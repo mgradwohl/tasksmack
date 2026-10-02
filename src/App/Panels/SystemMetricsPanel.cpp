@@ -555,11 +555,14 @@ void SystemMetricsPanel::renderOverview()
     // summary on a window too narrow for both (#967).
     if (rightBlockWidth > 0.0F)
     {
-        // Window-local X throughout: the space ImGui::SameLine() and SetCursorPosX() work in.
+        // Window-local X throughout: the space ImGui::SameLine() and SetCursorPosX() work in. The
+        // right edge is therefore the line's start plus the width available from it -- availWidth
+        // on its own is a width, and used as a position it stopped a padding's width short of the
+        // content's right edge, which is where this block had always been drawn.
         const float lineStartX = ImGui::GetCursorStartPos().x;
         const float summaryEndX = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + ImGui::GetScrollX();
-        const auto placement =
-            UI::LineLayout::placeTrailingBlock(lineStartX, summaryEndX, availWidth, rightBlockWidth, style.ItemSpacing.x * 2.0F);
+        const auto placement = UI::LineLayout::placeTrailingBlock(
+            lineStartX, summaryEndX, lineStartX + availWidth, rightBlockWidth, style.ItemSpacing.x * 2.0F);
         if (placement.sameLine)
         {
             ImGui::SameLine(placement.x);
@@ -970,13 +973,22 @@ void SystemMetricsPanel::renderOverview()
                 const ImGuiStyle& headerStyle = ImGui::GetStyle();
                 const float barColumnWidth = (UI::Widgets::BAR_WIDTH * static_cast<float>(OVERVIEW_NOW_BAR_COLUMNS)) +
                                              (headerStyle.ItemSpacing.x * (static_cast<float>(OVERVIEW_NOW_BAR_COLUMNS) - 1.0F));
-                const float chartRightEdge = ImGui::GetContentRegionAvail().x - barColumnWidth - headerStyle.CellPadding.x;
+                // The chart's right edge in window-local X. The chart and its NowBars sit in a
+                // two-column table with no outer border, which ImGui lays out with CellPadding.x on
+                // each side of the boundary between the columns and none outside them: so the chart
+                // ends two paddings and the bar column short of the content's right edge. This was
+                // "available width - bar column - one padding", a width used as a position, which
+                // only landed near the chart because the window padding it left out happened to be
+                // about the size of the cell padding it was short by.
+                const float headingLineStartX = ImGui::GetCursorStartPos().x;
+                const float chartRightEdge =
+                    headingLineStartX + ImGui::GetContentRegionAvail().x - barColumnWidth - (headerStyle.CellPadding.x * 2.0F);
                 const float rightTextWidth = ImGui::CalcTextSize(headerRight.c_str()).x;
                 // Same guard as the header line above: beside the heading when it fits, on its own
                 // line when it does not, never over it (#967).
                 const float headingEndX = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + ImGui::GetScrollX();
                 const auto placement = UI::LineLayout::placeTrailingBlock(
-                    ImGui::GetCursorStartPos().x, headingEndX, chartRightEdge, rightTextWidth, headerStyle.ItemSpacing.x * 2.0F);
+                    headingLineStartX, headingEndX, chartRightEdge, rightTextWidth, headerStyle.ItemSpacing.x * 2.0F);
                 if (placement.sameLine)
                 {
                     ImGui::SameLine(placement.x);

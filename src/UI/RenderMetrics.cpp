@@ -15,6 +15,15 @@
 namespace UI
 {
 
+namespace
+{
+
+// First-use size of the overlay window, in ems.
+constexpr float OVERLAY_WIDTH_EM = 43.0F;
+constexpr float OVERLAY_HEIGHT_EM = 32.0F;
+
+} // namespace
+
 void RenderMetrics::renderOverlay(bool* open)
 {
     if (open == nullptr || !*open)
@@ -24,7 +33,11 @@ void RenderMetrics::renderOverlay(bool* open)
     }
     setEnabled(true);
 
-    ImGui::SetNextWindowSize(ImVec2(460.0F, 340.0F), ImGuiCond_FirstUseEver);
+    // First-use size in ems: 43 x 32 em is the former fixed 460x340px at the reference em (32/3 px).
+    // The overlay holds text and a table of text, so a pixel size that suited one font left the
+    // larger presets with a window narrower than its own contents (#966).
+    const float overlayEmPx = ImGui::GetFontSize();
+    ImGui::SetNextWindowSize(ImVec2(OVERLAY_WIDTH_EM * overlayEmPx, OVERLAY_HEIGHT_EM * overlayEmPx), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Render Metrics", open, ImGuiWindowFlags_NoCollapse))
     {
         ImGui::End();
@@ -68,8 +81,16 @@ void RenderMetrics::renderOverlay(bool* open)
     // Wide enough for its own hint at the current font; a fixed 200px cut it short from about the
     // Large preset up (#965).
     constexpr const char* SCENARIO_HINT = "e.g. idle, resize, 1000-processes";
-    ImGui::SetNextItemWidth(ImGui::CalcTextSize(SCENARIO_HINT).x + (ImGui::GetStyle().FramePadding.x * 2.0F));
-    if (ImGui::InputTextWithHint("Scenario", SCENARIO_HINT, &scenarioInput))
+    //
+    // Capped to what the window has left once the visible "Scenario" label beside the field is
+    // accounted for: the window is user-resizable, SetNextItemWidth() does not widen it, and a
+    // field wider than the window would be clipped along with its label.
+    constexpr const char* SCENARIO_LABEL = "Scenario";
+    const ImGuiStyle& overlayStyle = ImGui::GetStyle();
+    const float scenarioWanted = ImGui::CalcTextSize(SCENARIO_HINT).x + (overlayStyle.FramePadding.x * 2.0F);
+    const float scenarioRoom = ImGui::GetContentRegionAvail().x - overlayStyle.ItemInnerSpacing.x - ImGui::CalcTextSize(SCENARIO_LABEL).x;
+    ImGui::SetNextItemWidth(std::max(std::min(scenarioWanted, scenarioRoom), overlayEmPx));
+    if (ImGui::InputTextWithHint(SCENARIO_LABEL, SCENARIO_HINT, &scenarioInput))
     {
         setScenario(scenarioInput);
     }
