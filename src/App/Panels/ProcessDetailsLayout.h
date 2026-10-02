@@ -123,4 +123,42 @@ snapshotIsSelectedProcess(std::int32_t selectedPid, std::uint64_t selectedKey, s
     return hasSelection && hadSnapshot && !snapshotPresent;
 }
 
+/// Content width the Confirm Action dialog may use: the viewport, less a margin, less the dialog's
+/// own padding.
+///
+/// The dialog auto-fits its content, so nothing else bounds it. Its question names the process and
+/// its two buttons have a font-relative floor; at Even Huger on a scaled display either can be
+/// wider than a small main window, and an auto-fitting popup wider than the window is simply
+/// clipped -- for the one dialog that confirms Terminate and Kill.
+///
+/// @param viewportWidthPx   Width of the viewport the dialog is centred in.
+/// @param viewportFraction  Largest share of the viewport the dialog may take (0..1].
+/// @param dialogPaddingPx   The dialog's horizontal window padding, one side.
+/// @return Width in pixels, or 0 when the viewport is unknown: "no budget", not "no room".
+[[nodiscard]] inline float computeConfirmContentBudget(float viewportWidthPx, float viewportFraction, float dialogPaddingPx) noexcept
+{
+    if (!std::isfinite(viewportWidthPx) || viewportWidthPx <= 0.0F || !std::isfinite(viewportFraction) || viewportFraction <= 0.0F)
+    {
+        return 0.0F;
+    }
+    const float padding = (std::isfinite(dialogPaddingPx) && dialogPaddingPx > 0.0F) ? dialogPaddingPx : 0.0F;
+    return std::max(0.0F, (viewportWidthPx * std::min(viewportFraction, 1.0F)) - (padding * 2.0F));
+}
+
+/// Width of each of the Confirm Action dialog's two buttons: the width they want, held to half the
+/// dialog's content budget so the pair always fits side by side.
+///
+/// @param wantedWidthPx    Width each button asks for (its font-relative floor, or its label).
+/// @param contentBudgetPx  From computeConfirmContentBudget(); non-positive means "unbounded".
+/// @param spacingPx        Gap between the two buttons (ImGuiStyle::ItemSpacing.x).
+[[nodiscard]] inline float computeConfirmButtonWidth(float wantedWidthPx, float contentBudgetPx, float spacingPx) noexcept
+{
+    const float wanted = (std::isfinite(wantedWidthPx) && wantedWidthPx > 0.0F) ? wantedWidthPx : 0.0F;
+    if (!std::isfinite(contentBudgetPx) || contentBudgetPx <= 0.0F)
+    {
+        return wanted;
+    }
+    const float spacing = (std::isfinite(spacingPx) && spacingPx > 0.0F) ? spacingPx : 0.0F;
+    return std::min(wanted, std::max(0.0F, (contentBudgetPx - spacing) * 0.5F));
+}
 } // namespace App::ProcessDetailsLayout

@@ -85,7 +85,6 @@ class SystemMetricsPanel : public Panel
 
   private:
     void renderOverview();
-    void renderCpuSection();
 
     std::unique_ptr<Domain::BackgroundSampler> m_Sampler;
     // shared_ptr (not unique_ptr): BackgroundSampler observes these models via weak_ptr rather

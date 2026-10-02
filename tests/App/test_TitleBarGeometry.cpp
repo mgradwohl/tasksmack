@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <limits>
+
 namespace App
 {
 namespace
@@ -974,5 +976,137 @@ TEST(TitleBarGeometryTest, MatchedGlyphSizeIsNeverNegative)
     EXPECT_GE(computeMatchedGlyphSize(-18.0F, 18.0F, 11.25F), 0.0F);
 }
 
+// ========== Resize border (#970) ==========
+
+// At a 1.0 display scale the strip is the 8px it always was.
+TEST(TitleBarGeometryTest, ResizeBorderIsUnchangedAtTheReferenceScale)
+{
+    EXPECT_FLOAT_EQ(computeResizeBorderThickness(1.0F), RESIZE_BORDER_REFERENCE_PX);
+}
+
+// The strip keeps its physical size on a scaled display instead of halving at 200%.
+TEST(TitleBarGeometryTest, ResizeBorderScalesWithTheDisplay)
+{
+    EXPECT_FLOAT_EQ(computeResizeBorderThickness(1.75F), 14.0F);
+    EXPECT_FLOAT_EQ(computeResizeBorderThickness(2.0F), 16.0F);
+}
+
+// Whole pixels: the strip is compared against integer window coordinates.
+TEST(TitleBarGeometryTest, ResizeBorderIsWholePixels)
+{
+    EXPECT_FLOAT_EQ(computeResizeBorderThickness(1.3F), 10.0F);
+    EXPECT_FLOAT_EQ(computeResizeBorderThickness(1.2F), 10.0F);
+}
+
+// A scale below 1.0, or a garbage one from a window that is not mapped yet, must not shrink the
+// only resize affordance the borderless window has.
+TEST(TitleBarGeometryTest, ResizeBorderIsNeverThinnerThanTheReference)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    for (const float scale : {0.5F, 0.0F, -1.0F, nan, std::numeric_limits<float>::infinity()})
+    {
+        EXPECT_FLOAT_EQ(computeResizeBorderThickness(scale), RESIZE_BORDER_REFERENCE_PX);
+    }
+}
+
+// ========== Minimum window size (#970) ==========
+
+// The bar's content: margin, icon, gap, wordmark, gap again, five buttons and the separator.
+TEST(TitleBarGeometryTest, TitleBarContentWidthSumsWhatTheBarDraws)
+{
+    // The 175% bar measured in the report: 56px tall, so margin 11.2, icon 52.64, gap 16.24,
+    // buttons 64.4 each, separator 21.84 -- with a 370px wordmark.
+    const float width = computeTitleBarContentWidth(11.2F, 52.64F, 16.24F, 370.0F, 64.4F, 21.84F);
+    EXPECT_NEAR(width, 11.2F + 52.64F + 16.24F + 370.0F + 16.24F + (64.4F * 5.0F) + 21.84F, 0.01F);
+}
+
+TEST(TitleBarGeometryTest, TitleBarContentWidthIgnoresUnusableInputs)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FLOAT_EQ(computeTitleBarContentWidth(nan, -5.0F, nan, 0.0F, 10.0F, nan), 50.0F);
+}
+
+// At a 1.0 display scale with nothing measured yet, the minimum is the base minimum it always was.
+TEST(TitleBarGeometryTest, MinimumSizeIsTheBaseMinimumAtTheReferenceScale)
+{
+    const auto minimum = computeMinimumWindowSize(1.0F, 0.0F);
+    EXPECT_EQ(minimum.width, MIN);
+    EXPECT_EQ(minimum.height, MIN);
+}
+
+// The reported case: at 175% the window could be dragged to 200 units wide while its title bar
+// needed about 800. The minimum width must cover the bar's content.
+TEST(TitleBarGeometryTest, MinimumWidthCoversTheTitleBarContent)
+{
+    const auto minimum = computeMinimumWindowSize(1.75F, 810.4F);
+    EXPECT_EQ(minimum.width, 811); // rounded up: a fraction of a pixel short still overlaps
+    EXPECT_EQ(minimum.height, 350);
+}
+
+// Content narrower than the scaled base minimum does not lower it.
+TEST(TitleBarGeometryTest, MinimumWidthIsNeverBelowTheScaledBase)
+{
+    const auto minimum = computeMinimumWindowSize(2.0F, 120.0F);
+    EXPECT_EQ(minimum.width, 400);
+    EXPECT_EQ(minimum.height, 400);
+}
+
+TEST(TitleBarGeometryTest, MinimumSizeSurvivesDegenerateInput)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+
+    for (const auto& minimum : {
+             computeMinimumWindowSize(nan, nan),
+             computeMinimumWindowSize(0.0F, -100.0F),
+             computeMinimumWindowSize(inf, inf),
+             computeMinimumWindowSize(0.25F, 0.0F),
+         })
+    {
+        EXPECT_EQ(minimum.width, MIN);
+        EXPECT_EQ(minimum.height, MIN);
+    }
+
+    // Absurdly wide content is held to the maximum dimension rather than overflowing the int.
+    EXPECT_EQ(computeMinimumWindowSize(1.0F, 1.0e9F).width, MAX);
+    EXPECT_EQ(computeMinimumWindowSize(1.0e6F, 0.0F).height, MAX);
+}
+
+// ========== Resize geometry with a caller-supplied minimum (#970) ==========
+
+// Dragging the right edge inward stops at the supplied minimum, not the base one.
+TEST(ComputeResizeGeometryTest, SuppliedMinimum_StopsAShrinkFromTheRight)
+{
+    const auto r = computeResizeGeometry(ResizeEdge::Right, 100, 100, 1200, 800, -1100, 0, 811, 350);
+    EXPECT_EQ(r.width, 811);
+    EXPECT_EQ(r.x, 100);
+}
+
+// From the left, the right edge stays anchored when the minimum bites.
+TEST(ComputeResizeGeometryTest, SuppliedMinimum_KeepsTheRightEdgeAnchoredFromTheLeft)
+{
+    const auto r = computeResizeGeometry(ResizeEdge::Left, 100, 100, 1200, 800, 1100, 0, 811, 350);
+    EXPECT_EQ(r.width, 811);
+    EXPECT_EQ(r.x + r.width, 100 + 1200);
+}
+
+TEST(ComputeResizeGeometryTest, SuppliedMinimum_AppliesToHeightFromTheTop)
+{
+    const auto r = computeResizeGeometry(ResizeEdge::Top, 100, 100, 1200, 800, 0, 700, 811, 350);
+    EXPECT_EQ(r.height, 350);
+    EXPECT_EQ(r.y + r.height, 100 + 800);
+}
+
+// A supplied minimum can neither undercut the base minimum nor exceed the maximum.
+TEST(ComputeResizeGeometryTest, SuppliedMinimum_IsHeldInsideTheAbsoluteBounds)
+{
+    const auto tooSmall = computeResizeGeometry(ResizeEdge::BottomRight, 0, 0, 800, 600, -5000, -5000, 10, -3);
+    EXPECT_EQ(tooSmall.width, MIN);
+    EXPECT_EQ(tooSmall.height, MIN);
+
+    const auto tooLarge = computeResizeGeometry(ResizeEdge::BottomRight, 0, 0, 800, 600, 0, 0, MAX * 2, MAX * 2);
+    EXPECT_EQ(tooLarge.width, MAX);
+    EXPECT_EQ(tooLarge.height, MAX);
+}
 } // namespace
 } // namespace App
