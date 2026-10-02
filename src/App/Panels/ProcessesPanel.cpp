@@ -5,6 +5,7 @@
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessSortUtils.h"
 #include "App/Panels/ProcessTableFlags.h"
+#include "App/Panels/ProcessTableLayout.h"
 #include "App/Panels/ProcessTreeFlatten.h"
 #include "App/Panels/ProcessTreeIndent.h"
 #include "App/ProcessColumnConfig.h"
@@ -22,6 +23,7 @@
 
 // clang-format off
 #include <imgui.h>
+#include <imgui_internal.h> // ImGuiTable: the laid-out column widths have no public accessor
 #include <misc/cpp/imgui_stdlib.h>
 #include <spdlog/spdlog.h>
 // clang-format on
@@ -582,16 +584,34 @@ void ProcessesPanel::renderContent()
 
     // Sortable only in list view -- tree view ignores sort specs entirely, so offering sortable
     // headers there would accept the click and do nothing (#926).
-    if (ImGui::BeginTable("ProcessTable", totalColumns, ProcessTableFlags::forProcessTable(m_TreeViewEnabled), tableOuterSize))
+    // Command absorbs whatever width the other columns leave, but never shrinks below its default;
+    // past that point the table scrolls instead. See ProcessTableLayout.h for why this takes an
+    // explicit inner width rather than just a stretch column (#924).
+    const float emPx = ImGui::GetFontSize();
+    // A hidden Command column reserves nothing: its minimum would otherwise be added back on top of
+    // a measurement that already excludes it, giving a table that fits a scrollbar and an empty
+    // scroll extent it does not need.
+    const float commandMinWidth =
+        m_ColumnSettings.isVisible(ProcessColumn::Command) ? scaledDefaultWidth(getColumnInfo(ProcessColumn::Command), emPx) : 0.0F;
+    const float tableInnerWidth = ProcessTableLayout::computeInnerWidth(m_OtherColumnsWidth, commandMinWidth, m_TableVisibleWidth);
+
+    if (ImGui::BeginTable(
+            "ProcessTable", totalColumns, ProcessTableFlags::forProcessTable(m_TreeViewEnabled), tableOuterSize, tableInnerWidth))
     {
         ImGui::TableSetupScrollFreeze(0, 1); // Freeze header row
 
         // Setup ALL columns with stable IDs - use enum value as user_id for stable identification
-        const float emPx = ImGui::GetFontSize();
+        int commandColumnIdx = -1;
+        int setupIdx = 0;
         for (const ProcessColumn col : allProcessColumns())
         {
             const auto info = getColumnInfo(col);
             ImGuiTableColumnFlags flags = ImGuiTableColumnFlags_None;
+            if (col == ProcessColumn::Command)
+            {
+                commandColumnIdx = setupIdx;
+            }
+            ++setupIdx;
 
             // Set default visibility from settings (ImGui will manage the actual state)
             if (!m_ColumnSettings.isVisible(col))
@@ -611,14 +631,21 @@ void ProcessesPanel::renderContent()
                 flags |= ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending;
             }
 
-            // Keep Command as fixed-width by default so horizontal extent is scrollable to the right edge.
+            // Command is the one stretch column: it takes the width the others leave. Its default
+            // width is not an initial width here but the floor enforced through tableInnerWidth.
+            //
+            // It is also pinned as the trailing column. ImGui makes the right-most enabled column
+            // non-resizable whenever the table has a stretch column, which is harmless while that
+            // column is Command itself; were Command dragged elsewhere, whichever fixed column ended
+            // up last would silently lose its resize handle. NoReorder keeps Command in place and
+            // stops other columns crossing over it.
             if (col == ProcessColumn::Command)
             {
-                flags |= ImGuiTableColumnFlags_WidthFixed;
+                flags |= ImGuiTableColumnFlags_WidthStretch | ImGuiTableColumnFlags_NoReorder;
+                ImGui::TableSetupColumn(std::string(info.menuName).c_str(), flags, 1.0F, toImGuiId(col));
             }
-
             // Columns with a positive default width are initialized as width-based columns.
-            if (info.defaultWidth > 0.0F)
+            else if (info.defaultWidth > 0.0F)
             {
                 // Use menuName for TableSetupColumn (shown in context menu)
                 // We render custom headers with info.name below
@@ -664,6 +691,16 @@ void ProcessesPanel::renderContent()
             }
 
             ++headerIdx;
+        }
+
+        // Measure this frame's layout for the next frame's inner-width decision. The layout is
+        // locked once the header row has been submitted, so these are final for the frame.
+        if (const ImGuiTable* table = ImGui::GetCurrentTable(); table != nullptr && commandColumnIdx >= 0)
+        {
+            const ImGuiTableColumn& commandColumn = table->Columns[commandColumnIdx];
+            const float commandWidth = commandColumn.IsEnabled ? commandColumn.WidthGiven : 0.0F;
+            m_OtherColumnsWidth = table->ColumnsGivenWidth - commandWidth;
+            m_TableVisibleWidth = table->InnerClipRect.GetWidth();
         }
 
         // Handle sorting: Disable in tree view mode to maintain parent-child hierarchy

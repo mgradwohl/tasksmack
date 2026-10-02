@@ -151,6 +151,10 @@ class ProcessesPanel : public Panel
 
     // Tree view state
     bool m_TreeViewEnabled = false;
+
+    // Previous frame's table layout, feeding ProcessTableLayout::computeInnerWidth() (#924)
+    float m_OtherColumnsWidth = 0.0F;                  // Everything but the Command column's own content
+    float m_TableVisibleWidth = 0.0F;                  // Visible width of the table's scrolling area
     std::unordered_set<std::uint64_t> m_CollapsedKeys; // uniqueKeys that are collapsed in tree view
 
     // Snapshot cache: only re-fetch from ProcessModel when version changes (data updates at 1Hz,
