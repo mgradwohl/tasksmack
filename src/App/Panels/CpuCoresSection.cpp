@@ -28,7 +28,6 @@ namespace App::CpuCoresSection
 namespace
 {
 
-using UI::Widgets::BAR_WIDTH;
 using UI::Widgets::buildTimeAxis;
 using UI::Widgets::ChartGridConfig;
 using UI::Widgets::computeAlpha;
@@ -137,7 +136,8 @@ void renderCpuCoresSection(RenderContext& ctx)
         // rows/scrolling (#823 review).
         const float approxLabelOverhead = (ImGui::GetStyle().WindowPadding.y * 2.0F) + ImGui::GetTextLineHeight() +
                                           (ImGui::GetStyle().ItemSpacing.y * 2.0F) + (ImGui::GetStyle().CellPadding.y * 2.0F);
-        const float barColumnAllowance = BAR_WIDTH; // extra width renderHistoryWithNowBars reserves for the NowBar column
+        const float barColumnAllowance =
+            UI::Widgets::nowBarWidth(ImGui::GetFontSize()); // extra width renderHistoryWithNowBars reserves for the NowBar column
 
         const ImVec2 avail = ImGui::GetContentRegionAvail();
         const ChartGridConfig gridConfig{

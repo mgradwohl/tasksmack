@@ -294,6 +294,14 @@ class Theme
         return m_DisplayScale;
     }
 
+    /// Factor applyImGuiStyle() multiplies its size literals by: the font preset relative to
+    /// Medium, times the display scale (see computeStyleScale()).
+    ///
+    /// For the few call sites that push their own padding over the style's -- the tab bars, the
+    /// shell's content gutter -- so that what they push scales the same way as what they replace.
+    /// A literal pushed over a scaled style value is the fixed-pixel bug again (#971).
+    [[nodiscard]] auto styleScale() const -> float;
+
     /// Get current font size preset
     [[nodiscard]] auto currentFontSize() const -> FontSize
     {

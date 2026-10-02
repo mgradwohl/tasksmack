@@ -429,7 +429,7 @@ void Theme::applyImGuiStyle() const
     //
     // Each field is re-assigned from its literal on every call, so the scale cannot compound. See
     // computeStyleScale() for why this is done here rather than with ImGuiStyle::ScaleAllSizes().
-    const float scale = computeStyleScale(fontConfig().regularPt, m_DisplayScale);
+    const float scale = styleScale();
 
     style.WindowRounding = 4.0F * scale;
     style.ChildRounding = 4.0F * scale;
@@ -489,6 +489,11 @@ void Theme::applyImGuiStyle() const
     // ImPlot caches colors when SetupAxis() is called - without this,
     // runtime theme changes won't update existing plots' axis labels/ticks
     ImPlot::BustColorCache();
+}
+
+auto Theme::styleScale() const -> float
+{
+    return computeStyleScale(fontConfig().regularPt, m_DisplayScale);
 }
 
 auto Theme::scheme() const -> const ColorScheme&

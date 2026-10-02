@@ -52,14 +52,13 @@ namespace App
 namespace
 {
 
-constexpr float TREE_INDENT_WIDTH = 16.0F; // Indent width per tree level in pixels
-// Name text kept visible past the expander no matter how deep the row or how narrow the user has
-// dragged the Name column. Bounds the tree indent so the expand/collapse button can never be
-// pushed out of its cell, which would make a deep parent impossible to toggle (#906).
-// Sized so a clamped row still shows a recognisable chunk of the process name rather than a few
-// characters; the indent gives way first, because depth is also conveyed by the expander column
-// alignment and the PPID column, whereas a truncated name has no other source (#906, #913).
-constexpr float MIN_TREE_NAME_WIDTH = 72.0F;
+// The tree's indent per level and the name width it must leave are font-relative; see
+// ProcessTreeIndent::INDENT_PER_LEVEL_EM and MIN_NAME_WIDTH_EM.
+//
+// The name reservation bounds the tree indent so the expand/collapse button can never be pushed
+// out of its cell, which would make a deep parent impossible to toggle (#906). The indent gives
+// way first, because depth is also conveyed by the expander column alignment and the PPID column,
+// whereas a truncated name has no other source (#906, #913).
 
 constexpr float INTERACTION_INTERVAL_HOLD_SECONDS = 0.40F;
 
@@ -1087,7 +1086,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             // depth-dependent width on later frames is silently ignored.
             //
             // So the indent yields instead: it is clamped against the cell's actual width, always
-            // reserving the expander slot plus MIN_TREE_NAME_WIDTH of name. Deep rows therefore
+            // reserving the expander slot plus MIN_NAME_WIDTH_EM of name. Deep rows therefore
             // show less indentation than their depth would suggest rather than losing the name or,
             // worse, the expander -- a parent whose expander is pushed out of the cell cannot be
             // collapsed back to a usable width, which is a dead end rather than a cosmetic clip.
@@ -1096,10 +1095,12 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             // after it -- both the button and the leaf Dummy are followed by SameLine(), so the
             // spacing is always paid and must be reserved or the name keeps less room than promised.
             const float expanderSlotWidth = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.x;
-            const float reservedForControls = expanderSlotWidth + MIN_TREE_NAME_WIDTH;
+            const float treeEmPx = ImGui::GetFontSize();
+            const float reservedForControls = expanderSlotWidth + (ProcessTreeIndent::MIN_NAME_WIDTH_EM * treeEmPx);
             const float indentWidth =
                 m_TreeViewEnabled
-                    ? ProcessTreeIndent::clampedIndent(depth, TREE_INDENT_WIDTH, ImGui::GetContentRegionAvail().x, reservedForControls)
+                    ? ProcessTreeIndent::clampedIndent(
+                          depth, ProcessTreeIndent::INDENT_PER_LEVEL_EM * treeEmPx, ImGui::GetContentRegionAvail().x, reservedForControls)
                     : 0.0F;
             const bool indented = indentWidth > 0.0F;
             if (indented)

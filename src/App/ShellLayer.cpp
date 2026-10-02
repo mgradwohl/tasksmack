@@ -5,18 +5,23 @@
 #include "Core/Event.h"
 #include "Core/Layer.h"
 #include "Domain/ProcessSnapshot.h"
+#include "ShellMetrics.h"
+#include "TitleBarGeometry.h"
 #include "TitleBarLayer.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/RenderMetrics.h"
 #include "UI/Theme.h"
 #include "UserConfig.h"
 
+#include <SDL3/SDL.h>
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <string>
 #include <utility>
 
@@ -38,6 +43,20 @@ void ShellLayer::onAttach()
     auto& config = UserConfig::get();
     config.load();
     config.applyToApplication();
+
+    // The window may not be made smaller than the base minimum at this display's scale. Set here
+    // because the shell is always present: TitleBarLayer widens the minimum to cover its own
+    // content, but it is not created when native decorations are in use (#745), and without this
+    // the window would have no SDL-level minimum at all in that mode. UILayer attaches first, so
+    // the display scale is already known (#970).
+    if (SDL_Window* sdlWindow = Core::Application::get().getWindow().getHandle(); sdlWindow != nullptr)
+    {
+        const WindowMinimumSize baseMinimum = computeMinimumWindowSize(UI::Theme::get().displayScale(), 0.0F);
+        if (!SDL_SetWindowMinimumSize(sdlWindow, baseMinimum.width, baseMinimum.height))
+        {
+            spdlog::warn("SDL_SetWindowMinimumSize({}, {}) failed: {}", baseMinimum.width, baseMinimum.height, SDL_GetError());
+        }
+    }
 
     // Initialize panels
     m_Tabs.onAttach();
@@ -261,12 +280,14 @@ void ShellLayer::onRender()
 
         renderTabBar();
 
-        // Render content area with padding
-        constexpr float CONTENT_PADDING_H = 12.0F;
-        constexpr float CONTENT_PADDING_V = 4.0F;
+        // Render content area with padding. Authored at the reference configuration and scaled
+        // like the style it overrides, so the gutter keeps its proportion to the text (#971).
+        const float styleScale = UI::Theme::get().styleScale();
+        const float contentPaddingH = ShellMetrics::CONTENT_PADDING_H * styleScale;
+        const float contentPaddingV = ShellMetrics::CONTENT_PADDING_V * styleScale;
 
         // Add padding by using a child window with border that provides internal padding
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(CONTENT_PADDING_H, CONTENT_PADDING_V));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(contentPaddingH, contentPaddingV));
 
         // Let ImGui own child sizing so each panel can consume full available height without
         // shell-level scrollbar reservations that affect non-process tabs.
@@ -290,16 +311,21 @@ void ShellLayer::onRender()
 
 void ShellLayer::renderTabBar()
 {
-    // Add top edge padding for visual balance
-    constexpr float TOP_EDGE_PADDING = 4.0F;
-    ImGui::Dummy(ImVec2(0.0F, TOP_EDGE_PADDING));
+    // Every size here is authored at the reference configuration and scaled like the ImGuiStyle
+    // values around it. As pixel literals pushed over a scaled style they kept one size while the
+    // text they frame grew and shrank: the tabs' padding was more than a line of text at Small and
+    // about half a line at Even Huger (#971).
+    const float styleScale = UI::Theme::get().styleScale();
 
-    // Add left indent to align main tabs with panel tabs below (content area has 12px padding)
-    constexpr float LEFT_INDENT = 12.0F;
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + LEFT_INDENT);
+    // Add top edge padding for visual balance
+    ImGui::Dummy(ImVec2(0.0F, ShellMetrics::TOP_EDGE_PADDING * styleScale));
+
+    // Add left indent to align main tabs with panel tabs below (same as the content area's gutter)
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ShellMetrics::CONTENT_PADDING_H * styleScale));
 
     // Add horizontal padding inside tabs and vertical padding for taller tabs
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(16.0F, 10.0F));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                        ImVec2(ShellMetrics::TAB_PADDING_X * styleScale, ShellMetrics::MAIN_TAB_PADDING_Y * styleScale));
 
     if (ImGui::BeginTabBar("##MainTabBar", ImGuiTabBarFlags_NoCloseWithMiddleMouseButton | ImGuiTabBarFlags_NoTooltip))
     {
@@ -359,7 +385,8 @@ void ShellLayer::renderStatusBar() const
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0F); // Show top border
     // Center text vertically within the status bar
     const float verticalPadding = (statusBarHeight - ImGui::GetFontSize()) * 0.5F;
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0F, verticalPadding));
+    const float statusBarPaddingX = ShellMetrics::STATUS_BAR_PADDING_X * UI::Theme::get().styleScale();
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(statusBarPaddingX, verticalPadding));
 
     if (ImGui::Begin("##StatusBar", nullptr, windowFlags))
     {
@@ -403,13 +430,19 @@ void ShellLayer::renderStatusBar() const
             }
         }
 
-        // Right-align FPS display
-        const char* fpsText = "%.1f FPS (%.2f ms)";
-        const float fpsWidth = ImGui::CalcTextSize(fpsText).x + 50.0F; // Extra space for numbers
-        ImGui::SameLine(ImGui::GetWindowWidth() - fpsWidth);
-        ImGui::Text("%.1f FPS (%.2f ms)",
-                    static_cast<double>(m_FpsCounter.displayedFps()),
-                    static_cast<double>(m_FpsCounter.frameTime() * 1000.0F));
+        // Right-align FPS display. The text is formatted first and then measured, so the readout
+        // ends at the status bar's padding at any font and any value. It used to be positioned from
+        // the width of the *format string* plus a fixed 50px, which is not the width of what is
+        // drawn (#971).
+        std::array<char, 48> fpsText{};
+        const auto fpsEnd = std::format_to_n(fpsText.data(),
+                                             fpsText.size() - 1,
+                                             "{:.1f} FPS ({:.2f} ms)",
+                                             static_cast<double>(m_FpsCounter.displayedFps()),
+                                             static_cast<double>(m_FpsCounter.frameTime() * 1000.0F));
+        const float fpsWidth = ImGui::CalcTextSize(fpsText.data(), fpsEnd.out).x;
+        ImGui::SameLine(ImGui::GetWindowWidth() - statusBarPaddingX - fpsWidth);
+        ImGui::TextUnformatted(fpsText.data(), fpsEnd.out);
     }
     ImGui::End();
     ImGui::PopStyleVar(3);
