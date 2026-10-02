@@ -9,6 +9,7 @@
 // clang-format on
 
 #include <algorithm>
+#include <cfloat>
 #include <string>
 #include <vector>
 
@@ -21,6 +22,15 @@ namespace
 // First-use size of the overlay window, in ems.
 constexpr float OVERLAY_WIDTH_EM = 43.0F;
 constexpr float OVERLAY_HEIGHT_EM = 32.0F;
+
+// Shortest the overlay may be dragged to, in ems: its summary lines, the scenario row, the Copy
+// button and a couple of table rows.
+constexpr float OVERLAY_MIN_HEIGHT_EM = 14.0F;
+
+// The scenario field's label and hint. The overlay's minimum width is measured from them, so they
+// are named here rather than repeated at the field.
+constexpr const char* SCENARIO_LABEL = "Scenario";
+constexpr const char* SCENARIO_HINT = "e.g. idle, resize, 1000-processes";
 
 } // namespace
 
@@ -38,6 +48,20 @@ void RenderMetrics::renderOverlay(bool* open)
     // larger presets with a window narrower than its own contents (#966).
     const float overlayEmPx = ImGui::GetFontSize();
     ImGui::SetNextWindowSize(ImVec2(OVERLAY_WIDTH_EM * overlayEmPx, OVERLAY_HEIGHT_EM * overlayEmPx), ImGuiCond_FirstUseEver);
+
+    // The first-use size above is applied once, so it cannot follow a Font Size change made while
+    // the overlay exists: opened at Medium and then switched to Even Huger, the window kept its
+    // Medium width and the scenario field below was capped to it, hint clipped again. A minimum
+    // size is re-evaluated every frame, so this one tracks the current font: the window can be
+    // resized freely, but never to less than its scenario row needs. Held to the viewport so a
+    // large font on a small main window cannot demand an overlay wider than the screen it is on.
+    const ImGuiStyle& overlayStyle = ImGui::GetStyle();
+    const float scenarioWanted = ImGui::CalcTextSize(SCENARIO_HINT).x + (overlayStyle.FramePadding.x * 2.0F);
+    const float scenarioRowWidth = scenarioWanted + overlayStyle.ItemInnerSpacing.x + ImGui::CalcTextSize(SCENARIO_LABEL).x;
+    const ImVec2 viewportSize = ImGui::GetMainViewport()->WorkSize;
+    const ImVec2 overlayMinSize(std::min(scenarioRowWidth + (overlayStyle.WindowPadding.x * 2.0F), viewportSize.x),
+                                std::min(OVERLAY_MIN_HEIGHT_EM * overlayEmPx, viewportSize.y));
+    ImGui::SetNextWindowSizeConstraints(overlayMinSize, ImVec2(FLT_MAX, FLT_MAX));
     if (!ImGui::Begin("Render Metrics", open, ImGuiWindowFlags_NoCollapse))
     {
         ImGui::End();
@@ -80,14 +104,10 @@ void RenderMetrics::renderOverlay(bool* open)
     static std::string scenarioInput = scenario();
     // Wide enough for its own hint at the current font; a fixed 200px cut it short from about the
     // Large preset up (#965).
-    constexpr const char* SCENARIO_HINT = "e.g. idle, resize, 1000-processes";
     //
-    // Capped to what the window has left once the visible "Scenario" label beside the field is
-    // accounted for: the window is user-resizable, SetNextItemWidth() does not widen it, and a
-    // field wider than the window would be clipped along with its label.
-    constexpr const char* SCENARIO_LABEL = "Scenario";
-    const ImGuiStyle& overlayStyle = ImGui::GetStyle();
-    const float scenarioWanted = ImGui::CalcTextSize(SCENARIO_HINT).x + (overlayStyle.FramePadding.x * 2.0F);
+    // Still capped to what the window has left beside the visible "Scenario" label. The minimum
+    // window size above normally guarantees the room; the cap is for the one case it cannot, a
+    // viewport narrower than the row, where a clipped hint beats a field running off the window.
     const float scenarioRoom = ImGui::GetContentRegionAvail().x - overlayStyle.ItemInnerSpacing.x - ImGui::CalcTextSize(SCENARIO_LABEL).x;
     ImGui::SetNextItemWidth(std::max(std::min(scenarioWanted, scenarioRoom), overlayEmPx));
     if (ImGui::InputTextWithHint(SCENARIO_LABEL, SCENARIO_HINT, &scenarioInput))
