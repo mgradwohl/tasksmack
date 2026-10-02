@@ -136,6 +136,7 @@ class ProcessesPanel : public Panel
     std::shared_ptr<Domain::ProcessModel> m_ProcessModel;
     std::unique_ptr<Domain::BackgroundSampler> m_Sampler;
     std::int32_t m_SelectedPid = -1;
+    std::uint64_t m_SelectedUniqueKey = 0; // Selected process's identity: a PID can be reused
 
     std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
     std::chrono::milliseconds m_AppliedSamplerInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};

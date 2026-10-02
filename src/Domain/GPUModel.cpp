@@ -53,6 +53,7 @@ GPUModel::GPUModel(std::unique_ptr<Platform::IGPUProbe> probe)
     try
     {
         m_GPUInfo = m_Probe->enumerateGPUs();
+        m_GPUInfoKnown = true;
         spdlog::info("GPUModel: Detected {} GPU(s)", m_GPUInfo.size());
 
         // Initialize history buffers for each GPU
@@ -168,6 +169,7 @@ void GPUModel::publish()
     // the version past what was actually published.
     publication->version = m_PublicationVersion + 1;
     publication->gpuInfo = m_GPUInfo;
+    publication->gpuInfoKnown = m_GPUInfoKnown;
     publication->capabilities = m_Capabilities;
     publication->snapshots.reserve(m_Snapshots.size());
     for (const auto& [gpuId, snapshot] : m_Snapshots)

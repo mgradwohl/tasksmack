@@ -60,7 +60,7 @@ void ShellLayer::onAttach()
     // so the system tab label is built once here.
     m_CachedSystemTabLabel = std::string(ICON_FA_COMPUTER) + "  " + m_SystemMetricsPanel.hostname();
     m_CachedDetailsTabLabel = std::string(ICON_FA_CIRCLE_INFO) + "  Select a process";
-    m_CachedLabelPid = -1;
+    m_CachedLabelText.clear();
 
     // Cache privilege status and trigger the startup notice if needed.
     // Elevation state is constant for process lifetime; cache once at startup.
@@ -180,12 +180,18 @@ void ShellLayer::onUpdate(float deltaTime)
     }
     m_ProcessDetailsPanel.updateWithSnapshot(selectedSnapshot, selectedSnapshotVersion, deltaTime);
 
-    // Update the cached details tab label only when the selected process changes.
-    // Rebuilding on every frame would allocate three std::string objects per frame at 60 fps.
-    if (selectedPid != m_CachedLabelPid)
+    // Rebuild the cached details tab label only when its text actually changes. Rebuilding on
+    // every frame would allocate three std::string objects per frame at 60 fps; comparing the
+    // panel's label against the cached text allocates nothing.
+    //
+    // Keyed on the text itself, not on the selection's identity. Identity is the wrong key: the
+    // label also changes when nothing about the selection does -- most simply when the selected
+    // process's first snapshot arrives a frame after the selection, which used to leave the tab
+    // titled "Select a process" for as long as that process stayed selected.
+    if (const std::string& labelText = m_ProcessDetailsPanel.tabLabel(); labelText != m_CachedLabelText)
     {
-        m_CachedLabelPid = selectedPid;
-        m_CachedDetailsTabLabel = std::string(ICON_FA_CIRCLE_INFO) + "  " + m_ProcessDetailsPanel.tabLabel();
+        m_CachedLabelText = labelText;
+        m_CachedDetailsTabLabel = std::string(ICON_FA_CIRCLE_INFO) + "  " + labelText;
     }
 
     // Handle keyboard shortcuts for font size

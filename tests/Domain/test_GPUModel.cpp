@@ -131,6 +131,52 @@ TEST(GPUModelTest, ReadProcessGPUCountersCallsProbeWhenCapabilitySupported)
     EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 1U);
 }
 
+// An empty device list is ambiguous on its own: it can mean "looked and found none" or "could not
+// look". The publication says which, so the UI does not report a failed enumeration as the absence
+// of a GPU (#927 review).
+TEST(GPUModelTest, PublicationRecordsSuccessfulEnumerationEvenWhenEmpty)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    const auto publication = model.publication();
+    ASSERT_NE(publication, nullptr);
+    EXPECT_TRUE(publication->gpuInfoKnown);
+    EXPECT_TRUE(publication->gpuInfo.empty());
+}
+
+TEST(GPUModelTest, PublicationRecordsSuccessfulEnumerationWithDevices)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    const auto publication = model.publication();
+    ASSERT_NE(publication, nullptr);
+    EXPECT_TRUE(publication->gpuInfoKnown);
+    EXPECT_EQ(publication->gpuInfo.size(), 1U);
+}
+
+// The model survives a failed enumeration and keeps publishing; the publication must say the
+// device list is not to be trusted.
+TEST(GPUModelTest, PublicationRecordsFailedEnumeration)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withEnumerationThrowing();
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    const auto publication = model.publication();
+    ASSERT_NE(publication, nullptr);
+    EXPECT_FALSE(publication->gpuInfoKnown);
+    EXPECT_TRUE(publication->gpuInfo.empty());
+}
+
 TEST(GPUModelTest, ReadProcessGPUCountersStillAttemptsProbeWhenCapabilityDiscoveryFailed)
 {
     // Regression test for a review finding on #862: the constructor's capabilities() query

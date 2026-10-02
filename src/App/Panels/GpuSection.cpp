@@ -2,6 +2,7 @@
 
 #include "Domain/GPUSnapshot.h"
 #include "UI/ChartWidgets.h"
+#include "UI/EmptyState.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
@@ -86,22 +87,39 @@ void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap
 
 void renderGpuSection(RenderContext& ctx)
 {
-    if (ctx.publication == nullptr)
+    const EmptyReason emptyReason = classifyEmptyState(ctx.publication != nullptr,
+                                                       (ctx.publication != nullptr) && ctx.publication->gpuInfoKnown,
+                                                       (ctx.publication != nullptr) ? ctx.publication->gpuInfo.size() : 0,
+                                                       (ctx.publication != nullptr) ? ctx.publication->snapshots.size() : 0);
+    switch (emptyReason)
     {
-        ImGui::Text("GPU monitoring not available");
+    case EmptyReason::Unavailable:
+        UI::Widgets::renderEmptyState(ICON_FA_TRIANGLE_EXCLAMATION "  GPU monitoring is not available",
+                                      "TaskSmack could not read GPU data on this system.");
         return;
+    case EmptyReason::NoDevices:
+        // Not an error and not transient: the probe ran and reported no device. Saying so, and that
+        // it is expected where it usually happens, is what distinguishes this from a failed tab.
+        UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  No GPU detected",
+                                      "No GPU device was found. This is expected in most virtual machines and under WSL2, "
+                                      "where no GPU device is exposed to the system.");
+        return;
+    case EmptyReason::NoReadings:
+    {
+        const std::size_t deviceCount = ctx.publication->gpuInfo.size();
+        const std::string detail =
+            std::format("{} GPU{} detected, but the latest reading returned no data.", deviceCount, deviceCount == 1 ? " was" : "s were");
+        UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  GPU data unavailable", detail.c_str());
+        return;
+    }
+    case EmptyReason::None:
+        break;
     }
 
     const auto& gpuSnapshots = ctx.publication->snapshots;
     const auto& gpuInfos = ctx.publication->gpuInfo;
     const auto& caps = ctx.publication->capabilities;
     auto& theme = UI::Theme::get();
-
-    if (gpuSnapshots.empty())
-    {
-        ImGui::TextColored(theme.scheme().textMuted, "No GPU data available");
-        return;
-    }
 
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 
