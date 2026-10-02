@@ -1978,10 +1978,24 @@ void ProcessDetailsPanel::renderConfirmDialog()
 
     if (ImGui::BeginPopupModal("Confirm Action", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
-        ImGui::Text("Are you sure you want to %s process '%s' (PID %d)?",
-                    Detail::actionVerb(m_ConfirmAction),
-                    m_CachedSnapshot.name.c_str(),
-                    m_SelectedPid);
+        // The dialog auto-fits, so it is bounded here: neither the question (which carries the
+        // process name) nor the button row may be wider than the main window can show. See
+        // ProcessDetailsLayout::computeConfirmContentBudget().
+        const ImGuiStyle& confirmStyle = ImGui::GetStyle();
+        const float contentBudget = ProcessDetailsLayout::computeConfirmContentBudget(
+            ImGui::GetMainViewport()->WorkSize.x, UI::DialogMetrics::MAX_VIEWPORT_FRACTION, confirmStyle.WindowPadding.x);
+
+        const std::string question = std::format("Are you sure you want to {} process '{}' (PID {})?",
+                                                 Detail::actionVerb(m_ConfirmAction),
+                                                 m_CachedSnapshot.name,
+                                                 m_SelectedPid);
+        // Wrapped at the budget, or at the text's own width when that is narrower -- a wrap
+        // position wider than the text would make the auto-fitting dialog as wide as the budget.
+        const float questionWidth = ImGui::CalcTextSize(question.c_str()).x;
+        const float wrapWidth = (contentBudget > 0.0F) ? std::min(questionWidth, contentBudget) : questionWidth;
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrapWidth);
+        ImGui::TextUnformatted(question.c_str());
+        ImGui::PopTextWrapPos();
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
@@ -1989,8 +2003,14 @@ void ProcessDetailsPanel::renderConfirmDialog()
         // One width for both, from the font: 11.25 em is the former fixed 120px at the reference
         // em, so the dialog is unchanged there and the buttons stay a comfortable target for a
         // destructive confirmation at any font size or display density (#971).
-        const float confirmButtonWidth = UI::DialogMetrics::computeActionButtonWidth(
-            std::max(ImGui::CalcTextSize("Yes").x, ImGui::CalcTextSize("No").x), ImGui::GetFontSize(), CONFIRM_BUTTON_MIN_EM);
+        //
+        // Held to half the dialog's budget: at Even Huger on a 175% display each button wants
+        // 420px, and the pair would be wider than a minimum-width window.
+        const float confirmButtonWidth = ProcessDetailsLayout::computeConfirmButtonWidth(
+            UI::DialogMetrics::computeActionButtonWidth(
+                std::max(ImGui::CalcTextSize("Yes").x, ImGui::CalcTextSize("No").x), ImGui::GetFontSize(), CONFIRM_BUTTON_MIN_EM),
+            contentBudget,
+            confirmStyle.ItemSpacing.x);
 
         if (ImGui::Button("Yes", ImVec2(confirmButtonWidth, 0.0F)))
         {

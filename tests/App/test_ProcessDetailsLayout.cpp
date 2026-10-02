@@ -206,5 +206,59 @@ TEST(ProcessDetailsLayoutTest, NoSelectionIsNeverExited)
     EXPECT_FALSE(selectedProcessHasExited(false, false, false));
 }
 
+// ========== Confirm Action dialog (#971 review) ==========
+
+using ProcessDetailsLayout::computeConfirmButtonWidth;
+using ProcessDetailsLayout::computeConfirmContentBudget;
+
+// The budget is the viewport, less the margin every dialog keeps, less the dialog's own padding.
+TEST(ProcessDetailsLayoutTest, ConfirmBudgetIsTheViewportLessMarginAndPadding)
+{
+    EXPECT_FLOAT_EQ(computeConfirmContentBudget(/*viewportWidthPx=*/1000.0F, /*viewportFraction=*/0.9F, /*dialogPaddingPx=*/20.0F), 860.0F);
+}
+
+// The reviewed case: Even Huger on a 175% display, where each button wants 420px, in a window at
+// its minimum width of 811px. Two buttons and their spacing (about 868px) do not fit; capped, the
+// pair must fit the budget exactly.
+TEST(ProcessDetailsLayoutTest, ConfirmButtonsFitSideBySideInAMinimumWidthWindow)
+{
+    const float padding = 28.0F;
+    const float spacing = 28.0F;
+    const float budget = computeConfirmContentBudget(811.0F, 0.9F, padding);
+    const float width = computeConfirmButtonWidth(/*wantedWidthPx=*/420.0F, budget, spacing);
+
+    EXPECT_LT(width, 420.0F);
+    EXPECT_LE((width * 2.0F) + spacing, budget + 0.01F);
+    EXPECT_LE((width * 2.0F) + spacing + (padding * 2.0F), 811.0F);
+}
+
+// With room to spare the buttons keep the width they asked for.
+TEST(ProcessDetailsLayoutTest, ConfirmButtonsKeepTheirWidthWhenThereIsRoom)
+{
+    const float budget = computeConfirmContentBudget(2000.0F, 0.9F, 28.0F);
+    EXPECT_FLOAT_EQ(computeConfirmButtonWidth(420.0F, budget, 28.0F), 420.0F);
+    EXPECT_FLOAT_EQ(computeConfirmButtonWidth(120.0F, computeConfirmContentBudget(1280.0F, 0.9F, 8.0F), 8.0F), 120.0F);
+}
+
+// An unknown viewport means "no budget", and the buttons are left alone rather than collapsed.
+TEST(ProcessDetailsLayoutTest, ConfirmButtonsAreUnboundedWithoutAViewport)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FLOAT_EQ(computeConfirmContentBudget(0.0F, 0.9F, 8.0F), 0.0F);
+    EXPECT_FLOAT_EQ(computeConfirmContentBudget(nan, 0.9F, 8.0F), 0.0F);
+    EXPECT_FLOAT_EQ(computeConfirmContentBudget(1000.0F, 0.0F, 8.0F), 0.0F);
+    EXPECT_FLOAT_EQ(computeConfirmButtonWidth(420.0F, 0.0F, 28.0F), 420.0F);
+    EXPECT_FLOAT_EQ(computeConfirmButtonWidth(420.0F, nan, 28.0F), 420.0F);
+}
+
+TEST(ProcessDetailsLayoutTest, ConfirmSizingSurvivesDegenerateInput)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FLOAT_EQ(computeConfirmContentBudget(1000.0F, 5.0F, nan), 1000.0F); // fraction held to 1
+    EXPECT_FLOAT_EQ(computeConfirmContentBudget(100.0F, 0.9F, 500.0F), 0.0F);  // padding exceeds the viewport
+    EXPECT_FLOAT_EQ(computeConfirmButtonWidth(nan, 800.0F, 28.0F), 0.0F);
+    EXPECT_FLOAT_EQ(computeConfirmButtonWidth(420.0F, 20.0F, 28.0F), 0.0F); // budget smaller than the spacing
+    EXPECT_FLOAT_EQ(computeConfirmButtonWidth(420.0F, 800.0F, nan), 400.0F);
+}
 } // namespace
 } // namespace App
