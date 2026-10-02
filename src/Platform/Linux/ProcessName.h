@@ -64,16 +64,26 @@ inline constexpr std::size_t KERNEL_COMM_MAX = 15;
 /// The process's full name, recovered from its command line where the kernel truncated it.
 ///
 /// Only a `comm` of exactly KERNEL_COMM_MAX characters can have been truncated, so anything shorter
-/// is returned as it is. For a full-length one, two places are tried, in order:
+/// is returned as it is. For a full-length one:
 ///
-///   1. the base name of argv[0] -- the executable, for an ordinary program;
-///   2. the base name of argv[1] -- the script, for one run through an interpreter, where argv[0]
-///      is "python3" or "sh" and the kernel took `comm` from the script's file name.
+///   1. If the base name of argv[0] is a longer spelling of `comm`, that is the name: an ordinary
+///      program whose executable name the kernel cut.
+///   2. If the base name of argv[0] *is* `comm`, the name is complete -- it merely happens to be 15
+///      characters long -- and nothing else is consulted. Without this, a program run with an
+///      argument that begins with its own name ("exactly15chars- exactly15chars-option") would be
+///      renamed to its argument.
+///   3. Otherwise argv[0] is something unrelated to `comm`, which is what a script run through an
+///      interpreter looks like: argv[0] is "python3" or "sh", and the kernel took `comm` from the
+///      script's file name. Then, and only then, the base name of argv[1] is tried.
 ///
-/// A candidate is accepted only if it *starts with* `comm`. That is what makes this safe: a process
-/// that renamed itself with prctl(PR_SET_NAME), a kernel thread (no command line), and a program
-/// that overwrote its own argv ("nginx: master process ...") all fail the test and keep their
-/// `comm`, so the name is only ever replaced by a longer spelling of the same thing.
+/// A candidate is accepted only if it *starts with* `comm`. A process that renamed itself with
+/// prctl(PR_SET_NAME), a kernel thread (no command line), and a program that overwrote its own
+/// argv ("nginx: master process ...") all fail that test and keep their `comm`, so the name is only
+/// ever replaced by a longer spelling of the same thing.
+///
+/// One case can still be wrong: a process that chose a 15-character name for itself, whose argv[0]
+/// is unrelated, and whose first argument happens to begin with that name. Telling that apart from
+/// a script would need knowing which programs are interpreters, which is not knowable from here.
 ///
 /// @param comm        Name from /proc/[pid]/stat, already stripped of its parentheses.
 /// @param rawCmdline  Contents of /proc/[pid]/cmdline, arguments still NUL-separated.
@@ -85,15 +95,18 @@ inline constexpr std::size_t KERNEL_COMM_MAX = 15;
         return comm;
     }
 
-    for (const std::size_t index : {std::size_t{0}, std::size_t{1}})
+    const std::string_view executable = baseName(argument(rawCmdline, 0));
+    if (extendsTruncatedName(comm, executable))
     {
-        const std::string_view candidate = baseName(argument(rawCmdline, index));
-        if (extendsTruncatedName(comm, candidate))
-        {
-            return candidate;
-        }
+        return executable;
     }
-    return comm;
+    if (executable == comm)
+    {
+        return comm;
+    }
+
+    const std::string_view script = baseName(argument(rawCmdline, 1));
+    return extendsTruncatedName(comm, script) ? script : comm;
 }
 
 } // namespace Platform::ProcessName

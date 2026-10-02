@@ -90,6 +90,28 @@ TEST(ProcessNameTest, ExactlyFifteenCharacterNameIsKept)
     EXPECT_EQ(resolveFullName("exactly15chars-", raw), "exactly15chars-");
 }
 
+// The reviewed defect: a program whose name really is 15 characters, run with an argument that
+// begins with that name. argv[0] shows the name is complete, so argv[1] must not be consulted.
+TEST(ProcessNameTest, CompleteNameIsNotReplacedByAnArgumentThatExtendsIt)
+{
+    const std::string raw = rawCmdline({"exactly15chars-", "exactly15chars-option"});
+    EXPECT_EQ(resolveFullName("exactly15chars-", raw), "exactly15chars-");
+
+    const std::string withPath = rawCmdline({"/usr/local/bin/exactly15chars-", "/etc/exactly15chars-option.conf"});
+    EXPECT_EQ(resolveFullName("exactly15chars-", withPath), "exactly15chars-");
+}
+
+// argv[1] is only a candidate when argv[0] is unrelated to comm, as with an interpreter.
+TEST(ProcessNameTest, SecondArgumentIsConsultedOnlyWhenTheFirstIsUnrelated)
+{
+    const std::string interpreted = rawCmdline({"/bin/sh", "/opt/tools/a-very-long-script-name.sh"});
+    EXPECT_EQ(resolveFullName("a-very-long-scr", interpreted), "a-very-long-script-name.sh");
+
+    // argv[0] already gives the full name: it wins, and argv[1] is not looked at.
+    const std::string direct = rawCmdline({"/opt/tools/a-very-long-script-name.sh", "a-very-long-script-name.sh.bak"});
+    EXPECT_EQ(resolveFullName("a-very-long-scr", direct), "a-very-long-script-name.sh");
+}
+
 // Kernel threads have no command line at all.
 TEST(ProcessNameTest, KernelThreadWithEmptyCmdlineIsKept)
 {
