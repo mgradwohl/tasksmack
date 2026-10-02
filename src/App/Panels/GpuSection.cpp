@@ -89,8 +89,9 @@ void renderGpuSection(RenderContext& ctx)
 {
     if (ctx.publication == nullptr)
     {
-        UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  GPU monitoring is not available",
-                                      "The GPU sampler is not running, so there is nothing to show on this tab.");
+        // The tab is only offered once a GPU model exists, so a missing publication means its first
+        // sample has not been published yet -- a wait, not a failure.
+        UI::Widgets::renderEmptyState(ICON_FA_HOURGLASS_HALF "  Waiting for GPU data", "The first GPU sample has not arrived yet.");
         return;
     }
 
