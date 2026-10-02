@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <limits>
+
 namespace UI::DialogMetrics
 {
 namespace
@@ -126,5 +128,36 @@ TEST(DialogMetricsTest, CappedWidthFallsBackWithoutAViewport)
     EXPECT_FLOAT_EQ(computeCappedControlWidth(20.0F, 100.0F, 16.0F, -1.0F, 60.0F), 60.0F);
 }
 
+// ========== computeFilledControlWidth (#972) ==========
+
+// The reported case, with the numbers measured at Extra Large on a 175% display: the combos started
+// 259px in and needed 272px of their own, ending at 531, while the ADVANCED row made the dialog's
+// content run from 21 to 568. The combo must be widened to end where the content does.
+TEST(DialogMetricsTest, FilledWidthReachesTheDialogsContentEdge)
+{
+    const float width = computeFilledControlWidth(/*contentWidthPx=*/272.0F,
+                                                  /*controlStartPx=*/259.0F,
+                                                  /*contentLeftPx=*/21.0F,
+                                                  /*widestOtherRowPx=*/547.0F);
+    EXPECT_FLOAT_EQ(width, 309.0F);
+    EXPECT_FLOAT_EQ(259.0F + width, 21.0F + 547.0F);
+}
+
+// When the control's own row is the widest in the dialog, it keeps its content width: the dialog
+// will be exactly that wide and there is nothing to reach for.
+TEST(DialogMetricsTest, FilledWidthIsNeverNarrowerThanTheContent)
+{
+    EXPECT_FLOAT_EQ(computeFilledControlWidth(600.0F, 259.0F, 21.0F, 547.0F), 600.0F);
+    EXPECT_FLOAT_EQ(computeFilledControlWidth(309.0F, 259.0F, 21.0F, 547.0F), 309.0F);
+}
+
+TEST(DialogMetricsTest, FilledWidthSurvivesDegenerateInput)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FLOAT_EQ(computeFilledControlWidth(272.0F, 259.0F, 21.0F, 0.0F), 272.0F);
+    EXPECT_FLOAT_EQ(computeFilledControlWidth(272.0F, 259.0F, 21.0F, nan), 272.0F);
+    EXPECT_FLOAT_EQ(computeFilledControlWidth(nan, nan, nan, nan), 0.0F);
+    EXPECT_FLOAT_EQ(computeFilledControlWidth(-5.0F, 259.0F, 21.0F, 100.0F), 0.0F);
+}
 } // namespace
 } // namespace UI::DialogMetrics

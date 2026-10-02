@@ -1,5 +1,6 @@
 #include "Theme.h"
 
+#include "ColorContrast.h"
 #include "StyleScale.h"
 #include "ThemeLoader.h"
 
@@ -365,7 +366,15 @@ void Theme::applyImGuiStyle() const
     style.Colors[ImGuiCol_TextDisabled] = s.textDisabled;
     style.Colors[ImGuiCol_WindowBg] = s.windowBg;
     style.Colors[ImGuiCol_ChildBg] = s.childBg;
-    style.Colors[ImGuiCol_PopupBg] = s.popupBg;
+    // Popups are drawn opaque whatever alpha the theme gives popup_background. Every bundled theme
+    // sets it to 94%, and the 6% that showed through a modal or a combo's drop-down was whatever lay
+    // underneath -- usually dense table text, legible right through the dialog's own labels (#969).
+    //
+    // The colour is flattened over the backdrop a modal is normally seen against (the window
+    // background under the modal dim layer) rather than just given alpha 1: see flattenOver() for
+    // why that distinction keeps buttons and combos visible in the light themes. Done here rather
+    // than in the theme files so user themes are covered too.
+    style.Colors[ImGuiCol_PopupBg] = ColorContrast::flattenOver(s.popupBg, ColorContrast::flattenOver(s.modalWindowDimBg, s.windowBg));
     style.Colors[ImGuiCol_Border] = s.border;
     style.Colors[ImGuiCol_BorderShadow] = s.borderShadow;
     style.Colors[ImGuiCol_FrameBg] = s.frameBg;

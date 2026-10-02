@@ -13,6 +13,7 @@
 #include "UI/DialogMetrics.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
+#include "UI/Widgets.h"
 
 #include <imgui.h>
 #include <spdlog/spdlog.h>
@@ -36,6 +37,16 @@ using Detail::REFRESH_RATE_OPTIONS;
 
 namespace
 {
+
+// Button labels. The dialog's width is worked out from these before the buttons are drawn (see the
+// combo sizing in renderSettingsDialog()), so each is named once and used for both.
+constexpr const char* EDIT_CONFIG_LABEL = ICON_FA_FILE_PEN "  Edit Config File";
+constexpr const char* OPEN_THEMES_LABEL = ICON_FA_FOLDER "  Open Themes Folder";
+constexpr const char* CANCEL_LABEL = "Cancel";
+constexpr const char* APPLY_LABEL = "Apply";
+#ifndef _WIN32
+constexpr const char* NATIVE_DECORATIONS_LABEL = "Use native window decorations instead of the custom title bar";
+#endif
 
 // Get the themes directory path using multi-path asset resolution
 [[nodiscard]] auto getThemesDir() -> std::filesystem::path
@@ -278,8 +289,37 @@ void SettingsLayer::renderSettingsDialog()
         // of reach. The floor keeps the control usable if the cap bites; ImGui clips the combo's
         // preview text, so a long name degrades to truncation rather than an unreachable control.
         const float comboMinWidth = (MIN_COMBO_EM * emPx) + comboDecoration;
+
+        // The dialog auto-fits its widest row, and that is usually not a combo row: the two
+        // ADVANCED buttons and the Cancel/Apply pair are both wider. Sized only to their own text,
+        // the combos stopped short of the dialog's right edge, in line with neither the separators
+        // nor Apply (#972). Those rows are measured from text as well, so the width they will give
+        // the dialog is known here, and the combos are widened to reach it.
+        const float advancedRowWidth = ImGui::CalcTextSize(EDIT_CONFIG_LABEL).x + ImGui::CalcTextSize(OPEN_THEMES_LABEL).x +
+                                       (style.FramePadding.x * 4.0F) + style.ItemSpacing.x;
+        const float actionButtonWidth =
+            std::max(UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize(CANCEL_LABEL).x, emPx, SETTINGS_BUTTON_MIN_EM),
+                     UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize(APPLY_LABEL).x, emPx, SETTINGS_BUTTON_MIN_EM));
+        const float actionRowWidth = (actionButtonWidth * 2.0F) + style.ItemSpacing.x;
+        // On native Wayland the ADVANCED section also has a checkbox, and its label makes that row
+        // the widest in the dialog. A checkbox is a square of the frame height, then its label.
+#ifndef _WIN32
+        const float checkboxRowWidth =
+            Core::VideoBackend::isWayland()
+                ? (ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + ImGui::CalcTextSize(NATIVE_DECORATIONS_LABEL).x)
+                : 0.0F;
+#else
+        const float checkboxRowWidth = 0.0F;
+#endif
+        const float widestOtherRow = std::max({advancedRowWidth, actionRowWidth, checkboxRowWidth});
+
         const float appearanceComboWidth = UI::DialogMetrics::computeCappedControlWidth(
-            widestAppearanceValue + comboDecoration, valueColumn, style.WindowPadding.x * 2.0F, viewport->WorkSize.x, comboMinWidth);
+            UI::DialogMetrics::computeFilledControlWidth(
+                widestAppearanceValue + comboDecoration, valueColumn, style.WindowPadding.x, widestOtherRow),
+            valueColumn,
+            style.WindowPadding.x * 2.0F,
+            viewport->WorkSize.x,
+            comboMinWidth);
 
         // Theme dropdown
         ImGui::AlignTextToFramePadding();
@@ -434,13 +474,13 @@ void SettingsLayer::renderSettingsDialog()
         // Button row for config file and themes folder
         // Push text color to ensure visibility on button backgrounds
         ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
-        if (ImGui::Button(ICON_FA_FILE_PEN "  Edit Config File"))
+        if (ImGui::Button(EDIT_CONFIG_LABEL))
         {
             // Result intentionally ignored - openWithSystemHandler logs warnings on failure
             (void) App::PlatformOpen::openWithSystemHandler(UserConfig::get().configPath());
         }
         ImGui::SameLine();
-        if (ImGui::Button(ICON_FA_FOLDER "  Open Themes Folder"))
+        if (ImGui::Button(OPEN_THEMES_LABEL))
         {
             // Result intentionally ignored - openWithSystemHandler logs warnings on failure
             (void) App::PlatformOpen::openWithSystemHandler(getThemesDir());
@@ -454,7 +494,7 @@ void SettingsLayer::renderSettingsDialog()
         if (Core::VideoBackend::isWayland())
         {
             ImGui::Spacing();
-            ImGui::Checkbox("Use native window decorations instead of the custom title bar", &m_ForceNativeDecorationsOnWayland);
+            ImGui::Checkbox(NATIVE_DECORATIONS_LABEL, &m_ForceNativeDecorationsOnWayland);
             ImGui::TextColored(theme.scheme().textMuted, "Takes effect after restarting TaskSmack.");
         }
 #endif
@@ -471,10 +511,9 @@ void SettingsLayer::renderSettingsDialog()
         // ========================================
         // Floor of 9.375 em is exactly the former fixed 100px at the reference configuration; the
         // measured term takes over for whichever of the two labels is wider once the font grows.
-        const float buttonWidth = std::max(
-            UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize("Cancel").x, ImGui::GetFontSize(), SETTINGS_BUTTON_MIN_EM),
-            UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize("Apply").x, ImGui::GetFontSize(), SETTINGS_BUTTON_MIN_EM));
-        const float totalButtonWidth = (buttonWidth * 2.0F) + style.ItemSpacing.x;
+        // (Computed above as actionButtonWidth, where the combos need it to find the dialog's width.)
+        const float buttonWidth = actionButtonWidth;
+        const float totalButtonWidth = actionRowWidth;
         const float availWidth = ImGui::GetContentRegionAvail().x;
 
         // Right-align buttons
@@ -482,7 +521,7 @@ void SettingsLayer::renderSettingsDialog()
 
         // Push text color to ensure visibility on button backgrounds
         ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
-        if (ImGui::Button("Cancel", ImVec2(buttonWidth, 0.0F)))
+        if (ImGui::Button(CANCEL_LABEL, ImVec2(buttonWidth, 0.0F)))
         {
             ImGui::CloseCurrentPopup();
         }
@@ -490,19 +529,23 @@ void SettingsLayer::renderSettingsDialog()
 
         ImGui::SameLine();
 
-        // Apply button with success color for positive action
-        ImGui::PushStyleColor(ImGuiCol_Button, theme.scheme().successButton);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme.scheme().successButtonHovered);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, theme.scheme().successButtonActive);
-        ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
-
-        if (ImGui::Button("Apply", ImVec2(buttonWidth, 0.0F)))
+        // Apply button with success color for positive action. Its label is drawn in whichever of
+        // the theme's two poles -- its text colour or its window background -- reads better on the
+        // fill showing in the button's current state; the ordinary text colour was nearly invisible
+        // on it in most of the bundled themes (#969).
+        if (UI::Widgets::filledButton(APPLY_LABEL,
+                                      ImVec2(buttonWidth, 0.0F),
+                                      {
+                                          .resting = theme.scheme().successButton,
+                                          .hovered = theme.scheme().successButtonHovered,
+                                          .pressed = theme.scheme().successButtonActive,
+                                      },
+                                      theme.scheme().textPrimary,
+                                      theme.scheme().windowBg))
         {
             applySettings();
             ImGui::CloseCurrentPopup();
         }
-
-        ImGui::PopStyleColor(4); // Button, ButtonHovered, ButtonActive, Text
 
         ImGui::EndPopup();
     }

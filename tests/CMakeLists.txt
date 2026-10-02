@@ -154,6 +154,7 @@ add_executable(TaskSmackTests
     UI/test_Format.cpp
     UI/test_RenderMetrics.cpp
     UI/test_RateAxis.cpp
+    UI/test_ColorContrast.cpp
     UI/test_StyleScale.cpp
     UI/test_DialogMetrics.cpp
     UI/test_LineLayout.cpp

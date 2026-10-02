@@ -2315,15 +2315,21 @@ void ProcessDetailsPanel::renderPrioritySection()
 
     // Apply button with success (green) styling
     {
-        ImGui::PushStyleColor(ImGuiCol_Button, theme.scheme().successButton);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme.scheme().successButtonHovered);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, theme.scheme().successButtonActive);
-
         if (!canApply)
         {
             ImGui::BeginDisabled();
         }
-        if (ImGui::Button("Apply", ImVec2(applyButtonWidth, 0)))
+        // As for the Settings dialog's Apply: the label is drawn in whichever of the theme's text
+        // colour and window background reads better on the fill showing in the current state (#969).
+        if (UI::Widgets::filledButton("Apply",
+                                      ImVec2(applyButtonWidth, 0.0F),
+                                      {
+                                          .resting = theme.scheme().successButton,
+                                          .hovered = theme.scheme().successButtonHovered,
+                                          .pressed = theme.scheme().successButtonActive,
+                                      },
+                                      theme.scheme().textPrimary,
+                                      theme.scheme().windowBg))
         {
             auto result = m_ProcessActions->setPriority(m_SelectedPid, m_PriorityNiceValue);
             if (result.success)
@@ -2343,8 +2349,6 @@ void ProcessDetailsPanel::renderPrioritySection()
         {
             ImGui::EndDisabled();
         }
-
-        ImGui::PopStyleColor(3);
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
     {
