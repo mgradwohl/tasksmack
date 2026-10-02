@@ -1555,16 +1555,28 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
 {
     const auto& theme = UI::Theme::get();
 
+    // Every label this table can show. The label column is measured from them (#966), so a label
+    // added below must be added here too -- which is why the rows use these constants rather than
+    // repeating the strings.
+    constexpr const char* LABEL_UTILIZATION = "GPU Utilization:";
+    constexpr const char* LABEL_MEMORY = "GPU Memory:";
+    constexpr const char* LABEL_DEVICES = "GPU Device(s):";
+    constexpr const char* LABEL_ENGINES = "Active Engines:";
+    constexpr const char* LABEL_ENCODER = "Video Encoder:";
+    constexpr const char* LABEL_DECODER = "Video Decoder:";
+    constexpr auto LABELS =
+        std::to_array<const char*>({LABEL_UTILIZATION, LABEL_MEMORY, LABEL_DEVICES, LABEL_ENGINES, LABEL_ENCODER, LABEL_DECODER});
+
     // Current GPU metrics
     if (ImGui::BeginTable("GPUCurrentMetrics", 2, ImGuiTableFlags_SizingStretchProp))
     {
-        ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 150.0F);
+        ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, UI::Widgets::measureLabelColumnWidth(LABELS));
         ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
 
         // GPU Utilization
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        ImGui::Text("GPU Utilization:");
+        ImGui::TextUnformatted(LABEL_UTILIZATION);
         ImGui::TableNextColumn();
         const ImVec4 gpuUtilColor = theme.scheme().gpuUtilization;
         ImGui::TextColored(gpuUtilColor, "%.1f%%", m_SmoothedUsage.gpuUtilPercent);
@@ -1572,7 +1584,7 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
         // GPU Memory
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        ImGui::Text("GPU Memory:");
+        ImGui::TextUnformatted(LABEL_MEMORY);
         ImGui::TableNextColumn();
         const ImVec4 gpuMemColor = theme.scheme().gpuMemory;
         const std::string memStr = UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes);
@@ -1583,7 +1595,7 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
         {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
-            ImGui::Text("GPU Device(s):");
+            ImGui::TextUnformatted(LABEL_DEVICES);
             ImGui::TableNextColumn();
             ImGui::TextUnformatted(proc.gpuDevices.c_str());
         }
@@ -1593,7 +1605,7 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
         {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
-            ImGui::Text("Active Engines:");
+            ImGui::TextUnformatted(LABEL_ENGINES);
             ImGui::TableNextColumn();
             std::string enginesStr;
             for (size_t i = 0; i < proc.gpuEngines.size(); ++i)
@@ -1612,7 +1624,7 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
         {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
-            ImGui::Text("Video Encoder:");
+            ImGui::TextUnformatted(LABEL_ENCODER);
             ImGui::TableNextColumn();
             const ImVec4 encColor = theme.scheme().gpuEncoder;
             ImGui::TextColored(encColor, "%.1f%%", proc.gpuEncoderUtil);
@@ -1622,7 +1634,7 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
         {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
-            ImGui::Text("Video Decoder:");
+            ImGui::TextUnformatted(LABEL_DECODER);
             ImGui::TableNextColumn();
             const ImVec4 decColor = theme.scheme().gpuDecoder;
             ImGui::TextColored(decColor, "%.1f%%", proc.gpuDecoderUtil);
@@ -1647,6 +1659,13 @@ void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& p
         const ImVec4 gpuUtilColor = theme.scheme().gpuUtilization;
         const ImVec4 gpuMemColor = theme.scheme().gpuMemory;
 
+        // As in renderGpuCurrentMetricsTable(): the label column is measured from these (#966).
+        constexpr const char* LABEL_UTILIZATION = "Utilization:";
+        constexpr const char* LABEL_MEMORY = "Memory:";
+        constexpr const char* LABEL_ENGINES = "Engines:";
+        constexpr auto LABELS = std::to_array<const char*>({LABEL_UTILIZATION, LABEL_MEMORY, LABEL_ENGINES});
+        const float labelColumnWidth = UI::Widgets::measureLabelColumnWidth(LABELS);
+
         for (const auto& gpuUsage : proc.perGpuUsage)
         {
             // Same words as the system GPU tab (GpuSection.cpp), so one adapter is not described
@@ -1660,18 +1679,18 @@ void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& p
 
                 if (ImGui::BeginTable("PerGPUMetrics", 2, ImGuiTableFlags_SizingStretchProp))
                 {
-                    ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 120.0F);
+                    ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, labelColumnWidth);
                     ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
 
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn();
-                    ImGui::Text("Utilization:");
+                    ImGui::TextUnformatted(LABEL_UTILIZATION);
                     ImGui::TableNextColumn();
                     ImGui::TextColored(gpuUtilColor, "%.1f%%", gpuUsage.utilPercent);
 
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn();
-                    ImGui::Text("Memory:");
+                    ImGui::TextUnformatted(LABEL_MEMORY);
                     ImGui::TableNextColumn();
                     const std::string memoryStr = UI::Format::formatBytes(static_cast<double>(gpuUsage.memoryBytes));
                     ImGui::TextColored(gpuMemColor, "%s", memoryStr.c_str());
@@ -1680,7 +1699,7 @@ void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& p
                     {
                         ImGui::TableNextRow();
                         ImGui::TableNextColumn();
-                        ImGui::Text("Engines:");
+                        ImGui::TextUnformatted(LABEL_ENGINES);
                         ImGui::TableNextColumn();
                         std::string engStr;
                         for (size_t i = 0; i < gpuUsage.engines.size(); ++i)
