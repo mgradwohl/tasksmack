@@ -87,6 +87,13 @@ class ProcessesPanel : public Panel
         return m_SelectedPid;
     }
 
+    /// Identity of the selected process (hash of PID and start time), or 0 if nothing is selected.
+    /// The PID alone does not identify a process once it has exited: the number can be reused.
+    [[nodiscard]] std::uint64_t selectedUniqueKey() const
+    {
+        return m_SelectedUniqueKey;
+    }
+
     /// Get the process count.
     [[nodiscard]] size_t processCount() const;
 
@@ -136,6 +143,7 @@ class ProcessesPanel : public Panel
     std::shared_ptr<Domain::ProcessModel> m_ProcessModel;
     std::unique_ptr<Domain::BackgroundSampler> m_Sampler;
     std::int32_t m_SelectedPid = -1;
+    std::uint64_t m_SelectedUniqueKey = 0; // Selected process's identity; see selectedUniqueKey()
 
     std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
     std::chrono::milliseconds m_AppliedSamplerInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};

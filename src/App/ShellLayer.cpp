@@ -61,6 +61,7 @@ void ShellLayer::onAttach()
     m_CachedSystemTabLabel = std::string(ICON_FA_COMPUTER) + "  " + m_SystemMetricsPanel.hostname();
     m_CachedDetailsTabLabel = std::string(ICON_FA_CIRCLE_INFO) + "  Select a process";
     m_CachedLabelPid = -1;
+    m_CachedLabelKey = 0;
 
     // Cache privilege status and trigger the startup notice if needed.
     // Elevation state is constant for process lifetime; cache once at startup.
@@ -182,9 +183,13 @@ void ShellLayer::onUpdate(float deltaTime)
 
     // Update the cached details tab label only when the selected process changes.
     // Rebuilding on every frame would allocate three std::string objects per frame at 60 fps.
-    if (selectedPid != m_CachedLabelPid)
+    // "Changes" means its identity, not just its PID: selecting a new process that reuses the old
+    // one's PID must retitle the tab, or it keeps the exited process's name indefinitely.
+    const std::uint64_t selectedKey = m_ProcessesPanel.selectedUniqueKey();
+    if (selectedPid != m_CachedLabelPid || selectedKey != m_CachedLabelKey)
     {
         m_CachedLabelPid = selectedPid;
+        m_CachedLabelKey = selectedKey;
         m_CachedDetailsTabLabel = std::string(ICON_FA_CIRCLE_INFO) + "  " + m_ProcessDetailsPanel.tabLabel();
     }
 

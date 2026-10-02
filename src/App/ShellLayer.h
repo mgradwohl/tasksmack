@@ -62,6 +62,7 @@ class ShellLayer : public Core::Layer
     std::string m_CachedSystemTabLabel;  // ICON + hostname: rebuilt in onAttach()
     std::string m_CachedDetailsTabLabel; // ICON + process name: rebuilt on PID change
     std::int32_t m_CachedLabelPid = -1;  // PID for which m_CachedDetailsTabLabel was built
+    std::uint64_t m_CachedLabelKey = 0;  // ...and its unique key, since a PID can be reused
 
     // Declared last so panels and cached labels outlive the non-owning registry.
     PanelTabs m_Tabs;
