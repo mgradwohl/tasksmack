@@ -24,28 +24,35 @@ inline constexpr std::size_t KERNEL_COMM_MAX = 15;
 [[nodiscard]] constexpr std::string_view baseName(std::string_view path) noexcept
 {
     const std::size_t slash = path.rfind('/');
-    return (slash == std::string_view::npos) ? path : path.substr(slash + 1);
+    if (slash == std::string_view::npos)
+    {
+        return path;
+    }
+    // Not substr(): it is specified to throw on an out-of-range position, which cannot happen here
+    // (slash < size) but which a noexcept function may not rely on the compiler to see.
+    path.remove_prefix(slash + 1);
+    return path;
 }
 
 /// The n-th NUL-separated argument of a raw /proc/[pid]/cmdline buffer, or empty if there is none.
 [[nodiscard]] constexpr std::string_view argument(std::string_view rawCmdline, std::size_t index) noexcept
 {
-    std::size_t start = 0;
+    // Walks the buffer by shrinking the view (remove_prefix/remove_suffix) rather than with
+    // substr(), which is specified to throw on an out-of-range position.
     for (std::size_t i = 0; i < index; ++i)
     {
-        const std::size_t nul = rawCmdline.find('\0', start);
+        const std::size_t nul = rawCmdline.find('\0');
         if (nul == std::string_view::npos)
         {
             return {};
         }
-        start = nul + 1;
+        rawCmdline.remove_prefix(nul + 1);
     }
-    if (start >= rawCmdline.size())
+    if (const std::size_t end = rawCmdline.find('\0'); end != std::string_view::npos)
     {
-        return {};
+        rawCmdline.remove_suffix(rawCmdline.size() - end);
     }
-    const std::size_t end = rawCmdline.find('\0', start);
-    return rawCmdline.substr(start, (end == std::string_view::npos) ? std::string_view::npos : end - start);
+    return rawCmdline;
 }
 
 /// Whether `candidate` is a longer name that `comm` could be the truncation of.
