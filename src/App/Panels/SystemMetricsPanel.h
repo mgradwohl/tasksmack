@@ -11,6 +11,7 @@
 #include "Domain/StorageSnapshot.h"
 #include "Domain/SystemModel.h"
 #include "Domain/SystemSnapshot.h"
+#include "UI/FillPlotLayout.h"
 #include "UI/Theme.h"
 
 #include <chrono>
@@ -120,9 +121,8 @@ class SystemMetricsPanel : public Panel
     float m_LastDeltaSeconds = 0.0F;
     bool m_IsActiveTab = true; // System Overview is default tab
 
-    // Previous frame's Overview layout, feeding UI::Widgets::computeFillPlotHeight() (#922)
-    float m_OverviewNonPlotHeight = 0.0F; // Everything on the tab that is not a plot
-    std::size_t m_OverviewPlotCount = 0;  // Charts rendered; 0 until the first frame has run
+    // Previous frame's Overview layout, feeding UI::Widgets::FillPlotLayout (#922)
+    UI::Widgets::PlotFillState m_OverviewFill;
 
     struct SmoothedCpu
     {
