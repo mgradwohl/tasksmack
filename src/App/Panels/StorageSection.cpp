@@ -46,6 +46,9 @@ using UI::Widgets::renderHistoryWithNowBars;
 
 constexpr size_t STORAGE_NOW_BAR_COLUMNS = 2; // Read, Write
 
+// Narrowest a disk cell may get before the grid uses fewer columns instead, in ems.
+constexpr float MIN_DISK_CELL_WIDTH_EM = 30.0F;
+
 /// Minimum plot height a disk cell will shrink to before the grid prefers scrolling over squashing
 /// charts flat. The same font-relative floor the Overview's charts hold (UI/HistoryPlotHeight.h),
 /// in whole pixels, so both bounds of the shared height rule apply here and not only the ceiling.
@@ -291,7 +294,10 @@ void renderStorageSection(RenderContext& ctx)
         const ChartGridConfig gridConfig{
             .availableWidth = avail.x,
             .availableHeight = avail.y,
-            .minCellWidth = 320.0F,
+            // 30 em is the former fixed 320px at the reference em (32/3 px): the width floor now
+            // scales with the font like the height floor beside it, so a large font gets fewer,
+            // wider cells rather than rate labels and NowBars crowding a fixed 320px (#964).
+            .minCellWidth = MIN_DISK_CELL_WIDTH_EM * ImGui::GetFontSize(),
             // The same floor and ceiling the Overview's charts keep to (UI/HistoryPlotHeight.h), so the
             // two tabs follow one rule instead of one never growing and the other never stopping (#923).
             .minCellHeight = approxLabelOverhead + minDiskPlotHeight(),

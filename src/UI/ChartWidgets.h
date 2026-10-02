@@ -87,7 +87,18 @@ inline constexpr ImPlotFlags PLOT_FLAGS_DEFAULT = ImPlotFlags_NoMenus;
 inline constexpr ImPlotAxisFlags X_AXIS_FLAGS_DEFAULT = ImPlotAxisFlags_NoHighlight;
 inline constexpr ImPlotAxisFlags Y_AXIS_FLAGS_DEFAULT = ImPlotAxisFlags_NoHighlight;
 inline constexpr float HISTORY_PLOT_HEIGHT_DEFAULT = 180.0F;
-inline constexpr float BAR_WIDTH = 24.0F;
+/// Width of one "now" bar beside a history chart, in ems: 24px at the reference em (32/3 px), the
+/// fixed pixel width it replaces. As pixels the bars ignored both the Font Size setting and the
+/// display's density, so on a 175% display they were 24 physical pixels beside 37px text: thin, and
+/// a small hover target for the only place their value is shown, the tooltip (#971).
+inline constexpr float NOW_BAR_WIDTH_EM = 2.25F;
+
+/// Width of one "now" bar in whole pixels at the given em (ImGui::GetFontSize()).
+[[nodiscard]] inline float nowBarWidth(float emPx) noexcept
+{
+    const float em = (std::isfinite(emPx) && emPx > 0.0F) ? emPx : 1.0F;
+    return std::max(1.0F, std::round(NOW_BAR_WIDTH_EM * em));
+}
 inline constexpr double SMOOTH_FACTOR = 0.5; // fraction of refresh interval used for tau
 inline constexpr double TAU_MS_MIN = 20.0;
 inline constexpr double TAU_MS_MAX = 400.0;
@@ -870,7 +881,7 @@ inline void renderHistoryWithNowBars(const char* tableId,
 
     if (barsOnly)
     {
-        const float widthPerBar = 24.0F;
+        const float widthPerBar = nowBarWidth(ImGui::GetFontSize());
         const ImGuiStyle& style = ImGui::GetStyle();
 
         const RenderMetricsScope barsScope(tableId, "/bars");
@@ -904,7 +915,8 @@ inline void renderHistoryWithNowBars(const char* tableId,
     const size_t barColumnCount = std::max(bars.size(), minBarColumns);
     const float barColumnCountF = UI::Format::toFloatNarrow(Domain::Numeric::toDouble(barColumnCount));
     const float spacing = (barColumnCount > 1) ? style.ItemSpacing.x * (barColumnCountF - 1.0F) : 0.0F;
-    const float columnWidth = (BAR_WIDTH * barColumnCountF) + spacing;
+    const float barWidth = nowBarWidth(ImGui::GetFontSize());
+    const float columnWidth = (barWidth * barColumnCountF) + spacing;
 
     int pushedVars = 0;
     if (compactSpacing)
@@ -924,7 +936,7 @@ inline void renderHistoryWithNowBars(const char* tableId,
 
         ImGui::TableNextColumn();
 
-        const float widthPerBar = BAR_WIDTH;
+        const float widthPerBar = barWidth;
 
         const RenderMetricsScope barsScope(tableId, "/bars");
         ImGui::BeginGroup();

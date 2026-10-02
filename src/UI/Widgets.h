@@ -1,40 +1,31 @@
 #pragma once
 
+#include "UI/LineLayout.h"
+
 #include <imgui.h>
 
 #include <algorithm>
+#include <span>
 
 namespace UI::Widgets
 {
+
+/// Width for a WidthFixed label column that holds exactly `labels`, measured at the current font.
+/// See UI::LineLayout::labelColumnWidth() for why these are measured rather than authored (#966).
+[[nodiscard]] inline float measureLabelColumnWidth(std::span<const char* const> labels)
+{
+    float widest = 0.0F;
+    for (const char* label : labels)
+    {
+        widest = std::max(widest, ImGui::CalcTextSize(label).x);
+    }
+    return UI::LineLayout::labelColumnWidth(widest, ImGui::GetFontSize());
+}
 
 /// Minimum height in pixels for bar fill rendering.
 /// Ensures at least a 1px marker remains visible even when the value is 0%,
 /// providing visual feedback that the bar exists and is capable of showing data.
 constexpr float MIN_BAR_FILL_HEIGHT = 1.0F;
-
-/// Draw right-aligned text overlay on the previous ImGui item (e.g., plot, progress bar).
-/// Note: ImGui requires null-terminated const char*; std::string_view wouldn't add value here.
-/// Shadow-free to avoid double-vision; relies on theme contrast instead.
-/// @param text The text to display (null or empty is a no-op)
-/// @param paddingX Distance from the right edge in pixels (default: 8.0)
-inline void drawRightAlignedOverlayText(const char* text, float paddingX = 8.0F)
-{
-    if (text == nullptr || text[0] == '\0')
-    {
-        return;
-    }
-
-    const ImVec2 rectMin = ImGui::GetItemRectMin();
-    const ImVec2 rectMax = ImGui::GetItemRectMax();
-    const ImVec2 textSize = ImGui::CalcTextSize(text);
-
-    const float x = rectMax.x - paddingX - textSize.x;
-    const float y = rectMin.y + ((rectMax.y - rectMin.y - textSize.y) * 0.5F);
-    const ImVec2 pos(x, y);
-
-    const ImU32 textCol = ImGui::GetColorU32(ImGuiCol_Text);
-    ImGui::GetWindowDrawList()->AddText(pos, textCol, text);
-}
 
 /// Draw a vertical bar (bottom-up fill) with the value and optional label centered underneath.
 /// The overall allocated height stays equal to barHeight; the bar shrinks to leave room for text.

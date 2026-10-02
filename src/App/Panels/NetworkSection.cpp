@@ -11,6 +11,7 @@
 #include <implot.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cinttypes>
 #include <cstddef>
@@ -132,6 +133,12 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     {
         dropdownWidth = std::max(dropdownWidth, ImGui::CalcTextSize(name.c_str()).x + comboExtraWidth);
     }
+
+    // Never wider than the pane. Interface names are long ("Realtek Gaming USB 2.5GbE Family
+    // Controller"), and a combo measured from the longest one ran under the scrollbar on a narrow
+    // window, taking its drop-down arrow out of view (#966). ImGui clips the preview text, so a
+    // capped combo stays fully operable.
+    dropdownWidth = std::min(dropdownWidth, ImGui::GetContentRegionAvail().x);
 
     // Interface selector
     ImGui::SetNextItemWidth(dropdownWidth);
@@ -464,7 +471,17 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
 
         if (ImGui::BeginTable("##InterfaceTable", 6, tableFlags))
         {
-            ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 30.0F);
+            // Wide enough for its header and for any of the icons it can hold, at the current font.
+            // It was a fixed 30px on a non-resizable table: the header was cut to "T..." from Extra
+            // Large up on a scaled display, and to "..." at Even Huger (#966).
+            constexpr auto TYPE_COLUMN_CONTENTS =
+                std::to_array<const char*>({"Type", ICON_FA_NETWORK_WIRED, ICON_FA_HOUSE, ICON_FA_WIFI, ICON_FA_ETHERNET});
+            float typeColumnWidth = 0.0F;
+            for (const char* text : TYPE_COLUMN_CONTENTS)
+            {
+                typeColumnWidth = std::max(typeColumnWidth, ImGui::CalcTextSize(text).x);
+            }
+            ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, typeColumnWidth);
             ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_None, 2.5F);
             ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_None, 0.8F);
             ImGui::TableSetupColumn("Speed", ImGuiTableColumnFlags_None, 1.0F);

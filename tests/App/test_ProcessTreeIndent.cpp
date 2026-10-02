@@ -73,5 +73,25 @@ TEST(ProcessTreeIndentTest, ResultIsNeverNegative)
     }
 }
 
+// ========== Font-relative sizes (#971) ==========
+
+// The em multiples reproduce the fixed pixel sizes they replace at the reference em (the Medium
+// preset on a 1.0 display scale: 8pt at 96 DPI = 32/3 px), so the tree is unchanged there.
+TEST(ProcessTreeIndentTest, EmSizesReproduceTheOldPixelsAtTheReferenceFont)
+{
+    constexpr float REFERENCE_EM = 32.0F / 3.0F;
+    EXPECT_FLOAT_EQ(ProcessTreeIndent::INDENT_PER_LEVEL_EM * REFERENCE_EM, 16.0F);
+    EXPECT_FLOAT_EQ(ProcessTreeIndent::MIN_NAME_WIDTH_EM * REFERENCE_EM, 72.0F);
+}
+
+// The reported case: at Extra Large on a 175% display an em is about 33px, and a 16px indent was
+// under half a character. One level must now be visibly more than a character wide.
+TEST(ProcessTreeIndentTest, IndentPerLevelIsMoreThanACharacterAtAnyFont)
+{
+    for (const float em : {8.0F, 32.0F / 3.0F, 33.0F, 37.33F})
+    {
+        EXPECT_GT(ProcessTreeIndent::INDENT_PER_LEVEL_EM * em, em);
+    }
+}
 } // namespace
 } // namespace App

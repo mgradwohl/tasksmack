@@ -1,6 +1,7 @@
 #include "ProcessDetailsPanel.h"
 
 #include "App/Panel.h"
+#include "App/ShellMetrics.h"
 #include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
@@ -18,6 +19,7 @@
 #include "UI/IconsFontAwesome6.h"
 #include "UI/TabContent.h"
 #include "UI/Theme.h"
+#include "UI/Widgets.h"
 
 #include <imgui.h>
 #include <implot.h>
@@ -55,6 +57,9 @@ using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
 
 constexpr size_t PROCESS_NOW_BAR_COLUMNS = 3;
+
+// Floor on the Confirm Action dialog's Yes/No buttons, in ems: 120px at the reference em.
+constexpr float CONFIRM_BUTTON_MIN_EM = 11.25F;
 
 template<typename T> [[nodiscard]] auto tailVector(const std::deque<T>& data, std::size_t count) -> std::vector<T>
 {
@@ -294,8 +299,10 @@ void ProcessDetailsPanel::renderContent()
     }
 
     // Tabs for different info sections
-    // Add padding inside tabs for better spacing
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(16.0F, 8.0F));
+    // Add padding inside tabs for better spacing, scaled like the style it overrides (#971)
+    const float tabPaddingScale = UI::Theme::get().styleScale();
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                        ImVec2(ShellMetrics::TAB_PADDING_X * tabPaddingScale, ShellMetrics::SUB_TAB_PADDING_Y * tabPaddingScale));
 
     if (ImGui::BeginTabBar("DetailsTabs"))
     {
@@ -1548,16 +1555,28 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
 {
     const auto& theme = UI::Theme::get();
 
+    // Every label this table can show. The label column is measured from them (#966), so a label
+    // added below must be added here too -- which is why the rows use these constants rather than
+    // repeating the strings.
+    constexpr const char* LABEL_UTILIZATION = "GPU Utilization:";
+    constexpr const char* LABEL_MEMORY = "GPU Memory:";
+    constexpr const char* LABEL_DEVICES = "GPU Device(s):";
+    constexpr const char* LABEL_ENGINES = "Active Engines:";
+    constexpr const char* LABEL_ENCODER = "Video Encoder:";
+    constexpr const char* LABEL_DECODER = "Video Decoder:";
+    constexpr auto LABELS =
+        std::to_array<const char*>({LABEL_UTILIZATION, LABEL_MEMORY, LABEL_DEVICES, LABEL_ENGINES, LABEL_ENCODER, LABEL_DECODER});
+
     // Current GPU metrics
     if (ImGui::BeginTable("GPUCurrentMetrics", 2, ImGuiTableFlags_SizingStretchProp))
     {
-        ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 150.0F);
+        ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, UI::Widgets::measureLabelColumnWidth(LABELS));
         ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
 
         // GPU Utilization
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        ImGui::Text("GPU Utilization:");
+        ImGui::TextUnformatted(LABEL_UTILIZATION);
         ImGui::TableNextColumn();
         const ImVec4 gpuUtilColor = theme.scheme().gpuUtilization;
         ImGui::TextColored(gpuUtilColor, "%.1f%%", m_SmoothedUsage.gpuUtilPercent);
@@ -1565,7 +1584,7 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
         // GPU Memory
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        ImGui::Text("GPU Memory:");
+        ImGui::TextUnformatted(LABEL_MEMORY);
         ImGui::TableNextColumn();
         const ImVec4 gpuMemColor = theme.scheme().gpuMemory;
         const std::string memStr = UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes);
@@ -1576,7 +1595,7 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
         {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
-            ImGui::Text("GPU Device(s):");
+            ImGui::TextUnformatted(LABEL_DEVICES);
             ImGui::TableNextColumn();
             ImGui::TextUnformatted(proc.gpuDevices.c_str());
         }
@@ -1586,7 +1605,7 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
         {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
-            ImGui::Text("Active Engines:");
+            ImGui::TextUnformatted(LABEL_ENGINES);
             ImGui::TableNextColumn();
             std::string enginesStr;
             for (size_t i = 0; i < proc.gpuEngines.size(); ++i)
@@ -1605,7 +1624,7 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
         {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
-            ImGui::Text("Video Encoder:");
+            ImGui::TextUnformatted(LABEL_ENCODER);
             ImGui::TableNextColumn();
             const ImVec4 encColor = theme.scheme().gpuEncoder;
             ImGui::TextColored(encColor, "%.1f%%", proc.gpuEncoderUtil);
@@ -1615,7 +1634,7 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
         {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
-            ImGui::Text("Video Decoder:");
+            ImGui::TextUnformatted(LABEL_DECODER);
             ImGui::TableNextColumn();
             const ImVec4 decColor = theme.scheme().gpuDecoder;
             ImGui::TextColored(decColor, "%.1f%%", proc.gpuDecoderUtil);
@@ -1640,6 +1659,13 @@ void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& p
         const ImVec4 gpuUtilColor = theme.scheme().gpuUtilization;
         const ImVec4 gpuMemColor = theme.scheme().gpuMemory;
 
+        // As in renderGpuCurrentMetricsTable(): the label column is measured from these (#966).
+        constexpr const char* LABEL_UTILIZATION = "Utilization:";
+        constexpr const char* LABEL_MEMORY = "Memory:";
+        constexpr const char* LABEL_ENGINES = "Engines:";
+        constexpr auto LABELS = std::to_array<const char*>({LABEL_UTILIZATION, LABEL_MEMORY, LABEL_ENGINES});
+        const float labelColumnWidth = UI::Widgets::measureLabelColumnWidth(LABELS);
+
         for (const auto& gpuUsage : proc.perGpuUsage)
         {
             // Same words as the system GPU tab (GpuSection.cpp), so one adapter is not described
@@ -1653,18 +1679,18 @@ void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& p
 
                 if (ImGui::BeginTable("PerGPUMetrics", 2, ImGuiTableFlags_SizingStretchProp))
                 {
-                    ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 120.0F);
+                    ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, labelColumnWidth);
                     ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
 
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn();
-                    ImGui::Text("Utilization:");
+                    ImGui::TextUnformatted(LABEL_UTILIZATION);
                     ImGui::TableNextColumn();
                     ImGui::TextColored(gpuUtilColor, "%.1f%%", gpuUsage.utilPercent);
 
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn();
-                    ImGui::Text("Memory:");
+                    ImGui::TextUnformatted(LABEL_MEMORY);
                     ImGui::TableNextColumn();
                     const std::string memoryStr = UI::Format::formatBytes(static_cast<double>(gpuUsage.memoryBytes));
                     ImGui::TextColored(gpuMemColor, "%s", memoryStr.c_str());
@@ -1673,7 +1699,7 @@ void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& p
                     {
                         ImGui::TableNextRow();
                         ImGui::TableNextColumn();
-                        ImGui::Text("Engines:");
+                        ImGui::TextUnformatted(LABEL_ENGINES);
                         ImGui::TableNextColumn();
                         std::string engStr;
                         for (size_t i = 0; i < gpuUsage.engines.size(); ++i)
@@ -1985,15 +2011,41 @@ void ProcessDetailsPanel::renderConfirmDialog()
 
     if (ImGui::BeginPopupModal("Confirm Action", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
-        ImGui::Text("Are you sure you want to %s process '%s' (PID %d)?",
-                    Detail::actionVerb(m_ConfirmAction),
-                    m_CachedSnapshot.name.c_str(),
-                    m_SelectedPid);
+        // The dialog auto-fits, so it is bounded here: neither the question (which carries the
+        // process name) nor the button row may be wider than the main window can show. See
+        // ProcessDetailsLayout::computeConfirmContentBudget().
+        const ImGuiStyle& confirmStyle = ImGui::GetStyle();
+        const float contentBudget = ProcessDetailsLayout::computeConfirmContentBudget(
+            ImGui::GetMainViewport()->WorkSize.x, UI::DialogMetrics::MAX_VIEWPORT_FRACTION, confirmStyle.WindowPadding.x);
+
+        const std::string question = std::format("Are you sure you want to {} process '{}' (PID {})?",
+                                                 Detail::actionVerb(m_ConfirmAction),
+                                                 m_CachedSnapshot.name,
+                                                 m_SelectedPid);
+        // Wrapped at the budget, or at the text's own width when that is narrower -- a wrap
+        // position wider than the text would make the auto-fitting dialog as wide as the budget.
+        const float questionWidth = ImGui::CalcTextSize(question.c_str()).x;
+        const float wrapWidth = (contentBudget > 0.0F) ? std::min(questionWidth, contentBudget) : questionWidth;
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrapWidth);
+        ImGui::TextUnformatted(question.c_str());
+        ImGui::PopTextWrapPos();
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
 
-        if (ImGui::Button("Yes", ImVec2(120, 0)))
+        // One width for both, from the font: 11.25 em is the former fixed 120px at the reference
+        // em, so the dialog is unchanged there and the buttons stay a comfortable target for a
+        // destructive confirmation at any font size or display density (#971).
+        //
+        // Held to half the dialog's budget: at Even Huger on a 175% display each button wants
+        // 420px, and the pair would be wider than a minimum-width window.
+        const float confirmButtonWidth = ProcessDetailsLayout::computeConfirmButtonWidth(
+            UI::DialogMetrics::computeActionButtonWidth(
+                std::max(ImGui::CalcTextSize("Yes").x, ImGui::CalcTextSize("No").x), ImGui::GetFontSize(), CONFIRM_BUTTON_MIN_EM),
+            contentBudget,
+            confirmStyle.ItemSpacing.x);
+
+        if (ImGui::Button("Yes", ImVec2(confirmButtonWidth, 0.0F)))
         {
             dispatchConfirmedAction();
             m_ShowConfirmDialog = false;
@@ -2002,7 +2054,7 @@ void ProcessDetailsPanel::renderConfirmDialog()
 
         ImGui::SameLine();
 
-        if (ImGui::Button("No", ImVec2(120, 0)))
+        if (ImGui::Button("No", ImVec2(confirmButtonWidth, 0.0F)))
         {
             m_ShowConfirmDialog = false;
             ImGui::CloseCurrentPopup();

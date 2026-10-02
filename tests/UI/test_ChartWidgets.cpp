@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -592,5 +593,31 @@ TEST(ClearChartAntiAliasingFlagsTest, NoOpOnZeroFlags)
     EXPECT_EQ(clearChartAntiAliasingFlags(0), 0);
 }
 
+// ========== NowBar width (#971) ==========
+
+// 2.25 em is the fixed 24px it replaces at the reference em (the Medium preset on a 1.0 display
+// scale), so the bars are unchanged there.
+TEST(ChartWidgetsTest, NowBarWidthIsUnchangedAtTheReferenceFont)
+{
+    EXPECT_FLOAT_EQ(nowBarWidth(32.0F / 3.0F), 24.0F);
+}
+
+// The reported case: on a 175% display the bars stayed 24 physical pixels beside 37px text.
+TEST(ChartWidgetsTest, NowBarWidthGrowsWithTheFont)
+{
+    EXPECT_FLOAT_EQ(nowBarWidth(37.33F), 84.0F);
+    EXPECT_FLOAT_EQ(nowBarWidth(14.0F), 32.0F); // whole pixels: 31.5 rounds up
+}
+
+TEST(ChartWidgetsTest, NowBarWidthSurvivesDegenerateInput)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    for (const float em : {nan, 0.0F, -12.0F, std::numeric_limits<float>::infinity()})
+    {
+        const float width = nowBarWidth(em);
+        EXPECT_TRUE(std::isfinite(width));
+        EXPECT_GE(width, 1.0F);
+    }
+}
 } // namespace
 } // namespace UI::Widgets
