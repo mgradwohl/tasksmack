@@ -588,7 +588,11 @@ void ProcessesPanel::renderContent()
     // past that point the table scrolls instead. See ProcessTableLayout.h for why this takes an
     // explicit inner width rather than just a stretch column (#924).
     const float emPx = ImGui::GetFontSize();
-    const float commandMinWidth = scaledDefaultWidth(getColumnInfo(ProcessColumn::Command), emPx);
+    // A hidden Command column reserves nothing: its minimum would otherwise be added back on top of
+    // a measurement that already excludes it, giving a table that fits a scrollbar and an empty
+    // scroll extent it does not need.
+    const float commandMinWidth =
+        m_ColumnSettings.isVisible(ProcessColumn::Command) ? scaledDefaultWidth(getColumnInfo(ProcessColumn::Command), emPx) : 0.0F;
     const float tableInnerWidth = ProcessTableLayout::computeInnerWidth(m_OtherColumnsWidth, commandMinWidth, m_TableVisibleWidth);
 
     if (ImGui::BeginTable(
@@ -629,9 +633,15 @@ void ProcessesPanel::renderContent()
 
             // Command is the one stretch column: it takes the width the others leave. Its default
             // width is not an initial width here but the floor enforced through tableInnerWidth.
+            //
+            // It is also pinned as the trailing column. ImGui makes the right-most enabled column
+            // non-resizable whenever the table has a stretch column, which is harmless while that
+            // column is Command itself; were Command dragged elsewhere, whichever fixed column ended
+            // up last would silently lose its resize handle. NoReorder keeps Command in place and
+            // stops other columns crossing over it.
             if (col == ProcessColumn::Command)
             {
-                flags |= ImGuiTableColumnFlags_WidthStretch;
+                flags |= ImGuiTableColumnFlags_WidthStretch | ImGuiTableColumnFlags_NoReorder;
                 ImGui::TableSetupColumn(std::string(info.menuName).c_str(), flags, 1.0F, toImGuiId(col));
             }
             // Columns with a positive default width are initialized as width-based columns.
