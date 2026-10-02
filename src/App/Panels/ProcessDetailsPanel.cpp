@@ -307,14 +307,14 @@ void ProcessDetailsPanel::renderContent()
                 const UI::Widgets::TabContentScope content("##OverviewContent");
                 // The charts on this tab share its height (#959). The Identity/Runtime block above
                 // them is inside the scope, so it is counted as non-plot height.
-                const ActiveFillScope fill(*this, m_OverviewFill);
+                UI::Widgets::FillPlotLayout fill(m_OverviewFill);
                 renderBasicInfo(m_CachedSnapshot);
                 ImGui::Separator();
-                renderResourceUsage(m_CachedSnapshot);
+                renderResourceUsage(m_CachedSnapshot, fill);
                 ImGui::Separator();
-                renderPowerUsage(m_CachedSnapshot);
+                renderPowerUsage(m_CachedSnapshot, fill);
                 ImGui::Separator();
-                renderThreadAndFaultHistory();
+                renderThreadAndFaultHistory(fill);
             }
             ImGui::EndTabItem();
         }
@@ -350,11 +350,11 @@ void ProcessDetailsPanel::renderContent()
                 {
                     {
                         const UI::Widgets::TabContentScope content("##NetworkContent");
-                        const ActiveFillScope fill(*this, m_NetworkFill);
+                        UI::Widgets::FillPlotLayout fill(m_NetworkFill);
                         // Render I/O stats first (at the top)
-                        renderIoStats(m_CachedSnapshot);
+                        renderIoStats(m_CachedSnapshot, fill);
                         ImGui::Separator();
-                        renderNetworkStats(m_CachedSnapshot);
+                        renderNetworkStats(m_CachedSnapshot, fill);
                     }
                     ImGui::EndTabItem();
                 }
@@ -721,20 +721,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     ImGui::EndGroup();
 }
 
-float ProcessDetailsPanel::chartHeight() const
-{
-    return (m_ActiveFill != nullptr) ? m_ActiveFill->plotHeight() : HISTORY_PLOT_HEIGHT_DEFAULT;
-}
-
-void ProcessDetailsPanel::noteChartRendered()
-{
-    if (m_ActiveFill != nullptr)
-    {
-        m_ActiveFill->addPlot();
-    }
-}
-
-void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& proc)
+void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill)
 {
     // Ensure smoothing is initialized even if render is called before an update tick
     if (!m_SmoothedUsage.initialized)
@@ -742,12 +729,12 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
         updateSmoothedUsage(proc, m_LastDeltaSeconds);
     }
 
-    renderCpuUsageSection();
-    renderMemoryUsageSection();
+    renderCpuUsageSection(fill);
+    renderMemoryUsageSection(fill);
 }
 
 // Renders the inline CPU history chart (total/user/system) plus paired "now" bars.
-void ProcessDetailsPanel::renderCpuUsageSection()
+void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fill)
 {
     const auto& theme = UI::Theme::get();
 
@@ -786,7 +773,7 @@ void ProcessDetailsPanel::renderCpuUsageSection()
         auto cpuPlot = [&]()
         {
             const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
-                UI::Widgets::percentHistoryConfig("##ProcOverviewCPU", axisConfig.xMin, axisConfig.xMax), chartHeight()));
+                UI::Widgets::percentHistoryConfig("##ProcOverviewCPU", axisConfig.xMin, axisConfig.xMax), fill.plotHeight()));
             if (chart.active())
             {
                 UI::Widgets::drawCollectingHint(alignedCount);
@@ -873,16 +860,20 @@ void ProcessDetailsPanel::renderCpuUsageSection()
         };
 
         ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MICROCHIP "  CPU (%zu samples)", alignedCount);
-        renderHistoryWithNowBars(
-            "ProcessCPUHistoryOverview", chartHeight(), cpuPlot, {cpuTotalNow, cpuUserNow, cpuSystemNow}, false, PROCESS_NOW_BAR_COLUMNS);
-        noteChartRendered();
+        renderHistoryWithNowBars("ProcessCPUHistoryOverview",
+                                 fill.plotHeight(),
+                                 cpuPlot,
+                                 {cpuTotalNow, cpuUserNow, cpuSystemNow},
+                                 false,
+                                 PROCESS_NOW_BAR_COLUMNS);
+        fill.addPlot();
         ImGui::Spacing();
     }
 }
 
 // Renders the inline memory history chart (used/shared/virtual, with a peak-line overlay)
 // plus paired "now" bars.
-void ProcessDetailsPanel::renderMemoryUsageSection()
+void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& fill)
 {
     const auto& theme = UI::Theme::get();
 
@@ -929,7 +920,7 @@ void ProcessDetailsPanel::renderMemoryUsageSection()
             auto memoryPlot = [&]()
             {
                 const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
-                    UI::Widgets::percentHistoryConfig("##ProcOverviewMemory", axisConfig.xMin, axisConfig.xMax), chartHeight()));
+                    UI::Widgets::percentHistoryConfig("##ProcOverviewMemory", axisConfig.xMin, axisConfig.xMax), fill.plotHeight()));
                 if (chart.active())
                 {
                     UI::Widgets::drawCollectingHint(alignedCount);
@@ -1014,8 +1005,9 @@ void ProcessDetailsPanel::renderMemoryUsageSection()
 
             ImGui::Spacing();
             ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MEMORY "  Memory (%zu samples)", alignedCount);
-            renderHistoryWithNowBars("ProcessMemoryOverviewLayout", chartHeight(), memoryPlot, memoryBars, false, PROCESS_NOW_BAR_COLUMNS);
-            noteChartRendered();
+            renderHistoryWithNowBars(
+                "ProcessMemoryOverviewLayout", fill.plotHeight(), memoryPlot, memoryBars, false, PROCESS_NOW_BAR_COLUMNS);
+            fill.addPlot();
             ImGui::Spacing();
         }
     }
@@ -1024,7 +1016,7 @@ void ProcessDetailsPanel::renderMemoryUsageSection()
 // Renders the thread/handle/page-fault history plot plus matching "now" bars.
 // Aligns history buffers by their shared tail, smooths the latest sample for the
 // bars, and returns early when no aligned data is available.
-void ProcessDetailsPanel::renderThreadAndFaultHistory()
+void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayout& fill)
 {
     if (m_Timestamps.empty() || (m_ThreadHistory.empty() && m_HandleHistory.empty() && m_PageFaultHistory.empty()))
     {
@@ -1112,7 +1104,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory()
                                                                                                      formatAxisLocalized,
                                                                                                      resourceAxisMax,
                                                                                                      UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT),
-                                                                      chartHeight()));
+                                                                      fill.plotHeight()));
         if (chart.active())
         {
             UI::Widgets::drawCollectingHint(alignedCount);
@@ -1201,17 +1193,17 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory()
     // 4 NowBars on Windows: Threads, Handles, Page Faults, GDI Objects
     constexpr size_t RESOURCE_NOW_BAR_COLUMNS = 4;
     renderHistoryWithNowBars(
-        "ProcessResourceHistory", chartHeight(), plot, {threadsBar, handlesBar, faultsBar, gdiBar}, false, RESOURCE_NOW_BAR_COLUMNS);
-    noteChartRendered();
+        "ProcessResourceHistory", fill.plotHeight(), plot, {threadsBar, handlesBar, faultsBar, gdiBar}, false, RESOURCE_NOW_BAR_COLUMNS);
+    fill.addPlot();
 #else
     renderHistoryWithNowBars(
-        "ProcessResourceHistory", chartHeight(), plot, {threadsBar, handlesBar, faultsBar}, false, PROCESS_NOW_BAR_COLUMNS);
-    noteChartRendered();
+        "ProcessResourceHistory", fill.plotHeight(), plot, {threadsBar, handlesBar, faultsBar}, false, PROCESS_NOW_BAR_COLUMNS);
+    fill.addPlot();
 #endif
     ImGui::Spacing();
 }
 
-void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
+void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill)
 {
     const bool hasCurrent = (proc.ioReadBytesPerSec > 0.0 || proc.ioWriteBytesPerSec > 0.0);
     if (m_Timestamps.empty() && !hasCurrent)
@@ -1268,7 +1260,7 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
                                                                    formatAxisBytesPerSec,
                                                                    UI::Widgets::maxOfSeries(readData, writeData),
                                                                    UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC),
-                                    chartHeight()));
+                                    fill.plotHeight()));
         if (chart.active())
         {
             UI::Widgets::drawCollectingHint(alignedCount);
@@ -1315,12 +1307,12 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
     };
 
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  I/O Statistics (%zu samples)", alignedCount);
-    renderHistoryWithNowBars("ProcessIoHistory", chartHeight(), plot, {readBar, writeBar}, false, PROCESS_NOW_BAR_COLUMNS);
-    noteChartRendered();
+    renderHistoryWithNowBars("ProcessIoHistory", fill.plotHeight(), plot, {readBar, writeBar}, false, PROCESS_NOW_BAR_COLUMNS);
+    fill.addPlot();
     ImGui::Spacing();
 }
 
-void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc)
+void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill)
 {
     const bool hasCurrent = (proc.netSentBytesPerSec > 0.0 || proc.netReceivedBytesPerSec > 0.0);
     if (m_Timestamps.empty() && !hasCurrent)
@@ -1377,7 +1369,7 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
                                                                    formatAxisBytesPerSec,
                                                                    UI::Widgets::maxOfSeries(sentData, recvData),
                                                                    UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC),
-                                    chartHeight()));
+                                    fill.plotHeight()));
         if (chart.active())
         {
             UI::Widgets::drawCollectingHint(alignedCount);
@@ -1429,12 +1421,12 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
     {
         ImGui::SetTooltip("Average network bytes/sec since monitoring started for this process.");
     }
-    renderHistoryWithNowBars("ProcessNetworkHistory", chartHeight(), plot, {sentBar, recvBar}, false, PROCESS_NOW_BAR_COLUMNS);
-    noteChartRendered();
+    renderHistoryWithNowBars("ProcessNetworkHistory", fill.plotHeight(), plot, {sentBar, recvBar}, false, PROCESS_NOW_BAR_COLUMNS);
+    fill.addPlot();
     ImGui::Spacing();
 }
 
-void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc)
+void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill)
 {
     const bool hasCurrent = proc.powerWatts > 0.0;
     if (m_Timestamps.empty() && m_PowerHistory.empty() && !hasCurrent)
@@ -1473,7 +1465,7 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc)
                                                                                                      formatAxisWatts,
                                                                                                      UI::Widgets::maxOfSeries(powerData),
                                                                                                      UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS),
-                                                                      chartHeight()));
+                                                                      fill.plotHeight()));
         if (chart.active())
         {
             UI::Widgets::drawCollectingHint(powerData.size());
@@ -1508,8 +1500,8 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc)
     };
 
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_BOLT "  Power Usage (%zu samples)", alignedCount);
-    renderHistoryWithNowBars("ProcessPowerHistory", chartHeight(), plot, {powerBar}, false, PROCESS_NOW_BAR_COLUMNS);
-    noteChartRendered();
+    renderHistoryWithNowBars("ProcessPowerHistory", fill.plotHeight(), plot, {powerBar}, false, PROCESS_NOW_BAR_COLUMNS);
+    fill.addPlot();
     ImGui::Spacing();
 }
 
