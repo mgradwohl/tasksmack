@@ -70,5 +70,59 @@ TEST(ProcessTableLayoutTest, FitsVisibleWidthOnNonFiniteInput)
     EXPECT_FLOAT_EQ(computeInnerWidth(700.0F, 300.0F, inf), 0.0F);
 }
 
+// ========== Clipped cell text (#914) ==========
+
+using ProcessTableLayout::CLIP_TOLERANCE_PX;
+using ProcessTableLayout::isCellTextClipped;
+
+TEST(ProcessTableLayoutTest, TextNarrowerThanCellIsNotClipped)
+{
+    EXPECT_FALSE(isCellTextClipped(60.0F, 120.0F));
+}
+
+TEST(ProcessTableLayoutTest, TextWiderThanCellIsClipped)
+{
+    EXPECT_TRUE(isCellTextClipped(130.0F, 120.0F));
+}
+
+// Text that exactly fills its cell is shown whole: it must not lose its last glyph to an ellipsis
+// over sub-pixel rounding between the text measurement and the column layout.
+TEST(ProcessTableLayoutTest, TextThatExactlyFitsIsNotClipped)
+{
+    EXPECT_FALSE(isCellTextClipped(120.0F, 120.0F));
+    EXPECT_FALSE(isCellTextClipped(120.0F + CLIP_TOLERANCE_PX, 120.0F));
+    EXPECT_FALSE(isCellTextClipped(120.25F, 120.0F));
+}
+
+TEST(ProcessTableLayoutTest, TextJustPastToleranceIsClipped)
+{
+    EXPECT_TRUE(isCellTextClipped(121.0F, 120.0F));
+}
+
+// A cell with no room left at all (a column squeezed to nothing, or a tree indent that used it up)
+// clips any text that has width.
+TEST(ProcessTableLayoutTest, AnyTextIsClippedInACellWithNoRoom)
+{
+    EXPECT_TRUE(isCellTextClipped(40.0F, 0.0F));
+    EXPECT_TRUE(isCellTextClipped(40.0F, -12.0F));
+}
+
+TEST(ProcessTableLayoutTest, EmptyTextIsNeverClipped)
+{
+    EXPECT_FALSE(isCellTextClipped(0.0F, 0.0F));
+    EXPECT_FALSE(isCellTextClipped(0.0F, 120.0F));
+}
+
+TEST(ProcessTableLayoutTest, NonFiniteWidthsAreNotClipped)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+
+    EXPECT_FALSE(isCellTextClipped(nan, 120.0F));
+    EXPECT_FALSE(isCellTextClipped(60.0F, nan));
+    EXPECT_FALSE(isCellTextClipped(inf, 120.0F));
+    EXPECT_FALSE(isCellTextClipped(60.0F, inf));
+}
+
 } // namespace
 } // namespace App
