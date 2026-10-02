@@ -1,5 +1,6 @@
 #include "UserConfig.h"
 
+#include "App/Panels/ProcessTableSettings.h"
 #include "App/UserConfigHelpers.h"
 #include "Core/WindowConstants.h"
 #include "Domain/Numeric.h"
@@ -359,6 +360,16 @@ void UserConfig::load()
             m_Settings.showPrivilegeNotice = *val;
         }
 
+        // Process table column layout (widths, order, sort). Length-capped here; its content is
+        // filtered where it is used, before ImGui parses it.
+        if (auto layout = config["process_table"]["layout"].value<std::string>())
+        {
+            if (layout->size() <= ProcessTableSettings::MAX_STORED_BYTES)
+            {
+                m_Settings.processTableLayout = std::move(*layout);
+            }
+        }
+
         // Process panel column visibility
         if (auto* cols = config["process_columns"].as_table())
         {
@@ -481,6 +492,7 @@ void UserConfig::save()
         {"font", toml::table{{"size", fontSizeStr}}},
         {"window", windowTable},
         {"process_columns", processColumnsTable},
+        {"process_table", toml::table{{"layout", m_Settings.processTableLayout}}},
     };
 
     // Write to file
@@ -507,6 +519,7 @@ void UserConfig::save()
     file << "#   [ui] chart_anti_aliasing: smooth chart line/fill edges (true/false); disable for lower CPU/GPU cost "
             "on integrated GPUs\n";
     file << "#   [process_columns]: toggle columns on/off; true shows the column\n";
+    file << "#   [process_table] layout: saved column widths, order and sort (written by TaskSmack; delete it to reset)\n";
     file << "#   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.\n\n";
     file << config;
     file.close();

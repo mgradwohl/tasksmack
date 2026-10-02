@@ -120,6 +120,15 @@ class ProcessesPanel : public Panel
     void requestRefresh();
 
     /// Access the underlying process model (non-owning).
+    /// Hands a saved column layout (widths, order, sort) back to ImGui. Call before the table is
+    /// first rendered; the text is filtered first, so anything that is not a table layout is
+    /// ignored. See ProcessTableSettings.h (#952).
+    static void restoreTableLayout(std::string_view stored);
+
+    /// The table's current column layout as text for the config, or empty if the table has not been
+    /// rendered this session (in which case the caller should keep whatever it already has).
+    [[nodiscard]] std::string captureTableLayout() const;
+
     [[nodiscard]] Domain::ProcessModel* processModel() const
     {
         return m_ProcessModel.get();
@@ -135,6 +144,10 @@ class ProcessesPanel : public Panel
     // destructor ordering.
     std::shared_ptr<Domain::ProcessModel> m_ProcessModel;
     std::unique_ptr<Domain::BackgroundSampler> m_Sampler;
+    // ImGui's ID for the process table, recorded when it is rendered; 0 until then. Needed to pick
+    // this table's section out of ImGui's settings text (#952).
+    std::uint32_t m_TableId = 0;
+
     std::int32_t m_SelectedPid = -1;
     std::uint64_t m_SelectedUniqueKey = 0; // Selected process's identity: a PID can be reused
 

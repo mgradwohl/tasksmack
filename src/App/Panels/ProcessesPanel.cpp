@@ -7,6 +7,7 @@
 #include "App/Panels/ProcessSortUtils.h"
 #include "App/Panels/ProcessTableFlags.h"
 #include "App/Panels/ProcessTableLayout.h"
+#include "App/Panels/ProcessTableSettings.h"
 #include "App/Panels/ProcessTreeFlatten.h"
 #include "App/Panels/ProcessTreeIndent.h"
 #include "App/ProcessColumnConfig.h"
@@ -199,6 +200,42 @@ void renderLeftAlignedText(std::string_view text)
 }
 
 } // namespace
+
+// ============================================================================
+// Column layout persistence (#952)
+// ============================================================================
+
+void ProcessesPanel::restoreTableLayout(std::string_view stored)
+{
+    if (ImGui::GetCurrentContext() == nullptr)
+    {
+        return;
+    }
+
+    // Filtered before ImGui sees it: the text comes from a user-editable file, and only a single
+    // table section may be passed on -- never a window position or a docking layout.
+    const std::string layout = ProcessTableSettings::sanitize(stored);
+    if (!layout.empty())
+    {
+        ImGui::LoadIniSettingsFromMemory(layout.data(), layout.size());
+    }
+}
+
+std::string ProcessesPanel::captureTableLayout() const
+{
+    if (m_TableId == 0 || ImGui::GetCurrentContext() == nullptr)
+    {
+        return {};
+    }
+
+    std::size_t iniSize = 0;
+    const char* ini = ImGui::SaveIniSettingsToMemory(&iniSize);
+    if (ini == nullptr)
+    {
+        return {};
+    }
+    return ProcessTableSettings::extractTableSection(std::string_view(ini, iniSize), m_TableId);
+}
 
 // ============================================================================
 // TextSizeCache implementation
@@ -762,6 +799,10 @@ void ProcessesPanel::renderContent()
 
         // Measure this frame's layout for the next frame's inner-width decision. The layout is
         // locked once the header row has been submitted, so these are final for the frame.
+        if (const ImGuiTable* table = ImGui::GetCurrentTable(); table != nullptr)
+        {
+            m_TableId = table->ID;
+        }
         if (const ImGuiTable* table = ImGui::GetCurrentTable(); table != nullptr && commandColumnIdx >= 0)
         {
             const ImGuiTableColumn& commandColumn = table->Columns[commandColumnIdx];
