@@ -1,5 +1,7 @@
 #pragma once
 
+#include "UI/ColorContrast.h"
+
 #include <imgui.h>
 
 #include <algorithm>
@@ -34,6 +36,67 @@ inline void drawRightAlignedOverlayText(const char* text, float paddingX = 8.0F)
 
     const ImU32 textCol = ImGui::GetColorU32(ImGuiCol_Text);
     ImGui::GetWindowDrawList()->AddText(pos, textCol, text);
+}
+
+/// The three fills a filledButton() is drawn with.
+struct ButtonFills
+{
+    ImVec4 resting;
+    ImVec4 hovered;
+    ImVec4 pressed;
+};
+
+/// A button with its own fill colours whose label stays readable in every state.
+///
+/// ImGui::Button() takes one text colour for all three of its states, but a themed fill moves
+/// between them -- and not consistently: some themes lighten the fill on hover, others darken it.
+/// One label colour therefore cannot be right for all three; measured across the bundled themes,
+/// sixteen of twenty had at least one state where the Apply label was under 3:1 contrast, several
+/// of them around 1.1 on hover, the state the user is in when about to click (#969).
+///
+/// So the button is submitted without a label and the label is drawn afterwards, in whichever of
+/// the two candidate colours reads better on the fill actually showing (see
+/// ColorContrast::readableTextOn()).
+///
+/// @param label           Visible label; also the button's ID. Drawn verbatim, so no "##" suffix.
+/// @param size            As for ImGui::Button(). A zero width fits the label.
+/// @param fills           The button's fill in each state.
+/// @param textPreferred   Label colour to use unless the alternate is clearly more readable.
+/// @param textAlternate   The other candidate; the theme's window background is a good choice.
+/// @return true when clicked, as ImGui::Button() does.
+inline bool
+filledButton(const char* label, const ImVec2& size, const ButtonFills& fills, const ImVec4& textPreferred, const ImVec4& textAlternate)
+{
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const ImVec2 labelSize = ImGui::CalcTextSize(label);
+    // The button is submitted with no visible label, so a zero width would collapse it: fit the
+    // label the way ImGui::Button() would have.
+    const ImVec2 buttonSize((size.x != 0.0F) ? size.x : (labelSize.x + (style.FramePadding.x * 2.0F)), size.y);
+
+    ImGui::PushStyleColor(ImGuiCol_Button, fills.resting);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, fills.hovered);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, fills.pressed);
+    ImGui::PushID(label);
+    const bool clicked = ImGui::Button("##filled", buttonSize);
+    ImGui::PopID();
+    ImGui::PopStyleColor(3);
+
+    // The same rule ImGui::Button() uses to pick its fill, so the label is judged against the
+    // colour that was actually drawn.
+    const bool hovered = ImGui::IsItemHovered();
+    const bool held = ImGui::IsItemActive();
+    const ImVec4& shown = (held && hovered) ? fills.pressed : (hovered ? fills.hovered : fills.resting);
+
+    const ImVec2 rectMin = ImGui::GetItemRectMin();
+    const ImVec2 rectMax = ImGui::GetItemRectMax();
+    const ImVec2 textPos(rectMin.x + (((rectMax.x - rectMin.x) - labelSize.x) * 0.5F),
+                         rectMin.y + (((rectMax.y - rectMin.y) - labelSize.y) * 0.5F));
+    // GetColorU32(ImVec4) applies the style's alpha, so a button inside BeginDisabled() gets a
+    // dimmed label like any other.
+    const ImU32 textColor = ImGui::GetColorU32(ColorContrast::readableTextOn(shown, textPreferred, textAlternate));
+    ImGui::GetWindowDrawList()->AddText(textPos, textColor, label);
+
+    return clicked;
 }
 
 /// Draw a vertical bar (bottom-up fill) with the value and optional label centered underneath.

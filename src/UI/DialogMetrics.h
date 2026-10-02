@@ -109,6 +109,32 @@ inline constexpr float BUTTON_LABEL_PADDING_EM = 1.0F;
     return safeColumn + std::max(0.0F, safeWide - safeNarrow);
 }
 
+/// Widen a control so its right edge meets the dialog's content edge, when another row is what
+/// sets the dialog's width.
+///
+/// An auto-fitting dialog is as wide as its widest row. When that row is not the one holding the
+/// control -- in Settings the two "ADVANCED" buttons are wider than the label-plus-combo rows -- a
+/// control sized only to its own text stops short, and its right edge lines up with neither the
+/// separators above it nor the buttons below (#972). The other rows are measured from text too, so
+/// the width the dialog will take is known before layout, and the control can be sized to reach it.
+///
+/// Never narrower than the control's own content: when its row is the widest, nothing changes.
+///
+/// @param contentWidthPx       Width the control needs for its own text.
+/// @param controlStartPx       Left edge of the control, measured from the dialog's left edge.
+/// @param contentLeftPx        Left edge of the dialog's content (its window padding), same origin.
+/// @param widestOtherRowPx     Width of the widest of the dialog's other rows.
+[[nodiscard]] inline float
+computeFilledControlWidth(float contentWidthPx, float controlStartPx, float contentLeftPx, float widestOtherRowPx) noexcept
+{
+    const float content = (std::isfinite(contentWidthPx) && contentWidthPx > 0.0F) ? contentWidthPx : 0.0F;
+    const float start = (std::isfinite(controlStartPx) && controlStartPx > 0.0F) ? controlStartPx : 0.0F;
+    const float left = (std::isfinite(contentLeftPx) && contentLeftPx > 0.0F) ? contentLeftPx : 0.0F;
+    const float otherRow = (std::isfinite(widestOtherRowPx) && widestOtherRowPx > 0.0F) ? widestOtherRowPx : 0.0F;
+
+    return std::max(content, (left + otherRow) - start);
+}
+
 /// Cap a width measured from content so its row still fits the viewport.
 ///
 /// Measuring a control from the text it holds is right up until that text is user-supplied and
