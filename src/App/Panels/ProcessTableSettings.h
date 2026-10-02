@@ -360,13 +360,15 @@ inline void appendColumnLine(std::string& out, const ColumnLine& column)
 /// gone after a restart. `source` is the layout as it stood in list view; its sort is carried
 /// across onto the freshly captured widths and order.
 ///
-/// A column that already has a sort in `captured` keeps it. Both inputs are sanitised first, so the
-/// result is always a well-formed section (or empty, if `captured` is not one).
+/// Only a capture with no sort at all is changed. If `captured` has a sort on any column, that sort
+/// is newer than `source`'s and is returned as it is -- adding `source`'s on top would turn a
+/// single-column sort into a two-column one. Both inputs are sanitised first, so the result is
+/// always a well-formed section (or empty, if `captured` is not one).
 [[nodiscard]] inline std::string carrySortForward(std::string_view captured, std::string_view source)
 {
     std::string cleanCaptured = sanitize(captured); // not const: returned by move below
     const std::string cleanSource = sanitize(source);
-    if (cleanCaptured.empty() || cleanSource.empty())
+    if (cleanCaptured.empty() || cleanSource.empty() || cleanCaptured.find(" Sort=") != std::string::npos)
     {
         return cleanCaptured;
     }

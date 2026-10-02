@@ -251,6 +251,15 @@ TEST(ProcessTableSettingsTest, SortIsCarriedOntoALayoutCapturedWithoutOne)
               "Column 2  Weight=1.0000 Order=2\n");
 }
 
+// A sort on a *different* column is still the newer sort: the user re-sorted after the backup was
+// taken. Carrying the old one across too would make a two-column sort out of a one-column one.
+TEST(ProcessTableSettingsTest, ASortOnAnotherColumnIsNotJoinedByTheOldOne)
+{
+    const std::string_view source = "[Table][0x1A2B3C4D,2]\nColumn 0  Width=60 Sort=0^\nColumn 1  Width=60\n";
+    const std::string_view captured = "[Table][0x1A2B3C4D,2]\nColumn 0  Width=60\nColumn 1  Width=60 Sort=0v\n";
+    EXPECT_EQ(carrySortForward(captured, source), captured);
+}
+
 // A sort that the captured layout does have is the newer one, and wins.
 TEST(ProcessTableSettingsTest, AnExistingSortIsNotOverwritten)
 {

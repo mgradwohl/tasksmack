@@ -235,10 +235,11 @@ std::string ProcessesPanel::captureTableLayout() const
     }
     std::string layout = ProcessTableSettings::extractTableSection(std::string_view(ini, iniSize), m_TableId);
 
-    // Captured in tree view, the section has no sort; restore the one list view last had.
-    if (m_TreeViewEnabled && !m_ListViewLayout.empty())
+    // A section with no sort at all lost it to tree view (see m_SortBackupLayout); put back the
+    // sort list view last had. A section that has a sort is newer and is left alone.
+    if (!m_SortBackupLayout.empty())
     {
-        layout = ProcessTableSettings::carrySortForward(layout, m_ListViewLayout);
+        layout = ProcessTableSettings::carrySortForward(layout, m_SortBackupLayout);
     }
     return layout;
 }
@@ -680,14 +681,15 @@ void ProcessesPanel::renderContent()
         if (m_TreeViewEnabled)
         {
             // Tree view is not sortable, and ImGui leaves the sort out of a table's settings while
-            // it is not. Keep the layout as it stands now, in list view, so a layout saved from
-            // tree view can still carry the user's sort (#952).
-            m_ListViewLayout = captureTableLayout();
+            // it is not. Keep the layout as it stands now, in list view, so a layout saved later
+            // can still carry the user's sort (#952). Kept after returning to list view too: a
+            // resize made in tree view leaves ImGui's stored settings without a sort, and merely
+            // becoming sortable again does not rewrite them, so the gap outlasts tree view itself.
+            m_SortBackupLayout = captureTableLayout();
             spdlog::debug("ProcessesPanel: Switched to tree view");
         }
         else
         {
-            m_ListViewLayout.clear();
             spdlog::debug("ProcessesPanel: Switched to flat list view");
         }
     }
