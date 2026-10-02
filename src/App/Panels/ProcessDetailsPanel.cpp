@@ -13,6 +13,7 @@
 #include "ProcessDetailsPanel_PriorityHelpers.h"
 #include "UI/ChartWidgets.h"
 #include "UI/DialogMetrics.h"
+#include "UI/EmptyState.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
@@ -243,8 +244,8 @@ void ProcessDetailsPanel::renderContent()
 {
     if (m_SelectedPid == -1)
     {
-        const auto& theme = UI::Theme::get();
-        ImGui::TextColored(theme.scheme().textMuted, "Select a process from the Processes panel to view details");
+        UI::Widgets::renderEmptyState(ICON_FA_CIRCLE_INFO "  No process selected",
+                                      "Select a process in the Processes tab to see its details, history and actions here.");
         return;
     }
 
@@ -256,8 +257,9 @@ void ProcessDetailsPanel::renderContent()
 
     if (!m_HasSnapshot)
     {
-        const auto& theme = UI::Theme::get();
-        ImGui::TextColored(theme.scheme().textWarning, "Process %d not found (may have exited)", m_SelectedPid);
+        const std::string detail =
+            std::format("Process {} is no longer running. Select another process in the Processes tab.", m_SelectedPid);
+        UI::Widgets::renderEmptyState(ICON_FA_TRIANGLE_EXCLAMATION "  Process not found", detail.c_str());
         return;
     }
 
@@ -715,6 +717,7 @@ void ProcessDetailsPanel::renderCpuUsageSection()
             const UI::Widgets::HistoryChart chart(UI::Widgets::percentHistoryConfig("##ProcOverviewCPU", axisConfig.xMin, axisConfig.xMax));
             if (chart.active())
             {
+                UI::Widgets::drawCollectingHint(alignedCount);
                 if (alignedCount > 0)
                 {
                     const int plotCount = UI::Format::checkedCount(alignedCount);
@@ -860,6 +863,7 @@ void ProcessDetailsPanel::renderMemoryUsageSection()
                     UI::Widgets::percentHistoryConfig("##ProcOverviewMemory", axisConfig.xMin, axisConfig.xMax));
                 if (chart.active())
                 {
+                    UI::Widgets::drawCollectingHint(alignedCount);
                     // Draw peak working set as a horizontal reference line (never decreases)
                     if (m_PeakMemoryPercent > 0.0)
                     {
@@ -1041,6 +1045,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory()
                                                                              UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT));
         if (chart.active())
         {
+            UI::Widgets::drawCollectingHint(alignedCount);
             const int plotCount = UI::Format::checkedCount(alignedCount);
             plotLineWithFill("Threads",
                              timeData.data(),
@@ -1196,6 +1201,7 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
                                                                              UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC));
         if (chart.active())
         {
+            UI::Widgets::drawCollectingHint(alignedCount);
             const int plotCount = UI::Format::checkedCount(alignedCount);
             plotLineWithFill("Read",
                              timeData.data(),
@@ -1301,6 +1307,7 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
                                                                              UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC));
         if (chart.active())
         {
+            UI::Widgets::drawCollectingHint(alignedCount);
             const int plotCount = UI::Format::checkedCount(alignedCount);
             plotLineWithFill("Sent",
                              timeData.data(),
@@ -1395,6 +1402,7 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc)
                                                                              UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS));
         if (chart.active())
         {
+            UI::Widgets::drawCollectingHint(powerData.size());
             if (!powerData.empty())
             {
                 plotLineWithFill(
@@ -1648,6 +1656,7 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs()
             const UI::Widgets::HistoryChart chart(UI::Widgets::percentHistoryConfig("##GPUUtilPlot", axisConfig.xMin, axisConfig.xMax));
             if (chart.active())
             {
+                UI::Widgets::drawCollectingHint(alignedCount);
                 if (plotCount > 0)
                 {
                     plotLineWithFill("GPU %",
@@ -1698,6 +1707,7 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs()
                                                                                  UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES));
             if (chart.active())
             {
+                UI::Widgets::drawCollectingHint(alignedCount);
                 if (plotCount > 0)
                 {
                     plotLineWithFill("GPU Memory",

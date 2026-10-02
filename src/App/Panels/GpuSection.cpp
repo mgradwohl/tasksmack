@@ -2,6 +2,7 @@
 
 #include "Domain/GPUSnapshot.h"
 #include "UI/ChartWidgets.h"
+#include "UI/EmptyState.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
@@ -88,7 +89,8 @@ void renderGpuSection(RenderContext& ctx)
 {
     if (ctx.publication == nullptr)
     {
-        ImGui::Text("GPU monitoring not available");
+        UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  GPU monitoring is not available",
+                                      "The GPU sampler is not running, so there is nothing to show on this tab.");
         return;
     }
 
@@ -99,7 +101,11 @@ void renderGpuSection(RenderContext& ctx)
 
     if (gpuSnapshots.empty())
     {
-        ImGui::TextColored(theme.scheme().textMuted, "No GPU data available");
+        // Not an error and not transient: the probes ran and reported no device. Saying so, and that
+        // it is expected where it usually happens, is what distinguishes this from a failed tab.
+        UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  No GPU detected",
+                                      "No GPU reported any data to TaskSmack. This is expected in most virtual machines and "
+                                      "under WSL2, where no GPU device is exposed to the system.");
         return;
     }
 

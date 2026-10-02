@@ -572,6 +572,43 @@ inline void setupLegendDefault()
     ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_NoHighlightItem);
 }
 
+/// Samples a history chart needs before its "collecting" hint is dropped.
+///
+/// A chart's time axis spans the whole history window (300 s by default), so the first few samples
+/// occupy a few pixels at its right edge and the plot still looks empty. A freshly selected process
+/// starts with no history at all, and four blank charts read as a pane that failed to load (#927).
+inline constexpr std::size_t HISTORY_COLLECTING_SAMPLE_COUNT = 5;
+
+/// Text shown over a history plot that has too few samples to draw anything visible yet.
+inline constexpr const char* HISTORY_COLLECTING_TEXT = "Collecting data...";
+
+/// Whether a chart with `sampleCount` samples should still show its "collecting" hint.
+[[nodiscard]] constexpr bool historyChartIsCollecting(std::size_t sampleCount) noexcept
+{
+    return sampleCount < HISTORY_COLLECTING_SAMPLE_COUNT;
+}
+
+/// Draws the "collecting" hint centred in the current plot while it has too few samples to show
+/// anything. Must be called between ImPlot::BeginPlot() and EndPlot(), i.e. while a HistoryChart is
+/// active.
+inline void drawCollectingHint(std::size_t sampleCount)
+{
+    if (!historyChartIsCollecting(sampleCount))
+    {
+        return;
+    }
+
+    const ImVec2 plotPos = ImPlot::GetPlotPos();
+    const ImVec2 plotSize = ImPlot::GetPlotSize();
+    const ImVec2 textSize = ImGui::CalcTextSize(HISTORY_COLLECTING_TEXT);
+    const ImVec2 textPos(plotPos.x + std::max(0.0F, (plotSize.x - textSize.x) * 0.5F),
+                         plotPos.y + std::max(0.0F, (plotSize.y - textSize.y) * 0.5F));
+
+    ImPlot::PushPlotClipRect();
+    ImPlot::GetPlotDrawList()->AddText(textPos, ImGui::ColorConvertFloat4ToU32(Theme::get().scheme().textMuted), HISTORY_COLLECTING_TEXT);
+    ImPlot::PopPlotClipRect();
+}
+
 /// Declarative configuration for a standard TaskSmack history chart.
 /// yLimits set → Y axis locked to that range (percent charts pin 0-100; the non-negative charts
 ///   compute theirs from the data via rateHistoryConfig()).
