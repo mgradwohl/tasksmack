@@ -46,4 +46,9 @@ inline constexpr float ELEVATION_BUTTON_MIN_EM = 9.375F; // 100px
 /// hold rather than authored, so this is the only fixed-pixel value it had left.
 inline constexpr float SETTINGS_BUTTON_MIN_EM = 9.375F; // 100px
 
+/// Smallest a Settings combo may be squeezed to, over and above its frame padding and arrow, when a
+/// very long user-supplied theme name would otherwise push the dialog past the viewport. Roughly six
+/// characters of preview text -- enough to stay recognisably a combo rather than a stub.
+inline constexpr float MIN_COMBO_EM = 6.0F;
+
 } // namespace App

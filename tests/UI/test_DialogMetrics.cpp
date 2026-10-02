@@ -99,5 +99,32 @@ TEST(DialogMetricsTest, RightAlignedStartNeverRunsBackOverTheLabels)
     EXPECT_GE(computeRightAlignedStart(150.0F, 100.0F, 400.0F), 150.0F);
 }
 
+TEST(DialogMetricsTest, MeasuredWidthPassesThroughWhenItFits)
+{
+    // The normal case: nothing is capped, so measuring content still decides.
+    EXPECT_FLOAT_EQ(computeCappedControlWidth(200.0F, 100.0F, 16.0F, 2000.0F, 60.0F), 200.0F);
+}
+
+TEST(DialogMetricsTest, MeasuredWidthIsCappedToTheViewportBudget)
+{
+    // A user's theme name is unbounded, so the measured width can be absurd. Budget here is
+    // 1000*0.9 - 100 - 16 = 784.
+    EXPECT_FLOAT_EQ(computeCappedControlWidth(5000.0F, 100.0F, 16.0F, 1000.0F, 60.0F), 784.0F);
+}
+
+TEST(DialogMetricsTest, CappedWidthNeverCollapsesBelowAUsableMinimum)
+{
+    // If the row cannot fit at all, a control clipped at a usable minimum beats one shrunk to
+    // nothing: ImGui clips a combo's preview text, so the control stays operable.
+    EXPECT_FLOAT_EQ(computeCappedControlWidth(5000.0F, 900.0F, 16.0F, 1000.0F, 60.0F), 60.0F);
+    EXPECT_GE(computeCappedControlWidth(5000.0F, 100000.0F, 0.0F, 1000.0F, 60.0F), 60.0F);
+}
+
+TEST(DialogMetricsTest, CappedWidthFallsBackWithoutAViewport)
+{
+    EXPECT_FLOAT_EQ(computeCappedControlWidth(200.0F, 100.0F, 16.0F, 0.0F, 60.0F), 200.0F);
+    EXPECT_FLOAT_EQ(computeCappedControlWidth(20.0F, 100.0F, 16.0F, -1.0F, 60.0F), 60.0F);
+}
+
 } // namespace
 } // namespace UI::DialogMetrics

@@ -250,6 +250,7 @@ void SettingsLayer::renderSettingsDialog()
         // Measuring is better than an em multiple here because these columns hold variable text: it
         // is self-documenting, it tracks the theme list and option arrays if either gains an entry,
         // and it absorbs the glyph-metric differences between platforms automatically.
+        const float emPx = ImGui::GetFontSize();
         const float labelGap = style.ItemSpacing.x * 2.0F;
         const float widestLabel = std::max({ImGui::CalcTextSize("Theme").x,
                                             ImGui::CalcTextSize("Font Size").x,
@@ -271,7 +272,14 @@ void SettingsLayer::renderSettingsDialog()
             widestAppearanceValue =
                 std::max(widestAppearanceValue, ImGui::CalcTextSize(option.label.data(), option.label.data() + option.label.size()).x);
         }
-        const float appearanceComboWidth = widestAppearanceValue + comboDecoration;
+        // Capped against the viewport. Theme names are read from a user's TOML with no length limit
+        // (ThemeLoader), so measuring them is unbounded: a long name would otherwise widen this
+        // auto-resizing popup past the window and put the combo's arrow and the buttons below it out
+        // of reach. The floor keeps the control usable if the cap bites; ImGui clips the combo's
+        // preview text, so a long name degrades to truncation rather than an unreachable control.
+        const float comboMinWidth = (MIN_COMBO_EM * emPx) + comboDecoration;
+        const float appearanceComboWidth = UI::DialogMetrics::computeCappedControlWidth(
+            widestAppearanceValue + comboDecoration, valueColumn, style.WindowPadding.x * 2.0F, viewport->WorkSize.x, comboMinWidth);
 
         // Theme dropdown
         ImGui::AlignTextToFramePadding();
@@ -350,7 +358,8 @@ void SettingsLayer::renderSettingsDialog()
             widestPerfValue =
                 std::max(widestPerfValue, ImGui::CalcTextSize(option.label.data(), option.label.data() + option.label.size()).x);
         }
-        const float perfComboWidth = widestPerfValue + comboDecoration;
+        const float perfComboWidth = UI::DialogMetrics::computeCappedControlWidth(
+            widestPerfValue + comboDecoration, valueColumn, style.WindowPadding.x * 2.0F, viewport->WorkSize.x, comboMinWidth);
         const float perfLabelWidth = UI::DialogMetrics::computeRightAlignedStart(valueColumn, appearanceComboWidth, perfComboWidth);
 
         ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GAUGE_HIGH "  PERFORMANCE");

@@ -109,4 +109,38 @@ inline constexpr float BUTTON_LABEL_PADDING_EM = 1.0F;
     return safeColumn + std::max(0.0F, safeWide - safeNarrow);
 }
 
+/// Cap a width measured from content so its row still fits the viewport.
+///
+/// Measuring a control from the text it holds is right up until that text is user-supplied and
+/// unbounded. Theme names are read straight from a user's TOML with no length limit, so a long one
+/// would otherwise make the Settings combo -- and the auto-resizing popup around it -- arbitrarily
+/// wide, pushing the combo's arrow and the buttons past the edge of the window where they cannot be
+/// reached (#921 review).
+///
+/// The floor deliberately wins over the budget: if the row genuinely cannot fit, a control clipped
+/// at a usable minimum is better than one shrunk to nothing. ImGui clips a combo's preview text, so
+/// the control stays operable either way.
+///
+/// @param desiredWidthPx    Width the measured content asks for.
+/// @param rowStartPx        Left edge of the control within the dialog.
+/// @param surroundingPx     Everything else on the row that also needs space (padding, borders).
+/// @param viewportWidthPx   Width of the viewport the dialog sits in.
+/// @param minWidthPx        Smallest width that leaves the control usable.
+[[nodiscard]] inline float
+computeCappedControlWidth(float desiredWidthPx, float rowStartPx, float surroundingPx, float viewportWidthPx, float minWidthPx) noexcept
+{
+    const float safeDesired = (std::isfinite(desiredWidthPx) && desiredWidthPx > 0.0F) ? desiredWidthPx : 0.0F;
+    const float safeMin = (std::isfinite(minWidthPx) && minWidthPx > 0.0F) ? minWidthPx : 0.0F;
+    if (!std::isfinite(viewportWidthPx) || viewportWidthPx <= 0.0F)
+    {
+        return std::max(safeDesired, safeMin);
+    }
+
+    const float safeStart = (std::isfinite(rowStartPx) && rowStartPx > 0.0F) ? rowStartPx : 0.0F;
+    const float safeSurrounding = (std::isfinite(surroundingPx) && surroundingPx > 0.0F) ? surroundingPx : 0.0F;
+    const float budget = (viewportWidthPx * MAX_VIEWPORT_FRACTION) - safeStart - safeSurrounding;
+
+    return std::max(safeMin, std::min(safeDesired, budget));
+}
+
 } // namespace UI::DialogMetrics
