@@ -34,13 +34,23 @@ enum class EmptyReason : std::uint8_t
 
 /// Classifies the GPU tab's empty state from what the model published (#927).
 ///
-/// The three reasons need different words. A null publication is not a wait -- GPUModel publishes
-/// on every successful refresh, including one that finds zero GPUs, and the panel takes its first
-/// refresh before it ever renders -- so it means the probe is missing or failing. And an empty
-/// snapshot list does not mean there is no GPU: the device list is published separately, so known
-/// devices with no counters is a failed or momentarily empty read, and telling the user their GPU
-/// was not detected would be false.
-[[nodiscard]] constexpr EmptyReason classifyEmptyState(bool hasPublication, std::size_t deviceCount, std::size_t snapshotCount) noexcept
+/// The reasons need different words, and each of the obvious shortcuts says something false:
+///
+///   - A null publication is not a wait. GPUModel publishes on every successful refresh, including
+///     one that finds zero GPUs, and the panel takes its first refresh before it ever renders -- so
+///     it means the probe is missing or its read failed.
+///   - An empty snapshot list does not mean there is no GPU. The device list is published
+///     separately, so known devices with no counters is a failed or momentarily empty read.
+///   - An empty device list does not mean there is no GPU either, unless enumeration succeeded.
+///     GPUModel catches a failed enumeration and carries on with an empty list, and later reads
+///     still publish; "no GPU detected" would then be a guess presented as a finding.
+///
+/// @param hasPublication  The model has published at least once.
+/// @param devicesKnown    Device enumeration succeeded (GPUPublication::gpuInfoKnown).
+/// @param deviceCount     Devices enumerated.
+/// @param snapshotCount   Devices the latest read returned counters for.
+[[nodiscard]] constexpr EmptyReason
+classifyEmptyState(bool hasPublication, bool devicesKnown, std::size_t deviceCount, std::size_t snapshotCount) noexcept
 {
     if (!hasPublication)
     {
@@ -50,7 +60,11 @@ enum class EmptyReason : std::uint8_t
     {
         return EmptyReason::None;
     }
-    return (deviceCount == 0) ? EmptyReason::NoDevices : EmptyReason::NoReadings;
+    if (deviceCount > 0)
+    {
+        return EmptyReason::NoReadings;
+    }
+    return devicesKnown ? EmptyReason::NoDevices : EmptyReason::Unavailable;
 }
 
 /// Context struct containing all state needed to render the GPU section.

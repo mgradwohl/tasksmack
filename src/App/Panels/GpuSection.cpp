@@ -88,6 +88,7 @@ void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap
 void renderGpuSection(RenderContext& ctx)
 {
     const EmptyReason emptyReason = classifyEmptyState(ctx.publication != nullptr,
+                                                       (ctx.publication != nullptr) && ctx.publication->gpuInfoKnown,
                                                        (ctx.publication != nullptr) ? ctx.publication->gpuInfo.size() : 0,
                                                        (ctx.publication != nullptr) ? ctx.publication->snapshots.size() : 0);
     switch (emptyReason)
