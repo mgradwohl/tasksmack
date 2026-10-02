@@ -172,6 +172,7 @@ add_executable(TaskSmackTests
     App/test_ProcessTableFlags.cpp
     App/test_ProcessTableLayout.cpp
     App/test_ProcessDetailsLayout.cpp
+    App/test_GpuSectionEmptyState.cpp
     App/test_ProcessRowFormat.cpp
     Platform/test_CgroupFreezerPath.cpp
     App/test_FpsCounter.cpp

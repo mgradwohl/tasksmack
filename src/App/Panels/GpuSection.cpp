@@ -87,28 +87,38 @@ void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap
 
 void renderGpuSection(RenderContext& ctx)
 {
-    if (ctx.publication == nullptr)
+    const EmptyReason emptyReason = classifyEmptyState(ctx.publication != nullptr,
+                                                       (ctx.publication != nullptr) ? ctx.publication->gpuInfo.size() : 0,
+                                                       (ctx.publication != nullptr) ? ctx.publication->snapshots.size() : 0);
+    switch (emptyReason)
     {
-        // The tab is only offered once a GPU model exists, so a missing publication means its first
-        // sample has not been published yet -- a wait, not a failure.
-        UI::Widgets::renderEmptyState(ICON_FA_HOURGLASS_HALF "  Waiting for GPU data", "The first GPU sample has not arrived yet.");
+    case EmptyReason::Unavailable:
+        UI::Widgets::renderEmptyState(ICON_FA_TRIANGLE_EXCLAMATION "  GPU monitoring is not available",
+                                      "TaskSmack could not read GPU data on this system.");
         return;
+    case EmptyReason::NoDevices:
+        // Not an error and not transient: the probe ran and reported no device. Saying so, and that
+        // it is expected where it usually happens, is what distinguishes this from a failed tab.
+        UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  No GPU detected",
+                                      "No GPU device was found. This is expected in most virtual machines and under WSL2, "
+                                      "where no GPU device is exposed to the system.");
+        return;
+    case EmptyReason::NoReadings:
+    {
+        const std::size_t deviceCount = ctx.publication->gpuInfo.size();
+        const std::string detail =
+            std::format("{} GPU{} detected, but the latest reading returned no data.", deviceCount, deviceCount == 1 ? " was" : "s were");
+        UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  GPU data unavailable", detail.c_str());
+        return;
+    }
+    case EmptyReason::None:
+        break;
     }
 
     const auto& gpuSnapshots = ctx.publication->snapshots;
     const auto& gpuInfos = ctx.publication->gpuInfo;
     const auto& caps = ctx.publication->capabilities;
     auto& theme = UI::Theme::get();
-
-    if (gpuSnapshots.empty())
-    {
-        // Not an error and not transient: the probes ran and reported no device. Saying so, and that
-        // it is expected where it usually happens, is what distinguishes this from a failed tab.
-        UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  No GPU detected",
-                                      "No GPU reported any data to TaskSmack. This is expected in most virtual machines and "
-                                      "under WSL2, where no GPU device is exposed to the system.");
-        return;
-    }
 
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 

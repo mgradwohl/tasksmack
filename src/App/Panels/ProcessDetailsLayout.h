@@ -41,4 +41,21 @@ inline constexpr float INFO_BLOCK_MAX_WIDTH_EM = 36.0F;
     return std::min(wanted, availableWidthPx);
 }
 
+/// Whether the selected process has just gone missing and should now be shown as exited (#927).
+///
+/// The pane is handed the selected process's snapshot every frame, or nothing when the process is
+/// not in the current process list. Nothing arriving before any snapshot has been seen is the
+/// lookup still in progress; nothing arriving *after* one has been seen is the process exiting.
+/// The pane used to treat both the same and kept drawing the last snapshot it had, so an exited
+/// process went on looking alive -- with its Terminate and Kill buttons still aimed at a PID the
+/// system is free to hand to something else.
+///
+/// @param hasSelection      A process is selected.
+/// @param hadSnapshot       A snapshot of it has been received since it was selected.
+/// @param snapshotPresent   A snapshot of it was provided this frame.
+[[nodiscard]] constexpr bool selectedProcessHasExited(bool hasSelection, bool hadSnapshot, bool snapshotPresent) noexcept
+{
+    return hasSelection && hadSnapshot && !snapshotPresent;
+}
+
 } // namespace App::ProcessDetailsLayout

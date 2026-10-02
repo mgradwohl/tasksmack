@@ -4,6 +4,8 @@
 #include "Domain/GPUSnapshot.h"
 
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 
@@ -24,6 +26,36 @@ struct SmoothedGPU
 /// Context struct containing all state needed to render the GPU section.
 /// This allows the render function to be extracted from SystemMetricsPanel
 /// without requiring access to private members.
+/// Why the GPU tab has nothing to chart, if it does not.
+enum class EmptyReason : std::uint8_t
+{
+    None,        ///< There is data; render the tab.
+    Unavailable, ///< No publication at all: the probe is missing or its read failed.
+    NoDevices,   ///< The probe ran and found no GPU.
+    NoReadings,  ///< GPUs are known, but the latest read returned no counters for any of them.
+};
+
+/// Classifies the GPU tab's empty state from what the model published (#927).
+///
+/// The three reasons need different words. A null publication is not a wait -- GPUModel publishes
+/// on every successful refresh, including one that finds zero GPUs, and the panel takes its first
+/// refresh before it ever renders -- so it means the probe is missing or failing. And an empty
+/// snapshot list does not mean there is no GPU: the device list is published separately, so known
+/// devices with no counters is a failed or momentarily empty read, and telling the user their GPU
+/// was not detected would be false.
+[[nodiscard]] constexpr EmptyReason classifyEmptyState(bool hasPublication, std::size_t deviceCount, std::size_t snapshotCount) noexcept
+{
+    if (!hasPublication)
+    {
+        return EmptyReason::Unavailable;
+    }
+    if (snapshotCount > 0)
+    {
+        return EmptyReason::None;
+    }
+    return (deviceCount == 0) ? EmptyReason::NoDevices : EmptyReason::NoReadings;
+}
+
 struct RenderContext
 {
     // Model (non-owning pointer)

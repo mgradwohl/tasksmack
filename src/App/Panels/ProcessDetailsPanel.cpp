@@ -137,6 +137,7 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
     {
         m_CachedSnapshot = *snapshot;
         m_HasSnapshot = true;
+        m_ProcessExited = false;
 
         updateSmoothedUsage(*snapshot, deltaTime);
 
@@ -202,6 +203,12 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
         {
             m_HasSnapshot = false;
         }
+        else if (ProcessDetailsLayout::selectedProcessHasExited(true, m_HasSnapshot, snapshot != nullptr))
+        {
+            // The cached snapshot is kept (the tab still names the process) but no longer drawn as
+            // if it were live; renderContent() shows the exited state instead.
+            m_ProcessExited = true;
+        }
     }
 }
 
@@ -255,10 +262,21 @@ void ProcessDetailsPanel::renderContent()
         return;
     }
 
+    if (m_ProcessExited)
+    {
+        // Replaces the whole pane, Actions tab included: nothing here may act on a PID that no
+        // longer belongs to this process.
+        const std::string detail = std::format(
+            "{} (PID {}) is no longer running. Select another process in the Processes tab.", m_CachedSnapshot.name, m_SelectedPid);
+        UI::Widgets::renderEmptyState(ICON_FA_TRIANGLE_EXCLAMATION "  Process exited", detail.c_str());
+        return;
+    }
+
     if (!m_HasSnapshot)
     {
-        const std::string detail =
-            std::format("Process {} is no longer running. Select another process in the Processes tab.", m_SelectedPid);
+        // Selected, but no snapshot of it has arrived: normally the frame or two before the first
+        // one does, otherwise a PID that is not in the process list at all.
+        const std::string detail = std::format("Process {} is not in the current process list.", m_SelectedPid);
         UI::Widgets::renderEmptyState(ICON_FA_TRIANGLE_EXCLAMATION "  Process not found", detail.c_str());
         return;
     }
@@ -384,6 +402,7 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid)
         m_Timestamps.clear();
         m_LastHistorySnapshotVersion = 0;
         m_HasSnapshot = false;
+        m_ProcessExited = false;
         m_ShowConfirmDialog = false;
         m_LastActionResult.clear();
         m_SmoothedUsage = {};

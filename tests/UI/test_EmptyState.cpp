@@ -70,6 +70,40 @@ TEST(EmptyStateTest, WrapWidthSurvivesDegenerateInput)
     EXPECT_GT(emptyStateWrapWidth(0.0F, 500.0F), 0.0F);
 }
 
+// The wrap extent is measured from the block's own longest line. It must cover that line (so it
+// does not re-wrap) without reaching anywhere near the full wrap width, which is what overflowed a
+// narrow pane.
+TEST(EmptyStateTest, WrapExtentCoversTheLongestLineAndNoMore)
+{
+    EXPECT_GE(emptyStateWrapExtent(181.4F), 181.4F);
+    EXPECT_LE(emptyStateWrapExtent(181.4F), 181.4F + 2.0F);
+    EXPECT_FLOAT_EQ(emptyStateWrapExtent(180.0F), 180.0F + EMPTY_STATE_WRAP_SLACK_PX);
+}
+
+// The reviewed defect, as arithmetic: a 300px pane, wrap width therefore 300px, and text whose
+// longest wrapped line is 200px. Centred, the block starts 50px in; its wrap point must stay
+// inside the pane. Measured from the full wrap width it was at 350px.
+TEST(EmptyStateTest, CentredBlockWrapsInsideANarrowPane)
+{
+    const float pane = 300.0F;
+    const float wrapWidth = emptyStateWrapWidth(10.0F, pane);
+    const float longestLine = 200.0F;
+
+    ASSERT_FLOAT_EQ(wrapWidth, pane);
+    const float left = centeredOffset(pane, longestLine);
+    EXPECT_FLOAT_EQ(left, 50.0F);
+    EXPECT_LE(left + emptyStateWrapExtent(longestLine), pane);
+    EXPECT_GT(left + wrapWidth, pane); // what the first revision used
+}
+
+TEST(EmptyStateTest, WrapExtentSurvivesDegenerateInput)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FLOAT_EQ(emptyStateWrapExtent(0.0F), EMPTY_STATE_WRAP_SLACK_PX);
+    EXPECT_FLOAT_EQ(emptyStateWrapExtent(-5.0F), EMPTY_STATE_WRAP_SLACK_PX);
+    EXPECT_FLOAT_EQ(emptyStateWrapExtent(nan), EMPTY_STATE_WRAP_SLACK_PX);
+}
+
 // A freshly selected process has no history; its charts say so until there is something to see.
 TEST(EmptyStateTest, ChartIsCollectingUntilItHasEnoughSamples)
 {

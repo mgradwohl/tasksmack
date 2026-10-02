@@ -48,6 +48,18 @@ inline constexpr float EMPTY_STATE_GAP_EM = 0.75F;
     return std::min(wanted, availableWidthPx);
 }
 
+/// Slack added to a measured line width when it is reused as a wrap width, in pixels: enough that
+/// the longest line does not re-wrap over float rounding, far too little to admit another word.
+inline constexpr float EMPTY_STATE_WRAP_SLACK_PX = 1.0F;
+
+/// Wrap extent, from the block's left edge, that reproduces line breaks measured at
+/// `longestLinePx`. See renderEmptyState() for why this, and not the full wrap width, is used.
+[[nodiscard]] inline float emptyStateWrapExtent(float longestLinePx) noexcept
+{
+    const float line = (std::isfinite(longestLinePx) && longestLinePx > 0.0F) ? longestLinePx : 0.0F;
+    return std::ceil(line) + EMPTY_STATE_WRAP_SLACK_PX;
+}
+
 /// Draws an empty state centred in the remaining content region: a heading, and beneath it an
 /// optional explanation of why the pane is empty and what to expect.
 ///
@@ -76,9 +88,17 @@ inline void renderEmptyState(const char* heading, const char* detail = nullptr)
     if (hasDetail)
     {
         // The wrapped block is centred as a whole; its lines are left-aligned within it.
+        //
+        // detailSize.x is the width of the longest wrapped line, which is what gets centred -- so a
+        // one-line explanation sits under its heading rather than at the left of a wider box. The
+        // wrap position must then be measured from that same width, not from wrapWidth: adding the
+        // full wrapWidth to an offset computed from a narrower block put the wrap point past the
+        // pane's right edge on a narrow pane, where the text was clipped instead of wrapped.
+        // Wrapping at the longest line's own width reproduces the measured line breaks exactly,
+        // since no line was wider than that.
         const float detailLeft = origin.x + centeredOffset(avail.x, detailSize.x);
         ImGui::SetCursorPos(ImVec2(detailLeft, top + headingSize.y + gap));
-        ImGui::PushTextWrapPos(detailLeft + wrapWidth);
+        ImGui::PushTextWrapPos(detailLeft + emptyStateWrapExtent(detailSize.x));
         ImGui::TextColored(scheme.textMuted, "%s", detail);
         ImGui::PopTextWrapPos();
     }

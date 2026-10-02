@@ -140,6 +140,7 @@ class ProcessDetailsPanel : public Panel
     // Cached snapshot for rendering
     Domain::ProcessSnapshot m_CachedSnapshot;
     bool m_HasSnapshot = false;
+    bool m_ProcessExited = false; // Had a snapshot of the selected process, and it has gone missing (#927)
 
     // Process actions
     std::unique_ptr<Platform::IProcessActions> m_ProcessActions;
