@@ -19,6 +19,7 @@
 #include "Platform/Factory.h"
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
+#include "UI/HistoryPlotHeight.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -50,7 +51,6 @@ using UI::Widgets::computeAlpha;
 using UI::Widgets::formatAgeSeconds;
 using UI::Widgets::formatAxisLocalized;
 using UI::Widgets::formatAxisWatts;
-using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::smoothTowards;
 
@@ -457,6 +457,16 @@ void SystemMetricsPanel::renderOverview()
 {
     auto snap = m_CachedSnapshot;
 
+    // Every chart on this tab shares the height available, between a font-relative minimum and
+    // maximum (UI/HistoryPlotHeight.h), instead of a fixed 180px that left up to a third of a tall
+    // window empty (#922). What is not plot -- headings, spacing, the padding around each chart --
+    // cannot be known before it is laid out, so it is measured at the end of this function and
+    // used on the next frame. It does not depend on the plot height, so this settles in one frame.
+    const float overviewTop = ImGui::GetCursorPosY();
+    const float plotHeight = UI::Widgets::computeFillPlotHeight(
+        ImGui::GetFontSize(), ImGui::GetContentRegionAvail().y, m_OverviewNonPlotHeight, m_OverviewPlotCount);
+    std::size_t plotCount = 0;
+
     updateSmoothedCpu(snap, m_LastDeltaSeconds);
     updateSmoothedMemory(snap, m_LastDeltaSeconds);
 
@@ -574,7 +584,8 @@ void SystemMetricsPanel::renderOverview()
 
     auto cpuPlot = [&]()
     {
-        const UI::Widgets::HistoryChart chart(UI::Widgets::percentHistoryConfig("##OverviewCPUHistory", axisConfig.xMin, axisConfig.xMax));
+        const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
+            UI::Widgets::percentHistoryConfig("##OverviewCPUHistory", axisConfig.xMin, axisConfig.xMax), plotHeight));
         if (chart.active())
         {
             if (breakdownCount > 0)
@@ -690,7 +701,8 @@ void SystemMetricsPanel::renderOverview()
                        .color = theme.scheme().cpuIowait});
 
     constexpr size_t OVERVIEW_NOW_BAR_COLUMNS = 4; // CPU: Total, User, System, I/O Wait
-    renderHistoryWithNowBars("OverviewCPUHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, cpuPlot, cpuBars, false, OVERVIEW_NOW_BAR_COLUMNS);
+    renderHistoryWithNowBars("OverviewCPUHistoryLayout", plotHeight, cpuPlot, cpuBars, false, OVERVIEW_NOW_BAR_COLUMNS);
+    ++plotCount;
 
     ImGui::Spacing();
 
@@ -703,8 +715,10 @@ void SystemMetricsPanel::renderOverview()
             .lastDeltaSeconds = m_LastDeltaSeconds,
             .refreshInterval = m_RefreshInterval,
             .smoothedMemory = &m_SmoothedMemory,
+            .plotHeight = plotHeight,
         };
         MemorySection::renderMemorySection(memCtx, timestamps, nowSeconds, static_cast<int>(OVERVIEW_NOW_BAR_COLUMNS));
+        ++plotCount;
         ImGui::Spacing();
     }
 
@@ -786,12 +800,14 @@ void SystemMetricsPanel::renderOverview()
             {
                 // Primary Y-axis: Power (Watts), pinned to 0 at the bottom. Battery sits on Y2
                 // below, so these limits apply to the watts series only.
-                const UI::Widgets::HistoryChart chart(UI::Widgets::rateHistoryConfig("##PowerBatteryHistory",
-                                                                                     axis.xMin,
-                                                                                     axis.xMax,
-                                                                                     formatAxisWatts,
-                                                                                     UI::Widgets::maxOfSeries(powerHist),
-                                                                                     UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS));
+                const UI::Widgets::HistoryChart chart(
+                    UI::Widgets::withHeight(UI::Widgets::rateHistoryConfig("##PowerBatteryHistory",
+                                                                           axis.xMin,
+                                                                           axis.xMax,
+                                                                           formatAxisWatts,
+                                                                           UI::Widgets::maxOfSeries(powerHist),
+                                                                           UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS),
+                                            plotHeight));
                 if (chart.active())
                 {
                     // Secondary Y-axis: Battery % (0-100) - hidden ticks to keep X-axis alignment
@@ -956,7 +972,8 @@ void SystemMetricsPanel::renderOverview()
                 ImGui::EndTooltip();
             }
 
-            renderHistoryWithNowBars("PowerBatteryHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, plot, bars, false, OVERVIEW_NOW_BAR_COLUMNS);
+            renderHistoryWithNowBars("PowerBatteryHistoryLayout", plotHeight, plot, bars, false, OVERVIEW_NOW_BAR_COLUMNS);
+            ++plotCount;
             ImGui::Spacing();
         }
     }
@@ -1028,12 +1045,13 @@ void SystemMetricsPanel::renderOverview()
         auto plot = [&]()
         {
             const UI::Widgets::HistoryChart chart(
-                UI::Widgets::rateHistoryConfig("##ResourcesHistory",
-                                               axis.xMin,
-                                               axis.xMax,
-                                               formatAxisLocalized,
-                                               UI::Widgets::maxOfSeries(threadData, handleData, faultData),
-                                               UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT));
+                UI::Widgets::withHeight(UI::Widgets::rateHistoryConfig("##ResourcesHistory",
+                                                                       axis.xMin,
+                                                                       axis.xMax,
+                                                                       formatAxisLocalized,
+                                                                       UI::Widgets::maxOfSeries(threadData, handleData, faultData),
+                                                                       UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT),
+                                        plotHeight));
             if (chart.active())
             {
                 const int count = UI::Format::checkedCount(alignedCount);
@@ -1095,14 +1113,15 @@ void SystemMetricsPanel::renderOverview()
 
         ImGui::TextColored(
             theme.scheme().textPrimary, ICON_FA_GEARS "  Threads, Page Faults & %s (%zu samples)", handleLabel, alignedCount);
-        renderHistoryWithNowBars("ResourcesHistoryLayout",
-                                 HISTORY_PLOT_HEIGHT_DEFAULT,
-                                 plot,
-                                 {threadsBar, faultsBar, handlesBar},
-                                 false,
-                                 OVERVIEW_NOW_BAR_COLUMNS);
+        renderHistoryWithNowBars(
+            "ResourcesHistoryLayout", plotHeight, plot, {threadsBar, faultsBar, handlesBar}, false, OVERVIEW_NOW_BAR_COLUMNS);
+        ++plotCount;
         ImGui::Spacing();
     }
+
+    // Measure what this frame spent on everything other than the plots, for the next frame's fill.
+    m_OverviewNonPlotHeight = (ImGui::GetCursorPosY() - overviewTop) - (static_cast<float>(plotCount) * plotHeight);
+    m_OverviewPlotCount = plotCount;
 }
 
 void SystemMetricsPanel::renderCpuSection()

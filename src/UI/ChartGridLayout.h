@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 
 namespace UI::Widgets
 {
@@ -22,6 +23,11 @@ struct ChartGridConfig
     size_t itemCount = 0;
     float minCellWidth = 240.0F;
     float minCellHeight = 140.0F;
+    // Tallest a cell may grow, or 0 for no limit. Without one a grid with few rows takes all the
+    // height it is given, however little its charts have to show: four disk charts on a tall window
+    // came out ~920px each, a flat line in a lot of background (#923). Capped cells leave the rest
+    // of the height unused below the grid. A cap below minCellHeight is raised to it.
+    float maxCellHeight = 0.0F;
     // Width/height a single chart cell "wants" when given free rein. 1.0 (square cells) makes
     // the overall grid SHAPE track the panel's shape -- a square panel resolves to a square-ish
     // grid (e.g. 4x4 for 16 items), a wide panel to fewer rows/more columns (e.g. 2x8) -- which
@@ -76,6 +82,9 @@ struct ChartGridDimensions
     // Relative slack for the "does this candidate fit" check below, absorbing float rounding in
     // e.g. columnsF * (safeWidth / columnsF) reproducing safeWidth imprecisely.
     constexpr float FIT_TOLERANCE = 1e-3F;
+    // Effective height cap: none when unset, and never below the floor.
+    const float heightCap =
+        (config.maxCellHeight > 0.0F) ? std::max(config.maxCellHeight, config.minCellHeight) : std::numeric_limits<float>::infinity();
 
     size_t bestColumns = 1;
     float bestScore = -1.0F;
@@ -109,7 +118,9 @@ struct ChartGridDimensions
         // space still win, silently overflowing the panel and forcing an unwanted outer
         // scrollbar even though a differently-shaped grid would have fit cleanly.
         const float cellWidth = std::max(widthForCells / columnsF, config.minCellWidth);
-        const float cellHeight = std::max(heightForCells / rowsF, config.minCellHeight);
+        // The cap is applied before scoring, so a shape is judged on the cell it will actually get:
+        // once height is capped, extra rows no longer buy taller cells.
+        const float cellHeight = std::min(std::max(heightForCells / rowsF, config.minCellHeight), heightCap);
         const float score = std::min(cellWidth, cellHeight * aspect);
         const size_t waste = (rows * columns) - config.itemCount;
         const bool widthFits = (cellWidth + config.columnOverhead) * columnsF <= safeWidth * (1.0F + FIT_TOLERANCE);
@@ -171,7 +182,7 @@ struct ChartGridDimensions
     const float finalWidthForCells = std::max(0.0F, safeWidth - (bestColumnsF * config.columnOverhead));
     const float finalHeightForCells = std::max(0.0F, safeHeight - (bestRowsF * config.rowOverhead));
     const float finalCellWidth = std::max(finalWidthForCells / bestColumnsF, config.minCellWidth);
-    const float finalCellHeight = std::max(finalHeightForCells / bestRowsF, config.minCellHeight);
+    const float finalCellHeight = std::min(std::max(finalHeightForCells / bestRowsF, config.minCellHeight), heightCap);
 
     return {.columns = bestColumns, .rows = bestRows, .cellWidth = finalCellWidth, .cellHeight = finalCellHeight};
 }
