@@ -1,6 +1,7 @@
 #include "ProcessDetailsPanel.h"
 
 #include "App/Panel.h"
+#include "App/ShellMetrics.h"
 #include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
@@ -55,6 +56,9 @@ using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
 
 constexpr size_t PROCESS_NOW_BAR_COLUMNS = 3;
+
+// Floor on the Confirm Action dialog's Yes/No buttons, in ems: 120px at the reference em.
+constexpr float CONFIRM_BUTTON_MIN_EM = 11.25F;
 
 template<typename T> [[nodiscard]] auto tailVector(const std::deque<T>& data, std::size_t count) -> std::vector<T>
 {
@@ -294,8 +298,10 @@ void ProcessDetailsPanel::renderContent()
     }
 
     // Tabs for different info sections
-    // Add padding inside tabs for better spacing
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(16.0F, 8.0F));
+    // Add padding inside tabs for better spacing, scaled like the style it overrides (#971)
+    const float tabPaddingScale = UI::Theme::get().styleScale();
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                        ImVec2(ShellMetrics::TAB_PADDING_X * tabPaddingScale, ShellMetrics::SUB_TAB_PADDING_Y * tabPaddingScale));
 
     if (ImGui::BeginTabBar("DetailsTabs"))
     {
@@ -1980,7 +1986,13 @@ void ProcessDetailsPanel::renderConfirmDialog()
         ImGui::Separator();
         ImGui::Spacing();
 
-        if (ImGui::Button("Yes", ImVec2(120, 0)))
+        // One width for both, from the font: 11.25 em is the former fixed 120px at the reference
+        // em, so the dialog is unchanged there and the buttons stay a comfortable target for a
+        // destructive confirmation at any font size or display density (#971).
+        const float confirmButtonWidth = UI::DialogMetrics::computeActionButtonWidth(
+            std::max(ImGui::CalcTextSize("Yes").x, ImGui::CalcTextSize("No").x), ImGui::GetFontSize(), CONFIRM_BUTTON_MIN_EM);
+
+        if (ImGui::Button("Yes", ImVec2(confirmButtonWidth, 0.0F)))
         {
             dispatchConfirmedAction();
             m_ShowConfirmDialog = false;
@@ -1989,7 +2001,7 @@ void ProcessDetailsPanel::renderConfirmDialog()
 
         ImGui::SameLine();
 
-        if (ImGui::Button("No", ImVec2(120, 0)))
+        if (ImGui::Button("No", ImVec2(confirmButtonWidth, 0.0F)))
         {
             m_ShowConfirmDialog = false;
             ImGui::CloseCurrentPopup();

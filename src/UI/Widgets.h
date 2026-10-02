@@ -12,30 +12,6 @@ namespace UI::Widgets
 /// providing visual feedback that the bar exists and is capable of showing data.
 constexpr float MIN_BAR_FILL_HEIGHT = 1.0F;
 
-/// Draw right-aligned text overlay on the previous ImGui item (e.g., plot, progress bar).
-/// Note: ImGui requires null-terminated const char*; std::string_view wouldn't add value here.
-/// Shadow-free to avoid double-vision; relies on theme contrast instead.
-/// @param text The text to display (null or empty is a no-op)
-/// @param paddingX Distance from the right edge in pixels (default: 8.0)
-inline void drawRightAlignedOverlayText(const char* text, float paddingX = 8.0F)
-{
-    if (text == nullptr || text[0] == '\0')
-    {
-        return;
-    }
-
-    const ImVec2 rectMin = ImGui::GetItemRectMin();
-    const ImVec2 rectMax = ImGui::GetItemRectMax();
-    const ImVec2 textSize = ImGui::CalcTextSize(text);
-
-    const float x = rectMax.x - paddingX - textSize.x;
-    const float y = rectMin.y + ((rectMax.y - rectMin.y - textSize.y) * 0.5F);
-    const ImVec2 pos(x, y);
-
-    const ImU32 textCol = ImGui::GetColorU32(ImGuiCol_Text);
-    ImGui::GetWindowDrawList()->AddText(pos, textCol, text);
-}
-
 /// Draw a vertical bar (bottom-up fill) with the value and optional label centered underneath.
 /// The overall allocated height stays equal to barHeight; the bar shrinks to leave room for text.
 /// Colors must be provided by the caller (theme-sourced).

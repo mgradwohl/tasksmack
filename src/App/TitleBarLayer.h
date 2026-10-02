@@ -142,6 +142,11 @@ class TitleBarLayer : public Core::Layer
     DragState m_Drag{};
     ResizeState m_Resize{};
 
+    // Smallest size the window may be resized to, from the title bar's own content and the display
+    // scale (see computeMinimumWindowSize()). Recomputed each frame the bar is drawn; applied to
+    // custom edge-drags here and handed to SDL for every other way a window gets resized (#970).
+    WindowMinimumSize m_MinimumSize{};
+
     ResizeEdge m_CachedHoverEdge = ResizeEdge::None;
     int m_LastCursorMouseLocalX = 0;
     int m_LastCursorMouseLocalY = 0;

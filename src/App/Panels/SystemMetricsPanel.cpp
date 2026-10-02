@@ -6,6 +6,7 @@
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/MemorySection.h"
 #include "App/Panels/NetworkSection.h"
+#include "App/ShellMetrics.h"
 #include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
@@ -373,8 +374,10 @@ void SystemMetricsPanel::renderContent()
         m_LayoutDirty = false;
     }
 
-    // Add padding inside tabs for better spacing
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(16.0F, 8.0F));
+    // Add padding inside tabs for better spacing, scaled like the style it overrides (#971)
+    const float tabPaddingScale = theme.styleScale();
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                        ImVec2(ShellMetrics::TAB_PADDING_X * tabPaddingScale, ShellMetrics::SUB_TAB_PADDING_Y * tabPaddingScale));
 
     if (ImGui::BeginTabBar("SystemTabs"))
     {
@@ -951,10 +954,11 @@ void SystemMetricsPanel::renderOverview()
             if (!headerRight.empty())
             {
                 // Calculate right-aligned position to align with chart's right edge (not NowBars)
-                // NowBar column width: BAR_WIDTH * OVERVIEW_NOW_BAR_COLUMNS + spacing
+                // NowBar column width: nowBarWidth() * OVERVIEW_NOW_BAR_COLUMNS + spacing
                 const ImGuiStyle& headerStyle = ImGui::GetStyle();
-                const float barColumnWidth = (UI::Widgets::BAR_WIDTH * static_cast<float>(OVERVIEW_NOW_BAR_COLUMNS)) +
-                                             (headerStyle.ItemSpacing.x * (static_cast<float>(OVERVIEW_NOW_BAR_COLUMNS) - 1.0F));
+                const float barColumnWidth =
+                    (UI::Widgets::nowBarWidth(ImGui::GetFontSize()) * static_cast<float>(OVERVIEW_NOW_BAR_COLUMNS)) +
+                    (headerStyle.ItemSpacing.x * (static_cast<float>(OVERVIEW_NOW_BAR_COLUMNS) - 1.0F));
                 const float chartRightEdge = ImGui::GetContentRegionAvail().x - barColumnWidth - headerStyle.CellPadding.x;
                 const float rightTextWidth = ImGui::CalcTextSize(headerRight.c_str()).x;
                 ImGui::SameLine(chartRightEdge - rightTextWidth);
@@ -1136,99 +1140,6 @@ void SystemMetricsPanel::renderOverview()
     // Measure what this frame spent on everything other than the plots, for the next frame's fill.
     m_OverviewNonPlotHeight = (ImGui::GetCursorPosY() - overviewTop) - (static_cast<float>(plotCount) * plotHeight);
     m_OverviewPlotCount = plotCount;
-}
-
-void SystemMetricsPanel::renderCpuSection()
-{
-    const auto& theme = UI::Theme::get();
-    const auto& cpuHist = m_SystemPublication->cpuHistory;
-    const auto& cpuUserHist = m_SystemPublication->cpuUserHistory;
-    const auto& cpuSystemHist = m_SystemPublication->cpuSystemHistory;
-    const auto& cpuIowaitHist = m_SystemPublication->cpuIowaitHistory;
-    const auto& cpuIdleHist = m_SystemPublication->cpuIdleHistory;
-    const auto& timestamps = m_TimestampsCache;
-    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-    const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds);
-
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CHART_LINE "  CPU History (%zu samples)", cpuHist.size());
-    ImGui::Spacing();
-
-    const size_t timeCount = std::min(cpuHist.size(), timestamps.size());
-    const auto cpuData = UI::Widgets::tailAlignedSpan(cpuHist, timeCount).values;
-    std::vector<float> timeData = buildTimeAxis(timestamps, timeCount, nowSeconds);
-
-    const size_t breakdownCount =
-        std::min({cpuUserHist.size(), cpuSystemHist.size(), cpuIowaitHist.size(), cpuIdleHist.size(), timestamps.size()});
-    const auto cpuUserData = UI::Widgets::tailAlignedSpan(cpuUserHist, breakdownCount).values;
-    const auto cpuSystemData = UI::Widgets::tailAlignedSpan(cpuSystemHist, breakdownCount).values;
-    const auto cpuIowaitData = UI::Widgets::tailAlignedSpan(cpuIowaitHist, breakdownCount).values;
-    const auto cpuIdleData = UI::Widgets::tailAlignedSpan(cpuIdleHist, breakdownCount).values;
-
-    // CPU Usage Plot
-    {
-        auto cpuCfg = UI::Widgets::percentHistoryConfig("##CPUHistory", axisConfig.xMin, axisConfig.xMax);
-        cpuCfg.showLegend = false;
-        cpuCfg.height = 200.0F;
-        const UI::Widgets::HistoryChart chart(cpuCfg);
-        if (chart.active())
-        {
-            if (!cpuData.empty())
-            {
-                ImPlot::PlotShaded("##CPUShaded",
-                                   timeData.data(),
-                                   cpuData.data(),
-                                   UI::Format::checkedCount(cpuData.size()),
-                                   0.0,
-                                   {ImPlotProp_FillColor, theme.scheme().chartCpuFill});
-
-                // Draw the line on top of the shaded region.
-                ImPlot::PlotLine("##CPU",
-                                 timeData.data(),
-                                 cpuData.data(),
-                                 UI::Format::checkedCount(cpuData.size()),
-                                 {ImPlotProp_LineColor, theme.scheme().chartCpu, ImPlotProp_LineWeight, 2.0F});
-
-                if (ImPlot::IsPlotHovered())
-                {
-                    const size_t n = cpuData.size();
-                    const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                    if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
-                    {
-                        const auto timeSec = static_cast<double>(timeData[*idxVal]);
-                        if ((breakdownCount == n) && (*idxVal < breakdownCount))
-                        {
-                            const size_t si = *idxVal;
-                            showCpuBreakdownTooltip(theme.scheme(),
-                                                    true,
-                                                    checkedRoundSeconds(timeSec),
-                                                    cpuUserData[si],
-                                                    cpuSystemData[si],
-                                                    cpuIowaitData[si],
-                                                    cpuIdleData[si]);
-                        }
-                        else
-                        {
-                            ImGui::BeginTooltip();
-                            const auto ageText = formatAgeSeconds(timeSec);
-                            ImGui::TextUnformatted(ageText.c_str());
-                            ImGui::Separator();
-                            ImGui::Text("CPU: %s", UI::Format::percentCompact(cpuData[*idxVal]).c_str());
-                            ImGui::EndTooltip();
-                        }
-                    }
-                }
-            }
-            else
-            {
-                ImPlot::PlotDummy("##CPU");
-            }
-        }
-    }
-
-    ImGui::Spacing();
-
-    // Current values
-    ImGui::Text("Current: %.1f%% (User: %.1f%%, System: %.1f%%)", m_SmoothedCpu.total, m_SmoothedCpu.user, m_SmoothedCpu.system);
 }
 
 void SystemMetricsPanel::updateSmoothedCpu(const Domain::SystemSnapshot& snap, float deltaTimeSeconds)

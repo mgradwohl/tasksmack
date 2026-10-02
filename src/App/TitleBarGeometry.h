@@ -5,6 +5,7 @@
 #include <SDL3/SDL_video.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 
 namespace App
@@ -85,6 +86,81 @@ enum class ResizeEdge : std::uint8_t
         return std::max(0.0F, referenceSizePx);
     }
     return referenceSizePx * (referenceInkPx / glyphInkPx);
+}
+
+/// Width of the strip along each window edge that starts a resize, at a 1.0 display scale.
+inline constexpr float RESIZE_BORDER_REFERENCE_PX = 8.0F;
+
+/// Width of the resize strip at the given display scale, in whole pixels.
+///
+/// The window is borderless, so this strip is the only resize affordance it has. As a fixed 8px it
+/// was compared against coordinates in which the title bar is display-scaled, so at 175-200% it was
+/// half the physical size it is at 100% (#970). Scaled, it is a constant physical size like the bar.
+/// Never thinner than the reference: a scale below 1.0 must not shrink an already small target.
+///
+/// @param displayScale  Display scale from SDL_GetWindowDisplayScale(); 1.0 at 96 DPI.
+[[nodiscard]] inline auto computeResizeBorderThickness(const float displayScale) -> float
+{
+    const float scale = (std::isfinite(displayScale) && displayScale > 1.0F) ? displayScale : 1.0F;
+    return std::round(RESIZE_BORDER_REFERENCE_PX * scale);
+}
+
+/// Width the title bar's own content needs: the icon, the wordmark, and the five buttons, with the
+/// gaps the bar draws between them.
+///
+/// Every input is a size the bar has already computed for drawing, so the minimum window width
+/// derived from this cannot drift from what is actually on screen.
+///
+/// @param edgeMarginPx    Left margin before the icon.
+/// @param iconSizePx      Width of the application icon.
+/// @param titleGapPx      Gap between the icon and the wordmark; reused between wordmark and buttons.
+/// @param wordmarkWidthPx Measured width of the "TaskSmack" wordmark; 0 before it has been drawn.
+/// @param buttonWidthPx   Width of one title-bar button.
+/// @param separatorGapPx  Gap between the two app buttons and the three window buttons.
+[[nodiscard]] inline auto computeTitleBarContentWidth(const float edgeMarginPx,
+                                                      const float iconSizePx,
+                                                      const float titleGapPx,
+                                                      const float wordmarkWidthPx,
+                                                      const float buttonWidthPx,
+                                                      const float separatorGapPx) -> float
+{
+    constexpr float BUTTON_COUNT = 5.0F; // help, settings, minimize, maximize, close
+    const auto atLeastZero = [](const float value)
+    {
+        return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
+    };
+
+    const float leading = atLeastZero(edgeMarginPx) + atLeastZero(iconSizePx) + atLeastZero(titleGapPx) + atLeastZero(wordmarkWidthPx);
+    const float trailing = (atLeastZero(buttonWidthPx) * BUTTON_COUNT) + atLeastZero(separatorGapPx);
+    return leading + atLeastZero(titleGapPx) + trailing;
+}
+
+/// Smallest size the window may be resized to.
+struct WindowMinimumSize
+{
+    int width = Core::WINDOW_MIN_DIMENSION;
+    int height = Core::WINDOW_MIN_DIMENSION;
+};
+
+/// Smallest size the window may take: the base minimum at the display's scale, and never narrower
+/// than the title bar's own content.
+///
+/// The base minimum was 200 units at every scale, but the title bar is display-scaled: its five
+/// buttons alone need about 197px at 100% and about 393px at 200%. So the window could be dragged
+/// narrower than its own title bar, and the buttons were drawn over the wordmark (#970).
+///
+/// @param displayScale             Display scale from SDL_GetWindowDisplayScale(); 1.0 at 96 DPI.
+/// @param titleBarContentWidthPx   From computeTitleBarContentWidth(); 0 if not yet known.
+[[nodiscard]] inline auto computeMinimumWindowSize(const float displayScale, const float titleBarContentWidthPx) -> WindowMinimumSize
+{
+    const float scale = (std::isfinite(displayScale) && displayScale > 1.0F) ? displayScale : 1.0F;
+    const float content = (std::isfinite(titleBarContentWidthPx) && titleBarContentWidthPx > 0.0F) ? titleBarContentWidthPx : 0.0F;
+
+    const float base = std::round(static_cast<float>(Core::WINDOW_MIN_DIMENSION) * scale);
+    const auto maxDimension = static_cast<float>(Core::WINDOW_MAX_DIMENSION);
+    // Narrowing: both operands are clamped to [WINDOW_MIN_DIMENSION, WINDOW_MAX_DIMENSION] first.
+    return {.width = static_cast<int>(std::min(std::max(base, std::ceil(content)), maxDimension)),
+            .height = static_cast<int>(std::min(base, maxDimension))};
 }
 
 /// Screen-space rectangle for a title-bar button's hit area (icon, help, settings,
@@ -174,9 +250,18 @@ struct WindowRect
 /// Pure geometry function: given the active resize edge and the mouse delta
 /// from drag start, compute the clamped window rect. No member state — pure
 /// inputs/outputs.
-[[nodiscard]] inline auto computeResizeGeometry(
-    const ResizeEdge edge, const int startX, const int startY, const int startWidth, const int startHeight, const int dx, const int dy)
-    -> WindowRect
+///
+/// minWidth/minHeight default to the base minimum; the title bar passes the display-scaled minimum
+/// from computeMinimumWindowSize() so a drag stops before the bar's own content is squeezed (#970).
+[[nodiscard]] inline auto computeResizeGeometry(const ResizeEdge edge,
+                                                const int startX,
+                                                const int startY,
+                                                const int startWidth,
+                                                const int startHeight,
+                                                const int dx,
+                                                const int dy,
+                                                const int minWidth = Core::WINDOW_MIN_DIMENSION,
+                                                const int minHeight = Core::WINDOW_MIN_DIMENSION) -> WindowRect
 {
     int newX = startX;
     int newY = startY;
@@ -225,18 +310,20 @@ struct WindowRect
 
     // Clamp to min/max and pin the stationary edge when the resize origin is on
     // the left or top so the opposite edge stays anchored.
-    constexpr int MIN_W = Core::WINDOW_MIN_DIMENSION;
     constexpr int MAX_W = Core::WINDOW_MAX_DIMENSION;
-    constexpr int MIN_H = Core::WINDOW_MIN_DIMENSION;
     constexpr int MAX_H = Core::WINDOW_MAX_DIMENSION;
+    // A caller-supplied minimum is held inside the absolute bounds, so it can neither undercut the
+    // base minimum nor exceed the maximum and invert the clamp.
+    const int lowestWidth = std::clamp(minWidth, Core::WINDOW_MIN_DIMENSION, MAX_W);
+    const int lowestHeight = std::clamp(minHeight, Core::WINDOW_MIN_DIMENSION, MAX_H);
 
-    if (newWidth < MIN_W)
+    if (newWidth < lowestWidth)
     {
         if (edge == ResizeEdge::Left || edge == ResizeEdge::TopLeft || edge == ResizeEdge::BottomLeft)
         {
-            newX = startX + (startWidth - MIN_W);
+            newX = startX + (startWidth - lowestWidth);
         }
-        newWidth = MIN_W;
+        newWidth = lowestWidth;
     }
     if (newWidth > MAX_W)
     {
@@ -246,13 +333,13 @@ struct WindowRect
         }
         newWidth = MAX_W;
     }
-    if (newHeight < MIN_H)
+    if (newHeight < lowestHeight)
     {
         if (edge == ResizeEdge::Top || edge == ResizeEdge::TopLeft || edge == ResizeEdge::TopRight)
         {
-            newY = startY + (startHeight - MIN_H);
+            newY = startY + (startHeight - lowestHeight);
         }
-        newHeight = MIN_H;
+        newHeight = lowestHeight;
     }
     if (newHeight > MAX_H)
     {
