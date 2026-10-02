@@ -168,6 +168,7 @@ add_executable(TaskSmackTests
     App/test_ProcessTreeFlatten.cpp
     App/test_ProcessTreeIndent.cpp
     App/test_ProcessTableFlags.cpp
+    App/test_ProcessDetailsLayout.cpp
     App/test_ProcessRowFormat.cpp
     Platform/test_CgroupFreezerPath.cpp
     App/test_FpsCounter.cpp
