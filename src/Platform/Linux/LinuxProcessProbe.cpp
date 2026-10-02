@@ -14,6 +14,7 @@
 
 #include "Platform/ProcessTypes.h"
 #include "ProcParsing.h"
+#include "ProcessName.h"
 
 #include <spdlog/spdlog.h>
 
@@ -610,6 +611,15 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
         // File opened and fully read but is empty: genuine kernel thread — use bracketed name.
         counters.command = "[" + counters.name + "]";
         return;
+    }
+
+    // The kernel caps the name in /proc/[pid]/stat at 15 characters. Where it has been cut, the
+    // full name is usually recoverable from the arguments, which are still NUL-separated at this
+    // point -- so this costs no extra read. See ProcessName.h for when the result is trusted (#951).
+    if (const std::string_view fullName = ProcessName::resolveFullName(counters.name, std::string_view(buf.data(), buf.size()));
+        fullName.size() != counters.name.size())
+    {
+        counters.name = std::string(fullName);
     }
 
     // Replace NUL argument separators with spaces, then trim trailing space.
