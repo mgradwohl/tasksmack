@@ -27,8 +27,9 @@ namespace App::ProcessTableSettings
 /// anything far beyond that is not a table layout.
 inline constexpr std::size_t MAX_STORED_BYTES = 8192;
 
-/// Most lines accepted in a stored layout: a header, RefScale, and one line per column, with room
-/// to spare for columns added in future versions.
+/// Most lines a stored section may have, counting the header and every line after it whether or
+/// not it is kept: a header, RefScale, and one line per column, with room to spare for columns
+/// added in future versions. A longer section is rejected whole, not truncated.
 inline constexpr std::size_t MAX_STORED_LINES = 128;
 
 namespace Detail
@@ -147,7 +148,8 @@ inline void appendWithoutVisibility(std::string& out, std::string_view line)
 /// lines made only of the characters ImGui itself writes, with column visibility removed. Leading
 /// blank lines are skipped; the section ends at the first blank line or the next header, so a
 /// second section -- a window position, a docking layout, another table -- is never passed on. Text
-/// that does not begin with a table header, or is implausibly large, yields an empty string.
+/// that does not begin with a table header, is over MAX_STORED_BYTES, or whose section runs to more
+/// than MAX_STORED_LINES lines (header included, kept or not) yields an empty string.
 [[nodiscard]] inline std::string sanitize(std::string_view stored)
 {
     if (stored.size() > MAX_STORED_BYTES)
@@ -170,13 +172,20 @@ inline void appendWithoutVisibility(std::string& out, std::string_view line)
     out.append(line);
     out.push_back('\n');
 
+    // Every line of the section counts towards the limit, kept or not, and exceeding it rejects the
+    // whole text rather than returning a truncated layout: a section that long is not something
+    // ImGui wrote, and half of it is not a layout worth restoring.
     std::size_t lines = 1;
-    while (!stored.empty() && lines < MAX_STORED_LINES)
+    while (!stored.empty())
     {
         line = Detail::takeLine(stored);
         if (line.empty() || line.front() == '[')
         {
             break;
+        }
+        if (++lines > MAX_STORED_LINES)
+        {
+            return {};
         }
         if (!Detail::isSettingsLine(line))
         {
@@ -184,7 +193,6 @@ inline void appendWithoutVisibility(std::string& out, std::string_view line)
         }
         Detail::appendWithoutVisibility(out, line);
         out.push_back('\n');
-        ++lines;
     }
     return out;
 }

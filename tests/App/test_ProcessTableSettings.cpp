@@ -16,6 +16,7 @@ namespace
 
 using ProcessTableSettings::extractTableSection;
 using ProcessTableSettings::MAX_STORED_BYTES;
+using ProcessTableSettings::MAX_STORED_LINES;
 using ProcessTableSettings::sanitize;
 
 // A section as ImGui writes it, for a table whose third column is the stretch one.
@@ -111,6 +112,50 @@ TEST(ProcessTableSettingsTest, OversizedTextIsRejected)
         text += "Column 9  Width=60 Order=9\n";
     }
     EXPECT_EQ(sanitize(text), "");
+}
+
+// The line limit is a rejection boundary, not a truncation point, and it counts every line in the
+// section: exactly MAX_STORED_LINES is accepted whole, one more is rejected whole.
+TEST(ProcessTableSettingsTest, SectionAtTheLineLimitIsAccepted)
+{
+    std::string text = "[Table][0x1A2B3C4D,31]\n";
+    for (std::size_t i = 1; i < MAX_STORED_LINES; ++i)
+    {
+        text += "Column 1  Width=60\n";
+    }
+    EXPECT_EQ(sanitize(text), text);
+}
+
+TEST(ProcessTableSettingsTest, SectionOverTheLineLimitIsRejectedNotTruncated)
+{
+    std::string text = "[Table][0x1A2B3C4D,31]\n";
+    for (std::size_t i = 1; i < MAX_STORED_LINES + 1; ++i)
+    {
+        text += "Column 1  Width=60\n";
+    }
+    EXPECT_EQ(sanitize(text), "");
+}
+
+// Lines that would be skipped still count, so the limit cannot be sidestepped with filler.
+TEST(ProcessTableSettingsTest, SkippedLinesCountTowardsTheLineLimit)
+{
+    std::string text = "[Table][0x1A2B3C4D,31]\nColumn 0  Width=60\n";
+    for (std::size_t i = 0; i < MAX_STORED_LINES; ++i)
+    {
+        text += "junk\n";
+    }
+    EXPECT_EQ(sanitize(text), "");
+}
+
+// The limit applies to the section, not to whatever follows it.
+TEST(ProcessTableSettingsTest, LinesAfterTheSectionDoNotCountTowardsTheLimit)
+{
+    std::string text = std::string(SECTION) + "\n";
+    for (std::size_t i = 0; i < MAX_STORED_LINES; ++i)
+    {
+        text += "x\n";
+    }
+    EXPECT_EQ(sanitize(text), SECTION);
 }
 
 TEST(ProcessTableSettingsTest, HeaderAloneIsAccepted)

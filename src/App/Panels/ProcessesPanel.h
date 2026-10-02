@@ -119,7 +119,6 @@ class ProcessesPanel : public Panel
     /// Request an immediate refresh.
     void requestRefresh();
 
-    /// Access the underlying process model (non-owning).
     /// Hands a saved column layout (widths, order, sort) back to ImGui. Call before the table is
     /// first rendered; the text is filtered first, so anything that is not a table layout is
     /// ignored. See ProcessTableSettings.h (#952).
@@ -129,6 +128,7 @@ class ProcessesPanel : public Panel
     /// rendered this session (in which case the caller should keep whatever it already has).
     [[nodiscard]] std::string captureTableLayout() const;
 
+    /// Access the underlying process model (non-owning).
     [[nodiscard]] Domain::ProcessModel* processModel() const
     {
         return m_ProcessModel.get();
