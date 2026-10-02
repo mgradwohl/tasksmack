@@ -9,7 +9,6 @@
 // clang-format on
 
 #include <algorithm>
-#include <cfloat>
 #include <string>
 #include <vector>
 
@@ -47,7 +46,10 @@ void RenderMetrics::renderOverlay(bool* open)
     // The overlay holds text and a table of text, so a pixel size that suited one font left the
     // larger presets with a window narrower than its own contents (#966).
     const float overlayEmPx = ImGui::GetFontSize();
-    ImGui::SetNextWindowSize(ImVec2(OVERLAY_WIDTH_EM * overlayEmPx, OVERLAY_HEIGHT_EM * overlayEmPx), ImGuiCond_FirstUseEver);
+    const ImVec2 viewportSize = ImGui::GetMainViewport()->WorkSize;
+    ImGui::SetNextWindowSize(
+        ImVec2(std::min(OVERLAY_WIDTH_EM * overlayEmPx, viewportSize.x), std::min(OVERLAY_HEIGHT_EM * overlayEmPx, viewportSize.y)),
+        ImGuiCond_FirstUseEver);
 
     // The first-use size above is applied once, so it cannot follow a Font Size change made while
     // the overlay exists: opened at Medium and then switched to Even Huger, the window kept its
@@ -58,11 +60,35 @@ void RenderMetrics::renderOverlay(bool* open)
     const ImGuiStyle& overlayStyle = ImGui::GetStyle();
     const float scenarioWanted = ImGui::CalcTextSize(SCENARIO_HINT).x + (overlayStyle.FramePadding.x * 2.0F);
     const float scenarioRowWidth = scenarioWanted + overlayStyle.ItemInnerSpacing.x + ImGui::CalcTextSize(SCENARIO_LABEL).x;
-    const ImVec2 viewportSize = ImGui::GetMainViewport()->WorkSize;
     const ImVec2 overlayMinSize(std::min(scenarioRowWidth + (overlayStyle.WindowPadding.x * 2.0F), viewportSize.x),
                                 std::min(OVERLAY_MIN_HEIGHT_EM * overlayEmPx, viewportSize.y));
-    ImGui::SetNextWindowSizeConstraints(overlayMinSize, ImVec2(FLT_MAX, FLT_MAX));
-    if (!ImGui::Begin("Render Metrics", open, ImGuiWindowFlags_NoCollapse))
+    // The viewport is the maximum as well as the cap on the minimum. A maximum is also re-evaluated
+    // every frame, so an overlay that was sized on a large main window is pulled back in when that
+    // window shrinks, instead of keeping content beyond its edge.
+    ImGui::SetNextWindowSizeConstraints(overlayMinSize, viewportSize);
+
+    // Size alone does not keep it on screen: an overlay that fits the viewport can still sit partly
+    // beyond it after the main window shrinks, with its close button out of reach. So its position
+    // is pulled back as well, from where it was last frame.
+    static ImVec2 lastOverlayPos;
+    static ImVec2 lastOverlaySize;
+    static bool hasLastOverlayRect = false;
+    if (hasLastOverlayRect)
+    {
+        const ImVec2 viewportPos = ImGui::GetMainViewport()->WorkPos;
+        const ImVec2 fitted(std::min(lastOverlaySize.x, viewportSize.x), std::min(lastOverlaySize.y, viewportSize.y));
+        const ImVec2 clampedPos(std::clamp(lastOverlayPos.x, viewportPos.x, viewportPos.x + viewportSize.x - fitted.x),
+                                std::clamp(lastOverlayPos.y, viewportPos.y, viewportPos.y + viewportSize.y - fitted.y));
+        if (clampedPos.x != lastOverlayPos.x || clampedPos.y != lastOverlayPos.y)
+        {
+            ImGui::SetNextWindowPos(clampedPos);
+        }
+    }
+    const bool overlayVisible = ImGui::Begin("Render Metrics", open, ImGuiWindowFlags_NoCollapse);
+    lastOverlayPos = ImGui::GetWindowPos();
+    lastOverlaySize = ImGui::GetWindowSize();
+    hasLastOverlayRect = true;
+    if (!overlayVisible)
     {
         ImGui::End();
         return;
