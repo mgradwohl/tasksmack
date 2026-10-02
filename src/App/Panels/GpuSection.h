@@ -26,10 +26,13 @@ struct SmoothedGPU
 /// Why the GPU tab has nothing to chart, if it does not.
 enum class EmptyReason : std::uint8_t
 {
-    None,        ///< There is data; render the tab.
-    Unavailable, ///< No publication at all: the probe is missing or its read failed.
-    NoDevices,   ///< The probe ran and found no GPU.
-    NoReadings,  ///< GPUs are known, but the latest read returned no counters for any of them.
+    None, ///< There is data; render the tab.
+    /// GPU data could not be read: either nothing has been published at all (the probe is missing
+    /// or its read failed), or something was published but enumerating the devices failed, so its
+    /// empty device list means "could not look" rather than "found none".
+    Unavailable,
+    NoDevices,  ///< Enumeration succeeded and found no GPU.
+    NoReadings, ///< GPUs are known, but the latest read returned no counters for any of them.
 };
 
 /// Classifies the GPU tab's empty state from what the model published (#927).
