@@ -64,12 +64,12 @@ TEST(ColorContrastTest, AlphaIsIgnored)
 }
 
 // The reported case, with Solarized Light's own colours: a dark green Apply button (#4A6600)
-// labelled in the theme's dark text (#586E75) had a contrast ratio under 1.5. The window background
+// labelled in the theme's dark text (#657B83) had a contrast ratio under 1.5. The window background
 // (#FDF6E3) is the readable one, and must be chosen.
 TEST(ColorContrastTest, PicksTheWindowBackgroundOnSolarizedLightsApplyButton)
 {
     const ImVec4 fill = rgb(0x4A, 0x66, 0x00);
-    const ImVec4 text = rgb(0x58, 0x6E, 0x75);
+    const ImVec4 text = rgb(0x65, 0x7B, 0x83);
     const ImVec4 windowBg = rgb(0xFD, 0xF6, 0xE3);
 
     ASSERT_LT(contrastRatio(fill, text), 1.6F);
