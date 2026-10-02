@@ -68,8 +68,8 @@ inline constexpr float ACTION_BUTTON_COLUMNS = 2.0F;
 /// @param widestLabelPx       Widest of the four button labels, i.e. ImGui::CalcTextSize(label).x.
 /// @param emPx                One em, i.e. ImGui::GetFontSize().
 /// @param availableWidthPx    Width of the pane the two columns must fit in.
-/// @param columnOverheadPx    Width each column takes beyond its button: the gutter and the
-///                            table's cell padding.
+/// @param columnOverheadPx    Width each column takes beyond its button: the gutter, plus that
+///                            column's share of the table's spacing between columns.
 /// @return Width in pixels. At least one pixel, so a degenerate pane cannot produce a zero-sized
 ///         button; never wider than half the pane allows when that is a usable size.
 [[nodiscard]] inline float

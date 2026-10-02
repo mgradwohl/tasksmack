@@ -1961,8 +1961,12 @@ void ProcessDetailsPanel::renderActionButtons()
                                         ImGui::CalcTextSize(KILL_LABEL).x,
                                         ImGui::CalcTextSize(PAUSE_LABEL).x,
                                         ImGui::CalcTextSize(RESUME_LABEL).x});
+    // Per-column overhead is the gutter plus one CellPadding.x, not two. This table has no inner
+    // border, so ImGui does not pad inside each cell: it puts CellPadding.x on each side of the gap
+    // *between* columns. Two columns have one gap, so the table is 2 * (width + gutter) plus
+    // 2 * CellPadding.x in total -- one CellPadding.x per column.
     const float buttonWidth = ProcessDetailsLayout::computeActionButtonWidth(
-        widestLabel, emPx, ImGui::GetContentRegionAvail().x, gutter + (ImGui::GetStyle().CellPadding.x * 2.0F));
+        widestLabel, emPx, ImGui::GetContentRegionAvail().x, gutter + ImGui::GetStyle().CellPadding.x);
     constexpr float BUTTON_HEIGHT = 0.0F; // Use default height
     const ImVec2 buttonSize(buttonWidth, BUTTON_HEIGHT);
 
