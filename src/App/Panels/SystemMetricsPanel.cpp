@@ -18,8 +18,8 @@
 #include "Domain/SystemModel.h"
 #include "Platform/Factory.h"
 #include "UI/ChartWidgets.h"
+#include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
-#include "UI/HistoryPlotHeight.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/TabContent.h"
 #include "UI/Theme.h"
@@ -473,13 +473,10 @@ void SystemMetricsPanel::renderOverview()
 
     // Every chart on this tab shares the height available, between a font-relative minimum and
     // maximum (UI/HistoryPlotHeight.h), instead of a fixed 180px that left up to a third of a tall
-    // window empty (#922). What is not plot -- headings, spacing, the padding around each chart --
-    // cannot be known before it is laid out, so it is measured at the end of this function and
-    // used on the next frame. It does not depend on the plot height, so this settles in one frame.
-    const float overviewTop = ImGui::GetCursorPosY();
-    const float plotHeight = UI::Widgets::computeFillPlotHeight(
-        ImGui::GetFontSize(), ImGui::GetContentRegionAvail().y, m_OverviewNonPlotHeight, m_OverviewPlotCount);
-    std::size_t plotCount = 0;
+    // window empty (#922). FillPlotLayout measures the non-plot content as this function renders
+    // and feeds it to the next frame.
+    UI::Widgets::FillPlotLayout fill(m_OverviewFill);
+    const float plotHeight = fill.plotHeight();
 
     updateSmoothedCpu(snap, m_LastDeltaSeconds);
     updateSmoothedMemory(snap, m_LastDeltaSeconds);
@@ -716,7 +713,7 @@ void SystemMetricsPanel::renderOverview()
 
     constexpr size_t OVERVIEW_NOW_BAR_COLUMNS = 4; // CPU: Total, User, System, I/O Wait
     renderHistoryWithNowBars("OverviewCPUHistoryLayout", plotHeight, cpuPlot, cpuBars, false, OVERVIEW_NOW_BAR_COLUMNS);
-    ++plotCount;
+    fill.addPlot();
 
     ImGui::Spacing();
 
@@ -732,7 +729,7 @@ void SystemMetricsPanel::renderOverview()
             .plotHeight = plotHeight,
         };
         MemorySection::renderMemorySection(memCtx, timestamps, nowSeconds, static_cast<int>(OVERVIEW_NOW_BAR_COLUMNS));
-        ++plotCount;
+        fill.addPlot();
         ImGui::Spacing();
     }
 
@@ -987,7 +984,7 @@ void SystemMetricsPanel::renderOverview()
             }
 
             renderHistoryWithNowBars("PowerBatteryHistoryLayout", plotHeight, plot, bars, false, OVERVIEW_NOW_BAR_COLUMNS);
-            ++plotCount;
+            fill.addPlot();
             ImGui::Spacing();
         }
     }
@@ -1129,13 +1126,9 @@ void SystemMetricsPanel::renderOverview()
             theme.scheme().textPrimary, ICON_FA_GEARS "  Threads, Page Faults & %s (%zu samples)", handleLabel, alignedCount);
         renderHistoryWithNowBars(
             "ResourcesHistoryLayout", plotHeight, plot, {threadsBar, faultsBar, handlesBar}, false, OVERVIEW_NOW_BAR_COLUMNS);
-        ++plotCount;
+        fill.addPlot();
         ImGui::Spacing();
     }
-
-    // Measure what this frame spent on everything other than the plots, for the next frame's fill.
-    m_OverviewNonPlotHeight = (ImGui::GetCursorPosY() - overviewTop) - (static_cast<float>(plotCount) * plotHeight);
-    m_OverviewPlotCount = plotCount;
 }
 
 void SystemMetricsPanel::renderCpuSection()
