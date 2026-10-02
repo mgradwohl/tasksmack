@@ -16,6 +16,7 @@
 #include "UI/EmptyState.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/TabContent.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -299,30 +300,37 @@ void ProcessDetailsPanel::renderContent()
     if (ImGui::BeginTabBar("DetailsTabs"))
     {
         // 1. Overview
+        // Each tab's body scrolls in its own child, so the tab bar itself stays in view (#968).
         if (ImGui::BeginTabItem(ICON_FA_CIRCLE_INFO "  Overview"))
         {
-            renderBasicInfo(m_CachedSnapshot);
-            ImGui::Separator();
-            renderResourceUsage(m_CachedSnapshot);
-            ImGui::Separator();
-            renderPowerUsage(m_CachedSnapshot);
-            ImGui::Separator();
-            renderThreadAndFaultHistory();
+            {
+                const UI::Widgets::TabContentScope content("##OverviewContent");
+                renderBasicInfo(m_CachedSnapshot);
+                ImGui::Separator();
+                renderResourceUsage(m_CachedSnapshot);
+                ImGui::Separator();
+                renderPowerUsage(m_CachedSnapshot);
+                ImGui::Separator();
+                renderThreadAndFaultHistory();
+            }
             ImGui::EndTabItem();
         }
 
         // 2. GPU (always show, with message if data unavailable)
         if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  GPU"))
         {
-            const auto& proc = m_CachedSnapshot;
-            // Show "no GPU" message only if ALL GPU fields are empty/zero (no GPU resources at all)
-            if ((proc.gpuMemoryBytes == 0U) && (proc.gpuUtilPercent == 0.0) && proc.gpuDevices.empty())
             {
-                ImGui::TextUnformatted("No GPU usage detected for this process");
-            }
-            else
-            {
-                renderGpuUsage(m_CachedSnapshot);
+                const UI::Widgets::TabContentScope content("##GpuContent");
+                const auto& proc = m_CachedSnapshot;
+                // Show "no GPU" message only if ALL GPU fields are empty/zero (no GPU resources at all)
+                if ((proc.gpuMemoryBytes == 0U) && (proc.gpuUtilPercent == 0.0) && proc.gpuDevices.empty())
+                {
+                    ImGui::TextUnformatted("No GPU usage detected for this process");
+                }
+                else
+                {
+                    renderGpuUsage(m_CachedSnapshot);
+                }
             }
             ImGui::EndTabItem();
         }
@@ -337,10 +345,13 @@ void ProcessDetailsPanel::renderContent()
             {
                 if (ImGui::BeginTabItem(ICON_FA_NETWORK_WIRED "  Network and I/O"))
                 {
-                    // Render I/O stats first (at the top)
-                    renderIoStats(m_CachedSnapshot);
-                    ImGui::Separator();
-                    renderNetworkStats(m_CachedSnapshot);
+                    {
+                        const UI::Widgets::TabContentScope content("##NetworkContent");
+                        // Render I/O stats first (at the top)
+                        renderIoStats(m_CachedSnapshot);
+                        ImGui::Separator();
+                        renderNetworkStats(m_CachedSnapshot);
+                    }
                     ImGui::EndTabItem();
                 }
             }
@@ -349,7 +360,10 @@ void ProcessDetailsPanel::renderContent()
         // 4. Actions (last)
         if (ImGui::BeginTabItem(ICON_FA_GEARS "  Actions"))
         {
-            renderActions();
+            {
+                const UI::Widgets::TabContentScope content("##ActionsContent");
+                renderActions();
+            }
             ImGui::EndTabItem();
         }
 
@@ -1615,8 +1629,10 @@ void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& p
 
         for (const auto& gpuUsage : proc.perGpuUsage)
         {
+            // Same words as the system GPU tab (GpuSection.cpp), so one adapter is not described
+            // two ways depending on which tab is open (#963).
             const std::string gpuLabel =
-                std::format("{} {} [{}]", ICON_FA_MICROCHIP, gpuUsage.gpuName, gpuUsage.isIntegrated ? "Integrated" : "Discrete");
+                std::format("{} {} [{}]", ICON_FA_MICROCHIP, gpuUsage.gpuName, gpuUsage.isIntegrated ? "Shared Memory" : "Discrete");
 
             if (ImGui::CollapsingHeader(gpuLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen))
             {

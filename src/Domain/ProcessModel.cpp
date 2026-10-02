@@ -596,18 +596,28 @@ void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const s
         return;
     }
 
-    // Build lookup maps: GPU ID -> friendly name
+    // Build lookup map: GPU ID -> what the per-process breakdown shows about that adapter.
     // PDH returns LUID-based IDs (e.g., "GPU_0x00000000_0x0000F78E")
     // DXGI provides both index-based IDs ("GPU0") and LUID-based IDs
-    std::unordered_map<std::string, std::string> gpuIdToName;
+    //
+    // The integrated flag travels with the name. It used to be left out, so PerGPUUsage kept its
+    // default of false and the process details pane labelled every adapter "Discrete", including
+    // one the system GPU tab correctly called integrated (#963).
+    struct GpuIdentity
+    {
+        std::string name;
+        bool isIntegrated = false;
+    };
+    std::unordered_map<std::string, GpuIdentity> gpuIdToIdentity;
     auto gpuSnaps = gpuModel->snapshots();
     for (const auto& gpuSnap : gpuSnaps)
     {
-        // Map both ID formats to the same name
-        gpuIdToName[gpuSnap.gpuId] = gpuSnap.name;
+        // Map both ID formats to the same adapter
+        const GpuIdentity identity{.name = gpuSnap.name, .isIntegrated = gpuSnap.isIntegrated};
+        gpuIdToIdentity[gpuSnap.gpuId] = identity;
         if (!gpuSnap.luidId.empty())
         {
-            gpuIdToName[gpuSnap.luidId] = gpuSnap.name;
+            gpuIdToIdentity[gpuSnap.luidId] = identity;
         }
     }
 
@@ -631,15 +641,18 @@ void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const s
 
         // Look up friendly name for this GPU
         std::string gpuName = gc.gpuId; // Default to ID if name not found
-        if (auto nameIt = gpuIdToName.find(gc.gpuId); nameIt != gpuIdToName.end())
+        bool isIntegrated = false;      // Unknown adapter: keep the default rather than guess
+        if (const auto identityIt = gpuIdToIdentity.find(gc.gpuId); identityIt != gpuIdToIdentity.end())
         {
-            gpuName = nameIt->second;
+            gpuName = identityIt->second.name;
+            isIntegrated = identityIt->second.isIntegrated;
         }
 
         // Add per-GPU breakdown
         ProcessSnapshot::PerGPUUsage perGpu;
         perGpu.gpuId = gc.gpuId;
         perGpu.gpuName = gpuName; // Store friendly name
+        perGpu.isIntegrated = isIntegrated;
         perGpu.memoryBytes = gc.gpuMemoryBytes;
         perGpu.utilPercent = gc.gpuUtilPercent;
         perGpu.engines = gc.activeEngines;

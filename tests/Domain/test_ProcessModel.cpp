@@ -2251,6 +2251,56 @@ TEST(ProcessModelTest, MergeGPUDataWithLUIDBasedMatching)
     EXPECT_FALSE(snaps[0].gpuDevices.empty());
 }
 
+// The per-GPU breakdown carries each adapter's integrated flag, not just its name. It used to be
+// left at its default, so the process details pane called every adapter "Discrete" (#963).
+TEST(ProcessModelTest, MergeGPUDataCarriesIntegratedFlagPerGpu)
+{
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "test_proc", 'R', 1000, 500)});
+    processProbe->setTotalCpuTime(100000);
+
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    gpuProbe->withCapabilities(caps);
+    gpuProbe->withGPU("GPU0", "Integrated GPU", "Vendor", /*isIntegrated=*/true).withGPU("GPU1", "Discrete GPU", "Vendor", false);
+    gpuProbe->withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024);
+    gpuProbe->withProcessGPU(100, "GPU1", 256ULL * 1024 * 1024);
+    // An adapter the GPU model does not know: there is nothing to look the flag up from, so it
+    // must stay at the default rather than inherit a neighbour's.
+    gpuProbe->withProcessGPU(100, "GPU99", 128ULL * 1024 * 1024);
+
+    const auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    Domain::ProcessModel processModel(std::move(processProbe));
+    processModel.setGPUModel(gpuModel);
+
+    gpuModel->refresh();
+    processModel.refresh();
+
+    auto snaps = processModel.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    ASSERT_EQ(snaps[0].perGpuUsage.size(), 3);
+
+    for (const auto& usage : snaps[0].perGpuUsage)
+    {
+        if (usage.gpuId == "GPU0")
+        {
+            EXPECT_EQ(usage.gpuName, "Integrated GPU");
+            EXPECT_TRUE(usage.isIntegrated);
+        }
+        else if (usage.gpuId == "GPU1")
+        {
+            EXPECT_EQ(usage.gpuName, "Discrete GPU");
+            EXPECT_FALSE(usage.isIntegrated);
+        }
+        else
+        {
+            EXPECT_EQ(usage.gpuId, "GPU99");
+            EXPECT_FALSE(usage.isIntegrated);
+        }
+    }
+}
+
 // =============================================================================
 // Snapshot Version Tests
 // =============================================================================
