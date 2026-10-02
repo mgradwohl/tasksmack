@@ -234,7 +234,14 @@ std::string ProcessesPanel::captureTableLayout() const
     {
         return {};
     }
-    return ProcessTableSettings::extractTableSection(std::string_view(ini, iniSize), m_TableId);
+    std::string layout = ProcessTableSettings::extractTableSection(std::string_view(ini, iniSize), m_TableId);
+
+    // Captured in tree view, the section has no sort; restore the one list view last had.
+    if (m_TreeViewEnabled && !m_ListViewLayout.empty())
+    {
+        layout = ProcessTableSettings::carrySortForward(layout, m_ListViewLayout);
+    }
+    return layout;
 }
 
 // ============================================================================
@@ -670,10 +677,15 @@ void ProcessesPanel::renderContent()
         m_TreeViewEnabled = !m_TreeViewEnabled;
         if (m_TreeViewEnabled)
         {
+            // Tree view is not sortable, and ImGui leaves the sort out of a table's settings while
+            // it is not. Keep the layout as it stands now, in list view, so a layout saved from
+            // tree view can still carry the user's sort (#952).
+            m_ListViewLayout = captureTableLayout();
             spdlog::debug("ProcessesPanel: Switched to tree view");
         }
         else
         {
+            m_ListViewLayout.clear();
             spdlog::debug("ProcessesPanel: Switched to flat list view");
         }
     }

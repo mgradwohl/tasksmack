@@ -45,77 +45,64 @@ namespace Detail
     return c >= '0' && c <= '9';
 }
 
+/// True if `text` is 1 to `maxDigits` decimal digits and nothing else. Bounding the digit count is
+/// what keeps the value in range: ImGui reads these with "%d", and an integer too large for an int
+/// is undefined behaviour there.
+[[nodiscard]] constexpr bool isUnsigned(std::string_view text, std::size_t maxDigits) noexcept
+{
+    return !text.empty() && text.size() <= maxDigits && std::ranges::all_of(text, isDigit);
+}
+
+/// True if `text` is a plain decimal -- digits, optionally one '.' followed by digits -- with a
+/// bounded number of digits either side. No sign, no exponent, and no letters, so "nan" and "inf"
+/// (which "%f" accepts) cannot get through, and the value is finite by construction.
+[[nodiscard]] constexpr bool isDecimal(std::string_view text, std::size_t maxIntegerDigits, std::size_t maxFractionDigits) noexcept
+{
+    const std::size_t dot = text.find('.');
+    if (dot == std::string_view::npos)
+    {
+        return isUnsigned(text, maxIntegerDigits);
+    }
+    std::string_view fraction = text;
+    fraction.remove_prefix(dot + 1);
+    text.remove_suffix(text.size() - dot);
+    return isUnsigned(text, maxIntegerDigits) && isUnsigned(fraction, maxFractionDigits);
+}
+
+/// True if `text` is exactly "0x" followed by eight hex digits.
+[[nodiscard]] constexpr bool isHexId(std::string_view text) noexcept
+{
+    constexpr std::size_t ID_DIGITS = 8;
+    if (!text.starts_with("0x") || text.size() != ID_DIGITS + 2)
+    {
+        return false;
+    }
+    text.remove_prefix(2);
+    return std::ranges::all_of(text, isHexDigit);
+}
+
 /// True for exactly "[Table][0xHHHHHHHH,N]" with N a positive decimal number.
 [[nodiscard]] constexpr bool isTableHeader(std::string_view line) noexcept
 {
-    constexpr std::string_view PREFIX = "[Table][0x";
-    constexpr std::size_t ID_DIGITS = 8;
-    if (!line.starts_with(PREFIX) || line.size() < PREFIX.size() + ID_DIGITS + 3)
+    constexpr std::string_view PREFIX = "[Table][";
+    constexpr std::size_t ID_LENGTH = 10; // "0x" + eight hex digits
+    if (!line.starts_with(PREFIX) || line.size() < PREFIX.size() + ID_LENGTH + 3 || line.back() != ']')
     {
         return false;
     }
     line.remove_prefix(PREFIX.size());
-    for (std::size_t i = 0; i < ID_DIGITS; ++i)
-    {
-        if (!isHexDigit(line[i]))
-        {
-            return false;
-        }
-    }
-    line.remove_prefix(ID_DIGITS);
-    if (line.front() != ',' || line.back() != ']')
-    {
-        return false;
-    }
-    line.remove_prefix(1);
     line.remove_suffix(1);
-    if (line.empty() || line.size() > 4)
+
+    std::string_view columnCount = line;
+    columnCount.remove_prefix(ID_LENGTH);
+    line.remove_suffix(line.size() - ID_LENGTH);
+    if (!isHexId(line) || columnCount.empty() || columnCount.front() != ',')
     {
         return false;
     }
-    return std::ranges::all_of(line, isDigit);
-}
-
-/// Characters that can appear in the "RefScale=" and "Column" lines ImGui writes: letters, digits,
-/// spaces and the punctuation of "Width=60 Order=3 Sort=0^ ID=0x1A2B3C4D Weight=1.0000".
-[[nodiscard]] constexpr bool isSettingsChar(char c) noexcept
-{
-    return isDigit(c) || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == ' ' || c == '=' || c == '.' || c == '^' || c == '-' ||
-           c == '+';
-}
-
-[[nodiscard]] constexpr bool isSettingsLine(std::string_view line) noexcept
-{
-    if (!line.starts_with("RefScale=") && !line.starts_with("Column "))
-    {
-        return false;
-    }
-    return std::ranges::all_of(line, isSettingsChar);
-}
-
-/// Appends `line` to `out` without any " Visible=N" token.
-///
-/// Column visibility already has a home in the config, [process_columns], which is hand-editable
-/// and is what the Settings and context menus write. Leaving a second copy in the table layout
-/// would let the two disagree, with ImGui's copy silently winning at startup.
-inline void appendWithoutVisibility(std::string& out, std::string_view line)
-{
-    constexpr std::string_view TOKEN = " Visible=";
-    for (;;)
-    {
-        const std::size_t at = line.find(TOKEN);
-        if (at == std::string_view::npos)
-        {
-            out.append(line);
-            return;
-        }
-        out.append(line.substr(0, at));
-        line.remove_prefix(at + TOKEN.size());
-        while (!line.empty() && isDigit(line.front()))
-        {
-            line.remove_prefix(1);
-        }
-    }
+    columnCount.remove_prefix(1);
+    // Up to three digits: ImGui allows fewer than 512 columns.
+    return isUnsigned(columnCount, 3);
 }
 
 /// Removes and returns the first line of `text` (without its terminator).
@@ -140,12 +127,176 @@ inline void appendWithoutVisibility(std::string& out, std::string_view line)
     return line;
 }
 
+/// Removes and returns the next space-separated token of `text`, skipping leading spaces.
+[[nodiscard]] constexpr std::string_view takeToken(std::string_view& text) noexcept
+{
+    while (!text.empty() && text.front() == ' ')
+    {
+        text.remove_prefix(1);
+    }
+    const std::size_t space = text.find(' ');
+    std::string_view token = text;
+    if (space == std::string_view::npos)
+    {
+        text = {};
+    }
+    else
+    {
+        token.remove_suffix(token.size() - space);
+        text.remove_prefix(space);
+    }
+    return token;
+}
+
+/// If `token` is "<key><value>", returns the value; otherwise an empty view.
+[[nodiscard]] constexpr std::string_view valueOf(std::string_view token, std::string_view key) noexcept
+{
+    if (!token.starts_with(key))
+    {
+        return {};
+    }
+    token.remove_prefix(key.size());
+    return token;
+}
+
+/// One "Column" line, reduced to the values that passed validation. Views point into the input.
+struct ColumnLine
+{
+    std::string_view index;
+    std::string_view width;  ///< Fixed columns: pixels.
+    std::string_view weight; ///< Stretch columns: weight.
+    std::string_view order;
+    std::string_view sort; ///< Sort order followed by its direction, e.g. "0^".
+    std::string_view id;
+};
+
+/// Parses a "Column N key=value ..." line against the exact grammar ImGui writes, returning false
+/// if anything in it is not a known key with a well-formed, in-range value.
+///
+/// This is a grammar, not a character filter, because the result is read back by ImGui with
+/// "%d" and "%f": a filter on characters alone lets through "Width=99999999999999999999" (an
+/// out-of-range conversion, which is undefined behaviour) and "Weight=nan".
+///
+/// "Visible=" is recognised and deliberately dropped: [process_columns] owns visibility, and a
+/// second copy here could disagree with it, with ImGui's copy silently winning at startup.
+[[nodiscard]] constexpr bool parseColumnLine(std::string_view line, ColumnLine& out) noexcept
+{
+    constexpr std::string_view PREFIX = "Column ";
+    if (!line.starts_with(PREFIX))
+    {
+        return false;
+    }
+    line.remove_prefix(PREFIX.size());
+
+    out = ColumnLine{};
+    out.index = takeToken(line);
+    if (!isUnsigned(out.index, 3))
+    {
+        return false;
+    }
+
+    for (std::string_view token = takeToken(line); !token.empty(); token = takeToken(line))
+    {
+        if (const std::string_view value = valueOf(token, "Width="); !value.empty())
+        {
+            // Five digits: far beyond any real column, far inside an int.
+            if (!isUnsigned(value, 5))
+            {
+                return false;
+            }
+            out.width = value;
+        }
+        else if (const std::string_view weightValue = valueOf(token, "Weight="); !weightValue.empty())
+        {
+            if (!isDecimal(weightValue, 4, 6))
+            {
+                return false;
+            }
+            out.weight = weightValue;
+        }
+        else if (const std::string_view visibleValue = valueOf(token, "Visible="); !visibleValue.empty())
+        {
+            if (!isUnsigned(visibleValue, 1))
+            {
+                return false;
+            }
+        }
+        else if (const std::string_view orderValue = valueOf(token, "Order="); !orderValue.empty())
+        {
+            if (!isUnsigned(orderValue, 3))
+            {
+                return false;
+            }
+            out.order = orderValue;
+        }
+        else if (const std::string_view sortValue = valueOf(token, "Sort="); !sortValue.empty())
+        {
+            std::string_view digits = sortValue;
+            digits.remove_suffix(1);
+            const char direction = sortValue.back();
+            if ((direction != 'v' && direction != '^') || !isUnsigned(digits, 2))
+            {
+                return false;
+            }
+            out.sort = sortValue;
+        }
+        else if (const std::string_view idValue = valueOf(token, "ID="); !idValue.empty())
+        {
+            if (!isHexId(idValue))
+            {
+                return false;
+            }
+            out.id = idValue;
+        }
+        else
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Writes a column line the way ImGui does, with its keys in the order ImGui's parser expects them
+/// (it tries each key once, in sequence, so a line with its keys out of order is only partly read).
+inline void appendColumnLine(std::string& out, const ColumnLine& column)
+{
+    out.append("Column ");
+    out.append(column.index);
+    if (column.index.size() < 2)
+    {
+        out.push_back(' ');
+    }
+    const auto appendField = [&out](std::string_view key, std::string_view value)
+    {
+        if (!value.empty())
+        {
+            out.push_back(' ');
+            out.append(key);
+            out.append(value);
+        }
+    };
+    appendField("Width=", column.width);
+    appendField("Weight=", column.weight);
+    appendField("Order=", column.order);
+    appendField("Sort=", column.sort);
+    appendField("ID=", column.id);
+    out.push_back('\n');
+}
+
+/// True for "RefScale=<decimal>": the font size the widths were measured at.
+[[nodiscard]] constexpr bool isRefScaleLine(std::string_view line) noexcept
+{
+    return isDecimal(valueOf(line, "RefScale="), 4, 6);
+}
+
 } // namespace Detail
 
 /// Reduces stored text to one well-formed table section, or to nothing.
 ///
 /// What survives is exactly: a "[Table][0x<id>,<columns>]" header, then "RefScale=" and "Column"
-/// lines made only of the characters ImGui itself writes, with column visibility removed. Leading
+/// lines that parse against the grammar ImGui itself writes -- known keys only, every number a
+/// bounded run of digits, so nothing non-finite or out of range reaches ImGui's "%d"/"%f" parser --
+/// rewritten in ImGui's own key order and with column visibility removed. Leading
 /// blank lines are skipped; the section ends at the first blank line or the next header, so a
 /// second section -- a window position, a docking layout, another table -- is never passed on. Text
 /// that does not begin with a table header, is over MAX_STORED_BYTES, or whose section runs to more
@@ -187,12 +338,66 @@ inline void appendWithoutVisibility(std::string& out, std::string_view line)
         {
             return {};
         }
-        if (!Detail::isSettingsLine(line))
+        if (Detail::isRefScaleLine(line))
         {
+            out.append(line);
+            out.push_back('\n');
+        }
+        else if (Detail::ColumnLine column; Detail::parseColumnLine(line, column))
+        {
+            Detail::appendColumnLine(out, column);
+        }
+        // Anything else -- an unknown key, a malformed or out-of-range value -- is skipped.
+    }
+    return out;
+}
+
+/// Returns `captured` with the sort from `source` restored to any column that has lost it.
+///
+/// Tree View renders in parent/child order and drops ImGuiTableFlags_Sortable, and ImGui leaves the
+/// sort out of a table's settings while it is not sortable. A layout captured in Tree View would
+/// therefore overwrite the saved one with no sort at all, and the user's list-view sort would be
+/// gone after a restart. `source` is the layout as it stood in list view; its sort is carried
+/// across onto the freshly captured widths and order.
+///
+/// A column that already has a sort in `captured` keeps it. Both inputs are sanitised first, so the
+/// result is always a well-formed section (or empty, if `captured` is not one).
+[[nodiscard]] inline std::string carrySortForward(std::string_view captured, std::string_view source)
+{
+    std::string cleanCaptured = sanitize(captured); // not const: returned by move below
+    const std::string cleanSource = sanitize(source);
+    if (cleanCaptured.empty() || cleanSource.empty())
+    {
+        return cleanCaptured;
+    }
+
+    std::string out;
+    out.reserve(cleanCaptured.size() + 64);
+    std::string_view remaining = cleanCaptured;
+    while (!remaining.empty())
+    {
+        const std::string_view line = Detail::takeLine(remaining);
+        Detail::ColumnLine column;
+        if (!Detail::parseColumnLine(line, column))
+        {
+            out.append(line);
+            out.push_back('\n');
             continue;
         }
-        Detail::appendWithoutVisibility(out, line);
-        out.push_back('\n');
+        if (column.sort.empty())
+        {
+            std::string_view sourceRemaining = cleanSource;
+            while (!sourceRemaining.empty())
+            {
+                Detail::ColumnLine sourceColumn;
+                if (Detail::parseColumnLine(Detail::takeLine(sourceRemaining), sourceColumn) && sourceColumn.index == column.index)
+                {
+                    column.sort = sourceColumn.sort;
+                    break;
+                }
+            }
+        }
+        Detail::appendColumnLine(out, column);
     }
     return out;
 }

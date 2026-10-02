@@ -148,6 +148,10 @@ class ProcessesPanel : public Panel
     // this table's section out of ImGui's settings text (#952).
     std::uint32_t m_TableId = 0;
 
+    // The table's layout as captured on entering tree view, whose sort a tree-view save reuses.
+    // Empty in list view.
+    std::string m_ListViewLayout;
+
     std::int32_t m_SelectedPid = -1;
     std::uint64_t m_SelectedUniqueKey = 0; // Selected process's identity: a PID can be reused
 

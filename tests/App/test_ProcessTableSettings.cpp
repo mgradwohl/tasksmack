@@ -164,6 +164,110 @@ TEST(ProcessTableSettingsTest, HeaderAloneIsAccepted)
     EXPECT_EQ(sanitize("[Table][0x1A2B3C4D,31]"), "[Table][0x1A2B3C4D,31]\n");
 }
 
+// ========== Numeric and grammar validation ==========
+
+// The text is read back by ImGui with "%d" and "%f". "%f" accepts "nan" and "inf", and an integer
+// too large for an int is undefined behaviour in "%d", so values are validated as bounded digit
+// runs -- a character filter alone lets all of these through.
+TEST(ProcessTableSettingsTest, NonFiniteAndOutOfRangeValuesAreRejected)
+{
+    const std::string_view header = "[Table][0x1A2B3C4D,2]\n";
+    const auto withLine = [&](std::string_view line)
+    {
+        return sanitize(std::string(header) + std::string(line) + "\n");
+    };
+
+    EXPECT_EQ(withLine("RefScale=nan"), header);
+    EXPECT_EQ(withLine("RefScale=inf"), header);
+    EXPECT_EQ(withLine("RefScale=-13"), header);
+    EXPECT_EQ(withLine("RefScale=1e9"), header);
+    EXPECT_EQ(withLine("RefScale=13.5.2"), header);
+    EXPECT_EQ(withLine("RefScale=123456789"), header);
+    EXPECT_EQ(withLine("RefScale="), header);
+
+    EXPECT_EQ(withLine("Column 0  Width=99999999999999999999"), header);
+    EXPECT_EQ(withLine("Column 0  Width=123456"), header);
+    EXPECT_EQ(withLine("Column 0  Width=-60"), header);
+    EXPECT_EQ(withLine("Column 0  Width=6.5"), header);
+    EXPECT_EQ(withLine("Column 0  Weight=nan"), header);
+    EXPECT_EQ(withLine("Column 0  Weight=inf"), header);
+    EXPECT_EQ(withLine("Column 0  Weight=1.0e5"), header);
+    EXPECT_EQ(withLine("Column 0  Order=99999"), header);
+    EXPECT_EQ(withLine("Column 0  Sort=0x"), header);
+    EXPECT_EQ(withLine("Column 0  Sort=999^"), header);
+    EXPECT_EQ(withLine("Column 0  Sort=^"), header);
+    EXPECT_EQ(withLine("Column 0  ID=0x123"), header);
+    EXPECT_EQ(withLine("Column 0  ID=1A2B3C4D5E"), header);
+    EXPECT_EQ(withLine("Column 9999  Width=60"), header);
+    EXPECT_EQ(withLine("Column x  Width=60"), header);
+    EXPECT_EQ(withLine("Column 0  Bogus=1"), header);
+    EXPECT_EQ(withLine("Column 0  Width="), header);
+}
+
+TEST(ProcessTableSettingsTest, InRangeValuesAreKept)
+{
+    const std::string_view text = "[Table][0x1A2B3C4D,3]\n"
+                                  "RefScale=13.3333\n"
+                                  "Column 0  Width=99999 Order=511 Sort=12^ ID=0xDEADBEEF\n"
+                                  "Column 10 Weight=0.5000 Order=0\n"
+                                  "Column 2  Width=0\n";
+    EXPECT_EQ(sanitize(text), text);
+}
+
+// ImGui's parser tries each key once, in a fixed sequence, so keys out of order are only partly
+// read. The filter writes them back in ImGui's order whatever order they arrived in.
+TEST(ProcessTableSettingsTest, KeysAreRewrittenInImGuiOrder)
+{
+    const std::string_view scrambled = "[Table][0x1A2B3C4D,1]\n"
+                                       "Column 0 ID=0x00000001   Sort=0v Order=2  Width=60\n";
+    EXPECT_EQ(sanitize(scrambled), "[Table][0x1A2B3C4D,1]\nColumn 0  Width=60 Order=2 Sort=0v ID=0x00000001\n");
+}
+
+// ========== carrySortForward ==========
+
+using ProcessTableSettings::carrySortForward;
+
+// The reviewed defect: a layout captured in tree view has no sort, and saving it as it stands would
+// erase the list-view sort. The sort is carried across from the list-view layout onto the freshly
+// captured widths and order.
+TEST(ProcessTableSettingsTest, SortIsCarriedOntoALayoutCapturedWithoutOne)
+{
+    const std::string_view listView = "[Table][0x1A2B3C4D,3]\n"
+                                      "RefScale=11\n"
+                                      "Column 0  Width=60 Order=0\n"
+                                      "Column 1  Width=120 Order=1 Sort=0^ ID=0x00000001\n"
+                                      "Column 2  Weight=1.0000 Order=2\n";
+    const std::string_view treeView = "[Table][0x1A2B3C4D,3]\n"
+                                      "RefScale=11\n"
+                                      "Column 0  Width=60 Order=1\n"
+                                      "Column 1  Width=240 Order=0 ID=0x00000001\n"
+                                      "Column 2  Weight=1.0000 Order=2\n";
+
+    EXPECT_EQ(carrySortForward(treeView, listView),
+              "[Table][0x1A2B3C4D,3]\n"
+              "RefScale=11\n"
+              "Column 0  Width=60 Order=1\n"
+              "Column 1  Width=240 Order=0 Sort=0^ ID=0x00000001\n"
+              "Column 2  Weight=1.0000 Order=2\n");
+}
+
+// A sort that the captured layout does have is the newer one, and wins.
+TEST(ProcessTableSettingsTest, AnExistingSortIsNotOverwritten)
+{
+    const std::string_view source = "[Table][0x1A2B3C4D,2]\nColumn 0  Width=60 Sort=0^\nColumn 1  Width=60\n";
+    const std::string_view captured = "[Table][0x1A2B3C4D,2]\nColumn 0  Width=60 Sort=0v\nColumn 1  Width=60\n";
+    EXPECT_EQ(carrySortForward(captured, source), captured);
+}
+
+TEST(ProcessTableSettingsTest, CarrySortForwardWithNothingToCarryReturnsTheSanitisedCapture)
+{
+    EXPECT_EQ(carrySortForward(SECTION, ""), SECTION);
+    EXPECT_EQ(carrySortForward(SECTION, "not a layout"), SECTION);
+    EXPECT_EQ(carrySortForward(SECTION, "[Table][0x1A2B3C4D,3]\nColumn 0  Width=60\n"), SECTION);
+    EXPECT_EQ(carrySortForward("", SECTION), "");
+    EXPECT_EQ(carrySortForward("garbage", SECTION), "");
+}
+
 // ========== extractTableSection ==========
 
 TEST(ProcessTableSettingsTest, ExtractsTheNamedTableFromFullIni)
