@@ -116,7 +116,7 @@ constexpr float CLIPPED_CELL_TOOLTIP_WRAP_EM = 60.0F;
 /// cell that fits is laid out exactly as before.
 void renderCellText(std::string_view text, float textWidth, bool rightAligned)
 {
-    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    const ImGuiWindow* window = ImGui::GetCurrentWindow();
     if (window->SkipItems)
     {
         return;
