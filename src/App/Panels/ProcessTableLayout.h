@@ -47,4 +47,29 @@ namespace App::ProcessTableLayout
     return (needed > visibleWidthPx) ? needed : 0.0F;
 }
 
+/// Slack allowed before a cell's text counts as clipped, in pixels.
+///
+/// Text widths and column widths are both fractional and arrive by different arithmetic, so text
+/// that exactly fills its cell can measure a hair wider than the space. Without this, such a cell
+/// would trade its last glyph for an ellipsis, or flicker between the two as the layout settles.
+inline constexpr float CLIP_TOLERANCE_PX = 0.5F;
+
+/// Whether text of the given width does not fit in the cell space left for it (#914).
+///
+/// A clipped cell is drawn with an ellipsis and gets a tooltip carrying the full value, so a value
+/// that has been cut is distinguishable from one that is genuinely that short: "systemd-r" cut from
+/// "systemd-resolve" reads as a plausible name in its own right, and the row it identifies is what
+/// Terminate and Kill act on.
+///
+/// @param textWidthPx   Measured width of the cell's text.
+/// @param availWidthPx  Width left in the cell from the cursor to its right edge.
+[[nodiscard]] inline bool isCellTextClipped(float textWidthPx, float availWidthPx) noexcept
+{
+    if (!std::isfinite(textWidthPx) || !std::isfinite(availWidthPx))
+    {
+        return false;
+    }
+    return textWidthPx > (availWidthPx + CLIP_TOLERANCE_PX);
+}
+
 } // namespace App::ProcessTableLayout

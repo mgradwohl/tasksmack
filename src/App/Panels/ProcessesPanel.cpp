@@ -101,17 +101,74 @@ constexpr std::string_view LIST_VIEW_LABEL = "List View";
     return std::nullopt;
 }
 
+/// Tooltips for clipped cells wrap at this many ems, so a long command line reads as a paragraph
+/// instead of one line running off the screen.
+constexpr float CLIPPED_CELL_TOOLTIP_WRAP_EM = 60.0F;
+
+/// Draws `text` in the current table cell, left- or right-aligned, using an already-measured
+/// `textWidth`. When the text does not fit it is drawn with an ellipsis and gets a tooltip carrying
+/// the full value (#914): a hard-clipped value is indistinguishable from one that is genuinely that
+/// short, which is the wrong failure mode for a table whose rows Terminate and Kill act on.
+///
+/// This submits the item itself rather than calling ImGui::TextUnformatted(), which would measure
+/// the text a second time -- ImFontCalcTextSizeEx showed up as a real cost in interactive-frame
+/// profiling. The steps mirror ImGui::TextEx()'s common path: same position, same item size, so a
+/// cell that fits is laid out exactly as before.
+void renderCellText(std::string_view text, float textWidth, bool rightAligned)
+{
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (window->SkipItems)
+    {
+        return;
+    }
+
+    const float availWidth = ImGui::GetContentRegionAvail().x;
+    const bool clipped = ProcessTableLayout::isCellTextClipped(textWidth, availWidth);
+
+    // A clipped cell fills the space it has and starts at its left edge in either alignment: the
+    // leading characters are the ones that identify the value.
+    const float itemWidth = clipped ? std::max(availWidth, 0.0F) : textWidth;
+    const float offsetX = (rightAligned && !clipped) ? std::max(0.0F, availWidth - textWidth) : 0.0F;
+
+    const char* textBegin = text.data();
+    const char* textEnd = text.data() + text.size();
+    const ImVec2 textPos(window->DC.CursorPos.x + offsetX, window->DC.CursorPos.y + window->DC.CurrLineTextBaseOffset);
+    const ImVec2 itemSize(itemWidth, ImGui::GetFontSize());
+    const ImRect bounds(textPos, ImVec2(textPos.x + itemSize.x, textPos.y + itemSize.y));
+
+    // Advance the layout cursor past the alignment offset as well as the text, as SetCursorPosX()
+    // followed by a text item did.
+    ImGui::ItemSize(ImVec2(offsetX + itemSize.x, itemSize.y), 0.0F);
+    if (!ImGui::ItemAdd(bounds, 0))
+    {
+        return;
+    }
+
+    if (!clipped)
+    {
+        ImGui::RenderText(textPos, textBegin, textEnd, false);
+        return;
+    }
+
+    const ImVec2 measuredSize(textWidth, itemSize.y);
+    ImGui::RenderTextEllipsis(window->DrawList, bounds.Min, bounds.Max, bounds.Max.x, textBegin, textEnd, &measuredSize);
+
+    if (ImGui::BeginItemTooltip())
+    {
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * CLIPPED_CELL_TOOLTIP_WRAP_EM);
+        ImGui::TextUnformatted(textBegin, textEnd);
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+    }
+}
+
 /// Renders `text` right-aligned within the remaining cell width, using an already-measured
 /// `textWidth` instead of calling ImGui::CalcTextSize() itself -- callers own measuring (and,
 /// for RowFormatCache-backed columns, caching) that width. See the AlignedCellText
 /// overload below for the common case.
 void renderRightAlignedText(std::string_view text, float textWidth)
 {
-    // GetContentRegionAvail() properly returns space from cursor to right edge of cell
-    const float availWidth = ImGui::GetContentRegionAvail().x;
-    const float currentX = ImGui::GetCursorPosX();
-    ImGui::SetCursorPosX(currentX + std::max(0.0F, availWidth - textWidth));
-    ImGui::TextUnformatted(text.data(), text.data() + text.size());
+    renderCellText(text, textWidth, /*rightAligned=*/true);
 }
 
 /// Common case: a RowFormatCache-backed cell whose text is built lazily, on demand, only for
@@ -129,6 +186,15 @@ void renderRightAlignedText(const AlignedCellText& cell)
         cell.width = ImGui::CalcTextSize(cell.text.c_str(), cell.text.c_str() + cell.text.size()).x;
     }
     renderRightAlignedText(cell.text, cell.width);
+}
+
+/// Renders free text (a name, a user, a command line) left-aligned in the current cell. These
+/// cells have no cached width, so the text is measured here -- once, which is what
+/// ImGui::TextUnformatted() did for them before.
+void renderLeftAlignedText(std::string_view text)
+{
+    const float textWidth = ImGui::CalcTextSize(text.data(), text.data() + text.size()).x;
+    renderCellText(text, textWidth, /*rightAligned=*/false);
 }
 
 } // namespace
@@ -889,11 +955,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             }
             ImGui::SameLine(0.0F, 0.0F);
             // Keep PID text right-aligned in its column in both list and tree modes.
-            const float pidTextWidth = ImGui::CalcTextSize(label.data(), label.data() + label.size()).x;
-            const float pidAvailWidth = ImGui::GetContentRegionAvail().x;
-            const float pidCurrentX = ImGui::GetCursorPosX();
-            ImGui::SetCursorPosX(pidCurrentX + std::max(0.0F, pidAvailWidth - pidTextWidth));
-            ImGui::TextUnformatted(label.data(), label.data() + label.size());
+            renderRightAlignedText(label, ImGui::CalcTextSize(label.data(), label.data() + label.size()).x);
             continue;
         }
 
@@ -901,7 +963,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         switch (col)
         {
         case ProcessColumn::User:
-            ImGui::TextUnformatted(proc.user.c_str());
+            renderLeftAlignedText(proc.user);
             break;
 
         case ProcessColumn::CpuPercent:
@@ -985,7 +1047,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         case ProcessColumn::Status:
             if (!proc.status.empty())
             {
-                ImGui::TextUnformatted(proc.status.c_str());
+                renderLeftAlignedText(proc.status);
             }
             else
             {
@@ -1053,7 +1115,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
                 ImGui::SameLine();
             }
 
-            ImGui::TextUnformatted(proc.name.c_str());
+            renderLeftAlignedText(proc.name);
 
             if (indented)
             {
@@ -1096,7 +1158,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         case ProcessColumn::Command:
             if (!proc.command.empty())
             {
-                ImGui::TextUnformatted(proc.command.c_str());
+                renderLeftAlignedText(proc.command);
             }
             else
             {
@@ -1134,14 +1196,14 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             break;
 
         case ProcessColumn::GpuEngine:
-            ImGui::TextUnformatted(fmt.gpuEngines.c_str());
+            renderLeftAlignedText(fmt.gpuEngines);
             break;
 
         case ProcessColumn::GpuDevice:
         {
             if (!proc.gpuDevices.empty())
             {
-                ImGui::TextUnformatted(proc.gpuDevices.c_str());
+                renderLeftAlignedText(proc.gpuDevices);
             }
             else
             {
@@ -1154,14 +1216,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         {
             if (!proc.publisher.empty())
             {
-                // Capture available width before rendering so the comparison
-                // uses the full cell width rather than the post-render remainder.
-                const float availWidth = ImGui::GetContentRegionAvail().x;
-                ImGui::TextUnformatted(proc.publisher.c_str());
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort) && ImGui::CalcTextSize(proc.publisher.c_str()).x > availWidth)
-                {
-                    ImGui::SetTooltip("%s", proc.publisher.c_str());
-                }
+                renderLeftAlignedText(proc.publisher);
             }
             else
             {
@@ -1189,7 +1244,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
                     typeColor = scheme.textMuted;
                 }
                 ImGui::PushStyleColor(ImGuiCol_Text, typeColor);
-                ImGui::TextUnformatted(proc.processType.c_str());
+                renderLeftAlignedText(proc.processType);
                 ImGui::PopStyleColor();
             }
             else
