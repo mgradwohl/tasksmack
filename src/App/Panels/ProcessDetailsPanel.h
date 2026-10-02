@@ -54,7 +54,9 @@ class ProcessDetailsPanel : public Panel
     void onEvent(Core::Event& event) override;
 
     /// Set the process to display.
-    void setSelectedPid(std::int32_t pid);
+    /// @param uniqueKey Identity of the process (hash of PID and start time), or 0 if not known.
+    ///        With it, a later process that reuses the PID is not mistaken for the selected one.
+    void setSelectedPid(std::int32_t pid, std::uint64_t uniqueKey = 0);
 
     /// Get currently displayed PID.
     [[nodiscard]] std::int32_t selectedPid() const
@@ -106,6 +108,7 @@ class ProcessDetailsPanel : public Panel
     void updateSmoothedUsage(const Domain::ProcessSnapshot& snapshot, float deltaTimeSeconds);
 
     std::int32_t m_SelectedPid = -1;
+    std::uint64_t m_SelectedUniqueKey = 0; // 0 = not known; adopted from the first snapshot
     std::uint64_t m_LastHistorySnapshotVersion = 0;
     float m_LastDeltaSeconds = 0.0F;
     bool m_IsActiveTab = false;

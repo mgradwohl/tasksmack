@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 namespace App::ProcessDetailsLayout
 {
@@ -39,6 +40,25 @@ inline constexpr float INFO_BLOCK_MAX_WIDTH_EM = 36.0F;
         return wanted;
     }
     return std::min(wanted, availableWidthPx);
+}
+
+/// Whether a snapshot is of the process that was selected, and not merely of its PID (#927).
+///
+/// PIDs are reused. A process is selected by PID together with its unique key (a hash of the PID
+/// and start time), and a snapshot carrying the same PID but a different key is a different process
+/// that has been handed the old one's number. Accepting it would bring an exited process's pane
+/// back to life showing -- and offering to Terminate or Kill -- something the user never selected.
+///
+/// A key of zero means "not known" on either side (older callers select by PID alone), and then
+/// the PID is all there is to go on.
+[[nodiscard]] constexpr bool
+snapshotIsSelectedProcess(std::int32_t selectedPid, std::uint64_t selectedKey, std::int32_t snapshotPid, std::uint64_t snapshotKey) noexcept
+{
+    if (selectedPid != snapshotPid)
+    {
+        return false;
+    }
+    return (selectedKey == 0) || (snapshotKey == 0) || (selectedKey == snapshotKey);
 }
 
 /// Whether the selected process has just gone missing and should now be shown as exited (#927).

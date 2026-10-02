@@ -23,9 +23,6 @@ struct SmoothedGPU
     bool initialized = false;
 };
 
-/// Context struct containing all state needed to render the GPU section.
-/// This allows the render function to be extracted from SystemMetricsPanel
-/// without requiring access to private members.
 /// Why the GPU tab has nothing to chart, if it does not.
 enum class EmptyReason : std::uint8_t
 {
@@ -56,6 +53,9 @@ enum class EmptyReason : std::uint8_t
     return (deviceCount == 0) ? EmptyReason::NoDevices : EmptyReason::NoReadings;
 }
 
+/// Context struct containing all state needed to render the GPU section.
+/// This allows the render function to be extracted from SystemMetricsPanel
+/// without requiring access to private members.
 struct RenderContext
 {
     // Model (non-owning pointer)

@@ -133,11 +133,22 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
         }
     }
 
-    if (snapshot != nullptr && snapshot->pid == m_SelectedPid)
+    // A snapshot only counts if it is of the selected process itself, not of a different process
+    // that has since been given its PID.
+    const bool isSelectedProcess = (snapshot != nullptr) && ProcessDetailsLayout::snapshotIsSelectedProcess(
+                                                                m_SelectedPid, m_SelectedUniqueKey, snapshot->pid, snapshot->uniqueKey);
+
+    if (isSelectedProcess)
     {
         m_CachedSnapshot = *snapshot;
         m_HasSnapshot = true;
         m_ProcessExited = false;
+        // Selected by PID alone: take the identity from the first snapshot, so that a later reuse
+        // of the PID is still recognised as a different process.
+        if (m_SelectedUniqueKey == 0)
+        {
+            m_SelectedUniqueKey = snapshot->uniqueKey;
+        }
 
         updateSmoothedUsage(*snapshot, deltaTime);
 
@@ -196,14 +207,14 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
             trimHistory(nowSeconds);
         }
     }
-    else if (snapshot == nullptr || snapshot->pid != m_SelectedPid)
+    else
     {
         // Selection changed or no selection
         if (m_SelectedPid == -1)
         {
             m_HasSnapshot = false;
         }
-        else if (ProcessDetailsLayout::selectedProcessHasExited(true, m_HasSnapshot, snapshot != nullptr))
+        else if (ProcessDetailsLayout::selectedProcessHasExited(true, m_HasSnapshot, isSelectedProcess))
         {
             // The cached snapshot is kept (the tab still names the process) but no longer drawn as
             // if it were live; renderContent() shows the exited state instead.
@@ -364,7 +375,7 @@ void ProcessDetailsPanel::onEvent(Core::Event& event)
     dispatcher.dispatch<Core::ProcessSelectedEvent>(
         [this](Core::ProcessSelectedEvent& e)
         {
-            setSelectedPid(e.getPid());
+            setSelectedPid(e.getPid(), e.getUniqueKey());
             return false; // Don't consume - other panels might care
         });
 
@@ -377,44 +388,54 @@ void ProcessDetailsPanel::onEvent(Core::Event& event)
         });
 }
 
-void ProcessDetailsPanel::setSelectedPid(std::int32_t pid)
+void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t uniqueKey)
 {
-    if (pid != m_SelectedPid)
+    // A different key under the same PID is a different process (the PID was reused), so it is a
+    // new selection and resets the pane like any other. An unknown key on either side is not a
+    // different process: re-selecting what is already shown must not wipe its history.
+    if (ProcessDetailsLayout::snapshotIsSelectedProcess(m_SelectedPid, m_SelectedUniqueKey, pid, uniqueKey))
     {
-        m_SelectedPid = pid;
-        m_CpuHistory.clear();
-        m_CpuUserHistory.clear();
-        m_CpuSystemHistory.clear();
-        m_MemoryHistory.clear();
-        m_SharedHistory.clear();
-        m_VirtualHistory.clear();
-        m_ThreadHistory.clear();
-        m_HandleHistory.clear();
-        m_PageFaultHistory.clear();
-        m_IoReadHistory.clear();
-        m_IoWriteHistory.clear();
-        m_NetSentHistory.clear();
-        m_NetRecvHistory.clear();
-        m_PowerHistory.clear();
-        m_GpuUtilHistory.clear();
-        m_GpuMemHistory.clear();
-        m_GdiHistory.clear();
-        m_Timestamps.clear();
-        m_LastHistorySnapshotVersion = 0;
-        m_HasSnapshot = false;
-        m_ProcessExited = false;
-        m_ShowConfirmDialog = false;
-        m_LastActionResult.clear();
-        m_SmoothedUsage = {};
-        m_PeakMemoryPercent = 0.0;
-        m_PriorityChanged = false;
-        m_PriorityNiceValue = 0;
-        m_PriorityError.clear(); // Clear priority error when switching processes
-
-        if (pid != -1)
+        if (m_SelectedUniqueKey == 0)
         {
-            spdlog::debug("ProcessDetailsPanel: selected PID {}", pid);
+            m_SelectedUniqueKey = uniqueKey;
         }
+        return;
+    }
+
+    m_SelectedPid = pid;
+    m_SelectedUniqueKey = uniqueKey;
+    m_CpuHistory.clear();
+    m_CpuUserHistory.clear();
+    m_CpuSystemHistory.clear();
+    m_MemoryHistory.clear();
+    m_SharedHistory.clear();
+    m_VirtualHistory.clear();
+    m_ThreadHistory.clear();
+    m_HandleHistory.clear();
+    m_PageFaultHistory.clear();
+    m_IoReadHistory.clear();
+    m_IoWriteHistory.clear();
+    m_NetSentHistory.clear();
+    m_NetRecvHistory.clear();
+    m_PowerHistory.clear();
+    m_GpuUtilHistory.clear();
+    m_GpuMemHistory.clear();
+    m_GdiHistory.clear();
+    m_Timestamps.clear();
+    m_LastHistorySnapshotVersion = 0;
+    m_HasSnapshot = false;
+    m_ProcessExited = false;
+    m_ShowConfirmDialog = false;
+    m_LastActionResult.clear();
+    m_SmoothedUsage = {};
+    m_PeakMemoryPercent = 0.0;
+    m_PriorityChanged = false;
+    m_PriorityNiceValue = 0;
+    m_PriorityError.clear(); // Clear priority error when switching processes
+
+    if (pid != -1)
+    {
+        spdlog::debug("ProcessDetailsPanel: selected PID {}", pid);
     }
 }
 

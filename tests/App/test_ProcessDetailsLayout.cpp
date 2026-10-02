@@ -77,6 +77,37 @@ TEST(ProcessDetailsLayoutTest, SurvivesDegenerateInput)
     }
 }
 
+// ========== Selected-process identity (#927) ==========
+
+using ProcessDetailsLayout::snapshotIsSelectedProcess;
+
+TEST(ProcessDetailsLayoutTest, SamePidAndKeyIsTheSelectedProcess)
+{
+    EXPECT_TRUE(snapshotIsSelectedProcess(/*selectedPid=*/4242, /*selectedKey=*/0xABCDU, /*snapshotPid=*/4242, /*snapshotKey=*/0xABCDU));
+}
+
+// The reviewed defect: the PID has been reused. Same number, different process -- it must not be
+// taken for the one the user selected, or an exited process's pane and its Terminate/Kill buttons
+// come back aimed at something else.
+TEST(ProcessDetailsLayoutTest, ReusedPidWithDifferentKeyIsNotTheSelectedProcess)
+{
+    EXPECT_FALSE(snapshotIsSelectedProcess(4242, 0xABCDU, 4242, 0x1234U));
+}
+
+TEST(ProcessDetailsLayoutTest, DifferentPidIsNeverTheSelectedProcess)
+{
+    EXPECT_FALSE(snapshotIsSelectedProcess(4242, 0xABCDU, 4243, 0xABCDU));
+    EXPECT_FALSE(snapshotIsSelectedProcess(4242, 0, 4243, 0));
+}
+
+// A key of zero means "not known"; the PID is then all there is to compare.
+TEST(ProcessDetailsLayoutTest, UnknownKeyFallsBackToPid)
+{
+    EXPECT_TRUE(snapshotIsSelectedProcess(4242, 0, 4242, 0x1234U));
+    EXPECT_TRUE(snapshotIsSelectedProcess(4242, 0xABCDU, 4242, 0));
+    EXPECT_TRUE(snapshotIsSelectedProcess(4242, 0, 4242, 0));
+}
+
 // ========== Exited process (#927) ==========
 
 using ProcessDetailsLayout::selectedProcessHasExited;
