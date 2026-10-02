@@ -69,9 +69,11 @@ filledButton(const char* label, const ImVec2& size, const ButtonFills& fills, co
 {
     const ImGuiStyle& style = ImGui::GetStyle();
     const ImVec2 labelSize = ImGui::CalcTextSize(label);
-    // The button is submitted with no visible label, so a zero width would collapse it: fit the
-    // label the way ImGui::Button() would have.
-    const ImVec2 buttonSize((size.x != 0.0F) ? size.x : (labelSize.x + (style.FramePadding.x * 2.0F)), size.y);
+    // The button is submitted with no visible label, so a zero size is resolved here against the
+    // real label, the way ImGui::Button() would have: a zero width would otherwise collapse, and
+    // the height should not depend on what ImGui measures for an empty string.
+    const ImVec2 buttonSize((size.x != 0.0F) ? size.x : (labelSize.x + (style.FramePadding.x * 2.0F)),
+                            (size.y != 0.0F) ? size.y : (labelSize.y + (style.FramePadding.y * 2.0F)));
 
     ImGui::PushStyleColor(ImGuiCol_Button, fills.resting);
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, fills.hovered);
@@ -94,7 +96,13 @@ filledButton(const char* label, const ImVec2& size, const ButtonFills& fills, co
     // GetColorU32(ImVec4) applies the style's alpha, so a button inside BeginDisabled() gets a
     // dimmed label like any other.
     const ImU32 textColor = ImGui::GetColorU32(ColorContrast::readableTextOn(shown, textPreferred, textAlternate));
-    ImGui::GetWindowDrawList()->AddText(textPos, textColor, label);
+    // Clipped to the button, as ImGui::Button() clips its own label: a caller may cap the width
+    // below the label's (the priority panel does, on a narrow pane), and an unclipped label would
+    // then be drawn over whatever is beside the button.
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    drawList->PushClipRect(rectMin, rectMax, true);
+    drawList->AddText(textPos, textColor, label);
+    drawList->PopClipRect();
 
     return clicked;
 }
