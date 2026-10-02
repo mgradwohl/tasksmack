@@ -368,7 +368,7 @@ inline void appendColumnLine(std::string& out, const ColumnLine& column)
 {
     std::string cleanCaptured = sanitize(captured); // not const: returned by move below
     const std::string cleanSource = sanitize(source);
-    if (cleanCaptured.empty() || cleanSource.empty() || cleanCaptured.find(" Sort=") != std::string::npos)
+    if (cleanCaptured.empty() || cleanSource.empty() || cleanCaptured.contains(" Sort="))
     {
         return cleanCaptured;
     }
