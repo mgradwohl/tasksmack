@@ -9,6 +9,7 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/Factory.h"
 #include "Platform/IProcessActions.h"
+#include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
 #include "UI/ChartWidgets.h"
 #include "UI/DialogMetrics.h"
@@ -623,10 +624,27 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     const auto runtimeRowCount = static_cast<float>(runtimeRows.size());
     const float rightHeight = (rowHeight * runtimeRowCount) + basePadding;
 
+    // Each block is capped at a readable width instead of taking half the pane, so a label and its
+    // value stay together however wide the window is (#925). The blocks pack to the left and the
+    // remaining width is left empty.
+    auto blockWidthFor = [&](const std::vector<std::pair<std::string, std::pair<std::string, ImVec4>>>& rows) -> float
+    {
+        float widestValue = 0.0F;
+        for (const auto& row : rows)
+        {
+            widestValue = std::max(widestValue, ImGui::CalcTextSize(row.second.first.c_str()).x);
+        }
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const float contentNeeded = labelColWidth + widestValue + (style.CellPadding.x * 4.0F) + (style.WindowPadding.x * 2.0F);
+        return ProcessDetailsLayout::computeInfoBlockWidth(ImGui::GetFontSize(), halfWidth, contentNeeded);
+    };
+    const float leftWidth = blockWidthFor(identityRows);
+    const float rightWidth = blockWidthFor(runtimeRows);
+
     // Identity section: Who is this process?
     ImGui::BeginGroup();
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_ID_CARD "  Identity");
-    ImGui::BeginChild("BasicInfoLeft", ImVec2(halfWidth, leftHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
+    ImGui::BeginChild("BasicInfoLeft", ImVec2(leftWidth, leftHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
     renderInfoTable("BasicInfoLeftTable", identityRows);
     ImGui::EndChild();
     ImGui::EndGroup();
@@ -636,7 +654,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     // Runtime section: What is this process doing?
     ImGui::BeginGroup();
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CLOCK "  Runtime");
-    ImGui::BeginChild("BasicInfoRight", ImVec2(halfWidth, rightHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
+    ImGui::BeginChild("BasicInfoRight", ImVec2(rightWidth, rightHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
 
     renderInfoTable("BasicInfoRightTable", runtimeRows);
     ImGui::EndChild();
