@@ -46,9 +46,14 @@ using UI::Widgets::renderHistoryWithNowBars;
 
 constexpr size_t STORAGE_NOW_BAR_COLUMNS = 2; // Read, Write
 
-// Minimum plot height a disk cell will shrink to before the grid prefers scrolling over
-// squashing charts flat -- mirrors CpuCoresSection's MIN_PLOT_HEIGHT.
-constexpr float MIN_PLOT_HEIGHT = 60.0F;
+/// Minimum plot height a disk cell will shrink to before the grid prefers scrolling over squashing
+/// charts flat. The same font-relative floor the Overview's charts hold (UI/HistoryPlotHeight.h),
+/// in whole pixels, so both bounds of the shared height rule apply here and not only the ceiling.
+/// It was a fixed 60px, which at Even Huger is under three lines of axis text.
+[[nodiscard]] float minDiskPlotHeight()
+{
+    return std::floor(UI::Widgets::historyPlotMinHeight(ImGui::GetFontSize()));
+}
 
 /// Render a single disk cell (label + read/write NowBars + chart). cellHeight is the enclosing
 /// grid cell's *usable content* height (see renderChartGrid's cellWidth/cellHeight doc in
@@ -102,7 +107,7 @@ void renderDiskCell(const std::string& deviceName,
         cachedOverhead = (ImGui::GetCursorPosY() - cellContentTop) + (ImGui::GetStyle().CellPadding.y * 2.0F);
     }
     const float measuredOverhead = *cachedOverhead;
-    const float plotHeight = std::max(MIN_PLOT_HEIGHT, cellHeight - measuredOverhead);
+    const float plotHeight = std::max(minDiskPlotHeight(), cellHeight - measuredOverhead);
 
     auto diskPlotFn = [&]()
     {
@@ -246,7 +251,7 @@ void renderStorageSection(RenderContext& ctx)
         // wraps: the bordered GridCell child's own WindowPadding (ChartGrid.h reserves it before
         // renderDiskCell ever sees a height), the label row, and renderDiskCell's nested table
         // CellPadding -- omitting any of those understates the floor, so the grid can pick a
-        // cellHeight that only fits a plot smaller than MIN_PLOT_HEIGHT once the real overhead is
+        // cellHeight that only fits a plot smaller than minDiskPlotHeight() once the real overhead is
         // subtracted, which then clips invisibly against the cell's NoScrollbar instead of the
         // grid falling back to more rows/scrolling (#823 review).
         const float approxLabelOverhead = (ImGui::GetStyle().WindowPadding.y * 2.0F) + ImGui::GetTextLineHeight() +
@@ -287,9 +292,9 @@ void renderStorageSection(RenderContext& ctx)
             .availableWidth = avail.x,
             .availableHeight = avail.y,
             .minCellWidth = 320.0F,
-            .minCellHeight = approxLabelOverhead + MIN_PLOT_HEIGHT,
-            // The same ceiling the Overview's charts grow to (UI/HistoryPlotHeight.h), so the two
-            // tabs follow one rule instead of one never growing and the other never stopping (#923).
+            // The same floor and ceiling the Overview's charts keep to (UI/HistoryPlotHeight.h), so the
+            // two tabs follow one rule instead of one never growing and the other never stopping (#923).
+            .minCellHeight = approxLabelOverhead + minDiskPlotHeight(),
             .maxCellHeight = approxLabelOverhead + UI::Widgets::historyPlotMaxHeight(ImGui::GetFontSize()),
         };
 

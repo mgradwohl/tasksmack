@@ -589,7 +589,6 @@ struct HistoryChartConfig
     ImPlotFlags flags = PLOT_FLAGS_DEFAULT;
 };
 
-/// Config for a percent-based history chart: Y axis locked to 0-100 with a percent formatter.
 /// Returns `config` with its plot height replaced, for callers that size a chart to the space
 /// available (see UI/HistoryPlotHeight.h) rather than taking the default.
 [[nodiscard]] inline HistoryChartConfig withHeight(HistoryChartConfig config, float height)
@@ -598,6 +597,7 @@ struct HistoryChartConfig
     return config;
 }
 
+/// Config for a percent-based history chart: Y axis locked to 0-100 with a percent formatter.
 [[nodiscard]] inline HistoryChartConfig percentHistoryConfig(const char* id, double xMin, double xMax)
 {
     HistoryChartConfig cfg;
