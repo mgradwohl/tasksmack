@@ -4,6 +4,7 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/IProcessActions.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
+#include "UI/FillPlotLayout.h"
 
 #include <cstdint>
 #include <deque>
@@ -100,6 +101,36 @@ class ProcessDetailsPanel : public Panel
     void renderPrioritySection();
     void trimHistory(double nowSeconds);
 
+    /// Makes one tab's charts share its height for the duration of that tab's content (#959).
+    /// While one is alive, chartHeight() returns the shared height and noteChartRendered() counts
+    /// towards it; outside one, charts keep the default height. Declare it after the tab's
+    /// TabContentScope so it measures inside the scrolling child and is destroyed before it.
+    class ActiveFillScope
+    {
+      public:
+        ActiveFillScope(ProcessDetailsPanel& panel, UI::Widgets::PlotFillState& state) : m_Panel(panel), m_Layout(state)
+        {
+            m_Panel.m_ActiveFill = &m_Layout;
+        }
+        ~ActiveFillScope()
+        {
+            m_Panel.m_ActiveFill = nullptr;
+        }
+        ActiveFillScope(const ActiveFillScope&) = delete;
+        ActiveFillScope& operator=(const ActiveFillScope&) = delete;
+        ActiveFillScope(ActiveFillScope&&) = delete;
+        ActiveFillScope& operator=(ActiveFillScope&&) = delete;
+
+      private:
+        ProcessDetailsPanel& m_Panel;
+        UI::Widgets::FillPlotLayout m_Layout;
+    };
+
+    /// Height for a history chart rendered now: the active tab's shared height, or the default.
+    [[nodiscard]] float chartHeight() const;
+    /// Counts a chart of chartHeight() towards the active tab's fill, if there is one.
+    void noteChartRendered();
+
     // Priority slider helper methods (extracted for testability and clarity)
     struct PrioritySliderContext;
     static void drawPriorityBadge(ImDrawList* drawList, const PrioritySliderContext& ctx);
@@ -144,6 +175,11 @@ class ProcessDetailsPanel : public Panel
 
     // Cached snapshot for rendering
     Domain::ProcessSnapshot m_CachedSnapshot;
+    // Per-tab state for the shared chart-height rule, and the tab currently being rendered (#959)
+    UI::Widgets::PlotFillState m_OverviewFill;
+    UI::Widgets::PlotFillState m_NetworkFill;
+    UI::Widgets::FillPlotLayout* m_ActiveFill = nullptr;
+
     bool m_HasSnapshot = false;
     bool m_ProcessExited = false; // Had a snapshot of the selected process, and it has gone missing (#927)
 
