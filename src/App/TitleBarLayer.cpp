@@ -1130,7 +1130,8 @@ void TitleBarLayer::renderTitleBar()
 
     // The window may not be made narrower than what this bar has to show, or shorter than the base
     // minimum at this display scale. Derived from the sizes just used for drawing, so it cannot
-    // drift from them, and handed to SDL only when it changes (#970).
+    // drift from them, and handed to SDL only when it changes (#970). ShellLayer has already set
+    // the scaled base minimum at attach; this widens it to cover the bar.
     const WindowMinimumSize minimumSize =
         computeMinimumWindowSize(UI::Theme::get().displayScale(),
                                  computeTitleBarContentWidth(iconX,

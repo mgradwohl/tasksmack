@@ -6,12 +6,14 @@
 #include "Core/Layer.h"
 #include "Domain/ProcessSnapshot.h"
 #include "ShellMetrics.h"
+#include "TitleBarGeometry.h"
 #include "TitleBarLayer.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/RenderMetrics.h"
 #include "UI/Theme.h"
 #include "UserConfig.h"
 
+#include <SDL3/SDL.h>
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 
@@ -41,6 +43,20 @@ void ShellLayer::onAttach()
     auto& config = UserConfig::get();
     config.load();
     config.applyToApplication();
+
+    // The window may not be made smaller than the base minimum at this display's scale. Set here
+    // because the shell is always present: TitleBarLayer widens the minimum to cover its own
+    // content, but it is not created when native decorations are in use (#745), and without this
+    // the window would have no SDL-level minimum at all in that mode. UILayer attaches first, so
+    // the display scale is already known (#970).
+    if (SDL_Window* sdlWindow = Core::Application::get().getWindow().getHandle(); sdlWindow != nullptr)
+    {
+        const WindowMinimumSize baseMinimum = computeMinimumWindowSize(UI::Theme::get().displayScale(), 0.0F);
+        if (!SDL_SetWindowMinimumSize(sdlWindow, baseMinimum.width, baseMinimum.height))
+        {
+            spdlog::warn("SDL_SetWindowMinimumSize({}, {}) failed: {}", baseMinimum.width, baseMinimum.height, SDL_GetError());
+        }
+    }
 
     // Initialize panels
     m_Tabs.onAttach();
