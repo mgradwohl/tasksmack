@@ -2,6 +2,7 @@
 
 #include "App/Panel.h"
 #include "App/Panels/AdaptiveIntervalUtils.h"
+#include "App/Panels/ProcessDetailsLayout.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessSortUtils.h"
 #include "App/Panels/ProcessTableFlags.h"
@@ -934,7 +935,10 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         // expand/collapse control deliberately do NOT live here -- see the comment below and #906.
         if (col == ProcessColumn::PID)
         {
-            const bool isSelected = (m_SelectedPid == proc.pid);
+            // By identity, not PID alone: after the selected process exits, a new process given
+            // its PID is a different row and must not inherit the highlight.
+            const bool isSelected =
+                ProcessDetailsLayout::snapshotIsSelectedProcess(m_SelectedPid, m_SelectedUniqueKey, proc.pid, proc.uniqueKey);
 
             // The tree indent and expand/collapse button live in the Name column, not here. This
             // column is a fixed 60px, so indenting it pushed the PID text past the cell's clip
@@ -956,6 +960,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
                     selectableIdBuf.data(), isSelected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
             {
                 m_SelectedPid = proc.pid;
+                m_SelectedUniqueKey = proc.uniqueKey;
 
                 // Emit process selection event for other panels to react
                 Core::ProcessSelectedEvent event(proc.pid, proc.uniqueKey);

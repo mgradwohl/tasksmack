@@ -150,10 +150,21 @@ class MockGPUProbe : public Platform::IGPUProbe
         return *this;
     }
 
+    /// Makes enumerateGPUs() throw, simulating a probe that cannot list its devices.
+    MockGPUProbe& withEnumerationThrowing()
+    {
+        m_ThrowOnEnumerate = true;
+        return *this;
+    }
+
     // IGPUProbe interface implementation
     [[nodiscard]] std::vector<Platform::GPUInfo> enumerateGPUs() override
     {
         ++m_EnumerateCount;
+        if (m_ThrowOnEnumerate)
+        {
+            throw std::runtime_error("MockGPUProbe: simulated enumerateGPUs() failure");
+        }
         return m_GPUInfo;
     }
 
@@ -248,6 +259,7 @@ class MockGPUProbe : public Platform::IGPUProbe
     std::vector<Platform::ProcessGPUCounters> m_ProcessCounters;
     Platform::GPUCapabilities m_Capabilities;
     mutable bool m_ThrowOnNextCapabilitiesQuery = false;
+    bool m_ThrowOnEnumerate = false;
 
     std::atomic<std::uint32_t> m_EnumerateCount{0};
     std::atomic<std::uint32_t> m_ReadCountersCount{0};

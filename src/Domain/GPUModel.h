@@ -45,6 +45,9 @@ struct GPUPublication
     std::uint64_t version = 0;
     std::vector<GPUSnapshot> snapshots;
     std::vector<Platform::GPUInfo> gpuInfo;
+    /// False if enumerating the GPUs failed, in which case an empty gpuInfo means "could not look",
+    /// not "looked and found none". Consumers that report the absence of a GPU must check this.
+    bool gpuInfoKnown = false;
     Platform::GPUCapabilities capabilities;
     std::unordered_map<std::string, GPUPublishedHistory> histories;
 };
@@ -134,6 +137,9 @@ class GPUModel : public ISamplable
     std::unique_ptr<Platform::IGPUProbe> m_Probe;
     mutable std::mutex m_ProbeMutex;
     std::vector<Platform::GPUInfo> m_GPUInfo;
+    // False if the constructor's enumerateGPUs() threw, leaving m_GPUInfo empty for a reason other
+    // than there being no GPUs. Published as GPUPublication::gpuInfoKnown.
+    bool m_GPUInfoKnown = false;
     Platform::GPUCapabilities m_Capabilities;
     // False if the constructor's capabilities() query threw, leaving m_Capabilities at its
     // default (all-false) values. readProcessGPUCounters() must not treat that as proof

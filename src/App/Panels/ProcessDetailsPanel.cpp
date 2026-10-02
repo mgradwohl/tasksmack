@@ -13,6 +13,7 @@
 #include "ProcessDetailsPanel_PriorityHelpers.h"
 #include "UI/ChartWidgets.h"
 #include "UI/DialogMetrics.h"
+#include "UI/EmptyState.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/TabContent.h"
@@ -133,10 +134,22 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
         }
     }
 
-    if (snapshot != nullptr && snapshot->pid == m_SelectedPid)
+    // A snapshot only counts if it is of the selected process itself, not of a different process
+    // that has since been given its PID.
+    const bool isSelectedProcess = (snapshot != nullptr) && ProcessDetailsLayout::snapshotIsSelectedProcess(
+                                                                m_SelectedPid, m_SelectedUniqueKey, snapshot->pid, snapshot->uniqueKey);
+
+    if (isSelectedProcess)
     {
         m_CachedSnapshot = *snapshot;
         m_HasSnapshot = true;
+        m_ProcessExited = false;
+        // Selected by PID alone: take the identity from the first snapshot, so that a later reuse
+        // of the PID is still recognised as a different process.
+        if (m_SelectedUniqueKey == 0)
+        {
+            m_SelectedUniqueKey = snapshot->uniqueKey;
+        }
 
         updateSmoothedUsage(*snapshot, deltaTime);
 
@@ -195,12 +208,18 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
             trimHistory(nowSeconds);
         }
     }
-    else if (snapshot == nullptr || snapshot->pid != m_SelectedPid)
+    else
     {
         // Selection changed or no selection
         if (m_SelectedPid == -1)
         {
             m_HasSnapshot = false;
+        }
+        else if (ProcessDetailsLayout::selectedProcessHasExited(true, m_HasSnapshot, isSelectedProcess))
+        {
+            // The cached snapshot is kept (the tab still names the process) but no longer drawn as
+            // if it were live; renderContent() shows the exited state instead.
+            m_ProcessExited = true;
         }
     }
 }
@@ -229,7 +248,7 @@ void ProcessDetailsPanel::render(bool* open)
     ImGui::End();
 }
 
-std::string ProcessDetailsPanel::tabLabel() const
+const std::string& ProcessDetailsPanel::tabLabel() const
 {
     if (m_HasSnapshot && (m_SelectedPid != -1) && !m_CachedSnapshot.name.empty())
     {
@@ -244,8 +263,8 @@ void ProcessDetailsPanel::renderContent()
 {
     if (m_SelectedPid == -1)
     {
-        const auto& theme = UI::Theme::get();
-        ImGui::TextColored(theme.scheme().textMuted, "Select a process from the Processes panel to view details");
+        UI::Widgets::renderEmptyState(ICON_FA_CIRCLE_INFO "  No process selected",
+                                      "Select a process in the Processes tab to see its details, history and actions here.");
         return;
     }
 
@@ -255,10 +274,22 @@ void ProcessDetailsPanel::renderContent()
         return;
     }
 
+    if (m_ProcessExited)
+    {
+        // Replaces the whole pane, Actions tab included: nothing here may act on a PID that no
+        // longer belongs to this process.
+        const std::string detail = std::format(
+            "{} (PID {}) is no longer running. Select another process in the Processes tab.", m_CachedSnapshot.name, m_SelectedPid);
+        UI::Widgets::renderEmptyState(ICON_FA_TRIANGLE_EXCLAMATION "  Process exited", detail.c_str());
+        return;
+    }
+
     if (!m_HasSnapshot)
     {
-        const auto& theme = UI::Theme::get();
-        ImGui::TextColored(theme.scheme().textWarning, "Process %d not found (may have exited)", m_SelectedPid);
+        // Selected, but no snapshot of it has arrived: normally the frame or two before the first
+        // one does, otherwise a PID that is not in the process list at all.
+        const std::string detail = std::format("Process {} is not in the current process list.", m_SelectedPid);
+        UI::Widgets::renderEmptyState(ICON_FA_TRIANGLE_EXCLAMATION "  Process not found", detail.c_str());
         return;
     }
 
@@ -358,7 +389,7 @@ void ProcessDetailsPanel::onEvent(Core::Event& event)
     dispatcher.dispatch<Core::ProcessSelectedEvent>(
         [this](Core::ProcessSelectedEvent& e)
         {
-            setSelectedPid(e.getPid());
+            setSelectedPid(e.getPid(), e.getUniqueKey());
             return false; // Don't consume - other panels might care
         });
 
@@ -371,43 +402,54 @@ void ProcessDetailsPanel::onEvent(Core::Event& event)
         });
 }
 
-void ProcessDetailsPanel::setSelectedPid(std::int32_t pid)
+void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t uniqueKey)
 {
-    if (pid != m_SelectedPid)
+    // A different key under the same PID is a different process (the PID was reused), so it is a
+    // new selection and resets the pane like any other. An unknown key on either side is not a
+    // different process: re-selecting what is already shown must not wipe its history.
+    if (ProcessDetailsLayout::snapshotIsSelectedProcess(m_SelectedPid, m_SelectedUniqueKey, pid, uniqueKey))
     {
-        m_SelectedPid = pid;
-        m_CpuHistory.clear();
-        m_CpuUserHistory.clear();
-        m_CpuSystemHistory.clear();
-        m_MemoryHistory.clear();
-        m_SharedHistory.clear();
-        m_VirtualHistory.clear();
-        m_ThreadHistory.clear();
-        m_HandleHistory.clear();
-        m_PageFaultHistory.clear();
-        m_IoReadHistory.clear();
-        m_IoWriteHistory.clear();
-        m_NetSentHistory.clear();
-        m_NetRecvHistory.clear();
-        m_PowerHistory.clear();
-        m_GpuUtilHistory.clear();
-        m_GpuMemHistory.clear();
-        m_GdiHistory.clear();
-        m_Timestamps.clear();
-        m_LastHistorySnapshotVersion = 0;
-        m_HasSnapshot = false;
-        m_ShowConfirmDialog = false;
-        m_LastActionResult.clear();
-        m_SmoothedUsage = {};
-        m_PeakMemoryPercent = 0.0;
-        m_PriorityChanged = false;
-        m_PriorityNiceValue = 0;
-        m_PriorityError.clear(); // Clear priority error when switching processes
-
-        if (pid != -1)
+        if (m_SelectedUniqueKey == 0)
         {
-            spdlog::debug("ProcessDetailsPanel: selected PID {}", pid);
+            m_SelectedUniqueKey = uniqueKey;
         }
+        return;
+    }
+
+    m_SelectedPid = pid;
+    m_SelectedUniqueKey = uniqueKey;
+    m_CpuHistory.clear();
+    m_CpuUserHistory.clear();
+    m_CpuSystemHistory.clear();
+    m_MemoryHistory.clear();
+    m_SharedHistory.clear();
+    m_VirtualHistory.clear();
+    m_ThreadHistory.clear();
+    m_HandleHistory.clear();
+    m_PageFaultHistory.clear();
+    m_IoReadHistory.clear();
+    m_IoWriteHistory.clear();
+    m_NetSentHistory.clear();
+    m_NetRecvHistory.clear();
+    m_PowerHistory.clear();
+    m_GpuUtilHistory.clear();
+    m_GpuMemHistory.clear();
+    m_GdiHistory.clear();
+    m_Timestamps.clear();
+    m_LastHistorySnapshotVersion = 0;
+    m_HasSnapshot = false;
+    m_ProcessExited = false;
+    m_ShowConfirmDialog = false;
+    m_LastActionResult.clear();
+    m_SmoothedUsage = {};
+    m_PeakMemoryPercent = 0.0;
+    m_PriorityChanged = false;
+    m_PriorityNiceValue = 0;
+    m_PriorityError.clear(); // Clear priority error when switching processes
+
+    if (pid != -1)
+    {
+        spdlog::debug("ProcessDetailsPanel: selected PID {}", pid);
     }
 }
 
@@ -729,6 +771,7 @@ void ProcessDetailsPanel::renderCpuUsageSection()
             const UI::Widgets::HistoryChart chart(UI::Widgets::percentHistoryConfig("##ProcOverviewCPU", axisConfig.xMin, axisConfig.xMax));
             if (chart.active())
             {
+                UI::Widgets::drawCollectingHint(alignedCount);
                 if (alignedCount > 0)
                 {
                     const int plotCount = UI::Format::checkedCount(alignedCount);
@@ -874,6 +917,7 @@ void ProcessDetailsPanel::renderMemoryUsageSection()
                     UI::Widgets::percentHistoryConfig("##ProcOverviewMemory", axisConfig.xMin, axisConfig.xMax));
                 if (chart.active())
                 {
+                    UI::Widgets::drawCollectingHint(alignedCount);
                     // Draw peak working set as a horizontal reference line (never decreases)
                     if (m_PeakMemoryPercent > 0.0)
                     {
@@ -1055,6 +1099,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory()
                                                                              UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT));
         if (chart.active())
         {
+            UI::Widgets::drawCollectingHint(alignedCount);
             const int plotCount = UI::Format::checkedCount(alignedCount);
             plotLineWithFill("Threads",
                              timeData.data(),
@@ -1210,6 +1255,7 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
                                                                              UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC));
         if (chart.active())
         {
+            UI::Widgets::drawCollectingHint(alignedCount);
             const int plotCount = UI::Format::checkedCount(alignedCount);
             plotLineWithFill("Read",
                              timeData.data(),
@@ -1315,6 +1361,7 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
                                                                              UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC));
         if (chart.active())
         {
+            UI::Widgets::drawCollectingHint(alignedCount);
             const int plotCount = UI::Format::checkedCount(alignedCount);
             plotLineWithFill("Sent",
                              timeData.data(),
@@ -1409,6 +1456,7 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc)
                                                                              UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS));
         if (chart.active())
         {
+            UI::Widgets::drawCollectingHint(powerData.size());
             if (!powerData.empty())
             {
                 plotLineWithFill(
@@ -1664,6 +1712,7 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs()
             const UI::Widgets::HistoryChart chart(UI::Widgets::percentHistoryConfig("##GPUUtilPlot", axisConfig.xMin, axisConfig.xMax));
             if (chart.active())
             {
+                UI::Widgets::drawCollectingHint(alignedCount);
                 if (plotCount > 0)
                 {
                     plotLineWithFill("GPU %",
@@ -1714,6 +1763,7 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs()
                                                                                  UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES));
             if (chart.active())
             {
+                UI::Widgets::drawCollectingHint(alignedCount);
                 if (plotCount > 0)
                 {
                     plotLineWithFill("GPU Memory",

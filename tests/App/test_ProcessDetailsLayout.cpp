@@ -146,5 +146,65 @@ TEST(ProcessDetailsLayoutTest, ActionButtonSurvivesDegenerateInput)
     EXPECT_FLOAT_EQ(computeActionButtonWidth(90.0F, REFERENCE_EM_PX, 1256.0F, -8.0F), 180.0F);
 }
 
+// ========== Selected-process identity (#927) ==========
+
+using ProcessDetailsLayout::snapshotIsSelectedProcess;
+
+TEST(ProcessDetailsLayoutTest, SamePidAndKeyIsTheSelectedProcess)
+{
+    EXPECT_TRUE(snapshotIsSelectedProcess(/*selectedPid=*/4242, /*selectedKey=*/0xABCDU, /*snapshotPid=*/4242, /*snapshotKey=*/0xABCDU));
+}
+
+// The reviewed defect: the PID has been reused. Same number, different process -- it must not be
+// taken for the one the user selected, or an exited process's pane and its Terminate/Kill buttons
+// come back aimed at something else.
+TEST(ProcessDetailsLayoutTest, ReusedPidWithDifferentKeyIsNotTheSelectedProcess)
+{
+    EXPECT_FALSE(snapshotIsSelectedProcess(4242, 0xABCDU, 4242, 0x1234U));
+}
+
+TEST(ProcessDetailsLayoutTest, DifferentPidIsNeverTheSelectedProcess)
+{
+    EXPECT_FALSE(snapshotIsSelectedProcess(4242, 0xABCDU, 4243, 0xABCDU));
+    EXPECT_FALSE(snapshotIsSelectedProcess(4242, 0, 4243, 0));
+}
+
+// A key of zero means "not known"; the PID is then all there is to compare.
+TEST(ProcessDetailsLayoutTest, UnknownKeyFallsBackToPid)
+{
+    EXPECT_TRUE(snapshotIsSelectedProcess(4242, 0, 4242, 0x1234U));
+    EXPECT_TRUE(snapshotIsSelectedProcess(4242, 0xABCDU, 4242, 0));
+    EXPECT_TRUE(snapshotIsSelectedProcess(4242, 0, 4242, 0));
+}
+
+// ========== Exited process (#927) ==========
+
+using ProcessDetailsLayout::selectedProcessHasExited;
+
+// A process that was being shown and is now missing from the process list has exited.
+TEST(ProcessDetailsLayoutTest, MissingAfterBeingSeenIsExited)
+{
+    EXPECT_TRUE(selectedProcessHasExited(/*hasSelection=*/true, /*hadSnapshot=*/true, /*snapshotPresent=*/false));
+}
+
+// Missing before any snapshot has arrived is the lookup still in progress, not an exit: the pane
+// must not announce that a just-selected process has exited.
+TEST(ProcessDetailsLayoutTest, MissingBeforeBeingSeenIsNotExited)
+{
+    EXPECT_FALSE(selectedProcessHasExited(true, false, false));
+}
+
+TEST(ProcessDetailsLayoutTest, PresentProcessIsNotExited)
+{
+    EXPECT_FALSE(selectedProcessHasExited(true, true, true));
+    EXPECT_FALSE(selectedProcessHasExited(true, false, true));
+}
+
+TEST(ProcessDetailsLayoutTest, NoSelectionIsNeverExited)
+{
+    EXPECT_FALSE(selectedProcessHasExited(false, true, false));
+    EXPECT_FALSE(selectedProcessHasExited(false, false, false));
+}
+
 } // namespace
 } // namespace App

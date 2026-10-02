@@ -150,6 +150,7 @@ add_executable(TaskSmackTests
     UI/test_ChartWidgets.cpp
     UI/test_ChartGridLayout.cpp
     UI/test_HistoryPlotHeight.cpp
+    UI/test_EmptyState.cpp
     UI/test_Format.cpp
     UI/test_RenderMetrics.cpp
     UI/test_RateAxis.cpp
@@ -171,6 +172,7 @@ add_executable(TaskSmackTests
     App/test_ProcessTableFlags.cpp
     App/test_ProcessTableLayout.cpp
     App/test_ProcessDetailsLayout.cpp
+    App/test_GpuSectionEmptyState.cpp
     App/test_ProcessRowFormat.cpp
     Platform/test_CgroupFreezerPath.cpp
     Platform/test_ProcessName.cpp

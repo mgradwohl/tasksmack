@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 namespace App::ProcessDetailsLayout
 {
@@ -84,6 +85,42 @@ computeActionButtonWidth(float widestLabelPx, float emPx, float availableWidthPx
     const float overhead = (std::isfinite(columnOverheadPx) && columnOverheadPx > 0.0F) ? columnOverheadPx : 0.0F;
     const float perColumn = (availableWidthPx / ACTION_BUTTON_COLUMNS) - overhead;
     return std::max(1.0F, std::floor(std::min(wanted, perColumn)));
+}
+
+/// Whether a snapshot is of the process that was selected, and not merely of its PID (#927).
+///
+/// PIDs are reused. A process is selected by PID together with its unique key (a hash of the PID
+/// and start time), and a snapshot carrying the same PID but a different key is a different process
+/// that has been handed the old one's number. Accepting it would bring an exited process's pane
+/// back to life showing -- and offering to Terminate or Kill -- something the user never selected.
+///
+/// A key of zero means "not known" on either side (older callers select by PID alone), and then
+/// the PID is all there is to go on.
+[[nodiscard]] constexpr bool
+snapshotIsSelectedProcess(std::int32_t selectedPid, std::uint64_t selectedKey, std::int32_t snapshotPid, std::uint64_t snapshotKey) noexcept
+{
+    if (selectedPid != snapshotPid)
+    {
+        return false;
+    }
+    return (selectedKey == 0) || (snapshotKey == 0) || (selectedKey == snapshotKey);
+}
+
+/// Whether the selected process has just gone missing and should now be shown as exited (#927).
+///
+/// The pane is handed the selected process's snapshot every frame, or nothing when the process is
+/// not in the current process list. Nothing arriving before any snapshot has been seen is the
+/// lookup still in progress; nothing arriving *after* one has been seen is the process exiting.
+/// The pane used to treat both the same and kept drawing the last snapshot it had, so an exited
+/// process went on looking alive -- with its Terminate and Kill buttons still aimed at a PID the
+/// system is free to hand to something else.
+///
+/// @param hasSelection      A process is selected.
+/// @param hadSnapshot       A snapshot of it has been received since it was selected.
+/// @param snapshotPresent   A snapshot of it was provided this frame.
+[[nodiscard]] constexpr bool selectedProcessHasExited(bool hasSelection, bool hadSnapshot, bool snapshotPresent) noexcept
+{
+    return hasSelection && hadSnapshot && !snapshotPresent;
 }
 
 } // namespace App::ProcessDetailsLayout

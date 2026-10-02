@@ -48,13 +48,17 @@ class ProcessDetailsPanel : public Panel
     void renderContent() override;
 
     /// Get a label for this panel (process name or "Select a process").
-    [[nodiscard]] std::string tabLabel() const;
+    /// Returned by reference so a caller can compare it against a cached copy every frame without
+    /// allocating. The reference is valid until the next updateWithSnapshot() or selection change.
+    [[nodiscard]] const std::string& tabLabel() const;
 
     /// Handle application events (process selection)
     void onEvent(Core::Event& event) override;
 
     /// Set the process to display.
-    void setSelectedPid(std::int32_t pid);
+    /// @param uniqueKey Identity of the process (hash of PID and start time), or 0 if not known.
+    ///        With it, a later process that reuses the PID is not mistaken for the selected one.
+    void setSelectedPid(std::int32_t pid, std::uint64_t uniqueKey = 0);
 
     /// Get currently displayed PID.
     [[nodiscard]] std::int32_t selectedPid() const
@@ -106,6 +110,7 @@ class ProcessDetailsPanel : public Panel
     void updateSmoothedUsage(const Domain::ProcessSnapshot& snapshot, float deltaTimeSeconds);
 
     std::int32_t m_SelectedPid = -1;
+    std::uint64_t m_SelectedUniqueKey = 0; // 0 = not known; adopted from the first snapshot
     std::uint64_t m_LastHistorySnapshotVersion = 0;
     float m_LastDeltaSeconds = 0.0F;
     bool m_IsActiveTab = false;
@@ -140,6 +145,7 @@ class ProcessDetailsPanel : public Panel
     // Cached snapshot for rendering
     Domain::ProcessSnapshot m_CachedSnapshot;
     bool m_HasSnapshot = false;
+    bool m_ProcessExited = false; // Had a snapshot of the selected process, and it has gone missing (#927)
 
     // Process actions
     std::unique_ptr<Platform::IProcessActions> m_ProcessActions;
