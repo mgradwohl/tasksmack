@@ -90,11 +90,43 @@ TEST(PriorityHelpersTest, SliderWidthIsNotStretchedToAvailableSpace)
     EXPECT_FLOAT_EQ(m.sliderWidth, 400.0F);
 }
 
-TEST(PriorityHelpersTest, SliderWidthFloorWinsOverAvailableSpace)
+// The content area does not scroll horizontally, so any width beyond what is available is clipped
+// and unreachable. No minimum may win over the available space, however small it is.
+TEST(PriorityHelpersTest, SliderWidthNeverExceedsAvailableSpace)
 {
-    const float em = 24.0F;
-    const PrioritySliderMetrics m = computePrioritySliderMetrics(em, 1.0F);
-    EXPECT_FLOAT_EQ(m.sliderWidth, PRIORITY_SLIDER_MIN_WIDTH_EM * em);
+    for (const float em : {8.0F, App::REFERENCE_EM_PX, 24.0F, 48.0F})
+    {
+        for (const float available : {1.0F, 20.0F, 120.0F, 500.0F, 5000.0F})
+        {
+            const PrioritySliderMetrics m = computePrioritySliderMetrics(em, available);
+            EXPECT_LE(m.sliderWidth, available) << "em=" << em << " available=" << available;
+            EXPECT_GT(m.sliderWidth, 0.0F) << "em=" << em << " available=" << available;
+        }
+    }
+}
+
+TEST(PriorityHelpersTest, BadgeCenterFollowsThumbWithinTrack)
+{
+    // Track from x=100 to x=500, badge 40 wide: the centre may range over [120, 480].
+    EXPECT_FLOAT_EQ(computeBadgeCenterX(300.0F, 100.0F, 400.0F, 20.0F), 300.0F);
+    EXPECT_FLOAT_EQ(computeBadgeCenterX(100.0F, 100.0F, 400.0F, 20.0F), 120.0F);
+    EXPECT_FLOAT_EQ(computeBadgeCenterX(500.0F, 100.0F, 400.0F, 20.0F), 480.0F);
+}
+
+// A track narrower than the badge leaves no valid clamp range; the badge is centred on the track
+// rather than handing std::clamp crossed bounds.
+TEST(PriorityHelpersTest, BadgeCenterIsTrackCentreWhenTrackIsNarrowerThanBadge)
+{
+    EXPECT_FLOAT_EQ(computeBadgeCenterX(100.0F, 100.0F, 30.0F, 20.0F), 115.0F);
+    EXPECT_FLOAT_EQ(computeBadgeCenterX(130.0F, 100.0F, 30.0F, 20.0F), 115.0F);
+    EXPECT_FLOAT_EQ(computeBadgeCenterX(100.0F, 100.0F, 1.0F, 20.0F), 100.5F);
+}
+
+TEST(PriorityHelpersTest, BadgeCenterExactFit)
+{
+    // Badge exactly as wide as the track: one valid position, the centre.
+    EXPECT_FLOAT_EQ(computeBadgeCenterX(100.0F, 100.0F, 40.0F, 20.0F), 120.0F);
+    EXPECT_FLOAT_EQ(computeBadgeCenterX(140.0F, 100.0F, 40.0F, 20.0F), 120.0F);
 }
 
 TEST(PriorityHelpersTest, SliderWidthUnconstrainedWhenAvailableIsNotUsable)

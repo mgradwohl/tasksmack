@@ -2068,7 +2068,7 @@ void ProcessDetailsPanel::renderPrioritySection()
     ctx.priorityNormalColor = theme.scheme().priorityNormalColor;
     ctx.priorityLowColor = theme.scheme().priorityLowColor;
     // A panel too narrow to leave any room is not "unconstrained": pass the smallest positive width
-    // so the track falls to its floor instead of its full authored width.
+    // so the track shrinks to that instead of taking its full authored width and being clipped.
     ctx.metrics = Detail::computePrioritySliderMetrics(emPx, std::max(availableTrackWidth, 1.0F));
     const Detail::PrioritySliderMetrics& metrics = ctx.metrics;
 
@@ -2137,8 +2137,11 @@ void ProcessDetailsPanel::renderPrioritySection()
     const bool canApply = m_PriorityChanged && m_HasSnapshot;
 
     // Right-align the Apply button
+    // Capped to the panel for the same reason the track is: the content area does not scroll
+    // horizontally, so a button wider than the space available would be clipped.
     const float applyButtonWidth =
-        UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize("Apply").x, emPx, PRIORITY_APPLY_BUTTON_MIN_EM);
+        std::min(UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize("Apply").x, emPx, PRIORITY_APPLY_BUTTON_MIN_EM),
+                 std::max(ImGui::GetContentRegionAvail().x, 1.0F));
     // The track starts after the "High" label, so the label offset belongs in the sum: without it the
     // button stopped that far short of the track's right edge.
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0F, highLabelOffset + metrics.sliderWidth - applyButtonWidth));
@@ -2204,9 +2207,8 @@ void ProcessDetailsPanel::drawPriorityBadge(ImDrawList* drawList, const Priority
     const float badgeWidth = textSize.x + (ctx.style->FramePadding.x * 2.0F);
     const float badgeHalfWidth = badgeWidth * 0.5F;
 
-    // Clamp badge position to stay within slider bounds
-    const float clampedBadgeX =
-        std::clamp(badgeX, ctx.cursorStart.x + badgeHalfWidth, ctx.cursorStart.x + ctx.metrics.sliderWidth - badgeHalfWidth);
+    // Keep the badge over the slider rather than hanging off either end
+    const float clampedBadgeX = Detail::computeBadgeCenterX(badgeX, ctx.cursorStart.x, ctx.metrics.sliderWidth, badgeHalfWidth);
 
     // Badge rectangle
     const ImVec2 badgeMin(clampedBadgeX - badgeHalfWidth, badgeY);

@@ -40,10 +40,6 @@ inline constexpr float PRIORITY_THUMB_OUTLINE_THICKNESS_EM = 0.1875F; // 2px, ou
 inline constexpr float PRIORITY_LABEL_PADDING_EM = 0.75F;             // 8px, between High/Low labels and slider
 inline constexpr float PRIORITY_APPLY_BUTTON_MIN_EM = 11.25F;         // 120px, floor on the Apply button
 
-/// Narrowest the track may be squeezed to when the panel is too narrow for the authored width.
-/// Below this the 40 nice steps are too close together to pick between with a pointer.
-inline constexpr float PRIORITY_SLIDER_MIN_WIDTH_EM = 10.0F;
-
 /// Thumb radius as a fraction of the track height, so the thumb overhangs the track slightly.
 inline constexpr float PRIORITY_THUMB_RADIUS_FRACTION = 0.6F;
 
@@ -81,8 +77,10 @@ struct PrioritySliderMetrics
  *
  * The track is the only part that can outgrow its container: at Even Huger on a scaled display its
  * authored width is well over a thousand pixels, so it is capped to the space the panel actually
- * has. The floor deliberately wins over that cap -- a track that overflows a very narrow panel is
- * still usable by scrolling, one squeezed to nothing is not.
+ * has. There is deliberately no minimum width that could win over that cap: the panel's content
+ * area does not scroll horizontally, so a track wider than the space available is clipped and the
+ * nice values past the clip cannot be reached with the pointer. A short track that is all on screen
+ * is still fully usable, by pointer and by keyboard.
  *
  * @param emPx One em, i.e. ImGui::GetFontSize()
  * @param availableTrackWidthPx Width left for the track once the High/Low labels and their padding
@@ -96,7 +94,7 @@ struct PrioritySliderMetrics
     float sliderWidth = PRIORITY_SLIDER_WIDTH_EM * em;
     if (std::isfinite(availableTrackWidthPx) && availableTrackWidthPx > 0.0F)
     {
-        sliderWidth = std::max(std::min(sliderWidth, availableTrackWidthPx), PRIORITY_SLIDER_MIN_WIDTH_EM * em);
+        sliderWidth = std::min(sliderWidth, availableTrackWidthPx);
     }
 
     const float sliderHeight = PRIORITY_SLIDER_HEIGHT_EM * em;
@@ -112,6 +110,30 @@ struct PrioritySliderMetrics
         .thumbOutlineThickness = std::max(PRIORITY_THUMB_OUTLINE_THICKNESS_EM * em, PRIORITY_THUMB_OUTLINE_MIN_PX),
         .labelPadding = PRIORITY_LABEL_PADDING_EM * em,
     };
+}
+
+/**
+ * @brief Horizontal centre of the value badge, kept over the track
+ *
+ * The badge follows the thumb but is not allowed to hang off either end of the track. When the track
+ * is narrower than the badge there is no position that satisfies both ends, so the badge is centred
+ * on the track instead -- std::clamp with its bounds crossed is undefined behaviour.
+ *
+ * @param thumbX Screen X of the thumb, which the badge wants to sit above
+ * @param trackStartX Screen X of the track's left edge
+ * @param trackWidthPx Width of the track
+ * @param badgeHalfWidthPx Half the badge's width
+ * @return float Screen X for the badge's centre
+ */
+[[nodiscard]] inline auto computeBadgeCenterX(float thumbX, float trackStartX, float trackWidthPx, float badgeHalfWidthPx) noexcept -> float
+{
+    const float lowest = trackStartX + badgeHalfWidthPx;
+    const float highest = trackStartX + trackWidthPx - badgeHalfWidthPx;
+    if (!(lowest <= highest))
+    {
+        return trackStartX + (trackWidthPx * 0.5F);
+    }
+    return std::clamp(thumbX, lowest, highest);
 }
 
 /**
