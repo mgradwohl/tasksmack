@@ -239,8 +239,7 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
 /// than its content needed (#913).
 ///
 /// ImGui rescales a live table's widths itself when the font changes (ImGuiTable::RefScale), so
-/// this only has to make the *starting* widths font-relative. It also corrects "Size all columns to
-/// default" in the header context menu, which re-reads this value.
+/// this only has to make the *starting* widths font-relative.
 ///
 /// @param info  Column metadata from getColumnInfo().
 /// @param emPx  One em, i.e. ImGui::GetFontSize().
