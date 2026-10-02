@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <limits>
 
 namespace App
@@ -122,6 +123,64 @@ TEST(ProcessTableLayoutTest, NonFiniteWidthsAreNotClipped)
     EXPECT_FALSE(isCellTextClipped(60.0F, nan));
     EXPECT_FALSE(isCellTextClipped(inf, 120.0F));
     EXPECT_FALSE(isCellTextClipped(60.0F, inf));
+}
+
+// ========== Filter box width (#965) ==========
+
+using ProcessTableLayout::computeFilterWidth;
+using ProcessTableLayout::FILTER_WIDTH_EM;
+
+// One em at the reference configuration: the Medium preset (8pt) on a 1.0 display scale, at 96 DPI.
+constexpr float REFERENCE_EM = 32.0F / 3.0F;
+
+// The em multiple reproduces the fixed 200px it replaces, so the box is unchanged at the reference.
+TEST(ProcessTableLayoutTest, FilterWidthIsUnchangedAtTheReferenceConfiguration)
+{
+    EXPECT_FLOAT_EQ(computeFilterWidth(/*hintWidthPx=*/95.0F, /*framePaddingPx=*/4.0F, REFERENCE_EM, /*rowWidthPx=*/1256.0F), 200.0F);
+}
+
+// The reported case: Even Huger on a 175% display, where one em is about 37px and the hint about
+// 290px. A 200px box cut the hint to "Filter by nam"; the box must now hold all of it.
+TEST(ProcessTableLayoutTest, FilterWidthGrowsWithTheFont)
+{
+    const float width = computeFilterWidth(290.0F, 9.0F, 37.33F, 1976.0F);
+    EXPECT_FLOAT_EQ(width, FILTER_WIDTH_EM * 37.33F);
+    EXPECT_GT(width, 290.0F + 18.0F);
+}
+
+// A hint wider than the em multiple (a longer translation, a condensed font) still fits.
+TEST(ProcessTableLayoutTest, FilterWidthIsNeverNarrowerThanItsHint)
+{
+    EXPECT_FLOAT_EQ(computeFilterWidth(400.0F, 6.0F, 10.0F, 4000.0F), 412.0F);
+}
+
+// On a narrow pane the box gives way to the summary and the view toggle that share its row.
+TEST(ProcessTableLayoutTest, FilterWidthIsCappedToHalfTheRow)
+{
+    EXPECT_FLOAT_EQ(computeFilterWidth(290.0F, 9.0F, 37.33F, 800.0F), 400.0F);
+}
+
+TEST(ProcessTableLayoutTest, FilterWidthSurvivesDegenerateInput)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+
+    // Unknown row width: no cap.
+    EXPECT_FLOAT_EQ(computeFilterWidth(95.0F, 4.0F, REFERENCE_EM, 0.0F), 200.0F);
+    EXPECT_FLOAT_EQ(computeFilterWidth(95.0F, 4.0F, REFERENCE_EM, nan), 200.0F);
+    EXPECT_FLOAT_EQ(computeFilterWidth(95.0F, 4.0F, REFERENCE_EM, inf), 200.0F);
+
+    for (const float width : {
+             computeFilterWidth(nan, 4.0F, 10.0F, 1000.0F),
+             computeFilterWidth(95.0F, nan, 10.0F, 1000.0F),
+             computeFilterWidth(95.0F, 4.0F, nan, 1000.0F),
+             computeFilterWidth(95.0F, 4.0F, 0.0F, 1000.0F),
+             computeFilterWidth(-95.0F, -4.0F, -10.0F, 1000.0F),
+         })
+    {
+        EXPECT_TRUE(std::isfinite(width));
+        EXPECT_GT(width, 0.0F);
+    }
 }
 
 } // namespace

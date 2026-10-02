@@ -21,6 +21,7 @@
 #include "UI/Format.h"
 #include "UI/HistoryPlotHeight.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/LineLayout.h"
 #include "UI/TabContent.h"
 #include "UI/Theme.h"
 
@@ -549,10 +550,24 @@ void SystemMetricsPanel::renderOverview()
     ImGui::SameLine(0, 0);
     ImGui::TextUnformatted(memoryStr.c_str());
 
-    // Right-align uptime
+    // Right-align process count and uptime -- beside the CPU summary when both fit, otherwise on
+    // a line of their own. Positioned from the right edge alone they were drawn straight over the
+    // summary on a window too narrow for both (#967).
     if (rightBlockWidth > 0.0F)
     {
-        ImGui::SameLine(std::max(0.0F, availWidth - rightBlockWidth));
+        // Window-local X throughout: the space ImGui::SameLine() and SetCursorPosX() work in.
+        const float lineStartX = ImGui::GetCursorStartPos().x;
+        const float summaryEndX = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + ImGui::GetScrollX();
+        const auto placement =
+            UI::LineLayout::placeTrailingBlock(lineStartX, summaryEndX, availWidth, rightBlockWidth, style.ItemSpacing.x * 2.0F);
+        if (placement.sameLine)
+        {
+            ImGui::SameLine(placement.x);
+        }
+        else
+        {
+            ImGui::SetCursorPosX(placement.x);
+        }
         if (!processStr.empty())
         {
             ImGui::TextUnformatted(processStr.c_str());
@@ -957,7 +972,19 @@ void SystemMetricsPanel::renderOverview()
                                              (headerStyle.ItemSpacing.x * (static_cast<float>(OVERVIEW_NOW_BAR_COLUMNS) - 1.0F));
                 const float chartRightEdge = ImGui::GetContentRegionAvail().x - barColumnWidth - headerStyle.CellPadding.x;
                 const float rightTextWidth = ImGui::CalcTextSize(headerRight.c_str()).x;
-                ImGui::SameLine(chartRightEdge - rightTextWidth);
+                // Same guard as the header line above: beside the heading when it fits, on its own
+                // line when it does not, never over it (#967).
+                const float headingEndX = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + ImGui::GetScrollX();
+                const auto placement = UI::LineLayout::placeTrailingBlock(
+                    ImGui::GetCursorStartPos().x, headingEndX, chartRightEdge, rightTextWidth, headerStyle.ItemSpacing.x * 2.0F);
+                if (placement.sameLine)
+                {
+                    ImGui::SameLine(placement.x);
+                }
+                else
+                {
+                    ImGui::SetCursorPosX(placement.x);
+                }
                 ImGui::TextUnformatted(headerRight.c_str());
             }
 

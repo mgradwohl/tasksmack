@@ -114,7 +114,7 @@ inline constexpr uint32_t ICON_MAX_FA = 0xf8ff;
 // ============================================================================
 // Menu & Navigation Icons
 // ============================================================================
-#define ICON_FA_DOOR_OPEN "\xef\x94\xbb" // U+f52b - Exit/door
+#define ICON_FA_DOOR_OPEN "\xef\x94\xab" // U+f52b - Exit/door
 #define ICON_FA_WRENCH "\xef\x82\xad"    // U+f0ad - Tools/wrench
 #define ICON_FA_PALETTE "\xef\x94\xbf"   // U+f53f - Theme/palette
 #define ICON_FA_FONT "\xef\x80\xb1"      // U+f031 - Font
@@ -131,7 +131,7 @@ inline constexpr uint32_t ICON_MAX_FA = 0xf8ff;
 #define ICON_FA_VIDEO "\xef\x80\xbd"     // U+f03d - Video camera
 #define ICON_FA_WIFI "\xef\x87\xab"      // U+f1eb - WiFi
 #define ICON_FA_BLUETOOTH "\xef\x8a\x93" // U+f293 - Bluetooth
-#define ICON_FA_ETHERNET "\xef\x9b\x96"  // U+f796 - Ethernet plug
+#define ICON_FA_ETHERNET "\xef\x9e\x96"  // U+f796 - Ethernet plug
 #define ICON_FA_CLOUD "\xef\x83\x82"     // U+f0c2 - Cloud (for virtual/VPN)
 #define ICON_FA_HOUSE "\xef\x80\x95"     // U+f015 - House (for loopback)
 

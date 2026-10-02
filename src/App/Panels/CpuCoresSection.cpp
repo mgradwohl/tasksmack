@@ -6,6 +6,7 @@
 #include "UI/ChartGridLayout.h"
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
+#include "UI/HistoryPlotHeight.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -40,9 +41,26 @@ using UI::Widgets::renderChartGrid;
 using UI::Widgets::renderHistoryWithNowBars;
 using UI::Widgets::smoothTowards;
 
-// Minimum plot height a core cell will shrink to before the grid prefers scrolling over
-// squashing charts flat -- keeps the chart legible even on a very short window with many rows.
-constexpr float MIN_PLOT_HEIGHT = 60.0F;
+/// Minimum plot height a core cell will shrink to before the grid prefers scrolling over squashing
+/// charts flat. The same font-relative floor the Overview's and the per-disk charts hold
+/// (UI/HistoryPlotHeight.h), in whole pixels.
+///
+/// It was a fixed 60px, which only ever suited one font on one display density: at Even Huger on a
+/// 175% display the grid accepted cells whose plot was three ems tall, and the six Y-axis labels
+/// were drawn on top of each other (#964). #958 made the same change for the per-disk grid.
+///
+/// The shared floor is 90px at the reference em, not 60px, so this is a higher floor everywhere,
+/// not only a scaled one: a machine with many cores starts scrolling sooner than it used to, in
+/// exchange for charts whose axis labels do not collide.
+[[nodiscard]] float minCorePlotHeight()
+{
+    return std::floor(UI::Widgets::historyPlotMinHeight(ImGui::GetFontSize()));
+}
+
+/// Narrowest a core cell may get, in ems, before the grid uses fewer columns instead: 240px at the
+/// reference em (32/3 px), the fixed width it replaces, so the width floor is unchanged at the
+/// reference configuration. Below this the X-axis labels run into each other.
+constexpr float MIN_CELL_WIDTH_EM = 22.5F;
 
 } // namespace
 
@@ -114,7 +132,7 @@ void renderCpuCoresSection(RenderContext& ctx)
         // of its own -- Spacing() is a zero-size item, so it still costs one full ItemSpacing.y
         // like any other item), and renderHistoryWithNowBars' nested table CellPadding -- omitting
         // any of those understates the floor, so the grid can pick a cellHeight that only fits a
-        // plot smaller than MIN_PLOT_HEIGHT once the real overhead is subtracted, which then clips
+        // plot smaller than minCorePlotHeight() once the real overhead is subtracted, which then clips
         // invisibly against the cell's NoScrollbar instead of the grid falling back to more
         // rows/scrolling (#823 review).
         const float approxLabelOverhead = (ImGui::GetStyle().WindowPadding.y * 2.0F) + ImGui::GetTextLineHeight() +
@@ -125,8 +143,8 @@ void renderCpuCoresSection(RenderContext& ctx)
         const ChartGridConfig gridConfig{
             .availableWidth = avail.x,
             .availableHeight = avail.y,
-            .minCellWidth = 240.0F + barColumnAllowance,
-            .minCellHeight = approxLabelOverhead + MIN_PLOT_HEIGHT,
+            .minCellWidth = (MIN_CELL_WIDTH_EM * ImGui::GetFontSize()) + barColumnAllowance,
+            .minCellHeight = approxLabelOverhead + minCorePlotHeight(),
         };
 
         // Every cell gets the same cellHeight (ImGuiTableFlags_SizingStretchSame) and renders an
@@ -195,7 +213,7 @@ void renderCpuCoresSection(RenderContext& ctx)
                             const float measuredOverhead = *cachedOverhead;
 
                             std::vector<float> timeData = buildTimeAxis(timestamps, samples.size(), nowSeconds);
-                            const float plotHeight = std::max(MIN_PLOT_HEIGHT, cellHeight - measuredOverhead);
+                            const float plotHeight = std::max(minCorePlotHeight(), cellHeight - measuredOverhead);
 
                             // Capture necessary variables by value/reference for lambda
                             const auto& sampleData = samples;

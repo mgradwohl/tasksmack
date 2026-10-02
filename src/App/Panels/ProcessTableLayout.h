@@ -72,4 +72,39 @@ inline constexpr float CLIP_TOLERANCE_PX = 0.5F;
     return textWidthPx > (availWidthPx + CLIP_TOLERANCE_PX);
 }
 
+/// Width of the filter box above the table, in ems: 200px at the reference em (32/3 px), which is
+/// the fixed pixel width it replaces, so the box is unchanged at the reference configuration.
+inline constexpr float FILTER_WIDTH_EM = 18.75F;
+
+/// Largest share of the toolbar row the filter box may take. The row also carries the process
+/// summary and the view toggle, right-aligned; the box must not grow into them on a narrow pane.
+inline constexpr float FILTER_MAX_ROW_FRACTION = 0.5F;
+
+/// Width of the "Filter by name..." box (#965).
+///
+/// It was a fixed 200px. At Even Huger on a 175% display that is under five and a half ems: the
+/// hint was cut to "Filter by nam" and the box held nine typed characters. The box is now a number
+/// of ems, never narrower than its own hint, and never more than half the row.
+///
+/// @param hintWidthPx     Measured width of the hint text.
+/// @param framePaddingPx  Horizontal frame padding on one side (ImGuiStyle::FramePadding.x).
+/// @param emPx            One em, i.e. ImGui::GetFontSize().
+/// @param rowWidthPx      Width of the toolbar row; non-positive or non-finite means "unknown".
+[[nodiscard]] inline float computeFilterWidth(float hintWidthPx, float framePaddingPx, float emPx, float rowWidthPx) noexcept
+{
+    const float em = (std::isfinite(emPx) && emPx > 0.0F) ? emPx : 1.0F;
+    const float hint = (std::isfinite(hintWidthPx) && hintWidthPx > 0.0F) ? hintWidthPx : 0.0F;
+    const float padding = (std::isfinite(framePaddingPx) && framePaddingPx > 0.0F) ? framePaddingPx : 0.0F;
+
+    const float forHint = hint + (padding * 2.0F);
+    const float wanted = (FILTER_WIDTH_EM * em > forHint) ? (FILTER_WIDTH_EM * em) : forHint;
+    if (!std::isfinite(rowWidthPx) || rowWidthPx <= 0.0F)
+    {
+        return wanted;
+    }
+
+    const float cap = rowWidthPx * FILTER_MAX_ROW_FRACTION;
+    return (wanted < cap) ? wanted : cap;
+}
+
 } // namespace App::ProcessTableLayout

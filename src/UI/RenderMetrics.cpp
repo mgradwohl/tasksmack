@@ -65,8 +65,11 @@ void RenderMetrics::renderOverlay(bool* open)
     // different capture sessions can be told apart later. Synced from the persisted value once;
     // edits below flow back into m_Scenario immediately so a mid-session export picks them up.
     static std::string scenarioInput = scenario();
-    ImGui::SetNextItemWidth(200.0F);
-    if (ImGui::InputTextWithHint("Scenario", "e.g. idle, resize, 1000-processes", &scenarioInput))
+    // Wide enough for its own hint at the current font; a fixed 200px cut it short from about the
+    // Large preset up (#965).
+    constexpr const char* SCENARIO_HINT = "e.g. idle, resize, 1000-processes";
+    ImGui::SetNextItemWidth(ImGui::CalcTextSize(SCENARIO_HINT).x + (ImGui::GetStyle().FramePadding.x * 2.0F));
+    if (ImGui::InputTextWithHint("Scenario", SCENARIO_HINT, &scenarioInput))
     {
         setScenario(scenarioInput);
     }
@@ -84,8 +87,14 @@ void RenderMetrics::renderOverlay(bool* open)
     {
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableSetupColumn("Chart", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("Vertices", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultSort, 80.0F);
-        ImGui::TableSetupColumn("CPU (us)", ImGuiTableColumnFlags_WidthFixed, 80.0F);
+        // Measured from the header and a value as wide as these columns get, rather than a fixed
+        // 80px that clipped both headers at the larger font presets (#966). The sort arrow takes a
+        // frame's height beside the header text.
+        const float sortArrowWidth = ImGui::GetFrameHeight();
+        const float verticesWidth = std::max(ImGui::CalcTextSize("Vertices").x + sortArrowWidth, ImGui::CalcTextSize("0000000").x);
+        const float cpuWidth = std::max(ImGui::CalcTextSize("CPU (us)").x + sortArrowWidth, ImGui::CalcTextSize("0000000.0").x);
+        ImGui::TableSetupColumn("Vertices", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultSort, verticesWidth);
+        ImGui::TableSetupColumn("CPU (us)", ImGuiTableColumnFlags_WidthFixed, cpuWidth);
         ImGui::TableHeadersRow();
 
         // Copy for display sorting so the recorded order stays stable for CSV export.

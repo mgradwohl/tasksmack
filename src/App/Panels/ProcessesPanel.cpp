@@ -512,10 +512,13 @@ void ProcessesPanel::renderContent()
 
     // Search bar
     const auto& theme = UI::Theme::get();
-    ImGui::SetNextItemWidth(200.0F);
+    // Sized from the font and the hint it has to show, not a fixed 200px (#965).
+    constexpr const char* FILTER_HINT = "Filter by name...";
+    ImGui::SetNextItemWidth(ProcessTableLayout::computeFilterWidth(
+        ImGui::CalcTextSize(FILTER_HINT).x, ImGui::GetStyle().FramePadding.x, ImGui::GetFontSize(), ImGui::GetContentRegionAvail().x));
     ImGui::PushStyleColor(ImGuiCol_TextDisabled, theme.scheme().statusRunning);
 
-    ImGui::InputTextWithHint("##search", "Filter by name...", &m_SearchBuffer);
+    ImGui::InputTextWithHint("##search", FILTER_HINT, &m_SearchBuffer);
     ImGui::PopStyleColor();
 
     // Clear button

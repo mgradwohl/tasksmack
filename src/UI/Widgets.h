@@ -1,11 +1,26 @@
 #pragma once
 
+#include "UI/LineLayout.h"
+
 #include <imgui.h>
 
 #include <algorithm>
+#include <span>
 
 namespace UI::Widgets
 {
+
+/// Width for a WidthFixed label column that holds exactly `labels`, measured at the current font.
+/// See UI::LineLayout::labelColumnWidth() for why these are measured rather than authored (#966).
+[[nodiscard]] inline float measureLabelColumnWidth(std::span<const char* const> labels)
+{
+    float widest = 0.0F;
+    for (const char* label : labels)
+    {
+        widest = std::max(widest, ImGui::CalcTextSize(label).x);
+    }
+    return UI::LineLayout::labelColumnWidth(widest, ImGui::GetFontSize());
+}
 
 /// Minimum height in pixels for bar fill rendering.
 /// Ensures at least a 1px marker remains visible even when the value is 0%,
