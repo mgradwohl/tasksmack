@@ -758,6 +758,7 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     snapshot.pageFaults = current.pageFaultCount;
     snapshot.cpuAffinityMask = current.cpuAffinityMask;
     snapshot.startTimeEpoch = current.startTimeEpoch;
+    snapshot.startTimeTicks = current.startTimeTicks;
     snapshot.uniqueKey = makeUniqueKey(current.pid, current.startTimeTicks);
 
     if (systemTotalMemory > 0)

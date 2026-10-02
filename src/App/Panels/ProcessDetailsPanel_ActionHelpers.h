@@ -6,6 +6,7 @@
 // mocked-IProcessActions integration tests requested in #415 a testable, pure entry
 // point instead of poking at ProcessDetailsPanel's private members.
 
+#include "Domain/ProcessSnapshot.h"
 #include "Platform/IProcessActions.h"
 
 #include <cstdint>
@@ -47,22 +48,35 @@ enum class ProcessAction : std::uint8_t
     return "";
 }
 
+/// The process an action on the current selection is meant for.
+///
+/// The start time comes only from a snapshot already confirmed to be of the selected process (the
+/// pane checks the unique key before caching one). Without such a snapshot it is left unknown, and
+/// the platform refuses the action rather than send it to whatever holds the PID (#973).
+///
+/// @param selectedPid        PID of the selected process.
+/// @param confirmedSnapshot  Latest snapshot of that same process, or nullptr if there is none.
+[[nodiscard]] inline Platform::ProcessTarget targetForSelection(std::int32_t selectedPid, const Domain::ProcessSnapshot* confirmedSnapshot)
+{
+    return {.pid = selectedPid, .startTimeTicks = (confirmedSnapshot != nullptr) ? confirmedSnapshot->startTimeTicks : 0};
+}
+
 /// Dispatch a confirmed process action to the given IProcessActions implementation.
 /// Pure aside from the call through `actions` - no ProcessDetailsPanel state is touched -
 /// so it's directly testable with a mock IProcessActions.
 [[nodiscard]] inline Platform::ProcessActionResult
-dispatchProcessAction(Platform::IProcessActions& actions, ProcessAction action, std::int32_t pid)
+dispatchProcessAction(Platform::IProcessActions& actions, ProcessAction action, const Platform::ProcessTarget& target)
 {
     switch (action)
     {
     case ProcessAction::Terminate:
-        return actions.terminate(pid);
+        return actions.terminate(target);
     case ProcessAction::Kill:
-        return actions.kill(pid);
+        return actions.kill(target);
     case ProcessAction::Stop:
-        return actions.stop(pid);
+        return actions.stop(target);
     case ProcessAction::Resume:
-        return actions.resume(pid);
+        return actions.resume(target);
     case ProcessAction::None:
         break;
     }
