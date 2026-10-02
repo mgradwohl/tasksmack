@@ -27,7 +27,6 @@ namespace
 using UI::Widgets::buildTimeAxis;
 using UI::Widgets::computeAlpha;
 using UI::Widgets::formatAgeSeconds;
-using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
@@ -99,7 +98,8 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
 
     auto memoryPlot = [&]()
     {
-        const UI::Widgets::HistoryChart chart(UI::Widgets::percentHistoryConfig("##MemorySwapHistory", axisConfig.xMin, axisConfig.xMax));
+        const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
+            UI::Widgets::percentHistoryConfig("##MemorySwapHistory", axisConfig.xMin, axisConfig.xMax), ctx.plotHeight));
         if (chart.active())
         {
             if (!memData.empty())
@@ -252,8 +252,7 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                               .color = theme.scheme().chartIo});
     }
 
-    renderHistoryWithNowBars(
-        "MemorySwapHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, memoryPlot, memoryBars, false, static_cast<size_t>(nowBarColumns));
+    renderHistoryWithNowBars("MemorySwapHistoryLayout", ctx.plotHeight, memoryPlot, memoryBars, false, static_cast<size_t>(nowBarColumns));
 }
 
 } // namespace App::MemorySection

@@ -6,6 +6,7 @@
 #include "UI/ChartGridLayout.h"
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
+#include "UI/HistoryPlotHeight.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -287,6 +288,9 @@ void renderStorageSection(RenderContext& ctx)
             .availableHeight = avail.y,
             .minCellWidth = 320.0F,
             .minCellHeight = approxLabelOverhead + MIN_PLOT_HEIGHT,
+            // The same ceiling the Overview's charts grow to (UI/HistoryPlotHeight.h), so the two
+            // tabs follow one rule instead of one never growing and the other never stopping (#923).
+            .maxCellHeight = approxLabelOverhead + UI::Widgets::historyPlotMaxHeight(ImGui::GetFontSize()),
         };
 
         renderChartGrid(

@@ -2,6 +2,7 @@
 
 #include "Domain/SystemModel.h"
 #include "Domain/SystemSnapshot.h"
+#include "UI/ChartWidgets.h"
 
 #include <chrono>
 #include <vector>
@@ -29,6 +30,10 @@ struct RenderContext
 
     // Smoothed values (owned by caller, modified by render functions)
     SmoothedMemory* smoothedMemory = nullptr;
+
+    // Height of the history plot. The Overview tab sizes its charts to share the height available
+    // (UI/HistoryPlotHeight.h) and passes that in.
+    float plotHeight = UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 };
 
 /// Update smoothed memory values based on current snapshot

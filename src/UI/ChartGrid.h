@@ -34,8 +34,8 @@ struct UseIndexAsId
 [[nodiscard]] inline bool chartGridConfigEquals(const ChartGridConfig& a, const ChartGridConfig& b) noexcept
 {
     return a.availableWidth == b.availableWidth && a.availableHeight == b.availableHeight && a.itemCount == b.itemCount &&
-           a.minCellWidth == b.minCellWidth && a.minCellHeight == b.minCellHeight && a.targetCellAspect == b.targetCellAspect &&
-           a.columnOverhead == b.columnOverhead && a.rowOverhead == b.rowOverhead;
+           a.minCellWidth == b.minCellWidth && a.minCellHeight == b.minCellHeight && a.maxCellHeight == b.maxCellHeight &&
+           a.targetCellAspect == b.targetCellAspect && a.columnOverhead == b.columnOverhead && a.rowOverhead == b.rowOverhead;
 }
 } // namespace Detail
 

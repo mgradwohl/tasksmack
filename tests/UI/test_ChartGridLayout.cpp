@@ -244,5 +244,78 @@ TEST(ChartGridLayoutTest, NonPositiveTargetAspectFallsBackToSquare)
     EXPECT_EQ(zeroAspectGrid.rows, squareGrid.rows);
 }
 
+// ========== Maximum cell height (#923) ==========
+
+// The #923 case: four disk charts on a tall, wide window. Uncapped they take the whole height;
+// capped they stop at the ceiling and leave the rest of the height unused.
+TEST(ChartGridLayoutTest, MaxCellHeightCapsCellsOnATallPanel)
+{
+    const ChartGridConfig uncapped{.availableWidth = 2800.0F, .availableHeight = 950.0F, .itemCount = 4, .minCellWidth = 320.0F};
+    ChartGridConfig capped = uncapped;
+    capped.maxCellHeight = 300.0F;
+
+    const auto uncappedGrid = computeChartGridLayout(uncapped);
+    const auto cappedGrid = computeChartGridLayout(capped);
+
+    EXPECT_GT(uncappedGrid.cellHeight, 300.0F);
+    EXPECT_FLOAT_EQ(cappedGrid.cellHeight, 300.0F);
+    EXPECT_LE(static_cast<float>(cappedGrid.rows) * cappedGrid.cellHeight, 950.0F);
+}
+
+// A cap that the available height never reaches changes nothing.
+TEST(ChartGridLayoutTest, MaxCellHeightAboveNaturalHeightHasNoEffect)
+{
+    const ChartGridConfig uncapped{.availableWidth = 1600.0F, .availableHeight = 400.0F, .itemCount = 4};
+    ChartGridConfig capped = uncapped;
+    capped.maxCellHeight = 5000.0F;
+
+    const auto uncappedGrid = computeChartGridLayout(uncapped);
+    const auto cappedGrid = computeChartGridLayout(capped);
+
+    EXPECT_EQ(cappedGrid.columns, uncappedGrid.columns);
+    EXPECT_EQ(cappedGrid.rows, uncappedGrid.rows);
+    EXPECT_FLOAT_EQ(cappedGrid.cellHeight, uncappedGrid.cellHeight);
+    EXPECT_FLOAT_EQ(cappedGrid.cellWidth, uncappedGrid.cellWidth);
+}
+
+// Zero (the default) and negative values mean "no cap", so existing callers such as the per-core
+// CPU grid, which is meant to fill its tab, are unaffected.
+TEST(ChartGridLayoutTest, NonPositiveMaxCellHeightMeansNoCap)
+{
+    const ChartGridConfig base{.availableWidth = 1000.0F, .availableHeight = 2000.0F, .itemCount = 1};
+    ChartGridConfig negative = base;
+    negative.maxCellHeight = -1.0F;
+
+    EXPECT_FLOAT_EQ(computeChartGridLayout(base).cellHeight, 2000.0F);
+    EXPECT_FLOAT_EQ(computeChartGridLayout(negative).cellHeight, 2000.0F);
+}
+
+// The floor wins over a cap set below it: a cell is never made shorter than its content needs.
+TEST(ChartGridLayoutTest, MaxCellHeightBelowMinimumIsRaisedToTheMinimum)
+{
+    const ChartGridConfig config{
+        .availableWidth = 1000.0F, .availableHeight = 2000.0F, .itemCount = 1, .minCellHeight = 140.0F, .maxCellHeight = 50.0F};
+
+    EXPECT_FLOAT_EQ(computeChartGridLayout(config).cellHeight, 140.0F);
+}
+
+// Capped cells must still fit: the cap can only ever shrink the grid's total height.
+TEST(ChartGridLayoutTest, CappedGridNeverExceedsAvailableHeightWhenUncappedFits)
+{
+    for (const size_t itemCount : {size_t{2}, size_t{4}, size_t{6}, size_t{10}})
+    {
+        for (const float height : {600.0F, 950.0F, 1400.0F, 2100.0F})
+        {
+            const ChartGridConfig config{
+                .availableWidth = 2800.0F, .availableHeight = height, .itemCount = itemCount, .maxCellHeight = 300.0F};
+            const auto grid = computeChartGridLayout(config);
+
+            EXPECT_LE(grid.cellHeight, 300.0F) << "itemCount=" << itemCount << " height=" << height;
+            EXPECT_LE(static_cast<float>(grid.rows) * grid.cellHeight, height * 1.001F)
+                << "itemCount=" << itemCount << " height=" << height;
+        }
+    }
+}
+
 } // namespace
 } // namespace UI::Widgets
