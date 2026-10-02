@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <limits>
 
 namespace App
@@ -75,6 +76,74 @@ TEST(ProcessDetailsLayoutTest, SurvivesDegenerateInput)
         EXPECT_GT(width, 0.0F);
         EXPECT_LE(width, 1400.0F);
     }
+}
+
+// ========== Process-control button width (#949) ==========
+
+using ProcessDetailsLayout::ACTION_BUTTON_MIN_WIDTH_EM;
+using ProcessDetailsLayout::computeActionButtonWidth;
+
+// The floor reproduces the old fixed 180px at the reference em, so the buttons are unchanged at
+// the Medium preset on an unscaled display.
+TEST(ProcessDetailsLayoutTest, ActionButtonIsUnchangedAtReferenceEm)
+{
+    // A label of ~90px (" Terminate" with its icon at Medium) is well under the floor.
+    EXPECT_FLOAT_EQ(computeActionButtonWidth(90.0F, REFERENCE_EM_PX, 1256.0F, 16.0F), 180.0F);
+    EXPECT_FLOAT_EQ(ACTION_BUTTON_MIN_WIDTH_EM * REFERENCE_EM_PX, 180.0F);
+}
+
+// The #949 defect: 180px at every font. The width now tracks the em.
+TEST(ProcessDetailsLayoutTest, ActionButtonScalesWithTheFont)
+{
+    EXPECT_FLOAT_EQ(computeActionButtonWidth(180.0F, REFERENCE_EM_PX * 2.0F, 2800.0F, 32.0F), 360.0F);
+    EXPECT_FLOAT_EQ(computeActionButtonWidth(68.0F, 8.0F, 2800.0F, 12.0F), 135.0F);
+}
+
+// A label wider than the floor allows (a longer translation, say) widens all four buttons rather
+// than being clipped.
+TEST(ProcessDetailsLayoutTest, ActionButtonGrowsForAWideLabel)
+{
+    // 200px label + 1 em padding each side at a 10px em = 220px, above the 168.75px floor.
+    EXPECT_FLOAT_EQ(computeActionButtonWidth(200.0F, 10.0F, 2800.0F, 16.0F), 220.0F);
+}
+
+// The content area does not scroll horizontally, so both columns must fit the pane: at Even Huger
+// in a 330px window the second column (Kill, Resume) was clipped out of reach.
+TEST(ProcessDetailsLayoutTest, ActionButtonsBothFitANarrowPane)
+{
+    const float pane = 306.0F;
+    const float overhead = 32.0F;
+    const float width = computeActionButtonWidth(180.0F, REFERENCE_EM_PX * 2.0F, pane, overhead);
+
+    EXPECT_LE(2.0F * (width + overhead), pane);
+    EXPECT_FLOAT_EQ(width, 121.0F);
+}
+
+TEST(ProcessDetailsLayoutTest, ActionButtonWidthIsWholePixels)
+{
+    const float width = computeActionButtonWidth(90.0F, 13.37F, 501.5F, 17.25F);
+    EXPECT_FLOAT_EQ(width, std::floor(width));
+}
+
+TEST(ProcessDetailsLayoutTest, ActionButtonNeverCollapsesToNothing)
+{
+    EXPECT_GE(computeActionButtonWidth(90.0F, REFERENCE_EM_PX, 10.0F, 16.0F), 1.0F);
+    EXPECT_GE(computeActionButtonWidth(90.0F, REFERENCE_EM_PX, 1.0F, 500.0F), 1.0F);
+}
+
+TEST(ProcessDetailsLayoutTest, ActionButtonSurvivesDegenerateInput)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+
+    // Unusable pane width: uncapped.
+    EXPECT_FLOAT_EQ(computeActionButtonWidth(90.0F, REFERENCE_EM_PX, 0.0F, 16.0F), 180.0F);
+    EXPECT_FLOAT_EQ(computeActionButtonWidth(90.0F, REFERENCE_EM_PX, nan, 16.0F), 180.0F);
+    EXPECT_FLOAT_EQ(computeActionButtonWidth(90.0F, REFERENCE_EM_PX, inf, 16.0F), 180.0F);
+
+    // Unusable overhead: treated as none.
+    EXPECT_FLOAT_EQ(computeActionButtonWidth(90.0F, REFERENCE_EM_PX, 1256.0F, nan), 180.0F);
+    EXPECT_FLOAT_EQ(computeActionButtonWidth(90.0F, REFERENCE_EM_PX, 1256.0F, -8.0F), 180.0F);
 }
 
 // ========== Selected-process identity (#927) ==========

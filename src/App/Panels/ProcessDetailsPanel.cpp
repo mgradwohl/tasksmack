@@ -1998,15 +1998,33 @@ void ProcessDetailsPanel::dispatchConfirmedAction()
 void ProcessDetailsPanel::renderActionButtons()
 {
     // Action buttons - use consistent sizing and 2x2 grid layout
-    constexpr float BUTTON_WIDTH = 180.0F;
+    constexpr const char* TERMINATE_LABEL = ICON_FA_XMARK " Terminate";
+    constexpr const char* KILL_LABEL = ICON_FA_SKULL " Kill";
+    constexpr const char* PAUSE_LABEL = ICON_FA_PAUSE " Pause";
+    constexpr const char* RESUME_LABEL = ICON_FA_PLAY " Resume";
+
+    // One width for all four, from the widest label and the font, capped to the pane (#949). See
+    // ProcessDetailsLayout::computeActionButtonWidth() for why it is no longer a fixed 180px.
+    const float emPx = ImGui::GetFontSize();
+    const float gutter = ProcessDetailsLayout::ACTION_BUTTON_GUTTER_EM * emPx;
+    const float widestLabel = std::max({ImGui::CalcTextSize(TERMINATE_LABEL).x,
+                                        ImGui::CalcTextSize(KILL_LABEL).x,
+                                        ImGui::CalcTextSize(PAUSE_LABEL).x,
+                                        ImGui::CalcTextSize(RESUME_LABEL).x});
+    // Per-column overhead is the gutter plus one CellPadding.x, not two. This table has no inner
+    // border, so ImGui does not pad inside each cell: it puts CellPadding.x on each side of the gap
+    // *between* columns. Two columns have one gap, so the table is 2 * (width + gutter) plus
+    // 2 * CellPadding.x in total -- one CellPadding.x per column.
+    const float buttonWidth = ProcessDetailsLayout::computeActionButtonWidth(
+        widestLabel, emPx, ImGui::GetContentRegionAvail().x, gutter + ImGui::GetStyle().CellPadding.x);
     constexpr float BUTTON_HEIGHT = 0.0F; // Use default height
-    const ImVec2 buttonSize(BUTTON_WIDTH, BUTTON_HEIGHT);
+    const ImVec2 buttonSize(buttonWidth, BUTTON_HEIGHT);
 
     // Use a table for consistent alignment
     if (ImGui::BeginTable("ActionButtons", 2, ImGuiTableFlags_SizingFixedFit))
     {
-        ImGui::TableSetupColumn("Col1", ImGuiTableColumnFlags_WidthFixed, BUTTON_WIDTH + 8.0F);
-        ImGui::TableSetupColumn("Col2", ImGuiTableColumnFlags_WidthFixed, BUTTON_WIDTH + 8.0F);
+        ImGui::TableSetupColumn("Col1", ImGuiTableColumnFlags_WidthFixed, buttonWidth + gutter);
+        ImGui::TableSetupColumn("Col2", ImGuiTableColumnFlags_WidthFixed, buttonWidth + gutter);
 
         // Row 1: Terminate and Kill
         ImGui::TableNextRow();
@@ -2015,7 +2033,7 @@ void ProcessDetailsPanel::renderActionButtons()
         ImGui::TableNextColumn();
         if (m_ActionCapabilities.canTerminate)
         {
-            if (ImGui::Button(ICON_FA_XMARK " Terminate", buttonSize))
+            if (ImGui::Button(TERMINATE_LABEL, buttonSize))
             {
                 m_ConfirmAction = ProcessAction::Terminate;
                 m_ShowConfirmDialog = true;
@@ -2030,7 +2048,7 @@ void ProcessDetailsPanel::renderActionButtons()
         ImGui::TableNextColumn();
         if (m_ActionCapabilities.canKill)
         {
-            if (ImGui::Button(ICON_FA_SKULL " Kill", buttonSize))
+            if (ImGui::Button(KILL_LABEL, buttonSize))
             {
                 m_ConfirmAction = ProcessAction::Kill;
                 m_ShowConfirmDialog = true;
@@ -2048,7 +2066,7 @@ void ProcessDetailsPanel::renderActionButtons()
         ImGui::TableNextColumn();
         if (m_ActionCapabilities.canStop)
         {
-            if (ImGui::Button(ICON_FA_PAUSE " Pause", buttonSize))
+            if (ImGui::Button(PAUSE_LABEL, buttonSize))
             {
                 m_ConfirmAction = ProcessAction::Stop;
                 m_ShowConfirmDialog = true;
@@ -2063,7 +2081,7 @@ void ProcessDetailsPanel::renderActionButtons()
         ImGui::TableNextColumn();
         if (m_ActionCapabilities.canContinue)
         {
-            if (ImGui::Button(ICON_FA_PLAY " Resume", buttonSize))
+            if (ImGui::Button(RESUME_LABEL, buttonSize))
             {
                 m_ConfirmAction = ProcessAction::Resume;
                 m_ShowConfirmDialog = true;
