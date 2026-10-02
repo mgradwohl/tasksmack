@@ -1,5 +1,7 @@
 #include "RenderMetrics.h"
 
+#include "UI/LineLayout.h"
+
 // clang-format off
 // imgui_stdlib.h has to follow imgui.h (it extends ImGui's API for std::string) and belongs with
 // the third-party group, but clang-format's IncludeCategories sort <misc/cpp/...> into the
@@ -76,9 +78,11 @@ void RenderMetrics::renderOverlay(bool* open)
     if (hasLastOverlayRect)
     {
         const ImVec2 viewportPos = ImGui::GetMainViewport()->WorkPos;
+        // The size constraint above will already have brought the window within the viewport's
+        // size by the time this position applies, so the span being placed is the fitted one.
         const ImVec2 fitted(std::min(lastOverlaySize.x, viewportSize.x), std::min(lastOverlaySize.y, viewportSize.y));
-        const ImVec2 clampedPos(std::clamp(lastOverlayPos.x, viewportPos.x, viewportPos.x + viewportSize.x - fitted.x),
-                                std::clamp(lastOverlayPos.y, viewportPos.y, viewportPos.y + viewportSize.y - fitted.y));
+        const ImVec2 clampedPos(LineLayout::clampSpanStart(lastOverlayPos.x, fitted.x, viewportPos.x, viewportSize.x),
+                                LineLayout::clampSpanStart(lastOverlayPos.y, fitted.y, viewportPos.y, viewportSize.y));
         if (clampedPos.x != lastOverlayPos.x || clampedPos.y != lastOverlayPos.y)
         {
             ImGui::SetNextWindowPos(clampedPos);

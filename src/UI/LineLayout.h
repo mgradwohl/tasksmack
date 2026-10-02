@@ -67,4 +67,32 @@ inline constexpr float LABEL_COLUMN_GAP_EM = 1.0F;
     return widest + (LABEL_COLUMN_GAP_EM * em);
 }
 
+/// Where a span of `lengthPx` should start so that it lies inside the bounds, moved as little as
+/// possible from `startPx`. One axis of keeping a floating window on screen.
+///
+/// A window that was placed while the viewport was large can be left partly or wholly outside it
+/// once the viewport shrinks, with its title bar and close button out of reach. This pulls it back:
+/// unchanged when it already fits, flush with the nearer edge when it overhangs, and flush with the
+/// leading edge when it is longer than the bounds (so the part that holds the title bar stays
+/// visible and the excess is cut off at the trailing end).
+///
+/// @param startPx        Where the span currently starts.
+/// @param lengthPx       Its length.
+/// @param boundsStartPx  Start of the bounds (a viewport's work position on this axis).
+/// @param boundsLengthPx Length of the bounds (the viewport's work size on this axis).
+[[nodiscard]] inline float clampSpanStart(float startPx, float lengthPx, float boundsStartPx, float boundsLengthPx) noexcept
+{
+    const float boundsStart = std::isfinite(boundsStartPx) ? boundsStartPx : 0.0F;
+    const float boundsLength = (std::isfinite(boundsLengthPx) && boundsLengthPx > 0.0F) ? boundsLengthPx : 0.0F;
+    const float length = (std::isfinite(lengthPx) && lengthPx > 0.0F) ? lengthPx : 0.0F;
+    if (!std::isfinite(startPx))
+    {
+        return boundsStart;
+    }
+
+    // The latest the span may start and still end inside the bounds; never before the bounds'
+    // own start, which is what a span longer than the bounds falls back to.
+    const float latestStart = std::max(boundsStart, boundsStart + boundsLength - length);
+    return std::clamp(startPx, boundsStart, latestStart);
+}
 } // namespace UI::LineLayout
