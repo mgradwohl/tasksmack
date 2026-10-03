@@ -5,9 +5,12 @@
 #include "Platform/GPUTypes.h"
 #include "UI/FillPlotLayout.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <unordered_map>
 
@@ -89,6 +92,27 @@ classifyEmptyState(bool hasPublication, bool devicesKnown, std::size_t deviceCou
         caps.hasEncoderDecoder = false;
     }
     return caps;
+}
+
+/// Lowest reference the clock line and bar are scaled against, so an idle GPU's few hundred MHz
+/// don't fill the chart.
+inline constexpr float GPU_CLOCK_REFERENCE_FLOOR_MHZ = 2000.0F;
+
+/// The clock the GPU clock line and bar are drawn as a percentage of: the highest clock in the
+/// history (no probe reports the device's maximum), floored at GPU_CLOCK_REFERENCE_FLOOR_MHZ. The
+/// scale moves only when a new peak arrives or the old one ages out, not with every sample, and no
+/// sample in the history exceeds 100 % (#994).
+[[nodiscard]] inline float gpuClockReferenceMHz(std::span<const float> clockHistory, std::uint32_t currentClockMHz) noexcept
+{
+    float reference = std::max(GPU_CLOCK_REFERENCE_FLOOR_MHZ, static_cast<float>(currentClockMHz));
+    for (const float clock : clockHistory)
+    {
+        if (std::isfinite(clock))
+        {
+            reference = std::max(reference, clock);
+        }
+    }
+    return reference;
 }
 
 /// Context struct containing all state needed to render the GPU section.

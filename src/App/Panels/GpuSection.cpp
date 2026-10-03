@@ -4,6 +4,7 @@
 #include "Platform/GPUTypes.h"
 #include "UI/ChartWidgets.h"
 #include "UI/EmptyState.h"
+#include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
@@ -225,7 +226,8 @@ void renderGpuSection(RenderContext& ctx)
         const auto tempData = tailAlignedSpan(tempHist, alignedCount).values;
         const auto powerData = tailAlignedSpan(powerHist, alignedCount).values;
         const auto fanData = tailAlignedSpan(fanHist, alignedCount).values;
-        const auto snapshotData = tailAlignedSpan(history.snapshots, alignedCount).values;
+        const auto memUsedBytesData = tailAlignedSpan(history.memoryUsedBytes, alignedCount).values;
+        const auto memTotalBytesData = tailAlignedSpan(history.memoryTotalBytes, alignedCount).values;
 
         std::vector<float> timeData = buildTimeAxis(perGpuTimestamps, alignedCount, nowSeconds);
 
@@ -234,9 +236,7 @@ void renderGpuSection(RenderContext& ctx)
         // (global timestamps would include samples this GPU never recorded, causing a mismatch).
         const auto axisConfig = makeTimeAxisConfig(perGpuTimestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
 
-        // Get max clock for normalization
-        const float maxClockMHz =
-            caps.hasClockSpeeds && snap.gpuClockMHz > 0 ? static_cast<float>(std::max(snap.gpuClockMHz, 2000U)) : 2000.0F;
+        const float maxClockMHz = gpuClockReferenceMHz(clockData, snap.gpuClockMHz);
 
         // ========================================
         // Chart 1: Core + Video (all percentages)
@@ -276,13 +276,14 @@ void renderGpuSection(RenderContext& ctx)
                                      UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
                 }
 
-                // Plot clock as normalized percentage (0-maxClockMHz mapped to 0-100)
+                // Plot clock as a percentage of gpuClockReferenceMHz(): the history's peak, or the floor
+                // when every clock is below it. The label stays fixed, so the legend keeps its show/hide
+                // state; the reference itself is in the tooltip.
                 if (caps.hasClockSpeeds && !clockData.empty())
                 {
                     normalizeToPercent(clockData, maxClockMHz, clockPercentBuf);
                     const auto clockTimeData = tailAlignedSpan(timeData, clockPercentBuf.size());
-                    const auto clockLabel = std::format("Clock (% of {:.0f} MHz)", static_cast<double>(maxClockMHz));
-                    plotLineWithFill(clockLabel.c_str(),
+                    plotLineWithFill("Clock (%)",
                                      clockTimeData.values.data(),
                                      clockPercentBuf.data(),
                                      UI::Format::checkedCount(clockTimeData.values.size()),
@@ -329,12 +330,8 @@ void renderGpuSection(RenderContext& ctx)
                     const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
                     if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
                     {
-                        // Fetch only the single snapshot needed for the hovered index.
-                        // snapshotAt() avoids copying the full history vector (unlike GPUModel::history()).
                         // perGpuTimestamps and the GPU history are always the same length and aligned
                         // sample-for-sample, so *idxVal maps directly to the correct history entry.
-                        const auto* histSnap = *idxVal < snapshotData.size() ? &snapshotData[*idxVal] : nullptr;
-
                         ImGui::BeginTooltip();
                         const auto ageText = formatAgeSeconds(static_cast<double>(timeData[*idxVal]));
                         ImGui::TextUnformatted(ageText.c_str());
@@ -347,12 +344,14 @@ void renderGpuSection(RenderContext& ctx)
                         if (*idxVal < memData.size())
                         {
                             const auto pct = static_cast<double>(memData[*idxVal]);
-                            if (histSnap != nullptr && histSnap->memoryTotalBytes > 0)
+                            const bool haveBytes =
+                                *idxVal < memUsedBytesData.size() && *idxVal < memTotalBytesData.size() && memTotalBytesData[*idxVal] > 0;
+                            if (haveBytes)
                             {
                                 ImGui::TextColored(
                                     theme.scheme().gpuMemory,
                                     "Memory: %s",
-                                    UI::Format::bytesUsedTotalPercentCompact(histSnap->memoryUsedBytes, histSnap->memoryTotalBytes, pct)
+                                    UI::Format::bytesUsedTotalPercentCompact(memUsedBytesData[*idxVal], memTotalBytesData[*idxVal], pct)
                                         .c_str());
                             }
                             else
@@ -366,8 +365,13 @@ void renderGpuSection(RenderContext& ctx)
                             if (*idxVal >= clockTimeData.offset)
                             {
                                 const size_t clockIdx = *idxVal - clockTimeData.offset;
+                                const auto clockMHz = static_cast<double>(clockData[clockIdx]);
                                 ImGui::TextColored(
-                                    theme.scheme().gpuClock, "Clock: %u MHz", static_cast<unsigned int>(clockData[clockIdx]));
+                                    theme.scheme().gpuClock,
+                                    "Clock: %.0f MHz (%s of %.0f MHz)",
+                                    clockMHz,
+                                    UI::Format::percentCompact((clockMHz / static_cast<double>(maxClockMHz)) * 100.0).c_str(),
+                                    static_cast<double>(maxClockMHz));
                             }
                         }
                         if (caps.hasEncoderDecoder && !encoderData.empty())
@@ -425,14 +429,24 @@ void renderGpuSection(RenderContext& ctx)
                                    .value01 = UI::Format::percent01(smoothed.memoryPercent),
                                    .color = theme.scheme().gpuMemory});
         }
-        if (caps.hasClockSpeeds && snap.gpuClockMHz > 0)
+        // Like the fan bar below: present whenever the clock line is, so a zero (unreadable) sample
+        // shows N/A instead of removing the bar and shifting every bar after it (#995).
+        if (caps.hasClockSpeeds)
         {
             const double clockPercent = (static_cast<double>(snap.gpuClockMHz) / static_cast<double>(maxClockMHz)) * 100.0;
-            gpuCoreBars.push_back({.valueText = std::format("{} MHz", snap.gpuClockMHz),
-                                   .label = "GPU Clock",
-                                   .tooltipText = {},
-                                   .value01 = UI::Format::percent01(clockPercent),
-                                   .color = theme.scheme().gpuClock});
+            gpuCoreBars.push_back(snap.gpuClockMHz > 0 ? NowBar{.valueText = std::format("{} MHz", snap.gpuClockMHz),
+                                                                .label = "GPU Clock",
+                                                                .tooltipText = std::format("GPU Clock: {} MHz ({} of {:.0f} MHz)",
+                                                                                           snap.gpuClockMHz,
+                                                                                           UI::Format::percentCompact(clockPercent),
+                                                                                           static_cast<double>(maxClockMHz)),
+                                                                .value01 = UI::Format::percent01(clockPercent),
+                                                                .color = theme.scheme().gpuClock}
+                                                       : NowBar{.valueText = "N/A",
+                                                                .label = "GPU Clock",
+                                                                .tooltipText = "GPU Clock: unavailable this sample",
+                                                                .value01 = 0.0,
+                                                                .color = theme.scheme().textMuted});
         }
         if (caps.hasEncoderDecoder)
         {

@@ -12,6 +12,7 @@
 #include "Platform/IProcessActions.h"
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
+#include "ProcessDetailsPanel_GpuHelpers.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
 #include "UI/ChartWidgets.h"
 #include "UI/DialogMetrics.h"
@@ -338,8 +339,8 @@ void ProcessDetailsPanel::renderContent()
             {
                 const UI::Widgets::TabContentScope content("##GpuContent");
                 const auto& proc = m_CachedSnapshot;
-                // Show "no GPU" message only if ALL GPU fields are empty/zero (no GPU resources at all)
-                if ((proc.gpuMemoryBytes == 0U) && (proc.gpuUtilPercent == 0.0) && proc.gpuDevices.empty())
+                if (!Detail::hasGpuUsageToShow(
+                        proc.gpuMemoryBytes, proc.gpuUtilPercent, !proc.gpuDevices.empty(), m_GpuUtilHistory, m_GpuMemHistory))
                 {
                     ImGui::TextUnformatted("No GPU usage detected for this process");
                 }
@@ -1821,7 +1822,7 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
                 UI::Widgets::withHeight(UI::Widgets::rateHistoryConfig("##GPUMemPlot",
                                                                        axisConfig.xMin,
                                                                        axisConfig.xMax,
-                                                                       formatAxisLocalized,
+                                                                       UI::Widgets::formatAxisBytes,
                                                                        UI::Widgets::maxOfSeries(gpuMemVec),
                                                                        UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES),
                                         fill.plotHeight()));

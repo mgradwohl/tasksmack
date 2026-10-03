@@ -162,6 +162,7 @@ void SystemMetricsPanel::onAttach()
     m_StorageModel->setMaxHistorySeconds(m_MaxHistorySeconds);
 
     m_GPUModel = std::make_shared<Domain::GPUModel>(Platform::makeGPUProbe());
+    m_GPUModel->setMaxHistorySeconds(m_MaxHistorySeconds);
 
     // Initial refresh to seed histories
     m_Model->refresh();
@@ -253,6 +254,10 @@ void SystemMetricsPanel::onEvent(Core::Event& event)
             if (m_StorageModel)
             {
                 m_StorageModel->setMaxHistorySeconds(m_MaxHistorySeconds);
+            }
+            if (m_GPUModel)
+            {
+                m_GPUModel->setMaxHistorySeconds(m_MaxHistorySeconds);
             }
             if (m_ProcessModel)
             {
