@@ -17,6 +17,7 @@
 #include "Domain/StorageSnapshot.h"
 #include "Domain/SystemModel.h"
 #include "Platform/Factory.h"
+#include "PowerStatusText.h"
 #include "UI/ChartWidgets.h"
 #include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
@@ -58,28 +59,6 @@ using UI::Widgets::formatAxisLocalized;
 using UI::Widgets::formatAxisWatts;
 using UI::Widgets::frameTimeAxis;
 using UI::Widgets::plotLineWithFill;
-
-// Get the appropriate battery icon based on charge level
-[[nodiscard]] const char* getBatteryIcon(int chargePercent)
-{
-    if (chargePercent >= 87)
-    {
-        return ICON_FA_BATTERY_FULL;
-    }
-    if (chargePercent >= 62)
-    {
-        return ICON_FA_BATTERY_THREE_QUARTERS;
-    }
-    if (chargePercent >= 37)
-    {
-        return ICON_FA_BATTERY_HALF;
-    }
-    if (chargePercent >= 12)
-    {
-        return ICON_FA_BATTERY_QUARTER;
-    }
-    return ICON_FA_BATTERY_EMPTY;
-}
 
 struct HistoryRange
 {
@@ -973,50 +952,8 @@ void SystemMetricsPanel::renderOverview()
                 headerLeft = hasProcessPower ? std::format(ICON_FA_BOLT "  Power & Battery ({} samples)", alignedCount)
                                              : std::format(ICON_FA_BOLT "  Battery ({} samples)", alignedCount);
 
-                // Build right-aligned status string with icons
-                const int chargeInt = snap.power.chargePercent;
-                const char* batteryIcon = getBatteryIcon(chargeInt);
-
-                if (snap.power.isCharging)
-                {
-                    if (snap.power.timeToFullSec > 0)
-                    {
-                        const auto hours = snap.power.timeToFullSec / 3600;
-                        const auto mins = (snap.power.timeToFullSec % 3600) / 60;
-                        headerRight = std::format("{} {} {}% ({:d}:{:02d} to full)", ICON_FA_BOLT, batteryIcon, chargeInt, hours, mins);
-                    }
-                    else
-                    {
-                        headerRight = std::format("{} {} {}%", ICON_FA_BOLT, batteryIcon, chargeInt);
-                    }
-                }
-                else if (snap.power.isFull)
-                {
-                    headerRight = std::format("{} {} 100%", ICON_FA_PLUG, ICON_FA_BATTERY_FULL);
-                }
-                else if (snap.power.isNotCharging)
-                {
-                    // Plugged in but held below full, often by a charge threshold: its real charge,
-                    // not "100%" (#1158).
-                    headerRight = std::format("{} {} {}% (not charging)", ICON_FA_PLUG, batteryIcon, chargeInt);
-                }
-                else if (snap.power.isDischarging)
-                {
-                    if (snap.power.timeToEmptySec > 0)
-                    {
-                        const auto hours = snap.power.timeToEmptySec / 3600;
-                        const auto mins = (snap.power.timeToEmptySec % 3600) / 60;
-                        headerRight = std::format("{} {}% ({:d}:{:02d} left)", batteryIcon, chargeInt, hours, mins);
-                    }
-                    else
-                    {
-                        headerRight = std::format("{} {}%", batteryIcon, chargeInt);
-                    }
-                }
-                else
-                {
-                    headerRight = std::format("{} {}%", batteryIcon, chargeInt);
-                }
+                // Right-aligned status string with icons
+                headerRight = Detail::batteryHeaderStatus(snap.power);
             }
             else
             {

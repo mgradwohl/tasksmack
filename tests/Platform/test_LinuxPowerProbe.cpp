@@ -114,16 +114,9 @@ TEST(LinuxPowerProbeTest, BatteryStateIsValid)
         GTEST_SKIP() << "No battery detected";
     }
 
-    // Verify state is consistent with AC status
-    if (counters.isOnAc)
-    {
-        EXPECT_TRUE(counters.state == BatteryState::Charging || counters.state == BatteryState::Full ||
-                    counters.state == BatteryState::NotCharging || counters.state == BatteryState::Unknown);
-    }
-    else
-    {
-        EXPECT_TRUE(counters.state == BatteryState::Discharging || counters.state == BatteryState::Unknown);
-    }
+    // AC status comes from the adapter and is independent of the battery's own state (#1109), so
+    // only the battery-presence contract holds: a present battery never reports NotPresent.
+    EXPECT_NE(counters.state, BatteryState::NotPresent);
 }
 
 TEST(LinuxPowerProbeTest, ChargePercentInValidRange)

@@ -123,6 +123,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessActionHelpers.cpp
     App/test_SettingsLayerDetail.cpp
     App/test_NetInterfaceUtils.cpp
+    App/test_PowerStatusText.cpp
 )
 set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_ProcessProbeContract.cpp

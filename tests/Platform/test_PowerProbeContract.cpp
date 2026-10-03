@@ -100,25 +100,20 @@ TEST(PowerProbeContractTest, MultipleReadsSucceed)
     }
 }
 
-TEST(PowerProbeContractTest, StateIsConsistentWithAcStatus)
+TEST(PowerProbeContractTest, BatteryPresentReportsABatteryState)
 {
+    // AC status and battery state are independent readings -- an adapter can be online while the
+    // battery reports a stale Discharging, or offline while it reports Full (#1109) -- so only the
+    // battery-presence contract is checked: a present battery never reports NotPresent.
     auto probe = makePowerProbe();
     ASSERT_NE(probe, nullptr);
 
-    const auto caps = probe->capabilities();
-    if (!caps.hasBattery)
+    if (!probe->capabilities().hasBattery)
     {
         GTEST_SKIP() << "No battery detected";
     }
 
-    const PowerCounters counters = probe->read();
-
-    // If on AC and fully charged, should be Charging or Full
-    // If not on AC, should be Discharging
-    if (!counters.isOnAc)
-    {
-        EXPECT_TRUE(counters.state == BatteryState::Discharging || counters.state == BatteryState::Unknown);
-    }
+    EXPECT_NE(probe->read().state, BatteryState::NotPresent);
 }
 
 } // namespace Platform
