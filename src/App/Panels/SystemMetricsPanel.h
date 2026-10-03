@@ -7,7 +7,9 @@
 #include "Core/Event.h"
 #include "Domain/BackgroundSampler.h"
 #include "Domain/GPUModel.h"
+#include "Domain/Numeric.h"
 #include "Domain/ProcessModel.h"
+#include "Domain/SamplingConfig.h"
 #include "Domain/StorageModel.h"
 #include "Domain/StorageSnapshot.h"
 #include "Domain/SystemModel.h"
@@ -54,14 +56,11 @@ class SystemMetricsPanel : public Panel
     /// Request an immediate refresh.
     void requestRefresh();
 
-    /// Inject process model for aggregated system histories (non-owning).
+    /// Inject process model for aggregated system histories (non-owning, read-only: ProcessesPanel
+    /// owns it and sets its history length, #1078).
     void setProcessModel(Domain::ProcessModel* model)
     {
         m_ProcessModel = model;
-        if (m_ProcessModel != nullptr)
-        {
-            m_ProcessModel->setMaxHistorySeconds(m_MaxHistorySeconds);
-        }
     }
 
     /// Render the panel (with ImGui window wrapper).
@@ -105,7 +104,7 @@ class SystemMetricsPanel : public Panel
     std::vector<double> m_ProcessThreadCountHistory;
     std::vector<double> m_ProcessHandleCountHistory;
 
-    double m_MaxHistorySeconds = 300.0;
+    double m_MaxHistorySeconds = Domain::Numeric::toDouble(Domain::Sampling::HISTORY_SECONDS_DEFAULT);
     double m_HistoryScrollSeconds = 0.0;
     double m_CurrentNowSeconds = 0.0;
     std::vector<double> m_TimestampsCache;
@@ -120,7 +119,7 @@ class SystemMetricsPanel : public Panel
     std::vector<double> m_CpuStackSystem; // raw System and I/O Wait, to choose reduced points by (#1022)
     std::vector<double> m_CpuStackIowait;
 
-    std::chrono::milliseconds m_RefreshInterval{1000};
+    std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
     bool m_ForceRefresh = false;
     float m_LastDeltaSeconds = 0.0F;
     bool m_IsActiveTab = true; // System Overview is default tab
