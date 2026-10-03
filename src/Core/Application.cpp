@@ -543,7 +543,8 @@ void Application::run()
                 guardLayerCall(layer, "onSDLEvent", [&] { layer->onSDLEvent(&sdlEvent); });
             }
 
-            // Translate window close events to our event system for clean shutdown coordination
+            // Translate window close requests into a WindowCloseEvent. A layer that handles it
+            // vetoes the close; unhandled, the app stops (contract in WindowEvents.h).
             if (sdlEvent.type == SDL_EVENT_QUIT || sdlEvent.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
             {
                 WindowCloseEvent event;

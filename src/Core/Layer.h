@@ -38,8 +38,11 @@ class Layer
     virtual void onPostRender()
     {}
 
-    /// Handle application events (mouse, keyboard, window)
-    /// Return true from your handler to mark the event as handled and stop propagation
+    /// Handle Core::Event broadcasts (window and application events; raw input arrives through
+    /// onSDLEvent). Application::raiseEvent() calls layers top of the stack first. A dispatch
+    /// handler that returns true marks the event handled and stops it reaching the layers below,
+    /// so a handler that only reacts to a broadcast must return false. For WindowCloseEvent,
+    /// handled means "veto the close" (see WindowEvents.h).
     virtual void onEvent([[maybe_unused]] Event& event)
     {}
 
