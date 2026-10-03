@@ -122,8 +122,9 @@ void Theme::loadDefaultFallbackTheme()
     fallback.button = ImVec4(0.26F, 0.59F, 0.98F, 0.40F);
     fallback.buttonHovered = ImVec4(0.26F, 0.59F, 0.98F, 1.0F);
     fallback.buttonActive = ImVec4(0.06F, 0.53F, 0.98F, 1.0F);
-    fallback.header = ImVec4(0.26F, 0.59F, 0.98F, 0.31F);
-    fallback.headerHovered = ImVec4(0.26F, 0.59F, 0.98F, 0.80F);
+    // Selected rows stronger than hovered ones, so hovering never looks like selecting (#1190).
+    fallback.header = ImVec4(0.26F, 0.59F, 0.98F, 0.45F);
+    fallback.headerHovered = ImVec4(0.26F, 0.59F, 0.98F, 0.22F);
     fallback.headerActive = ImVec4(0.26F, 0.59F, 0.98F, 1.0F);
     fallback.separator = ImVec4(0.43F, 0.43F, 0.50F, 0.50F);
     fallback.separatorHovered = ImVec4(0.10F, 0.40F, 0.75F, 0.78F);
@@ -134,10 +135,10 @@ void Theme::loadDefaultFallbackTheme()
     fallback.tab = ImVec4(0.18F, 0.35F, 0.58F, 0.86F);
     fallback.tabHovered = ImVec4(0.26F, 0.59F, 0.98F, 0.80F);
     fallback.tabSelected = ImVec4(0.20F, 0.41F, 0.68F, 1.0F);
-    fallback.tabSelectedOverline = transparent; // Transparent to disable
+    fallback.tabSelectedOverline = blue; // The selected tab's cue (#1190)
     fallback.tabDimmed = ImVec4(0.07F, 0.10F, 0.15F, 0.97F);
     fallback.tabDimmedSelected = ImVec4(0.14F, 0.26F, 0.42F, 1.0F);
-    fallback.tabDimmedSelectedOverline = transparent; // Transparent
+    fallback.tabDimmedSelectedOverline = ImVec4(0.26F, 0.59F, 0.98F, 0.50F);
     fallback.dockingPreview = ImVec4(0.26F, 0.59F, 0.98F, 0.70F);
     fallback.dockingEmptyBg = ImVec4(0.20F, 0.20F, 0.20F, 1.0F);
     fallback.plotLines = ImVec4(0.61F, 0.61F, 0.61F, 1.0F);
