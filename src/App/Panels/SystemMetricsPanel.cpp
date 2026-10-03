@@ -92,6 +92,7 @@ using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
+using UI::Widgets::NowBarList;
 using UI::Widgets::renderHistoryWithNowBars;
 
 /// Hover tooltip for the system CPU chart: the age of the hovered sample to a tenth of a second, as
@@ -748,7 +749,7 @@ void SystemMetricsPanel::renderOverview()
         }
     };
 
-    std::vector<NowBar> cpuBars;
+    NowBarList cpuBars;
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.total),
                        .label = CPU_TOTAL_LABEL,
                        .tooltipText = {},
@@ -855,7 +856,7 @@ void SystemMetricsPanel::renderOverview()
                 "##PowerBatteryHistory", UI::Widgets::maxOfSeries(powerHist), UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS);
 
             // Build NowBars
-            std::vector<NowBar> bars;
+            NowBarList bars;
             if (hasProcessPower)
             {
                 bars.push_back({

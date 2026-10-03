@@ -56,6 +56,7 @@ using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
+using UI::Widgets::NowBarList;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
 
@@ -990,7 +991,7 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
             const double virtAxisUpper = UI::Widgets::easedRateAxisUpperBound(
                 "##ProcOverviewMemory/Y2", UI::Widgets::maxOfSeries(virtData), UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES);
 
-            std::vector<NowBar> memoryBars;
+            NowBarList memoryBars;
             // No tooltipText: the hover tooltip is "label: value" (selectNowBarTooltip), in the
             // chart's own units -- percents of RAM, and bytes for Virtual.
             memoryBars.push_back({.valueText = UI::Format::percentCompact(usedNow),

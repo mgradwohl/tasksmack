@@ -35,6 +35,7 @@ using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
+using UI::Widgets::NowBarList;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
 using UI::Widgets::tailAlignedSpan;
@@ -434,7 +435,7 @@ void renderGpuSection(RenderContext& ctx)
         };
 
         // Build now bars for chart 1: utilization, memory, clock, encoder, decoder
-        std::vector<NowBar> gpuCoreBars;
+        NowBarList gpuCoreBars;
         gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.utilizationPercent),
                                .label = UTIL_LABEL,
                                .tooltipText = {},
@@ -499,7 +500,7 @@ void renderGpuSection(RenderContext& ctx)
         }
 
         // Build thermal bars early so we can calculate max column count for alignment
-        std::vector<NowBar> gpuThermalBars;
+        NowBarList gpuThermalBars;
         constexpr float maxTempC = 100.0F;
         const float maxPowerW = snap.powerLimitWatts > 0.0 ? static_cast<float>(snap.powerLimitWatts) : 300.0F;
         if (caps.hasTemperature)

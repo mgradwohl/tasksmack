@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -872,6 +873,44 @@ struct NowBar
     ImVec4 color;
 };
 
+/// A chart's NowBars, held in place: built every frame without a heap allocation (#1018). A chart
+/// has at most five bars (the GPU core chart); the capacity leaves room. Converts to the span
+/// renderHistoryWithNowBars() takes.
+class NowBarList
+{
+  public:
+    static constexpr std::size_t CAPACITY = 8;
+
+    void push_back(NowBar bar)
+    {
+        assert(m_Size < CAPACITY && "NowBarList is full: raise CAPACITY");
+        if (m_Size < CAPACITY)
+        {
+            m_Bars[m_Size++] = std::move(bar);
+        }
+    }
+
+    [[nodiscard]] std::size_t size() const noexcept
+    {
+        return m_Size;
+    }
+
+    [[nodiscard]] bool empty() const noexcept
+    {
+        return m_Size == 0;
+    }
+
+    // NOLINTNEXTLINE(google-explicit-constructor,hicpp-explicit-conversions) - stands in for the vector it replaced
+    operator std::span<const NowBar>() const noexcept
+    {
+        return {m_Bars.data(), m_Size};
+    }
+
+  private:
+    std::array<NowBar, CAPACITY> m_Bars{};
+    std::size_t m_Size = 0;
+};
+
 [[nodiscard]] inline double normalizeToUnitInterval(double value, double maxValue)
 {
     // NaN would pass straight through std::clamp; a bar with no value is empty.
@@ -1462,7 +1501,7 @@ class RenderMetricsScope
 inline void renderHistoryWithNowBars(const char* tableId,
                                      float plotHeight,
                                      const std::function<void()>& plotFn,
-                                     const std::vector<NowBar>& bars,
+                                     std::span<const NowBar> bars,
                                      bool barsOnly = false,
                                      size_t minBarColumns = 0,
                                      bool compactSpacing = false)
@@ -1580,6 +1619,20 @@ inline void renderHistoryWithNowBars(const char* tableId,
     {
         ImGui::PopStyleVar(pushedVars);
     }
+}
+
+/// renderHistoryWithNowBars() for bars listed in place, e.g. `{readBar, writeBar}`: the list's backing
+/// array lives on the stack, where a braced std::vector argument allocated every frame (#1018).
+inline void renderHistoryWithNowBars(const char* tableId,
+                                     float plotHeight,
+                                     const std::function<void()>& plotFn,
+                                     std::initializer_list<NowBar> bars,
+                                     bool barsOnly = false,
+                                     size_t minBarColumns = 0,
+                                     bool compactSpacing = false)
+{
+    renderHistoryWithNowBars(
+        tableId, plotHeight, plotFn, std::span<const NowBar>(bars.begin(), bars.size()), barsOnly, minBarColumns, compactSpacing);
 }
 
 } // namespace UI::Widgets

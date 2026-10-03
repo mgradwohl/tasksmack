@@ -33,6 +33,7 @@ using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
+using UI::Widgets::NowBarList;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
 
@@ -217,7 +218,7 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
     // dropped when the RAM or swap total was 0 while their series, legend entry and tooltip row stayed.
     // The bar's height and value are the smoothed percent; its tooltip has the current sample's bytes,
     // so the byte and percent figures come from the same sample.
-    std::vector<NowBar> memoryBars;
+    NowBarList memoryBars;
     if (ctx.smoothedMemory != nullptr)
     {
         const auto addBar = [&](const char* label, double smoothedPercent, std::string tooltip, const ImVec4& color)

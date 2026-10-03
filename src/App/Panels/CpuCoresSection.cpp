@@ -35,6 +35,7 @@ using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
+using UI::Widgets::NowBarList;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderChartGrid;
 using UI::Widgets::renderHistoryWithNowBars;
@@ -304,7 +305,7 @@ void renderCpuCoresSection(RenderContext& ctx)
                                              .value01 = UI::Format::percent01(smoothed),
                                              .color = theme.progressColor(smoothed)};
 
-                            std::vector<NowBar> bars;
+                            NowBarList bars;
                             bars.push_back(bar);
                             // coreLabel is already allocated above for the visible label text, so
                             // reusing it here as the RenderMetrics/table id costs nothing extra --

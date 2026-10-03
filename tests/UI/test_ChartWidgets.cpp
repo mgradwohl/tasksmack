@@ -131,6 +131,27 @@ TEST(ChartWidgetsTest, TailAlignedSpanWithEmptyDataReturnsEmptySpan)
 
 // ========== NowBar ==========
 
+TEST(NowBarListTest, HoldsBarsInOrderAndViewsThemAsASpan)
+{
+    NowBarList bars;
+    EXPECT_TRUE(bars.empty());
+    bars.push_back({.valueText = "12%", .label = "Read", .tooltipText = {}, .value01 = 0.12, .color = {}});
+    bars.push_back({.valueText = "34%", .label = "Write", .tooltipText = {}, .value01 = 0.34, .color = {}});
+    ASSERT_EQ(bars.size(), 2U);
+
+    const std::span<const NowBar> view = bars;
+    ASSERT_EQ(view.size(), 2U);
+    EXPECT_EQ(view[0].label, "Read");
+    EXPECT_EQ(view[1].valueText, "34%");
+    EXPECT_DOUBLE_EQ(view[1].value01, 0.34);
+}
+
+TEST(NowBarListTest, CapacityCoversTheLargestChart)
+{
+    // The GPU core chart has the most bars: utilization, memory, clock, encoder and decoder.
+    EXPECT_GE(NowBarList::CAPACITY, 5U);
+}
+
 TEST(NowBarTest, ExplicitEmptyTooltipTextIsEmpty)
 {
     const NowBar bar{.valueText = "50%", .label = "CPU", .tooltipText = {}, .color = {}};
