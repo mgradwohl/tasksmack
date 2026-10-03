@@ -1043,8 +1043,20 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             std::array<char, 40> selectableIdBuf{};
             auto selRes = std::format_to_n(selectableIdBuf.data(), selectableIdBuf.size() - 1, "##pid_select_{}", proc.uniqueKey);
             *selRes.out = '\0';
-            if (ImGui::Selectable(
-                    selectableIdBuf.data(), isSelected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
+            // ImGui fills a hovered row with HeaderHovered even when it is selected, so the row just
+            // clicked would show the weaker hover tint until the pointer left it. Keep the selected
+            // fill while hovered (#1190).
+            if (isSelected)
+            {
+                ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImGui::GetStyleColorVec4(ImGuiCol_Header));
+            }
+            const bool clicked = ImGui::Selectable(
+                selectableIdBuf.data(), isSelected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap);
+            if (isSelected)
+            {
+                ImGui::PopStyleColor();
+            }
+            if (clicked)
             {
                 m_SelectedPid = proc.pid;
                 m_SelectedUniqueKey = proc.uniqueKey;

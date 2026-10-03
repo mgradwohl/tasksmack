@@ -136,8 +136,8 @@ hovered = "#45475A"
 active = "#CBA6F7"
 
 [ui.header]
-normal = "#383951"
-hovered = "#2C2C40"
+normal = "#3B3C55"
+hovered = "#323349"
 active = "#313244"
 
 [ui.separator]
