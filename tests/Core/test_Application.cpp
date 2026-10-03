@@ -12,6 +12,7 @@
 /// environments. The FramePacingTest suite is pure logic extracted from Application::run() (see
 /// Core/FramePacing.h) and always runs, headless or not.
 
+#include "Core/AnimationRequest.h"
 #include "Core/Application.h"
 #include "Core/FramePacing.h"
 #include "Core/HeadlessVideoDriverTestUtils.h"
@@ -421,6 +422,41 @@ TEST(FramePacingTest, FrameDeltaStaysExactAtLargeUptime)
 
     // Still capped at the maximum delta.
     EXPECT_FLOAT_EQ(Core::FramePacing::frameDeltaSeconds(previous, previous + 5.0, 0.1F), 0.1F);
+}
+
+TEST(FramePacingTest, AnimationPacingHoldsASteadyRateWhateverTheInput)
+{
+    // #1037: while something animates, frames start once per period. The wait is the rest of the
+    // period since the last frame started, so a frame that took 5 ms waits about 11.7 ms at 60 FPS.
+    constexpr double PERIOD = 1.0 / 60.0;
+    EXPECT_NEAR(Core::FramePacing::computeAnimationWaitSeconds(true, false, false, 0.005, PERIOD), PERIOD - 0.005, 1e-12);
+    // A frame that already took the whole period (a 60 Hz vsync swap, or a slow frame) waits nothing.
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationWaitSeconds(true, false, false, PERIOD, PERIOD), 0.0);
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationWaitSeconds(true, false, false, 0.040, PERIOD), 0.0);
+}
+
+TEST(FramePacingTest, AnimationPacingOnlyAppliesWhileAnimatingVisiblyOutsideAnInteraction)
+{
+    constexpr double PERIOD = 1.0 / 60.0;
+    // Nothing animating: the idle path (~20 FPS, woken by input) applies instead.
+    EXPECT_FALSE(Core::FramePacing::isAnimationPaced(false, false, false));
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationWaitSeconds(false, false, false, 0.0, PERIOD), 0.0);
+    // A move/resize keeps its own redraw path; a minimized window keeps its own sleep.
+    EXPECT_FALSE(Core::FramePacing::isAnimationPaced(true, true, false));
+    EXPECT_FALSE(Core::FramePacing::isAnimationPaced(true, false, true));
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationWaitSeconds(true, true, false, 0.0, PERIOD), 0.0);
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationWaitSeconds(true, false, true, 0.0, PERIOD), 0.0);
+    EXPECT_TRUE(Core::FramePacing::isAnimationPaced(true, false, false));
+}
+
+TEST(AnimationRequestTest, ConsumeReportsAndClearsARequest)
+{
+    static_cast<void>(Core::AnimationRequest::consume()); // start clear
+    EXPECT_FALSE(Core::AnimationRequest::consume());
+    Core::AnimationRequest::request();
+    Core::AnimationRequest::request(); // several requests in one frame are one request
+    EXPECT_TRUE(Core::AnimationRequest::consume());
+    EXPECT_FALSE(Core::AnimationRequest::consume());
 }
 
 TEST(FramePacingTest, IsWithinInteractionGrace)
