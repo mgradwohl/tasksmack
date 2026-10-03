@@ -1686,6 +1686,29 @@ TEST(SystemModelTest, PowerStatus_Full)
     EXPECT_TRUE(power.isFull);
 }
 
+TEST(SystemModelTest, PowerStatus_NoBatteryKeepsTheAdapterReport)
+{
+    // With no battery, isOnAc is still the adapter's own report (#1109), online or not.
+    for (const bool online : {true, false})
+    {
+        auto sysProbe = std::make_unique<MockSystemProbe>();
+        sysProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(1024, 512)));
+        auto powerProbe = std::make_unique<MockPowerProbe>();
+        powerProbe->setCapabilities(Platform::PowerCapabilities{});
+        Platform::PowerCounters counters;
+        counters.state = Platform::BatteryState::NotPresent;
+        counters.isOnAc = online;
+        powerProbe->setCounters(counters);
+
+        Domain::SystemModel model(std::move(sysProbe), std::move(powerProbe));
+        model.refresh();
+
+        const auto& power = model.snapshot().power;
+        EXPECT_FALSE(power.hasBattery);
+        EXPECT_EQ(power.isOnAc, online);
+    }
+}
+
 TEST(SystemModelTest, PowerStatus_NotCharging)
 {
     // Plugged in but held below full (#1158): its own state, not Full or Discharging.
