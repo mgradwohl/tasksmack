@@ -133,7 +133,7 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                                  memData.data(),
                                  UI::Format::checkedCount(memData.size()),
                                  theme.scheme().chartMemory,
-                                 std::nullopt,
+                                 theme.scheme().chartMemoryFill,
                                  2.0F,
                                  true,
                                  UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -146,7 +146,7 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                                  cachedData.data(),
                                  UI::Format::checkedCount(cachedData.size()),
                                  theme.scheme().chartCpu,
-                                 std::nullopt,
+                                 theme.scheme().chartCpuFill,
                                  2.0F,
                                  true,
                                  UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -159,7 +159,7 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                                  swapData.data(),
                                  UI::Format::checkedCount(swapData.size()),
                                  theme.scheme().chartIo,
-                                 std::nullopt,
+                                 theme.scheme().chartIoFill,
                                  2.0F,
                                  true,
                                  UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);

@@ -351,7 +351,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                                  ifaceSentData.data(),
                                  count,
                                  theme.scheme().chartNetTx,
-                                 std::nullopt,
+                                 theme.scheme().chartNetTxFill,
                                  2.0F,
                                  true,
                                  UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -360,7 +360,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                                  ifaceRecvData.data(),
                                  count,
                                  theme.scheme().chartNetRx,
-                                 std::nullopt,
+                                 theme.scheme().chartNetRxFill,
                                  2.0F,
                                  true,
                                  UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -373,7 +373,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                                  sentData.data(),
                                  count,
                                  theme.scheme().chartNetTx,
-                                 std::nullopt,
+                                 theme.scheme().chartNetTxFill,
                                  2.0F,
                                  true,
                                  UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -382,7 +382,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                                  recvData.data(),
                                  count,
                                  theme.scheme().chartNetRx,
-                                 std::nullopt,
+                                 theme.scheme().chartNetRxFill,
                                  2.0F,
                                  true,
                                  UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);

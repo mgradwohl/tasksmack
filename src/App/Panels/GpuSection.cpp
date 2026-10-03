@@ -292,7 +292,7 @@ void renderGpuSection(RenderContext& ctx)
                                      utilData.data(),
                                      UI::Format::checkedCount(utilData.size()),
                                      theme.scheme().gpuUtilization,
-                                     std::nullopt,
+                                     theme.scheme().gpuUtilizationFill,
                                      2.0F,
                                      true,
                                      UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -305,7 +305,7 @@ void renderGpuSection(RenderContext& ctx)
                                      memData.data(),
                                      UI::Format::checkedCount(memData.size()),
                                      theme.scheme().gpuMemory,
-                                     std::nullopt,
+                                     theme.scheme().gpuMemoryFill,
                                      2.0F,
                                      true,
                                      UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -323,7 +323,7 @@ void renderGpuSection(RenderContext& ctx)
                                      clockPercentBuf.data(),
                                      UI::Format::checkedCount(clockTimeData.values.size()),
                                      theme.scheme().gpuClock,
-                                     std::nullopt,
+                                     theme.scheme().gpuClockFill,
                                      2.0F,
                                      true,
                                      UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);

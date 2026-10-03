@@ -200,7 +200,8 @@ class GPUModel : public ISamplable
 
     // Size every history ring for m_MaxHistorySeconds at the fastest refresh cadence (caller holds m_Mutex).
     void applyHistoryCapacity();
-    // Drop samples older than m_MaxHistorySeconds before nowSeconds (caller holds m_Mutex).
+    // Drop samples older than m_MaxHistorySeconds before nowSeconds, except the newest of them while a
+    // newer sample remains, like HistoryUtils::discardBefore (#1016) (caller holds m_Mutex).
     void trimHistory(double nowSeconds);
 };
 

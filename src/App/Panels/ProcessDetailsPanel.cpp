@@ -1039,7 +1039,8 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
                                          timeData.data(),
                                          usedData.data(),
                                          UI::Format::checkedCount(usedData.size()),
-                                         theme.scheme().chartMemory);
+                                         theme.scheme().chartMemory,
+                                         theme.scheme().chartMemoryFill);
                     }
 
                     if (!sharedData.empty())
@@ -1048,7 +1049,8 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
                                          timeData.data(),
                                          sharedData.data(),
                                          UI::Format::checkedCount(sharedData.size()),
-                                         theme.scheme().chartCpu);
+                                         theme.scheme().chartCpu,
+                                         theme.scheme().chartCpuFill);
                     }
 
                     if (!virtData.empty())
@@ -1060,7 +1062,7 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
                                          virtData.data(),
                                          UI::Format::checkedCount(virtData.size()),
                                          theme.scheme().chartIo,
-                                         std::nullopt,
+                                         theme.scheme().chartIoFill,
                                          2.0F,
                                          false);
                         ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
@@ -1225,7 +1227,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
                              threadData.data(),
                              plotCount,
                              theme.scheme().chartCpu,
-                             std::nullopt,
+                             theme.scheme().chartCpuFill,
                              2.0F,
                              true,
                              UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -1234,7 +1236,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
                              handleData.data(),
                              plotCount,
                              theme.scheme().chartMemory,
-                             std::nullopt,
+                             theme.scheme().chartMemoryFill,
                              2.0F,
                              true,
                              UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -1371,7 +1373,7 @@ void ProcessDetailsPanel::renderIoStats(UI::Widgets::FillPlotLayout& fill)
                              readData.data(),
                              plotCount,
                              theme.scheme().chartIo,
-                             std::nullopt,
+                             theme.scheme().chartIoFill,
                              2.0F,
                              true,
                              UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -1381,7 +1383,7 @@ void ProcessDetailsPanel::renderIoStats(UI::Widgets::FillPlotLayout& fill)
                              writeData.data(),
                              plotCount,
                              theme.scheme().chartIoWrite,
-                             std::nullopt,
+                             theme.scheme().chartIoWriteFill,
                              2.0F,
                              true,
                              UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -1469,7 +1471,7 @@ void ProcessDetailsPanel::renderNetworkStats(UI::Widgets::FillPlotLayout& fill)
                              sentData.data(),
                              plotCount,
                              theme.scheme().chartNetTx,
-                             std::nullopt,
+                             theme.scheme().chartNetTxFill,
                              2.0F,
                              true,
                              UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -1479,7 +1481,7 @@ void ProcessDetailsPanel::renderNetworkStats(UI::Widgets::FillPlotLayout& fill)
                              recvData.data(),
                              plotCount,
                              theme.scheme().chartNetRx,
-                             std::nullopt,
+                             theme.scheme().chartNetRxFill,
                              2.0F,
                              true,
                              UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -1839,7 +1841,7 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
                                      gpuUtilVec.data(),
                                      plotCount,
                                      theme.scheme().gpuUtilization,
-                                     std::nullopt,
+                                     theme.scheme().gpuUtilizationFill,
                                      2.0F,
                                      true,
                                      UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -1887,7 +1889,7 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
                                      gpuMemVec.data(),
                                      plotCount,
                                      theme.scheme().gpuMemory,
-                                     std::nullopt,
+                                     theme.scheme().gpuMemoryFill,
                                      2.0F,
                                      true,
                                      UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);

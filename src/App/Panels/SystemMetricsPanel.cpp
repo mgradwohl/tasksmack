@@ -707,7 +707,7 @@ void SystemMetricsPanel::renderOverview()
                                      cpuData.data(),
                                      UI::Format::checkedCount(cpuData.size()),
                                      theme.scheme().chartCpu,
-                                     std::nullopt,
+                                     theme.scheme().chartCpuFill,
                                      2.0F,
                                      false);
                 }
@@ -902,7 +902,7 @@ void SystemMetricsPanel::renderOverview()
                                          powerHist.data(),
                                          UI::Format::checkedCount(powerHist.size()),
                                          theme.scheme().chartCpu,
-                                         std::nullopt,
+                                         theme.scheme().chartCpuFill,
                                          2.0F,
                                          true,
                                          UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -917,7 +917,7 @@ void SystemMetricsPanel::renderOverview()
                                          batteryHist.data(),
                                          UI::Format::checkedCount(batteryHist.size()),
                                          theme.scheme().chartMemory,
-                                         std::nullopt,
+                                         theme.scheme().chartMemoryFill,
                                          2.0F,
                                          true,
                                          UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -1160,7 +1160,7 @@ void SystemMetricsPanel::renderOverview()
                                  threadData.data(),
                                  count,
                                  theme.scheme().chartCpu,
-                                 std::nullopt,
+                                 theme.scheme().chartCpuFill,
                                  2.0F,
                                  true,
                                  UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -1180,7 +1180,7 @@ void SystemMetricsPanel::renderOverview()
                                  handleData.data(),
                                  count,
                                  theme.scheme().chartMemory,
-                                 std::nullopt,
+                                 theme.scheme().chartMemoryFill,
                                  2.0F,
                                  true,
                                  UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);

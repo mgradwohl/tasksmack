@@ -104,13 +104,16 @@ void renderCpuCoresSection(RenderContext& ctx)
     const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
     const auto axisConfig = makeTimeAxisConfig(timestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
 
-    if (perCoreHist.empty() || timestamps.empty())
+    // The snapshot knows the cores before there is any per-core history (CPU deltas need a previous
+    // sample), so the grid is built from whichever is larger: every core gets its chart, with the
+    // collecting hint, from the first frame (#1013).
+    const size_t coreCount = std::max(perCoreHist.size(), snap.cpuPerCore.size());
+    if (coreCount == 0)
     {
         ImGui::TextColored(theme.scheme().textMuted, "Collecting data...");
         return;
     }
-
-    const size_t coreCount = perCoreHist.size();
+    static const std::vector<float> noSamples;
 
     // Grid layout: fills the full available panel space (width and height), choosing a
     // rows x columns shape that tracks the panel's own aspect ratio (square panel -> square-ish
@@ -188,7 +191,7 @@ void renderCpuCoresSection(RenderContext& ctx)
                         {
                             // An empty history still draws the chart, with the collecting hint, rather
                             // than plain text in place of the chart (#1013).
-                            const auto& samples = perCoreHist[coreIdx];
+                            const auto& samples = (coreIdx < perCoreHist.size()) ? perCoreHist[coreIdx] : noSamples;
 
                             const float cellContentTop = ImGui::GetCursorPosY();
                             const std::string coreLabel = std::format(ICON_FA_MICROCHIP " Core {}", coreIdx);
@@ -246,7 +249,7 @@ void renderCpuCoresSection(RenderContext& ctx)
                                                      sampleData.data(),
                                                      UI::Format::checkedCount(timeData.size()),
                                                      themeRef.scheme().chartCpu,
-                                                     std::nullopt,
+                                                     themeRef.scheme().chartCpuFill,
                                                      2.0F,
                                                      true,
                                                      UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -270,9 +273,16 @@ void renderCpuCoresSection(RenderContext& ctx)
                                 }
                             };
 
-                            const double smoothed = (ctx.smoothedPerCore != nullptr && coreIdx < ctx.smoothedPerCore->size())
-                                                      ? (*ctx.smoothedPerCore)[coreIdx]
-                                                      : snap.cpuPerCore[coreIdx].totalPercent;
+                            // coreCount can exceed either list (see above), so each lookup is guarded.
+                            double smoothed = 0.0;
+                            if (ctx.smoothedPerCore != nullptr && coreIdx < ctx.smoothedPerCore->size())
+                            {
+                                smoothed = (*ctx.smoothedPerCore)[coreIdx];
+                            }
+                            else if (coreIdx < snap.cpuPerCore.size())
+                            {
+                                smoothed = snap.cpuPerCore[coreIdx].totalPercent;
+                            }
                             const NowBar bar{.valueText = UI::Format::percentCompact(smoothed),
                                              .label = coreName,
                                              .tooltipText = {},
