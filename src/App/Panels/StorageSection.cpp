@@ -145,6 +145,7 @@ void renderDiskCell(const std::string& deviceName,
         const UI::Widgets::HistoryChart chart(diskCfg);
         if (chart.active())
         {
+            UI::Widgets::drawCollectingHint(timeData.size()); // The same "no data yet" state on every chart (#1013)
             const int count = UI::Format::checkedCount(timeData.size());
             plotLineWithFill(READ_LABEL,
                              timeData.data(),
@@ -334,11 +335,8 @@ void renderStorageSection(RenderContext& ctx)
                 const auto& disk = perDisk[diskIdx];
                 const size_t alignedCount = std::min({diskTimes.size(), disk.readBytesPerSec.size(), disk.writeBytesPerSec.size()});
 
-                if (alignedCount == 0)
-                {
-                    ImGui::TextColored(theme.scheme().textMuted, "%s\nCollecting data...", disk.deviceName.c_str());
-                    return;
-                }
+                // An empty history still draws the cell's chart, with the collecting hint, rather than
+                // plain text in place of the chart (#1013).
 
                 // Build float read/write data for this disk
                 std::vector<float> readData;
@@ -435,6 +433,7 @@ void renderStorageSection(RenderContext& ctx)
                                         plotHeight));
             if (chart.active())
             {
+                UI::Widgets::drawCollectingHint(alignedDisk); // The same "no data yet" state on every chart (#1013)
                 const int count = UI::Format::checkedCount(alignedDisk);
                 plotLineWithFill(READ_LABEL,
                                  aggregateTimes.data(),

@@ -1901,7 +1901,7 @@ TEST(ProcessModelTest, HistoryTimestampsAreEmptyInitially)
 
 TEST(ProcessModelTest, ZeroHistoryRetentionKeepsOnlyCurrentSample)
 {
-    // Drives sample time via the injectable clock instead of a real sleep, so the two
+    // Drives sample time via the injectable clock instead of a real sleep, so the
     // pushed history entries get distinct, deterministic timestamps regardless of
     // scheduler/clock-resolution timing.
     auto currentTime = Domain::ProcessModel::Clock::time_point{};
@@ -1915,9 +1915,13 @@ TEST(ProcessModelTest, ZeroHistoryRetentionKeepsOnlyCurrentSample)
     model.updateFromCounters({counter}, 300000);
     ASSERT_EQ(model.historyTimestamps().size(), 2);
 
+    currentTime += std::chrono::milliseconds(10);
+    model.updateFromCounters({counter}, 400000);
+    ASSERT_EQ(model.historyTimestamps().size(), 3);
+
     model.setMaxHistorySeconds(0.0);
-    // With a zero-second window the cutoff equals the newest timestamp, so
-    // trimming keeps only the current sample.
+    // With a zero-second window the cutoff equals the newest timestamp, so trimming keeps only the
+    // current sample: an anchor before a zero-length window is never kept (keepTrimAnchor).
     EXPECT_EQ(model.historyTimestamps().size(), 1);
 }
 
