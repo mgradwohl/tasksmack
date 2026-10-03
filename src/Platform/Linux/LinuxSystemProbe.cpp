@@ -250,6 +250,9 @@ void LinuxSystemProbe::readMemoryCounters(SystemCounters& counters, const std::f
         return;
     }
 
+    // Set again below if the kernel reports MemAvailable.
+    counters.memory.hasAvailableBytes = false;
+
     const char* p = buf.data();
     const char* const end = buf.data() + len;
     constexpr uint64_t KB = 1024;
@@ -294,6 +297,7 @@ void LinuxSystemProbe::readMemoryCounters(SystemCounters& counters, const std::f
         else if (key == "MemAvailable")
         {
             counters.memory.availableBytes = value * KB;
+            counters.memory.hasAvailableBytes = true;
         }
         else if (key == "Buffers")
         {

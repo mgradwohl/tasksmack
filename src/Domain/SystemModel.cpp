@@ -138,6 +138,9 @@ void SystemModel::refresh()
     }
 
     auto counters = m_Probe->read();
+    // Stamped as soon as the counters are read, as StorageModel does: the power read below has
+    // its own, variable latency (sysfs, WMI), which would otherwise jitter the rate interval (#1144).
+    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 
     // Also read power data if probe is available (outside mutex - it's I/O). Applied to
     // the snapshot inside updateFromCountersLocked() below, under the same lock as the
@@ -149,7 +152,6 @@ void SystemModel::refresh()
         powerStatus = computePowerStatus(m_PowerProbe->read());
     }
 
-    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     updateFromCountersLocked(counters, nowSeconds, powerStatus);
 }
 
@@ -369,16 +371,22 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
     snap.memoryCachedBytes = counters.memory.cachedBytes;
     snap.memoryBuffersBytes = counters.memory.buffersBytes;
 
-    // Used = total - available (MemAvailable accounts for cache/buffers that can be freed)
-    if (counters.memory.availableBytes > 0)
+    // Used = total - available (MemAvailable accounts for cache/buffers that can be freed). A
+    // MemAvailable of 0 is memory exhausted, not missing, so only a kernel without it takes the
+    // legacy formula. Both subtractions saturate at 0: a container (LXCFS) can report available
+    // above total, which wrapped to about 16 EiB used (#1143).
+    const auto saturatingSub = [](std::uint64_t a, std::uint64_t b) -> std::uint64_t
     {
-        snap.memoryUsedBytes = counters.memory.totalBytes - counters.memory.availableBytes;
+        return (a > b) ? a - b : 0;
+    };
+    if (counters.memory.hasAvailableBytes)
+    {
+        snap.memoryUsedBytes = saturatingSub(counters.memory.totalBytes, counters.memory.availableBytes);
     }
     else
     {
-        // Fallback for older kernels without MemAvailable
-        snap.memoryUsedBytes =
-            counters.memory.totalBytes - counters.memory.freeBytes - counters.memory.cachedBytes - counters.memory.buffersBytes;
+        snap.memoryUsedBytes = saturatingSub(counters.memory.totalBytes,
+                                             counters.memory.freeBytes + counters.memory.cachedBytes + counters.memory.buffersBytes);
     }
 
     // Memory percentage
