@@ -22,7 +22,9 @@
 #include <spdlog/spdlog.h>
 
 #include <cmath>
+#include <exception>
 #include <filesystem>
+#include <system_error>
 
 namespace
 {
@@ -65,8 +67,11 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir, float display
     auto iconFontPath = (assetsDir / "fonts" / FONT_ICON_FILE_NAME_FAS).string();
     const auto monospaceFontPath = findMonospaceFontPath();
 
-    // Check if icon font exists
-    const bool hasIconFont = std::filesystem::exists(iconFontPath);
+    // Check if icon font exists. The error_code overloads here and below: this also runs when the
+    // display scale changes (#943), after the old fonts are gone, and a filesystem error must
+    // degrade to "not found" rather than throw out of the rebuild.
+    std::error_code existsError;
+    const bool hasIconFont = std::filesystem::exists(iconFontPath, existsError);
     if (!hasIconFont)
     {
         spdlog::warn("Icon font not found at {}, icons will not be available", iconFontPath);
@@ -180,7 +185,7 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir, float display
     theme.setTitleBarHeightPx(titleBarPx);
     spdlog::info("Title bar {}pt -> {}px (title font {}pt -> {}px)", TITLE_BAR_PT, titleBarPx, TITLE_FONT_PT, titleFontPx);
     auto titleFontPath = (assetsDir / "fonts" / "Sixtyfour.ttf").string();
-    if (std::filesystem::exists(titleFontPath))
+    if (std::filesystem::exists(titleFontPath, existsError))
     {
         ImFontConfig titleConfig;
         titleConfig.FontLoaderFlags |= ImGuiFreeTypeBuilderFlags_Bitmap;
@@ -229,6 +234,26 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir, float display
     }
 
     spdlog::info("Pre-baked {} fonts into atlas using FreeType", imguiIO.Fonts->Fonts.Size);
+}
+
+void UILayer::loadFallbackFonts(float displayScale)
+{
+    // ImGui's embedded font at each preset's sizes: no files involved, so it cannot fail the way
+    // loadAllFonts() can. Without icons, and the title-bar fonts stay unregistered, which the title
+    // bar already handles.
+    auto& theme = Theme::get();
+    const ImGuiIO& imguiIO = ImGui::GetIO();
+    for (const auto size : ALL_FONT_SIZES)
+    {
+        const auto& fontCfg = theme.fontConfig(size);
+        ImFontConfig regularConfig;
+        regularConfig.SizePixels = computePointsToPixels(fontCfg.regularPt, displayScale);
+        ImFont* regular = imguiIO.Fonts->AddFontDefault(&regularConfig);
+        ImFontConfig largeConfig;
+        largeConfig.SizePixels = computePointsToPixels(fontCfg.largePt, displayScale);
+        ImFont* large = imguiIO.Fonts->AddFontDefault(&largeConfig);
+        theme.registerFonts(size, regular, large, regular);
+    }
 }
 
 void UILayer::onAttach()
@@ -391,7 +416,19 @@ void UILayer::rebuildForDisplayScaleChange()
     // backend re-uploads the atlas texture on the next render.
     Theme::get().clearFontRegistrations();
     ImGui::GetIO().Fonts->ClearFonts();
-    loadAllFonts(m_AssetsDir, measured);
+    try
+    {
+        loadAllFonts(m_AssetsDir, measured);
+    }
+    catch (const std::exception& e)
+    {
+        // The old fonts are already gone, and beginFrame() must still reach NewFrame() with a font
+        // to draw with, so fall back to ImGui's built-in font rather than let this escape.
+        spdlog::error("Rebuilding fonts at display scale {:.2f} failed ({}); using the built-in font", measured, e.what());
+        Theme::get().clearFontRegistrations();
+        ImGui::GetIO().Fonts->ClearFonts();
+        loadFallbackFonts(measured);
+    }
     // Queues the style rebuild; applyPendingStyleChanges() flushes it straight after this.
     Theme::get().setDisplayScale(measured);
 }
