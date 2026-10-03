@@ -90,6 +90,7 @@ struct ProcessCapabilities
                                        // Windows: non-admin AND EStats was specifically denied (ERROR_ACCESS_DENIED).
                                        //          Remains false when EStats is simply unsupported, because
                                        //          running as Administrator would not restore those counters.
+    bool hasSharedMemory = false;      // Whether ProcessCounters::sharedBytes is filled (Linux: statm; not on Windows)
 };
 
 } // namespace Platform
