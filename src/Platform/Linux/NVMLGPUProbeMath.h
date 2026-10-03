@@ -30,6 +30,10 @@ inline constexpr std::size_t kProcessInfoV1Size = 16;
 inline constexpr std::size_t kProcessInfoV2Size = 24;
 inline constexpr std::size_t kProcessInfoMemoryOffset = 8;
 
+/// Upper bound on the entries we allocate for, whatever the driver reports: a corrupt count must
+/// not drive the sampler into repeated multi-gigabyte allocations. Matches the Windows probe.
+inline constexpr unsigned int kMaxPlausibleProcessCount = 65536;
+
 struct RunningProcess
 {
     std::uint32_t pid = 0;
@@ -40,7 +44,8 @@ struct RunningProcess
 /// `query(unsigned int* count, void* buffer)` forwards to it. NVML answers a count-only call
 /// (count 0, null buffer) with NVML_ERROR_INSUFFICIENT_SIZE and the needed count whenever any
 /// process is running, and with NVML_SUCCESS only when none are. The list can also grow between
-/// the two calls, so the sized call is retried a few times with headroom.
+/// the two calls, so the sized call is retried a few times with headroom. Counts are capped at
+/// kMaxPlausibleProcessCount; a list the driver says is longer than that is treated as unreadable.
 template<typename Query> [[nodiscard]] std::vector<RunningProcess> queryRunningProcesses(const Query& query, std::size_t entrySize)
 {
     constexpr int MAX_ATTEMPTS = 3;
@@ -61,7 +66,11 @@ template<typename Query> [[nodiscard]] std::vector<RunningProcess> queryRunningP
     result = NVML::NVML_ERROR_INSUFFICIENT_SIZE;
     for (int attempt = 0; attempt < MAX_ATTEMPTS && result == NVML::NVML_ERROR_INSUFFICIENT_SIZE; ++attempt)
     {
-        count += HEADROOM;
+        if (count > kMaxPlausibleProcessCount)
+        {
+            return {};
+        }
+        count = std::min(count + HEADROOM, kMaxPlausibleProcessCount);
         buffer.assign(static_cast<std::size_t>(count) * entrySize, std::byte{0});
         result = query(&count, buffer.data());
     }

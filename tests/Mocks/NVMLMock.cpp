@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#include <utility>
 
 namespace
 {
@@ -170,6 +171,13 @@ NVML::nvmlReturn_t listProcesses(NVML::nvmlDevice_t device, unsigned int* count,
     return NVML::NVML_SUCCESS;
 }
 
+// Test controls (#1162), set through the tasksmackNvmlMock* functions below. Each test runs in
+// its own process under CTest, but tests reset them anyway.
+constexpr unsigned int NO_FAILING_HANDLE = std::numeric_limits<unsigned int>::max();
+unsigned int g_FailingHandleIndex = NO_FAILING_HANDLE;
+int g_UuidCallsBeforeFailure = -1; // -1: never fail
+unsigned int g_UuidCalls = 0;
+
 } // namespace
 
 extern "C"
@@ -197,6 +205,10 @@ extern "C"
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
         }
+        if (index == g_FailingHandleIndex)
+        {
+            return NVML::NVML_ERROR_UNKNOWN;
+        }
         *device = &MOCK_HANDLES[index];
         return NVML::NVML_SUCCESS;
     }
@@ -218,6 +230,11 @@ extern "C"
         if (dev == nullptr)
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        ++g_UuidCalls;
+        if (g_UuidCallsBeforeFailure >= 0 && std::cmp_greater(g_UuidCalls, g_UuidCallsBeforeFailure))
+        {
+            return NVML::NVML_ERROR_UNKNOWN;
         }
         if (!dev->hasUuid)
         {
@@ -336,6 +353,21 @@ extern "C"
     NVML::nvmlReturn_t nvmlDeviceGetGraphicsRunningProcesses_v3(NVML::nvmlDevice_t device, unsigned int* count, void* infos)
     {
         return listProcesses<ProcessInfoV2>(device, count, infos, GRAPHICS_PROCESSES);
+    }
+
+    // Test controls (not part of NVML). failingHandleIndex: nvmlDeviceGetHandleByIndex_v2 fails for
+    // that index (NO_FAILING_HANDLE for none). uuidCallsBeforeFailure: nvmlDeviceGetUUID fails
+    // once it has been called more than this many times (-1 for never). Also resets the counter.
+    void tasksmackNvmlMockConfigure(unsigned int failingHandleIndex, int uuidCallsBeforeFailure)
+    {
+        g_FailingHandleIndex = failingHandleIndex;
+        g_UuidCallsBeforeFailure = uuidCallsBeforeFailure;
+        g_UuidCalls = 0;
+    }
+
+    unsigned int tasksmackNvmlMockUuidCalls()
+    {
+        return g_UuidCalls;
     }
 
     const char* nvmlErrorString(NVML::nvmlReturn_t /*result*/)

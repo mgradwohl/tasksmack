@@ -12,8 +12,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <utility>
 #include <vector>
+
+#include <dlfcn.h>
 
 namespace Platform
 {
@@ -167,6 +170,23 @@ TEST(NVMLGPUProbeMathTest, UnavailableMemoryIsNullopt)
     EXPECT_FALSE(processes[0].usedGpuMemoryBytes.has_value());
 }
 
+TEST(NVMLGPUProbeMathTest, ImplausibleProcessCountIsNotAllocated)
+{
+    // A corrupt count must not drive repeated multi-gigabyte allocations (#1213 review).
+    int sizedCalls = 0;
+    const auto query = [&sizedCalls](unsigned int* count, void* buffer)
+    {
+        if (buffer != nullptr)
+        {
+            ++sizedCalls;
+        }
+        *count = NVMLGPUProbeMath::kMaxPlausibleProcessCount + 1U;
+        return NVML::NVML_ERROR_INSUFFICIENT_SIZE;
+    };
+    EXPECT_TRUE(NVMLGPUProbeMath::queryRunningProcesses(query, NVMLGPUProbeMath::kProcessInfoV2Size).empty());
+    EXPECT_EQ(sizedCalls, 0);
+}
+
 TEST(NVMLGPUProbeMathTest, CountQueryErrorIsEmpty)
 {
     auto fake = makeFake({{.pid = 1, .usedGpuMemory = 1}});
@@ -294,6 +314,122 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryEnumeratesDevicesAndUsesUuidFallback)
     EXPECT_EQ(gpus[1].id, "nvidia-1");
     EXPECT_FALSE(gpus[1].isIntegrated);
     EXPECT_EQ(gpus[1].deviceIndex, 1U);
+}
+
+/// Drives the NVML mock's test controls (tasksmackNvmlMockConfigure) for one test and resets
+/// them afterwards. dlopen() returns the same instance the probe loads.
+class NvmlMockControls
+{
+  public:
+    NvmlMockControls() : m_Library(dlopen("libnvidia-ml.so.1", RTLD_NOW))
+    {
+        if (m_Library != nullptr)
+        {
+            // dlsym returns void* by POSIX definition; the casts restore the mock's signatures.
+            // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast)
+            m_Configure = reinterpret_cast<ConfigureFn>(dlsym(m_Library, "tasksmackNvmlMockConfigure"));
+            m_UuidCalls = reinterpret_cast<UuidCallsFn>(dlsym(m_Library, "tasksmackNvmlMockUuidCalls"));
+            // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
+        }
+    }
+
+    ~NvmlMockControls()
+    {
+        if (m_Configure != nullptr)
+        {
+            m_Configure(NO_FAILING_HANDLE, -1);
+        }
+        if (m_Library != nullptr)
+        {
+            dlclose(m_Library);
+        }
+    }
+
+    NvmlMockControls(const NvmlMockControls&) = delete;
+    NvmlMockControls& operator=(const NvmlMockControls&) = delete;
+    NvmlMockControls(NvmlMockControls&&) = delete;
+    NvmlMockControls& operator=(NvmlMockControls&&) = delete;
+
+    [[nodiscard]] bool available() const
+    {
+        return m_Configure != nullptr && m_UuidCalls != nullptr;
+    }
+
+    void configure(unsigned int failingHandleIndex, int uuidCallsBeforeFailure) const
+    {
+        m_Configure(failingHandleIndex, uuidCallsBeforeFailure);
+    }
+
+    [[nodiscard]] unsigned int uuidCalls() const
+    {
+        return m_UuidCalls();
+    }
+
+    static constexpr unsigned int NO_FAILING_HANDLE = std::numeric_limits<unsigned int>::max();
+
+  private:
+    using ConfigureFn = void (*)(unsigned int, int);
+    using UuidCallsFn = unsigned int (*)();
+
+    void* m_Library;
+    ConfigureFn m_Configure = nullptr;
+    UuidCallsFn m_UuidCalls = nullptr;
+};
+
+// #1162: a device whose handle NVML won't return is skipped, not sampled through a null handle
+// as an all-zero phantom GPU.
+TEST(LinuxNVMLGPUProbeTest, DeviceWithoutAHandleIsSkipped)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const NvmlMockControls controls;
+    ASSERT_TRUE(controls.available());
+    controls.configure(0, -1);
+
+    NVMLGPUProbe probe;
+    ASSERT_TRUE(probe.isAvailable());
+
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    EXPECT_EQ(gpus[0].deviceIndex, 1U);
+    EXPECT_EQ(gpus[0].id, "nvidia-1");
+
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_EQ(counters[0].gpuId, "nvidia-1");
+}
+
+// #1162: ids are resolved once at load, so a UUID failure afterwards can't turn a GPU into a
+// different "nvidia-N" id for one sample, and sampling makes no further UUID calls.
+TEST(LinuxNVMLGPUProbeTest, DeviceIdsAreResolvedOnceAtLoad)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const NvmlMockControls controls;
+    ASSERT_TRUE(controls.available());
+    controls.configure(NvmlMockControls::NO_FAILING_HANDLE, 2); // every UUID call after load fails
+
+    NVMLGPUProbe probe;
+    ASSERT_TRUE(probe.isAvailable());
+    const unsigned int callsAtLoad = controls.uuidCalls();
+
+    const auto counters = probe.readGPUCounters();
+    const auto processCounters = probe.readProcessGPUCounters();
+    const auto gpus = probe.enumerateGPUs();
+
+    ASSERT_EQ(counters.size(), 2U);
+    EXPECT_EQ(counters[0].gpuId, "mock-nvml-uuid-0");
+    ASSERT_FALSE(processCounters.empty());
+    EXPECT_EQ(processCounters.front().gpuId, "mock-nvml-uuid-0");
+    ASSERT_EQ(gpus.size(), 2U);
+    EXPECT_EQ(gpus[0].id, "mock-nvml-uuid-0");
+    EXPECT_EQ(controls.uuidCalls(), callsAtLoad);
 }
 
 TEST(LinuxNVMLGPUProbeTest, MockLibraryReturnsExpectedCountersAndMergesProcessEngines)
