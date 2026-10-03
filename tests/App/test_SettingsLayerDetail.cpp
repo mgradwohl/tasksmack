@@ -6,6 +6,8 @@
 
 #include <gtest/gtest.h>
 
+#include <optional>
+
 namespace App::Detail
 {
 namespace
@@ -136,6 +138,53 @@ TEST(SettingsLayerDetailTest, HistoryValuesArePositive)
         EXPECT_GT(opt.valueSeconds, 0) << "History option has non-positive valueSeconds: " << opt.valueSeconds << " (label=" << opt.label
                                        << ")";
     }
+}
+
+// ========================================
+// Apply writes only picked combos (#1120, #1151)
+// ========================================
+
+TEST(SettingsLayerDetailTest, UntouchedComboWritesNothing)
+{
+    // A stored value that isn't an option (interval_ms = 750) has no index; untouched, Apply must
+    // leave it alone instead of writing the old fallback option.
+    const ComboState offList{.index = std::nullopt, .touched = false};
+    EXPECT_FALSE(pickedOption(offList, REFRESH_RATE_OPTIONS).has_value());
+
+    // Same for a matching value the user didn't change: nothing to write.
+    const ComboState onList{.index = 3, .touched = false};
+    EXPECT_FALSE(pickedOption(onList, REFRESH_RATE_OPTIONS).has_value());
+}
+
+TEST(SettingsLayerDetailTest, PickedComboWritesThePickedOption)
+{
+    const ComboState picked{.index = 1, .touched = true};
+    const auto option = pickedOption(picked, HISTORY_OPTIONS);
+    ASSERT_TRUE(option.has_value());
+    EXPECT_EQ(option->valueSeconds, 120);
+}
+
+TEST(SettingsLayerDetailTest, FontSizeChangedWhileOpenIsNotRevertedByApply)
+{
+    // The dialog opened on Medium, then Ctrl+= made it Large; the combo was never touched, so
+    // Apply has nothing to write and the shortcut's change stands (#1151).
+    const ComboState fontChoice{.index = optionIndexOf(FONT_SIZE_OPTIONS, UI::FontSize::Medium, &FontSizeOption::value)};
+    EXPECT_FALSE(pickedOption(fontChoice, FONT_SIZE_OPTIONS).has_value());
+}
+
+TEST(SettingsLayerDetailTest, OptionIndexOfFindsOnlyExactValues)
+{
+    EXPECT_EQ(optionIndexOf(REFRESH_RATE_OPTIONS, 250, &RefreshRateOption::valueMs), 1U);
+    EXPECT_FALSE(optionIndexOf(REFRESH_RATE_OPTIONS, 750, &RefreshRateOption::valueMs).has_value());
+    EXPECT_FALSE(optionIndexOf(HISTORY_OPTIONS, 1800, &HistoryOption::valueSeconds).has_value());
+}
+
+TEST(SettingsLayerDetailTest, CustomLabelsDescribeOffListValues)
+{
+    EXPECT_EQ(customRefreshLabel(750), "Custom (750 ms)");
+    EXPECT_EQ(customHistoryLabel(1800), "Custom (30 minutes)");
+    EXPECT_EQ(customHistoryLabel(60), "Custom (1 minute)");
+    EXPECT_EQ(customHistoryLabel(45), "Custom (45 seconds)");
 }
 
 } // namespace
