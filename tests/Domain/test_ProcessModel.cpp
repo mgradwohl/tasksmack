@@ -1899,7 +1899,7 @@ TEST(ProcessModelTest, HistoryTimestampsAreEmptyInitially)
     EXPECT_TRUE(timestamps.empty());
 }
 
-TEST(ProcessModelTest, ZeroHistoryRetentionKeepsTheCurrentAndPreviousSample)
+TEST(ProcessModelTest, ZeroHistoryRetentionKeepsOnlyCurrentSample)
 {
     // Drives sample time via the injectable clock instead of a real sleep, so the
     // pushed history entries get distinct, deterministic timestamps regardless of
@@ -1920,9 +1920,9 @@ TEST(ProcessModelTest, ZeroHistoryRetentionKeepsTheCurrentAndPreviousSample)
     ASSERT_EQ(model.historyTimestamps().size(), 3);
 
     model.setMaxHistorySeconds(0.0);
-    // With a zero-second window the cutoff equals the newest timestamp, so trimming keeps the
-    // current sample and the newest one before the cutoff (#1016).
-    EXPECT_EQ(model.historyTimestamps().size(), 2);
+    // With a zero-second window the cutoff equals the newest timestamp, so trimming keeps only the
+    // current sample: an anchor before a zero-length window is never kept (keepTrimAnchor).
+    EXPECT_EQ(model.historyTimestamps().size(), 1);
 }
 
 // =============================================================================

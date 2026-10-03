@@ -5,6 +5,7 @@
 #include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
+#include "Domain/History.h"
 #include "Domain/Numeric.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessSnapshot.h"
@@ -1959,7 +1960,10 @@ void ProcessDetailsPanel::trimHistory(double nowSeconds)
         m_Timestamps.pop_front();
         ++removeCount;
     }
-    if (m_Timestamps.size() == 1 && m_Timestamps.front() < cutoff)
+    // The one left before the cutoff is the anchor; drop it too when nothing newer remains or it is
+    // across a gap (Domain::HistoryUtils::keepTrimAnchor).
+    if (!m_Timestamps.empty() && m_Timestamps.front() < cutoff &&
+        (m_Timestamps.size() == 1 || !Domain::HistoryUtils::keepTrimAnchor(m_Timestamps[0], m_Timestamps[1], cutoff, m_Timestamps.back())))
     {
         m_Timestamps.pop_front();
         ++removeCount;

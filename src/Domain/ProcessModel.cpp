@@ -839,7 +839,7 @@ void ProcessModel::trimHistory()
     // sample remains (see HistoryUtils::discardBefore, #1016). All rings are pushed in lockstep with
     // m_Timestamps, so a single discard count keeps them aligned. discardFront is O(1): no copies,
     // rebuilds, or allocations. With maxHistorySeconds == 0 the cutoff equals the newest timestamp,
-    // so the current sample and the one before it are retained.
+    // so only the current sample is retained (no anchor before a zero-length window).
     const double cutoff = m_Timestamps.latest() - m_MaxHistorySeconds;
     static_cast<void>(HistoryUtils::discardBefore(m_Timestamps,
                                                   cutoff,
