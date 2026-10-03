@@ -131,6 +131,39 @@ TEST(ROCmGPUProbeMathTest, DecodesRocm5Layout)
     EXPECT_EQ(ROCmGPUProbeMath::currentFrequencyHz(buffer, ROCmGPUProbeMath::FrequenciesLayout::V5), 2'100'000'000ULL);
 }
 
+// The reported version is only a preference: a library built without git-tag metadata reports a
+// generated 1.0.0 while writing the ROCm 6 layout, and the clocks must still decode (#1189 review).
+TEST(ROCmGPUProbeMathTest, DecodesRocm6LayoutWhenVersionSuggestsRocm5)
+{
+    ROCmGPUProbeMath::RsmiFrequenciesV6 v6{};
+    v6.has_deep_sleep = true;
+    v6.num_supported = 8;
+    v6.current = 5;
+    v6.frequency[5] = 1'800'000'000ULL;
+
+    const auto preferred = ROCmGPUProbeMath::frequenciesLayoutFor(1U);
+    ASSERT_EQ(preferred, ROCmGPUProbeMath::FrequenciesLayout::V5);
+    EXPECT_EQ(ROCmGPUProbeMath::currentFrequencyHz(bufferFrom(v6), preferred), 1'800'000'000ULL);
+}
+
+TEST(ROCmGPUProbeMathTest, DecodesRocm5LayoutWhenVersionSuggestsRocm6)
+{
+    ROCmGPUProbeMath::RsmiFrequenciesV5 v5{};
+    v5.num_supported = 4;
+    v5.current = 3;
+    v5.frequency[3] = 900'000'000ULL;
+
+    EXPECT_EQ(ROCmGPUProbeMath::currentFrequencyHz(bufferFrom(v5), ROCmGPUProbeMath::FrequenciesLayout::V6), 900'000'000ULL);
+}
+
+TEST(ROCmGPUProbeMathTest, RejectsZeroFrequencyInEitherLayout)
+{
+    ROCmGPUProbeMath::RsmiFrequenciesV6 v6{};
+    v6.num_supported = 2;
+    v6.current = 1; // frequency[1] left at 0
+    EXPECT_FALSE(ROCmGPUProbeMath::currentFrequencyHz(bufferFrom(v6), ROCmGPUProbeMath::FrequenciesLayout::V6).has_value());
+}
+
 TEST(ROCmGPUProbeMathTest, RejectsCurrentIndexOutsideSupportedOrArray)
 {
     ROCmGPUProbeMath::RsmiFrequenciesV6 notSupported{};

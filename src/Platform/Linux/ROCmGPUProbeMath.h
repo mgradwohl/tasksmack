@@ -10,6 +10,7 @@
 #include <cstring>
 #include <optional>
 #include <string>
+#include <type_traits>
 
 namespace Platform::ROCmGPUProbeMath
 {
@@ -18,11 +19,11 @@ namespace Platform::ROCmGPUProbeMath
 // `bool has_deep_sleep` and grew from 32 to 33 frequencies (RSMI_MAX_NUM_FREQUENCIES, 32 normal
 // plus 1 deep-sleep). Passing the old 264-byte struct to a ROCm 6 library let it write 16 bytes
 // past a stack object on every clock read (#1088). Both layouts are mirrored here, and the probe
-// hands the library a buffer larger than either, then decodes by the library's version.
+// hands the library a buffer larger than either, then decodes it.
 
 // NOLINTBEGIN(readability-identifier-naming,cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - must match AMD ROCm SMI API ABI
 
-/// rsmi_frequencies_t up to ROCm 5.x (librocm_smi64 major version 5 and earlier).
+/// rsmi_frequencies_t up to ROCm 5.x.
 struct RsmiFrequenciesV5
 {
     std::uint32_t num_supported;
@@ -30,7 +31,7 @@ struct RsmiFrequenciesV5
     std::uint64_t frequency[32];
 };
 
-/// rsmi_frequencies_t from ROCm 6.0 onward (librocm_smi64 major version 6 and later).
+/// rsmi_frequencies_t from ROCm 6.0 onward.
 struct RsmiFrequenciesV6
 {
     bool has_deep_sleep;
@@ -59,9 +60,10 @@ enum class FrequenciesLayout : std::uint8_t
     V6
 };
 
-/// The layout to decode for a ROCm SMI library whose rsmi_version_get() reported `libraryMajor`.
-/// An unknown version (the optional symbol is missing) is decoded as the current layout: the
-/// buffer is oversized either way, so a wrong guess can misread a clock but never overflow.
+/// The layout to try first for a ROCm SMI library whose rsmi_version_get() reported
+/// `libraryMajor`. Only a preference: a library built without its git-tag metadata reports a
+/// generated version (1.0.0) whatever layout it writes, so currentFrequencyHz() validates the
+/// preferred layout and falls back to the other.
 [[nodiscard]] constexpr FrequenciesLayout frequenciesLayoutFor(std::optional<std::uint32_t> libraryMajor) noexcept
 {
     return (libraryMajor.has_value() && *libraryMajor < 6U) ? FrequenciesLayout::V5 : FrequenciesLayout::V6;
@@ -69,25 +71,70 @@ enum class FrequenciesLayout : std::uint8_t
 
 namespace Detail
 {
-template<typename Layout> [[nodiscard]] std::optional<std::uint64_t> currentFrequencyHz(const RsmiFrequenciesBuffer& buffer)
+
+// Where each layout keeps its fields. Decoding reads them by offset rather than copying the buffer
+// into the mirror struct: a V5 buffer's first byte is not a valid bool, so reading it as
+// RsmiFrequenciesV6::has_deep_sleep would be undefined behaviour.
+struct FieldOffsets
 {
-    Layout decoded{};
-    std::memcpy(&decoded, buffer.bytes.data(), sizeof(decoded));
-    const std::size_t capacity = std::size(decoded.frequency);
-    if (decoded.current >= decoded.num_supported || decoded.current >= capacity)
+    std::size_t numSupported;
+    std::size_t current;
+    std::size_t frequency;
+    std::size_t capacity;
+};
+
+inline constexpr FieldOffsets V5_OFFSETS{.numSupported = offsetof(RsmiFrequenciesV5, num_supported),
+                                         .current = offsetof(RsmiFrequenciesV5, current),
+                                         .frequency = offsetof(RsmiFrequenciesV5, frequency),
+                                         .capacity = std::extent_v<decltype(RsmiFrequenciesV5::frequency)>};
+inline constexpr FieldOffsets V6_OFFSETS{.numSupported = offsetof(RsmiFrequenciesV6, num_supported),
+                                         .current = offsetof(RsmiFrequenciesV6, current),
+                                         .frequency = offsetof(RsmiFrequenciesV6, frequency),
+                                         .capacity = std::extent_v<decltype(RsmiFrequenciesV6::frequency)>};
+
+/// Clocks above this are not a real reading (no GPU clock is near 100 GHz).
+inline constexpr std::uint64_t MAX_PLAUSIBLE_HZ = 100'000'000'000ULL;
+
+template<typename T> [[nodiscard]] T readAt(const RsmiFrequenciesBuffer& buffer, std::size_t offset)
+{
+    T value{};
+    std::memcpy(&value, buffer.bytes.data() + offset, sizeof(value));
+    return value;
+}
+
+/// The current frequency if the buffer is self-consistent under `offsets`: a supported count
+/// that fits the array, a current index below it, and a non-zero, plausible frequency there.
+[[nodiscard]] inline std::optional<std::uint64_t> plausibleFrequencyHz(const RsmiFrequenciesBuffer& buffer, const FieldOffsets& offsets)
+{
+    const auto numSupported = readAt<std::uint32_t>(buffer, offsets.numSupported);
+    const auto current = readAt<std::uint32_t>(buffer, offsets.current);
+    if (numSupported == 0 || numSupported > offsets.capacity || current >= numSupported)
     {
         return std::nullopt;
     }
-    return decoded.frequency[decoded.current];
+    const auto hz = readAt<std::uint64_t>(buffer, offsets.frequency + (current * sizeof(std::uint64_t)));
+    if (hz == 0 || hz > MAX_PLAUSIBLE_HZ)
+    {
+        return std::nullopt;
+    }
+    return hz;
 }
+
 } // namespace Detail
 
-/// The current frequency in Hz from a filled buffer, or nullopt when the reported current index
-/// is out of range (of the supported count, or of the array itself).
-[[nodiscard]] inline std::optional<std::uint64_t> currentFrequencyHz(const RsmiFrequenciesBuffer& buffer, FrequenciesLayout layout)
+/// The current frequency in Hz from a filled buffer. The `preferred` layout is tried first and
+/// the other second; each must be self-consistent (see plausibleFrequencyHz). The two layouts
+/// put different fields at the same offsets, so a buffer written in one layout is not
+/// self-consistent when read as the other. nullopt when neither fits.
+[[nodiscard]] inline std::optional<std::uint64_t> currentFrequencyHz(const RsmiFrequenciesBuffer& buffer, FrequenciesLayout preferred)
 {
-    return layout == FrequenciesLayout::V5 ? Detail::currentFrequencyHz<RsmiFrequenciesV5>(buffer)
-                                           : Detail::currentFrequencyHz<RsmiFrequenciesV6>(buffer);
+    const auto& first = (preferred == FrequenciesLayout::V5) ? Detail::V5_OFFSETS : Detail::V6_OFFSETS;
+    const auto& second = (preferred == FrequenciesLayout::V5) ? Detail::V6_OFFSETS : Detail::V5_OFFSETS;
+    if (const auto hz = Detail::plausibleFrequencyHz(buffer, first))
+    {
+        return hz;
+    }
+    return Detail::plausibleFrequencyHz(buffer, second);
 }
 
 // Mirrors ROCm SMI's RSMI_STATUS_SUCCESS (0) without depending on ROCmGPUProbe.cpp's

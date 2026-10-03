@@ -153,7 +153,7 @@ struct ROCmGPUProbe::Impl
     rsmi_status_t (*rsmi_dev_fan_speed_max_get)(std::uint32_t, std::uint32_t, std::uint64_t*) = nullptr;
     const char* (*rsmi_status_string)(rsmi_status_t) = nullptr;
 
-    // How to decode rsmi_frequencies_t for the loaded library; set in loadROCmSMI().
+    // Which rsmi_frequencies_t layout to try first for the loaded library; set in loadROCmSMI().
     ROCmGPUProbeMath::FrequenciesLayout frequenciesLayout = ROCmGPUProbeMath::FrequenciesLayout::V6;
 
     bool loadROCmSMI();
