@@ -401,7 +401,7 @@ void SystemMetricsPanel::renderContent()
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
                         ImVec2(ShellMetrics::TAB_PADDING_X * tabPaddingScale, ShellMetrics::SUB_TAB_PADDING_Y * tabPaddingScale));
 
-    if (ImGui::BeginTabBar("SystemTabs"))
+    if (ImGui::BeginTabBar("SystemTabs", ImGuiTabBarFlags_DrawSelectedOverline))
     {
         // Each tab's body scrolls in its own child, so the tab bar itself stays in view (#968).
         if (ImGui::BeginTabItem(ICON_FA_GAUGE_HIGH "  Overview"))
