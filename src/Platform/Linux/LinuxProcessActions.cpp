@@ -2,6 +2,7 @@
 
 #include "Domain/PriorityConfig.h"
 #include "Platform/IProcessActions.h"
+#include "PriorityErrorMessage.h"
 #include "ProcStatStartTime.h"
 
 #include <spdlog/spdlog.h>
@@ -18,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -214,6 +216,7 @@ struct PriorityChange
     std::size_t changed = 0;
     std::size_t failed = 0;
     int firstError = 0;
+    bool threadsKeptStarting = false; // new threads were still appearing after the last pass
 };
 
 /// The thread IDs in /proc/<pid>/task, or why they couldn't be listed. There is no fallback to
@@ -244,30 +247,60 @@ struct PriorityChange
     return tids;
 }
 
-/// setpriority(2) on each of `tids`, the threads of `pid`. A thread that exits meanwhile (ESRCH)
-/// is neither a change nor a failure -- except the main thread, whose exit means the process's.
-[[nodiscard]] PriorityChange setPriorityOfEveryThread(const std::vector<id_t>& tids, int32_t pid, int32_t nice)
+/// setpriority(2) on every thread of `pid`. A thread can start another between the listing and its
+/// own renice; the new one inherits the old nice and isn't in that listing. So the threads are
+/// listed again after each pass until a pass finds none it hasn't already set, giving up after a
+/// bounded number of passes (#1228 review). A thread that exits meanwhile (ESRCH) is neither a
+/// change nor a failure -- except the main thread, whose exit means the process's. Only the first
+/// listing's failure is an error; a later one means the process has gone, which the caller's
+/// pidfd check reports.
+[[nodiscard]] std::expected<PriorityChange, std::error_code> setPriorityOfEveryThread(int32_t pid, int32_t nice)
 {
+    constexpr int MAX_PASSES = 8;
     PriorityChange change;
-    for (const id_t tid : tids)
+    std::unordered_set<id_t> seen;
+    for (int pass = 0; pass < MAX_PASSES; ++pass)
     {
-        // setpriority() returns 0 on success and -1 on error (per POSIX).
-        if (setpriority(PRIO_PROCESS, tid, nice) == 0)
+        const auto tids = threadIds(pid);
+        if (!tids.has_value())
         {
-            ++change.changed;
-            continue;
+            if (pass == 0)
+            {
+                return std::unexpected(tids.error());
+            }
+            return change;
         }
-        const int err = errno;
-        if (err == ESRCH && std::cmp_not_equal(tid, pid))
+        bool foundNew = false;
+        for (const id_t tid : *tids)
         {
-            continue;
+            if (!seen.insert(tid).second)
+            {
+                continue;
+            }
+            foundNew = true;
+            // setpriority() returns 0 on success and -1 on error (per POSIX).
+            if (setpriority(PRIO_PROCESS, tid, nice) == 0)
+            {
+                ++change.changed;
+                continue;
+            }
+            const int err = errno;
+            if (err == ESRCH && std::cmp_not_equal(tid, pid))
+            {
+                continue;
+            }
+            ++change.failed;
+            if (change.firstError == 0)
+            {
+                change.firstError = err;
+            }
         }
-        ++change.failed;
-        if (change.firstError == 0)
+        if (!foundNew)
         {
-            change.firstError = err;
+            return change;
         }
     }
+    change.threadsKeptStarting = true;
     return change;
 }
 
@@ -309,17 +342,17 @@ ProcessActionResult LinuxProcessActions::setPriority(const ProcessTarget& target
     // changes only the main thread, so a multithreaded compiler or browser kept nearly all of its
     // work at the old priority while the UI reported success (#1104). Renice every thread, as
     // Windows' SetPriorityClass changes the whole process.
-    const auto tids = threadIds(target.pid);
-    if (!tids.has_value())
+    const auto result = setPriorityOfEveryThread(target.pid, clampedNice);
+    if (!result.has_value())
     {
-        const std::error_code listError = tids.error();
+        const std::error_code listError = result.error();
         std::string errorMsg = (listError == std::errc::no_such_file_or_directory || listError == std::errc::no_such_process)
                                  ? std::string("Process not found - may have already exited")
                                  : std::format("Can't list the threads of process {}: {}", target.pid, listError.message());
         spdlog::warn("Failed to set priority for PID {}: {}", target.pid, errorMsg);
         return ProcessActionResult::error(std::move(errorMsg));
     }
-    const PriorityChange change = setPriorityOfEveryThread(*tids, target.pid, clampedNice);
+    const PriorityChange change = *result;
 
     // Once any thread was changed, confirm the target survived before reporting anything else: if
     // it exited meanwhile, the change may have reached another process, which matters more than
@@ -342,6 +375,15 @@ ProcessActionResult LinuxProcessActions::setPriority(const ProcessTarget& target
             spdlog::warn("{}", errorMsg);
             return ProcessActionResult::error(std::move(errorMsg));
         }
+        if (change.threadsKeptStarting)
+        {
+            std::string errorMsg =
+                std::format("Priority changed for {} threads, but process {} kept starting new ones; some may still have the old priority",
+                            change.changed,
+                            target.pid);
+            spdlog::warn("{}", errorMsg);
+            return ProcessActionResult::error(std::move(errorMsg));
+        }
         if (change.failed == 0)
         {
             spdlog::info("Successfully set priority (nice={}) for PID {} ({} threads)", clampedNice, target.pid, change.changed);
@@ -349,31 +391,7 @@ ProcessActionResult LinuxProcessActions::setPriority(const ProcessTarget& target
         }
     }
 
-    // Handle error
-    const int err = change.firstError;
-    std::string errorMsg;
-
-    switch (err)
-    {
-    // setpriority(2): EPERM is a process owned by another user; EACCES is raising priority
-    // (lowering niceness) without CAP_SYS_NICE. The advice was the other way round (#1155).
-    case EPERM:
-        errorMsg = "Permission denied: the process belongs to another user. Run TaskSmack as root, or use: sudo renice -n " +
-                   std::to_string(clampedNice) + " -p " + std::to_string(target.pid);
-        break;
-    case ESRCH:
-        errorMsg = "Process not found - may have already exited";
-        break;
-    // Note: EACCES is not in POSIX for setpriority(), but is documented by
-    // Linux setpriority(2) man page as a possible error code.
-    case EACCES:
-        errorMsg = "Permission denied. Raising priority (lowering niceness) needs root (CAP_SYS_NICE); use: sudo renice -n " +
-                   std::to_string(clampedNice) + " -p " + std::to_string(target.pid);
-        break;
-    default:
-        errorMsg = std::system_category().message(err);
-        break;
-    }
+    std::string errorMsg = priorityErrorMessage(change.firstError, clampedNice, target.pid);
     if (change.changed > 0)
     {
         errorMsg = std::format("Priority changed for only {} of {} threads. {}", change.changed, change.changed + change.failed, errorMsg);

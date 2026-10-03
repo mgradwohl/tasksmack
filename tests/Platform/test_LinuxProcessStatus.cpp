@@ -3,18 +3,24 @@
 
 #include "Platform/Linux/CgroupFreezeStatus.h"
 #include "Platform/Linux/LinuxProcessProbe.h"
+#include "Platform/Linux/PriorityErrorMessage.h"
+#include "Platform/Linux/UserNameLookup.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/ScopedTempDir.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cerrno>
+#include <cstddef>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
 #include <string_view>
 
+#include <pwd.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -125,6 +131,58 @@ TEST(LinuxProcessStatusTest, ZombieIsNotLabelledAsAKernelThread)
     ASSERT_EQ(state, 'Z');
     EXPECT_FALSE(command.starts_with('[')) << command;
     EXPECT_TRUE(command.ends_with("<defunct>")) << command;
+}
+
+TEST(PriorityErrorMessageTest, PermissionErrorsGiveTheRightAdvice)
+{
+    // EPERM: another user's process. EACCES: raising priority without CAP_SYS_NICE. The advice
+    // used to be swapped (#1155).
+    const std::string otherUser = priorityErrorMessage(EPERM, 5, 1234);
+    EXPECT_NE(otherUser.find("belongs to another user"), std::string::npos) << otherUser;
+    EXPECT_NE(otherUser.find("sudo renice -n 5 -p 1234"), std::string::npos) << otherUser;
+
+    const std::string needsPrivilege = priorityErrorMessage(EACCES, -5, 1234);
+    EXPECT_NE(needsPrivilege.find("CAP_SYS_NICE"), std::string::npos) << needsPrivilege;
+    EXPECT_EQ(needsPrivilege.find("another user"), std::string::npos) << needsPrivilege;
+    EXPECT_NE(needsPrivilege.find("sudo renice -n -5 -p 1234"), std::string::npos) << needsPrivilege;
+
+    EXPECT_NE(priorityErrorMessage(ESRCH, 0, 1).find("not found"), std::string::npos);
+    EXPECT_FALSE(priorityErrorMessage(EINVAL, 0, 1).empty());
+}
+
+TEST(UserNameLookupTest, LargeEntryIsRetriedWithABiggerBuffer)
+{
+    // A big LDAP/SSSD entry doesn't fit the first buffer: ERANGE, then success once it has grown.
+    // The name, not the numeric UID, must come back (#1155).
+    constexpr std::size_t NEEDED = 4096;
+    std::size_t calls = 0;
+    const auto fakeGetpwuidR = [&calls](uid_t uid, passwd* entry, char* buffer, std::size_t size, passwd** result) -> int
+    {
+        ++calls;
+        *result = nullptr;
+        if (size < NEEDED)
+        {
+            return ERANGE;
+        }
+        std::strcpy(buffer, "ldap-user");
+        entry->pw_name = buffer;
+        entry->pw_uid = uid;
+        *result = entry;
+        return 0;
+    };
+
+    EXPECT_EQ(lookUpUserName(1000, fakeGetpwuidR), "ldap-user");
+    EXPECT_EQ(calls, 3U); // 1 KiB, 2 KiB, then 4 KiB
+}
+
+TEST(UserNameLookupTest, UnknownUidIsNullopt)
+{
+    const auto noSuchUser = [](uid_t, passwd*, char*, std::size_t, passwd** result) -> int
+    {
+        *result = nullptr;
+        return 0;
+    };
+    EXPECT_FALSE(lookUpUserName(4242, noSuchUser).has_value());
 }
 
 } // namespace

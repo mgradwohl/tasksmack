@@ -44,6 +44,92 @@ namespace
     return {.pid = static_cast<std::int32_t>(getpid()), .startTimeTicks = ProcStat::parseStartTime(line).value_or(0)};
 }
 
+/// A forked child that sleeps until signalled, killed and reaped on scope exit if still running.
+class SleepingChild
+{
+  public:
+    /// `extraThreads` threads besides the main one, all sleeping.
+    explicit SleepingChild(int extraThreads = 0) : m_Pid(fork())
+    {
+        if (m_Pid == 0)
+        {
+            for (int i = 0; i < extraThreads; ++i)
+            {
+                pthread_t thread{};
+                pthread_create(
+                    &thread,
+                    nullptr,
+                    [](void*) -> void*
+                    {
+                        for (;;)
+                        {
+                            pause();
+                        }
+                    },
+                    nullptr);
+            }
+            for (;;)
+            {
+                pause();
+            }
+        }
+    }
+    SleepingChild(const SleepingChild&) = delete;
+    SleepingChild& operator=(const SleepingChild&) = delete;
+    SleepingChild(SleepingChild&&) = delete;
+    SleepingChild& operator=(SleepingChild&&) = delete;
+    ~SleepingChild()
+    {
+        if (m_Pid > 0 && !m_Reaped)
+        {
+            ::kill(m_Pid, SIGKILL);
+            waitpid(m_Pid, nullptr, 0);
+        }
+    }
+
+    [[nodiscard]] bool started() const
+    {
+        return m_Pid > 0;
+    }
+    [[nodiscard]] bool alive()
+    {
+        // NOLINTNEXTLINE(misc-include-cleaner) - WNOHANG is provided by <sys/wait.h>
+        return !reap(WNOHANG);
+    }
+    [[nodiscard]] bool exitsSoon()
+    {
+        for (int attempt = 0; attempt < 500; ++attempt)
+        {
+            // NOLINTNEXTLINE(misc-include-cleaner) - WNOHANG is provided by <sys/wait.h>
+            if (reap(WNOHANG))
+            {
+                return true;
+            }
+            usleep(10'000);
+        }
+        return false;
+    }
+    [[nodiscard]] ProcessTarget target() const
+    {
+        std::ifstream stat("/proc/" + std::to_string(m_Pid) + "/stat");
+        const std::string line((std::istreambuf_iterator<char>(stat)), std::istreambuf_iterator<char>());
+        return {.pid = static_cast<std::int32_t>(m_Pid), .startTimeTicks = ProcStat::parseStartTime(line).value_or(0)};
+    }
+
+  private:
+    bool reap(int options)
+    {
+        if (!m_Reaped && waitpid(m_Pid, nullptr, options) == m_Pid)
+        {
+            m_Reaped = true;
+        }
+        return m_Reaped;
+    }
+
+    pid_t m_Pid = -1;
+    bool m_Reaped = false;
+};
+
 // =============================================================================
 // Construction and Capabilities
 // =============================================================================
@@ -207,69 +293,35 @@ TEST(LinuxProcessActionsTest, SetPriorityInvalidPid)
     EXPECT_GT(result2.errorMessage.size(), 0ULL);
 }
 
-// Note: This test may modify the test process's priority and cannot reliably
-// restore the original value without root privileges. This is acceptable since
-// test processes typically run at default nice=0 and are short-lived.
-TEST(LinuxProcessActionsTest, SetPriorityOwnProcess)
+TEST(LinuxProcessActionsTest, SetPriorityOfAChildSucceeds)
 {
+    // Against a disposable child, not this test process: an unprivileged process can raise its own
+    // niceness but never lower it again, and every child forked afterwards would inherit it, so a
+    // later priority test running in the same process would start at 19 (#1228 review).
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+
     LinuxProcessActions actions;
-    auto ownPid = static_cast<int32_t>(getpid());
-
-    // Lowering priority (raising nice value) should work without root
-    const auto result = actions.setPriority(ownTarget(), 10);
-
-    // This may succeed or fail depending on current priority
-    // If we're already at a high nice value, this should succeed
-    // If we're at a lower nice value, we might need root to go back down
-
-    // Only attempt cleanup if the initial operation succeeded
-    if (result.success)
-    {
-        // Attempt to reset to 0 (may fail without privileges - see note above)
-        const auto resetResult = actions.setPriority(ownTarget(), 0);
-        if (!resetResult.success)
-        {
-            // Log warning but don't fail - lowering nice requires privileges
-            GTEST_LOG_(WARNING) << "Test cleanup: Failed to reset priority for PID " << ownPid << ": " << resetResult.errorMessage;
-        }
-    }
-    else
-    {
-        // At minimum, the error message should be informative if it fails
-        EXPECT_GT(result.errorMessage.size(), 0ULL);
-    }
+    const auto result = actions.setPriority(child.target(), 10);
+    EXPECT_TRUE(result.success) << result.errorMessage;
 }
 
 TEST(LinuxProcessActionsTest, SetPriorityClampsBoundaryValues)
 {
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+
+    // Out-of-range values are clamped to [-20, 19]. Lowering niceness needs privilege, so the
+    // first may be refused; it must still fail cleanly, with a message.
     LinuxProcessActions actions;
-    auto ownPid = static_cast<int32_t>(getpid());
-
-    // Test extreme values - they should be clamped internally
-    // These may fail due to permissions, but shouldn't crash
-    const auto result1 = actions.setPriority(ownTarget(), -100); // Way below -20
-    const auto result2 = actions.setPriority(ownTarget(), 100);  // Way above 19
-
-    // Either succeeds or has an error message, but no crash
-    if (!result1.success)
+    const auto belowRange = actions.setPriority(child.target(), -100);
+    if (!belowRange.success)
     {
-        EXPECT_GT(result1.errorMessage.size(), 0ULL);
+        EXPECT_FALSE(belowRange.errorMessage.empty());
     }
-    if (!result2.success)
-    {
-        EXPECT_GT(result2.errorMessage.size(), 0ULL);
-    }
-
-    // Cleanup: attempt to reset priority to 0 to avoid affecting subsequent tests.
-    // Note: This may fail without root privileges (see SetPriorityOwnProcess note).
-    if (result2.success)
-    {
-        const auto resetResult = actions.setPriority(ownTarget(), 0);
-        if (!resetResult.success)
-        {
-            GTEST_LOG_(WARNING) << "Test cleanup: Failed to reset priority for PID " << ownPid << ": " << resetResult.errorMessage;
-        }
-    }
+    const auto aboveRange = actions.setPriority(child.target(), 100);
+    EXPECT_TRUE(aboveRange.success) << aboveRange.errorMessage;
+    EXPECT_EQ(getpriority(PRIO_PROCESS, static_cast<id_t>(child.target().pid)), 19);
 }
 
 // =============================================================================
@@ -292,92 +344,6 @@ TEST(LinuxProcessActionsTest, ResumeOwnProcess_Succeeds)
 // =============================================================================
 // Identity (#973), against a real child process that only waits to be killed.
 // =============================================================================
-
-/// A forked child that sleeps until signalled, killed and reaped on scope exit if still running.
-class SleepingChild
-{
-  public:
-    /// `extraThreads` threads besides the main one, all sleeping.
-    explicit SleepingChild(int extraThreads = 0) : m_Pid(fork())
-    {
-        if (m_Pid == 0)
-        {
-            for (int i = 0; i < extraThreads; ++i)
-            {
-                pthread_t thread{};
-                pthread_create(
-                    &thread,
-                    nullptr,
-                    [](void*) -> void*
-                    {
-                        for (;;)
-                        {
-                            pause();
-                        }
-                    },
-                    nullptr);
-            }
-            for (;;)
-            {
-                pause();
-            }
-        }
-    }
-    SleepingChild(const SleepingChild&) = delete;
-    SleepingChild& operator=(const SleepingChild&) = delete;
-    SleepingChild(SleepingChild&&) = delete;
-    SleepingChild& operator=(SleepingChild&&) = delete;
-    ~SleepingChild()
-    {
-        if (m_Pid > 0 && !m_Reaped)
-        {
-            ::kill(m_Pid, SIGKILL);
-            waitpid(m_Pid, nullptr, 0);
-        }
-    }
-
-    [[nodiscard]] bool started() const
-    {
-        return m_Pid > 0;
-    }
-    [[nodiscard]] bool alive()
-    {
-        // NOLINTNEXTLINE(misc-include-cleaner) - WNOHANG is provided by <sys/wait.h>
-        return !reap(WNOHANG);
-    }
-    [[nodiscard]] bool exitsSoon()
-    {
-        for (int attempt = 0; attempt < 500; ++attempt)
-        {
-            // NOLINTNEXTLINE(misc-include-cleaner) - WNOHANG is provided by <sys/wait.h>
-            if (reap(WNOHANG))
-            {
-                return true;
-            }
-            usleep(10'000);
-        }
-        return false;
-    }
-    [[nodiscard]] ProcessTarget target() const
-    {
-        std::ifstream stat("/proc/" + std::to_string(m_Pid) + "/stat");
-        const std::string line((std::istreambuf_iterator<char>(stat)), std::istreambuf_iterator<char>());
-        return {.pid = static_cast<std::int32_t>(m_Pid), .startTimeTicks = ProcStat::parseStartTime(line).value_or(0)};
-    }
-
-  private:
-    bool reap(int options)
-    {
-        if (!m_Reaped && waitpid(m_Pid, nullptr, options) == m_Pid)
-        {
-            m_Reaped = true;
-        }
-        return m_Reaped;
-    }
-
-    pid_t m_Pid = -1;
-    bool m_Reaped = false;
-};
 
 TEST(LinuxProcessActionsTest, KillWithADifferentStartTimeLeavesTheProcessRunning)
 {

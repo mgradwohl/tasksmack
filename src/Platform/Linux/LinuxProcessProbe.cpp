@@ -7,6 +7,7 @@
 #include "CgroupFreezeStatus.h"
 #include "Domain/SamplingConfig.h"
 #include "Platform/PlatformConfig.h"
+#include "UserNameLookup.h"
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 #include "NetlinkSocketStats.h"
@@ -119,29 +120,8 @@ std::mutex& getUsernameCacheMutex()
         return it->second;
     }
 
-    // Look up username from passwd database (thread-safe version). An entry larger than the
-    // buffer (big LDAP/SSSD records) fails with ERANGE: grow and retry, rather than cache the
-    // numeric UID for good (#1155).
-    struct passwd pwBuf = {};
-    struct passwd* pwResult = nullptr;
-    constexpr std::size_t INITIAL_PASSWD_BUFFER = 1024;
-    constexpr std::size_t MAX_PASSWD_BUFFER = std::size_t{1024} * 1024;
-    std::vector<char> buffer(INITIAL_PASSWD_BUFFER);
-    int lookupError = 0;
-    while ((lookupError = getpwuid_r(uid, &pwBuf, buffer.data(), buffer.size(), &pwResult)) == ERANGE && buffer.size() < MAX_PASSWD_BUFFER)
-    {
-        buffer.resize(buffer.size() * 2);
-    }
-    std::string username;
-    if (lookupError == 0 && pwResult != nullptr && pwResult->pw_name != nullptr)
-    {
-        username = pwResult->pw_name;
-    }
-    else
-    {
-        // Fall back to UID as string
-        username = std::to_string(uid);
-    }
+    // Look up username from passwd database (thread-safe version); fall back to the UID as a string.
+    std::string username = lookUpUserName(uid, ::getpwuid_r).value_or(std::to_string(uid));
 
     cache[uid] = username;
     return username;
