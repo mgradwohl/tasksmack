@@ -30,7 +30,8 @@ struct RenderContext
     bool* smoothedInitialized = nullptr;
 
     // State for the single-disk chart, which fills the rest of the tab like the per-disk grid
-    // does (#959). Null: it still fills, from a fresh measurement each frame.
+    // does (#959). The fill needs the previous frame's measurement, so with null the chart stays at
+    // the minimum height every frame.
     UI::Widgets::PlotFillState* aggregateFill = nullptr;
 };
 

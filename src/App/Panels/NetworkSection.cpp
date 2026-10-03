@@ -22,6 +22,7 @@
 #include <iterator>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -99,26 +100,19 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
 
     const auto interfaceCount = interfaces.size();
 
-    // The selection is held by interface name, not by position in this frame's list, so a reorder,
-    // insertion or removal cannot silently switch the chart to a different interface (#996).
-    // selectedInterface is this frame's index for it: -1 = "Total".
-    int selectedInterface = -1;
-    if (ctx.selectedNetworkInterface != nullptr && !ctx.selectedNetworkInterface->empty())
+    // The selection is held by interface name (see resolveInterfaceSelection). selectedInterface is
+    // this frame's index for it: -1 = "Total".
+    const auto selection = NetInterfaceUtils::resolveInterfaceSelection(
+        interfaces, ctx.selectedNetworkInterface != nullptr ? std::string_view{*ctx.selectedNetworkInterface} : std::string_view{});
+    int selectedInterface = selection.index.has_value() ? UI::Format::checkedCount(*selection.index) : -1;
+    if (selection.lost && ctx.selectedNetworkInterface != nullptr)
     {
-        const auto it = std::ranges::find_if(interfaces, [&](const auto& iface) { return iface.name == *ctx.selectedNetworkInterface; });
-        if (it != interfaces.end())
+        // The interface went away (adapter unplugged, VPN disconnected): show Total, and restart
+        // the bars rather than letting them glide from the old interface's values.
+        ctx.selectedNetworkInterface->clear();
+        if (ctx.smoothedNetInitialized != nullptr)
         {
-            selectedInterface = UI::Format::checkedCount(static_cast<size_t>(std::distance(interfaces.begin(), it)));
-        }
-        else
-        {
-            // The interface went away (adapter unplugged, VPN disconnected): show Total, and restart
-            // the bars rather than letting them glide from the old interface's values.
-            ctx.selectedNetworkInterface->clear();
-            if (ctx.smoothedNetInitialized != nullptr)
-            {
-                *ctx.smoothedNetInitialized = false;
-            }
+            *ctx.smoothedNetInitialized = false;
         }
     }
 

@@ -4,7 +4,11 @@
 #include "UI/IconsFontAwesome6.h"
 
 #include <algorithm>
+#include <cstddef>
+#include <iterator>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace App::NetInterfaceUtils
@@ -187,6 +191,33 @@ getSortedFilteredInterfaces(const std::vector<Domain::SystemSnapshot::InterfaceS
                       });
 
     return result;
+}
+
+/// Where the network chart's selected interface is in this frame's interface list.
+struct InterfaceSelection
+{
+    std::optional<std::size_t> index; ///< Position in the list; nullopt shows "Total".
+    bool lost = false;                ///< A named interface was selected but is no longer listed.
+};
+
+/// Resolve a selection held by interface name (empty = "Total") against this frame's list.
+///
+/// The selection is a name, not a position: a position silently switched the chart to a different
+/// interface whenever the list was reordered or an interface was added or removed (#996). When the
+/// named interface is gone, `lost` tells the caller to fall back to Total and restart the bars.
+[[nodiscard]] inline InterfaceSelection resolveInterfaceSelection(const std::vector<Domain::SystemSnapshot::InterfaceSnapshot>& interfaces,
+                                                                  std::string_view selectedName)
+{
+    if (selectedName.empty())
+    {
+        return {};
+    }
+    const auto it = std::ranges::find_if(interfaces, [selectedName](const auto& iface) { return iface.name == selectedName; });
+    if (it == interfaces.end())
+    {
+        return {.index = std::nullopt, .lost = true};
+    }
+    return {.index = static_cast<std::size_t>(std::distance(interfaces.begin(), it)), .lost = false};
 }
 
 } // namespace App::NetInterfaceUtils
