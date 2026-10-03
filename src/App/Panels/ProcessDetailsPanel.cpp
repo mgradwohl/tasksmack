@@ -568,18 +568,13 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
     m_SmoothedUsage.gpuMemoryBytes = std::max(0.0, initializeOrSmooth(m_SmoothedUsage.gpuMemoryBytes, targetGpuMem, alpha, initialized));
     // A sample with no GDI reading isn't smoothed toward 0: the NowBar shows N/A for it instead,
     // matching the gap in the line, and the next reading starts afresh (#1148).
-    if (snapshot.gdiObjectCount.has_value())
-    {
-        const double targetGdiObjects = std::max(0.0, Domain::Numeric::toDouble(*snapshot.gdiObjectCount));
-        m_SmoothedUsage.gdiObjectCount = std::max(
-            0.0,
-            initializeOrSmooth(m_SmoothedUsage.gdiObjectCount, targetGdiObjects, alpha, initialized && m_SmoothedUsage.gdiInitialized));
-        m_SmoothedUsage.gdiInitialized = true;
-    }
-    else
-    {
-        m_SmoothedUsage.gdiInitialized = false;
-    }
+    const auto gdi = Detail::smoothOptionalReading(
+        {.value = m_SmoothedUsage.gdiObjectCount, .available = m_SmoothedUsage.gdiInitialized},
+        snapshot.gdiObjectCount.has_value() ? std::optional<double>(Domain::Numeric::toDouble(*snapshot.gdiObjectCount)) : std::nullopt,
+        alpha,
+        initialized);
+    m_SmoothedUsage.gdiObjectCount = gdi.value;
+    m_SmoothedUsage.gdiInitialized = gdi.available;
     m_SmoothedUsage.memoryUsedPercent = initializeOrSmooth(m_SmoothedUsage.memoryUsedPercent, targetMemUsedPercent, alpha, initialized);
     m_SmoothedUsage.memorySharedPercent =
         initializeOrSmooth(m_SmoothedUsage.memorySharedPercent, targetMemSharedPercent, alpha, initialized);

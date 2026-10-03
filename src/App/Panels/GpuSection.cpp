@@ -247,9 +247,9 @@ void renderGpuSection(RenderContext& ctx)
         const auto& powerHist = history.power;
         const auto& fanHist = history.fanSpeed;
 
-        // Per-GPU timestamps: only includes samples when this GPU was present,
-        // so they stay aligned with the per-GPU history vectors even when the GPU
-        // was intermittently absent (global timestamps include samples this GPU never recorded).
+        // Per-GPU timestamps: one per refresh since this GPU was first seen, aligned with the
+        // per-GPU history vectors. A refresh it was missing from has an entry too, whose values
+        // are NaN, so the absence is drawn as a gap (#1146).
         const auto& perGpuTimestamps = history.timestamps;
 
         const size_t alignedCount = std::min({utilHist.size(), memHist.size(), perGpuTimestamps.size()});
