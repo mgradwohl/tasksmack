@@ -17,10 +17,12 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <ios>
 #include <limits>
 #include <optional>
+#include <random>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -415,38 +417,6 @@ void readSettings(const toml::table& config, UserSettings& settings)
     };
 }
 
-/// Lays `owned` (TaskSmack's keys) over `document` (the file as it is), so tables and keys
-/// TaskSmack doesn't own survive a save (#1122).
-void overlay(toml::table& document, const toml::table& owned)
-{
-    for (const auto& [key, value] : owned)
-    {
-        auto* existing = document.get_as<toml::table>(key);
-        if (const auto* ownedTable = value.as_table(); ownedTable != nullptr && existing != nullptr)
-        {
-            for (const auto& [subKey, subValue] : *ownedTable)
-            {
-                existing->insert_or_assign(subKey, subValue);
-            }
-        }
-        else
-        {
-            document.insert_or_assign(key, value);
-        }
-    }
-}
-
-[[nodiscard]] std::optional<std::filesystem::file_time_type> lastWriteTime(const std::filesystem::path& path)
-{
-    std::error_code ec;
-    const auto time = std::filesystem::last_write_time(path, ec);
-    if (ec)
-    {
-        return std::nullopt;
-    }
-    return time;
-}
-
 } // namespace
 
 auto UserConfig::get() -> UserConfig&
@@ -501,6 +471,7 @@ void UserConfig::load()
         return;
     }
     m_IsLoaded = true;
+    m_HasSynced = false;
 
     // error_code overloads: an unreadable config directory falls back to defaults instead of
     // throwing out of startup (#1124).
@@ -515,7 +486,6 @@ void UserConfig::load()
         {
             spdlog::info("No config file found at {}, using defaults", m_ConfigPath.string());
         }
-        markSynced();
         return;
     }
 
@@ -523,19 +493,14 @@ void UserConfig::load()
     {
         const auto config = toml::parse_file(m_ConfigPath.string());
         readSettings(config, m_Settings);
+        m_Synced = m_Settings;
+        m_HasSynced = true;
         spdlog::info("Loaded config from {}", m_ConfigPath.string());
     }
     catch (const toml::parse_error& err)
     {
         spdlog::error("Failed to parse config file: {}", err.what());
     }
-    markSynced();
-}
-
-void UserConfig::markSynced()
-{
-    m_Baseline = m_Settings;
-    m_SyncedWriteTime = lastWriteTime(m_ConfigPath);
 }
 
 void UserConfig::save()
@@ -553,74 +518,95 @@ void UserConfig::save()
         }
     }
 
-    // Start from the file as it is, so keys and tables TaskSmack doesn't own are kept (#1122).
+    // Start from the file as it is. One that exists but can't be read or parsed is left alone:
+    // replacing it would lose every setting and unknown key in it, and a malformed file is the
+    // user's to repair (#1122).
     toml::table document;
-    const auto writeTime = lastWriteTime(m_ConfigPath);
-    bool parsed = false;
-    if (writeTime.has_value())
+    std::filesystem::perms originalPermissions = std::filesystem::perms::unknown;
+    const bool fileExists = std::filesystem::exists(m_ConfigPath, ec);
+    if (ec)
+    {
+        spdlog::error("Not saving settings: can't check {}: {}", m_ConfigPath.string(), ec.message());
+        return;
+    }
+    if (fileExists)
     {
         try
         {
             document = toml::parse_file(m_ConfigPath.string());
-            parsed = true;
         }
         catch (const toml::parse_error& err)
         {
-            spdlog::warn("Rewriting unparseable config file {}: {}", m_ConfigPath.string(), err.what());
-        }
-    }
-
-    // Edited outside TaskSmack since it was last read or written (e.g. via Settings' "Edit Config
-    // File")? Keep those edits for every setting TaskSmack hasn't itself changed since then.
-    if (parsed && writeTime != m_SyncedWriteTime)
-    {
-        UserSettings external = m_Baseline;
-        readSettings(document, external);
-        m_Settings = mergeSettings(external, m_Baseline, m_Settings);
-        spdlog::info("Config file {} was edited outside TaskSmack; keeping those edits", m_ConfigPath.string());
-    }
-
-    overlay(document, buildTable(m_Settings));
-
-    // Write a temporary file beside it and rename it over the original, so a crash, power loss or
-    // full disk mid-write can't leave an empty or truncated config (#1122).
-    std::filesystem::path tempPath = m_ConfigPath;
-    tempPath += ".tmp";
-    {
-        std::ofstream file(tempPath, std::ios::trunc);
-        if (!file)
-        {
-            spdlog::error("Failed to open {} for writing", tempPath.string());
+            spdlog::error("Not saving settings: {} can't be read or parsed ({}); fix or remove it", m_ConfigPath.string(), err.what());
             return;
         }
+        originalPermissions = std::filesystem::status(m_ConfigPath, ec).permissions();
+    }
 
-        file << "# TaskSmack user configuration\n";
-        file << "# Written by TaskSmack. Keys it doesn't use are kept, but comments in this file are not.\n";
-        file << "# Edits made while TaskSmack is running are kept unless TaskSmack changes the same setting.\n";
-        file << "# Notes:\n";
-        file << "#   [sampling] interval_ms: refresh cadence (100-5000ms); affects all samplers\n";
-        file << "#   [sampling] history_max_seconds: timeline history window (10-1800s)\n";
-        file << "#   [sampling] socket_stats_cache_ttl_ms: Linux only; per-process network stat cache TTL (0-5000ms)\n";
-        file << "#   [metrics] min_time_for_rate_seconds: delay before computing network rates (0.0-5.0s); avoids early spikes\n";
-        file << "#   [metrics] max_sane_rate_bps: sanity check for network/IO rates (bytes/sec); clamps outliers\n";
-        file << "#   [metrics] integrated_gpu_vram_threshold_mb: GPU classification threshold (16-512MB)\n";
-        file << "#   [ui] chart_smooth_factor: exponential smoothing for charts (0.0-0.95); 0=no smoothing, 0.95=max smoothing\n";
-        file << "#   [ui] chart_tau_ms_min/max: adaptive smoothing time constant range (ms); affects chart responsiveness\n";
-        file << "#   [ui] progress_color_low/high_threshold: color change percentages for progress bars\n";
-        file << "#   [ui] show_privilege_notice: show startup dialog when running without elevated privileges (true/false)\n";
-        file << "#   [ui] chart_anti_aliasing: smooth chart line/fill edges (true/false); disable for lower CPU/GPU cost "
-                "on integrated GPUs\n";
-        file << "#   [process_columns]: toggle columns on/off; true shows the column\n";
-        file << "#   [process_table] layout: saved column widths, order and sort (written by TaskSmack; delete it to reset)\n";
-        file << "#   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.\n\n";
-        file << document;
-        file.close();
-        if (!file)
+    // Write only what TaskSmack changed since it last read or wrote the file; everything else in
+    // the file, including edits made while TaskSmack runs, stays as it is (#1122).
+    const toml::table mine = buildTable(m_Settings);
+    UserConfigHelpers::mergeOwnedKeys(document, m_HasSynced ? buildTable(m_Synced) : toml::table{}, mine);
+
+    // Write a temporary file beside it and rename it over the original, so a crash mid-write can't
+    // leave the config truncated or empty (#1122). This does not make the new contents durable
+    // across a power loss: nothing is synced to disk. Each save gets its own, exclusively created
+    // temporary file, so two TaskSmack instances can't write into the same one.
+    std::filesystem::path tempPath;
+    std::ofstream file;
+    std::random_device random;
+    for (int attempt = 0; attempt < 8 && !file.is_open(); ++attempt)
+    {
+        tempPath = m_ConfigPath;
+        tempPath += std::format(".{:08x}.tmp", random());
+        if (std::filesystem::exists(tempPath, ec))
         {
-            spdlog::error("Failed to write {}: stream error after write", tempPath.string());
-            std::filesystem::remove(tempPath, ec);
-            return;
+            continue;
         }
+#if defined(__cpp_lib_ios_noreplace)
+        file.open(tempPath, std::ios::out | std::ios::noreplace);
+#else
+        file.open(tempPath, std::ios::out | std::ios::trunc);
+#endif
+    }
+    if (!file.is_open())
+    {
+        spdlog::error("Failed to create a temporary file beside {}", m_ConfigPath.string());
+        return;
+    }
+    if (originalPermissions != std::filesystem::perms::unknown)
+    {
+        // Keep the original's access restrictions (a 0600 config stays 0600). POSIX permission
+        // bits only: Windows ACLs aren't copied.
+        std::filesystem::permissions(tempPath, originalPermissions, ec);
+    }
+
+    file << "# TaskSmack user configuration\n";
+    file << "# Written by TaskSmack. Keys it doesn't use are kept, but comments in this file are not.\n";
+    file << "# Edits made while TaskSmack is running are kept unless TaskSmack changes the same setting.\n";
+    file << "# Notes:\n";
+    file << "#   [sampling] interval_ms: refresh cadence (100-5000ms); affects all samplers\n";
+    file << "#   [sampling] history_max_seconds: timeline history window (10-1800s)\n";
+    file << "#   [sampling] socket_stats_cache_ttl_ms: Linux only; per-process network stat cache TTL (0-5000ms)\n";
+    file << "#   [metrics] min_time_for_rate_seconds: delay before computing network rates (0.0-5.0s); avoids early spikes\n";
+    file << "#   [metrics] max_sane_rate_bps: sanity check for network/IO rates (bytes/sec); clamps outliers\n";
+    file << "#   [metrics] integrated_gpu_vram_threshold_mb: GPU classification threshold (16-512MB)\n";
+    file << "#   [ui] chart_smooth_factor: exponential smoothing for charts (0.0-0.95); 0=no smoothing, 0.95=max smoothing\n";
+    file << "#   [ui] chart_tau_ms_min/max: adaptive smoothing time constant range (ms); affects chart responsiveness\n";
+    file << "#   [ui] progress_color_low/high_threshold: color change percentages for progress bars\n";
+    file << "#   [ui] show_privilege_notice: show startup dialog when running without elevated privileges (true/false)\n";
+    file << "#   [ui] chart_anti_aliasing: smooth chart line/fill edges (true/false); disable for lower CPU/GPU cost "
+            "on integrated GPUs\n";
+    file << "#   [process_columns]: toggle columns on/off; true shows the column\n";
+    file << "#   [process_table] layout: saved column widths, order and sort (written by TaskSmack; delete it to reset)\n";
+    file << "#   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.\n\n";
+    file << document;
+    file.close();
+    if (!file)
+    {
+        spdlog::error("Failed to write {}: stream error after write", tempPath.string());
+        std::filesystem::remove(tempPath, ec);
+        return;
     }
 
     std::filesystem::rename(tempPath, m_ConfigPath, ec);
@@ -632,7 +618,8 @@ void UserConfig::save()
     }
 
     spdlog::info("Saved config to {}", m_ConfigPath.string());
-    markSynced();
+    m_Synced = m_Settings;
+    m_HasSynced = true;
 
     // Reset so that the next load() call re-reads from disk (e.g., for test round-trips
     // or any future live-reload use case).

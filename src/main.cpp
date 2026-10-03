@@ -195,55 +195,74 @@ auto runApp() -> int
     // Get reference to the application for further setup
     Core::Application& appRef = Core::Application::get();
 
-    // Apply saved position/maximized state after the window exists.
-    // Ordering: set restore geometry first, then maximize.
-    if (Core::Window::supportsPositioning() && settings.windowPosX.has_value() && settings.windowPosY.has_value())
+    // From here the Application owns the layers. However the rest ends, detach them while the
+    // Application singleton is still reachable, then destroy it, both before the config and theme
+    // singletons are torn down at static destruction (#1124).
+    const auto tearDownApplication = [&appRef]
     {
-        appRef.getWindow().setPosition(*settings.windowPosX, *settings.windowPosY);
-    }
-    if (settings.windowMaximized)
+        // CRITICAL: Manually detach all layers BEFORE clearing the Application singleton.
+        // Reason: Layer onDetach() methods may call Application::get() to save state.
+        // If we let ~Application() run during setInstance(nullptr), those calls will fail.
+        appRef.detachAllLayers();
+        // Explicitly destroy the Application singleton to ensure SDL_Quit()
+        // and other teardown happen before main()/WinMain() returns.
+        Core::Application::setInstance(nullptr);
+    };
+
+    try
     {
-        appRef.getWindow().maximize();
+
+        // Apply saved position/maximized state after the window exists.
+        // Ordering: set restore geometry first, then maximize.
+        if (Core::Window::supportsPositioning() && settings.windowPosX.has_value() && settings.windowPosY.has_value())
+        {
+            appRef.getWindow().setPosition(*settings.windowPosX, *settings.windowPosY);
+        }
+        if (settings.windowMaximized)
+        {
+            appRef.getWindow().maximize();
+        }
+
+        // Push UI layer (initializes ImGui/ImPlot backends). Must be pushed (and therefore
+        // onRender()'d) before ShellLayer: UILayer::onRender() calls ImGui::NewFrame(), which is
+        // what actually advances ImGui::GetFrameCount() -- ShellLayer::onRender() reads that count
+        // to publish RenderMetrics' per-frame totals (see #875) and needs the *current* frame's
+        // value, not the previous one.
+        appRef.pushLayer<UI::UILayer>();
+
+        // Push title bar layer (custom window chrome) -- skipped when native OS decorations are in
+        // use instead (opt-in, native Wayland only; see #745), since the OS/compositor already draws
+        // a title bar in that case and ShellLayer reserves no space for a second one.
+        if (appRef.getWindow().isBorderless())
+        {
+            appRef.pushLayer<App::TitleBarLayer>();
+        }
+
+        // Push shell layer (docking workspace with panels)
+        appRef.pushLayer<App::ShellLayer>();
+
+        // Dialog layers (modal overlays), opened by OpenAboutEvent, OpenSettingsEvent and
+        // OpenElevationNoticeEvent. The elevation notice is shown at startup when running without
+        // elevated privileges.
+        appRef.pushLayer<App::AboutLayer>();
+        appRef.pushLayer<App::SettingsLayer>();
+        appRef.pushLayer<App::ElevationNoticeLayer>();
+
+        // Run the application
+        appRef.run();
     }
-
-    // Push UI layer (initializes ImGui/ImPlot backends). Must be pushed (and therefore
-    // onRender()'d) before ShellLayer: UILayer::onRender() calls ImGui::NewFrame(), which is
-    // what actually advances ImGui::GetFrameCount() -- ShellLayer::onRender() reads that count
-    // to publish RenderMetrics' per-frame totals (see #875) and needs the *current* frame's
-    // value, not the previous one.
-    appRef.pushLayer<UI::UILayer>();
-
-    // Push title bar layer (custom window chrome) -- skipped when native OS decorations are in
-    // use instead (opt-in, native Wayland only; see #745), since the OS/compositor already draws
-    // a title bar in that case and ShellLayer reserves no space for a second one.
-    if (appRef.getWindow().isBorderless())
+    catch (...)
     {
-        appRef.pushLayer<App::TitleBarLayer>();
+        try
+        {
+            tearDownApplication();
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) - already failing; report the original error
+        {}
+        throw;
     }
 
-    // Push shell layer (docking workspace with panels)
-    appRef.pushLayer<App::ShellLayer>();
-
-    // Dialog layers (modal overlays), opened by OpenAboutEvent, OpenSettingsEvent and
-    // OpenElevationNoticeEvent. The elevation notice is shown at startup when running without
-    // elevated privileges.
-    appRef.pushLayer<App::AboutLayer>();
-    appRef.pushLayer<App::SettingsLayer>();
-    appRef.pushLayer<App::ElevationNoticeLayer>();
-
-    // Run the application
-    appRef.run();
-
-    // CRITICAL: Manually detach all layers BEFORE clearing the Application singleton.
-    // Reason: Layer onDetach() methods may call Application::get() to save state.
-    // If we let ~Application() run during setInstance(nullptr), those calls will fail.
-    // This ensures layers can still access the Application during cleanup.
-    appRef.detachAllLayers();
-
-    // Explicitly destroy the Application singleton to ensure SDL_Quit()
-    // and other teardown happen before main()/WinMain() returns.
-    Core::Application::setInstance(nullptr);
-
+    tearDownApplication();
     return 0;
 }
 

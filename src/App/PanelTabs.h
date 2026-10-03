@@ -2,7 +2,10 @@
 
 #include "Panel.h"
 
+#include <spdlog/spdlog.h>
+
 #include <cstddef>
+#include <exception>
 #include <functional>
 #include <initializer_list>
 #include <ranges>
@@ -66,9 +69,22 @@ class PanelTabs
 
     void onDetach()
     {
+        // Each panel separately: one that throws must not stop the others stopping their samplers,
+        // nor ShellLayer reaching its config save after this (#1124).
         for (const auto& tab : m_Tabs | std::views::reverse)
         {
-            tab.panel.get().onDetach();
+            try
+            {
+                tab.panel.get().onDetach();
+            }
+            catch (const std::exception& e)
+            {
+                spdlog::error("Panel '{}' threw while detaching: {}", tab.eventName, e.what());
+            }
+            catch (...)
+            {
+                spdlog::error("Panel '{}' threw while detaching", tab.eventName);
+            }
         }
     }
 

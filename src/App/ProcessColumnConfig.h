@@ -258,8 +258,6 @@ struct ProcessColumnSettings
 {
     std::array<bool, processColumnCount()> visible{};
 
-    bool operator==(const ProcessColumnSettings&) const = default;
-
     ProcessColumnSettings()
     {
         // Initialize with defaults

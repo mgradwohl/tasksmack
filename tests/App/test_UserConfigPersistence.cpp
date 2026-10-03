@@ -1,9 +1,11 @@
 // NOLINTBEGIN(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
 #include "App/ProcessColumnConfig.h"
 #include "App/UserConfig.h"
+#include "App/UserConfigHelpers.h"
 #include "UI/ChartWidgets.h"
 
 #include <gtest/gtest.h>
+#include <toml++/toml.hpp>
 
 #include <chrono>
 #include <cstddef>
@@ -1098,49 +1100,61 @@ TEST_F(UserConfigSaveLoadFixture, MetricsMaxSaneRateRoundTrip)
     return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 
-/// Moves the file's modification time on, as an editor saving it would, so the change is seen
-/// whatever the filesystem's timestamp resolution.
-void touchLater(const std::filesystem::path& path)
+void writeFile(const std::filesystem::path& path, const std::string& content)
 {
-    std::filesystem::last_write_time(path, std::filesystem::last_write_time(path) + std::chrono::seconds(2));
+    std::ofstream out(path, std::ios::trunc);
+    out << content;
 }
 
-TEST(UserConfigMergeTest, ExternalEditsAreKeptExceptForSettingsTaskSmackChanged)
+[[nodiscard]] toml::table parsed(const std::filesystem::path& path)
 {
-    UserSettings baseline;
-    baseline.refreshIntervalMs = 1000;
-    baseline.themeId = "arctic-fire";
+    return toml::parse_file(path.string());
+}
 
-    UserSettings external = baseline; // the file, edited outside TaskSmack
-    external.refreshIntervalMs = 750;
-    external.themeId = "dracula";
+TEST(UserConfigMergeTest, OnlyKeysTaskSmackChangedAreWritten)
+{
+    const toml::table base{{"sampling", toml::table{{"interval_ms", 1000}}}, {"theme", toml::table{{"id", "arctic-fire"}}}};
+    const toml::table mine{{"sampling", toml::table{{"interval_ms", 1000}}}, {"theme", toml::table{{"id", "mocha"}}}};
+    toml::table document{{"sampling", toml::table{{"interval_ms", 750}, {"future", 1}}}, {"theme", toml::table{{"id", "dracula"}}}};
 
-    UserSettings mine = baseline; // TaskSmack's own change since the baseline
-    mine.themeId = "mocha";
+    UserConfigHelpers::mergeOwnedKeys(document, base, mine);
 
-    const UserSettings merged = mergeSettings(external, baseline, mine);
-    EXPECT_EQ(merged.refreshIntervalMs, 750); // only edited outside: the edit stands
-    EXPECT_EQ(merged.themeId, "mocha");       // changed by TaskSmack: TaskSmack's value wins
+    EXPECT_EQ(document["sampling"]["interval_ms"].value<int>(), 750); // edited outside: kept
+    EXPECT_EQ(document["sampling"]["future"].value<int>(), 1);        // not TaskSmack's: kept
+    EXPECT_EQ(document["theme"]["id"].value<std::string>(), "mocha"); // changed by TaskSmack: written
+}
+
+TEST(UserConfigMergeTest, KeysDeletedOrClearedStayDeleted)
+{
+    // Deleted outside TaskSmack (unchanged in-app): stays deleted. No longer written by TaskSmack
+    // (a cleared window position): removed.
+    const toml::table base{{"window", toml::table{{"x", 10}, {"y", 20}}}, {"process_table", toml::table{{"layout", "abc"}}}};
+    const toml::table mine{{"window", toml::table{{"y", 20}}}, {"process_table", toml::table{{"layout", "abc"}}}};
+    toml::table document{{"window", toml::table{{"x", 10}, {"y", 20}, {"mine", true}}}, {"process_table", toml::table{}}};
+
+    UserConfigHelpers::mergeOwnedKeys(document, base, mine);
+
+    EXPECT_FALSE(document["window"]["x"]);
+    EXPECT_EQ(document["window"]["y"].value<int>(), 20);
+    EXPECT_EQ(document["window"]["mine"].value<bool>(), true);
+    EXPECT_FALSE(document["process_table"]["layout"]);
 }
 
 TEST_F(UserConfigSaveLoadFixture, SaveKeepsKeysTaskSmackDoesNotOwn)
 {
     const auto path = UserConfig::get().configPath();
-    {
-        std::ofstream out(path);
-        out << "[sampling]\ninterval_ms = 500\nfuture_option = 7\n\n[plugin]\nenabled = true\n";
-    }
+    writeFile(path, "[sampling]\ninterval_ms = 500\nfuture_option = 7\n\n[plugin]\nenabled = true\n");
     auto& config = UserConfig::get();
     config.load();
     config.save();
 
-    const std::string written = readFile(path);
-    EXPECT_NE(written.find("future_option = 7"), std::string::npos);
-    EXPECT_NE(written.find("[plugin]"), std::string::npos);
-    EXPECT_NE(written.find("interval_ms = 500"), std::string::npos);
+    const auto document = parsed(path);
+    EXPECT_EQ(document["sampling"]["future_option"].value<int>(), 7);
+    EXPECT_EQ(document["plugin"]["enabled"].value<bool>(), true);
+    EXPECT_EQ(document["sampling"]["interval_ms"].value<int>(), 500);
 }
 
-TEST_F(UserConfigSaveLoadFixture, EditsMadeWhileRunningSurviveTheNextSave)
+TEST_F(UserConfigSaveLoadFixture, EditsMadeWhileRunningSurviveSavesAndShutdown)
 {
     const auto path = UserConfig::get().configPath();
     auto& config = UserConfig::get();
@@ -1149,21 +1163,59 @@ TEST_F(UserConfigSaveLoadFixture, EditsMadeWhileRunningSurviveTheNextSave)
     config.save();
     config.load();
 
-    // Edited in a text editor while TaskSmack runs (Settings' "Edit Config File")...
-    {
-        std::ofstream out(path);
-        out << "[sampling]\ninterval_ms = 750\n\n[theme]\nid = \"arctic-fire\"\n";
-    }
-    touchLater(path);
+    // Edited in a text editor while TaskSmack runs, keeping the same modification time.
+    const auto before = std::filesystem::last_write_time(path);
+    writeFile(path, "[sampling]\ninterval_ms = 750\n\n[theme]\nid = \"dracula\"\n");
+    std::filesystem::last_write_time(path, before);
 
-    // ...then TaskSmack changes a different setting and saves (on Apply, or at exit).
-    config.settings().themeId = "dracula";
+    // Apply changes a different setting, then shutdown saves again with the theme still running.
+    config.settings().maxHistorySeconds = 600;
+    config.save();
     config.save();
 
-    config.settings() = UserSettings{};
+    const auto document = parsed(path);
+    EXPECT_EQ(document["sampling"]["interval_ms"].value<int>(), 750);
+    EXPECT_EQ(document["theme"]["id"].value<std::string>(), "dracula");
+    EXPECT_EQ(document["sampling"]["history_max_seconds"].value<int>(), 600);
+}
+
+TEST_F(UserConfigSaveLoadFixture, ToggledColumnDoesNotOverwriteOtherColumnsEditedOutside)
+{
+    const auto path = UserConfig::get().configPath();
+    auto& config = UserConfig::get();
+    config.save();
     config.load();
-    EXPECT_EQ(config.settings().refreshIntervalMs, 750);
-    EXPECT_EQ(config.settings().themeId, "dracula");
+    const auto columns = allProcessColumns();
+    ASSERT_GE(columns.size(), 2U);
+    const auto first = getColumnInfo(columns[0]).configKey;
+    const auto second = getColumnInfo(columns[1]).configKey;
+
+    auto document = parsed(path);
+    const bool secondWas = document["process_columns"][second].value_or(true);
+    document["process_columns"].as_table()->insert_or_assign(second, !secondWas);
+    {
+        std::ofstream out(path, std::ios::trunc);
+        out << document;
+    }
+
+    config.settings().processColumns.toggleVisible(columns[0]);
+    config.save();
+
+    const auto saved = parsed(path);
+    EXPECT_EQ(saved["process_columns"][second].value<bool>(), !secondWas);
+    EXPECT_EQ(saved["process_columns"][first].value<bool>(), config.settings().processColumns.isVisible(columns[0]));
+}
+
+TEST_F(UserConfigSaveLoadFixture, MalformedConfigIsNotReplaced)
+{
+    const auto path = UserConfig::get().configPath();
+    const std::string malformed = "[sampling\ninterval_ms = = 5\n";
+    writeFile(path, malformed);
+    auto& config = UserConfig::get();
+    config.load();
+    config.settings().themeId = "dracula";
+    config.save();
+    EXPECT_EQ(readFile(path), malformed);
 }
 
 TEST_F(UserConfigSaveLoadFixture, SaveLeavesNoTemporaryFileBehind)
@@ -1171,12 +1223,44 @@ TEST_F(UserConfigSaveLoadFixture, SaveLeavesNoTemporaryFileBehind)
     auto& config = UserConfig::get();
     config.save();
     EXPECT_TRUE(std::filesystem::exists(config.configPath()));
-    std::filesystem::path temp = config.configPath();
-    temp += ".tmp";
-    EXPECT_FALSE(std::filesystem::exists(temp));
+    for (const auto& entry : std::filesystem::directory_iterator(m_TempDir))
+    {
+        EXPECT_NE(entry.path().extension(), ".tmp") << entry.path();
+    }
 }
 
 #ifndef _WIN32
+TEST_F(UserConfigSaveLoadFixture, UnreadableConfigFileIsNotReplaced)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root can read a mode-000 file";
+    }
+    const auto path = UserConfig::get().configPath();
+    writeFile(path, "[theme]\nid = \"dracula\"\n");
+    std::filesystem::permissions(path, std::filesystem::perms::none);
+
+    auto& config = UserConfig::get();
+    config.settings().themeId = "mocha";
+    EXPECT_NO_THROW(config.save());
+
+    std::filesystem::permissions(path, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
+    EXPECT_EQ(parsed(path)["theme"]["id"].value<std::string>(), "dracula");
+}
+
+TEST_F(UserConfigSaveLoadFixture, SaveKeepsTheConfigFilesPermissions)
+{
+    auto& config = UserConfig::get();
+    config.save();
+    const auto path = config.configPath();
+    const auto restricted = std::filesystem::perms::owner_read | std::filesystem::perms::owner_write;
+    std::filesystem::permissions(path, restricted);
+
+    config.settings().themeId = "mocha";
+    config.save();
+    EXPECT_EQ(std::filesystem::status(path).permissions() & std::filesystem::perms::all, restricted);
+}
+
 TEST_F(UserConfigSaveLoadFixture, UnreadableConfigDirectoryFallsBackToDefaults)
 {
     if (::geteuid() == 0)
