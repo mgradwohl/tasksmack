@@ -263,9 +263,10 @@ TEST(SystemModelTest, MemoryUsedNeverWrapsBelowZero)
     EXPECT_EQ(legacyModel.snapshot().memoryUsedBytes, 0U);
 }
 
-namespace
+namespace SystemModelTestSupport
 {
-/// A power probe that records when it was read.
+/// A power probe that records when it was read. In a named namespace, not an anonymous one: mocks
+/// built with std::make_unique follow the repository's test convention of external linkage.
 class TimedPowerProbe : public Platform::IPowerProbe
 {
   public:
@@ -284,7 +285,7 @@ class TimedPowerProbe : public Platform::IPowerProbe
   private:
     std::chrono::steady_clock::time_point* m_ReadAt;
 };
-} // namespace
+} // namespace SystemModelTestSupport
 
 TEST(SystemModelTest, SampleIsStampedBeforeThePowerRead)
 {
@@ -293,7 +294,7 @@ TEST(SystemModelTest, SampleIsStampedBeforeThePowerRead)
     auto probe = std::make_unique<MockSystemProbe>();
     probe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(100, 50)));
     std::chrono::steady_clock::time_point powerReadAt;
-    Domain::SystemModel model(std::move(probe), std::make_unique<TimedPowerProbe>(&powerReadAt));
+    Domain::SystemModel model(std::move(probe), std::make_unique<SystemModelTestSupport::TimedPowerProbe>(&powerReadAt));
     model.refresh();
     model.refresh();
 

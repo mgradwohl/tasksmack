@@ -599,6 +599,7 @@ TEST(LinuxSystemProbeTest, MissingMeminfoReturnsZeroMemory)
     auto counters = probe.read();
     EXPECT_EQ(counters.memory.totalBytes, 0ULL);
     EXPECT_EQ(counters.memory.availableBytes, 0ULL);
+    EXPECT_FALSE(counters.memory.hasAvailableBytes); // a failed read isn't a reading of 0 (#1232 review)
 }
 
 TEST(LinuxSystemProbeTest, MissingNetDevReturnsZeroNetwork)

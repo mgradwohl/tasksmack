@@ -42,9 +42,10 @@ struct MemoryCounters
     uint64_t totalBytes = 0;
     uint64_t freeBytes = 0;
     uint64_t availableBytes = 0; // Available for starting new apps (includes cached)
-    // Whether availableBytes is a real reading. Linux kernels before 3.14 have no MemAvailable;
-    // a reading of 0 is real (memory exhausted), not "missing" (#1143).
-    bool hasAvailableBytes = true;
+    // Whether availableBytes is a real reading, set by each probe once it has one. Linux kernels
+    // before 3.14 have no MemAvailable, and a failed read has nothing; a reading of 0 is real
+    // (memory exhausted), not "missing" (#1143).
+    bool hasAvailableBytes = false;
     uint64_t buffersBytes = 0;
     uint64_t cachedBytes = 0;
 
