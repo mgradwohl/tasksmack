@@ -12,12 +12,14 @@
 #include "Platform/IProcessActions.h"
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
+#include "ProcessDetailsPanel_GpuHelpers.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
 #include "UI/ChartWidgets.h"
 #include "UI/DialogMetrics.h"
 #include "UI/EmptyState.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/RateAxis.h"
 #include "UI/TabContent.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
@@ -49,7 +51,6 @@ using UI::Widgets::formatAgeSeconds;
 using UI::Widgets::formatAxisBytesPerSec;
 using UI::Widgets::formatAxisLocalized;
 using UI::Widgets::formatAxisWatts;
-using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
@@ -320,8 +321,13 @@ void ProcessDetailsPanel::renderContent()
                 ImGui::Separator();
                 renderResourceUsage(m_CachedSnapshot, fill);
                 ImGui::Separator();
-                renderPowerUsage(m_CachedSnapshot, fill);
-                ImGui::Separator();
+                // Only where the platform measures it: Windows does not, and used to chart a
+                // fabricated figure (#1028).
+                if (m_ProcessCapabilities.hasPowerUsage)
+                {
+                    renderPowerUsage(m_CachedSnapshot, fill);
+                    ImGui::Separator();
+                }
                 renderThreadAndFaultHistory(fill);
             }
             ImGui::EndTabItem();
@@ -333,14 +339,17 @@ void ProcessDetailsPanel::renderContent()
             {
                 const UI::Widgets::TabContentScope content("##GpuContent");
                 const auto& proc = m_CachedSnapshot;
-                // Show "no GPU" message only if ALL GPU fields are empty/zero (no GPU resources at all)
-                if ((proc.gpuMemoryBytes == 0U) && (proc.gpuUtilPercent == 0.0) && proc.gpuDevices.empty())
+                if (!Detail::hasGpuUsageToShow(
+                        proc.gpuMemoryBytes, proc.gpuUtilPercent, !proc.gpuDevices.empty(), m_GpuUtilHistory, m_GpuMemHistory))
                 {
                     ImGui::TextUnformatted("No GPU usage detected for this process");
                 }
                 else
                 {
-                    renderGpuUsage(m_CachedSnapshot);
+                    // The two history charts share the tab's height, like the other tabs' charts
+                    // (#959). The metrics table and per-GPU breakdown above them count as non-plot.
+                    UI::Widgets::FillPlotLayout fill(m_GpuFill);
+                    renderGpuUsage(m_CachedSnapshot, fill);
                 }
             }
             ImGui::EndTabItem();
@@ -412,6 +421,11 @@ void ProcessDetailsPanel::onEvent(Core::Event& event)
             m_MaxHistorySeconds = Domain::Numeric::toDouble(e.getSeconds());
             return false;
         });
+}
+
+void ProcessDetailsPanel::setProcessCapabilities(const Platform::ProcessCapabilities& capabilities)
+{
+    m_ProcessCapabilities = capabilities;
 }
 
 void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t uniqueKey)
@@ -896,7 +910,10 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
         {
             const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
             std::vector<double> usedData = tailVector(m_MemoryHistory, alignedCount);
-            std::vector<double> sharedData = tailVector(m_SharedHistory, alignedCount);
+            // Shared is not reported on Windows; its line, tooltip row and bar are left out there
+            // rather than shown as a permanent 0 (#1035).
+            const bool showShared = m_ProcessCapabilities.hasSharedMemory;
+            std::vector<double> sharedData = showShared ? tailVector(m_SharedHistory, alignedCount) : std::vector<double>{};
             std::vector<double> virtData = tailVector(m_VirtualHistory, alignedCount);
 
             const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
@@ -914,11 +931,16 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
                                   .tooltipText = std::format("Memory Used: {}", UI::Format::percentCompact(usedNow)),
                                   .value01 = UI::Format::percent01(usedNow),
                                   .color = theme.scheme().chartMemory});
-            memoryBars.push_back({.valueText = UI::Format::percentCompact(sharedNow),
-                                  .label = "Shared",
-                                  .tooltipText = std::format("Shared: {}", UI::Format::percentCompact(sharedNow)),
-                                  .value01 = UI::Format::percent01(sharedNow),
-                                  .color = theme.scheme().chartCpu});
+            if (showShared)
+            {
+                memoryBars.push_back({
+                    .valueText = UI::Format::percentCompact(sharedNow),
+                    .label = "Shared",
+                    .tooltipText = std::format("Shared: {}", UI::Format::percentCompact(sharedNow)),
+                    .value01 = UI::Format::percent01(sharedNow),
+                    .color = theme.scheme().chartCpu,
+                });
+            }
             memoryBars.push_back({.valueText = UI::Format::percentCompact(virtNowVal),
                                   .label = "Virtual",
                                   .tooltipText = std::format("Virtual: {}", UI::Format::percentCompact(virtNowVal)),
@@ -1513,7 +1535,7 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc, 
     ImGui::Spacing();
 }
 
-void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
+void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill)
 {
     auto& theme = UI::Theme::get();
 
@@ -1547,7 +1569,7 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
     ImGui::Separator();
     ImGui::Spacing();
 
-    renderGpuHistoryGraphs();
+    renderGpuHistoryGraphs(fill);
 }
 
 // Renders the current-value GPU metrics table (utilization, memory, devices, engines,
@@ -1726,7 +1748,7 @@ void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& p
 
 // Renders the GPU utilization and memory history charts, or a "collecting data" placeholder
 // until enough history has accumulated.
-void ProcessDetailsPanel::renderGpuHistoryGraphs()
+void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fill)
 {
     auto& theme = UI::Theme::get();
 
@@ -1749,7 +1771,8 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs()
         // GPU Utilization graph (percent metric: locked 0-100 axis with percent formatter)
         auto plotGpuUtil = [&]()
         {
-            const UI::Widgets::HistoryChart chart(UI::Widgets::percentHistoryConfig("##GPUUtilPlot", axisConfig.xMin, axisConfig.xMax));
+            const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
+                UI::Widgets::percentHistoryConfig("##GPUUtilPlot", axisConfig.xMin, axisConfig.xMax), fill.plotHeight()));
             if (chart.active())
             {
                 UI::Widgets::drawCollectingHint(alignedCount);
@@ -1795,12 +1818,14 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs()
         // GPU Memory graph
         auto plotGpuMem = [&]()
         {
-            const UI::Widgets::HistoryChart chart(UI::Widgets::rateHistoryConfig("##GPUMemPlot",
-                                                                                 axisConfig.xMin,
-                                                                                 axisConfig.xMax,
-                                                                                 formatAxisLocalized,
-                                                                                 UI::Widgets::maxOfSeries(gpuMemVec),
-                                                                                 UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES));
+            const UI::Widgets::HistoryChart chart(
+                UI::Widgets::withHeight(UI::Widgets::rateHistoryConfig("##GPUMemPlot",
+                                                                       axisConfig.xMin,
+                                                                       axisConfig.xMax,
+                                                                       UI::Widgets::formatAxisBytes,
+                                                                       UI::Widgets::maxOfSeries(gpuMemVec),
+                                                                       UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES),
+                                        fill.plotHeight()));
             if (chart.active())
             {
                 UI::Widgets::drawCollectingHint(alignedCount);
@@ -1861,13 +1886,13 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs()
         };
 
         ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CHART_LINE "  GPU Utilization History (%zu samples)", alignedCount);
-        renderHistoryWithNowBars(
-            "ProcessGPUUtilHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plotGpuUtil, {gpuUtilBar}, false, PROCESS_NOW_BAR_COLUMNS);
+        renderHistoryWithNowBars("ProcessGPUUtilHistory", fill.plotHeight(), plotGpuUtil, {gpuUtilBar}, false, PROCESS_NOW_BAR_COLUMNS);
+        fill.addPlot();
         ImGui::Spacing();
 
         ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CHART_LINE "  GPU Memory History (%zu samples)", alignedCount);
-        renderHistoryWithNowBars(
-            "ProcessGPUMemHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plotGpuMem, {gpuMemBar}, false, PROCESS_NOW_BAR_COLUMNS);
+        renderHistoryWithNowBars("ProcessGPUMemHistory", fill.plotHeight(), plotGpuMem, {gpuMemBar}, false, PROCESS_NOW_BAR_COLUMNS);
+        fill.addPlot();
         ImGui::Spacing();
     }
     else

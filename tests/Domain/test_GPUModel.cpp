@@ -11,6 +11,7 @@
 /// - Thread-safe operations
 
 #include "Domain/GPUModel.h"
+#include "Domain/SamplingConfig.h"
 #include "Mocks/MockGPUProbe.h"
 #include "Platform/GPUTypes.h"
 
@@ -353,7 +354,8 @@ TEST(GPUModelTest, PublishesCoherentVersionedState)
     const auto historyIt = second->histories.find("GPU0");
     ASSERT_NE(historyIt, second->histories.end());
     EXPECT_EQ(historyIt->second.timestamps.size(), historyIt->second.utilization.size());
-    EXPECT_EQ(historyIt->second.snapshots.size(), historyIt->second.timestamps.size());
+    EXPECT_EQ(historyIt->second.memoryUsedBytes.size(), historyIt->second.timestamps.size());
+    EXPECT_EQ(historyIt->second.memoryTotalBytes.size(), historyIt->second.timestamps.size());
 }
 
 TEST(GPUModelTest, PublishesHistoryForGpuDiscoveredAfterConstruction)
@@ -372,8 +374,8 @@ TEST(GPUModelTest, PublishesHistoryForGpuDiscoveredAfterConstruction)
 
     const auto historyIt = publication->histories.find("GPU-late");
     ASSERT_NE(historyIt, publication->histories.end());
-    ASSERT_EQ(historyIt->second.snapshots.size(), 1);
-    EXPECT_DOUBLE_EQ(historyIt->second.snapshots[0].utilizationPercent, 67.0);
+    ASSERT_EQ(historyIt->second.utilization.size(), 1);
+    EXPECT_FLOAT_EQ(historyIt->second.utilization[0], 67.0F);
     EXPECT_EQ(historyIt->second.timestamps.size(), 1);
     EXPECT_EQ(historyIt->second.utilization.size(), 1);
 }
@@ -1192,21 +1194,23 @@ TEST(GPUModelTest, PerGpuHistoryTimestampsIndexAlignedWithSnapshotAt)
 
 TEST(GPUModelTest, PerGpuHistoryTimestampsCappedAtCapacity)
 {
-    // After pushing more samples than GPU_HISTORY_CAPACITY, historyTimestamps(gpuId)
-    // returns exactly GPU_HISTORY_CAPACITY entries (ring-buffer wraparound).
+    // After pushing more samples than the ring holds (all at once, so the time window
+    // trims nothing), historyTimestamps(gpuId) returns exactly the capacity.
     auto probe = std::make_unique<MockGPUProbe>();
     auto* rawProbe = probe.get();
     rawProbe->withGPU("GPU0", "Test GPU", "TestVendor");
 
     Domain::GPUModel model(std::move(probe));
-    constexpr std::size_t overCapacity = Domain::GPU_HISTORY_CAPACITY + 5;
+    model.setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
+    const std::size_t capacity = Domain::Sampling::historyCapacityForSeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
+    const std::size_t overCapacity = capacity + 5;
     for (std::size_t i = 0; i < overCapacity; ++i)
     {
         rawProbe->withUtilization("GPU0", static_cast<double>(i));
         model.refresh();
     }
 
-    EXPECT_EQ(model.historyTimestamps("GPU0").size(), Domain::GPU_HISTORY_CAPACITY);
+    EXPECT_EQ(model.historyTimestamps("GPU0").size(), capacity);
 }
 
 TEST(GPUModelTest, PerGpuHistoryTimestampsIndependentPerGpu)
@@ -1562,7 +1566,7 @@ TEST(GPUModelTest, SnapshotAtReturnsValueMatchingHistoryByIndex)
 
 TEST(GPUModelTest, SnapshotAtWrapsAroundAfterCapacityExceeded)
 {
-    // Push more samples than GPU_HISTORY_CAPACITY to verify the ring-buffer
+    // Push more samples than the ring's capacity to verify the ring-buffer
     // wraparound: index 0 should return the oldest *retained* sample, not the
     // original first sample, and the last index should return the newest sample.
     auto probe = std::make_unique<MockGPUProbe>();
@@ -1570,32 +1574,120 @@ TEST(GPUModelTest, SnapshotAtWrapsAroundAfterCapacityExceeded)
     rawProbe->withGPU("GPU0", "Test GPU", "TestVendor");
 
     Domain::GPUModel model(std::move(probe));
+    model.setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
+    const std::size_t capacity = Domain::Sampling::historyCapacityForSeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
 
-    constexpr std::size_t overCapacity = Domain::GPU_HISTORY_CAPACITY + 10;
+    const std::size_t overCapacity = capacity + 10;
     for (std::size_t i = 0; i < overCapacity; ++i)
     {
         rawProbe->withUtilization("GPU0", static_cast<double>(i));
         model.refresh();
     }
 
-    // History should be capped at GPU_HISTORY_CAPACITY, not overCapacity.
+    // History should be capped at the capacity, not overCapacity.
     auto fullHistory = model.history("GPU0");
-    ASSERT_EQ(fullHistory.size(), Domain::GPU_HISTORY_CAPACITY);
+    ASSERT_EQ(fullHistory.size(), capacity);
 
-    // Index 0 is the oldest retained sample (value = overCapacity - GPU_HISTORY_CAPACITY).
-    const auto expectedOldestUtil = static_cast<double>(overCapacity - Domain::GPU_HISTORY_CAPACITY);
+    // Index 0 is the oldest retained sample (value = overCapacity - capacity).
+    const auto expectedOldestUtil = static_cast<double>(overCapacity - capacity);
     auto s0 = model.snapshotAt("GPU0", 0);
     ASSERT_TRUE(s0.has_value());
     EXPECT_DOUBLE_EQ(s0->utilizationPercent, expectedOldestUtil);
 
     // Last index is the newest sample (value = overCapacity - 1).
     const auto expectedNewestUtil = static_cast<double>(overCapacity - 1);
-    auto sLast = model.snapshotAt("GPU0", Domain::GPU_HISTORY_CAPACITY - 1);
+    auto sLast = model.snapshotAt("GPU0", capacity - 1);
     ASSERT_TRUE(sLast.has_value());
     EXPECT_DOUBLE_EQ(sLast->utilizationPercent, expectedNewestUtil);
 
     // One past the last index is out of range.
-    EXPECT_FALSE(model.snapshotAt("GPU0", Domain::GPU_HISTORY_CAPACITY).has_value());
+    EXPECT_FALSE(model.snapshotAt("GPU0", capacity).has_value());
+}
+
+// ========== History window (#993) ==========
+
+TEST(GPUModelTest, HistoryIsTrimmedToTheHistoryWindow)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    model.setMaxHistorySeconds(10.0);
+
+    // One sample a second for 15 s: the cutoff is 15 - 10 = 5, so t = 5..15 remain.
+    const auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i <= 15; ++i)
+    {
+        rawProbe->withUtilization("GPU0", static_cast<double>(i));
+        model.refreshAt(start + std::chrono::seconds(i));
+    }
+
+    const auto timestamps = model.historyTimestamps("GPU0");
+    ASSERT_EQ(timestamps.size(), 11U);
+    EXPECT_NEAR(timestamps.back() - timestamps.front(), 10.0, 1e-6);
+    EXPECT_EQ(model.historyTimestamps().size(), 11U);
+
+    const auto utilization = model.utilizationHistory("GPU0");
+    ASSERT_EQ(utilization.size(), 11U);
+    EXPECT_FLOAT_EQ(utilization.front(), 5.0F);
+    EXPECT_FLOAT_EQ(utilization.back(), 15.0F);
+
+    const auto publication = model.publication();
+    const auto historyIt = publication->histories.find("GPU0");
+    ASSERT_NE(historyIt, publication->histories.end());
+    EXPECT_EQ(historyIt->second.timestamps.size(), 11U);
+}
+
+TEST(GPUModelTest, HistoryKeepsMoreThanThreeHundredSamplesWhenTheWindowAllows)
+{
+    // The old fixed 300-sample ring covered only 30 s of a 300 s window at a 100 ms refresh.
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    model.setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_DEFAULT);
+
+    const auto start = std::chrono::steady_clock::now();
+    constexpr int sampleCount = 1000; // 100 s at 100 ms
+    for (int i = 0; i < sampleCount; ++i)
+    {
+        model.refreshAt(start + std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MIN_MS * i));
+    }
+
+    EXPECT_EQ(model.historyTimestamps("GPU0").size(), static_cast<std::size_t>(sampleCount));
+}
+
+TEST(GPUModelTest, ShrinkingTheHistoryWindowTrimsExistingHistory)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    model.setMaxHistorySeconds(60.0);
+
+    const auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i <= 30; ++i)
+    {
+        model.refreshAt(start + std::chrono::seconds(i));
+    }
+    ASSERT_EQ(model.historyTimestamps("GPU0").size(), 31U);
+
+    model.setMaxHistorySeconds(10.0);
+    EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), 10.0);
+    EXPECT_EQ(model.historyTimestamps("GPU0").size(), 11U);
+    EXPECT_EQ(model.historyTimestamps().size(), 11U);
+}
+
+TEST(GPUModelTest, MaxHistorySecondsIsClampedToTheSupportedRange)
+{
+    Domain::GPUModel model(std::make_unique<MockGPUProbe>());
+    model.setMaxHistorySeconds(1.0);
+    EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), static_cast<double>(Domain::Sampling::HISTORY_SECONDS_MIN));
+    model.setMaxHistorySeconds(1.0e9);
+    EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), static_cast<double>(Domain::Sampling::HISTORY_SECONDS_MAX));
 }
 
 } // namespace

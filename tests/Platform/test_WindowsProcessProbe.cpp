@@ -43,6 +43,25 @@ TEST(WindowsProcessProbeTest, ConstructsSuccessfully)
     EXPECT_NO_THROW({ WindowsProcessProbe probe; });
 }
 
+TEST(WindowsProcessProbeTest, PowerAndSharedMemoryAreNotClaimedAndNoEnergyIsInvented)
+{
+    // Power used to be "available" whenever AC status was known, and was a fabricated 1 J per
+    // sample shared out by CPU time (#1028). Shared memory was never filled (#1035). Neither is
+    // claimed now, and no process carries energy.
+    WindowsProcessProbe probe;
+    const auto caps = probe.capabilities();
+    EXPECT_FALSE(caps.hasPowerUsage);
+    EXPECT_FALSE(caps.hasSharedMemory);
+
+    for (int sample = 0; sample < 2; ++sample)
+    {
+        for (const auto& proc : probe.enumerate())
+        {
+            EXPECT_EQ(proc.energyMicrojoules, 0ULL) << proc.name;
+        }
+    }
+}
+
 TEST(WindowsProcessProbeTest, CapabilitiesReportedCorrectly)
 {
     WindowsProcessProbe probe;

@@ -5,6 +5,7 @@
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/RateAxis.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -17,9 +18,9 @@
 #include <cstddef>
 #include <format>
 #include <functional>
-#include <limits>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -71,6 +72,7 @@ void renderDiskIOSection(RenderContext& ctx)
         .smoothedReadBytesPerSec = ctx.smoothedDiskReadBytesPerSec,
         .smoothedWriteBytesPerSec = ctx.smoothedDiskWriteBytesPerSec,
         .smoothedInitialized = ctx.smoothedDiskInitialized,
+        .fill = ctx.fill,
     };
     StorageSection::renderStorageSection(storageCtx);
 }
@@ -97,30 +99,19 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
 
     const auto interfaceCount = interfaces.size();
 
-    // Get selected interface (or default to -1)
-    int selectedInterface = (ctx.selectedNetworkInterface != nullptr) ? *ctx.selectedNetworkInterface : -1;
-
-    // Clamp selected interface to current range so indexing into interfaceNames is always safe.
-    // Interfaces can disappear (e.g., USB adapter unplugged, VPN disconnected).
-    if (std::cmp_greater_equal(selectedInterface, interfaceCount))
+    // The selection is held by interface name (see resolveInterfaceSelection). selectedInterface is
+    // this frame's index for it: -1 = "Total".
+    const auto selection = NetInterfaceUtils::resolveInterfaceSelection(
+        interfaces, ctx.selectedNetworkInterface != nullptr ? std::string_view{*ctx.selectedNetworkInterface} : std::string_view{});
+    int selectedInterface = selection.index.has_value() ? UI::Format::checkedCount(*selection.index) : -1;
+    if (selection.lost && ctx.selectedNetworkInterface != nullptr)
     {
-        // Guard against potential overflow when converting from size_t to int.
-        // While extremely unlikely (would require SIZE_MAX interfaces), be defensive.
-        constexpr auto maxIntIndex = static_cast<size_t>(std::numeric_limits<int>::max());
-        if ((interfaceCount == 0) || (interfaceCount > maxIntIndex))
+        // The interface went away (adapter unplugged, VPN disconnected): show Total, and restart
+        // the bars rather than letting them glide from the old interface's values.
+        ctx.selectedNetworkInterface->clear();
+        if (ctx.smoothedNetInitialized != nullptr)
         {
-            // Fall back to "Total" mode when no interfaces or index would overflow int.
-            selectedInterface = -1;
-        }
-        else
-        {
-            selectedInterface = static_cast<int>(interfaceCount) - 1;
-        }
-
-        // Update the caller's value
-        if (ctx.selectedNetworkInterface != nullptr)
-        {
-            *ctx.selectedNetworkInterface = selectedInterface;
+            *ctx.smoothedNetInitialized = false;
         }
     }
 
@@ -157,7 +148,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                 selectedInterface = selectionValue;
                 if (ctx.selectedNetworkInterface != nullptr)
                 {
-                    *ctx.selectedNetworkInterface = selectedInterface;
+                    *ctx.selectedNetworkInterface = (i == 0) ? std::string{} : interfaces[i - 1].name;
                 }
                 // Reset smoothed values when changing interface
                 if (ctx.smoothedNetInitialized != nullptr)
@@ -280,7 +271,8 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     }
 
     // Determine labels based on selection
-    const std::string ifaceDisplayName = showingInterface ? interfaces[static_cast<size_t>(selectedInterface)].name : "Network";
+    // Name the interface the way the picker above does (#1009).
+    const std::string ifaceDisplayName = showingInterface ? interfaceNames[static_cast<size_t>(selectedInterface) + 1] : "Network";
     const std::string sentBarLabel = showingInterface ? std::format("{} Sent", ifaceDisplayName) : "Network Sent";
     const std::string recvBarLabel = showingInterface ? std::format("{} Received", ifaceDisplayName) : "Network Received";
 
@@ -302,7 +294,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     std::string plotTitle = "Total";
     if (usingInterfaceHistory)
     {
-        plotTitle = interfaces[static_cast<size_t>(selectedInterface)].name;
+        plotTitle = ifaceDisplayName;
     }
     else if (interfaceHistoryUnavailable)
     {
@@ -313,9 +305,11 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     const auto ifaceSentColor = UI::withAlpha(theme.scheme().chartNetTx, 0.7F);
     const auto ifaceRecvColor = UI::withAlpha(theme.scheme().chartNetRx, 0.7F);
 
+    // Shares the tab's height with the disk chart or grid below it (#959).
+    const float plotHeight = (ctx.fill != nullptr) ? ctx.fill->plotHeight() : HISTORY_PLOT_HEIGHT_DEFAULT;
     auto plot = [&]()
     {
-        const UI::Widgets::HistoryChart chart(
+        const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
             UI::Widgets::rateHistoryConfig("##SystemNetHistory",
                                            axis.xMin,
                                            axis.xMax,
@@ -327,7 +321,8 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                                            // the total's. The interface vectors are empty when
                                            // none is selected; maxOfSeries() ignores those.
                                            UI::Widgets::maxOfSeries(sentData, recvData, ifaceSentData, ifaceRecvData),
-                                           UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC));
+                                           UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC),
+            plotHeight));
         if (chart.active())
         {
             const int count = UI::Format::checkedCount(aligned);
@@ -454,8 +449,11 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         ImGui::Spacing();
     }
     constexpr size_t NETWORK_NOW_BAR_COLUMNS = 2; // Sent, Recv
-    renderHistoryWithNowBars(
-        "SystemNetHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {sentBar, recvBar}, false, NETWORK_NOW_BAR_COLUMNS);
+    renderHistoryWithNowBars("SystemNetHistoryLayout", plotHeight, plot, {sentBar, recvBar}, false, NETWORK_NOW_BAR_COLUMNS);
+    if (ctx.fill != nullptr)
+    {
+        ctx.fill->addPlot();
+    }
     ImGui::Spacing();
 
     // Interface status table - filtered and sorted (virtual/bluetooth hidden by default)
@@ -604,18 +602,41 @@ void renderNetworkSection(RenderContext& ctx)
     // StorageSection::renderStorageSection) -- reversed from the disk-then-network order this
     // tab used before #823's grid work, which let the disk grid's now-space-filling behavior
     // greedily consume the whole tab and push the network chart/table below it off-screen.
-    if (ctx.systemPublication == nullptr || !ctx.hasNetworkCounters)
+    //
+    // The charts share the tab's height like every other tab's (#959). With one disk that is just
+    // the network chart and the disk chart. With several, the per-disk grid still takes whatever
+    // is left, so it is not measured: it is reserved one share of the height, and the fill scope
+    // closes before it renders. The network chart and the grid then split the tab between them.
+    const bool diskGrid = StorageSection::usesDiskGrid(ctx.storagePublication);
     {
-        ImGui::TextUnformatted("Network monitoring not available on this platform.");
-    }
-    else
-    {
-        renderNetworkChartAndTable(ctx, theme, nowSeconds);
-    }
+        std::optional<UI::Widgets::FillPlotLayout> fill;
+        if (ctx.fillState != nullptr)
+        {
+            fill.emplace(*ctx.fillState, diskGrid ? 1U : 0U);
+            ctx.fill = &*fill;
+        }
 
-    ImGui::Separator();
-    ImGui::Spacing();
-    renderDiskIOSection(ctx);
+        if (ctx.systemPublication == nullptr || !ctx.hasNetworkCounters)
+        {
+            ImGui::TextUnformatted("Network monitoring not available on this platform.");
+        }
+        else
+        {
+            renderNetworkChartAndTable(ctx, theme, nowSeconds);
+        }
+
+        ImGui::Separator();
+        ImGui::Spacing();
+        if (!diskGrid)
+        {
+            renderDiskIOSection(ctx);
+        }
+        ctx.fill = nullptr;
+    }
+    if (diskGrid)
+    {
+        renderDiskIOSection(ctx);
+    }
 }
 
 } // namespace App::NetworkSection

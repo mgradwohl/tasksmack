@@ -389,7 +389,11 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
 
     // Swap
     snap.swapTotalBytes = counters.memory.swapTotalBytes;
-    snap.swapUsedBytes = counters.memory.swapTotalBytes - counters.memory.swapFreeBytes;
+    // Guarded: a probe reporting more free than total must read as 0 used, not wrap to ~2^64
+    // (the Windows probe once did exactly that, pinning swap at 100 %, #1026).
+    snap.swapUsedBytes = (counters.memory.swapFreeBytes < counters.memory.swapTotalBytes)
+                           ? (counters.memory.swapTotalBytes - counters.memory.swapFreeBytes)
+                           : 0;
     if (counters.memory.swapTotalBytes > 0)
     {
         const double totalSwapBytes = Numeric::toDouble(counters.memory.swapTotalBytes);
@@ -483,8 +487,22 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
             snap.cpuPerCore.push_back(coreUsage);
         }
 
-        // Compute total network rates (aggregate of all interfaces, bytes per second)
-        if (timeDelta > 0.0)
+        // Total network rate is the sum of the per-interface rates computed above, not the change in
+        // the summed lifetime counters. With the summed counters, an interface appearing (a VPN
+        // connecting, WSL starting a vEthernet adapter) delivered its whole lifetime byte count in
+        // one sample -- single-sample spikes of 50-110 MB/s on an idle Wi-Fi link that then pinned
+        // the axis for the history window -- and one disappearing read as a counter rollback, 0
+        // (#1030). Per interface, a new one has no rate until its second sample. The aggregate
+        // counters remain the fallback for a probe that reports no per-interface data.
+        if (timeDelta > 0.0 && !snap.networkInterfaces.empty())
+        {
+            for (const auto& ifaceSnap : snap.networkInterfaces)
+            {
+                snap.netRxBytesPerSec += ifaceSnap.rxBytesPerSec;
+                snap.netTxBytesPerSec += ifaceSnap.txBytesPerSec;
+            }
+        }
+        else if (timeDelta > 0.0)
         {
             // Only compute if counters increased (handle overflow/restart)
             if (counters.netRxBytes >= m_PrevCounters.netRxBytes)
