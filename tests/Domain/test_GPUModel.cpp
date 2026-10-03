@@ -354,7 +354,8 @@ TEST(GPUModelTest, PublishesCoherentVersionedState)
     const auto historyIt = second->histories.find("GPU0");
     ASSERT_NE(historyIt, second->histories.end());
     EXPECT_EQ(historyIt->second.timestamps.size(), historyIt->second.utilization.size());
-    EXPECT_EQ(historyIt->second.snapshots.size(), historyIt->second.timestamps.size());
+    EXPECT_EQ(historyIt->second.memoryUsedBytes.size(), historyIt->second.timestamps.size());
+    EXPECT_EQ(historyIt->second.memoryTotalBytes.size(), historyIt->second.timestamps.size());
 }
 
 TEST(GPUModelTest, PublishesHistoryForGpuDiscoveredAfterConstruction)
@@ -373,8 +374,8 @@ TEST(GPUModelTest, PublishesHistoryForGpuDiscoveredAfterConstruction)
 
     const auto historyIt = publication->histories.find("GPU-late");
     ASSERT_NE(historyIt, publication->histories.end());
-    ASSERT_EQ(historyIt->second.snapshots.size(), 1);
-    EXPECT_DOUBLE_EQ(historyIt->second.snapshots[0].utilizationPercent, 67.0);
+    ASSERT_EQ(historyIt->second.utilization.size(), 1);
+    EXPECT_FLOAT_EQ(historyIt->second.utilization[0], 67.0F);
     EXPECT_EQ(historyIt->second.timestamps.size(), 1);
     EXPECT_EQ(historyIt->second.utilization.size(), 1);
 }

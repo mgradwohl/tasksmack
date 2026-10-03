@@ -24,10 +24,16 @@
 namespace Domain
 {
 
+/// One GPU's history as published to the UI: numeric series only, all the same length and aligned
+/// sample-for-sample. Whole GPUSnapshots are not republished: each carries four identity strings,
+/// and with the history sized to the window (up to 18,001 samples at 1800 s / 100 ms) copying them
+/// on every refresh was the bulk of the sampler thread's work. GPUModel::history() still returns
+/// them for a caller that needs one.
 struct GPUPublishedHistory
 {
-    std::vector<GPUSnapshot> snapshots;
     std::vector<double> timestamps;
+    std::vector<std::uint64_t> memoryUsedBytes;
+    std::vector<std::uint64_t> memoryTotalBytes;
     std::vector<float> utilization;
     std::vector<float> memoryPercent;
     std::vector<float> gpuClock;

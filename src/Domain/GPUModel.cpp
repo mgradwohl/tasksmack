@@ -225,8 +225,9 @@ void GPUModel::publish()
     for (const auto& [gpuId, history] : m_Histories)
     {
         auto& publishedHistory = publication->histories[gpuId];
-        publishedHistory.snapshots.reserve(history.size());
         publishedHistory.timestamps.reserve(history.size());
+        publishedHistory.memoryUsedBytes.reserve(history.size());
+        publishedHistory.memoryTotalBytes.reserve(history.size());
         publishedHistory.utilization.reserve(history.size());
         publishedHistory.memoryPercent.reserve(history.size());
         publishedHistory.gpuClock.reserve(history.size());
@@ -237,9 +238,11 @@ void GPUModel::publish()
         publishedHistory.fanSpeed.reserve(history.size());
         for (std::size_t index = 0; index < history.size(); ++index)
         {
-            const auto sample = history[index];
-            publishedHistory.snapshots.push_back(sample);
+            // ref(), not operator[]: a reference, so no GPUSnapshot (and its strings) is copied.
+            const auto& sample = history.ref(index);
             publishedHistory.timestamps.push_back(sample.captureTimeSec);
+            publishedHistory.memoryUsedBytes.push_back(sample.memoryUsedBytes);
+            publishedHistory.memoryTotalBytes.push_back(sample.memoryTotalBytes);
             publishedHistory.utilization.push_back(static_cast<float>(sample.utilizationPercent));
             publishedHistory.memoryPercent.push_back(static_cast<float>(sample.memoryUsedPercent));
             publishedHistory.gpuClock.push_back(static_cast<float>(sample.gpuClockMHz));

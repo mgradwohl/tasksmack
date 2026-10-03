@@ -12,6 +12,7 @@
 #include "Platform/IProcessActions.h"
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
+#include "ProcessDetailsPanel_GpuHelpers.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
 #include "UI/ChartWidgets.h"
 #include "UI/DialogMetrics.h"
@@ -332,15 +333,8 @@ void ProcessDetailsPanel::renderContent()
             {
                 const UI::Widgets::TabContentScope content("##GpuContent");
                 const auto& proc = m_CachedSnapshot;
-                // Show "no GPU" message only if ALL GPU fields are empty/zero (no GPU resources at all)
-                // and the history holds no GPU use either, so the charts stay up after the process
-                // goes idle on the GPU (#1014).
-                const auto isUsed = [](double value)
-                {
-                    return value > 0.0;
-                };
-                const bool hasGpuHistory = std::ranges::any_of(m_GpuUtilHistory, isUsed) || std::ranges::any_of(m_GpuMemHistory, isUsed);
-                if ((proc.gpuMemoryBytes == 0U) && (proc.gpuUtilPercent == 0.0) && proc.gpuDevices.empty() && !hasGpuHistory)
+                if (!Detail::hasGpuUsageToShow(
+                        proc.gpuMemoryBytes, proc.gpuUtilPercent, !proc.gpuDevices.empty(), m_GpuUtilHistory, m_GpuMemHistory))
                 {
                     ImGui::TextUnformatted("No GPU usage detected for this process");
                 }

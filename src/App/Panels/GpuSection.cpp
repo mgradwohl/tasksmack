@@ -47,27 +47,6 @@ void normalizeToPercent(std::span<const float> hist, float maxVal, std::vector<f
     std::ranges::transform(hist, out.begin(), [maxVal](float v) { return (v / maxVal) * 100.0F; });
 }
 
-/// Lowest reference the clock line and bar are scaled against, so an idle GPU's few hundred MHz
-/// don't fill the chart.
-constexpr float GPU_CLOCK_REFERENCE_FLOOR_MHZ = 2000.0F;
-
-/// The clock the GPU clock line and bar are drawn as a percentage of: the highest clock in the
-/// history (no probe reports the device's maximum), floored at GPU_CLOCK_REFERENCE_FLOOR_MHZ. The
-/// scale moves only when a new peak arrives or the old one ages out, not with every sample, and no
-/// sample in the history exceeds 100 % (#994).
-[[nodiscard]] float gpuClockReferenceMHz(std::span<const float> clockHistory, std::uint32_t currentClockMHz)
-{
-    float reference = std::max(GPU_CLOCK_REFERENCE_FLOOR_MHZ, static_cast<float>(currentClockMHz));
-    for (const float clock : clockHistory)
-    {
-        if (std::isfinite(clock))
-        {
-            reference = std::max(reference, clock);
-        }
-    }
-    return reference;
-}
-
 /// Render a "Note: This system does not report GPU X, Y or Z" line in muted text.
 void renderUnavailableMetricsNote(std::span<const std::string> unavailable, ImVec4 textColor)
 {
@@ -236,7 +215,8 @@ void renderGpuSection(RenderContext& ctx)
         const auto tempData = tailAlignedSpan(tempHist, alignedCount).values;
         const auto powerData = tailAlignedSpan(powerHist, alignedCount).values;
         const auto fanData = tailAlignedSpan(fanHist, alignedCount).values;
-        const auto snapshotData = tailAlignedSpan(history.snapshots, alignedCount).values;
+        const auto memUsedBytesData = tailAlignedSpan(history.memoryUsedBytes, alignedCount).values;
+        const auto memTotalBytesData = tailAlignedSpan(history.memoryTotalBytes, alignedCount).values;
 
         std::vector<float> timeData = buildTimeAxis(perGpuTimestamps, alignedCount, nowSeconds);
 
@@ -338,12 +318,8 @@ void renderGpuSection(RenderContext& ctx)
                     const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
                     if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
                     {
-                        // Fetch only the single snapshot needed for the hovered index.
-                        // snapshotAt() avoids copying the full history vector (unlike GPUModel::history()).
                         // perGpuTimestamps and the GPU history are always the same length and aligned
                         // sample-for-sample, so *idxVal maps directly to the correct history entry.
-                        const auto* histSnap = *idxVal < snapshotData.size() ? &snapshotData[*idxVal] : nullptr;
-
                         ImGui::BeginTooltip();
                         const auto ageText = formatAgeSeconds(static_cast<double>(timeData[*idxVal]));
                         ImGui::TextUnformatted(ageText.c_str());
@@ -356,12 +332,14 @@ void renderGpuSection(RenderContext& ctx)
                         if (*idxVal < memData.size())
                         {
                             const auto pct = static_cast<double>(memData[*idxVal]);
-                            if (histSnap != nullptr && histSnap->memoryTotalBytes > 0)
+                            const bool haveBytes =
+                                *idxVal < memUsedBytesData.size() && *idxVal < memTotalBytesData.size() && memTotalBytesData[*idxVal] > 0;
+                            if (haveBytes)
                             {
                                 ImGui::TextColored(
                                     theme.scheme().gpuMemory,
                                     "Memory: %s",
-                                    UI::Format::bytesUsedTotalPercentCompact(histSnap->memoryUsedBytes, histSnap->memoryTotalBytes, pct)
+                                    UI::Format::bytesUsedTotalPercentCompact(memUsedBytesData[*idxVal], memTotalBytesData[*idxVal], pct)
                                         .c_str());
                             }
                             else
