@@ -366,8 +366,8 @@ std::vector<GPUInfo> ROCmGPUProbe::enumerateGPUs()
             info.name = "AMD GPU " + std::to_string(deviceIdx);
         }
 
-        // Derive a stable device ID via the shared chain (uniqueId → pciId → "amd_N").
-        // readGPUCounters() uses the same helper so GPUInfo::id and GPUCounters::gpuId match.
+        // The id resolved once at load (uniqueId → pciId → "amd_N", #1162); readGPUCounters() uses
+        // the same cached value, so GPUInfo::id and GPUCounters::gpuId always match.
         info.id = m_Impl->deviceIds[deviceIdx];
 
         // Driver version: ROCm SMI doesn't directly expose driver version
@@ -395,8 +395,8 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
     {
         GPUCounters counter{};
 
-        // Derive gpuId via the shared helper (uniqueId → pciId → "amd_N") so it
-        // always matches GPUInfo::id produced by enumerateGPUs() for domain correlation.
+        // The id cached at load (#1162), the same value enumerateGPUs() reports as GPUInfo::id, so
+        // a lookup failing later can't give this sample a different id.
         counter.gpuId = m_Impl->deviceIds[deviceIdx];
 
         // GPU utilization (0-100%)

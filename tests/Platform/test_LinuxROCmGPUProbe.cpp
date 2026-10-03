@@ -209,8 +209,11 @@ TEST(LinuxROCmGPUProbeTest, DeviceIdsAreResolvedOnceAtLoad)
 
     const auto counters = probe.readGPUCounters();
     const auto gpus = probe.enumerateGPUs();
+    const unsigned int callsWhileSampling = idCalls(); // configure(0) reset the count
     configure(-1);
     dlclose(library);
+
+    EXPECT_EQ(callsWhileSampling, 0U); // sampling makes no further id lookups
 
     ASSERT_EQ(counters.size(), expectedIds.size());
     ASSERT_EQ(gpus.size(), expectedIds.size());
