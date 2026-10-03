@@ -200,20 +200,36 @@ template<typename Format> [[nodiscard]] std::string formatSampleOrNA(double valu
     return std::isfinite(value) ? std::string(std::forward<Format>(format)(value)) : std::string("N/A");
 }
 
+/// Side of the colour swatch before each tooltip row, as a fraction of the text line height.
+inline constexpr float TOOLTIP_SWATCH_LINE_FRACTION = 0.7F;
+
 /// The tooltip every history chart shows on hover (#1020): the hovered sample's age, a separator,
-/// then one "label: value" row per series in that series' colour. Charts used to write this out by
-/// hand, and the copies drifted -- whole-second ages, colours matching nothing on the chart, series
-/// left out, labels different from the legend's.
+/// then one row per series: a swatch in the series' colour and "label: value" in the normal text
+/// colour. Charts used to write this out by hand, and the copies drifted -- whole-second ages,
+/// colours matching nothing on the chart, series left out, labels different from the legend's.
+///
+/// The text was drawn in the series colour until #1192. Series colours are tuned to be seen as
+/// lines (3:1), not read as text (4.5:1), and CPU Idle's was close to the tooltip's own background,
+/// so the colour moved to an opaque swatch and the text stays readable in every theme.
 inline void renderHistoryTooltip(double relativeSeconds, std::span<const TooltipRow> rows)
 {
     ImGui::BeginTooltip();
     const std::string age = formatAgeSeconds(relativeSeconds);
     ImGui::TextUnformatted(age.c_str());
     ImGui::Separator();
+    const float lineHeight = ImGui::GetTextLineHeight();
+    const float side = std::floor(lineHeight * TOOLTIP_SWATCH_LINE_FRACTION);
     for (const auto& row : rows)
     {
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        const float inset = std::floor((lineHeight - side) * 0.5F);
+        ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(at.x, at.y + inset),
+                                                  ImVec2(at.x + side, at.y + inset + side),
+                                                  ImGui::ColorConvertFloat4ToU32(withAlpha(row.color, 1.0F)));
+        ImGui::Dummy(ImVec2(side, lineHeight));
+        ImGui::SameLine();
         const std::string text = formatTooltipRow(row.label, row.value);
-        ImGui::TextColored(row.color, "%s", text.c_str());
+        ImGui::TextUnformatted(text.c_str());
     }
     ImGui::EndTooltip();
 }

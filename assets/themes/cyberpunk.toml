@@ -104,11 +104,11 @@ fan = "#E040FB"               # Magenta - GPU fan speed line (theme-native)
 # Colors for the stacked CPU usage bar
 # =============================================================================
 [cpu_breakdown]
-user = "#00E5FF"      # Electric Blue - user CPU time
+user = "#00B7D0"      # Electric Blue - user CPU time
 system = "#FF4081"    # Neon Pink - system/kernel time
 iowait = "#FFEA00"    # Electric Yellow - I/O wait time
 idle = "#666680"      # Muted - idle time
-user_fill = "#00E5FF59"      # Electric Blue with 35% alpha - user fill
+user_fill = "#00B7D059"      # Electric Blue with 35% alpha - user fill
 system_fill = "#FF408159"    # Neon Pink with 35% alpha - system fill
 iowait_fill = "#FFEA0059"    # Electric Yellow with 35% alpha - iowait fill
 idle_fill = "#66668033"      # Muted with 20% alpha - idle fill
