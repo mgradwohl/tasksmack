@@ -306,7 +306,8 @@ void renderCpuCoresSection(RenderContext& ctx)
                                              .label = coreName,
                                              .tooltipText = {},
                                              .value01 = UI::Format::percent01(smoothed),
-                                             .color = std::isnan(smoothed) ? theme.scheme().textMuted : theme.progressColor(smoothed)};
+                                             // The core line's colour (#1192), muted when the core has no current sample (#1146)
+                                             .color = std::isnan(smoothed) ? theme.scheme().textMuted : theme.scheme().chartCpu};
 
                             NowBarList bars;
                             bars.push_back(bar);
