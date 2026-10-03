@@ -303,7 +303,7 @@ void renderCpuCoresSection(RenderContext& ctx)
                                              .label = coreName,
                                              .tooltipText = {},
                                              .value01 = UI::Format::percent01(smoothed),
-                                             .color = theme.progressColor(smoothed)};
+                                             .color = theme.scheme().chartCpu}; // The core line's colour (#1192)
 
                             NowBarList bars;
                             bars.push_back(bar);
