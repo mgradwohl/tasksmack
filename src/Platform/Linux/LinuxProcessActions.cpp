@@ -217,6 +217,7 @@ struct PriorityChange
     std::size_t failed = 0;
     int firstError = 0;
     bool threadsKeptStarting = false; // new threads were still appearing after the last pass
+    std::error_code relistError;      // a later listing failed for a reason other than the process exiting
 };
 
 /// The thread IDs in /proc/<pid>/task, or why they couldn't be listed. There is no fallback to
@@ -267,6 +268,12 @@ struct PriorityChange
             if (pass == 0)
             {
                 return std::unexpected(tids.error());
+            }
+            // The process exiting meanwhile is for the caller's pidfd check to report; any other
+            // failure leaves threads started since the last listing unchecked (#1228 review).
+            if (tids.error() != std::errc::no_such_file_or_directory && tids.error() != std::errc::no_such_process)
+            {
+                change.relistError = tids.error();
             }
             return change;
         }
@@ -372,6 +379,17 @@ ProcessActionResult LinuxProcessActions::setPriority(const ProcessTarget& target
                     : std::format("Priority was set, but it could not be confirmed that process {} still held its PID: {}",
                                   target.pid,
                                   std::system_category().message(probeErr));
+            spdlog::warn("{}", errorMsg);
+            return ProcessActionResult::error(std::move(errorMsg));
+        }
+        if (change.relistError)
+        {
+            std::string errorMsg = std::format(
+                "Priority changed for {} threads, but the threads of process {} couldn't be listed again ({}); any started since may "
+                "still have the old priority",
+                change.changed,
+                target.pid,
+                change.relistError.message());
             spdlog::warn("{}", errorMsg);
             return ProcessActionResult::error(std::move(errorMsg));
         }
