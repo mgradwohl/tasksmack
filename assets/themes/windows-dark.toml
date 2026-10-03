@@ -196,8 +196,8 @@ active = "#0078D4"           # Windows Blue on click
 # Collapsible headers, tree nodes
 # =============================================================================
 [ui.header]
-normal = "#383838"
-hovered = "#424242"
+normal = "#3C3C3C"
+hovered = "#2E2E2E"
 active = "#4A4A4A"
 
 # =============================================================================
@@ -223,7 +223,7 @@ active = "#005A9E"
 # Tab bar tabs - Windows 11 dark style
 # =============================================================================
 [ui.tab]
-normal = "#383838"
+normal = "#3E3E3E"
 hovered = "#424242"
 active = "#2B2B2B"
 active_overline = "#0078D4"             # Windows accent color overline

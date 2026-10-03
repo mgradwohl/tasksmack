@@ -195,8 +195,8 @@ active = "#9C27B0"           # Purple on click
 # Collapsible headers, tree nodes
 # =============================================================================
 [ui.header]
-normal = "#E0D8F0"
-hovered = "#D0C8E8"
+normal = "#D3C7EA"
+hovered = "#E5DEF3"
 active = "#7C4DFF"
 
 # =============================================================================
@@ -222,13 +222,13 @@ active = "#7C4DFF"
 # Tab bar tabs
 # =============================================================================
 [ui.tab]
-normal = "#E8E0F5"
+normal = "#D5C7ED"
 hovered = "#7C4DFF"
 active = "#F0E8FA"
-active_overline = "#FF4081"           # Hot pink accent overline for visibility
+active_overline = "#FF2670"           # Hot pink accent overline for visibility
 unfocused = "#F0EAF8"
 unfocused_active = "#E8E0F5"
-unfocused_active_overline = "#FF408180" # Semi-transparent pink overline
+unfocused_active_overline = "#FF267080" # Semi-transparent pink overline
 
 # =============================================================================
 # DOCKING COLORS
