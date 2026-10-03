@@ -638,6 +638,52 @@ TEST_F(NVMLGPUProbeFakeTest, EnumerateLeavesDriverVersionUnknownWhenVbiosFails)
     EXPECT_TRUE(gpus[0].driverVersion.empty());
 }
 
+TEST_F(NVMLGPUProbeFakeTest, EnumerateRecordsWhichSensorsEachDeviceReports)
+{
+    // Sensor capabilities are per device (#1040): of two cards, one reports no fan or power and
+    // the other no temperature or clock.
+    fakeState().deviceCount = 2;
+    deviceData(0).fanOk = false;
+    deviceData(0).powerOk = false;
+    deviceData(1).temperatureOk = false;
+    deviceData(1).gpuClockOk = false;
+
+    NVMLGPUProbe probe;
+    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
+
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 2U);
+    const auto first = gpus[0].sensorCapabilities.value_or(Platform::GPUCapabilities{});
+    const auto second = gpus[1].sensorCapabilities.value_or(Platform::GPUCapabilities{});
+    EXPECT_TRUE(gpus[0].sensorCapabilities.has_value());
+    EXPECT_TRUE(first.hasTemperature);
+    EXPECT_FALSE(first.hasPowerMetrics);
+    EXPECT_TRUE(first.hasClockSpeeds);
+    EXPECT_FALSE(first.hasFanSpeed);
+    EXPECT_TRUE(gpus[1].sensorCapabilities.has_value());
+    EXPECT_FALSE(second.hasTemperature);
+    EXPECT_TRUE(second.hasPowerMetrics);
+    EXPECT_FALSE(second.hasClockSpeeds);
+    EXPECT_TRUE(second.hasFanSpeed);
+}
+
+TEST_F(NVMLGPUProbeFakeTest, CountersKeepTheIdEnumerationReported)
+{
+    // A UUID read that succeeds at enumeration but fails later must not change the device's id,
+    // or the DXGI merge would lose its NVML metrics (#1040).
+    fakeState().deviceCount = 1;
+    deviceData(0).uuid = "GPU-abc123";
+
+    NVMLGPUProbe probe;
+    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
+    ASSERT_EQ(probe.enumerateGPUs().size(), 1U);
+    deviceData(0).uuidOk = false;
+
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_EQ(counters[0].gpuId, "GPU-abc123");
+}
+
 // ==========================================================================
 // readGPUCounters
 // ==========================================================================
