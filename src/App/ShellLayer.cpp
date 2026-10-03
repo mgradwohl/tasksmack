@@ -457,7 +457,7 @@ void ShellLayer::renderStatusBar() const
                                              fpsText.size() - 1,
                                              "{:.1f} FPS ({:.2f} ms)",
                                              static_cast<double>(m_FpsCounter.displayedFps()),
-                                             static_cast<double>(m_FpsCounter.frameTime() * 1000.0F));
+                                             static_cast<double>(m_FpsCounter.displayedFrameTime() * 1000.0F));
         const float fpsWidth = ImGui::CalcTextSize(fpsText.data(), fpsEnd.out).x;
         ImGui::SameLine(ImGui::GetWindowWidth() - statusBarPaddingX - fpsWidth);
         ImGui::TextUnformatted(fpsText.data(), fpsEnd.out);
