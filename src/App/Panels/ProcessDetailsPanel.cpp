@@ -823,7 +823,7 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
                                  .label = CPU_TOTAL_LABEL,
                                  .tooltipText = {},
                                  .value01 = UI::Format::percent01(m_SmoothedUsage.cpuPercent),
-                                 .color = theme.progressColor(m_SmoothedUsage.cpuPercent)};
+                                 .color = theme.scheme().chartCpu}; // The Total line's colour (#1192)
         const NowBar cpuUserNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuUserPercent),
                                 .label = CPU_USER_LABEL,
                                 .tooltipText = {},

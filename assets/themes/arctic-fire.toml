@@ -104,11 +104,11 @@ fan = "#546E7A"               # Dark Blue Gray - GPU fan speed line
 # Colors for the stacked CPU usage bar
 # =============================================================================
 [cpu_breakdown]
-user = "#42A5F5"      # Blue - user CPU time
+user = "#7DD3FF"      # Blue - user CPU time
 system = "#FF7043"    # Orange - system/kernel time
 iowait = "#FFB300"    # Amber - I/O wait time
 idle = "#808080"      # Gray - idle time
-user_fill = "#42A5F559"      # Blue with 35% alpha - user fill
+user_fill = "#7DD3FF59"      # Blue with 35% alpha - user fill
 system_fill = "#FF704359"    # Orange with 35% alpha - system fill
 iowait_fill = "#FFB30059"    # Amber with 35% alpha - iowait fill
 idle_fill = "#80808033"      # Gray with 20% alpha - idle fill
