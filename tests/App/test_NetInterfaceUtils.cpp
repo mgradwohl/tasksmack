@@ -6,6 +6,7 @@
 /// - Bluetooth interface detection
 /// - Interface type icon selection
 /// - Interface sorting and filtering
+/// - Resolving the network chart's selection by name (#996)
 
 // NOLINTBEGIN(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
 
@@ -452,6 +453,60 @@ TEST(NetInterfaceUtilsTest, GetSortedFilteredInterfacesPreservesAllFields)
     EXPECT_DOUBLE_EQ(result[0].rxBytesPerSec, 1000.0);
     EXPECT_DOUBLE_EQ(result[0].txBytesPerSec, 500.0);
     EXPECT_EQ(result[0].linkSpeedMbps, 1000U);
+}
+
+// ========== resolveInterfaceSelection (#996) ==========
+
+TEST(NetInterfaceUtilsTest, EmptySelectionIsTotal)
+{
+    const std::vector interfaces{makeInterface("eth0"), makeInterface("wlan0")};
+    const auto selection = resolveInterfaceSelection(interfaces, "");
+    EXPECT_FALSE(selection.index.has_value());
+    EXPECT_FALSE(selection.lost);
+}
+
+TEST(NetInterfaceUtilsTest, SelectionFollowsTheInterfaceWhenTheListIsReordered)
+{
+    const std::vector before{makeInterface("eth0"), makeInterface("wlan0")};
+    const std::vector after{makeInterface("wlan0"), makeInterface("eth0")};
+    EXPECT_EQ(resolveInterfaceSelection(before, "wlan0").index, 1U);
+    EXPECT_EQ(resolveInterfaceSelection(after, "wlan0").index, 0U);
+    EXPECT_FALSE(resolveInterfaceSelection(after, "wlan0").lost);
+}
+
+TEST(NetInterfaceUtilsTest, SelectionFollowsTheInterfaceWhenAnotherIsInsertedBeforeIt)
+{
+    const std::vector after{makeInterface("eth0"), makeInterface("tun0"), makeInterface("wlan0")};
+    const auto selection = resolveInterfaceSelection(after, "wlan0");
+    EXPECT_EQ(selection.index, 2U);
+    EXPECT_FALSE(selection.lost);
+}
+
+TEST(NetInterfaceUtilsTest, SelectionFollowsTheInterfaceWhenAnotherIsRemovedBeforeIt)
+{
+    const std::vector after{makeInterface("wlan0")};
+    const auto selection = resolveInterfaceSelection(after, "wlan0");
+    EXPECT_EQ(selection.index, 0U);
+    EXPECT_FALSE(selection.lost);
+}
+
+TEST(NetInterfaceUtilsTest, RemovingTheSelectedInterfaceReportsItLostInsteadOfPickingAnother)
+{
+    // The old positional selection clamped to whichever interface was now last.
+    const std::vector after{makeInterface("eth0"), makeInterface("tun0")};
+    const auto selection = resolveInterfaceSelection(after, "wlan0");
+    EXPECT_FALSE(selection.index.has_value());
+    EXPECT_TRUE(selection.lost);
+
+    const std::vector<Domain::SystemSnapshot::InterfaceSnapshot> none;
+    EXPECT_TRUE(resolveInterfaceSelection(none, "wlan0").lost);
+}
+
+TEST(NetInterfaceUtilsTest, SelectionMatchesTheRawNameNotTheDisplayName)
+{
+    const std::vector interfaces{makeInterface("{GUID-1}", "Ethernet"), makeInterface("{GUID-2}", "Wi-Fi")};
+    EXPECT_EQ(resolveInterfaceSelection(interfaces, "{GUID-2}").index, 1U);
+    EXPECT_TRUE(resolveInterfaceSelection(interfaces, "Wi-Fi").lost);
 }
 
 } // namespace

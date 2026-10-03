@@ -17,6 +17,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -1164,6 +1165,57 @@ TEST(SystemModelTest, PerInterfaceNetworkRatesHandleNewInterface)
     EXPECT_EQ(snap.networkInterfaces[1].name, "tun0");
     EXPECT_DOUBLE_EQ(snap.networkInterfaces[1].rxBytesPerSec, 0.0);
     EXPECT_DOUBLE_EQ(snap.networkInterfaces[1].txBytesPerSec, 0.0);
+}
+
+TEST(SystemModelTest, TotalNetworkRateDoesNotSpikeWhenAnInterfaceAppears)
+{
+    // #1030: an interface appearing used to deliver its whole lifetime byte count into the Total
+    // in one sample (here 10 GB, as WSL's vEthernet adapter did). Total is now the sum of the
+    // per-interface rates, and a new interface has no rate until its second sample.
+    auto probe = std::make_unique<MockSystemProbe>();
+    const auto mem = makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024);
+    const auto wifi1 = makeInterfaceCounters("Wi-Fi", 1'000'000, 500'000);
+    const auto counters1 = makeSystemCounters(makeCpuCounters(100, 0, 50, 850), mem, 0, {}, 1'000'000, 500'000, {wifi1});
+    probe->setCounters(counters1);
+    Domain::SystemModel model(std::move(probe));
+    model.updateFromCounters(counters1, 1.0);
+
+    constexpr std::uint64_t WSL_LIFETIME_RX = 10'000'000'000ULL;
+    const auto wifi2 = makeInterfaceCounters("Wi-Fi", 1'002'000, 501'000);
+    const auto vEthernet = makeInterfaceCounters("vEthernet (WSL)", WSL_LIFETIME_RX, 1'000'000'000ULL);
+    const auto counters2 = makeSystemCounters(
+        makeCpuCounters(200, 0, 100, 1700), mem, 0, {}, 1'002'000 + WSL_LIFETIME_RX, 501'000 + 1'000'000'000ULL, {wifi2, vEthernet});
+    model.updateFromCounters(counters2, 2.0);
+
+    const auto snap = model.snapshot();
+    EXPECT_DOUBLE_EQ(snap.netRxBytesPerSec, 2000.0);
+    EXPECT_DOUBLE_EQ(snap.netTxBytesPerSec, 1000.0);
+}
+
+TEST(SystemModelTest, TotalNetworkRateKeepsTheRemainingInterfacesWhenOneDisappears)
+{
+    // The opposite edge: an interface vanishing used to read as a counter rollback and drop the
+    // Total to 0 for that sample, although the remaining interfaces were still moving data.
+    auto probe = std::make_unique<MockSystemProbe>();
+    const auto mem = makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024);
+    const auto counters1 = makeSystemCounters(makeCpuCounters(100, 0, 50, 850),
+                                              mem,
+                                              0,
+                                              {},
+                                              3000,
+                                              1500,
+                                              {makeInterfaceCounters("eth0", 1000, 500), makeInterfaceCounters("wlan0", 2000, 1000)});
+    probe->setCounters(counters1);
+    Domain::SystemModel model(std::move(probe));
+    model.updateFromCounters(counters1, 1.0);
+
+    const auto counters2 =
+        makeSystemCounters(makeCpuCounters(200, 0, 100, 1700), mem, 0, {}, 2000, 1000, {makeInterfaceCounters("eth0", 2000, 1000)});
+    model.updateFromCounters(counters2, 2.0);
+
+    const auto snap = model.snapshot();
+    EXPECT_DOUBLE_EQ(snap.netRxBytesPerSec, 1000.0);
+    EXPECT_DOUBLE_EQ(snap.netTxBytesPerSec, 500.0);
 }
 
 TEST(SystemModelTest, PerInterfaceNetworkRatesHandleInterfaceRemoval)

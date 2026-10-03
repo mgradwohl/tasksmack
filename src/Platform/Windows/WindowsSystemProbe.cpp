@@ -438,29 +438,12 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
     {
         const MIB_IF_ROW2& row = table->Table[i];
 
-        // Filter interfaces:
-        // - Skip loopback (internal traffic)
-        // - Skip non-network interface types (Bluetooth, etc.)
-        // - Include Ethernet, Wi-Fi, and virtual adapters (VPN, Docker, etc.)
-        if (row.Type == IF_TYPE_SOFTWARE_LOOPBACK)
+        // Loopback, non-network types and NDIS filter-module rows are not interfaces of their own
+        // (#1030); see isCountedNetworkRow().
+        if (!isCountedNetworkRow(row.Type, row.InterfaceAndOperStatusFlags.FilterInterface != 0))
         {
             continue;
         }
-
-        // Only include network-type interfaces:
-        // IF_TYPE_ETHERNET_CSMACD (6) - Ethernet
-        // IF_TYPE_IEEE80211 (71) - Wi-Fi
-        // IF_TYPE_TUNNEL (131) - VPN tunnels
-        // IF_TYPE_PPP (23) - PPP connections
-        // IF_TYPE_PROP_VIRTUAL (53) - Virtual adapters (Hyper-V, Docker, etc.)
-        const bool isNetworkInterface = (row.Type == IF_TYPE_ETHERNET_CSMACD || row.Type == IF_TYPE_IEEE80211 ||
-                                         row.Type == IF_TYPE_TUNNEL || row.Type == IF_TYPE_PPP || row.Type == IF_TYPE_PROP_VIRTUAL);
-
-        if (!isNetworkInterface)
-        {
-            continue;
-        }
-
         // 64-bit byte counters - no more 32-bit overflow issues
         const uint64_t rxBytes = row.InOctets;
         const uint64_t txBytes = row.OutOctets;
