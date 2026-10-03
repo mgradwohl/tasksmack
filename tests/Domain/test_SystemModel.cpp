@@ -509,7 +509,7 @@ TEST(SystemModelTest, PerCoreHistoryStaysAlignedOnCoreCountDecrease)
 {
     // Establish two cores over three samples, then simulate a transient probe
     // read that reports only one core.  The retained ring for core 1 must
-    // receive a 0.0F placeholder so every core series stays the same length
+    // receive a NaN placeholder (a gap, #1146) so every core series stays the same length
     // as the timestamp axis.  A subsequent sample with two cores again must
     // resume normal values.
     auto probe = std::make_unique<MockSystemProbe>();
@@ -547,11 +547,11 @@ TEST(SystemModelTest, PerCoreHistoryStaysAlignedOnCoreCountDecrease)
         // All series must be the same length as the timestamp axis
         EXPECT_EQ(cores[0].size(), ts.size());
         EXPECT_EQ(cores[1].size(), ts.size());
-        // Absent core 1 must have received a 0.0F placeholder for this sample
-        EXPECT_FLOAT_EQ(cores[1].back(), 0.0F);
+        // Absent core 1 must have received a NaN placeholder (a gap, not a fake 0%) for this sample
+        EXPECT_TRUE(std::isnan(cores[1].back()));
     }
 
-    // Sample 4: two cores return → core 1 still gets 0.0F this sample because
+    // Sample 4: two cores return → core 1 still gets NaN this sample because
     // m_PrevCounters only has 1 core from sample 3 (min-of-two logic), so no
     // delta is computable for core 1 yet.  What matters is that the ring stays aligned.
     std::vector<Platform::CpuCounters> cores4 = {makeCpuCounters(3000, 0, 3000, 24000), makeCpuCounters(4000, 0, 4000, 22000)};
@@ -564,8 +564,8 @@ TEST(SystemModelTest, PerCoreHistoryStaysAlignedOnCoreCountDecrease)
         ASSERT_EQ(cores.size(), 2);
         EXPECT_EQ(cores[0].size(), ts.size());
         EXPECT_EQ(cores[1].size(), ts.size());
-        // Core 1 still shows 0.0F (prev counters only had 1 core); alignment is the key invariant
-        EXPECT_FLOAT_EQ(cores[1].back(), 0.0F);
+        // Core 1 still has no reading (prev counters only had 1 core); alignment is the key invariant
+        EXPECT_TRUE(std::isnan(cores[1].back()));
     }
 }
 

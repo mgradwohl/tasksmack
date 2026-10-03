@@ -31,6 +31,24 @@
 namespace Domain
 {
 
+namespace
+{
+
+/// A history value as a float: NaN for a placeholder recorded while the GPU was missing (#1146).
+template<typename T> [[nodiscard]] float sampleOrNaN(const GPUSnapshot& sample, T value)
+{
+    return sample.sampled ? static_cast<float>(value) : std::numeric_limits<float>::quiet_NaN();
+}
+
+/// The fan speed as a float: NaN when it couldn't be read, not 0.0F, so the chart shows a gap
+/// rather than a flat "0%" indistinguishable from an idle fan.
+[[nodiscard]] float fanSpeedOrNaN(const GPUSnapshot& sample)
+{
+    return sample.fanSpeedAvailable ? sampleOrNaN(sample, sample.fanSpeedPercent) : std::numeric_limits<float>::quiet_NaN();
+}
+
+} // namespace
+
 GPUModel::GPUModel(std::unique_ptr<Platform::IGPUProbe> probe)
     : m_Probe(std::move(probe)), m_PrevSampleTime(std::chrono::steady_clock::now())
 {
@@ -129,6 +147,19 @@ void GPUModel::refreshAt(std::chrono::steady_clock::time_point now)
                 auto histIt = m_Histories.try_emplace(gpuId, Sampling::historyCapacityForSeconds(m_MaxHistorySeconds)).first;
                 histIt->second.push(snapshot);
             }
+            // A known GPU missing from this read gets a placeholder, so its history has a gap here
+            // rather than a line drawn straight across the absence (#1146).
+            for (auto& [gpuId, history] : m_Histories)
+            {
+                if (!m_Snapshots.contains(gpuId))
+                {
+                    GPUSnapshot gap;
+                    gap.gpuId = gpuId;
+                    gap.captureTimeSec = nowSec;
+                    gap.sampled = false;
+                    history.push(gap);
+                }
+            }
             trimHistory(nowSec);
             publish();
 
@@ -208,6 +239,22 @@ void GPUModel::trimHistory(double nowSeconds)
                                                              history.ref(history.size() - 1).captureTimeSec);
         history.discardFront(keepAnchor ? staleCount - 1 : staleCount);
     }
+
+    // A GPU whose window holds nothing but placeholders has been gone for the whole window: forget it,
+    // rather than record a placeholder for it on every sample forever.
+    std::erase_if(m_Histories,
+                  [](const auto& entry)
+                  {
+                      const auto& history = entry.second;
+                      for (std::size_t index = 0; index < history.size(); ++index)
+                      {
+                          if (history.ref(index).sampled)
+                          {
+                              return false;
+                          }
+                      }
+                      return true;
+                  });
 }
 
 std::shared_ptr<const GPUPublication> GPUModel::publication() const noexcept
@@ -259,18 +306,14 @@ void GPUModel::publish()
             publishedHistory.timestamps.push_back(sample.captureTimeSec);
             publishedHistory.memoryUsedBytes.push_back(sample.memoryUsedBytes);
             publishedHistory.memoryTotalBytes.push_back(sample.memoryTotalBytes);
-            publishedHistory.utilization.push_back(static_cast<float>(sample.utilizationPercent));
-            publishedHistory.memoryPercent.push_back(static_cast<float>(sample.memoryUsedPercent));
-            publishedHistory.gpuClock.push_back(static_cast<float>(sample.gpuClockMHz));
-            publishedHistory.encoder.push_back(static_cast<float>(sample.encoderUtilPercent));
-            publishedHistory.decoder.push_back(static_cast<float>(sample.decoderUtilPercent));
-            publishedHistory.temperature.push_back(static_cast<float>(sample.temperatureC));
-            publishedHistory.power.push_back(static_cast<float>(sample.powerDrawWatts));
-            // A sample where the fan couldn't be read (fanSpeedAvailable == false) is stored as
-            // NaN rather than 0.0F, so the history chart shows a gap instead of a misleading
-            // flat "0%" indistinguishable from a genuine idle-fan reading.
-            publishedHistory.fanSpeed.push_back(sample.fanSpeedAvailable ? static_cast<float>(sample.fanSpeedPercent)
-                                                                         : std::numeric_limits<float>::quiet_NaN());
+            publishedHistory.utilization.push_back(sampleOrNaN(sample, sample.utilizationPercent));
+            publishedHistory.memoryPercent.push_back(sampleOrNaN(sample, sample.memoryUsedPercent));
+            publishedHistory.gpuClock.push_back(sampleOrNaN(sample, sample.gpuClockMHz));
+            publishedHistory.encoder.push_back(sampleOrNaN(sample, sample.encoderUtilPercent));
+            publishedHistory.decoder.push_back(sampleOrNaN(sample, sample.decoderUtilPercent));
+            publishedHistory.temperature.push_back(sampleOrNaN(sample, sample.temperatureC));
+            publishedHistory.power.push_back(sampleOrNaN(sample, sample.powerDrawWatts));
+            publishedHistory.fanSpeed.push_back(fanSpeedOrNaN(sample));
         }
     }
     m_PublicationVersion = publication->version;
@@ -435,7 +478,7 @@ template<typename FieldPtr> std::vector<float> GPUModel::getHistoryField(std::st
     return getHistoryFieldByProjection(gpuId,
                                        [field](const GPUSnapshot& sample) -> float
                                        {
-                                           const auto value = static_cast<float>(sample.*field);
+                                           const float value = sampleOrNaN(sample, sample.*field);
                                            return value;
                                        });
 }
@@ -503,10 +546,7 @@ std::vector<float> GPUModel::fanSpeedHistory(std::string_view gpuId) const
     // be read (fanSpeedAvailable == false) must come back as NaN, not its default 0.0F, or a
     // caller of this accessor sees the same misleading flat "0%" that publish()'s
     // GPUPublication::histories path was fixed to avoid.
-    return getHistoryFieldByProjection(
-        gpuId,
-        [](const GPUSnapshot& sample) -> float
-        { return sample.fanSpeedAvailable ? static_cast<float>(sample.fanSpeedPercent) : std::numeric_limits<float>::quiet_NaN(); });
+    return getHistoryFieldByProjection(gpuId, fanSpeedOrNaN);
 }
 
 std::vector<double> GPUModel::historyTimestamps() const

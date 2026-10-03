@@ -205,6 +205,22 @@ TEST(FormatTest, PercentToIntClampsNegativeToZero)
     EXPECT_EQ(UI::Format::percentToInt(100.0), 100);
 }
 
+TEST(FormatTest, PercentHelpersTreatNaNAsNoReading)
+{
+    // NaN marks a sample with no reading; it used to print "-2,147,483,648%" and reach bar geometry (#1148).
+    constexpr double NaN = std::numeric_limits<double>::quiet_NaN();
+    constexpr double INF = std::numeric_limits<double>::infinity();
+    EXPECT_EQ(UI::Format::percentToInt(NaN), 0);
+    EXPECT_EQ(UI::Format::percentToInt(std::numeric_limits<float>::quiet_NaN()), 0);
+    EXPECT_EQ(UI::Format::percentToInt(INF), std::numeric_limits<int>::max());
+    EXPECT_EQ(UI::Format::percentToInt(-INF), 0);
+    EXPECT_EQ(UI::Format::percentCompact(NaN), "N/A");
+    EXPECT_EQ(UI::Format::percentCompact(std::numeric_limits<float>::quiet_NaN()), "N/A");
+    EXPECT_DOUBLE_EQ(UI::Format::clampPercent(NaN), 0.0);
+    EXPECT_DOUBLE_EQ(UI::Format::clampPercent(INF), 100.0);
+    EXPECT_DOUBLE_EQ(UI::Format::percent01(NaN), 0.0);
+}
+
 // =============================================================================
 // clampPercent Tests (Heavily Used - 30+ call sites)
 // =============================================================================

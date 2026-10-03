@@ -403,11 +403,16 @@ void renderGpuSection(RenderContext& ctx)
                             {
                                 rows.push_back({.label = CLOCK_LABEL,
                                                 .color = theme.scheme().gpuClock,
-                                                .value = std::format(
-                                                    "{:.0f} MHz ({} of {:.0f} MHz)",
+                                                .value = UI::Widgets::formatSampleOrNA(
                                                     *clockMHz,
-                                                    UI::Format::percentCompact((*clockMHz / static_cast<double>(maxClockMHz)) * 100.0),
-                                                    static_cast<double>(maxClockMHz))});
+                                                    [maxClockMHz](double mhz)
+                                                    {
+                                                        return std::format(
+                                                            "{:.0f} MHz ({} of {:.0f} MHz)",
+                                                            mhz,
+                                                            UI::Format::percentCompact((mhz / static_cast<double>(maxClockMHz)) * 100.0),
+                                                            static_cast<double>(maxClockMHz));
+                                                    })});
                             }
                         }
                         if (caps.hasEncoderDecoder && !encoderData.empty())
@@ -649,15 +654,21 @@ void renderGpuSection(RenderContext& ctx)
                                 }
                                 return static_cast<double>(series[*idxVal - aligned.offset]);
                             };
+                            // "N/A" for a sample with no reading, such as while the GPU was missing (#1146).
                             const auto ofReference = [](double value, double reference, std::string_view unit, std::string_view note)
                             {
-                                return std::format("{:.0f}{} ({} of {:.0f}{}{})",
-                                                   value,
-                                                   unit,
-                                                   UI::Format::percentCompact((value / reference) * 100.0),
-                                                   reference,
-                                                   unit,
-                                                   note);
+                                return UI::Widgets::formatSampleOrNA(value,
+                                                                     [&](double reading)
+                                                                     {
+                                                                         return std::format(
+                                                                             "{:.0f}{} ({} of {:.0f}{}{})",
+                                                                             reading,
+                                                                             unit,
+                                                                             UI::Format::percentCompact((reading / reference) * 100.0),
+                                                                             reference,
+                                                                             unit,
+                                                                             note);
+                                                                     });
                             };
                             std::vector<UI::Widgets::TooltipRow> rows;
                             if (caps.hasTemperature && !tempData.empty())
