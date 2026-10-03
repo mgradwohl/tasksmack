@@ -58,10 +58,17 @@ jobs:
         # .github/workflows/* from a token without that scope, even with Contents:write), added
         # as the RENOVATE_TOKEN repo secret -- see CONTRIBUTING.md's "Keeping Dependencies
         # Current" section -- is a one-time, least-privilege setup cost worth paying up front.
-        if: ${{ secrets.RENOVATE_TOKEN == '' }}
+        #
+        # The check is in the script, not a step `if:`: the `secrets` context is not available in
+        # `if:` conditions, and using it there made GitHub reject the whole file -- every push then
+        # showed a failed zero-job run of this workflow, and the schedule never ran at all (#1053).
+        env:
+          RENOVATE_TOKEN: ${{ secrets.RENOVATE_TOKEN }}
         run: |
-          echo "::error::RENOVATE_TOKEN repo secret is not set. Without it, Renovate PRs would silently skip CI (GitHub's loop-prevention for the default GITHUB_TOKEN) and could be merged unvalidated. Add a fine-grained PAT (Contents, Pull requests, Issues, Workflows scopes) as the RENOVATE_TOKEN secret -- see CONTRIBUTING.md's \"Keeping Dependencies Current\" section -- then re-run this workflow."
-          exit 1
+          if [ -z "${RENOVATE_TOKEN}" ]; then
+            echo "::error::RENOVATE_TOKEN repo secret is not set. Without it, Renovate PRs would silently skip CI (GitHub's loop-prevention for the default GITHUB_TOKEN) and could be merged unvalidated. Add a fine-grained PAT (Contents, Pull requests, Issues, Workflows scopes) as the RENOVATE_TOKEN secret -- see CONTRIBUTING.md's \"Keeping Dependencies Current\" section -- then re-run this workflow."
+            exit 1
+          fi
 
       - name: Self-hosted Renovate
         uses: renovatebot/github-action@f3a31a786096ba6b40d0f0ffe11a494ef73bfa7c # v46.3.4
