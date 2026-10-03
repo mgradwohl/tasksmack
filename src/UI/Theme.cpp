@@ -264,15 +264,7 @@ void Theme::loadThemes(const std::filesystem::path& themesDir)
 
 void Theme::initializeFontSizes()
 {
-    // Font size presets (regular/large point sizes)
-    m_FontSizes = {{
-        {.name = "Small", .regularPt = 6.0F, .largePt = 8.0F},
-        {.name = "Medium", .regularPt = 8.0F, .largePt = 10.0F},
-        {.name = "Large", .regularPt = 10.0F, .largePt = 12.0F},
-        {.name = "Extra Large", .regularPt = 12.0F, .largePt = 14.0F},
-        {.name = "Huge", .regularPt = 14.0F, .largePt = 16.0F},
-        {.name = "Even Huger", .regularPt = 16.0F, .largePt = 18.0F},
-    }};
+    m_FontSizes = FONT_SIZE_PRESETS;
 }
 
 auto Theme::currentThemeId() const -> const std::string&
@@ -675,33 +667,9 @@ auto Theme::monospaceFont() const -> ImFont*
     return fonts.monospace != nullptr ? fonts.monospace : fonts.regular;
 }
 
-auto Theme::smallerFont() const -> ImFont*
+auto Theme::chartFont() const -> ImFont*
 {
-    // Return font one size smaller than current, or smallest if already at minimum
-    FontSize smallerSize{};
-    switch (m_CurrentFontSize)
-    {
-    case FontSize::Small:
-    case FontSize::Medium:
-        smallerSize = FontSize::Small;
-        break;
-    case FontSize::Large:
-        smallerSize = FontSize::Medium;
-        break;
-    case FontSize::ExtraLarge:
-        smallerSize = FontSize::Large;
-        break;
-    case FontSize::Huge:
-        smallerSize = FontSize::ExtraLarge;
-        break;
-    case FontSize::EvenHuger:
-        smallerSize = FontSize::Huge;
-        break;
-    case FontSize::Count:
-        smallerSize = FontSize::Small;
-        break;
-    }
-    return m_Fonts[fontSizeIndex(smallerSize)].regular;
+    return m_Fonts[fontSizeIndex(chartFontSize(m_CurrentFontSize))].regular;
 }
 
 void Theme::registerFonts(FontSize size, ImFont* regular, ImFont* large, ImFont* monospace)

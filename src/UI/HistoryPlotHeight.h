@@ -26,13 +26,21 @@
 namespace UI::Widgets
 {
 
-/// Shortest a stacked history chart may be, in ems: 90px at the Medium preset on a 1.0 display
-/// scale (em = 32/3 px), 67.5px at Small and 180px at Even Huger.
+/// Shortest a stacked history chart may be, in body ems: 90px at the Medium preset on a 1.0 display
+/// scale (em = 32/3 px) and 180px at Even Huger. The chart-text floor below is the larger of the two
+/// at Small and Medium, where chart text is the body size.
 ///
 /// Chosen so that Even Huger, where the axis labels are largest, keeps exactly the 180px these
 /// charts used to be fixed at. A larger multiple would make the charts taller than before at the
 /// big presets and push a tab that used to fit into scrolling.
 inline constexpr float HISTORY_PLOT_MIN_HEIGHT_EM = 8.4375F;
+
+/// Shortest a stacked history chart may be in ems of its own axis and legend text, which can be the
+/// body size (see UI::chartFontSize()): 11.25 is the proportion the Medium preset had when its chart
+/// text was 8px in a 90px chart, which keeps a four-entry legend (Memory: Used, Cached, Swap, Peak
+/// Used) and six Y-axis labels inside the plot. Moving chart text up to the body size at Medium
+/// (#1194) without this would have clipped that legend.
+inline constexpr float HISTORY_PLOT_MIN_HEIGHT_CHART_EM = 11.25F;
 
 /// Tallest a stacked history chart may grow, in ems: 360px at the Medium preset, twice the 180px
 /// these charts used to be fixed at.
@@ -42,10 +50,14 @@ inline constexpr float HISTORY_PLOT_MAX_HEIGHT_EM = 33.75F;
 /// measured against, which would summon a scrollbar the layout was specifically sized to avoid.
 inline constexpr float HISTORY_PLOT_FILL_MARGIN_PX = 2.0F;
 
-[[nodiscard]] inline float historyPlotMinHeight(float emPx) noexcept
+/// @param emPx       One em of body text, i.e. ImGui::GetFontSize().
+/// @param chartEmPx  One em of the chart's axis and legend text (UI::chartEmPx()); a value
+///                   that is not positive and finite means "the same as emPx".
+[[nodiscard]] inline float historyPlotMinHeight(float emPx, float chartEmPx = 0.0F) noexcept
 {
     const float em = (std::isfinite(emPx) && emPx > 0.0F) ? emPx : 1.0F;
-    return HISTORY_PLOT_MIN_HEIGHT_EM * em;
+    const float chartEm = (std::isfinite(chartEmPx) && chartEmPx > 0.0F) ? chartEmPx : em;
+    return std::max(HISTORY_PLOT_MIN_HEIGHT_EM * em, HISTORY_PLOT_MIN_HEIGHT_CHART_EM * chartEm);
 }
 
 [[nodiscard]] inline float historyPlotMaxHeight(float emPx) noexcept
@@ -61,13 +73,15 @@ inline constexpr float HISTORY_PLOT_FILL_MARGIN_PX = 2.0F;
 /// @param nonPlotHeightPx    Height taken by everything that is not a plot: headings, spacing, the
 ///                           padding around each chart. Measured from the previous frame.
 /// @param plotCount          Number of charts sharing the region.
+/// @param chartEmPx          One em of chart text; see historyPlotMinHeight().
 /// @return The plot height in whole pixels, within [historyPlotMinHeight, historyPlotMaxHeight]
 ///         rounded down. With nothing
 ///         measured yet (plotCount == 0, or an unusable height) it is the minimum, so the first
 ///         frame under-fills rather than overflowing and the next frame corrects it.
-[[nodiscard]] inline float computeFillPlotHeight(float emPx, float availableHeightPx, float nonPlotHeightPx, std::size_t plotCount) noexcept
+[[nodiscard]] inline float
+computeFillPlotHeight(float emPx, float availableHeightPx, float nonPlotHeightPx, std::size_t plotCount, float chartEmPx = 0.0F) noexcept
 {
-    const float minHeight = historyPlotMinHeight(emPx);
+    const float minHeight = std::min(historyPlotMinHeight(emPx, chartEmPx), historyPlotMaxHeight(emPx));
     const float maxHeight = historyPlotMaxHeight(emPx);
 
     if (plotCount == 0 || !std::isfinite(availableHeightPx) || availableHeightPx <= 0.0F || !std::isfinite(nonPlotHeightPx))
