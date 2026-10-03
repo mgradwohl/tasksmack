@@ -44,6 +44,10 @@ struct ProcessCounters
     // Network counters (cumulative bytes)
     std::uint64_t netSentBytes = 0;
     std::uint64_t netReceivedBytes = 0;
+    // When the network counters were read from the OS, as std::chrono::steady_clock nanoseconds since
+    // its epoch; 0 = read with this refresh. A probe that caches its network query for longer than a
+    // refresh interval sets it, so rates are taken over the time between real reads (#1063 review).
+    std::uint64_t netSampleTimeNs = 0;
 
     // Power usage (optional, platform-dependent; see ProcessCapabilities::hasPowerUsage)
     // On Linux: from powercap sysfs (per-package energy counters), shared out by CPU time

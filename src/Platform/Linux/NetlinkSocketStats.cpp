@@ -379,7 +379,7 @@ NetlinkSocketStats::~NetlinkSocketStats() noexcept
     }
 }
 
-std::vector<SocketStats> NetlinkSocketStats::queryAllSockets()
+std::vector<SocketStats> NetlinkSocketStats::queryAllSockets(std::chrono::steady_clock::time_point* sampledAt)
 {
     if (!m_Available || m_Socket < 0)
     {
@@ -399,6 +399,10 @@ std::vector<SocketStats> NetlinkSocketStats::queryAllSockets()
     if ((m_CacheTtl.count() > 0) && (m_LastQueryTime != std::chrono::steady_clock::time_point{}) && (cacheAge < m_CacheTtl))
     {
         // Cache hit - return cached results (may be empty if system has no sockets)
+        if (sampledAt != nullptr)
+        {
+            *sampledAt = m_LastSampleTime;
+        }
         return m_CachedResults;
     }
 
@@ -419,6 +423,11 @@ std::vector<SocketStats> NetlinkSocketStats::queryAllSockets()
     if (m_CacheTtl.count() > 0)
     {
         m_LastQueryTime = now;
+    }
+    m_LastSampleTime = now;
+    if (sampledAt != nullptr)
+    {
+        *sampledAt = now;
     }
 
     // Note: Returns a copy of the cached vector. For typical socket counts (<1000),

@@ -95,10 +95,10 @@ class TitleBarLayer : public Core::Layer
         bool hasPendingCommit = false;
         int pendingWidth = 0;
         int pendingHeight = 0;
-        float lastSizeCommitTime = 0.0F;
+        double lastSizeCommitTime = 0.0;
         int lastImmediatePixelW = 0;
         int lastImmediatePixelH = 0;
-        float lastImmediateEventTime = 0.0F;
+        double lastImmediateEventTime = 0.0;
     };
 
     void beginWindowInteraction(const SDL_Event& event);
