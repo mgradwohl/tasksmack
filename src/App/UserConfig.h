@@ -91,6 +91,47 @@ struct UserSettings
     bool forceNativeWindowDecorationsOnWayland = false;
 };
 
+/// Merges settings when config.toml was edited outside TaskSmack (for example through Settings'
+/// "Edit Config File") since TaskSmack last read or wrote it (#1122). `baseline` is what TaskSmack
+/// last read or wrote, `mine` is what it holds now, and `external` is the edited file read over
+/// `baseline`. A field TaskSmack changed since the baseline keeps its value; every other field
+/// takes the edited file's, so neither side's changes are lost. Keep in step with UserSettings.
+[[nodiscard]] inline UserSettings mergeSettings(const UserSettings& external, const UserSettings& baseline, const UserSettings& mine)
+{
+    UserSettings merged = external;
+    const auto keepMine = [&](auto UserSettings::* field)
+    {
+        if (mine.*field != baseline.*field)
+        {
+            merged.*field = mine.*field;
+        }
+    };
+    keepMine(&UserSettings::themeId);
+    keepMine(&UserSettings::fontSize);
+    keepMine(&UserSettings::processColumns);
+    keepMine(&UserSettings::processTableLayout);
+    keepMine(&UserSettings::refreshIntervalMs);
+    keepMine(&UserSettings::maxHistorySeconds);
+    keepMine(&UserSettings::socketStatsCacheTtlMs);
+    keepMine(&UserSettings::minTimeForRateSeconds);
+    keepMine(&UserSettings::maxSaneRateBps);
+    keepMine(&UserSettings::integratedGpuVramThresholdBytes);
+    keepMine(&UserSettings::chartSmoothFactor);
+    keepMine(&UserSettings::chartTauMsMin);
+    keepMine(&UserSettings::chartTauMsMax);
+    keepMine(&UserSettings::chartAntiAliasing);
+    keepMine(&UserSettings::progressColorLowThreshold);
+    keepMine(&UserSettings::progressColorHighThreshold);
+    keepMine(&UserSettings::windowWidth);
+    keepMine(&UserSettings::windowHeight);
+    keepMine(&UserSettings::windowPosX);
+    keepMine(&UserSettings::windowPosY);
+    keepMine(&UserSettings::windowMaximized);
+    keepMine(&UserSettings::showPrivilegeNotice);
+    keepMine(&UserSettings::forceNativeWindowDecorationsOnWayland);
+    return merged;
+}
+
 /**
  * @brief Manages user configuration persistence
  *
@@ -113,7 +154,9 @@ class UserConfig
     /// Load settings from config file (call on startup)
     void load();
 
-    /// Save settings to config file.
+    /// Save settings to config file, atomically (a temporary file renamed over it), keeping keys
+    /// TaskSmack doesn't own. If the file was edited outside TaskSmack since it was last read or
+    /// written, those edits are merged in first (see mergeSettings).
     /// Resets the loaded flag so a subsequent load() call will re-read from disk.
     void save();
 
@@ -150,6 +193,8 @@ class UserConfig
     {
         m_ConfigPath = path;
         m_Settings = UserSettings{};
+        m_Baseline = UserSettings{};
+        m_SyncedWriteTime.reset();
         m_IsLoaded = false;
     }
 
@@ -160,6 +205,13 @@ class UserConfig
     std::filesystem::path m_ConfigPath;
     UserSettings m_Settings;
     bool m_IsLoaded = false;
+
+    // What TaskSmack last read from or wrote to the file, and the file's modification time then:
+    // a different time at save means it was edited outside TaskSmack (#1122).
+    UserSettings m_Baseline;
+    std::optional<std::filesystem::file_time_type> m_SyncedWriteTime;
+
+    void markSynced();
 
     static auto getConfigDirectory() -> std::filesystem::path;
 };

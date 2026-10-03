@@ -31,6 +31,7 @@
 #include <algorithm>
 #include <clocale>
 #include <cstdio> // NOLINT(misc-include-cleaner) - FILE* is used only in the _WIN32 console-attach branch below
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <iostream>
@@ -246,6 +247,30 @@ auto runApp() -> int
     return 0;
 }
 
+/// Runs the app, turning an exception that escapes it into a logged error and a non-zero exit
+/// instead of std::terminate (#1124). On Windows there is no console, so it is also shown.
+auto runAppGuarded() -> int
+{
+    try
+    {
+        return runApp();
+    }
+    catch (const std::exception& e)
+    {
+        try
+        {
+            spdlog::critical("TaskSmack stopped on an unexpected error: {}", e.what());
+#ifdef _WIN32
+            const std::string message = std::string("TaskSmack stopped on an unexpected error:\n\n") + e.what();
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "TaskSmack", message.c_str(), nullptr);
+#endif
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) - reporting is best effort; the exit code still says it failed
+        {}
+        return EXIT_FAILURE;
+    }
+}
+
 } // namespace
 
 // Entry points
@@ -253,13 +278,13 @@ auto runApp() -> int
 // Windows GUI application entry point
 auto WINAPI WinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, LPSTR /*lpCmdLine*/, int /*nShowCmd*/) -> int
 {
-    return runApp();
+    return runAppGuarded();
 }
 #else
 // Standard entry point for Linux/macOS
 // NOLINTNEXTLINE(bugprone-exception-escape) - spdlog initialization may theoretically throw; acceptable at program start
 auto main() -> int
 {
-    return runApp();
+    return runAppGuarded();
 }
 #endif

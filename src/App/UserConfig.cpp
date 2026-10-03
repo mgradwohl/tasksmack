@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <ios>
 #include <limits>
 #include <optional>
 #include <string>
@@ -118,6 +119,334 @@ constexpr int WINDOW_POS_ABS_MAX = 100'000;
 }
 #endif
 
+/// Reads every setting present in `config` into `settings`; keys that are absent leave the
+/// existing value alone.
+void readSettings(const toml::table& config, UserSettings& settings)
+{
+
+    // Sampling / refresh interval
+    UserConfigHelpers::loadAndNarrowInt64(config,
+                                          "sampling",
+                                          "interval_ms",
+                                          settings.refreshIntervalMs,
+                                          Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS,
+                                          [](auto v) { return Domain::Sampling::clampRefreshInterval(v); });
+
+    UserConfigHelpers::loadAndNarrowInt64(config,
+                                          "sampling",
+                                          "history_max_seconds",
+                                          settings.maxHistorySeconds,
+                                          Domain::Sampling::HISTORY_SECONDS_DEFAULT,
+                                          [](auto v) { return Domain::Sampling::clampHistorySeconds(v); });
+    // When the key is missing we intentionally keep the default (300s) set in UserSettings.
+
+    // Socket stats cache TTL (Linux-only, controls how long per-process network stats are cached)
+    UserConfigHelpers::loadAndNarrowInt64(config,
+                                          "sampling",
+                                          "socket_stats_cache_ttl_ms",
+                                          settings.socketStatsCacheTtlMs,
+                                          Domain::Sampling::SOCKET_STATS_CACHE_TTL_MS_DEFAULT,
+                                          [](auto v) { return Domain::Sampling::clampSocketStatsCacheTtlMs(v); });
+
+    // Metrics calculation parameters
+    UserConfigHelpers::loadAndClamp(config,
+                                    "metrics",
+                                    "min_time_for_rate_seconds",
+                                    settings.minTimeForRateSeconds,
+                                    [](auto v) { return Domain::Sampling::clampMinTimeForRateSeconds(v); });
+
+    UserConfigHelpers::loadAndClamp(
+        config, "metrics", "max_sane_rate_bps", settings.maxSaneRateBps, [](auto v) { return Domain::Sampling::clampMaxSaneRateBps(v); });
+
+    if (auto val = config["metrics"]["integrated_gpu_vram_threshold_mb"].value<std::int64_t>())
+    {
+        // Check for overflow before MB-to-bytes conversion
+        constexpr int64_t MAX_MB_BEFORE_OVERFLOW = std::numeric_limits<int64_t>::max() / (1024LL * 1024LL);
+        const int64_t mb = std::clamp(*val, static_cast<int64_t>(0), MAX_MB_BEFORE_OVERFLOW);
+        const int64_t bytes = mb * 1024LL * 1024LL;
+        settings.integratedGpuVramThresholdBytes = Domain::Sampling::clampIntegratedGpuVramThresholdBytes(bytes);
+    }
+
+    // UI behavior parameters
+    UserConfigHelpers::loadAndClamp(config,
+                                    "ui",
+                                    "chart_smooth_factor",
+                                    settings.chartSmoothFactor,
+                                    [](auto v) { return Domain::Sampling::clampChartSmoothFactor(v); });
+
+    UserConfigHelpers::loadAndNarrowInt64(config,
+                                          "ui",
+                                          "chart_tau_ms_min",
+                                          settings.chartTauMsMin,
+                                          Domain::Sampling::CHART_TAU_MS_MIN_DEFAULT,
+                                          [](auto v) { return Domain::Sampling::clampChartTauMsMin(v); });
+
+    UserConfigHelpers::loadAndNarrowInt64(config,
+                                          "ui",
+                                          "chart_tau_ms_max",
+                                          settings.chartTauMsMax,
+                                          Domain::Sampling::CHART_TAU_MS_MAX_DEFAULT,
+                                          [](auto v) { return Domain::Sampling::clampChartTauMsMax(v); });
+
+    if (auto val = config["ui"]["chart_anti_aliasing"].value<bool>())
+    {
+        settings.chartAntiAliasing = *val;
+    }
+
+    UserConfigHelpers::loadAndClamp(config,
+                                    "ui",
+                                    "progress_color_low_threshold",
+                                    settings.progressColorLowThreshold,
+                                    [](auto v) { return Domain::Sampling::clampProgressColorLowThreshold(v); });
+
+    UserConfigHelpers::loadAndClamp(config,
+                                    "ui",
+                                    "progress_color_high_threshold",
+                                    settings.progressColorHighThreshold,
+                                    [](auto v) { return Domain::Sampling::clampProgressColorHighThreshold(v); });
+
+    // Validate that low <= high threshold
+    if (settings.progressColorLowThreshold > settings.progressColorHighThreshold)
+    {
+        spdlog::warn("User config: progress_color_low_threshold ({}) > progress_color_high_threshold ({}); "
+                     "swapping to maintain low <= high.",
+                     settings.progressColorLowThreshold,
+                     settings.progressColorHighThreshold);
+        std::swap(settings.progressColorLowThreshold, settings.progressColorHighThreshold);
+    }
+
+    // Theme
+    if (auto theme = config["theme"]["id"].value<std::string>())
+    {
+        settings.themeId = *theme;
+    }
+
+    // Font size
+    if (auto fontSizeStr = config["font"]["size"].value<std::string>())
+    {
+        if (*fontSizeStr == "small")
+        {
+            settings.fontSize = UI::FontSize::Small;
+        }
+        else if (*fontSizeStr == "medium")
+        {
+            settings.fontSize = UI::FontSize::Medium;
+        }
+        else if (*fontSizeStr == "large")
+        {
+            settings.fontSize = UI::FontSize::Large;
+        }
+        else if (*fontSizeStr == "extra-large")
+        {
+            settings.fontSize = UI::FontSize::ExtraLarge;
+        }
+        else if (*fontSizeStr == "huge")
+        {
+            settings.fontSize = UI::FontSize::Huge;
+        }
+        else if (*fontSizeStr == "even-huger")
+        {
+            settings.fontSize = UI::FontSize::EvenHuger;
+        }
+    }
+
+    // Note: panels visibility is no longer used (removed in favor of tabbed UI)
+
+    // Window state
+    UserConfigHelpers::loadAndNarrowIntWithClamp(
+        config, "window", "width", settings.windowWidth, 800, Core::WINDOW_MIN_DIMENSION, Core::WINDOW_MAX_DIMENSION);
+    UserConfigHelpers::loadAndNarrowIntWithClamp(
+        config, "window", "height", settings.windowHeight, 600, Core::WINDOW_MIN_DIMENSION, Core::WINDOW_MAX_DIMENSION);
+    if (auto val = config["window"]["x"].value<std::int64_t>())
+    {
+        // Use default x position of 100 if narrowOr fails
+        const int x = Domain::Numeric::narrowOr<int>(*val, 100);
+        if (isSaneWindowPositionComponent(x))
+        {
+            settings.windowPosX = x;
+        }
+        else
+        {
+            settings.windowPosX.reset();
+        }
+    }
+    if (auto val = config["window"]["y"].value<std::int64_t>())
+    {
+        // Use default y position of 100 if narrowOr fails
+        const int y = Domain::Numeric::narrowOr<int>(*val, 100);
+        if (isSaneWindowPositionComponent(y))
+        {
+            settings.windowPosY = y;
+        }
+        else
+        {
+            settings.windowPosY.reset();
+        }
+    }
+    if (auto val = config["window"]["maximized"].value<bool>())
+    {
+        settings.windowMaximized = *val;
+    }
+    if (auto val = config["window"]["force_native_decorations_on_wayland"].value<bool>())
+    {
+        settings.forceNativeWindowDecorationsOnWayland = *val;
+    }
+
+    // Privilege notice: suppress startup dialog if user dismissed it permanently
+    if (auto val = config["ui"]["show_privilege_notice"].value<bool>())
+    {
+        settings.showPrivilegeNotice = *val;
+    }
+
+    // Process table column layout (widths, order, sort). Length-capped here; its content is
+    // filtered where it is used, before ImGui parses it.
+    if (auto layout = config["process_table"]["layout"].value<std::string>())
+    {
+        if (layout->size() <= ProcessTableSettings::MAX_STORED_BYTES)
+        {
+            settings.processTableLayout = std::move(*layout);
+        }
+    }
+
+    // Process panel column visibility
+    if (const auto* cols = config["process_columns"].as_table())
+    {
+        for (std::size_t i = 0; i < std::to_underlying(ProcessColumn::Count); ++i)
+        {
+            const auto col = processColumnFromIndex(i);
+            const auto info = getColumnInfo(col);
+            if (const auto* node = cols->get(info.configKey); node != nullptr)
+            {
+                if (auto val = node->value<bool>())
+                {
+                    settings.processColumns.setVisible(col, *val);
+                }
+            }
+        }
+    }
+
+    // Note: imgui_layout is no longer used (removed in favor of tabbed UI)
+}
+
+/// The TOML document for `settings`: every key TaskSmack owns.
+[[nodiscard]] toml::table buildTable(const UserSettings& settings)
+{
+    // Convert font size to string
+    std::string fontSizeStr;
+    switch (settings.fontSize)
+    {
+    case UI::FontSize::Small:
+        fontSizeStr = "small";
+        break;
+    case UI::FontSize::Medium:
+        fontSizeStr = "medium";
+        break;
+    case UI::FontSize::Large:
+        fontSizeStr = "large";
+        break;
+    case UI::FontSize::ExtraLarge:
+        fontSizeStr = "extra-large";
+        break;
+    case UI::FontSize::Huge:
+        fontSizeStr = "huge";
+        break;
+    case UI::FontSize::EvenHuger:
+        fontSizeStr = "even-huger";
+        break;
+    default:
+        fontSizeStr = "medium";
+        break;
+    }
+
+    // Build process columns table
+    auto processColumnsTable = toml::table{};
+    for (std::size_t i = 0; i < std::to_underlying(ProcessColumn::Count); ++i)
+    {
+        const auto col = processColumnFromIndex(i);
+        const auto info = getColumnInfo(col);
+        processColumnsTable.insert(std::string(info.configKey), settings.processColumns.isVisible(col));
+    }
+
+    // Build TOML document
+    auto windowTable = toml::table{
+        {"width", settings.windowWidth},
+        {"height", settings.windowHeight},
+        {"maximized", settings.windowMaximized},
+        {"force_native_decorations_on_wayland", settings.forceNativeWindowDecorationsOnWayland},
+    };
+
+    if (settings.windowPosX.has_value())
+    {
+        windowTable.insert("x", *settings.windowPosX);
+    }
+    if (settings.windowPosY.has_value())
+    {
+        windowTable.insert("y", *settings.windowPosY);
+    }
+
+    return toml::table{
+        {"sampling",
+         toml::table{
+             {"interval_ms", Domain::Sampling::clampRefreshInterval(settings.refreshIntervalMs)},
+             {"history_max_seconds", Domain::Sampling::clampHistorySeconds(settings.maxHistorySeconds)},
+             {"socket_stats_cache_ttl_ms", Domain::Sampling::clampSocketStatsCacheTtlMs(settings.socketStatsCacheTtlMs)},
+         }},
+        {"metrics",
+         toml::table{
+             {"min_time_for_rate_seconds", Domain::Sampling::clampMinTimeForRateSeconds(settings.minTimeForRateSeconds)},
+             {"max_sane_rate_bps", Domain::Sampling::clampMaxSaneRateBps(settings.maxSaneRateBps)},
+             {"integrated_gpu_vram_threshold_mb", settings.integratedGpuVramThresholdBytes / (1024LL * 1024LL)},
+         }},
+        {"ui",
+         toml::table{
+             {"chart_smooth_factor", Domain::Sampling::clampChartSmoothFactor(settings.chartSmoothFactor)},
+             {"chart_tau_ms_min", Domain::Sampling::clampChartTauMsMin(settings.chartTauMsMin)},
+             {"chart_tau_ms_max", Domain::Sampling::clampChartTauMsMax(settings.chartTauMsMax)},
+             {"progress_color_low_threshold", Domain::Sampling::clampProgressColorLowThreshold(settings.progressColorLowThreshold)},
+             {"progress_color_high_threshold", Domain::Sampling::clampProgressColorHighThreshold(settings.progressColorHighThreshold)},
+             {"show_privilege_notice", settings.showPrivilegeNotice},
+             {"chart_anti_aliasing", settings.chartAntiAliasing},
+         }},
+        {"theme", toml::table{{"id", settings.themeId}}},
+        {"font", toml::table{{"size", fontSizeStr}}},
+        {"window", windowTable},
+        {"process_columns", processColumnsTable},
+        {"process_table", toml::table{{"layout", settings.processTableLayout}}},
+    };
+}
+
+/// Lays `owned` (TaskSmack's keys) over `document` (the file as it is), so tables and keys
+/// TaskSmack doesn't own survive a save (#1122).
+void overlay(toml::table& document, const toml::table& owned)
+{
+    for (const auto& [key, value] : owned)
+    {
+        auto* existing = document.get_as<toml::table>(key);
+        if (const auto* ownedTable = value.as_table(); ownedTable != nullptr && existing != nullptr)
+        {
+            for (const auto& [subKey, subValue] : *ownedTable)
+            {
+                existing->insert_or_assign(subKey, subValue);
+            }
+        }
+        else
+        {
+            document.insert_or_assign(key, value);
+        }
+    }
+}
+
+[[nodiscard]] std::optional<std::filesystem::file_time_type> lastWriteTime(const std::filesystem::path& path)
+{
+    std::error_code ec;
+    const auto time = std::filesystem::last_write_time(path, ec);
+    if (ec)
+    {
+        return std::nullopt;
+    }
+    return time;
+}
+
 } // namespace
 
 auto UserConfig::get() -> UserConfig&
@@ -173,237 +502,49 @@ void UserConfig::load()
     }
     m_IsLoaded = true;
 
-    if (!std::filesystem::exists(m_ConfigPath))
+    // error_code overloads: an unreadable config directory falls back to defaults instead of
+    // throwing out of startup (#1124).
+    std::error_code ec;
+    if (!std::filesystem::exists(m_ConfigPath, ec))
     {
-        spdlog::info("No config file found at {}, using defaults", m_ConfigPath.string());
+        if (ec)
+        {
+            spdlog::warn("Can't check config file {}: {}; using defaults", m_ConfigPath.string(), ec.message());
+        }
+        else
+        {
+            spdlog::info("No config file found at {}, using defaults", m_ConfigPath.string());
+        }
+        markSynced();
         return;
     }
 
     try
     {
-        auto config = toml::parse_file(m_ConfigPath.string());
-
-        // Sampling / refresh interval
-        UserConfigHelpers::loadAndNarrowInt64(config,
-                                              "sampling",
-                                              "interval_ms",
-                                              m_Settings.refreshIntervalMs,
-                                              Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS,
-                                              [](auto v) { return Domain::Sampling::clampRefreshInterval(v); });
-
-        UserConfigHelpers::loadAndNarrowInt64(config,
-                                              "sampling",
-                                              "history_max_seconds",
-                                              m_Settings.maxHistorySeconds,
-                                              Domain::Sampling::HISTORY_SECONDS_DEFAULT,
-                                              [](auto v) { return Domain::Sampling::clampHistorySeconds(v); });
-        // When the key is missing we intentionally keep the default (300s) set in UserSettings.
-
-        // Socket stats cache TTL (Linux-only, controls how long per-process network stats are cached)
-        UserConfigHelpers::loadAndNarrowInt64(config,
-                                              "sampling",
-                                              "socket_stats_cache_ttl_ms",
-                                              m_Settings.socketStatsCacheTtlMs,
-                                              Domain::Sampling::SOCKET_STATS_CACHE_TTL_MS_DEFAULT,
-                                              [](auto v) { return Domain::Sampling::clampSocketStatsCacheTtlMs(v); });
-
-        // Metrics calculation parameters
-        UserConfigHelpers::loadAndClamp(config,
-                                        "metrics",
-                                        "min_time_for_rate_seconds",
-                                        m_Settings.minTimeForRateSeconds,
-                                        [](auto v) { return Domain::Sampling::clampMinTimeForRateSeconds(v); });
-
-        UserConfigHelpers::loadAndClamp(config,
-                                        "metrics",
-                                        "max_sane_rate_bps",
-                                        m_Settings.maxSaneRateBps,
-                                        [](auto v) { return Domain::Sampling::clampMaxSaneRateBps(v); });
-
-        if (auto val = config["metrics"]["integrated_gpu_vram_threshold_mb"].value<std::int64_t>())
-        {
-            // Check for overflow before MB-to-bytes conversion
-            constexpr int64_t MAX_MB_BEFORE_OVERFLOW = std::numeric_limits<int64_t>::max() / (1024LL * 1024LL);
-            const int64_t mb = std::clamp(*val, static_cast<int64_t>(0), MAX_MB_BEFORE_OVERFLOW);
-            const int64_t bytes = mb * 1024LL * 1024LL;
-            m_Settings.integratedGpuVramThresholdBytes = Domain::Sampling::clampIntegratedGpuVramThresholdBytes(bytes);
-        }
-
-        // UI behavior parameters
-        UserConfigHelpers::loadAndClamp(config,
-                                        "ui",
-                                        "chart_smooth_factor",
-                                        m_Settings.chartSmoothFactor,
-                                        [](auto v) { return Domain::Sampling::clampChartSmoothFactor(v); });
-
-        UserConfigHelpers::loadAndNarrowInt64(config,
-                                              "ui",
-                                              "chart_tau_ms_min",
-                                              m_Settings.chartTauMsMin,
-                                              Domain::Sampling::CHART_TAU_MS_MIN_DEFAULT,
-                                              [](auto v) { return Domain::Sampling::clampChartTauMsMin(v); });
-
-        UserConfigHelpers::loadAndNarrowInt64(config,
-                                              "ui",
-                                              "chart_tau_ms_max",
-                                              m_Settings.chartTauMsMax,
-                                              Domain::Sampling::CHART_TAU_MS_MAX_DEFAULT,
-                                              [](auto v) { return Domain::Sampling::clampChartTauMsMax(v); });
-
-        if (auto val = config["ui"]["chart_anti_aliasing"].value<bool>())
-        {
-            m_Settings.chartAntiAliasing = *val;
-        }
-
-        UserConfigHelpers::loadAndClamp(config,
-                                        "ui",
-                                        "progress_color_low_threshold",
-                                        m_Settings.progressColorLowThreshold,
-                                        [](auto v) { return Domain::Sampling::clampProgressColorLowThreshold(v); });
-
-        UserConfigHelpers::loadAndClamp(config,
-                                        "ui",
-                                        "progress_color_high_threshold",
-                                        m_Settings.progressColorHighThreshold,
-                                        [](auto v) { return Domain::Sampling::clampProgressColorHighThreshold(v); });
-
-        // Validate that low <= high threshold
-        if (m_Settings.progressColorLowThreshold > m_Settings.progressColorHighThreshold)
-        {
-            spdlog::warn("User config: progress_color_low_threshold ({}) > progress_color_high_threshold ({}); "
-                         "swapping to maintain low <= high.",
-                         m_Settings.progressColorLowThreshold,
-                         m_Settings.progressColorHighThreshold);
-            std::swap(m_Settings.progressColorLowThreshold, m_Settings.progressColorHighThreshold);
-        }
-
-        // Theme
-        if (auto theme = config["theme"]["id"].value<std::string>())
-        {
-            m_Settings.themeId = *theme;
-        }
-
-        // Font size
-        if (auto fontSizeStr = config["font"]["size"].value<std::string>())
-        {
-            if (*fontSizeStr == "small")
-            {
-                m_Settings.fontSize = UI::FontSize::Small;
-            }
-            else if (*fontSizeStr == "medium")
-            {
-                m_Settings.fontSize = UI::FontSize::Medium;
-            }
-            else if (*fontSizeStr == "large")
-            {
-                m_Settings.fontSize = UI::FontSize::Large;
-            }
-            else if (*fontSizeStr == "extra-large")
-            {
-                m_Settings.fontSize = UI::FontSize::ExtraLarge;
-            }
-            else if (*fontSizeStr == "huge")
-            {
-                m_Settings.fontSize = UI::FontSize::Huge;
-            }
-            else if (*fontSizeStr == "even-huger")
-            {
-                m_Settings.fontSize = UI::FontSize::EvenHuger;
-            }
-        }
-
-        // Note: panels visibility is no longer used (removed in favor of tabbed UI)
-
-        // Window state
-        UserConfigHelpers::loadAndNarrowIntWithClamp(
-            config, "window", "width", m_Settings.windowWidth, 800, Core::WINDOW_MIN_DIMENSION, Core::WINDOW_MAX_DIMENSION);
-        UserConfigHelpers::loadAndNarrowIntWithClamp(
-            config, "window", "height", m_Settings.windowHeight, 600, Core::WINDOW_MIN_DIMENSION, Core::WINDOW_MAX_DIMENSION);
-        if (auto val = config["window"]["x"].value<std::int64_t>())
-        {
-            // Use default x position of 100 if narrowOr fails
-            const int x = Domain::Numeric::narrowOr<int>(*val, 100);
-            if (isSaneWindowPositionComponent(x))
-            {
-                m_Settings.windowPosX = x;
-            }
-            else
-            {
-                m_Settings.windowPosX.reset();
-            }
-        }
-        if (auto val = config["window"]["y"].value<std::int64_t>())
-        {
-            // Use default y position of 100 if narrowOr fails
-            const int y = Domain::Numeric::narrowOr<int>(*val, 100);
-            if (isSaneWindowPositionComponent(y))
-            {
-                m_Settings.windowPosY = y;
-            }
-            else
-            {
-                m_Settings.windowPosY.reset();
-            }
-        }
-        if (auto val = config["window"]["maximized"].value<bool>())
-        {
-            m_Settings.windowMaximized = *val;
-        }
-        if (auto val = config["window"]["force_native_decorations_on_wayland"].value<bool>())
-        {
-            m_Settings.forceNativeWindowDecorationsOnWayland = *val;
-        }
-
-        // Privilege notice: suppress startup dialog if user dismissed it permanently
-        if (auto val = config["ui"]["show_privilege_notice"].value<bool>())
-        {
-            m_Settings.showPrivilegeNotice = *val;
-        }
-
-        // Process table column layout (widths, order, sort). Length-capped here; its content is
-        // filtered where it is used, before ImGui parses it.
-        if (auto layout = config["process_table"]["layout"].value<std::string>())
-        {
-            if (layout->size() <= ProcessTableSettings::MAX_STORED_BYTES)
-            {
-                m_Settings.processTableLayout = std::move(*layout);
-            }
-        }
-
-        // Process panel column visibility
-        if (auto* cols = config["process_columns"].as_table())
-        {
-            for (std::size_t i = 0; i < std::to_underlying(ProcessColumn::Count); ++i)
-            {
-                const auto col = processColumnFromIndex(i);
-                const auto info = getColumnInfo(col);
-                if (auto* node = cols->get(info.configKey); node != nullptr)
-                {
-                    if (auto val = node->value<bool>())
-                    {
-                        m_Settings.processColumns.setVisible(col, *val);
-                    }
-                }
-            }
-        }
-
-        // Note: imgui_layout is no longer used (removed in favor of tabbed UI)
-
+        const auto config = toml::parse_file(m_ConfigPath.string());
+        readSettings(config, m_Settings);
         spdlog::info("Loaded config from {}", m_ConfigPath.string());
     }
     catch (const toml::parse_error& err)
     {
         spdlog::error("Failed to parse config file: {}", err.what());
     }
+    markSynced();
+}
+
+void UserConfig::markSynced()
+{
+    m_Baseline = m_Settings;
+    m_SyncedWriteTime = lastWriteTime(m_ConfigPath);
 }
 
 void UserConfig::save()
 {
     // Ensure config directory exists
     const std::filesystem::path configDir = m_ConfigPath.parent_path();
-    if (!std::filesystem::exists(configDir))
+    std::error_code ec;
+    if (!std::filesystem::exists(configDir, ec))
     {
-        std::error_code ec;
         std::filesystem::create_directories(configDir, ec);
         if (ec)
         {
@@ -412,125 +553,86 @@ void UserConfig::save()
         }
     }
 
-    // Convert font size to string
-    std::string fontSizeStr;
-    switch (m_Settings.fontSize)
+    // Start from the file as it is, so keys and tables TaskSmack doesn't own are kept (#1122).
+    toml::table document;
+    const auto writeTime = lastWriteTime(m_ConfigPath);
+    bool parsed = false;
+    if (writeTime.has_value())
     {
-    case UI::FontSize::Small:
-        fontSizeStr = "small";
-        break;
-    case UI::FontSize::Medium:
-        fontSizeStr = "medium";
-        break;
-    case UI::FontSize::Large:
-        fontSizeStr = "large";
-        break;
-    case UI::FontSize::ExtraLarge:
-        fontSizeStr = "extra-large";
-        break;
-    case UI::FontSize::Huge:
-        fontSizeStr = "huge";
-        break;
-    case UI::FontSize::EvenHuger:
-        fontSizeStr = "even-huger";
-        break;
-    default:
-        fontSizeStr = "medium";
-        break;
+        try
+        {
+            document = toml::parse_file(m_ConfigPath.string());
+            parsed = true;
+        }
+        catch (const toml::parse_error& err)
+        {
+            spdlog::warn("Rewriting unparseable config file {}: {}", m_ConfigPath.string(), err.what());
+        }
     }
 
-    // Build process columns table
-    auto processColumnsTable = toml::table{};
-    for (std::size_t i = 0; i < std::to_underlying(ProcessColumn::Count); ++i)
+    // Edited outside TaskSmack since it was last read or written (e.g. via Settings' "Edit Config
+    // File")? Keep those edits for every setting TaskSmack hasn't itself changed since then.
+    if (parsed && writeTime != m_SyncedWriteTime)
     {
-        const auto col = processColumnFromIndex(i);
-        const auto info = getColumnInfo(col);
-        processColumnsTable.insert(std::string(info.configKey), m_Settings.processColumns.isVisible(col));
+        UserSettings external = m_Baseline;
+        readSettings(document, external);
+        m_Settings = mergeSettings(external, m_Baseline, m_Settings);
+        spdlog::info("Config file {} was edited outside TaskSmack; keeping those edits", m_ConfigPath.string());
     }
 
-    // Build TOML document
-    auto windowTable = toml::table{
-        {"width", m_Settings.windowWidth},
-        {"height", m_Settings.windowHeight},
-        {"maximized", m_Settings.windowMaximized},
-        {"force_native_decorations_on_wayland", m_Settings.forceNativeWindowDecorationsOnWayland},
-    };
+    overlay(document, buildTable(m_Settings));
 
-    if (m_Settings.windowPosX.has_value())
+    // Write a temporary file beside it and rename it over the original, so a crash, power loss or
+    // full disk mid-write can't leave an empty or truncated config (#1122).
+    std::filesystem::path tempPath = m_ConfigPath;
+    tempPath += ".tmp";
     {
-        windowTable.insert("x", *m_Settings.windowPosX);
-    }
-    if (m_Settings.windowPosY.has_value())
-    {
-        windowTable.insert("y", *m_Settings.windowPosY);
-    }
+        std::ofstream file(tempPath, std::ios::trunc);
+        if (!file)
+        {
+            spdlog::error("Failed to open {} for writing", tempPath.string());
+            return;
+        }
 
-    auto config = toml::table{
-        {"sampling",
-         toml::table{
-             {"interval_ms", Domain::Sampling::clampRefreshInterval(m_Settings.refreshIntervalMs)},
-             {"history_max_seconds", Domain::Sampling::clampHistorySeconds(m_Settings.maxHistorySeconds)},
-             {"socket_stats_cache_ttl_ms", Domain::Sampling::clampSocketStatsCacheTtlMs(m_Settings.socketStatsCacheTtlMs)},
-         }},
-        {"metrics",
-         toml::table{
-             {"min_time_for_rate_seconds", Domain::Sampling::clampMinTimeForRateSeconds(m_Settings.minTimeForRateSeconds)},
-             {"max_sane_rate_bps", Domain::Sampling::clampMaxSaneRateBps(m_Settings.maxSaneRateBps)},
-             {"integrated_gpu_vram_threshold_mb", m_Settings.integratedGpuVramThresholdBytes / (1024LL * 1024LL)},
-         }},
-        {"ui",
-         toml::table{
-             {"chart_smooth_factor", Domain::Sampling::clampChartSmoothFactor(m_Settings.chartSmoothFactor)},
-             {"chart_tau_ms_min", Domain::Sampling::clampChartTauMsMin(m_Settings.chartTauMsMin)},
-             {"chart_tau_ms_max", Domain::Sampling::clampChartTauMsMax(m_Settings.chartTauMsMax)},
-             {"progress_color_low_threshold", Domain::Sampling::clampProgressColorLowThreshold(m_Settings.progressColorLowThreshold)},
-             {"progress_color_high_threshold", Domain::Sampling::clampProgressColorHighThreshold(m_Settings.progressColorHighThreshold)},
-             {"show_privilege_notice", m_Settings.showPrivilegeNotice},
-             {"chart_anti_aliasing", m_Settings.chartAntiAliasing},
-         }},
-        {"theme", toml::table{{"id", m_Settings.themeId}}},
-        {"font", toml::table{{"size", fontSizeStr}}},
-        {"window", windowTable},
-        {"process_columns", processColumnsTable},
-        {"process_table", toml::table{{"layout", m_Settings.processTableLayout}}},
-    };
-
-    // Write to file
-    std::ofstream file(m_ConfigPath);
-    if (!file)
-    {
-        spdlog::error("Failed to open config file for writing: {}", m_ConfigPath.string());
-        return;
+        file << "# TaskSmack user configuration\n";
+        file << "# Written by TaskSmack. Keys it doesn't use are kept, but comments in this file are not.\n";
+        file << "# Edits made while TaskSmack is running are kept unless TaskSmack changes the same setting.\n";
+        file << "# Notes:\n";
+        file << "#   [sampling] interval_ms: refresh cadence (100-5000ms); affects all samplers\n";
+        file << "#   [sampling] history_max_seconds: timeline history window (10-1800s)\n";
+        file << "#   [sampling] socket_stats_cache_ttl_ms: Linux only; per-process network stat cache TTL (0-5000ms)\n";
+        file << "#   [metrics] min_time_for_rate_seconds: delay before computing network rates (0.0-5.0s); avoids early spikes\n";
+        file << "#   [metrics] max_sane_rate_bps: sanity check for network/IO rates (bytes/sec); clamps outliers\n";
+        file << "#   [metrics] integrated_gpu_vram_threshold_mb: GPU classification threshold (16-512MB)\n";
+        file << "#   [ui] chart_smooth_factor: exponential smoothing for charts (0.0-0.95); 0=no smoothing, 0.95=max smoothing\n";
+        file << "#   [ui] chart_tau_ms_min/max: adaptive smoothing time constant range (ms); affects chart responsiveness\n";
+        file << "#   [ui] progress_color_low/high_threshold: color change percentages for progress bars\n";
+        file << "#   [ui] show_privilege_notice: show startup dialog when running without elevated privileges (true/false)\n";
+        file << "#   [ui] chart_anti_aliasing: smooth chart line/fill edges (true/false); disable for lower CPU/GPU cost "
+                "on integrated GPUs\n";
+        file << "#   [process_columns]: toggle columns on/off; true shows the column\n";
+        file << "#   [process_table] layout: saved column widths, order and sort (written by TaskSmack; delete it to reset)\n";
+        file << "#   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.\n\n";
+        file << document;
+        file.close();
+        if (!file)
+        {
+            spdlog::error("Failed to write {}: stream error after write", tempPath.string());
+            std::filesystem::remove(tempPath, ec);
+            return;
+        }
     }
 
-    file << "# TaskSmack user configuration\n";
-    file << "# This file is auto-generated. Manual edits are preserved.\n";
-    file << "# Notes:\n";
-    file << "#   [sampling] interval_ms: refresh cadence (100-5000ms); affects all samplers\n";
-    file << "#   [sampling] history_max_seconds: timeline history window (10-1800s)\n";
-    file << "#   [sampling] socket_stats_cache_ttl_ms: Linux only; per-process network stat cache TTL (0-5000ms)\n";
-    file << "#   [metrics] min_time_for_rate_seconds: delay before computing network rates (0.0-5.0s); avoids early spikes\n";
-    file << "#   [metrics] max_sane_rate_bps: sanity check for network/IO rates (bytes/sec); clamps outliers\n";
-    file << "#   [metrics] integrated_gpu_vram_threshold_mb: GPU classification threshold (16-512MB)\n";
-    file << "#   [ui] chart_smooth_factor: exponential smoothing for charts (0.0-0.95); 0=no smoothing, 0.95=max smoothing\n";
-    file << "#   [ui] chart_tau_ms_min/max: adaptive smoothing time constant range (ms); affects chart responsiveness\n";
-    file << "#   [ui] progress_color_low/high_threshold: color change percentages for progress bars\n";
-    file << "#   [ui] show_privilege_notice: show startup dialog when running without elevated privileges (true/false)\n";
-    file << "#   [ui] chart_anti_aliasing: smooth chart line/fill edges (true/false); disable for lower CPU/GPU cost "
-            "on integrated GPUs\n";
-    file << "#   [process_columns]: toggle columns on/off; true shows the column\n";
-    file << "#   [process_table] layout: saved column widths, order and sort (written by TaskSmack; delete it to reset)\n";
-    file << "#   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.\n\n";
-    file << config;
-    file.close();
-
-    if (!file)
+    std::filesystem::rename(tempPath, m_ConfigPath, ec);
+    if (ec)
     {
-        spdlog::error("Failed to write config to {}: stream error after write", m_ConfigPath.string());
+        spdlog::error("Failed to replace {} with the new config: {}", m_ConfigPath.string(), ec.message());
+        std::filesystem::remove(tempPath, ec);
         return;
     }
 
     spdlog::info("Saved config to {}", m_ConfigPath.string());
+    markSynced();
 
     // Reset so that the next load() call re-reads from disk (e.g., for test round-trips
     // or any future live-reload use case).

@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -14,6 +15,10 @@
 #include <system_error>
 #include <utility>
 #include <vector>
+
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 namespace App
 {
@@ -1084,6 +1089,112 @@ TEST_F(UserConfigSaveLoadFixture, MetricsMaxSaneRateRoundTrip)
     config.load();
     EXPECT_DOUBLE_EQ(config.settings().maxSaneRateBps, testRate);
 }
+
+// ========== Robust config writes (#1122, #1124) ==========
+
+[[nodiscard]] std::string readFile(const std::filesystem::path& path)
+{
+    std::ifstream in(path);
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+/// Moves the file's modification time on, as an editor saving it would, so the change is seen
+/// whatever the filesystem's timestamp resolution.
+void touchLater(const std::filesystem::path& path)
+{
+    std::filesystem::last_write_time(path, std::filesystem::last_write_time(path) + std::chrono::seconds(2));
+}
+
+TEST(UserConfigMergeTest, ExternalEditsAreKeptExceptForSettingsTaskSmackChanged)
+{
+    UserSettings baseline;
+    baseline.refreshIntervalMs = 1000;
+    baseline.themeId = "arctic-fire";
+
+    UserSettings external = baseline; // the file, edited outside TaskSmack
+    external.refreshIntervalMs = 750;
+    external.themeId = "dracula";
+
+    UserSettings mine = baseline; // TaskSmack's own change since the baseline
+    mine.themeId = "mocha";
+
+    const UserSettings merged = mergeSettings(external, baseline, mine);
+    EXPECT_EQ(merged.refreshIntervalMs, 750); // only edited outside: the edit stands
+    EXPECT_EQ(merged.themeId, "mocha");       // changed by TaskSmack: TaskSmack's value wins
+}
+
+TEST_F(UserConfigSaveLoadFixture, SaveKeepsKeysTaskSmackDoesNotOwn)
+{
+    const auto path = UserConfig::get().configPath();
+    {
+        std::ofstream out(path);
+        out << "[sampling]\ninterval_ms = 500\nfuture_option = 7\n\n[plugin]\nenabled = true\n";
+    }
+    auto& config = UserConfig::get();
+    config.load();
+    config.save();
+
+    const std::string written = readFile(path);
+    EXPECT_NE(written.find("future_option = 7"), std::string::npos);
+    EXPECT_NE(written.find("[plugin]"), std::string::npos);
+    EXPECT_NE(written.find("interval_ms = 500"), std::string::npos);
+}
+
+TEST_F(UserConfigSaveLoadFixture, EditsMadeWhileRunningSurviveTheNextSave)
+{
+    const auto path = UserConfig::get().configPath();
+    auto& config = UserConfig::get();
+    config.settings().refreshIntervalMs = 1000;
+    config.settings().themeId = "arctic-fire";
+    config.save();
+    config.load();
+
+    // Edited in a text editor while TaskSmack runs (Settings' "Edit Config File")...
+    {
+        std::ofstream out(path);
+        out << "[sampling]\ninterval_ms = 750\n\n[theme]\nid = \"arctic-fire\"\n";
+    }
+    touchLater(path);
+
+    // ...then TaskSmack changes a different setting and saves (on Apply, or at exit).
+    config.settings().themeId = "dracula";
+    config.save();
+
+    config.settings() = UserSettings{};
+    config.load();
+    EXPECT_EQ(config.settings().refreshIntervalMs, 750);
+    EXPECT_EQ(config.settings().themeId, "dracula");
+}
+
+TEST_F(UserConfigSaveLoadFixture, SaveLeavesNoTemporaryFileBehind)
+{
+    auto& config = UserConfig::get();
+    config.save();
+    EXPECT_TRUE(std::filesystem::exists(config.configPath()));
+    std::filesystem::path temp = config.configPath();
+    temp += ".tmp";
+    EXPECT_FALSE(std::filesystem::exists(temp));
+}
+
+#ifndef _WIN32
+TEST_F(UserConfigSaveLoadFixture, UnreadableConfigDirectoryFallsBackToDefaults)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root can read a mode-000 directory";
+    }
+    const auto dir = m_TempDir / "locked";
+    std::filesystem::create_directory(dir);
+    UserConfig::get().resetConfigPathForTesting(dir / "inner" / "config.toml");
+    std::filesystem::permissions(dir, std::filesystem::perms::none);
+
+    EXPECT_NO_THROW(UserConfig::get().load());
+    EXPECT_EQ(UserConfig::get().settings().refreshIntervalMs, UserSettings{}.refreshIntervalMs);
+    EXPECT_NO_THROW(UserConfig::get().save());
+
+    std::filesystem::permissions(dir, std::filesystem::perms::owner_all); // let TearDown remove it
+}
+#endif
 
 } // namespace
 } // namespace App
