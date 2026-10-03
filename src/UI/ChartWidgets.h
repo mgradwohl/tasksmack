@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <format>
 #include <functional>
+#include <initializer_list>
 #include <iterator>
 #include <limits>
 #include <optional>
@@ -398,6 +399,141 @@ template<typename TX, typename TY>
         bucketStart = next;
     }
     return written;
+}
+
+/// Most series reduceAlignedSeries() can select points by (see there).
+inline constexpr std::size_t MAX_ALIGNED_KEY_SERIES = 4;
+
+/// Reduce series that share one x axis to at most `maxOut` common points, in place: the stacked
+/// bands and lines a chart draws with ImPlot directly, which plotLineWithFill() cannot reduce
+/// because each series would keep different samples and the bands would no longer line up (#1022).
+///
+/// The same bucketing as reduceSeriesMinMax(), anchored at `xOffset`: each bucket keeps, for every
+/// series in `keyed`, its lowest and highest sample and its first gap (NaN), plus the series' first
+/// and last samples. The kept indices are then applied to `x`, every `keyed` series and every
+/// `carried` series (drawn alongside but not used to choose points), so all stay aligned and each
+/// keyed series keeps its peaks. A keyed series with two or more gap runs in a bucket keeps only its
+/// gap there, as in reduceSeriesMinMax(). With an unusable span the series are stride-reduced.
+/// Series no longer than `maxOut` are left unchanged. Every series must be as long as `x`.
+inline void reduceAlignedSeries(std::vector<double>& x,
+                                std::initializer_list<std::vector<double>*> keyed,
+                                std::initializer_list<std::vector<double>*> carried,
+                                int maxOut,
+                                double xOffset)
+{
+    const int count = UI::Format::checkedCount(x.size());
+    const auto keyCount = static_cast<int>(keyed.size());
+    if (count <= maxOut || maxOut < 2 || keyCount == 0 || keyed.size() > MAX_ALIGNED_KEY_SERIES)
+    {
+        return;
+    }
+
+    // Keeps source index `pick` as output point `written`. Picks ascend and each is at or after its
+    // output slot, so compacting in place never overwrites a sample still to be read.
+    int written = 0;
+    const auto keep = [&](int pick)
+    {
+        x[static_cast<std::size_t>(written)] = x[static_cast<std::size_t>(pick)];
+        for (auto* series : keyed)
+        {
+            (*series)[static_cast<std::size_t>(written)] = (*series)[static_cast<std::size_t>(pick)];
+        }
+        for (auto* series : carried)
+        {
+            (*series)[static_cast<std::size_t>(written)] = (*series)[static_cast<std::size_t>(pick)];
+        }
+        ++written;
+    };
+
+    // At most three points per keyed series per bucket plus the two end samples, over at most
+    // bucketCount + 1 buckets (see reduceSeriesMinMax()).
+    const int bucketCount = ((maxOut - 2) / (3 * keyCount)) - 1;
+    const double width = (bucketCount > 0) ? minMaxBucketWidth(x.back() - x.front(), bucketCount) : 0.0;
+    if (width <= 0.0)
+    {
+        for (int k = 0; k < maxOut; ++k)
+        {
+            keep(static_cast<int>((static_cast<std::size_t>(k) * static_cast<std::size_t>(count - 1)) /
+                                  static_cast<std::size_t>(maxOut - 1)));
+        }
+    }
+    else
+    {
+        const auto bucketOf = [&](int index)
+        {
+            return std::floor((x[static_cast<std::size_t>(index)] + xOffset) / width);
+        };
+        int bucketStart = 0;
+        while (bucketStart < count)
+        {
+            const double bucket = bucketOf(bucketStart);
+            int next = bucketStart;
+            while (next < count && bucketOf(next) == bucket)
+            {
+                ++next;
+            }
+
+            std::array<int, (3 * MAX_ALIGNED_KEY_SERIES) + 2> picks{};
+            picks.fill(-1);
+            std::size_t pickCount = 0;
+            picks[pickCount++] = (bucketStart == 0) ? 0 : -1;
+            picks[pickCount++] = (next == count) ? count - 1 : -1;
+            for (const auto* series : keyed)
+            {
+                int minIdx = -1;
+                int maxIdx = -1;
+                int gapIdx = -1;
+                int gapRuns = 0;
+                bool inGap = false;
+                for (int i = bucketStart; i < next; ++i)
+                {
+                    const double value = (*series)[static_cast<std::size_t>(i)];
+                    if (!std::isfinite(value))
+                    {
+                        gapIdx = (gapIdx < 0) ? i : gapIdx;
+                        gapRuns += inGap ? 0 : 1;
+                        inGap = true;
+                        continue;
+                    }
+                    inGap = false;
+                    if (minIdx < 0 || value < (*series)[static_cast<std::size_t>(minIdx)])
+                    {
+                        minIdx = i;
+                    }
+                    if (maxIdx < 0 || value > (*series)[static_cast<std::size_t>(maxIdx)])
+                    {
+                        maxIdx = i;
+                    }
+                }
+                const bool collapse = gapRuns > 1;
+                picks[pickCount++] = collapse ? -1 : minIdx;
+                picks[pickCount++] = collapse ? -1 : maxIdx;
+                picks[pickCount++] = gapIdx;
+            }
+            std::ranges::sort(picks);
+            int previous = -1;
+            for (const int pick : picks)
+            {
+                if (pick < 0 || pick == previous || written >= maxOut)
+                {
+                    continue;
+                }
+                keep(pick);
+                previous = pick;
+            }
+            bucketStart = next;
+        }
+    }
+
+    x.resize(static_cast<std::size_t>(written));
+    for (auto* series : keyed)
+    {
+        series->resize(static_cast<std::size_t>(written));
+    }
+    for (auto* series : carried)
+    {
+        series->resize(static_cast<std::size_t>(written));
+    }
 }
 
 /// "Now" for history charts, in seconds since the steady_clock epoch, read once per ImGui frame.

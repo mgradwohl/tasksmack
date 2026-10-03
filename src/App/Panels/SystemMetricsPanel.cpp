@@ -663,6 +663,11 @@ void SystemMetricsPanel::renderOverview()
                 // The bands reach "now" like every plotLineWithFill series: the last sample held to
                 // x = 0 (UI::Widgets::holdLastValueToNow, #1016).
                 m_CpuStackX.assign(breakdownTimeData.begin(), breakdownTimeData.end());
+                // The bands are drawn with ImPlot directly, so they are capped here like every
+                // plotLineWithFill series (#1022), reduced together so they still line up.
+                UI::Widgets::reduceAlignedSeries(
+                    m_CpuStackX, {&yUserTop, &ySystemTop, &yIowaitTop}, {}, UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE, nowSeconds);
+                y0.assign(m_CpuStackX.size(), 0.0);
                 if (!m_CpuStackX.empty() && m_CpuStackX.back() < 0.0)
                 {
                     m_CpuStackX.push_back(0.0);

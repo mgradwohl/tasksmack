@@ -1,6 +1,5 @@
 #include "UI/ChartWidgets.h"
 #include "UI/RateAxis.h"
-#include "UI/Theme.h"
 
 #include <gtest/gtest.h>
 
@@ -325,6 +324,60 @@ TEST(ChartWidgetsReduceTest, MinMaxReductionIsStableAsTheWindowScrolls)
             EXPECT_DOUBLE_EQ(outY[static_cast<std::size_t>(k)], firstY[static_cast<std::size_t>(k)]) << "point " << k;
         }
     }
+}
+
+TEST(ChartWidgetsReduceTest, AlignedReductionCapsStackedSeriesAndKeepsThemAligned)
+{
+    // #1022 review: the stacked CPU bands and the process CPU lines were drawn with ImPlot directly,
+    // uncapped. reduceAlignedSeries() caps them while keeping every series at the same x points.
+    ReduceFixture f;
+    std::vector<double> user(ReduceFixture::COUNT, 5.0);
+    std::vector<double> top(ReduceFixture::COUNT, 20.0);
+    std::vector<double> carried(ReduceFixture::COUNT);
+    for (int i = 0; i < ReduceFixture::COUNT; ++i)
+    {
+        carried[static_cast<std::size_t>(i)] = static_cast<double>(i); // identifies the source sample
+    }
+    user[1234] = 60.0; // a single-sample peak in one band
+    top[2345] = 95.0;  // and in another
+    auto x = f.x;
+
+    reduceAlignedSeries(x, {&user, &top}, {&carried}, LINE_PLOT_MAX_POINTS_DENSE, 1000.0);
+
+    ASSERT_LE(x.size(), static_cast<std::size_t>(LINE_PLOT_MAX_POINTS_DENSE));
+    ASSERT_GT(x.size(), 2U);
+    ASSERT_EQ(user.size(), x.size());
+    ASSERT_EQ(top.size(), x.size());
+    ASSERT_EQ(carried.size(), x.size());
+    // Each kept point is one source sample, taken from every series at once.
+    for (std::size_t k = 0; k < x.size(); ++k)
+    {
+        const auto source = static_cast<std::size_t>(carried[k]);
+        EXPECT_DOUBLE_EQ(x[k], f.x[source]) << "point " << k;
+        if (k > 0)
+        {
+            EXPECT_GT(carried[k], carried[k - 1]);
+        }
+    }
+    EXPECT_DOUBLE_EQ(std::ranges::max(user), 60.0);
+    EXPECT_DOUBLE_EQ(std::ranges::max(top), 95.0);
+    // The oldest and newest samples are always kept.
+    EXPECT_DOUBLE_EQ(carried.front(), 0.0);
+    EXPECT_DOUBLE_EQ(x.back(), 0.0);
+}
+
+TEST(ChartWidgetsReduceTest, AlignedReductionLeavesShortSeriesAndKeepsGaps)
+{
+    std::vector<double> x = {-3.0, -2.0, -1.0, 0.0};
+    std::vector<double> y = {1.0, 2.0, 3.0, 4.0};
+    reduceAlignedSeries(x, {&y}, {}, LINE_PLOT_MAX_POINTS_DENSE, 0.0);
+    EXPECT_EQ(x.size(), 4U);
+
+    ReduceFixture f;
+    f.y[1500] = std::numeric_limits<double>::quiet_NaN(); // one missing reading
+    auto gx = f.x;
+    reduceAlignedSeries(gx, {&f.y}, {}, LINE_PLOT_MAX_POINTS_DENSE, 1000.0);
+    EXPECT_TRUE(std::ranges::any_of(f.y, [](double v) { return std::isnan(v); }));
 }
 
 TEST(ChartWidgetsReduceTest, MinMaxReductionKeepsAGap)
