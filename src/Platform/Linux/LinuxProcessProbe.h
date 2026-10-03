@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Platform/IProcessProbe.h"
-#include "Platform/Linux/ProcessEnergyAttribution.h"
 #include "Platform/PlatformConfig.h"
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
@@ -48,6 +47,7 @@ class LinuxProcessProbe : public IProcessProbe
     [[nodiscard]] uint64_t totalCpuTime() const override;
     [[nodiscard]] long ticksPerSecond() const override;
     [[nodiscard]] uint64_t systemTotalMemory() const override;
+    [[nodiscard]] std::optional<PackageEnergyReading> readPackageEnergy() const override;
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     /// Set the socket stats cache TTL (Linux only)
@@ -67,10 +67,6 @@ class LinuxProcessProbe : public IProcessProbe
     bool m_HasPowerCap = false;
     std::string m_PowerCapPath;
     std::uint64_t m_PowerCapMaxRangeUj = 0; // max_energy_range_uj, where the counter wraps (0: unknown)
-
-    // Per-interval energy attribution (#1093); enumerate() may run on several threads.
-    mutable std::mutex m_EnergyMutex;
-    ProcessEnergy::Attributor m_EnergyAttributor;
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     // Per-process network monitoring via Netlink INET_DIAG. m_SocketStatsMutex guards
@@ -135,9 +131,6 @@ class LinuxProcessProbe : public IProcessProbe
 
     /// Read the package energy counter in microjoules, or nullopt if it can't be read.
     [[nodiscard]] std::optional<uint64_t> readSystemEnergy() const;
-
-    /// Credit this interval's package energy to processes by their share of this interval's CPU time.
-    void attributeEnergyToProcesses(std::vector<ProcessCounters>& processes);
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     /// Attribute network bytes to processes using Netlink socket stats

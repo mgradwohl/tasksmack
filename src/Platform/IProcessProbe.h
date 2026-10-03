@@ -3,10 +3,20 @@
 #include "ProcessTypes.h"
 
 #include <chrono>
+#include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace Platform
 {
+
+/// A raw package energy counter (RAPL on Linux) for Domain to share out between processes per
+/// interval (#1093).
+struct PackageEnergyReading
+{
+    std::optional<std::uint64_t> energyUj; ///< nullopt when this sample couldn't be read
+    std::uint64_t maxRangeUj = 0;          ///< where the counter wraps back to 0; 0 when unknown
+};
 
 /// Interface for platform-specific process enumeration.
 /// Implementations read raw counters from OS APIs.
@@ -38,6 +48,13 @@ class IProcessProbe
     /// Total system memory in bytes.
     /// Used for calculating per-process memory%.
     [[nodiscard]] virtual uint64_t systemTotalMemory() const = 0;
+
+    /// Reads the package energy counter behind per-process power, or nullopt when this platform
+    /// derives per-process power that way (stateless; Domain keeps the per-interval state).
+    [[nodiscard]] virtual std::optional<PackageEnergyReading> readPackageEnergy() const
+    {
+        return std::nullopt;
+    }
 
     /// Set socket stats cache TTL (Linux only; no-op on Windows).
     /// @param ttlMs Time-to-live in milliseconds for cached socket stats

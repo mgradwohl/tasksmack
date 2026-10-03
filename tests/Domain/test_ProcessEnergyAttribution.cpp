@@ -1,7 +1,7 @@
 /// @file test_ProcessEnergyAttribution.cpp
-/// @brief Tests for Platform::ProcessEnergy, per-interval RAPL energy attribution (#1093)
+/// @brief Tests for Domain::ProcessEnergy, per-interval RAPL energy attribution (#1093)
 
-#include "Platform/Linux/ProcessEnergyAttribution.h"
+#include "Domain/ProcessEnergyAttribution.h"
 #include "Platform/ProcessTypes.h"
 
 #include <gtest/gtest.h>
@@ -10,7 +10,7 @@
 #include <optional>
 #include <vector>
 
-namespace Platform
+namespace Domain
 {
 namespace
 {
@@ -18,9 +18,9 @@ namespace
 using ProcessEnergy::Attributor;
 using ProcessEnergy::energyDeltaUj;
 
-ProcessCounters process(std::int32_t pid, std::uint64_t cpuTime, std::uint64_t startTimeTicks = 1)
+Platform::ProcessCounters process(std::int32_t pid, std::uint64_t cpuTime, std::uint64_t startTimeTicks = 1)
 {
-    ProcessCounters counters{};
+    Platform::ProcessCounters counters{};
     counters.pid = pid;
     counters.startTimeTicks = startTimeTicks;
     counters.userTime = cpuTime;
@@ -39,7 +39,7 @@ TEST(ProcessEnergyTest, EnergyDeltaHandlesTheCounterWrap)
 TEST(ProcessEnergyTest, FirstSampleCreditsNothing)
 {
     Attributor attributor;
-    std::vector<ProcessCounters> processes{process(1, 500), process(2, 900)};
+    std::vector<Platform::ProcessCounters> processes{process(1, 500), process(2, 900)};
     attributor.attribute(processes, 200'000'000'000ULL, 0);
 
     EXPECT_EQ(processes[0].energyMicrojoules, 0U);
@@ -51,10 +51,10 @@ TEST(ProcessEnergyTest, IdleLongLivedProcessIsChargedNothing)
     // A daemon with a huge lifetime CPU time but none this interval used to be charged its lifetime
     // share of current package power.
     Attributor attributor;
-    std::vector<ProcessCounters> first{process(1, 1'000'000), process(2, 100)};
+    std::vector<Platform::ProcessCounters> first{process(1, 1'000'000), process(2, 100)};
     attributor.attribute(first, 50'000, 0);
 
-    std::vector<ProcessCounters> second{process(1, 1'000'000), process(2, 200)};
+    std::vector<Platform::ProcessCounters> second{process(1, 1'000'000), process(2, 200)};
     attributor.attribute(second, 51'000, 0);
 
     EXPECT_EQ(second[0].energyMicrojoules, 0U);
@@ -64,10 +64,10 @@ TEST(ProcessEnergyTest, IdleLongLivedProcessIsChargedNothing)
 TEST(ProcessEnergyTest, IntervalEnergyIsSharedByIntervalCpuAndSumsToTheDelta)
 {
     Attributor attributor;
-    std::vector<ProcessCounters> first{process(1, 100), process(2, 100), process(3, 100)};
+    std::vector<Platform::ProcessCounters> first{process(1, 100), process(2, 100), process(3, 100)};
     attributor.attribute(first, 0, 0);
 
-    std::vector<ProcessCounters> second{process(1, 130), process(2, 160), process(3, 100)};
+    std::vector<Platform::ProcessCounters> second{process(1, 130), process(2, 160), process(3, 100)};
     attributor.attribute(second, 9'000, 0);
 
     EXPECT_EQ(second[0].energyMicrojoules, 3'000U);
@@ -78,11 +78,11 @@ TEST(ProcessEnergyTest, IntervalEnergyIsSharedByIntervalCpuAndSumsToTheDelta)
 TEST(ProcessEnergyTest, ExitingProcessDoesNotSpikeTheSurvivors)
 {
     Attributor attributor;
-    std::vector<ProcessCounters> first{process(1, 100), process(2, 100), process(3, 5'000'000)};
+    std::vector<Platform::ProcessCounters> first{process(1, 100), process(2, 100), process(3, 5'000'000)};
     attributor.attribute(first, 0, 0);
 
     // The busy process 3 exits; 1 and 2 used 50 ticks each.
-    std::vector<ProcessCounters> second{process(1, 150), process(2, 150)};
+    std::vector<Platform::ProcessCounters> second{process(1, 150), process(2, 150)};
     attributor.attribute(second, 1'000, 0);
 
     EXPECT_EQ(second[0].energyMicrojoules, 500U);
@@ -92,7 +92,7 @@ TEST(ProcessEnergyTest, ExitingProcessDoesNotSpikeTheSurvivors)
 TEST(ProcessEnergyTest, TotalsAccumulateAcrossIntervalsAndSurviveAWrap)
 {
     Attributor attributor;
-    std::vector<ProcessCounters> sample{process(1, 0)};
+    std::vector<Platform::ProcessCounters> sample{process(1, 0)};
     attributor.attribute(sample, 9'000, 10'000);
 
     sample = {process(1, 10)};
@@ -107,7 +107,7 @@ TEST(ProcessEnergyTest, TotalsAccumulateAcrossIntervalsAndSurviveAWrap)
 TEST(ProcessEnergyTest, UnreadableCounterKeepsTotalsUnchanged)
 {
     Attributor attributor;
-    std::vector<ProcessCounters> sample{process(1, 0)};
+    std::vector<Platform::ProcessCounters> sample{process(1, 0)};
     attributor.attribute(sample, 1'000, 0);
     sample = {process(1, 10)};
     attributor.attribute(sample, 2'000, 0);
@@ -125,11 +125,11 @@ TEST(ProcessEnergyTest, UnreadableCounterKeepsTotalsUnchanged)
 TEST(ProcessEnergyTest, ReusedPidIsANewProcess)
 {
     Attributor attributor;
-    std::vector<ProcessCounters> first{process(7, 100, 1), process(8, 100)};
+    std::vector<Platform::ProcessCounters> first{process(7, 100, 1), process(8, 100)};
     attributor.attribute(first, 0, 0);
 
     // PID 7 now belongs to a different process (new start time): no credit on its first sample.
-    std::vector<ProcessCounters> second{process(7, 900, 2), process(8, 200)};
+    std::vector<Platform::ProcessCounters> second{process(7, 900, 2), process(8, 200)};
     attributor.attribute(second, 4'000, 0);
 
     EXPECT_EQ(second[0].energyMicrojoules, 0U);
@@ -137,4 +137,4 @@ TEST(ProcessEnergyTest, ReusedPidIsANewProcess)
 }
 
 } // namespace
-} // namespace Platform
+} // namespace Domain

@@ -6,6 +6,7 @@
 
 #include "CgroupFreezerPath.h"
 #include "Domain/SamplingConfig.h"
+#include "Platform/IProcessProbe.h"
 #include "Platform/PlatformConfig.h"
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
@@ -281,12 +282,6 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
     if (errorCode)
     {
         spdlog::warn("Error iterating {}: {}", procPath.string(), errorCode.message());
-    }
-
-    // Attribute energy to processes if power monitoring is available
-    if (m_HasPowerCap)
-    {
-        attributeEnergyToProcesses(processes);
     }
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
@@ -1107,11 +1102,14 @@ std::optional<uint64_t> LinuxProcessProbe::readSystemEnergy() const
     return energyUj; // Already in microjoules
 }
 
-void LinuxProcessProbe::attributeEnergyToProcesses(std::vector<ProcessCounters>& processes)
+std::optional<PackageEnergyReading> LinuxProcessProbe::readPackageEnergy() const
 {
-    const auto systemEnergy = readSystemEnergy();
-    const std::scoped_lock lock(m_EnergyMutex);
-    m_EnergyAttributor.attribute(processes, systemEnergy, m_PowerCapMaxRangeUj);
+    if (!m_HasPowerCap)
+    {
+        return std::nullopt;
+    }
+    // Raw read only: ProcessModel shares it out between processes per interval (#1093).
+    return PackageEnergyReading{.energyUj = readSystemEnergy(), .maxRangeUj = m_PowerCapMaxRangeUj};
 }
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS

@@ -3,6 +3,7 @@
 #include "History.h"
 #include "ISamplable.h"
 #include "Platform/IProcessProbe.h"
+#include "ProcessEnergyAttribution.h"
 #include "ProcessSnapshot.h"
 
 #include <atomic>
@@ -136,7 +137,7 @@ class ProcessModel : public ISamplable
 
     // Per-process tracking state.  Consolidating previous counters and
     // peak-RSS into one struct reduces per-process map lookups
-    // in computeSnapshots() from 3-4 separate finds/inserts to a single
+    // in computeSnapshotsLocked() from 3-4 separate finds/inserts to a single
     // try_emplace, improving cache locality and reducing map overhead.
     struct PerProcessState
     {
@@ -169,7 +170,7 @@ class ProcessModel : public ISamplable
 
     // Single map replaces m_PrevCounters + m_PeakRss + m_ActiveKeys.
     std::unordered_map<ProcessIdentity, PerProcessState, ProcessIdentityHash> m_PerProcessState;
-    // Monotonically increasing counter; bumped each computeSnapshots() call.
+    // Monotonically increasing counter; bumped each computeSnapshotsLocked() call.
     // Entries with generation != m_CurrentGeneration belong to dead processes.
     std::uint64_t m_CurrentGeneration = 0;
 
@@ -205,9 +206,11 @@ class ProcessModel : public ISamplable
     // Thread safety
     mutable std::shared_mutex m_Mutex;
     std::mutex m_SamplingMutex;
+    ProcessEnergy::Attributor m_EnergyAttributor; // guarded by m_SamplingMutex
 
     // Helpers
-    void computeSnapshots(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime);
+    /// Requires m_SamplingMutex held.
+    void computeSnapshotsLocked(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime);
 
     static void mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel);
 

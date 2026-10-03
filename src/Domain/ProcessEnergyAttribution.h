@@ -1,7 +1,8 @@
 #pragma once
 
-// Per-process energy from the RAPL package counter (#1093), kept free of /proc and /sys I/O so it
-// can be unit-tested directly. See CONTRIBUTING.md's "extract the pure decision logic" pattern.
+// Per-process energy from a package energy counter such as RAPL (#1093). Lives in Domain because it
+// keeps state between samples: probes read raw counters only (IProcessProbe::readPackageEnergy),
+// and ProcessModel calls this under its sampling lock, so samples are applied in order.
 //
 // RAPL reports one package-wide energy counter. Each interval's energy is shared out by each
 // process's share of the CPU time used in that interval, and credited to a per-process running
@@ -21,7 +22,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace Platform::ProcessEnergy
+namespace Domain::ProcessEnergy
 {
 
 /// Energy used between two reads of a counter that wraps back to 0 after `maxRangeUj`
@@ -39,8 +40,8 @@ namespace Platform::ProcessEnergy
     return 0;
 }
 
-/// Shares package energy out to processes interval by interval. Not thread-safe; the probe
-/// serialises calls.
+/// Shares package energy out to processes interval by interval. Not thread-safe; ProcessModel
+/// serialises calls under its sampling lock.
 class Attributor
 {
   public:
@@ -50,7 +51,7 @@ class Attributor
     /// then reported unchanged, so the counters stay monotonic and read as 0 W for the interval.
     /// A process seen for the first time is credited nothing (its CPU time so far may predate the
     /// interval); processes that have exited are forgotten.
-    void attribute(std::span<ProcessCounters> processes, std::optional<std::uint64_t> systemEnergyUj, std::uint64_t maxRangeUj)
+    void attribute(std::span<Platform::ProcessCounters> processes, std::optional<std::uint64_t> systemEnergyUj, std::uint64_t maxRangeUj)
     {
         const std::uint64_t intervalEnergyUj = (systemEnergyUj.has_value() && m_PreviousSystemEnergyUj.has_value())
                                                  ? energyDeltaUj(*m_PreviousSystemEnergyUj, *systemEnergyUj, maxRangeUj)
@@ -116,7 +117,7 @@ class Attributor
         double accumulatedUj = 0.0;
     };
 
-    [[nodiscard]] static Key keyOf(const ProcessCounters& process) noexcept
+    [[nodiscard]] static Key keyOf(const Platform::ProcessCounters& process) noexcept
     {
         return Key{.pid = process.pid, .startTimeTicks = process.startTimeTicks};
     }
@@ -126,4 +127,4 @@ class Attributor
     std::vector<std::uint64_t> m_CpuDeltas; // reused scratch
 };
 
-} // namespace Platform::ProcessEnergy
+} // namespace Domain::ProcessEnergy
