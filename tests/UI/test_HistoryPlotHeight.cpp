@@ -20,16 +20,20 @@ constexpr float REFERENCE_EM_PX = 32.0F / 3.0F;
 
 TEST(HistoryPlotHeightTest, BoundsAtReferenceEm)
 {
-    EXPECT_FLOAT_EQ(historyPlotMinHeight(REFERENCE_EM_PX), 90.0F);
+    // Chart text at the body size (Medium since #1194): 11.25 chart ems.
+    EXPECT_FLOAT_EQ(historyPlotMinHeight(REFERENCE_EM_PX), 120.0F);
+    EXPECT_FLOAT_EQ(historyPlotMinHeight(REFERENCE_EM_PX, REFERENCE_EM_PX), 120.0F);
     EXPECT_FLOAT_EQ(historyPlotMaxHeight(REFERENCE_EM_PX), 360.0F);
 }
 
 TEST(HistoryPlotHeightTest, BoundsScaleWithTheFont)
 {
-    // Even Huger keeps the 180px these charts were fixed at before.
-    EXPECT_FLOAT_EQ(historyPlotMinHeight(REFERENCE_EM_PX * 2.0F), 180.0F);
+    // With small chart text the body-em floor governs: 180px at twice the reference em, the size
+    // these charts were fixed at before.
+    EXPECT_FLOAT_EQ(historyPlotMinHeight(REFERENCE_EM_PX * 2.0F, REFERENCE_EM_PX), 180.0F);
+    EXPECT_FLOAT_EQ(historyPlotMinHeight(REFERENCE_EM_PX * 2.0F), 240.0F);
     EXPECT_FLOAT_EQ(historyPlotMaxHeight(REFERENCE_EM_PX * 2.0F), 720.0F);
-    EXPECT_FLOAT_EQ(historyPlotMinHeight(8.0F), 67.5F);
+    EXPECT_FLOAT_EQ(historyPlotMinHeight(8.0F), 90.0F);
     EXPECT_FLOAT_EQ(historyPlotMaxHeight(8.0F), 270.0F);
 }
 
@@ -56,8 +60,37 @@ TEST(HistoryPlotHeightTest, GrowthStopsAtTheMaximum)
 // A short window: the charts hold their minimum and the tab scrolls, rather than squashing flat.
 TEST(HistoryPlotHeightTest, ShortRegionHoldsTheMinimum)
 {
-    EXPECT_FLOAT_EQ(computeFillPlotHeight(REFERENCE_EM_PX, 400.0F, 160.0F, 4), 90.0F);
-    EXPECT_FLOAT_EQ(computeFillPlotHeight(REFERENCE_EM_PX, 100.0F, 160.0F, 4), 90.0F);
+    EXPECT_FLOAT_EQ(computeFillPlotHeight(REFERENCE_EM_PX, 400.0F, 160.0F, 4), 120.0F);
+    EXPECT_FLOAT_EQ(computeFillPlotHeight(REFERENCE_EM_PX, 100.0F, 160.0F, 4), 120.0F);
+}
+
+// #1194: the floor is also measured in ems of the chart's own text, so moving chart text up to the
+// body size makes the minimum chart taller instead of clipping its legend. With chart text at
+// three quarters of the body (Medium before #1194) it is the 90px it was.
+TEST(HistoryPlotHeightTest, MinimumFollowsTheChartText)
+{
+    EXPECT_FLOAT_EQ(historyPlotMinHeight(REFERENCE_EM_PX, REFERENCE_EM_PX * 0.75F), 90.0F);
+    EXPECT_FLOAT_EQ(computeFillPlotHeight(REFERENCE_EM_PX, 100.0F, 160.0F, 4, REFERENCE_EM_PX * 0.75F), 90.0F);
+    EXPECT_FLOAT_EQ(computeFillPlotHeight(REFERENCE_EM_PX, 100.0F, 160.0F, 4, REFERENCE_EM_PX), 120.0F);
+    // An unusable chart em falls back to the body em.
+    EXPECT_FLOAT_EQ(historyPlotMinHeight(REFERENCE_EM_PX, std::numeric_limits<float>::quiet_NaN()), 120.0F);
+    EXPECT_FLOAT_EQ(historyPlotMinHeight(REFERENCE_EM_PX, -1.0F), 120.0F);
+}
+
+// Review of #1219: from Large up the chart text is a step smaller than the body, as it was before
+// #1194, so those presets keep their old floor: 180px at Even Huger (16pt body, 14pt charts).
+TEST(HistoryPlotHeightTest, LargerPresetsKeepTheBodyFloor)
+{
+    const float evenHugerEm = REFERENCE_EM_PX * 2.0F;
+    EXPECT_FLOAT_EQ(historyPlotMinHeight(evenHugerEm, evenHugerEm * 14.0F / 16.0F), 180.0F);
+    const float largeEm = REFERENCE_EM_PX * 1.25F;
+    EXPECT_FLOAT_EQ(historyPlotMinHeight(largeEm, largeEm * 0.8F), 112.5F);
+}
+
+// The floor never exceeds the ceiling, even with chart text larger than the body text.
+TEST(HistoryPlotHeightTest, MinimumNeverExceedsTheMaximum)
+{
+    EXPECT_FLOAT_EQ(computeFillPlotHeight(REFERENCE_EM_PX, 100.0F, 160.0F, 4, REFERENCE_EM_PX * 10.0F), 360.0F);
 }
 
 // #923 reported Small more than doubling the chart height (920px against 400px at Even Huger),
@@ -95,6 +128,7 @@ TEST(HistoryPlotHeightTest, ResultIsAlwaysWholePixels)
 TEST(HistoryPlotHeightTest, FeedbackSettlesAndStaysPut)
 {
     const float em = 21.0F;
+    const float chartEm = em * 14.0F / 16.0F; // Even Huger's charts use Huge's 14pt (#1194)
     const float available = 1198.0F;
     const float trueNonPlot = 257.0F;
     const std::size_t count = 4;
@@ -105,7 +139,7 @@ TEST(HistoryPlotHeightTest, FeedbackSettlesAndStaysPut)
     int changesAfterSettling = 0;
     for (int frame = 0; frame < 12; ++frame)
     {
-        const float height = computeFillPlotHeight(em, available, nonPlot, measuredCount);
+        const float height = computeFillPlotHeight(em, available, nonPlot, measuredCount, chartEm);
         if (frame >= 2 && height != previous)
         {
             ++changesAfterSettling;
@@ -132,7 +166,7 @@ TEST(HistoryPlotHeightTest, FewerChartsGetMoreHeightEach)
 // First frame: nothing measured. Under-fill at the minimum rather than guess and overflow.
 TEST(HistoryPlotHeightTest, NothingMeasuredYetGivesTheMinimum)
 {
-    EXPECT_FLOAT_EQ(computeFillPlotHeight(REFERENCE_EM_PX, 1100.0F, 0.0F, 0), 90.0F);
+    EXPECT_FLOAT_EQ(computeFillPlotHeight(REFERENCE_EM_PX, 1100.0F, 0.0F, 0), 120.0F);
 }
 
 TEST(HistoryPlotHeightTest, NegativeNonPlotHeightIsTreatedAsZero)
@@ -145,10 +179,10 @@ TEST(HistoryPlotHeightTest, SurvivesDegenerateInput)
     const float nan = std::numeric_limits<float>::quiet_NaN();
     const float inf = std::numeric_limits<float>::infinity();
 
-    EXPECT_FLOAT_EQ(computeFillPlotHeight(REFERENCE_EM_PX, nan, 160.0F, 4), 90.0F);
-    EXPECT_FLOAT_EQ(computeFillPlotHeight(REFERENCE_EM_PX, inf, 160.0F, 4), 90.0F);
-    EXPECT_FLOAT_EQ(computeFillPlotHeight(REFERENCE_EM_PX, 0.0F, 160.0F, 4), 90.0F);
-    EXPECT_FLOAT_EQ(computeFillPlotHeight(REFERENCE_EM_PX, 1100.0F, nan, 4), 90.0F);
+    EXPECT_FLOAT_EQ(computeFillPlotHeight(REFERENCE_EM_PX, nan, 160.0F, 4), 120.0F);
+    EXPECT_FLOAT_EQ(computeFillPlotHeight(REFERENCE_EM_PX, inf, 160.0F, 4), 120.0F);
+    EXPECT_FLOAT_EQ(computeFillPlotHeight(REFERENCE_EM_PX, 0.0F, 160.0F, 4), 120.0F);
+    EXPECT_FLOAT_EQ(computeFillPlotHeight(REFERENCE_EM_PX, 1100.0F, nan, 4), 120.0F);
 
     for (const float em : {0.0F, -8.0F, nan, inf})
     {
