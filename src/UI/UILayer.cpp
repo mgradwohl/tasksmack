@@ -314,8 +314,8 @@ void UILayer::onAttach()
         spdlog::info("Loaded {} themes", Theme::get().discoveredThemes().size());
 
         // Optional: load user-provided themes from the same directory as config.toml (../themes)
-        // They are merged over the built-ins by id, so a user theme overrides a built-in of the same
-        // name instead of hiding all of them (#1127). The error_code overload keeps an unreadable
+        // They are merged over the built-ins by id (the filename stem), so a user theme overrides a built-in
+        // with the same id instead of hiding all of them (#1127). The error_code overload keeps an unreadable
         // directory from throwing out of onAttach.
         const auto userThemesDir = Core::Application::get().paths().userConfigDir() / "themes";
         std::error_code ec;
