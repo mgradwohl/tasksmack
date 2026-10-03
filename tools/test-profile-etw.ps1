@@ -91,6 +91,16 @@ try {
     }
     Assert-True ((ConvertTo-QuotedArgument 'plain') -ceq 'plain') 'A simple argument is not quoted'
 
+    # -OutputDirectory becomes absolute against the caller's location, because the elevated children
+    # start in the repo root and would resolve a relative path there instead.
+    Push-Location $root
+    try {
+        Assert-True ((Resolve-CaptureOutputDirectory -OutputDirectory 'runs\a' -RepoRoot 'C:\repo') -eq (Join-Path $root 'runs\a')) 'Relative output resolves against the caller'
+        Assert-True ((Resolve-CaptureOutputDirectory -OutputDirectory 'C:\abs\out' -RepoRoot 'C:\repo') -eq 'C:\abs\out') 'Absolute output is kept'
+        Assert-True ((Resolve-CaptureOutputDirectory -OutputDirectory '' -RepoRoot 'C:\repo') -eq 'C:\repo\perf-data') 'Default is perf-data in the repo'
+    }
+    finally { Pop-Location }
+
     # A collector's recorded error is reported after it has stopped, too.
     $controlDir = Join-Path $root 'control'
     New-Item -ItemType Directory -Path $controlDir | Out-Null

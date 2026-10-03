@@ -142,7 +142,6 @@ $ErrorActionPreference = 'Stop'
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
-$perfDir = if ([string]::IsNullOrWhiteSpace($OutputDirectory)) { Join-Path $repoRoot 'perf-data' } else { $OutputDirectory }
 $wprProfilePath = Join-Path $scriptDir 'TaskSmackCPU.wprp'
 
 if ($Mode -eq 'resize') {
@@ -154,6 +153,8 @@ if ($Mode -eq 'resize') {
 }
 
 . (Join-Path $scriptDir 'profile-etw-common.ps1')
+# Absolute before anything is created or passed on (see Resolve-CaptureOutputDirectory).
+$perfDir = Resolve-CaptureOutputDirectory -OutputDirectory $OutputDirectory -RepoRoot $repoRoot
 
 if ([string]::IsNullOrWhiteSpace($Preset)) {
     $Preset = if ($Mode -eq 'app') { 'win-optimized' } else { 'win-benchmark' }

@@ -129,6 +129,15 @@ function Get-BenchmarkFilterMatches {
     return Resolve-BenchmarkFilterMatches -ListOutput @($output | ForEach-Object { "$_" }) -Filter $Filter
 }
 
+function Resolve-CaptureOutputDirectory {
+    # Where app/bench artifacts go, as an absolute path: the elevated children start in the repo
+    # root, so a relative -OutputDirectory must be resolved against the caller's location before it
+    # is passed on, or they would write somewhere else.
+    param([AllowEmptyString()][string]$OutputDirectory, [Parameter(Mandatory = $true)][string]$RepoRoot)
+    if ([string]::IsNullOrWhiteSpace($OutputDirectory)) { return (Join-Path $RepoRoot 'perf-data') }
+    return $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)
+}
+
 function Get-CollectorErrorDetail {
     # The error the collector recorded in the control directory, as " Collector error: ...", or
     # an empty string. Its console window closes when it exits, so this is the only place it
