@@ -14,6 +14,7 @@
 #include "ProcessDetailsPanel_ActionHelpers.h"
 #include "ProcessDetailsPanel_GpuHelpers.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
+#include "ProcessDetailsPanel_ResourceHelpers.h"
 #include "UI/ChartWidgets.h"
 #include "UI/DialogMetrics.h"
 #include "UI/EmptyState.h"
@@ -38,6 +39,7 @@
 #include <format>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -1108,16 +1110,24 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
                            .color = theme.scheme().chartIo};
 
 #ifdef _WIN32
-    // GDI objects NowBar (Windows-only)
+    // GDI objects NowBar (Windows-only). The GDI history can be shorter than the others, and ends at
+    // the same newest sample, so it starts gdiTimeOffset timestamps in (#1001). A missing reading is
+    // NaN: it is skipped by the bar's scale and shown as N/A, and a series with no reading at all --
+    // a process TaskSmack cannot open -- is not drawn (#1000).
     const size_t gdiAlignedCount = std::min(alignedCount, m_GdiHistory.size());
     std::vector<double> gdiData = tailVector(m_GdiHistory, gdiAlignedCount);
-    const double gdiMax = seriesMax(gdiData, m_SmoothedUsage.gdiObjectCount);
-    const NowBar gdiBar{.valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedUsage.gdiObjectCount), "GDI"),
-                        .label = "GDI Objects",
-                        .tooltipText =
-                            std::format("GDI Objects: {}", UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.gdiObjectCount))),
-                        .value01 = (gdiMax > 0.0) ? std::clamp(m_SmoothedUsage.gdiObjectCount / gdiMax, 0.0, 1.0) : 0.0,
-                        .color = theme.accentColor(4)};
+    const size_t gdiTimeOffset = Detail::seriesTimeOffset(alignedCount, gdiData.size());
+    const bool hasGdiSamples = Detail::hasAnySample(gdiData);
+    const double gdiMax = std::max({UI::Widgets::maxOfSeries(gdiData), m_SmoothedUsage.gdiObjectCount, 1.0});
+    const NowBar gdiBar{
+        .valueText =
+            hasGdiSamples ? UI::Format::formatCountWithLabel(std::llround(m_SmoothedUsage.gdiObjectCount), "GDI") : std::string("N/A"),
+        .label = "GDI Objects",
+        .tooltipText = hasGdiSamples
+                         ? std::format("GDI Objects: {}", UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.gdiObjectCount)))
+                         : std::string("GDI Objects: N/A"),
+        .value01 = hasGdiSamples ? std::clamp(m_SmoothedUsage.gdiObjectCount / gdiMax, 0.0, 1.0) : 0.0,
+        .color = theme.accentColor(4)};
 #endif
 
     // Bound must cover every series drawn on this axis. GDI is plotted below on Windows, so leaving
@@ -1170,11 +1180,11 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
                              UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
 
 #ifdef _WIN32
-            if (!gdiData.empty())
+            if (hasGdiSamples && gdiTimeOffset < timeData.size())
             {
-                const int gdiPlotCount = UI::Format::checkedCount(std::min(gdiAlignedCount, timeData.size()));
+                const int gdiPlotCount = UI::Format::checkedCount(std::min(gdiData.size(), timeData.size() - gdiTimeOffset));
                 plotLineWithFill("GDI Objects",
-                                 timeData.data(),
+                                 std::span(timeData).subspan(gdiTimeOffset).data(),
                                  gdiData.data(),
                                  gdiPlotCount,
                                  theme.accentColor(4),
@@ -1206,11 +1216,12 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
                         ImGui::TextColored(
                             theme.accentColor(3), "Page Faults: %s", UI::Format::formatCountPerSecond(faultData[*idxVal]).c_str());
 #ifdef _WIN32
-                        if (*idxVal < gdiData.size())
+                        if (hasGdiSamples)
                         {
+                            const auto gdiValue = Detail::seriesValueAt(gdiData, gdiTimeOffset, *idxVal);
                             ImGui::TextColored(theme.accentColor(4),
                                                "GDI Objects: %s",
-                                               UI::Format::formatIntLocalized(std::llround(gdiData[*idxVal])).c_str());
+                                               gdiValue ? UI::Format::formatIntLocalized(std::llround(*gdiValue)).c_str() : "N/A");
                         }
 #endif
                         ImGui::EndTooltip();
