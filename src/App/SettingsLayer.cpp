@@ -22,17 +22,19 @@
 #include <algorithm>
 #include <cstddef>
 #include <filesystem>
+#include <format>
+#include <optional>
 #include <string>
 
 namespace App
 {
 
 // Import Detail types and functions into this translation unit
-using Detail::findFontSizeIndex;
-using Detail::findHistoryIndex;
-using Detail::findRefreshRateIndex;
+using Detail::ComboState;
 using Detail::FONT_SIZE_OPTIONS;
 using Detail::HISTORY_OPTIONS;
+using Detail::optionIndexOf;
+using Detail::pickedOption;
 using Detail::REFRESH_RATE_OPTIONS;
 
 namespace
@@ -98,21 +100,20 @@ void SettingsLayer::loadCurrentSettings()
 
     // Load theme options
     m_Themes = themeManager.discoveredThemes();
-    m_SelectedThemeIndex = 0;
 
-    for (std::size_t i = 0; i < m_Themes.size(); ++i)
-    {
-        if (m_Themes[i].id == settings.themeId)
-        {
-            m_SelectedThemeIndex = i;
-            break;
-        }
-    }
+    // Each combo starts on the stored value, or on none when the stored value isn't an option
+    // (an interval set in config.toml, a theme file that's gone); nothing is touched yet.
+    const auto themeIt = std::ranges::find(m_Themes, settings.themeId, &UI::DiscoveredTheme::id);
+    m_ThemeChoice = ComboState{.index = (themeIt != m_Themes.end()) ? std::optional{static_cast<std::size_t>(themeIt - m_Themes.begin())}
+                                                                    : std::nullopt};
+    m_FontSizeChoice = ComboState{.index = optionIndexOf(FONT_SIZE_OPTIONS, settings.fontSize, &Detail::FontSizeOption::value)};
+    m_RefreshRateChoice =
+        ComboState{.index = optionIndexOf(REFRESH_RATE_OPTIONS, settings.refreshIntervalMs, &Detail::RefreshRateOption::valueMs)};
+    m_HistoryChoice = ComboState{.index = optionIndexOf(HISTORY_OPTIONS, settings.maxHistorySeconds, &Detail::HistoryOption::valueSeconds)};
 
-    // Load other settings
-    m_SelectedFontSizeIndex = findFontSizeIndex(settings.fontSize);
-    m_SelectedRefreshRateIndex = findRefreshRateIndex(settings.refreshIntervalMs);
-    m_SelectedHistoryIndex = findHistoryIndex(settings.maxHistorySeconds);
+    m_CustomThemePreview = std::format("Custom ({})", settings.themeId);
+    m_CustomRefreshPreview = Detail::customRefreshLabel(settings.refreshIntervalMs);
+    m_CustomHistoryPreview = Detail::customHistoryLabel(settings.maxHistorySeconds);
     m_ForceNativeDecorationsOnWayland = settings.forceNativeWindowDecorationsOnWayland;
 }
 
@@ -122,10 +123,12 @@ void SettingsLayer::applySettings()
     auto& settings = config.settings();
     auto& themeManager = UI::Theme::get();
 
+    // Only the combos the user picked are written (#1120, #1151): see Detail::pickedOption.
+
     // Apply theme
-    if (m_SelectedThemeIndex < m_Themes.size())
+    if (m_ThemeChoice.touched && m_ThemeChoice.index.has_value() && *m_ThemeChoice.index < m_Themes.size())
     {
-        const std::string& newThemeId = m_Themes[m_SelectedThemeIndex].id;
+        const std::string& newThemeId = m_Themes[*m_ThemeChoice.index].id;
         if (newThemeId != settings.themeId)
         {
             settings.themeId = newThemeId;
@@ -140,17 +143,17 @@ void SettingsLayer::applySettings()
     }
 
     // Apply font size
-    const auto newFontSize = FONT_SIZE_OPTIONS[m_SelectedFontSizeIndex].value;
-    if (newFontSize != settings.fontSize)
+    if (const auto font = pickedOption(m_FontSizeChoice, FONT_SIZE_OPTIONS); font.has_value() && font->value != settings.fontSize)
     {
-        changeFontSize(newFontSize);
-        spdlog::info("Font size changed to {}", m_SelectedFontSizeIndex);
+        changeFontSize(font->value);
+        spdlog::info("Font size changed to {}", font->label);
     }
 
     // Apply refresh rate
-    const int newRefreshMs = REFRESH_RATE_OPTIONS[m_SelectedRefreshRateIndex].valueMs;
-    if (newRefreshMs != settings.refreshIntervalMs)
+    if (const auto refresh = pickedOption(m_RefreshRateChoice, REFRESH_RATE_OPTIONS);
+        refresh.has_value() && refresh->valueMs != settings.refreshIntervalMs)
     {
+        const int newRefreshMs = refresh->valueMs;
         settings.refreshIntervalMs = newRefreshMs;
         // Notify panels/samplers of interval change via event
         {
@@ -161,9 +164,10 @@ void SettingsLayer::applySettings()
     }
 
     // Apply history duration
-    const int newHistorySeconds = HISTORY_OPTIONS[m_SelectedHistoryIndex].valueSeconds;
-    if (newHistorySeconds != settings.maxHistorySeconds)
+    if (const auto history = pickedOption(m_HistoryChoice, HISTORY_OPTIONS);
+        history.has_value() && history->valueSeconds != settings.maxHistorySeconds)
     {
+        const int newHistorySeconds = history->valueSeconds;
         settings.maxHistorySeconds = newHistorySeconds;
         // Notify panels/models to adjust history window via event
         {
@@ -257,6 +261,10 @@ void SettingsLayer::renderSettingsDialog()
             widestAppearanceValue =
                 std::max(widestAppearanceValue, ImGui::CalcTextSize(option.label.data(), option.label.data() + option.label.size()).x);
         }
+        if (!m_ThemeChoice.index.has_value())
+        {
+            widestAppearanceValue = std::max(widestAppearanceValue, ImGui::CalcTextSize(m_CustomThemePreview.c_str()).x);
+        }
         // Capped against the viewport. Theme names are read from a user's TOML with no length limit
         // (ThemeLoader), so measuring them is unbounded: a long name would otherwise widen this
         // auto-resizing popup past the window and put the combo's arrow and the buttons below it out
@@ -303,15 +311,17 @@ void SettingsLayer::renderSettingsDialog()
 
         if (!m_Themes.empty())
         {
-            const char* currentTheme = m_Themes[m_SelectedThemeIndex].name.c_str();
+            const char* currentTheme = (m_ThemeChoice.index.has_value() && *m_ThemeChoice.index < m_Themes.size())
+                                         ? m_Themes[*m_ThemeChoice.index].name.c_str()
+                                         : m_CustomThemePreview.c_str();
             if (ImGui::BeginCombo("##Theme", currentTheme))
             {
                 for (std::size_t i = 0; i < m_Themes.size(); ++i)
                 {
-                    const bool isSelected = (m_SelectedThemeIndex == i);
+                    const bool isSelected = (m_ThemeChoice.index == i);
                     if (ImGui::Selectable(m_Themes[i].name.c_str(), isSelected))
                     {
-                        m_SelectedThemeIndex = i;
+                        m_ThemeChoice = ComboState{.index = i, .touched = true};
                     }
                     if (isSelected)
                     {
@@ -331,16 +341,19 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::SetNextItemWidth(appearanceComboWidth);
 
         // NOLINT comments below: label is always initialized from a string literal, so .data() is null-terminated
-        const char* currentFontSize =
-            FONT_SIZE_OPTIONS[m_SelectedFontSizeIndex].label.data(); // NOLINT(bugprone-suspicious-stringview-data-usage)
+        // The font size always matches an option (the enum has no other values), but a Ctrl+= change
+        // while the dialog is open moves it, so the preview follows the live setting.
+        const auto liveFontIndex = optionIndexOf(FONT_SIZE_OPTIONS, UserConfig::get().settings().fontSize, &Detail::FontSizeOption::value);
+        const std::size_t fontPreviewIndex = (m_FontSizeChoice.touched ? m_FontSizeChoice.index : liveFontIndex).value_or(1);
+        const char* currentFontSize = FONT_SIZE_OPTIONS[fontPreviewIndex].label.data(); // NOLINT(bugprone-suspicious-stringview-data-usage)
         if (ImGui::BeginCombo("##FontSize", currentFontSize))
         {
             for (std::size_t i = 0; i < FONT_SIZE_OPTIONS.size(); ++i)
             {
-                const bool isSelected = (m_SelectedFontSizeIndex == i);
+                const bool isSelected = (fontPreviewIndex == i);
                 if (ImGui::Selectable(FONT_SIZE_OPTIONS[i].label.data(), isSelected)) // NOLINT(bugprone-suspicious-stringview-data-usage)
                 {
-                    m_SelectedFontSizeIndex = i;
+                    m_FontSizeChoice = ComboState{.index = i, .touched = true};
                 }
                 if (isSelected)
                 {
@@ -372,6 +385,15 @@ void SettingsLayer::renderSettingsDialog()
             widestPerfValue =
                 std::max(widestPerfValue, ImGui::CalcTextSize(option.label.data(), option.label.data() + option.label.size()).x);
         }
+        // A stored value that isn't an option shows as "Custom (...)", which can be the widest.
+        if (!m_RefreshRateChoice.index.has_value())
+        {
+            widestPerfValue = std::max(widestPerfValue, ImGui::CalcTextSize(m_CustomRefreshPreview.c_str()).x);
+        }
+        if (!m_HistoryChoice.index.has_value())
+        {
+            widestPerfValue = std::max(widestPerfValue, ImGui::CalcTextSize(m_CustomHistoryPreview.c_str()).x);
+        }
         const float perfComboWidth = UI::DialogMetrics::computeCappedControlWidth(
             widestPerfValue + comboDecoration, valueColumn, style.WindowPadding.x * 2.0F, viewport->WorkSize.x, comboMinWidth);
         const float perfLabelWidth = UI::DialogMetrics::computeRightAlignedStart(valueColumn, appearanceComboWidth, perfComboWidth);
@@ -387,16 +409,18 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::SetNextItemWidth(perfComboWidth);
 
         const char* currentRefresh =
-            REFRESH_RATE_OPTIONS[m_SelectedRefreshRateIndex].label.data(); // NOLINT(bugprone-suspicious-stringview-data-usage)
+            m_RefreshRateChoice.index.has_value()
+                ? REFRESH_RATE_OPTIONS[*m_RefreshRateChoice.index].label.data() // NOLINT(bugprone-suspicious-stringview-data-usage)
+                : m_CustomRefreshPreview.c_str();
         if (ImGui::BeginCombo("##RefreshRate", currentRefresh))
         {
             for (std::size_t i = 0; i < REFRESH_RATE_OPTIONS.size(); ++i)
             {
-                const bool isSelected = (m_SelectedRefreshRateIndex == i);
+                const bool isSelected = (m_RefreshRateChoice.index == i);
                 if (ImGui::Selectable(REFRESH_RATE_OPTIONS[i].label.data(), // NOLINT(bugprone-suspicious-stringview-data-usage)
                                       isSelected))
                 {
-                    m_SelectedRefreshRateIndex = i;
+                    m_RefreshRateChoice = ComboState{.index = i, .touched = true};
                 }
                 if (isSelected)
                 {
@@ -415,15 +439,17 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::SetNextItemWidth(perfComboWidth);
 
         const char* currentHistory =
-            HISTORY_OPTIONS[m_SelectedHistoryIndex].label.data(); // NOLINT(bugprone-suspicious-stringview-data-usage)
+            m_HistoryChoice.index.has_value()
+                ? HISTORY_OPTIONS[*m_HistoryChoice.index].label.data() // NOLINT(bugprone-suspicious-stringview-data-usage)
+                : m_CustomHistoryPreview.c_str();
         if (ImGui::BeginCombo("##History", currentHistory))
         {
             for (std::size_t i = 0; i < HISTORY_OPTIONS.size(); ++i)
             {
-                const bool isSelected = (m_SelectedHistoryIndex == i);
+                const bool isSelected = (m_HistoryChoice.index == i);
                 if (ImGui::Selectable(HISTORY_OPTIONS[i].label.data(), isSelected)) // NOLINT(bugprone-suspicious-stringview-data-usage)
                 {
-                    m_SelectedHistoryIndex = i;
+                    m_HistoryChoice = ComboState{.index = i, .touched = true};
                 }
                 if (isSelected)
                 {
