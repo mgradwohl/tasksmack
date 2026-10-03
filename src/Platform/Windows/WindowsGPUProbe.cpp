@@ -23,7 +23,8 @@ namespace Platform
 WindowsGPUProbe::WindowsGPUProbe()
     : m_DXGIProbe(std::make_unique<DXGIGPUProbe>()),
       m_NVMLProbe(std::make_unique<NVMLGPUProbe>()),
-      m_PDHProbe(std::make_unique<PDHGPUProbe>())
+      m_PDHProbe(std::make_unique<PDHGPUProbe>()),
+      m_PDHAdapterProbe(std::make_unique<PDHGPUProbe>())
 {
     std::string probeSummary = "DXGI";
     if (m_NVMLProbe->isAvailable())
@@ -173,7 +174,7 @@ void WindowsGPUProbe::mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiC
 {
     // Skip if no PDH, or if all GPUs already have utilization data from NVML
     // (0% at idle is a valid NVML reading, not a sentinel).
-    if (!m_PDHProbe || !m_PDHProbe->isAvailable())
+    if (!m_PDHAdapterProbe || !m_PDHAdapterProbe->isAvailable())
     {
         return;
     }
@@ -182,19 +183,12 @@ void WindowsGPUProbe::mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiC
         return;
     }
 
-    // Read per-process GPU data from PDH
-    auto processCounters = m_PDHProbe->readProcessGPUCounters();
-    if (processCounters.empty())
-    {
-        return;
-    }
-
-    // Sum utilization per GPU LUID.
-    // PDH ProcessGPUCounters::gpuId is "GPU_0x{HighPart}_0x{LowPart}" — the same
-    // format as GPUInfo::luidId from DXGI. Group process contributions per GPU so
-    // we assign the correct utilization to each physical adapter instead of the
-    // system-wide sum to every adapter (which inflated multi-GPU readings).
-    const auto utilizationByLuid = sumProcessUtilizationByGPUId(processCounters);
+    // Collect on this sampler's own query, then take the per-adapter figure computed from it:
+    // per engine the sum over processes, then the busiest engine (Task Manager's definition),
+    // keyed by "GPU_0x{HighPart}_0x{LowPart}" -- the same format as GPUInfo::luidId from DXGI.
+    // Summing process totals instead counted parallel engines as if they were serial (#1033).
+    static_cast<void>(m_PDHAdapterProbe->readProcessGPUCounters());
+    const auto utilizationByLuid = m_PDHAdapterProbe->adapterUtilization();
     if (utilizationByLuid.empty())
     {
         return;
