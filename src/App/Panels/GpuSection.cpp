@@ -271,13 +271,14 @@ void renderGpuSection(RenderContext& ctx)
                                      UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
                 }
 
-                // Plot clock as a percentage of the history's peak clock. The label stays fixed, so the
-                // legend keeps its show/hide state; the peak itself is in the tooltip.
+                // Plot clock as a percentage of gpuClockReferenceMHz(): the history's peak, or the floor
+                // when every clock is below it. The label stays fixed, so the legend keeps its show/hide
+                // state; the reference itself is in the tooltip.
                 if (caps.hasClockSpeeds && !clockData.empty())
                 {
                     normalizeToPercent(clockData, maxClockMHz, clockPercentBuf);
                     const auto clockTimeData = tailAlignedSpan(timeData, clockPercentBuf.size());
-                    plotLineWithFill("Clock (% of peak)",
+                    plotLineWithFill("Clock (%)",
                                      clockTimeData.values.data(),
                                      clockPercentBuf.data(),
                                      UI::Format::checkedCount(clockTimeData.values.size()),
@@ -359,10 +360,13 @@ void renderGpuSection(RenderContext& ctx)
                             if (*idxVal >= clockTimeData.offset)
                             {
                                 const size_t clockIdx = *idxVal - clockTimeData.offset;
-                                ImGui::TextColored(theme.scheme().gpuClock,
-                                                   "Clock: %u MHz (peak %.0f MHz)",
-                                                   static_cast<unsigned int>(clockData[clockIdx]),
-                                                   static_cast<double>(maxClockMHz));
+                                const auto clockMHz = static_cast<double>(clockData[clockIdx]);
+                                ImGui::TextColored(
+                                    theme.scheme().gpuClock,
+                                    "Clock: %.0f MHz (%s of %.0f MHz)",
+                                    clockMHz,
+                                    UI::Format::percentCompact((clockMHz / static_cast<double>(maxClockMHz)) * 100.0).c_str(),
+                                    static_cast<double>(maxClockMHz));
                             }
                         }
                         if (caps.hasEncoderDecoder && !encoderData.empty())
@@ -427,8 +431,9 @@ void renderGpuSection(RenderContext& ctx)
             const double clockPercent = (static_cast<double>(snap.gpuClockMHz) / static_cast<double>(maxClockMHz)) * 100.0;
             gpuCoreBars.push_back(snap.gpuClockMHz > 0 ? NowBar{.valueText = std::format("{} MHz", snap.gpuClockMHz),
                                                                 .label = "GPU Clock",
-                                                                .tooltipText = std::format("GPU Clock: {} MHz (peak {:.0f} MHz)",
+                                                                .tooltipText = std::format("GPU Clock: {} MHz ({} of {:.0f} MHz)",
                                                                                            snap.gpuClockMHz,
+                                                                                           UI::Format::percentCompact(clockPercent),
                                                                                            static_cast<double>(maxClockMHz)),
                                                                 .value01 = UI::Format::percent01(clockPercent),
                                                                 .color = theme.scheme().gpuClock}
