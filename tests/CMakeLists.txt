@@ -176,6 +176,7 @@ add_executable(TaskSmackTests
     App/test_ProcessTableLayout.cpp
     App/test_ProcessTableSettings.cpp
     App/test_ProcessDetailsLayout.cpp
+    App/test_GpuClockReference.cpp
     App/test_GpuSectionEmptyState.cpp
     App/test_ProcessRowFormat.cpp
     Platform/test_CgroupFreezerPath.cpp
@@ -191,6 +192,7 @@ add_executable(TaskSmackTests
     App/test_UserConfigPersistence.cpp
     App/test_PanelTabs.cpp
     App/test_PriorityHelpers.cpp
+    App/test_ProcessGpuHelpers.cpp
     App/test_ProcessActionHelpers.cpp
     App/test_SettingsLayerDetail.cpp
     App/test_NetInterfaceUtils.cpp

@@ -18,9 +18,9 @@
 #include <cstddef>
 #include <format>
 #include <functional>
-#include <limits>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -99,30 +99,19 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
 
     const auto interfaceCount = interfaces.size();
 
-    // Get selected interface (or default to -1)
-    int selectedInterface = (ctx.selectedNetworkInterface != nullptr) ? *ctx.selectedNetworkInterface : -1;
-
-    // Clamp selected interface to current range so indexing into interfaceNames is always safe.
-    // Interfaces can disappear (e.g., USB adapter unplugged, VPN disconnected).
-    if (std::cmp_greater_equal(selectedInterface, interfaceCount))
+    // The selection is held by interface name (see resolveInterfaceSelection). selectedInterface is
+    // this frame's index for it: -1 = "Total".
+    const auto selection = NetInterfaceUtils::resolveInterfaceSelection(
+        interfaces, ctx.selectedNetworkInterface != nullptr ? std::string_view{*ctx.selectedNetworkInterface} : std::string_view{});
+    int selectedInterface = selection.index.has_value() ? UI::Format::checkedCount(*selection.index) : -1;
+    if (selection.lost && ctx.selectedNetworkInterface != nullptr)
     {
-        // Guard against potential overflow when converting from size_t to int.
-        // While extremely unlikely (would require SIZE_MAX interfaces), be defensive.
-        constexpr auto maxIntIndex = static_cast<size_t>(std::numeric_limits<int>::max());
-        if ((interfaceCount == 0) || (interfaceCount > maxIntIndex))
+        // The interface went away (adapter unplugged, VPN disconnected): show Total, and restart
+        // the bars rather than letting them glide from the old interface's values.
+        ctx.selectedNetworkInterface->clear();
+        if (ctx.smoothedNetInitialized != nullptr)
         {
-            // Fall back to "Total" mode when no interfaces or index would overflow int.
-            selectedInterface = -1;
-        }
-        else
-        {
-            selectedInterface = static_cast<int>(interfaceCount) - 1;
-        }
-
-        // Update the caller's value
-        if (ctx.selectedNetworkInterface != nullptr)
-        {
-            *ctx.selectedNetworkInterface = selectedInterface;
+            *ctx.smoothedNetInitialized = false;
         }
     }
 
@@ -159,7 +148,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                 selectedInterface = selectionValue;
                 if (ctx.selectedNetworkInterface != nullptr)
                 {
-                    *ctx.selectedNetworkInterface = selectedInterface;
+                    *ctx.selectedNetworkInterface = (i == 0) ? std::string{} : interfaces[i - 1].name;
                 }
                 // Reset smoothed values when changing interface
                 if (ctx.smoothedNetInitialized != nullptr)
@@ -277,7 +266,8 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     netMax = std::max(netMax, UI::Widgets::maxOfSeries(ifaceSentData, ifaceRecvData));
 
     // Determine labels based on selection
-    const std::string ifaceDisplayName = showingInterface ? interfaces[static_cast<size_t>(selectedInterface)].name : "Network";
+    // Name the interface the way the picker above does (#1009).
+    const std::string ifaceDisplayName = showingInterface ? interfaceNames[static_cast<size_t>(selectedInterface) + 1] : "Network";
     const std::string sentBarLabel = showingInterface ? std::format("{} Sent", ifaceDisplayName) : "Network Sent";
     const std::string recvBarLabel = showingInterface ? std::format("{} Received", ifaceDisplayName) : "Network Received";
 
@@ -299,7 +289,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     std::string plotTitle = "Total";
     if (usingInterfaceHistory)
     {
-        plotTitle = interfaces[static_cast<size_t>(selectedInterface)].name;
+        plotTitle = ifaceDisplayName;
     }
     else if (interfaceHistoryUnavailable)
     {

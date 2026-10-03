@@ -24,6 +24,7 @@
 #include <ratio>
 #include <span>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -509,11 +510,11 @@ inline int formatAxisLocalized(double value, char* buff, int size, void* /*userD
     return 0;
 }
 
-/// Format values as bytes/s with appropriate unit scaling (B/s, KB/s, MB/s, GB/s)
-/// Use with ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytesPerSec)
-inline int formatAxisBytesPerSec(double value, char* buff, int size, void* /*userData*/)
+/// Shared body of formatAxisBytes and formatAxisBytesPerSec: scale a byte count to B, KB, MB or GB
+/// (binary, matching UI::Format::formatBytes) and append `suffix` ("" or "/s").
+inline int formatAxisBinaryBytes(double value, char* buff, int size, std::string_view suffix)
 {
-    // Clamp tiny values to zero to avoid "-0B/s" display
+    // Clamp tiny values to zero to avoid a "-0B" display
     if (std::abs(value) < 0.5)
     {
         value = 0.0;
@@ -524,19 +525,19 @@ inline int formatAxisBytesPerSec(double value, char* buff, int size, void* /*use
 
     if (absValue >= 1024.0 * 1024.0 * 1024.0)
     {
-        str = std::format("{:.1f}GB/s", value / (1024.0 * 1024.0 * 1024.0));
+        str = std::format("{:.1f}GB{}", value / (1024.0 * 1024.0 * 1024.0), suffix);
     }
     else if (absValue >= 1024.0 * 1024.0)
     {
-        str = std::format("{:.1f}MB/s", value / (1024.0 * 1024.0));
+        str = std::format("{:.1f}MB{}", value / (1024.0 * 1024.0), suffix);
     }
     else if (absValue >= 1024.0)
     {
-        str = std::format("{:.1f}KB/s", value / 1024.0);
+        str = std::format("{:.1f}KB{}", value / 1024.0, suffix);
     }
     else
     {
-        str = std::format("{:.1f}B/s", value);
+        str = std::format("{:.1f}B{}", value, suffix);
     }
 
     const int len = static_cast<int>(str.size());
@@ -547,6 +548,20 @@ inline int formatAxisBytesPerSec(double value, char* buff, int size, void* /*use
         return len;
     }
     return 0;
+}
+
+/// Format values as bytes with appropriate unit scaling (B, KB, MB, GB)
+/// Use with ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytes)
+inline int formatAxisBytes(double value, char* buff, int size, void* /*userData*/)
+{
+    return formatAxisBinaryBytes(value, buff, size, "");
+}
+
+/// Format values as bytes/s with appropriate unit scaling (B/s, KB/s, MB/s, GB/s)
+/// Use with ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytesPerSec)
+inline int formatAxisBytesPerSec(double value, char* buff, int size, void* /*userData*/)
+{
+    return formatAxisBinaryBytes(value, buff, size, "/s");
 }
 
 /// Format values as watts (always in W with decimal places for consistency)

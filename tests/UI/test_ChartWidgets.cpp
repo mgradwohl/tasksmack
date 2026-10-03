@@ -471,6 +471,27 @@ TEST(ChartWidgetsFormattersTest, FormatAxisBytesPerSecScalesUnits)
     EXPECT_EQ(std::string(buf), "2.0KB/s");
 }
 
+TEST(ChartWidgetsFormattersTest, FormatAxisBytesUsesBinaryUnitsWithoutRateSuffix)
+{
+    // Matches UI::Format::formatBytes (binary units) so the GPU Memory axis agrees with its tooltip (#1023).
+    char buf[32]{};
+    int len = formatAxisBytes(512.0, buf, static_cast<int>(sizeof(buf)), nullptr);
+    EXPECT_GT(len, 0);
+    EXPECT_EQ(std::string(buf), "512.0B");
+
+    len = formatAxisBytes(1536.0, buf, static_cast<int>(sizeof(buf)), nullptr);
+    EXPECT_GT(len, 0);
+    EXPECT_EQ(std::string(buf), "1.5KB");
+
+    len = formatAxisBytes(1.5 * 1024.0 * 1024.0 * 1024.0, buf, static_cast<int>(sizeof(buf)), nullptr);
+    EXPECT_GT(len, 0);
+    EXPECT_EQ(std::string(buf), "1.5GB");
+
+    len = formatAxisBytes(-0.1, buf, static_cast<int>(sizeof(buf)), nullptr);
+    EXPECT_GT(len, 0);
+    EXPECT_EQ(std::string(buf), "0.0B");
+}
+
 TEST(ChartWidgetsFormattersTest, FormatAxisBytesPerSecClampsTinyNegativeToZero)
 {
     char buf[32]{};
