@@ -365,7 +365,9 @@ void ShellLayer::renderTabBar()
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
                         ImVec2(ShellMetrics::TAB_PADDING_X * styleScale, ShellMetrics::MAIN_TAB_PADDING_Y * styleScale));
 
-    if (ImGui::BeginTabBar("##MainTabBar", ImGuiTabBarFlags_NoCloseWithMiddleMouseButton | ImGuiTabBarFlags_NoTooltip))
+    if (ImGui::BeginTabBar("##MainTabBar",
+                           ImGuiTabBarFlags_NoCloseWithMiddleMouseButton | ImGuiTabBarFlags_NoTooltip |
+                               ImGuiTabBarFlags_DrawSelectedOverline))
     {
         // Track previous tab to emit change event if selection changes
         const auto* previousTab = &m_Tabs.activeTab();
