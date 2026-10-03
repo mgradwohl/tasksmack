@@ -49,7 +49,6 @@ using UI::Widgets::formatAgeSeconds;
 using UI::Widgets::formatAxisBytesPerSec;
 using UI::Widgets::formatAxisLocalized;
 using UI::Widgets::formatAxisWatts;
-using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
@@ -334,13 +333,21 @@ void ProcessDetailsPanel::renderContent()
                 const UI::Widgets::TabContentScope content("##GpuContent");
                 const auto& proc = m_CachedSnapshot;
                 // Show "no GPU" message only if ALL GPU fields are empty/zero (no GPU resources at all)
-                if ((proc.gpuMemoryBytes == 0U) && (proc.gpuUtilPercent == 0.0) && proc.gpuDevices.empty())
+                // and the history holds no GPU use either, so the charts stay up after the process
+                // goes idle on the GPU (#1014).
+                const auto isUsed = [](double value)
+                {
+                    return value > 0.0;
+                };
+                const bool hasGpuHistory = std::ranges::any_of(m_GpuUtilHistory, isUsed) || std::ranges::any_of(m_GpuMemHistory, isUsed);
+                if ((proc.gpuMemoryBytes == 0U) && (proc.gpuUtilPercent == 0.0) && proc.gpuDevices.empty() && !hasGpuHistory)
                 {
                     ImGui::TextUnformatted("No GPU usage detected for this process");
                 }
                 else
                 {
-                    renderGpuUsage(m_CachedSnapshot);
+                    UI::Widgets::FillPlotLayout fill(m_GpuFill);
+                    renderGpuUsage(m_CachedSnapshot, fill);
                 }
             }
             ImGui::EndTabItem();
@@ -1513,7 +1520,7 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc, 
     ImGui::Spacing();
 }
 
-void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
+void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill)
 {
     auto& theme = UI::Theme::get();
 
@@ -1547,7 +1554,7 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
     ImGui::Separator();
     ImGui::Spacing();
 
-    renderGpuHistoryGraphs();
+    renderGpuHistoryGraphs(fill);
 }
 
 // Renders the current-value GPU metrics table (utilization, memory, devices, engines,
@@ -1726,7 +1733,7 @@ void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& p
 
 // Renders the GPU utilization and memory history charts, or a "collecting data" placeholder
 // until enough history has accumulated.
-void ProcessDetailsPanel::renderGpuHistoryGraphs()
+void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fill)
 {
     auto& theme = UI::Theme::get();
 
@@ -1749,7 +1756,8 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs()
         // GPU Utilization graph (percent metric: locked 0-100 axis with percent formatter)
         auto plotGpuUtil = [&]()
         {
-            const UI::Widgets::HistoryChart chart(UI::Widgets::percentHistoryConfig("##GPUUtilPlot", axisConfig.xMin, axisConfig.xMax));
+            const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
+                UI::Widgets::percentHistoryConfig("##GPUUtilPlot", axisConfig.xMin, axisConfig.xMax), fill.plotHeight()));
             if (chart.active())
             {
                 UI::Widgets::drawCollectingHint(alignedCount);
@@ -1795,12 +1803,14 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs()
         // GPU Memory graph
         auto plotGpuMem = [&]()
         {
-            const UI::Widgets::HistoryChart chart(UI::Widgets::rateHistoryConfig("##GPUMemPlot",
-                                                                                 axisConfig.xMin,
-                                                                                 axisConfig.xMax,
-                                                                                 formatAxisLocalized,
-                                                                                 UI::Widgets::maxOfSeries(gpuMemVec),
-                                                                                 UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES));
+            const UI::Widgets::HistoryChart chart(
+                UI::Widgets::withHeight(UI::Widgets::rateHistoryConfig("##GPUMemPlot",
+                                                                       axisConfig.xMin,
+                                                                       axisConfig.xMax,
+                                                                       UI::Widgets::formatAxisBytes,
+                                                                       UI::Widgets::maxOfSeries(gpuMemVec),
+                                                                       UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES),
+                                        fill.plotHeight()));
             if (chart.active())
             {
                 UI::Widgets::drawCollectingHint(alignedCount);
@@ -1861,13 +1871,13 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs()
         };
 
         ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CHART_LINE "  GPU Utilization History (%zu samples)", alignedCount);
-        renderHistoryWithNowBars(
-            "ProcessGPUUtilHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plotGpuUtil, {gpuUtilBar}, false, PROCESS_NOW_BAR_COLUMNS);
+        renderHistoryWithNowBars("ProcessGPUUtilHistory", fill.plotHeight(), plotGpuUtil, {gpuUtilBar}, false, PROCESS_NOW_BAR_COLUMNS);
+        fill.addPlot();
         ImGui::Spacing();
 
         ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CHART_LINE "  GPU Memory History (%zu samples)", alignedCount);
-        renderHistoryWithNowBars(
-            "ProcessGPUMemHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plotGpuMem, {gpuMemBar}, false, PROCESS_NOW_BAR_COLUMNS);
+        renderHistoryWithNowBars("ProcessGPUMemHistory", fill.plotHeight(), plotGpuMem, {gpuMemBar}, false, PROCESS_NOW_BAR_COLUMNS);
+        fill.addPlot();
         ImGui::Spacing();
     }
     else

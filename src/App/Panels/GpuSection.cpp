@@ -3,6 +3,7 @@
 #include "Domain/GPUSnapshot.h"
 #include "UI/ChartWidgets.h"
 #include "UI/EmptyState.h"
+#include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
@@ -14,6 +15,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <format>
 #include <optional>
 #include <span>
@@ -29,7 +31,6 @@ namespace
 using UI::Widgets::buildTimeAxis;
 using UI::Widgets::computeAlpha;
 using UI::Widgets::formatAgeSeconds;
-using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
@@ -44,6 +45,27 @@ void normalizeToPercent(std::span<const float> hist, float maxVal, std::vector<f
 {
     out.resize(hist.size());
     std::ranges::transform(hist, out.begin(), [maxVal](float v) { return (v / maxVal) * 100.0F; });
+}
+
+/// Lowest reference the clock line and bar are scaled against, so an idle GPU's few hundred MHz
+/// don't fill the chart.
+constexpr float GPU_CLOCK_REFERENCE_FLOOR_MHZ = 2000.0F;
+
+/// The clock the GPU clock line and bar are drawn as a percentage of: the highest clock in the
+/// history (no probe reports the device's maximum), floored at GPU_CLOCK_REFERENCE_FLOOR_MHZ. The
+/// scale moves only when a new peak arrives or the old one ages out, not with every sample, and no
+/// sample in the history exceeds 100 % (#994).
+[[nodiscard]] float gpuClockReferenceMHz(std::span<const float> clockHistory, std::uint32_t currentClockMHz)
+{
+    float reference = std::max(GPU_CLOCK_REFERENCE_FLOOR_MHZ, static_cast<float>(currentClockMHz));
+    for (const float clock : clockHistory)
+    {
+        if (std::isfinite(clock))
+        {
+            reference = std::max(reference, clock);
+        }
+    }
+    return reference;
 }
 
 /// Render a "Note: This system does not report GPU X, Y or Z" line in muted text.
@@ -122,6 +144,10 @@ void renderGpuSection(RenderContext& ctx)
     auto& theme = UI::Theme::get();
 
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+
+    // Every GPU's charts share the tab's height, like the Overview tab's (#959).
+    UI::Widgets::PlotFillState localFill;
+    UI::Widgets::FillPlotLayout fill(ctx.plotFill != nullptr ? *ctx.plotFill : localFill);
 
     ImGui::Text("GPU Monitoring (%zu GPU%s)", gpuSnapshots.size(), gpuSnapshots.size() == 1 ? "" : "s");
     ImGui::Spacing();
@@ -219,9 +245,7 @@ void renderGpuSection(RenderContext& ctx)
         // (global timestamps would include samples this GPU never recorded, causing a mismatch).
         const auto axisConfig = makeTimeAxisConfig(perGpuTimestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
 
-        // Get max clock for normalization
-        const float maxClockMHz =
-            caps.hasClockSpeeds && snap.gpuClockMHz > 0 ? static_cast<float>(std::max(snap.gpuClockMHz, 2000U)) : 2000.0F;
+        const float maxClockMHz = gpuClockReferenceMHz(clockData, snap.gpuClockMHz);
 
         // ========================================
         // Chart 1: Core + Video (all percentages)
@@ -231,7 +255,8 @@ void renderGpuSection(RenderContext& ctx)
 
         auto gpuCorePlot = [&]()
         {
-            const UI::Widgets::HistoryChart chart(UI::Widgets::percentHistoryConfig("##GPUCoreHistory", axisConfig.xMin, axisConfig.xMax));
+            const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
+                UI::Widgets::percentHistoryConfig("##GPUCoreHistory", axisConfig.xMin, axisConfig.xMax), fill.plotHeight()));
             if (chart.active())
             {
                 if (!utilData.empty())
@@ -260,13 +285,13 @@ void renderGpuSection(RenderContext& ctx)
                                      UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
                 }
 
-                // Plot clock as normalized percentage (0-maxClockMHz mapped to 0-100)
+                // Plot clock as a percentage of the history's peak clock. The label stays fixed, so the
+                // legend keeps its show/hide state; the peak itself is in the tooltip.
                 if (caps.hasClockSpeeds && !clockData.empty())
                 {
                     normalizeToPercent(clockData, maxClockMHz, clockPercentBuf);
                     const auto clockTimeData = tailAlignedSpan(timeData, clockPercentBuf.size());
-                    const auto clockLabel = std::format("Clock (% of {:.0f} MHz)", static_cast<double>(maxClockMHz));
-                    plotLineWithFill(clockLabel.c_str(),
+                    plotLineWithFill("Clock (% of peak)",
                                      clockTimeData.values.data(),
                                      clockPercentBuf.data(),
                                      UI::Format::checkedCount(clockTimeData.values.size()),
@@ -350,8 +375,10 @@ void renderGpuSection(RenderContext& ctx)
                             if (*idxVal >= clockTimeData.offset)
                             {
                                 const size_t clockIdx = *idxVal - clockTimeData.offset;
-                                ImGui::TextColored(
-                                    theme.scheme().gpuClock, "Clock: %u MHz", static_cast<unsigned int>(clockData[clockIdx]));
+                                ImGui::TextColored(theme.scheme().gpuClock,
+                                                   "Clock: %u MHz (peak %.0f MHz)",
+                                                   static_cast<unsigned int>(clockData[clockIdx]),
+                                                   static_cast<double>(maxClockMHz));
                             }
                         }
                         if (caps.hasEncoderDecoder && !encoderData.empty())
@@ -409,14 +436,23 @@ void renderGpuSection(RenderContext& ctx)
                                    .value01 = UI::Format::percent01(smoothed.memoryPercent),
                                    .color = theme.scheme().gpuMemory});
         }
-        if (caps.hasClockSpeeds && snap.gpuClockMHz > 0)
+        // Like the fan bar below: present whenever the clock line is, so a zero (unreadable) sample
+        // shows N/A instead of removing the bar and shifting every bar after it (#995).
+        if (caps.hasClockSpeeds)
         {
             const double clockPercent = (static_cast<double>(snap.gpuClockMHz) / static_cast<double>(maxClockMHz)) * 100.0;
-            gpuCoreBars.push_back({.valueText = std::format("{} MHz", snap.gpuClockMHz),
-                                   .label = "GPU Clock",
-                                   .tooltipText = {},
-                                   .value01 = UI::Format::percent01(clockPercent),
-                                   .color = theme.scheme().gpuClock});
+            gpuCoreBars.push_back(snap.gpuClockMHz > 0 ? NowBar{.valueText = std::format("{} MHz", snap.gpuClockMHz),
+                                                                .label = "GPU Clock",
+                                                                .tooltipText = std::format("GPU Clock: {} MHz (peak {:.0f} MHz)",
+                                                                                           snap.gpuClockMHz,
+                                                                                           static_cast<double>(maxClockMHz)),
+                                                                .value01 = UI::Format::percent01(clockPercent),
+                                                                .color = theme.scheme().gpuClock}
+                                                       : NowBar{.valueText = "N/A",
+                                                                .label = "GPU Clock",
+                                                                .tooltipText = "GPU Clock: unavailable this sample",
+                                                                .value01 = 0.0,
+                                                                .color = theme.scheme().textMuted});
         }
         if (caps.hasEncoderDecoder)
         {
@@ -477,7 +513,8 @@ void renderGpuSection(RenderContext& ctx)
         const size_t gpuNowBarColumns = std::max(gpuCoreBars.size(), gpuThermalBars.size());
 
         const std::string coreLayoutId = std::format("GPUCoreLayout{}", gpuIdx);
-        renderHistoryWithNowBars(coreLayoutId.c_str(), HISTORY_PLOT_HEIGHT_DEFAULT, gpuCorePlot, gpuCoreBars, false, gpuNowBarColumns);
+        renderHistoryWithNowBars(coreLayoutId.c_str(), fill.plotHeight(), gpuCorePlot, gpuCoreBars, false, gpuNowBarColumns);
+        fill.addPlot();
 
         // Show notes for unavailable core metrics
         {
@@ -515,8 +552,8 @@ void renderGpuSection(RenderContext& ctx)
 
             auto gpuThermalPlot = [&]()
             {
-                const UI::Widgets::HistoryChart chart(
-                    UI::Widgets::percentHistoryConfig("##GPUThermalHistory", axisConfig.xMin, axisConfig.xMax));
+                const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
+                    UI::Widgets::percentHistoryConfig("##GPUThermalHistory", axisConfig.xMin, axisConfig.xMax), fill.plotHeight()));
                 if (chart.active())
                 {
                     // Temperature (normalized to 0-100%)
@@ -633,13 +670,14 @@ void renderGpuSection(RenderContext& ctx)
             {
                 const std::string thermalLayoutId = std::format("GPUThermalLayout{}", gpuIdx);
                 renderHistoryWithNowBars(
-                    thermalLayoutId.c_str(), HISTORY_PLOT_HEIGHT_DEFAULT, gpuThermalPlot, gpuThermalBars, false, gpuNowBarColumns);
+                    thermalLayoutId.c_str(), fill.plotHeight(), gpuThermalPlot, gpuThermalBars, false, gpuNowBarColumns);
             }
             else
             {
                 // No current data, just render the plot without now bars
                 gpuThermalPlot();
             }
+            fill.addPlot();
 
             // Show notes for unavailable metrics
             std::vector<std::string> unavailableNotes;

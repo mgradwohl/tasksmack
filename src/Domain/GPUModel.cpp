@@ -5,6 +5,7 @@
 #include "Numeric.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/IGPUProbe.h"
+#include "SamplingConfig.h"
 
 #include <spdlog/spdlog.h>
 
@@ -59,7 +60,7 @@ GPUModel::GPUModel(std::unique_ptr<Platform::IGPUProbe> probe)
         // Initialize history buffers for each GPU
         for (const auto& info : m_GPUInfo)
         {
-            m_Histories.emplace(info.id, History<GPUSnapshot, GPU_HISTORY_CAPACITY>{});
+            m_Histories.emplace(info.id, HistoryBuffer<GPUSnapshot>{Sampling::historyCapacityForSeconds(m_MaxHistorySeconds)});
         }
     }
     catch (const std::exception& e)
@@ -69,6 +70,11 @@ GPUModel::GPUModel(std::unique_ptr<Platform::IGPUProbe> probe)
 }
 
 void GPUModel::refresh()
+{
+    refreshAt(std::chrono::steady_clock::now());
+}
+
+void GPUModel::refreshAt(std::chrono::steady_clock::time_point now)
 {
     if (!m_Probe)
     {
@@ -83,7 +89,7 @@ void GPUModel::refresh()
             const std::scoped_lock probeLock(m_ProbeMutex);
             currentCounters = m_Probe->readGPUCounters();
         }
-        auto currentTime = std::chrono::steady_clock::now();
+        const auto currentTime = now;
 
         // Calculate time delta
         auto timeDelta = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - m_PrevSampleTime);
@@ -115,22 +121,15 @@ void GPUModel::refresh()
             const double nowSec = std::chrono::duration<double>(currentTime.time_since_epoch()).count();
             m_HistoryTimestamps.push_back(nowSec);
 
-            // Trim timestamps to match history capacity
-            if (m_HistoryTimestamps.size() > GPU_HISTORY_CAPACITY)
-            {
-                m_HistoryTimestamps.erase(m_HistoryTimestamps.begin(),
-                                          m_HistoryTimestamps.begin() +
-                                              static_cast<std::ptrdiff_t>(m_HistoryTimestamps.size() - GPU_HISTORY_CAPACITY));
-            }
-
             // Push to history under lock protection — stamp capture time first so that
             // per-GPU timestamps stay aligned with each GPU's own history entries.
             for (auto& [gpuId, snapshot] : m_Snapshots)
             {
                 snapshot.captureTimeSec = nowSec;
-                auto histIt = m_Histories.try_emplace(gpuId).first;
+                auto histIt = m_Histories.try_emplace(gpuId, Sampling::historyCapacityForSeconds(m_MaxHistorySeconds)).first;
                 histIt->second.push(snapshot);
             }
+            trimHistory(nowSec);
             publish();
 
             m_PrevCounters.clear();
@@ -145,6 +144,53 @@ void GPUModel::refresh()
     catch (const std::exception& e)
     {
         spdlog::error("GPUModel::refresh: {}", e.what());
+    }
+}
+
+void GPUModel::setMaxHistorySeconds(double seconds)
+{
+    const std::unique_lock lock(m_Mutex);
+    m_MaxHistorySeconds = Sampling::clampHistorySeconds(seconds);
+    applyHistoryCapacity();
+    if (!m_HistoryTimestamps.empty())
+    {
+        trimHistory(m_HistoryTimestamps.back());
+    }
+}
+
+double GPUModel::maxHistorySeconds() const
+{
+    const std::shared_lock lock(m_Mutex);
+    return m_MaxHistorySeconds;
+}
+
+void GPUModel::applyHistoryCapacity()
+{
+    // Sized for the window at the fastest supported refresh cadence; trimHistory() governs
+    // actual retention, as in SystemModel and StorageModel.
+    const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
+    for (auto& [gpuId, history] : m_Histories)
+    {
+        history.setCapacity(capacity);
+    }
+}
+
+void GPUModel::trimHistory(double nowSeconds)
+{
+    const double cutoff = nowSeconds - m_MaxHistorySeconds;
+    const auto keepFrom = std::ranges::lower_bound(m_HistoryTimestamps, cutoff);
+    m_HistoryTimestamps.erase(m_HistoryTimestamps.begin(), keepFrom);
+
+    // Each GPU has its own timestamps (a GPU missing from a sample has no entry for it), so
+    // trim each ring by its own capture times rather than by one shared count.
+    for (auto& [gpuId, history] : m_Histories)
+    {
+        std::size_t staleCount = 0;
+        while (staleCount < history.size() && history.ref(staleCount).captureTimeSec < cutoff)
+        {
+            ++staleCount;
+        }
+        history.discardFront(staleCount);
     }
 }
 

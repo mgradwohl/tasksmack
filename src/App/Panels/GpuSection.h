@@ -2,6 +2,7 @@
 
 #include "Domain/GPUModel.h"
 #include "Domain/GPUSnapshot.h"
+#include "UI/FillPlotLayout.h"
 
 #include <chrono>
 #include <cstddef>
@@ -88,6 +89,10 @@ struct RenderContext
 
     // Smoothed values per GPU (map keyed by GPU ID)
     std::unordered_map<std::string, SmoothedGPU>* smoothedGPUs = nullptr;
+
+    // The tab's state for the shared chart-height rule (#959). Null: the charts still fill, but
+    // from a fresh measurement each frame.
+    UI::Widgets::PlotFillState* plotFill = nullptr;
 };
 
 /// Render the GPU section with utilization, memory, thermal, and power charts.
