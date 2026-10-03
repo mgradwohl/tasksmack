@@ -85,6 +85,27 @@ TEST(FpsCounterTest, HighFrameRateProducesHighDisplayedFps)
     EXPECT_NEAR(counter.displayedFps(), 60.0F, 1.0F);
 }
 
+TEST(FpsCounterTest, DisplayedFrameTimeAveragesTheSameWindowAsFps)
+{
+    // #1037: the status bar paired the window's FPS with the last single frame's time. Fast frames
+    // then one slow one: the displayed frame time is the window's mean, consistent with the FPS.
+    FpsCounter counter(0.5F);
+    EXPECT_FLOAT_EQ(counter.displayedFrameTime(), 0.0F);
+    for (int i = 0; i < 4; ++i)
+    {
+        counter.update(0.05F);
+    }
+    counter.update(0.3F); // window: 5 frames over 0.5 s
+    EXPECT_FLOAT_EQ(counter.frameTime(), 0.3F);
+    EXPECT_FLOAT_EQ(counter.displayedFps(), 10.0F);
+    EXPECT_FLOAT_EQ(counter.displayedFrameTime(), 0.1F);
+    EXPECT_FLOAT_EQ(counter.displayedFrameTime() * counter.displayedFps(), 1.0F);
+
+    // Unchanged until the next window completes.
+    counter.update(0.01F);
+    EXPECT_FLOAT_EQ(counter.displayedFrameTime(), 0.1F);
+}
+
 TEST(FpsCounterTest, CustomAveragingWindowIsRespected)
 {
     // A 1-second window shouldn't fire after only 0.5s of accumulated frames.
