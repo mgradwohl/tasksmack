@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -106,15 +107,18 @@ enum rsmi_memory_type_t : std::uint32_t
 // ROCm SMI buffer size constants
 constexpr std::size_t RSMI_MAX_BUFFER_LENGTH = 256;
 
-// ROCm SMI frequency structure
+// ROCm SMI library version
 // NOLINTNEXTLINE(readability-identifier-naming) - must match AMD ROCm SMI API
-struct rsmi_frequencies_t
+struct rsmi_version_t
 {
-    std::uint32_t num_supported;
-    std::uint32_t current;
-    // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - must match AMD ROCm SMI API ABI
-    std::uint64_t frequency[32];
+    std::uint32_t major;
+    std::uint32_t minor;
+    std::uint32_t patch;
+    const char* build;
 };
+
+// rsmi_frequencies_t changed layout across ROCm versions, so it is never declared here: the
+// probe passes ROCmGPUProbeMath::RsmiFrequenciesBuffer and decodes it by library version (#1088).
 
 } // anonymous namespace
 
@@ -142,10 +146,15 @@ struct ROCmGPUProbe::Impl
     rsmi_status_t (*rsmi_dev_temp_metric_get)(std::uint32_t, rsmi_temperature_type_t, rsmi_temperature_metric_t, std::int64_t*) = nullptr;
     rsmi_status_t (*rsmi_dev_power_ave_get)(std::uint32_t, std::uint32_t, std::uint64_t*) = nullptr;
     rsmi_status_t (*rsmi_dev_power_cap_get)(std::uint32_t, std::uint32_t, std::uint64_t*) = nullptr;
-    rsmi_status_t (*rsmi_dev_gpu_clk_freq_get)(std::uint32_t, rsmi_clk_type_t, rsmi_frequencies_t*) = nullptr;
+    // Takes rsmi_frequencies_t*, whose layout depends on the library version: see frequenciesLayout.
+    rsmi_status_t (*rsmi_dev_gpu_clk_freq_get)(std::uint32_t, rsmi_clk_type_t, void*) = nullptr;
+    rsmi_status_t (*rsmi_version_get)(rsmi_version_t*) = nullptr;
     rsmi_status_t (*rsmi_dev_fan_speed_get)(std::uint32_t, std::uint32_t, std::int64_t*) = nullptr;
     rsmi_status_t (*rsmi_dev_fan_speed_max_get)(std::uint32_t, std::uint32_t, std::uint64_t*) = nullptr;
     const char* (*rsmi_status_string)(rsmi_status_t) = nullptr;
+
+    // How to decode rsmi_frequencies_t for the loaded library; set in loadROCmSMI().
+    ROCmGPUProbeMath::FrequenciesLayout frequenciesLayout = ROCmGPUProbeMath::FrequenciesLayout::V6;
 
     bool loadROCmSMI();
     void unloadROCmSMI();
@@ -217,6 +226,7 @@ bool ROCmGPUProbe::Impl::loadROCmSMI()
     LOAD_ROCM_FUNC(rsmi_dev_gpu_clk_freq_get);
     LOAD_ROCM_FUNC(rsmi_dev_fan_speed_get);
     LOAD_ROCM_FUNC_OPTIONAL(rsmi_dev_fan_speed_max_get);
+    LOAD_ROCM_FUNC_OPTIONAL(rsmi_version_get);
     LOAD_ROCM_FUNC(rsmi_status_string);
 
 #undef LOAD_ROCM_FUNC
@@ -241,6 +251,17 @@ bool ROCmGPUProbe::Impl::loadROCmSMI()
         unloadROCmSMI();
         return false;
     }
+
+    // rsmi_frequencies_t's layout depends on the library version (#1088).
+    std::optional<std::uint32_t> libraryMajor;
+    if (rsmi_version_t version{}; rsmi_version_get != nullptr && rsmi_version_get(&version) == RSMI_STATUS_SUCCESS)
+    {
+        libraryMajor = version.major;
+    }
+    frequenciesLayout = ROCmGPUProbeMath::frequenciesLayoutFor(libraryMajor);
+    spdlog::debug("ROCmGPUProbe: ROCm SMI library major version {}, frequency layout {}",
+                  libraryMajor.has_value() ? std::to_string(*libraryMajor) : std::string("unknown"),
+                  frequenciesLayout == ROCmGPUProbeMath::FrequenciesLayout::V5 ? "ROCm 5" : "ROCm 6+");
 
     // Populate device handles
     devices.clear();
@@ -425,19 +446,21 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
         }
 
         // GPU clock speed (system clock)
-        rsmi_frequencies_t gpuFreq{};
-        result = m_Impl->rsmi_dev_gpu_clk_freq_get(deviceIdx, RSMI_CLK_TYPE_SYS, &gpuFreq);
-        if (result == RSMI_STATUS_SUCCESS && gpuFreq.current < gpuFreq.num_supported)
+        ROCmGPUProbeMath::RsmiFrequenciesBuffer gpuFreq;
+        result = m_Impl->rsmi_dev_gpu_clk_freq_get(deviceIdx, RSMI_CLK_TYPE_SYS, gpuFreq.bytes.data());
+        if (const auto hz = ROCmGPUProbeMath::currentFrequencyHz(gpuFreq, m_Impl->frequenciesLayout);
+            result == RSMI_STATUS_SUCCESS && hz.has_value())
         {
-            counter.gpuClockMHz = static_cast<std::uint32_t>(gpuFreq.frequency[gpuFreq.current] / 1000000); // Convert Hz to MHz
+            counter.gpuClockMHz = static_cast<std::uint32_t>(*hz / 1000000); // Convert Hz to MHz
         }
 
         // Memory clock speed
-        rsmi_frequencies_t memFreq{};
-        result = m_Impl->rsmi_dev_gpu_clk_freq_get(deviceIdx, RSMI_CLK_TYPE_MEM, &memFreq);
-        if (result == RSMI_STATUS_SUCCESS && memFreq.current < memFreq.num_supported)
+        ROCmGPUProbeMath::RsmiFrequenciesBuffer memFreq;
+        result = m_Impl->rsmi_dev_gpu_clk_freq_get(deviceIdx, RSMI_CLK_TYPE_MEM, memFreq.bytes.data());
+        if (const auto hz = ROCmGPUProbeMath::currentFrequencyHz(memFreq, m_Impl->frequenciesLayout);
+            result == RSMI_STATUS_SUCCESS && hz.has_value())
         {
-            counter.memoryClockMHz = static_cast<std::uint32_t>(memFreq.frequency[memFreq.current] / 1000000); // Convert Hz to MHz
+            counter.memoryClockMHz = static_cast<std::uint32_t>(*hz / 1000000); // Convert Hz to MHz
         }
 
         // Fan speed (sensor 0). rsmi_dev_fan_speed_get() returns a raw value relative to
