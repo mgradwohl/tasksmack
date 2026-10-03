@@ -113,17 +113,16 @@ inline constexpr double TAU_MS_MIN = 20.0;
 inline constexpr double TAU_MS_MAX = 400.0;
 inline constexpr int LINE_PLOT_MAX_POINTS_DENSE = 720;
 
-/// RAII guard to push smaller font for chart axis labels and legends
-/// RAII guard that pushes smaller font for chart rendering.
+/// RAII guard that pushes the chart font (see UI::chartFontSize()) for axis labels, legends and hints.
 class PlotFontGuard
 {
   public:
     PlotFontGuard()
     {
-        ImFont* smallerFont = UI::Theme::get().smallerFont();
-        if (smallerFont != nullptr)
+        ImFont* chartFont = UI::Theme::get().chartFont();
+        if (chartFont != nullptr)
         {
-            ImGui::PushFont(smallerFont);
+            ImGui::PushFont(chartFont);
             m_FontPushed = true;
         }
     }
