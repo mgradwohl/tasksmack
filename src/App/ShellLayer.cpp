@@ -19,7 +19,6 @@
 #include <spdlog/spdlog.h>
 
 #include <array>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -236,11 +235,9 @@ void ShellLayer::onUpdate(float deltaTime)
     {
         // Theme steps to the next preset; changeFontSize() then saves it and raises the event (#1076).
         auto& theme = UI::Theme::get();
-        if ((ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd)) && theme.increaseFontSize())
-        {
-            changeFontSize(theme.currentFontSize());
-        }
-        else if ((ImGui::IsKeyPressed(ImGuiKey_Minus) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract)) && theme.decreaseFontSize())
+        const bool grow = ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd);
+        const bool shrink = ImGui::IsKeyPressed(ImGuiKey_Minus) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract);
+        if ((grow && theme.increaseFontSize()) || (shrink && theme.decreaseFontSize()))
         {
             changeFontSize(theme.currentFontSize());
         }
