@@ -222,7 +222,9 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
 
             m_MemoryHistory.push_back(usedPercent);
             m_SharedHistory.push_back(toPercent(snapshot->sharedBytes));
-            m_VirtualHistory.push_back(toPercent(snapshot->virtualBytes));
+            // Bytes, not a percent of RAM: a process's virtual size is usually larger than physical RAM,
+            // so as a percent it was clamped to 100 and carried no information (#992).
+            m_VirtualHistory.push_back(Domain::Numeric::toDouble(snapshot->virtualBytes));
             m_ThreadHistory.push_back(Domain::Numeric::toDouble(snapshot->threadCount));
             m_HandleHistory.push_back(Domain::Numeric::toDouble(snapshot->handleCount));
             m_PageFaultHistory.push_back(snapshot->pageFaultsPerSec);
@@ -538,7 +540,6 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
     const double percentPerByte = memoryPercentPerByte(snapshot);
     const double targetMemUsedPercent = std::clamp(snapshot.memoryPercent, 0.0, 100.0);
     const double targetMemSharedPercent = memoryBytesToPercent(snapshot.sharedBytes, percentPerByte);
-    const double targetMemVirtualPercent = memoryBytesToPercent(snapshot.virtualBytes, percentPerByte);
 
     const bool initialized = m_SmoothedUsage.initialized && (deltaTimeSeconds > 0.0F);
 
@@ -571,8 +572,6 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
     m_SmoothedUsage.memoryUsedPercent = initializeOrSmooth(m_SmoothedUsage.memoryUsedPercent, targetMemUsedPercent, alpha, initialized);
     m_SmoothedUsage.memorySharedPercent =
         initializeOrSmooth(m_SmoothedUsage.memorySharedPercent, targetMemSharedPercent, alpha, initialized);
-    m_SmoothedUsage.memoryVirtualPercent =
-        initializeOrSmooth(m_SmoothedUsage.memoryVirtualPercent, targetMemVirtualPercent, alpha, initialized);
     m_SmoothedUsage.initialized = true;
 }
 
@@ -969,11 +968,14 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
             // they stepped while the bars around them glided.
             const double usedNow = m_SmoothedUsage.memoryUsedPercent;
             const double sharedNow = m_SmoothedUsage.memorySharedPercent;
-            const double virtNowVal = m_SmoothedUsage.memoryVirtualPercent;
+            // Virtual size in bytes on its own right-hand axis (#992), eased like a rate axis and shared
+            // with its bar.
+            const double virtAxisUpper = UI::Widgets::easedRateAxisUpperBound(
+                "##ProcOverviewMemory/Y2", UI::Widgets::maxOfSeries(virtData), UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES);
 
             std::vector<NowBar> memoryBars;
-            // No tooltipText: the hover tooltip is "label: value" (selectNowBarTooltip), percent-only
-            // to match the chart, which plots percents of RAM.
+            // No tooltipText: the hover tooltip is "label: value" (selectNowBarTooltip), in the
+            // chart's own units -- percents of RAM, and bytes for Virtual.
             memoryBars.push_back({.valueText = UI::Format::percentCompact(usedNow),
                                   .label = MEM_USED_LABEL,
                                   .tooltipText = {},
@@ -989,18 +991,22 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
                     .color = theme.scheme().chartCpu,
                 });
             }
-            memoryBars.push_back({.valueText = UI::Format::percentCompact(virtNowVal),
+            memoryBars.push_back({.valueText = UI::Format::formatBytes(m_SmoothedUsage.virtualBytes),
                                   .label = MEM_VIRTUAL_LABEL,
                                   .tooltipText = {},
-                                  .value01 = UI::Format::percent01(virtNowVal),
+                                  .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.virtualBytes, virtAxisUpper),
                                   .color = theme.scheme().chartIo});
 
             auto memoryPlot = [&]()
             {
-                const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
-                    UI::Widgets::percentHistoryConfig("##ProcOverviewMemory", axisConfig.xMin, axisConfig.xMax), fill.plotHeight()));
+                // Four legend entries (Used, Shared, Virtual, Peak Used): one row (see legendHorizontal).
+                const UI::Widgets::HistoryChart chart(
+                    UI::Widgets::withHeight(UI::Widgets::withHorizontalLegend(UI::Widgets::percentHistoryConfig(
+                                                "##ProcOverviewMemory", axisConfig.xMin, axisConfig.xMax)),
+                                            fill.plotHeight()));
                 if (chart.active())
                 {
+                    UI::Widgets::setupSecondaryRateAxis(virtAxisUpper, UI::Widgets::formatAxisBytes);
                     UI::Widgets::drawCollectingHint(alignedCount);
                     // Draw peak working set as a horizontal reference line (never decreases)
                     if (m_PeakMemoryPercent > 0.0)
@@ -1039,12 +1045,17 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
 
                     if (!virtData.empty())
                     {
+                        // Line only: a fill on its own scale would cover the Used and Shared areas.
+                        ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
                         plotLineWithFill(MEM_VIRTUAL_LABEL,
                                          timeData.data(),
                                          virtData.data(),
                                          UI::Format::checkedCount(virtData.size()),
                                          theme.scheme().chartIo,
-                                         theme.scheme().chartIoFill);
+                                         std::nullopt,
+                                         2.0F,
+                                         false);
+                        ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
                     }
 
                     if (ImPlot::IsPlotHovered())
@@ -1069,7 +1080,7 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
                             {
                                 rows.push_back({.label = MEM_VIRTUAL_LABEL,
                                                 .color = theme.scheme().chartIo,
-                                                .value = UI::Format::percentCompact(virtData[*idxVal])});
+                                                .value = UI::Format::formatBytes(virtData[*idxVal])});
                             }
                             if (m_PeakMemoryPercent > 0.0)
                             {
@@ -1198,7 +1209,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
                                     fill.plotHeight()));
         if (chart.active())
         {
-            chart.setupSecondaryRateAxis(faultAxisUpper, formatAxisLocalized);
+            UI::Widgets::setupSecondaryRateAxis(faultAxisUpper, formatAxisLocalized);
             UI::Widgets::drawCollectingHint(alignedCount);
             const int plotCount = UI::Format::checkedCount(alignedCount);
             plotLineWithFill(THREADS_LABEL,

@@ -130,7 +130,7 @@ class ProcessDetailsPanel : public Panel
     std::deque<double> m_CpuSystemHistory; // CPU% system history (avoid narrowing)
     std::deque<double> m_MemoryHistory;    // Used memory percent (RSS)
     std::deque<double> m_SharedHistory;    // Shared memory percent (best effort)
-    std::deque<double> m_VirtualHistory;   // Virtual memory percent (best effort)
+    std::deque<double> m_VirtualHistory;   // Virtual memory bytes (#992)
     std::deque<double> m_ThreadHistory;    // Thread count history
     std::deque<double> m_HandleHistory;    // Handle/FD count history
     std::deque<double> m_PageFaultHistory; // Page faults per second history
@@ -198,7 +198,6 @@ class ProcessDetailsPanel : public Panel
         // Memory bars, as percents of system RAM like the Memory chart
         double memoryUsedPercent = 0.0;
         double memorySharedPercent = 0.0;
-        double memoryVirtualPercent = 0.0;
         bool initialized = false;
     } m_SmoothedUsage;
 

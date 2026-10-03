@@ -1157,7 +1157,7 @@ void SystemMetricsPanel::renderOverview()
                 plotHeight));
             if (chart.active())
             {
-                chart.setupSecondaryRateAxis(faultAxisUpper, formatAxisLocalized);
+                UI::Widgets::setupSecondaryRateAxis(faultAxisUpper, formatAxisLocalized);
                 const int count = UI::Format::checkedCount(alignedCount);
                 plotLineWithFill(THREADS_LABEL,
                                  timeData.data(),

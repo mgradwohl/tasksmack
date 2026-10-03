@@ -1062,6 +1062,19 @@ rateHistoryConfig(const char* id, double xMin, double xMax, ImPlotFormatter yFor
     return showLegend ? configuredFlags : (configuredFlags | ImPlotFlags_NoLegend);
 }
 
+/// Set up a right-hand Y2 axis for a series with its own scale -- a rate drawn beside counts, say
+/// (#1024) -- from 0 to `upperBound`. Pass easedRateAxisUpperBound() for it, the value its NowBar
+/// is scaled to as well. Call right after constructing the HistoryChart, while it is active() and
+/// before plotting; then plot that series between ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2) and
+/// ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1).
+inline void setupSecondaryRateAxis(double upperBound, ImPlotFormatter formatter)
+{
+    // AuxDefault: no grid lines of its own, and Opposite, which puts its labels on the right.
+    ImPlot::SetupAxis(ImAxis_Y2, nullptr, ImPlotAxisFlags_AuxDefault | ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
+    ImPlot::SetupAxisFormat(ImAxis_Y2, formatter);
+    ImPlot::SetupAxisLimits(ImAxis_Y2, 0.0, upperBound, ImPlotCond_Always);
+}
+
 /// RAII frame for every history chart in the app: pushes the chart font, begins the plot,
 /// and applies the shared legend/axis/format/limit setup so all charts look and behave
 /// identically. When the Render Metrics overlay is active it also captures this chart's
@@ -1156,18 +1169,6 @@ class HistoryChart
     [[nodiscard]] bool active() const noexcept
     {
         return m_Active;
-    }
-
-    /// Set up a right-hand Y2 axis for a series with its own scale -- a rate drawn beside counts, say
-    /// (#1024) -- from 0 to `upperBound`. Pass easedRateAxisUpperBound() for it, the value its NowBar
-    /// is scaled to as well. Call right after construction, while active(), before plotting; then plot
-    /// that series between ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2) and ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1).
-    static void setupSecondaryRateAxis(double upperBound, ImPlotFormatter formatter)
-    {
-        // AuxDefault: no grid lines of its own, and Opposite, which puts its labels on the right.
-        ImPlot::SetupAxis(ImAxis_Y2, nullptr, ImPlotAxisFlags_AuxDefault | ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
-        ImPlot::SetupAxisFormat(ImAxis_Y2, formatter);
-        ImPlot::SetupAxisLimits(ImAxis_Y2, 0.0, upperBound, ImPlotCond_Always);
     }
 
   private:
