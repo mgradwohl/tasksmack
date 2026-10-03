@@ -7,11 +7,11 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -217,30 +217,16 @@ void NVMLGPUProbe::Impl::unloadNVML()
 
 NVMLGPUProbe::Impl::RunningProcessesQuery NVMLGPUProbe::Impl::loadRunningProcessesQuery(const std::string& baseName) const
 {
-    // The unversioned symbols are NVML's legacy v1 entry points and write the 16-byte
-    // nvmlProcessInfo_v1_t; _v3 and _v2 write the 24-byte v2 struct. Prefer the newest (#1092).
-    struct Candidate
+    const auto symbol = NVMLGPUProbeMath::chooseRunningProcessesSymbol(
+        baseName, [this](const std::string& name) { return dlsym(nvmlHandle, name.c_str()); });
+    if (symbol.address == nullptr)
     {
-        const char* suffix;
-        std::size_t entrySize;
-    };
-    constexpr std::array<Candidate, 3> CANDIDATES{{
-        {.suffix = "_v3", .entrySize = NVMLGPUProbeMath::kProcessInfoV2Size},
-        {.suffix = "_v2", .entrySize = NVMLGPUProbeMath::kProcessInfoV2Size},
-        {.suffix = "", .entrySize = NVMLGPUProbeMath::kProcessInfoV1Size},
-    }};
-    for (const auto& candidate : CANDIDATES)
-    {
-        const std::string symbol = baseName + candidate.suffix;
-        // dlsym returns void* by POSIX definition; the cast to the known NVML signature is required.
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-        if (auto* fn = reinterpret_cast<RunningProcessesFn>(dlsym(nvmlHandle, symbol.c_str())); fn != nullptr)
-        {
-            spdlog::debug("NVMLGPUProbe: using {} ({}-byte entries)", symbol, candidate.entrySize);
-            return {.fn = fn, .entrySize = candidate.entrySize};
-        }
+        return {};
     }
-    return {};
+    spdlog::debug("NVMLGPUProbe: using {} ({}-byte entries)", symbol.name, symbol.entrySize);
+    // dlsym returns void* by POSIX definition; the cast to the known NVML signature is required.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    return {.fn = reinterpret_cast<RunningProcessesFn>(symbol.address), .entrySize = symbol.entrySize};
 }
 
 std::string NVMLGPUProbe::Impl::getNVMLError(nvmlReturn_t result) const
@@ -422,19 +408,22 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
     for (const auto& dev : m_Impl->devices)
     {
         const std::string& gpuId = dev.id;
-        const auto addProcess = [&allCounters, &gpuId](const NVMLGPUProbeMath::RunningProcess& proc, const char* engine)
+        // A process listed as both compute and graphics on this device gets one row with both
+        // engines. Looked up by PID instead of scanning every row, which was quadratic in the
+        // number of contexts.
+        std::unordered_map<std::uint32_t, std::size_t> rowByPid;
+        const auto addProcess = [&allCounters, &gpuId, &rowByPid](const NVMLGPUProbeMath::RunningProcess& proc, const char* engine)
         {
             const std::uint64_t memoryBytes = proc.usedGpuMemoryBytes.value_or(0);
-            auto it = std::ranges::find_if(
-                allCounters, [&proc, &gpuId](const ProcessGPUCounters& c) { return std::cmp_equal(c.pid, proc.pid) && c.gpuId == gpuId; });
-            if (it != allCounters.end())
+            if (const auto it = rowByPid.find(proc.pid); it != rowByPid.end())
             {
-                // Listed as both compute and graphics: merge the engines.
-                it->activeEngines.emplace_back(engine);
-                it->gpuMemoryBytes = std::max(it->gpuMemoryBytes, memoryBytes);
+                auto& row = allCounters[it->second];
+                row.activeEngines.emplace_back(engine);
+                row.gpuMemoryBytes = std::max(row.gpuMemoryBytes, memoryBytes);
                 return;
             }
 
+            rowByPid.emplace(proc.pid, allCounters.size());
             ProcessGPUCounters counter;
             counter.pid = static_cast<std::int32_t>(proc.pid);
             counter.gpuId = gpuId;

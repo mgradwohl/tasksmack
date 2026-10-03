@@ -7,12 +7,15 @@
 #include "Platform/NVMLTypes.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace Platform::NVMLGPUProbeMath
@@ -33,6 +36,43 @@ inline constexpr std::size_t kProcessInfoMemoryOffset = 8;
 /// Upper bound on the entries we allocate for, whatever the driver reports: a corrupt count must
 /// not drive the sampler into repeated multi-gigabyte allocations. Matches the Windows probe.
 inline constexpr unsigned int kMaxPlausibleProcessCount = 65536;
+
+/// A running-process entry point chosen by chooseRunningProcessesSymbol().
+struct RunningProcessesSymbol
+{
+    void* address = nullptr; ///< nullptr when no variant is exported
+    std::string name;
+    std::size_t entrySize = 0;
+};
+
+/// Picks the newest running-process entry point for `baseName` (for example
+/// "nvmlDeviceGetComputeRunningProcesses"): _v3, then _v2, both writing 24-byte entries, then
+/// the legacy unversioned symbol, which writes 16-byte entries (#1092). `resolve(name)` returns
+/// the symbol's address, or nullptr if it isn't exported.
+template<typename Resolve>
+[[nodiscard]] RunningProcessesSymbol chooseRunningProcessesSymbol(std::string_view baseName, const Resolve& resolve)
+{
+    struct Candidate
+    {
+        std::string_view suffix;
+        std::size_t entrySize = 0;
+    };
+    constexpr std::array<Candidate, 3> CANDIDATES{{
+        {.suffix = "_v3", .entrySize = kProcessInfoV2Size},
+        {.suffix = "_v2", .entrySize = kProcessInfoV2Size},
+        {.suffix = "", .entrySize = kProcessInfoV1Size},
+    }};
+    for (const auto& candidate : CANDIDATES)
+    {
+        std::string name(baseName);
+        name += candidate.suffix;
+        if (void* address = resolve(name); address != nullptr)
+        {
+            return {.address = address, .name = std::move(name), .entrySize = candidate.entrySize};
+        }
+    }
+    return {};
+}
 
 struct RunningProcess
 {

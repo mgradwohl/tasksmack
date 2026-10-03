@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -99,6 +100,62 @@ FakeRunningProcesses makeFake(std::vector<FakeProcess> processes, std::size_t en
     fake.processes = std::move(processes);
     fake.entrySize = entrySize;
     return fake;
+}
+
+// chooseRunningProcessesSymbol (#1092): which entry point the loader picks, and its entry size.
+// The mock library exports every variant, so the loader's fallback is tested through a resolver.
+
+/// A resolver exporting only `exported`; returns a distinct non-null address for each.
+struct FakeResolver
+{
+    std::vector<std::string> exported;
+
+    void* operator()(const std::string& name) const
+    {
+        for (std::size_t i = 0; i < exported.size(); ++i)
+        {
+            if (exported[i] == name)
+            {
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr) - opaque fake address
+                return reinterpret_cast<void*>(i + 1);
+            }
+        }
+        return nullptr;
+    }
+};
+
+TEST(NVMLGPUProbeMathTest, PrefersTheV3RunningProcessesSymbol)
+{
+    const FakeResolver resolver{
+        {"nvmlDeviceGetComputeRunningProcesses", "nvmlDeviceGetComputeRunningProcesses_v2", "nvmlDeviceGetComputeRunningProcesses_v3"}};
+    const auto symbol = NVMLGPUProbeMath::chooseRunningProcessesSymbol("nvmlDeviceGetComputeRunningProcesses", resolver);
+    EXPECT_EQ(symbol.name, "nvmlDeviceGetComputeRunningProcesses_v3");
+    EXPECT_EQ(symbol.entrySize, NVMLGPUProbeMath::kProcessInfoV2Size);
+}
+
+TEST(NVMLGPUProbeMathTest, FallsBackToTheV2RunningProcessesSymbol)
+{
+    const FakeResolver resolver{{"nvmlDeviceGetGraphicsRunningProcesses", "nvmlDeviceGetGraphicsRunningProcesses_v2"}};
+    const auto symbol = NVMLGPUProbeMath::chooseRunningProcessesSymbol("nvmlDeviceGetGraphicsRunningProcesses", resolver);
+    EXPECT_EQ(symbol.name, "nvmlDeviceGetGraphicsRunningProcesses_v2");
+    EXPECT_EQ(symbol.entrySize, NVMLGPUProbeMath::kProcessInfoV2Size);
+}
+
+TEST(NVMLGPUProbeMathTest, LegacyRunningProcessesSymbolUsesTheV1EntrySize)
+{
+    // An older driver exports only the unversioned symbol, which writes 16-byte entries.
+    const FakeResolver resolver{{"nvmlDeviceGetComputeRunningProcesses"}};
+    const auto symbol = NVMLGPUProbeMath::chooseRunningProcessesSymbol("nvmlDeviceGetComputeRunningProcesses", resolver);
+    EXPECT_EQ(symbol.name, "nvmlDeviceGetComputeRunningProcesses");
+    EXPECT_NE(symbol.address, nullptr);
+    EXPECT_EQ(symbol.entrySize, NVMLGPUProbeMath::kProcessInfoV1Size);
+}
+
+TEST(NVMLGPUProbeMathTest, NoRunningProcessesSymbolExported)
+{
+    const FakeResolver resolver{};
+    const auto symbol = NVMLGPUProbeMath::chooseRunningProcessesSymbol("nvmlDeviceGetComputeRunningProcesses", resolver);
+    EXPECT_EQ(symbol.address, nullptr);
 }
 
 TEST(NVMLGPUProbeMathTest, NoRunningProcessesIsEmpty)
