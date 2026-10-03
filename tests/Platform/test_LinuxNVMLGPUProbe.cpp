@@ -1,5 +1,6 @@
 #if defined(__linux__) && __has_include(<unistd.h>)
 
+#include "Platform/GPUTypes.h"
 #include "Platform/GpuMockLibraryTestUtils.h"
 #include "Platform/Linux/NVMLGPUProbe.h"
 #include "Platform/Linux/NVMLGPUProbeMath.h"
@@ -8,6 +9,15 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include <dlfcn.h>
 
 namespace Platform
 {
@@ -36,6 +46,288 @@ TEST(NVMLGPUProbeMathTest, ResolveErrorStringFallsBackWhenLibraryReturnsNull)
     const auto result =
         NVMLGPUProbeMath::resolveErrorString(NVML::NVML_ERROR_NOT_SUPPORTED, [](NVML::nvmlReturn_t) -> const char* { return nullptr; });
     EXPECT_EQ(result, "Unknown NVML error");
+}
+
+// queryRunningProcesses (#1092): a fake entry point that behaves like NVML's.
+
+struct FakeProcess
+{
+    unsigned int pid;
+    std::uint64_t usedGpuMemory;
+};
+
+/// Writes `processes` with `entrySize` stride (pid at 0, usedGpuMemory at 8), answering a
+/// too-small or null buffer with INSUFFICIENT_SIZE. `listedAfterCount` simulates processes that
+/// start between the count query and the sized call.
+struct FakeRunningProcesses
+{
+    std::vector<FakeProcess> processes;
+    std::size_t entrySize = NVMLGPUProbeMath::PROCESS_INFO_V2_SIZE;
+    std::vector<FakeProcess> listedAfterCount;
+    NVML::nvmlReturn_t countOnlyResult = NVML::NVML_ERROR_INSUFFICIENT_SIZE;
+    int calls = 0;
+
+    NVML::nvmlReturn_t operator()(unsigned int* count, void* buffer)
+    {
+        ++calls;
+        if (calls == 2)
+        {
+            processes.insert(processes.end(), listedAfterCount.begin(), listedAfterCount.end());
+        }
+        const unsigned int capacity = *count;
+        *count = static_cast<unsigned int>(processes.size());
+        if (buffer == nullptr)
+        {
+            return processes.empty() ? NVML::NVML_SUCCESS : countOnlyResult;
+        }
+        if (capacity < processes.size())
+        {
+            return NVML::NVML_ERROR_INSUFFICIENT_SIZE;
+        }
+        auto* bytes = static_cast<std::byte*>(buffer);
+        for (std::size_t i = 0; i < processes.size(); ++i)
+        {
+            std::memcpy(bytes + (i * entrySize), &processes[i].pid, sizeof(unsigned int));
+            std::memcpy(bytes + (i * entrySize) + 8, &processes[i].usedGpuMemory, sizeof(std::uint64_t));
+        }
+        return NVML::NVML_SUCCESS;
+    }
+};
+
+FakeRunningProcesses makeFake(std::vector<FakeProcess> processes, std::size_t entrySize = NVMLGPUProbeMath::PROCESS_INFO_V2_SIZE)
+{
+    FakeRunningProcesses fake;
+    fake.processes = std::move(processes);
+    fake.entrySize = entrySize;
+    return fake;
+}
+
+// chooseRunningProcessesSymbol (#1092): which entry point the loader picks, and its entry size.
+// The mock library exports every variant, so the loader's fallback is tested through a resolver.
+
+/// A resolver exporting only `exported`; returns a distinct non-null address for each.
+struct FakeResolver
+{
+    std::vector<std::string> exported;
+
+    void* operator()(const std::string& name) const
+    {
+        for (std::size_t i = 0; i < exported.size(); ++i)
+        {
+            if (exported[i] == name)
+            {
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr) - opaque fake address
+                return reinterpret_cast<void*>(i + 1);
+            }
+        }
+        return nullptr;
+    }
+};
+
+TEST(NVMLGPUProbeMathTest, PrefersTheV3RunningProcessesSymbol)
+{
+    const FakeResolver resolver{
+        {"nvmlDeviceGetComputeRunningProcesses", "nvmlDeviceGetComputeRunningProcesses_v2", "nvmlDeviceGetComputeRunningProcesses_v3"}};
+    const auto symbol = NVMLGPUProbeMath::chooseRunningProcessesSymbol("nvmlDeviceGetComputeRunningProcesses", resolver);
+    EXPECT_EQ(symbol.name, "nvmlDeviceGetComputeRunningProcesses_v3");
+    EXPECT_EQ(symbol.entrySize, NVMLGPUProbeMath::PROCESS_INFO_V2_SIZE);
+}
+
+TEST(NVMLGPUProbeMathTest, FallsBackToTheV2RunningProcessesSymbol)
+{
+    const FakeResolver resolver{{"nvmlDeviceGetGraphicsRunningProcesses", "nvmlDeviceGetGraphicsRunningProcesses_v2"}};
+    const auto symbol = NVMLGPUProbeMath::chooseRunningProcessesSymbol("nvmlDeviceGetGraphicsRunningProcesses", resolver);
+    EXPECT_EQ(symbol.name, "nvmlDeviceGetGraphicsRunningProcesses_v2");
+    EXPECT_EQ(symbol.entrySize, NVMLGPUProbeMath::PROCESS_INFO_V2_SIZE);
+}
+
+TEST(NVMLGPUProbeMathTest, LegacyRunningProcessesSymbolUsesTheV1EntrySize)
+{
+    // An older driver exports only the unversioned symbol, which writes 16-byte entries.
+    const FakeResolver resolver{{"nvmlDeviceGetComputeRunningProcesses"}};
+    const auto symbol = NVMLGPUProbeMath::chooseRunningProcessesSymbol("nvmlDeviceGetComputeRunningProcesses", resolver);
+    EXPECT_EQ(symbol.name, "nvmlDeviceGetComputeRunningProcesses");
+    EXPECT_NE(symbol.address, nullptr);
+    EXPECT_EQ(symbol.entrySize, NVMLGPUProbeMath::PROCESS_INFO_V1_SIZE);
+}
+
+TEST(NVMLGPUProbeMathTest, NoRunningProcessesSymbolExported)
+{
+    const FakeResolver resolver{};
+    const auto symbol = NVMLGPUProbeMath::chooseRunningProcessesSymbol("nvmlDeviceGetComputeRunningProcesses", resolver);
+    EXPECT_EQ(symbol.address, nullptr);
+}
+
+TEST(NVMLGPUProbeMathTest, NoRunningProcessesIsEmpty)
+{
+    FakeRunningProcesses fake;
+    const auto query = [&fake](unsigned int* count, void* buffer)
+    {
+        return fake(count, buffer);
+    };
+    EXPECT_TRUE(NVMLGPUProbeMath::queryRunningProcesses(query, fake.entrySize).empty());
+}
+
+TEST(NVMLGPUProbeMathTest, InsufficientSizeOnCountQueryMeansProcessesAreRunning)
+{
+    auto fake = makeFake({{.pid = 10, .usedGpuMemory = 100}, {.pid = 20, .usedGpuMemory = 200}});
+    const auto query = [&fake](unsigned int* count, void* buffer)
+    {
+        return fake(count, buffer);
+    };
+    const auto processes = NVMLGPUProbeMath::queryRunningProcesses(query, fake.entrySize);
+
+    ASSERT_EQ(processes.size(), 2U);
+    EXPECT_EQ(processes[1].pid, 20U);
+    EXPECT_EQ(processes[1].usedGpuMemoryBytes, 200U);
+}
+
+TEST(NVMLGPUProbeMathTest, LegacyV1EntriesAreReadAtTheirOwnStride)
+{
+    auto fake = makeFake({{.pid = 10, .usedGpuMemory = 100}, {.pid = 20, .usedGpuMemory = 200}, {.pid = 30, .usedGpuMemory = 300}},
+                         NVMLGPUProbeMath::PROCESS_INFO_V1_SIZE);
+    const auto query = [&fake](unsigned int* count, void* buffer)
+    {
+        return fake(count, buffer);
+    };
+    const auto processes = NVMLGPUProbeMath::queryRunningProcesses(query, NVMLGPUProbeMath::PROCESS_INFO_V1_SIZE);
+
+    ASSERT_EQ(processes.size(), 3U);
+    EXPECT_EQ(processes[2].pid, 30U);
+    EXPECT_EQ(processes[2].usedGpuMemoryBytes, 300U);
+}
+
+TEST(NVMLGPUProbeMathTest, RetriesWhenTheListGrowsBetweenCalls)
+{
+    auto fake = makeFake({{.pid = 1, .usedGpuMemory = 1}});
+    for (unsigned int pid = 2; pid <= 10; ++pid)
+    {
+        fake.listedAfterCount.push_back({.pid = pid, .usedGpuMemory = pid});
+    }
+    const auto query = [&fake](unsigned int* count, void* buffer)
+    {
+        return fake(count, buffer);
+    };
+    const auto processes = NVMLGPUProbeMath::queryRunningProcesses(query, fake.entrySize);
+
+    ASSERT_EQ(processes.size(), 10U);
+    EXPECT_EQ(processes.back().pid, 10U);
+}
+
+TEST(NVMLGPUProbeMathTest, UnavailableMemoryIsNullopt)
+{
+    auto fake = makeFake({{.pid = 7, .usedGpuMemory = NVMLGPUProbeMath::VALUE_NOT_AVAILABLE}});
+    const auto query = [&fake](unsigned int* count, void* buffer)
+    {
+        return fake(count, buffer);
+    };
+    const auto processes = NVMLGPUProbeMath::queryRunningProcesses(query, fake.entrySize);
+
+    ASSERT_EQ(processes.size(), 1U);
+    EXPECT_FALSE(processes[0].usedGpuMemoryBytes.has_value());
+}
+
+TEST(NVMLGPUProbeMathTest, ImplausibleProcessCountIsNotAllocated)
+{
+    // A corrupt count must not drive repeated multi-gigabyte allocations (#1213 review).
+    int sizedCalls = 0;
+    const auto query = [&sizedCalls](unsigned int* count, void* buffer)
+    {
+        if (buffer != nullptr)
+        {
+            ++sizedCalls;
+        }
+        *count = NVMLGPUProbeMath::MAX_PLAUSIBLE_PROCESS_COUNT + 1U;
+        return NVML::NVML_ERROR_INSUFFICIENT_SIZE;
+    };
+    EXPECT_TRUE(NVMLGPUProbeMath::queryRunningProcesses(query, NVMLGPUProbeMath::PROCESS_INFO_V2_SIZE).empty());
+    EXPECT_EQ(sizedCalls, 0);
+}
+
+TEST(NVMLGPUProbeMathTest, CountQueryErrorIsEmpty)
+{
+    auto fake = makeFake({{.pid = 1, .usedGpuMemory = 1}});
+    fake.countOnlyResult = NVML::NVML_ERROR_NO_PERMISSION;
+    const auto query = [&fake](unsigned int* count, void* buffer)
+    {
+        return fake(count, buffer);
+    };
+    EXPECT_TRUE(NVMLGPUProbeMath::queryRunningProcesses(query, fake.entrySize).empty());
+}
+
+TEST(NVMLGPUProbeMathTest, CountQueryReportingSuccessWithACountStillFetchesTheList)
+{
+    // Some drivers answer the count-only call with SUCCESS and a non-zero count.
+    auto fake = makeFake({{.pid = 5, .usedGpuMemory = 50}});
+    fake.countOnlyResult = NVML::NVML_SUCCESS;
+    const auto query = [&fake](unsigned int* count, void* buffer)
+    {
+        return fake(count, buffer);
+    };
+    const auto processes = NVMLGPUProbeMath::queryRunningProcesses(query, fake.entrySize);
+
+    ASSERT_EQ(processes.size(), 1U);
+    EXPECT_EQ(processes[0].pid, 5U);
+}
+
+// combineRunningProcesses (#1213 review): one entry per process, MIG instances summed.
+
+NVMLGPUProbeMath::RunningProcess
+onInstance(std::uint32_t pid, std::uint64_t memory, std::uint32_t gpuInstance, std::uint32_t computeInstance)
+{
+    return {.pid = pid, .usedGpuMemoryBytes = memory, .gpuInstanceId = gpuInstance, .computeInstanceId = computeInstance};
+}
+
+TEST(NVMLGPUProbeMathTest, MigInstancesOfOneProcessAreSummed)
+{
+    // PID 5 runs on two MIG instances; graphics reports instance (1, 0) again, a little higher.
+    const std::vector compute{onInstance(5, 100, 1, 0), onInstance(5, 200, 2, 0)};
+    const std::vector graphics{onInstance(5, 150, 1, 0)};
+
+    const auto usages = NVMLGPUProbeMath::combineRunningProcesses(compute, graphics);
+    ASSERT_EQ(usages.size(), 1U);
+    EXPECT_EQ(usages[0].memoryBytes, 350U); // max(100, 150) on instance (1, 0) + 200 on (2, 0)
+    EXPECT_TRUE(usages[0].compute);
+    EXPECT_TRUE(usages[0].graphics);
+}
+
+TEST(NVMLGPUProbeMathTest, LegacyEntriesForOneProcessTakeTheLarger)
+{
+    // 16-byte entries carry no instance ids: compute and graphics are one allocation.
+    const std::vector<NVMLGPUProbeMath::RunningProcess> compute{{.pid = 7, .usedGpuMemoryBytes = 100}};
+    const std::vector<NVMLGPUProbeMath::RunningProcess> graphics{{.pid = 7, .usedGpuMemoryBytes = 120},
+                                                                 {.pid = 8, .usedGpuMemoryBytes = 50}};
+
+    const auto usages = NVMLGPUProbeMath::combineRunningProcesses(compute, graphics);
+    ASSERT_EQ(usages.size(), 2U);
+    EXPECT_EQ(usages[0].pid, 7U);
+    EXPECT_EQ(usages[0].memoryBytes, 120U);
+    EXPECT_EQ(usages[1].pid, 8U);
+    EXPECT_FALSE(usages[1].compute);
+}
+
+TEST(NVMLGPUProbeMathTest, InstanceIdsAreReadFromV2Entries)
+{
+    auto fake = makeFake({{.pid = 9, .usedGpuMemory = 64}});
+    const auto query = [&fake](unsigned int* count, void* buffer)
+    {
+        const auto result = fake(count, buffer);
+        if (buffer != nullptr && result == NVML::NVML_SUCCESS)
+        {
+            const std::uint32_t gpuInstance = 3;
+            const std::uint32_t computeInstance = 1;
+            std::memcpy(
+                static_cast<std::byte*>(buffer) + NVMLGPUProbeMath::PROCESS_INFO_GPU_INSTANCE_OFFSET, &gpuInstance, sizeof(gpuInstance));
+            std::memcpy(static_cast<std::byte*>(buffer) + NVMLGPUProbeMath::PROCESS_INFO_COMPUTE_INSTANCE_OFFSET,
+                        &computeInstance,
+                        sizeof(computeInstance));
+        }
+        return result;
+    };
+    const auto processes = NVMLGPUProbeMath::queryRunningProcesses(query, NVMLGPUProbeMath::PROCESS_INFO_V2_SIZE);
+    ASSERT_EQ(processes.size(), 1U);
+    EXPECT_EQ(processes[0].gpuInstanceId, 3U);
+    EXPECT_EQ(processes[0].computeInstanceId, 1U);
 }
 
 TEST(LinuxNVMLGPUProbeTest, BasicOperationsDoNotThrow)
@@ -141,6 +433,122 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryEnumeratesDevicesAndUsesUuidFallback)
     EXPECT_EQ(gpus[1].deviceIndex, 1U);
 }
 
+/// Drives the NVML mock's test controls (tasksmackNvmlMockConfigure) for one test and resets
+/// them afterwards. dlopen() returns the same instance the probe loads.
+class NvmlMockControls
+{
+  public:
+    NvmlMockControls() : m_Library(dlopen("libnvidia-ml.so.1", RTLD_NOW))
+    {
+        if (m_Library != nullptr)
+        {
+            // dlsym returns void* by POSIX definition; the casts restore the mock's signatures.
+            // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast)
+            m_Configure = reinterpret_cast<ConfigureFn>(dlsym(m_Library, "tasksmackNvmlMockConfigure"));
+            m_UuidCalls = reinterpret_cast<UuidCallsFn>(dlsym(m_Library, "tasksmackNvmlMockUuidCalls"));
+            // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
+        }
+    }
+
+    ~NvmlMockControls()
+    {
+        if (m_Configure != nullptr)
+        {
+            m_Configure(NO_FAILING_HANDLE, -1);
+        }
+        if (m_Library != nullptr)
+        {
+            dlclose(m_Library);
+        }
+    }
+
+    NvmlMockControls(const NvmlMockControls&) = delete;
+    NvmlMockControls& operator=(const NvmlMockControls&) = delete;
+    NvmlMockControls(NvmlMockControls&&) = delete;
+    NvmlMockControls& operator=(NvmlMockControls&&) = delete;
+
+    [[nodiscard]] bool available() const
+    {
+        return m_Configure != nullptr && m_UuidCalls != nullptr;
+    }
+
+    void configure(unsigned int failingHandleIndex, int uuidCallsBeforeFailure) const
+    {
+        m_Configure(failingHandleIndex, uuidCallsBeforeFailure);
+    }
+
+    [[nodiscard]] unsigned int uuidCalls() const
+    {
+        return m_UuidCalls();
+    }
+
+    static constexpr unsigned int NO_FAILING_HANDLE = std::numeric_limits<unsigned int>::max();
+
+  private:
+    using ConfigureFn = void (*)(unsigned int, int);
+    using UuidCallsFn = unsigned int (*)();
+
+    void* m_Library;
+    ConfigureFn m_Configure = nullptr;
+    UuidCallsFn m_UuidCalls = nullptr;
+};
+
+// #1162: a device whose handle NVML won't return is skipped, not sampled through a null handle
+// as an all-zero phantom GPU.
+TEST(LinuxNVMLGPUProbeTest, DeviceWithoutAHandleIsSkipped)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const NvmlMockControls controls;
+    ASSERT_TRUE(controls.available());
+    controls.configure(0, -1);
+
+    NVMLGPUProbe probe;
+    ASSERT_TRUE(probe.isAvailable());
+
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    EXPECT_EQ(gpus[0].deviceIndex, 1U);
+    EXPECT_EQ(gpus[0].id, "nvidia-1");
+
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_EQ(counters[0].gpuId, "nvidia-1");
+}
+
+// #1162: ids are resolved once at load, so a UUID failure afterwards can't turn a GPU into a
+// different "nvidia-N" id for one sample, and sampling makes no further UUID calls.
+TEST(LinuxNVMLGPUProbeTest, DeviceIdsAreResolvedOnceAtLoad)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const NvmlMockControls controls;
+    ASSERT_TRUE(controls.available());
+    controls.configure(NvmlMockControls::NO_FAILING_HANDLE, 2); // every UUID call after load fails
+
+    NVMLGPUProbe probe;
+    ASSERT_TRUE(probe.isAvailable());
+    const unsigned int callsAtLoad = controls.uuidCalls();
+
+    const auto counters = probe.readGPUCounters();
+    const auto processCounters = probe.readProcessGPUCounters();
+    const auto gpus = probe.enumerateGPUs();
+
+    ASSERT_EQ(counters.size(), 2U);
+    EXPECT_EQ(counters[0].gpuId, "mock-nvml-uuid-0");
+    ASSERT_FALSE(processCounters.empty());
+    EXPECT_EQ(processCounters.front().gpuId, "mock-nvml-uuid-0");
+    ASSERT_EQ(gpus.size(), 2U);
+    EXPECT_EQ(gpus[0].id, "mock-nvml-uuid-0");
+    EXPECT_EQ(controls.uuidCalls(), callsAtLoad);
+}
+
 TEST(LinuxNVMLGPUProbeTest, MockLibraryReturnsExpectedCountersAndMergesProcessEngines)
 {
     const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
@@ -175,8 +583,10 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryReturnsExpectedCountersAndMergesProcessEn
     EXPECT_EQ(counters[1].gpuId, "nvidia-1");
     EXPECT_DOUBLE_EQ(counters[1].utilizationPercent, 25.0);
 
+    // The mock answers like real NVML: INSUFFICIENT_SIZE for the count query, the _v3 stride, and
+    // NVML_VALUE_NOT_AVAILABLE for one process's memory (#1092).
     const auto processCounters = probe.readProcessGPUCounters();
-    ASSERT_EQ(processCounters.size(), 2U);
+    ASSERT_EQ(processCounters.size(), 3U);
 
     const auto merged = std::ranges::find_if(processCounters, [](const ProcessGPUCounters& counter) { return counter.pid == 123; });
     ASSERT_NE(merged, processCounters.end());
@@ -192,6 +602,11 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryReturnsExpectedCountersAndMergesProcessEn
     EXPECT_EQ(graphicsOnly->gpuMemoryBytes, 333U);
     ASSERT_EQ(graphicsOnly->activeEngines.size(), 1U);
     EXPECT_EQ(graphicsOnly->activeEngines[0], "3D");
+
+    // Memory NVML can't report is not passed on as ~16 EiB.
+    const auto noMemory = std::ranges::find_if(processCounters, [](const ProcessGPUCounters& counter) { return counter.pid == 789; });
+    ASSERT_NE(noMemory, processCounters.end());
+    EXPECT_EQ(noMemory->gpuMemoryBytes, 0U);
 }
 
 } // namespace
