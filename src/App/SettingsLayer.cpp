@@ -329,6 +329,9 @@ void SettingsLayer::renderSettingsDialog()
                 for (std::size_t i = 0; i < m_Themes.size(); ++i)
                 {
                     const bool isSelected = (m_ThemeChoice.index == i);
+                    // Scoped by id: two themes can share a display name (a user copy of a built-in,
+                    // renamed), and the label alone would give both entries one widget ID.
+                    ImGui::PushID(m_Themes[i].id.c_str());
                     if (ImGui::Selectable(m_Themes[i].name.c_str(), isSelected))
                     {
                         m_ThemeChoice = ComboState{.index = i, .touched = true};
@@ -337,6 +340,7 @@ void SettingsLayer::renderSettingsDialog()
                     {
                         ImGui::SetItemDefaultFocus();
                     }
+                    ImGui::PopID();
                 }
                 ImGui::EndCombo();
             }
