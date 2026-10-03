@@ -222,11 +222,8 @@ void SystemMetricsPanel::onDetach()
     m_Model.reset();
 }
 
-void SystemMetricsPanel::setSamplingInterval(std::chrono::milliseconds interval)
+void SystemMetricsPanel::setSamplingInterval(std::chrono::milliseconds interval, bool forceSample)
 {
-    // ShellLayer raises the configured interval once at startup (#1079); when it matches what is
-    // already running there's nothing to apply, and forcing an extra sample then just landed one a
-    // few ms after the last (#1102).
     if (interval == m_RefreshInterval)
     {
         return;
@@ -236,8 +233,11 @@ void SystemMetricsPanel::setSamplingInterval(std::chrono::milliseconds interval)
     {
         m_Sampler->setInterval(interval);
     }
-    m_ForceRefresh = true;
-    requestRefresh(); // Consume flag semantics for older calls
+    if (forceSample)
+    {
+        m_ForceRefresh = true;
+        requestRefresh(); // Consume flag semantics for older calls
+    }
 }
 
 void SystemMetricsPanel::requestRefresh()
@@ -261,7 +261,9 @@ void SystemMetricsPanel::onEvent(Core::Event& event)
     dispatcher.dispatch<Core::RefreshRateChangedEvent>(
         [this](Core::RefreshRateChangedEvent& e)
         {
-            setSamplingInterval(std::chrono::milliseconds(e.getIntervalMs()));
+            // The startup value (#1079) is applied without forcing a sample: the models were just
+            // seeded, so one now would cover only a few ms (#1102).
+            setSamplingInterval(std::chrono::milliseconds(e.getIntervalMs()), !e.isInitial());
             return false;
         });
     dispatcher.dispatch<Core::HistoryDurationChangedEvent>(
@@ -270,7 +272,7 @@ void SystemMetricsPanel::onEvent(Core::Event& event)
             const double seconds = Domain::Numeric::toDouble(e.getSeconds());
             if (seconds == m_MaxHistorySeconds)
             {
-                return false; // unchanged (the startup event, #1102): nothing to trim or refresh
+                return false; // unchanged: nothing to trim or refresh
             }
             m_MaxHistorySeconds = seconds;
             if (m_Model)
@@ -285,7 +287,8 @@ void SystemMetricsPanel::onEvent(Core::Event& event)
             {
                 m_GPUModel->setMaxHistorySeconds(m_MaxHistorySeconds);
             }
-            m_ForceRefresh = true;
+            // Republish promptly for a user's change; not for the startup value, just after the seed (#1102).
+            m_ForceRefresh = m_ForceRefresh || !e.isInitial();
             return false; // Allow others to react
         });
 }

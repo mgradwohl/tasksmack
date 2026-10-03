@@ -114,7 +114,7 @@ class ProcessesPanel : public Panel
     }
 
     /// Set the refresh interval (applied by onUpdate cadence checks).
-    void setSamplingInterval(std::chrono::milliseconds interval);
+    void setSamplingInterval(std::chrono::milliseconds interval, bool forceSample = true);
 
     /// Request an immediate refresh.
     void requestRefresh();

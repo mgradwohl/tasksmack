@@ -378,9 +378,8 @@ void ProcessesPanel::onAttach()
     spdlog::info("ProcessesPanel: initialized with background sampler ({}ms interval)", m_AppliedSamplerInterval.count());
 }
 
-void ProcessesPanel::setSamplingInterval(std::chrono::milliseconds interval)
+void ProcessesPanel::setSamplingInterval(std::chrono::milliseconds interval, bool forceSample)
 {
-    // Unchanged (the startup event, #1079): don't force a sample right after the last one (#1102).
     if (interval == m_RefreshInterval)
     {
         return;
@@ -391,7 +390,7 @@ void ProcessesPanel::setSamplingInterval(std::chrono::milliseconds interval)
     {
         m_Sampler->setInterval(m_AppliedSamplerInterval);
     }
-    m_ForceRefresh = true;
+    m_ForceRefresh = m_ForceRefresh || forceSample;
 }
 
 void ProcessesPanel::requestRefresh()
@@ -422,12 +421,14 @@ void ProcessesPanel::onEvent(Core::Event& event)
     dispatcher.dispatch<Core::ActiveTabChangedEvent>(
         [this](Core::ActiveTabChangedEvent& e)
         {
-            const bool wasActive = m_IsActiveTab;
+            const bool wasShown = m_ProcessDataShown;
             m_IsActiveTab = (e.tabName() == "Processes");
             m_ProcessDataShown = AdaptiveIntervalUtils::showsProcessData(e.tabName());
-            if (!wasActive && m_IsActiveTab)
+            if (!wasShown && m_ProcessDataShown)
             {
-                // Catch up quickly when tab becomes visible again.
+                // Catch up straight away when coming back from a tab that showed no process data,
+                // where the sampler was relaxed. Between tabs that all show it the sampler ran at
+                // the full rate, and an extra sample would land just after the last one (#1102).
                 m_ForceRefresh = true;
             }
             return false;
@@ -435,7 +436,8 @@ void ProcessesPanel::onEvent(Core::Event& event)
     dispatcher.dispatch<Core::RefreshRateChangedEvent>(
         [this](Core::RefreshRateChangedEvent& e)
         {
-            setSamplingInterval(std::chrono::milliseconds(e.getIntervalMs()));
+            // The startup value (#1079) is applied without forcing a sample right after the seed (#1102).
+            setSamplingInterval(std::chrono::milliseconds(e.getIntervalMs()), !e.isInitial());
             return false;
         });
     // This panel owns the process model, so it sets the model's history length (#1078).
