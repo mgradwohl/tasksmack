@@ -1,6 +1,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <utility>
 
 namespace
 {
@@ -171,6 +172,17 @@ const std::array<MockRocmDevice, 3> MOCK_DEVICES{{
     return &MOCK_DEVICES[deviceIndex];
 }
 
+// Test controls (#1162), set through tasksmackRocmMockConfigure(): device-id lookups (unique id and
+// PCI id) fail once they have been called more than g_IdCallsBeforeFailure times (-1: never).
+int g_IdCallsBeforeFailure = -1;
+unsigned int g_IdCalls = 0;
+
+[[nodiscard]] bool idLookupFails()
+{
+    ++g_IdCalls;
+    return g_IdCallsBeforeFailure >= 0 && std::cmp_greater(g_IdCalls, g_IdCallsBeforeFailure);
+}
+
 } // namespace
 
 extern "C"
@@ -226,6 +238,10 @@ extern "C"
         {
             return RSMI_STATUS_INVALID_ARGS;
         }
+        if (idLookupFails())
+        {
+            return RSMI_STATUS_NOT_FOUND;
+        }
         if (!device->hasPciId)
         {
             return RSMI_STATUS_NOT_FOUND;
@@ -241,6 +257,10 @@ extern "C"
         if (device == nullptr)
         {
             return RSMI_STATUS_INVALID_ARGS;
+        }
+        if (idLookupFails())
+        {
+            return RSMI_STATUS_NOT_FOUND;
         }
         if (!device->hasUniqueId)
         {
@@ -374,6 +394,18 @@ extern "C"
 
         *maxSpeed = 255; // RSMI_MAX_FAN_SPEED
         return RSMI_STATUS_SUCCESS;
+    }
+
+    // Test controls (not part of ROCm SMI). See g_IdCallsBeforeFailure; also resets the counter.
+    void tasksmackRocmMockConfigure(int idCallsBeforeFailure)
+    {
+        g_IdCallsBeforeFailure = idCallsBeforeFailure;
+        g_IdCalls = 0;
+    }
+
+    unsigned int tasksmackRocmMockIdCalls()
+    {
+        return g_IdCalls;
     }
 
     rsmi_status_t rsmi_version_get(rsmi_version_t* version)
