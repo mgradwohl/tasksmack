@@ -91,8 +91,8 @@ class ProcessDetailsPanel : public Panel
     void renderCpuUsageSection(UI::Widgets::FillPlotLayout& fill);
     void renderMemoryUsageSection(UI::Widgets::FillPlotLayout& fill);
     void renderThreadAndFaultHistory(UI::Widgets::FillPlotLayout& fill);
-    void renderIoStats(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
-    void renderNetworkStats(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
+    void renderIoStats(UI::Widgets::FillPlotLayout& fill);
+    void renderNetworkStats(UI::Widgets::FillPlotLayout& fill);
     void renderPowerUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
     void renderGpuUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
     void renderGpuCurrentMetricsTable(const Domain::ProcessSnapshot& proc) const;

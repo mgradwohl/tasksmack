@@ -87,7 +87,9 @@ inline constexpr ImDrawListFlags CHART_ANTI_ALIASING_FLAGS_MASK =
     return flags & ~CHART_ANTI_ALIASING_FLAGS_MASK;
 }
 
-inline constexpr ImPlotFlags PLOT_FLAGS_DEFAULT = ImPlotFlags_NoMenus;
+// NoMouseText: every history chart has its own hover tooltip (renderHistoryTooltip), so ImPlot's raw
+// "-16, 31.0" cursor readout was a second, unlabelled and partly hidden readout of the same point (#1039).
+inline constexpr ImPlotFlags PLOT_FLAGS_DEFAULT = ImPlotFlags_NoMenus | ImPlotFlags_NoMouseText;
 inline constexpr ImPlotAxisFlags X_AXIS_FLAGS_DEFAULT = ImPlotAxisFlags_NoHighlight;
 inline constexpr ImPlotAxisFlags Y_AXIS_FLAGS_DEFAULT = ImPlotAxisFlags_NoHighlight;
 inline constexpr float HISTORY_PLOT_HEIGHT_DEFAULT = 180.0F;
@@ -426,6 +428,41 @@ template<typename TX, typename TY>
 }
 
 /// @p lineThickness is authored at the reference configuration; it is scaled by lineWeight().
+/// The fill a series drawn in `lineColor` gets when its caller passes none: the theme's own fill for
+/// that series colour where it defines one (every shipped theme sets these), else the line colour at
+/// 35 % alpha. One rule applied by plotLineWithFill, instead of some charts passing the theme's fill
+/// and others the derived one for the same series (#1022).
+[[nodiscard]] inline ImVec4 defaultSeriesFill(const ColorScheme& scheme, const ImVec4& lineColor)
+{
+    // Theme colours are copied, not computed, so they match exactly; the tolerance only keeps this
+    // from being an exact float comparison.
+    constexpr float COLOR_EPSILON = 1e-6F;
+    const auto same = [](const ImVec4& a, const ImVec4& b)
+    {
+        return std::abs(a.x - b.x) < COLOR_EPSILON && std::abs(a.y - b.y) < COLOR_EPSILON && std::abs(a.z - b.z) < COLOR_EPSILON &&
+               std::abs(a.w - b.w) < COLOR_EPSILON;
+    };
+    const std::array<std::pair<const ImVec4*, const ImVec4*>, 9> themed{{
+        {&scheme.chartCpu, &scheme.chartCpuFill},
+        {&scheme.chartMemory, &scheme.chartMemoryFill},
+        {&scheme.chartIo, &scheme.chartIoFill},
+        {&scheme.chartIoWrite, &scheme.chartIoWriteFill},
+        {&scheme.chartNetTx, &scheme.chartNetTxFill},
+        {&scheme.chartNetRx, &scheme.chartNetRxFill},
+        {&scheme.gpuUtilization, &scheme.gpuUtilizationFill},
+        {&scheme.gpuMemory, &scheme.gpuMemoryFill},
+        {&scheme.gpuClock, &scheme.gpuClockFill},
+    }};
+    for (const auto& [line, fill] : themed)
+    {
+        if (same(*line, lineColor))
+        {
+            return *fill;
+        }
+    }
+    return ImVec4{lineColor.x, lineColor.y, lineColor.z, lineColor.w * 0.35F};
+}
+
 /// Extend a history series to x = 0 ("now") by repeating its last value there.
 ///
 /// Samples arrive once per refresh interval while the chart scrolls every frame, so the newest
@@ -458,7 +495,7 @@ inline void plotLineWithFill(const char* label,
                              std::optional<ImVec4> fillColor = std::nullopt,
                              float lineThickness = 2.0F,
                              bool drawFill = true,
-                             int maxPointCount = 0)
+                             int maxPointCount = LINE_PLOT_MAX_POINTS_DENSE)
 {
     if (count <= 0)
     {
@@ -471,7 +508,7 @@ inline void plotLineWithFill(const char* label,
     {
         if (drawFill)
         {
-            const ImVec4 fill = fillColor.value_or(ImVec4{lineColor.x, lineColor.y, lineColor.z, lineColor.w * 0.35F});
+            const ImVec4 fill = fillColor.value_or(defaultSeriesFill(Theme::get().scheme(), lineColor));
             // Render fill with same label as line so ImPlot treats them as one series.
             // When user clicks legend to hide the series, both fill and line hide together.
             // Render fill first so line appears on top.

@@ -333,7 +333,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                                  ifaceSentColor,
                                  std::nullopt,
                                  2.0F,
-                                 true,
+                                 false, // line only: the interface fills in front are the series
                                  UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
                 plotLineWithFill(TOTAL_RECV_BEHIND_LABEL,
                                  netTimes.data(),
@@ -342,7 +342,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                                  ifaceRecvColor,
                                  std::nullopt,
                                  2.0F,
-                                 true,
+                                 false, // line only: the interface fills in front are the series
                                  UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
 
                 // Interface-specific lines (bright, in foreground)

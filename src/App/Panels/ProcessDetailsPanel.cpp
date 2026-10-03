@@ -402,9 +402,9 @@ void ProcessDetailsPanel::renderContent()
                         const UI::Widgets::TabContentScope content("##NetworkContent");
                         UI::Widgets::FillPlotLayout fill(m_NetworkFill);
                         // Render I/O stats first (at the top)
-                        renderIoStats(m_CachedSnapshot, fill);
+                        renderIoStats(fill);
                         ImGui::Separator();
-                        renderNetworkStats(m_CachedSnapshot, fill);
+                        renderNetworkStats(fill);
                     }
                     ImGui::EndTabItem();
                 }
@@ -839,105 +839,99 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
             if (chart.active())
             {
                 UI::Widgets::drawCollectingHint(alignedCount);
-                if (alignedCount > 0)
+                // alignedCount > 0 here: the section only renders with history (see above).
+
+                // Reuse member scratch buffers across frames instead of local vectors, so the
+                // per-frame history redraw doesn't reallocate once buffers reach steady-state size.
+                m_CpuStackY0.assign(alignedCount, 0.0);
+                m_CpuStackYUser.resize(alignedCount);
+                m_CpuStackYSystem.resize(alignedCount);
+                auto& y0 = m_CpuStackY0;
+                auto& yUserTop = m_CpuStackYUser;
+                auto& ySystemTop = m_CpuStackYSystem;
+
+                // PlotShaded fills the area *between* two Y series, so a stacked user/system
+                // area chart needs cumulative tops: user alone, then user+system on top of it.
+                for (size_t i = 0; i < alignedCount; ++i)
                 {
-                    // Reuse member scratch buffers across frames instead of local vectors, so the
-                    // per-frame history redraw doesn't reallocate once buffers reach steady-state size.
-                    m_CpuStackY0.assign(alignedCount, 0.0);
-                    m_CpuStackYUser.resize(alignedCount);
-                    m_CpuStackYSystem.resize(alignedCount);
-                    auto& y0 = m_CpuStackY0;
-                    auto& yUserTop = m_CpuStackYUser;
-                    auto& ySystemTop = m_CpuStackYSystem;
+                    yUserTop[i] = cpuUserData[i];
+                    ySystemTop[i] = cpuUserData[i] + cpuSystemData[i];
+                }
 
-                    // PlotShaded fills the area *between* two Y series, so a stacked user/system
-                    // area chart needs cumulative tops: user alone, then user+system on top of it.
-                    for (size_t i = 0; i < alignedCount; ++i)
+                // Bands and lines reach "now" like every plotLineWithFill series: the last sample
+                // held to x = 0 (UI::Widgets::holdLastValueToNow, #1016). Copies, so the tooltip's
+                // lookup over cpuTimeData still finds real samples only.
+                m_CpuPlotX.assign(cpuTimeData.begin(), cpuTimeData.end());
+                m_CpuPlotTotal.assign(cpuData.begin(), cpuData.end());
+                m_CpuPlotUser.assign(cpuUserData.begin(), cpuUserData.end());
+                m_CpuPlotSystem.assign(cpuSystemData.begin(), cpuSystemData.end());
+                if (!m_CpuPlotX.empty() && m_CpuPlotX.back() < 0.0)
+                {
+                    m_CpuPlotX.push_back(0.0);
+                    for (auto* series : {&y0, &yUserTop, &ySystemTop, &m_CpuPlotTotal, &m_CpuPlotUser, &m_CpuPlotSystem})
                     {
-                        yUserTop[i] = cpuUserData[i];
-                        ySystemTop[i] = cpuUserData[i] + cpuSystemData[i];
-                    }
-
-                    // Bands and lines reach "now" like every plotLineWithFill series: the last sample
-                    // held to x = 0 (UI::Widgets::holdLastValueToNow, #1016). Copies, so the tooltip's
-                    // lookup over cpuTimeData still finds real samples only.
-                    m_CpuPlotX.assign(cpuTimeData.begin(), cpuTimeData.end());
-                    m_CpuPlotTotal.assign(cpuData.begin(), cpuData.end());
-                    m_CpuPlotUser.assign(cpuUserData.begin(), cpuUserData.end());
-                    m_CpuPlotSystem.assign(cpuSystemData.begin(), cpuSystemData.end());
-                    if (!m_CpuPlotX.empty() && m_CpuPlotX.back() < 0.0)
-                    {
-                        m_CpuPlotX.push_back(0.0);
-                        for (auto* series : {&y0, &yUserTop, &ySystemTop, &m_CpuPlotTotal, &m_CpuPlotUser, &m_CpuPlotSystem})
-                        {
-                            series->push_back(series->back());
-                        }
-                    }
-                    const int drawCount = UI::Format::checkedCount(m_CpuPlotX.size());
-
-                    // The bands share their labels with the User and System lines below, so ImPlot
-                    // treats each band and its line as one legend item: hiding "User" hides both.
-                    // With separate hidden labels the band stayed on screen after its line was hidden.
-                    ImPlot::PlotShaded(CPU_USER_LABEL,
-                                       m_CpuPlotX.data(),
-                                       y0.data(),
-                                       yUserTop.data(),
-                                       drawCount,
-                                       {ImPlotProp_FillColor, theme.scheme().cpuUserFill});
-
-                    ImPlot::PlotShaded(CPU_SYSTEM_LABEL,
-                                       m_CpuPlotX.data(),
-                                       yUserTop.data(),
-                                       ySystemTop.data(),
-                                       drawCount,
-                                       {ImPlotProp_FillColor, theme.scheme().cpuSystemFill});
-
-                    ImPlot::PlotLine(CPU_TOTAL_LABEL,
-                                     m_CpuPlotX.data(),
-                                     m_CpuPlotTotal.data(),
-                                     drawCount,
-                                     {ImPlotProp_LineColor, theme.scheme().chartCpu, ImPlotProp_LineWeight, UI::Widgets::lineWeight(2.0F)});
-
-                    ImPlot::PlotLine(CPU_USER_LABEL,
-                                     m_CpuPlotX.data(),
-                                     m_CpuPlotUser.data(),
-                                     drawCount,
-                                     {ImPlotProp_LineColor, theme.scheme().cpuUser, ImPlotProp_LineWeight, UI::Widgets::lineWeight(1.8F)});
-
-                    ImPlot::PlotLine(
-                        CPU_SYSTEM_LABEL,
-                        m_CpuPlotX.data(),
-                        m_CpuPlotSystem.data(),
-                        drawCount,
-                        {ImPlotProp_LineColor, theme.scheme().cpuSystem, ImPlotProp_LineWeight, UI::Widgets::lineWeight(1.8F)});
-
-                    if (ImPlot::IsPlotHovered())
-                    {
-                        const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                        if (const auto idxVal = hoveredIndexFromPlotX(cpuTimeData, mouse.x))
-                        {
-                            if (*idxVal < alignedCount)
-                            {
-                                // Total in its line's colour, not progressColor, which matched nothing on the chart.
-                                const std::array rows{
-                                    UI::Widgets::TooltipRow{.label = CPU_TOTAL_LABEL,
-                                                            .color = theme.scheme().chartCpu,
-                                                            .value = UI::Format::percentCompact(cpuData[*idxVal])},
-                                    UI::Widgets::TooltipRow{.label = CPU_USER_LABEL,
-                                                            .color = theme.scheme().cpuUser,
-                                                            .value = UI::Format::percentCompact(cpuUserData[*idxVal])},
-                                    UI::Widgets::TooltipRow{.label = CPU_SYSTEM_LABEL,
-                                                            .color = theme.scheme().cpuSystem,
-                                                            .value = UI::Format::percentCompact(cpuSystemData[*idxVal])},
-                                };
-                                UI::Widgets::renderHistoryTooltip(cpuTimeData[*idxVal], rows);
-                            }
-                        }
+                        series->push_back(series->back());
                     }
                 }
-                else
+                const int drawCount = UI::Format::checkedCount(m_CpuPlotX.size());
+
+                // The bands share their labels with the User and System lines below, so ImPlot
+                // treats each band and its line as one legend item: hiding "User" hides both.
+                // With separate hidden labels the band stayed on screen after its line was hidden.
+                ImPlot::PlotShaded(CPU_USER_LABEL,
+                                   m_CpuPlotX.data(),
+                                   y0.data(),
+                                   yUserTop.data(),
+                                   drawCount,
+                                   {ImPlotProp_FillColor, theme.scheme().cpuUserFill});
+
+                ImPlot::PlotShaded(CPU_SYSTEM_LABEL,
+                                   m_CpuPlotX.data(),
+                                   yUserTop.data(),
+                                   ySystemTop.data(),
+                                   drawCount,
+                                   {ImPlotProp_FillColor, theme.scheme().cpuSystemFill});
+
+                ImPlot::PlotLine(CPU_TOTAL_LABEL,
+                                 m_CpuPlotX.data(),
+                                 m_CpuPlotTotal.data(),
+                                 drawCount,
+                                 {ImPlotProp_LineColor, theme.scheme().chartCpu, ImPlotProp_LineWeight, UI::Widgets::lineWeight(2.0F)});
+
+                ImPlot::PlotLine(CPU_USER_LABEL,
+                                 m_CpuPlotX.data(),
+                                 m_CpuPlotUser.data(),
+                                 drawCount,
+                                 {ImPlotProp_LineColor, theme.scheme().cpuUser, ImPlotProp_LineWeight, UI::Widgets::lineWeight(2.0F)});
+
+                ImPlot::PlotLine(CPU_SYSTEM_LABEL,
+                                 m_CpuPlotX.data(),
+                                 m_CpuPlotSystem.data(),
+                                 drawCount,
+                                 {ImPlotProp_LineColor, theme.scheme().cpuSystem, ImPlotProp_LineWeight, UI::Widgets::lineWeight(2.0F)});
+
+                if (ImPlot::IsPlotHovered())
                 {
-                    ImPlot::PlotDummy("CPU");
+                    const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
+                    if (const auto idxVal = hoveredIndexFromPlotX(cpuTimeData, mouse.x))
+                    {
+                        if (*idxVal < alignedCount)
+                        {
+                            // Total in its line's colour, not progressColor, which matched nothing on the chart.
+                            const std::array rows{
+                                UI::Widgets::TooltipRow{.label = CPU_TOTAL_LABEL,
+                                                        .color = theme.scheme().chartCpu,
+                                                        .value = UI::Format::percentCompact(cpuData[*idxVal])},
+                                UI::Widgets::TooltipRow{.label = CPU_USER_LABEL,
+                                                        .color = theme.scheme().cpuUser,
+                                                        .value = UI::Format::percentCompact(cpuUserData[*idxVal])},
+                                UI::Widgets::TooltipRow{.label = CPU_SYSTEM_LABEL,
+                                                        .color = theme.scheme().cpuSystem,
+                                                        .value = UI::Format::percentCompact(cpuSystemData[*idxVal])},
+                            };
+                            UI::Widgets::renderHistoryTooltip(cpuTimeData[*idxVal], rows);
+                        }
+                    }
                 }
             }
         };
@@ -1045,8 +1039,7 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
                                          timeData.data(),
                                          usedData.data(),
                                          UI::Format::checkedCount(usedData.size()),
-                                         theme.scheme().chartMemory,
-                                         theme.scheme().chartMemoryFill);
+                                         theme.scheme().chartMemory);
                     }
 
                     if (!sharedData.empty())
@@ -1055,8 +1048,7 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
                                          timeData.data(),
                                          sharedData.data(),
                                          UI::Format::checkedCount(sharedData.size()),
-                                         theme.scheme().chartCpu,
-                                         theme.scheme().chartCpuFill);
+                                         theme.scheme().chartCpu);
                     }
 
                     if (!virtData.empty())
@@ -1324,14 +1316,8 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
     ImGui::Spacing();
 }
 
-void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill)
+void ProcessDetailsPanel::renderIoStats(UI::Widgets::FillPlotLayout& fill)
 {
-    const bool hasCurrent = (proc.ioReadBytesPerSec > 0.0 || proc.ioWriteBytesPerSec > 0.0);
-    if (m_Timestamps.empty() && !hasCurrent)
-    {
-        return;
-    }
-
     const size_t alignedCount = std::min({m_Timestamps.size(), m_IoReadHistory.size(), m_IoWriteHistory.size()});
     if (alignedCount == 0)
     {
@@ -1385,7 +1371,7 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc, UI:
                              readData.data(),
                              plotCount,
                              theme.scheme().chartIo,
-                             theme.scheme().chartIoFill,
+                             std::nullopt,
                              2.0F,
                              true,
                              UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -1395,7 +1381,7 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc, UI:
                              writeData.data(),
                              plotCount,
                              theme.scheme().chartIoWrite,
-                             theme.scheme().chartIoWriteFill,
+                             std::nullopt,
                              2.0F,
                              true,
                              UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -1428,14 +1414,8 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc, UI:
     ImGui::Spacing();
 }
 
-void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill)
+void ProcessDetailsPanel::renderNetworkStats(UI::Widgets::FillPlotLayout& fill)
 {
-    const bool hasCurrent = (proc.netSentBytesPerSec > 0.0 || proc.netReceivedBytesPerSec > 0.0);
-    if (m_Timestamps.empty() && !hasCurrent)
-    {
-        return;
-    }
-
     const size_t alignedCount = std::min({m_Timestamps.size(), m_NetSentHistory.size(), m_NetRecvHistory.size()});
     if (alignedCount == 0)
     {
@@ -1489,7 +1469,7 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
                              sentData.data(),
                              plotCount,
                              theme.scheme().chartNetTx,
-                             theme.scheme().chartNetTxFill,
+                             std::nullopt,
                              2.0F,
                              true,
                              UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -1499,7 +1479,7 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
                              recvData.data(),
                              plotCount,
                              theme.scheme().chartNetRx,
-                             theme.scheme().chartNetRxFill,
+                             std::nullopt,
                              2.0F,
                              true,
                              UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -1859,7 +1839,7 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
                                      gpuUtilVec.data(),
                                      plotCount,
                                      theme.scheme().gpuUtilization,
-                                     theme.scheme().gpuUtilizationFill,
+                                     std::nullopt,
                                      2.0F,
                                      true,
                                      UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -1907,7 +1887,7 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
                                      gpuMemVec.data(),
                                      plotCount,
                                      theme.scheme().gpuMemory,
-                                     theme.scheme().gpuMemoryFill,
+                                     std::nullopt,
                                      2.0F,
                                      true,
                                      UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);

@@ -327,15 +327,17 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
 
         // GPU chart colors
         scheme.gpuUtilization = getColor(tbl, "charts.gpu.utilization");
-        scheme.gpuUtilizationFill = getColor(tbl, "charts.gpu.utilization_fill", scheme.gpuUtilization);
+        // Fill fallbacks translucent like the chart fills above, not the opaque line colour.
+        scheme.gpuUtilizationFill =
+            getColor(tbl, "charts.gpu.utilization_fill", withAlpha(scheme.gpuUtilization, (scheme.gpuUtilization.w * 0.35F)));
         scheme.gpuMemory = getColor(tbl, "charts.gpu.memory");
-        scheme.gpuMemoryFill = getColor(tbl, "charts.gpu.memory_fill", scheme.gpuMemory);
+        scheme.gpuMemoryFill = getColor(tbl, "charts.gpu.memory_fill", withAlpha(scheme.gpuMemory, (scheme.gpuMemory.w * 0.35F)));
         scheme.gpuTemperature = getColor(tbl, "charts.gpu.temperature");
         scheme.gpuPower = getColor(tbl, "charts.gpu.power");
         scheme.gpuEncoder = getColor(tbl, "charts.gpu.encoder");
         scheme.gpuDecoder = getColor(tbl, "charts.gpu.decoder");
         scheme.gpuClock = getColor(tbl, "charts.gpu.clock");
-        scheme.gpuClockFill = getColor(tbl, "charts.gpu.clock_fill", scheme.gpuClock);
+        scheme.gpuClockFill = getColor(tbl, "charts.gpu.clock_fill", withAlpha(scheme.gpuClock, (scheme.gpuClock.w * 0.35F)));
         scheme.gpuFan = getColor(tbl, "charts.gpu.fan");
 
         // Chart overlays

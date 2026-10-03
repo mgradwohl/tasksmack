@@ -104,7 +104,6 @@ constexpr const char* CPU_USER_LABEL = "User";
 constexpr const char* CPU_SYSTEM_LABEL = "System";
 constexpr const char* CPU_IOWAIT_LABEL = "I/O Wait";
 constexpr const char* CPU_IDLE_LABEL = "Idle";
-constexpr const char* CPU_SINGLE_LABEL = "CPU";
 constexpr const char* POWER_LABEL = "Power";
 constexpr const char* BATTERY_LABEL = "Battery";
 constexpr const char* THREADS_LABEL = "Threads";
@@ -729,31 +728,6 @@ void SystemMetricsPanel::renderOverview()
                                                 cpuIdleData[*si]);
                     }
                 }
-            }
-            else if (!cpuData.empty())
-            {
-                plotLineWithFill(CPU_SINGLE_LABEL,
-                                 cpuTimeData.data(),
-                                 cpuData.data(),
-                                 UI::Format::checkedCount(cpuData.size()),
-                                 theme.scheme().chartCpu,
-                                 theme.scheme().chartCpuFill);
-
-                if (ImPlot::IsPlotHovered())
-                {
-                    const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                    if (const auto idxVal = hoveredIndexFromPlotX(cpuTimeData, mouse.x))
-                    {
-                        const std::array rows{UI::Widgets::TooltipRow{.label = CPU_SINGLE_LABEL,
-                                                                      .color = theme.scheme().chartCpu,
-                                                                      .value = UI::Format::percentCompact(cpuData[*idxVal])}};
-                        UI::Widgets::renderHistoryTooltip(cpuTimeData[*idxVal], rows);
-                    }
-                }
-            }
-            else
-            {
-                ImPlot::PlotDummy("##CPU");
             }
         }
     };

@@ -1,5 +1,6 @@
 #include "UI/ChartWidgets.h"
 #include "UI/RateAxis.h"
+#include "UI/Theme.h"
 
 #include <gtest/gtest.h>
 
@@ -670,6 +671,26 @@ TEST(ChartWidgetsTest, HoldDoesNothingForAnEmptyOrAlreadyCurrentSeries)
     EXPECT_EQ(x.size(), 2U);
 }
 
+// ========== defaultSeriesFill (#1022) ==========
+
+TEST(ChartWidgetsTest, DefaultFillIsTheThemesFillForAKnownSeriesColour)
+{
+    ColorScheme scheme{};
+    scheme.chartIo = ImVec4(1.0F, 0.5F, 0.0F, 1.0F);
+    scheme.chartIoFill = ImVec4(1.0F, 0.5F, 0.0F, 0.3F);
+    const ImVec4 fill = defaultSeriesFill(scheme, scheme.chartIo);
+    EXPECT_FLOAT_EQ(fill.w, 0.3F);
+}
+
+TEST(ChartWidgetsTest, DefaultFillDerivesFromAnUnknownSeriesColour)
+{
+    const ColorScheme scheme{};
+    const ImVec4 line(0.2F, 0.4F, 0.6F, 0.8F);
+    const ImVec4 fill = defaultSeriesFill(scheme, line);
+    EXPECT_FLOAT_EQ(fill.x, 0.2F);
+    EXPECT_FLOAT_EQ(fill.w, 0.8F * 0.35F);
+}
+
 // ========== normalizeToUnitInterval ==========
 
 TEST(ChartWidgetsTest, NormalizeToUnitIntervalScalesAndClamps)
@@ -939,6 +960,13 @@ TEST(HistoryChartConfigTest, YAxisFlagsLockWithFixedLimitsAutoFitOtherwise)
 
 // ========== historyChartBeginPlotFlags (perf-plan #843 phase 1: showLegend=false must
 // actually suppress the legend, not just skip customizing it) ==========
+
+TEST(ChartWidgetsTest, DefaultPlotFlagsHideImPlotsMouseReadout)
+{
+    // Every history chart has its own tooltip; ImPlot's raw cursor coordinates were a second,
+    // unlabelled readout of the same point (#1039).
+    EXPECT_TRUE((PLOT_FLAGS_DEFAULT & ImPlotFlags_NoMouseText) != 0);
+}
 
 TEST(HistoryChartConfigTest, BeginPlotFlagsUnchangedWhenLegendShown)
 {
