@@ -119,4 +119,34 @@ processorTimes(std::uint64_t kernel, std::uint64_t idle, std::uint64_t user, std
     return core;
 }
 
+/// IANA ifType values GetIfTable2 reports (ipifcons.h), spelled out so this header stays free of
+/// Windows includes.
+inline constexpr std::uint32_t IF_TYPE_ETHERNET = 6;
+inline constexpr std::uint32_t IF_TYPE_PPP_LINK = 23;
+inline constexpr std::uint32_t IF_TYPE_LOOPBACK = 24;
+inline constexpr std::uint32_t IF_TYPE_VIRTUAL = 53;
+inline constexpr std::uint32_t IF_TYPE_WIFI = 71;
+inline constexpr std::uint32_t IF_TYPE_TUNNEL_LINK = 131;
+
+/// Whether a GetIfTable2 row counts as a network interface of its own.
+///
+/// Ethernet, Wi-Fi, tunnels, PPP and virtual adapters (VPN, Hyper-V, Docker) count; loopback and
+/// other types (Bluetooth, etc.) do not. Nor do NDIS filter-module rows: GetIfTable2 lists one per
+/// filter bound to an adapter (WFP MAC layer, QoS Packet Scheduler, Native WiFi filter, Hyper-V
+/// switch extensions), each repeating its adapter's byte counters. Counting them made the network
+/// Total several times the real traffic -- on a Wi-Fi laptop with WSL, Wi-Fi was counted 5 times
+/// and the WSL vEthernet adapter 4 times, 49.0 GB of lifetime bytes against 11.8 GB actual (#1030).
+///
+/// @param ifType             MIB_IF_ROW2::Type.
+/// @param isFilterInterface  MIB_IF_ROW2::InterfaceAndOperStatusFlags.FilterInterface.
+[[nodiscard]] constexpr bool isCountedNetworkRow(std::uint32_t ifType, bool isFilterInterface) noexcept
+{
+    if (isFilterInterface)
+    {
+        return false;
+    }
+    return ifType == IF_TYPE_ETHERNET || ifType == IF_TYPE_WIFI || ifType == IF_TYPE_TUNNEL_LINK || ifType == IF_TYPE_PPP_LINK ||
+           ifType == IF_TYPE_VIRTUAL;
+}
+
 } // namespace Platform
