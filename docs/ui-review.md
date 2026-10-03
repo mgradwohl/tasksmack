@@ -201,7 +201,7 @@ None of this needs a redesign. The app's technical, information-dense character 
 - **Scope:** Small–Medium · **Issue:** [#1207](https://github.com/mgradwohl/tasksmack/issues/1207)
 
 ### UI-020 — OS-level maximize leaves the window a quarter of the screen with clipped content (bug)
-- **Current:** `ShowWindow(SW_MAXIMIZE)`, which Windows sends for Win+Up and snap, left the window "zoomed" at 1600×783 on a 3200×2000 display, with the UI laid out larger and the title-bar buttons cut off. TaskSmack's own Maximize button works.
+- **Current:** maximizing through the OS API, `ShowWindow(SW_MAXIMIZE)` (the reproduction used for OS-initiated maximize; real Win+Up and snap gestures couldn't be sent), left the window "zoomed" at 1600×783 on a 3200×2000 display, with the UI laid out larger and the title-bar buttons cut off. TaskSmack's own Maximize button works.
 - **Scope:** Small–Medium · **Issue:** [#1208](https://github.com/mgradwohl/tasksmack/issues/1208)
 
 ### UI-021 — Process table affordances are hidden
@@ -250,8 +250,8 @@ None of this needs a redesign. The app's technical, information-dense character 
 
 Contrast thresholds:
 - **Body text:** 4.5:1.
-- **Chart lines, NowBars and selection:** 3:1.
-- **Selected row and selected tab against their neighbours:** 1.35:1, a practical floor.
+- **Chart lines and NowBars, and any selection edge or tab overline:** 3:1.
+- **Selection fills against their neighbours** (practical floors, not WCAG numbers): selected row 1.35:1; selected tab 1.3:1.
 - **Series sharing a chart:** ΔE2000 ≥ 12, and ≥ 8 under protan/deutan simulation.
 
 Each theme's colours are judged against the background they're drawn on; for example, axis labels are measured on the plot frame, not the window. Ratios and candidate replacement hex values per theme follow.
@@ -314,7 +314,7 @@ Key ratios: primary/window 17.23, primary/plot 16.45, muted/plot 2.53, disabled/
 | `accents.colors[5]` | #E46E97 | 2.67 | #D9658E | >= 3.0 vs plot / NowBar track |
 | `accents.colors[6]` | #A8F04F | 1.22 | #5B9C00 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[7]` | #FF9E7A | 1.79 | #CA7454 | >= 3.0 vs plot / NowBar track |
-| `ui.header.normal` | #D0E0F0 | 1.25 | #C8D8E7 | >= 1.35 vs window/row |
+| `ui.header.normal` | #D0E0F0 | 1.25 | #B9D1E9 | >= 1.35 vs window/row |
 | `ui.window.border (grid)` | #C6D4E880 | 1.15 | #C5D3E7 | >= 1.35 vs plot |
 
 
@@ -371,7 +371,7 @@ Key ratios: primary/window 17.81, primary/plot 16.67, muted/plot 3.4, disabled/w
 | `accents.colors[4]` | #FF7A1A | 2.24 | #E06300 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[5]` | #F44BFF | 2.47 | #E039EC | >= 3.0 vs plot / NowBar track |
 | `accents.colors[6]` | #FFE433 | 1.1 | #9A8900 | >= 3.0 vs plot / NowBar track |
-| `ui.header.normal` | #E0D8F0 | 1.27 | #D9D1E9 | >= 1.35 vs window/row |
+| `ui.header.normal` | #E0D8F0 | 1.27 | #D3C7EA | >= 1.35 vs window/row |
 | `ui.window.border (grid)` | #D7CFF580 | 1.13 | #D1C9EF | >= 1.35 vs plot |
 
 
@@ -416,7 +416,7 @@ Key ratios: primary/window 10.75, primary/plot 8.45, muted/plot 4.17, disabled/w
 | key | current | ratio now | candidate | target |
 |---|---|---|---|---|
 | `semantic.text_muted` | #A89984 | 4.17 | #AFA08B | >= 4.5 vs plot/frame (axis labels) |
-| `ui.header.normal` | #3C383680 | 1.12 | #403C3A | >= 1.35 vs window/row |
+| `ui.header.normal` | #3C383680 | 1.12 | #444240 | >= 1.35 vs window/row |
 | `ui.window.border (grid)` | #50494580 | 1.15 | #524B47 | >= 1.35 vs plot |
 
 
@@ -446,7 +446,7 @@ Key ratios: primary/window 10.22, primary/plot 8.45, muted/plot 3.55, disabled/w
 | `progress.medium` | #B57614 | 2.75 | #AD700C | >= 3.0 vs plot / NowBar track |
 | `accents.colors[4]` | #B57614 | 2.75 | #AD700C | >= 3.0 vs plot / NowBar track |
 | `accents.colors[7]` | #928374 | 2.68 | #897A6B | >= 3.0 vs plot / NowBar track |
-| `ui.header.normal` | #EBDBB2 | 1.21 | #DFD0A8 | >= 1.35 vs window/row |
+| `ui.header.normal` | #EBDBB2 | 1.21 | #E0C787 | >= 1.35 vs window/row |
 
 
 ### Latte (`latte.toml`, light)
@@ -507,7 +507,7 @@ Key ratios: primary/window 11.34, primary/plot 8.69, muted/plot 4.45, disabled/w
 |---|---|---|---|---|
 | `semantic.text_muted` | #9399B2 | 4.45 | #949AB3 | >= 4.5 vs plot/frame (axis labels) |
 | `charts.gpu.fan` | #585B70 | 1.88 | #787B90 | >= 3.0 vs plot / NowBar track |
-| `ui.header.normal` | #31324480 | 1.13 | #333446 | >= 1.35 vs window/row |
+| `ui.header.normal` | #31324480 | 1.13 | #383951 | >= 1.35 vs window/row |
 | `ui.window.border (grid)` | #45475A80 | 1.17 | raise to an opaque mid-tone (see text) | >= 1.35 vs plot |
 
 
@@ -567,7 +567,7 @@ Key ratios: primary/window 17.17, primary/plot 16.35, muted/plot 2.6, disabled/w
 | `accents.colors[5]` | #6CC46C | 1.96 | #4A9E4D | >= 3.0 vs plot / NowBar track |
 | `accents.colors[6]` | #8BD88B | 1.56 | #579D59 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[7]` | #B6E8B6 | 1.26 | #6C976D | >= 3.0 vs plot / NowBar track |
-| `ui.header.normal` | #E8F5E0 | 1.08 | #D0DDC9 | >= 1.35 vs window/row |
+| `ui.header.normal` | #E8F5E0 | 1.08 | #B3DE99 | >= 1.35 vs window/row |
 | `ui.window.border (grid)` | #CFE7CF80 | 1.09 | #C3DAC3 | >= 1.35 vs plot |
 
 
@@ -592,7 +592,7 @@ Key ratios: primary/window 10.84, primary/plot 8.73, muted/plot 7.45, disabled/w
 | `progress.high` | #BF616A | 2.46 | #D07179 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[1]` | #BF616A | 2.46 | #D07179 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[7]` | #5E81AC | 2.5 | #6D8FBA | >= 3.0 vs plot / NowBar track |
-| `ui.header.normal` | #3B425280 | 1.11 | #414858 | >= 1.35 vs window/row |
+| `ui.header.normal` | #3B425280 | 1.11 | #454D5F | >= 1.35 vs window/row |
 | `ui.window.border (grid)` | #4C566A80 | 1.17 | raise to an opaque mid-tone (see text) | >= 1.35 vs plot |
 
 
@@ -620,7 +620,7 @@ Key ratios: primary/window 10.84, primary/plot 10.26, muted/plot 6.06, disabled/
 | `progress.medium` | #D08770 | 2.34 | #B9745E | >= 3.0 vs plot / NowBar track |
 | `accents.colors[4]` | #C97710 | 2.81 | #C37208 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[6]` | #6D8EB8 | 2.78 | #6788B1 | >= 3.0 vs plot / NowBar track |
-| `ui.header.normal` | #D8DEE9 | 1.17 | #C9CFD9 | >= 1.35 vs window/row |
+| `ui.header.normal` | #D8DEE9 | 1.17 | #BEC8DA | >= 1.35 vs window/row |
 | `ui.window.border (grid)` | #B0BCC880 | 1.25 | raise to an opaque mid-tone (see text) | >= 1.35 vs plot |
 
 
@@ -660,7 +660,7 @@ Key ratios: primary/window 4.75, primary/plot 4.11, muted/plot 2.42, disabled/wi
 | `accents.colors[5]` | #6C71C4 | 2.97 | #6D72C5 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[6]` | #D33682 | 2.86 | #D73B86 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[7]` | #DC322F | 2.81 | #E23934 | >= 3.0 vs plot / NowBar track |
-| `ui.header.normal` | #07364280 | 1.07 | #18414D | >= 1.35 vs window/row |
+| `ui.header.normal` | #07364280 | 1.07 | #054859 | >= 1.35 vs window/row |
 
 
 ### Solarized Light (`solarized-light.toml`, light)
@@ -686,7 +686,7 @@ Key ratios: primary/window 4.13, primary/plot 3.64, muted/plot 2.18, disabled/wi
 | `charts.gpu.fan` | #93A1A1 | 2.18 | #7B8888 | >= 3.0 vs plot / NowBar track |
 | `progress.medium` | #B58900 | 2.62 | #A97F00 | >= 3.0 vs plot / NowBar track |
 | `charts.peak_line` | #657B83B3 | 2.33 | #4A5E66B3 | >= 3.0 vs plot / NowBar track |
-| `ui.header.normal` | #EEE8D5 | 1.14 | #DBD6C3 | >= 1.35 vs window/row |
+| `ui.header.normal` | #EEE8D5 | 1.14 | #DBCEA6 | >= 1.35 vs window/row |
 | `ui.window.border (grid)` | #C5BEAB80 | 1.22 | raise to an opaque mid-tone (see text) | >= 1.35 vs plot |
 
 
@@ -707,7 +707,7 @@ Key ratios: primary/window 10.59, primary/plot 8.32, muted/plot 6.36, disabled/w
 |---|---|---|---|---|
 | `semantic.text_disabled` | #565F89 | 2.76 | #5C658F | >= 3.0 vs window (disabled widgets, hints) |
 | `charts.gpu.fan` | #565F89 | 2.17 | #6D75A0 | >= 3.0 vs plot / NowBar track |
-| `ui.header.normal` | #292E4280 | 1.12 | #2D3247 | >= 1.35 vs window/row |
+| `ui.header.normal` | #292E4280 | 1.12 | #33374E | >= 1.35 vs window/row |
 | `ui.window.border (grid)` | #29303E80 | 1.01 | #3C4351 | >= 1.35 vs plot |
 
 
@@ -760,7 +760,7 @@ Key ratios: primary/window 17.84, primary/plot 17.82, muted/plot 3.34, disabled/
 | `accents.colors[2]` | #6FD86F | 1.69 | #3FA345 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[4]` | #F07F1E | 2.55 | #DF720F | >= 3.0 vs plot / NowBar track |
 | `accents.colors[6]` | #FFC533 | 1.49 | #B78800 | >= 3.0 vs plot / NowBar track |
-| `ui.header.normal` | #FAFAFA | 1.01 | #D8D8D8 | >= 1.35 vs window/row |
+| `ui.header.normal` | #FAFAFA | 1.01 | #D0D0D0 | >= 1.35 vs window/row |
 | `ui.window.border (grid)` | #D7CFC480 | 1.2 | raise to an opaque mid-tone (see text) | >= 1.35 vs plot |
 
 
@@ -807,7 +807,7 @@ Key ratios: primary/window 17.86, primary/plot 18.32, muted/plot 3.3, disabled/w
 | `accents.colors[4]` | #FA7A1C | 2.55 | #E96D0C | >= 3.0 vs plot / NowBar track |
 | `accents.colors[5]` | #00B5C8 | 2.38 | #00A0B3 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[6]` | #FFC228 | 1.54 | #BA8800 | >= 3.0 vs plot / NowBar track |
-| `ui.header.normal` | #F3F3F3 | 1.03 | #D7D7D7 | >= 1.35 vs window/row |
+| `ui.header.normal` | #F3F3F3 | 1.03 | #CECECE | >= 1.35 vs window/row |
 | `ui.window.border (grid)` | #DDE3EB80 | 1.11 | #D3D9E1 | >= 1.35 vs plot |
 
 
@@ -886,8 +886,8 @@ The table gives each theme's hue family for each semantic key. Bold marks the ou
 4. **Contrast floors:**
    - primary text 7:1 (4.5 minimum) on the window, plot and selected row;
    - muted text 4.5:1 on the plot;
-   - series, NowBars and selection 3:1 on the plot;
-   - selected row 1.35:1 and selected tab 1.3:1 against their neighbours;
+   - series and NowBars 3:1 on the plot, and any selection edge or tab overline 3:1 against the tab or row;
+   - selection fills: selected row 1.35:1 and selected tab 1.3:1 against their neighbours;
    - grid 1.3–1.6:1.
 5. **Enforce it:** the bundled-theme lint in #1199.
 
