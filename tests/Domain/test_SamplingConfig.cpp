@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 
@@ -540,6 +541,20 @@ TEST(SamplingConfigTest, MaxSaneRateBpsRepresents100Gbps)
 {
     // Default 100 Gbps in bytes/sec = 100 * 10^9 / 8 bytes/sec = 12.5e9
     EXPECT_DOUBLE_EQ(MAX_SANE_RATE_BPS_DEFAULT, 12'500'000'000.0);
+}
+
+TEST(SamplingConfigTest, HistoryCapacityHoldsTheWindowAtTheFastestCadencePlusTwo)
+{
+    // At the fastest supported refresh the window holds ceil(seconds * samplesPerSecond) samples;
+    // the ring needs one more for headroom and one for the anchor trimming keeps just before the
+    // window (HistoryUtils::discardBefore, #1016). With only +1, the anchor would be overwritten
+    // before a trim could keep it.
+    const double samplesPerSecond = 1000.0 / static_cast<double>(REFRESH_INTERVAL_MIN_MS);
+    for (const double seconds : {static_cast<double>(HISTORY_SECONDS_MIN), 300.0, static_cast<double>(HISTORY_SECONDS_MAX)})
+    {
+        const auto windowSamples = static_cast<std::size_t>(std::ceil(seconds * samplesPerSecond));
+        EXPECT_EQ(historyCapacityForSeconds(seconds), windowSamples + 2) << seconds << " s";
+    }
 }
 
 } // namespace
