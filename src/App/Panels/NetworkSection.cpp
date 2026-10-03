@@ -19,6 +19,7 @@
 #include <format>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -231,27 +232,28 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     const auto axis = aligned > 0 ? makeTimeAxisConfig(netTimestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds)
                                   : makeTimeAxisConfig({}, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
 
+    // Views into the published history, not per-frame copies of it (#1018).
     std::vector<double> netTimes;
-    std::vector<float> sentData;
-    std::vector<float> recvData;
-    std::vector<float> ifaceSentData;
-    std::vector<float> ifaceRecvData;
+    std::span<const float> sentData;
+    std::span<const float> recvData;
+    std::span<const float> ifaceSentData;
+    std::span<const float> ifaceRecvData;
 
     if (aligned > 0)
     {
         // Use real-time for smooth scrolling (not netTimestamps.back() which freezes between refreshes)
         netTimes = buildTimeAxis(netTimestamps, aligned, nowSeconds);
-        sentData.assign(netTxHist.end() - static_cast<std::ptrdiff_t>(aligned), netTxHist.end());
-        recvData.assign(netRxHist.end() - static_cast<std::ptrdiff_t>(aligned), netRxHist.end());
+        sentData = UI::Widgets::tailAlignedSpan(netTxHist, aligned).values;
+        recvData = UI::Widgets::tailAlignedSpan(netRxHist, aligned).values;
 
         // Per-interface history (if available and same length as total)
         if (showingInterface && ifaceTxHist.size() >= aligned)
         {
-            ifaceSentData.assign(ifaceTxHist.end() - static_cast<std::ptrdiff_t>(aligned), ifaceTxHist.end());
+            ifaceSentData = UI::Widgets::tailAlignedSpan(ifaceTxHist, aligned).values;
         }
         if (showingInterface && ifaceRxHist.size() >= aligned)
         {
-            ifaceRecvData.assign(ifaceRxHist.end() - static_cast<std::ptrdiff_t>(aligned), ifaceRxHist.end());
+            ifaceRecvData = UI::Widgets::tailAlignedSpan(ifaceRxHist, aligned).values;
         }
     }
 

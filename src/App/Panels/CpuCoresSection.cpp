@@ -115,6 +115,21 @@ void renderCpuCoresSection(RenderContext& ctx)
     }
     static const std::vector<float> noSamples;
 
+    // Each core's heading ("<icon> Core N") and series name ("Core N"), built once per core count
+    // rather than with two std::format calls per core every frame (#1018). UI thread only.
+    static std::vector<std::string> coreLabels;
+    static std::vector<std::string> coreNames;
+    if (coreNames.size() != coreCount)
+    {
+        coreLabels.clear();
+        coreNames.clear();
+        for (size_t i = 0; i < coreCount; ++i)
+        {
+            coreLabels.push_back(std::format(ICON_FA_MICROCHIP " Core {}", i));
+            coreNames.push_back(std::format("Core {}", i));
+        }
+    }
+
     // Grid layout: fills the full available panel space (width and height), choosing a
     // rows x columns shape that tracks the panel's own aspect ratio (square panel -> square-ish
     // grid, wide panel -> fewer rows/more columns) -- see UI/ChartGridLayout.h for the sizing
@@ -194,7 +209,7 @@ void renderCpuCoresSection(RenderContext& ctx)
                             const auto& samples = (coreIdx < perCoreHist.size()) ? perCoreHist[coreIdx] : noSamples;
 
                             const float cellContentTop = ImGui::GetCursorPosY();
-                            const std::string coreLabel = std::format(ICON_FA_MICROCHIP " Core {}", coreIdx);
+                            const std::string& coreLabel = coreLabels[coreIdx];
                             const float availableWidth = ImGui::GetContentRegionAvail().x;
                             const float labelWidth = ImGui::CalcTextSize(coreLabel.c_str()).x;
                             const float labelOffset = std::max(0.0F, (availableWidth - labelWidth) * 0.5F);
@@ -223,7 +238,7 @@ void renderCpuCoresSection(RenderContext& ctx)
 
                             // The core's name, shared by its tooltip row and NowBar (#1008); the tooltip
                             // used to say "CPU:" whichever core it was over.
-                            const std::string coreName = std::format("Core {}", coreIdx);
+                            const std::string& coreName = coreNames[coreIdx];
 
                             auto plotFn = [&timeData, &sampleData, &themeRef, &axisCfg, &coreLabel, &coreName, plotHeight]()
                             {

@@ -22,6 +22,7 @@
 #include <format>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -81,8 +82,8 @@ constexpr float MIN_DISK_CELL_WIDTH_EM = 30.0F;
 /// doesn't change frame to frame on its own.
 void renderDiskCell(const std::string& deviceName,
                     const std::vector<double>& timeData,
-                    const std::vector<float>& readData,
-                    const std::vector<float>& writeData,
+                    std::span<const double> readData,
+                    std::span<const double> writeData,
                     double currentRead,
                     double currentWrite,
                     const UI::Widgets::TimeAxisConfig& axisConfig,
@@ -338,18 +339,10 @@ void renderStorageSection(RenderContext& ctx)
                 // An empty history still draws the cell's chart, with the collecting hint, rather than
                 // plain text in place of the chart (#1013).
 
-                // Build float read/write data for this disk
-                std::vector<float> readData;
-                std::vector<float> writeData;
-                readData.reserve(alignedCount);
-                writeData.reserve(alignedCount);
-                const size_t readOffset = disk.readBytesPerSec.size() - alignedCount;
-                const size_t writeOffset = disk.writeBytesPerSec.size() - alignedCount;
-                for (size_t i = 0; i < alignedCount; ++i)
-                {
-                    readData.push_back(static_cast<float>(disk.readBytesPerSec[readOffset + i]));
-                    writeData.push_back(static_cast<float>(disk.writeBytesPerSec[writeOffset + i]));
-                }
+                // Views into the published history, plotted as doubles against the double time axis --
+                // no per-frame float copies (#1018).
+                const auto readData = tailAlignedSpan(disk.readBytesPerSec, alignedCount).values;
+                const auto writeData = tailAlignedSpan(disk.writeBytesPerSec, alignedCount).values;
 
                 // Per-disk snapshot values for NowBars (O(1) lookup via pre-built map).
                 // NaN if the disk is missing from the latest sample: renderDiskCell shows N/A, not 0.
@@ -396,17 +389,9 @@ void renderStorageSection(RenderContext& ctx)
 
         // Take the newest alignedDisk entries of each series, so read, write and time line up by sample.
         const std::vector<double> aggregateTimes = buildTimeAxis(diskTimestamps, alignedDisk, nowSeconds);
-        const auto readTail = tailAlignedSpan(diskReadHist, alignedDisk).values;
-        const auto writeTail = tailAlignedSpan(diskWriteHist, alignedDisk).values;
-        std::vector<float> readData;
-        std::vector<float> writeData;
-        readData.reserve(alignedDisk);
-        writeData.reserve(alignedDisk);
-        for (size_t i = 0; i < alignedDisk; ++i)
-        {
-            readData.push_back(static_cast<float>(readTail[i]));
-            writeData.push_back(static_cast<float>(writeTail[i]));
-        }
+        // Views into the published history, plotted as doubles -- no per-frame float copies (#1018).
+        const auto readData = tailAlignedSpan(diskReadHist, alignedDisk).values;
+        const auto writeData = tailAlignedSpan(diskWriteHist, alignedDisk).values;
 
         // One upper bound for the chart's Y axis and its bars (#1003).
         const double diskAxisUpper = UI::Widgets::easedRateAxisUpperBound(
