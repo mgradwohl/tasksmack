@@ -168,9 +168,10 @@ $manifestPath = Join-Path $perfDir "$prefix-$Timestamp.manifest.json"
 $binaryName = if ($Mode -eq 'app') { 'TaskSmack.exe' } else { 'TaskSmackBenchmarks.exe' }
 $binaryPath = Join-Path $repoRoot "build/$Preset/bin/$binaryName"
 
-# The collector waits at most this long for the target to finish: the interactive app wait plus
-# slack, or the fixed duration plus slack.
-$collectorTimeoutSeconds = if ($Mode -eq 'app' -and $DurationSeconds -le 0) { 14400 + 600 } else { [Math]::Max($DurationSeconds, 0) + 3600 }
+# The collector waits at most this long for the stop request: a fixed-duration app run plus
+# slack, or else the 4-hour interactive allowance plus slack (a benchmark run can legitimately
+# take long with large -BenchmarkRepetitions/-BenchmarkMinTime). Reaching it fails the capture.
+$collectorTimeoutSeconds = if ($Mode -eq 'app' -and $DurationSeconds -gt 0) { $DurationSeconds + 600 } else { 14400 + 600 }
 
 function Invoke-Native {
     param(
@@ -241,6 +242,9 @@ function Invoke-ProfileTarget {
             Start-Sleep -Seconds $DurationSeconds
             if (-not $proc.HasExited) {
                 Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                # Stop-Process returns before the process is gone; wait, so its status is final
+                # and the trace is not stopped while it is still terminating.
+                $null = $proc.WaitForExit(30000)
                 $result.EndReason = 'closed by the script after -DurationSeconds (the exit code is from that forced stop)'
             }
         }
@@ -260,7 +264,7 @@ function Invoke-ProfileTarget {
     }
     else {
         $benchArgs = @("--benchmark_filter=$BenchmarkFilter", "--benchmark_repetitions=$BenchmarkRepetitions", "--benchmark_min_time=$BenchmarkMinTime", '--benchmark_report_aggregates_only=true', '--benchmark_display_aggregates_only=true', "--benchmark_out=$benchJsonPath", '--benchmark_out_format=json')
-        $proc = Start-Process -FilePath $binaryPath -ArgumentList $benchArgs -NoNewWindow -PassThru
+        $proc = Start-Process -FilePath $binaryPath -ArgumentList (ConvertTo-CommandLine $benchArgs) -NoNewWindow -PassThru
         $null = $proc.Handle
         $result.Pid = $proc.Id
         $result.IntegrityLevel = Get-ProcessIntegrityLevel -ProcessId $proc.Id
@@ -268,13 +272,21 @@ function Invoke-ProfileTarget {
         $proc.WaitForExit()
         $result.ExitCode = $proc.ExitCode
         $result.EndReason = 'exited'
-        if ($proc.ExitCode -ne 0) {
-            throw "Benchmark binary failed with exit code $($proc.ExitCode): $binaryPath"
-        }
-        Write-Host "Benchmark JSON: $benchJsonPath"
+        # A failure is returned, not thrown, so the caller still writes the manifest (PID,
+        # integrity, exit code) once the trace is saved, and fails after that (Assert-TargetSucceeded).
+        if ($proc.ExitCode -eq 0) { Write-Host "Benchmark JSON: $benchJsonPath" }
     }
     $result.EndUtc = (Get-Date).ToUniversalTime().ToString('o')
     return $result
+}
+
+function Assert-TargetSucceeded {
+    # After the manifest is written: a benchmark run that exited nonzero fails the capture. (The
+    # app's exit code is not checked: -DurationSeconds ends it with a forced stop.)
+    param($Target)
+    if ($Mode -eq 'bench' -and $null -ne $Target -and $Target.ExitCode -ne 0) {
+        throw "Benchmark binary failed with exit code $($Target.ExitCode): $binaryPath. The trace and manifest ($manifestPath) are kept for inspection."
+    }
 }
 
 function Write-ProfileManifest {
@@ -340,16 +352,22 @@ if ($Role -eq 'Collector') {
     Start-Transcript -Path $childLogPath -Force | Out-Null
     try {
         Write-Host "Starting ETW collector ($Mode); trace: $tracePath"
+        $script:collectorTimedOut = $false
         Invoke-WprCapture {
             @{ StartUtc = (Get-Date).ToUniversalTime().ToString('o') } | ConvertTo-Json | Set-Content -LiteralPath $startedMarker -Encoding utf8
             $deadline = (Get-Date).AddSeconds($collectorTimeoutSeconds)
             while (-not (Test-Path -LiteralPath $stopMarker)) {
                 if ((Get-Date) -gt $deadline) {
-                    Write-Warning "No stop request after $collectorTimeoutSeconds s; stopping the trace anyway."
+                    $script:collectorTimedOut = $true
                     break
                 }
                 Start-Sleep -Milliseconds 250
             }
+        }
+        # The trace is saved either way, but one cut off before the target finished is incomplete
+        # and must not be reported as a successful capture.
+        if ($script:collectorTimedOut) {
+            throw "No stop request within $collectorTimeoutSeconds s; the trace was saved but is truncated, so the capture failed."
         }
         @{ StopUtc = (Get-Date).ToUniversalTime().ToString('o'); Trace = $tracePath } | ConvertTo-Json | Set-Content -LiteralPath $doneMarker -Encoding utf8
         Write-Host "ETW_TRACE=$tracePath"
@@ -378,6 +396,7 @@ if ($Role -eq 'ElevatedRun') {
         $matchesForManifest = if ($Mode -eq 'bench') { Get-BenchmarkFilterMatches -BinaryPath $binaryPath -Filter $BenchmarkFilter } else { $null }
         Write-ProfileManifest -Target $target -BenchmarkMatches $matchesForManifest -CollectorElevated $true
         Write-Host "ETW_TRACE=$tracePath"
+        Assert-TargetSucceeded $target
     }
     finally {
         Stop-Transcript | Out-Null
@@ -418,7 +437,7 @@ if ($ElevatedTarget) {
         $childExit = $LASTEXITCODE
     }
     else {
-        $childProcess = Start-Process -FilePath $hostExe -Verb RunAs -ArgumentList $argList -WorkingDirectory $repoRoot -Wait -PassThru
+        $childProcess = Start-Process -FilePath $hostExe -Verb RunAs -ArgumentList (ConvertTo-CommandLine $argList) -WorkingDirectory $repoRoot -Wait -PassThru
         $childExit = $childProcess.ExitCode
     }
     "EXIT_CODE=$childExit" | Add-Content -Path $launcherLogPath -Encoding utf8
@@ -432,7 +451,7 @@ else {
     $argList = $commonArgs + @('-Role', 'Collector', '-ControlDirectory', $controlDir)
     "LAUNCH=$hostExe $($argList -join ' ')" | Set-Content -Path $launcherLogPath -Encoding utf8
 
-    $collector = Start-Process -FilePath $hostExe -Verb RunAs -ArgumentList $argList -WorkingDirectory $repoRoot -PassThru
+    $collector = Start-Process -FilePath $hostExe -Verb RunAs -ArgumentList (ConvertTo-CommandLine $argList) -WorkingDirectory $repoRoot -PassThru
     $null = $collector.Handle
     $target = $null
     try {
@@ -443,16 +462,22 @@ else {
     finally {
         # Always ask the collector to stop, so a failed target still leaves a saved trace.
         Set-Content -LiteralPath (Join-Path $controlDir 'stop-requested') -Value (Get-Date).ToUniversalTime().ToString('o') -Encoding utf8
-        if (-not $collector.WaitForExit(600000)) {
-            Write-Warning "The ETW collector did not exit within 10 minutes of the stop request."
-        }
+        $collectorExited = $collector.WaitForExit(600000)
+    }
+    if (-not $collectorExited) {
+        # Its exit code is not available while it runs; say so rather than read a stale value.
+        "EXIT_CODE=still running" | Add-Content -Path $launcherLogPath -Encoding utf8
+        throw "The elevated ETW collector did not exit within 10 minutes of the stop request; the trace may not be saved. Check $childLogPath, and close the collector window when it finishes.$(Get-CollectorErrorDetail -ControlDirectory $controlDir)"
     }
     "EXIT_CODE=$($collector.ExitCode)" | Add-Content -Path $launcherLogPath -Encoding utf8
-    if ($collector.ExitCode -ne 0) {
-        throw "Elevated ETW collector failed with exit code $($collector.ExitCode). Check $launcherLogPath and $childLogPath."
+    if ($null -ne $target) {
+        Write-ProfileManifest -Target $target -BenchmarkMatches $benchmarkMatches -CollectorElevated $true
     }
-    Write-ProfileManifest -Target $target -BenchmarkMatches $benchmarkMatches -CollectorElevated $true
+    if ($collector.ExitCode -ne 0) {
+        throw "Elevated ETW collector failed with exit code $($collector.ExitCode).$(Get-CollectorErrorDetail -ControlDirectory $controlDir) Check $launcherLogPath and $childLogPath."
+    }
     Remove-Item -LiteralPath $controlDir -Recurse -Force -ErrorAction SilentlyContinue
+    Assert-TargetSucceeded $target
 }
 
 $missingArtifacts = @()

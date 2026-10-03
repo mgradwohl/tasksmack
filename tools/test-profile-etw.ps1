@@ -65,6 +65,31 @@ try {
     Assert-True ((ConvertTo-IntegrityLevelName 0x2000) -eq 'Medium' -and (ConvertTo-IntegrityLevelName 0x3000) -eq 'High') 'Well-known RIDs'
     Assert-True ((ConvertTo-IntegrityLevelName 0x2500) -eq '0x2500') 'An unknown RID must be shown as hex, not mislabelled'
 
+    # Arguments survive a real process boundary intact: spaces (a checkout under a profile with a
+    # space in it), embedded quotes, trailing backslashes and empty strings.
+    $echo = Join-Path $root 'echo-args.ps1'
+    $echoOut = Join-Path $root 'args.json'
+    # The raw argv as Windows splits it (what a benchmark binary receives), not PowerShell's own
+    # parameter binding, which would read '--benchmark_out=C:\...' as '-name:value'.
+    Set-Content -LiteralPath $echo -Value "[Environment]::GetCommandLineArgs() | Select-Object -Skip 4 | ConvertTo-Json -AsArray | Set-Content -LiteralPath '$echoOut' -Encoding utf8"
+    $tricky = @('--benchmark_out=C:\Users\First Last\perf data\x.json', 'BM_(A|B)$', 'say "hi"', 'C:\trailing\', '', 'plain')
+    $commandLine = ConvertTo-CommandLine (@('-NoProfile', '-File', $echo) + $tricky)
+    $echoProc = Start-Process -FilePath $hostExe -ArgumentList $commandLine -PassThru -WindowStyle Hidden
+    $echoProc.WaitForExit()
+    $received = @(Get-Content -LiteralPath $echoOut -Raw | ConvertFrom-Json)
+    Assert-True ($received.Count -eq $tricky.Count) "Expected $($tricky.Count) arguments, got $($received.Count): $($received -join ' | ')"
+    for ($i = 0; $i -lt $tricky.Count; $i++) {
+        Assert-True ($received[$i] -ceq $tricky[$i]) "Argument $i arrived as [$($received[$i])], sent [$($tricky[$i])]"
+    }
+    Assert-True ((ConvertTo-QuotedArgument 'plain') -ceq 'plain') 'A simple argument is not quoted'
+
+    # A collector's recorded error is reported after it has stopped, too.
+    $controlDir = Join-Path $root 'control'
+    New-Item -ItemType Directory -Path $controlDir | Out-Null
+    Assert-True ((Get-CollectorErrorDetail -ControlDirectory $controlDir) -eq '') 'No error file means no detail'
+    Set-Content -LiteralPath (Join-Path $controlDir 'collector-error.txt') -Value 'wpr -stop failed'
+    Assert-True ((Get-CollectorErrorDetail -ControlDirectory $controlDir) -eq ' Collector error: wpr -stop failed') 'Recorded error detail'
+
     # The orchestrator fails fast when the collector exits before it starts recording.
     $exited = Start-Process -FilePath $hostExe -ArgumentList @('-NoProfile', '-Command', 'exit 5') -PassThru -WindowStyle Hidden
     $null = $exited.Handle

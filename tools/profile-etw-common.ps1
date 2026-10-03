@@ -129,6 +129,42 @@ function Get-BenchmarkFilterMatches {
     return Resolve-BenchmarkFilterMatches -ListOutput @($output | ForEach-Object { "$_" }) -Filter $Filter
 }
 
+function Get-CollectorErrorDetail {
+    # The error the collector recorded in the control directory, as " Collector error: ...", or
+    # an empty string. Its console window closes when it exits, so this is the only place it
+    # survives -- at startup or after it was told to stop.
+    param([Parameter(Mandatory = $true)][string]$ControlDirectory)
+    $errorFile = Join-Path $ControlDirectory 'collector-error.txt'
+    if (Test-Path -LiteralPath $errorFile) { return " Collector error: $((Get-Content -LiteralPath $errorFile -Raw).Trim())" }
+    return ''
+}
+
+function ConvertTo-QuotedArgument {
+    # One argument quoted by the Windows C runtime's command-line rules (CommandLineToArgvW), so
+    # spaces, quotes and trailing backslashes survive: a backslash run is doubled before a quote
+    # and at the end, and an embedded quote is escaped.
+    param([AllowEmptyString()][string]$Value)
+    if ($Value.Length -gt 0 -and $Value -notmatch '[\s"]') { return $Value }
+    $builder = [System.Text.StringBuilder]::new('"')
+    $backslashes = 0
+    foreach ($ch in $Value.ToCharArray()) {
+        if ($ch -eq '\') { $backslashes++; continue }
+        if ($ch -eq '"') { [void]$builder.Append('\', 2 * $backslashes + 1).Append('"') }
+        else { [void]$builder.Append('\', $backslashes).Append($ch) }
+        $backslashes = 0
+    }
+    [void]$builder.Append('\', 2 * $backslashes).Append('"')
+    return $builder.ToString()
+}
+
+function ConvertTo-CommandLine {
+    # Start-Process -ArgumentList joins an array with spaces and no quoting, so a path containing
+    # a space (a checkout under "C:\Users\First Last\...") was split into two arguments. Pass it
+    # this single, correctly quoted string instead.
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][AllowEmptyString()][string[]]$Arguments)
+    return (@($Arguments | ForEach-Object { ConvertTo-QuotedArgument $_ }) -join ' ')
+}
+
 function Wait-CollectorMarker {
     # Waits for the elevated collector to write a marker file, failing early if the collector
     # process has already exited (UAC denied, or wpr -start failed) instead of waiting out the
@@ -142,9 +178,8 @@ function Wait-CollectorMarker {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while (-not (Test-Path -LiteralPath $Path)) {
         if ($Collector -and $Collector.HasExited) {
-            # The collector's console closes with it, so it leaves its error beside the marker.
-            $errorFile = Join-Path (Split-Path -Parent $Path) 'collector-error.txt'
-            $detail = if (Test-Path -LiteralPath $errorFile) { " Collector error: $((Get-Content -LiteralPath $errorFile -Raw).Trim())" } else { ' The UAC prompt may have been denied, or wpr failed; see the collector log.' }
+            $detail = Get-CollectorErrorDetail -ControlDirectory (Split-Path -Parent $Path)
+            if (-not $detail) { $detail = ' The UAC prompt may have been denied, or wpr failed; see the collector log.' }
             throw "The elevated $What exited (code $($Collector.ExitCode)) before writing $Path.$detail"
         }
         if ((Get-Date) -gt $deadline) {
