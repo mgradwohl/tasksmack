@@ -140,6 +140,9 @@ struct ROCmGPUProbe::Impl
     bool initialized = false;
     std::uint32_t deviceCount = 0;
     std::vector<rsmi_device_t> devices;
+    // Device ids resolved once at load, parallel to devices (#1162): re-deriving them on every
+    // read let a transient lookup failure turn a GPU into a different "amd_N" id for one sample.
+    std::vector<std::string> deviceIds;
 
     // ROCm SMI function pointers
     rsmi_status_t (*rsmi_init)(std::uint64_t) = nullptr;
@@ -275,9 +278,12 @@ bool ROCmGPUProbe::Impl::loadROCmSMI()
     // Populate device handles
     devices.clear();
     devices.reserve(deviceCount);
+    deviceIds.clear();
+    deviceIds.reserve(deviceCount);
     for (std::uint32_t i = 0; i < deviceCount; ++i)
     {
         devices.push_back(i);
+        deviceIds.push_back(deriveDeviceId(i));
     }
 
     initialized = true;
@@ -295,6 +301,7 @@ void ROCmGPUProbe::Impl::unloadROCmSMI()
     initialized = false;
     deviceCount = 0;
     devices.clear();
+    deviceIds.clear();
 }
 
 std::string ROCmGPUProbe::Impl::getROCmError(rsmi_status_t result) const
@@ -361,7 +368,7 @@ std::vector<GPUInfo> ROCmGPUProbe::enumerateGPUs()
 
         // Derive a stable device ID via the shared chain (uniqueId → pciId → "amd_N").
         // readGPUCounters() uses the same helper so GPUInfo::id and GPUCounters::gpuId match.
-        info.id = m_Impl->deriveDeviceId(deviceIdx);
+        info.id = m_Impl->deviceIds[deviceIdx];
 
         // Driver version: ROCm SMI doesn't directly expose driver version
         // We could read from /sys/module/amdgpu/version, but keeping it simple for now
@@ -390,7 +397,7 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
 
         // Derive gpuId via the shared helper (uniqueId → pciId → "amd_N") so it
         // always matches GPUInfo::id produced by enumerateGPUs() for domain correlation.
-        counter.gpuId = m_Impl->deriveDeviceId(deviceIdx);
+        counter.gpuId = m_Impl->deviceIds[deviceIdx];
 
         // GPU utilization (0-100%)
         std::uint32_t busyPercent = 0;

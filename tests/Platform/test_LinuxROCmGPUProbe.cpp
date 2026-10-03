@@ -6,9 +6,12 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <optional>
+
+#include <dlfcn.h>
 
 namespace Platform
 {
@@ -176,6 +179,47 @@ TEST(ROCmGPUProbeMathTest, RejectsCurrentIndexOutsideSupportedOrArray)
     pastArray.num_supported = 1000;
     pastArray.current = 32;
     EXPECT_FALSE(ROCmGPUProbeMath::currentFrequencyHz(bufferFrom(pastArray), ROCmGPUProbeMath::FrequenciesLayout::V5).has_value());
+}
+
+// #1162: device ids are resolved once at load. A lookup failing afterwards must not turn a GPU into
+// a different id for a sample, and sampling makes no further id lookups.
+TEST(LinuxROCmGPUProbeTest, DeviceIdsAreResolvedOnceAtLoad)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    void* library = dlopen("librocm_smi64.so.6", RTLD_NOW);
+    ASSERT_NE(library, nullptr);
+    // dlsym returns void* by POSIX definition; the casts restore the mock's signatures.
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast)
+    const auto configure = reinterpret_cast<void (*)(int)>(dlsym(library, "tasksmackRocmMockConfigure"));
+    const auto idCalls = reinterpret_cast<unsigned int (*)()>(dlsym(library, "tasksmackRocmMockIdCalls"));
+    // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
+    ASSERT_NE(configure, nullptr);
+    ASSERT_NE(idCalls, nullptr);
+
+    configure(-1);
+    ROCmGPUProbe probe;
+    ASSERT_TRUE(probe.isAvailable());
+    const auto expectedIds = probe.enumerateGPUs();
+    const unsigned int callsAtLoad = idCalls();
+    configure(0); // every id lookup from now on fails
+
+    const auto counters = probe.readGPUCounters();
+    const auto gpus = probe.enumerateGPUs();
+    configure(-1);
+    dlclose(library);
+
+    ASSERT_EQ(counters.size(), expectedIds.size());
+    ASSERT_EQ(gpus.size(), expectedIds.size());
+    for (std::size_t i = 0; i < expectedIds.size(); ++i)
+    {
+        EXPECT_EQ(counters[i].gpuId, expectedIds[i].id);
+        EXPECT_EQ(gpus[i].id, expectedIds[i].id);
+    }
+    EXPECT_GT(callsAtLoad, 0U);
 }
 
 TEST(LinuxROCmGPUProbeTest, BasicOperationsDoNotThrow)
