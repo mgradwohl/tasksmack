@@ -337,7 +337,7 @@ void ProcessDetailsPanel::renderContent()
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
                         ImVec2(ShellMetrics::TAB_PADDING_X * tabPaddingScale, ShellMetrics::SUB_TAB_PADDING_Y * tabPaddingScale));
 
-    if (ImGui::BeginTabBar("DetailsTabs"))
+    if (ImGui::BeginTabBar("DetailsTabs", ImGuiTabBarFlags_DrawSelectedOverline))
     {
         // 1. Overview
         // Each tab's body scrolls in its own child, so the tab bar itself stays in view (#968).
