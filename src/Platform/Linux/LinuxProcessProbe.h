@@ -122,6 +122,14 @@ class LinuxProcessProbe : public IProcessProbe
     /// Read total CPU time from /proc/stat
     [[nodiscard]] uint64_t readTotalCpuTime() const;
 
+    /// /proc/stat's first line: all CPU time, and the part processes' utime + stime account for.
+    struct CpuTimes
+    {
+        uint64_t total = 0;
+        uint64_t busy = 0;
+    };
+    [[nodiscard]] std::optional<CpuTimes> readCpuTimes() const;
+
     /// Read system boot time from /proc/stat (returns Unix epoch seconds, 0 if unavailable)
     [[nodiscard]] static uint64_t readBootTime(const std::filesystem::path& procRoot);
 

@@ -1234,7 +1234,7 @@ TEST(ProcessModelTest, PackageEnergyIsSharedByIntervalCpuTime)
     rawProbe->withProcess(1, "busy").withCpuTime(1, 100, 0);
     rawProbe->withProcess(2, "idle_daemon").withCpuTime(2, 1'000'000, 0); // lots of lifetime CPU
     rawProbe->setTotalCpuTime(10'000);
-    rawProbe->setPackageEnergy(Platform::PackageEnergyReading{.energyUj = 5'000'000, .maxRangeUj = 0});
+    rawProbe->setPackageEnergy(Platform::PackageEnergyReading{.energyUj = 5'000'000, .maxRangeUj = 0, .busyCpuTicks = std::nullopt});
 
     Domain::ProcessModel::Clock::time_point now{};
     Domain::ProcessModel model(std::move(probe), [&now] { return now; });
@@ -1244,7 +1244,7 @@ TEST(ProcessModelTest, PackageEnergyIsSharedByIntervalCpuTime)
     now += std::chrono::seconds(1);
     rawProbe->withCpuTime(1, 200, 0);
     rawProbe->setTotalCpuTime(10'100);
-    rawProbe->setPackageEnergy(Platform::PackageEnergyReading{.energyUj = 7'000'000, .maxRangeUj = 0});
+    rawProbe->setPackageEnergy(Platform::PackageEnergyReading{.energyUj = 7'000'000, .maxRangeUj = 0, .busyCpuTicks = std::nullopt});
     model.refresh();
 
     const auto snaps = model.snapshots();

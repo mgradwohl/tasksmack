@@ -13,6 +13,7 @@
 
 #include "Platform/ProcessTypes.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -55,7 +56,15 @@ class Attributor
     /// A process seen for the first time is credited nothing (its CPU time so far may predate the
     /// interval) but its CPU time still counts toward the interval's total, so its share is left
     /// unattributed rather than given to the others; processes that have exited are forgotten.
-    void attribute(std::span<Platform::ProcessCounters> processes, std::optional<std::uint64_t> systemEnergyUj, std::uint64_t maxRangeUj)
+    ///
+    /// `busyCpuTicks` is the system-wide busy CPU counter read with the energy (see
+    /// PackageEnergyReading). When known for both samples, the interval's share denominator is the
+    /// larger of its delta and the processes' summed deltas, so work by processes that exited
+    /// between samples (in the energy, but in no process's delta) isn't charged to the survivors.
+    void attribute(std::span<Platform::ProcessCounters> processes,
+                   std::optional<std::uint64_t> systemEnergyUj,
+                   std::uint64_t maxRangeUj,
+                   std::optional<std::uint64_t> busyCpuTicks = std::nullopt)
     {
         const std::uint64_t intervalEnergyUj = (systemEnergyUj.has_value() && m_PreviousSystemEnergyUj.has_value())
                                                  ? energyDeltaUj(*m_PreviousSystemEnergyUj, *systemEnergyUj, maxRangeUj)
@@ -81,6 +90,12 @@ class Attributor
                 totalCpuDelta += m_CpuDeltas[i];
             }
         }
+
+        if (busyCpuTicks.has_value() && m_PreviousBusyCpuTicks.has_value() && *busyCpuTicks >= *m_PreviousBusyCpuTicks)
+        {
+            totalCpuDelta = std::max(totalCpuDelta, *busyCpuTicks - *m_PreviousBusyCpuTicks);
+        }
+        m_PreviousBusyCpuTicks = busyCpuTicks;
 
         std::unordered_map<Key, State, KeyHash> next;
         next.reserve(processes.size());
@@ -132,6 +147,7 @@ class Attributor
     }
 
     std::optional<std::uint64_t> m_PreviousSystemEnergyUj;
+    std::optional<std::uint64_t> m_PreviousBusyCpuTicks;
     std::unordered_map<Key, State, KeyHash> m_State;
     std::vector<std::uint64_t> m_CpuDeltas; // reused scratch
 };

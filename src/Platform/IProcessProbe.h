@@ -16,6 +16,11 @@ struct PackageEnergyReading
 {
     std::optional<std::uint64_t> energyUj; ///< nullopt when this sample couldn't be read
     std::uint64_t maxRangeUj = 0;          ///< where the counter wraps back to 0; 0 when unknown
+    /// System-wide CPU time spent running processes (user + nice + system), in the same ticks as
+    /// ProcessCounters::userTime/systemTime, read with the energy. Unlike the sum over processes
+    /// still present, it includes processes that ran and exited between samples, so their share
+    /// of the energy isn't charged to the survivors. nullopt when unavailable.
+    std::optional<std::uint64_t> busyCpuTicks;
 };
 
 /// Interface for platform-specific process enumeration.

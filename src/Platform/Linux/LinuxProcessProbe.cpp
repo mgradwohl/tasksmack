@@ -882,6 +882,12 @@ std::string LinuxProcessProbe::getProcessStatus(int32_t pid, const std::filesyst
 }
 uint64_t LinuxProcessProbe::readTotalCpuTime() const
 {
+    const auto times = readCpuTimes();
+    return times.has_value() ? times->total : 0;
+}
+
+std::optional<LinuxProcessProbe::CpuTimes> LinuxProcessProbe::readCpuTimes() const
+{
     // Format: /proc/stat — first line: "cpu user nice system idle iowait irq softirq steal …"
     // We only need the first line, so 256 bytes is ample.
 
@@ -891,7 +897,7 @@ uint64_t LinuxProcessProbe::readTotalCpuTime() const
     if (len == 0)
     {
         spdlog::warn("Failed to open {}", statPath);
-        return 0;
+        return std::nullopt;
     }
 
     const char* p = buf.data();
@@ -901,7 +907,7 @@ uint64_t LinuxProcessProbe::readTotalCpuTime() const
     if (len < 4 || p[0] != 'c' || p[1] != 'p' || p[2] != 'u' || p[3] != ' ')
     {
         spdlog::warn("Failed to parse {}", statPath);
-        return 0;
+        return std::nullopt;
     }
     p += 4; // skip "cpu "
 
@@ -925,11 +931,12 @@ uint64_t LinuxProcessProbe::readTotalCpuTime() const
         !parseNum(p, lineEnd, iowait) || !parseNum(p, lineEnd, irq) || !parseNum(p, lineEnd, softirq) || !parseNum(p, lineEnd, steal))
     {
         spdlog::warn("Failed to parse {}", statPath);
-        return 0;
+        return std::nullopt;
     }
 
-    // Total CPU time = all fields combined
-    return user + nice + system + idle + iowait + irq + softirq + steal;
+    // Total CPU time = all fields combined. Busy = the time processes' own utime + stime account
+    // for (user, nice and system), the interval denominator for energy attribution (#1093).
+    return CpuTimes{.total = user + nice + system + idle + iowait + irq + softirq + steal, .busy = user + nice + system};
 }
 
 uint64_t LinuxProcessProbe::readBootTime(const std::filesystem::path& procRoot)
@@ -1109,7 +1116,10 @@ std::optional<PackageEnergyReading> LinuxProcessProbe::readPackageEnergy() const
         return std::nullopt;
     }
     // Raw read only: ProcessModel shares it out between processes per interval (#1093).
-    return PackageEnergyReading{.energyUj = readSystemEnergy(), .maxRangeUj = m_PowerCapMaxRangeUj};
+    const auto cpuTimes = readCpuTimes();
+    return PackageEnergyReading{.energyUj = readSystemEnergy(),
+                                .maxRangeUj = m_PowerCapMaxRangeUj,
+                                .busyCpuTicks = cpuTimes.has_value() ? std::optional{cpuTimes->busy} : std::nullopt};
 }
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS

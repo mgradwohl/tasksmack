@@ -148,6 +148,22 @@ TEST(ProcessEnergyTest, NewlyStartedProcessesShareIsNotGivenToOthers)
     EXPECT_EQ(second[1].energyMicrojoules, 0U); // first seen: not credited
 }
 
+TEST(ProcessEnergyTest, WorkByProcessesThatExitedIsNotChargedToSurvivors)
+{
+    // A process uses 900 ticks and exits between samples while two survivors use 10 each. The
+    // system busy counter (920 ticks) is the denominator, so each survivor gets 10/920 of the
+    // energy rather than half (#1217 review).
+    Attributor attributor;
+    std::vector<Platform::ProcessCounters> first{process(1, 100), process(2, 100), process(3, 0)};
+    attributor.attribute(first, 0, 0, 5'000);
+
+    std::vector<Platform::ProcessCounters> second{process(1, 110), process(2, 110)};
+    attributor.attribute(second, 9'200, 0, 5'920);
+
+    EXPECT_EQ(second[0].energyMicrojoules, 100U);
+    EXPECT_EQ(second[1].energyMicrojoules, 100U);
+}
+
 TEST(ProcessEnergyTest, ReusedPidIsANewProcess)
 {
     Attributor attributor;

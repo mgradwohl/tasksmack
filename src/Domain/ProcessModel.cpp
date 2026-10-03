@@ -133,7 +133,7 @@ void ProcessModel::refresh()
     // return nullopt and their energyMicrojoules is used as-is.
     if (const auto packageEnergy = m_Probe->readPackageEnergy())
     {
-        m_EnergyAttributor.attribute(currentCounters, packageEnergy->energyUj, packageEnergy->maxRangeUj);
+        m_EnergyAttributor.attribute(currentCounters, packageEnergy->energyUj, packageEnergy->maxRangeUj, packageEnergy->busyCpuTicks);
     }
 
     computeSnapshotsLocked(currentCounters, currentTotalCpuTime);
