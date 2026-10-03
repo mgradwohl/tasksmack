@@ -69,7 +69,9 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir, float display
 
     // Check if icon font exists. The error_code overloads here and below: this also runs when the
     // display scale changes (#943), after the old fonts are gone, and a filesystem error must
-    // degrade to "not found" rather than throw out of the rebuild.
+    // degrade to "not found" rather than throw out of the rebuild. For the same reason every
+    // AddFontFromFileTTF() below passes ImFontFlags_NoLoadError: without it ImGui asserts on a file
+    // it cannot read, before the null-return fallbacks here get a chance to run.
     std::error_code existsError;
     const bool hasIconFont = std::filesystem::exists(iconFontPath, existsError);
     if (!hasIconFont)
@@ -102,7 +104,9 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir, float display
                       fontCfg.largePt,
                       fontSizeLarge);
 
-        ImFont* fontRegular = imguiIO.Fonts->AddFontFromFileTTF(fontPath.c_str(), fontSizeRegular);
+        ImFontConfig regularConfig;
+        regularConfig.Flags |= ImFontFlags_NoLoadError;
+        ImFont* fontRegular = imguiIO.Fonts->AddFontFromFileTTF(fontPath.c_str(), fontSizeRegular, &regularConfig);
         if (fontRegular == nullptr)
         {
             spdlog::warn("Could not load Inter font from {}, using default", fontPath);
@@ -115,13 +119,16 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir, float display
         if (hasIconFont)
         {
             ImFontConfig iconConfig;
+            iconConfig.Flags |= ImFontFlags_NoLoadError;
             iconConfig.MergeMode = true;
             iconConfig.PixelSnapH = true;
             iconConfig.GlyphMinAdvanceX = fontSizeRegular; // Make icons monospaced
             imguiIO.Fonts->AddFontFromFileTTF(iconFontPath.c_str(), fontSizeRegular, &iconConfig, ICON_RANGES);
         }
 
-        ImFont* fontLarge = imguiIO.Fonts->AddFontFromFileTTF(fontPath.c_str(), fontSizeLarge);
+        ImFontConfig largeConfig;
+        largeConfig.Flags |= ImFontFlags_NoLoadError;
+        ImFont* fontLarge = imguiIO.Fonts->AddFontFromFileTTF(fontPath.c_str(), fontSizeLarge, &largeConfig);
         if (fontLarge == nullptr)
         {
             ImFontConfig defaultFontConfig;
@@ -133,6 +140,7 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir, float display
         if (hasIconFont)
         {
             ImFontConfig iconConfig;
+            iconConfig.Flags |= ImFontFlags_NoLoadError;
             iconConfig.MergeMode = true;
             iconConfig.PixelSnapH = true;
             iconConfig.GlyphMinAdvanceX = fontSizeLarge;
@@ -143,6 +151,7 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir, float display
         if (!monospaceFontPath.empty())
         {
             ImFontConfig monoConfig;
+            monoConfig.Flags |= ImFontFlags_NoLoadError;
             monoConfig.FontLoaderFlags |= ImGuiFreeTypeBuilderFlags_MonoHinting;
             monoConfig.SizePixels = fontSizeRegular;
             fontMonospace = imguiIO.Fonts->AddFontFromFileTTF(monospaceFontPath.string().c_str(), fontSizeRegular, &monoConfig);
@@ -188,6 +197,7 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir, float display
     if (std::filesystem::exists(titleFontPath, existsError))
     {
         ImFontConfig titleConfig;
+        titleConfig.Flags |= ImFontFlags_NoLoadError;
         titleConfig.FontLoaderFlags |= ImGuiFreeTypeBuilderFlags_Bitmap;
         ImFont* titleFont = imguiIO.Fonts->AddFontFromFileTTF(titleFontPath.c_str(), titleFontPx, &titleConfig);
         if (titleFont != nullptr)
@@ -223,6 +233,7 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir, float display
         constexpr float CHROME_ICON_RATIO = 0.55F;
         const float chromeIconPx = std::round(titleBarPx * CHROME_ICON_RATIO);
         ImFontConfig chromeConfig;
+        chromeConfig.Flags |= ImFontFlags_NoLoadError;
         chromeConfig.PixelSnapH = true;
         chromeConfig.GlyphMinAdvanceX = chromeIconPx; // keep the controls monospaced
         ImFont* chromeIconFont = imguiIO.Fonts->AddFontFromFileTTF(iconFontPath.c_str(), chromeIconPx, &chromeConfig, ICON_RANGES);
