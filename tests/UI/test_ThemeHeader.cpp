@@ -31,6 +31,50 @@ TEST(ThemeHeaderTest, FontSizeArrayContainsUniqueEntries)
     EXPECT_EQ(uniqueSizes.size(), ALL_FONT_SIZES.size());
 }
 
+// Fonts are rasterised at pt * 96 / 72 px at 100 % display scale.
+constexpr float PT_TO_PX = 96.0F / 72.0F;
+
+auto presetFor(FontSize size) -> const FontSizeConfig&
+{
+    return FONT_SIZE_PRESETS[static_cast<std::size_t>(size)];
+}
+
+TEST(ThemeHeaderTest, NoPresetSetsBodyTextBelowNinePixels)
+{
+    for (const auto& preset : FONT_SIZE_PRESETS)
+    {
+        EXPECT_GE(preset.regularPt * PT_TO_PX, 9.0F) << preset.name;
+        EXPECT_GT(preset.largePt, preset.regularPt) << preset.name;
+    }
+}
+
+TEST(ThemeHeaderTest, PresetsGrowWithEachStep)
+{
+    for (std::size_t i = 1; i < FONT_SIZE_PRESETS.size(); ++i)
+    {
+        EXPECT_GT(FONT_SIZE_PRESETS[i].regularPt, FONT_SIZE_PRESETS[i - 1].regularPt) << FONT_SIZE_PRESETS[i].name;
+    }
+}
+
+TEST(ThemeHeaderTest, ChartTextIsAtLeastTenPixelsAtMedium)
+{
+    EXPECT_GE(presetFor(chartFontSize(FontSize::Medium)).regularPt * PT_TO_PX, 10.0F);
+}
+
+TEST(ThemeHeaderTest, ChartTextNeverExceedsBodyTextAndScalesWithThePreset)
+{
+    auto previous = chartFontSize(FontSize::Small);
+    EXPECT_EQ(previous, FontSize::Small);
+    for (const auto size : ALL_FONT_SIZES)
+    {
+        const auto chart = chartFontSize(size);
+        EXPECT_LE(presetFor(chart).regularPt, presetFor(size).regularPt);
+        EXPECT_GE(static_cast<int>(chart), static_cast<int>(previous));
+        previous = chart;
+    }
+    EXPECT_EQ(chartFontSize(FontSize::EvenHuger), FontSize::Huge);
+}
+
 TEST(ThemeHeaderTest, HexToImVec4ConvertsExpectedChannels)
 {
     const ImVec4 color = hexToImVec4(0xFF8040);
