@@ -1456,9 +1456,10 @@ TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_GpuFills_FallBackToAlphaScaledLineCol
         EXPECT_NEAR(fill.z, line.z, k_Tolerance) << name;
         EXPECT_NEAR(fill.w, line.w * k_AlphaScale, k_Tolerance) << name;
     };
-    expectScaled(theme->gpuUtilizationFill, theme->gpuUtilization, "utilization");
-    expectScaled(theme->gpuMemoryFill, theme->gpuMemory, "memory");
-    expectScaled(theme->gpuClockFill, theme->gpuClock, "clock");
+    const auto scheme = theme.value_or(decltype(theme)::value_type{});
+    expectScaled(scheme.gpuUtilizationFill, scheme.gpuUtilization, "utilization");
+    expectScaled(scheme.gpuMemoryFill, scheme.gpuMemory, "memory");
+    expectScaled(scheme.gpuClockFill, scheme.gpuClock, "clock");
 }
 
 // ========== Priority Badge Text Color Tests ==========
