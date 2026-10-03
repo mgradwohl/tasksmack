@@ -180,7 +180,7 @@
             "inherits": "linux-base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
-                "CMAKE_CXX_FLAGS_DEBUG": "-g -ftrivial-auto-var-init=pattern -fsanitize=address,undefined -fno-omit-frame-pointer",
+                "CMAKE_CXX_FLAGS_DEBUG": "-g -ftrivial-auto-var-init=pattern -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer",
                 "CMAKE_EXE_LINKER_FLAGS_DEBUG": "-fsanitize=address,undefined",
                 "CMAKE_SHARED_LINKER_FLAGS_DEBUG": "-fsanitize=address,undefined",
                 "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "OFF",
@@ -552,7 +552,8 @@
                 "outputOnFailure": true
             },
             "environment": {
-                "LSAN_OPTIONS": "suppressions=${sourceDir}/tests/sanitizer-suppressions/lsan.supp:$penv{LSAN_OPTIONS}"
+                "LSAN_OPTIONS": "suppressions=${sourceDir}/tests/sanitizer-suppressions/lsan.supp:$penv{LSAN_OPTIONS}",
+                "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1:$penv{UBSAN_OPTIONS}"
             }
         },
         {
