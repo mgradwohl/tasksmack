@@ -132,6 +132,16 @@ void renderGpuSection(RenderContext& ctx)
         updateSmoothedGPU(snap.gpuId, snap, ctx);
     }
 
+    // Every chart on the tab, across all GPUs, gets the same share of its height.
+    const float plotHeight = (ctx.fill != nullptr) ? ctx.fill->plotHeight() : HISTORY_PLOT_HEIGHT_DEFAULT;
+    const auto countPlot = [&ctx]
+    {
+        if (ctx.fill != nullptr)
+        {
+            ctx.fill->addPlot();
+        }
+    };
+
     // Scratch buffers for normalizeToPercent — declared before the GPU loop so they are reused
     // across multiple GPU iterations in the same frame (resize only allocates when count grows).
     std::vector<float> clockPercentBuf;
@@ -231,7 +241,8 @@ void renderGpuSection(RenderContext& ctx)
 
         auto gpuCorePlot = [&]()
         {
-            const UI::Widgets::HistoryChart chart(UI::Widgets::percentHistoryConfig("##GPUCoreHistory", axisConfig.xMin, axisConfig.xMax));
+            const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
+                UI::Widgets::percentHistoryConfig("##GPUCoreHistory", axisConfig.xMin, axisConfig.xMax), plotHeight));
             if (chart.active())
             {
                 if (!utilData.empty())
@@ -477,7 +488,8 @@ void renderGpuSection(RenderContext& ctx)
         const size_t gpuNowBarColumns = std::max(gpuCoreBars.size(), gpuThermalBars.size());
 
         const std::string coreLayoutId = std::format("GPUCoreLayout{}", gpuIdx);
-        renderHistoryWithNowBars(coreLayoutId.c_str(), HISTORY_PLOT_HEIGHT_DEFAULT, gpuCorePlot, gpuCoreBars, false, gpuNowBarColumns);
+        renderHistoryWithNowBars(coreLayoutId.c_str(), plotHeight, gpuCorePlot, gpuCoreBars, false, gpuNowBarColumns);
+        countPlot();
 
         // Show notes for unavailable core metrics
         {
@@ -515,8 +527,8 @@ void renderGpuSection(RenderContext& ctx)
 
             auto gpuThermalPlot = [&]()
             {
-                const UI::Widgets::HistoryChart chart(
-                    UI::Widgets::percentHistoryConfig("##GPUThermalHistory", axisConfig.xMin, axisConfig.xMax));
+                const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
+                    UI::Widgets::percentHistoryConfig("##GPUThermalHistory", axisConfig.xMin, axisConfig.xMax), plotHeight));
                 if (chart.active())
                 {
                     // Temperature (normalized to 0-100%)
@@ -632,14 +644,14 @@ void renderGpuSection(RenderContext& ctx)
             if (!gpuThermalBars.empty())
             {
                 const std::string thermalLayoutId = std::format("GPUThermalLayout{}", gpuIdx);
-                renderHistoryWithNowBars(
-                    thermalLayoutId.c_str(), HISTORY_PLOT_HEIGHT_DEFAULT, gpuThermalPlot, gpuThermalBars, false, gpuNowBarColumns);
+                renderHistoryWithNowBars(thermalLayoutId.c_str(), plotHeight, gpuThermalPlot, gpuThermalBars, false, gpuNowBarColumns);
             }
             else
             {
                 // No current data, just render the plot without now bars
                 gpuThermalPlot();
             }
+            countPlot();
 
             // Show notes for unavailable metrics
             std::vector<std::string> unavailableNotes;

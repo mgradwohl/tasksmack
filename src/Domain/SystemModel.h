@@ -138,7 +138,7 @@ class SystemModel : public ISamplable
     std::unordered_map<std::string, HistoryBuffer<float>> m_PerInterfaceTxHistory;
     // Wall-clock time (nowSeconds, same clock as m_Timestamps) each interface name was last
     // seen in a live sample, so a name absent for longer than the configured history window
-    // (at which point its buffers hold nothing but zero padding) can be pruned instead of
+    // (at which point its buffers hold nothing but NaN padding) can be pruned instead of
     // retained forever -- otherwise a machine with churning interfaces (container veth*/br-*,
     // VPN reconnects, WiFi cycling) leaks one HistoryBuffer pair per distinct interface name
     // ever seen (#776). Deliberately time-based, matching trimHistory()'s own cutoff, rather

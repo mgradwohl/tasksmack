@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/ISystemProbe.h"
+#include "Platform/Windows/WindowsSystemProbeMath.h"
 
 #include <cstddef>
 #include <string>
@@ -29,6 +30,9 @@ class WindowsSystemProbe : public ISystemProbe
     void readCpuCounters(SystemCounters& counters) const;
     void readPerCoreCpuCounters(SystemCounters& counters) const;
     static void readMemoryCounters(SystemCounters& counters);
+    /// Page-file totals from NtQuerySystemInformation; zero when there is no page file or the
+    /// query fails.
+    [[nodiscard]] static SwapBytes readSwap();
     static void readUptime(SystemCounters& counters);
     void readStaticInfo(SystemCounters& counters) const;
     static void readCpuFreq(SystemCounters& counters);

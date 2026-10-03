@@ -14,6 +14,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -112,8 +113,9 @@ void StorageModel::sampleAt(const std::chrono::steady_clock::time_point now)
         m_Timestamps.push(nowSeconds);
 
         // Maintain per-disk I/O histories aligned to m_Timestamps.
-        // Track which disks are present in this sample; known-but-absent disks
-        // get a zero placeholder so every ring buffer stays aligned with m_Timestamps.
+        // Track which disks are present in this sample; known-but-absent disks get a NaN
+        // placeholder so every ring buffer stays aligned with m_Timestamps. NaN, not 0: nothing
+        // was measured, and a chart must show a gap there rather than a false zero (#1015).
         std::unordered_set<std::string> presentDisks;
         presentDisks.reserve(snapshot.disks.size());
         for (const auto& disk : snapshot.disks)
@@ -122,7 +124,7 @@ void StorageModel::sampleAt(const std::chrono::steady_clock::time_point now)
             presentDisks.insert(name);
             if (!m_DiskReadHistory.contains(name))
             {
-                // New disk: backfill zeros for the samples taken before it appeared
+                // New disk: backfill NaN for the samples taken before it appeared
                 // (clamped to ring capacity) so its series stays index-aligned
                 // with m_Timestamps.
                 m_DiskOrder.push_back(name);
@@ -134,26 +136,26 @@ void StorageModel::sampleAt(const std::chrono::steady_clock::time_point now)
                 const std::size_t backfillCount = std::min(m_Timestamps.size() - 1, capacity - 1);
                 for (std::size_t i = 0; i < backfillCount; ++i)
                 {
-                    readHistory.push(0.0);
-                    writeHistory.push(0.0);
+                    readHistory.push(std::numeric_limits<double>::quiet_NaN());
+                    writeHistory.push(std::numeric_limits<double>::quiet_NaN());
                 }
             }
             m_DiskReadHistory[name].push(disk.readBytesPerSec);
             m_DiskWriteHistory[name].push(disk.writeBytesPerSec);
             m_DiskLastSeenSeconds[name] = nowSeconds;
         }
-        // Append a zero placeholder for known disks absent from this sample.
+        // Append a NaN placeholder for known disks absent from this sample.
         for (const auto& name : m_DiskOrder)
         {
             if (!presentDisks.contains(name))
             {
-                m_DiskReadHistory[name].push(0.0);
-                m_DiskWriteHistory[name].push(0.0);
+                m_DiskReadHistory[name].push(std::numeric_limits<double>::quiet_NaN());
+                m_DiskWriteHistory[name].push(std::numeric_limits<double>::quiet_NaN());
             }
         }
 
         // Prune disks absent for longer than the configured history window: by that point their
-        // histories hold nothing but the 0.0 padding just pushed above, so removing the entry
+        // histories hold nothing but the NaN padding just pushed above, so removing the entry
         // changes nothing observable, but retaining it forever would grow m_DiskStates/
         // m_DiskReadHistory/m_DiskWriteHistory/m_DiskOrder without bound on a machine with
         // churning removable/USB storage (#777). Matches trimHistory()'s own wall-clock cutoff

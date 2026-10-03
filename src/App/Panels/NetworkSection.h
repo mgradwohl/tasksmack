@@ -2,6 +2,7 @@
 
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
+#include "UI/FillPlotLayout.h"
 
 #include <chrono>
 
@@ -38,6 +39,13 @@ struct RenderContext
 
     // Selected network interface (-1 = "Total" / all interfaces combined)
     int* selectedNetworkInterface = nullptr;
+
+    // The tab's chart-height measurements from the previous frame (#959). Null keeps the fixed
+    // default height for every chart.
+    UI::Widgets::PlotFillState* fillState = nullptr;
+
+    // Set by renderNetworkSection() while the tab's fill scope is open; not for callers.
+    UI::Widgets::FillPlotLayout* fill = nullptr;
 };
 
 /// Render the Disk I/O section with history chart.

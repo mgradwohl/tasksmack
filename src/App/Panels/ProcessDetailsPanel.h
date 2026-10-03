@@ -3,6 +3,7 @@
 #include "App/Panel.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/ProcessTypes.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
 #include "UI/FillPlotLayout.h"
 
@@ -61,6 +62,10 @@ class ProcessDetailsPanel : public Panel
     ///        With it, a later process that reuses the PID is not mistaken for the selected one.
     void setSelectedPid(std::int32_t pid, std::uint64_t uniqueKey = 0);
 
+    /// What the process probe can report, so series it never fills are not drawn (#1028, #1035).
+    /// Set once by ShellLayer at attach; the default (all false) hides those optional series.
+    void setProcessCapabilities(const Platform::ProcessCapabilities& capabilities);
+
     /// Get currently displayed PID.
     [[nodiscard]] std::int32_t selectedPid() const
     {
@@ -89,10 +94,10 @@ class ProcessDetailsPanel : public Panel
     void renderIoStats(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
     void renderNetworkStats(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
     void renderPowerUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
-    void renderGpuUsage(const Domain::ProcessSnapshot& proc);
+    void renderGpuUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
     void renderGpuCurrentMetricsTable(const Domain::ProcessSnapshot& proc) const;
     static void renderPerGpuBreakdown(const Domain::ProcessSnapshot& proc);
-    void renderGpuHistoryGraphs();
+    void renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fill);
     void renderActions();
     void renderActionResultFeedback();
     void renderConfirmDialog();
@@ -151,6 +156,7 @@ class ProcessDetailsPanel : public Panel
     // Per-tab state for the shared chart-height rule (#959)
     UI::Widgets::PlotFillState m_OverviewFill;
     UI::Widgets::PlotFillState m_NetworkFill;
+    UI::Widgets::PlotFillState m_GpuFill;
 
     bool m_HasSnapshot = false;
     bool m_ProcessExited = false; // Had a snapshot of the selected process, and it has gone missing (#927)
@@ -158,6 +164,7 @@ class ProcessDetailsPanel : public Panel
     // Process actions
     std::unique_ptr<Platform::IProcessActions> m_ProcessActions;
     Platform::ProcessActionCapabilities m_ActionCapabilities;
+    Platform::ProcessCapabilities m_ProcessCapabilities;
 
     // Confirmation dialog state
     bool m_ShowConfirmDialog = false;

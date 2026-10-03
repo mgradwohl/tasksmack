@@ -71,7 +71,7 @@ class StorageModel : public ISamplable
     /// Per-device I/O history for charting individual disks.
     /// Each entry is strictly aligned to historyTimestamps(): every per-disk
     /// vector has the same length as historyTimestamps(). Samples where a disk
-    /// was absent (disappeared or not yet seen) are represented as 0.0.
+    /// was absent (disappeared or not yet seen) are NaN: no reading, drawn as a gap.
     [[nodiscard]] std::vector<PerDiskHistory> perDiskHistory() const;
     [[nodiscard]] std::shared_ptr<const StoragePublication> publication() const noexcept;
     [[nodiscard]] std::uint64_t publicationVersion() const noexcept;
@@ -111,14 +111,15 @@ class StorageModel : public ISamplable
     bool m_HasPrevSample = false;
 
     // Per-device I/O history for per-disk charting. Newly discovered disks are
-    // backfilled with zeros (clamped to ring capacity) and absent disks receive
-    // 0.0 placeholders, so every series stays index-aligned with m_Timestamps.
+    // backfilled with NaN (clamped to ring capacity) and absent disks receive NaN
+    // placeholders, so every series stays index-aligned with m_Timestamps and a
+    // sample where nothing was measured is a gap, not a false zero (#1015).
     std::unordered_map<std::string, HistoryBuffer<double>> m_DiskReadHistory;
     std::unordered_map<std::string, HistoryBuffer<double>> m_DiskWriteHistory;
     std::vector<std::string> m_DiskOrder; ///< Insertion-order disk names for consistent display
     // Wall-clock time (nowSeconds, same clock as m_Timestamps) each device name was last seen
     // in a live sample, so a name absent for longer than the configured history window (at
-    // which point its histories hold nothing but zero padding) can be pruned instead of
+    // which point its histories hold nothing but NaN padding) can be pruned instead of
     // retained forever -- otherwise a machine with churning removable/USB storage leaks one
     // entry per distinct device name ever seen, across
     // m_DiskStates/m_DiskReadHistory/m_DiskWriteHistory/m_DiskOrder (#777). Deliberately
