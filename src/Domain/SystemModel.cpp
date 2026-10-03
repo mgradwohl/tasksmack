@@ -389,7 +389,11 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
 
     // Swap
     snap.swapTotalBytes = counters.memory.swapTotalBytes;
-    snap.swapUsedBytes = counters.memory.swapTotalBytes - counters.memory.swapFreeBytes;
+    // Guarded: a probe reporting more free than total must read as 0 used, not wrap to ~2^64
+    // (the Windows probe once did exactly that, pinning swap at 100 %, #1026).
+    snap.swapUsedBytes = (counters.memory.swapFreeBytes < counters.memory.swapTotalBytes)
+                           ? (counters.memory.swapTotalBytes - counters.memory.swapFreeBytes)
+                           : 0;
     if (counters.memory.swapTotalBytes > 0)
     {
         const double totalSwapBytes = Numeric::toDouble(counters.memory.swapTotalBytes);
