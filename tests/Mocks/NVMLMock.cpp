@@ -102,6 +102,74 @@ void writeString(const char* source, char* destination, unsigned int length)
     destination[length - 1] = '\0';
 }
 
+// Running processes, as real NVML reports them (#1092):
+//   - a count-only call (null buffer) returns NVML_ERROR_INSUFFICIENT_SIZE and the needed count
+//     whenever any process is running, and NVML_SUCCESS only when none are;
+//   - a buffer smaller than the list also gets NVML_ERROR_INSUFFICIENT_SIZE;
+//   - the unversioned symbols write the 16-byte nvmlProcessInfo_v1_t, the _v3 symbols the
+//     24-byte nvmlProcessInfo_v2_t;
+//   - usedGpuMemory is NVML_VALUE_NOT_AVAILABLE (ULLONG_MAX) when it can't be read.
+// The probe must not share these layouts with the mock, or the mock can't catch a mismatch.
+
+// NOLINTNEXTLINE(readability-identifier-naming) - mirrors NVML's nvmlProcessInfo_v1_t
+struct ProcessInfoV1
+{
+    unsigned int pid;
+    unsigned long long usedGpuMemory;
+};
+static_assert(sizeof(ProcessInfoV1) == 16);
+
+// NOLINTNEXTLINE(readability-identifier-naming) - mirrors NVML's nvmlProcessInfo_v2_t
+struct ProcessInfoV2
+{
+    unsigned int pid;
+    unsigned long long usedGpuMemory;
+    unsigned int gpuInstanceId;
+    unsigned int computeInstanceId;
+};
+static_assert(sizeof(ProcessInfoV2) == 24);
+
+struct MockProcess
+{
+    unsigned int pid;
+    unsigned long long usedGpuMemory;
+};
+
+constexpr unsigned long long VALUE_NOT_AVAILABLE = std::numeric_limits<unsigned long long>::max();
+constexpr std::array<MockProcess, 1> COMPUTE_PROCESSES{{{.pid = 123U, .usedGpuMemory = 111ULL}}};
+constexpr std::array<MockProcess, 3> GRAPHICS_PROCESSES{{
+    {.pid = 123U, .usedGpuMemory = 222ULL},
+    {.pid = 456U, .usedGpuMemory = 333ULL},
+    {.pid = 789U, .usedGpuMemory = VALUE_NOT_AVAILABLE},
+}};
+
+template<typename Info, std::size_t N>
+NVML::nvmlReturn_t listProcesses(NVML::nvmlDevice_t device, unsigned int* count, void* infos, const std::array<MockProcess, N>& processes)
+{
+    const auto idx = deviceIndex(device);
+    if (idx == INVALID_DEVICE_INDEX || idx != 0)
+    {
+        *count = 0;
+        return NVML::NVML_SUCCESS;
+    }
+
+    const unsigned int capacity = *count;
+    *count = static_cast<unsigned int>(N);
+    if (infos == nullptr || capacity < N)
+    {
+        return NVML::NVML_ERROR_INSUFFICIENT_SIZE;
+    }
+
+    auto* out = static_cast<Info*>(infos);
+    for (std::size_t i = 0; i < N; ++i)
+    {
+        out[i] = Info{};
+        out[i].pid = processes[i].pid;
+        out[i].usedGpuMemory = processes[i].usedGpuMemory;
+    }
+    return NVML::NVML_SUCCESS;
+}
+
 } // namespace
 
 extern "C"
@@ -250,43 +318,24 @@ extern "C"
         return NVML::NVML_SUCCESS;
     }
 
-    NVML::nvmlReturn_t nvmlDeviceGetComputeRunningProcesses(NVML::nvmlDevice_t device, unsigned int* count, NVML::nvmlProcessInfo_t* infos)
+    NVML::nvmlReturn_t nvmlDeviceGetComputeRunningProcesses(NVML::nvmlDevice_t device, unsigned int* count, void* infos)
     {
-        const auto idx = deviceIndex(device);
-        if (idx == INVALID_DEVICE_INDEX || idx != 0)
-        {
-            *count = 0;
-            return NVML::NVML_SUCCESS;
-        }
-
-        *count = 1;
-        if (infos == nullptr)
-        {
-            return NVML::NVML_SUCCESS;
-        }
-
-        infos[0] = {.pid = 123U, .usedGpuMemory = 111ULL, .gpuInstanceId = 0U, .computeInstanceId = 0U};
-        return NVML::NVML_SUCCESS;
+        return listProcesses<ProcessInfoV1>(device, count, infos, COMPUTE_PROCESSES);
     }
 
-    NVML::nvmlReturn_t nvmlDeviceGetGraphicsRunningProcesses(NVML::nvmlDevice_t device, unsigned int* count, NVML::nvmlProcessInfo_t* infos)
+    NVML::nvmlReturn_t nvmlDeviceGetGraphicsRunningProcesses(NVML::nvmlDevice_t device, unsigned int* count, void* infos)
     {
-        const auto idx = deviceIndex(device);
-        if (idx == INVALID_DEVICE_INDEX || idx != 0)
-        {
-            *count = 0;
-            return NVML::NVML_SUCCESS;
-        }
+        return listProcesses<ProcessInfoV1>(device, count, infos, GRAPHICS_PROCESSES);
+    }
 
-        *count = 2;
-        if (infos == nullptr)
-        {
-            return NVML::NVML_SUCCESS;
-        }
+    NVML::nvmlReturn_t nvmlDeviceGetComputeRunningProcesses_v3(NVML::nvmlDevice_t device, unsigned int* count, void* infos)
+    {
+        return listProcesses<ProcessInfoV2>(device, count, infos, COMPUTE_PROCESSES);
+    }
 
-        infos[0] = {.pid = 123U, .usedGpuMemory = 222ULL, .gpuInstanceId = 0U, .computeInstanceId = 0U};
-        infos[1] = {.pid = 456U, .usedGpuMemory = 333ULL, .gpuInstanceId = 0U, .computeInstanceId = 0U};
-        return NVML::NVML_SUCCESS;
+    NVML::nvmlReturn_t nvmlDeviceGetGraphicsRunningProcesses_v3(NVML::nvmlDevice_t device, unsigned int* count, void* infos)
+    {
+        return listProcesses<ProcessInfoV2>(device, count, infos, GRAPHICS_PROCESSES);
     }
 
     const char* nvmlErrorString(NVML::nvmlReturn_t /*result*/)

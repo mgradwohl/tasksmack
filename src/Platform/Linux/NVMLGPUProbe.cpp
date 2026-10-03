@@ -7,6 +7,8 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -26,7 +28,27 @@ struct NVMLGPUProbe::Impl
     void* nvmlHandle = nullptr;
     bool initialized = false;
     std::uint32_t deviceCount = 0;
-    std::vector<nvmlDevice_t> devices;
+
+    // Devices whose handle NVML returned, with the id resolved once at load (#1162): the UUID, or
+    // "nvidia-<index>" if NVML cannot report one. Re-deriving the id on every read let a transient
+    // UUID failure turn a GPU into a phantom "nvidia-N" for one sample.
+    struct Device
+    {
+        nvmlDevice_t handle = nullptr;
+        std::uint32_t index = 0;
+        std::string id;
+    };
+    std::vector<Device> devices;
+
+    // A running-process entry point and the size of the entries it writes (#1092).
+    using RunningProcessesFn = nvmlReturn_t (*)(nvmlDevice_t, unsigned int*, void*);
+    struct RunningProcessesQuery
+    {
+        RunningProcessesFn fn = nullptr;
+        std::size_t entrySize = 0;
+    };
+    RunningProcessesQuery computeProcesses;
+    RunningProcessesQuery graphicsProcesses;
 
     // NVML function pointers
     nvmlReturn_t (*nvmlInit_v2)() = nullptr;
@@ -43,11 +65,10 @@ struct NVMLGPUProbe::Impl
     nvmlReturn_t (*nvmlDeviceGetClockInfo)(nvmlDevice_t, nvmlClockType_t, unsigned int*) = nullptr;
     nvmlReturn_t (*nvmlDeviceGetFanSpeed)(nvmlDevice_t, unsigned int*) = nullptr;
     nvmlReturn_t (*nvmlDeviceGetPcieThroughput)(nvmlDevice_t, nvmlPcieUtilCounter_t, unsigned int*) = nullptr;
-    nvmlReturn_t (*nvmlDeviceGetComputeRunningProcesses)(nvmlDevice_t, unsigned int*, nvmlProcessInfo_t*) = nullptr;
-    nvmlReturn_t (*nvmlDeviceGetGraphicsRunningProcesses)(nvmlDevice_t, unsigned int*, nvmlProcessInfo_t*) = nullptr;
     const char* (*nvmlErrorString)(nvmlReturn_t) = nullptr;
 
     bool loadNVML();
+    [[nodiscard]] RunningProcessesQuery loadRunningProcessesQuery(const std::string& baseName) const;
     void unloadNVML();
     [[nodiscard]] std::string getNVMLError(nvmlReturn_t result) const;
 };
@@ -114,8 +135,14 @@ bool NVMLGPUProbe::Impl::loadNVML()
     // optional so a minimal/older NVML build missing it doesn't block loading the rest of
     // the counters.
     LOAD_NVML_FUNC_OPTIONAL(nvmlDeviceGetPcieThroughput);
-    LOAD_NVML_FUNC(nvmlDeviceGetComputeRunningProcesses);
-    LOAD_NVML_FUNC(nvmlDeviceGetGraphicsRunningProcesses);
+    computeProcesses = loadRunningProcessesQuery("nvmlDeviceGetComputeRunningProcesses");
+    graphicsProcesses = loadRunningProcessesQuery("nvmlDeviceGetGraphicsRunningProcesses");
+    if (computeProcesses.fn == nullptr || graphicsProcesses.fn == nullptr)
+    {
+        spdlog::error("NVMLGPUProbe: Failed to load the running-process symbols");
+        unloadNVML();
+        return false;
+    }
     LOAD_NVML_FUNC(nvmlErrorString);
 
 #undef LOAD_NVML_FUNC_OPTIONAL
@@ -140,15 +167,25 @@ bool NVMLGPUProbe::Impl::loadNVML()
         return false;
     }
 
-    // Get device handles
-    devices.resize(deviceCount);
+    // Get device handles. A device whose handle NVML won't return is skipped rather than sampled
+    // through a null handle, which produced an all-zero phantom GPU (#1162).
+    devices.clear();
+    devices.reserve(deviceCount);
     for (std::uint32_t i = 0; i < deviceCount; ++i)
     {
-        result = nvmlDeviceGetHandleByIndex_v2(i, &devices[i]);
-        if (result != NVML_SUCCESS)
+        nvmlDevice_t handle = nullptr;
+        result = nvmlDeviceGetHandleByIndex_v2(i, &handle);
+        if (result != NVML_SUCCESS || handle == nullptr)
         {
             spdlog::warn("NVMLGPUProbe: Failed to get handle for GPU {} - {}", i, getNVMLError(result));
+            continue;
         }
+
+        // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - C API buffer
+        char uuid[NVML_DEVICE_UUID_BUFFER_SIZE]{};
+        std::string id =
+            (nvmlDeviceGetUUID(handle, uuid, sizeof(uuid)) == NVML_SUCCESS) ? std::string(uuid) : "nvidia-" + std::to_string(i);
+        devices.push_back({.handle = handle, .index = i, .id = std::move(id)});
     }
 
     initialized = true;
@@ -172,6 +209,34 @@ void NVMLGPUProbe::Impl::unloadNVML()
     initialized = false;
     deviceCount = 0;
     devices.clear();
+}
+
+NVMLGPUProbe::Impl::RunningProcessesQuery NVMLGPUProbe::Impl::loadRunningProcessesQuery(const std::string& baseName) const
+{
+    // The unversioned symbols are NVML's legacy v1 entry points and write the 16-byte
+    // nvmlProcessInfo_v1_t; _v3 and _v2 write the 24-byte v2 struct. Prefer the newest (#1092).
+    struct Candidate
+    {
+        const char* suffix;
+        std::size_t entrySize;
+    };
+    constexpr std::array<Candidate, 3> CANDIDATES{{
+        {.suffix = "_v3", .entrySize = NVMLGPUProbeMath::kProcessInfoV2Size},
+        {.suffix = "_v2", .entrySize = NVMLGPUProbeMath::kProcessInfoV2Size},
+        {.suffix = "", .entrySize = NVMLGPUProbeMath::kProcessInfoV1Size},
+    }};
+    for (const auto& candidate : CANDIDATES)
+    {
+        const std::string symbol = baseName + candidate.suffix;
+        // dlsym returns void* by POSIX definition; the cast to the known NVML signature is required.
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        if (auto* fn = reinterpret_cast<RunningProcessesFn>(dlsym(nvmlHandle, symbol.c_str())); fn != nullptr)
+        {
+            spdlog::debug("NVMLGPUProbe: using {} ({}-byte entries)", symbol, candidate.entrySize);
+            return {.fn = fn, .entrySize = candidate.entrySize};
+        }
+    }
+    return {};
 }
 
 std::string NVMLGPUProbe::Impl::getNVMLError(nvmlReturn_t result) const
@@ -207,14 +272,14 @@ std::vector<GPUInfo> NVMLGPUProbe::enumerateGPUs()
     }
 
     std::vector<GPUInfo> gpus;
-    gpus.reserve(m_Impl->deviceCount);
+    gpus.reserve(m_Impl->devices.size());
 
-    for (std::uint32_t i = 0; i < m_Impl->deviceCount; ++i)
+    for (const auto& dev : m_Impl->devices)
     {
-        nvmlDevice_t device = m_Impl->devices[i];
+        nvmlDevice_t device = dev.handle;
 
         GPUInfo info;
-        info.deviceIndex = i;
+        info.deviceIndex = dev.index;
         info.vendor = "NVIDIA";
         info.isIntegrated = false; // NVIDIA GPUs are typically discrete
 
@@ -227,19 +292,7 @@ std::vector<GPUInfo> NVMLGPUProbe::enumerateGPUs()
             info.name = name;
         }
 
-        // Get UUID as ID
-        // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - C API buffer
-        char uuid[NVML_DEVICE_UUID_BUFFER_SIZE]{};
-        result = m_Impl->nvmlDeviceGetUUID(device, uuid, sizeof(uuid));
-        if (result == NVML_SUCCESS)
-        {
-            info.id = uuid;
-        }
-        else
-        {
-            // Fallback to index-based ID
-            info.id = "nvidia-" + std::to_string(i);
-        }
+        info.id = dev.id;
 
         gpus.push_back(std::move(info));
     }
@@ -255,29 +308,17 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
     }
 
     std::vector<GPUCounters> counters;
-    counters.reserve(m_Impl->deviceCount);
+    counters.reserve(m_Impl->devices.size());
 
-    for (std::uint32_t i = 0; i < m_Impl->deviceCount; ++i)
+    for (const auto& dev : m_Impl->devices)
     {
-        nvmlDevice_t device = m_Impl->devices[i];
+        nvmlDevice_t device = dev.handle;
         GPUCounters counter;
-
-        // Get UUID as GPU ID
-        // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - C API buffer
-        char uuid[NVML_DEVICE_UUID_BUFFER_SIZE]{};
-        auto result = m_Impl->nvmlDeviceGetUUID(device, uuid, sizeof(uuid));
-        if (result == NVML_SUCCESS)
-        {
-            counter.gpuId = uuid;
-        }
-        else
-        {
-            counter.gpuId = "nvidia-" + std::to_string(i);
-        }
+        counter.gpuId = dev.id;
 
         // Memory info
         nvmlMemory_t memInfo{};
-        result = m_Impl->nvmlDeviceGetMemoryInfo(device, &memInfo);
+        auto result = m_Impl->nvmlDeviceGetMemoryInfo(device, &memInfo);
         if (result == NVML_SUCCESS)
         {
             counter.memoryUsedBytes = memInfo.used;
@@ -367,78 +408,43 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
 
     std::vector<ProcessGPUCounters> allCounters;
 
-    for (std::uint32_t i = 0; i < m_Impl->deviceCount; ++i)
+    const auto runningProcesses = [](const Impl::RunningProcessesQuery& query, nvmlDevice_t device)
     {
-        nvmlDevice_t device = m_Impl->devices[i];
+        return NVMLGPUProbeMath::queryRunningProcesses(
+            [&query, device](unsigned int* count, void* buffer) { return query.fn(device, count, buffer); }, query.entrySize);
+    };
 
-        // Get UUID as GPU ID
-        // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - C API buffer
-        char uuid[NVML_DEVICE_UUID_BUFFER_SIZE]{};
-        std::string gpuId;
-        auto result = m_Impl->nvmlDeviceGetUUID(device, uuid, sizeof(uuid));
-        if (result == NVML_SUCCESS)
+    for (const auto& dev : m_Impl->devices)
+    {
+        const std::string& gpuId = dev.id;
+        const auto addProcess = [&allCounters, &gpuId](const NVMLGPUProbeMath::RunningProcess& proc, const char* engine)
         {
-            gpuId = uuid;
-        }
-        else
-        {
-            gpuId = "nvidia-" + std::to_string(i);
-        }
-
-        // Query compute processes
-        unsigned int computeCount = 0;
-        result = m_Impl->nvmlDeviceGetComputeRunningProcesses(device, &computeCount, nullptr);
-        if (result == NVML_SUCCESS && computeCount > 0)
-        {
-            std::vector<nvmlProcessInfo_t> computeProcesses(computeCount);
-            result = m_Impl->nvmlDeviceGetComputeRunningProcesses(device, &computeCount, computeProcesses.data());
-            if (result == NVML_SUCCESS)
+            const std::uint64_t memoryBytes = proc.usedGpuMemoryBytes.value_or(0);
+            auto it = std::ranges::find_if(
+                allCounters, [&proc, &gpuId](const ProcessGPUCounters& c) { return std::cmp_equal(c.pid, proc.pid) && c.gpuId == gpuId; });
+            if (it != allCounters.end())
             {
-                for (const auto& proc : computeProcesses)
-                {
-                    ProcessGPUCounters counter;
-                    counter.pid = static_cast<std::int32_t>(proc.pid);
-                    counter.gpuId = gpuId;
-                    counter.gpuMemoryBytes = proc.usedGpuMemory;
-                    counter.activeEngines.emplace_back("Compute");
-                    allCounters.push_back(std::move(counter));
-                }
+                // Listed as both compute and graphics: merge the engines.
+                it->activeEngines.emplace_back(engine);
+                it->gpuMemoryBytes = std::max(it->gpuMemoryBytes, memoryBytes);
+                return;
             }
-        }
 
-        // Query graphics processes
-        unsigned int graphicsCount = 0;
-        result = m_Impl->nvmlDeviceGetGraphicsRunningProcesses(device, &graphicsCount, nullptr);
-        if (result == NVML_SUCCESS && graphicsCount > 0)
+            ProcessGPUCounters counter;
+            counter.pid = static_cast<std::int32_t>(proc.pid);
+            counter.gpuId = gpuId;
+            counter.gpuMemoryBytes = memoryBytes;
+            counter.activeEngines.emplace_back(engine);
+            allCounters.push_back(std::move(counter));
+        };
+
+        for (const auto& proc : runningProcesses(m_Impl->computeProcesses, dev.handle))
         {
-            std::vector<nvmlProcessInfo_t> graphicsProcesses(graphicsCount);
-            result = m_Impl->nvmlDeviceGetGraphicsRunningProcesses(device, &graphicsCount, graphicsProcesses.data());
-            if (result == NVML_SUCCESS)
-            {
-                for (const auto& proc : graphicsProcesses)
-                {
-                    // Check if we already have this process from compute list
-                    auto it = std::ranges::find_if(allCounters,
-                                                   [&proc, &gpuId](const ProcessGPUCounters& c)
-                                                   { return std::cmp_equal(c.pid, proc.pid) && c.gpuId == gpuId; });
-
-                    if (it != allCounters.end())
-                    {
-                        // Merge: add graphics engine
-                        it->activeEngines.emplace_back("3D");
-                        it->gpuMemoryBytes = std::max(it->gpuMemoryBytes, static_cast<std::uint64_t>(proc.usedGpuMemory));
-                    }
-                    else
-                    {
-                        ProcessGPUCounters counter;
-                        counter.pid = static_cast<std::int32_t>(proc.pid);
-                        counter.gpuId = gpuId;
-                        counter.gpuMemoryBytes = proc.usedGpuMemory;
-                        counter.activeEngines.emplace_back("3D");
-                        allCounters.push_back(std::move(counter));
-                    }
-                }
-            }
+            addProcess(proc, "Compute");
+        }
+        for (const auto& proc : runningProcesses(m_Impl->graphicsProcesses, dev.handle))
+        {
+            addProcess(proc, "3D");
         }
     }
 
