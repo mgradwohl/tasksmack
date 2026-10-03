@@ -29,7 +29,7 @@ medium = "#B58900"    # 50-80%  - Yellow (caution)
 high = "#DC322F"      # 80-100% - Red (critical)
 
 [semantic]
-text_primary = "#657B83"
+text_primary = "#4A5B60"
 text_disabled = "#93A1A1"
 text_muted = "#93A1A1"
 text_error = "#DC322F"
@@ -136,8 +136,8 @@ hovered = "#DDD6C5"
 active = "#2075BA"
 
 [ui.header]
-normal = "#EEE8D5"
-hovered = "#DDD6C5"
+normal = "#DBCEA6"
+hovered = "#ECE2C4"
 active = "#CCC5B0"
 
 [ui.separator]
@@ -151,7 +151,7 @@ hovered = "#2075BA"
 active = "#1D8C82"
 
 [ui.tab]
-normal = "#EEE8D5"
+normal = "#E2D7B6"
 hovered = "#DDD6C5"
 active = "#FDF6E3"
 active_overline = "#2075BA"

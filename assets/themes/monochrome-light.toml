@@ -196,8 +196,8 @@ active = "#4CAF50"           # Green on click
 # Collapsible headers, tree nodes
 # =============================================================================
 [ui.header]
-normal = "#E8F5E0"
-hovered = "#C8E6C9"
+normal = "#B3DE99"
+hovered = "#D5ECC8"
 active = "#4CAF5080"
 
 # =============================================================================
@@ -223,13 +223,13 @@ active = "#388E3C"
 # Tab bar tabs
 # =============================================================================
 [ui.tab]
-normal = "#E8F5E0"
+normal = "#BCE2A4"
 hovered = "#66BB6A"
 active = "#F5F5F5"
-active_overline = "#00000000"           # Transparent - no overline
+active_overline = "#2E7D32"           # Green accent overline (#1190: the selected tab needs a cue)
 unfocused = "#F1F8E9"
 unfocused_active = "#E8F5E0"
-unfocused_active_overline = "#00000000" # Transparent - no overline
+unfocused_active_overline = "#2E7D3280" # Semi-transparent green overline
 
 # =============================================================================
 # DOCKING COLORS

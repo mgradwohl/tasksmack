@@ -136,8 +136,8 @@ hovered = "#BCC0CC"
 active = "#1E66F5"
 
 [ui.header]
-normal = "#CCD0DA"
-hovered = "#BCC0CC"
+normal = "#C5C9D5"
+hovered = "#DADDE5"
 active = "#ACB0BE"
 
 [ui.separator]
@@ -151,7 +151,7 @@ hovered = "#1E66F5"
 active = "#209FB5"
 
 [ui.tab]
-normal = "#E6E9EF"
+normal = "#CDD3DF"
 hovered = "#CCD0DA"
 active = "#EFF1F5"
 active_overline = "#8839EF"
