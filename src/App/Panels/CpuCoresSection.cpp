@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstddef>
 #include <format>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -289,8 +290,10 @@ void renderCpuCoresSection(RenderContext& ctx)
                                 }
                             };
 
-                            // coreCount can exceed either list (see above), so each lookup is guarded.
-                            double smoothed = 0.0;
+                            // coreCount can exceed either list (see above), so each lookup is guarded. A
+                            // retained core missing from the latest sample has no current value: NaN, shown
+                            // as N/A in muted text like its history's gap, not a fake 0% (#1146).
+                            double smoothed = std::numeric_limits<double>::quiet_NaN();
                             if (ctx.smoothedPerCore != nullptr && coreIdx < ctx.smoothedPerCore->size())
                             {
                                 smoothed = (*ctx.smoothedPerCore)[coreIdx];
@@ -303,7 +306,7 @@ void renderCpuCoresSection(RenderContext& ctx)
                                              .label = coreName,
                                              .tooltipText = {},
                                              .value01 = UI::Format::percent01(smoothed),
-                                             .color = theme.progressColor(smoothed)};
+                                             .color = std::isnan(smoothed) ? theme.scheme().textMuted : theme.progressColor(smoothed)};
 
                             NowBarList bars;
                             bars.push_back(bar);

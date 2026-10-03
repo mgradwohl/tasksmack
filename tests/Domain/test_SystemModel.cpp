@@ -569,6 +569,51 @@ TEST(SystemModelTest, PerCoreHistoryStaysAlignedOnCoreCountDecrease)
     }
 }
 
+TEST(SystemModelTest, HotAddedCoreIsBackfilledWithGaps)
+{
+    // A core that appears mid-run gets NaN for the samples before it existed (a gap, not a fake
+    // 0%, #1146), so its ring stays aligned with the timestamp axis.
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+    const auto oneCore = [&](std::uint64_t busy, std::uint64_t idle)
+    {
+        rawProbe->setCounters(
+            makeSystemCounters(makeCpuCounters(busy, 0, 0, idle), makeMemoryCounters(1024, 512), 0, {makeCpuCounters(busy, 0, 0, idle)}));
+    };
+    const auto twoCores = [&](std::uint64_t busy, std::uint64_t idle)
+    {
+        rawProbe->setCounters(makeSystemCounters(makeCpuCounters(2 * busy, 0, 0, 2 * idle),
+                                                 makeMemoryCounters(1024, 512),
+                                                 0,
+                                                 {makeCpuCounters(busy, 0, 0, idle), makeCpuCounters(busy, 0, 0, idle)}));
+    };
+
+    oneCore(0, 0);
+    Domain::SystemModel model(std::move(probe));
+    model.refresh(); // baseline
+    oneCore(100, 100);
+    model.refresh();
+    oneCore(200, 200);
+    model.refresh();
+    twoCores(300, 300); // the previous sample had one core, so core 1 has no delta yet
+    model.refresh();
+    twoCores(400, 400);
+    model.refresh();
+
+    const auto ts = model.timestamps();
+    const auto cores = model.perCoreHistory();
+    ASSERT_EQ(cores.size(), 2U);
+    ASSERT_EQ(cores[0].size(), ts.size());
+    ASSERT_EQ(cores[1].size(), ts.size());
+    ASSERT_GE(ts.size(), 2U);
+    for (std::size_t i = 0; i + 1 < cores[1].size(); ++i)
+    {
+        EXPECT_TRUE(std::isnan(cores[1][i])) << "sample " << i;
+        EXPECT_FALSE(std::isnan(cores[0][i])) << "sample " << i;
+    }
+    EXPECT_FLOAT_EQ(cores[1].back(), 50.0F);
+}
+
 // =============================================================================
 // updateFromCounters Tests
 // =============================================================================
