@@ -505,6 +505,8 @@ TEST(LinuxProcessProbeTest, NetworkReadTimeIsStampedOnEveryProcess)
     {
         GTEST_SKIP() << "Per-process network counters not available (Netlink INET_DIAG)";
     }
+    // Long enough that both enumerations below hit the same cached socket read.
+    probe.setSocketStatsCacheTtl(std::chrono::minutes{10});
 
     const auto first = probe.enumerate();
     ASSERT_FALSE(first.empty());
@@ -515,10 +517,15 @@ TEST(LinuxProcessProbeTest, NetworkReadTimeIsStampedOnEveryProcess)
         EXPECT_EQ(proc.netSampleTimeNs, stamp) << "pid " << proc.pid;
     }
 
-    // Within the socket cache's TTL the same read is returned, with its original time.
+    // Within the socket cache's TTL the same read is returned with its original time, not a new one:
+    // a fresh stamp on a cache hit would make ProcessModel treat it as a new reading (rates of 0
+    // between real reads, then inflated ones when fresh counters arrive).
     const auto second = probe.enumerate();
     ASSERT_FALSE(second.empty());
-    EXPECT_GE(second.front().netSampleTimeNs, stamp);
+    for (const auto& proc : second)
+    {
+        EXPECT_EQ(proc.netSampleTimeNs, stamp) << "pid " << proc.pid;
+    }
 }
 
 TEST(LinuxProcessProbeTest, IoCountersIncreaseWithActivity)

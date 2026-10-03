@@ -1118,7 +1118,15 @@ TEST(ProcessModelTest, NetworkRatesZeroForImplausiblyShortInterval)
     NetworkRateFixture fixture;
     fixture.sample(std::chrono::milliseconds{0}, 1000, 2000);
 
-    const auto snap = fixture.sample(std::chrono::milliseconds{1}, 5000, 10000);
+    auto snap = fixture.sample(std::chrono::milliseconds{1}, 5000, 10000);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 0.0);
+
+    // From a nonzero rate (#1063 review): a too-short interval resets the rate to 0, not the last
+    // rate republished -- only a repeated cached read from a probe that stamps its reads holds it.
+    snap = fixture.sample(std::chrono::seconds{1}, 6000, 12000);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 1000.0);
+    snap = fixture.sample(std::chrono::milliseconds{1}, 6000, 12000);
     EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 0.0);
     EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 0.0);
 }
