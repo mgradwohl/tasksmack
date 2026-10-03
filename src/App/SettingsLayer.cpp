@@ -10,7 +10,6 @@
 #include "Core/Event.h"
 #include "Core/Layer.h"
 #include "Core/VideoBackend.h"
-#include "UI/AssetPath.h"
 #include "UI/DialogMetrics.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
@@ -23,6 +22,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <string>
+#include <system_error>
 
 namespace App
 {
@@ -48,10 +48,20 @@ constexpr const char* APPLY_LABEL = "Apply";
 constexpr const char* NATIVE_DECORATIONS_LABEL = "Use native window decorations instead of the custom title bar";
 #endif
 
-// Get the themes directory path using multi-path asset resolution
-[[nodiscard]] auto getThemesDir() -> std::filesystem::path
+// The user themes directory: the one UILayer scans and merges over the built-ins. The built-in
+// themes live in the install's assets directory, which is read-only and replaced on upgrade, so
+// that is not where users should add themes (#1127). Created on first use so the button always
+// opens something.
+[[nodiscard]] auto getUserThemesDir() -> std::filesystem::path
 {
-    return UI::findAssetsDir() / "themes";
+    auto dir = Core::Application::get().paths().userConfigDir() / "themes";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (ec)
+    {
+        spdlog::warn("Couldn't create user themes directory {}: {}", dir.string(), ec.message());
+    }
+    return dir;
 }
 
 } // namespace
@@ -457,7 +467,7 @@ void SettingsLayer::renderSettingsDialog()
         if (ImGui::Button(OPEN_THEMES_LABEL))
         {
             // Result intentionally ignored - openWithSystemHandler logs warnings on failure
-            (void) App::PlatformOpen::openWithSystemHandler(getThemesDir());
+            (void) App::PlatformOpen::openWithSystemHandler(getUserThemesDir());
         }
         ImGui::PopStyleColor();
 

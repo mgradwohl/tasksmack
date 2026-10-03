@@ -3,6 +3,7 @@
 #include "ColorContrast.h"
 #include "DpiScale.h"
 #include "StyleScale.h"
+#include "ThemeCatalog.h"
 #include "ThemeLoader.h"
 
 #include <imgui.h>
@@ -12,6 +13,7 @@
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -21,6 +23,9 @@ namespace UI
 
 namespace
 {
+
+/// Id of the built-in theme the constructor installs before any theme file is read.
+constexpr std::string_view FALLBACK_THEME_ID = "fallback";
 
 [[nodiscard]] constexpr auto fontSizeIndex(FontSize size) noexcept -> std::size_t
 {
@@ -197,7 +202,7 @@ void Theme::loadDefaultFallbackTheme()
 
     // Add as the initial theme
     DiscoveredTheme fallbackInfo;
-    fallbackInfo.id = "fallback";
+    fallbackInfo.id = FALLBACK_THEME_ID;
     fallbackInfo.name = "Fallback";
     fallbackInfo.description = "Built-in fallback theme";
 
@@ -240,24 +245,30 @@ void Theme::loadThemes(const std::filesystem::path& themesDir)
 
     if (loadedSchemes.empty())
     {
-        spdlog::error("Failed to load any themes, reverting to fallback");
-        loadDefaultFallbackTheme();
+        // Keep whatever is already loaded: the built-in fallback from the constructor, or the
+        // built-in themes when this was the user directory. Appending another fallback here
+        // produced a duplicate "Fallback" entry (#1127).
+        spdlog::error("Failed to load any themes from {}", themesDir.string());
         return;
     }
 
-    m_DiscoveredThemes = std::move(discoveredThemes);
-    m_LoadedSchemes = std::move(loadedSchemes);
-    m_CurrentThemeIndex = 0;
-
-    // Set default theme (prefer arctic-fire if available)
-    for (std::size_t i = 0; i < m_DiscoveredThemes.size(); ++i)
+    const std::string currentId = m_DiscoveredThemes.empty() ? std::string{} : m_DiscoveredThemes[m_CurrentThemeIndex].id;
+    const bool onlyFallbackLoaded = (m_DiscoveredThemes.size() == 1) && (m_DiscoveredThemes.front().id == FALLBACK_THEME_ID);
+    if (onlyFallbackLoaded)
     {
-        if (m_DiscoveredThemes[i].id == "arctic-fire")
-        {
-            m_CurrentThemeIndex = i;
-            break;
-        }
+        m_DiscoveredThemes = std::move(discoveredThemes);
+        m_LoadedSchemes = std::move(loadedSchemes);
     }
+    else
+    {
+        // A later directory (the user's) is layered over what is loaded, overriding by id (#1127).
+        ThemeCatalog::mergeById(m_DiscoveredThemes, m_LoadedSchemes, std::move(discoveredThemes), std::move(loadedSchemes));
+    }
+
+    // Keep the current theme if it is still loaded; otherwise prefer arctic-fire, then the first.
+    m_CurrentThemeIndex = ThemeCatalog::indexOfId(m_DiscoveredThemes, currentId)
+                              .or_else([this] { return ThemeCatalog::indexOfId(m_DiscoveredThemes, "arctic-fire"); })
+                              .value_or(0);
 
     spdlog::info("Loaded {} themes, current: {}", m_LoadedSchemes.size(), m_DiscoveredThemes[m_CurrentThemeIndex].name);
 }
