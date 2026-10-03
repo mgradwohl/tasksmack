@@ -91,7 +91,7 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
         alignedCount = std::min(alignedCount, swapCount);
     }
 
-    std::vector<float> timeData = buildTimeAxis(timestamps, alignedCount, nowSeconds);
+    std::vector<double> timeData = buildTimeAxis(timestamps, alignedCount, nowSeconds);
     const auto memData = UI::Widgets::tailAlignedSpan(memHist, alignedCount).values;
     const auto cachedData = UI::Widgets::tailAlignedSpan(cachedHist, alignedCount).values;
     const auto swapData = UI::Widgets::tailAlignedSpan(swapHist, alignedCount).values;

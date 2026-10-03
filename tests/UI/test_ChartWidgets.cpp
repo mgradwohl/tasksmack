@@ -381,26 +381,12 @@ TEST(ChartWidgetsReduceTest, MinMaxReductionNeverExceedsItsBudget)
     }
 }
 
-TEST(ChartWidgetsReduceTest, MinMaxReductionNeverBridgesEitherOfTwoGapsInOneBucket)
+namespace
 {
-    // finite / NaN / finite / NaN / finite inside one bucket. Every pair of consecutive finite output
-    // points must have no NaN sample between them in the source, or the line would bridge it.
-    ReduceFixture f;
-    const auto nan = std::numeric_limits<double>::quiet_NaN();
-    // With now = 0.05 and 100 ms samples, the 2 s buckets hold 20 samples each; 1499..1518 is one bucket.
-    for (const int i : {1504, 1512})
-    {
-        f.y[static_cast<std::size_t>(i)] = nan;
-    }
-    f.y[1500] = 1.0;
-    f.y[1508] = 50.0; // between the two gaps: the bucket's max
-    f.y[1516] = 0.5;  // after both: the bucket's min
-    std::vector<double> outX(LINE_PLOT_MAX_POINTS_DENSE);
-    std::vector<double> outY(LINE_PLOT_MAX_POINTS_DENSE);
-    const double now = 0.05; // keep sample times off the bucket boundaries
-    const int written =
-        reduceSeriesMinMax(f.x.data(), f.y.data(), ReduceFixture::COUNT, LINE_PLOT_MAX_POINTS_DENSE, now, outX.data(), outY.data());
-
+// Asserts that no two consecutive finite output points have a NaN source sample between them --
+// which is what drawing the line across a gap would mean.
+void expectNoBridgedGap(const ReduceFixture& f, const std::vector<double>& outX, const std::vector<double>& outY, int written)
+{
     const auto sourceIndexOf = [&](double x)
     {
         return static_cast<int>(std::lround((x / 0.1) + (ReduceFixture::COUNT - 1)));
@@ -417,6 +403,79 @@ TEST(ChartWidgetsReduceTest, MinMaxReductionNeverBridgesEitherOfTwoGapsInOneBuck
         {
             EXPECT_FALSE(std::isnan(f.y[static_cast<std::size_t>(src)])) << "points " << k - 1 << "-" << k << " bridge the gap at " << src;
         }
+    }
+}
+} // namespace
+
+TEST(ChartWidgetsReduceTest, MinMaxReductionNeverBridgesAGapWhateverItsLayoutInOneBucket)
+{
+    // With now = 0.05 and 100 ms samples, the 2 s buckets hold 20 samples each; 1499..1518 is one
+    // bucket. Each layout puts the bucket's min and max between gaps, the case that used to bridge.
+    struct Layout
+    {
+        std::vector<int> gaps;
+        int maxAt;
+        int minAt;
+    };
+    const std::vector<Layout> layouts{
+        {.gaps = {1504}, .maxAt = 1500, .minAt = 1510},             // one run, extremes either side
+        {.gaps = {1504, 1512}, .maxAt = 1508, .minAt = 1516},       // two runs
+        {.gaps = {1504, 1508, 1512}, .maxAt = 1506, .minAt = 1510}, // three runs (#1051 review)
+        {.gaps = {1502, 1503, 1509, 1515}, .maxAt = 1506, .minAt = 1512},
+    };
+    for (const auto& layout : layouts)
+    {
+        ReduceFixture f;
+        for (const int i : layout.gaps)
+        {
+            f.y[static_cast<std::size_t>(i)] = std::numeric_limits<double>::quiet_NaN();
+        }
+        f.y[static_cast<std::size_t>(layout.maxAt)] = 50.0;
+        f.y[static_cast<std::size_t>(layout.minAt)] = 0.5;
+        std::vector<double> outX(LINE_PLOT_MAX_POINTS_DENSE);
+        std::vector<double> outY(LINE_PLOT_MAX_POINTS_DENSE);
+        const int written =
+            reduceSeriesMinMax(f.x.data(), f.y.data(), ReduceFixture::COUNT, LINE_PLOT_MAX_POINTS_DENSE, 0.05, outX.data(), outY.data());
+        SCOPED_TRACE(layout.gaps.size());
+        expectNoBridgedGap(f, outX, outY, written);
+    }
+}
+
+TEST(ChartWidgetsReduceTest, ReductionOfABuiltTimeAxisIsStableAsNowAdvances)
+{
+    // The production path: buildTimeAxis(timestamps, n, now) then a reduction anchored at the same
+    // now. With a float axis, x + now did not recover the timestamp exactly and the error changed as
+    // now advanced, so a sample this close to a bucket boundary could change bucket between frames
+    // (#1051 review). Timestamps are large, like steady_clock seconds on a long-running machine.
+    constexpr std::size_t COUNT = 3000;
+    std::vector<double> timestamps(COUNT);
+    std::vector<double> values(COUNT);
+    const double start = 864'000.0; // ten days of uptime
+    for (std::size_t i = 0; i < COUNT; ++i)
+    {
+        timestamps[i] = start + (static_cast<double>(i) * 0.1);
+        values[i] = static_cast<double>((i * 37) % 101);
+    }
+    // One sample 2 microseconds before a 2 s bucket boundary, with a value that makes it a bucket max.
+    timestamps[1500] = 864'150.0 - 2e-6;
+    values[1500] = 500.0;
+
+    std::vector<double> firstY;
+    for (const double elapsed : {0.0, 0.0161, 0.0334, 0.0517, 0.0833, 0.1})
+    {
+        const double now = timestamps.back() + 0.04 + elapsed;
+        const auto x = buildTimeAxis(timestamps, COUNT, now);
+        std::vector<double> outX(LINE_PLOT_MAX_POINTS_DENSE);
+        std::vector<double> outY(LINE_PLOT_MAX_POINTS_DENSE);
+        const int written =
+            reduceSeriesMinMax(x.data(), values.data(), static_cast<int>(COUNT), LINE_PLOT_MAX_POINTS_DENSE, now, outX.data(), outY.data());
+        outY.resize(static_cast<std::size_t>(written));
+        if (firstY.empty())
+        {
+            firstY = outY;
+            continue;
+        }
+        EXPECT_EQ(outY, firstY) << "elapsed " << elapsed;
     }
 }
 

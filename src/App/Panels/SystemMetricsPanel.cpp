@@ -615,7 +615,7 @@ void SystemMetricsPanel::renderOverview()
     // CPU history with vertical now bars (total + breakdown)
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MICROCHIP "  CPU Usage (%zu samples)", cpuCount);
 
-    std::vector<float> cpuTimeData = buildTimeAxis(timestamps, cpuCount, nowSeconds);
+    std::vector<double> cpuTimeData = buildTimeAxis(timestamps, cpuCount, nowSeconds);
 
     const size_t breakdownCount =
         std::min({cpuUserHist.size(), cpuSystemHist.size(), cpuIowaitHist.size(), cpuIdleHist.size(), timestamps.size()});
@@ -623,7 +623,7 @@ void SystemMetricsPanel::renderOverview()
     const auto cpuSystemData = UI::Widgets::tailAlignedSpan(cpuSystemHist, breakdownCount).values;
     const auto cpuIowaitData = UI::Widgets::tailAlignedSpan(cpuIowaitHist, breakdownCount).values;
     const auto cpuIdleData = UI::Widgets::tailAlignedSpan(cpuIdleHist, breakdownCount).values;
-    std::vector<float> breakdownTimeData = buildTimeAxis(timestamps, breakdownCount, nowSeconds);
+    std::vector<double> breakdownTimeData = buildTimeAxis(timestamps, breakdownCount, nowSeconds);
 
     // I/O Wait is drawn -- fill, legend entry, tooltip row and bar -- only where the platform
     // reports it. Windows does not, and showed a permanently empty series and bar (#1031).
@@ -637,7 +637,7 @@ void SystemMetricsPanel::renderOverview()
         {
             if (breakdownCount > 0)
             {
-                m_CpuStackY0.assign(breakdownCount, 0.0F);
+                m_CpuStackY0.assign(breakdownCount, 0.0);
                 m_CpuStackYUser.resize(breakdownCount);
                 m_CpuStackYSystem.resize(breakdownCount);
                 m_CpuStackYIowait.resize(breakdownCount);
@@ -648,9 +648,9 @@ void SystemMetricsPanel::renderOverview()
 
                 for (size_t i = 0; i < breakdownCount; ++i)
                 {
-                    yUserTop[i] = cpuUserData[i];
-                    ySystemTop[i] = cpuUserData[i] + cpuSystemData[i];
-                    yIowaitTop[i] = ySystemTop[i] + cpuIowaitData[i];
+                    yUserTop[i] = static_cast<double>(cpuUserData[i]);
+                    ySystemTop[i] = yUserTop[i] + static_cast<double>(cpuSystemData[i]);
+                    yIowaitTop[i] = ySystemTop[i] + static_cast<double>(cpuIowaitData[i]);
                 }
 
                 ImPlot::PlotShaded("User",
@@ -682,11 +682,14 @@ void SystemMetricsPanel::renderOverview()
                 // of the stack understated the load whenever that other time was significant.
                 if (!cpuData.empty())
                 {
-                    ImPlot::PlotLine("Total",
+                    plotLineWithFill("Total",
                                      cpuTimeData.data(),
                                      cpuData.data(),
                                      UI::Format::checkedCount(cpuData.size()),
-                                     {ImPlotProp_LineColor, theme.scheme().chartCpu, ImPlotProp_LineWeight, 2.0F});
+                                     theme.scheme().chartCpu,
+                                     std::nullopt,
+                                     2.0F,
+                                     false);
                 }
 
                 if (ImPlot::IsPlotHovered())
@@ -708,18 +711,12 @@ void SystemMetricsPanel::renderOverview()
             }
             else if (!cpuData.empty())
             {
-                ImPlot::PlotShaded("##CPUShaded",
-                                   cpuTimeData.data(),
-                                   cpuData.data(),
-                                   UI::Format::checkedCount(cpuData.size()),
-                                   0.0,
-                                   {ImPlotProp_FillColor, theme.scheme().chartCpuFill});
-
-                ImPlot::PlotLine("CPU",
+                plotLineWithFill("CPU",
                                  cpuTimeData.data(),
                                  cpuData.data(),
                                  UI::Format::checkedCount(cpuData.size()),
-                                 {ImPlotProp_LineColor, theme.scheme().chartCpu, ImPlotProp_LineWeight, 2.0F});
+                                 theme.scheme().chartCpu,
+                                 theme.scheme().chartCpuFill);
 
                 if (ImPlot::IsPlotHovered())
                 {
@@ -839,8 +836,8 @@ void SystemMetricsPanel::renderOverview()
                 }
             }
 
-            const std::vector<float> powerTimeData = buildTimeAxis(m_ProcessHistoryTimestamps, powerCount, nowSeconds);
-            const std::vector<float> batteryTimeData = buildTimeAxis(timestamps, batteryCount, nowSeconds);
+            const std::vector<double> powerTimeData = buildTimeAxis(m_ProcessHistoryTimestamps, powerCount, nowSeconds);
+            const std::vector<double> batteryTimeData = buildTimeAxis(timestamps, batteryCount, nowSeconds);
             const auto axis = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds);
             // Update smoothed values: the latest *reading*, skipping trailing gaps.
             const float targetPower = powerHist.empty() ? 0.0F : powerHist.back();
@@ -948,7 +945,7 @@ void SystemMetricsPanel::renderOverview()
                         if (powerIdx || batteryIdx)
                         {
                             ImGui::BeginTooltip();
-                            const float ageX = powerIdx ? powerTimeData[*powerIdx] : batteryTimeData[*batteryIdx];
+                            const double ageX = powerIdx ? powerTimeData[*powerIdx] : batteryTimeData[*batteryIdx];
                             const auto ageText = formatAgeSeconds(static_cast<double>(ageX));
                             ImGui::TextUnformatted(ageText.c_str());
                             ImGui::Separator();
@@ -1115,7 +1112,7 @@ void SystemMetricsPanel::renderOverview()
         const auto axis = alignedCount > 0 ? makeTimeAxisConfig(procTimestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds)
                                            : makeTimeAxisConfig({}, m_MaxHistorySeconds, m_HistoryScrollSeconds);
 
-        std::vector<float> timeData;
+        std::vector<double> timeData;
         std::vector<float> faultData;
         std::vector<float> threadData;
         std::vector<float> handleData;

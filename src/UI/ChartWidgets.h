@@ -281,9 +281,11 @@ inline void reduceSeriesKeepingGaps(const TX* xData, const TY* yData, int count,
 /// bucket as the window scrolls and the reduced line does not shimmer; counted from an end, every new
 /// or trimmed sample would regroup the whole series.
 ///
-/// A bucket holding non-finite samples (NaN: no reading) also emits a NaN point at its first and at
-/// its last one, so gaps survive the reduction: anything emitted between the two markers stands
-/// alone and is never drawn connected across a gap, however many separate gaps the bucket holds.
+/// Gaps (NaN: no reading) survive the reduction. A bucket with one run of non-finite samples emits
+/// a NaN point at the run's start: every other point it emits lies wholly before or after the run,
+/// so none is drawn connected across it. A bucket with two or more separate runs cannot show them
+/// all within its budget, so it collapses to a single NaN point (plus the series' end samples if it
+/// holds them): a short stretch drawn as missing rather than a line drawn across a gap.
 /// The first and last samples are always emitted, so the line still starts at the oldest sample and
 /// ends at the newest instead of at its bucket's extremes.
 ///
@@ -292,10 +294,10 @@ inline void reduceSeriesKeepingGaps(const TX* xData, const TY* yData, int count,
 template<typename TX, typename TY>
 [[nodiscard]] inline int reduceSeriesMinMax(const TX* xData, const TY* yData, int count, int maxOut, double xOffset, TX* outX, TY* outY)
 {
-    // At most four points per bucket (min, max, first and last gap marker) plus the two end
-    // samples, and a span of n widths can touch n + 1 buckets once both ends fall mid-bucket: so
-    // (maxOut - 2) / 4 - 1 buckets always fit.
-    const int bucketCount = ((maxOut - 2) / 4) - 1;
+    // At most three points per bucket (min, max, gap marker) plus the two end samples, and a span
+    // of n widths can touch n + 1 buckets once both ends fall mid-bucket: so (maxOut - 2) / 3 - 1
+    // buckets always fit.
+    const int bucketCount = ((maxOut - 2) / 3) - 1;
     const double width =
         (count > 1) ? minMaxBucketWidth(static_cast<double>(xData[count - 1]) - static_cast<double>(xData[0]), bucketCount) : 0.0;
     if (width <= 0.0)
@@ -325,7 +327,8 @@ template<typename TX, typename TY>
         int minIdx = -1;
         int maxIdx = -1;
         int gapIdx = -1;
-        int lastGapIdx = -1;
+        int gapRuns = 0;
+        bool inGap = false;
         int next = bucketStart;
         for (; next < count && bucketOf(next) == bucket; ++next)
         {
@@ -333,9 +336,11 @@ template<typename TX, typename TY>
             if (!std::isfinite(value))
             {
                 gapIdx = (gapIdx < 0) ? next : gapIdx;
-                lastGapIdx = next;
+                gapRuns += inGap ? 0 : 1;
+                inGap = true;
                 continue;
             }
+            inGap = false;
             if (minIdx < 0 || value < static_cast<double>(yData[minIdx]))
             {
                 minIdx = next;
@@ -348,7 +353,9 @@ template<typename TX, typename TY>
 
         const int firstIdx = (bucketStart == 0) ? 0 : -1;
         const int lastIdx = (next == count) ? count - 1 : -1;
-        std::array<int, 6> picks{firstIdx, minIdx, maxIdx, gapIdx, lastGapIdx, lastIdx};
+        // Two or more gap runs: drop the bucket's extremes and keep only the gap (see above).
+        const bool collapse = gapRuns > 1;
+        std::array<int, 5> picks{firstIdx, collapse ? -1 : minIdx, collapse ? -1 : maxIdx, gapIdx, lastIdx};
         std::ranges::sort(picks);
         int previous = -1;
         for (const int pick : picks)
@@ -360,7 +367,7 @@ template<typename TX, typename TY>
             outX[written] = xData[pick];
             if constexpr (std::is_floating_point_v<TY>)
             {
-                outY[written] = (pick == gapIdx || pick == lastGapIdx) ? std::numeric_limits<TY>::quiet_NaN() : yData[pick];
+                outY[written] = (pick == gapIdx) ? std::numeric_limits<TY>::quiet_NaN() : yData[pick];
             }
             else
             {
@@ -410,7 +417,9 @@ inline void plotLineWithFill(const char* label,
         return;
     }
 
-    const auto renderSeries = [&](const TX* plotXData, const TY* plotYData, int plotCount)
+    // ImPlot takes x and y of one type. The time axis is double (buildTimeAxis) while some series
+    // are float, so y is drawn as TX: converted into reused buffers when the types differ.
+    const auto renderSeries = [&](const TX* plotXData, const TX* plotYData, int plotCount)
     {
         if (drawFill)
         {
@@ -444,11 +453,30 @@ inline void plotLineWithFill(const char* label,
         const int reducedCount =
             reduceSeriesMinMax(xData, yData, count, effectiveMax, historyFrameNowSeconds(), reducedXData.data(), reducedYData.data());
 
-        renderSeries(reducedXData.data(), reducedYData.data(), reducedCount);
+        if constexpr (std::is_same_v<TX, TY>)
+        {
+            renderSeries(reducedXData.data(), reducedYData.data(), reducedCount);
+        }
+        else
+        {
+            std::array<TX, LINE_PLOT_MAX_POINTS_DENSE> reducedYAsX{};
+            std::copy_n(reducedYData.begin(), reducedCount, reducedYAsX.begin());
+            renderSeries(reducedXData.data(), reducedYAsX.data(), reducedCount);
+        }
         return;
     }
 
-    renderSeries(xData, yData, count);
+    if constexpr (std::is_same_v<TX, TY>)
+    {
+        renderSeries(xData, yData, count);
+    }
+    else
+    {
+        // UI thread only; reused so a converted series costs no allocation once it has grown.
+        static std::vector<TX> yAsX;
+        yAsX.assign(yData, yData + count);
+        renderSeries(xData, yAsX.data(), count);
+    }
 }
 
 /// Helper for line-only rendering, reduced to at most LINE_PLOT_MAX_POINTS_DENSE points (see reduceSeriesMinMax).
@@ -707,18 +735,20 @@ inline TimeAxisConfig makeTimeAxisConfig(const std::vector<double>& timestamps, 
     return cfg;
 }
 
-inline std::vector<float> buildTimeAxis(const std::vector<double>& timestamps, size_t desiredCount, double nowSeconds)
+/// Time axis for a history chart: the newest `desiredCount` timestamps as seconds before
+/// `nowSeconds` (pass historyFrameNowSeconds()).
+///
+/// double, not float: plotLineWithFill() adds now back to x to bucket samples in absolute time
+/// (reduceSeriesMinMax), and a float x carries a rounding error that changes as now advances, so a
+/// sample near a bucket boundary could still change bucket from frame to frame (#1051 review).
+inline std::vector<double> buildTimeAxis(const std::vector<double>& timestamps, size_t desiredCount, double nowSeconds)
 {
     const size_t n = std::min(desiredCount, timestamps.size());
-    std::vector<float> timeData(n);
+    std::vector<double> timeData(n);
     const size_t offset = timestamps.size() - n;
-    if (n == 0)
-    {
-        return timeData;
-    }
     for (size_t i = 0; i < n; ++i)
     {
-        timeData[i] = UI::Format::toFloatNarrow(timestamps[offset + i] - nowSeconds);
+        timeData[i] = timestamps[offset + i] - nowSeconds;
     }
     return timeData;
 }

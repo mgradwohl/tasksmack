@@ -225,7 +225,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     const auto axis = aligned > 0 ? makeTimeAxisConfig(netTimestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds)
                                   : makeTimeAxisConfig({}, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
 
-    std::vector<float> netTimes;
+    std::vector<double> netTimes;
     std::vector<float> sentData;
     std::vector<float> recvData;
     std::vector<float> ifaceSentData;

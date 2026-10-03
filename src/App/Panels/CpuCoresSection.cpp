@@ -212,7 +212,7 @@ void renderCpuCoresSection(RenderContext& ctx)
                             }
                             const float measuredOverhead = *cachedOverhead;
 
-                            std::vector<float> timeData = buildTimeAxis(timestamps, samples.size(), nowSeconds);
+                            std::vector<double> timeData = buildTimeAxis(timestamps, samples.size(), nowSeconds);
                             const float plotHeight = std::max(minCorePlotHeight(), cellHeight - measuredOverhead);
 
                             // Capture necessary variables by value/reference for lambda
