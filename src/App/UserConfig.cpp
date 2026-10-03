@@ -605,8 +605,9 @@ void UserConfig::save()
     std::random_device random;
     for (int attempt = 0; attempt < 8 && !file.is_open(); ++attempt)
     {
-        tempPath = destination;
-        tempPath += std::format(".{:08x}.tmp", random());
+        // A short name of its own in the same directory, not "<name>.<hex>.tmp": a target whose own
+        // name is near the filesystem's 255-byte limit would leave no room for a suffix (#1222 review).
+        tempPath = destination.parent_path() / std::format(".tasksmack-config.{:08x}.tmp", random());
         if (std::filesystem::exists(tempPath, ec))
         {
             continue;

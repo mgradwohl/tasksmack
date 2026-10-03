@@ -1292,6 +1292,24 @@ TEST_F(UserConfigSaveLoadFixture, SymlinkedConfigKeepsItsLinkAndUpdatesItsTarget
     EXPECT_EQ(parsed(target)["theme"]["id"].value<std::string>(), "mocha");
 }
 
+TEST_F(UserConfigSaveLoadFixture, SymlinkTargetWithALongNameStillSaves)
+{
+    // A 250-byte target name is valid under a 255-byte limit; a temporary named after it with a
+    // suffix would not be, and every save would fail (#1222 review).
+    const auto link = UserConfig::get().configPath();
+    const auto target = m_TempDir / (std::string(245, 'c') + ".toml");
+    writeFile(target, "[theme]\nid = \"arctic-fire\"\n");
+    std::filesystem::create_symlink(target, link);
+
+    auto& config = UserConfig::get();
+    config.load();
+    config.settings().themeId = "mocha";
+    config.save();
+
+    EXPECT_TRUE(std::filesystem::is_symlink(link));
+    EXPECT_EQ(parsed(target)["theme"]["id"].value<std::string>(), "mocha");
+}
+
 TEST_F(UserConfigSaveLoadFixture, SymlinkToAMissingFileCreatesTheTarget)
 {
     // canonical() needs the target to exist; a link to a file not created yet must still be
