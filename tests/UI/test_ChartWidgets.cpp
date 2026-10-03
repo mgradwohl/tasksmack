@@ -345,6 +345,42 @@ TEST(ChartWidgetsReduceTest, MinMaxReductionKeepsAGap)
     }
 }
 
+TEST(ChartWidgetsReduceTest, MinMaxReductionAlwaysEndsAtTheNewestAndStartsAtTheOldestSample)
+{
+    // A flat series: every bucket's min and max are its first sample, so without the end samples
+    // the line would stop up to a bucket width short of x = 0 and start late on the left.
+    for (const double now : {1000.0, 1000.37, 1000.81}) // endpoints at different places in their buckets
+    {
+        ReduceFixture f;
+        std::vector<double> outX(LINE_PLOT_MAX_POINTS_DENSE);
+        std::vector<double> outY(LINE_PLOT_MAX_POINTS_DENSE);
+        const int written =
+            reduceSeriesMinMax(f.x.data(), f.y.data(), ReduceFixture::COUNT, LINE_PLOT_MAX_POINTS_DENSE, now, outX.data(), outY.data());
+        ASSERT_GT(written, 1);
+        ASSERT_LE(written, LINE_PLOT_MAX_POINTS_DENSE);
+        EXPECT_DOUBLE_EQ(outX.front(), f.x.front()) << "now " << now;
+        EXPECT_DOUBLE_EQ(outX[static_cast<std::size_t>(written) - 1], f.x.back()) << "now " << now;
+    }
+}
+
+TEST(ChartWidgetsReduceTest, MinMaxReductionNeverExceedsItsBudget)
+{
+    // Worst case: every bucket has a distinct min, max and gap.
+    ReduceFixture f;
+    for (int i = 0; i < ReduceFixture::COUNT; ++i)
+    {
+        f.y[static_cast<std::size_t>(i)] = (i % 7 == 3) ? std::numeric_limits<double>::quiet_NaN() : static_cast<double>((i * 13) % 17);
+    }
+    for (const int budget : {30, 31, 32, 100, LINE_PLOT_MAX_POINTS_DENSE})
+    {
+        std::vector<double> outX(static_cast<std::size_t>(budget));
+        std::vector<double> outY(static_cast<std::size_t>(budget));
+        const int written = reduceSeriesMinMax(f.x.data(), f.y.data(), ReduceFixture::COUNT, budget, 7.3, outX.data(), outY.data());
+        EXPECT_LE(written, budget);
+        EXPECT_DOUBLE_EQ(outX[static_cast<std::size_t>(written) - 1], f.x.back()) << "budget " << budget;
+    }
+}
+
 TEST(ChartWidgetsReduceTest, MinMaxReductionFallsBackForAnUnusableSpan)
 {
     // x not increasing (all equal): no usable bucket width, so it falls back to the stride.

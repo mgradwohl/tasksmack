@@ -281,16 +281,18 @@ inline void reduceSeriesKeepingGaps(const TX* xData, const TY* yData, int count,
 /// or trimmed sample would regroup the whole series.
 ///
 /// A bucket holding a non-finite sample (NaN: no reading) also emits a NaN point at that sample's x,
-/// so the gap survives the reduction.
+/// so the gap survives the reduction. The first and last samples are always emitted, so the line
+/// still starts at the oldest sample and ends at the newest instead of at its bucket's extremes.
 ///
 /// @return Points written to outX/outY (each must hold `maxOut`). With an unusable span (fewer than
 ///         two samples, or x not increasing) the series is stride-reduced to `maxOut` points instead.
 template<typename TX, typename TY>
 [[nodiscard]] inline int reduceSeriesMinMax(const TX* xData, const TY* yData, int count, int maxOut, double xOffset, TX* outX, TY* outY)
 {
-    // At most three points per bucket (min, max, gap marker), and a span of n widths can touch
-    // n + 1 buckets once both ends fall mid-bucket: so maxOut / 3 - 1 buckets always fit.
-    const int bucketCount = (maxOut / 3) - 1;
+    // At most three points per bucket (min, max, gap marker) plus the two end samples, and a span of
+    // n widths can touch n + 1 buckets once both ends fall mid-bucket: so (maxOut - 2) / 3 - 1
+    // buckets always fit.
+    const int bucketCount = ((maxOut - 2) / 3) - 1;
     const double width =
         (count > 1) ? minMaxBucketWidth(static_cast<double>(xData[count - 1]) - static_cast<double>(xData[0]), bucketCount) : 0.0;
     if (width <= 0.0)
@@ -339,7 +341,9 @@ template<typename TX, typename TY>
             }
         }
 
-        std::array<int, 3> picks{minIdx, maxIdx, gapIdx};
+        const int firstIdx = (bucketStart == 0) ? 0 : -1;
+        const int lastIdx = (next == count) ? count - 1 : -1;
+        std::array<int, 5> picks{firstIdx, minIdx, maxIdx, gapIdx, lastIdx};
         std::ranges::sort(picks);
         int previous = -1;
         for (const int pick : picks)
@@ -911,12 +915,16 @@ rateHistoryConfig(const char* id, double xMin, double xMax, ImPlotFormatter yFor
     // UI thread only, like everything else in ImGui. Bounded: one entry per chart ID ever drawn, and
     // entries not drawn for a while are dropped once there are many (per-disk charts come and go).
     static std::unordered_map<ImGuiID, Eased> state;
+    static int lastPruneFrame = -1;
     constexpr std::size_t PRUNE_ABOVE = 256;
     constexpr int STALE_FRAMES = 600;
 
     const int frame = ImGui::GetFrameCount();
-    if (state.size() > PRUNE_ABOVE)
+    // At most once per frame, not once per chart: a full scan per chart would make axis setup
+    // quadratic in the number of charts exactly when there are many.
+    if (state.size() > PRUNE_ABOVE && frame != lastPruneFrame)
     {
+        lastPruneFrame = frame;
         std::erase_if(state, [frame](const auto& entry) { return (frame - entry.second.lastFrame) > STALE_FRAMES; });
     }
     auto& entry = state[chartId];
