@@ -89,10 +89,10 @@ class ProcessDetailsPanel : public Panel
     void renderIoStats(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
     void renderNetworkStats(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
     void renderPowerUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
-    void renderGpuUsage(const Domain::ProcessSnapshot& proc);
+    void renderGpuUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
     void renderGpuCurrentMetricsTable(const Domain::ProcessSnapshot& proc) const;
     static void renderPerGpuBreakdown(const Domain::ProcessSnapshot& proc);
-    void renderGpuHistoryGraphs();
+    void renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fill);
     void renderActions();
     void renderActionResultFeedback();
     void renderConfirmDialog();
@@ -148,6 +148,7 @@ class ProcessDetailsPanel : public Panel
     // Per-tab state for the shared chart-height rule (#959)
     UI::Widgets::PlotFillState m_OverviewFill;
     UI::Widgets::PlotFillState m_NetworkFill;
+    UI::Widgets::PlotFillState m_GpuFill;
 
     bool m_HasSnapshot = false;
     bool m_ProcessExited = false; // Had a snapshot of the selected process, and it has gone missing (#927)
