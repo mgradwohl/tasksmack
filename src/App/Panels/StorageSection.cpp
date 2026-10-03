@@ -218,7 +218,7 @@ void updateSmoothedDiskIO(double targetRead, double targetWrite, float deltaTime
 void renderStorageSection(RenderContext& ctx)
 {
     const auto& theme = UI::Theme::get();
-    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
 
     if (ctx.publication == nullptr)
     {

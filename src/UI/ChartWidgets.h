@@ -280,19 +280,21 @@ inline void reduceSeriesKeepingGaps(const TX* xData, const TY* yData, int count,
 /// bucket as the window scrolls and the reduced line does not shimmer; counted from an end, every new
 /// or trimmed sample would regroup the whole series.
 ///
-/// A bucket holding a non-finite sample (NaN: no reading) also emits a NaN point at that sample's x,
-/// so the gap survives the reduction. The first and last samples are always emitted, so the line
-/// still starts at the oldest sample and ends at the newest instead of at its bucket's extremes.
+/// A bucket holding non-finite samples (NaN: no reading) also emits a NaN point at its first and at
+/// its last one, so gaps survive the reduction: anything emitted between the two markers stands
+/// alone and is never drawn connected across a gap, however many separate gaps the bucket holds.
+/// The first and last samples are always emitted, so the line still starts at the oldest sample and
+/// ends at the newest instead of at its bucket's extremes.
 ///
 /// @return Points written to outX/outY (each must hold `maxOut`). With an unusable span (fewer than
 ///         two samples, or x not increasing) the series is stride-reduced to `maxOut` points instead.
 template<typename TX, typename TY>
 [[nodiscard]] inline int reduceSeriesMinMax(const TX* xData, const TY* yData, int count, int maxOut, double xOffset, TX* outX, TY* outY)
 {
-    // At most three points per bucket (min, max, gap marker) plus the two end samples, and a span of
-    // n widths can touch n + 1 buckets once both ends fall mid-bucket: so (maxOut - 2) / 3 - 1
-    // buckets always fit.
-    const int bucketCount = ((maxOut - 2) / 3) - 1;
+    // At most four points per bucket (min, max, first and last gap marker) plus the two end
+    // samples, and a span of n widths can touch n + 1 buckets once both ends fall mid-bucket: so
+    // (maxOut - 2) / 4 - 1 buckets always fit.
+    const int bucketCount = ((maxOut - 2) / 4) - 1;
     const double width =
         (count > 1) ? minMaxBucketWidth(static_cast<double>(xData[count - 1]) - static_cast<double>(xData[0]), bucketCount) : 0.0;
     if (width <= 0.0)
@@ -322,6 +324,7 @@ template<typename TX, typename TY>
         int minIdx = -1;
         int maxIdx = -1;
         int gapIdx = -1;
+        int lastGapIdx = -1;
         int next = bucketStart;
         for (; next < count && bucketOf(next) == bucket; ++next)
         {
@@ -329,6 +332,7 @@ template<typename TX, typename TY>
             if (!std::isfinite(value))
             {
                 gapIdx = (gapIdx < 0) ? next : gapIdx;
+                lastGapIdx = next;
                 continue;
             }
             if (minIdx < 0 || value < static_cast<double>(yData[minIdx]))
@@ -343,7 +347,7 @@ template<typename TX, typename TY>
 
         const int firstIdx = (bucketStart == 0) ? 0 : -1;
         const int lastIdx = (next == count) ? count - 1 : -1;
-        std::array<int, 5> picks{firstIdx, minIdx, maxIdx, gapIdx, lastIdx};
+        std::array<int, 6> picks{firstIdx, minIdx, maxIdx, gapIdx, lastGapIdx, lastIdx};
         std::ranges::sort(picks);
         int previous = -1;
         for (const int pick : picks)
@@ -355,7 +359,7 @@ template<typename TX, typename TY>
             outX[written] = xData[pick];
             if constexpr (std::is_floating_point_v<TY>)
             {
-                outY[written] = (pick == gapIdx) ? std::numeric_limits<TY>::quiet_NaN() : yData[pick];
+                outY[written] = (pick == gapIdx || pick == lastGapIdx) ? std::numeric_limits<TY>::quiet_NaN() : yData[pick];
             }
             else
             {
@@ -369,10 +373,14 @@ template<typename TX, typename TY>
     return written;
 }
 
-/// "Now" in the seconds-since-steady_clock-epoch that history charts measure x from, read once per
-/// ImGui frame. plotLineWithFill() adds it to a chart's x ("seconds before now") to anchor its
-/// reduction buckets in absolute time. Reading it once per frame, not per call, keeps the anchor
-/// from wandering by however long the frame has taken to reach each chart.
+/// "Now" for history charts, in seconds since the steady_clock epoch, read once per ImGui frame.
+///
+/// Every chart builds its time axis as `timestamp - historyFrameNowSeconds()` (buildTimeAxis), and
+/// plotLineWithFill() adds the same value back to anchor its reduction buckets in absolute time, so
+/// x + anchor is exactly the sample's timestamp. If each chart read the clock itself, the anchor and
+/// the axis would differ by however long the frame took to reach the chart, and a sample near a
+/// bucket boundary could change bucket from one frame to the next -- the shimmer the anchoring exists
+/// to prevent.
 [[nodiscard]] inline double historyFrameNowSeconds()
 {
     static int cachedFrame = -1;
@@ -430,8 +438,8 @@ inline void plotLineWithFill(const char* label,
     {
         std::array<TX, LINE_PLOT_MAX_POINTS_DENSE> reducedXData{};
         std::array<TY, LINE_PLOT_MAX_POINTS_DENSE> reducedYData{};
-        // x is "seconds before now" on every history chart (buildTimeAxis), so now anchors the
-        // reduction's buckets in absolute time (see reduceSeriesMinMax).
+        // x is "seconds before historyFrameNowSeconds()" on every history chart, so adding it back
+        // anchors the reduction's buckets in absolute time (see reduceSeriesMinMax).
         const int reducedCount =
             reduceSeriesMinMax(xData, yData, count, effectiveMax, historyFrameNowSeconds(), reducedXData.data(), reducedYData.data());
 

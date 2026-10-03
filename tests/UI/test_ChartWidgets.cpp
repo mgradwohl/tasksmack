@@ -381,6 +381,45 @@ TEST(ChartWidgetsReduceTest, MinMaxReductionNeverExceedsItsBudget)
     }
 }
 
+TEST(ChartWidgetsReduceTest, MinMaxReductionNeverBridgesEitherOfTwoGapsInOneBucket)
+{
+    // finite / NaN / finite / NaN / finite inside one bucket. Every pair of consecutive finite output
+    // points must have no NaN sample between them in the source, or the line would bridge it.
+    ReduceFixture f;
+    const auto nan = std::numeric_limits<double>::quiet_NaN();
+    // With now = 0.05 and 100 ms samples, the 2 s buckets hold 20 samples each; 1499..1518 is one bucket.
+    for (const int i : {1504, 1512})
+    {
+        f.y[static_cast<std::size_t>(i)] = nan;
+    }
+    f.y[1500] = 1.0;
+    f.y[1508] = 50.0; // between the two gaps: the bucket's max
+    f.y[1516] = 0.5;  // after both: the bucket's min
+    std::vector<double> outX(LINE_PLOT_MAX_POINTS_DENSE);
+    std::vector<double> outY(LINE_PLOT_MAX_POINTS_DENSE);
+    const double now = 0.05; // keep sample times off the bucket boundaries
+    const int written =
+        reduceSeriesMinMax(f.x.data(), f.y.data(), ReduceFixture::COUNT, LINE_PLOT_MAX_POINTS_DENSE, now, outX.data(), outY.data());
+
+    const auto sourceIndexOf = [&](double x)
+    {
+        return static_cast<int>(std::lround((x / 0.1) + (ReduceFixture::COUNT - 1)));
+    };
+    for (int k = 1; k < written; ++k)
+    {
+        const auto a = static_cast<std::size_t>(k - 1);
+        const auto b = static_cast<std::size_t>(k);
+        if (std::isnan(outY[a]) || std::isnan(outY[b]))
+        {
+            continue;
+        }
+        for (int src = sourceIndexOf(outX[a]) + 1; src < sourceIndexOf(outX[b]); ++src)
+        {
+            EXPECT_FALSE(std::isnan(f.y[static_cast<std::size_t>(src)])) << "points " << k - 1 << "-" << k << " bridge the gap at " << src;
+        }
+    }
+}
+
 TEST(ChartWidgetsReduceTest, MinMaxReductionFallsBackForAnUnusableSpan)
 {
     // x not increasing (all equal): no usable bucket width, so it falls back to the stride.

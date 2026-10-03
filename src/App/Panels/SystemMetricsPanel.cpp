@@ -602,7 +602,7 @@ void SystemMetricsPanel::renderOverview()
     const auto& cpuIowaitHist = m_SystemPublication->cpuIowaitHistory;
     const auto& cpuIdleHist = m_SystemPublication->cpuIdleHistory;
     const auto& timestamps = m_TimestampsCache;
-    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds);
 
     const size_t cpuCount = std::min(cpuHist.size(), timestamps.size());

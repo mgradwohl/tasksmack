@@ -762,7 +762,7 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
     // Inline CPU history with paired now bar
     if (!m_Timestamps.empty() && !m_CpuHistory.empty())
     {
-        const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
         const size_t alignedCount =
             std::min({m_Timestamps.size(), m_CpuHistory.size(), m_CpuUserHistory.size(), m_CpuSystemHistory.size()});
 
@@ -904,7 +904,7 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
     // Inline history for memory (overview) mirroring system memory chart layout
     if (!m_Timestamps.empty())
     {
-        const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
         const size_t alignedCount =
             std::min({m_Timestamps.size(), m_MemoryHistory.size(), m_SharedHistory.size(), m_VirtualHistory.size()});
 
@@ -1057,7 +1057,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
 
     // Align the independently sampled histories to their newest shared window so
     // every plotted value and tooltip lookup refers to the same point in time.
-    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
     const size_t alignedCount = std::min({m_Timestamps.size(), m_ThreadHistory.size(), m_HandleHistory.size(), m_PageFaultHistory.size()});
     if (alignedCount == 0)
     {
@@ -1250,7 +1250,7 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc, UI:
     }
 
     const auto& theme = UI::Theme::get();
-    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
 
     const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
     std::vector<double> readData = tailVector(m_IoReadHistory, alignedCount);
@@ -1359,7 +1359,7 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
     }
 
     const auto& theme = UI::Theme::get();
-    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
 
     const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
     std::vector<double> sentData = tailVector(m_NetSentHistory, alignedCount);
@@ -1473,7 +1473,7 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc, 
     }
 
     const auto& theme = UI::Theme::get();
-    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
 
     std::vector<double> powerData = tailVector(m_PowerHistory, alignedCount);
     const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
@@ -1758,7 +1758,7 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
     if (!m_GpuUtilHistory.empty() && !m_Timestamps.empty())
     {
         const size_t alignedCount = std::min(m_GpuUtilHistory.size(), m_Timestamps.size());
-        const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
 
         // Extract only what we need for the graphs
         const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);

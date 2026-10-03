@@ -600,7 +600,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
 void renderNetworkSection(RenderContext& ctx)
 {
     const auto& theme = UI::Theme::get();
-    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
 
     // Network content first, at its own natural (non-stretching) height; the disk grid renders
     // after it and fills whatever's left via ImGui::GetContentRegionAvail() (see
