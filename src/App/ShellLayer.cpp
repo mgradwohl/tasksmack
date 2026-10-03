@@ -137,23 +137,25 @@ void ShellLayer::onDetach()
 
 void ShellLayer::onEvent(Core::Event& event)
 {
-    // Handle app-wide coordination events
-    Core::EventDispatcher dispatcher(event);
-    dispatcher.dispatch<Core::RefreshRateChangedEvent>(
-        [this](Core::RefreshRateChangedEvent& e)
-        {
-            const auto interval = std::chrono::milliseconds(e.getIntervalMs());
-            m_ProcessesPanel.setSamplingInterval(interval);
-            m_SystemMetricsPanel.setSamplingInterval(interval);
-            return false; // Do not consume; allow others to react as well
-        });
-
-    // Forward events to all panels
+    // Forward events to all panels; each handles the settings events it needs itself
     m_Tabs.onEvent(event);
 }
 
 void ShellLayer::onUpdate(float deltaTime)
 {
+    // Publish the loaded settings on the first update, after all layers are stacked, through the
+    // same events the Settings dialog raises when they change (#1079). Panels start from the
+    // SamplingConfig defaults and take their configured values from these.
+    if (m_PendingStartupSettings)
+    {
+        m_PendingStartupSettings = false;
+        const auto& settings = UserConfig::get().settings();
+        Core::RefreshRateChangedEvent refreshEvent(settings.refreshIntervalMs);
+        Core::Application::get().raiseEvent(refreshEvent);
+        Core::HistoryDurationChangedEvent historyEvent(settings.maxHistorySeconds);
+        Core::Application::get().raiseEvent(historyEvent);
+    }
+
     // Dispatch the startup privilege notice on the first update, after all layers are stacked.
     if (m_PendingPrivilegeNotice)
     {

@@ -16,6 +16,7 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/BackgroundSampler.h"
+#include "Domain/Numeric.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessModel.h"
 #include "Platform/Factory.h"
@@ -336,8 +337,8 @@ void ProcessesPanel::onAttach()
     // Load column settings from user config
     m_ColumnSettings = UserConfig::get().settings().processColumns;
 
-    const int intervalMs = UserConfig::get().settings().refreshIntervalMs;
-    m_RefreshInterval = std::chrono::milliseconds(intervalMs);
+    // m_RefreshInterval starts at the SamplingConfig default, and the model at its built-in history
+    // length; ShellLayer raises the configured values as events on its first update (#1079).
     m_AppliedSamplerInterval = m_RefreshInterval;
     this->m_InteractionHoldSeconds = 0.0F;
     m_ForceRefresh = false;
@@ -370,7 +371,7 @@ void ProcessesPanel::onAttach()
         m_CachedSnapshotVersion = newVersion;
     }
 
-    spdlog::info("ProcessesPanel: initialized with background sampler ({}ms interval)", intervalMs);
+    spdlog::info("ProcessesPanel: initialized with background sampler ({}ms interval)", m_AppliedSamplerInterval.count());
 }
 
 void ProcessesPanel::setSamplingInterval(std::chrono::milliseconds interval)
@@ -418,6 +419,22 @@ void ProcessesPanel::onEvent(Core::Event& event)
             {
                 // Catch up quickly when tab becomes visible again.
                 m_ForceRefresh = true;
+            }
+            return false;
+        });
+    dispatcher.dispatch<Core::RefreshRateChangedEvent>(
+        [this](Core::RefreshRateChangedEvent& e)
+        {
+            setSamplingInterval(std::chrono::milliseconds(e.getIntervalMs()));
+            return false;
+        });
+    // This panel owns the process model, so it sets the model's history length (#1078).
+    dispatcher.dispatch<Core::HistoryDurationChangedEvent>(
+        [this](Core::HistoryDurationChangedEvent& e)
+        {
+            if (m_ProcessModel)
+            {
+                m_ProcessModel->setMaxHistorySeconds(Domain::Numeric::toDouble(e.getSeconds()));
             }
             return false;
         });
