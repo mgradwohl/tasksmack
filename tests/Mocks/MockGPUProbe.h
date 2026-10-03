@@ -103,6 +103,13 @@ class MockGPUProbe : public Platform::IGPUProbe
         return *this;
     }
 
+    /// Stop reporting counters for `gpuId`, as if it had dropped out (it stays enumerated).
+    MockGPUProbe& withoutGPUCounters(const std::string& gpuId)
+    {
+        std::erase_if(m_Counters, [&gpuId](const auto& counter) { return counter.gpuId == gpuId; });
+        return *this;
+    }
+
     MockGPUProbe& withUtilization(const std::string& gpuId, double util)
     {
         for (auto& counter : m_Counters)

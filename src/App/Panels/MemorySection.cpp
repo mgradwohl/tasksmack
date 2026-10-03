@@ -125,6 +125,7 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
             UI::Widgets::percentHistoryConfig("##MemorySwapHistory", axisConfig.xMin, axisConfig.xMax), ctx.plotHeight));
         if (chart.active())
         {
+            UI::Widgets::drawCollectingHint(alignedCount); // The same "no data yet" state on every chart (#1013)
             if (!memData.empty())
             {
                 plotLineWithFill(USED_LABEL,

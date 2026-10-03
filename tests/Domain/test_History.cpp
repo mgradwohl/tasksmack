@@ -21,26 +21,52 @@ using FloatHistory = History<float, 10>;
 
 TEST(HistoryUtilsTest, DiscardBeforeKeepsAlignedBuffersSynchronized)
 {
-    HistoryBuffer<double> timestamps(8);
-    HistoryBuffer<int> first(8);
-    HistoryBuffer<int> second(8);
-    timestamps.push(1.0);
-    timestamps.push(2.0);
-    timestamps.push(3.0);
-    first.push(10);
-    first.push(20);
-    first.push(30);
-    second.push(100);
-    second.push(200);
-    second.push(300);
+    // One sample a second, t = 1..10; a 4.5 s window ending at 10 has its cutoff at 5.5.
+    HistoryBuffer<double> timestamps(16);
+    HistoryBuffer<int> first(16);
+    HistoryBuffer<int> second(16);
+    for (int t = 1; t <= 10; ++t)
+    {
+        timestamps.push(static_cast<double>(t));
+        first.push(t * 10);
+        second.push(t * 100);
+    }
 
-    EXPECT_EQ(HistoryUtils::discardBefore(timestamps, 2.5, first, second), 2);
+    // 1..5 are before the cutoff; 5, the newest of them, is kept as the anchor that lets a chart's
+    // line run off the window's left edge (#1016).
+    EXPECT_EQ(HistoryUtils::discardBefore(timestamps, 5.5, first, second), 4);
+    ASSERT_EQ(timestamps.size(), 6ULL);
+    EXPECT_DOUBLE_EQ(timestamps[0], 5.0);
+    ASSERT_EQ(first.size(), 6ULL);
+    EXPECT_EQ(first[0], 50);
+    ASSERT_EQ(second.size(), 6ULL);
+    EXPECT_EQ(second[0], 500);
+}
+
+TEST(HistoryUtilsTest, DiscardBeforeDropsTheAnchorAcrossAGap)
+{
+    // Sampling paused for longer than the window: [1, 20] with the cutoff at 15. Keeping 1 would draw
+    // it connected to 20 across the whole pause (#1060 review), so it goes.
+    HistoryBuffer<double> timestamps(4);
+    HistoryBuffer<int> aligned(4);
+    timestamps.push(1.0);
+    timestamps.push(20.0);
+    aligned.push(10);
+    aligned.push(200);
+
+    EXPECT_EQ(HistoryUtils::discardBefore(timestamps, 15.0, aligned), 1);
     ASSERT_EQ(timestamps.size(), 1ULL);
-    EXPECT_DOUBLE_EQ(timestamps[0], 3.0);
-    ASSERT_EQ(first.size(), 1ULL);
-    EXPECT_EQ(first[0], 30);
-    ASSERT_EQ(second.size(), 1ULL);
-    EXPECT_EQ(second[0], 300);
+    EXPECT_DOUBLE_EQ(timestamps[0], 20.0);
+    EXPECT_EQ(aligned[0], 200);
+}
+
+TEST(HistoryUtilsTest, KeepTrimAnchorOnlyForAnAdjacentSample)
+{
+    // Window = newest - cutoff = 10. A step of 1 s is an adjacent sample; 30 s is a gap.
+    EXPECT_TRUE(HistoryUtils::keepTrimAnchor(4.5, 5.5, 5.0, 15.0));
+    EXPECT_FALSE(HistoryUtils::keepTrimAnchor(-20.0, 10.0, 5.0, 15.0));
+    // A zero-length window keeps no anchor: only the current sample remains.
+    EXPECT_FALSE(HistoryUtils::keepTrimAnchor(9.0, 10.0, 10.0, 10.0));
 }
 
 TEST(HistoryUtilsTest, DiscardBeforeWithFutureCutoffEmptiesBuffers)
@@ -52,6 +78,8 @@ TEST(HistoryUtilsTest, DiscardBeforeWithFutureCutoffEmptiesBuffers)
     aligned.push(10);
     aligned.push(20);
 
+    // Every entry is before the cutoff: no anchor is kept, since nothing newer remains to draw it
+    // to -- it would be joined to the next sample across the gap.
     EXPECT_EQ(HistoryUtils::discardBefore(timestamps, 100.0, aligned), 2);
     EXPECT_TRUE(timestamps.empty());
     EXPECT_TRUE(aligned.empty());

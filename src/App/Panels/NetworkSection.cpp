@@ -319,6 +319,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
             plotHeight));
         if (chart.active())
         {
+            UI::Widgets::drawCollectingHint(aligned); // The same "no data yet" state on every chart (#1013)
             const int count = UI::Format::checkedCount(aligned);
 
             // When an interface is selected, show both total (muted) and interface (bright)

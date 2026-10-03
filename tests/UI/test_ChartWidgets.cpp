@@ -636,6 +636,40 @@ TEST(ChartWidgetsTest, SampleWithNoReadingFormatsAsNA)
     EXPECT_EQ(formatSampleOrNA(std::numeric_limits<double>::infinity(), percent), "N/A");
 }
 
+// ========== holdLastValueToNow (#1016) ==========
+
+TEST(ChartWidgetsTest, HoldExtendsTheLastValueToNow)
+{
+    std::vector<double> x{-3.0, -2.0, -0.7};
+    std::vector<double> y{10.0, 20.0, 30.0};
+    holdLastValueToNow(x, y);
+    ASSERT_EQ(x.size(), 4U);
+    EXPECT_DOUBLE_EQ(x.back(), 0.0);
+    EXPECT_DOUBLE_EQ(y.back(), 30.0);
+}
+
+TEST(ChartWidgetsTest, HoldLeavesAGapAtTheEndAlone)
+{
+    // A trailing NaN is a missing reading: there is nothing to hold, and the gap must stay a gap.
+    std::vector<double> x{-2.0, -1.0};
+    std::vector<double> y{5.0, std::numeric_limits<double>::quiet_NaN()};
+    holdLastValueToNow(x, y);
+    EXPECT_EQ(x.size(), 2U);
+}
+
+TEST(ChartWidgetsTest, HoldDoesNothingForAnEmptyOrAlreadyCurrentSeries)
+{
+    std::vector<double> emptyX;
+    std::vector<double> emptyY;
+    holdLastValueToNow(emptyX, emptyY);
+    EXPECT_TRUE(emptyX.empty());
+
+    std::vector<double> x{-1.0, 0.0};
+    std::vector<double> y{1.0, 2.0};
+    holdLastValueToNow(x, y);
+    EXPECT_EQ(x.size(), 2U);
+}
+
 // ========== normalizeToUnitInterval ==========
 
 TEST(ChartWidgetsTest, NormalizeToUnitIntervalScalesAndClamps)

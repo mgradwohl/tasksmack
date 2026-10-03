@@ -1025,16 +1025,16 @@ TEST(SystemModelTest, NetworkHistoryTrimmedByTime)
     auto rxHistory = model.netRxHistory();
     auto timestamps = model.timestamps();
 
-    // Time-based trimming keeps only samples within the 10-second window:
-    // cutoff = 15 - 10 = 5, so samples t=5..15 remain (11 entries).
-    EXPECT_EQ(rxHistory.size(), 11U);
-    EXPECT_EQ(timestamps.size(), 11U);
+    // Time-based trimming keeps the samples within the 10-second window plus the newest one
+    // before it (#1016): cutoff = 15 - 10 = 5, so samples t=4..15 remain (12 entries).
+    EXPECT_EQ(rxHistory.size(), 12U);
+    EXPECT_EQ(timestamps.size(), 12U);
 
     // Verify window boundaries
     if (!timestamps.empty())
     {
         EXPECT_DOUBLE_EQ(timestamps.back(), 15.0);
-        EXPECT_DOUBLE_EQ(timestamps.front(), 5.0);
+        EXPECT_DOUBLE_EQ(timestamps.front(), 4.0);
     }
 }
 // ==========================================================================

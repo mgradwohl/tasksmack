@@ -147,6 +147,10 @@ class ProcessDetailsPanel : public Panel
     double m_PeakMemoryPercent = 0.0; // Peak working set (never decreases)
 
     // Render scratch buffers for stacked CPU chart (reused across frames to avoid per-frame heap allocation)
+    std::vector<double> m_CpuPlotX; // CPU chart points as drawn, held to now (#1016)
+    std::vector<double> m_CpuPlotTotal;
+    std::vector<double> m_CpuPlotUser;
+    std::vector<double> m_CpuPlotSystem;
     std::vector<double> m_CpuStackY0;
     std::vector<double> m_CpuStackYUser;
     std::vector<double> m_CpuStackYSystem;
