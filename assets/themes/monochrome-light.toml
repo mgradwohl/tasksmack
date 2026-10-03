@@ -103,12 +103,12 @@ fan = "#3D8F3F"               # Medium green - GPU fan speed line (theme-native)
 # Colors for the stacked CPU usage bar
 # =============================================================================
 [cpu_breakdown]
-user = "#2E7D32"      # Dark green - user CPU time
-system = "#4CAF50"    # Medium green - system/kernel time
+user = "#00560C"      # Dark green - user CPU time
+system = "#3B9F42"    # Medium green - system/kernel time
 iowait = "#1B5E20"    # Darkest green - I/O wait time
 idle = "#C8E6C9"      # Very light green - idle time
-user_fill = "#2E7D3259"      # Dark green with 35% alpha - user fill
-system_fill = "#4CAF5059"    # Medium green with 35% alpha - system fill
+user_fill = "#00560C59"      # Dark green with 35% alpha - user fill
+system_fill = "#3B9F4259"    # Medium green with 35% alpha - system fill
 iowait_fill = "#1B5E2059"    # Darkest green with 35% alpha - iowait fill
 idle_fill = "#C8E6C933"      # Very light green with 20% alpha - idle fill
 

@@ -74,12 +74,12 @@ clock_fill = "#81A1C1CC"
 fan = "#4C566A"
 
 [cpu_breakdown]
-user = "#88C0D0"
-system = "#BF616A"
+user = "#B2ECFD"
+system = "#D2727A"
 iowait = "#EBCB8B"
 idle = "#4C566A"
-user_fill = "#88C0D059"
-system_fill = "#BF616A59"
+user_fill = "#B2ECFD59"
+system_fill = "#D2727A59"
 iowait_fill = "#EBCB8B59"
 idle_fill = "#4C566A33"
 
