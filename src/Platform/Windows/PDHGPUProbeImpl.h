@@ -583,7 +583,10 @@ struct PDHGPUProbe::Impl
         {
             addWildcardCounter(ADAPTER_SHARED_COUNTER_PATH, adapterSharedCounter);
         }
-        return utilizationCounter != nullptr || dedicatedMemoryCounter != nullptr || sharedMemoryCounter != nullptr;
+        // Any one active counter is worth a collect: the adapter-memory counters alone still give
+        // the GPU tab its Memory line (#1029).
+        return utilizationCounter != nullptr || dedicatedMemoryCounter != nullptr || sharedMemoryCounter != nullptr ||
+               adapterDedicatedCounter != nullptr || adapterSharedCounter != nullptr;
     }
 
     /// @brief Look up (or parse and cache) instance metadata for a wide instance name

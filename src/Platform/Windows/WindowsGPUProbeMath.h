@@ -117,7 +117,9 @@ namespace Platform
     return mapping;
 }
 
-/// Fill memoryUsedBytes for every adapter NVML does not cover, from PDH's adapter-wide counters.
+/// Fill memoryUsedBytes for every adapter whose memory NVML did not supply, from PDH's adapter-wide
+/// counters. @p nvmlMemoryIds are the GPUs whose NVML memory read succeeded (see
+/// mergeNVMLIntoDXGICounters()), not merely the ones NVML covers for utilization.
 ///
 /// DXGI's QueryVideoMemoryInfo reports the *calling process's* usage, so the GPU tab used to show
 /// TaskSmack's own few MB as the GPU's memory (#1029). An integrated GPU's memory is the shared
@@ -126,11 +128,11 @@ inline void assignPDHMemoryToDXGICounters(std::vector<GPUCounters>& dxgiCounters
                                           const std::unordered_map<std::string, AdapterMemoryUsage>& memoryByLuidId,
                                           const std::unordered_map<std::string, std::string>& dxgiIdToLuidId,
                                           const std::unordered_map<std::string, bool>& dxgiIdIsIntegrated,
-                                          const std::unordered_set<std::string>& nvmlSourcedIds)
+                                          const std::unordered_set<std::string>& nvmlMemoryIds)
 {
     for (auto& counter : dxgiCounters)
     {
-        if (nvmlSourcedIds.contains(counter.gpuId))
+        if (nvmlMemoryIds.contains(counter.gpuId))
         {
             continue;
         }
@@ -157,10 +159,15 @@ inline void assignPDHMemoryToDXGICounters(std::vector<GPUCounters>& dxgiCounters
 /// when NVML reports a total) directly on @p dxgiCounters for every DXGI index present in
 /// @p dxgiToNvmlMap, and returns the gpuId of each counter that was updated (so a later merge
 /// step - e.g. PDH per-adapter utilization - knows not to overwrite it).
+///
+/// @param nvmlMemoryIds  If given, receives the gpuId of each counter whose memory actually came
+///                       from NVML (a non-zero total). A GPU NVML covers for utilization but whose
+///                       memory read failed still needs the PDH memory fallback (#1029).
 [[nodiscard]] inline std::unordered_set<std::string>
 mergeNVMLIntoDXGICounters(std::vector<GPUCounters>& dxgiCounters,
                           const std::vector<GPUCounters>& nvmlCounters,
-                          const std::unordered_map<std::uint32_t, std::uint32_t>& dxgiToNvmlMap)
+                          const std::unordered_map<std::uint32_t, std::uint32_t>& dxgiToNvmlMap,
+                          std::unordered_set<std::string>* nvmlMemoryIds = nullptr)
 {
     std::unordered_set<std::string> nvmlSourcedIds;
     if (nvmlCounters.empty())
@@ -184,6 +191,10 @@ mergeNVMLIntoDXGICounters(std::vector<GPUCounters>& dxgiCounters,
 
         auto& dxgiCounter = dxgiCounters[dxgiIdx];
         const auto& nvmlCounter = nvmlCounters[nvmlIdx];
+        if (nvmlCounter.gpuId.empty())
+        {
+            continue; // Placeholder from orderNVMLCountersByIds(): this device was not read
+        }
 
         // Enhance with NVML data (NVML provides more accurate/detailed metrics)
         dxgiCounter.temperatureC = nvmlCounter.temperatureC;
@@ -204,9 +215,34 @@ mergeNVMLIntoDXGICounters(std::vector<GPUCounters>& dxgiCounters,
         {
             dxgiCounter.memoryUsedBytes = nvmlCounter.memoryUsedBytes;
             dxgiCounter.memoryTotalBytes = nvmlCounter.memoryTotalBytes;
+            if (nvmlMemoryIds != nullptr)
+            {
+                nvmlMemoryIds->insert(dxgiCounter.gpuId);
+            }
         }
     }
     return nvmlSourcedIds;
+}
+
+/// Reorder NVML counters into the order NVML enumerated its devices, matching by gpuId (the
+/// device UUID, or "NVML_GPU<n>"), so a DXGI-to-NVML mapping built from enumeration positions
+/// indexes the right device's counters. NVMLGPUProbe reads counters by iterating an unordered map
+/// of device handles, so two devices can come back in either order (#1040). A device with no
+/// counters this read gets a placeholder with an empty gpuId, which mergeNVMLIntoDXGICounters()
+/// skips rather than applying zeros.
+[[nodiscard]] inline std::vector<GPUCounters> orderNVMLCountersByIds(const std::vector<GPUCounters>& counters,
+                                                                     const std::vector<std::string>& enumeratedIds)
+{
+    std::vector<GPUCounters> ordered(enumeratedIds.size());
+    for (const auto& counter : counters)
+    {
+        const auto it = std::ranges::find(enumeratedIds, counter.gpuId);
+        if (it != enumeratedIds.end())
+        {
+            ordered[static_cast<std::size_t>(it - enumeratedIds.begin())] = counter;
+        }
+    }
+    return ordered;
 }
 
 /// True when every counter in @p dxgiCounters already has NVML-sourced utilization, meaning

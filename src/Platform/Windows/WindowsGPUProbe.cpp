@@ -56,6 +56,12 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
             // Map NVIDIA DXGI adapters to NVML devices by name, each NVML device claimed once so
             // identical cards do not all map to the first (#1040).
             m_DXGIToNVMLMap = mapDXGIToNVML(gpus, nvmlGPUs);
+            // The mapping holds enumeration positions; counter reads are reordered to match by id.
+            m_NVMLEnumeratedIds.clear();
+            for (const auto& nvmlGPU : nvmlGPUs)
+            {
+                m_NVMLEnumeratedIds.push_back(nvmlGPU.id);
+            }
             for (std::size_t dxgiIdx = 0; dxgiIdx < gpus.size(); ++dxgiIdx)
             {
                 if (gpus[dxgiIdx].vendor == "NVIDIA" && !m_DXGIToNVMLMap.contains(static_cast<uint32_t>(dxgiIdx)))
@@ -109,11 +115,13 @@ std::vector<GPUCounters> WindowsGPUProbe::readGPUCounters()
     // Get base counters from DXGI
     auto counters = m_DXGIProbe->readGPUCounters();
 
-    // Merge NVML enhancements for NVIDIA GPUs; returns IDs that got NVML utilization
+    // Merge NVML enhancements for NVIDIA GPUs; returns IDs that got NVML utilization, and fills
+    // nvmlMemoryIds with those whose NVML memory read actually succeeded.
     std::unordered_set<std::string> nvmlSourcedIds;
+    std::unordered_set<std::string> nvmlMemoryIds;
     if (m_NVMLProbe && m_NVMLProbe->isAvailable())
     {
-        nvmlSourcedIds = mergeNVMLEnhancements(counters);
+        nvmlSourcedIds = mergeNVMLEnhancements(counters, nvmlMemoryIds);
     }
 
     // For GPUs without NVML, merge PDH per-adapter utilization matched to each adapter
@@ -122,13 +130,14 @@ std::vector<GPUCounters> WindowsGPUProbe::readGPUCounters()
     // And their memory in use, from the same collect: adapter-wide, not this process's (#1029).
     if (m_PDHAdapterProbe && m_PDHAdapterProbe->isAvailable())
     {
-        assignPDHMemoryToDXGICounters(counters, m_PDHAdapterProbe->adapterMemory(), m_DXGIIdToLuidId, m_DXGIIdIsIntegrated, nvmlSourcedIds);
+        assignPDHMemoryToDXGICounters(counters, m_PDHAdapterProbe->adapterMemory(), m_DXGIIdToLuidId, m_DXGIIdIsIntegrated, nvmlMemoryIds);
     }
 
     return counters;
 }
 
-std::unordered_set<std::string> WindowsGPUProbe::mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounters)
+std::unordered_set<std::string> WindowsGPUProbe::mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounters,
+                                                                       std::unordered_set<std::string>& nvmlMemoryIds)
 {
     if (!m_NVMLProbe || !m_NVMLProbe->isAvailable())
     {
@@ -149,7 +158,10 @@ std::unordered_set<std::string> WindowsGPUProbe::mergeNVMLEnhancements(std::vect
                   nvmlCounters.size(),
                   m_DXGIToNVMLMap.size());
 
-    return mergeNVMLIntoDXGICounters(dxgiCounters, nvmlCounters, m_DXGIToNVMLMap);
+    // m_DXGIToNVMLMap holds positions in enumeration order; NVML reads counters in hash order, so
+    // put them back in enumeration order by device id first (#1040).
+    return mergeNVMLIntoDXGICounters(
+        dxgiCounters, orderNVMLCountersByIds(nvmlCounters, m_NVMLEnumeratedIds), m_DXGIToNVMLMap, &nvmlMemoryIds);
 }
 
 void WindowsGPUProbe::mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiCounters,

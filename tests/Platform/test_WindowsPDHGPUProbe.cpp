@@ -313,6 +313,8 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, AllCountersFailingToAddReturnsEmptyWithNo
     m_scenario->failToAdd[Impl::UTILIZATION_COUNTER_PATH] = true;
     m_scenario->failToAdd[Impl::DEDICATED_MEMORY_COUNTER_PATH] = true;
     m_scenario->failToAdd[Impl::SHARED_MEMORY_COUNTER_PATH] = true;
+    m_scenario->failToAdd[Impl::ADAPTER_DEDICATED_COUNTER_PATH] = true;
+    m_scenario->failToAdd[Impl::ADAPTER_SHARED_COUNTER_PATH] = true;
 
     PDHGPUProbe probe(std::move(impl));
     EXPECT_TRUE(probe.readProcessGPUCounters().empty());
@@ -340,6 +342,8 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, AllCountersFailingToAddReturnsStaleCacheW
     m_scenario->failToAdd[Impl::UTILIZATION_COUNTER_PATH] = true;
     m_scenario->failToAdd[Impl::DEDICATED_MEMORY_COUNTER_PATH] = true;
     m_scenario->failToAdd[Impl::SHARED_MEMORY_COUNTER_PATH] = true;
+    m_scenario->failToAdd[Impl::ADAPTER_DEDICATED_COUNTER_PATH] = true;
+    m_scenario->failToAdd[Impl::ADAPTER_SHARED_COUNTER_PATH] = true;
 
     PDHGPUProbe probe(std::move(impl));
     const auto results = probe.readProcessGPUCounters();
@@ -486,6 +490,26 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, AdapterMemoryIsReadFromTheAdapterCounters
     EXPECT_EQ(memory.at("GPU_0x0_0x1").dedicatedBytes, 300ULL);
     EXPECT_EQ(memory.at("GPU_0x0_0x1").sharedBytes, 1500ULL);
     EXPECT_EQ(memory.at("GPU_0x0_0x2").dedicatedBytes, 5000ULL);
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, AdapterMemoryIsCollectedWhenOnlyTheAdapterCountersAreAvailable)
+{
+    // With the engine and process-memory counters unavailable, the adapter counters alone must
+    // still be collected, or the GPU tab's Memory line reads zero (#1029).
+    m_scenario->failToAdd[Impl::UTILIZATION_COUNTER_PATH] = true;
+    m_scenario->failToAdd[Impl::DEDICATED_MEMORY_COUNTER_PATH] = true;
+    m_scenario->failToAdd[Impl::SHARED_MEMORY_COUNTER_PATH] = true;
+    auto impl = makeInjectedImpl();
+    ASSERT_EQ(impl->utilizationCounter, nullptr);
+    ASSERT_NE(impl->adapterSharedCounter, nullptr);
+    m_scenario->items[impl->adapterSharedCounter] = {{.name = L"luid_0x0_0x1_phys_0", .largeValue = 1234}};
+    PDHGPUProbe probe(std::move(impl));
+
+    static_cast<void>(probe.readProcessGPUCounters());
+
+    const auto memory = probe.adapterMemory();
+    ASSERT_EQ(memory.size(), 1U);
+    EXPECT_EQ(memory.at("GPU_0x0_0x1").sharedBytes, 1234ULL);
 }
 
 TEST_F(WindowsPDHGPUProbeInjectedTest, MemoryCounterSkipsFailingCstatusAndMalformedNames)

@@ -110,6 +110,7 @@ TEST(MergeNVMLIntoDXGICountersTest, UnmappedDXGIIndexIsSkipped)
     dxgi[0].utilizationPercent = 5.0;
 
     std::vector<GPUCounters> nvml(1);
+    nvml[0].gpuId = "uuid-0";
     nvml[0].utilizationPercent = 99.0;
 
     // No mapping for DXGI index 0 -> nothing should change.
@@ -141,6 +142,7 @@ TEST(MergeNVMLIntoDXGICountersTest, MergesMappedGPUAndReportsIdAsSourced)
     dxgi[0].memoryTotalBytes = 0; // DXGI didn't report total memory
 
     std::vector<GPUCounters> nvml(1);
+    nvml[0].gpuId = "uuid-0";
     nvml[0].temperatureC = 65;
     nvml[0].powerDrawWatts = 150.5;
     nvml[0].powerLimitWatts = 300.0;
@@ -176,6 +178,7 @@ TEST(MergeNVMLIntoDXGICountersTest, ZeroNVMLMemoryTotalKeepsDXGIMemoryValues)
     dxgi[0].memoryTotalBytes = 999;
 
     std::vector<GPUCounters> nvml(1);
+    nvml[0].gpuId = "uuid-0";
     nvml[0].memoryUsedBytes = 222;
     nvml[0].memoryTotalBytes = 0; // NVML query failed for memory; DXGI's numbers must survive
 
@@ -309,6 +312,59 @@ TEST(MapDXGIToNVMLTest, NonNVIDIAAdaptersAndSurplusCardsStayUnmapped)
     EXPECT_EQ(mapping.at(1), 0U);
     EXPECT_FALSE(mapping.contains(0));
     EXPECT_FALSE(mapping.contains(2));
+}
+
+TEST(OrderNVMLCountersByIdsTest, CountersFollowEnumerationOrderByDeviceId)
+{
+    // NVML reads counters from an unordered map, so they can come back in either order; the
+    // DXGI-to-NVML mapping holds enumeration positions, so they are put back by id (#1040).
+    std::vector<GPUCounters> read(2);
+    read[0].gpuId = "GPU-uuid-B";
+    read[0].temperatureC = 70;
+    read[1].gpuId = "GPU-uuid-A";
+    read[1].temperatureC = 40;
+
+    const auto ordered = orderNVMLCountersByIds(read, {"GPU-uuid-A", "GPU-uuid-B", "GPU-uuid-C"});
+
+    ASSERT_EQ(ordered.size(), 3U);
+    EXPECT_EQ(ordered[0].gpuId, "GPU-uuid-A");
+    EXPECT_EQ(ordered[0].temperatureC, 40);
+    EXPECT_EQ(ordered[1].gpuId, "GPU-uuid-B");
+    EXPECT_EQ(ordered[1].temperatureC, 70);
+    EXPECT_TRUE(ordered[2].gpuId.empty()); // Not read this time: a placeholder the merge skips
+}
+
+TEST(MergeNVMLIntoDXGICountersTest, PlaceholderForAnUnreadDeviceIsSkipped)
+{
+    std::vector<GPUCounters> dxgi(1);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[0].temperatureC = 55;
+    const std::vector<GPUCounters> nvml(1); // Placeholder: empty gpuId
+
+    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0U, 0U}});
+
+    EXPECT_TRUE(sourced.empty());
+    EXPECT_EQ(dxgi[0].temperatureC, 55);
+}
+
+TEST(MergeNVMLIntoDXGICountersTest, MemoryIdsListOnlyGPUsWhoseNVMLMemoryReadSucceeded)
+{
+    // A GPU NVML covers for utilization but whose memory read failed (total 0) must still get the
+    // PDH memory fallback, so it is not reported as having NVML memory (#1029).
+    std::vector<GPUCounters> dxgi(2);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[1].gpuId = "GPU1";
+    std::vector<GPUCounters> nvml(2);
+    nvml[0].gpuId = "uuid-0";
+    nvml[0].memoryTotalBytes = 8ULL << 30U;
+    nvml[0].memoryUsedBytes = 1ULL << 30U;
+    nvml[1].gpuId = "uuid-1"; // Memory read failed
+
+    std::unordered_set<std::string> memoryIds;
+    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0U, 0U}, {1U, 1U}}, &memoryIds);
+
+    EXPECT_EQ(sourced.size(), 2U);
+    EXPECT_EQ(memoryIds, (std::unordered_set<std::string>{"GPU0"}));
 }
 
 TEST(AssignPDHMemoryToDXGICountersTest, IntegratedUsesSharedDiscreteUsesDedicated)
