@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
 
 env:
-  LLVM_VERSION: '22'
+  LLVM_VERSION: '23'
 
 permissions: {}
 

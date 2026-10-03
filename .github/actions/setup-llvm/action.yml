@@ -4,7 +4,7 @@ inputs:
   llvm-version:
     description: 'LLVM version to install'
     required: false
-    default: '22'
+    default: '23'
   install-clang-format:
     description: 'Install clang-format'
     required: false

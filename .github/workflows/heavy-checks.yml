@@ -13,8 +13,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  LLVM_VERSION: '22'
-  LLVM_SEMVER_VERSION: '22.1.7'
+  LLVM_VERSION: '23'
+  LLVM_SEMVER_VERSION: '23.1.2'
   LINUX_COVERAGE_THRESHOLD: '80'
   WINDOWS_COVERAGE_THRESHOLD: '60'
 

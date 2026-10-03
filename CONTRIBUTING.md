@@ -90,7 +90,7 @@ ctest --preset win-debug
 ### Linux Pre-Requisites
 
 - **Clang 22 + libc++/libc++abi 22 (matches CI)**
-    - `sudo apt install clang-22 lld-22 libc++-22-dev libc++abi-22-dev`
+    - `sudo apt install clang-23 lld-23 libc++-23-dev libc++abi-23-dev`
     - `<print>` from C++23 requires a C++23-ready standard library (libc++ 22)
 - CMake 3.29+ (4.x recommended)
 - Ninja
@@ -108,7 +108,7 @@ ctest --preset win-debug
 Example (Ubuntu/Debian):
 
 ```bash
-sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 cmake ninja-build ccache python3 python3-jinja2 libfreetype6-dev
+sudo apt install clang-23 clang-tidy-23 clang-format-23 lld-23 llvm-23 cmake ninja-build ccache python3 python3-jinja2 libfreetype6-dev
 
 # Optional: For GPU monitoring
 # NVIDIA drivers (download from nvidia.com)
@@ -445,11 +445,11 @@ If this check passes, `clangd`/`clang-format` should be auto-discovered by the w
 
 clangd reads `compile_commands.json` from the repository root. The `debug` and `win-debug` presets copy it there automatically after each build via the opt-in `TASKSMACK_COPY_COMPILE_COMMANDS` CMake option; other presets leave the source tree untouched. To get the copy behavior with a different preset, configure with `-DTASKSMACK_COPY_COMPILE_COMMANDS=ON`.
 
-Linux note (durable PATH setup): if only versioned LLVM binaries exist (for example `clang-format-22`), register unversioned commands system-wide with `update-alternatives`:
+Linux note (durable PATH setup): if only versioned LLVM binaries exist (for example `clang-format-23`), register unversioned commands system-wide with `update-alternatives`:
 
 ```bash
-sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-22 220
-sudo update-alternatives --set clang-format /usr/bin/clang-format-22
+sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-23 220
+sudo update-alternatives --set clang-format /usr/bin/clang-format-23
 
 sudo update-alternatives --install /usr/bin/clangd clangd /usr/bin/clangd-22 220
 sudo update-alternatives --set clangd /usr/bin/clangd-22
@@ -613,7 +613,7 @@ To run the current target locally with Clang:
 
 ```bash
 mkdir -p build/fuzz
-clang++-22 -std=c++23 -Isrc -fsanitize=fuzzer,address \
+clang++-23 -std=c++23 -Isrc -fsanitize=fuzzer,address \
   tests/fuzz/fuzz_proc_parsing.cpp -o build/fuzz/fuzz_proc_parsing
 ./build/fuzz/fuzz_proc_parsing -max_total_time=60
 ```
@@ -1216,7 +1216,7 @@ build/pgo-use/bin/TaskSmack
 
 ```powershell
 # Windows – full workflow
-# Requires LLVM 22: set LLVM_ROOT to your LLVM 22 install directory
+# Requires LLVM 23: set LLVM_ROOT to your LLVM 23 install directory
 # (e.g. C:\Program Files\LLVM) before running.
 pwsh tools/pgo.ps1
 
@@ -1248,9 +1248,9 @@ LLVM_PROFILE_FILE="profiles/tasksmack-%p.profraw" \
 # (exit after a few seconds of normal use)
 
 # Phase 2 – merge profraw files
-# Use llvm-profdata from your LLVM 22 install (llvm-profdata-22 on Debian/Ubuntu,
-# or llvm-profdata if LLVM 22 is the default on PATH). tools/pgo.sh does this automatically.
-LLVM_PROFDATA_BIN="$(command -v llvm-profdata-22 || command -v llvm-profdata)"
+# Use llvm-profdata from your LLVM 23 install (llvm-profdata-23 on Debian/Ubuntu,
+# or llvm-profdata if LLVM 23 is the default on PATH). tools/pgo.sh does this automatically.
+LLVM_PROFDATA_BIN="$(command -v llvm-profdata-23 || command -v llvm-profdata)"
 "$LLVM_PROFDATA_BIN" merge -sparse profiles/*.profraw -o profiles/tasksmack.profdata
 
 # Phase 3 – PGO-optimized build (reads profiles/tasksmack.profdata)
@@ -1556,11 +1556,11 @@ below. See #798 for the full repo-wide audit and rationale behind this split.
     human still has to do real work when approving one. Known locations Renovate does *not*
     track, that must be updated by hand as part of that same approval (not exhaustive --
     grep the repo for the old major number too): `CMakePresets.json`'s Linux presets hardcode
-    the compiler binary names (`clang++-22`/`clang-22`); `release.yml`'s
+    the compiler binary names (`clang++-23`/`clang-23`); `release.yml`'s
     `LLVM_LINUX_EXACT_VERSION` is a separate, manually-verified apt package-version pin (see
     that variable's own comment for the verification command); `tools/pgo.sh`/`tools/pgo.ps1`
-    hardcode "LLVM 22" throughout their `llvm-profdata`-version validation and error text; and
-    `tools/clang-format.sh`'s version-discovery fallback list (`for ver in 22 21 20 19 18 17`)
+    hardcode "LLVM 23" throughout their `llvm-profdata`-version validation and error text; and
+    `tools/clang-format.sh`'s version-discovery fallback list (`for ver in 23 22 21 20 19 18 17`)
     stops at the current major.
   - **Python interpreter**: `.github/actions/setup-python-glad/action.yml`'s
     `python-version: '3.14'`, `.github/workflows/pre-commit.yml`'s `python-version: '3.14'`
@@ -1698,7 +1698,7 @@ immediately.
 Each platform build job's "Record toolchain versions" step logs the runner image
 (`ubuntu-24.04`/`windows-2025`), full compiler/linker versions (`clang --version`, `ld.lld
 --version`), CMake, Ninja, and Python versions to that job's log. Linux additionally pins and
-asserts an exact `apt.llvm.org` package version for `clang-22` (`LLVM_LINUX_EXACT_VERSION` in
+asserts an exact `apt.llvm.org` package version for `clang-23` (`LLVM_LINUX_EXACT_VERSION` in
 `release.yml`) rather than accepting whatever the apt repository currently serves for the major
 version — see the comment above that variable for the deliberate-upgrade procedure. Windows
 already pins an exact LLVM semver via `LLVM_SEMVER_VERSION`.

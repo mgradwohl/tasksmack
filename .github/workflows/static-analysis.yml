@@ -10,8 +10,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  LLVM_VERSION: '22'
-  LLVM_SEMVER_VERSION: '22.1.7'
+  LLVM_VERSION: '23'
+  LLVM_SEMVER_VERSION: '23.1.2'
 
 permissions: {}
 

@@ -11,7 +11,7 @@ param()
 
 # Required versions (minimum)
 $MIN_CMAKE_VERSION = [Version]"3.29"
-$MIN_CLANG_VERSION = 22
+$MIN_CLANG_VERSION = 23
 $MIN_CCACHE_VERSION = [Version]"4.9.1"
 $MIN_PYTHON_VERSION = [Version]"3.14"
 $MIN_GIT_VERSION = [Version]"2.30"
