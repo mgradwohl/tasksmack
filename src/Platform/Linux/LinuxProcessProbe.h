@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/IProcessProbe.h"
+#include "Platform/Linux/ProcessEnergyAttribution.h"
 #include "Platform/PlatformConfig.h"
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
@@ -14,6 +15,7 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <optional>
 
 namespace Platform
 {
@@ -28,6 +30,10 @@ class LinuxProcessProbe : public IProcessProbe
     /// Testability constructor: reads from a custom proc root instead of /proc.
     /// Useful for unit tests that supply synthetic /proc content.
     explicit LinuxProcessProbe(std::filesystem::path procRoot);
+
+    /// Testability constructor that also takes the powercap root (normally /sys/class/powercap),
+    /// so power detection can be exercised against fixture files.
+    LinuxProcessProbe(std::filesystem::path procRoot, std::filesystem::path powercapRoot);
 
     ~LinuxProcessProbe() override = default;
 
@@ -52,6 +58,7 @@ class LinuxProcessProbe : public IProcessProbe
 
   private:
     std::filesystem::path m_ProcRoot;
+    std::filesystem::path m_PowercapRoot;
     long m_TicksPerSecond;
     uint64_t m_PageSize;
     uint64_t m_BootTimeEpoch = 0;                            // System boot time (Unix epoch seconds)
@@ -59,6 +66,11 @@ class LinuxProcessProbe : public IProcessProbe
     mutable std::atomic<bool> m_IoCountersAvailable = false; // Cached capability check (atomic for thread-safe read)
     bool m_HasPowerCap = false;
     std::string m_PowerCapPath;
+    std::uint64_t m_PowerCapMaxRangeUj = 0; // max_energy_range_uj, where the counter wraps (0: unknown)
+
+    // Per-interval energy attribution (#1093); enumerate() may run on several threads.
+    mutable std::mutex m_EnergyMutex;
+    ProcessEnergy::Attributor m_EnergyAttributor;
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     // Per-process network monitoring via Netlink INET_DIAG. m_SocketStatsMutex guards
@@ -117,14 +129,15 @@ class LinuxProcessProbe : public IProcessProbe
     /// Read system boot time from /proc/stat (returns Unix epoch seconds, 0 if unavailable)
     [[nodiscard]] static uint64_t readBootTime(const std::filesystem::path& procRoot);
 
-    /// Check if RAPL powercap is available and find the path
+    /// Find a RAPL package energy file this process can actually read (not just one that exists:
+    /// energy_uj is root-only on current kernels, #1103), and its wrap point.
     [[nodiscard]] bool detectPowerCap();
 
-    /// Read system-wide energy from RAPL (returns microjoules, 0 if unavailable)
-    [[nodiscard]] uint64_t readSystemEnergy() const;
+    /// Read the package energy counter in microjoules, or nullopt if it can't be read.
+    [[nodiscard]] std::optional<uint64_t> readSystemEnergy() const;
 
-    /// Attribute system energy to processes based on CPU usage
-    void attributeEnergyToProcesses(std::vector<ProcessCounters>& processes) const;
+    /// Credit this interval's package energy to processes by their share of this interval's CPU time.
+    void attributeEnergyToProcesses(std::vector<ProcessCounters>& processes);
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     /// Attribute network bytes to processes using Netlink socket stats

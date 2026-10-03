@@ -33,6 +33,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <string_view>
 #include <system_error>
 #include <thread>
 
@@ -762,6 +763,51 @@ TEST(LinuxProcessProbeTest, SetSocketStatsCacheTtlDoesNotRaceWithEnumerate)
 // ========== Error Path / Injection Tests ==========
 
 using Platform::TestSupport::ScopedTempDir;
+
+// #1103: per-process power is offered only when the RAPL counter is readable, not merely present.
+// energy_uj is root-only on current kernels; detection used to accept it by existence and then
+// report 0 W for every process to a normal user.
+void writeFile(const std::filesystem::path& path, std::string_view content)
+{
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream(path) << content;
+}
+
+TEST(LinuxProcessProbeTest, ReadableRaplCounterEnablesPowerUsage)
+{
+    ScopedTempDir proc("ts_test_proc_rapl_ok");
+    ScopedTempDir powercap("ts_test_powercap_ok");
+    writeFile(powercap.path / "intel-rapl:0" / "energy_uj", "123456\n");
+    writeFile(powercap.path / "intel-rapl:0" / "max_energy_range_uj", "262143328850\n");
+
+    const LinuxProcessProbe probe(proc.path, powercap.path);
+    EXPECT_TRUE(probe.capabilities().hasPowerUsage);
+}
+
+TEST(LinuxProcessProbeTest, UnreadableRaplCounterDisablesPowerUsage)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root can read a mode-000 file";
+    }
+    ScopedTempDir proc("ts_test_proc_rapl_denied");
+    ScopedTempDir powercap("ts_test_powercap_denied");
+    const auto energyFile = powercap.path / "intel-rapl:0" / "energy_uj";
+    writeFile(energyFile, "123456\n");
+    std::filesystem::permissions(energyFile, std::filesystem::perms::none);
+
+    const LinuxProcessProbe probe(proc.path, powercap.path);
+    EXPECT_FALSE(probe.capabilities().hasPowerUsage);
+}
+
+TEST(LinuxProcessProbeTest, NoRaplCounterDisablesPowerUsage)
+{
+    ScopedTempDir proc("ts_test_proc_rapl_none");
+    ScopedTempDir powercap("ts_test_powercap_none");
+
+    const LinuxProcessProbe probe(proc.path, powercap.path);
+    EXPECT_FALSE(probe.capabilities().hasPowerUsage);
+}
 
 TEST(LinuxProcessProbeTest, EmptyProcDirReturnsNoProcesses)
 {

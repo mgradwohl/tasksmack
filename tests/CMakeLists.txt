@@ -94,6 +94,7 @@ else()
         Platform/test_PathProviderContract.cpp
         Platform/test_PowerProbeContract.cpp
         Platform/test_LinuxProcessProbe.cpp
+        Platform/test_ProcessEnergyAttribution.cpp
         Platform/test_LinuxSystemProbe.cpp
         Platform/test_LinuxProcessActions.cpp
         Platform/test_LinuxDiskProbe.cpp
