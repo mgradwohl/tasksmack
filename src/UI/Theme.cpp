@@ -93,13 +93,13 @@ void Theme::loadDefaultFallbackTheme()
     fallback.chartIoFill = ImVec4(1.0F, 0.5F, 0.0F, 0.3F);
     fallback.chartIoWriteFill = ImVec4(1.0F, 0.0F, 0.0F, 0.3F);
 
-    fallback.cpuUser = blue;
+    fallback.cpuUser = ImVec4(0.60F, 0.80F, 1.0F, 1.0F); // Lighter than chartCpu: User is not CPU Total (#1192)
     fallback.cpuSystem = orange;
     fallback.cpuIowait = yellow;
     fallback.cpuIdle = gray;
 
     // CPU breakdown fill colors (semi-transparent versions)
-    fallback.cpuUserFill = ImVec4(0.26F, 0.59F, 0.98F, 0.35F);
+    fallback.cpuUserFill = ImVec4(0.60F, 0.80F, 1.0F, 0.35F);
     fallback.cpuSystemFill = ImVec4(1.0F, 0.5F, 0.0F, 0.35F);
     fallback.cpuIowaitFill = ImVec4(1.0F, 1.0F, 0.0F, 0.35F);
     fallback.cpuIdleFill = ImVec4(0.5F, 0.5F, 0.5F, 0.20F); // semi-transparent gray
