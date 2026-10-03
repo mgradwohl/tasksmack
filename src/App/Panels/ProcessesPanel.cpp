@@ -922,9 +922,6 @@ void ProcessesPanel::renderContent()
         if (settingsChanged)
         {
             UserConfig::get().settings().processColumns = m_ColumnSettings;
-            // Notify listeners that process column settings have changed
-            Core::ProcessColumnsChangedEvent evt;
-            Core::Application::get().raiseEvent(evt);
         }
 
         ImGui::EndTable();

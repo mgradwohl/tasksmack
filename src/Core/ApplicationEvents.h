@@ -155,20 +155,6 @@ class ActiveTabChangedEvent : public Event
     std::string m_TabName;
 };
 
-/// Process columns changed event - emitted when the user toggles column visibility/settings
-class ProcessColumnsChangedEvent : public Event
-{
-  public:
-    ProcessColumnsChangedEvent() = default;
-
-    [[nodiscard]] auto toString() const -> std::string override
-    {
-        return "ProcessColumnsChangedEvent";
-    }
-
-    EVENT_CLASS_TYPE(ProcessColumnsChanged)
-};
-
 /// Settings dialog request event - emitted when user wants to open settings
 class OpenSettingsEvent : public Event
 {
