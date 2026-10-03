@@ -133,18 +133,37 @@ TEST(LinuxProcessStatusTest, ZombieIsNotLabelledAsAKernelThread)
     EXPECT_TRUE(command.ends_with("<defunct>")) << command;
 }
 
+TEST(LinuxProcessStatusTest, ZombieWithUnreadableCmdlineIsStillDefunct)
+{
+    // /proc/<pid>/cmdline can be denied for another user's process while stat still shows state Z;
+    // the zombie label must not depend on reading it (#1228 review).
+    const ScopedTempDir proc("ts_test_proc_zombie_nocmdline");
+    writeControlFile(proc.path / "4242" / "stat",
+                     "4242 (defunct-app) Z 1 4242 4242 0 -1 4194564 0 0 0 0 0 0 0 0 20 0 1 0 12345 0 0 "
+                     "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+    // No cmdline file at all: opening it fails, as a permission denial would.
+
+    LinuxProcessProbe probe(proc.path);
+    const auto processes = probe.enumerate();
+    const auto it = std::ranges::find_if(processes, [](const ProcessCounters& p) { return p.pid == 4242; });
+    ASSERT_NE(it, processes.end());
+    EXPECT_EQ(it->state, 'Z');
+    EXPECT_EQ(it->command, "defunct-app <defunct>");
+}
+
 TEST(PriorityErrorMessageTest, PermissionErrorsGiveTheRightAdvice)
 {
     // EPERM: another user's process. EACCES: raising priority without CAP_SYS_NICE. The advice
     // used to be swapped (#1155).
     const std::string otherUser = priorityErrorMessage(EPERM, 5, 1234);
     EXPECT_NE(otherUser.find("belongs to another user"), std::string::npos) << otherUser;
-    EXPECT_NE(otherUser.find("sudo renice -n 5 -p 1234"), std::string::npos) << otherUser;
+    EXPECT_NE(otherUser.find("Run TaskSmack as root"), std::string::npos) << otherUser;
+    EXPECT_EQ(otherUser.find("renice"), std::string::npos) << otherUser; // renice -p changes one thread
 
     const std::string needsPrivilege = priorityErrorMessage(EACCES, -5, 1234);
     EXPECT_NE(needsPrivilege.find("CAP_SYS_NICE"), std::string::npos) << needsPrivilege;
     EXPECT_EQ(needsPrivilege.find("another user"), std::string::npos) << needsPrivilege;
-    EXPECT_NE(needsPrivilege.find("sudo renice -n -5 -p 1234"), std::string::npos) << needsPrivilege;
+    EXPECT_EQ(needsPrivilege.find("renice"), std::string::npos) << needsPrivilege;
 
     EXPECT_NE(priorityErrorMessage(ESRCH, 0, 1).find("not found"), std::string::npos);
     EXPECT_FALSE(priorityErrorMessage(EINVAL, 0, 1).empty());

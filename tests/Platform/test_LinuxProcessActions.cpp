@@ -23,8 +23,9 @@
 #include <system_error>
 #include <vector>
 
-// NOLINTNEXTLINE(modernize-deprecated-headers) - POSIX signal.h provides kill(), csignal does not
 #include <pthread.h>
+
+// NOLINTNEXTLINE(modernize-deprecated-headers) - POSIX signal.h provides kill(), csignal does not
 #include <signal.h>
 #include <sys/resource.h>
 #include <sys/types.h>

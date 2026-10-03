@@ -546,6 +546,15 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
     // Format: /proc/[pid]/cmdline
     // Arguments are separated by NUL bytes
 
+    // A zombie has no command line left, and /proc/<pid>/cmdline may also be unreadable for another
+    // user's process even though stat showed state Z. Either way it must not get the kernel-thread
+    // label: mark it <defunct>, as ps does (#1155).
+    if (counters.state == 'Z')
+    {
+        counters.command = counters.name + " <defunct>";
+        return;
+    }
+
     const std::string cmdlinePath = (procRoot / std::to_string(pid) / "cmdline").string();
 
     // Open once: distinguishes "unreadable" (permission denied, hidepid) from
@@ -595,9 +604,8 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
 
     if (buf.empty())
     {
-        // File opened and fully read but empty. A zombie's cmdline is empty too, once its memory is
-        // gone, so it must not get the kernel-thread label (#1155); it is marked <defunct>, as ps does.
-        counters.command = (counters.state == 'Z') ? counters.name + " <defunct>" : "[" + counters.name + "]";
+        // File opened and fully read but empty: a kernel thread (zombies were handled above).
+        counters.command = "[" + counters.name + "]";
         return;
     }
 
