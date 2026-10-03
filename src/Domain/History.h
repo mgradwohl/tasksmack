@@ -314,8 +314,12 @@ template<typename T> [[nodiscard]] std::vector<T> toVector(const HistoryBuffer<T
     return result;
 }
 
-/// Count leading timestamps strictly older than `cutoff`, then discard that
-/// many entries from the timestamp ring and every aligned ring in O(1) each.
+/// Discard the leading entries older than `cutoff` from the timestamp ring and every aligned ring,
+/// in O(1) each -- all but the newest of them, which is kept.
+///
+/// That one sample sits just before the window's left edge, so a chart's line runs off the edge of
+/// the axis instead of starting a fraction of a refresh interval inside it and leaving an empty
+/// strip after every trim (#1016). The chart clips it to the axis.
 /// Returns the number of discarded entries.
 template<typename... Buffers>
 [[nodiscard]] std::size_t discardBefore(HistoryBuffer<double>& timestamps, double cutoff, Buffers&... alignedBuffers)
@@ -324,6 +328,10 @@ template<typename... Buffers>
     while (removeCount < timestamps.size() && timestamps.ref(removeCount) < cutoff)
     {
         ++removeCount;
+    }
+    if (removeCount > 0)
+    {
+        --removeCount; // keep the newest sample before the cutoff (see above)
     }
 
     timestamps.discardFront(removeCount);

@@ -284,6 +284,7 @@ void renderGpuSection(RenderContext& ctx)
                 UI::Widgets::percentHistoryConfig("##GPUCoreHistory", axisConfig.xMin, axisConfig.xMax), plotHeight));
             if (chart.active())
             {
+                UI::Widgets::drawCollectingHint(alignedCount); // The same "no data yet" state on every chart (#1013)
                 if (!utilData.empty())
                 {
                     plotLineWithFill(UTIL_LABEL,
@@ -584,6 +585,7 @@ void renderGpuSection(RenderContext& ctx)
                     UI::Widgets::percentHistoryConfig("##GPUThermalHistory", axisConfig.xMin, axisConfig.xMax), plotHeight));
                 if (chart.active())
                 {
+                    UI::Widgets::drawCollectingHint(alignedCount); // The same "no data yet" state on every chart (#1013)
                     // Temperature (normalized to 0-100%)
                     if (caps.hasTemperature && !tempData.empty())
                     {

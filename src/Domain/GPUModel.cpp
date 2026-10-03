@@ -178,7 +178,13 @@ void GPUModel::applyHistoryCapacity()
 void GPUModel::trimHistory(double nowSeconds)
 {
     const double cutoff = nowSeconds - m_MaxHistorySeconds;
-    const auto keepFrom = std::ranges::lower_bound(m_HistoryTimestamps, cutoff);
+    // Like HistoryUtils::discardBefore, keep the newest sample before the cutoff, so the charts'
+    // lines run off the window's left edge instead of leaving a strip there (#1016).
+    auto keepFrom = std::ranges::lower_bound(m_HistoryTimestamps, cutoff);
+    if (keepFrom != m_HistoryTimestamps.begin())
+    {
+        --keepFrom;
+    }
     m_HistoryTimestamps.erase(m_HistoryTimestamps.begin(), keepFrom);
 
     // Each GPU has its own timestamps (a GPU missing from a sample has no entry for it), so
@@ -190,7 +196,7 @@ void GPUModel::trimHistory(double nowSeconds)
         {
             ++staleCount;
         }
-        history.discardFront(staleCount);
+        history.discardFront(staleCount > 0 ? staleCount - 1 : 0);
     }
 }
 

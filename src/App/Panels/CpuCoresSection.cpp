@@ -186,12 +186,9 @@ void renderCpuCoresSection(RenderContext& ctx)
                         gridConfig,
                         [&](const size_t coreIdx, float /*cellWidth*/, const float cellHeight)
                         {
+                            // An empty history still draws the chart, with the collecting hint, rather
+                            // than plain text in place of the chart (#1013).
                             const auto& samples = perCoreHist[coreIdx];
-                            if (samples.empty())
-                            {
-                                ImGui::TextColored(theme.scheme().textMuted, "Core %zu\nCollecting data...", coreIdx);
-                                return;
-                            }
 
                             const float cellContentTop = ImGui::GetCursorPosY();
                             const std::string coreLabel = std::format(ICON_FA_MICROCHIP " Core {}", coreIdx);
@@ -243,6 +240,7 @@ void renderCpuCoresSection(RenderContext& ctx)
                                 const UI::Widgets::HistoryChart chart(coreCfg);
                                 if (chart.active())
                                 {
+                                    UI::Widgets::drawCollectingHint(timeData.size()); // The same "no data yet" state on every chart (#1013)
                                     plotLineWithFill("##Core",
                                                      timeData.data(),
                                                      sampleData.data(),

@@ -426,6 +426,29 @@ template<typename TX, typename TY>
 }
 
 /// @p lineThickness is authored at the reference configuration; it is scaled by lineWeight().
+/// Extend a history series to x = 0 ("now") by repeating its last value there.
+///
+/// Samples arrive once per refresh interval while the chart scrolls every frame, so the newest
+/// point sits up to an interval left of the right edge: the line stopped short of "now" and jumped
+/// forward with each new sample (#1016). Holding the latest reading until the next one -- the usual
+/// sample-and-hold reading of a sampled series -- draws it to the edge. Nothing is added when the
+/// last sample is a gap (NaN: no reading to hold) or already at or past x = 0.
+template<typename T> inline void holdLastValueToNow(std::vector<T>& x, std::vector<T>& y)
+{
+    if (x.empty() || y.size() != x.size())
+    {
+        return;
+    }
+    const auto lastX = static_cast<double>(x.back());
+    const auto lastY = static_cast<double>(y.back());
+    if (!(lastX < 0.0) || !std::isfinite(lastY))
+    {
+        return;
+    }
+    x.push_back(T{0});
+    y.push_back(y.back());
+}
+
 template<typename TX, typename TY>
 inline void plotLineWithFill(const char* label,
                              const TX* xData,
@@ -470,6 +493,12 @@ inline void plotLineWithFill(const char* label,
 
     // Clamp effective max so the reduction and buffer capacity stay in sync.
     const int effectiveMax = (maxPointCount > 1) ? std::min(maxPointCount, static_cast<int>(LINE_PLOT_MAX_POINTS_DENSE)) : maxPointCount;
+
+    // The points actually drawn, as TX: the series (reduced if it is long), then its last reading held
+    // out to x = 0 (holdLastValueToNow). UI thread only; reused, so drawing costs no allocation once
+    // the buffers have grown to the longest series.
+    static std::vector<TX> drawX;
+    static std::vector<TX> drawY;
     if ((effectiveMax > 1) && (count > effectiveMax))
     {
         std::array<TX, LINE_PLOT_MAX_POINTS_DENSE> reducedXData{};
@@ -478,31 +507,16 @@ inline void plotLineWithFill(const char* label,
         // anchors the reduction's buckets in absolute time (see reduceSeriesMinMax).
         const int reducedCount =
             reduceSeriesMinMax(xData, yData, count, effectiveMax, historyFrameNowSeconds(), reducedXData.data(), reducedYData.data());
-
-        if constexpr (std::is_same_v<TX, TY>)
-        {
-            renderSeries(reducedXData.data(), reducedYData.data(), reducedCount);
-        }
-        else
-        {
-            std::array<TX, LINE_PLOT_MAX_POINTS_DENSE> reducedYAsX{};
-            std::copy_n(reducedYData.begin(), reducedCount, reducedYAsX.begin());
-            renderSeries(reducedXData.data(), reducedYAsX.data(), reducedCount);
-        }
-        return;
-    }
-
-    if constexpr (std::is_same_v<TX, TY>)
-    {
-        renderSeries(xData, yData, count);
+        drawX.assign(reducedXData.begin(), reducedXData.begin() + reducedCount);
+        drawY.assign(reducedYData.begin(), reducedYData.begin() + reducedCount);
     }
     else
     {
-        // UI thread only; reused so a converted series costs no allocation once it has grown.
-        static std::vector<TX> yAsX;
-        yAsX.assign(yData, yData + count);
-        renderSeries(xData, yAsX.data(), count);
+        drawX.assign(xData, xData + count);
+        drawY.assign(yData, yData + count);
     }
+    holdLastValueToNow(drawX, drawY);
+    renderSeries(drawX.data(), drawY.data(), UI::Format::checkedCount(drawX.size()));
 }
 
 /// Helper for line-only rendering, reduced to at most LINE_PLOT_MAX_POINTS_DENSE points (see reduceSeriesMinMax).
@@ -890,7 +904,8 @@ inline constexpr const char* HISTORY_COLLECTING_TEXT = "Collecting data...";
 
 /// Draws the "collecting" hint centred in the current plot while it has too few samples to show
 /// anything. Must be called between ImPlot::BeginPlot() and EndPlot(), i.e. while a HistoryChart is
-/// active.
+/// active, and after any further axis setup (setupSecondaryRateAxis, SetupAxis): it reads the plot's
+/// geometry, which locks ImPlot's setup.
 inline void drawCollectingHint(std::size_t sampleCount)
 {
     if (!historyChartIsCollecting(sampleCount))

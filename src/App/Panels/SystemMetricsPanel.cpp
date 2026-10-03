@@ -642,6 +642,7 @@ void SystemMetricsPanel::renderOverview()
             plotHeight));
         if (chart.active())
         {
+            UI::Widgets::drawCollectingHint(cpuData.size()); // The same "no data yet" state on every chart (#1013)
             if (breakdownCount > 0)
             {
                 m_CpuStackY0.assign(breakdownCount, 0.0);
@@ -660,27 +661,40 @@ void SystemMetricsPanel::renderOverview()
                     yIowaitTop[i] = ySystemTop[i] + static_cast<double>(cpuIowaitData[i]);
                 }
 
+                // The bands reach "now" like every plotLineWithFill series: the last sample held to
+                // x = 0 (UI::Widgets::holdLastValueToNow, #1016).
+                m_CpuStackX.assign(breakdownTimeData.begin(), breakdownTimeData.end());
+                if (!m_CpuStackX.empty() && m_CpuStackX.back() < 0.0)
+                {
+                    m_CpuStackX.push_back(0.0);
+                    for (auto* band : {&y0, &yUserTop, &ySystemTop, &yIowaitTop})
+                    {
+                        band->push_back(band->back());
+                    }
+                }
+                const int stackCount = UI::Format::checkedCount(m_CpuStackX.size());
+
                 ImPlot::PlotShaded(CPU_USER_LABEL,
-                                   breakdownTimeData.data(),
+                                   m_CpuStackX.data(),
                                    y0.data(),
                                    yUserTop.data(),
-                                   UI::Format::checkedCount(breakdownCount),
+                                   stackCount,
                                    {ImPlotProp_FillColor, theme.scheme().cpuUserFill});
 
                 ImPlot::PlotShaded(CPU_SYSTEM_LABEL,
-                                   breakdownTimeData.data(),
+                                   m_CpuStackX.data(),
                                    yUserTop.data(),
                                    ySystemTop.data(),
-                                   UI::Format::checkedCount(breakdownCount),
+                                   stackCount,
                                    {ImPlotProp_FillColor, theme.scheme().cpuSystemFill});
 
                 if (showIowait)
                 {
                     ImPlot::PlotShaded(CPU_IOWAIT_LABEL,
-                                       breakdownTimeData.data(),
+                                       m_CpuStackX.data(),
                                        ySystemTop.data(),
                                        yIowaitTop.data(),
-                                       UI::Format::checkedCount(breakdownCount),
+                                       stackCount,
                                        {ImPlotProp_FillColor, theme.scheme().cpuIowaitFill});
                 }
 
@@ -814,7 +828,8 @@ void SystemMetricsPanel::renderOverview()
         const size_t batteryCount = std::min(batteryHistFloat.size(), timestamps.size());
         const size_t alignedCount = std::max(powerCount, batteryCount);
 
-        if (alignedCount > 0)
+        // Rendered from the first frame, empty and showing the collecting hint until samples arrive,
+        // like every other chart; it used to appear only once it had data (#1013).
         {
             // Convert power double history to float for ImPlot compatibility
             std::vector<float> powerHist;
@@ -849,7 +864,10 @@ void SystemMetricsPanel::renderOverview()
             const auto finiteBattery = batteryHist | std::views::reverse;
             const auto lastBattery = std::ranges::find_if(finiteBattery, [](float v) { return !std::isnan(v); });
             const float targetBattery = (lastBattery != finiteBattery.end()) ? *lastBattery : 0.0F;
-            updateSmoothedPower(targetPower, targetBattery, m_LastDeltaSeconds);
+            if (alignedCount > 0)
+            {
+                updateSmoothedPower(targetPower, targetBattery, m_LastDeltaSeconds);
+            }
 
             // One upper bound for the power axis and its bar, so the bar and line agree (#1003).
             const double powerAxisUpper = UI::Widgets::easedRateAxisUpperBound(
@@ -899,6 +917,8 @@ void SystemMetricsPanel::renderOverview()
                                               ImPlotAxisFlags_NoTickMarks);
                         ImPlot::SetupAxisLimits(ImAxis_Y2, 0, 100, ImPlotCond_Always);
                     }
+                    // After all axis setup: the hint reads the plot's geometry, which locks setup (#1013).
+                    UI::Widgets::drawCollectingHint(alignedCount);
 
                     // Plot power on primary Y-axis
                     if (!powerHist.empty())
@@ -1158,6 +1178,8 @@ void SystemMetricsPanel::renderOverview()
             if (chart.active())
             {
                 UI::Widgets::setupSecondaryRateAxis(faultAxisUpper, formatAxisLocalized);
+                // After all axis setup: the hint reads the plot's geometry, which locks setup (#1013).
+                UI::Widgets::drawCollectingHint(alignedCount);
                 const int count = UI::Format::checkedCount(alignedCount);
                 plotLineWithFill(THREADS_LABEL,
                                  timeData.data(),

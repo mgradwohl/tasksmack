@@ -34,16 +34,18 @@ TEST(HistoryUtilsTest, DiscardBeforeKeepsAlignedBuffersSynchronized)
     second.push(200);
     second.push(300);
 
-    EXPECT_EQ(HistoryUtils::discardBefore(timestamps, 2.5, first, second), 2);
-    ASSERT_EQ(timestamps.size(), 1ULL);
-    EXPECT_DOUBLE_EQ(timestamps[0], 3.0);
-    ASSERT_EQ(first.size(), 1ULL);
-    EXPECT_EQ(first[0], 30);
-    ASSERT_EQ(second.size(), 1ULL);
-    EXPECT_EQ(second[0], 300);
+    // 1.0 and 2.0 are before the cutoff; 2.0, the newest of them, is kept so a chart's line runs
+    // off the window's left edge (#1016).
+    EXPECT_EQ(HistoryUtils::discardBefore(timestamps, 2.5, first, second), 1);
+    ASSERT_EQ(timestamps.size(), 2ULL);
+    EXPECT_DOUBLE_EQ(timestamps[0], 2.0);
+    ASSERT_EQ(first.size(), 2ULL);
+    EXPECT_EQ(first[0], 20);
+    ASSERT_EQ(second.size(), 2ULL);
+    EXPECT_EQ(second[0], 200);
 }
 
-TEST(HistoryUtilsTest, DiscardBeforeWithFutureCutoffEmptiesBuffers)
+TEST(HistoryUtilsTest, DiscardBeforeWithFutureCutoffKeepsOnlyTheNewestSample)
 {
     HistoryBuffer<double> timestamps(4);
     HistoryBuffer<int> aligned(4);
@@ -52,9 +54,11 @@ TEST(HistoryUtilsTest, DiscardBeforeWithFutureCutoffEmptiesBuffers)
     aligned.push(10);
     aligned.push(20);
 
-    EXPECT_EQ(HistoryUtils::discardBefore(timestamps, 100.0, aligned), 2);
-    EXPECT_TRUE(timestamps.empty());
-    EXPECT_TRUE(aligned.empty());
+    EXPECT_EQ(HistoryUtils::discardBefore(timestamps, 100.0, aligned), 1);
+    ASSERT_EQ(timestamps.size(), 1ULL);
+    EXPECT_DOUBLE_EQ(timestamps[0], 2.0);
+    ASSERT_EQ(aligned.size(), 1ULL);
+    EXPECT_EQ(aligned[0], 20);
 }
 
 TEST(HistoryUtilsTest, ToVectorCopiesHistoryBufferChronologically)

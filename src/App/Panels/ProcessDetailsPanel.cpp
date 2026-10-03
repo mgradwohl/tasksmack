@@ -841,7 +841,6 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
                 UI::Widgets::drawCollectingHint(alignedCount);
                 if (alignedCount > 0)
                 {
-                    const int plotCount = UI::Format::checkedCount(alignedCount);
                     // Reuse member scratch buffers across frames instead of local vectors, so the
                     // per-frame history redraw doesn't reallocate once buffers reach steady-state size.
                     m_CpuStackY0.assign(alignedCount, 0.0);
@@ -859,40 +858,57 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
                         ySystemTop[i] = cpuUserData[i] + cpuSystemData[i];
                     }
 
+                    // Bands and lines reach "now" like every plotLineWithFill series: the last sample
+                    // held to x = 0 (UI::Widgets::holdLastValueToNow, #1016). Copies, so the tooltip's
+                    // lookup over cpuTimeData still finds real samples only.
+                    m_CpuPlotX.assign(cpuTimeData.begin(), cpuTimeData.end());
+                    m_CpuPlotTotal.assign(cpuData.begin(), cpuData.end());
+                    m_CpuPlotUser.assign(cpuUserData.begin(), cpuUserData.end());
+                    m_CpuPlotSystem.assign(cpuSystemData.begin(), cpuSystemData.end());
+                    if (!m_CpuPlotX.empty() && m_CpuPlotX.back() < 0.0)
+                    {
+                        m_CpuPlotX.push_back(0.0);
+                        for (auto* series : {&y0, &yUserTop, &ySystemTop, &m_CpuPlotTotal, &m_CpuPlotUser, &m_CpuPlotSystem})
+                        {
+                            series->push_back(series->back());
+                        }
+                    }
+                    const int drawCount = UI::Format::checkedCount(m_CpuPlotX.size());
+
                     // The bands share their labels with the User and System lines below, so ImPlot
                     // treats each band and its line as one legend item: hiding "User" hides both.
                     // With separate hidden labels the band stayed on screen after its line was hidden.
                     ImPlot::PlotShaded(CPU_USER_LABEL,
-                                       cpuTimeData.data(),
+                                       m_CpuPlotX.data(),
                                        y0.data(),
                                        yUserTop.data(),
-                                       plotCount,
+                                       drawCount,
                                        {ImPlotProp_FillColor, theme.scheme().cpuUserFill});
 
                     ImPlot::PlotShaded(CPU_SYSTEM_LABEL,
-                                       cpuTimeData.data(),
+                                       m_CpuPlotX.data(),
                                        yUserTop.data(),
                                        ySystemTop.data(),
-                                       plotCount,
+                                       drawCount,
                                        {ImPlotProp_FillColor, theme.scheme().cpuSystemFill});
 
                     ImPlot::PlotLine(CPU_TOTAL_LABEL,
-                                     cpuTimeData.data(),
-                                     cpuData.data(),
-                                     plotCount,
+                                     m_CpuPlotX.data(),
+                                     m_CpuPlotTotal.data(),
+                                     drawCount,
                                      {ImPlotProp_LineColor, theme.scheme().chartCpu, ImPlotProp_LineWeight, UI::Widgets::lineWeight(2.0F)});
 
                     ImPlot::PlotLine(CPU_USER_LABEL,
-                                     cpuTimeData.data(),
-                                     cpuUserData.data(),
-                                     plotCount,
+                                     m_CpuPlotX.data(),
+                                     m_CpuPlotUser.data(),
+                                     drawCount,
                                      {ImPlotProp_LineColor, theme.scheme().cpuUser, ImPlotProp_LineWeight, UI::Widgets::lineWeight(1.8F)});
 
                     ImPlot::PlotLine(
                         CPU_SYSTEM_LABEL,
-                        cpuTimeData.data(),
-                        cpuSystemData.data(),
-                        plotCount,
+                        m_CpuPlotX.data(),
+                        m_CpuPlotSystem.data(),
+                        drawCount,
                         {ImPlotProp_LineColor, theme.scheme().cpuSystem, ImPlotProp_LineWeight, UI::Widgets::lineWeight(1.8F)});
 
                     if (ImPlot::IsPlotHovered())
@@ -1812,8 +1828,8 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
 {
     auto& theme = UI::Theme::get();
 
-    // GPU history graphs (if we have history)
-    if (!m_GpuUtilHistory.empty() && !m_Timestamps.empty())
+    // GPU history graphs: drawn from the start, with the collecting hint until samples arrive, like
+    // every other chart (#1013); this was a line of text until there was history.
     {
         const size_t alignedCount = std::min(m_GpuUtilHistory.size(), m_Timestamps.size());
         const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
@@ -1946,17 +1962,15 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
         fill.addPlot();
         ImGui::Spacing();
     }
-    else
-    {
-        ImGui::TextColored(theme.scheme().textMuted, "Collecting GPU history data...");
-    }
 }
 
 void ProcessDetailsPanel::trimHistory(double nowSeconds)
 {
     const double cutoff = nowSeconds - m_MaxHistorySeconds;
+    // Keep the newest sample before the cutoff, so the charts' lines run off the window's left edge
+    // instead of leaving an empty strip there after every trim (#1016).
     size_t removeCount = 0;
-    while (!m_Timestamps.empty() && (m_Timestamps.front() < cutoff))
+    while (m_Timestamps.size() >= 2 && m_Timestamps[1] < cutoff)
     {
         m_Timestamps.pop_front();
         ++removeCount;

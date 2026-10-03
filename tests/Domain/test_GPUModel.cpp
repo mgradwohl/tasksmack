@@ -1615,7 +1615,8 @@ TEST(GPUModelTest, HistoryIsTrimmedToTheHistoryWindow)
     Domain::GPUModel model(std::move(probe));
     model.setMaxHistorySeconds(10.0);
 
-    // One sample a second for 15 s: the cutoff is 15 - 10 = 5, so t = 5..15 remain.
+    // One sample a second for 15 s: the cutoff is 15 - 10 = 5, so t = 5..15 remain, plus t = 4, the
+    // newest before the cutoff, kept so the line runs off the window's left edge (#1016).
     const auto start = std::chrono::steady_clock::now();
     for (int i = 0; i <= 15; ++i)
     {
@@ -1624,19 +1625,19 @@ TEST(GPUModelTest, HistoryIsTrimmedToTheHistoryWindow)
     }
 
     const auto timestamps = model.historyTimestamps("GPU0");
-    ASSERT_EQ(timestamps.size(), 11U);
-    EXPECT_NEAR(timestamps.back() - timestamps.front(), 10.0, 1e-6);
-    EXPECT_EQ(model.historyTimestamps().size(), 11U);
+    ASSERT_EQ(timestamps.size(), 12U);
+    EXPECT_NEAR(timestamps.back() - timestamps.front(), 11.0, 1e-6);
+    EXPECT_EQ(model.historyTimestamps().size(), 12U);
 
     const auto utilization = model.utilizationHistory("GPU0");
-    ASSERT_EQ(utilization.size(), 11U);
-    EXPECT_FLOAT_EQ(utilization.front(), 5.0F);
+    ASSERT_EQ(utilization.size(), 12U);
+    EXPECT_FLOAT_EQ(utilization.front(), 4.0F);
     EXPECT_FLOAT_EQ(utilization.back(), 15.0F);
 
     const auto publication = model.publication();
     const auto historyIt = publication->histories.find("GPU0");
     ASSERT_NE(historyIt, publication->histories.end());
-    EXPECT_EQ(historyIt->second.timestamps.size(), 11U);
+    EXPECT_EQ(historyIt->second.timestamps.size(), 12U);
 }
 
 TEST(GPUModelTest, HistoryKeepsMoreThanThreeHundredSamplesWhenTheWindowAllows)
@@ -1677,8 +1678,9 @@ TEST(GPUModelTest, ShrinkingTheHistoryWindowTrimsExistingHistory)
 
     model.setMaxHistorySeconds(10.0);
     EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), 10.0);
-    EXPECT_EQ(model.historyTimestamps("GPU0").size(), 11U);
-    EXPECT_EQ(model.historyTimestamps().size(), 11U);
+    // t = 20..30, plus t = 19 kept before the cutoff (#1016).
+    EXPECT_EQ(model.historyTimestamps("GPU0").size(), 12U);
+    EXPECT_EQ(model.historyTimestamps().size(), 12U);
 }
 
 TEST(GPUModelTest, MaxHistorySecondsIsClampedToTheSupportedRange)
