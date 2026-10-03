@@ -1,11 +1,27 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace Platform
 {
+
+// Capability reporting
+struct GPUCapabilities
+{
+    bool hasTemperature = false;
+    bool hasHotspotTemp = false;
+    bool hasPowerMetrics = false;
+    bool hasClockSpeeds = false;
+    bool hasFanSpeed = false;
+    bool hasPCIeMetrics = false;
+    bool hasEngineUtilization = false;
+    bool hasPerProcessMetrics = false; // Per-process GPU usage
+    bool hasEncoderDecoder = false;
+    bool supportsMultiGPU = false;
+};
 
 // Identifies a physical GPU
 struct GPUInfo
@@ -17,6 +33,12 @@ struct GPUInfo
     std::string driverVersion;
     bool isIntegrated = false;     // Integrated vs discrete
     std::uint32_t deviceIndex = 0; // Vendor-specific index
+    /// The sensor metrics this particular adapter reports (temperature, hotspot, power, clocks,
+    /// fan, PCIe, encoder/decoder); the other fields are not used. GPUCapabilities from a probe
+    /// describes the probe as a whole, so on a hybrid Windows laptop NVML's capabilities applied to
+    /// the Intel iGPU too, and two NVIDIA cards with different sensors both drew every series
+    /// (#1040). nullopt means the probe's capabilities apply to this adapter unchanged.
+    std::optional<GPUCapabilities> sensorCapabilities;
 };
 
 // Raw GPU counters (Platform layer provides raw values only)
@@ -82,21 +104,6 @@ struct ProcessGPUCounters
     // Active engines (bitmask or string set)
     // Engines: 3D, Compute, Video Encode, Video Decode, Copy
     std::vector<std::string> activeEngines;
-};
-
-// Capability reporting
-struct GPUCapabilities
-{
-    bool hasTemperature = false;
-    bool hasHotspotTemp = false;
-    bool hasPowerMetrics = false;
-    bool hasClockSpeeds = false;
-    bool hasFanSpeed = false;
-    bool hasPCIeMetrics = false;
-    bool hasEngineUtilization = false;
-    bool hasPerProcessMetrics = false; // Per-process GPU usage
-    bool hasEncoderDecoder = false;
-    bool supportsMultiGPU = false;
 };
 
 } // namespace Platform

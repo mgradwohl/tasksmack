@@ -176,34 +176,13 @@ std::vector<GPUCounters> DXGIGPUProbe::readGPUCounters()
                 GPUCounters counter{};
                 counter.gpuId = std::format("GPU{}", adapterIndex);
 
-                // Try to get IDXGIAdapter3 for QueryVideoMemoryInfo (Windows 10+)
-                ComPtr<IDXGIAdapter3> adapter3;
-                // __uuidof is a Microsoft extension, suppress warning
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wlanguage-extension-token"
-                const HRESULT hrQuery =
-                    adapter->QueryInterface(__uuidof(IDXGIAdapter3), reinterpret_cast<void**>(adapter3.releaseAndGetAddressOf()));
-#pragma clang diagnostic pop
-
-                if (SUCCEEDED(hrQuery) && adapter3)
-                {
-                    DXGI_QUERY_VIDEO_MEMORY_INFO memInfo{};
-                    const HRESULT hrMemInfo = adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &memInfo);
-
-                    if (SUCCEEDED(hrMemInfo))
-                    {
-                        counter.memoryUsedBytes = memInfo.CurrentUsage;
-                        counter.memoryTotalBytes = memInfo.Budget;
-                    }
-                }
-                else
-                {
-                    // Fallback: use dedicated memory size from adapter desc
-                    counter.memoryTotalBytes = desc.DedicatedVideoMemory;
-                    // Cannot determine current usage without QueryVideoMemoryInfo
-                    counter.memoryUsedBytes = 0;
-                }
-
+                // The adapter's own memory size. Usage is not read here: QueryVideoMemoryInfo
+                // reports the calling process's usage and budget, not the adapter's, so the GPU tab
+                // used to chart TaskSmack's own few MB as the GPU's memory (#1029). WindowsGPUProbe
+                // fills memoryUsedBytes from PDH's adapter-wide counters (or NVML).
+                const bool integrated = isIntegratedGPUFromDesc(desc.VendorId, desc.Flags, desc.DedicatedVideoMemory);
+                counter.memoryTotalBytes = adapterMemoryTotalBytes(integrated, desc.DedicatedVideoMemory, desc.SharedSystemMemory);
+                counter.memoryUsedBytes = 0;
                 counters.push_back(std::move(counter));
             }
         }

@@ -87,6 +87,10 @@ class NVMLGPUProbe : public IGPUProbe
 
     // Map device index to NVML handle
     std::unordered_map<uint32_t, NVML::nvmlDevice_t> m_DeviceHandles;
+    // Map device index to the id enumerateGPUs() reported (UUID, or NVML_GPU<n> when that read
+    // failed). Counter reads reuse it rather than querying the UUID again: a second, independently
+    // fallible query could give a device a different id and lose its NVML metrics (#1040).
+    std::unordered_map<uint32_t, std::string> m_DeviceIds;
 };
 
 } // namespace Platform

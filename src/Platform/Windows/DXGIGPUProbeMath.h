@@ -69,4 +69,13 @@ namespace Platform
     return false;
 }
 
+/// An adapter's memory size, from DXGI_ADAPTER_DESC1: the shared system memory an integrated GPU
+/// may use, or a discrete GPU's dedicated VRAM. Fixed for the adapter's lifetime, unlike the
+/// per-process budget QueryVideoMemoryInfo reports, which moved over time and made the GPU tab's
+/// total disagree with its header (16 GB vs 17.2 GB on an Arc 140T, #1029).
+[[nodiscard]] constexpr uint64_t adapterMemoryTotalBytes(bool isIntegrated, uint64_t dedicatedVideoMemory, uint64_t sharedSystemMemory)
+{
+    return isIntegrated ? sharedSystemMemory : dedicatedVideoMemory;
+}
+
 } // namespace Platform
