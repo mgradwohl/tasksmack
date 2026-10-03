@@ -7,6 +7,8 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstring>
+#include <optional>
 
 namespace Platform
 {
@@ -85,6 +87,95 @@ TEST(ROCmGPUProbeMathTest, DeriveDeviceIdFallsBackToAmdIndexWhenBothLookupsFail)
         return ROCmGPUProbeMath::kRsmiStatusSuccess + 1;
     };
     EXPECT_EQ(ROCmGPUProbeMath::deriveDeviceId(2, alwaysFails, alwaysFails), "amd_2");
+}
+
+// rsmi_frequencies_t layouts (#1088): fill the buffer exactly as each library version writes it.
+
+template<typename Layout> ROCmGPUProbeMath::RsmiFrequenciesBuffer bufferFrom(const Layout& layout)
+{
+    ROCmGPUProbeMath::RsmiFrequenciesBuffer buffer;
+    std::memcpy(buffer.bytes.data(), &layout, sizeof(layout));
+    return buffer;
+}
+
+TEST(ROCmGPUProbeMathTest, FrequenciesLayoutFollowsLibraryMajorVersion)
+{
+    using ROCmGPUProbeMath::FrequenciesLayout;
+    EXPECT_EQ(ROCmGPUProbeMath::frequenciesLayoutFor(5U), FrequenciesLayout::V5);
+    EXPECT_EQ(ROCmGPUProbeMath::frequenciesLayoutFor(6U), FrequenciesLayout::V6);
+    EXPECT_EQ(ROCmGPUProbeMath::frequenciesLayoutFor(7U), FrequenciesLayout::V6);
+    // Unknown version: decode as the current layout (the buffer is oversized either way).
+    EXPECT_EQ(ROCmGPUProbeMath::frequenciesLayoutFor(std::nullopt), FrequenciesLayout::V6);
+}
+
+TEST(ROCmGPUProbeMathTest, DecodesRocm6LayoutWithDeepSleepFlag)
+{
+    ROCmGPUProbeMath::RsmiFrequenciesV6 v6{};
+    v6.has_deep_sleep = true;
+    v6.num_supported = 33;
+    v6.current = 32; // the deep-sleep slot, beyond the old 32-entry array
+    v6.frequency[32] = 400'000'000ULL;
+    const auto buffer = bufferFrom(v6);
+
+    EXPECT_EQ(ROCmGPUProbeMath::currentFrequencyHz(buffer, ROCmGPUProbeMath::FrequenciesLayout::V6), 400'000'000ULL);
+}
+
+TEST(ROCmGPUProbeMathTest, DecodesRocm5Layout)
+{
+    ROCmGPUProbeMath::RsmiFrequenciesV5 v5{};
+    v5.num_supported = 3;
+    v5.current = 2;
+    v5.frequency[2] = 2'100'000'000ULL;
+    const auto buffer = bufferFrom(v5);
+
+    EXPECT_EQ(ROCmGPUProbeMath::currentFrequencyHz(buffer, ROCmGPUProbeMath::FrequenciesLayout::V5), 2'100'000'000ULL);
+}
+
+// The reported version is only a preference: a library built without git-tag metadata reports a
+// generated 1.0.0 while writing the ROCm 6 layout, and the clocks must still decode (#1189 review).
+TEST(ROCmGPUProbeMathTest, DecodesRocm6LayoutWhenVersionSuggestsRocm5)
+{
+    ROCmGPUProbeMath::RsmiFrequenciesV6 v6{};
+    v6.has_deep_sleep = true;
+    v6.num_supported = 8;
+    v6.current = 5;
+    v6.frequency[5] = 1'800'000'000ULL;
+
+    const auto preferred = ROCmGPUProbeMath::frequenciesLayoutFor(1U);
+    ASSERT_EQ(preferred, ROCmGPUProbeMath::FrequenciesLayout::V5);
+    EXPECT_EQ(ROCmGPUProbeMath::currentFrequencyHz(bufferFrom(v6), preferred), 1'800'000'000ULL);
+}
+
+TEST(ROCmGPUProbeMathTest, DecodesRocm5LayoutWhenVersionSuggestsRocm6)
+{
+    ROCmGPUProbeMath::RsmiFrequenciesV5 v5{};
+    v5.num_supported = 4;
+    v5.current = 3;
+    v5.frequency[3] = 900'000'000ULL;
+
+    EXPECT_EQ(ROCmGPUProbeMath::currentFrequencyHz(bufferFrom(v5), ROCmGPUProbeMath::FrequenciesLayout::V6), 900'000'000ULL);
+}
+
+TEST(ROCmGPUProbeMathTest, RejectsZeroFrequencyInEitherLayout)
+{
+    ROCmGPUProbeMath::RsmiFrequenciesV6 v6{};
+    v6.num_supported = 2;
+    v6.current = 1; // frequency[1] left at 0
+    EXPECT_FALSE(ROCmGPUProbeMath::currentFrequencyHz(bufferFrom(v6), ROCmGPUProbeMath::FrequenciesLayout::V6).has_value());
+}
+
+TEST(ROCmGPUProbeMathTest, RejectsCurrentIndexOutsideSupportedOrArray)
+{
+    ROCmGPUProbeMath::RsmiFrequenciesV6 notSupported{};
+    notSupported.num_supported = 2;
+    notSupported.current = 2;
+    EXPECT_FALSE(ROCmGPUProbeMath::currentFrequencyHz(bufferFrom(notSupported), ROCmGPUProbeMath::FrequenciesLayout::V6).has_value());
+
+    // A library reporting more supported entries than the array holds must not index past it.
+    ROCmGPUProbeMath::RsmiFrequenciesV5 pastArray{};
+    pastArray.num_supported = 1000;
+    pastArray.current = 32;
+    EXPECT_FALSE(ROCmGPUProbeMath::currentFrequencyHz(bufferFrom(pastArray), ROCmGPUProbeMath::FrequenciesLayout::V5).has_value());
 }
 
 TEST(LinuxROCmGPUProbeTest, BasicOperationsDoNotThrow)
