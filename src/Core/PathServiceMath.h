@@ -43,7 +43,7 @@ using CurrentPathFn = std::function<std::filesystem::path(std::error_code&)>;
 /// storable type for the callables.
 template<typename AbsoluteCallable, typename CurrentPathCallable>
 [[nodiscard]] inline std::filesystem::path
-resolveAbsolutePath(const std::filesystem::path& raw, AbsoluteCallable&& absoluteFn, CurrentPathCallable&& currentPathFn)
+resolveAbsolutePath(const std::filesystem::path& raw, const AbsoluteCallable& absoluteFn, const CurrentPathCallable& currentPathFn)
 {
     std::error_code ec;
     const std::filesystem::path abs = absoluteFn(raw, ec);

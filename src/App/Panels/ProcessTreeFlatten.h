@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <ranges>
 #include <unordered_set>
 #include <vector>
 
@@ -108,9 +109,9 @@ inline void collectProcessTreeRows(const std::vector<Domain::ProcessSnapshot>& s
         // Add children to stack if expanded (in reverse order for correct rendering)
         if (hasChildren && isExpanded)
         {
-            for (auto it = filteredChildren.rbegin(); it != filteredChildren.rend(); ++it)
+            for (const std::size_t child : std::views::reverse(filteredChildren))
             {
-                stack.push_back(StackFrame{.procIdx = *it, .depth = frame.depth + 1});
+                stack.push_back(StackFrame{.procIdx = child, .depth = frame.depth + 1});
             }
         }
     }

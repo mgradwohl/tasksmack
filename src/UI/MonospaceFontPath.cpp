@@ -1,6 +1,9 @@
 #include "MonospaceFontPath.h"
 
 #include <array>
+#include <filesystem>
+#include <functional>
+#include <span>
 #include <system_error>
 
 namespace UI

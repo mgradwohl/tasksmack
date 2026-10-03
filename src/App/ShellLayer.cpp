@@ -6,6 +6,7 @@
 #include "Core/Layer.h"
 #include "Domain/ProcessSnapshot.h"
 #include "FontSizeChange.h"
+#include "Panels/ProcessesPanel.h"
 #include "ShellMetrics.h"
 #include "TitleBarGeometry.h"
 #include "TitleBarLayer.h"

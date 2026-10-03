@@ -14,10 +14,10 @@
 #include "ProcessDetailsPanel_ActionHelpers.h"
 #include "ProcessDetailsPanel_GpuHelpers.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
-#include "ProcessDetailsPanel_ResourceHelpers.h"
 #include "UI/ChartWidgets.h"
 #include "UI/DialogMetrics.h"
 #include "UI/EmptyState.h"
+#include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/RateAxis.h"
@@ -37,6 +37,7 @@
 #include <cstdint>
 #include <format>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
