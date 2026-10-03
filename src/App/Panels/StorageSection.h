@@ -29,11 +29,17 @@ struct RenderContext
     double* smoothedWriteBytesPerSec = nullptr;
     bool* smoothedInitialized = nullptr;
 
-    // State for the single-disk chart, which fills the rest of the tab like the per-disk grid
-    // does (#959). The fill needs the previous frame's measurement, so with null the chart stays at
-    // the minimum height every frame.
-    UI::Widgets::PlotFillState* aggregateFill = nullptr;
+    // The tab's shared chart height (#959). Used by the single-disk chart; the per-disk grid takes
+    // whatever height is left instead. Null keeps the fixed default height.
+    UI::Widgets::FillPlotLayout* fill = nullptr;
 };
+
+/// Whether the section shows one chart per disk in a grid that fills the remaining height, rather
+/// than a single aggregate chart.
+[[nodiscard]] inline bool usesDiskGrid(const Domain::StoragePublication* publication) noexcept
+{
+    return (publication != nullptr) && (publication->perDiskHistory.size() > 1);
+}
 
 /// Render the Disk I/O section with history chart and now bars.
 /// @param ctx Render context containing model and smoothed values

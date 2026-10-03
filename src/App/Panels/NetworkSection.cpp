@@ -4,7 +4,6 @@
 #include "App/Panels/StorageSection.h"
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
-#include "UI/HistoryPlotHeight.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/RateAxis.h"
 #include "UI/Theme.h"
@@ -19,7 +18,6 @@
 #include <cstddef>
 #include <format>
 #include <functional>
-#include <iterator>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -36,6 +34,7 @@ using UI::Widgets::buildTimeAxis;
 using UI::Widgets::computeAlpha;
 using UI::Widgets::formatAgeSeconds;
 using UI::Widgets::formatAxisBytesPerSec;
+using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
@@ -73,7 +72,7 @@ void renderDiskIOSection(RenderContext& ctx)
         .smoothedReadBytesPerSec = ctx.smoothedDiskReadBytesPerSec,
         .smoothedWriteBytesPerSec = ctx.smoothedDiskWriteBytesPerSec,
         .smoothedInitialized = ctx.smoothedDiskInitialized,
-        .aggregateFill = ctx.aggregateDiskFill,
+        .fill = ctx.fill,
     };
     StorageSection::renderStorageSection(storageCtx);
 }
@@ -306,25 +305,24 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     const auto ifaceSentColor = UI::withAlpha(theme.scheme().chartNetTx, 0.7F);
     const auto ifaceRecvColor = UI::withAlpha(theme.scheme().chartNetRx, 0.7F);
 
-    // A font-relative fixed height rather than a share of the tab: the storage charts below take
-    // whatever height is left (#959).
-    const float netPlotHeight = UI::Widgets::historyPlotNaturalHeight(ImGui::GetFontSize());
-
+    // Shares the tab's height with the disk chart or grid below it (#959).
+    const float plotHeight = (ctx.fill != nullptr) ? ctx.fill->plotHeight() : HISTORY_PLOT_HEIGHT_DEFAULT;
     auto plot = [&]()
     {
-        const auto netConfig = UI::Widgets::rateHistoryConfig("##SystemNetHistory",
-                                                              axis.xMin,
-                                                              axis.xMax,
-                                                              formatAxisBytesPerSec,
-                                                              // Every series drawn on this axis, not just the
-                                                              // totals: a selected interface is plotted here too,
-                                                              // and total vs per-interface rates are derived
-                                                              // independently, so the interface rate can exceed
-                                                              // the total's. The interface vectors are empty when
-                                                              // none is selected; maxOfSeries() ignores those.
-                                                              UI::Widgets::maxOfSeries(sentData, recvData, ifaceSentData, ifaceRecvData),
-                                                              UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
-        const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(netConfig, netPlotHeight));
+        const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
+            UI::Widgets::rateHistoryConfig("##SystemNetHistory",
+                                           axis.xMin,
+                                           axis.xMax,
+                                           formatAxisBytesPerSec,
+                                           // Every series drawn on this axis, not just the
+                                           // totals: a selected interface is plotted here too,
+                                           // and total vs per-interface rates are derived
+                                           // independently, so the interface rate can exceed
+                                           // the total's. The interface vectors are empty when
+                                           // none is selected; maxOfSeries() ignores those.
+                                           UI::Widgets::maxOfSeries(sentData, recvData, ifaceSentData, ifaceRecvData),
+                                           UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC),
+            plotHeight));
         if (chart.active())
         {
             const int count = UI::Format::checkedCount(aligned);
@@ -451,7 +449,11 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         ImGui::Spacing();
     }
     constexpr size_t NETWORK_NOW_BAR_COLUMNS = 2; // Sent, Recv
-    renderHistoryWithNowBars("SystemNetHistoryLayout", netPlotHeight, plot, {sentBar, recvBar}, false, NETWORK_NOW_BAR_COLUMNS);
+    renderHistoryWithNowBars("SystemNetHistoryLayout", plotHeight, plot, {sentBar, recvBar}, false, NETWORK_NOW_BAR_COLUMNS);
+    if (ctx.fill != nullptr)
+    {
+        ctx.fill->addPlot();
+    }
     ImGui::Spacing();
 
     // Interface status table - filtered and sorted (virtual/bluetooth hidden by default)
@@ -600,18 +602,41 @@ void renderNetworkSection(RenderContext& ctx)
     // StorageSection::renderStorageSection) -- reversed from the disk-then-network order this
     // tab used before #823's grid work, which let the disk grid's now-space-filling behavior
     // greedily consume the whole tab and push the network chart/table below it off-screen.
-    if (ctx.systemPublication == nullptr || !ctx.hasNetworkCounters)
+    //
+    // The charts share the tab's height like every other tab's (#959). With one disk that is just
+    // the network chart and the disk chart. With several, the per-disk grid still takes whatever
+    // is left, so it is not measured: it is reserved one share of the height, and the fill scope
+    // closes before it renders. The network chart and the grid then split the tab between them.
+    const bool diskGrid = StorageSection::usesDiskGrid(ctx.storagePublication);
     {
-        ImGui::TextUnformatted("Network monitoring not available on this platform.");
-    }
-    else
-    {
-        renderNetworkChartAndTable(ctx, theme, nowSeconds);
-    }
+        std::optional<UI::Widgets::FillPlotLayout> fill;
+        if (ctx.fillState != nullptr)
+        {
+            fill.emplace(*ctx.fillState, diskGrid ? 1U : 0U);
+            ctx.fill = &*fill;
+        }
 
-    ImGui::Separator();
-    ImGui::Spacing();
-    renderDiskIOSection(ctx);
+        if (ctx.systemPublication == nullptr || !ctx.hasNetworkCounters)
+        {
+            ImGui::TextUnformatted("Network monitoring not available on this platform.");
+        }
+        else
+        {
+            renderNetworkChartAndTable(ctx, theme, nowSeconds);
+        }
+
+        ImGui::Separator();
+        ImGui::Spacing();
+        if (!diskGrid)
+        {
+            renderDiskIOSection(ctx);
+        }
+        ctx.fill = nullptr;
+    }
+    if (diskGrid)
+    {
+        renderDiskIOSection(ctx);
+    }
 }
 
 } // namespace App::NetworkSection

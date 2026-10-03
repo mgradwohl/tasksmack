@@ -41,8 +41,12 @@ struct RenderContext
     // Name of the selected network interface (empty = "Total" / all interfaces combined)
     std::string* selectedNetworkInterface = nullptr;
 
-    // Passed to StorageSection::RenderContext::aggregateFill
-    UI::Widgets::PlotFillState* aggregateDiskFill = nullptr;
+    // The tab's chart-height measurements from the previous frame (#959). Null keeps the fixed
+    // default height for every chart.
+    UI::Widgets::PlotFillState* fillState = nullptr;
+
+    // Set by renderNetworkSection() while the tab's fill scope is open; not for callers.
+    UI::Widgets::FillPlotLayout* fill = nullptr;
 };
 
 /// Render the Disk I/O section with history chart.

@@ -5,7 +5,6 @@
 #include "UI/ChartGrid.h"
 #include "UI/ChartGridLayout.h"
 #include "UI/ChartWidgets.h"
-#include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
 #include "UI/HistoryPlotHeight.h"
 #include "UI/IconsFontAwesome6.h"
@@ -35,6 +34,7 @@ using UI::Widgets::ChartGridConfig;
 using UI::Widgets::computeAlpha;
 using UI::Widgets::formatAgeSeconds;
 using UI::Widgets::formatAxisBytesPerSec;
+using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
@@ -233,7 +233,7 @@ void renderStorageSection(RenderContext& ctx)
     const auto& perDisk = ctx.publication->perDiskHistory;
     const size_t diskCount = perDisk.size();
 
-    if (diskCount > 1)
+    if (usesDiskGrid(ctx.publication))
     {
         // ── Multi-disk: one chart cell per disk, grid fills the available panel space ──
         ImGui::TextColored(
@@ -352,10 +352,6 @@ void renderStorageSection(RenderContext& ctx)
     else
     {
         // ── Single disk (or no data yet): aggregate chart ─────────────────────
-        // Last thing on the tab, so it takes the height that is left (within the shared bounds),
-        // as the per-disk grid does when there are several disks (#959).
-        UI::Widgets::PlotFillState localFill;
-        UI::Widgets::FillPlotLayout fill(ctx.aggregateFill != nullptr ? *ctx.aggregateFill : localFill);
         const auto& diskReadHist = ctx.publication->totalReadHistory;
         const auto& diskWriteHist = ctx.publication->totalWriteHistory;
         const size_t alignedDisk = std::min({historySize, diskReadHist.size(), diskWriteHist.size()});
@@ -391,6 +387,8 @@ void renderStorageSection(RenderContext& ctx)
                               .value01 = std::clamp(smoothedWrite / diskMax, 0.0, 1.0),
                               .color = theme.scheme().chartIoWrite};
 
+        // Shares the tab's height with the network chart above it (#959).
+        const float plotHeight = (ctx.fill != nullptr) ? ctx.fill->plotHeight() : HISTORY_PLOT_HEIGHT_DEFAULT;
         auto diskPlot = [&]()
         {
             const UI::Widgets::HistoryChart chart(
@@ -400,7 +398,7 @@ void renderStorageSection(RenderContext& ctx)
                                                                        formatAxisBytesPerSec,
                                                                        UI::Widgets::maxOfSeries(readData, writeData),
                                                                        UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC),
-                                        fill.plotHeight()));
+                                        plotHeight));
             if (chart.active())
             {
                 const int count = UI::Format::checkedCount(alignedDisk);
@@ -448,9 +446,11 @@ void renderStorageSection(RenderContext& ctx)
         };
 
         ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  Disk I/O History (%zu samples)", alignedDisk);
-        renderHistoryWithNowBars(
-            "SystemDiskHistoryLayout", fill.plotHeight(), diskPlot, {readBar, writeBar}, false, STORAGE_NOW_BAR_COLUMNS);
-        fill.addPlot();
+        renderHistoryWithNowBars("SystemDiskHistoryLayout", plotHeight, diskPlot, {readBar, writeBar}, false, STORAGE_NOW_BAR_COLUMNS);
+        if (ctx.fill != nullptr)
+        {
+            ctx.fill->addPlot();
+        }
     }
 }
 

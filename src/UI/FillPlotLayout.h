@@ -36,10 +36,21 @@ struct PlotFillState
 class FillPlotLayout
 {
   public:
-    explicit FillPlotLayout(PlotFillState& state)
+    /// @param state           The tab's measurements from the previous frame.
+    /// @param reservedShares  Shares of the height kept for content rendered *after* this scope
+    ///                        ends that takes whatever is left (the per-disk grid on Network and
+    ///                        I/O). They count when the height is divided but are never measured,
+    ///                        so content that fills the remainder cannot feed back into the next
+    ///                        frame's division.
+    explicit FillPlotLayout(PlotFillState& state, std::size_t reservedShares = 0)
         : m_State(state),
           m_Top(ImGui::GetCursorPosY()),
-          m_PlotHeight(computeFillPlotHeight(ImGui::GetFontSize(), ImGui::GetContentRegionAvail().y, state.nonPlotHeight, state.plotCount))
+          m_PlotHeight(computeFillPlotHeight(ImGui::GetFontSize(),
+                                             ImGui::GetContentRegionAvail().y,
+                                             state.nonPlotHeight,
+                                             // Nothing measured yet stays nothing: the first frame
+                                             // under-fills (see computeFillPlotHeight()).
+                                             (state.plotCount == 0) ? 0 : state.plotCount + reservedShares))
     {}
 
     ~FillPlotLayout()

@@ -38,10 +38,6 @@ inline constexpr float HISTORY_PLOT_MIN_HEIGHT_EM = 8.4375F;
 /// these charts used to be fixed at.
 inline constexpr float HISTORY_PLOT_MAX_HEIGHT_EM = 33.75F;
 
-/// Height of a history chart that does not share a fill -- one that sits above content which fills
-/// the rest of the tab, like the network chart above the disk grid -- in ems: 180px at the Medium
-/// preset, the size these charts used to be fixed at, and twice the fill minimum at any font.
-inline constexpr float HISTORY_PLOT_NATURAL_HEIGHT_EM = 2.0F * HISTORY_PLOT_MIN_HEIGHT_EM;
 /// Height kept back from the fill so the charts never sum to a hair more than the space they were
 /// measured against, which would summon a scrollbar the layout was specifically sized to avoid.
 inline constexpr float HISTORY_PLOT_FILL_MARGIN_PX = 2.0F;
@@ -56,13 +52,6 @@ inline constexpr float HISTORY_PLOT_FILL_MARGIN_PX = 2.0F;
 {
     const float em = (std::isfinite(emPx) && emPx > 0.0F) ? emPx : 1.0F;
     return HISTORY_PLOT_MAX_HEIGHT_EM * em;
-}
-
-/// HISTORY_PLOT_NATURAL_HEIGHT_EM at this font, in whole pixels (see computeFillPlotHeight for why).
-[[nodiscard]] inline float historyPlotNaturalHeight(float emPx) noexcept
-{
-    const float em = (std::isfinite(emPx) && emPx > 0.0F) ? emPx : 1.0F;
-    return std::floor(HISTORY_PLOT_NATURAL_HEIGHT_EM * em);
 }
 
 /// Height for each of `plotCount` charts stacked in a region `availableHeightPx` tall.
