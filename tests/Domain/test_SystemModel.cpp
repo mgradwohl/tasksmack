@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -261,6 +262,16 @@ TEST(SystemModelTest, MemoryUsedNeverWrapsBelowZero)
     Domain::SystemModel legacyModel(std::move(legacyProbe));
     legacyModel.refresh();
     EXPECT_EQ(legacyModel.snapshot().memoryUsedBytes, 0U);
+
+    // Parts whose sum wraps (UINT64_MAX + 1 == 0) must not read as all memory used.
+    auto wrappingProbe = std::make_unique<MockSystemProbe>();
+    auto* rawWrapping = wrappingProbe.get();
+    auto wrapping = makeMemoryCounters(100, 0, std::numeric_limits<std::uint64_t>::max(), 1, 0);
+    wrapping.hasAvailableBytes = false;
+    rawWrapping->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), wrapping));
+    Domain::SystemModel wrappingModel(std::move(wrappingProbe));
+    wrappingModel.refresh();
+    EXPECT_EQ(wrappingModel.snapshot().memoryUsedBytes, 0U);
 }
 
 namespace SystemModelTestSupport

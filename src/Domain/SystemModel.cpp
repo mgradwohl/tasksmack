@@ -385,8 +385,10 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
     }
     else
     {
-        snap.memoryUsedBytes = saturatingSub(counters.memory.totalBytes,
-                                             counters.memory.freeBytes + counters.memory.cachedBytes + counters.memory.buffersBytes);
+        // Subtract each part in turn: summing them first could wrap (#1232 review).
+        snap.memoryUsedBytes =
+            saturatingSub(saturatingSub(saturatingSub(counters.memory.totalBytes, counters.memory.freeBytes), counters.memory.cachedBytes),
+                          counters.memory.buffersBytes);
     }
 
     // Memory percentage
