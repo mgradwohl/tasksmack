@@ -11,6 +11,7 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <filesystem>
 #include <format>
 #include <optional>
@@ -215,13 +216,14 @@ struct PriorityChange
     int firstError = 0;
 };
 
-/// The thread IDs in /proc/<pid>/task; just the PID itself if that can't be listed.
-[[nodiscard]] std::vector<id_t> threadIds(int32_t pid)
+/// The thread IDs in /proc/<pid>/task, or why they couldn't be listed. There is no fallback to
+/// the PID alone: renicing just the main thread and reporting success is the bug this replaces.
+[[nodiscard]] std::expected<std::vector<id_t>, std::error_code> threadIds(int32_t pid)
 {
     std::vector<id_t> tids;
     std::error_code ec;
-    for (std::filesystem::directory_iterator it(std::filesystem::path("/proc") / std::to_string(pid) / "task", ec), end; !ec && it != end;
-         it.increment(ec))
+    std::filesystem::directory_iterator it(std::filesystem::path("/proc") / std::to_string(pid) / "task", ec);
+    for (const std::filesystem::directory_iterator end; !ec && it != end; it.increment(ec))
     {
         const std::string name = it->path().filename().string();
         id_t tid = 0;
@@ -231,19 +233,23 @@ struct PriorityChange
             tids.push_back(tid);
         }
     }
+    if (ec)
+    {
+        return std::unexpected(ec);
+    }
     if (tids.empty())
     {
-        tids.push_back(static_cast<id_t>(pid));
+        return std::unexpected(std::make_error_code(std::errc::no_such_process));
     }
     return tids;
 }
 
-/// setpriority(2) on every thread of `pid`. A thread that exits meanwhile (ESRCH) is neither a
-/// change nor a failure -- unless no thread could be changed at all, when it is reported as such.
-[[nodiscard]] PriorityChange setPriorityOfEveryThread(int32_t pid, int32_t nice)
+/// setpriority(2) on each of `tids`, the threads of `pid`. A thread that exits meanwhile (ESRCH)
+/// is neither a change nor a failure -- except the main thread, whose exit means the process's.
+[[nodiscard]] PriorityChange setPriorityOfEveryThread(const std::vector<id_t>& tids, int32_t pid, int32_t nice)
 {
     PriorityChange change;
-    for (const id_t tid : threadIds(pid))
+    for (const id_t tid : tids)
     {
         // setpriority() returns 0 on success and -1 on error (per POSIX).
         if (setpriority(PRIO_PROCESS, tid, nice) == 0)
@@ -303,8 +309,22 @@ ProcessActionResult LinuxProcessActions::setPriority(const ProcessTarget& target
     // changes only the main thread, so a multithreaded compiler or browser kept nearly all of its
     // work at the old priority while the UI reported success (#1104). Renice every thread, as
     // Windows' SetPriorityClass changes the whole process.
-    const PriorityChange change = setPriorityOfEveryThread(target.pid, clampedNice);
-    if (change.failed == 0)
+    const auto tids = threadIds(target.pid);
+    if (!tids.has_value())
+    {
+        const std::error_code listError = tids.error();
+        std::string errorMsg = (listError == std::errc::no_such_file_or_directory || listError == std::errc::no_such_process)
+                                 ? std::string("Process not found - may have already exited")
+                                 : std::format("Can't list the threads of process {}: {}", target.pid, listError.message());
+        spdlog::warn("Failed to set priority for PID {}: {}", target.pid, errorMsg);
+        return ProcessActionResult::error(std::move(errorMsg));
+    }
+    const PriorityChange change = setPriorityOfEveryThread(*tids, target.pid, clampedNice);
+
+    // Once any thread was changed, confirm the target survived before reporting anything else: if
+    // it exited meanwhile, the change may have reached another process, which matters more than
+    // which threads failed (#1228 review).
+    if (change.changed > 0)
     {
         // Signal 0 checks for existence without delivering anything. Any failure of that probe
         // leaves the call unconfirmed, not only ESRCH: a sandbox that blocks pidfd_send_signal
@@ -322,8 +342,11 @@ ProcessActionResult LinuxProcessActions::setPriority(const ProcessTarget& target
             spdlog::warn("{}", errorMsg);
             return ProcessActionResult::error(std::move(errorMsg));
         }
-        spdlog::info("Successfully set priority (nice={}) for PID {} ({} threads)", clampedNice, target.pid, change.changed);
-        return ProcessActionResult::ok();
+        if (change.failed == 0)
+        {
+            spdlog::info("Successfully set priority (nice={}) for PID {} ({} threads)", clampedNice, target.pid, change.changed);
+            return ProcessActionResult::ok();
+        }
     }
 
     // Handle error
