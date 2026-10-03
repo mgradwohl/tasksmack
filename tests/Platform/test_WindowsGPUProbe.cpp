@@ -85,7 +85,7 @@ TEST(GpuNamesMatchTest, TwoDistinctAllWhitespaceNamesDoNotMatch)
 }
 
 // ==========================================================================
-// mergeNVMLIntoDXGICounters / allGPUsHaveNVMLUtilization / sumProcessUtilizationByGPUId /
+// mergeNVMLIntoDXGICounters / allGPUsHaveNVMLUtilization /
 // assignPDHUtilizationToDXGICounters: pure merge logic extracted from WindowsGPUProbe, no
 // NVML/PDH hardware required.
 // ==========================================================================
@@ -205,33 +205,6 @@ TEST(AllGPUsHaveNVMLUtilizationTest, FalseWhenAnyGPUIsMissing)
     dxgi[1].gpuId = "GPU1";
 
     EXPECT_FALSE(allGPUsHaveNVMLUtilization(dxgi, {"GPU0"}));
-}
-
-TEST(SumProcessUtilizationByGPUIdTest, SumsMultipleProcessesOnSameGPU)
-{
-    std::vector<ProcessGPUCounters> procs(2);
-    procs[0].gpuId = "GPU_0x0_0x1";
-    procs[0].gpuUtilPercent = 30.0;
-    procs[1].gpuId = "GPU_0x0_0x1";
-    procs[1].gpuUtilPercent = 45.0;
-
-    const auto byGpu = sumProcessUtilizationByGPUId(procs);
-
-    ASSERT_TRUE(byGpu.contains("GPU_0x0_0x1"));
-    EXPECT_DOUBLE_EQ(byGpu.at("GPU_0x0_0x1"), 75.0);
-}
-
-TEST(SumProcessUtilizationByGPUIdTest, SkipsNonPositiveUtilization)
-{
-    std::vector<ProcessGPUCounters> procs(2);
-    procs[0].gpuId = "GPU_0x0_0x1";
-    procs[0].gpuUtilPercent = 0.0;
-    procs[1].gpuId = "GPU_0x0_0x1";
-    procs[1].gpuUtilPercent = -1.0; // shouldn't occur in practice, but must not create a bucket
-
-    const auto byGpu = sumProcessUtilizationByGPUId(procs);
-
-    EXPECT_TRUE(byGpu.empty());
 }
 
 TEST(AssignPDHUtilizationToDXGICountersTest, AssignsClampedUtilizationForMatchedLuid)

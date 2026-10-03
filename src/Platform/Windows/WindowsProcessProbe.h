@@ -63,10 +63,8 @@ class WindowsProcessProbe : public IProcessProbe
     [[nodiscard]] uint64_t systemTotalMemory() const override;
 
   private:
-    bool m_HasPowerMonitoring = false;
     bool m_HasNetworkCounters = false;
-    bool m_NetworkCountersAccessDenied = false; // True when EStats failed specifically due to access denied (privilege issue)
-    mutable std::atomic<uint64_t> m_SyntheticEnergy{0};
+    bool m_NetworkCountersAccessDenied = false;       // True when EStats failed specifically due to access denied (privilege issue)
     std::chrono::milliseconds m_LightDetailTTL{1000}; // Default; tuned by total physical RAM in constructor
     std::chrono::milliseconds m_HeavyDetailTTL{5000}; // Default; tuned by total physical RAM in constructor
     HMODULE m_IphlpModule = nullptr;                  // Non-null only when loaded by this class (must be freed in destructor)
@@ -122,17 +120,8 @@ class WindowsProcessProbe : public IProcessProbe
     /// Read total system CPU time
     [[nodiscard]] static uint64_t readTotalCpuTime();
 
-    /// Detect if power monitoring is available
-    [[nodiscard]] static bool detectPowerMonitoring();
-
     /// Calculate detail cache TTLs based on total physical RAM
     static void calculateDetailTTLsFromTotalRAM(std::chrono::milliseconds& lightTTL, std::chrono::milliseconds& heavyTTL) noexcept;
-
-    /// Read system-wide energy (microjoules) if available
-    [[nodiscard]] uint64_t readSystemEnergy() const;
-
-    /// Attribute energy to processes based on CPU usage
-    void attributeEnergyToProcesses(std::vector<ProcessCounters>& processes) const;
 
     /// Detect ETW/EStats availability for per-process network counters
     [[nodiscard]] bool detectNetworkCounters();
