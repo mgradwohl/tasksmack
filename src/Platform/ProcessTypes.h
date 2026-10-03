@@ -45,9 +45,9 @@ struct ProcessCounters
     std::uint64_t netSentBytes = 0;
     std::uint64_t netReceivedBytes = 0;
 
-    // Power usage (optional, platform-dependent)
-    // On Windows: from PROCESS_POWER_THROTTLING_STATE
-    // On Linux: from powercap sysfs (per-package energy counters)
+    // Power usage (optional, platform-dependent; see ProcessCapabilities::hasPowerUsage)
+    // On Linux: from powercap sysfs (per-package energy counters), shared out by CPU time
+    // On Windows: not populated; always 0 (#1028)
     std::uint64_t energyMicrojoules = 0; // Cumulative energy consumption in microjoules
 
     // Publisher / vendor info (optional, Windows-only via PE version info)
