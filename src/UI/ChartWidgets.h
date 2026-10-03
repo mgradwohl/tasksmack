@@ -425,7 +425,6 @@ template<typename TX, typename TY>
     return scaledLineWeight(authoredPx, Theme::get().styleScale());
 }
 
-/// @p lineThickness is authored at the reference configuration; it is scaled by lineWeight().
 /// Extend a history series to x = 0 ("now") by repeating its last value there.
 ///
 /// Samples arrive once per refresh interval while the chart scrolls every frame, so the newest
@@ -449,6 +448,7 @@ template<typename T> inline void holdLastValueToNow(std::vector<T>& x, std::vect
     y.push_back(y.back());
 }
 
+/// @p lineThickness is authored at the reference configuration; it is scaled by lineWeight().
 template<typename TX, typename TY>
 inline void plotLineWithFill(const char* label,
                              const TX* xData,

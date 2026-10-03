@@ -324,9 +324,10 @@ StorageModel::computeDiskSnapshot(const Platform::DiskCounters& current, DiskSta
 
 void StorageModel::trimHistory(double nowSeconds)
 {
-    // Drop entries older than the configured time window. All rings are pushed
-    // in lockstep with m_Timestamps, so a single discard count keeps them
-    // aligned. discardFront is O(1): no copies, rebuilds, or allocations.
+    // Drop entries older than the configured time window, except the newest of them while a newer
+    // sample remains (see HistoryUtils::discardBefore, #1016). All rings are pushed in lockstep with
+    // m_Timestamps, so a single discard count keeps them aligned. discardFront is O(1): no copies,
+    // rebuilds, or allocations.
     const double cutoff = nowSeconds - m_MaxHistorySeconds;
     const std::size_t removeCount = HistoryUtils::discardBefore(m_Timestamps, cutoff, m_History);
     for (auto& [name, history] : m_DiskReadHistory)

@@ -835,11 +835,11 @@ void ProcessModel::trimHistory()
         return;
     }
 
-    // Drop entries older than the configured time window. All rings are pushed
-    // in lockstep with m_Timestamps, so a single discard count keeps them
-    // aligned. discardFront is O(1): no copies, rebuilds, or allocations.
-    // With maxHistorySeconds == 0 the cutoff equals the newest timestamp, so
-    // only the current sample is retained (matching the old deque behavior).
+    // Drop entries older than the configured time window, except the newest of them while a newer
+    // sample remains (see HistoryUtils::discardBefore, #1016). All rings are pushed in lockstep with
+    // m_Timestamps, so a single discard count keeps them aligned. discardFront is O(1): no copies,
+    // rebuilds, or allocations. With maxHistorySeconds == 0 the cutoff equals the newest timestamp,
+    // so the current sample and the one before it are retained.
     const double cutoff = m_Timestamps.latest() - m_MaxHistorySeconds;
     static_cast<void>(HistoryUtils::discardBefore(m_Timestamps,
                                                   cutoff,
