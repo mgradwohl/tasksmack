@@ -104,22 +104,33 @@ TEST(ProcessEnergyTest, TotalsAccumulateAcrossIntervalsAndSurviveAWrap)
     EXPECT_EQ(sample[0].energyMicrojoules, 1'100U);
 }
 
-TEST(ProcessEnergyTest, UnreadableCounterKeepsTotalsUnchanged)
+TEST(ProcessEnergyTest, FailedReadKeepsTotalsAndRestartsTheBaseline)
 {
+    // Different processes are busy before and after the failure, so crediting the energy that
+    // spans the failed read on the next interval's shares would show up as a spike on process 2.
     Attributor attributor;
-    std::vector<Platform::ProcessCounters> sample{process(1, 0)};
+    std::vector<Platform::ProcessCounters> sample{process(1, 0), process(2, 0)};
     attributor.attribute(sample, 1'000, 0);
-    sample = {process(1, 10)};
+
+    sample = {process(1, 10), process(2, 0)}; // process 1 busy
     attributor.attribute(sample, 2'000, 0);
     ASSERT_EQ(sample[0].energyMicrojoules, 1'000U);
+    ASSERT_EQ(sample[1].energyMicrojoules, 0U);
 
-    sample = {process(1, 20)};
+    sample = {process(1, 10), process(2, 10)}; // read fails while process 2 is busy
     attributor.attribute(sample, std::nullopt, 0);
-    EXPECT_EQ(sample[0].energyMicrojoules, 1'000U); // monotonic, reads as 0 W
+    EXPECT_EQ(sample[0].energyMicrojoules, 1'000U); // unchanged: reads as 0 W
+    EXPECT_EQ(sample[1].energyMicrojoules, 0U);
 
-    sample = {process(1, 30)};
-    attributor.attribute(sample, 3'000, 0); // the next good read credits only its own interval's share
-    EXPECT_EQ(sample[0].energyMicrojoules, 2'000U);
+    sample = {process(1, 10), process(2, 20)}; // first good read: only a new baseline
+    attributor.attribute(sample, 5'000, 0);
+    EXPECT_EQ(sample[0].energyMicrojoules, 1'000U);
+    EXPECT_EQ(sample[1].energyMicrojoules, 0U); // no catch-up spike from the 3,000 uJ gap
+
+    sample = {process(1, 10), process(2, 30)};
+    attributor.attribute(sample, 6'000, 0); // normal interval again
+    EXPECT_EQ(sample[0].energyMicrojoules, 1'000U);
+    EXPECT_EQ(sample[1].energyMicrojoules, 1'000U);
 }
 
 TEST(ProcessEnergyTest, ReusedPidIsANewProcess)

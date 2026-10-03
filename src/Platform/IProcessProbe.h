@@ -49,8 +49,10 @@ class IProcessProbe
     /// Used for calculating per-process memory%.
     [[nodiscard]] virtual uint64_t systemTotalMemory() const = 0;
 
-    /// Reads the package energy counter behind per-process power, or nullopt when this platform
-    /// derives per-process power that way (stateless; Domain keeps the per-interval state).
+    /// Reads the package energy counter that ProcessModel shares out between processes per
+    /// interval (stateless; Domain keeps the per-interval state). Returns nullopt when this platform
+    /// doesn't use package-energy attribution: ProcessCounters::energyMicrojoules from enumerate()
+    /// is then used as-is.
     [[nodiscard]] virtual std::optional<PackageEnergyReading> readPackageEnergy() const
     {
         return std::nullopt;

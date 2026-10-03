@@ -48,7 +48,10 @@ class Attributor
     /// Credits the energy used since the previous call to `processes` by their share of the CPU
     /// time used since then, and writes each process's running total to energyMicrojoules.
     /// `systemEnergyUj` is the package counter now, or nullopt if it couldn't be read: totals are
-    /// then reported unchanged, so the counters stay monotonic and read as 0 W for the interval.
+    /// then reported unchanged, so the counters stay monotonic and read as 0 W for the interval,
+    /// and the energy baseline is dropped. The next good read only re-establishes it: the energy
+    /// across a failed read spans more than one interval, and crediting it on the next interval's
+    /// CPU shares would spike whoever happened to be busy then.
     /// A process seen for the first time is credited nothing (its CPU time so far may predate the
     /// interval); processes that have exited are forgotten.
     void attribute(std::span<Platform::ProcessCounters> processes, std::optional<std::uint64_t> systemEnergyUj, std::uint64_t maxRangeUj)
@@ -87,10 +90,7 @@ class Attributor
         }
         m_State = std::move(next);
 
-        if (systemEnergyUj.has_value())
-        {
-            m_PreviousSystemEnergyUj = systemEnergyUj;
-        }
+        m_PreviousSystemEnergyUj = systemEnergyUj; // nullopt after a failed read: see above
     }
 
   private:
