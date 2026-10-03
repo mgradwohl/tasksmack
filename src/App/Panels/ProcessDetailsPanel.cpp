@@ -863,10 +863,12 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
                 m_CpuPlotSystem.assign(cpuSystemData.begin(), cpuSystemData.end());
                 // These bands and lines are drawn with ImPlot directly, so they are capped here like
                 // every plotLineWithFill series (#1022). Reduced together, so the bands still line
-                // up with each other and with the lines; the User line is the user band's top.
+                // up with each other and with the lines. Points are chosen by each drawn value --
+                // User (also the user band's top), System and Total -- not by the cumulative system
+                // top, which stays flat when System rises as User falls and would drop that spike.
                 UI::Widgets::reduceAlignedSeries(m_CpuPlotX,
-                                                 {&yUserTop, &ySystemTop, &m_CpuPlotTotal, &m_CpuPlotSystem},
-                                                 {&m_CpuPlotUser},
+                                                 {&m_CpuPlotUser, &m_CpuPlotSystem, &m_CpuPlotTotal},
+                                                 {&yUserTop, &ySystemTop},
                                                  UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE,
                                                  nowSeconds);
                 y0.assign(m_CpuPlotX.size(), 0.0);

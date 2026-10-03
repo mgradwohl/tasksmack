@@ -653,20 +653,30 @@ void SystemMetricsPanel::renderOverview()
                 auto& ySystemTop = m_CpuStackYSystem;
                 auto& yIowaitTop = m_CpuStackYIowait;
 
+                m_CpuStackSystem.resize(breakdownCount);
+                m_CpuStackIowait.resize(breakdownCount);
                 for (size_t i = 0; i < breakdownCount; ++i)
                 {
                     yUserTop[i] = static_cast<double>(cpuUserData[i]);
-                    ySystemTop[i] = yUserTop[i] + static_cast<double>(cpuSystemData[i]);
-                    yIowaitTop[i] = ySystemTop[i] + static_cast<double>(cpuIowaitData[i]);
+                    m_CpuStackSystem[i] = static_cast<double>(cpuSystemData[i]);
+                    m_CpuStackIowait[i] = static_cast<double>(cpuIowaitData[i]);
+                    ySystemTop[i] = yUserTop[i] + m_CpuStackSystem[i];
+                    yIowaitTop[i] = ySystemTop[i] + m_CpuStackIowait[i];
                 }
 
                 // The bands reach "now" like every plotLineWithFill series: the last sample held to
                 // x = 0 (UI::Widgets::holdLastValueToNow, #1016).
                 m_CpuStackX.assign(breakdownTimeData.begin(), breakdownTimeData.end());
                 // The bands are drawn with ImPlot directly, so they are capped here like every
-                // plotLineWithFill series (#1022), reduced together so they still line up.
-                UI::Widgets::reduceAlignedSeries(
-                    m_CpuStackX, {&yUserTop, &ySystemTop, &yIowaitTop}, {}, UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE, nowSeconds);
+                // plotLineWithFill series (#1022), reduced together so they still line up. Points are
+                // chosen by each band's own value (User is its own top), not by the cumulative tops:
+                // a System spike while User falls by as much leaves System's top flat, and would be
+                // dropped if the tops chose the points.
+                UI::Widgets::reduceAlignedSeries(m_CpuStackX,
+                                                 {&yUserTop, &m_CpuStackSystem, &m_CpuStackIowait},
+                                                 {&ySystemTop, &yIowaitTop},
+                                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE,
+                                                 nowSeconds);
                 y0.assign(m_CpuStackX.size(), 0.0);
                 if (!m_CpuStackX.empty() && m_CpuStackX.back() < 0.0)
                 {

@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <format>
 #include <limits>
+#include <ranges>
 #include <span>
 #include <string>
 #include <utility>
@@ -364,6 +365,33 @@ TEST(ChartWidgetsReduceTest, AlignedReductionCapsStackedSeriesAndKeepsThemAligne
     // The oldest and newest samples are always kept.
     EXPECT_DOUBLE_EQ(carried.front(), 0.0);
     EXPECT_DOUBLE_EQ(x.back(), 0.0);
+}
+
+TEST(ChartWidgetsReduceTest, AlignedReductionKeyedOnBandValuesKeepsASpikeUnderAFlatTop)
+{
+    // #1061 review: System rises from 10 to 30 at one sample while User falls from 50 to 30, so the
+    // cumulative System top stays at 60. Choosing points by the band's own value keeps that spike;
+    // the tops ride along as carried series.
+    const ReduceFixture f;
+    std::vector<double> user(ReduceFixture::COUNT, 50.0);
+    std::vector<double> system(ReduceFixture::COUNT, 10.0);
+    user[1234] = 30.0;
+    system[1234] = 30.0;
+    std::vector<double> systemTop(ReduceFixture::COUNT);
+    for (std::size_t i = 0; i < systemTop.size(); ++i)
+    {
+        systemTop[i] = user[i] + system[i]; // 60 throughout
+    }
+    auto x = f.x;
+
+    reduceAlignedSeries(x, {&user, &system}, {&systemTop}, LINE_PLOT_MAX_POINTS_DENSE, 1000.0);
+
+    ASSERT_LE(x.size(), static_cast<std::size_t>(LINE_PLOT_MAX_POINTS_DENSE));
+    EXPECT_DOUBLE_EQ(std::ranges::max(system), 30.0);
+    EXPECT_DOUBLE_EQ(std::ranges::min(user), 30.0);
+    // The band between User and the System top shows it: 30 thick at the spike, 10 elsewhere.
+    EXPECT_TRUE(
+        std::ranges::any_of(std::views::iota(std::size_t{0}, x.size()), [&](std::size_t k) { return systemTop[k] - user[k] == 30.0; }));
 }
 
 TEST(ChartWidgetsReduceTest, AlignedReductionLeavesShortSeriesAndKeepsGaps)
