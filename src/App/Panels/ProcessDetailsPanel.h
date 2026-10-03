@@ -8,9 +8,9 @@
 #include "UI/FillPlotLayout.h"
 
 #include <cstdint>
-#include <deque>
 #include <memory>
 #include <string>
+#include <vector>
 
 // Forward declaration for ImGui draw list
 struct ImDrawList;
@@ -124,25 +124,27 @@ class ProcessDetailsPanel : public Panel
     float m_LastDeltaSeconds = 0.0F;
     bool m_IsActiveTab = false;
 
-    // History buffers (trimmed by time window)
-    std::deque<double> m_CpuHistory;       // CPU% total history (avoid narrowing)
-    std::deque<double> m_CpuUserHistory;   // CPU% user history (avoid narrowing)
-    std::deque<double> m_CpuSystemHistory; // CPU% system history (avoid narrowing)
-    std::deque<double> m_MemoryHistory;    // Used memory percent (RSS)
-    std::deque<double> m_SharedHistory;    // Shared memory percent (best effort)
-    std::deque<double> m_VirtualHistory;   // Virtual memory bytes (#992)
-    std::deque<double> m_ThreadHistory;    // Thread count history
-    std::deque<double> m_HandleHistory;    // Handle/FD count history
-    std::deque<double> m_PageFaultHistory; // Page faults per second history
-    std::deque<double> m_IoReadHistory;    // Disk read rate (bytes/sec)
-    std::deque<double> m_IoWriteHistory;   // Disk write rate (bytes/sec)
-    std::deque<double> m_NetSentHistory;   // Network send rate (bytes/sec)
-    std::deque<double> m_NetRecvHistory;   // Network receive rate (bytes/sec)
-    std::deque<double> m_PowerHistory;     // Power usage history (watts)
-    std::deque<double> m_GpuUtilHistory;   // GPU utilization % history
-    std::deque<double> m_GpuMemHistory;    // GPU memory bytes history
-    std::deque<double> m_GdiHistory;       // GDI object count history (Windows-only)
-    std::deque<double> m_Timestamps;
+    // History buffers (trimmed by time window). Vectors, not deques: the charts plot the newest
+    // samples in place through spans, where a deque had to be copied out every frame (#1018).
+    // Trimming erases from the front, once per sample, not per frame.
+    std::vector<double> m_CpuHistory;       // CPU% total history (avoid narrowing)
+    std::vector<double> m_CpuUserHistory;   // CPU% user history (avoid narrowing)
+    std::vector<double> m_CpuSystemHistory; // CPU% system history (avoid narrowing)
+    std::vector<double> m_MemoryHistory;    // Used memory percent (RSS)
+    std::vector<double> m_SharedHistory;    // Shared memory percent (best effort)
+    std::vector<double> m_VirtualHistory;   // Virtual memory bytes (#992)
+    std::vector<double> m_ThreadHistory;    // Thread count history
+    std::vector<double> m_HandleHistory;    // Handle/FD count history
+    std::vector<double> m_PageFaultHistory; // Page faults per second history
+    std::vector<double> m_IoReadHistory;    // Disk read rate (bytes/sec)
+    std::vector<double> m_IoWriteHistory;   // Disk write rate (bytes/sec)
+    std::vector<double> m_NetSentHistory;   // Network send rate (bytes/sec)
+    std::vector<double> m_NetRecvHistory;   // Network receive rate (bytes/sec)
+    std::vector<double> m_PowerHistory;     // Power usage history (watts)
+    std::vector<double> m_GpuUtilHistory;   // GPU utilization % history
+    std::vector<double> m_GpuMemHistory;    // GPU memory bytes history
+    std::vector<double> m_GdiHistory;       // GDI object count history (Windows-only)
+    std::vector<double> m_Timestamps;
     double m_MaxHistorySeconds = 300.0;
     double m_PeakMemoryPercent = 0.0; // Peak working set (never decreases)
 

@@ -759,7 +759,7 @@ struct TimeAxisConfig
     double clampedOffset = 0.0;
 };
 
-inline TimeAxisConfig makeTimeAxisConfig(const std::vector<double>& timestamps, double maxHistorySeconds, double desiredOffsetSeconds)
+inline TimeAxisConfig makeTimeAxisConfig(std::span<const double> timestamps, double maxHistorySeconds, double desiredOffsetSeconds)
 {
     TimeAxisConfig cfg;
     cfg.xMin = -maxHistorySeconds;
@@ -787,7 +787,7 @@ inline TimeAxisConfig makeTimeAxisConfig(const std::vector<double>& timestamps, 
 /// double, not float: plotLineWithFill() adds now back to x to bucket samples in absolute time
 /// (reduceSeriesMinMax), and a float x carries a rounding error that changes as now advances, so a
 /// sample near a bucket boundary could still change bucket from frame to frame (#1051 review).
-inline std::vector<double> buildTimeAxis(const std::vector<double>& timestamps, size_t desiredCount, double nowSeconds)
+inline std::vector<double> buildTimeAxis(std::span<const double> timestamps, size_t desiredCount, double nowSeconds)
 {
     const size_t n = std::min(desiredCount, timestamps.size());
     std::vector<double> timeData(n);
@@ -799,7 +799,7 @@ inline std::vector<double> buildTimeAxis(const std::vector<double>& timestamps, 
     return timeData;
 }
 
-inline std::vector<double> buildTimeAxisDoubles(const std::vector<double>& timestamps, size_t desiredCount, double nowSeconds)
+inline std::vector<double> buildTimeAxisDoubles(std::span<const double> timestamps, size_t desiredCount, double nowSeconds)
 {
     const size_t n = std::min(desiredCount, timestamps.size());
     std::vector<double> timeData(n);

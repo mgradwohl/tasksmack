@@ -85,6 +85,31 @@ TEST(HistoryUtilsTest, DiscardBeforeWithFutureCutoffEmptiesBuffers)
     EXPECT_TRUE(aligned.empty());
 }
 
+TEST(HistoryUtilsTest, TrimCountBeforeKeepsTheAdjacentAnchor)
+{
+    // Samples 1 s apart, cutoff at 2.5: 0 and 1 go, 2 stays as the anchor just before the window.
+    const std::vector<double> timestamps = {0.0, 1.0, 2.0, 3.0, 4.0};
+    EXPECT_EQ(HistoryUtils::trimCountBefore(timestamps, 2.5), 2U);
+    // Nothing before the cutoff: nothing goes.
+    EXPECT_EQ(HistoryUtils::trimCountBefore(timestamps, 0.0), 0U);
+    // The cutoff exactly on a sample: that sample is in the window, its predecessor is the anchor.
+    EXPECT_EQ(HistoryUtils::trimCountBefore(timestamps, 3.0), 2U);
+}
+
+TEST(HistoryUtilsTest, TrimCountBeforeDropsTheAnchorAcrossAGap)
+{
+    // The same case as DiscardBeforeDropsTheAnchorAcrossAGap, for a contiguous history.
+    const std::vector<double> timestamps = {1.0, 20.0};
+    EXPECT_EQ(HistoryUtils::trimCountBefore(timestamps, 15.0), 1U);
+}
+
+TEST(HistoryUtilsTest, TrimCountBeforeRemovesEverythingWhenAllAreBeforeTheCutoff)
+{
+    const std::vector<double> timestamps = {1.0, 2.0};
+    EXPECT_EQ(HistoryUtils::trimCountBefore(timestamps, 100.0), 2U);
+    EXPECT_EQ(HistoryUtils::trimCountBefore(std::vector<double>{}, 100.0), 0U);
+}
+
 TEST(HistoryUtilsTest, ToVectorCopiesHistoryBufferChronologically)
 {
     HistoryBuffer<int> history(3);

@@ -36,7 +36,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <format>
 #include <limits>
 #include <optional>
@@ -65,20 +64,16 @@ constexpr size_t PROCESS_NOW_BAR_COLUMNS = 3;
 // Floor on the Confirm Action dialog's Yes/No buttons, in ems: 120px at the reference em.
 constexpr float CONFIRM_BUTTON_MIN_EM = 11.25F;
 
-template<typename T> [[nodiscard]] auto tailVector(const std::deque<T>& data, std::size_t count) -> std::vector<T>
+// The newest @p count samples of a history, viewed in place (#1018: this was a per-frame copy).
+[[nodiscard]] auto tailSpan(const std::vector<double>& data, std::size_t count) -> std::span<const double>
 {
-    count = std::min(count, data.size());
+    return UI::Widgets::tailAlignedSpan(data, count).values;
+}
 
-    std::vector<T> out;
-    out.reserve(count);
-
-    const std::size_t start = data.size() - count;
-    for (std::size_t i = start; i < data.size(); ++i)
-    {
-        out.push_back(data[i]);
-    }
-
-    return out;
+// Drops the oldest @p count samples of a history (all of them if it has fewer).
+void dropOldest(std::vector<double>& data, std::size_t count)
+{
+    data.erase(data.begin(), data.begin() + static_cast<std::ptrdiff_t>(std::min(count, data.size())));
 }
 
 // ImPlot series counts are int; keep conversion explicit + checked.
@@ -808,10 +803,10 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
         const size_t alignedCount =
             std::min({m_Timestamps.size(), m_CpuHistory.size(), m_CpuUserHistory.size(), m_CpuSystemHistory.size()});
 
-        const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
-        std::vector<double> cpuData = tailVector(m_CpuHistory, alignedCount);
-        std::vector<double> cpuUserData = tailVector(m_CpuUserHistory, alignedCount);
-        std::vector<double> cpuSystemData = tailVector(m_CpuSystemHistory, alignedCount);
+        const auto timestamps = tailSpan(m_Timestamps, alignedCount);
+        const auto cpuData = tailSpan(m_CpuHistory, alignedCount);
+        const auto cpuUserData = tailSpan(m_CpuUserHistory, alignedCount);
+        const auto cpuSystemData = tailSpan(m_CpuSystemHistory, alignedCount);
 
         const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
         std::vector<double> cpuTimeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
@@ -964,13 +959,13 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
 
         if (alignedCount > 0)
         {
-            const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
-            std::vector<double> usedData = tailVector(m_MemoryHistory, alignedCount);
+            const auto timestamps = tailSpan(m_Timestamps, alignedCount);
+            const auto usedData = tailSpan(m_MemoryHistory, alignedCount);
             // Shared is not reported on Windows; its line, tooltip row and bar are left out there
             // rather than shown as a permanent 0 (#1035).
             const bool showShared = m_ProcessCapabilities.hasSharedMemory;
-            std::vector<double> sharedData = showShared ? tailVector(m_SharedHistory, alignedCount) : std::vector<double>{};
-            std::vector<double> virtData = tailVector(m_VirtualHistory, alignedCount);
+            const auto sharedData = showShared ? tailSpan(m_SharedHistory, alignedCount) : std::span<const double>{};
+            const auto virtData = tailSpan(m_VirtualHistory, alignedCount);
 
             const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
             std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
@@ -1137,10 +1132,10 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
 
     const auto& theme = UI::Theme::get();
 
-    const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
-    std::vector<double> threadData = tailVector(m_ThreadHistory, alignedCount);
-    std::vector<double> handleData = tailVector(m_HandleHistory, alignedCount);
-    std::vector<double> faultData = tailVector(m_PageFaultHistory, alignedCount);
+    const auto timestamps = tailSpan(m_Timestamps, alignedCount);
+    const auto threadData = tailSpan(m_ThreadHistory, alignedCount);
+    const auto handleData = tailSpan(m_HandleHistory, alignedCount);
+    const auto faultData = tailSpan(m_PageFaultHistory, alignedCount);
 
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
     std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
@@ -1149,7 +1144,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
     // The GDI history can be shorter than the others, and ends at the same newest sample, so it
     // starts gdiTimeOffset timestamps in (#1001).
     const size_t gdiAlignedCount = std::min(alignedCount, m_GdiHistory.size());
-    std::vector<double> gdiData = tailVector(m_GdiHistory, gdiAlignedCount);
+    const auto gdiData = tailSpan(m_GdiHistory, gdiAlignedCount);
     const size_t gdiTimeOffset = Detail::seriesTimeOffset(alignedCount, gdiData.size());
     const bool hasGdiSamples = Detail::hasAnySample(gdiData);
 #endif
@@ -1330,9 +1325,9 @@ void ProcessDetailsPanel::renderIoStats(UI::Widgets::FillPlotLayout& fill)
     const auto& theme = UI::Theme::get();
     const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
 
-    const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
-    std::vector<double> readData = tailVector(m_IoReadHistory, alignedCount);
-    std::vector<double> writeData = tailVector(m_IoWriteHistory, alignedCount);
+    const auto timestamps = tailSpan(m_Timestamps, alignedCount);
+    const auto readData = tailSpan(m_IoReadHistory, alignedCount);
+    const auto writeData = tailSpan(m_IoWriteHistory, alignedCount);
 
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
     std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
@@ -1428,9 +1423,9 @@ void ProcessDetailsPanel::renderNetworkStats(UI::Widgets::FillPlotLayout& fill)
     const auto& theme = UI::Theme::get();
     const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
 
-    const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
-    std::vector<double> sentData = tailVector(m_NetSentHistory, alignedCount);
-    std::vector<double> recvData = tailVector(m_NetRecvHistory, alignedCount);
+    const auto timestamps = tailSpan(m_Timestamps, alignedCount);
+    const auto sentData = tailSpan(m_NetSentHistory, alignedCount);
+    const auto recvData = tailSpan(m_NetRecvHistory, alignedCount);
 
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
     std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
@@ -1537,8 +1532,8 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc, 
     const auto& theme = UI::Theme::get();
     const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
 
-    std::vector<double> powerData = tailVector(m_PowerHistory, alignedCount);
-    const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
+    const auto powerData = tailSpan(m_PowerHistory, alignedCount);
+    const auto timestamps = tailSpan(m_Timestamps, alignedCount);
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
     std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
 
@@ -1818,9 +1813,9 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
         const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
 
         // Extract only what we need for the graphs
-        const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
-        const std::vector<double> gpuUtilVec = tailVector(m_GpuUtilHistory, alignedCount);
-        const std::vector<double> gpuMemVec = tailVector(m_GpuMemHistory, alignedCount);
+        const auto timestamps = tailSpan(m_Timestamps, alignedCount);
+        const auto gpuUtilVec = tailSpan(m_GpuUtilHistory, alignedCount);
+        const auto gpuMemVec = tailSpan(m_GpuMemHistory, alignedCount);
 
         const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
         std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
@@ -1954,46 +1949,35 @@ void ProcessDetailsPanel::trimHistory(double nowSeconds)
     // instead of leaving an empty strip there after every trim (#1016).
     // Only while a newer sample remains (the newest is always the current sample, so here one does
     // unless the window is shorter than the time since it -- then everything goes).
-    size_t removeCount = 0;
-    while (m_Timestamps.size() >= 2 && m_Timestamps[1] < cutoff)
-    {
-        m_Timestamps.pop_front();
-        ++removeCount;
-    }
-    // The one left before the cutoff is the anchor; drop it too when nothing newer remains or it is
-    // across a gap (Domain::HistoryUtils::keepTrimAnchor).
-    if (!m_Timestamps.empty() && m_Timestamps.front() < cutoff &&
-        (m_Timestamps.size() == 1 || !Domain::HistoryUtils::keepTrimAnchor(m_Timestamps[0], m_Timestamps[1], cutoff, m_Timestamps.back())))
-    {
-        m_Timestamps.pop_front();
-        ++removeCount;
-    }
+    // The anchor is dropped too when nothing newer remains or it is across a gap
+    // (Domain::HistoryUtils::keepTrimAnchor).
+    const size_t removeCount = Domain::HistoryUtils::trimCountBefore(m_Timestamps, cutoff);
 
-    auto trimDeque = [removeCount](auto& dq)
+    // One erase per buffer rather than a pop_front per sample: vector erase from the front shifts
+    // the rest, so it must not run once per dropped sample.
+    const auto trimHistoryFront = [removeCount](std::vector<double>& history)
     {
-        for (size_t i = 0; i < removeCount && !dq.empty(); ++i)
-        {
-            dq.pop_front();
-        }
+        dropOldest(history, removeCount);
     };
+    trimHistoryFront(m_Timestamps);
 
-    trimDeque(m_CpuHistory);
-    trimDeque(m_CpuUserHistory);
-    trimDeque(m_CpuSystemHistory);
-    trimDeque(m_MemoryHistory);
-    trimDeque(m_SharedHistory);
-    trimDeque(m_VirtualHistory);
-    trimDeque(m_ThreadHistory);
-    trimDeque(m_HandleHistory);
-    trimDeque(m_PageFaultHistory);
-    trimDeque(m_IoReadHistory);
-    trimDeque(m_IoWriteHistory);
-    trimDeque(m_NetSentHistory);
-    trimDeque(m_NetRecvHistory);
-    trimDeque(m_PowerHistory);
-    trimDeque(m_GpuUtilHistory);
-    trimDeque(m_GpuMemHistory);
-    trimDeque(m_GdiHistory);
+    trimHistoryFront(m_CpuHistory);
+    trimHistoryFront(m_CpuUserHistory);
+    trimHistoryFront(m_CpuSystemHistory);
+    trimHistoryFront(m_MemoryHistory);
+    trimHistoryFront(m_SharedHistory);
+    trimHistoryFront(m_VirtualHistory);
+    trimHistoryFront(m_ThreadHistory);
+    trimHistoryFront(m_HandleHistory);
+    trimHistoryFront(m_PageFaultHistory);
+    trimHistoryFront(m_IoReadHistory);
+    trimHistoryFront(m_IoWriteHistory);
+    trimHistoryFront(m_NetSentHistory);
+    trimHistoryFront(m_NetRecvHistory);
+    trimHistoryFront(m_PowerHistory);
+    trimHistoryFront(m_GpuUtilHistory);
+    trimHistoryFront(m_GpuMemHistory);
+    trimHistoryFront(m_GdiHistory);
 
     // Keep all history buffers aligned to the smallest non-empty length.
     size_t minSize = std::numeric_limits<size_t>::max();
@@ -2026,11 +2010,11 @@ void ProcessDetailsPanel::trimHistory(double nowSeconds)
 
     if (minSize != std::numeric_limits<size_t>::max())
     {
-        auto trimToMin = [minSize](auto& dq)
+        const auto trimToMin = [minSize](std::vector<double>& history)
         {
-            while (dq.size() > minSize)
+            if (history.size() > minSize)
             {
-                dq.pop_front();
+                dropOldest(history, history.size() - minSize);
             }
         };
 
