@@ -709,7 +709,7 @@ void SystemMetricsPanel::renderOverview()
                                  cpuTimeData.data(),
                                  cpuData.data(),
                                  UI::Format::checkedCount(cpuData.size()),
-                                 {ImPlotProp_LineColor, theme.scheme().chartCpu, ImPlotProp_LineWeight, 2.0F});
+                                 {ImPlotProp_LineColor, theme.scheme().chartCpu, ImPlotProp_LineWeight, UI::Widgets::lineWeight(2.0F)});
 
                 if (ImPlot::IsPlotHovered())
                 {

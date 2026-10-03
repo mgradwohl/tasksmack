@@ -837,19 +837,20 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
                                      cpuTimeData.data(),
                                      cpuData.data(),
                                      plotCount,
-                                     {ImPlotProp_LineColor, theme.scheme().chartCpu, ImPlotProp_LineWeight, 2.0F});
+                                     {ImPlotProp_LineColor, theme.scheme().chartCpu, ImPlotProp_LineWeight, UI::Widgets::lineWeight(2.0F)});
 
                     ImPlot::PlotLine("User",
                                      cpuTimeData.data(),
                                      cpuUserData.data(),
                                      plotCount,
-                                     {ImPlotProp_LineColor, theme.scheme().cpuUser, ImPlotProp_LineWeight, 1.8F});
+                                     {ImPlotProp_LineColor, theme.scheme().cpuUser, ImPlotProp_LineWeight, UI::Widgets::lineWeight(1.8F)});
 
-                    ImPlot::PlotLine("System",
-                                     cpuTimeData.data(),
-                                     cpuSystemData.data(),
-                                     plotCount,
-                                     {ImPlotProp_LineColor, theme.scheme().cpuSystem, ImPlotProp_LineWeight, 1.8F});
+                    ImPlot::PlotLine(
+                        "System",
+                        cpuTimeData.data(),
+                        cpuSystemData.data(),
+                        plotCount,
+                        {ImPlotProp_LineColor, theme.scheme().cpuSystem, ImPlotProp_LineWeight, UI::Widgets::lineWeight(1.8F)});
 
                     if (ImPlot::IsPlotHovered())
                     {
@@ -962,11 +963,12 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
                         const double peakY = m_PeakMemoryPercent;
                         std::array<double, 2> peakX = {axisConfig.xMin, axisConfig.xMax};
                         std::array<double, 2> peakYVals = {peakY, peakY};
-                        ImPlot::PlotLine("Peak",
-                                         peakX.data(),
-                                         peakYVals.data(),
-                                         2,
-                                         {ImPlotProp_LineColor, theme.scheme().chartPeakLine, ImPlotProp_LineWeight, 1.5F});
+                        ImPlot::PlotLine(
+                            "Peak",
+                            peakX.data(),
+                            peakYVals.data(),
+                            2,
+                            {ImPlotProp_LineColor, theme.scheme().chartPeakLine, ImPlotProp_LineWeight, UI::Widgets::lineWeight(1.5F)});
                     }
 
                     if (!usedData.empty())

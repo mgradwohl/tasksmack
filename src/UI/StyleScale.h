@@ -56,4 +56,17 @@ inline constexpr float STYLE_SCALE_MIN = 0.25F;
     return std::max(STYLE_SCALE_MIN, (safePt / STYLE_REFERENCE_PT) * safeScale);
 }
 
+/// Thinnest a chart line is drawn: one pixel, so a scale below 1.0 (the Small preset) cannot thin a
+/// 1px line into a faint sub-pixel smear.
+inline constexpr float LINE_WEIGHT_MIN_PX = 1.0F;
+
+/// A chart line weight authored at the reference configuration, scaled like the rest of the style
+/// (#971). Line weights were pixel literals, so a 2px series line stayed 2px beside text 2.8 times
+/// the reference size at Extra Large on a 175% display.
+[[nodiscard]] inline float scaledLineWeight(float authoredPx, float styleScale) noexcept
+{
+    const float safeScale = (std::isfinite(styleScale) && styleScale > 0.0F) ? styleScale : 1.0F;
+    return std::max(LINE_WEIGHT_MIN_PX, authoredPx * safeScale);
+}
+
 } // namespace UI

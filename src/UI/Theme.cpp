@@ -494,6 +494,29 @@ void Theme::applyImGuiStyle() const
     plotStyle.Colors[ImPlotCol_LegendBg] = s.popupBg;
     plotStyle.Colors[ImPlotCol_LegendBorder] = s.border;
 
+    // ImPlot's sizes, scaled like the ImGui style above (#971): these are ImPlot's own defaults,
+    // authored here so they track the font and display instead of staying 5-10px beside text up to
+    // 2.8 times the reference size. Re-assigned from the literals on every call, so they cannot
+    // compound. Left at ImPlot's pixel defaults on purpose:
+    // - PlotPadding and LabelPadding come straight out of the plotting area. Scaled, they took about
+    //   60px from a chart's data area at Extra Large on 175% (170px -> 110px), squeezing the axis
+    //   labels together, and the fill layout's chart heights have no room to give.
+    // - MajorTickLen and MinorTickLen: ticks are drawn inside the plotting area, over the data.
+    //   Scaled, a major tick was 28px tall at Extra Large on 175% and cut through the band where
+    //   low values are drawn.
+    // - Line thicknesses (border, ticks, grid) are hairlines, as the ImGui borders are.
+    // - PlotMinSize and PlotDefaultSize: every chart passes its own height, and a scaled 150px
+    //   minimum would override the fill layout's heights at large scales.
+    plotStyle.PlotPadding = ImVec2(10.0F, 10.0F);
+    plotStyle.LabelPadding = ImVec2(5.0F, 5.0F);
+    plotStyle.MajorTickLen = ImVec2(10.0F, 10.0F);
+    plotStyle.MinorTickLen = ImVec2(5.0F, 5.0F);
+    plotStyle.LegendPadding = ImVec2(10.0F * scale, 10.0F * scale);
+    plotStyle.LegendInnerPadding = ImVec2(5.0F * scale, 5.0F * scale);
+    plotStyle.LegendSpacing = ImVec2(5.0F * scale, 0.0F);
+    plotStyle.MousePosPadding = ImVec2(10.0F * scale, 10.0F * scale);
+    plotStyle.AnnotationPadding = ImVec2(2.0F * scale, 2.0F * scale);
+
     // CRITICAL: Bust ImPlot's color cache to force re-read of style colors
     // ImPlot caches colors when SetupAxis() is called - without this,
     // runtime theme changes won't update existing plots' axis labels/ticks

@@ -152,7 +152,7 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                                  xLine.data(),
                                  yLine.data(),
                                  2,
-                                 {ImPlotProp_LineColor, theme.scheme().textWarning, ImPlotProp_LineWeight, 1.5F});
+                                 {ImPlotProp_LineColor, theme.scheme().textWarning, ImPlotProp_LineWeight, UI::Widgets::lineWeight(1.5F)});
             }
 
             // Tooltip on hover

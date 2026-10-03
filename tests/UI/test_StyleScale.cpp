@@ -56,5 +56,24 @@ TEST(StyleScaleTest, ScaleIsNeverBelowTheFloor)
     EXPECT_GE(computeStyleScale(0.001F, 0.001F), STYLE_SCALE_MIN);
 }
 
+TEST(StyleScaleTest, LineWeightIsUnchangedAtTheReferenceConfiguration)
+{
+    EXPECT_FLOAT_EQ(scaledLineWeight(2.0F, 1.0F), 2.0F);
+    EXPECT_FLOAT_EQ(scaledLineWeight(1.5F, 1.0F), 1.5F);
+}
+
+TEST(StyleScaleTest, LineWeightTracksTheStyleScale)
+{
+    // A 2px series line beside text 2.8 times the reference size (Extra Large on 175%) (#971).
+    EXPECT_FLOAT_EQ(scaledLineWeight(2.0F, computeStyleScale(12.0F, 1.75F)), 5.25F);
+    EXPECT_FLOAT_EQ(scaledLineWeight(2.0F, 0.75F), 1.5F); // Small
+}
+
+TEST(StyleScaleTest, LineWeightIsNeverThinnerThanOnePixel)
+{
+    EXPECT_FLOAT_EQ(scaledLineWeight(1.0F, 0.75F), LINE_WEIGHT_MIN_PX);
+    EXPECT_FLOAT_EQ(scaledLineWeight(2.0F, 0.0F), 2.0F); // a degenerate scale falls back to 1.0
+}
+
 } // namespace
 } // namespace UI
