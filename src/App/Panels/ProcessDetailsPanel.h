@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 // Forward declaration for ImGui draw list
 struct ImDrawList;
