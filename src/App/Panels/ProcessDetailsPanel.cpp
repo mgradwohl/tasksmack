@@ -907,21 +907,22 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
             const double virtNowVal = virtData.empty() ? 0.0 : virtData.back();
 
             std::vector<NowBar> memoryBars;
-            // Tooltip shows percent-only to stay consistent with the bar, which is driven by history samples.
-            // Using live smoothed bytes here would mix sources and can disagree with the displayed bar value.
+            // No tooltipText: the hover tooltip is "label: value" (selectNowBarTooltip), percent-only to
+            // stay consistent with the bar, which is driven by history samples. Live smoothed bytes would
+            // mix sources and could disagree with the displayed bar value.
             memoryBars.push_back({.valueText = UI::Format::percentCompact(usedNow),
                                   .label = "Memory Used",
-                                  .tooltipText = std::format("Memory Used: {}", UI::Format::percentCompact(usedNow)),
+                                  .tooltipText = {},
                                   .value01 = UI::Format::percent01(usedNow),
                                   .color = theme.scheme().chartMemory});
             memoryBars.push_back({.valueText = UI::Format::percentCompact(sharedNow),
                                   .label = "Shared",
-                                  .tooltipText = std::format("Shared: {}", UI::Format::percentCompact(sharedNow)),
+                                  .tooltipText = {},
                                   .value01 = UI::Format::percent01(sharedNow),
                                   .color = theme.scheme().chartCpu});
             memoryBars.push_back({.valueText = UI::Format::percentCompact(virtNowVal),
                                   .label = "Virtual",
-                                  .tooltipText = std::format("Virtual: {}", UI::Format::percentCompact(virtNowVal)),
+                                  .tooltipText = {},
                                   .value01 = UI::Format::percent01(virtNowVal),
                                   .color = theme.scheme().chartIo});
 
@@ -1078,8 +1079,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
 
     const NowBar faultsBar{.valueText = UI::Format::formatCountPerSecond(m_SmoothedUsage.pageFaultsPerSec),
                            .label = "Page Faults",
-                           .tooltipText =
-                               std::format("Page Faults: {}", UI::Format::formatCountPerSecond(m_SmoothedUsage.pageFaultsPerSec)),
+                           .tooltipText = {},
                            .value01 = (faultMax > 0.0) ? std::clamp(m_SmoothedUsage.pageFaultsPerSec / faultMax, 0.0, 1.0) : 0.0,
                            .color = theme.scheme().chartIo};
 
@@ -1243,19 +1243,17 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc, UI:
     const auto readUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.ioReadBytesPerSec);
     const auto writeUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.ioWriteBytesPerSec);
 
-    const NowBar readBar{
-        .valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioReadBytesPerSec, readUnit),
-        .label = "Disk Read",
-        .tooltipText = std::format("Disk Read: {}", UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioReadBytesPerSec, readUnit)),
-        .value01 = (readMax > 0.0) ? std::clamp(m_SmoothedUsage.ioReadBytesPerSec / readMax, 0.0, 1.0) : 0.0,
-        .color = theme.scheme().chartIo};
+    const NowBar readBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioReadBytesPerSec, readUnit),
+                         .label = "Disk Read",
+                         .tooltipText = {},
+                         .value01 = (readMax > 0.0) ? std::clamp(m_SmoothedUsage.ioReadBytesPerSec / readMax, 0.0, 1.0) : 0.0,
+                         .color = theme.scheme().chartIo};
 
-    const NowBar writeBar{
-        .valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioWriteBytesPerSec, writeUnit),
-        .label = "Disk Write",
-        .tooltipText = std::format("Disk Write: {}", UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioWriteBytesPerSec, writeUnit)),
-        .value01 = (writeMax > 0.0) ? std::clamp(m_SmoothedUsage.ioWriteBytesPerSec / writeMax, 0.0, 1.0) : 0.0,
-        .color = theme.scheme().chartIoWrite};
+    const NowBar writeBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioWriteBytesPerSec, writeUnit),
+                          .label = "Disk Write",
+                          .tooltipText = {},
+                          .value01 = (writeMax > 0.0) ? std::clamp(m_SmoothedUsage.ioWriteBytesPerSec / writeMax, 0.0, 1.0) : 0.0,
+                          .color = theme.scheme().chartIoWrite};
 
     // Keep the plot and its hover tooltip together: both consume the same aligned
     // vectors, and the lambda is rendered alongside the matching NowBars below.
@@ -1461,7 +1459,7 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc, 
 
     const NowBar powerBar{.valueText = UI::Format::formatPowerOrZero(m_SmoothedUsage.powerWatts),
                           .label = "Power Usage",
-                          .tooltipText = std::format("Power: {}", UI::Format::formatPowerOrZero(m_SmoothedUsage.powerWatts)),
+                          .tooltipText = {},
                           .value01 = (powerMax > 0.0) ? std::clamp(m_SmoothedUsage.powerWatts / powerMax, 0.0, 1.0) : 0.0,
                           .color = theme.scheme().textInfo};
 
@@ -1846,7 +1844,7 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs()
         const NowBar gpuUtilBar{
             .valueText = UI::Format::percentCompact(m_SmoothedUsage.gpuUtilPercent),
             .label = "GPU Utilization",
-            .tooltipText = std::format("GPU Utilization: {}", UI::Format::percentCompact(m_SmoothedUsage.gpuUtilPercent)),
+            .tooltipText = {},
             .value01 = m_SmoothedUsage.gpuUtilPercent / 100.0,
             .color = theme.scheme().gpuUtilization,
         };
@@ -1855,7 +1853,7 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs()
         const NowBar gpuMemBar{
             .valueText = UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes),
             .label = "GPU Memory",
-            .tooltipText = std::format("GPU Memory: {}", UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes)),
+            .tooltipText = {},
             .value01 = (gpuMemMax > 0.0) ? std::clamp(m_SmoothedUsage.gpuMemoryBytes / gpuMemMax, 0.0, 1.0) : 0.0,
             .color = theme.scheme().gpuMemory,
         };
