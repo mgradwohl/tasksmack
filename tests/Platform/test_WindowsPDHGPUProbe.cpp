@@ -451,6 +451,43 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, StaleCacheIsNotRepeatedAfterACollectFailu
     EXPECT_TRUE(probe.adapterUtilization().empty());
 }
 
+TEST(ParseAdapterInstanceLuidTest, AcceptsAdapterInstancesOnly)
+{
+    EXPECT_EQ(PDHGPUProbeImplDetail::parseAdapterInstanceLuid("luid_0x00000000_0x0001752D_phys_0"), "0x00000000_0x0001752D");
+    EXPECT_EQ(PDHGPUProbeImplDetail::parseAdapterInstanceLuid("luid_0x0_0x1_phys_12"), "0x0_0x1");
+    EXPECT_TRUE(PDHGPUProbeImplDetail::parseAdapterInstanceLuid("pid_1_luid_0x0_0x1_phys_0").empty());
+    EXPECT_TRUE(PDHGPUProbeImplDetail::parseAdapterInstanceLuid("luid_0x0_0x1").empty());
+    EXPECT_TRUE(PDHGPUProbeImplDetail::parseAdapterInstanceLuid("luid_0xZZ_0x1_phys_0").empty());
+    EXPECT_TRUE(PDHGPUProbeImplDetail::parseAdapterInstanceLuid("luid_0x0_0x1_phys_").empty());
+    EXPECT_TRUE(PDHGPUProbeImplDetail::parseAdapterInstanceLuid("luid_0x_0x1_phys_0").empty());
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, AdapterMemoryIsReadFromTheAdapterCounters)
+{
+    // The GPU tab's Memory line used to be TaskSmack's own usage (DXGI QueryVideoMemoryInfo);
+    // it now comes from the adapter-wide counters, summed over physical nodes (#1029).
+    auto impl = makeInjectedImpl();
+    ASSERT_NE(impl->adapterDedicatedCounter, nullptr);
+    ASSERT_NE(impl->adapterSharedCounter, nullptr);
+    m_scenario->items[impl->adapterDedicatedCounter] = {
+        {.name = L"luid_0x0_0x1_phys_0", .largeValue = 300},
+        {.name = L"luid_0x0_0x2_phys_0", .largeValue = 5000},
+    };
+    m_scenario->items[impl->adapterSharedCounter] = {
+        {.name = L"luid_0x0_0x1_phys_0", .largeValue = 1000},
+        {.name = L"luid_0x0_0x1_phys_1", .largeValue = 500},
+        {.name = L"not_an_adapter_instance", .largeValue = 999},
+    };
+    PDHGPUProbe probe(std::move(impl));
+    static_cast<void>(probe.readProcessGPUCounters());
+
+    const auto memory = probe.adapterMemory();
+    ASSERT_EQ(memory.size(), 2U);
+    EXPECT_EQ(memory.at("GPU_0x0_0x1").dedicatedBytes, 300ULL);
+    EXPECT_EQ(memory.at("GPU_0x0_0x1").sharedBytes, 1500ULL);
+    EXPECT_EQ(memory.at("GPU_0x0_0x2").dedicatedBytes, 5000ULL);
+}
+
 TEST_F(WindowsPDHGPUProbeInjectedTest, MemoryCounterSkipsFailingCstatusAndMalformedNames)
 {
     auto impl = makeInjectedImpl();

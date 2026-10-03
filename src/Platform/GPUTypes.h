@@ -17,6 +17,11 @@ struct GPUInfo
     std::string driverVersion;
     bool isIntegrated = false;     // Integrated vs discrete
     std::uint32_t deviceIndex = 0; // Vendor-specific index
+    /// Whether this adapter's sensor metrics (temperature, power, clocks, fan, encoder/decoder)
+    /// are actually read. GPUCapabilities describes the probe as a whole, so on a hybrid Windows
+    /// laptop NVML's capabilities used to apply to the Intel iGPU too, which then showed
+    /// Temperature, Power and Clock series stuck at 0 (#1040). True unless a probe knows otherwise.
+    bool hasSensorMetrics = true;
 };
 
 // Raw GPU counters (Platform layer provides raw values only)

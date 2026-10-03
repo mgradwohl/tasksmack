@@ -88,6 +88,7 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
         if (cached.empty())
         {
             m_Impl->lastAdapterUtilization.clear();
+            m_Impl->lastAdapterMemory.clear();
         }
         return cached;
     }
@@ -215,6 +216,36 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
     accumulateMemory(
         m_Impl->sharedMemoryCounter, m_Impl->sharedMemoryPositional, [](AggData& agg) -> std::uint64_t& { return agg.sharedMemory; });
 
+    // Adapter-wide memory in use (#1029). One instance per adapter and physical node, so names are
+    // parsed directly rather than through the per-process instance caches.
+    std::unordered_map<std::string, AdapterMemoryUsage> adapterMemory;
+    const auto accumulateAdapterMemory = [&](PDH_HCOUNTER counter, std::uint64_t AdapterMemoryUsage::* member)
+    {
+        auto* items = m_Impl->readCounterArray(counter, PDH_FMT_LARGE, itemCount);
+        if (items == nullptr)
+        {
+            return;
+        }
+        for (const auto& item : std::span{items, itemCount})
+        {
+            if (item.FmtValue.CStatus != ERROR_SUCCESS && item.FmtValue.CStatus != PDH_CSTATUS_NEW_DATA)
+            {
+                continue;
+            }
+            const std::string luid =
+                PDHGPUProbeImplDetail::parseAdapterInstanceLuid(PDHGPUProbeImplDetail::wideToUtf8Fallback(std::wstring(item.szName)));
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access) - PDH_FMT_LARGE selects largeValue
+            if (!luid.empty() && item.FmtValue.largeValue > 0)
+            {
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access) - PDH_FMT_LARGE selects largeValue
+                adapterMemory["GPU_" + luid].*member += static_cast<std::uint64_t>(item.FmtValue.largeValue);
+            }
+        }
+    };
+    accumulateAdapterMemory(m_Impl->adapterDedicatedCounter, &AdapterMemoryUsage::dedicatedBytes);
+    accumulateAdapterMemory(m_Impl->adapterSharedCounter, &AdapterMemoryUsage::sharedBytes);
+    m_Impl->lastAdapterMemory = std::move(adapterMemory);
+
     // Convert to ProcessGPUCounters
     for (const auto& [key, agg] : aggregated)
     {
@@ -258,6 +289,11 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
 std::unordered_map<std::string, double> PDHGPUProbe::adapterUtilization() const
 {
     return m_Impl ? m_Impl->lastAdapterUtilization : std::unordered_map<std::string, double>{};
+}
+
+std::unordered_map<std::string, AdapterMemoryUsage> PDHGPUProbe::adapterMemory() const
+{
+    return m_Impl ? m_Impl->lastAdapterMemory : std::unordered_map<std::string, AdapterMemoryUsage>{};
 }
 
 PDHGPUProbe::CacheStats PDHGPUProbe::instanceCacheStats() const

@@ -3,6 +3,7 @@
 /// has nothing to chart (#927).
 
 #include "App/Panels/GpuSection.h"
+#include "Platform/GPUTypes.h"
 
 #include <gtest/gtest.h>
 
@@ -16,6 +17,36 @@ using GpuSection::EmptyReason;
 
 // GPUModel publishes on every successful refresh, even one that finds no GPU, so the absence of a
 // publication is a missing probe or a failed read -- never an ordinary wait.
+TEST(GpuSectionCapabilitiesTest, AnAdapterWithoutSensorsGetsNoSensorSeries)
+{
+    // On a hybrid laptop NVML's capabilities belong to the NVIDIA GPU; the Intel iGPU, whose
+    // sensors are not read, must not inherit them (#1040).
+    Platform::GPUCapabilities probe;
+    probe.hasTemperature = true;
+    probe.hasHotspotTemp = true;
+    probe.hasPowerMetrics = true;
+    probe.hasClockSpeeds = true;
+    probe.hasFanSpeed = true;
+    probe.hasEncoderDecoder = true;
+    probe.hasEngineUtilization = true;
+    probe.hasPerProcessMetrics = true;
+
+    const auto withSensors = GpuSection::capabilitiesForGpu(probe, true);
+    const auto withoutSensors = GpuSection::capabilitiesForGpu(probe, false);
+
+    EXPECT_TRUE(withSensors.hasTemperature);
+    EXPECT_TRUE(withSensors.hasEncoderDecoder);
+    EXPECT_FALSE(withoutSensors.hasTemperature);
+    EXPECT_FALSE(withoutSensors.hasHotspotTemp);
+    EXPECT_FALSE(withoutSensors.hasPowerMetrics);
+    EXPECT_FALSE(withoutSensors.hasClockSpeeds);
+    EXPECT_FALSE(withoutSensors.hasFanSpeed);
+    EXPECT_FALSE(withoutSensors.hasEncoderDecoder);
+    // Utilization and per-process data come from PDH for every adapter.
+    EXPECT_TRUE(withoutSensors.hasEngineUtilization);
+    EXPECT_TRUE(withoutSensors.hasPerProcessMetrics);
+}
+
 TEST(GpuSectionEmptyStateTest, NoPublicationIsUnavailable)
 {
     EXPECT_EQ(classifyEmptyState(/*hasPublication=*/false, /*devicesKnown=*/false, /*deviceCount=*/0, /*snapshotCount=*/0),

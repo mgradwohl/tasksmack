@@ -12,6 +12,13 @@
 namespace Platform
 {
 
+/// GPU memory in use on one adapter, from the PDH "GPU Adapter Memory" counters.
+struct AdapterMemoryUsage
+{
+    std::uint64_t dedicatedBytes = 0;
+    std::uint64_t sharedBytes = 0;
+};
+
 /// @brief PDH-based GPU probe for per-process GPU engine utilization
 ///
 /// Uses Windows Performance Counters (PDH) to query GPU Engine utilization.
@@ -56,6 +63,11 @@ class PDHGPUProbe
     /// busiest engine, as Task Manager defines it (#1033). Empty before the first collect with
     /// utilization, and after a collect fails and the cached results have gone stale.
     [[nodiscard]] std::unordered_map<std::string, double> adapterUtilization() const;
+
+    /// Adapter-wide GPU memory in use from the most recent readProcessGPUCounters() call, keyed by
+    /// "GPU_<luid>". Unlike DXGI's QueryVideoMemoryInfo, which reports only the calling process,
+    /// this covers every process on the adapter (#1029).
+    [[nodiscard]] std::unordered_map<std::string, AdapterMemoryUsage> adapterMemory() const;
 
     /// @brief Get capabilities of this probe
     [[nodiscard]] GPUCapabilities capabilities() const;

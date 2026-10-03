@@ -67,6 +67,10 @@ class WindowsGPUProbe : public IGPUProbe
     // Built during enumerateGPUs(), used in mergePDHAdapterUtilization()
     // to assign per-GPU utilization from PDH counters (which are keyed by LUID)
     std::unordered_map<std::string, std::string> m_DXGIIdToLuidId;
+
+    // Map DXGI GPU id ("GPU0") to whether it is integrated, which decides whether its memory in
+    // use is the shared or the dedicated segment. Built during enumerateGPUs().
+    std::unordered_map<std::string, bool> m_DXGIIdIsIntegrated;
 };
 
 } // namespace Platform

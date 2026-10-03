@@ -1,6 +1,7 @@
 #ifdef _WIN32
 
 #include "Platform/GPUTypes.h"
+#include "Platform/Windows/PDHGPUProbe.h"
 #include "Platform/Windows/WindowsGPUProbe.h"
 #include "Platform/Windows/WindowsGPUProbeMath.h"
 
@@ -264,6 +265,83 @@ TEST(AssignPDHUtilizationToDXGICountersTest, LeavesUtilizationUntouchedWhenLuidH
 // ==========================================================================
 // Basic Smoke Tests
 // ==========================================================================
+
+// =============================================================================
+// mapDXGIToNVML / assignPDHMemoryToDXGICounters (#1040, #1029)
+// =============================================================================
+
+namespace
+{
+GPUInfo makeInfo(const std::string& name, const std::string& vendor)
+{
+    GPUInfo info;
+    info.name = name;
+    info.vendor = vendor;
+    return info;
+}
+} // namespace
+
+TEST(MapDXGIToNVMLTest, IdenticalCardsMapToDistinctNVMLDevices)
+{
+    // Two identical cards used to both map to NVML device 0, so the second showed the first's data.
+    const std::vector<GPUInfo> dxgi = {makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA"), makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA")};
+    const std::vector<GPUInfo> nvml = {makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA"), makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA")};
+
+    const auto mapping = mapDXGIToNVML(dxgi, nvml);
+    ASSERT_EQ(mapping.size(), 2U);
+    EXPECT_EQ(mapping.at(0), 0U);
+    EXPECT_EQ(mapping.at(1), 1U);
+}
+
+TEST(MapDXGIToNVMLTest, NonNVIDIAAdaptersAndSurplusCardsStayUnmapped)
+{
+    // A hybrid laptop's Intel iGPU is never mapped; a third identical card with only two NVML
+    // devices is left unmapped rather than sharing one.
+    const std::vector<GPUInfo> dxgi = {
+        makeInfo("Intel(R) Arc(TM) 140T GPU", "Intel"),
+        makeInfo("NVIDIA GeForce RTX 4060 Laptop GPU", "NVIDIA"),
+        makeInfo("NVIDIA GeForce RTX 4060 Laptop GPU", "NVIDIA"),
+    };
+    const std::vector<GPUInfo> nvml = {makeInfo("NVIDIA GeForce RTX 4060 Laptop GPU", "NVIDIA")};
+
+    const auto mapping = mapDXGIToNVML(dxgi, nvml);
+    ASSERT_EQ(mapping.size(), 1U);
+    EXPECT_EQ(mapping.at(1), 0U);
+    EXPECT_FALSE(mapping.contains(0));
+    EXPECT_FALSE(mapping.contains(2));
+}
+
+TEST(AssignPDHMemoryToDXGICountersTest, IntegratedUsesSharedDiscreteUsesDedicated)
+{
+    std::vector<GPUCounters> dxgi(2);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[1].gpuId = "GPU1";
+    const std::unordered_map<std::string, AdapterMemoryUsage> memory = {
+        {"GPU_0x0_0x1", {.dedicatedBytes = 128, .sharedBytes = 1'500'000'000}},
+        {"GPU_0x0_0x2", {.dedicatedBytes = 3'000'000'000, .sharedBytes = 200}},
+    };
+    const std::unordered_map<std::string, std::string> idToLuid = {{"GPU0", "GPU_0x0_0x1"}, {"GPU1", "GPU_0x0_0x2"}};
+    const std::unordered_map<std::string, bool> integrated = {{"GPU0", true}, {"GPU1", false}};
+
+    assignPDHMemoryToDXGICounters(dxgi, memory, idToLuid, integrated, {});
+
+    EXPECT_EQ(dxgi[0].memoryUsedBytes, 1'500'000'000ULL);
+    EXPECT_EQ(dxgi[1].memoryUsedBytes, 3'000'000'000ULL);
+}
+
+TEST(AssignPDHMemoryToDXGICountersTest, LeavesNVMLSourcedAndUnmappedGPUsAlone)
+{
+    std::vector<GPUCounters> dxgi(2);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[0].memoryUsedBytes = 42; // From NVML
+    dxgi[1].gpuId = "GPU1";       // No LUID mapping
+    const std::unordered_map<std::string, AdapterMemoryUsage> memory = {{"GPU_0x0_0x1", {.dedicatedBytes = 999, .sharedBytes = 0}}};
+
+    assignPDHMemoryToDXGICounters(dxgi, memory, {{"GPU0", "GPU_0x0_0x1"}}, {{"GPU0", false}}, {"GPU0"});
+
+    EXPECT_EQ(dxgi[0].memoryUsedBytes, 42ULL);
+    EXPECT_EQ(dxgi[1].memoryUsedBytes, 0ULL);
+}
 
 TEST(WindowsGPUProbeTest, ConstructionDoesNotThrow)
 {

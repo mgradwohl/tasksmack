@@ -53,46 +53,16 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
             auto nvmlGPUs = m_NVMLProbe->enumerateGPUs();
             spdlog::debug("WindowsGPUProbe: Found {} DXGI GPUs and {} NVML GPUs", gpus.size(), nvmlGPUs.size());
 
-            // Build mapping between DXGI and NVML GPUs (match by name)
-            m_DXGIToNVMLMap.clear();
+            // Map NVIDIA DXGI adapters to NVML devices by name, each NVML device claimed once so
+            // identical cards do not all map to the first (#1040).
+            m_DXGIToNVMLMap = mapDXGIToNVML(gpus, nvmlGPUs);
             for (std::size_t dxgiIdx = 0; dxgiIdx < gpus.size(); ++dxgiIdx)
             {
-                const auto& dxgiGPU = gpus[dxgiIdx];
-                spdlog::debug("WindowsGPUProbe: DXGI GPU {}: '{}' (vendor: {})", dxgiIdx, dxgiGPU.name, dxgiGPU.vendor);
-
-                // Only try to match NVIDIA GPUs
-                if (dxgiGPU.vendor != "NVIDIA")
+                if (gpus[dxgiIdx].vendor == "NVIDIA" && !m_DXGIToNVMLMap.contains(static_cast<uint32_t>(dxgiIdx)))
                 {
-                    continue;
-                }
-
-                // Find matching NVML GPU by name
-                bool matched = false;
-                for (std::size_t nvmlIdx = 0; nvmlIdx < nvmlGPUs.size(); ++nvmlIdx)
-                {
-                    const auto& nvmlGPU = nvmlGPUs[nvmlIdx];
-                    spdlog::debug("WindowsGPUProbe: Comparing DXGI '{}' with NVML '{}'", dxgiGPU.name, nvmlGPU.name);
-
-                    // Match by name using robust comparison
-                    if (gpuNamesMatch(dxgiGPU.name, nvmlGPU.name))
-                    {
-                        m_DXGIToNVMLMap[static_cast<uint32_t>(dxgiIdx)] = static_cast<uint32_t>(nvmlIdx);
-                        spdlog::info("WindowsGPUProbe: Mapped DXGI GPU {} to NVML GPU {} ('{}' <-> '{}')",
-                                     dxgiIdx,
-                                     nvmlIdx,
-                                     dxgiGPU.name,
-                                     nvmlGPU.name);
-                        matched = true;
-                        break;
-                    }
-                }
-
-                if (!matched)
-                {
-                    spdlog::warn("WindowsGPUProbe: Failed to match DXGI GPU '{}' with any NVML GPU", dxgiGPU.name);
+                    spdlog::warn("WindowsGPUProbe: Failed to match DXGI GPU '{}' with any NVML GPU", gpus[dxgiIdx].name);
                 }
             }
-
             spdlog::info("WindowsGPUProbe: Created {} DXGI-to-NVML mappings", m_DXGIToNVMLMap.size());
         }
         else
@@ -107,8 +77,15 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
         // Clear before rebuilding because enumerateGPUs() may be called multiple times
         // (e.g., on device change) and the adapter list can change between calls.
         m_DXGIIdToLuidId.clear();
-        for (const auto& gpu : gpus)
+        m_DXGIIdIsIntegrated.clear();
+        for (std::size_t dxgiIdx = 0; dxgiIdx < gpus.size(); ++dxgiIdx)
         {
+            auto& gpu = gpus[dxgiIdx];
+            // Sensor metrics (temperature, power, clocks, fan, encoder/decoder) come only from
+            // NVML on Windows, so an adapter NVML does not cover has none -- e.g. a hybrid
+            // laptop's Intel iGPU, which used to show NVML's series stuck at 0 (#1040).
+            gpu.hasSensorMetrics = m_DXGIToNVMLMap.contains(static_cast<uint32_t>(dxgiIdx));
+            m_DXGIIdIsIntegrated[gpu.id] = gpu.isIntegrated;
             if (!gpu.luidId.empty())
             {
                 m_DXGIIdToLuidId[gpu.id] = gpu.luidId;
@@ -141,6 +118,12 @@ std::vector<GPUCounters> WindowsGPUProbe::readGPUCounters()
 
     // For GPUs without NVML, merge PDH per-adapter utilization matched to each adapter
     mergePDHAdapterUtilization(counters, nvmlSourcedIds);
+
+    // And their memory in use, from the same collect: adapter-wide, not this process's (#1029).
+    if (m_PDHAdapterProbe && m_PDHAdapterProbe->isAvailable())
+    {
+        assignPDHMemoryToDXGICounters(counters, m_PDHAdapterProbe->adapterMemory(), m_DXGIIdToLuidId, m_DXGIIdIsIntegrated, nvmlSourcedIds);
+    }
 
     return counters;
 }

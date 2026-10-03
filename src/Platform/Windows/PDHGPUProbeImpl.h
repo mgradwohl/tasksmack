@@ -25,6 +25,7 @@
 // clang-format on
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
@@ -268,6 +269,41 @@ inline std::string normalizeEngineType(const std::string& rawType)
     return rawType; // Return as-is if unknown
 }
 
+/// The LUID in a "GPU Adapter Memory" instance name, "luid_0x<hi>_0x<lo>_phys_<n>", in the same
+/// "0x<hi>_0x<lo>" form parseInstanceName() produces, or empty if the name is not of that form.
+[[nodiscard]] inline std::string parseAdapterInstanceLuid(std::string_view name)
+{
+    constexpr std::string_view luidPrefix{"luid_"};
+    constexpr std::string_view physToken{"_phys_"};
+    if (!name.starts_with(luidPrefix))
+    {
+        return {};
+    }
+    name.remove_prefix(luidPrefix.size());
+    const auto physPos = name.find(physToken);
+    if (physPos == std::string_view::npos)
+    {
+        return {};
+    }
+    const std::string_view luid = name.substr(0, physPos);
+    const std::string_view phys = name.substr(physPos + physToken.size());
+    const auto isHexHalf = [](std::string_view half)
+    {
+        if (!half.starts_with("0x") || half.size() <= 2)
+        {
+            return false;
+        }
+        return std::ranges::all_of(half.substr(2), [](char ch) { return std::isxdigit(static_cast<unsigned char>(ch)) != 0; });
+    };
+    const auto sep = luid.find('_');
+    if (sep == std::string_view::npos || !isHexHalf(luid.substr(0, sep)) || !isHexHalf(luid.substr(sep + 1)) || phys.empty() ||
+        !std::ranges::all_of(phys, [](char ch) { return ch >= '0' && ch <= '9'; }))
+    {
+        return {};
+    }
+    return std::string(luid);
+}
+
 /// Add one counter instance's utilization to a process's per-engine totals. Instances of the same
 /// engine (the same engineKey) add up; different engines are kept apart.
 inline void addEngineUtilization(std::vector<std::pair<std::string, double>>& byEngine, const std::string& engineKey, double utilization)
@@ -330,6 +366,10 @@ struct PDHGPUProbe::Impl
     static constexpr const wchar_t* UTILIZATION_COUNTER_PATH = L"\\GPU Engine(*)\\Utilization Percentage";
     static constexpr const wchar_t* DEDICATED_MEMORY_COUNTER_PATH = L"\\GPU Process Memory(*)\\Dedicated Usage";
     static constexpr const wchar_t* SHARED_MEMORY_COUNTER_PATH = L"\\GPU Process Memory(*)\\Shared Usage";
+    // Adapter-wide memory in use, for the GPU tab's Memory line (#1029). Instances are per adapter
+    // ("luid_0x..._0x..._phys_0"), so a handful at most.
+    static constexpr const wchar_t* ADAPTER_DEDICATED_COUNTER_PATH = L"\\GPU Adapter Memory(*)\\Dedicated Usage";
+    static constexpr const wchar_t* ADAPTER_SHARED_COUNTER_PATH = L"\\GPU Adapter Memory(*)\\Shared Usage";
 
     HMODULE pdhModule = nullptr;
     PdhOpenQueryFn pdhOpenQuery = nullptr;
@@ -350,9 +390,11 @@ struct PDHGPUProbe::Impl
     // each sample - no periodic PdhEnumObjectItems re-enumeration or counter rebuilds.
     // Measured on a 651-instance system: wildcard collect + array read is ~1 ms total vs
     // ~8-30 ms per collect for per-instance counters plus ~140 ms per re-enumeration.
-    PDH_HCOUNTER utilizationCounter = nullptr;     // "\GPU Engine(*)\Utilization Percentage"
-    PDH_HCOUNTER dedicatedMemoryCounter = nullptr; // "\GPU Process Memory(*)\Dedicated Usage"
-    PDH_HCOUNTER sharedMemoryCounter = nullptr;    // "\GPU Process Memory(*)\Shared Usage"
+    PDH_HCOUNTER utilizationCounter = nullptr;      // "\GPU Engine(*)\Utilization Percentage"
+    PDH_HCOUNTER dedicatedMemoryCounter = nullptr;  // "\GPU Process Memory(*)\Dedicated Usage"
+    PDH_HCOUNTER sharedMemoryCounter = nullptr;     // "\GPU Process Memory(*)\Shared Usage"
+    PDH_HCOUNTER adapterDedicatedCounter = nullptr; // "\GPU Adapter Memory(*)\Dedicated Usage"
+    PDH_HCOUNTER adapterSharedCounter = nullptr;    // "\GPU Adapter Memory(*)\Shared Usage"
 
     // Scratch buffer reused across PdhGetFormattedCounterArray calls to avoid
     // per-sample allocation churn.
@@ -370,6 +412,9 @@ struct PDHGPUProbe::Impl
     /// each engine the sum over processes, then the busiest engine -- Task Manager's definition
     /// (#1033). Empty until a collect has produced utilization.
     std::unordered_map<std::string, double> lastAdapterUtilization;
+
+    /// Adapter-wide memory in use from the most recent collect, keyed by "GPU_<luid>".
+    std::unordered_map<std::string, AdapterMemoryUsage> lastAdapterMemory;
 
     /// lastValidResults if it is recent enough to stand in for a failed collect, else nothing.
     [[nodiscard]] std::vector<ProcessGPUCounters> freshCachedResults() const
@@ -529,6 +574,14 @@ struct PDHGPUProbe::Impl
         if (sharedMemoryCounter == nullptr)
         {
             addWildcardCounter(SHARED_MEMORY_COUNTER_PATH, sharedMemoryCounter);
+        }
+        if (adapterDedicatedCounter == nullptr)
+        {
+            addWildcardCounter(ADAPTER_DEDICATED_COUNTER_PATH, adapterDedicatedCounter);
+        }
+        if (adapterSharedCounter == nullptr)
+        {
+            addWildcardCounter(ADAPTER_SHARED_COUNTER_PATH, adapterSharedCounter);
         }
         return utilizationCounter != nullptr || dedicatedMemoryCounter != nullptr || sharedMemoryCounter != nullptr;
     }

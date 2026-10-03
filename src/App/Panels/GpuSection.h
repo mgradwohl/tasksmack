@@ -2,6 +2,7 @@
 
 #include "Domain/GPUModel.h"
 #include "Domain/GPUSnapshot.h"
+#include "Platform/GPUTypes.h"
 #include "UI/FillPlotLayout.h"
 
 #include <chrono>
@@ -69,6 +70,25 @@ classifyEmptyState(bool hasPublication, bool devicesKnown, std::size_t deviceCou
         return EmptyReason::NoReadings;
     }
     return devicesKnown ? EmptyReason::NoDevices : EmptyReason::Unavailable;
+}
+
+/// The capabilities that apply to one GPU. GPUCapabilities describes the probe as a whole -- on a
+/// hybrid Windows laptop NVML's sensor capabilities are set because the NVIDIA GPU has them --
+/// so an adapter whose sensors are not read (GPUInfo::hasSensorMetrics false, e.g. the Intel iGPU)
+/// has its sensor series switched off here rather than drawn as lines stuck at 0 (#1040).
+[[nodiscard]] constexpr Platform::GPUCapabilities capabilitiesForGpu(Platform::GPUCapabilities caps, bool hasSensorMetrics) noexcept
+{
+    if (!hasSensorMetrics)
+    {
+        caps.hasTemperature = false;
+        caps.hasHotspotTemp = false;
+        caps.hasPowerMetrics = false;
+        caps.hasClockSpeeds = false;
+        caps.hasFanSpeed = false;
+        caps.hasPCIeMetrics = false;
+        caps.hasEncoderDecoder = false;
+    }
+    return caps;
 }
 
 /// Context struct containing all state needed to render the GPU section.

@@ -1,6 +1,7 @@
 #include "GpuSection.h"
 
 #include "Domain/GPUSnapshot.h"
+#include "Platform/GPUTypes.h"
 #include "UI/ChartWidgets.h"
 #include "UI/EmptyState.h"
 #include "UI/Format.h"
@@ -118,7 +119,7 @@ void renderGpuSection(RenderContext& ctx)
 
     const auto& gpuSnapshots = ctx.publication->snapshots;
     const auto& gpuInfos = ctx.publication->gpuInfo;
-    const auto& caps = ctx.publication->capabilities;
+    const auto& probeCaps = ctx.publication->capabilities;
     auto& theme = UI::Theme::get();
 
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -157,15 +158,19 @@ void renderGpuSection(RenderContext& ctx)
         // Find GPU info for this GPU
         std::string gpuName = snap.name;
         bool isIntegrated = snap.isIntegrated;
+        bool hasSensorMetrics = true;
         for (const auto& info : gpuInfos)
         {
             if (info.id == snap.gpuId)
             {
                 gpuName = info.name;
                 isIntegrated = info.isIntegrated;
+                hasSensorMetrics = info.hasSensorMetrics;
                 break;
             }
         }
+        // What this GPU reports, not what the probe can report for some GPU (#1040).
+        const Platform::GPUCapabilities caps = capabilitiesForGpu(probeCaps, hasSensorMetrics);
 
         // GPU header with collapsible section
         // Discrete: show VRAM amount after name, label as "Discrete"

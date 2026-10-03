@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/GPUTypes.h"
+#include "Platform/Windows/PDHGPUProbe.h"
 
 #include <algorithm>
 #include <cctype>
@@ -84,6 +85,69 @@ namespace Platform
     }
 
     return false;
+}
+
+/// Map each NVIDIA DXGI adapter (by index) to the NVML device (by index) with a matching name.
+///
+/// Each NVML device is claimed at most once, in enumeration order: two identical cards both used
+/// to map to NVML device 0, so the second card's charts showed the first card's data (#1040).
+/// DXGI exposes no PCI location to match on exactly, so with identical names the order is the
+/// tie-break; both APIs enumerate by PCI order in practice.
+[[nodiscard]] inline std::unordered_map<std::uint32_t, std::uint32_t> mapDXGIToNVML(const std::vector<GPUInfo>& dxgiGPUs,
+                                                                                    const std::vector<GPUInfo>& nvmlGPUs)
+{
+    std::unordered_map<std::uint32_t, std::uint32_t> mapping;
+    std::vector<bool> claimed(nvmlGPUs.size(), false);
+    for (std::size_t dxgiIdx = 0; dxgiIdx < dxgiGPUs.size(); ++dxgiIdx)
+    {
+        if (dxgiGPUs[dxgiIdx].vendor != "NVIDIA")
+        {
+            continue;
+        }
+        for (std::size_t nvmlIdx = 0; nvmlIdx < nvmlGPUs.size(); ++nvmlIdx)
+        {
+            if (!claimed[nvmlIdx] && gpuNamesMatch(dxgiGPUs[dxgiIdx].name, nvmlGPUs[nvmlIdx].name))
+            {
+                mapping[static_cast<std::uint32_t>(dxgiIdx)] = static_cast<std::uint32_t>(nvmlIdx);
+                claimed[nvmlIdx] = true;
+                break;
+            }
+        }
+    }
+    return mapping;
+}
+
+/// Fill memoryUsedBytes for every adapter NVML does not cover, from PDH's adapter-wide counters.
+///
+/// DXGI's QueryVideoMemoryInfo reports the *calling process's* usage, so the GPU tab used to show
+/// TaskSmack's own few MB as the GPU's memory (#1029). An integrated GPU's memory is the shared
+/// segment; a discrete GPU's is its dedicated VRAM.
+inline void assignPDHMemoryToDXGICounters(std::vector<GPUCounters>& dxgiCounters,
+                                          const std::unordered_map<std::string, AdapterMemoryUsage>& memoryByLuidId,
+                                          const std::unordered_map<std::string, std::string>& dxgiIdToLuidId,
+                                          const std::unordered_map<std::string, bool>& dxgiIdIsIntegrated,
+                                          const std::unordered_set<std::string>& nvmlSourcedIds)
+{
+    for (auto& counter : dxgiCounters)
+    {
+        if (nvmlSourcedIds.contains(counter.gpuId))
+        {
+            continue;
+        }
+        const auto luidIt = dxgiIdToLuidId.find(counter.gpuId);
+        if (luidIt == dxgiIdToLuidId.end())
+        {
+            continue;
+        }
+        const auto memIt = memoryByLuidId.find(luidIt->second);
+        if (memIt == memoryByLuidId.end())
+        {
+            continue;
+        }
+        const auto integratedIt = dxgiIdIsIntegrated.find(counter.gpuId);
+        const bool integrated = (integratedIt != dxgiIdIsIntegrated.end()) && integratedIt->second;
+        counter.memoryUsedBytes = integrated ? memIt->second.sharedBytes : memIt->second.dedicatedBytes;
+    }
 }
 
 /// Pure merge logic extracted from WindowsGPUProbe::mergeNVMLEnhancements() so it can be unit
