@@ -788,11 +788,12 @@ std::string LinuxProcessProbe::getProcessStatus(int32_t pid, const std::filesyst
 {
     // /proc/<pid>/cgroup names the process's cgroups: the v2 "0::<path>" line and/or v1 lines,
     // including the freezer controller's. isCgroupFrozen() checks the matching freeze state.
+    // Read to EOF: a cgroup path can approach PATH_MAX, and a truncated one would point the check
+    // at the wrong cgroup.events (#1228 review).
     const auto cgroupPath = (procRoot / std::to_string(pid) / "cgroup").string();
-    constexpr std::size_t CGROUP_BUF = 2048;
-    std::array<char, CGROUP_BUF> cgroupBuf{};
-    const std::size_t cgroupLen = readProcFile(cgroupPath.c_str(), cgroupBuf.data(), CGROUP_BUF);
-    if (cgroupLen > 0 && CgroupPath::isCgroupFrozen(std::string_view(cgroupBuf.data(), cgroupLen), std::filesystem::path("/sys/fs/cgroup")))
+    const std::vector<char> cgroupContents = ProcParsing::readProcFileFull(cgroupPath.c_str());
+    if (!cgroupContents.empty() &&
+        CgroupPath::isCgroupFrozen(std::string_view(cgroupContents.data(), cgroupContents.size()), std::filesystem::path("/sys/fs/cgroup")))
     {
         return "Suspended";
     }

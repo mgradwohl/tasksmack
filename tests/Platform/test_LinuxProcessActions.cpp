@@ -302,9 +302,21 @@ TEST(LinuxProcessActionsTest, SetPriorityOfAChildSucceeds)
     const SleepingChild child;
     ASSERT_TRUE(child.started());
 
+    // The child inherits the runner's niceness, which may already be above 10 (say under nice -n 15),
+    // and an unprivileged process can only raise it: pick a value above the child's current one.
+    errno = 0;
+    const int before = getpriority(PRIO_PROCESS, static_cast<id_t>(child.target().pid));
+    ASSERT_EQ(errno, 0);
+    if (before >= 19)
+    {
+        GTEST_SKIP() << "child already at the lowest priority";
+    }
+    const int raised = std::min(before + 5, 19);
+
     LinuxProcessActions actions;
-    const auto result = actions.setPriority(child.target(), 10);
+    const auto result = actions.setPriority(child.target(), raised);
     EXPECT_TRUE(result.success) << result.errorMessage;
+    EXPECT_EQ(getpriority(PRIO_PROCESS, static_cast<id_t>(child.target().pid)), raised);
 }
 
 TEST(LinuxProcessActionsTest, SetPriorityClampsBoundaryValues)
