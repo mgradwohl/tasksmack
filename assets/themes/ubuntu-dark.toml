@@ -196,8 +196,8 @@ active = "#E95420"           # Ubuntu Orange on click
 # Collapsible headers, tree nodes
 # =============================================================================
 [ui.header]
-normal = "#3D3D3D"
-hovered = "#474747"
+normal = "#424242"
+hovered = "#383838"
 active = "#505050"
 
 # =============================================================================
@@ -223,7 +223,7 @@ active = "#C94017"
 # Tab bar tabs - Ubuntu/GNOME dark style
 # =============================================================================
 [ui.tab]
-normal = "#3D3D3D"
+normal = "#434343"
 hovered = "#474747"
 active = "#303030"
 active_overline = "#E95420"             # Ubuntu orange overline

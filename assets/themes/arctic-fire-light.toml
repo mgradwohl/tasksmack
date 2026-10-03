@@ -195,8 +195,8 @@ active = "#00A8E8"           # Cyan on click
 # Collapsible headers, tree nodes
 # =============================================================================
 [ui.header]
-normal = "#D0E0F0"
-hovered = "#B8D0E8"
+normal = "#B9D1E9"
+hovered = "#D6E4F2"
 active = "#A0C0E0"
 
 # =============================================================================
@@ -222,7 +222,7 @@ active = "#1565C0"
 # Tab bar tabs
 # =============================================================================
 [ui.tab]
-normal = "#D8E8F5"
+normal = "#B8D5ED"
 hovered = "#C0D8F0"
 active = "#E8F0F8"
 active_overline = "#1976D2"           # Blue accent overline for visibility
