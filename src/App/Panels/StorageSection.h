@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Domain/StorageModel.h"
+#include "UI/FillPlotLayout.h"
 
 #include <chrono>
 
@@ -27,6 +28,10 @@ struct RenderContext
     double* smoothedReadBytesPerSec = nullptr;
     double* smoothedWriteBytesPerSec = nullptr;
     bool* smoothedInitialized = nullptr;
+
+    // State for the single-disk chart, which fills the rest of the tab like the per-disk grid
+    // does (#959). Null: it still fills, from a fresh measurement each frame.
+    UI::Widgets::PlotFillState* aggregateFill = nullptr;
 };
 
 /// Render the Disk I/O section with history chart and now bars.

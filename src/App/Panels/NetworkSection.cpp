@@ -4,7 +4,9 @@
 #include "App/Panels/StorageSection.h"
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
+#include "UI/HistoryPlotHeight.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/RateAxis.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -17,7 +19,7 @@
 #include <cstddef>
 #include <format>
 #include <functional>
-#include <limits>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <utility>
@@ -33,7 +35,6 @@ using UI::Widgets::buildTimeAxis;
 using UI::Widgets::computeAlpha;
 using UI::Widgets::formatAgeSeconds;
 using UI::Widgets::formatAxisBytesPerSec;
-using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
@@ -71,6 +72,7 @@ void renderDiskIOSection(RenderContext& ctx)
         .smoothedReadBytesPerSec = ctx.smoothedDiskReadBytesPerSec,
         .smoothedWriteBytesPerSec = ctx.smoothedDiskWriteBytesPerSec,
         .smoothedInitialized = ctx.smoothedDiskInitialized,
+        .aggregateFill = ctx.aggregateDiskFill,
     };
     StorageSection::renderStorageSection(storageCtx);
 }
@@ -97,30 +99,26 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
 
     const auto interfaceCount = interfaces.size();
 
-    // Get selected interface (or default to -1)
-    int selectedInterface = (ctx.selectedNetworkInterface != nullptr) ? *ctx.selectedNetworkInterface : -1;
-
-    // Clamp selected interface to current range so indexing into interfaceNames is always safe.
-    // Interfaces can disappear (e.g., USB adapter unplugged, VPN disconnected).
-    if (std::cmp_greater_equal(selectedInterface, interfaceCount))
+    // The selection is held by interface name, not by position in this frame's list, so a reorder,
+    // insertion or removal cannot silently switch the chart to a different interface (#996).
+    // selectedInterface is this frame's index for it: -1 = "Total".
+    int selectedInterface = -1;
+    if (ctx.selectedNetworkInterface != nullptr && !ctx.selectedNetworkInterface->empty())
     {
-        // Guard against potential overflow when converting from size_t to int.
-        // While extremely unlikely (would require SIZE_MAX interfaces), be defensive.
-        constexpr auto maxIntIndex = static_cast<size_t>(std::numeric_limits<int>::max());
-        if ((interfaceCount == 0) || (interfaceCount > maxIntIndex))
+        const auto it = std::ranges::find_if(interfaces, [&](const auto& iface) { return iface.name == *ctx.selectedNetworkInterface; });
+        if (it != interfaces.end())
         {
-            // Fall back to "Total" mode when no interfaces or index would overflow int.
-            selectedInterface = -1;
+            selectedInterface = UI::Format::checkedCount(static_cast<size_t>(std::distance(interfaces.begin(), it)));
         }
         else
         {
-            selectedInterface = static_cast<int>(interfaceCount) - 1;
-        }
-
-        // Update the caller's value
-        if (ctx.selectedNetworkInterface != nullptr)
-        {
-            *ctx.selectedNetworkInterface = selectedInterface;
+            // The interface went away (adapter unplugged, VPN disconnected): show Total, and restart
+            // the bars rather than letting them glide from the old interface's values.
+            ctx.selectedNetworkInterface->clear();
+            if (ctx.smoothedNetInitialized != nullptr)
+            {
+                *ctx.smoothedNetInitialized = false;
+            }
         }
     }
 
@@ -157,7 +155,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                 selectedInterface = selectionValue;
                 if (ctx.selectedNetworkInterface != nullptr)
                 {
-                    *ctx.selectedNetworkInterface = selectedInterface;
+                    *ctx.selectedNetworkInterface = (i == 0) ? std::string{} : interfaces[i - 1].name;
                 }
                 // Reset smoothed values when changing interface
                 if (ctx.smoothedNetInitialized != nullptr)
@@ -280,7 +278,8 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     }
 
     // Determine labels based on selection
-    const std::string ifaceDisplayName = showingInterface ? interfaces[static_cast<size_t>(selectedInterface)].name : "Network";
+    // Name the interface the way the picker above does (#1009).
+    const std::string ifaceDisplayName = showingInterface ? interfaceNames[static_cast<size_t>(selectedInterface) + 1] : "Network";
     const std::string sentBarLabel = showingInterface ? std::format("{} Sent", ifaceDisplayName) : "Network Sent";
     const std::string recvBarLabel = showingInterface ? std::format("{} Received", ifaceDisplayName) : "Network Received";
 
@@ -302,7 +301,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     std::string plotTitle = "Total";
     if (usingInterfaceHistory)
     {
-        plotTitle = interfaces[static_cast<size_t>(selectedInterface)].name;
+        plotTitle = ifaceDisplayName;
     }
     else if (interfaceHistoryUnavailable)
     {
@@ -313,21 +312,25 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     const auto ifaceSentColor = UI::withAlpha(theme.scheme().chartNetTx, 0.7F);
     const auto ifaceRecvColor = UI::withAlpha(theme.scheme().chartNetRx, 0.7F);
 
+    // A font-relative fixed height rather than a share of the tab: the storage charts below take
+    // whatever height is left (#959).
+    const float netPlotHeight = UI::Widgets::historyPlotNaturalHeight(ImGui::GetFontSize());
+
     auto plot = [&]()
     {
-        const UI::Widgets::HistoryChart chart(
-            UI::Widgets::rateHistoryConfig("##SystemNetHistory",
-                                           axis.xMin,
-                                           axis.xMax,
-                                           formatAxisBytesPerSec,
-                                           // Every series drawn on this axis, not just the
-                                           // totals: a selected interface is plotted here too,
-                                           // and total vs per-interface rates are derived
-                                           // independently, so the interface rate can exceed
-                                           // the total's. The interface vectors are empty when
-                                           // none is selected; maxOfSeries() ignores those.
-                                           UI::Widgets::maxOfSeries(sentData, recvData, ifaceSentData, ifaceRecvData),
-                                           UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC));
+        const auto netConfig = UI::Widgets::rateHistoryConfig("##SystemNetHistory",
+                                                              axis.xMin,
+                                                              axis.xMax,
+                                                              formatAxisBytesPerSec,
+                                                              // Every series drawn on this axis, not just the
+                                                              // totals: a selected interface is plotted here too,
+                                                              // and total vs per-interface rates are derived
+                                                              // independently, so the interface rate can exceed
+                                                              // the total's. The interface vectors are empty when
+                                                              // none is selected; maxOfSeries() ignores those.
+                                                              UI::Widgets::maxOfSeries(sentData, recvData, ifaceSentData, ifaceRecvData),
+                                                              UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
+        const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(netConfig, netPlotHeight));
         if (chart.active())
         {
             const int count = UI::Format::checkedCount(aligned);
@@ -454,8 +457,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         ImGui::Spacing();
     }
     constexpr size_t NETWORK_NOW_BAR_COLUMNS = 2; // Sent, Recv
-    renderHistoryWithNowBars(
-        "SystemNetHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {sentBar, recvBar}, false, NETWORK_NOW_BAR_COLUMNS);
+    renderHistoryWithNowBars("SystemNetHistoryLayout", netPlotHeight, plot, {sentBar, recvBar}, false, NETWORK_NOW_BAR_COLUMNS);
     ImGui::Spacing();
 
     // Interface status table - filtered and sorted (virtual/bluetooth hidden by default)

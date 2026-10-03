@@ -2,8 +2,10 @@
 
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
+#include "UI/FillPlotLayout.h"
 
 #include <chrono>
+#include <string>
 
 namespace App::NetworkSection
 {
@@ -36,8 +38,11 @@ struct RenderContext
     double* smoothedNetRecvBytesPerSec = nullptr;
     bool* smoothedNetInitialized = nullptr;
 
-    // Selected network interface (-1 = "Total" / all interfaces combined)
-    int* selectedNetworkInterface = nullptr;
+    // Name of the selected network interface (empty = "Total" / all interfaces combined)
+    std::string* selectedNetworkInterface = nullptr;
+
+    // Passed to StorageSection::RenderContext::aggregateFill
+    UI::Widgets::PlotFillState* aggregateDiskFill = nullptr;
 };
 
 /// Render the Disk I/O section with history chart.

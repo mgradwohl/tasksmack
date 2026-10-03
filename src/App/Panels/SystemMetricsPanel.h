@@ -122,6 +122,8 @@ class SystemMetricsPanel : public Panel
 
     // Previous frame's Overview layout, feeding UI::Widgets::FillPlotLayout (#922)
     UI::Widgets::PlotFillState m_OverviewFill;
+    // Same, for the single-disk chart on the Network and I/O tab (#959)
+    UI::Widgets::PlotFillState m_AggregateDiskFill;
 
     struct SmoothedCpu
     {
@@ -173,8 +175,8 @@ class SystemMetricsPanel : public Panel
         bool initialized = false;
     } m_SmoothedNetwork;
 
-    // Selected network interface (-1 means "Total" / all interfaces combined)
-    int m_SelectedNetworkInterface = -1;
+    // Name of the selected network interface; empty means "Total" / all interfaces combined
+    std::string m_SelectedNetworkInterface;
 
     // GPU smoothed values (uses type from GpuSection)
     std::unordered_map<std::string, GpuSection::SmoothedGPU> m_SmoothedGPUs;

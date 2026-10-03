@@ -33,6 +33,16 @@ TEST(HistoryPlotHeightTest, BoundsScaleWithTheFont)
     EXPECT_FLOAT_EQ(historyPlotMaxHeight(8.0F), 270.0F);
 }
 
+TEST(HistoryPlotHeightTest, NaturalHeightKeepsTheOldSizeAtMediumAndScales)
+{
+    EXPECT_FLOAT_EQ(historyPlotNaturalHeight(REFERENCE_EM_PX), 180.0F);
+    EXPECT_FLOAT_EQ(historyPlotNaturalHeight(REFERENCE_EM_PX * 2.0F), 360.0F);
+    // Whole pixels, and never below the fill minimum.
+    EXPECT_FLOAT_EQ(historyPlotNaturalHeight(13.0F), std::floor(HISTORY_PLOT_NATURAL_HEIGHT_EM * 13.0F));
+    EXPECT_GE(historyPlotNaturalHeight(13.0F), std::floor(historyPlotMinHeight(13.0F)));
+    EXPECT_FLOAT_EQ(historyPlotNaturalHeight(std::numeric_limits<float>::quiet_NaN()), std::floor(HISTORY_PLOT_NATURAL_HEIGHT_EM));
+}
+
 // The #922 case: a tall window. The charts share the height instead of stopping at a fixed size and
 // leaving the rest empty.
 TEST(HistoryPlotHeightTest, ChartsShareTheAvailableHeight)

@@ -456,6 +456,7 @@ void SystemMetricsPanel::renderContent()
                     .smoothedNetRecvBytesPerSec = &m_SmoothedNetwork.recvBytesPerSec,
                     .smoothedNetInitialized = &m_SmoothedNetwork.initialized,
                     .selectedNetworkInterface = &m_SelectedNetworkInterface,
+                    .aggregateDiskFill = &m_AggregateDiskFill,
                 };
                 {
                     const UI::Widgets::TabContentScope content("##NetworkContent");
