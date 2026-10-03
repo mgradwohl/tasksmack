@@ -17,7 +17,7 @@ namespace UI
 /// Font size presets
 enum class FontSize : std::uint8_t
 {
-    Small = 0,  // 6pt / 8pt
+    Small = 0,  // 7pt / 9pt
     Medium,     // 8pt / 10pt (default)
     Large,      // 10pt / 12pt
     ExtraLarge, // 12pt / 14pt
@@ -204,6 +204,54 @@ struct FontSizeConfig
     float largePt = 0.0F;   // Headings
 };
 
+/// Font size presets in points (body / headings), indexed by FontSize. Fonts are rasterised at
+/// pt * 96 / 72 px at 100 % display scale, so Small's 7 pt body is about 9.3 px: no preset sets body
+/// text under 9 px (#1194).
+inline constexpr auto FONT_SIZE_PRESETS = std::to_array<FontSizeConfig>({
+    {.name = "Small", .regularPt = 7.0F, .largePt = 9.0F},
+    {.name = "Medium", .regularPt = 8.0F, .largePt = 10.0F},
+    {.name = "Large", .regularPt = 10.0F, .largePt = 12.0F},
+    {.name = "Extra Large", .regularPt = 12.0F, .largePt = 14.0F},
+    {.name = "Huge", .regularPt = 14.0F, .largePt = 16.0F},
+    {.name = "Even Huger", .regularPt = 16.0F, .largePt = 18.0F},
+});
+static_assert(FONT_SIZE_PRESETS.size() == FONT_SIZE_COUNT);
+
+/// The preset chart axis, legend and hint text is drawn at for a given body preset: one step smaller
+/// than the body text, but never below Medium, so chart text stays at least Medium's body size
+/// (about 10.7 px at 100 %) except at Small, where it matches the body text (#1194).
+[[nodiscard]] constexpr auto chartFontSize(FontSize bodySize) -> FontSize
+{
+    switch (bodySize)
+    {
+    case FontSize::Small:
+        return FontSize::Small;
+    case FontSize::Medium:
+    case FontSize::Large:
+        return FontSize::Medium;
+    case FontSize::ExtraLarge:
+        return FontSize::Large;
+    case FontSize::Huge:
+        return FontSize::ExtraLarge;
+    case FontSize::EvenHuger:
+        return FontSize::Huge;
+    case FontSize::Count:
+        break;
+    }
+    return FontSize::Small;
+}
+
+/// Chart text size as a fraction of body text size at a given body preset (1.0 at Small and Medium).
+[[nodiscard]] constexpr auto chartFontScale(FontSize bodySize) -> float
+{
+    const auto body = static_cast<std::size_t>(bodySize);
+    if (body >= FONT_SIZE_PRESETS.size())
+    {
+        return 1.0F;
+    }
+    return FONT_SIZE_PRESETS[static_cast<std::size_t>(chartFontSize(bodySize))].regularPt / FONT_SIZE_PRESETS[body].regularPt;
+}
+
 /// Global theme manager - provides access to color schemes and font settings
 class Theme
 {
@@ -336,8 +384,8 @@ class Theme
     /// Get the current monospace font (based on font size setting); falls back to regular if unset
     [[nodiscard]] auto monospaceFont() const -> ImFont*;
 
-    /// Get a smaller font for chart axis labels and legends (one size below current)
-    [[nodiscard]] auto smallerFont() const -> ImFont*;
+    /// Get the font for chart axis labels, legends and hints (see chartFontSize())
+    [[nodiscard]] auto chartFont() const -> ImFont*;
 
     /// Get the title font (Sixtyfour pixel font for custom title bar)
     [[nodiscard]] auto titleFont() const -> ImFont*;
@@ -438,6 +486,13 @@ constexpr ImVec4 hexToImVec4(std::uint32_t hex)
             static_cast<float>((hex >> 8) & 0xFF) / 255.0F,
             static_cast<float>(hex & 0xFF) / 255.0F,
             1.0F};
+}
+
+/// One em of chart text (axis labels, legends, hints) at the current preset and display scale. Call
+/// it outside a PlotFontGuard: it scales the body em, ImGui::GetFontSize(), by chartFontScale().
+[[nodiscard]] inline auto chartEmPx() -> float
+{
+    return ImGui::GetFontSize() * chartFontScale(Theme::get().currentFontSize());
 }
 
 /// Return a copy of a color with a different alpha value.
