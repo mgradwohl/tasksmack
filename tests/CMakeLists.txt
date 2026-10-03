@@ -51,87 +51,9 @@ if(WIN32)
     endif()
 endif()
 
-# Platform-specific test sources
-if(WIN32)
-    set(PLATFORM_TEST_SOURCES
-        Platform/test_ProcessProbeContract.cpp
-        Platform/test_SystemProbeContract.cpp
-        Platform/test_ProcessActionsContract.cpp
-        Platform/test_PathProviderContract.cpp
-        Platform/test_PowerProbeContract.cpp
-        Platform/test_WindowsProcessProbe.cpp
-        Platform/test_WindowsSystemProbe.cpp
-        Platform/test_WindowsProcessActions.cpp
-        Platform/test_WindowsDiskProbe.cpp
-        Platform/test_WindowsPathProvider.cpp
-        Platform/test_WindowsPowerProbe.cpp
-        Platform/test_WindowsNVMLGPUProbe.cpp
-        Platform/test_WindowsPDHGPUProbe.cpp
-        Platform/test_WindowsGPUProbe.cpp
-        Platform/test_WindowsDXGIGPUProbe.cpp
-        Platform/test_WindowsProcAddress.cpp
-        Platform/test_WinString.cpp
-    )
-    set(PLATFORM_SRC_UNDER_TEST
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/Factory.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessActions.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsDiskProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPathProvider.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPowerProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsGPUProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/DXGIGPUProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/NVMLGPUProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/PDHGPUProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
-    )
-    set(INTEGRATION_TEST_SOURCES
-        Integration/test_CrossLayer.cpp
-        Integration/test_WindowsRealProbes.cpp
-    )
-else()
-    set(PLATFORM_TEST_SOURCES
-        Platform/test_ProcessProbeContract.cpp
-        Platform/test_SystemProbeContract.cpp
-        Platform/test_ProcessActionsContract.cpp
-        Platform/test_PathProviderContract.cpp
-        Platform/test_PowerProbeContract.cpp
-        Platform/test_LinuxProcessProbe.cpp
-        Platform/test_LinuxSystemProbe.cpp
-        Platform/test_LinuxProcessActions.cpp
-        Platform/test_LinuxDiskProbe.cpp
-        Platform/test_LinuxPathProvider.cpp
-        Platform/test_LinuxPowerProbe.cpp
-        Platform/test_LinuxGPUProbe.cpp
-        Platform/test_LinuxNVMLGPUProbe.cpp
-        Platform/test_LinuxROCmGPUProbe.cpp
-        Platform/test_NetlinkSocketStats.cpp
-        Platform/test_DRMGPUProbe.cpp
-        Platform/test_Factory.cpp
-    )
-    set(PLATFORM_SRC_UNDER_TEST
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/Factory.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxSystemProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessActions.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxDiskProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPathProvider.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPowerProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxGPUProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/NVMLGPUProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/DRMGPUProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/ROCmGPUProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/NetlinkSocketStats.cpp
-    )
-    set(INTEGRATION_TEST_SOURCES
-        Integration/test_CrossLayer.cpp
-        Integration/test_LinuxRealProbes.cpp
-    )
-endif()
-
-# Test executable with all test sources
-add_executable(TaskSmackTests
+# Test sources. Every list is defined on every platform, so the registration check below can see
+# all of them; the platform branch then picks its own.
+set(COMMON_TEST_SOURCES
     test_main.cpp
     Core/test_Application.cpp
     Core/test_EnvUtils.cpp
@@ -142,6 +64,7 @@ add_executable(TaskSmackTests
     Core/test_Window.cpp
     Core/test_WindowEvents.cpp
     Domain/test_History.cpp
+    Domain/test_Numeric.cpp
     Domain/test_SingleLineText.cpp
     Domain/test_ProcessModel.cpp
     Domain/test_GPUModel.cpp
@@ -202,6 +125,112 @@ add_executable(TaskSmackTests
     App/test_ProcessActionHelpers.cpp
     App/test_SettingsLayerDetail.cpp
     App/test_NetInterfaceUtils.cpp
+)
+set(WINDOWS_PLATFORM_TEST_SOURCES
+    Platform/test_ProcessProbeContract.cpp
+    Platform/test_SystemProbeContract.cpp
+    Platform/test_ProcessActionsContract.cpp
+    Platform/test_PathProviderContract.cpp
+    Platform/test_PowerProbeContract.cpp
+    Platform/test_WindowsProcessProbe.cpp
+    Platform/test_WindowsSystemProbe.cpp
+    Platform/test_WindowsProcessActions.cpp
+    Platform/test_WindowsDiskProbe.cpp
+    Platform/test_WindowsPathProvider.cpp
+    Platform/test_WindowsPowerProbe.cpp
+    Platform/test_WindowsNVMLGPUProbe.cpp
+    Platform/test_WindowsPDHGPUProbe.cpp
+    Platform/test_WindowsGPUProbe.cpp
+    Platform/test_WindowsDXGIGPUProbe.cpp
+    Platform/test_WindowsProcAddress.cpp
+    Platform/test_WinString.cpp
+)
+set(WINDOWS_INTEGRATION_TEST_SOURCES
+    Integration/test_CrossLayer.cpp
+    Integration/test_WindowsRealProbes.cpp
+)
+set(LINUX_PLATFORM_TEST_SOURCES
+    Platform/test_ProcessProbeContract.cpp
+    Platform/test_SystemProbeContract.cpp
+    Platform/test_ProcessActionsContract.cpp
+    Platform/test_PathProviderContract.cpp
+    Platform/test_PowerProbeContract.cpp
+    Platform/test_LinuxProcessProbe.cpp
+    Platform/test_LinuxSystemProbe.cpp
+    Platform/test_LinuxProcessActions.cpp
+    Platform/test_LinuxDiskProbe.cpp
+    Platform/test_LinuxPathProvider.cpp
+    Platform/test_LinuxPowerProbe.cpp
+    Platform/test_LinuxGPUProbe.cpp
+    Platform/test_LinuxNVMLGPUProbe.cpp
+    Platform/test_LinuxROCmGPUProbe.cpp
+    Platform/test_NetlinkSocketStats.cpp
+    Platform/test_DRMGPUProbe.cpp
+    Platform/test_Factory.cpp
+)
+set(LINUX_INTEGRATION_TEST_SOURCES
+    Integration/test_CrossLayer.cpp
+    Integration/test_LinuxRealProbes.cpp
+)
+
+# Platform-specific test sources
+if(WIN32)
+    set(PLATFORM_TEST_SOURCES ${WINDOWS_PLATFORM_TEST_SOURCES})
+    set(INTEGRATION_TEST_SOURCES ${WINDOWS_INTEGRATION_TEST_SOURCES})
+    set(PLATFORM_SRC_UNDER_TEST
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/Factory.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessActions.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsDiskProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPathProvider.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPowerProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsGPUProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/DXGIGPUProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/NVMLGPUProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/PDHGPUProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
+    )
+else()
+    set(PLATFORM_TEST_SOURCES ${LINUX_PLATFORM_TEST_SOURCES})
+    set(INTEGRATION_TEST_SOURCES ${LINUX_INTEGRATION_TEST_SOURCES})
+    set(PLATFORM_SRC_UNDER_TEST
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/Factory.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxSystemProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessActions.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxDiskProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPathProvider.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPowerProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxGPUProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/NVMLGPUProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/DRMGPUProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/ROCmGPUProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/NetlinkSocketStats.cpp
+    )
+endif()
+
+# Every tests/**/test_*.cpp must be in one of the lists above; otherwise it is never built and its
+# tests silently never run, as test_Numeric.cpp wasn't for months (#1135). Compared against the
+# lists themselves, not the text of this file, so a mention in a comment doesn't count.
+set(TASKSMACK_REGISTERED_TEST_SOURCES
+    ${COMMON_TEST_SOURCES}
+    ${WINDOWS_PLATFORM_TEST_SOURCES}
+    ${WINDOWS_INTEGRATION_TEST_SOURCES}
+    ${LINUX_PLATFORM_TEST_SOURCES}
+    ${LINUX_INTEGRATION_TEST_SOURCES}
+)
+file(GLOB_RECURSE TASKSMACK_TEST_FILES RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/test_*.cpp")
+foreach(test_file IN LISTS TASKSMACK_TEST_FILES)
+    if(NOT test_file IN_LIST TASKSMACK_REGISTERED_TEST_SOURCES)
+        message(FATAL_ERROR "tests/${test_file} is not in any test source list in tests/CMakeLists.txt, so it would never be built or run")
+    endif()
+endforeach()
+
+# Test executable with all test sources
+add_executable(TaskSmackTests
+    ${COMMON_TEST_SOURCES}
     ${PLATFORM_TEST_SOURCES}
     ${INTEGRATION_TEST_SOURCES}
     # Source files under test
