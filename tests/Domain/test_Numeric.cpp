@@ -154,6 +154,15 @@ TEST(NumericTest, NarrowOrSameTypeSameValue)
     EXPECT_EQ(narrowOr<std::uint64_t>(std::uint64_t{1000}, std::uint64_t{0}), 1000);
 }
 
+// ========== counterDelta at the top of the range (#1135) ==========
+
+TEST(NumericTest, CounterDeltaAtTheTopOfTheRange)
+{
+    // A counter that reached its maximum and reset reads as no change rather than a huge delta.
+    EXPECT_EQ(counterDelta(std::uint64_t{0}, std::numeric_limits<std::uint64_t>::max()), 0U);
+    EXPECT_EQ(counterDelta(std::numeric_limits<std::uint64_t>::max(), std::uint64_t{0}), std::numeric_limits<std::uint64_t>::max());
+}
+
 } // namespace
 } // namespace Domain::Numeric
 // NOLINTEND(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
