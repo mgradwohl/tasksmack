@@ -1514,7 +1514,8 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_NETWORK_WIRED "  Network (%zu samples)", alignedCount);
     if (ImGui::IsItemHovered())
     {
-        ImGui::SetTooltip("Network bytes/sec over each refresh interval, summed over the process's open TCP connections.");
+        ImGui::SetTooltip("Network bytes/sec between readings of the process's open connections. A refresh that reuses a cached reading "
+                          "shows the last rate.");
     }
     renderHistoryWithNowBars("ProcessNetworkHistory", fill.plotHeight(), plot, {sentBar, recvBar}, false, PROCESS_NOW_BAR_COLUMNS);
     fill.addPlot();

@@ -122,7 +122,7 @@ The System Overview and process views provide three levels of visibility:
 | Per-interface | Individual interface throughput with status and link speed |
 | Per-process | Bytes sent and received attributed to each process |
 
-An interface selector lets you focus on a specific adapter. Per-process network rates are the bytes transferred over the last refresh interval, summed over the process's open TCP connections.
+An interface selector lets you focus on a specific adapter. Per-process network rates are the bytes transferred between two readings of the process's network counters, summed over its open connections. On Linux the readings are cached (`socket_stats_cache_ttl_ms`, 500 ms by default), and a refresh that reuses one shows the last rate (see the FAQ).
 
 Linux per-process attribution uses Netlink and requires Linux 4.2 or later. Windows per-process attribution uses TCP EStats and requires administrator privileges to enable collection. System-wide and interface metrics remain available when process attribution is unavailable.
 

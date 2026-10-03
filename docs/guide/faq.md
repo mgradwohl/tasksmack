@@ -87,7 +87,9 @@ See the built-in theme files (shipped alongside the application) for the expecte
 
 ## How are per-process network rates measured?
 
-Per-process network rates (`sent bytes/s`, `received bytes/s`) are the bytes transferred over the last refresh interval, divided by that interval, the same way per-process disk I/O rates are measured. They rise while a transfer runs and fall back to zero when it stops.
+Per-process network rates (`sent bytes/s`, `received bytes/s`) are the bytes transferred between two readings of the process's network counters, divided by the time between those readings. They rise while a transfer runs and fall back to zero when it stops.
+
+On Linux the counters come from a socket statistics cache that is refreshed every `socket_stats_cache_ttl_ms` (500 ms by default), which can span several refreshes. Refreshes that reuse a cached reading keep showing the last rate, so a rate can take up to one cache lifetime to change after a transfer starts or stops. On Windows the counters are read every refresh.
 
 The byte counts are summed over the process's open TCP connections. When a connection closes, its bytes leave the sum, so the rate for that one interval reads 0 instead of a negative value. System-wide and per-interface rates come from the interface counters and include all traffic.
 
