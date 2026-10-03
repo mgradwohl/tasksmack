@@ -281,11 +281,17 @@ function Invoke-ProfileTarget {
 }
 
 function Assert-TargetSucceeded {
-    # After the manifest is written: a benchmark run that exited nonzero fails the capture. (The
-    # app's exit code is not checked: -DurationSeconds ends it with a forced stop.)
+    # After the manifest is written: a benchmark run that exited nonzero, or an app still running
+    # when the trace was stopped (past the 4-hour interactive wait), fails the capture -- the
+    # trace ended before the workload did. (The app's exit code is not checked: -DurationSeconds
+    # ends it with a forced stop.)
     param($Target)
-    if ($Mode -eq 'bench' -and $null -ne $Target -and $Target.ExitCode -ne 0) {
+    if ($null -eq $Target) { return }
+    if ($Mode -eq 'bench' -and $Target.ExitCode -ne 0) {
         throw "Benchmark binary failed with exit code $($Target.ExitCode): $binaryPath. The trace and manifest ($manifestPath) are kept for inspection."
+    }
+    if ($null -eq $Target.ExitCode) {
+        throw "The target (PID $($Target.Pid)) was still running when the trace was stopped ($($Target.EndReason)), so the trace is truncated. The trace and manifest ($manifestPath) are kept for inspection."
     }
 }
 

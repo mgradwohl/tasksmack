@@ -57,10 +57,14 @@ try {
     Assert-Throws { Get-BenchmarkFilterMatches -BinaryPath $failingLister -Filter 'BM_.*' } 'exit 3'
 
     # #872: the integrity level is measured from the process's own token.
-    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    # Compared with the token's own mandatory label as whoami reports it, not inferred from
+    # administrator membership, so this holds for any account (e.g. LocalSystem is System).
     $own = Get-ProcessIntegrityLevel -ProcessId $PID
-    $expected = if ($isAdmin) { 'High' } else { 'Medium' }
-    Assert-True ($own -eq $expected) "This process's integrity measured as '$own', expected '$expected'"
+    $label = (whoami /groups | Select-String 'Mandatory Label\\(\w+) Mandatory Level' | Select-Object -First 1)
+    Assert-True ($null -ne $label) 'whoami /groups reported no mandatory label'
+    $expected = switch ($label.Matches[0].Groups[1].Value) { 'Untrusted' { 'Untrusted' } 'Low' { 'Low' } 'Medium' { 'Medium' } 'High' { 'High' } 'System' { 'System' } default { "whoami:$_" } }
+    if ($label.Line -match 'Medium Plus') { $expected = 'MediumPlus' }
+    Assert-True ($own -eq $expected) "This process's integrity measured as '$own', whoami reports '$expected'"
     Assert-True ((Get-ProcessIntegrityLevel -ProcessId 999999) -eq 'Unknown') 'A missing process must be Unknown'
     Assert-True ((ConvertTo-IntegrityLevelName 0x2000) -eq 'Medium' -and (ConvertTo-IntegrityLevelName 0x3000) -eq 'High') 'Well-known RIDs'
     Assert-True ((ConvertTo-IntegrityLevelName 0x2500) -eq '0x2500') 'An unknown RID must be shown as hex, not mislabelled'
