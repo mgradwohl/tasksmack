@@ -221,8 +221,9 @@ void GPUModel::trimHistory(double nowSeconds)
     }
     m_HistoryTimestamps.erase(m_HistoryTimestamps.begin(), keepFrom);
 
-    // Each GPU has its own timestamps (a GPU missing from a sample has no entry for it), so
-    // trim each ring by its own capture times rather than by one shared count.
+    // Each GPU has its own timestamps: a refresh it was missing from has a gap entry, but its
+    // history starts when it was first seen and is pruned on its own, so it needn't line up with
+    // the global timestamps. Trim each ring by its own capture times rather than one shared count.
     for (auto& [gpuId, history] : m_Histories)
     {
         std::size_t staleCount = 0;

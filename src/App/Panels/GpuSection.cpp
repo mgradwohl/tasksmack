@@ -266,9 +266,10 @@ void renderGpuSection(RenderContext& ctx)
 
         const auto timeData = frameTimeAxis(perGpuTimestamps, alignedCount, nowSeconds);
 
-        // Compute per-GPU axis config from per-GPU timestamps so that X-axis scroll/limits
-        // stay consistent with the data being plotted even when a GPU is intermittently absent
-        // (global timestamps would include samples this GPU never recorded, causing a mismatch).
+        // Compute per-GPU axis config from per-GPU timestamps so that X-axis scroll/limits stay
+        // consistent with the data being plotted. A refresh the GPU was missing from has a (gap)
+        // entry of its own, but the GPU's history can still start later than the global one (a GPU
+        // first seen mid-run) or be pruned on its own, so the global timestamps could mismatch.
         const auto axisConfig = makeTimeAxisConfig(perGpuTimestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
 
         const float maxClockMHz = gpuClockReferenceMHz(clockData, snap.gpuClockMHz);
