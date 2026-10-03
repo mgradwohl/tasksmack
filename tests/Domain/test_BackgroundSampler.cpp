@@ -276,11 +276,17 @@ TEST(BackgroundSamplerTest, SeededSamplerWaitsAnIntervalBeforeItsFirstSample)
     Domain::BackgroundSampler sampler(config);
     sampler.addSamplable(samplable);
 
+    const auto started = std::chrono::steady_clock::now();
     sampler.start();
-    std::this_thread::sleep_for(100ms);
-    EXPECT_EQ(samplable->getSampleCount(), 0); // not straight after the seed
-    samplable->waitForSamples(1);              // but one interval later
+    samplable->waitForSamples(1);
+    const auto firstSampleAfter = std::chrono::steady_clock::now() - started;
     sampler.stop();
+
+    // Not straight after the seed, but one interval later. A wait can only overrun, so the lower
+    // bound is exact (less a little clock slack); the upper bound leaves room for a loaded runner
+    // while still catching a sampler that waits several intervals.
+    EXPECT_GE(firstSampleAfter, 290ms);
+    EXPECT_LT(firstSampleAfter, 1000ms);
 }
 
 TEST(BackgroundSamplerTest, SetIntervalWhileStopped)

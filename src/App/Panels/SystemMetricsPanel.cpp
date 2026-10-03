@@ -270,7 +270,8 @@ void SystemMetricsPanel::onEvent(Core::Event& event)
         [this](Core::HistoryDurationChangedEvent& e)
         {
             const double seconds = Domain::Numeric::toDouble(e.getSeconds());
-            if (seconds == m_MaxHistorySeconds)
+            // Whole seconds, so anything under half a second apart is the same setting.
+            if (std::abs(seconds - m_MaxHistorySeconds) < 0.5)
             {
                 return false; // unchanged: nothing to trim or refresh
             }
