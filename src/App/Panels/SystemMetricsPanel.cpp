@@ -805,17 +805,8 @@ void SystemMetricsPanel::renderOverview()
         // Rendered from the first frame, empty and showing the collecting hint until samples arrive,
         // like every other chart; it used to appear only once it had data (#1013).
         {
-            // Convert power double history to float for ImPlot compatibility
-            std::vector<float> powerHist;
-            if (powerCount > 0)
-            {
-                powerHist.reserve(powerCount);
-                const auto startIt = m_ProcessPowerHistory.end() - static_cast<std::ptrdiff_t>(powerCount);
-                for (auto it = startIt; it != m_ProcessPowerHistory.end(); ++it)
-                {
-                    powerHist.push_back(static_cast<float>(*it));
-                }
-            }
+            // A view into the power history, plotted as doubles -- no per-frame copy (#1018).
+            const auto powerHist = UI::Widgets::tailAlignedSpan(m_ProcessPowerHistory, powerCount).values;
 
             // Battery history, with the model's "no reading" value (-1) as NaN: a gap in the line,
             // not a dive to 0 %.
@@ -834,7 +825,7 @@ void SystemMetricsPanel::renderOverview()
             const std::vector<double> batteryTimeData = buildTimeAxis(timestamps, batteryCount, nowSeconds);
             const auto axis = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds);
             // Update smoothed values: the latest *reading*, skipping trailing gaps.
-            const float targetPower = powerHist.empty() ? 0.0F : powerHist.back();
+            const float targetPower = powerHist.empty() ? 0.0F : static_cast<float>(powerHist.back()); // updateSmoothedPower takes float
             const auto finiteBattery = batteryHist | std::views::reverse;
             const auto lastBattery = std::ranges::find_if(finiteBattery, [](float v) { return !std::isnan(v); });
             const float targetBattery = (lastBattery != finiteBattery.end()) ? *lastBattery : 0.0F;
@@ -1093,17 +1084,15 @@ void SystemMetricsPanel::renderOverview()
         const auto axis = alignedCount > 0 ? makeTimeAxisConfig(procTimestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds)
                                            : makeTimeAxisConfig({}, m_MaxHistorySeconds, m_HistoryScrollSeconds);
 
+        // Views into the panel's history, plotted as doubles -- no per-frame float copies (#1018).
         std::vector<double> timeData;
-        std::vector<float> faultData;
-        std::vector<float> threadData;
-        std::vector<float> handleData;
+        const auto faultData = UI::Widgets::tailAlignedSpan(pageFaultHist, alignedCount).values;
+        const auto threadData = UI::Widgets::tailAlignedSpan(threadHist, alignedCount).values;
+        const auto handleData = UI::Widgets::tailAlignedSpan(handleHist, alignedCount).values;
 
         if (alignedCount > 0)
         {
             timeData = buildTimeAxis(procTimestamps, alignedCount, nowSeconds);
-            faultData.assign(pageFaultHist.end() - static_cast<std::ptrdiff_t>(alignedCount), pageFaultHist.end());
-            threadData.assign(threadHist.end() - static_cast<std::ptrdiff_t>(alignedCount), threadHist.end());
-            handleData.assign(handleHist.end() - static_cast<std::ptrdiff_t>(alignedCount), handleHist.end());
 
             // Update smoothed values
             const auto targetThreads = static_cast<double>(threadData.back());
