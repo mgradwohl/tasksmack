@@ -154,21 +154,7 @@ TEST(NumericTest, NarrowOrSameTypeSameValue)
     EXPECT_EQ(narrowOr<std::uint64_t>(std::uint64_t{1000}, std::uint64_t{0}), 1000);
 }
 
-// ========== narrowOr Tests (#1135) ==========
-
-TEST(NumericTest, NarrowOrConvertsValuesInRange)
-{
-    EXPECT_EQ(narrowOr<int>(std::int64_t{1234}, -1), 1234);
-    EXPECT_EQ(narrowOr<std::uint8_t>(255, std::uint8_t{0}), 255);
-    EXPECT_EQ(narrowOr<std::int32_t>(std::int64_t{std::numeric_limits<std::int32_t>::min()}, 0), std::numeric_limits<std::int32_t>::min());
-}
-
-TEST(NumericTest, NarrowOrReturnsFallbackOutOfRange)
-{
-    EXPECT_EQ(narrowOr<int>(std::int64_t{1} << 40, -1), -1);
-    EXPECT_EQ(narrowOr<std::uint8_t>(256, std::uint8_t{7}), 7);
-    EXPECT_EQ(narrowOr<std::uint32_t>(-1, std::uint32_t{9}), 9U); // negative into unsigned
-}
+// ========== counterDelta at the top of the range (#1135) ==========
 
 TEST(NumericTest, CounterDeltaAtTheTopOfTheRange)
 {

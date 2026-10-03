@@ -431,11 +431,13 @@ TEST(BackgroundSamplerTest, StartStopStartCycle)
     // Start/stop cycle multiple times
     for (int i = 0; i < 3; ++i)
     {
+        // Wait for a sample from this run -- counted from before start(), since the previous run
+        // may have sampled more than once before it stopped -- rather than sleeping a fixed time,
+        // which a loaded sanitizer runner can outlast (#1136).
+        const int samplesBefore = samplable->getSampleCount();
         sampler.start();
         EXPECT_TRUE(sampler.isRunning());
-        // Wait for this run's sample rather than sleeping a fixed time, which a loaded
-        // sanitizer runner can outlast (#1136).
-        samplable->waitForSamples(i + 1);
+        samplable->waitForSamples(samplesBefore + 1);
         sampler.stop();
         EXPECT_FALSE(sampler.isRunning());
     }
