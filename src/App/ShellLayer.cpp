@@ -61,6 +61,9 @@ void ShellLayer::onAttach()
     // Initialize panels
     m_Tabs.onAttach();
 
+    // Give ImGui back the Processes table's saved column layout before it is first drawn (#952).
+    ProcessesPanel::restoreTableLayout(config.settings().processTableLayout);
+
     // Share the process model with panels that render system-level aggregates
     if (auto* processModel = m_ProcessesPanel.processModel(); processModel != nullptr)
     {
@@ -113,6 +116,13 @@ void ShellLayer::onDetach()
     }
 
     settings.windowMaximized = window.isMaximized();
+
+    // Column widths, order and sort of the Processes table (#952). Empty means the table was never
+    // drawn this session, so whatever was loaded is kept.
+    if (std::string layout = m_ProcessesPanel.captureTableLayout(); !layout.empty())
+    {
+        settings.processTableLayout = std::move(layout);
+    }
 
     config.save();
 
@@ -265,10 +275,14 @@ void ShellLayer::onRender()
     ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - statusBarHeight - titleBarHeight));
     ImGui::SetNextWindowViewport(viewport->ID);
 
+    // Deliberately without ImGuiWindowFlags_NoSavedSettings. A table inherits that flag from its
+    // top-level window, and with it ImGui neither records nor restores the table's column layout --
+    // which is what stopped the Processes table's widths and order surviving a restart (#952).
+    // Nothing of this window's own is persisted as a result: its position and size are set every
+    // frame above, and ImGui's ini file is disabled, so its settings entry only ever lives in memory.
     const ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
                                          ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus |
-                                         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
-                                         ImGuiWindowFlags_NoSavedSettings;
+                                         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0F);
