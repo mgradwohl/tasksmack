@@ -45,7 +45,7 @@ TEST(HistoryUtilsTest, DiscardBeforeKeepsAlignedBuffersSynchronized)
     EXPECT_EQ(second[0], 200);
 }
 
-TEST(HistoryUtilsTest, DiscardBeforeWithFutureCutoffKeepsOnlyTheNewestSample)
+TEST(HistoryUtilsTest, DiscardBeforeWithFutureCutoffEmptiesBuffers)
 {
     HistoryBuffer<double> timestamps(4);
     HistoryBuffer<int> aligned(4);
@@ -54,11 +54,11 @@ TEST(HistoryUtilsTest, DiscardBeforeWithFutureCutoffKeepsOnlyTheNewestSample)
     aligned.push(10);
     aligned.push(20);
 
-    EXPECT_EQ(HistoryUtils::discardBefore(timestamps, 100.0, aligned), 1);
-    ASSERT_EQ(timestamps.size(), 1ULL);
-    EXPECT_DOUBLE_EQ(timestamps[0], 2.0);
-    ASSERT_EQ(aligned.size(), 1ULL);
-    EXPECT_EQ(aligned[0], 20);
+    // Every entry is before the cutoff: no anchor is kept, since nothing newer remains to draw it
+    // to -- it would be joined to the next sample across the gap.
+    EXPECT_EQ(HistoryUtils::discardBefore(timestamps, 100.0, aligned), 2);
+    EXPECT_TRUE(timestamps.empty());
+    EXPECT_TRUE(aligned.empty());
 }
 
 TEST(HistoryUtilsTest, ToVectorCopiesHistoryBufferChronologically)

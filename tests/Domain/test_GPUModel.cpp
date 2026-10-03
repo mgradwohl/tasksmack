@@ -1692,4 +1692,28 @@ TEST(GPUModelTest, MaxHistorySecondsIsClampedToTheSupportedRange)
     EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), static_cast<double>(Domain::Sampling::HISTORY_SECONDS_MAX));
 }
 
+TEST(GPUModelTest, AGpuAbsentForTheWholeWindowKeepsNoStaleSample)
+{
+    // Review of #1060: keeping a pre-cutoff anchor for a GPU with no sample inside the window would
+    // join its last reading to the next one across the whole absence.
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor");
+    rawProbe->withGPU("GPU1", "Other GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    model.setMaxHistorySeconds(10.0);
+
+    const auto start = std::chrono::steady_clock::now();
+    model.refreshAt(start);
+    rawProbe->withoutGPUCounters("GPU1");
+    for (int i = 1; i <= 20; ++i)
+    {
+        model.refreshAt(start + std::chrono::seconds(i));
+    }
+
+    EXPECT_TRUE(model.historyTimestamps("GPU1").empty());
+    EXPECT_FALSE(model.historyTimestamps("GPU0").empty());
+}
+
 } // namespace

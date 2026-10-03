@@ -180,8 +180,10 @@ void GPUModel::trimHistory(double nowSeconds)
     const double cutoff = nowSeconds - m_MaxHistorySeconds;
     // Like HistoryUtils::discardBefore, keep the newest sample before the cutoff, so the charts'
     // lines run off the window's left edge instead of leaving a strip there (#1016).
+    // Only while a newer sample remains: an anchor with nothing after it would be drawn connected to
+    // the next sample across the gap.
     auto keepFrom = std::ranges::lower_bound(m_HistoryTimestamps, cutoff);
-    if (keepFrom != m_HistoryTimestamps.begin())
+    if (keepFrom != m_HistoryTimestamps.begin() && keepFrom != m_HistoryTimestamps.end())
     {
         --keepFrom;
     }
@@ -196,7 +198,10 @@ void GPUModel::trimHistory(double nowSeconds)
         {
             ++staleCount;
         }
-        history.discardFront(staleCount > 0 ? staleCount - 1 : 0);
+        // A GPU absent for the whole window has no sample after the cutoff: drop them all, rather than
+        // keep one that would later be joined to its next sample across the absence.
+        const bool keepAnchor = staleCount > 0 && staleCount < history.size();
+        history.discardFront(keepAnchor ? staleCount - 1 : staleCount);
     }
 }
 

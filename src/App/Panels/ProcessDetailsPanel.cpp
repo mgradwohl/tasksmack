@@ -1969,8 +1969,15 @@ void ProcessDetailsPanel::trimHistory(double nowSeconds)
     const double cutoff = nowSeconds - m_MaxHistorySeconds;
     // Keep the newest sample before the cutoff, so the charts' lines run off the window's left edge
     // instead of leaving an empty strip there after every trim (#1016).
+    // Only while a newer sample remains (the newest is always the current sample, so here one does
+    // unless the window is shorter than the time since it -- then everything goes).
     size_t removeCount = 0;
     while (m_Timestamps.size() >= 2 && m_Timestamps[1] < cutoff)
+    {
+        m_Timestamps.pop_front();
+        ++removeCount;
+    }
+    if (m_Timestamps.size() == 1 && m_Timestamps.front() < cutoff)
     {
         m_Timestamps.pop_front();
         ++removeCount;
