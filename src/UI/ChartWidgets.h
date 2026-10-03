@@ -412,8 +412,11 @@ inline constexpr std::size_t MAX_ALIGNED_KEY_SERIES = 4;
 /// series in `keyed`, its lowest and highest sample and its first gap (NaN), plus the series' first
 /// and last samples. The kept indices are then applied to `x`, every `keyed` series and every
 /// `carried` series (drawn alongside but not used to choose points), so all stay aligned and each
-/// keyed series keeps its peaks. A keyed series with two or more gap runs in a bucket keeps only its
-/// gap there, as in reduceSeriesMinMax(). With an unusable span the series are stride-reduced.
+/// keyed series keeps its peaks. When any keyed series has two or more gap runs in a bucket, the
+/// whole bucket collapses: it keeps only its gap points, NaN in every series, plus the series' end
+/// samples. Collapsing only that series' extrema would not do: another series' picks would still give
+/// it finite points on both sides of a later gap and draw it across that gap (#1061 review), and the
+/// carried series are built from the keyed ones. With an unusable span the series are stride-reduced.
 /// Series no longer than `maxOut` are left unchanged. Every series must be as long as `x`.
 inline void reduceAlignedSeries(std::vector<double>& x,
                                 std::initializer_list<std::vector<double>*> keyed,
@@ -430,17 +433,23 @@ inline void reduceAlignedSeries(std::vector<double>& x,
 
     // Keeps source index `pick` as output point `written`. Picks ascend and each is at or after its
     // output slot, so compacting in place never overwrites a sample still to be read.
+    // With `asGap`, every series gets NaN there instead of its sample.
     int written = 0;
-    const auto keep = [&](int pick)
+    const auto keep = [&](int pick, bool asGap)
     {
+        const auto copy = [&](std::vector<double>& series)
+        {
+            series[static_cast<std::size_t>(written)] =
+                asGap ? std::numeric_limits<double>::quiet_NaN() : series[static_cast<std::size_t>(pick)];
+        };
         x[static_cast<std::size_t>(written)] = x[static_cast<std::size_t>(pick)];
         for (auto* series : keyed)
         {
-            (*series)[static_cast<std::size_t>(written)] = (*series)[static_cast<std::size_t>(pick)];
+            copy(*series);
         }
         for (auto* series : carried)
         {
-            (*series)[static_cast<std::size_t>(written)] = (*series)[static_cast<std::size_t>(pick)];
+            copy(*series);
         }
         ++written;
     };
@@ -451,10 +460,22 @@ inline void reduceAlignedSeries(std::vector<double>& x,
     const double width = (bucketCount > 0) ? minMaxBucketWidth(x.back() - x.front(), bucketCount) : 0.0;
     if (width <= 0.0)
     {
+        // As reduceSeriesKeepingGaps(): a point whose stride skipped a gap in any keyed series is a gap.
+        int previousSource = -1;
         for (int k = 0; k < maxOut; ++k)
         {
-            keep(static_cast<int>((static_cast<std::size_t>(k) * static_cast<std::size_t>(count - 1)) /
-                                  static_cast<std::size_t>(maxOut - 1)));
+            const auto source = static_cast<int>((static_cast<std::size_t>(k) * static_cast<std::size_t>(count - 1)) /
+                                                 static_cast<std::size_t>(maxOut - 1));
+            bool skippedGap = false;
+            for (const auto* series : keyed)
+            {
+                for (int i = previousSource + 1; i <= source && !skippedGap; ++i)
+                {
+                    skippedGap = !std::isfinite((*series)[static_cast<std::size_t>(i)]);
+                }
+            }
+            keep(source, skippedGap);
+            previousSource = source;
         }
     }
     else
@@ -476,6 +497,9 @@ inline void reduceAlignedSeries(std::vector<double>& x,
             std::array<int, (3 * MAX_ALIGNED_KEY_SERIES) + 2> picks{};
             picks.fill(-1);
             std::size_t pickCount = 0;
+            std::array<int, MAX_ALIGNED_KEY_SERIES> gapPicks{};
+            std::size_t gapCount = 0;
+            bool collapseBucket = false;
             picks[pickCount++] = (bucketStart == 0) ? 0 : -1;
             picks[pickCount++] = (next == count) ? count - 1 : -1;
             for (const auto* series : keyed)
@@ -505,10 +529,19 @@ inline void reduceAlignedSeries(std::vector<double>& x,
                         maxIdx = i;
                     }
                 }
-                const bool collapse = gapRuns > 1;
-                picks[pickCount++] = collapse ? -1 : minIdx;
-                picks[pickCount++] = collapse ? -1 : maxIdx;
+                collapseBucket = collapseBucket || (gapRuns > 1);
+                picks[pickCount++] = minIdx;
+                picks[pickCount++] = maxIdx;
                 picks[pickCount++] = gapIdx;
+                gapPicks[gapCount++] = gapIdx;
+            }
+            if (collapseBucket)
+            {
+                // Only the gap points and the series' ends survive (see above).
+                picks.fill(-1);
+                picks[0] = (bucketStart == 0) ? 0 : -1;
+                picks[1] = (next == count) ? count - 1 : -1;
+                std::copy_n(gapPicks.begin(), gapCount, picks.begin() + 2);
             }
             std::ranges::sort(picks);
             int previous = -1;
@@ -518,7 +551,7 @@ inline void reduceAlignedSeries(std::vector<double>& x,
                 {
                     continue;
                 }
-                keep(pick);
+                keep(pick, collapseBucket && pick != 0 && pick != count - 1);
                 previous = pick;
             }
             bucketStart = next;

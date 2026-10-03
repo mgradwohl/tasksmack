@@ -394,6 +394,44 @@ TEST(ChartWidgetsReduceTest, AlignedReductionKeyedOnBandValuesKeepsASpikeUnderAF
         std::ranges::any_of(std::views::iota(std::size_t{0}, x.size()), [&](std::size_t k) { return systemTop[k] - user[k] == 30.0; }));
 }
 
+TEST(ChartWidgetsReduceTest, AlignedReductionNeverDrawsASeriesAcrossItsGap)
+{
+    // #1061 review: series A has two separate gaps in one bucket, and B's peak and dip fall between
+    // and after them. B's picks must not give A finite points on both sides of a gap with no gap point
+    // between: the drawn line would cross a missing reading.
+    const ReduceFixture f;
+    std::vector<double> a(ReduceFixture::COUNT, 10.0);
+    std::vector<double> b(ReduceFixture::COUNT, 50.0);
+    // With x anchored at 1000, samples 1479-1518 share one 4 s bucket (2 keys: 118 buckets over 300 s).
+    a[1485] = std::numeric_limits<double>::quiet_NaN();
+    a[1505] = std::numeric_limits<double>::quiet_NaN();
+    b[1495] = 90.0;                  // between A's gaps
+    b[1510] = 5.0;                   // after the second
+    std::vector<double> sourceA = a; // full-resolution A, to check the reduced points against
+    auto x = f.x;
+
+    reduceAlignedSeries(x, {&a, &b}, {}, LINE_PLOT_MAX_POINTS_DENSE, 1000.0);
+
+    ASSERT_LE(x.size(), static_cast<std::size_t>(LINE_PLOT_MAX_POINTS_DENSE));
+    const auto sourceOf = [](double xv)
+    {
+        return static_cast<std::size_t>(std::lround((xv / 0.1) + (ReduceFixture::COUNT - 1)));
+    };
+    for (std::size_t k = 1; k < x.size(); ++k)
+    {
+        if (!std::isfinite(a[k - 1]) || !std::isfinite(a[k]))
+        {
+            continue;
+        }
+        // Two consecutive finite points of A: no missing reading of A may lie between them.
+        for (std::size_t i = sourceOf(x[k - 1]); i <= sourceOf(x[k]); ++i)
+        {
+            EXPECT_TRUE(std::isfinite(sourceA[i])) << "A drawn across its gap at sample " << i << " (points " << k - 1 << "-" << k << ")";
+        }
+    }
+    EXPECT_TRUE(std::ranges::any_of(a, [](double v) { return std::isnan(v); }));
+}
+
 TEST(ChartWidgetsReduceTest, AlignedReductionLeavesShortSeriesAndKeepsGaps)
 {
     std::vector<double> x = {-3.0, -2.0, -1.0, 0.0};
