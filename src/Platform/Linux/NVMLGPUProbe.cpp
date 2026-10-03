@@ -40,8 +40,12 @@ struct NVMLGPUProbe::Impl
     };
     std::vector<Device> devices;
 
-    // A running-process entry point and the size of the entries it writes (#1092).
-    using RunningProcessesFn = nvmlReturn_t (*)(nvmlDevice_t, unsigned int*, void*);
+    // A running-process entry point and the size of the entries it writes (#1092). The entries are
+    // nvmlProcessInfo_v1_t or _v2_t depending on the symbol, so the struct is opaque here: the
+    // pointer keeps a struct-pointer parameter like the library's, and the caller's byte buffer is
+    // converted only at the call.
+    struct ProcessInfoEntries;
+    using RunningProcessesFn = nvmlReturn_t (*)(nvmlDevice_t, unsigned int*, ProcessInfoEntries*);
     struct RunningProcessesQuery
     {
         RunningProcessesFn fn = nullptr;
@@ -410,8 +414,9 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
 
     const auto runningProcesses = [](const Impl::RunningProcessesQuery& query, nvmlDevice_t device)
     {
-        return NVMLGPUProbeMath::queryRunningProcesses(
-            [&query, device](unsigned int* count, void* buffer) { return query.fn(device, count, buffer); }, query.entrySize);
+        return NVMLGPUProbeMath::queryRunningProcesses([&query, device](unsigned int* count, void* buffer)
+                                                       { return query.fn(device, count, static_cast<Impl::ProcessInfoEntries*>(buffer)); },
+                                                       query.entrySize);
     };
 
     for (const auto& dev : m_Impl->devices)
