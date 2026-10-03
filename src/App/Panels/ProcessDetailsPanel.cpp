@@ -11,6 +11,7 @@
 #include "Platform/Factory.h"
 #include "Platform/IProcessActions.h"
 #include "ProcessDetailsLayout.h"
+#include "ProcessDetailsPanel_ActionHelpers.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
 #include "UI/ChartWidgets.h"
 #include "UI/DialogMetrics.h"
@@ -2070,13 +2071,18 @@ void ProcessDetailsPanel::renderConfirmDialog()
     }
 }
 
+Platform::ProcessTarget ProcessDetailsPanel::selectedTarget() const
+{
+    return Detail::targetForSelection(m_SelectedPid, m_HasSnapshot ? &m_CachedSnapshot : nullptr);
+}
+
 void ProcessDetailsPanel::dispatchConfirmedAction()
 {
     // m_ProcessActions can be null: the injection constructor doesn't reject a null
     // unique_ptr (m_ActionCapabilities already handles that case), so guard here too rather
     // than dereferencing unconditionally.
     const Platform::ProcessActionResult result = m_ProcessActions
-                                                   ? Detail::dispatchProcessAction(*m_ProcessActions, m_ConfirmAction, m_SelectedPid)
+                                                   ? Detail::dispatchProcessAction(*m_ProcessActions, m_ConfirmAction, selectedTarget())
                                                    : Platform::ProcessActionResult::error("Process actions unavailable");
     m_LastActionResult = Detail::formatActionResultMessage(m_ConfirmAction, m_SelectedPid, result);
     m_ActionResultTimer = 5.0F;
@@ -2337,7 +2343,7 @@ void ProcessDetailsPanel::renderPrioritySection()
                                       theme.scheme().textPrimary,
                                       theme.scheme().windowBg))
         {
-            auto result = m_ProcessActions->setPriority(m_SelectedPid, m_PriorityNiceValue);
+            const auto result = m_ProcessActions->setPriority(selectedTarget(), m_PriorityNiceValue);
             if (result.success)
             {
                 m_PriorityError.clear(); // Clear any previous error

@@ -1760,6 +1760,25 @@ TEST(ProcessModelTest, StartTimeEpochZeroIsPassedThrough)
     EXPECT_EQ(snaps[0].startTimeEpoch, 0);
 }
 
+TEST(ProcessModelTest, StartTimeTicksArePassedThrough)
+{
+    // The raw start time is what process actions verify before acting (#973). If the model ever
+    // stopped copying it, every action from the UI would carry an unknown identity and be refused,
+    // and neither the dispatch tests (hand-built snapshots) nor the platform contract tests
+    // (which bypass the model) would notice.
+    auto probe = std::make_unique<MockProcessProbe>();
+    constexpr uint64_t START_TICKS = 133'987'654'321'000'000ULL; // A FILETIME-sized value
+    probe->setCounters({makeCounter(100, "ticks_test", 'R', 1000, 500, START_TICKS)});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].startTimeTicks, START_TICKS);
+}
+
 // =============================================================================
 // System-Level History Tests (for untested functions)
 // =============================================================================

@@ -23,6 +23,10 @@ struct UserSettings
     // Process table column visibility
     ProcessColumnSettings processColumns;
 
+    // Process table column widths, order and sort, as ImGui's own "[Table]" settings text (#952).
+    // Opaque to TaskSmack: it is filtered by ProcessTableSettings::sanitize() and handed to ImGui.
+    std::string processTableLayout;
+
     // Sampling / refresh interval (milliseconds)
     // Applied to all background samplers (process + system) for consistent cadence.
     int refreshIntervalMs = Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS;

@@ -97,6 +97,9 @@ class ProcessDetailsPanel : public Panel
     void renderActionResultFeedback();
     void renderConfirmDialog();
     void dispatchConfirmedAction();
+    /// The selected process as an action target: its PID and, once a snapshot has confirmed it,
+    /// its start time, so a reuse of the PID is refused rather than acted on (#973).
+    [[nodiscard]] Platform::ProcessTarget selectedTarget() const;
     void renderActionButtons();
     void renderPrioritySection();
     void trimHistory(double nowSeconds);

@@ -9,6 +9,7 @@
 /// actual dispatch decision logic directly against a mock, which is the part #415 cared about.
 
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
+#include "Domain/ProcessSnapshot.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
 
@@ -25,7 +26,7 @@ namespace
 TEST(ProcessActionHelpersTest, TerminateCallsTerminateWithPid)
 {
     TestMocks::MockProcessActions mock;
-    const auto result = dispatchProcessAction(mock, ProcessAction::Terminate, 4242);
+    const auto result = dispatchProcessAction(mock, ProcessAction::Terminate, {.pid = 4242, .startTimeTicks = 1000});
 
     EXPECT_EQ(mock.terminateCount(), 1);
     EXPECT_EQ(mock.lastTerminatePid(), 4242);
@@ -35,10 +36,44 @@ TEST(ProcessActionHelpersTest, TerminateCallsTerminateWithPid)
     EXPECT_TRUE(result.success);
 }
 
+TEST(ProcessActionHelpersTest, DispatchPassesTheStartTimeThrough)
+{
+    // The start time is what lets the platform tell the selected process from a later one given
+    // the same PID (#973); dropping it on the way would quietly turn every action back into PID-only.
+    TestMocks::MockProcessActions mock;
+    const auto result = dispatchProcessAction(mock, ProcessAction::Kill, {.pid = 4242, .startTimeTicks = 133'000'000'000ULL});
+
+    EXPECT_TRUE(result.success);
+    EXPECT_EQ(mock.lastTarget().pid, 4242);
+    EXPECT_EQ(mock.lastTarget().startTimeTicks, 133'000'000'000ULL);
+}
+
+TEST(ProcessActionHelpersTest, TargetForSelectionTakesTheConfirmedSnapshotsStartTime)
+{
+    Domain::ProcessSnapshot snapshot;
+    snapshot.pid = 4242;
+    snapshot.startTimeTicks = 987'654'321ULL;
+
+    const Platform::ProcessTarget target = targetForSelection(4242, &snapshot);
+
+    EXPECT_EQ(target.pid, 4242);
+    EXPECT_EQ(target.startTimeTicks, 987'654'321ULL);
+}
+
+TEST(ProcessActionHelpersTest, TargetForSelectionWithoutASnapshotLeavesTheStartTimeUnknown)
+{
+    // No snapshot has confirmed the selection yet, so there is nothing to vouch for the process
+    // behind the PID. Unknown makes the platform refuse rather than act on the PID alone.
+    const Platform::ProcessTarget target = targetForSelection(4242, nullptr);
+
+    EXPECT_EQ(target.pid, 4242);
+    EXPECT_EQ(target.startTimeTicks, 0ULL);
+}
+
 TEST(ProcessActionHelpersTest, KillCallsKillWithPid)
 {
     TestMocks::MockProcessActions mock;
-    const auto result = dispatchProcessAction(mock, ProcessAction::Kill, 777);
+    const auto result = dispatchProcessAction(mock, ProcessAction::Kill, {.pid = 777, .startTimeTicks = 1000});
 
     EXPECT_EQ(mock.killCount(), 1);
     EXPECT_EQ(mock.lastKillPid(), 777);
@@ -49,7 +84,7 @@ TEST(ProcessActionHelpersTest, KillCallsKillWithPid)
 TEST(ProcessActionHelpersTest, StopCallsStopWithPid)
 {
     TestMocks::MockProcessActions mock;
-    const auto result = dispatchProcessAction(mock, ProcessAction::Stop, 88);
+    const auto result = dispatchProcessAction(mock, ProcessAction::Stop, {.pid = 88, .startTimeTicks = 1000});
 
     EXPECT_EQ(mock.stopCount(), 1);
     EXPECT_EQ(mock.lastStopPid(), 88);
@@ -59,7 +94,7 @@ TEST(ProcessActionHelpersTest, StopCallsStopWithPid)
 TEST(ProcessActionHelpersTest, ResumeCallsResumeWithPid)
 {
     TestMocks::MockProcessActions mock;
-    const auto result = dispatchProcessAction(mock, ProcessAction::Resume, 99);
+    const auto result = dispatchProcessAction(mock, ProcessAction::Resume, {.pid = 99, .startTimeTicks = 1000});
 
     EXPECT_EQ(mock.resumeCount(), 1);
     EXPECT_EQ(mock.lastResumePid(), 99);
@@ -69,7 +104,7 @@ TEST(ProcessActionHelpersTest, ResumeCallsResumeWithPid)
 TEST(ProcessActionHelpersTest, NoneCallsNothingAndReturnsError)
 {
     TestMocks::MockProcessActions mock;
-    const auto result = dispatchProcessAction(mock, ProcessAction::None, 1);
+    const auto result = dispatchProcessAction(mock, ProcessAction::None, {.pid = 1, .startTimeTicks = 1000});
 
     EXPECT_EQ(mock.terminateCount(), 0);
     EXPECT_EQ(mock.killCount(), 0);
@@ -84,7 +119,7 @@ TEST(ProcessActionHelpersTest, PropagatesMockFailureResult)
     TestMocks::MockProcessActions mock;
     mock.setKillResult(Platform::ProcessActionResult::error("Access is denied."));
 
-    const auto result = dispatchProcessAction(mock, ProcessAction::Kill, 5);
+    const auto result = dispatchProcessAction(mock, ProcessAction::Kill, {.pid = 5, .startTimeTicks = 1000});
 
     EXPECT_FALSE(result.success);
     EXPECT_EQ(result.errorMessage, "Access is denied.");
@@ -119,7 +154,7 @@ TEST(ProcessActionHelpersTest, DispatchThenFormatEndToEnd)
     TestMocks::MockProcessActions mock;
     mock.setStopResult(Platform::ProcessActionResult::error("Operation not permitted"));
 
-    const auto result = dispatchProcessAction(mock, ProcessAction::Stop, 321);
+    const auto result = dispatchProcessAction(mock, ProcessAction::Stop, {.pid = 321, .startTimeTicks = 1000});
     const auto message = formatActionResultMessage(ProcessAction::Stop, 321, result);
 
     EXPECT_EQ(mock.lastStopPid(), 321);

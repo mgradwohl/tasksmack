@@ -547,6 +547,12 @@ TEST(LinuxProcessProbeTest, EnumerateHandlesKernelThreadsWithNullCmdline)
 {
     // Verify the empty-cmdline fallback branch by finding a real process whose
     // /proc/[pid]/cmdline is empty and asserting the probe formats command as "[name]".
+    //
+    // Only kernel threads (kthreadd, PID 2, and its children) are considered. Any other process
+    // with an empty cmdline at the moment of this check is one that exited after the probe read
+    // it -- a zombie's cmdline reads as empty -- and its earlier, non-empty command makes the
+    // assertion fail. Under a parallel ctest run, tests that fork short-lived children make that
+    // race likely. Where kernel threads are not visible (WSL, some containers) the test skips.
     LinuxProcessProbe probe;
     auto processes = probe.enumerate();
 
@@ -554,6 +560,10 @@ TEST(LinuxProcessProbeTest, EnumerateHandlesKernelThreadsWithNullCmdline)
                                  processes.end(),
                                  [](const ProcessCounters& proc)
                                  {
+                                     if (proc.pid != 2 && proc.parentPid != 2)
+                                     {
+                                         return false;
+                                     }
                                      const auto cmdlinePath = std::filesystem::path("/proc") / std::to_string(proc.pid) / "cmdline";
                                      std::ifstream cmdlineFile(cmdlinePath, std::ios::binary);
                                      if (!cmdlineFile.is_open())

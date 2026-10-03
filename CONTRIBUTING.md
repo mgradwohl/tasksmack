@@ -333,7 +333,9 @@ For `Platform::IProcessActions` (process kill/terminate/stop/resume/setPriority)
 `TestMocks::MockProcessActions` in the same header: it lets each action's result be configured
 independently (`setKillResult(...)`, etc.) and tracks the last pid (and, for `setPriority`, the
 nice value) and call count per method, so a test can assert both what was called and with what
-argument.
+argument. Every action takes a `Platform::ProcessTarget` (PID plus the probe's raw start time),
+not a bare PID, and real implementations refuse the action unless the process at that PID has that
+start time (#973); `lastTarget()` returns the whole target the most recent action received.
 
 ### Testing App/UI code that needs a live ImGui context
 
