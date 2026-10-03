@@ -49,12 +49,12 @@ using UI::Widgets::tailAlignedSpan;
 /// 175% display the grid accepted cells whose plot was three ems tall, and the six Y-axis labels
 /// were drawn on top of each other (#964). #958 made the same change for the per-disk grid.
 ///
-/// The shared floor is 90px at the reference em, not 60px, so this is a higher floor everywhere,
+/// The shared floor is 120px at the reference em, not 60px, so this is a higher floor everywhere,
 /// not only a scaled one: a machine with many cores starts scrolling sooner than it used to, in
 /// exchange for charts whose axis labels do not collide.
 [[nodiscard]] float minCorePlotHeight()
 {
-    return std::floor(UI::Widgets::historyPlotMinHeight(ImGui::GetFontSize()));
+    return std::floor(UI::Widgets::historyPlotMinHeight(ImGui::GetFontSize(), UI::chartEmPx()));
 }
 
 /// Narrowest a core cell may get, in ems, before the grid uses fewer columns instead: 240px at the
