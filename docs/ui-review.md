@@ -181,7 +181,7 @@ None of this needs a redesign. The app's technical, information-dense character 
 - **Scope:** Small–Medium · **Issue:** [#1204](https://github.com/mgradwohl/tasksmack/issues/1204)
 
 ### UI-017 — GPU clock, temperature and power on an unexplained % axis
-- **Source:** `GpuSection.cpp` `normalizeToPercent`; 100 °C and an assumed 300 W reference. This regressed after #1008 removed the label suffix that #606 added.
+- **Source:** `GpuSection.cpp` `normalizeToPercent`; 100 °C, and the GPU's reported power limit (`powerLimitWatts`) or an assumed 300 W when it reports none. This regressed after #1008 removed the label suffix that #606 added.
 - **Change:** unit-true charts, or the basis stated in the label.
 - **Scope:** Small–Medium · **Issue:** [#1205](https://github.com/mgradwohl/tasksmack/issues/1205)
 
@@ -216,7 +216,7 @@ None of this needs a redesign. The app's technical, information-dense character 
 
 ### UI-022 — "-" means both zero and not available; unsupported default columns; residual empty states
 - **Current:**
-  - On Windows, SHR and Status are entire columns of "-", and VIRT reads about 2,052 GB everywhere.
+  - With SHR and Status shown (both are hidden by default; the review's saved layout had them on), SHR on Windows is a column of "-" and Status is sparse (only Suspended or Efficiency Mode processes), and VIRT reads about 2,052 GB everywhere.
   - Five different "unavailable" wordings.
   - 8 bare-text empty states.
   - The Details "Network and I/O" tab appears mid-session.
@@ -1039,7 +1039,7 @@ The table gives each theme's hue family for each semantic key. Bold marks the ou
   - Maximized, single-chart views leave large dead areas.
   - Even Huger shows one chart per screen (#1207).
 - **Density:**
-  - Processes is dense, which is right, but noisy: on Windows, SHR and Status are all "-" and VIRT is about 2 TB everywhere (#1210).
+  - Processes is dense, which is right, but noisy: with a saved layout that shows them, SHR is all "-" on Windows and Status is mostly empty, and VIRT is about 2 TB everywhere (#1210).
   - Interface Status is dominated by down adapters (#1211).
 - **Responsive:**
   - At the minimum window size (the 200×200 dp base, widened only for the title bar), controls overprint; at 900×700, tab labels truncate (#1207).
@@ -1107,7 +1107,7 @@ The table gives each theme's hue family for each semantic key. Bold marks the ou
 11. Settings: Title Case headers, "Update interval", "History length", "Largest" (#1203).
 12. Confirm dialogs: [Verb] [Cancel] (#1203).
 13. Use "Integrated" instead of "Shared Memory" (#1203).
-14. Hide SHR and Status by default on Windows (#1210).
+14. Explain or hide SHR where the platform has no value, in saved layouts too (fresh installs already hide SHR and Status); Status stays, as sparse but supported data (#1210).
 15. Route the 8 bare empty states through `renderEmptyState` (#1210).
 16. Use one icon-spacing helper (#977).
 17. Credit Font Awesome (icons CC BY 4.0, font files SIL OFL 1.1) and Sixtyfour in About (#1212).
