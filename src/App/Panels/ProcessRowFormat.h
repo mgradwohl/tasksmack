@@ -46,6 +46,13 @@ struct AlignedCellText
     return AlignedCellText{.text = std::move(text)};
 }
 
+/// Which optional fields the process probe fills; a field it does not is shown as "-".
+struct RowFormatOptions
+{
+    bool hasPowerUsage = true;
+    bool hasSharedMemory = true;
+};
+
 [[nodiscard]] inline std::string formatAlignedPercentString(double percent)
 {
     const auto parts = UI::Format::splitPercentForAlignment(percent);
@@ -137,7 +144,11 @@ struct RowFormatCache
 /// decides are visible, instead of eagerly for every process every time the snapshot version
 /// changes. `generation`/`fontId` are stamped by the caller after construction (they're not
 /// derivable from `proc` alone).
-[[nodiscard]] inline RowFormatCache buildRowFormatCache(const Domain::ProcessSnapshot& proc)
+///
+/// `options` carries the process probe's capabilities for fields a platform may not fill: there the
+/// cell reads "-", as the GPU cells do for no data, instead of a column of zeros that reads like a
+/// measurement (#1028, #1035). They are fixed for the probe's lifetime, so they need no stamp.
+[[nodiscard]] inline RowFormatCache buildRowFormatCache(const Domain::ProcessSnapshot& proc, const RowFormatOptions& options = {})
 {
     RowFormatCache fmt;
     fmt.ppid = makeAlignedCellText(UI::Format::formatId(proc.parentPid));
@@ -151,8 +162,9 @@ struct RowFormatCache
         formatAlignedBytesString(static_cast<double>(proc.memoryBytes), UI::Format::unitForTotalBytes(proc.memoryBytes)));
     fmt.peakRss = makeAlignedCellText(
         formatAlignedBytesString(static_cast<double>(proc.peakMemoryBytes), UI::Format::unitForTotalBytes(proc.peakMemoryBytes)));
-    fmt.shared = makeAlignedCellText(
-        formatAlignedBytesString(static_cast<double>(proc.sharedBytes), UI::Format::unitForTotalBytes(proc.sharedBytes)));
+    fmt.shared = makeAlignedCellText(options.hasSharedMemory ? formatAlignedBytesString(static_cast<double>(proc.sharedBytes),
+                                                                                        UI::Format::unitForTotalBytes(proc.sharedBytes))
+                                                             : "-");
     fmt.ioRead = makeAlignedCellText(
         (proc.ioReadBytesPerSec > 0.0)
             ? formatAlignedBytesPerSecString(proc.ioReadBytesPerSec, UI::Format::unitForBytesPerSecond(proc.ioReadBytesPerSec))
@@ -169,7 +181,7 @@ struct RowFormatCache
         (proc.netReceivedBytesPerSec > 0.0)
             ? formatAlignedBytesPerSecString(proc.netReceivedBytesPerSec, UI::Format::unitForBytesPerSecond(proc.netReceivedBytesPerSec))
             : "-");
-    fmt.power = makeAlignedCellText(formatAlignedPowerString(proc.powerWatts));
+    fmt.power = makeAlignedCellText(options.hasPowerUsage ? formatAlignedPowerString(proc.powerWatts) : "-");
     fmt.gpuPercent = makeAlignedCellText((proc.gpuUtilPercent > 0.0) ? formatAlignedPercentString(proc.gpuUtilPercent) : "-");
     fmt.gpuMemory =
         makeAlignedCellText((proc.gpuMemoryBytes > 0) ? formatAlignedBytesString(static_cast<double>(proc.gpuMemoryBytes),
@@ -207,7 +219,8 @@ struct RowFormatCache
 inline RowFormatCache& getOrBuildRowFormatCache(std::unordered_map<std::uint64_t, RowFormatCache>& cache,
                                                 const Domain::ProcessSnapshot& proc,
                                                 std::uint64_t generation,
-                                                std::uintptr_t fontId)
+                                                std::uintptr_t fontId,
+                                                const RowFormatOptions& options = {})
 {
     // try_emplace, not operator[]: a freshly default-constructed entry carries generation == 0 /
     // fontId == 0, which are themselves legal stamp values, so a stamp comparison alone
@@ -218,7 +231,7 @@ inline RowFormatCache& getOrBuildRowFormatCache(std::unordered_map<std::uint64_t
     RowFormatCache& entry = it->second;
     if (inserted || entry.generation != generation || entry.fontId != fontId)
     {
-        entry = buildRowFormatCache(proc);
+        entry = buildRowFormatCache(proc, options);
         entry.generation = generation;
         entry.fontId = fontId;
     }

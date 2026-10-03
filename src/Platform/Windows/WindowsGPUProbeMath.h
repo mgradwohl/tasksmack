@@ -156,28 +156,10 @@ mergeNVMLIntoDXGICounters(std::vector<GPUCounters>& dxgiCounters,
            std::ranges::all_of(dxgiCounters, [&nvmlSourcedIds](const auto& counter) { return nvmlSourcedIds.contains(counter.gpuId); });
 }
 
-/// Sums PDH per-process GPU utilization by GPU id (LUID-based, "GPU_0x...") so
-/// mergePDHAdapterUtilization() can assign a single per-adapter total instead of the raw
-/// per-process readings. Processes reporting 0% are skipped so an all-idle process list
-/// legitimately produces an empty map (as opposed to a map full of zero entries).
-[[nodiscard]] inline std::unordered_map<std::string, double>
-sumProcessUtilizationByGPUId(const std::vector<ProcessGPUCounters>& processCounters)
-{
-    std::unordered_map<std::string, double> utilizationByGpuId;
-    for (const auto& procCounter : processCounters)
-    {
-        if (procCounter.gpuUtilPercent > 0.0)
-        {
-            utilizationByGpuId[procCounter.gpuId] += procCounter.gpuUtilPercent;
-        }
-    }
-    return utilizationByGpuId;
-}
-
 /// Pure assignment logic extracted from WindowsGPUProbe::mergePDHAdapterUtilization(): for each
 /// DXGI counter not already covered by NVML, looks up its LUID-based id in @p dxgiIdToLuidId and,
-/// if PDH reported a summed utilization for that LUID in @p utilizationByGpuId, assigns it
-/// (clamped to [0, 100] since summing per-engine utilizations can exceed 100). Counters with no
+/// if PDH reported a utilization for that LUID in @p utilizationByGpuId, assigns it (clamped to
+/// [0, 100]). Counters with no
 /// LUID mapping or no matching PDH data are left untouched (utilization stays whatever the
 /// caller initialized it to, typically 0).
 inline void assignPDHUtilizationToDXGICounters(std::vector<GPUCounters>& dxgiCounters,

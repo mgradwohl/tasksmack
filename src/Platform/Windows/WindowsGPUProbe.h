@@ -51,7 +51,14 @@ class WindowsGPUProbe : public IGPUProbe
 
     std::unique_ptr<DXGIGPUProbe> m_DXGIProbe;
     std::unique_ptr<NVMLGPUProbe> m_NVMLProbe;
+    // Two PDH probes, one per sampler: m_PDHProbe for per-process counters (process sampler),
+    // m_PDHAdapterProbe for adapter utilization (system sampler). PDH computes rates between
+    // consecutive collects on a query, so with one shared query each sampler's reading covered
+    // only the slice since the *other* sampler's collect (#1034). Each query now spans its own
+    // sampler's whole interval. (Access was already serialized by GPUModel's m_ProbeMutex; this
+    // is about the measurement window, not thread safety.)
     std::unique_ptr<PDHGPUProbe> m_PDHProbe;
+    std::unique_ptr<PDHGPUProbe> m_PDHAdapterProbe;
 
     // Map DXGI GPU index to NVML GPU index (for merging data)
     std::unordered_map<uint32_t, uint32_t> m_DXGIToNVMLMap;
