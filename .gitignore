@@ -34,6 +34,7 @@ coverage-output.txt
 # GIT_SOURCE_STATE, so a tracked run directory stamps the captured binary as
 # configureSourceState=dirty with the capture's own output.
 /perf-data/resize-*/
+/perf-data/etw-*-control-*/
 /perf-data/*.etl
 /perf-data/*.etl.NGENPDB/
 /perf-data/etw-*.log
