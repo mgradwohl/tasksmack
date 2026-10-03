@@ -77,6 +77,16 @@ TEST(HistoryPlotHeightTest, MinimumFollowsTheChartText)
     EXPECT_FLOAT_EQ(historyPlotMinHeight(REFERENCE_EM_PX, -1.0F), 120.0F);
 }
 
+// Review of #1219: from Large up the chart text is a step smaller than the body, as it was before
+// #1194, so those presets keep their old floor: 180px at Even Huger (16pt body, 14pt charts).
+TEST(HistoryPlotHeightTest, LargerPresetsKeepTheBodyFloor)
+{
+    const float evenHugerEm = REFERENCE_EM_PX * 2.0F;
+    EXPECT_FLOAT_EQ(historyPlotMinHeight(evenHugerEm, evenHugerEm * 14.0F / 16.0F), 180.0F);
+    const float largeEm = REFERENCE_EM_PX * 1.25F;
+    EXPECT_FLOAT_EQ(historyPlotMinHeight(largeEm, largeEm * 0.8F), 112.5F);
+}
+
 // The floor never exceeds the ceiling, even with chart text larger than the body text.
 TEST(HistoryPlotHeightTest, MinimumNeverExceedsTheMaximum)
 {

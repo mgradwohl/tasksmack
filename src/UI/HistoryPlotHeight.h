@@ -27,16 +27,16 @@ namespace UI::Widgets
 {
 
 /// Shortest a stacked history chart may be, in body ems: 90px at the Medium preset on a 1.0 display
-/// scale (em = 32/3 px) and 180px at Even Huger. The chart-text floor below is the larger of the two
-/// at Small and Medium, where chart text is the body size.
+/// scale (em = 32/3 px) and 180px at Even Huger. At Small and Medium, where chart text is the body
+/// size, the chart-text floor below applies instead.
 ///
 /// Chosen so that Even Huger, where the axis labels are largest, keeps exactly the 180px these
 /// charts used to be fixed at. A larger multiple would make the charts taller than before at the
 /// big presets and push a tab that used to fit into scrolling.
 inline constexpr float HISTORY_PLOT_MIN_HEIGHT_EM = 8.4375F;
 
-/// Shortest a stacked history chart may be in ems of its own axis and legend text, which can be the
-/// body size (see UI::chartFontSize()): 11.25 is the proportion the Medium preset had when its chart
+/// Shortest a stacked history chart may be in ems of its own axis and legend text, when that text is
+/// the body size (Small and Medium; see UI::chartFontSize()): 11.25 is the proportion the Medium preset had when its chart
 /// text was 8px in a 90px chart, which keeps a four-entry legend (Memory: Used, Cached, Swap, Peak
 /// Used) and six Y-axis labels inside the plot. Moving chart text up to the body size at Medium
 /// (#1194) without this would have clipped that legend.
@@ -57,7 +57,11 @@ inline constexpr float HISTORY_PLOT_FILL_MARGIN_PX = 2.0F;
 {
     const float em = (std::isfinite(emPx) && emPx > 0.0F) ? emPx : 1.0F;
     const float chartEm = (std::isfinite(chartEmPx) && chartEmPx > 0.0F) ? chartEmPx : em;
-    return std::max(HISTORY_PLOT_MIN_HEIGHT_EM * em, HISTORY_PLOT_MIN_HEIGHT_CHART_EM * chartEm);
+    const float bodyFloor = HISTORY_PLOT_MIN_HEIGHT_EM * em;
+    // Only body-sized chart text (Small and Medium) needs the taller floor. From Large up the chart
+    // text is a step smaller than the body, as it always was, and the body floor keeps those presets'
+    // charts the height they were (180px at Even Huger).
+    return (chartEm >= em) ? std::max(bodyFloor, HISTORY_PLOT_MIN_HEIGHT_CHART_EM * chartEm) : bodyFloor;
 }
 
 [[nodiscard]] inline float historyPlotMaxHeight(float emPx) noexcept
