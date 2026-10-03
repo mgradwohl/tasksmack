@@ -94,53 +94,63 @@ class UniqueFd
     return checkProcessIdentity(target, *actual);
 }
 
-/// Result of trying to open a pidfd: the descriptor, or why there is none.
+/// Result of trying to open a pidfd: the descriptor, or the message to refuse the action with.
 struct PidfdOpen
 {
-    int fd = -1;   ///< The pidfd, or -1.
-    int error = 0; ///< errno of a real failure; 0 when the caller should fall back to the plain PID.
+    int fd = -1;         ///< The pidfd, or -1.
+    std::string refusal; ///< Why there is none; empty when fd is valid.
 };
 
-/// Open a pidfd for `pid`. Where pidfds are unavailable it reports no error, so the caller falls
-/// back to acting on the PID straight after its identity check rather than failing the action.
+/// Error text shared by every action refused because pidfds are unavailable.
+[[nodiscard]] std::string noPidfdMessage(std::int32_t pid)
+{
+    return std::format("Cannot act on process {} safely: this system does not provide pidfds (Linux 5.3 or later, "
+                       "not blocked by a sandbox), so a reused PID could not be ruled out; action not sent",
+                       pid);
+}
+
+[[nodiscard]] std::string signalErrorMessage(int err);
+
+/// Open a pidfd for `pid`.
+///
+/// Without one there is no way to act on the checked process rather than on whatever holds its PID
+/// a moment later, so the actions fail closed: they refuse rather than fall back to the bare PID,
+/// as they refuse an unknown start time (#973). The supported Linux target (Ubuntu 24.04, kernel
+/// 6.x) always has pidfd_open, so this only refuses on old kernels or under a seccomp filter.
 [[nodiscard]] PidfdOpen openPidfd(std::int32_t pid)
 {
 #if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
     const int fd = static_cast<int>(::syscall(SYS_pidfd_open, static_cast<pid_t>(pid), 0U));
     if (fd >= 0)
     {
-        return {.fd = fd, .error = 0};
+        return {.fd = fd, .refusal = {}};
     }
     const int err = errno;
     // ENOSYS: a kernel before 5.3. EPERM/EACCES: pidfd_open never returns these itself, but a
     // seccomp filter does for syscalls it does not list (some container runtimes' default
-    // profiles); reporting that as "process belongs to another user" would be wrong, and kill(2)
-    // can still carry the action out.
+    // profiles), so "process belongs to another user" would be the wrong message for them.
     if (err == ENOSYS || err == EPERM || err == EACCES)
     {
-        return {.fd = -1, .error = 0};
+        return {.fd = -1, .refusal = noPidfdMessage(pid)};
     }
-    return {.fd = -1, .error = err};
+    return {.fd = -1, .refusal = signalErrorMessage(err)};
 #else
-    static_cast<void>(pid);
-    return {.fd = -1, .error = 0};
+    return {.fd = -1, .refusal = noPidfdMessage(pid)};
 #endif
 }
 
-/// Send `signal` through `pidfd` when there is one, else to the PID with kill(2).
-[[nodiscard]] int signalTarget(const UniqueFd& pidfd, std::int32_t pid, int signal)
+/// Send `signal` through `pidfd`; 0 on success, -1 with errno set on failure.
+[[nodiscard]] int sendThroughPidfd(const UniqueFd& pidfd, int signal)
 {
 #if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
-    if (pidfd.get() >= 0)
-    {
-        return static_cast<int>(::syscall(SYS_pidfd_send_signal, pidfd.get(), signal, nullptr, 0U));
-    }
+    return static_cast<int>(::syscall(SYS_pidfd_send_signal, pidfd.get(), signal, nullptr, 0U));
 #else
     static_cast<void>(pidfd);
+    static_cast<void>(signal);
+    errno = ENOSYS;
+    return -1;
 #endif
-    return ::kill(pid, signal);
 }
-
 [[nodiscard]] std::string signalErrorMessage(int err)
 {
     switch (err)
@@ -210,11 +220,10 @@ ProcessActionResult LinuxProcessActions::setPriority(const ProcessTarget& target
     // reaped, so if the target is still there after the call -- running or a zombie -- the PID
     // never changed hands and the call reached it.
     const PidfdOpen opened = openPidfd(target.pid);
-    if (opened.error != 0)
+    if (opened.fd < 0)
     {
-        const std::string errorMsg = signalErrorMessage(opened.error);
-        spdlog::warn("Failed to set priority for PID {}: {}", target.pid, errorMsg);
-        return ProcessActionResult::error(errorMsg);
+        spdlog::warn("Failed to set priority for PID {}: {}", target.pid, opened.refusal);
+        return ProcessActionResult::error(opened.refusal);
     }
     const UniqueFd pidfd(opened.fd);
 
@@ -230,11 +239,10 @@ ProcessActionResult LinuxProcessActions::setPriority(const ProcessTarget& target
     const int result = setpriority(PRIO_PROCESS, static_cast<id_t>(target.pid), clampedNice);
     if (result == 0)
     {
-        // Signal 0 checks for existence without delivering anything. Without a pidfd (old kernel
-        // or a sandbox) there is nothing to ask, and the gap is the few microseconds above.
-        // Any failure of that probe leaves the call unconfirmed, not only ESRCH: a sandbox that
-        // blocks pidfd_send_signal gives no evidence the target still held the PID.
-        if (pidfd.get() >= 0 && signalTarget(pidfd, target.pid, 0) != 0)
+        // Signal 0 checks for existence without delivering anything. Any failure of that probe
+        // leaves the call unconfirmed, not only ESRCH: a sandbox that blocks pidfd_send_signal
+        // gives no evidence the target still held the PID.
+        if (sendThroughPidfd(pidfd, 0) != 0)
         {
             const int probeErr = errno;
             std::string errorMsg =
@@ -292,11 +300,10 @@ ProcessActionResult LinuxProcessActions::sendSignal(const ProcessTarget& target,
     // target, because the target is older than any process that could take the PID after it. From
     // then on the pidfd keeps referring to it, so a reuse of the PID cannot redirect the signal.
     const PidfdOpen opened = openPidfd(target.pid);
-    if (opened.error != 0)
+    if (opened.fd < 0)
     {
-        const std::string errorMsg = signalErrorMessage(opened.error);
-        spdlog::warn("Failed to send {} to PID {}: {}", signalName, target.pid, errorMsg);
-        return ProcessActionResult::error(errorMsg);
+        spdlog::warn("Failed to send {} to PID {}: {}", signalName, target.pid, opened.refusal);
+        return ProcessActionResult::error(opened.refusal);
     }
     const UniqueFd pidfd(opened.fd);
 
@@ -307,10 +314,7 @@ ProcessActionResult LinuxProcessActions::sendSignal(const ProcessTarget& target,
         return identity;
     }
 
-    // Without a pidfd (a kernel before 5.3, or a sandbox that blocks pidfd_open) the signal goes
-    // to the PID with kill(2) straight after the check, which narrows the exposure to the gap
-    // between the two calls but cannot close it.
-    const int sendResult = signalTarget(pidfd, target.pid, signal);
+    const int sendResult = sendThroughPidfd(pidfd, signal);
 
     if (sendResult == 0)
     {

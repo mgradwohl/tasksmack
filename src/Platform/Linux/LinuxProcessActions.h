@@ -12,8 +12,9 @@ namespace Platform
 /// /proc/[pid]/stat matches the target's, and signals through the pidfd, which keeps referring to
 /// the process it was opened for even if the PID is later reused. setpriority(2) has no pidfd form,
 /// so it is aimed at the PID after the check, and the pidfd is asked afterwards whether the target
-/// survived the call: if it did, its PID never changed hands. Where pidfds are unavailable (old
-/// kernels, some sandboxes) both paths fall back to acting on the PID straight after the check.
+/// survived the call: if it did, its PID never changed hands. Where pidfds are unavailable (kernels
+/// before 5.3, or a seccomp filter that blocks pidfd_open) every action is refused rather than sent
+/// to the bare PID.
 class LinuxProcessActions : public IProcessActions
 {
   public:
