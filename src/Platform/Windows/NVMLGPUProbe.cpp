@@ -286,6 +286,17 @@ std::vector<GPUInfo> NVMLGPUProbe::enumerateGPUs()
 
         info.deviceIndex = i;
 
+        // Which sensors this device actually reports: capabilities() covers NVML as a whole, but
+        // e.g. a passively cooled card has no fan reading, and a laptop GPU may not report power
+        // (#1040). A read that fails now is treated as unsupported for this device.
+        unsigned int probeValue = 0;
+        GPUCapabilities sensors = capabilities();
+        sensors.hasTemperature = m_NVML.DeviceGetTemperature(device, NVML_TEMPERATURE_GPU, &probeValue) == NVML_SUCCESS;
+        sensors.hasPowerMetrics = m_NVML.DeviceGetPowerUsage(device, &probeValue) == NVML_SUCCESS;
+        sensors.hasClockSpeeds = m_NVML.DeviceGetClockInfo(device, NVML_CLOCK_GRAPHICS, &probeValue) == NVML_SUCCESS;
+        sensors.hasFanSpeed = m_NVML.DeviceGetFanSpeed(device, &probeValue) == NVML_SUCCESS;
+        info.sensorCapabilities = sensors;
+
         spdlog::debug("NVMLGPUProbe: Enumerated NVIDIA GPU {}: {}", i, info.name);
 
         gpus.push_back(std::move(info));

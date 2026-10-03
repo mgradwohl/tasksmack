@@ -7,6 +7,8 @@
 
 #include <gtest/gtest.h>
 
+#include <optional>
+
 namespace App
 {
 namespace
@@ -15,12 +17,8 @@ namespace
 using GpuSection::classifyEmptyState;
 using GpuSection::EmptyReason;
 
-// GPUModel publishes on every successful refresh, even one that finds no GPU, so the absence of a
-// publication is a missing probe or a failed read -- never an ordinary wait.
-TEST(GpuSectionCapabilitiesTest, AnAdapterWithoutSensorsGetsNoSensorSeries)
+Platform::GPUCapabilities allSensorsProbe()
 {
-    // On a hybrid laptop NVML's capabilities belong to the NVIDIA GPU; the Intel iGPU, whose
-    // sensors are not read, must not inherit them (#1040).
     Platform::GPUCapabilities probe;
     probe.hasTemperature = true;
     probe.hasHotspotTemp = true;
@@ -30,12 +28,25 @@ TEST(GpuSectionCapabilitiesTest, AnAdapterWithoutSensorsGetsNoSensorSeries)
     probe.hasEncoderDecoder = true;
     probe.hasEngineUtilization = true;
     probe.hasPerProcessMetrics = true;
+    return probe;
+}
 
-    const auto withSensors = GpuSection::capabilitiesForGpu(probe, true);
-    const auto withoutSensors = GpuSection::capabilitiesForGpu(probe, false);
+TEST(GpuSectionCapabilitiesTest, WithoutPerAdapterSensorsTheProbeCapabilitiesApply)
+{
+    const auto probe = allSensorsProbe();
+    const auto caps = GpuSection::capabilitiesForGpu(probe, std::nullopt);
 
-    EXPECT_TRUE(withSensors.hasTemperature);
-    EXPECT_TRUE(withSensors.hasEncoderDecoder);
+    EXPECT_TRUE(caps.hasTemperature);
+    EXPECT_TRUE(caps.hasFanSpeed);
+    EXPECT_TRUE(caps.hasEncoderDecoder);
+}
+
+TEST(GpuSectionCapabilitiesTest, AnAdapterWithoutSensorsGetsNoSensorSeries)
+{
+    // On a hybrid laptop NVML's capabilities belong to the NVIDIA GPU; the Intel iGPU, whose
+    // sensors are not read, must not inherit them (#1040).
+    const auto withoutSensors = GpuSection::capabilitiesForGpu(allSensorsProbe(), Platform::GPUCapabilities{});
+
     EXPECT_FALSE(withoutSensors.hasTemperature);
     EXPECT_FALSE(withoutSensors.hasHotspotTemp);
     EXPECT_FALSE(withoutSensors.hasPowerMetrics);
@@ -47,6 +58,29 @@ TEST(GpuSectionCapabilitiesTest, AnAdapterWithoutSensorsGetsNoSensorSeries)
     EXPECT_TRUE(withoutSensors.hasPerProcessMetrics);
 }
 
+TEST(GpuSectionCapabilitiesTest, EachAdapterKeepsOnlyTheSensorsItReports)
+{
+    // Two NVIDIA cards under one probe: one passively cooled, with no fan reading.
+    Platform::GPUCapabilities fanless;
+    fanless.hasTemperature = true;
+    fanless.hasPowerMetrics = true;
+    fanless.hasClockSpeeds = true;
+    Platform::GPUCapabilities cooled = fanless;
+    cooled.hasFanSpeed = true;
+
+    const auto fanlessCaps = GpuSection::capabilitiesForGpu(allSensorsProbe(), fanless);
+    const auto cooledCaps = GpuSection::capabilitiesForGpu(allSensorsProbe(), cooled);
+
+    EXPECT_FALSE(fanlessCaps.hasFanSpeed);
+    EXPECT_TRUE(fanlessCaps.hasTemperature);
+    EXPECT_TRUE(cooledCaps.hasFanSpeed);
+    // An adapter cannot gain a series the probe does not draw.
+    Platform::GPUCapabilities noFanProbe = allSensorsProbe();
+    noFanProbe.hasFanSpeed = false;
+    EXPECT_FALSE(GpuSection::capabilitiesForGpu(noFanProbe, cooled).hasFanSpeed);
+}
+// GPUModel publishes on every successful refresh, even one that finds no GPU, so the absence of a
+// publication is a missing probe or a failed read -- never an ordinary wait.
 TEST(GpuSectionEmptyStateTest, NoPublicationIsUnavailable)
 {
     EXPECT_EQ(classifyEmptyState(/*hasPublication=*/false, /*devicesKnown=*/false, /*deviceCount=*/0, /*snapshotCount=*/0),

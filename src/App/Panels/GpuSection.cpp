@@ -159,19 +159,19 @@ void renderGpuSection(RenderContext& ctx)
         // Find GPU info for this GPU
         std::string gpuName = snap.name;
         bool isIntegrated = snap.isIntegrated;
-        bool hasSensorMetrics = true;
+        std::optional<Platform::GPUCapabilities> adapterSensors;
         for (const auto& info : gpuInfos)
         {
             if (info.id == snap.gpuId)
             {
                 gpuName = info.name;
                 isIntegrated = info.isIntegrated;
-                hasSensorMetrics = info.hasSensorMetrics;
+                adapterSensors = info.sensorCapabilities;
                 break;
             }
         }
         // What this GPU reports, not what the probe can report for some GPU (#1040).
-        const Platform::GPUCapabilities caps = capabilitiesForGpu(probeCaps, hasSensorMetrics);
+        const Platform::GPUCapabilities caps = capabilitiesForGpu(probeCaps, adapterSensors);
 
         // GPU header with collapsible section
         // Discrete: show VRAM amount after name, label as "Discrete"

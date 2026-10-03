@@ -117,6 +117,26 @@ namespace Platform
     return mapping;
 }
 
+/// Set each DXGI adapter's sensorCapabilities: sensor metrics come only from NVML on Windows, so a
+/// mapped adapter takes its own NVML device's set (or @p nvmlProbeCaps if the device has none), and
+/// an adapter NVML does not cover -- e.g. a hybrid laptop's Intel iGPU -- has no sensors (#1040).
+inline void assignSensorCapabilities(std::vector<GPUInfo>& dxgiGPUs,
+                                     const std::vector<GPUInfo>& nvmlGPUs,
+                                     const std::unordered_map<std::uint32_t, std::uint32_t>& dxgiToNVML,
+                                     const GPUCapabilities& nvmlProbeCaps)
+{
+    for (std::size_t dxgiIdx = 0; dxgiIdx < dxgiGPUs.size(); ++dxgiIdx)
+    {
+        const auto mapped = dxgiToNVML.find(static_cast<std::uint32_t>(dxgiIdx));
+        if (mapped == dxgiToNVML.end() || mapped->second >= nvmlGPUs.size())
+        {
+            dxgiGPUs[dxgiIdx].sensorCapabilities = GPUCapabilities{};
+            continue;
+        }
+        dxgiGPUs[dxgiIdx].sensorCapabilities = nvmlGPUs[mapped->second].sensorCapabilities.value_or(nvmlProbeCaps);
+    }
+}
+
 /// Fill memoryUsedBytes for every adapter whose memory NVML did not supply, from PDH's adapter-wide
 /// counters. @p nvmlMemoryIds are the GPUs whose NVML memory read succeeded (see
 /// mergeNVMLIntoDXGICounters()), not merely the ones NVML covers for utilization.

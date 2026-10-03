@@ -314,6 +314,48 @@ TEST(MapDXGIToNVMLTest, NonNVIDIAAdaptersAndSurplusCardsStayUnmapped)
     EXPECT_FALSE(mapping.contains(2));
 }
 
+TEST(AssignSensorCapabilitiesTest, EachAdapterTakesItsOwnNVMLDevicesSensors)
+{
+    // Sensors are per adapter (#1040): the iGPU has none, and of two identical NVIDIA cards the
+    // passively cooled one reports no fan.
+    std::vector<GPUInfo> dxgi = {
+        makeInfo("Intel(R) Arc(TM) 140T GPU", "Intel"),
+        makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA"),
+        makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA"),
+    };
+    std::vector<GPUInfo> nvml = {makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA"), makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA")};
+    GPUCapabilities cooled;
+    cooled.hasTemperature = true;
+    cooled.hasFanSpeed = true;
+    GPUCapabilities fanless;
+    fanless.hasTemperature = true;
+    nvml[0].sensorCapabilities = cooled;
+    nvml[1].sensorCapabilities = fanless;
+
+    assignSensorCapabilities(dxgi, nvml, mapDXGIToNVML(dxgi, nvml), GPUCapabilities{});
+
+    ASSERT_TRUE(dxgi[0].sensorCapabilities.has_value());
+    EXPECT_FALSE(dxgi[0].sensorCapabilities.value_or(GPUCapabilities{}).hasTemperature);
+    ASSERT_TRUE(dxgi[1].sensorCapabilities.has_value());
+    EXPECT_TRUE(dxgi[1].sensorCapabilities.value_or(GPUCapabilities{}).hasFanSpeed);
+    ASSERT_TRUE(dxgi[2].sensorCapabilities.has_value());
+    EXPECT_TRUE(dxgi[2].sensorCapabilities.value_or(GPUCapabilities{}).hasTemperature);
+    EXPECT_FALSE(dxgi[2].sensorCapabilities.value_or(GPUCapabilities{}).hasFanSpeed);
+}
+
+TEST(AssignSensorCapabilitiesTest, AMappedDeviceWithoutItsOwnSetTakesTheNVMLProbes)
+{
+    std::vector<GPUInfo> dxgi = {makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA")};
+    const std::vector<GPUInfo> nvml = {makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA")};
+    GPUCapabilities probeCaps;
+    probeCaps.hasPowerMetrics = true;
+
+    assignSensorCapabilities(dxgi, nvml, mapDXGIToNVML(dxgi, nvml), probeCaps);
+
+    ASSERT_TRUE(dxgi[0].sensorCapabilities.has_value());
+    EXPECT_TRUE(dxgi[0].sensorCapabilities.value_or(GPUCapabilities{}).hasPowerMetrics);
+}
+
 TEST(OrderNVMLCountersByIdsTest, CountersFollowEnumerationOrderByDeviceId)
 {
     // NVML reads counters from an unordered map, so they can come back in either order; the

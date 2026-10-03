@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -76,20 +77,22 @@ classifyEmptyState(bool hasPublication, bool devicesKnown, std::size_t deviceCou
 }
 
 /// The capabilities that apply to one GPU. GPUCapabilities describes the probe as a whole -- on a
-/// hybrid Windows laptop NVML's sensor capabilities are set because the NVIDIA GPU has them --
-/// so an adapter whose sensors are not read (GPUInfo::hasSensorMetrics false, e.g. the Intel iGPU)
-/// has its sensor series switched off here rather than drawn as lines stuck at 0 (#1040).
-[[nodiscard]] constexpr Platform::GPUCapabilities capabilitiesForGpu(Platform::GPUCapabilities caps, bool hasSensorMetrics) noexcept
+/// hybrid Windows laptop NVML's sensor capabilities are set because the NVIDIA GPU has them -- so
+/// each sensor series is kept only if this adapter reports it (GPUInfo::sensorCapabilities), rather
+/// than drawn as a line stuck at 0 (#1040). Without per-adapter sensors the probe's apply as is.
+/// Utilization and per-process metrics are not per adapter and are left alone.
+[[nodiscard]] constexpr Platform::GPUCapabilities
+capabilitiesForGpu(Platform::GPUCapabilities caps, const std::optional<Platform::GPUCapabilities>& adapterSensors) noexcept
 {
-    if (!hasSensorMetrics)
+    if (adapterSensors.has_value())
     {
-        caps.hasTemperature = false;
-        caps.hasHotspotTemp = false;
-        caps.hasPowerMetrics = false;
-        caps.hasClockSpeeds = false;
-        caps.hasFanSpeed = false;
-        caps.hasPCIeMetrics = false;
-        caps.hasEncoderDecoder = false;
+        caps.hasTemperature = caps.hasTemperature && adapterSensors->hasTemperature;
+        caps.hasHotspotTemp = caps.hasHotspotTemp && adapterSensors->hasHotspotTemp;
+        caps.hasPowerMetrics = caps.hasPowerMetrics && adapterSensors->hasPowerMetrics;
+        caps.hasClockSpeeds = caps.hasClockSpeeds && adapterSensors->hasClockSpeeds;
+        caps.hasFanSpeed = caps.hasFanSpeed && adapterSensors->hasFanSpeed;
+        caps.hasPCIeMetrics = caps.hasPCIeMetrics && adapterSensors->hasPCIeMetrics;
+        caps.hasEncoderDecoder = caps.hasEncoderDecoder && adapterSensors->hasEncoderDecoder;
     }
     return caps;
 }

@@ -46,11 +46,15 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
     if (m_DXGIProbe)
     {
         auto gpus = m_DXGIProbe->enumerateGPUs();
+        std::vector<GPUInfo> nvmlGPUs;
+        GPUCapabilities nvmlCaps{};
+        m_DXGIToNVMLMap.clear();
 
         // If NVML is available, try to match NVIDIA GPUs for enhanced data
         if (m_NVMLProbe && m_NVMLProbe->isAvailable())
         {
-            auto nvmlGPUs = m_NVMLProbe->enumerateGPUs();
+            nvmlGPUs = m_NVMLProbe->enumerateGPUs();
+            nvmlCaps = m_NVMLProbe->capabilities();
             spdlog::debug("WindowsGPUProbe: Found {} DXGI GPUs and {} NVML GPUs", gpus.size(), nvmlGPUs.size());
 
             // Map NVIDIA DXGI adapters to NVML devices by name, each NVML device claimed once so
@@ -84,13 +88,10 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
         // (e.g., on device change) and the adapter list can change between calls.
         m_DXGIIdToLuidId.clear();
         m_DXGIIdIsIntegrated.clear();
-        for (std::size_t dxgiIdx = 0; dxgiIdx < gpus.size(); ++dxgiIdx)
+        // Sensor metrics are per adapter: its own NVML device's, or none without one (#1040).
+        assignSensorCapabilities(gpus, nvmlGPUs, m_DXGIToNVMLMap, nvmlCaps);
+        for (const auto& gpu : gpus)
         {
-            auto& gpu = gpus[dxgiIdx];
-            // Sensor metrics (temperature, power, clocks, fan, encoder/decoder) come only from
-            // NVML on Windows, so an adapter NVML does not cover has none -- e.g. a hybrid
-            // laptop's Intel iGPU, which used to show NVML's series stuck at 0 (#1040).
-            gpu.hasSensorMetrics = m_DXGIToNVMLMap.contains(static_cast<uint32_t>(dxgiIdx));
             m_DXGIIdIsIntegrated[gpu.id] = gpu.isIntegrated;
             if (!gpu.luidId.empty())
             {
