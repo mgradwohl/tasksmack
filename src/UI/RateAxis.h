@@ -70,4 +70,31 @@ template<std::ranges::input_range... Rs>
     return std::max({maxOfSeries(series)...});
 }
 
+/// Time constants for easing a rate chart's Y upper bound toward rateAxisUpperBound() (#1011).
+/// Rising is quick, so a new peak is clipped for only a few frames; falling is slower, so the chart
+/// settles rather than snapping when a peak scrolls out of the window.
+inline constexpr double RATE_AXIS_EASE_UP_TAU_SECONDS = 0.12;
+inline constexpr double RATE_AXIS_EASE_DOWN_TAU_SECONDS = 0.5;
+/// Within this fraction of the target the eased bound snaps to it, so it settles exactly instead of
+/// creeping toward it forever (and the axis labels stop changing).
+inline constexpr double RATE_AXIS_EASE_SNAP_FRACTION = 0.002;
+
+/// One frame of easing a rate chart's Y upper bound from `current` toward `target`.
+///
+/// Rate charts recompute their upper bound from the visible data every frame, so when a peak entered
+/// or left the window the whole chart rescaled in a single frame. This moves the bound exponentially
+/// instead, with RATE_AXIS_EASE_UP/DOWN_TAU_SECONDS. A non-finite or non-positive `current` (no
+/// previous bound) or `deltaSeconds` returns `target` unchanged.
+[[nodiscard]] inline double easeAxisUpperBound(double current, double target, double deltaSeconds) noexcept
+{
+    if (!std::isfinite(current) || current <= 0.0 || !std::isfinite(deltaSeconds) || deltaSeconds <= 0.0 || !std::isfinite(target))
+    {
+        return target;
+    }
+    const double tau = (target > current) ? RATE_AXIS_EASE_UP_TAU_SECONDS : RATE_AXIS_EASE_DOWN_TAU_SECONDS;
+    const double alpha = 1.0 - std::exp(-deltaSeconds / tau);
+    const double next = current + ((target - current) * alpha);
+    return (std::abs(next - target) <= std::abs(target) * RATE_AXIS_EASE_SNAP_FRACTION) ? target : next;
+}
+
 } // namespace UI::Widgets

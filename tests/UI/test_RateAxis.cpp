@@ -80,5 +80,45 @@ TEST(RateAxisTest, MaxOfTwoAndThreeSeriesSpansAllOfThem)
     EXPECT_DOUBLE_EQ(maxOfSeries(a, b, c), 20.0);
 }
 
+// ========== easeAxisUpperBound (#1011) ==========
+
+TEST(RateAxisTest, EasingMovesPartWayTowardTheTargetEachFrame)
+{
+    constexpr double frame = 1.0 / 60.0;
+    const double up = easeAxisUpperBound(100.0, 200.0, frame);
+    EXPECT_GT(up, 100.0);
+    EXPECT_LT(up, 200.0);
+    const double down = easeAxisUpperBound(200.0, 100.0, frame);
+    EXPECT_LT(down, 200.0);
+    EXPECT_GT(down, 100.0);
+}
+
+TEST(RateAxisTest, EasingRisesFasterThanItFalls)
+{
+    // A new peak should be clipped for as few frames as possible; a departing one can settle.
+    constexpr double frame = 1.0 / 60.0;
+    const double risen = easeAxisUpperBound(100.0, 200.0, frame) - 100.0;
+    const double fallen = 200.0 - easeAxisUpperBound(200.0, 100.0, frame);
+    EXPECT_GT(risen, fallen);
+}
+
+TEST(RateAxisTest, EasingSettlesExactlyOnTheTarget)
+{
+    double bound = 100.0;
+    for (int i = 0; i < 600; ++i) // 10 s at 60 FPS
+    {
+        bound = easeAxisUpperBound(bound, 250.0, 1.0 / 60.0);
+    }
+    EXPECT_DOUBLE_EQ(bound, 250.0);
+}
+
+TEST(RateAxisTest, EasingWithNoPreviousBoundOrTimeIsTheTarget)
+{
+    EXPECT_DOUBLE_EQ(easeAxisUpperBound(0.0, 42.0, 0.016), 42.0);
+    EXPECT_DOUBLE_EQ(easeAxisUpperBound(std::numeric_limits<double>::quiet_NaN(), 42.0, 0.016), 42.0);
+    EXPECT_DOUBLE_EQ(easeAxisUpperBound(10.0, 42.0, 0.0), 42.0);
+    EXPECT_DOUBLE_EQ(easeAxisUpperBound(10.0, 42.0, std::numeric_limits<double>::infinity()), 42.0);
+}
+
 } // namespace
 } // namespace UI::Widgets

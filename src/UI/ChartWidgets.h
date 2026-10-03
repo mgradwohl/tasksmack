@@ -25,6 +25,7 @@
 #include <span>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -254,6 +255,132 @@ inline void reduceSeriesKeepingGaps(const TX* xData, const TY* yData, int count,
     }
 }
 
+/// Width, in x units, of the buckets reduceSeriesMinMax() groups a series spanning `span` into, for
+/// at most `bucketCount` buckets: span / bucketCount rounded *up* to a power of two. Rounding makes
+/// the width a step function of the span, so it stays put while the span drifts by a sample as the
+/// window scrolls -- a width that moved every sample would move every bucket boundary with it.
+/// Returns 0 for an empty or unusable span.
+[[nodiscard]] inline double minMaxBucketWidth(double span, int bucketCount) noexcept
+{
+    if (!std::isfinite(span) || span <= 0.0 || bucketCount <= 0)
+    {
+        return 0.0;
+    }
+    return std::exp2(std::ceil(std::log2(span / static_cast<double>(bucketCount))));
+}
+
+/// Reduce `count` samples to at most `maxOut` points for drawing, keeping peaks and gaps (#1010).
+///
+/// The samples are grouped into buckets of minMaxBucketWidth() along x, and each bucket contributes
+/// its lowest and highest sample, in their original order. Unlike picking every k-th sample, this
+/// keeps a single-sample peak, so the line agrees with the tooltip, which reads full-resolution data.
+///
+/// Bucket boundaries are fixed in absolute x -- `x + xOffset` -- not counted from either end of the
+/// series. History charts plot x as "seconds before now", so with `xOffset` = now a sample keeps its
+/// bucket as the window scrolls and the reduced line does not shimmer; counted from an end, every new
+/// or trimmed sample would regroup the whole series.
+///
+/// A bucket holding a non-finite sample (NaN: no reading) also emits a NaN point at that sample's x,
+/// so the gap survives the reduction.
+///
+/// @return Points written to outX/outY (each must hold `maxOut`). With an unusable span (fewer than
+///         two samples, or x not increasing) the series is stride-reduced to `maxOut` points instead.
+template<typename TX, typename TY>
+[[nodiscard]] inline int reduceSeriesMinMax(const TX* xData, const TY* yData, int count, int maxOut, double xOffset, TX* outX, TY* outY)
+{
+    // At most three points per bucket (min, max, gap marker), and a span of n widths can touch
+    // n + 1 buckets once both ends fall mid-bucket: so maxOut / 3 - 1 buckets always fit.
+    const int bucketCount = (maxOut / 3) - 1;
+    const double width =
+        (count > 1) ? minMaxBucketWidth(static_cast<double>(xData[count - 1]) - static_cast<double>(xData[0]), bucketCount) : 0.0;
+    if (width <= 0.0)
+    {
+        const int outCount = std::min(count, maxOut);
+        if (outCount == count)
+        {
+            std::copy_n(xData, count, outX);
+            std::copy_n(yData, count, outY);
+        }
+        else
+        {
+            reduceSeriesKeepingGaps(xData, yData, count, outCount, outX, outY);
+        }
+        return outCount;
+    }
+
+    const auto bucketOf = [&](int index)
+    {
+        return std::floor((static_cast<double>(xData[index]) + xOffset) / width);
+    };
+    int written = 0;
+    int bucketStart = 0;
+    while (bucketStart < count)
+    {
+        const double bucket = bucketOf(bucketStart);
+        int minIdx = -1;
+        int maxIdx = -1;
+        int gapIdx = -1;
+        int next = bucketStart;
+        for (; next < count && bucketOf(next) == bucket; ++next)
+        {
+            const auto value = static_cast<double>(yData[next]);
+            if (!std::isfinite(value))
+            {
+                gapIdx = (gapIdx < 0) ? next : gapIdx;
+                continue;
+            }
+            if (minIdx < 0 || value < static_cast<double>(yData[minIdx]))
+            {
+                minIdx = next;
+            }
+            if (maxIdx < 0 || value > static_cast<double>(yData[maxIdx]))
+            {
+                maxIdx = next;
+            }
+        }
+
+        std::array<int, 3> picks{minIdx, maxIdx, gapIdx};
+        std::ranges::sort(picks);
+        int previous = -1;
+        for (const int pick : picks)
+        {
+            if (pick < 0 || pick == previous || written >= maxOut)
+            {
+                continue;
+            }
+            outX[written] = xData[pick];
+            if constexpr (std::is_floating_point_v<TY>)
+            {
+                outY[written] = (pick == gapIdx) ? std::numeric_limits<TY>::quiet_NaN() : yData[pick];
+            }
+            else
+            {
+                outY[written] = yData[pick];
+            }
+            ++written;
+            previous = pick;
+        }
+        bucketStart = next;
+    }
+    return written;
+}
+
+/// "Now" in the seconds-since-steady_clock-epoch that history charts measure x from, read once per
+/// ImGui frame. plotLineWithFill() adds it to a chart's x ("seconds before now") to anchor its
+/// reduction buckets in absolute time. Reading it once per frame, not per call, keeps the anchor
+/// from wandering by however long the frame has taken to reach each chart.
+[[nodiscard]] inline double historyFrameNowSeconds()
+{
+    static int cachedFrame = -1;
+    static double cachedNow = 0.0;
+    if (const int frame = ImGui::GetFrameCount(); frame != cachedFrame)
+    {
+        cachedFrame = frame;
+        cachedNow = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+    return cachedNow;
+}
+
 template<typename TX, typename TY>
 inline void plotLineWithFill(const char* label,
                              const TX* xData,
@@ -293,22 +420,25 @@ inline void plotLineWithFill(const char* label,
         ImPlot::PlotLine(label, plotXData, plotYData, plotCount, {ImPlotProp_LineColor, lineColor, ImPlotProp_LineWeight, lineThickness});
     };
 
-    // Clamp effective max so stride math and buffer capacity stay in sync.
+    // Clamp effective max so the reduction and buffer capacity stay in sync.
     const int effectiveMax = (maxPointCount > 1) ? std::min(maxPointCount, static_cast<int>(LINE_PLOT_MAX_POINTS_DENSE)) : maxPointCount;
     if ((effectiveMax > 1) && (count > effectiveMax))
     {
         std::array<TX, LINE_PLOT_MAX_POINTS_DENSE> reducedXData{};
         std::array<TY, LINE_PLOT_MAX_POINTS_DENSE> reducedYData{};
-        reduceSeriesKeepingGaps(xData, yData, count, effectiveMax, reducedXData.data(), reducedYData.data());
+        // x is "seconds before now" on every history chart (buildTimeAxis), so now anchors the
+        // reduction's buckets in absolute time (see reduceSeriesMinMax).
+        const int reducedCount =
+            reduceSeriesMinMax(xData, yData, count, effectiveMax, historyFrameNowSeconds(), reducedXData.data(), reducedYData.data());
 
-        renderSeries(reducedXData.data(), reducedYData.data(), effectiveMax);
+        renderSeries(reducedXData.data(), reducedYData.data(), reducedCount);
         return;
     }
 
     renderSeries(xData, yData, count);
 }
 
-/// Helper for line-only rendering with stride downsampling to LINE_PLOT_MAX_POINTS_DENSE points.
+/// Helper for line-only rendering, reduced to at most LINE_PLOT_MAX_POINTS_DENSE points (see reduceSeriesMinMax).
 /// Fills are intentionally disabled; pass only the line color.
 /// NOTE: For visual consistency, prefer plotLineWithFill(..., drawFill=true) to show fills.
 /// Use plotDenseLine only for charts that should remain line-only (e.g., sparse event streams).
@@ -706,6 +836,10 @@ struct HistoryChartConfig
     bool showLegend = true;
     float height = HISTORY_PLOT_HEIGHT_DEFAULT;
     ImPlotFlags flags = PLOT_FLAGS_DEFAULT;
+    /// Ease the Y upper bound toward yLimits->second over a few frames instead of jumping to it
+    /// (see easeAxisUpperBound). Set by rateHistoryConfig(); a fixed range such as 0-100 % has
+    /// nothing to ease.
+    bool easeYUpper = false;
 };
 
 /// Returns `config` with its plot height replaced, for callers that size a chart to the space
@@ -759,7 +893,37 @@ rateHistoryConfig(const char* id, double xMin, double xMax, ImPlotFormatter yFor
     cfg.xMax = xMax;
     cfg.yFormatter = yFormatter;
     cfg.yLimits = std::pair{0.0, rateAxisUpperBound(dataMax, minSpan)};
+    cfg.easeYUpper = true;
     return cfg;
+}
+
+/// The Y upper bound a HistoryChart with easeYUpper draws this frame: its previous frame's bound
+/// eased toward `target` (easeAxisUpperBound). Kept per chart, keyed by the chart's ImGui ID. A chart
+/// that was not drawn last frame -- just opened, or its tab just shown -- starts at its target rather
+/// than easing in from a stale value.
+[[nodiscard]] inline double easedChartUpperBound(ImGuiID chartId, double target)
+{
+    struct Eased
+    {
+        double value = 0.0;
+        int lastFrame = -1;
+    };
+    // UI thread only, like everything else in ImGui. Bounded: one entry per chart ID ever drawn, and
+    // entries not drawn for a while are dropped once there are many (per-disk charts come and go).
+    static std::unordered_map<ImGuiID, Eased> state;
+    constexpr std::size_t PRUNE_ABOVE = 256;
+    constexpr int STALE_FRAMES = 600;
+
+    const int frame = ImGui::GetFrameCount();
+    if (state.size() > PRUNE_ABOVE)
+    {
+        std::erase_if(state, [frame](const auto& entry) { return (frame - entry.second.lastFrame) > STALE_FRAMES; });
+    }
+    auto& entry = state[chartId];
+    const bool continuing = entry.lastFrame == frame - 1;
+    entry.value = continuing ? easeAxisUpperBound(entry.value, target, static_cast<double>(ImGui::GetIO().DeltaTime)) : target;
+    entry.lastFrame = frame;
+    return entry.value;
 }
 
 /// Maps the config's Y policy to ImPlot axis flags: locked range vs auto-fit.
@@ -804,6 +968,10 @@ class HistoryChart
             m_Start = std::chrono::steady_clock::now();
         }
 
+        // The ID ImPlot gives this plot (BeginPlot hashes the label in the current ID stack), taken
+        // here because ImPlot's public API has no accessor for it once the plot has begun. Scoped by
+        // the caller's PushID, so same-label charts in different scopes ease separately.
+        const ImGuiID plotId = ImGui::GetID(config.id);
         m_Active = ImPlot::BeginPlot(config.id, ImVec2(-1, config.height), historyChartBeginPlotFlags(config.flags, config.showLegend));
         if (!m_Active)
         {
@@ -831,7 +999,8 @@ class HistoryChart
         ImPlot::SetupAxisFormat(ImAxis_Y1, config.yFormatter);
         if (config.yLimits.has_value())
         {
-            ImPlot::SetupAxisLimits(ImAxis_Y1, config.yLimits->first, config.yLimits->second, ImPlotCond_Always);
+            const double upper = config.easeYUpper ? easedChartUpperBound(plotId, config.yLimits->second) : config.yLimits->second;
+            ImPlot::SetupAxisLimits(ImAxis_Y1, config.yLimits->first, upper, ImPlotCond_Always);
         }
         ImPlot::SetupAxisLimits(ImAxis_X1, config.xMin, config.xMax, ImPlotCond_Always);
     }

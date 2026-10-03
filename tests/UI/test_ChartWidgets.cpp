@@ -2,10 +2,12 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -239,6 +241,118 @@ TEST(ChartWidgetsReduceTest, ReductionKeepsALeadingGap)
 
     EXPECT_TRUE(std::isnan(outY[0]));
     EXPECT_FLOAT_EQ(outY[1], 1.0F);
+}
+
+// ========== reduceSeriesMinMax (#1010) ==========
+
+TEST(ChartWidgetsReduceTest, BucketWidthIsAPowerOfTwoThatHoldsAsTheSpanDrifts)
+{
+    // 300 s into 239 buckets: 1.255 s rounds up to 2 s, and stays 2 s as the span drifts.
+    EXPECT_DOUBLE_EQ(minMaxBucketWidth(300.0, 239), 2.0);
+    EXPECT_DOUBLE_EQ(minMaxBucketWidth(299.9, 239), 2.0);
+    EXPECT_DOUBLE_EQ(minMaxBucketWidth(300.1, 239), 2.0);
+    EXPECT_DOUBLE_EQ(minMaxBucketWidth(30.0, 239), 0.25); // 0.1255 rounds up to 2^-2
+    EXPECT_DOUBLE_EQ(minMaxBucketWidth(0.0, 239), 0.0);
+    EXPECT_DOUBLE_EQ(minMaxBucketWidth(std::numeric_limits<double>::quiet_NaN(), 239), 0.0);
+}
+
+namespace
+{
+// 100 ms samples over 300 s, as "seconds before now" (the last sample at x = 0).
+struct ReduceFixture
+{
+    static constexpr int COUNT = 3000;
+    std::vector<double> x = std::vector<double>(COUNT);
+    std::vector<double> y = std::vector<double>(COUNT, 10.0);
+    ReduceFixture()
+    {
+        for (int i = 0; i < COUNT; ++i)
+        {
+            x[static_cast<std::size_t>(i)] = (static_cast<double>(i) - (COUNT - 1)) * 0.1;
+        }
+    }
+};
+} // namespace
+
+TEST(ChartWidgetsReduceTest, MinMaxReductionKeepsASingleSamplePeak)
+{
+    ReduceFixture f;
+    f.y[1234] = 99.0; // one sample; a stride of ~4 would usually skip it
+    std::vector<double> outX(LINE_PLOT_MAX_POINTS_DENSE);
+    std::vector<double> outY(LINE_PLOT_MAX_POINTS_DENSE);
+    const int written =
+        reduceSeriesMinMax(f.x.data(), f.y.data(), ReduceFixture::COUNT, LINE_PLOT_MAX_POINTS_DENSE, 1000.0, outX.data(), outY.data());
+    ASSERT_GT(written, 0);
+    ASSERT_LE(written, LINE_PLOT_MAX_POINTS_DENSE);
+    const auto peak = std::ranges::max(std::span(outY).first(static_cast<std::size_t>(written)));
+    EXPECT_DOUBLE_EQ(peak, 99.0);
+    // The newest sample is never dropped.
+    EXPECT_DOUBLE_EQ(outX[static_cast<std::size_t>(written) - 1], 0.0);
+}
+
+TEST(ChartWidgetsReduceTest, MinMaxReductionIsStableAsTheWindowScrolls)
+{
+    // Every frame, x shifts left by the time elapsed and the anchor (now) moves right by the same
+    // amount, so each sample's absolute time -- and therefore its bucket -- is unchanged.
+    ReduceFixture f;
+    for (int i = 0; i < ReduceFixture::COUNT; ++i)
+    {
+        f.y[static_cast<std::size_t>(i)] = static_cast<double>((i * 37) % 101); // jagged
+    }
+    std::vector<double> firstX(LINE_PLOT_MAX_POINTS_DENSE);
+    std::vector<double> firstY(LINE_PLOT_MAX_POINTS_DENSE);
+    const double now = 5000.03;
+    const int firstCount =
+        reduceSeriesMinMax(f.x.data(), f.y.data(), ReduceFixture::COUNT, LINE_PLOT_MAX_POINTS_DENSE, now, firstX.data(), firstY.data());
+
+    for (const double elapsed : {0.016, 0.033, 0.05, 0.083})
+    {
+        std::vector<double> shifted(f.x);
+        for (auto& v : shifted)
+        {
+            v -= elapsed;
+        }
+        std::vector<double> outX(LINE_PLOT_MAX_POINTS_DENSE);
+        std::vector<double> outY(LINE_PLOT_MAX_POINTS_DENSE);
+        const int count = reduceSeriesMinMax(
+            shifted.data(), f.y.data(), ReduceFixture::COUNT, LINE_PLOT_MAX_POINTS_DENSE, now + elapsed, outX.data(), outY.data());
+        ASSERT_EQ(count, firstCount) << "elapsed " << elapsed;
+        for (int k = 0; k < count; ++k)
+        {
+            EXPECT_DOUBLE_EQ(outY[static_cast<std::size_t>(k)], firstY[static_cast<std::size_t>(k)]) << "point " << k;
+        }
+    }
+}
+
+TEST(ChartWidgetsReduceTest, MinMaxReductionKeepsAGap)
+{
+    ReduceFixture f;
+    f.y[1500] = std::numeric_limits<double>::quiet_NaN();
+    std::vector<double> outX(LINE_PLOT_MAX_POINTS_DENSE);
+    std::vector<double> outY(LINE_PLOT_MAX_POINTS_DENSE);
+    const int written =
+        reduceSeriesMinMax(f.x.data(), f.y.data(), ReduceFixture::COUNT, LINE_PLOT_MAX_POINTS_DENSE, 0.0, outX.data(), outY.data());
+    int gaps = 0;
+    for (int k = 0; k < written; ++k)
+    {
+        gaps += std::isnan(outY[static_cast<std::size_t>(k)]) ? 1 : 0;
+    }
+    EXPECT_EQ(gaps, 1);
+    // Points stay in x order, so the line runs left to right through the gap.
+    for (int k = 1; k < written; ++k)
+    {
+        EXPECT_LT(outX[static_cast<std::size_t>(k) - 1], outX[static_cast<std::size_t>(k)]);
+    }
+}
+
+TEST(ChartWidgetsReduceTest, MinMaxReductionFallsBackForAnUnusableSpan)
+{
+    // x not increasing (all equal): no usable bucket width, so it falls back to the stride.
+    std::vector<float> x(10, 0.0F);
+    std::vector<float> y(10, 1.0F);
+    std::vector<float> outX(4);
+    std::vector<float> outY(4);
+    EXPECT_EQ(reduceSeriesMinMax(x.data(), y.data(), 10, 4, 0.0, outX.data(), outY.data()), 4);
 }
 
 // ========== Axis formatters ==========
