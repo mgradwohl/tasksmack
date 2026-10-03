@@ -320,8 +320,13 @@ void ProcessDetailsPanel::renderContent()
                 ImGui::Separator();
                 renderResourceUsage(m_CachedSnapshot, fill);
                 ImGui::Separator();
-                renderPowerUsage(m_CachedSnapshot, fill);
-                ImGui::Separator();
+                // Only where the platform measures it: Windows does not, and used to chart a
+                // fabricated figure (#1028).
+                if (m_ProcessCapabilities.hasPowerUsage)
+                {
+                    renderPowerUsage(m_CachedSnapshot, fill);
+                    ImGui::Separator();
+                }
                 renderThreadAndFaultHistory(fill);
             }
             ImGui::EndTabItem();
@@ -415,6 +420,11 @@ void ProcessDetailsPanel::onEvent(Core::Event& event)
             m_MaxHistorySeconds = Domain::Numeric::toDouble(e.getSeconds());
             return false;
         });
+}
+
+void ProcessDetailsPanel::setProcessCapabilities(const Platform::ProcessCapabilities& capabilities)
+{
+    m_ProcessCapabilities = capabilities;
 }
 
 void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t uniqueKey)
@@ -899,7 +909,10 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
         {
             const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
             std::vector<double> usedData = tailVector(m_MemoryHistory, alignedCount);
-            std::vector<double> sharedData = tailVector(m_SharedHistory, alignedCount);
+            // Shared is not reported on Windows; its line, tooltip row and bar are left out there
+            // rather than shown as a permanent 0 (#1035).
+            const bool showShared = m_ProcessCapabilities.hasSharedMemory;
+            std::vector<double> sharedData = showShared ? tailVector(m_SharedHistory, alignedCount) : std::vector<double>{};
             std::vector<double> virtData = tailVector(m_VirtualHistory, alignedCount);
 
             const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
@@ -917,11 +930,16 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
                                   .tooltipText = std::format("Memory Used: {}", UI::Format::percentCompact(usedNow)),
                                   .value01 = UI::Format::percent01(usedNow),
                                   .color = theme.scheme().chartMemory});
-            memoryBars.push_back({.valueText = UI::Format::percentCompact(sharedNow),
-                                  .label = "Shared",
-                                  .tooltipText = std::format("Shared: {}", UI::Format::percentCompact(sharedNow)),
-                                  .value01 = UI::Format::percent01(sharedNow),
-                                  .color = theme.scheme().chartCpu});
+            if (showShared)
+            {
+                memoryBars.push_back({
+                    .valueText = UI::Format::percentCompact(sharedNow),
+                    .label = "Shared",
+                    .tooltipText = std::format("Shared: {}", UI::Format::percentCompact(sharedNow)),
+                    .value01 = UI::Format::percent01(sharedNow),
+                    .color = theme.scheme().chartCpu,
+                });
+            }
             memoryBars.push_back({.valueText = UI::Format::percentCompact(virtNowVal),
                                   .label = "Virtual",
                                   .tooltipText = std::format("Virtual: {}", UI::Format::percentCompact(virtNowVal)),

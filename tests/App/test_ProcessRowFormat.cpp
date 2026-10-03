@@ -128,6 +128,24 @@ TEST(ProcessRowFormatTest, BuildRowFormatCacheFormatsEveryField)
     EXPECT_EQ(fmt.gdiObjects.text, UI::Format::formatIntLocalized(9));
 }
 
+TEST(ProcessRowFormatTest, FieldsThePlatformDoesNotFillReadAsDash)
+{
+    // Windows measures neither power (#1028) nor shared memory (#1035): those cells must say "no
+    // data", not a measured-looking value, even when a snapshot carries one.
+    const RowFormatCache filled = buildRowFormatCache(makeSnapshot());
+    const RowFormatCache unfilled = buildRowFormatCache(makeSnapshot(), {.hasPowerUsage = false, .hasSharedMemory = false});
+
+    EXPECT_EQ(filled.power.text, "5.5 W");
+    EXPECT_EQ(filled.shared.text, "64.0 MB");
+    EXPECT_EQ(unfilled.power.text, "-");
+    EXPECT_EQ(unfilled.shared.text, "-");
+
+    std::unordered_map<std::uint64_t, RowFormatCache> cache;
+    const RowFormatCache& entry = getOrBuildRowFormatCache(cache, makeSnapshot(), 1, 1, {.hasPowerUsage = false, .hasSharedMemory = true});
+    EXPECT_EQ(entry.power.text, "-");
+    EXPECT_EQ(entry.shared.text, "64.0 MB");
+}
+
 TEST(ProcessRowFormatTest, BuildRowFormatCacheUsesDashForZeroRateAndOptionalFields)
 {
     ProcessSnapshot snap; // Every rate/optional field left at its default (zero / nullopt).

@@ -3,6 +3,7 @@
 #include "App/Panel.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/ProcessTypes.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
 #include "UI/FillPlotLayout.h"
 
@@ -60,6 +61,10 @@ class ProcessDetailsPanel : public Panel
     /// @param uniqueKey Identity of the process (hash of PID and start time), or 0 if not known.
     ///        With it, a later process that reuses the PID is not mistaken for the selected one.
     void setSelectedPid(std::int32_t pid, std::uint64_t uniqueKey = 0);
+
+    /// What the process probe can report, so series it never fills are not drawn (#1028, #1035).
+    /// Set once by ShellLayer at attach; the default (all false) hides those optional series.
+    void setProcessCapabilities(const Platform::ProcessCapabilities& capabilities);
 
     /// Get currently displayed PID.
     [[nodiscard]] std::int32_t selectedPid() const
@@ -159,6 +164,7 @@ class ProcessDetailsPanel : public Panel
     // Process actions
     std::unique_ptr<Platform::IProcessActions> m_ProcessActions;
     Platform::ProcessActionCapabilities m_ActionCapabilities;
+    Platform::ProcessCapabilities m_ProcessCapabilities;
 
     // Confirmation dialog state
     bool m_ShowConfirmDialog = false;

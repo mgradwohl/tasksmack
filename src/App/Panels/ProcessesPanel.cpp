@@ -921,6 +921,11 @@ bool ProcessesPanel::hasReducedPrivileges() const
     return m_ProcessModel && m_ProcessModel->capabilities().hasReducedPrivileges;
 }
 
+Platform::ProcessCapabilities ProcessesPanel::processCapabilities() const
+{
+    return m_ProcessModel ? m_ProcessModel->capabilities() : Platform::ProcessCapabilities{};
+}
+
 std::optional<Domain::ProcessSnapshot> ProcessesPanel::findSnapshot(std::int32_t pid) const
 {
     if (!m_ProcessModel)
@@ -966,8 +971,15 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
     // The font is passed as an identity value, not a pointer: RowFormatCache only ever compares
     // this stamp for equality, so it stores a std::uintptr_t and no address escapes into the
     // long-lived cache map (see #904).
-    RowFormatCache& fmt = ProcessRowFormat::getOrBuildRowFormatCache(
-        m_RowFormatCache, proc, m_CachedSnapshotVersion, std::bit_cast<std::uintptr_t>(m_TextSizeCache.fontPtr));
+    const Platform::ProcessCapabilities caps = processCapabilities();
+    RowFormatCache& fmt = ProcessRowFormat::getOrBuildRowFormatCache(m_RowFormatCache,
+                                                                     proc,
+                                                                     m_CachedSnapshotVersion,
+                                                                     std::bit_cast<std::uintptr_t>(m_TextSizeCache.fontPtr),
+                                                                     {
+                                                                         .hasPowerUsage = caps.hasPowerUsage,
+                                                                         .hasSharedMemory = caps.hasSharedMemory,
+                                                                     });
 
     // Render all columns
     int colIdx = 0;

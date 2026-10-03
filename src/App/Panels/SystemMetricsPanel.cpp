@@ -23,6 +23,7 @@
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/LineLayout.h"
+#include "UI/RateAxis.h"
 #include "UI/TabContent.h"
 #include "UI/Theme.h"
 
@@ -102,7 +103,7 @@ void showCpuBreakdownTooltip(const UI::ColorScheme& scheme,
                              int timeSec,
                              float userPercent,
                              float systemPercent,
-                             float iowaitPercent,
+                             std::optional<float> iowaitPercent,
                              float idlePercent)
 {
     ImGui::BeginTooltip();
@@ -114,7 +115,11 @@ void showCpuBreakdownTooltip(const UI::ColorScheme& scheme,
     }
     ImGui::TextColored(scheme.cpuUser, "User: %s", UI::Format::percentCompact(userPercent).c_str());
     ImGui::TextColored(scheme.cpuSystem, "System: %s", UI::Format::percentCompact(systemPercent).c_str());
-    ImGui::TextColored(scheme.cpuIowait, "I/O Wait: %s", UI::Format::percentCompact(iowaitPercent).c_str());
+    // Absent, not 0 %, where the platform does not report it (Windows, #1031).
+    if (iowaitPercent.has_value())
+    {
+        ImGui::TextColored(scheme.cpuIowait, "I/O Wait: %s", UI::Format::percentCompact(*iowaitPercent).c_str());
+    }
     ImGui::TextColored(scheme.cpuIdle, "Idle: %s", UI::Format::percentCompact(idlePercent).c_str());
     ImGui::EndTooltip();
 }
@@ -617,6 +622,10 @@ void SystemMetricsPanel::renderOverview()
     const auto cpuIdleData = UI::Widgets::tailAlignedSpan(cpuIdleHist, breakdownCount).values;
     std::vector<float> breakdownTimeData = buildTimeAxis(timestamps, breakdownCount, nowSeconds);
 
+    // I/O Wait is drawn -- fill, legend entry, tooltip row and bar -- only where the platform
+    // reports it. Windows does not, and showed a permanently empty series and bar (#1031).
+    const bool showIowait = (m_Model != nullptr) && m_Model->capabilities().hasIoWait;
+
     auto cpuPlot = [&]()
     {
         const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
@@ -655,12 +664,15 @@ void SystemMetricsPanel::renderOverview()
                                    UI::Format::checkedCount(breakdownCount),
                                    {ImPlotProp_FillColor, theme.scheme().cpuSystemFill});
 
-                ImPlot::PlotShaded("I/O Wait",
-                                   breakdownTimeData.data(),
-                                   ySystemTop.data(),
-                                   yIowaitTop.data(),
-                                   UI::Format::checkedCount(breakdownCount),
-                                   {ImPlotProp_FillColor, theme.scheme().cpuIowaitFill});
+                if (showIowait)
+                {
+                    ImPlot::PlotShaded("I/O Wait",
+                                       breakdownTimeData.data(),
+                                       ySystemTop.data(),
+                                       yIowaitTop.data(),
+                                       UI::Format::checkedCount(breakdownCount),
+                                       {ImPlotProp_FillColor, theme.scheme().cpuIowaitFill});
+                }
 
                 if (ImPlot::IsPlotHovered())
                 {
@@ -672,7 +684,7 @@ void SystemMetricsPanel::renderOverview()
                                                 checkedRoundSeconds(static_cast<double>(breakdownTimeData[*si])),
                                                 cpuUserData[*si],
                                                 cpuSystemData[*si],
-                                                cpuIowaitData[*si],
+                                                showIowait ? std::optional<float>(cpuIowaitData[*si]) : std::nullopt,
                                                 cpuIdleData[*si]);
                     }
                 }
@@ -729,12 +741,19 @@ void SystemMetricsPanel::renderOverview()
                        .tooltipText = {},
                        .value01 = UI::Format::percent01(m_SmoothedCpu.system),
                        .color = theme.scheme().cpuSystem});
-    cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.iowait),
-                       .label = "I/O Wait",
-                       .tooltipText = {},
-                       .value01 = UI::Format::percent01(m_SmoothedCpu.iowait),
-                       .color = theme.scheme().cpuIowait});
+    if (showIowait)
+    {
+        cpuBars.push_back({
+            .valueText = UI::Format::percentCompact(m_SmoothedCpu.iowait),
+            .label = "I/O Wait",
+            .tooltipText = {},
+            .value01 = UI::Format::percent01(m_SmoothedCpu.iowait),
+            .color = theme.scheme().cpuIowait,
+        });
+    }
 
+    // Kept at 4 even without I/O Wait: every Overview chart reserves the same bar columns so their
+    // time axes line up.
     constexpr size_t OVERVIEW_NOW_BAR_COLUMNS = 4; // CPU: Total, User, System, I/O Wait
     renderHistoryWithNowBars("OverviewCPUHistoryLayout", plotHeight, cpuPlot, cpuBars, false, OVERVIEW_NOW_BAR_COLUMNS);
     fill.addPlot();
@@ -757,8 +776,11 @@ void SystemMetricsPanel::renderOverview()
         ImGui::Spacing();
     }
 
-    // Power & Battery history chart (combines per-process power aggregation with battery charge %)
-    if (m_ProcessModel != nullptr || snap.power.hasBattery)
+    // Power & Battery history chart (combines per-process power aggregation with battery charge %).
+    // Power is drawn only where the process probe actually measures it: on Windows it does not, and
+    // used to show a fabricated figure (#1028). Without it the chart is a plain Battery chart.
+    const bool hasProcessPower = (m_ProcessModel != nullptr) && m_ProcessModel->capabilities().hasPowerUsage;
+    if (hasProcessPower || snap.power.hasBattery)
     {
         // Get power history from ProcessModel (aggregated per-process power)
         // Get battery charge history from SystemModel
@@ -766,7 +788,7 @@ void SystemMetricsPanel::renderOverview()
 
         // Align to timestamps - use process timestamps as primary if available, else system timestamps
         const auto& alignTimestamps = !m_ProcessHistoryTimestamps.empty() ? m_ProcessHistoryTimestamps : timestamps;
-        const size_t powerCount = std::min(m_ProcessPowerHistory.size(), alignTimestamps.size());
+        const size_t powerCount = hasProcessPower ? std::min(m_ProcessPowerHistory.size(), alignTimestamps.size()) : 0;
         const size_t batteryCount = std::min(batteryHistFloat.size(), alignTimestamps.size());
         const size_t alignedCount = std::max(powerCount, batteryCount);
 
@@ -815,12 +837,17 @@ void SystemMetricsPanel::renderOverview()
 
             // Build NowBars
             std::vector<NowBar> bars;
-            bars.push_back({.valueText = powerHist.empty() ? UI::Format::formatPowerCompact(m_SmoothedPower.watts)
-                                                           : UI::Format::formatPowerOrZero(m_SmoothedPower.watts),
-                            .label = "Power Draw",
-                            .tooltipText = {},
-                            .value01 = std::clamp(std::abs(m_SmoothedPower.watts) / powerMaxAbs, 0.0, 1.0),
-                            .color = theme.scheme().chartCpu});
+            if (hasProcessPower)
+            {
+                bars.push_back({
+                    .valueText = powerHist.empty() ? UI::Format::formatPowerCompact(m_SmoothedPower.watts)
+                                                   : UI::Format::formatPowerOrZero(m_SmoothedPower.watts),
+                    .label = "Power Draw",
+                    .tooltipText = {},
+                    .value01 = std::clamp(std::abs(m_SmoothedPower.watts) / powerMaxAbs, 0.0, 1.0),
+                    .color = theme.scheme().chartCpu,
+                });
+            }
 
             if (snap.power.hasBattery)
             {
@@ -833,20 +860,22 @@ void SystemMetricsPanel::renderOverview()
 
             auto plot = [&]()
             {
-                // Primary Y-axis: Power (Watts), pinned to 0 at the bottom. Battery sits on Y2
-                // below, so these limits apply to the watts series only.
-                const UI::Widgets::HistoryChart chart(
-                    UI::Widgets::withHeight(UI::Widgets::rateHistoryConfig("##PowerBatteryHistory",
-                                                                           axis.xMin,
-                                                                           axis.xMax,
-                                                                           formatAxisWatts,
-                                                                           UI::Widgets::maxOfSeries(powerHist),
-                                                                           UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS),
-                                            plotHeight));
+                // Primary Y-axis: Power (Watts), pinned to 0 at the bottom, with Battery on Y2. Without
+                // power, Battery is the only series and takes the primary axis as a percentage, so no
+                // Watts axis is left labelling nothing.
+                const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
+                    hasProcessPower ? UI::Widgets::rateHistoryConfig("##PowerBatteryHistory",
+                                                                     axis.xMin,
+                                                                     axis.xMax,
+                                                                     formatAxisWatts,
+                                                                     UI::Widgets::maxOfSeries(powerHist),
+                                                                     UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS)
+                                    : UI::Widgets::percentHistoryConfig("##PowerBatteryHistory", axis.xMin, axis.xMax),
+                    plotHeight));
                 if (chart.active())
                 {
                     // Secondary Y-axis: Battery % (0-100) - hidden ticks to keep X-axis alignment
-                    if (snap.power.hasBattery && !batteryHist.empty())
+                    if (hasProcessPower && snap.power.hasBattery && !batteryHist.empty())
                     {
                         ImPlot::SetupAxis(ImAxis_Y2,
                                           "",
@@ -872,7 +901,7 @@ void SystemMetricsPanel::renderOverview()
                     // Plot battery charge on secondary Y-axis
                     if (snap.power.hasBattery && !batteryHist.empty())
                     {
-                        ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
+                        ImPlot::SetAxes(ImAxis_X1, hasProcessPower ? ImAxis_Y2 : ImAxis_Y1);
                         plotLineWithFill("Battery",
                                          timeData.data() + static_cast<std::ptrdiff_t>(batteryOffset),
                                          batteryHist.data(),
@@ -921,7 +950,8 @@ void SystemMetricsPanel::renderOverview()
 
             if (snap.power.hasBattery)
             {
-                headerLeft = std::format(ICON_FA_BOLT "  Power & Battery ({} samples)", alignedCount);
+                headerLeft = hasProcessPower ? std::format(ICON_FA_BOLT "  Power & Battery ({} samples)", alignedCount)
+                                             : std::format(ICON_FA_BOLT "  Battery ({} samples)", alignedCount);
 
                 // Build right-aligned status string with icons
                 const int chargeInt = snap.power.chargePercent;
@@ -1008,7 +1038,10 @@ void SystemMetricsPanel::renderOverview()
             if (ImGui::IsItemHovered())
             {
                 ImGui::BeginTooltip();
-                ImGui::TextUnformatted("Power: Aggregated CPU-proportional estimate from all processes.");
+                if (hasProcessPower)
+                {
+                    ImGui::TextUnformatted("Power: Aggregated CPU-proportional estimate from all processes.");
+                }
                 if (snap.power.hasBattery)
                 {
                     ImGui::TextUnformatted("Battery: System battery charge percentage (0-100%).");
