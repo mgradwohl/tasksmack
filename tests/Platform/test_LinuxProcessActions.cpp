@@ -13,12 +13,18 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <format>
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <system_error>
+#include <vector>
 
 // NOLINTNEXTLINE(modernize-deprecated-headers) - POSIX signal.h provides kill(), csignal does not
+#include <pthread.h>
 #include <signal.h>
 #include <sys/resource.h>
 #include <sys/types.h>
@@ -291,10 +297,26 @@ TEST(LinuxProcessActionsTest, ResumeOwnProcess_Succeeds)
 class SleepingChild
 {
   public:
-    SleepingChild() : m_Pid(fork())
+    /// `extraThreads` threads besides the main one, all sleeping.
+    explicit SleepingChild(int extraThreads = 0) : m_Pid(fork())
     {
         if (m_Pid == 0)
         {
+            for (int i = 0; i < extraThreads; ++i)
+            {
+                pthread_t thread{};
+                pthread_create(
+                    &thread,
+                    nullptr,
+                    [](void*) -> void*
+                    {
+                        for (;;)
+                        {
+                            pause();
+                        }
+                    },
+                    nullptr);
+            }
             for (;;)
             {
                 pause();
@@ -398,6 +420,51 @@ TEST(LinuxProcessActionsTest, SetPriorityReachesTheProcessOnlyWhenTheStartTimeMa
     const auto applied = actions.setPriority(target, raised);
     EXPECT_TRUE(applied.success) << applied.errorMessage;
     EXPECT_EQ(getpriority(PRIO_PROCESS, static_cast<id_t>(target.pid)), raised);
+}
+
+/// The thread IDs in /proc/<pid>/task, once there are `expected` of them (empty on timeout).
+std::vector<id_t> waitForThreads(pid_t pid, std::size_t expected)
+{
+    for (int attempt = 0; attempt < 200; ++attempt)
+    {
+        std::vector<id_t> tids;
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::directory_iterator(std::format("/proc/{}/task", pid), ec))
+        {
+            tids.push_back(static_cast<id_t>(std::stoul(entry.path().filename().string())));
+        }
+        if (tids.size() >= expected)
+        {
+            return tids;
+        }
+        usleep(10'000);
+    }
+    return {};
+}
+
+TEST(LinuxProcessActionsTest, SetPriorityChangesEveryThread)
+{
+    // Nice is per thread on Linux: setpriority(PRIO_PROCESS, pid) alone changes only the main
+    // thread, leaving a multithreaded process's workers at the old priority (#1104).
+    const SleepingChild child(2);
+    ASSERT_TRUE(child.started());
+    const ProcessTarget target = child.target();
+    const std::vector<id_t> tids = waitForThreads(target.pid, 3);
+    ASSERT_EQ(tids.size(), 3U);
+
+    errno = 0;
+    const int before = getpriority(PRIO_PROCESS, static_cast<id_t>(target.pid));
+    ASSERT_EQ(errno, 0);
+    const int raised = std::min(before + 5, 19);
+    ASSERT_NE(raised, before) << "child already at the lowest priority";
+
+    LinuxProcessActions actions;
+    const auto result = actions.setPriority(target, raised);
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    for (const id_t tid : tids)
+    {
+        EXPECT_EQ(getpriority(PRIO_PROCESS, tid), raised) << "thread " << tid;
+    }
 }
 
 TEST(LinuxProcessActionsTest, KillWithTheMatchingStartTimeEndsTheProcess)
