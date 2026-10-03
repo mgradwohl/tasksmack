@@ -32,7 +32,6 @@
 
 #include <algorithm>
 #include <array>
-#include <bit>
 #include <cctype>
 #include <charconv>
 #include <chrono>
@@ -250,14 +249,18 @@ std::string ProcessesPanel::captureTableLayout() const
 
 bool ProcessesPanel::TextSizeCache::isValid() const noexcept
 {
-    // Cache invalid if not yet populated or if font has changed
-    return fontPtr != nullptr && fontPtr == ImGui::GetFont();
+    // Cache invalid if not yet populated, if the font has changed, or if the font atlas was rebuilt
+    // (which can give the new font the old one's address, #943)
+    return fontPtr != nullptr && fontPtr == ImGui::GetFont() && fontGeneration == UI::Theme::get().fontGeneration();
 }
 
 void ProcessesPanel::TextSizeCache::populate()
 {
-    // Store current font pointer for invalidation detection
+    // Store current font pointer and atlas generation for invalidation detection, and a new stamp
+    // for the row-format cache
     fontPtr = ImGui::GetFont();
+    fontGeneration = UI::Theme::get().fontGeneration();
+    ++stamp;
 
     // Cache column header widths
     for (const ProcessColumn col : allProcessColumns())
@@ -967,12 +970,13 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
     // decision itself lives in ProcessRowFormat.h (ImGui-free) so it's directly unit-testable.
     // The font is passed as an identity value, not a pointer: RowFormatCache only ever compares
     // this stamp for equality, so it stores a std::uintptr_t and no address escapes into the
-    // long-lived cache map (see #904).
+    // long-lived cache map (see #904). The stamp changes on every TextSizeCache::populate(), not
+    // with the font's address, which a rebuilt font atlas can reuse (#943).
     const Platform::ProcessCapabilities caps = processCapabilities();
     RowFormatCache& fmt = ProcessRowFormat::getOrBuildRowFormatCache(m_RowFormatCache,
                                                                      proc,
                                                                      m_CachedSnapshotVersion,
-                                                                     std::bit_cast<std::uintptr_t>(m_TextSizeCache.fontPtr),
+                                                                     m_TextSizeCache.stamp,
                                                                      {
                                                                          .hasPowerUsage = caps.hasPowerUsage,
                                                                          .hasSharedMemory = caps.hasSharedMemory,
