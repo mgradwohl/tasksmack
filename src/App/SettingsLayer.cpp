@@ -1,6 +1,7 @@
 #include "SettingsLayer.h"
 
 #include "App/DialogGeometry.h"
+#include "App/FontSizeChange.h"
 #include "App/PlatformOpen.h"
 #include "App/SettingsLayerDetail.h"
 #include "App/UserConfig.h"
@@ -142,13 +143,7 @@ void SettingsLayer::applySettings()
     const auto newFontSize = FONT_SIZE_OPTIONS[m_SelectedFontSizeIndex].value;
     if (newFontSize != settings.fontSize)
     {
-        settings.fontSize = newFontSize;
-        themeManager.setFontSize(newFontSize);
-        // Notify panels to invalidate font-dependent caches
-        {
-            Core::FontSizeChangedEvent event(static_cast<int>(newFontSize));
-            Core::Application::get().raiseEvent(event);
-        }
+        changeFontSize(newFontSize);
         spdlog::info("Font size changed to {}", m_SelectedFontSizeIndex);
     }
 
