@@ -1617,7 +1617,9 @@ TEST(GPUModelTest, HistoryIsTrimmedToTheHistoryWindow)
 
     // One sample a second for 15 s: the cutoff is 15 - 10 = 5, so t = 5..15 remain, plus t = 4, the
     // newest before the cutoff, kept so the line runs off the window's left edge (#1016).
-    const auto start = std::chrono::steady_clock::now();
+    // The cutoff falls exactly on t = 5, so start on a whole second: timestamps are seconds as double,
+    // and from an arbitrary now() t = 5 could round to either side of the cutoff (11 or 12 samples).
+    const auto start = std::chrono::ceil<std::chrono::seconds>(std::chrono::steady_clock::now());
     for (int i = 0; i <= 15; ++i)
     {
         rawProbe->withUtilization("GPU0", static_cast<double>(i));
@@ -1669,7 +1671,8 @@ TEST(GPUModelTest, ShrinkingTheHistoryWindowTrimsExistingHistory)
     Domain::GPUModel model(std::move(probe));
     model.setMaxHistorySeconds(60.0);
 
-    const auto start = std::chrono::steady_clock::now();
+    // A whole second, so the cutoff below lands exactly on t = 20 without rounding (see above).
+    const auto start = std::chrono::ceil<std::chrono::seconds>(std::chrono::steady_clock::now());
     for (int i = 0; i <= 30; ++i)
     {
         model.refreshAt(start + std::chrono::seconds(i));
