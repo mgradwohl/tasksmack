@@ -262,7 +262,7 @@ Each theme's colours are judged against the background they're drawn on; for exa
 **Default theme** (Theme.cpp:253 prefers `arctic-fire`), so its issues reach the most users.
 Effective backgrounds: window #141A24, plot/frame #1F2938, popup #191E27, legend #1A202A, selected row #334D73, grid #293549.
 Key ratios: primary/window 15.82, primary/plot 13.28, muted/plot 10.18, disabled/window 10.32, warning/window 9.73, error/popup 3.96, grid 1.18, selected row 2.04, selected tab vs tab 1.45.
-- **Strengths:** All four text roles are 10-16:1; 19 of 21 series are at least 3:1 on the plot (#1F2938); hue families are clean (CPU blue, memory green, read orange, write cyan).
+- **Strengths:** Primary, muted and disabled text are 10-16:1 (error is the exception, 3.96 in popups); 19 of 21 series are at least 3:1 on the plot (#1F2938); hue families are clean (CPU blue, memory green, read orange, write cyan).
 - **Weak combinations / concerns:**
   - `text_muted` #D0D8E0 (12.1:1) is almost `text_primary` #F0F4FA (15.8:1): muted carries no hierarchy (#1167).
   - `text_error` #E53935 is 4.13 on the window, 3.47 on frames, 3.96 in popups.
@@ -276,7 +276,7 @@ Key ratios: primary/window 15.82, primary/plot 13.28, muted/plot 10.18, disabled
 |---|---|---|---|---|
 | `semantic.text_error` | #E53935 | 3.96 | #F1473F | >= 4.5 vs popup (darkest/lightest text bg) |
 | `charts.gpu.fan` | #546E7A | 2.71 | #5C7582 | >= 3.0 vs plot / NowBar track |
-| `ui.window.border (grid)` | #33405980 | 1.18 | raise to an opaque mid-tone (see text) | >= 1.35 vs plot |
+| `ui.window.border (grid)` | #33405980 | 1.18 | raise to an opaque mid-tone (see text) | >= 1.3 vs plot |
 
 
 ### Arctic Fire Light (`arctic-fire-light.toml`, light)
@@ -299,7 +299,7 @@ Key ratios: primary/window 17.23, primary/plot 16.45, muted/plot 2.53, disabled/
 | `semantic.text_warning` | #F57C00 | 2.29 | #B24B00 | >= 4.5 vs popup (darkest/lightest text bg) |
 | `semantic.text_success` | #388E3C | 3.48 | #247A2B | >= 4.5 vs popup (darkest/lightest text bg) |
 | `semantic.text_info` | #1976D2 | 3.89 | #006BC4 | >= 4.5 vs popup (darkest/lightest text bg) |
-| `charts.io_write` | #00BCD4 | 2.04 | #009AB0 | >= 3.0 vs plot / NowBar track |
+| `charts.io_write` | #00BCD4 | 2.04 | #0099AF | >= 3.0 vs plot / NowBar track |
 | `charts.net_tx` | #F6C445 | 1.45 | #AE8603 | >= 3.0 vs plot / NowBar track |
 | `cpu_breakdown.iowait` | #F57C00 | 2.4 | #DD6B00 | >= 3.0 vs plot / NowBar track |
 | `charts.gpu.memory` | #E46E97 | 2.67 | #D9658E | >= 3.0 vs plot / NowBar track |
@@ -307,7 +307,7 @@ Key ratios: primary/window 17.23, primary/plot 16.45, muted/plot 2.53, disabled/
 | `charts.gpu.clock` | #64B5F6 | 1.97 | #3F92CE | >= 3.0 vs plot / NowBar track |
 | `progress.low` | #66BB6A | 2.1 | #4B9C51 | >= 3.0 vs plot / NowBar track |
 | `progress.medium` | #FFB300 | 1.59 | #BD7E00 | >= 3.0 vs plot / NowBar track |
-| `charts.peak_line` | #F57C00B3 | 1.89 | #AF4900B3 | >= 3.0 vs plot / NowBar track |
+| `charts.peak_line` | #F57C00B3 | 1.89 | #AE4900B3 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[1]` | #FF8A50 | 2.07 | #D96D37 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[2]` | #4FAF7A | 2.41 | #3D9C69 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[4]` | #F6C445 | 1.45 | #AE8603 | >= 3.0 vs plot / NowBar track |
@@ -315,7 +315,7 @@ Key ratios: primary/window 17.23, primary/plot 16.45, muted/plot 2.53, disabled/
 | `accents.colors[6]` | #A8F04F | 1.22 | #5B9C00 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[7]` | #FF9E7A | 1.79 | #CA7454 | >= 3.0 vs plot / NowBar track |
 | `ui.header.normal` | #D0E0F0 | 1.25 | #B9D1E9 | >= 1.35 vs window/row |
-| `ui.window.border (grid)` | #C6D4E880 | 1.15 | #C5D3E7 | >= 1.35 vs plot |
+| `ui.window.border (grid)` | #C6D4E880 | 1.15 | #C5D3E7 | >= 1.3 vs plot |
 
 
 ### Cyberpunk (`cyberpunk.toml`, dark)
@@ -333,7 +333,7 @@ Key ratios: primary/window 18.07, primary/plot 16.28, muted/plot 11.51, disabled
 
 | key | current | ratio now | candidate | target |
 |---|---|---|---|---|
-| `ui.window.border (grid)` | #4D266680 | 1.2 | raise to an opaque mid-tone (see text) | >= 1.35 vs plot |
+| `ui.window.border (grid)` | #4D266680 | 1.2 | raise to an opaque mid-tone (see text) | >= 1.3 vs plot |
 
 
 ### Cyberpunk Light (`cyberpunk-light.toml`, light)
@@ -365,14 +365,14 @@ Key ratios: primary/window 17.81, primary/plot 16.67, muted/plot 3.4, disabled/w
 | `progress.medium` | #FF4081 | 2.87 | #FA3B7D | >= 3.0 vs plot / NowBar track |
 | `progress.high` | #FF6D00 | 2.43 | #E85D00 | >= 3.0 vs plot / NowBar track |
 | `charts.peak_line` | #F57C00B3 | 1.85 | #AC4600B3 | >= 3.0 vs plot / NowBar track |
-| `accents.colors[0]` | #FF4FA3 | 2.62 | #F24398 | >= 3.0 vs plot / NowBar track |
+| `accents.colors[0]` | #FF4FA3 | 2.62 | #F24297 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[1]` | #00D7FF | 1.48 | #0094B7 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[3]` | #7DFF5A | 1.11 | #1B9F00 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[4]` | #FF7A1A | 2.24 | #E06300 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[5]` | #F44BFF | 2.47 | #E039EC | >= 3.0 vs plot / NowBar track |
 | `accents.colors[6]` | #FFE433 | 1.1 | #9A8900 | >= 3.0 vs plot / NowBar track |
 | `ui.header.normal` | #E0D8F0 | 1.27 | #D3C7EA | >= 1.35 vs window/row |
-| `ui.window.border (grid)` | #D7CFF580 | 1.13 | #D1C9EF | >= 1.35 vs plot |
+| `ui.window.border (grid)` | #D7CFF580 | 1.13 | #D1C9EF | >= 1.3 vs plot |
 
 
 ### Dracula (`dracula.toml`, dark)
@@ -398,7 +398,7 @@ Key ratios: primary/window 13.36, primary/plot 8.59, muted/plot 1.94, disabled/w
 | `progress.high` | #FF5555 | 2.91 | #FF5B5A | >= 3.0 vs plot / NowBar track |
 | `accents.colors[5]` | #FF5555 | 2.91 | #FF5B5A | >= 3.0 vs plot / NowBar track |
 | `accents.colors[7]` | #6272A4 | 1.94 | #8492C4 | >= 3.0 vs plot / NowBar track |
-| `ui.header.normal` | #44475A80 | 1.24 | raise to an opaque mid-tone (see text) | >= 1.35 vs window/row |
+| `ui.header.normal` | #44475A80 | 1.24 | #404355 | >= 1.35 vs window/row |
 
 
 ### Gruvbox (`gruvbox.toml`, dark)
@@ -417,7 +417,7 @@ Key ratios: primary/window 10.75, primary/plot 8.45, muted/plot 4.17, disabled/w
 |---|---|---|---|---|
 | `semantic.text_muted` | #A89984 | 4.17 | #AFA08B | >= 4.5 vs plot/frame (axis labels) |
 | `ui.header.normal` | #3C383680 | 1.12 | #444240 | >= 1.35 vs window/row |
-| `ui.window.border (grid)` | #50494580 | 1.15 | #524B47 | >= 1.35 vs plot |
+| `ui.window.border (grid)` | #50494580 | 1.15 | #524B47 | >= 1.3 vs plot |
 
 
 ### Gruvbox Light (`gruvbox-light.toml`, light)
@@ -488,7 +488,7 @@ Key ratios: primary/window 7.06, primary/plot 5.17, muted/plot 2.07, disabled/wi
 | `accents.colors[5]` | #EA76CB | 1.71 | #B74C9C | >= 3.0 vs plot / NowBar track |
 | `accents.colors[6]` | #DF8E1D | 1.7 | #A96400 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[7]` | #209FB5 | 2.03 | #007F94 | >= 3.0 vs plot / NowBar track |
-| `ui.window.border (grid)` | #BCC0CC80 | 1.08 | #B0B4BF | >= 1.35 vs plot |
+| `ui.window.border (grid)` | #BCC0CC80 | 1.08 | #B0B4BF | >= 1.3 vs plot |
 
 
 ### Mocha (`mocha.toml`, dark)
@@ -508,7 +508,7 @@ Key ratios: primary/window 11.34, primary/plot 8.69, muted/plot 4.45, disabled/w
 | `semantic.text_muted` | #9399B2 | 4.45 | #949AB3 | >= 4.5 vs plot/frame (axis labels) |
 | `charts.gpu.fan` | #585B70 | 1.88 | #787B90 | >= 3.0 vs plot / NowBar track |
 | `ui.header.normal` | #31324480 | 1.13 | #383951 | >= 1.35 vs window/row |
-| `ui.window.border (grid)` | #45475A80 | 1.17 | raise to an opaque mid-tone (see text) | >= 1.35 vs plot |
+| `ui.window.border (grid)` | #45475A80 | 1.17 | raise to an opaque mid-tone (see text) | >= 1.3 vs plot |
 
 
 ### Monochrome (`monochrome.toml`, dark)
@@ -529,7 +529,7 @@ Key ratios: primary/window 18.14, primary/plot 15.68, muted/plot 12.25, disabled
 | `charts.net_rx` | #1B5E20 | 2.07 | #3A783A | >= 3.0 vs plot / NowBar track |
 | `charts.gpu.decoder` | #1B5E20 | 2.07 | #3A783A | >= 3.0 vs plot / NowBar track |
 | `accents.colors[0]` | #1B5E20 | 2.07 | #3A783A | >= 3.0 vs plot / NowBar track |
-| `ui.window.border (grid)` | #1F401F80 | 1.17 | raise to an opaque mid-tone (see text) | >= 1.35 vs plot |
+| `ui.window.border (grid)` | #1F401F80 | 1.17 | raise to an opaque mid-tone (see text) | >= 1.3 vs plot |
 
 
 ### Monochrome Light (`monochrome-light.toml`, light)
@@ -551,7 +551,7 @@ Key ratios: primary/window 17.17, primary/plot 16.35, muted/plot 2.6, disabled/w
 | `semantic.text_muted` | #999999 | 2.6 | #707070 | >= 4.5 vs plot/frame (axis labels) |
 | `semantic.text_warning` | #2E7D32 | 4.44 | #2D7C31 | >= 4.5 vs popup (darkest/lightest text bg) |
 | `semantic.text_success` | #4CAF50 | 2.41 | #177D27 | >= 4.5 vs popup (darkest/lightest text bg) |
-| `semantic.text_info` | #388E3C | 3.57 | #267D2E | >= 4.5 vs popup (darkest/lightest text bg) |
+| `semantic.text_info` | #388E3C | 3.57 | #267C2E | >= 4.5 vs popup (darkest/lightest text bg) |
 | `charts.memory` | #4CAF50 | 2.53 | #3DA044 | >= 3.0 vs plot / NowBar track |
 | `charts.io_write` | #00BCD4 | 2.09 | #009BB1 | >= 3.0 vs plot / NowBar track |
 | `charts.net_tx` | #B6E8B6 | 1.26 | #6C976D | >= 3.0 vs plot / NowBar track |
@@ -562,13 +562,13 @@ Key ratios: primary/window 17.17, primary/plot 16.35, muted/plot 2.6, disabled/w
 | `charts.gpu.clock` | #8BD88B | 1.56 | #579D59 | >= 3.0 vs plot / NowBar track |
 | `progress.low` | #4CAF50 | 2.53 | #3DA044 | >= 3.0 vs plot / NowBar track |
 | `charts.peak_line` | #4CAF50B3 | 1.89 | #0E7722B3 | >= 3.0 vs plot / NowBar track |
-| `accents.colors[3]` | #49A14A | 2.95 | #48A049 | >= 3.0 vs plot / NowBar track |
+| `accents.colors[3]` | #49A14A | 2.95 | #489F49 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[4]` | #55B255 | 2.43 | #44A046 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[5]` | #6CC46C | 1.96 | #4A9E4D | >= 3.0 vs plot / NowBar track |
 | `accents.colors[6]` | #8BD88B | 1.56 | #579D59 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[7]` | #B6E8B6 | 1.26 | #6C976D | >= 3.0 vs plot / NowBar track |
 | `ui.header.normal` | #E8F5E0 | 1.08 | #B3DE99 | >= 1.35 vs window/row |
-| `ui.window.border (grid)` | #CFE7CF80 | 1.09 | #C3DAC3 | >= 1.35 vs plot |
+| `ui.window.border (grid)` | #CFE7CF80 | 1.09 | #C3DAC3 | >= 1.3 vs plot |
 
 
 ### Nord (`nord.toml`, dark)
@@ -593,7 +593,7 @@ Key ratios: primary/window 10.84, primary/plot 8.73, muted/plot 7.45, disabled/w
 | `accents.colors[1]` | #BF616A | 2.46 | #D07179 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[7]` | #5E81AC | 2.5 | #6D8FBA | >= 3.0 vs plot / NowBar track |
 | `ui.header.normal` | #3B425280 | 1.11 | #454D5F | >= 1.35 vs window/row |
-| `ui.window.border (grid)` | #4C566A80 | 1.17 | raise to an opaque mid-tone (see text) | >= 1.35 vs plot |
+| `ui.window.border (grid)` | #4C566A80 | 1.17 | raise to an opaque mid-tone (see text) | >= 1.3 vs plot |
 
 
 ### Nord Light (`nord-light.toml`, light)
@@ -621,7 +621,7 @@ Key ratios: primary/window 10.84, primary/plot 10.26, muted/plot 6.06, disabled/
 | `accents.colors[4]` | #C97710 | 2.81 | #C37208 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[6]` | #6D8EB8 | 2.78 | #6788B1 | >= 3.0 vs plot / NowBar track |
 | `ui.header.normal` | #D8DEE9 | 1.17 | #BEC8DA | >= 1.35 vs window/row |
-| `ui.window.border (grid)` | #B0BCC880 | 1.25 | raise to an opaque mid-tone (see text) | >= 1.35 vs plot |
+| `ui.window.border (grid)` | #B0BCC880 | 1.25 | raise to an opaque mid-tone (see text) | >= 1.3 vs plot |
 
 
 ### Solarized Dark (`solarized-dark.toml`, dark)
@@ -654,7 +654,7 @@ Key ratios: primary/window 4.75, primary/plot 4.11, muted/plot 2.42, disabled/wi
 | `charts.gpu.utilization` | #6C71C4 | 2.97 | #6D72C5 | >= 3.0 vs plot / NowBar track |
 | `charts.gpu.memory` | #D33682 | 2.86 | #D73B86 | >= 3.0 vs plot / NowBar track |
 | `charts.gpu.decoder` | #D33682 | 2.86 | #D73B86 | >= 3.0 vs plot / NowBar track |
-| `charts.gpu.fan` | #586E75 | 2.42 | #677D84 | >= 3.0 vs plot / NowBar track |
+| `charts.gpu.fan` | #586E75 | 2.42 | #677E85 | >= 3.0 vs plot / NowBar track |
 | `progress.high` | #DC322F | 2.81 | #E23934 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[4]` | #CB4B16 | 2.82 | #D1511C | >= 3.0 vs plot / NowBar track |
 | `accents.colors[5]` | #6C71C4 | 2.97 | #6D72C5 | >= 3.0 vs plot / NowBar track |
@@ -683,11 +683,11 @@ Key ratios: primary/window 4.13, primary/plot 3.64, muted/plot 2.18, disabled/wi
 | `semantic.text_error` | #DC322F | 3.51 | #C41A21 | >= 4.5 vs popup (darkest/lightest text bg) |
 | `semantic.text_warning` | #B58900 | 2.43 | #815E00 | >= 4.5 vs popup (darkest/lightest text bg) |
 | `semantic.text_info` | #2075BA | 3.69 | #0067AA | >= 4.5 vs popup (darkest/lightest text bg) |
-| `charts.gpu.fan` | #93A1A1 | 2.18 | #7B8888 | >= 3.0 vs plot / NowBar track |
-| `progress.medium` | #B58900 | 2.62 | #A97F00 | >= 3.0 vs plot / NowBar track |
+| `charts.gpu.fan` | #93A1A1 | 2.18 | #7A8888 | >= 3.0 vs plot / NowBar track |
+| `progress.medium` | #B58900 | 2.62 | #A87F00 | >= 3.0 vs plot / NowBar track |
 | `charts.peak_line` | #657B83B3 | 2.33 | #4A5E66B3 | >= 3.0 vs plot / NowBar track |
 | `ui.header.normal` | #EEE8D5 | 1.14 | #DBCEA6 | >= 1.35 vs window/row |
-| `ui.window.border (grid)` | #C5BEAB80 | 1.22 | raise to an opaque mid-tone (see text) | >= 1.35 vs plot |
+| `ui.window.border (grid)` | #C5BEAB80 | 1.22 | raise to an opaque mid-tone (see text) | >= 1.3 vs plot |
 
 
 ### Tokyo Night (`tokyo-night.toml`, dark)
@@ -708,7 +708,7 @@ Key ratios: primary/window 10.59, primary/plot 8.32, muted/plot 6.36, disabled/w
 | `semantic.text_disabled` | #565F89 | 2.76 | #5C658F | >= 3.0 vs window (disabled widgets, hints) |
 | `charts.gpu.fan` | #565F89 | 2.17 | #6D75A0 | >= 3.0 vs plot / NowBar track |
 | `ui.header.normal` | #292E4280 | 1.12 | #33374E | >= 1.35 vs window/row |
-| `ui.window.border (grid)` | #29303E80 | 1.01 | #3C4351 | >= 1.35 vs plot |
+| `ui.window.border (grid)` | #29303E80 | 1.01 | #3C4351 | >= 1.3 vs plot |
 
 
 ### Ubuntu Dark (`ubuntu-dark.toml`, dark)
@@ -729,7 +729,7 @@ Key ratios: primary/window 14.62, primary/plot 12.43, muted/plot 8.22, disabled/
 | `progress.high` | #E01B24 | 2.73 | #E92B2B | >= 3.0 vs plot / NowBar track |
 | `accents.colors[3]` | #8E44AD | 2.25 | #A35AC1 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[7]` | #C7162B | 2.25 | #DF393E | >= 3.0 vs plot / NowBar track |
-| `ui.window.border (grid)` | #3D3D3D80 | 1.1 | #444444 | >= 1.35 vs plot |
+| `ui.window.border (grid)` | #3D3D3D80 | 1.1 | #444444 | >= 1.3 vs plot |
 
 
 ### Ubuntu Light (`ubuntu-light.toml`, light)
@@ -761,13 +761,13 @@ Key ratios: primary/window 17.84, primary/plot 17.82, muted/plot 3.34, disabled/
 | `accents.colors[4]` | #F07F1E | 2.55 | #DF720F | >= 3.0 vs plot / NowBar track |
 | `accents.colors[6]` | #FFC533 | 1.49 | #B78800 | >= 3.0 vs plot / NowBar track |
 | `ui.header.normal` | #FAFAFA | 1.01 | #D0D0D0 | >= 1.35 vs window/row |
-| `ui.window.border (grid)` | #D7CFC480 | 1.2 | raise to an opaque mid-tone (see text) | >= 1.35 vs plot |
+| `ui.window.border (grid)` | #D7CFC480 | 1.2 | raise to an opaque mid-tone (see text) | >= 1.3 vs plot |
 
 
 ### Windows Dark (`windows-dark.toml`, dark)
 Effective backgrounds: window #202020, plot/frame #2B2B2B, popup #292929, legend #2B2B2B, selected row #383838, grid #353535.
 Key ratios: primary/window 14.94, primary/plot 12.99, muted/plot 8.82, disabled/window 8.96, warning/window 5.23, error/popup 5.07, grid 1.15, selected row 1.39, selected tab vs tab 1.21.
-- **Strengths:** Best-balanced theme: every text role >= 5.2, all series but fan >= 3:1.
+- **Strengths:** Best-balanced theme: every text role is at least 5.0:1 (error 5.07 in popups), all series but fan >= 3:1.
 - **Weak combinations / concerns:**
   - `charts.net_rx` #00B7C3 vs `charts.io_write` #26C6DA dE 5.0 on the same tab.
   - `charts.gpu.memory` == `charts.gpu.decoder` #E3008C; `charts.gpu.fan` #5F5F5F 2.22; grid 1.15.
@@ -777,13 +777,13 @@ Key ratios: primary/window 14.94, primary/plot 12.99, muted/plot 8.82, disabled/
 | key | current | ratio now | candidate | target |
 |---|---|---|---|---|
 | `charts.gpu.fan` | #5F5F5F | 2.22 | #747474 | >= 3.0 vs plot / NowBar track |
-| `ui.window.border (grid)` | #3F3F3F80 | 1.15 | #404040 | >= 1.35 vs plot |
+| `ui.window.border (grid)` | #3F3F3F80 | 1.15 | #404040 | >= 1.3 vs plot |
 
 
 ### Windows Light (`windows-light.toml`, light)
 Effective backgrounds: window #F5F7FA, plot/frame #F7FAFF, popup #E9ECF1, legend #F1F5FA, selected row #F3F3F3, grid #EAEEF5.
 Key ratios: primary/window 17.86, primary/plot 18.32, muted/plot 3.3, disabled/window 5.35, warning/window 4.19, error/popup 5.13, grid 1.11, selected row 1.03, selected tab vs tab 1.11.
-- **Strengths:** Primary 17.9; error 5.7; success 5.0.
+- **Strengths:** Primary 17.9:1; error 5.7:1 on the window (5.13 in popups); success 5.0:1.
 - **Weak combinations / concerns:**
   - `ui.header.normal` #F3F3F3 on #F5F7FA: selected row **1.03:1**.
   - `cpu_breakdown.iowait`/`progress.medium` #FFB900 1.65 (CPU Total bar at 50-80 %), accent6 #FFC228 1.54.
@@ -796,7 +796,7 @@ Key ratios: primary/window 17.86, primary/plot 18.32, muted/plot 3.3, disabled/w
 |---|---|---|---|---|
 | `semantic.text_muted` | #8A8A8A | 3.3 | #737373 | >= 4.5 vs plot/frame (axis labels) |
 | `semantic.text_warning` | #CA5010 | 3.81 | #B94401 | >= 4.5 vs popup (darkest/lightest text bg) |
-| `semantic.text_info` | #0078D4 | 3.83 | #006CC5 | >= 4.5 vs popup (darkest/lightest text bg) |
+| `semantic.text_info` | #0078D4 | 3.83 | #006BC4 | >= 4.5 vs popup (darkest/lightest text bg) |
 | `charts.io_write` | #00BCD4 | 2.2 | #009FB6 | >= 3.0 vs plot / NowBar track |
 | `charts.net_tx` | #FA7A1C | 2.55 | #E96D0C | >= 3.0 vs plot / NowBar track |
 | `charts.net_rx` | #00B5C8 | 2.38 | #00A0B3 | >= 3.0 vs plot / NowBar track |
@@ -808,7 +808,7 @@ Key ratios: primary/window 17.86, primary/plot 18.32, muted/plot 3.3, disabled/w
 | `accents.colors[5]` | #00B5C8 | 2.38 | #00A0B3 | >= 3.0 vs plot / NowBar track |
 | `accents.colors[6]` | #FFC228 | 1.54 | #BA8800 | >= 3.0 vs plot / NowBar track |
 | `ui.header.normal` | #F3F3F3 | 1.03 | #CECECE | >= 1.35 vs window/row |
-| `ui.window.border (grid)` | #DDE3EB80 | 1.11 | #D3D9E1 | >= 1.35 vs plot |
+| `ui.window.border (grid)` | #DDE3EB80 | 1.11 | #D3D9E1 | >= 1.3 vs plot |
 
 
 ### Fallback (built-in, `Theme::loadDefaultFallbackTheme`, Theme.cpp:44-206)
