@@ -59,8 +59,11 @@ TEST(BundledThemesTest, SelectedRowStandsOutFromEveryRowAndFromHover)
         }
         const auto name = path.stem().string();
 
-        const ImVec4 row = flattenOver(scheme->windowBg, scheme->windowBg);
-        const ImVec4 stripe = flattenOver(scheme->tableRowBgAlt, row);
+        // ImGui fills even rows with TableRowBg and odd rows with TableRowBgAlt, each over the window,
+        // and draws the selection or hover fill on top of the row.
+        const ImVec4 window = flattenOver(scheme->windowBg, scheme->windowBg);
+        const ImVec4 row = flattenOver(scheme->tableRowBg, window);
+        const ImVec4 stripe = flattenOver(scheme->tableRowBgAlt, window);
         const ImVec4 selected = flattenOver(scheme->header, row);
         const ImVec4 hovered = flattenOver(scheme->headerHovered, row);
 

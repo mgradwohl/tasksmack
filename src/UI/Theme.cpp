@@ -135,10 +135,10 @@ void Theme::loadDefaultFallbackTheme()
     fallback.tab = ImVec4(0.18F, 0.35F, 0.58F, 0.86F);
     fallback.tabHovered = ImVec4(0.26F, 0.59F, 0.98F, 0.80F);
     fallback.tabSelected = ImVec4(0.20F, 0.41F, 0.68F, 1.0F);
-    fallback.tabSelectedOverline = blue; // The selected tab's cue (#1190)
+    fallback.tabSelectedOverline = ImVec4(0.60F, 0.82F, 1.0F, 1.0F); // The selected tab's cue, >= 3:1 on tabSelected (#1190)
     fallback.tabDimmed = ImVec4(0.07F, 0.10F, 0.15F, 0.97F);
     fallback.tabDimmedSelected = ImVec4(0.14F, 0.26F, 0.42F, 1.0F);
-    fallback.tabDimmedSelectedOverline = ImVec4(0.26F, 0.59F, 0.98F, 0.50F);
+    fallback.tabDimmedSelectedOverline = ImVec4(0.60F, 0.82F, 1.0F, 0.50F);
     fallback.dockingPreview = ImVec4(0.26F, 0.59F, 0.98F, 0.70F);
     fallback.dockingEmptyBg = ImVec4(0.20F, 0.20F, 0.20F, 1.0F);
     fallback.plotLines = ImVec4(0.61F, 0.61F, 0.61F, 1.0F);
