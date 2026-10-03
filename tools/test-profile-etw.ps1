@@ -76,7 +76,10 @@ try {
     $echoOut = Join-Path $root 'args.json'
     # The raw argv as Windows splits it (what a benchmark binary receives), not PowerShell's own
     # parameter binding, which would read '--benchmark_out=C:\...' as '-name:value'.
-    Set-Content -LiteralPath $echo -Value "[Environment]::GetCommandLineArgs() | Select-Object -Skip 4 | ConvertTo-Json -AsArray | Set-Content -LiteralPath '$echoOut' -Encoding utf8"
+    # The path goes inside a single-quoted literal, so its apostrophes are doubled (a TEMP under
+    # C:\Users\O'Brien would otherwise make the child script invalid).
+    $echoOutLiteral = $echoOut.Replace("'", "''")
+    Set-Content -LiteralPath $echo -Value "[Environment]::GetCommandLineArgs() | Select-Object -Skip 4 | ConvertTo-Json -AsArray | Set-Content -LiteralPath '$echoOutLiteral' -Encoding utf8"
     $tricky = @('--benchmark_out=C:\Users\First Last\perf data\x.json', 'BM_(A|B)$', 'say "hi"', 'C:\trailing\', '', 'plain')
     $commandLine = ConvertTo-CommandLine (@('-NoProfile', '-File', $echo) + $tricky)
     $echoProc = Start-Process -FilePath $hostExe -ArgumentList $commandLine -PassThru -WindowStyle Hidden
@@ -107,6 +110,85 @@ try {
     $marker = Join-Path $root 'started'
     Set-Content -LiteralPath $marker -Value '{}'
     Wait-CollectorMarker -Path $marker -TimeoutSeconds 1
+
+    # ── Role lifecycle (#872): profile-etw.ps1 itself, against a stub wpr first on PATH ──────
+    # The collector and the elevated-terminal refusal need an elevated token (GitHub's Windows
+    # runners have one); the stub records every call and writes the trace file on -stop, so no
+    # ETW session is started.
+    $profileScript = Join-Path $PSScriptRoot 'profile-etw.ps1'
+    $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $elevated) {
+        Write-Host 'SKIP: profile-etw.ps1 role lifecycle tests need an elevated token.'
+    }
+    else {
+        $stubDir = Join-Path $root 'stub'
+        New-Item -ItemType Directory -Path $stubDir | Out-Null
+        $stubLog = Join-Path $root 'wpr-calls.log'
+        Set-Content -LiteralPath (Join-Path $stubDir 'wpr.cmd') -Encoding ascii -Value @(
+            '@echo off'
+            'echo %*>>"%WPR_STUB_LOG%"'
+            'if /i "%~1"=="-start" exit /b %WPR_STUB_START_EXIT%'
+            'if /i "%~1"=="-stop" echo stub-trace> "%~2"'
+            'exit /b 0'
+        )
+        $savedPath = $env:PATH
+        $env:PATH = "$stubDir;$savedPath"
+        $env:WPR_STUB_LOG = $stubLog
+
+        function Start-StubCollector([string]$Name, [int]$TimeoutSeconds, [int]$StartExit) {
+            $env:WPR_STUB_START_EXIT = "$StartExit"
+            $control = Join-Path $root "control-$Name"
+            $out = Join-Path $root "out-$Name"
+            New-Item -ItemType Directory -Path $control, $out | Out-Null
+            $collectorArgs = @('-NoProfile', '-File', $profileScript, '-Mode', 'app', '-Role', 'Collector', '-ControlDirectory', $control, '-OutputDirectory', $out, '-Timestamp', $Name, '-CollectorTimeoutSeconds', "$TimeoutSeconds")
+            $process = Start-Process -FilePath $hostExe -ArgumentList (ConvertTo-CommandLine $collectorArgs) -PassThru -WindowStyle Hidden
+            $null = $process.Handle
+            return [pscustomobject]@{ Process = $process; Control = $control; Trace = (Join-Path $out "etw-app-$Name.etl") }
+        }
+        function Get-StubCalls { if (Test-Path -LiteralPath $stubLog) { @(Get-Content -LiteralPath $stubLog) } else { @() } }
+
+        try {
+            # A normal run: starts WPR, signals it started, stops WPR on request, exits 0.
+            Remove-Item -LiteralPath $stubLog -ErrorAction SilentlyContinue
+            $normal = Start-StubCollector -Name 'normal' -TimeoutSeconds 120 -StartExit 0
+            Wait-CollectorMarker -Path (Join-Path $normal.Control 'collector-started.json') -TimeoutSeconds 60 -Collector $normal.Process
+            Set-Content -LiteralPath (Join-Path $normal.Control 'stop-requested') -Value 'now'
+            Assert-True ($normal.Process.WaitForExit(60000)) 'Collector did not exit after the stop request'
+            Assert-True ($normal.Process.ExitCode -eq 0) "Collector exit code $($normal.Process.ExitCode)"
+            Assert-True (Test-Path -LiteralPath (Join-Path $normal.Control 'collector-done.json')) 'No done marker'
+            Assert-True (Test-Path -LiteralPath $normal.Trace) 'Trace not saved'
+            $calls = Get-StubCalls
+            $starts = @($calls | Where-Object { $_ -like '-start *' })
+            $stops = @($calls | Where-Object { $_ -like '-stop *' })
+            Assert-True ($starts.Count -eq 1 -and $stops.Count -eq 1) "Expected one start and one stop: $($calls -join ' | ')"
+            Assert-True (($starts[0] -split ' ')[-1] -eq ($stops[0] -split ' ')[-1]) 'Start and stop used different instance names'
+
+            # wpr -start fails: no stop is attempted, the error is recorded, the exit is nonzero.
+            Remove-Item -LiteralPath $stubLog -ErrorAction SilentlyContinue
+            $failed = Start-StubCollector -Name 'startfail' -TimeoutSeconds 120 -StartExit 5
+            Assert-True ($failed.Process.WaitForExit(60000)) 'Collector hung after a failed start'
+            Assert-True ($failed.Process.ExitCode -ne 0) 'A failed wpr -start must fail the collector'
+            Assert-True ((Get-CollectorErrorDetail -ControlDirectory $failed.Control) -like '*exit code 5*') "Recorded error: $(Get-CollectorErrorDetail -ControlDirectory $failed.Control)"
+            Assert-True (@(Get-StubCalls | Where-Object { $_ -like '-stop *' }).Count -eq 0) 'Stopped a recording that never started'
+            Assert-True (-not (Test-Path -LiteralPath (Join-Path $failed.Control 'collector-started.json'))) 'Signalled started after a failed start'
+
+            # No stop request within the deadline: the trace is saved, but the capture fails.
+            Remove-Item -LiteralPath $stubLog -ErrorAction SilentlyContinue
+            $late = Start-StubCollector -Name 'timeout' -TimeoutSeconds 3 -StartExit 0
+            Assert-True ($late.Process.WaitForExit(60000)) 'Collector did not give up at its deadline'
+            Assert-True ($late.Process.ExitCode -ne 0) 'A deadline must fail the capture'
+            Assert-True ((Get-CollectorErrorDetail -ControlDirectory $late.Control) -like '*truncated*') "Recorded error: $(Get-CollectorErrorDetail -ControlDirectory $late.Control)"
+            Assert-True (Test-Path -LiteralPath $late.Trace) 'The trace must still be saved at the deadline'
+        }
+        finally {
+            $env:PATH = $savedPath
+            Remove-Item Env:WPR_STUB_LOG, Env:WPR_STUB_START_EXIT -ErrorAction SilentlyContinue
+        }
+
+        # From an elevated terminal the orchestrator refuses, before building or prompting.
+        $refusal = & $hostExe -NoProfile -File $profileScript app -SkipBuild -OutputDirectory $root 2>&1 | Out-String
+        Assert-True ($LASTEXITCODE -ne 0 -and $refusal -like '*normal (non-elevated) terminal*') "Expected the elevated-terminal refusal: $refusal"
+    }
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

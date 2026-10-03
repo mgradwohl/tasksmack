@@ -127,7 +127,14 @@ param(
     [string]$Role = 'Orchestrator',
 
     # Internal: Collector role only, the directory the orchestrator and collector signal through.
-    [string]$ControlDirectory
+    [string]$ControlDirectory,
+
+    # app/bench modes: where the trace, logs, manifest and benchmark JSON are written. Defaults to
+    # perf-data/ in the repository.
+    [string]$OutputDirectory,
+
+    # Internal (tests): overrides how long the collector waits for the stop request.
+    [int]$CollectorTimeoutSeconds = 0
 )
 
 Set-StrictMode -Version Latest
@@ -135,7 +142,7 @@ $ErrorActionPreference = 'Stop'
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
-$perfDir = Join-Path $repoRoot 'perf-data'
+$perfDir = if ([string]::IsNullOrWhiteSpace($OutputDirectory)) { Join-Path $repoRoot 'perf-data' } else { $OutputDirectory }
 $wprProfilePath = Join-Path $scriptDir 'TaskSmackCPU.wprp'
 
 if ($Mode -eq 'resize') {
@@ -171,7 +178,9 @@ $binaryPath = Join-Path $repoRoot "build/$Preset/bin/$binaryName"
 # The collector waits at most this long for the stop request: a fixed-duration app run plus
 # slack, or else the 4-hour interactive allowance plus slack (a benchmark run can legitimately
 # take long with large -BenchmarkRepetitions/-BenchmarkMinTime). Reaching it fails the capture.
-$collectorTimeoutSeconds = if ($Mode -eq 'app' -and $DurationSeconds -gt 0) { $DurationSeconds + 600 } else { 14400 + 600 }
+$collectorTimeoutSeconds = if ($CollectorTimeoutSeconds -gt 0) { $CollectorTimeoutSeconds }
+    elseif ($Mode -eq 'app' -and $DurationSeconds -gt 0) { $DurationSeconds + 600 }
+    else { 14400 + 600 }
 
 function Invoke-Native {
     param(
@@ -433,7 +442,7 @@ if ($Mode -eq 'bench') {
 }
 
 $hostExe = Get-HostExe
-$commonArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "$PSCommandPath", '-Mode', $Mode, '-Preset', $Preset, '-Timestamp', $Timestamp, '-BenchmarkFilter', $BenchmarkFilter, '-BenchmarkRepetitions', "$BenchmarkRepetitions", '-BenchmarkMinTime', $BenchmarkMinTime, '-DurationSeconds', "$DurationSeconds", '-SkipBuild')
+$commonArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "$PSCommandPath", '-Mode', $Mode, '-Preset', $Preset, '-Timestamp', $Timestamp, '-BenchmarkFilter', $BenchmarkFilter, '-BenchmarkRepetitions', "$BenchmarkRepetitions", '-BenchmarkMinTime', $BenchmarkMinTime, '-DurationSeconds', "$DurationSeconds", '-OutputDirectory', $perfDir, '-SkipBuild')
 
 if ($ElevatedTarget) {
     $argList = $commonArgs + @('-ElevatedTarget', '-Role', 'ElevatedRun')
