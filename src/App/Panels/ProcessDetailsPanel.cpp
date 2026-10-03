@@ -14,6 +14,7 @@
 #include "ProcessDetailsPanel_ActionHelpers.h"
 #include "ProcessDetailsPanel_GpuHelpers.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
+#include "ProcessDetailsPanel_ResourceHelpers.h" // NOLINT(misc-include-cleaner) - used by the _WIN32 GDI code, which Linux analysis doesn't see
 #include "UI/ChartWidgets.h"
 #include "UI/DialogMetrics.h"
 #include "UI/EmptyState.h"
