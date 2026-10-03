@@ -30,9 +30,9 @@ TEST(ProcessColumnConfigTest, ScaledDefaultWidthTracksTheFont)
 {
     const auto name = getColumnInfo(ProcessColumn::Name);
 
-    // Even Huger is twice the Medium body font, Small three quarters of it.
+    // Even Huger is twice the Medium body font, Small seven eighths of it.
     EXPECT_FLOAT_EQ(scaledDefaultWidth(name, REFERENCE_EM_PX * 2.0F), name.defaultWidth * 2.0F);
-    EXPECT_FLOAT_EQ(scaledDefaultWidth(name, REFERENCE_EM_PX * 0.75F), name.defaultWidth * 0.75F);
+    EXPECT_FLOAT_EQ(scaledDefaultWidth(name, REFERENCE_EM_PX * 0.875F), name.defaultWidth * 0.875F);
 }
 
 // Every column keeps the same width in ems at every font, which is the property that stops a
