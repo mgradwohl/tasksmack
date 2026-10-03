@@ -1021,7 +1021,7 @@ The table gives each theme's hue family for each semantic key. Bold marks the ou
 - NowBars show no value (#1193).
 - Chart text is about 8 px (#1194).
 - Grid lines are near-invisible (#1191).
-- The legend sits over the data (#1198).
+- The legend sits over the data, wherever a legend is shown; the per-core CPU charts have none (#1198).
 
 **Already tracked chart items:** #1003 (NowBars scaled to the series max), #1012/#1021 (NowBar smoothing), #1013 (no-data states), #1020 (shared tooltip), #1024 (mixed axis), #1039 (ImPlot mouse text), #1023 (GPU memory axis).
 
@@ -1110,7 +1110,7 @@ The table gives each theme's hue family for each semantic key. Bold marks the ou
 14. Explain or hide SHR where the platform has no value, in saved layouts too (fresh installs already hide SHR and Status); Status stays, as sparse but supported data (#1210).
 15. Route the 8 bare empty states through `renderEmptyState` (#1210).
 16. Use one icon-spacing helper (#977).
-17. Credit Font Awesome (icons CC BY 4.0, font files SIL OFL 1.1) and Sixtyfour in About (#1212).
+17. Credit Font Awesome (icons CC BY 4.0, font files SIL OFL 1.1) and Sixtyfour in About, and add their notices to the installed `assets/fonts/LICENSE.txt`, which has only Inter's today (#1212).
 18. Fix the Cyberpunk load-ramp order and the fallback accents (#1196).
 19. Give Dracula's `charts.gpu.fan` a visible colour (#1191).
 20. Use the `…` glyph instead of three periods (#1203).
