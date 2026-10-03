@@ -11,6 +11,9 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
 #include <filesystem>
 #include <vector>
 
@@ -21,12 +24,28 @@ namespace
 
 using ColorContrast::contrastRatio;
 using ColorContrast::flattenOver;
+using ColorContrast::relativeLuminance;
 
 constexpr float SELECTED_ROW_MIN = 1.35F; // selected row vs plain and striped rows
 constexpr float HOVER_VS_SELECTED_MIN = 1.15F;
 constexpr float TEXT_MIN = 4.5F;         // primary text on the selected row
 constexpr float SELECTED_TAB_MIN = 1.3F; // selected tab vs unselected tab
-constexpr float OVERLINE_MIN = 3.0F;     // overline vs the selected tab
+constexpr float OVERLINE_MIN = 3.0F;
+constexpr float CPU_USER_VS_TOTAL_MIN_DL = 15.0F; // CIELAB L* between CPU User and CPU Total (#1192)     // overline vs the selected tab
+
+/// CIELAB L* (0..100) of an opaque colour. L* depends only on relative luminance.
+auto lightness(const ImVec4& color) -> float
+{
+    const float y = relativeLuminance(color);
+    constexpr float EPSILON = 216.0F / 24389.0F;
+    constexpr float KAPPA = 24389.0F / 27.0F;
+    return (y > EPSILON) ? (116.0F * std::cbrt(y)) - 16.0F : KAPPA * y;
+}
+
+auto sameRgb(const ImVec4& a, const ImVec4& b) -> bool
+{
+    return a.x == b.x && a.y == b.y && a.z == b.z;
+}
 
 auto bundledThemes() -> std::vector<std::filesystem::path>
 {
@@ -95,6 +114,55 @@ TEST(BundledThemesTest, SelectedTabStandsOutAndCarriesAVisibleOverline)
         EXPECT_GE(contrastRatio(selected, tab), SELECTED_TAB_MIN) << name;
         EXPECT_GE(contrastRatio(overline, selected), OVERLINE_MIN) << name;
         EXPECT_GE(contrastRatio(scheme->textPrimary, selected), TEXT_MIN) << name;
+    }
+}
+
+TEST(BundledThemesTest, CpuChartSeriesAreDistinct)
+{
+    for (const auto& path : bundledThemes())
+    {
+        const auto scheme = ThemeLoader::loadTheme(path);
+        if (!scheme.has_value())
+        {
+            ADD_FAILURE() << "failed to load " << path;
+            continue;
+        }
+        const auto name = path.stem().string();
+
+        // User was the Total line's colour in every theme, so the User NowBar looked like Total's (#1192).
+        EXPECT_GE(std::abs(lightness(scheme->cpuUser) - lightness(scheme->chartCpu)), CPU_USER_VS_TOTAL_MIN_DL) << name;
+
+        const std::array series{scheme->chartCpu, scheme->cpuUser, scheme->cpuSystem, scheme->cpuIowait};
+        for (std::size_t i = 0; i < series.size(); ++i)
+        {
+            for (std::size_t j = i + 1; j < series.size(); ++j)
+            {
+                EXPECT_FALSE(sameRgb(series[i], series[j])) << name << ": CPU series " << i << " and " << j << " share a colour";
+            }
+        }
+
+        // A band's fill is its line's colour at a lower alpha, so band, line and swatch read as one series.
+        EXPECT_TRUE(sameRgb(scheme->cpuUserFill, scheme->cpuUser)) << name;
+        EXPECT_TRUE(sameRgb(scheme->cpuSystemFill, scheme->cpuSystem)) << name;
+        EXPECT_TRUE(sameRgb(scheme->cpuIowaitFill, scheme->cpuIowait)) << name;
+    }
+}
+
+TEST(BundledThemesTest, TooltipTextIsReadable)
+{
+    for (const auto& path : bundledThemes())
+    {
+        const auto scheme = ThemeLoader::loadTheme(path);
+        if (!scheme.has_value())
+        {
+            ADD_FAILURE() << "failed to load " << path;
+            continue;
+        }
+
+        // Popups (tooltips included) are drawn opaque, flattened over the modal backdrop as
+        // Theme::applyImGuiStyle() does; chart tooltip rows use the primary text colour (#1192).
+        const ImVec4 popup = flattenOver(scheme->popupBg, flattenOver(scheme->modalWindowDimBg, scheme->windowBg));
+        EXPECT_GE(contrastRatio(scheme->textPrimary, popup), TEXT_MIN) << path.stem().string();
     }
 }
 
