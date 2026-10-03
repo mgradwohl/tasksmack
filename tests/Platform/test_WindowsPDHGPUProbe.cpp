@@ -512,6 +512,28 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, AdapterMemoryIsCollectedWhenOnlyTheAdapte
     EXPECT_EQ(memory.at("GPU_0x0_0x1").sharedBytes, 1234ULL);
 }
 
+TEST_F(WindowsPDHGPUProbeInjectedTest, AdapterMemoryIsReadOnTheWarmUpCollect)
+{
+    // The adapter memory counters are gauges, so the first collect already has them; skipping
+    // them during warm-up published the first GPU refresh with 0 bytes in use (#1029).
+    auto impl = makeInjectedImpl();
+    impl->warmedUp = false;
+    m_scenario->items[impl->adapterSharedCounter] = {{.name = L"luid_0x0_0x1_phys_0", .largeValue = 1234}};
+    m_scenario->items[impl->utilizationCounter] = {
+        {.name = L"pid_802_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .doubleValue = 5.0},
+    };
+    PDHGPUProbe probe(std::move(impl));
+
+    const auto results = probe.readProcessGPUCounters();
+
+    // Utilization is still a warm-up: no process rates yet.
+    EXPECT_TRUE(results.empty());
+    EXPECT_TRUE(probe.adapterUtilization().empty());
+    const auto memory = probe.adapterMemory();
+    ASSERT_EQ(memory.size(), 1U);
+    EXPECT_EQ(memory.at("GPU_0x0_0x1").sharedBytes, 1234ULL);
+}
+
 TEST_F(WindowsPDHGPUProbeInjectedTest, MemoryCounterSkipsFailingCstatusAndMalformedNames)
 {
     auto impl = makeInjectedImpl();
