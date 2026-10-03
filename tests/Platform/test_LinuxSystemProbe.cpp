@@ -17,6 +17,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <thread>
@@ -150,8 +151,8 @@ TEST(LinuxSystemProbeTest, CpuCountersIncrease)
 
     // Do some CPU work
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    volatile int sum = 0;
-    for (int i = 0; i < 1000000; ++i)
+    volatile std::uint64_t sum = 0; // unsigned, so the busy loop's wrap-around is defined (#1090)
+    for (std::uint64_t i = 0; i < 1000000; ++i)
     {
         sum += i;
     }
