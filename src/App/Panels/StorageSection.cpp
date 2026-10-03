@@ -81,7 +81,7 @@ constexpr float MIN_DISK_CELL_WIDTH_EM = 30.0F;
 /// single-line label row, so the resulting vertical overhead is the same across all disks and
 /// doesn't change frame to frame on its own.
 void renderDiskCell(const std::string& deviceName,
-                    const std::vector<double>& timeData,
+                    std::span<const double> timeData,
                     std::span<const double> readData,
                     std::span<const double> writeData,
                     double currentRead,
@@ -372,7 +372,8 @@ void renderStorageSection(RenderContext& ctx)
                     }
                 }
 
-                const std::vector<double> cellTimes(diskTimes.end() - static_cast<std::ptrdiff_t>(alignedCount), diskTimes.end());
+                // The pooled axis, viewed in place: no per-disk copy (#1066 review).
+                const auto cellTimes = UI::Widgets::tailAlignedSpan(diskTimes, alignedCount).values;
                 renderDiskCell(
                     disk.deviceName, cellTimes, readData, writeData, diskRead, diskWrite, diskAxis, theme, cellHeight, cachedOverhead);
             },
