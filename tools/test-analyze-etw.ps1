@@ -29,6 +29,10 @@ Assert-True ($loss.LostEventsPct -eq 0.498) "Lost share $($loss.LostEventsPct), 
 # xperf's -detail output has no totals, only the lost-events warning.
 $detailOnly = Get-TraceLossSummary -Lines @("`t`t336273 Events were lost in this trace.  Data may be unreliable.", '{2cb15d1d-5fc1-11d2-abe1-00a0c911f518}        42756         8049624  Image')
 Assert-True ($detailOnly.Parsed -and $detailOnly.LostEvents -eq 336273) 'The lost-events warning line must be read'
+# Lost events but no provider totals (the -detail pass failed): the share is unknown, not 100 %.
+$noTotals = Get-TraceLossSummary -Lines @('Total # Lost Buffers : 0', 'Total # Lost Events  : 500')
+Assert-True ($noTotals.Parsed -and $noTotals.LostEvents -eq 500 -and $null -eq $noTotals.RecordedEvents) 'Lost count without totals'
+Assert-True ($null -eq $noTotals.LostEventsRatio -and $null -eq $noTotals.LostEventsPct) "Share must be unknown without totals, got $($noTotals.LostEventsPct)"
 $unparsed = Get-TraceLossSummary -Lines @('nothing useful')
 Assert-True (-not $unparsed.Parsed) 'Missing statistics must be reported as unparsed'
 
@@ -153,6 +157,19 @@ $noKernelSymbols = @(Parse-XperfRows -Lines @(
 $unavailable = Get-EtwOverhead -FunctionRows $noKernelSymbols
 Assert-True ($unavailable.Status -eq 'SymbolsUnavailable' -and $null -eq $unavailable.EtwPathSharePct) 'Missing kernel symbols must not report a share'
 Assert-True ((Get-EtwOverhead -FunctionRows @()).Status -eq 'NoSamples') 'No samples'
+Assert-True ((Get-TraceValidity -Loss $noTotals -Identity $match -AppUnresolved $allResolved).Invalid -join ' ' -like '*could not be computed*') 'Unknown share is reported as uncomputable'
+
+# TopEtwPathFunctions is always a JSON list: zero, one, several and unavailable.
+$oneEtw = @(Parse-XperfRows -Lines @(
+    'TaskSmack.exe (4000),     80000,       0.03,         TaskSmack.exe!main'
+    'TaskSmack.exe (4000),      2000,       0.00,         ntoskrnl.exe!EtwpLogKernelEvent'
+) -TargetProcessName 'TaskSmack.exe')
+$noEtw = @(Parse-XperfRows -Lines @('TaskSmack.exe (4000),     80000,       0.03,         ntoskrnl.exe!KiPageFault') -TargetProcessName 'TaskSmack.exe')
+foreach ($case in @(@{ Name = 'one'; Rows = $oneEtw; Count = 1 }, @{ Name = 'zero'; Rows = $noEtw; Count = 0 }, @{ Name = 'several'; Rows = $rows; Count = 2 }, @{ Name = 'unavailable'; Rows = $noKernelSymbols; Count = 0 })) {
+    $json = Get-EtwOverhead -FunctionRows $case.Rows | ConvertTo-Json -Depth 5
+    Assert-True ($json -match '"TopEtwPathFunctions":\s*\[') "TopEtwPathFunctions must serialize as a list ($($case.Name))"
+    Assert-True (@((Get-EtwOverhead -FunctionRows $case.Rows).TopEtwPathFunctions).Count -eq $case.Count) "TopEtwPathFunctions count ($($case.Name))"
+}
 
 # Partly resolved kernel: 18,000 us of named non-ETW kernel samples, 2,000 us unknown. Any of the
 # unknown could be ETW logging, so no single share -- only bounds (0% to 2,000/100,000).

@@ -71,8 +71,10 @@ function Get-TraceLossSummary {
     }
     # The exact ratio is what limits are compared against; LostEventsPct is rounded for display,
     # and rounding must not carry a value just over a limit back under it.
+    # Only with the per-provider totals as the denominator: without them (e.g. the -detail pass
+    # failed) the share is unknown, not 100 %, and the verdict treats it as uncomputable.
     $lostRatio = $null
-    if ($null -ne $lostEvents -and ($recorded + $lostEvents) -gt 0) {
+    if ($null -ne $lostEvents -and $providerRows -gt 0 -and ($recorded + $lostEvents) -gt 0) {
         $lostRatio = [double]$lostEvents / ($recorded + $lostEvents)
     }
     # A trace with no loss prints no warning, so a parsed header with no lost-event line means 0.
@@ -350,6 +352,8 @@ function Get-EtwOverhead {
         KernelUnresolvedUs   = $kernel.UnresolvedUs
         KernelResolvedPct    = $kernelResolvedPct
         EtwPathPatterns      = $script:EtwPathPatterns
-        TopEtwPathFunctions  = if ($status -in 'Measured', 'Bounded') { $topRows } else { @() }
+        # @(...) around the whole conditional: PowerShell unwraps a returned array, so zero rows
+        # became null and one row a bare object, and the JSON reports changed shape.
+        TopEtwPathFunctions  = @(if ($status -in 'Measured', 'Bounded') { $topRows })
     }
 }
