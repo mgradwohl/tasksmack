@@ -232,10 +232,18 @@ ProcessActionResult LinuxProcessActions::setPriority(const ProcessTarget& target
     {
         // Signal 0 checks for existence without delivering anything. Without a pidfd (old kernel
         // or a sandbox) there is nothing to ask, and the gap is the few microseconds above.
-        if (pidfd.get() >= 0 && signalTarget(pidfd, target.pid, 0) != 0 && errno == ESRCH)
+        // Any failure of that probe leaves the call unconfirmed, not only ESRCH: a sandbox that
+        // blocks pidfd_send_signal gives no evidence the target still held the PID.
+        if (pidfd.get() >= 0 && signalTarget(pidfd, target.pid, 0) != 0)
         {
-            std::string errorMsg = std::format(
-                "Process {} exited while its priority was being changed; the change may have reached a different process", target.pid);
+            const int probeErr = errno;
+            std::string errorMsg =
+                (probeErr == ESRCH)
+                    ? std::format("Process {} exited while its priority was being changed; the change may have reached a different process",
+                                  target.pid)
+                    : std::format("Priority was set, but it could not be confirmed that process {} still held its PID: {}",
+                                  target.pid,
+                                  std::system_category().message(probeErr));
             spdlog::warn("{}", errorMsg);
             return ProcessActionResult::error(std::move(errorMsg));
         }
