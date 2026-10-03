@@ -12,9 +12,11 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -74,10 +76,18 @@ template<typename Resolve>
     return {};
 }
 
+/// A process's GPU instance and compute instance ids are only in the 24-byte entries; for MIG
+/// partitions one process can be listed once per instance (#1213 review).
+inline constexpr std::uint32_t kNoInstanceId = std::numeric_limits<std::uint32_t>::max();
+inline constexpr std::size_t kProcessInfoGpuInstanceOffset = 16;
+inline constexpr std::size_t kProcessInfoComputeInstanceOffset = 20;
+
 struct RunningProcess
 {
     std::uint32_t pid = 0;
     std::optional<std::uint64_t> usedGpuMemoryBytes; ///< nullopt when NVML reports it unavailable
+    std::uint32_t gpuInstanceId = kNoInstanceId;     ///< kNoInstanceId for the legacy 16-byte entries
+    std::uint32_t computeInstanceId = kNoInstanceId;
 };
 
 /// Lists the processes running on a device through one of the running-process entry points.
@@ -129,8 +139,14 @@ template<typename Query> [[nodiscard]] std::vector<RunningProcess> queryRunningP
         std::uint64_t usedGpuMemory = 0;
         std::memcpy(&pid, entry, sizeof(pid));
         std::memcpy(&usedGpuMemory, entry + kProcessInfoMemoryOffset, sizeof(usedGpuMemory));
-        processes.push_back(
-            {.pid = pid, .usedGpuMemoryBytes = (usedGpuMemory == kValueNotAvailable) ? std::nullopt : std::optional{usedGpuMemory}});
+        RunningProcess process{.pid = pid,
+                               .usedGpuMemoryBytes = (usedGpuMemory == kValueNotAvailable) ? std::nullopt : std::optional{usedGpuMemory}};
+        if (entrySize >= kProcessInfoV2Size)
+        {
+            std::memcpy(&process.gpuInstanceId, entry + kProcessInfoGpuInstanceOffset, sizeof(process.gpuInstanceId));
+            std::memcpy(&process.computeInstanceId, entry + kProcessInfoComputeInstanceOffset, sizeof(process.computeInstanceId));
+        }
+        processes.push_back(process);
     }
     return processes;
 }
@@ -151,6 +167,58 @@ using StatusStringFn = const char* (*) (Platform::NVML::nvmlReturn_t);
         }
     }
     return "Unknown NVML error";
+}
+
+/// One process's GPU use on one device, combined from the compute and graphics lists.
+struct ProcessUsage
+{
+    std::uint32_t pid = 0;
+    std::uint64_t memoryBytes = 0;
+    bool compute = false;
+    bool graphics = false;
+};
+
+/// Combines one device's compute and graphics lists into one entry per process, in first-seen
+/// order. The two lists report the same allocation for a process on one instance, so within an
+/// instance the larger figure is taken; under MIG a process can run on several GPU/compute
+/// instances, each with its own memory, so those are summed (#1213 review). Legacy 16-byte entries
+/// carry no instance ids and count as a single instance.
+[[nodiscard]] inline std::vector<ProcessUsage> combineRunningProcesses(const std::vector<RunningProcess>& compute,
+                                                                       const std::vector<RunningProcess>& graphics)
+{
+    using InstanceKey = std::tuple<std::uint32_t, std::uint32_t, std::uint32_t>; // pid, GPU instance, compute instance
+    std::map<InstanceKey, std::uint64_t> memoryByInstance;
+    std::vector<ProcessUsage> usages;
+    std::map<std::uint32_t, std::size_t> usageByPid;
+
+    const auto add = [&](const RunningProcess& process, bool isCompute)
+    {
+        const InstanceKey key{process.pid, process.gpuInstanceId, process.computeInstanceId};
+        auto& instanceMemory = memoryByInstance[key];
+        instanceMemory = std::max(instanceMemory, process.usedGpuMemoryBytes.value_or(0));
+
+        auto [it, inserted] = usageByPid.try_emplace(process.pid, usages.size());
+        if (inserted)
+        {
+            usages.push_back(ProcessUsage{.pid = process.pid});
+        }
+        auto& usage = usages[it->second];
+        (isCompute ? usage.compute : usage.graphics) = true;
+    };
+    for (const auto& process : compute)
+    {
+        add(process, true);
+    }
+    for (const auto& process : graphics)
+    {
+        add(process, false);
+    }
+
+    for (const auto& [key, memoryBytes] : memoryByInstance)
+    {
+        usages[usageByPid.at(std::get<0>(key))].memoryBytes += memoryBytes;
+    }
+    return usages;
 }
 
 } // namespace Platform::NVMLGPUProbeMath

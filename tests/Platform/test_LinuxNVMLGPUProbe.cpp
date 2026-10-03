@@ -270,6 +270,66 @@ TEST(NVMLGPUProbeMathTest, CountQueryReportingSuccessWithACountStillFetchesTheLi
     EXPECT_EQ(processes[0].pid, 5U);
 }
 
+// combineRunningProcesses (#1213 review): one entry per process, MIG instances summed.
+
+NVMLGPUProbeMath::RunningProcess
+onInstance(std::uint32_t pid, std::uint64_t memory, std::uint32_t gpuInstance, std::uint32_t computeInstance)
+{
+    return {.pid = pid, .usedGpuMemoryBytes = memory, .gpuInstanceId = gpuInstance, .computeInstanceId = computeInstance};
+}
+
+TEST(NVMLGPUProbeMathTest, MigInstancesOfOneProcessAreSummed)
+{
+    // PID 5 runs on two MIG instances; graphics reports instance (1, 0) again, a little higher.
+    const std::vector compute{onInstance(5, 100, 1, 0), onInstance(5, 200, 2, 0)};
+    const std::vector graphics{onInstance(5, 150, 1, 0)};
+
+    const auto usages = NVMLGPUProbeMath::combineRunningProcesses(compute, graphics);
+    ASSERT_EQ(usages.size(), 1U);
+    EXPECT_EQ(usages[0].memoryBytes, 350U); // max(100, 150) on instance (1, 0) + 200 on (2, 0)
+    EXPECT_TRUE(usages[0].compute);
+    EXPECT_TRUE(usages[0].graphics);
+}
+
+TEST(NVMLGPUProbeMathTest, LegacyEntriesForOneProcessTakeTheLarger)
+{
+    // 16-byte entries carry no instance ids: compute and graphics are one allocation.
+    const std::vector<NVMLGPUProbeMath::RunningProcess> compute{{.pid = 7, .usedGpuMemoryBytes = 100}};
+    const std::vector<NVMLGPUProbeMath::RunningProcess> graphics{{.pid = 7, .usedGpuMemoryBytes = 120},
+                                                                 {.pid = 8, .usedGpuMemoryBytes = 50}};
+
+    const auto usages = NVMLGPUProbeMath::combineRunningProcesses(compute, graphics);
+    ASSERT_EQ(usages.size(), 2U);
+    EXPECT_EQ(usages[0].pid, 7U);
+    EXPECT_EQ(usages[0].memoryBytes, 120U);
+    EXPECT_EQ(usages[1].pid, 8U);
+    EXPECT_FALSE(usages[1].compute);
+}
+
+TEST(NVMLGPUProbeMathTest, InstanceIdsAreReadFromV2Entries)
+{
+    auto fake = makeFake({{.pid = 9, .usedGpuMemory = 64}});
+    const auto query = [&fake](unsigned int* count, void* buffer)
+    {
+        const auto result = fake(count, buffer);
+        if (buffer != nullptr && result == NVML::NVML_SUCCESS)
+        {
+            const std::uint32_t gpuInstance = 3;
+            const std::uint32_t computeInstance = 1;
+            std::memcpy(
+                static_cast<std::byte*>(buffer) + NVMLGPUProbeMath::kProcessInfoGpuInstanceOffset, &gpuInstance, sizeof(gpuInstance));
+            std::memcpy(static_cast<std::byte*>(buffer) + NVMLGPUProbeMath::kProcessInfoComputeInstanceOffset,
+                        &computeInstance,
+                        sizeof(computeInstance));
+        }
+        return result;
+    };
+    const auto processes = NVMLGPUProbeMath::queryRunningProcesses(query, NVMLGPUProbeMath::kProcessInfoV2Size);
+    ASSERT_EQ(processes.size(), 1U);
+    EXPECT_EQ(processes[0].gpuInstanceId, 3U);
+    EXPECT_EQ(processes[0].computeInstanceId, 1U);
+}
+
 TEST(LinuxNVMLGPUProbeTest, BasicOperationsDoNotThrow)
 {
     NVMLGPUProbe probe;

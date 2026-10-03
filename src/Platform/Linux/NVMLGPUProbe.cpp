@@ -11,7 +11,6 @@
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -407,38 +406,23 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
 
     for (const auto& dev : m_Impl->devices)
     {
-        const std::string& gpuId = dev.id;
-        // A process listed as both compute and graphics on this device gets one row with both
-        // engines. Looked up by PID instead of scanning every row, which was quadratic in the
-        // number of contexts.
-        std::unordered_map<std::uint32_t, std::size_t> rowByPid;
-        const auto addProcess = [&allCounters, &gpuId, &rowByPid](const NVMLGPUProbeMath::RunningProcess& proc, const char* engine)
+        // One row per process on this device, combined from both lists (instances under MIG summed).
+        for (const auto& usage : NVMLGPUProbeMath::combineRunningProcesses(runningProcesses(m_Impl->computeProcesses, dev.handle),
+                                                                           runningProcesses(m_Impl->graphicsProcesses, dev.handle)))
         {
-            const std::uint64_t memoryBytes = proc.usedGpuMemoryBytes.value_or(0);
-            if (const auto it = rowByPid.find(proc.pid); it != rowByPid.end())
-            {
-                auto& row = allCounters[it->second];
-                row.activeEngines.emplace_back(engine);
-                row.gpuMemoryBytes = std::max(row.gpuMemoryBytes, memoryBytes);
-                return;
-            }
-
-            rowByPid.emplace(proc.pid, allCounters.size());
             ProcessGPUCounters counter;
-            counter.pid = static_cast<std::int32_t>(proc.pid);
-            counter.gpuId = gpuId;
-            counter.gpuMemoryBytes = memoryBytes;
-            counter.activeEngines.emplace_back(engine);
+            counter.pid = static_cast<std::int32_t>(usage.pid);
+            counter.gpuId = dev.id;
+            counter.gpuMemoryBytes = usage.memoryBytes;
+            if (usage.compute)
+            {
+                counter.activeEngines.emplace_back("Compute");
+            }
+            if (usage.graphics)
+            {
+                counter.activeEngines.emplace_back("3D");
+            }
             allCounters.push_back(std::move(counter));
-        };
-
-        for (const auto& proc : runningProcesses(m_Impl->computeProcesses, dev.handle))
-        {
-            addProcess(proc, "Compute");
-        }
-        for (const auto& proc : runningProcesses(m_Impl->graphicsProcesses, dev.handle))
-        {
-            addProcess(proc, "3D");
         }
     }
 
