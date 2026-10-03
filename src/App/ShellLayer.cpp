@@ -8,6 +8,7 @@
 #include "ShellMetrics.h"
 #include "TitleBarGeometry.h"
 #include "TitleBarLayer.h"
+#include "UI/DpiScale.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/RenderMetrics.h"
 #include "UI/Theme.h"
@@ -49,14 +50,7 @@ void ShellLayer::onAttach()
     // content, but it is not created when native decorations are in use (#745), and without this
     // the window would have no SDL-level minimum at all in that mode. UILayer attaches first, so
     // the display scale is already known (#970).
-    if (SDL_Window* sdlWindow = Core::Application::get().getWindow().getHandle(); sdlWindow != nullptr)
-    {
-        const WindowMinimumSize baseMinimum = computeMinimumWindowSize(UI::Theme::get().displayScale(), 0.0F);
-        if (!SDL_SetWindowMinimumSize(sdlWindow, baseMinimum.width, baseMinimum.height))
-        {
-            spdlog::warn("SDL_SetWindowMinimumSize({}, {}) failed: {}", baseMinimum.width, baseMinimum.height, SDL_GetError());
-        }
-    }
+    applyBaseMinimumWindowSize();
 
     // Initialize panels
     m_Tabs.onAttach();
@@ -97,6 +91,19 @@ void ShellLayer::onAttach()
     // The details pane draws only the series the process probe can fill (#1028, #1035). The
     // capabilities are fixed for the probe's lifetime, so once is enough.
     m_ProcessDetailsPanel.setProcessCapabilities(m_ProcessesPanel.processCapabilities());
+}
+
+void ShellLayer::applyBaseMinimumWindowSize()
+{
+    m_MinimumSizeDisplayScale = UI::Theme::get().displayScale();
+    if (SDL_Window* sdlWindow = Core::Application::get().getWindow().getHandle(); sdlWindow != nullptr)
+    {
+        const WindowMinimumSize baseMinimum = computeMinimumWindowSize(m_MinimumSizeDisplayScale, 0.0F);
+        if (!SDL_SetWindowMinimumSize(sdlWindow, baseMinimum.width, baseMinimum.height))
+        {
+            spdlog::warn("SDL_SetWindowMinimumSize({}, {}) failed: {}", baseMinimum.width, baseMinimum.height, SDL_GetError());
+        }
+    }
 }
 
 void ShellLayer::onDetach()
@@ -162,6 +169,15 @@ void ShellLayer::onUpdate(float deltaTime)
     }
 
     m_FpsCounter.update(deltaTime);
+
+    // With native decorations, follow a display-scale change (#943). Not with the borderless title
+    // bar: TitleBarLayer re-derives a wider minimum from the scale every frame, and re-applying the
+    // base here would overwrite it.
+    if (!Core::Application::get().getWindow().isBorderless() &&
+        UI::displayScaleChanged(m_MinimumSizeDisplayScale, UI::Theme::get().displayScale()))
+    {
+        applyBaseMinimumWindowSize();
+    }
 
     // Update panels
     m_Tabs.onUpdate(deltaTime);
