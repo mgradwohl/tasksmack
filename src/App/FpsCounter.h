@@ -34,6 +34,7 @@ class FpsCounter
         if (m_FrameTimeAccumulator >= m_AverageWindowSeconds)
         {
             m_DisplayedFps = static_cast<float>(m_FrameCount) / m_FrameTimeAccumulator;
+            m_DisplayedFrameTime = m_FrameTimeAccumulator / static_cast<float>(m_FrameCount);
             m_FrameTimeAccumulator = 0.0F;
             m_FrameCount = 0U;
         }
@@ -51,12 +52,21 @@ class FpsCounter
         return m_DisplayedFps;
     }
 
+    /// Mean frame time over the same window as displayedFps(), in seconds: always 1 / displayedFps().
+    /// The status bar shows this beside the FPS; it showed frameTime(), one frame's time, so a
+    /// window-averaged FPS sat next to an unrelated single frame, e.g. "29.3 FPS (51.00 ms)" (#1037).
+    [[nodiscard]] float displayedFrameTime() const noexcept
+    {
+        return m_DisplayedFrameTime;
+    }
+
   private:
     float m_AverageWindowSeconds;
     float m_FrameTime = 0.0F;
     float m_FrameTimeAccumulator = 0.0F;
     std::uint32_t m_FrameCount = 0U;
     float m_DisplayedFps = 0.0F;
+    float m_DisplayedFrameTime = 0.0F;
 };
 
 } // namespace App
