@@ -43,6 +43,7 @@ using UI::Widgets::NowBar;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderChartGrid;
 using UI::Widgets::renderHistoryWithNowBars;
+using UI::Widgets::tailAlignedSpan;
 
 constexpr size_t STORAGE_NOW_BAR_COLUMNS = 2; // Read, Write
 
@@ -356,17 +357,18 @@ void renderStorageSection(RenderContext& ctx)
         const auto& diskWriteHist = ctx.publication->totalWriteHistory;
         const size_t alignedDisk = std::min({historySize, diskReadHist.size(), diskWriteHist.size()});
 
+        // Take the newest alignedDisk entries of each series, so read, write and time line up by sample.
+        const std::vector<float> aggregateTimes = buildTimeAxis(diskTimestamps, alignedDisk, nowSeconds);
+        const auto readTail = tailAlignedSpan(diskReadHist, alignedDisk).values;
+        const auto writeTail = tailAlignedSpan(diskWriteHist, alignedDisk).values;
         std::vector<float> readData;
         std::vector<float> writeData;
-        if (alignedDisk > 0)
+        readData.reserve(alignedDisk);
+        writeData.reserve(alignedDisk);
+        for (size_t i = 0; i < alignedDisk; ++i)
         {
-            readData.reserve(alignedDisk);
-            writeData.reserve(alignedDisk);
-            for (size_t i = diskReadHist.size() - alignedDisk; i < diskReadHist.size(); ++i)
-            {
-                readData.push_back(static_cast<float>(diskReadHist[i]));
-                writeData.push_back(static_cast<float>(diskWriteHist[i]));
-            }
+            readData.push_back(static_cast<float>(readTail[i]));
+            writeData.push_back(static_cast<float>(writeTail[i]));
         }
 
         // Calculate max across all data for consistent Y axis
@@ -399,7 +401,7 @@ void renderStorageSection(RenderContext& ctx)
             {
                 const int count = UI::Format::checkedCount(alignedDisk);
                 plotLineWithFill("Read",
-                                 diskTimes.data(),
+                                 aggregateTimes.data(),
                                  readData.data(),
                                  count,
                                  theme.scheme().chartIo,
@@ -408,7 +410,7 @@ void renderStorageSection(RenderContext& ctx)
                                  true,
                                  UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
                 plotLineWithFill("Write",
-                                 diskTimes.data(),
+                                 aggregateTimes.data(),
                                  writeData.data(),
                                  count,
                                  theme.scheme().chartIoWrite,
@@ -420,12 +422,12 @@ void renderStorageSection(RenderContext& ctx)
                 if (ImPlot::IsPlotHovered())
                 {
                     const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                    if (const auto idxVal = hoveredIndexFromPlotX(diskTimes, mouse.x))
+                    if (const auto idxVal = hoveredIndexFromPlotX(aggregateTimes, mouse.x))
                     {
                         if (*idxVal < alignedDisk)
                         {
                             ImGui::BeginTooltip();
-                            const auto ageText = formatAgeSeconds(static_cast<double>(diskTimes[*idxVal]));
+                            const auto ageText = formatAgeSeconds(static_cast<double>(aggregateTimes[*idxVal]));
                             ImGui::TextUnformatted(ageText.c_str());
                             ImGui::Separator();
                             ImGui::TextColored(theme.scheme().chartIo,
