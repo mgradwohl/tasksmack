@@ -233,7 +233,7 @@ void renderStorageSection(RenderContext& ctx)
     const auto& perDisk = ctx.publication->perDiskHistory;
     const size_t diskCount = perDisk.size();
 
-    if (diskCount > 1)
+    if (usesDiskGrid(ctx.publication))
     {
         // ── Multi-disk: one chart cell per disk, grid fills the available panel space ──
         ImGui::TextColored(
@@ -387,14 +387,18 @@ void renderStorageSection(RenderContext& ctx)
                               .value01 = std::clamp(smoothedWrite / diskMax, 0.0, 1.0),
                               .color = theme.scheme().chartIoWrite};
 
+        // Shares the tab's height with the network chart above it (#959).
+        const float plotHeight = (ctx.fill != nullptr) ? ctx.fill->plotHeight() : HISTORY_PLOT_HEIGHT_DEFAULT;
         auto diskPlot = [&]()
         {
-            const UI::Widgets::HistoryChart chart(UI::Widgets::rateHistoryConfig("##SystemDiskHistory",
-                                                                                 diskAxis.xMin,
-                                                                                 diskAxis.xMax,
-                                                                                 formatAxisBytesPerSec,
-                                                                                 UI::Widgets::maxOfSeries(readData, writeData),
-                                                                                 UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC));
+            const UI::Widgets::HistoryChart chart(
+                UI::Widgets::withHeight(UI::Widgets::rateHistoryConfig("##SystemDiskHistory",
+                                                                       diskAxis.xMin,
+                                                                       diskAxis.xMax,
+                                                                       formatAxisBytesPerSec,
+                                                                       UI::Widgets::maxOfSeries(readData, writeData),
+                                                                       UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC),
+                                        plotHeight));
             if (chart.active())
             {
                 const int count = UI::Format::checkedCount(alignedDisk);
@@ -442,8 +446,11 @@ void renderStorageSection(RenderContext& ctx)
         };
 
         ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  Disk I/O History (%zu samples)", alignedDisk);
-        renderHistoryWithNowBars(
-            "SystemDiskHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, diskPlot, {readBar, writeBar}, false, STORAGE_NOW_BAR_COLUMNS);
+        renderHistoryWithNowBars("SystemDiskHistoryLayout", plotHeight, diskPlot, {readBar, writeBar}, false, STORAGE_NOW_BAR_COLUMNS);
+        if (ctx.fill != nullptr)
+        {
+            ctx.fill->addPlot();
+        }
     }
 }
 
