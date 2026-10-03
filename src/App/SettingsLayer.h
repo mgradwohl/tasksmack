@@ -1,8 +1,10 @@
 #pragma once
 
+#include "App/SettingsLayerDetail.h"
 #include "Core/Layer.h"
 #include "UI/Theme.h"
 
+#include <string>
 #include <vector>
 
 namespace App
@@ -34,13 +36,17 @@ class SettingsLayer : public Core::Layer
 
     bool m_OpenRequested = false;
 
-    // Cached settings for editing (applied on "Apply")
-    // Using size_t to match vector indices, avoiding signed/unsigned comparisons
-    std::size_t m_SelectedThemeIndex = 0;
-    std::size_t m_SelectedFontSizeIndex = 0;
-    std::size_t m_SelectedRefreshRateIndex = 0;
-    std::size_t m_SelectedHistoryIndex = 0;
+    // The combos' state while the dialog is open. Apply writes only the ones the user picked (#1120).
+    Detail::ComboState m_ThemeChoice;
+    Detail::ComboState m_FontSizeChoice;
+    Detail::ComboState m_RefreshRateChoice;
+    Detail::ComboState m_HistoryChoice;
     bool m_ForceNativeDecorationsOnWayland = false;
+
+    // Previews for stored values that aren't among the options ("Custom (750 ms)"), built on open.
+    std::string m_CustomThemePreview;
+    std::string m_CustomRefreshPreview;
+    std::string m_CustomHistoryPreview;
 
     // Available options
     std::vector<UI::DiscoveredTheme> m_Themes;
