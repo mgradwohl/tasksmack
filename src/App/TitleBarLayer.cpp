@@ -122,7 +122,7 @@ void drawChromeGlyphMatched(
     return computeResizeBorderThickness(UI::Theme::get().displayScale());
 }
 
-constexpr float RESIZE_SIZE_COMMIT_INTERVAL_SECONDS = 1.0F / 20.0F;
+constexpr double RESIZE_SIZE_COMMIT_INTERVAL_SECONDS = 1.0 / 20.0;
 
 // Conditionally time an operation and accumulate the duration into accumMs.
 // When traceEnabled is false the call reduces to a branch and a direct callable invocation.
@@ -716,7 +716,7 @@ void TitleBarLayer::updateResize(
 
     const bool positionChanged = (newX != m_Resize.lastAppliedX) || (newY != m_Resize.lastAppliedY);
     const bool sizeChanged = (newWidth != m_Resize.lastAppliedWidth) || (newHeight != m_Resize.lastAppliedHeight);
-    const float now = Core::Application::getTime();
+    const double now = Core::Application::getTime();
     bool sizeCommitApplied = false;
 
     if (positionChanged)
@@ -771,8 +771,8 @@ void TitleBarLayer::updateResize(
         int pixelW = 0;
         int pixelH = 0;
         SDL_GetWindowSizeInPixels(window.getHandle(), &pixelW, &pixelH);
-        constexpr float MIN_RESIZE_EVENT_INTERVAL_SECONDS = 1.0F / 120.0F;
-        const float resizeEventNow = Core::Application::getTime();
+        constexpr double MIN_RESIZE_EVENT_INTERVAL_SECONDS = 1.0 / 120.0;
+        const double resizeEventNow = Core::Application::getTime();
         const bool pixelSizeChanged = (pixelW != m_Resize.lastImmediatePixelW) || (pixelH != m_Resize.lastImmediatePixelH);
         const bool intervalElapsed = (resizeEventNow - m_Resize.lastImmediateEventTime) >= MIN_RESIZE_EVENT_INTERVAL_SECONDS;
         if (pixelSizeChanged && intervalElapsed)

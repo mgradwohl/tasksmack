@@ -175,6 +175,13 @@ class MockProcessProbe : public Platform::IProcessProbe
         return *this;
     }
 
+    /// When the network counters were read (ProcessCounters::netSampleTimeNs), for a probe that caches them.
+    MockProcessProbe& withNetworkSampleTime(int32_t pid, uint64_t sampleTimeNs)
+    {
+        findOrCreateProcess(pid, [sampleTimeNs](Platform::ProcessCounters& c) { c.netSampleTimeNs = sampleTimeNs; });
+        return *this;
+    }
+
     MockProcessProbe& withIoCounters(int32_t pid, uint64_t readBytes, uint64_t writeBytes)
     {
         findOrCreateProcess(pid,

@@ -27,6 +27,7 @@
 #include <spdlog/sinks/ostream_sink.h>
 #include <spdlog/spdlog.h>
 
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
@@ -401,11 +402,32 @@ TEST(FramePacingTest, IsInteractingWhenAnyReasonPresent)
     EXPECT_FALSE(Core::FramePacing::computeIsInteracting(false, false, 0));
 }
 
+TEST(FramePacingTest, FrameDeltaStaysExactAtLargeUptime)
+{
+    // #1038: at 2^18 s (about three days) of uptime a float clock's spacing is ~31 ms, so a 16 ms
+    // frame read as 0 or ~31 ms. The double clock from nanosecond ticks keeps it at 16 ms.
+    constexpr std::uint64_t NS_PER_SECOND = 1'000'000'000;
+    constexpr std::uint64_t uptimeNs = (std::uint64_t{1} << 18U) * NS_PER_SECOND;
+    constexpr std::uint64_t frameNs = 16'000'000;
+
+    const double previous = Core::FramePacing::ticksNsToSeconds(uptimeNs);
+    const double current = Core::FramePacing::ticksNsToSeconds(uptimeNs + frameNs);
+    EXPECT_NEAR(Core::FramePacing::frameDeltaSeconds(previous, current, 0.1F), 0.016F, 1.0e-6F);
+
+    // The same reading through a float clock, for contrast: the delta is quantised away from 16 ms.
+    const auto floatPrevious = static_cast<float>(previous);
+    const auto floatCurrent = static_cast<float>(current);
+    EXPECT_GT(std::abs((floatCurrent - floatPrevious) - 0.016F), 0.01F);
+
+    // Still capped at the maximum delta.
+    EXPECT_FLOAT_EQ(Core::FramePacing::frameDeltaSeconds(previous, previous + 5.0, 0.1F), 0.1F);
+}
+
 TEST(FramePacingTest, IsWithinInteractionGrace)
 {
-    EXPECT_TRUE(Core::FramePacing::isWithinInteractionGrace(1.0F, 1.5F));
-    EXPECT_FALSE(Core::FramePacing::isWithinInteractionGrace(1.5F, 1.5F));
-    EXPECT_FALSE(Core::FramePacing::isWithinInteractionGrace(2.0F, 1.5F));
+    EXPECT_TRUE(Core::FramePacing::isWithinInteractionGrace(1.0, 1.5));
+    EXPECT_FALSE(Core::FramePacing::isWithinInteractionGrace(1.5, 1.5));
+    EXPECT_FALSE(Core::FramePacing::isWithinInteractionGrace(2.0, 1.5));
 }
 
 TEST(FramePacingTest, VsyncTransitionDisablesOnInteractionStartWhenSpecRequestsVsync)
@@ -860,8 +882,8 @@ TEST(ApplicationTest, GetTimeReturnsMonotonicValue)
     {
         Core::Application app(spec);
 
-        float time1 = Core::Application::getTime();
-        float time2 = Core::Application::getTime();
+        const double time1 = Core::Application::getTime();
+        const double time2 = Core::Application::getTime();
 
         // Time should be monotonic
         EXPECT_GE(time2, time1);
@@ -886,8 +908,8 @@ TEST(ApplicationTest, GetTimeIsConsistent)
     {
         Core::Application app(spec);
 
-        float time1 = Core::Application::getTime();
-        float time2 = Core::Application::getTime();
+        const double time1 = Core::Application::getTime();
+        const double time2 = Core::Application::getTime();
 
         // Within a few microseconds, times should be nearly identical
         EXPECT_NEAR(time1, time2, 0.01F); // 10ms tolerance

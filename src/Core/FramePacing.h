@@ -6,10 +6,27 @@
 // CONTRIBUTING.md's "extract the pure decision logic into a small header" pattern (also used by
 // App/TitleBarGeometry.h, App/Panels/AdaptiveIntervalUtils.h).
 
+#include <algorithm>
 #include <cstdint>
 
 namespace Core::FramePacing
 {
+
+/// The frame clock: nanosecond ticks (SDL_GetTicksNS) as a double of seconds, exact to well under a
+/// microsecond for centuries of uptime. It was float(SDL_GetTicks()) / 1000 -- millisecond ticks in
+/// a float whose spacing grows with the value (~7.8 ms after a day, ~31 ms after three), so after a
+/// day or two deltaTime and every NowBar's smoothing were quantised to a few steps (#1038).
+[[nodiscard]] constexpr auto ticksNsToSeconds(std::uint64_t ticksNs) -> double
+{
+    return static_cast<double>(ticksNs) / 1.0e9;
+}
+
+/// A frame's deltaTime from two frame-clock readings, capped at @p maxDeltaSeconds. The difference
+/// is taken in double and only then narrowed: a float delta is fine, a float clock is not (#1038).
+[[nodiscard]] constexpr auto frameDeltaSeconds(double previousSeconds, double currentSeconds, float maxDeltaSeconds) -> float
+{
+    return static_cast<float>(std::min(currentSeconds - previousSeconds, static_cast<double>(maxDeltaSeconds)));
+}
 
 /// P0: whether the SDL event-drain loop has spent too long on the current batch and should
 /// break out early, capping how much a single frame's drain can stall (e.g. on Wayland
@@ -30,7 +47,7 @@ namespace Core::FramePacing
 /// Whether "now" is still within an interaction's redraw grace window. Shared by both the
 /// forceInteractionRedraw (this frame) and keepInteractionRedrawActive (idle-sleep gate)
 /// checks in Application::run(), which compare the same two timestamps.
-[[nodiscard]] inline auto isWithinInteractionGrace(float nowSeconds, float interactionRedrawUntilSeconds) -> bool
+[[nodiscard]] inline auto isWithinInteractionGrace(double nowSeconds, double interactionRedrawUntilSeconds) -> bool
 {
     return nowSeconds < interactionRedrawUntilSeconds;
 }

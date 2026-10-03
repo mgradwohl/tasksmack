@@ -78,14 +78,14 @@ constexpr int MINIMIZED_FRAME_SLEEP_MS = 200;
 // compositor/window-manager behavior. Keep redraw active for a short grace
 // window after each relevant window event so the framebuffer stays responsive
 // without forcing continuous high-rate rendering when idle.
-constexpr float INTERACTION_REDRAW_GRACE_SECONDS = 0.35F;
+constexpr double INTERACTION_REDRAW_GRACE_SECONDS = 0.35;
 constexpr const char* RESIZE_PERF_TRACE_ENV = "TASKSMACK_TRACE_RESIZE_PERF";
-constexpr float RESIZE_PERF_TRACE_LOG_INTERVAL_SECONDS = 0.5F;
+constexpr double RESIZE_PERF_TRACE_LOG_INTERVAL_SECONDS = 0.5;
 // Idle/steady-state frames are logged on a much longer cadence than interaction frames: an
 // interaction is a short, bounded burst where frequent logging is useful, but idle frames run
 // indefinitely while the app just sits open, so 0.5s would spam the log forever (perf-plan #843
 // phase 0 — idle-time performance is priority 1, but that doesn't mean logging it every tick).
-constexpr float IDLE_PERF_TRACE_LOG_INTERVAL_SECONDS = 5.0F;
+constexpr double IDLE_PERF_TRACE_LOG_INTERVAL_SECONDS = 5.0;
 constexpr int RESIZE_PERF_TRACE_TOP_LAYER_COUNT = 3;
 
 // P0: Break the event drain loop if wall-clock drain exceeds this threshold.
@@ -450,22 +450,22 @@ void Application::run()
 {
     m_Running = true;
 
-    float lastTime = getTime();
+    double lastTime = getTime();
 
     const auto computeDeltaTime = [&lastTime]() -> float
     {
-        const float currentTime = getTime();
-        const float deltaTime = std::min(currentTime - lastTime, MAX_DELTA_TIME);
+        const double currentTime = getTime();
+        const float deltaTime = FramePacing::frameDeltaSeconds(lastTime, currentTime, MAX_DELTA_TIME);
         lastTime = currentTime;
         return deltaTime;
     };
 
-    m_InteractionRedrawUntil = 0.0F;
+    m_InteractionRedrawUntil = 0.0;
 
     ResizePerfTraceStats resizeTraceStats;
     bool wasTracingInteraction = false;
     bool wasInteracting = false;
-    float lastResizeTraceLogTime = getTime();
+    double lastResizeTraceLogTime = getTime();
     // Snapshot of whether TitleBarLayer changed window geometry (position/size) during
     // the PREVIOUS frame's onUpdate. Used to gate grace-period sleep: if no geometry
     // changed last frame, we allow the idle sleep even inside the interaction grace window,
@@ -759,7 +759,7 @@ void Application::run()
         // frames use a longer cadence than interaction frames (see
         // IDLE_PERF_TRACE_LOG_INTERVAL_SECONDS above), and both share the same accumulator/p95
         // logging so idle and interactive numbers are directly comparable.
-        const float perfTraceLogIntervalSeconds =
+        const double perfTraceLogIntervalSeconds =
             isInteracting ? RESIZE_PERF_TRACE_LOG_INTERVAL_SECONDS : IDLE_PERF_TRACE_LOG_INTERVAL_SECONDS;
         if (traceResizePerfThisFrame && ((getTime() - lastResizeTraceLogTime) >= perfTraceLogIntervalSeconds))
         {
@@ -976,10 +976,9 @@ Application& Application::get()
     throw std::runtime_error("Application does not exist!");
 }
 
-float Application::getTime()
+double Application::getTime()
 {
-    // SDL_GetTicks returns milliseconds as Uint64
-    return static_cast<float>(SDL_GetTicks()) / 1000.0F;
+    return FramePacing::ticksNsToSeconds(SDL_GetTicksNS());
 }
 
 /// Set the global application instance for initialization or cleanup.

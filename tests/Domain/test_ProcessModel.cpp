@@ -10,6 +10,7 @@
 
 #include "Domain/GPUModel.h"
 #include "Domain/ProcessModel.h"
+#include "Domain/SamplingConfig.h"
 #include "Mocks/MockGPUProbe.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/GPUTypes.h"
@@ -21,6 +22,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -1021,130 +1023,158 @@ TEST(ProcessModelTest, NetworkRatesZeroOnFirstRefresh)
     EXPECT_DOUBLE_EQ(snaps[0].netReceivedBytesPerSec, 0.0); // No previous data
 }
 
+namespace
+{
+
+// Drives a ProcessModel's sample times through the injectable clock, so the network rate tests
+// get exact intervals instead of depending on a real sleep.
+struct NetworkRateFixture
+{
+    Domain::ProcessModel::Clock::time_point currentTime;
+    MockProcessProbe* probe = nullptr;
+    std::unique_ptr<Domain::ProcessModel> model;
+    std::uint64_t totalCpuTime = 100000;
+
+    NetworkRateFixture()
+    {
+        auto owned = std::make_unique<MockProcessProbe>();
+        probe = owned.get();
+        model = std::make_unique<Domain::ProcessModel>(std::move(owned), [this] { return currentTime; });
+    }
+
+    // Advances the clock by @p elapsed (none for the first sample), then samples one process
+    // whose open connections have sent and received the given byte totals.
+    // @p netSampleTimeNs: when the probe read the network counters (0 = with this refresh).
+    auto sample(std::chrono::milliseconds elapsed, std::uint64_t sent, std::uint64_t received, std::uint64_t netSampleTimeNs = 0)
+        -> Domain::ProcessSnapshot
+    {
+        currentTime += elapsed;
+        totalCpuTime += 100000;
+        probe->setCounters({});
+        probe->withProcess(100, "network_proc").withNetworkCounters(100, sent, received).withNetworkSampleTime(100, netSampleTimeNs);
+        probe->setTotalCpuTime(totalCpuTime);
+        model->refresh();
+        const auto snaps = model->snapshots();
+        EXPECT_EQ(snaps.size(), 1U);
+        return snaps.empty() ? Domain::ProcessSnapshot{} : snaps.front();
+    }
+};
+
+} // namespace
+
 TEST(ProcessModelTest, NetworkRatesCalculatedFromDeltas)
 {
-    // Note: Network rates now use baseline approach with 0.5s minimum time
-    // This test verifies rates are computed correctly after minimum time elapsed
-    auto probe = std::make_unique<MockProcessProbe>();
-    auto* rawProbe = probe.get();
+    NetworkRateFixture fixture;
+    fixture.sample(std::chrono::milliseconds{0}, 1000, 2000);
 
-    // First sample: 1000 sent, 2000 received (establishes baseline)
-    rawProbe->withProcess(100, "network_proc").withNetworkCounters(100, 1000, 2000);
-    rawProbe->setTotalCpuTime(100000);
+    const auto snap = fixture.sample(std::chrono::milliseconds{500}, 2000, 4000);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 2000.0);     // 1000 bytes / 0.5 s
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 4000.0); // 2000 bytes / 0.5 s
+}
 
-    Domain::ProcessModel model(std::move(probe));
-    model.refresh();
+TEST(ProcessModelTest, NetworkRatesFollowTheLastIntervalNotTheLifetimeAverage)
+{
+    // #1036: the rate was (bytes now - bytes when first seen) / time since first seen, so a
+    // burst decayed slowly instead of dropping to zero when the transfer stopped.
+    NetworkRateFixture fixture;
+    fixture.sample(std::chrono::milliseconds{0}, 0, 0);
 
-    // Wait minimum time (0.5s) for rates to be computed
-    std::this_thread::sleep_for(std::chrono::milliseconds(550));
+    auto snap = fixture.sample(std::chrono::seconds{1}, 1'000'000, 3'000'000);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 1'000'000.0);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 3'000'000.0);
 
-    // Second sample: 2000 sent (+1000 from baseline), 4000 received (+2000 from baseline)
-    rawProbe->setCounters({});
-    rawProbe->withProcess(100, "network_proc").withNetworkCounters(100, 2000, 4000);
-    rawProbe->setTotalCpuTime(200000);
-    model.refresh();
+    // Transfer stopped: the lifetime average would still read 500 KB/s and 1.5 MB/s here.
+    snap = fixture.sample(std::chrono::seconds{1}, 1'000'000, 3'000'000);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 0.0);
 
-    auto snaps = model.snapshots();
-    ASSERT_EQ(snaps.size(), 1);
-
-    // With ~550ms elapsed and baseline approach:
-    // sent: 1000 bytes / 0.55s = ~1800 B/s
-    // recv: 2000 bytes / 0.55s = ~3600 B/s
-    EXPECT_GT(snaps[0].netSentBytesPerSec, 1000.0);
-    EXPECT_LT(snaps[0].netSentBytesPerSec, 3000.0);
-    EXPECT_GT(snaps[0].netReceivedBytesPerSec, 2000.0);
-    EXPECT_LT(snaps[0].netReceivedBytesPerSec, 6000.0);
+    // A later, smaller transfer shows at its own rate, not diluted by the time already watched.
+    snap = fixture.sample(std::chrono::seconds{1}, 1'010'000, 3'020'000);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 10'000.0);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 20'000.0);
 }
 
 TEST(ProcessModelTest, NetworkRatesHandleCounterDecrease)
 {
-    auto probe = std::make_unique<MockProcessProbe>();
-    auto* rawProbe = probe.get();
+    // The counters are sums over live connections; one closing makes the sum drop. That interval
+    // reads 0, not a wrapped (huge) or negative rate, and the next interval is measured from the
+    // lower sum.
+    NetworkRateFixture fixture;
+    fixture.sample(std::chrono::milliseconds{0}, 2000, 4000);
 
-    rawProbe->withProcess(100, "proc").withNetworkCounters(100, 2000, 4000);
-    rawProbe->setTotalCpuTime(100000);
+    auto snap = fixture.sample(std::chrono::seconds{1}, 500, 1000);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 0.0);
 
-    Domain::ProcessModel model(std::move(probe));
-    model.refresh();
-
-    // Wait minimum time for rates
-    std::this_thread::sleep_for(std::chrono::milliseconds(550));
-
-    // Counter decreased (process restarted or counter wrapped)
-    rawProbe->setCounters({});
-    rawProbe->withProcess(100, "proc").withNetworkCounters(100, 500, 1000);
-    rawProbe->setTotalCpuTime(200000);
-    model.refresh();
-
-    auto snaps = model.snapshots();
-    ASSERT_EQ(snaps.size(), 1);
-    // Should be 0 (no rate calculated when counter decreases)
-    EXPECT_DOUBLE_EQ(snaps[0].netSentBytesPerSec, 0.0);
-    EXPECT_DOUBLE_EQ(snaps[0].netReceivedBytesPerSec, 0.0);
+    snap = fixture.sample(std::chrono::seconds{1}, 1500, 1500);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 1000.0);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 500.0);
 }
 
-TEST(ProcessModelTest, NetworkRatesUseBaselineApproach)
+TEST(ProcessModelTest, NetworkRatesZeroForImplausiblyShortInterval)
 {
-    // Test that network rates are computed as average since first seen
-    // This handles TCP connection churn by using (current - baseline) / timeSinceFirstSeen
-    // Note: Minimum time of 0.5s required before rates are computed
-    auto probe = std::make_unique<MockProcessProbe>();
-    auto* rawProbe = probe.get();
+    // An interval under half the minimum refresh interval (the seed refresh followed at once by
+    // the sampler's first) is treated as no previous data, so it cannot divide by a tiny time.
+    NetworkRateFixture fixture;
+    fixture.sample(std::chrono::milliseconds{0}, 1000, 2000);
 
-    // First sample: baseline is established at 1000 sent, 2000 received
-    rawProbe->withProcess(100, "network_proc").withNetworkCounters(100, 1000, 2000);
-    rawProbe->setTotalCpuTime(100000);
+    auto snap = fixture.sample(std::chrono::milliseconds{1}, 5000, 10000);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 0.0);
 
-    Domain::ProcessModel model(std::move(probe));
-    model.refresh();
-
-    // Wait minimum time (0.5s) before rates can be computed
-    std::this_thread::sleep_for(std::chrono::milliseconds(550));
-
-    // Second sample: 2000 sent (+1000 from baseline), 4000 received (+2000 from baseline)
-    // Time since first seen is ~550ms, so rates should be ~1800 B/s and ~3600 B/s
-    rawProbe->setCounters({});
-    rawProbe->withProcess(100, "network_proc").withNetworkCounters(100, 2000, 4000);
-    rawProbe->setTotalCpuTime(200000);
-    model.refresh();
-
-    auto snaps = model.snapshots();
-    ASSERT_EQ(snaps.size(), 1);
-
-    // Rates should be reasonable (baseline approach: delta from first seen / time since first seen)
-    // With ~550ms elapsed and 1000 bytes sent delta: ~1800 B/s (allow range for timing variance)
-    EXPECT_GT(snaps[0].netSentBytesPerSec, 1000.0);
-    EXPECT_LT(snaps[0].netSentBytesPerSec, 3000.0);
-    EXPECT_GT(snaps[0].netReceivedBytesPerSec, 2000.0);
-    EXPECT_LT(snaps[0].netReceivedBytesPerSec, 6000.0);
+    // From a nonzero rate (#1063 review): a too-short interval resets the rate to 0, not the last
+    // rate republished -- only a repeated cached read from a probe that stamps its reads holds it.
+    snap = fixture.sample(std::chrono::seconds{1}, 6000, 12000);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 1000.0);
+    snap = fixture.sample(std::chrono::milliseconds{1}, 6000, 12000);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 0.0);
 }
 
-TEST(ProcessModelTest, NetworkRatesZeroBeforeMinimumTime)
+TEST(ProcessModelTest, NetworkRatesUseTheProbeReadIntervalWhenItCaches)
 {
-    // Test that network rates remain 0 until minimum time (0.5s) has elapsed
-    auto probe = std::make_unique<MockProcessProbe>();
-    auto* rawProbe = probe.get();
+    // #1063 review: the Linux probe caches its socket query for 500 ms. With 100 ms refreshes a steady
+    // 1 MB/s transfer read as four refreshes of 0 and then one of 5 MB/s when the rate was taken over
+    // the refresh interval. Over the time between the probe's reads, it is 1 MB/s throughout.
+    constexpr std::uint64_t MS = 1'000'000; // ns
+    NetworkRateFixture fixture;
+    fixture.sample(std::chrono::milliseconds{0}, 0, 0, 1000 * MS);
 
-    rawProbe->withProcess(100, "network_proc").withNetworkCounters(100, 1000, 2000);
-    rawProbe->setTotalCpuTime(100000);
+    constexpr auto REFRESH = std::chrono::milliseconds{100};
+    auto snap = fixture.sample(REFRESH, 0, 0, 1000 * MS); // still the cached read
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 0.0);
 
-    Domain::ProcessModel model(std::move(probe));
-    model.refresh();
+    // Fresh read 500 ms after the first: 500 KB over 0.5 s.
+    snap = fixture.sample(REFRESH, 0, 500'000, 1500 * MS);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 1'000'000.0);
 
-    // Wait less than minimum time
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // Cached refreshes after it hold the rate rather than reading 0.
+    for (int i = 0; i < 4; ++i)
+    {
+        snap = fixture.sample(REFRESH, 0, 500'000, 1500 * MS);
+        EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 1'000'000.0);
+    }
 
-    rawProbe->setCounters({});
-    rawProbe->withProcess(100, "network_proc").withNetworkCounters(100, 5000, 10000);
-    rawProbe->setTotalCpuTime(200000);
-    model.refresh();
+    // The next fresh read: another 500 KB over 0.5 s, not 5x the rate.
+    snap = fixture.sample(REFRESH, 0, 1'000'000, 2000 * MS);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 1'000'000.0);
 
-    auto snaps = model.snapshots();
-    ASSERT_EQ(snaps.size(), 1);
+    // Transfer stopped: the next fresh read drops it to 0.
+    snap = fixture.sample(REFRESH, 0, 1'000'000, 2500 * MS);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 0.0);
+}
 
-    // Rates should still be 0 because minimum time hasn't elapsed
-    EXPECT_DOUBLE_EQ(snaps[0].netSentBytesPerSec, 0.0);
-    EXPECT_DOUBLE_EQ(snaps[0].netReceivedBytesPerSec, 0.0);
+TEST(ProcessModelTest, NetworkRatesAboveSanityCeilingAreDropped)
+{
+    // A connection that appears carrying traffic from before it was first seen can add far more
+    // bytes than one interval could carry; such a rate is reported as 0, not as a spike.
+    NetworkRateFixture fixture;
+    fixture.sample(std::chrono::milliseconds{0}, 0, 0);
+
+    const auto huge = static_cast<std::uint64_t>(Domain::Sampling::MAX_SANE_RATE_BPS_DEFAULT) * 2U;
+    const auto snap = fixture.sample(std::chrono::seconds{1}, huge, 1000);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 1000.0);
 }
 
 // =============================================================================

@@ -28,6 +28,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <format>
@@ -492,6 +493,39 @@ TEST(LinuxProcessProbeTest, IoCountersForSelfProcess)
     // I/O counters should be populated (at least non-negative)
     EXPECT_GE(selfProc->readBytes, 0ULL);
     EXPECT_GE(selfProc->writeBytes, 0ULL);
+}
+
+TEST(LinuxProcessProbeTest, NetworkReadTimeIsStampedOnEveryProcess)
+{
+    // #1063 review: ProcessModel takes network rates over the time between the probe's socket reads,
+    // so every process must carry the read's time -- processes without sockets too, or the next
+    // read with sockets would fall back to the refresh interval and overstate its rate.
+    LinuxProcessProbe probe;
+    if (!probe.capabilities().hasNetworkCounters)
+    {
+        GTEST_SKIP() << "Per-process network counters not available (Netlink INET_DIAG)";
+    }
+    // Long enough that both enumerations below hit the same cached socket read.
+    probe.setSocketStatsCacheTtl(std::chrono::minutes{10});
+
+    const auto first = probe.enumerate();
+    ASSERT_FALSE(first.empty());
+    const std::uint64_t stamp = first.front().netSampleTimeNs;
+    EXPECT_NE(stamp, 0U);
+    for (const auto& proc : first)
+    {
+        EXPECT_EQ(proc.netSampleTimeNs, stamp) << "pid " << proc.pid;
+    }
+
+    // Within the socket cache's TTL the same read is returned with its original time, not a new one:
+    // a fresh stamp on a cache hit would make ProcessModel treat it as a new reading (rates of 0
+    // between real reads, then inflated ones when fresh counters arrive).
+    const auto second = probe.enumerate();
+    ASSERT_FALSE(second.empty());
+    for (const auto& proc : second)
+    {
+        EXPECT_EQ(proc.netSampleTimeNs, stamp) << "pid " << proc.pid;
+    }
 }
 
 TEST(LinuxProcessProbeTest, IoCountersIncreaseWithActivity)

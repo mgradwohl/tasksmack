@@ -134,55 +134,17 @@ class ProcessModel : public ISamplable
     std::shared_ptr<GPUModel> m_GPUModel; // For per-process GPU data
     Platform::ProcessCapabilities m_Capabilities;
 
-    // ==========================================================================
-    // Network Rate Baseline Tracking
-    // ==========================================================================
-    //
-    // Problem: Windows TCP EStats (GetPerTcpConnectionEStats) returns cumulative
-    // byte counters *per TCP connection*. When we aggregate these across all
-    // connections for a process, the sum can jump wildly because:
-    //   1. New connections appear with large cumulative values (data transferred
-    //      before we started monitoring)
-    //   2. Old connections disappear, removing their contribution
-    //   3. The net effect is massive, impossible rate spikes (e.g., 14 EB/s)
-    //
-    // Solution: Track a "baseline" for each process - the network counter values
-    // when we first saw that process. Then compute:
-    //   rate = (currentCounters - baselineCounters) / timeSinceFirstSeen
-    //
-    // This gives us the average bytes/sec since we started monitoring, which:
-    //   - Absorbs the initial cumulative values into the baseline
-    //   - Smoothly reflects ongoing activity without wild spikes
-    //   - Is robust to connection churn (new connections just add to the total)
-    //
-    // Tradeoff: This is an *average* rate, not instantaneous. A process that was
-    // busy 5 minutes ago but idle now will still show some activity. For most
-    // monitoring use cases, this is more useful than noisy instantaneous rates.
-    //
-    // Future improvement options (would require significant platform work):
-    //   - ETW (Event Tracing for Windows) kernel providers for real-time network events
-    //   - Track per-connection state to handle connection lifecycle properly
-    //   - Use system-wide network interface counters instead (more reliable but less granular)
-    //   - On Linux, consider eBPF or netlink INET_DIAG for accurate per-process tracking
-    //
-    // ==========================================================================
-    struct NetworkBaseline
-    {
-        std::uint64_t netSentBytes = 0;
-        std::uint64_t netReceivedBytes = 0;
-        std::chrono::steady_clock::time_point firstSeenTime;
-    };
-
-    // Per-process tracking state.  Consolidating previous counters, network
-    // baseline, and peak-RSS into one struct reduces per-process map lookups
+    // Per-process tracking state.  Consolidating previous counters and
+    // peak-RSS into one struct reduces per-process map lookups
     // in computeSnapshots() from 3-4 separate finds/inserts to a single
     // try_emplace, improving cache locality and reducing map overhead.
     struct PerProcessState
     {
         Platform::ProcessCounters counters{}; // counters from last refresh (for delta)
-        NetworkBaseline networkBaseline{};    // network rate baseline (see above)
         std::uint64_t peakRss = 0;            // tracked peak RSS
-        std::uint64_t generation = 0;         // refresh generation when last seen
+        double netSentBytesPerSec = 0.0;      // last network rates, held while the probe's read is cached
+        double netReceivedBytesPerSec = 0.0;
+        std::uint64_t generation = 0; // refresh generation when last seen
     };
 
     // Key for m_PerProcessState: the exact (pid, startTime) identity, distinct from the
@@ -205,7 +167,7 @@ class ProcessModel : public ISamplable
         }
     };
 
-    // Single map replaces m_PrevCounters + m_NetworkBaselines + m_PeakRss + m_ActiveKeys.
+    // Single map replaces m_PrevCounters + m_PeakRss + m_ActiveKeys.
     std::unordered_map<ProcessIdentity, PerProcessState, ProcessIdentityHash> m_PerProcessState;
     // Monotonically increasing counter; bumped each computeSnapshots() call.
     // Entries with generation != m_CurrentGeneration belong to dead processes.
