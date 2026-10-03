@@ -370,7 +370,9 @@ void SystemMetricsPanel::renderContent()
         m_LayoutDirty = true;
     }
 
-    auto snap = m_CachedSnapshot;
+    // A reference, not a copy: m_CachedSnapshot is only reassigned in onUpdate(), never while
+    // rendering, and a copy duplicated every per-core and per-interface vector each frame (#1017).
+    const auto& snap = m_CachedSnapshot;
 
     const int coreCount = snap.coreCount;
     if (coreCount != m_LastCoreCount)
@@ -486,7 +488,7 @@ void SystemMetricsPanel::renderContent()
 
 void SystemMetricsPanel::renderOverview()
 {
-    auto snap = m_CachedSnapshot;
+    const auto& snap = m_CachedSnapshot; // See renderContent() (#1017)
 
     // Every chart on this tab shares the height available, between a font-relative minimum and
     // maximum (UI/HistoryPlotHeight.h), instead of a fixed 180px that left up to a third of a tall
@@ -1126,8 +1128,7 @@ void SystemMetricsPanel::renderOverview()
                                 .color = theme.scheme().chartCpu};
         const NowBar faultsBar{.valueText = UI::Format::formatCountPerSecond(m_SmoothedResources.pageFaults),
                                .label = "Page Faults",
-                               .tooltipText =
-                                   std::format("Page Faults: {}", UI::Format::formatCountPerSecond(m_SmoothedResources.pageFaults)),
+                               .tooltipText = {},
                                .value01 = (faultMax > 0.0) ? std::clamp(m_SmoothedResources.pageFaults / faultMax, 0.0, 1.0) : 0.0,
                                .color = theme.accentColor(3)};
         const NowBar handlesBar{
