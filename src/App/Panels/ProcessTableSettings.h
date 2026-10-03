@@ -208,7 +208,10 @@ struct ColumnLine
         }
         else if (const std::string_view weightValue = valueOf(token, "Weight="); !weightValue.empty())
         {
-            if (!isDecimal(weightValue, 4, 6))
+            // Strictly positive. A stretch column's weight is divided by the sum of all stretch
+            // weights, and this table has one stretch column: a zero weight makes that 0 / 0, and
+            // the NaN spreads through the table's layout.
+            if (!isDecimal(weightValue, 4, 6) || !std::ranges::any_of(weightValue, [](char c) { return c >= '1' && c <= '9'; }))
             {
                 return false;
             }
@@ -235,6 +238,15 @@ struct ColumnLine
             digits.remove_suffix(1);
             const char direction = sortValue.back();
             if ((direction != 'v' && direction != '^') || !isUnsigned(digits, 2))
+            {
+                return false;
+            }
+            // At most 63. ImGui uses the restored sort order as a shift count into a 64-bit mask
+            // (TableSortSpecsSanitize) before it normalises the orders, so 64 and above is an
+            // out-of-range shift.
+            constexpr int MAX_SORT_ORDER = 63;
+            const int order = (digits.size() == 1) ? (digits[0] - '0') : (((digits[0] - '0') * 10) + (digits[1] - '0'));
+            if (order > MAX_SORT_ORDER)
             {
                 return false;
             }
@@ -400,6 +412,40 @@ inline void appendColumnLine(std::string& out, const ColumnLine& column)
             }
         }
         Detail::appendColumnLine(out, column);
+    }
+
+    // A sorted column with no line of its own in the capture still needs its sort. ImGui writes a
+    // header-only section when nothing but the (masked-out) sort differs from the defaults -- after
+    // a reordered table is reset in tree view, say -- so the loop above had no line to add it to.
+    // Only for the same table: a sort from another table's section means nothing here.
+    std::string_view sourceRemaining = cleanSource;
+    const std::string_view sourceHeader = Detail::takeLine(sourceRemaining);
+    std::string_view capturedRemaining = cleanCaptured;
+    if (sourceHeader != Detail::takeLine(capturedRemaining))
+    {
+        return out;
+    }
+    while (!sourceRemaining.empty())
+    {
+        Detail::ColumnLine sourceColumn;
+        if (!Detail::parseColumnLine(Detail::takeLine(sourceRemaining), sourceColumn) || sourceColumn.sort.empty())
+        {
+            continue;
+        }
+        bool present = false;
+        std::string_view scan = cleanCaptured;
+        while (!scan.empty() && !present)
+        {
+            Detail::ColumnLine capturedColumn;
+            present = Detail::parseColumnLine(Detail::takeLine(scan), capturedColumn) && capturedColumn.index == sourceColumn.index;
+        }
+        if (!present)
+        {
+            Detail::ColumnLine sortOnly;
+            sortOnly.index = sourceColumn.index;
+            sortOnly.sort = sourceColumn.sort;
+            Detail::appendColumnLine(out, sortOnly);
+        }
     }
     return out;
 }

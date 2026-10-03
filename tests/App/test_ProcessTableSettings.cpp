@@ -196,12 +196,28 @@ TEST(ProcessTableSettingsTest, NonFiniteAndOutOfRangeValuesAreRejected)
     EXPECT_EQ(withLine("Column 0  Sort=0x"), header);
     EXPECT_EQ(withLine("Column 0  Sort=999^"), header);
     EXPECT_EQ(withLine("Column 0  Sort=^"), header);
+    // ImGui shifts a 64-bit mask by the sort order, so 64 and above must never reach it.
+    EXPECT_EQ(withLine("Column 0  Sort=64^"), header);
+    EXPECT_EQ(withLine("Column 0  Sort=99v"), header);
+    // A zero stretch weight makes ImGui's weight / sum-of-weights a 0 / 0.
+    EXPECT_EQ(withLine("Column 0  Weight=0"), header);
+    EXPECT_EQ(withLine("Column 0  Weight=0.0000"), header);
+    EXPECT_EQ(withLine("Column 0  Weight=000.000"), header);
     EXPECT_EQ(withLine("Column 0  ID=0x123"), header);
     EXPECT_EQ(withLine("Column 0  ID=1A2B3C4D5E"), header);
     EXPECT_EQ(withLine("Column 9999  Width=60"), header);
     EXPECT_EQ(withLine("Column x  Width=60"), header);
     EXPECT_EQ(withLine("Column 0  Bogus=1"), header);
     EXPECT_EQ(withLine("Column 0  Width="), header);
+}
+
+TEST(ProcessTableSettingsTest, BoundaryValuesAreKept)
+{
+    const std::string_view text = "[Table][0x1A2B3C4D,3]\n"
+                                  "Column 0  Sort=63^\n"
+                                  "Column 1  Weight=0.0001\n"
+                                  "Column 2  Sort=0v\n";
+    EXPECT_EQ(sanitize(text), text);
 }
 
 TEST(ProcessTableSettingsTest, InRangeValuesAreKept)
@@ -266,6 +282,31 @@ TEST(ProcessTableSettingsTest, AnExistingSortIsNotOverwritten)
     const std::string_view source = "[Table][0x1A2B3C4D,2]\nColumn 0  Width=60 Sort=0^\nColumn 1  Width=60\n";
     const std::string_view captured = "[Table][0x1A2B3C4D,2]\nColumn 0  Width=60 Sort=0v\nColumn 1  Width=60\n";
     EXPECT_EQ(carrySortForward(captured, source), captured);
+}
+
+// The reviewed defect: ImGui writes a header-only section when nothing but the masked-out sort
+// differs from the defaults. The sorted column then has no line to receive the sort, so one is added.
+TEST(ProcessTableSettingsTest, SortIsCarriedIntoAHeaderOnlyCapture)
+{
+    const std::string_view source = "[Table][0x1A2B3C4D,3]\nColumn 0  Width=60 Order=2\nColumn 1  Width=120 Sort=0^\n";
+    const std::string_view headerOnly = "[Table][0x1A2B3C4D,3]\n";
+    EXPECT_EQ(carrySortForward(headerOnly, source), "[Table][0x1A2B3C4D,3]\nColumn 1  Sort=0^\n");
+}
+
+// The same when the capture has lines, just not for the sorted column.
+TEST(ProcessTableSettingsTest, SortIsAddedForASortedColumnTheCaptureHasNoLineFor)
+{
+    const std::string_view source = "[Table][0x1A2B3C4D,3]\nColumn 2  Width=90 Sort=0v\n";
+    const std::string_view captured = "[Table][0x1A2B3C4D,3]\nRefScale=11\nColumn 0  Width=60\n";
+    EXPECT_EQ(carrySortForward(captured, source), "[Table][0x1A2B3C4D,3]\nRefScale=11\nColumn 0  Width=60\nColumn 2  Sort=0v\n");
+}
+
+// A sort only means something for the table it was saved from.
+TEST(ProcessTableSettingsTest, SortIsNotCarriedFromADifferentTable)
+{
+    const std::string_view source = "[Table][0x0BADF00D,3]\nColumn 1  Width=120 Sort=0^\n";
+    const std::string_view headerOnly = "[Table][0x1A2B3C4D,3]\n";
+    EXPECT_EQ(carrySortForward(headerOnly, source), headerOnly);
 }
 
 TEST(ProcessTableSettingsTest, CarrySortForwardWithNothingToCarryReturnsTheSanitisedCapture)
