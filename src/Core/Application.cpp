@@ -545,14 +545,9 @@ void Application::run()
 
             // Translate window close requests into a WindowCloseEvent. A layer that handles it
             // vetoes the close; unhandled, the app stops (contract in WindowEvents.h).
-            if (sdlEvent.type == SDL_EVENT_QUIT || sdlEvent.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
+            if ((sdlEvent.type == SDL_EVENT_QUIT || sdlEvent.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) && closeRequestAccepted())
             {
-                WindowCloseEvent event;
-                raiseEvent(event);
-                if (!event.isHandled())
-                {
-                    stop();
-                }
+                stop();
             }
 
             // Drive viewport updates from resize-related events.
@@ -682,10 +677,16 @@ void Application::run()
 
         // Deferred from just after the drain (see comment above) so this frame's batch is
         // always recorded -- including the final one before shutdown -- before we might break.
+        // Window::requestClose() (the custom title bar's Close button and system menu) is a close
+        // request like Alt+F4, so it goes through the same WindowCloseEvent veto (#1077).
         if (m_Window->shouldClose())
         {
-            stop();
-            break;
+            m_Window->clearCloseRequest();
+            if (closeRequestAccepted())
+            {
+                stop();
+                break;
+            }
         }
 
         // P3: If drain severely exceeded a full-frame budget, skip rendering this
@@ -980,6 +981,13 @@ void Application::renderFrame(
 void Application::stop()
 {
     m_Running = false;
+}
+
+bool Application::closeRequestAccepted()
+{
+    WindowCloseEvent event;
+    raiseEvent(event);
+    return !event.isHandled();
 }
 
 void Application::raiseEvent(Event& event)

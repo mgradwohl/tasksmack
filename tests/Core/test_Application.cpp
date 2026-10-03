@@ -14,6 +14,7 @@
 
 #include "Core/AnimationRequest.h"
 #include "Core/Application.h"
+#include "Core/Event.h"
 #include "Core/FramePacing.h"
 #include "Core/HeadlessVideoDriverTestUtils.h"
 #include "Core/Layer.h"
@@ -214,6 +215,65 @@ class ThrowingOnAttachLayer : public Core::Layer
     void onDetach() override;
 };
 
+/// Layer that handles WindowCloseEvent, returning `veto` from its handler, and counts how many it saw.
+class CloseListenerLayer : public Core::Layer
+{
+  public:
+    CloseListenerLayer(const std::string& name, bool veto) : Layer(name), m_Veto(veto)
+    {}
+
+    void onEvent(Core::Event& event) override
+    {
+        Core::EventDispatcher dispatcher(event);
+        dispatcher.dispatch<Core::WindowCloseEvent>(
+            [this](Core::WindowCloseEvent&)
+            {
+                ++m_CloseEventsSeen;
+                return m_Veto;
+            });
+    }
+
+    [[nodiscard]] int closeEventsSeen() const
+    {
+        return m_CloseEventsSeen;
+    }
+
+  private:
+    bool m_Veto;
+    int m_CloseEventsSeen = 0;
+};
+
+/// Layer that calls Window::requestClose() on its first update, as the custom title bar's Close
+/// button does, and stops the app itself after `stopAfter` updates so a vetoed close still ends.
+class CloseRequestingLayer : public Core::Layer
+{
+  public:
+    explicit CloseRequestingLayer(int stopAfter) : Layer("CloseRequester"), m_StopAfter(stopAfter)
+    {}
+
+    void onUpdate(float /*deltaTime*/) override
+    {
+        ++m_UpdateCount;
+        if (m_UpdateCount == 1)
+        {
+            Core::Application::get().getWindow().requestClose();
+        }
+        if (m_UpdateCount >= m_StopAfter)
+        {
+            Core::Application::get().stop();
+        }
+    }
+
+    [[nodiscard]] int updateCount() const
+    {
+        return m_UpdateCount;
+    }
+
+  private:
+    int m_StopAfter;
+    int m_UpdateCount = 0;
+};
+
 /// Static vector to track layer detach order across Application destruction
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 std::vector<std::string> g_DetachOrder;
@@ -250,6 +310,11 @@ struct ApplicationTestAccessor
     [[nodiscard]] static bool geometryChangedThisFrame(const Application& app)
     {
         return app.m_WindowGeometryChangedThisFrame;
+    }
+
+    [[nodiscard]] static bool closeRequestAccepted(Application& app)
+    {
+        return app.closeRequestAccepted();
     }
 };
 } // namespace Core
@@ -351,6 +416,102 @@ TEST(ApplicationTest, PushLayerCallsOnAttach)
         // Layer should have been attached during pushLayer call
         // (We can't easily verify this without exposing internals,
         // but if it crashes or throws, the test will fail)
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
+TEST(ApplicationTest, CloseRequestIsAcceptedUnlessALayerVetoesIt)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "CloseVetoTest";
+
+    try
+    {
+        Core::Application app(spec);
+
+        // No handler: the close goes ahead.
+        EXPECT_TRUE(Core::ApplicationTestAccessor::closeRequestAccepted(app));
+
+        // A layer that only observes the close returns false and does not stop it (#1073).
+        auto& observer = app.pushLayer<CloseListenerLayer>("Observer", false);
+        EXPECT_TRUE(Core::ApplicationTestAccessor::closeRequestAccepted(app));
+        EXPECT_EQ(observer.closeEventsSeen(), 1);
+
+        // A layer that handles it vetoes the close, and the layers below it never see the event.
+        auto& vetoer = app.pushLayer<CloseListenerLayer>("Vetoer", true);
+        EXPECT_FALSE(Core::ApplicationTestAccessor::closeRequestAccepted(app));
+        EXPECT_EQ(vetoer.closeEventsSeen(), 1);
+        EXPECT_EQ(observer.closeEventsSeen(), 1);
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
+TEST(ApplicationTest, RequestCloseRaisesWindowCloseEventAndStopsWhenAccepted)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "RequestCloseAcceptedTest";
+
+    try
+    {
+        Core::Application app(spec);
+        const auto& observer = app.pushLayer<CloseListenerLayer>("Observer", false);
+        // The fallback stop is far off: the close request should end the loop long before it.
+        const auto& requester = app.pushLayer<CloseRequestingLayer>(100);
+
+        app.run();
+
+        // Window::requestClose() reaches layers as a WindowCloseEvent (#1077), and with no veto the
+        // loop ends on the frame after the request instead of running on to the fallback stop.
+        EXPECT_EQ(observer.closeEventsSeen(), 1);
+        EXPECT_EQ(requester.updateCount(), 1);
+        EXPECT_FALSE(app.getWindow().shouldClose());
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
+TEST(ApplicationTest, RequestCloseIsVetoedByAHandlingLayer)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "RequestCloseVetoedTest";
+
+    try
+    {
+        Core::Application app(spec);
+        const auto& vetoer = app.pushLayer<CloseListenerLayer>("Vetoer", true);
+        constexpr int STOP_AFTER = 3;
+        const auto& requester = app.pushLayer<CloseRequestingLayer>(STOP_AFTER);
+
+        app.run();
+
+        // The veto keeps the loop running until the layer's own stop, and the request is cleared
+        // once raised, so it is not raised again on every later frame.
+        EXPECT_EQ(vetoer.closeEventsSeen(), 1);
+        EXPECT_EQ(requester.updateCount(), STOP_AFTER);
+        EXPECT_FALSE(app.getWindow().shouldClose());
     }
     catch (const std::exception& e)
     {

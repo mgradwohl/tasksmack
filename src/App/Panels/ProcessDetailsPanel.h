@@ -1,12 +1,15 @@
 #pragma once
 
 #include "App/Panel.h"
+#include "Domain/Numeric.h"
 #include "Domain/ProcessSnapshot.h"
+#include "Domain/SamplingConfig.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/ProcessTypes.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
 #include "UI/FillPlotLayout.h"
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -54,7 +57,7 @@ class ProcessDetailsPanel : public Panel
     /// allocating. The reference is valid until the next updateWithSnapshot() or selection change.
     [[nodiscard]] const std::string& tabLabel() const;
 
-    /// Handle application events (process selection)
+    /// Handle application events (process selection, active tab, refresh interval, history window)
     void onEvent(Core::Event& event) override;
 
     /// Set the process to display.
@@ -145,7 +148,11 @@ class ProcessDetailsPanel : public Panel
     std::vector<double> m_GpuMemHistory;    // GPU memory bytes history
     std::vector<double> m_GdiHistory;       // GDI object count history (Windows-only)
     std::vector<double> m_Timestamps;
-    double m_MaxHistorySeconds = 300.0;
+    // Refresh interval and history window start at the SamplingConfig defaults; ShellLayer raises the
+    // configured values as events on its first update (#1079).
+    double m_MaxHistorySeconds = Domain::Numeric::toDouble(Domain::Sampling::HISTORY_SECONDS_DEFAULT);
+    // Sampling interval the NowBar smoothing is tuned to (#1072)
+    std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
     double m_PeakMemoryPercent = 0.0; // Peak working set (never decreases)
 
     // Render scratch buffers for stacked CPU chart (reused across frames to avoid per-frame heap allocation)

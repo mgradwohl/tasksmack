@@ -8,7 +8,8 @@ namespace Core
 {
 
 /// Window close event - raised by Application::run() when the OS or the user asks to close the
-/// window (SDL_EVENT_QUIT, or SDL_EVENT_WINDOW_CLOSE_REQUESTED such as Alt+F4).
+/// window: SDL_EVENT_QUIT, SDL_EVENT_WINDOW_CLOSE_REQUESTED (such as Alt+F4), or
+/// Window::requestClose() (the custom title bar's Close button and system menu).
 ///
 /// Contract: marking this event handled VETOES the close. If no layer handles it, run() calls
 /// stop() and the app shuts down. A layer that only wants to observe the close (to flush state,
@@ -21,8 +22,7 @@ namespace Core
 /// Layer::onDetach(), which runs on every orderly shutdown; this event is only for deciding whether to
 /// close.
 ///
-/// No layer handles it today, so every close stops the app. Window::requestClose(), used by the
-/// custom title bar's Close button and system menu, does not raise this event yet (#1077).
+/// No layer handles it today, so every close stops the app.
 class WindowCloseEvent : public Event
 {
   public:
