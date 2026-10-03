@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Core/AnimationRequest.h"
 #include "Domain/Numeric.h"
 #include "UI/Format.h"
 #include "UI/RateAxis.h"
@@ -1375,6 +1376,9 @@ class HistoryChart
         {
             return;
         }
+        // A visible history chart scrolls every frame: keep the loop at the animation rate (#1037).
+        // BeginPlot is false for a clipped plot, so an off-screen chart asks for nothing.
+        Core::AnimationRequest::request();
 
         if (!chartAntiAliasingEnabled())
         {
@@ -1519,6 +1523,8 @@ inline void renderHistoryWithNowBars(const char* tableId,
 
     if (barsOnly)
     {
+        // With no chart beside them, the bars' easing is what animates (#1037).
+        Core::AnimationRequest::request();
         const float widthPerBar = nowBarWidth(ImGui::GetFontSize());
         const ImGuiStyle& style = ImGui::GetStyle();
 

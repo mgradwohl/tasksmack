@@ -99,6 +99,34 @@ computeVsyncTransition(bool wasInteracting, bool isInteracting, bool vsyncReques
     return !keepInteractionRedrawActive || !geometryChangedLastFrame;
 }
 
+/// How long to wait before the next frame so that, while something on screen is animating, frames
+/// start at most once per @p periodSeconds (#1037). The wait does not depend on input: before, the
+/// loop slept only when no events had arrived, so the charts ran at the idle rate (~20 FPS) with the
+/// mouse still and at the display rate while it moved, and visibly changed speed between the two.
+///
+/// Returns 0 (no pacing: use the idle path) unless the previous frame requested animation
+/// (Core::AnimationRequest). Never paces a move/resize interaction, which has its own redraw path,
+/// or a minimized window, which has its own sleep. With vsync on and a display at or below the
+/// target rate, the swap already took the period and the wait is 0: the cap is the lower of the
+/// two rates.
+[[nodiscard]] inline auto
+computeAnimationWaitSeconds(bool animating, bool isInteracting, bool isMinimized, double secondsSinceFrameStart, double periodSeconds)
+    -> double
+{
+    if (!animating || isInteracting || isMinimized)
+    {
+        return 0.0;
+    }
+    return std::max(0.0, periodSeconds - secondsSinceFrameStart);
+}
+
+/// Whether the loop paces this frame for animation (see computeAnimationWaitSeconds()) instead of
+/// taking the idle path.
+[[nodiscard]] inline auto isAnimationPaced(bool animating, bool isInteracting, bool isMinimized) -> bool
+{
+    return animating && !isInteracting && !isMinimized;
+}
+
 /// Idle-sleep duration: a longer sleep while minimized (nothing visible to update) than the
 /// normal idle rate.
 [[nodiscard]] inline auto computeIdleSleepMs(bool isMinimized, int idleFrameSleepMs, int minimizedFrameSleepMs) -> int
