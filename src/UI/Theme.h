@@ -280,10 +280,10 @@ class Theme
     /// Record the display scale from SDL_GetWindowDisplayScale(), 1.0 at 96 DPI.
     ///
     /// Feeds the ImGuiStyle scale factor so chrome tracks display density as well as font size
-    /// (#936). Sampled once, after the window exists and before the fonts are baked, because the
-    /// font atlas is pre-baked at that same density: re-scaling the style alone when a window is
-    /// dragged to a differently scaled monitor would grow the chrome while the text stayed put. See
-    /// #943 for handling SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED across both.
+    /// (#936). The fonts are baked at the same density, so the two must change together: UILayer
+    /// re-measures the scale when SDL reports a display-scale change, rebuilds the fonts at the new
+    /// density and then calls this, so text and chrome rescale at the same frame boundary (#943).
+    /// Re-scaling the style alone would grow the chrome while the text stayed put.
     ///
     /// Queues the rebuild rather than performing it, like setTheme() -- see
     /// applyPendingStyleChanges(), which flushes it at the next frame boundary.
@@ -348,6 +348,21 @@ class Theme
     /// Register the title-bar display font (called by UILayer during initialization).
     void registerTitleFont(ImFont* font);
 
+    /// Forget every registered font, before the font atlas is cleared to be rebuilt (#943).
+    ///
+    /// The title and chrome-icon fonts are optional -- re-registered only if their files load -- so
+    /// without this a failed reload would leave them pointing into the freed atlas. Also advances
+    /// fontGeneration().
+    void clearFontRegistrations();
+
+    /// Counts font atlas rebuilds. A cache keyed on an ImFont* must also compare this: a rebuilt
+    /// atlas can hand out a font at the address the old one had, so the pointer alone cannot tell
+    /// the fonts apart (#943).
+    [[nodiscard]] auto fontGeneration() const -> std::uint64_t
+    {
+        return m_FontGeneration;
+    }
+
     /// Register the fixed-size icon font used for the title bar's window and app controls.
     ///
     /// Separate from the body fonts because the icon ranges are merged into each of those at that
@@ -407,6 +422,7 @@ class Theme
     ImFont* m_ChromeIconFont = nullptr; // Fixed-size Font Awesome for title-bar controls
     // Pixel size m_ChromeIconFont was rasterized at; overwritten by registerChromeIconFont().
     float m_ChromeIconFontSizePx = 18.0F;
+    std::uint64_t m_FontGeneration = 0; // see fontGeneration()
     // Title bar height in pixels. Defaults to 24pt at a 1.0 display scale so geometry is usable
     // before fonts load; overwritten by setTitleBarHeightPx().
     float m_TitleBarHeightPx = 32.0F;

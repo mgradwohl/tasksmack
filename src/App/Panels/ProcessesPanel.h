@@ -202,7 +202,8 @@ class ProcessesPanel : public Panel
     std::string m_CachedSummaryStr;
 
     /// Cache for text size measurements to avoid repeated ImGui::CalcTextSize calls.
-    /// Invalidated when font changes (detected by comparing ImFont pointer).
+    /// Invalidated when the font changes: a different ImFont pointer, or a rebuilt font atlas
+    /// (UI::Theme::fontGeneration()), which can reuse the old pointer (#943).
     struct TextSizeCache
     {
         // Column header widths (indexed by ProcessColumn enum)
@@ -227,8 +228,13 @@ class ProcessesPanel : public Panel
         // small fixed-string-set widths.
         std::array<float, PRIORITY_LABELS.size()> priorityLabelWidths{};
 
-        // Font pointer used when cache was populated (for invalidation)
+        // Font pointer and font-atlas generation used when cache was populated (for invalidation)
         const ImFont* fontPtr = nullptr;
+        std::uint64_t fontGeneration = 0;
+
+        // Changes on every populate(): the identity RowFormatCache entries are stamped with, so a
+        // repopulate for any reason rebuilds their widths, even if the font kept its address.
+        std::uintptr_t stamp = 0;
 
         /// Check if cache is valid for current font
         [[nodiscard]] bool isValid() const noexcept;
