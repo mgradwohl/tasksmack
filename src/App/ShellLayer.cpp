@@ -5,6 +5,7 @@
 #include "Core/Event.h"
 #include "Core/Layer.h"
 #include "Domain/ProcessSnapshot.h"
+#include "FontSizeChange.h"
 #include "ShellMetrics.h"
 #include "TitleBarGeometry.h"
 #include "TitleBarLayer.h"
@@ -231,13 +232,15 @@ void ShellLayer::onUpdate(float deltaTime)
     const ImGuiIO& io = ImGui::GetIO();
     if (io.KeyCtrl && !io.KeyShift && !io.KeyAlt)
     {
-        if (ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd))
+        // Theme steps to the next preset; changeFontSize() then saves it and raises the event (#1076).
+        auto& theme = UI::Theme::get();
+        if ((ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd)) && theme.increaseFontSize())
         {
-            UI::Theme::get().increaseFontSize();
+            changeFontSize(theme.currentFontSize());
         }
-        else if (ImGui::IsKeyPressed(ImGuiKey_Minus) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract))
+        else if ((ImGui::IsKeyPressed(ImGuiKey_Minus) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract)) && theme.decreaseFontSize())
         {
-            UI::Theme::get().decreaseFontSize();
+            changeFontSize(theme.currentFontSize());
         }
     }
 
