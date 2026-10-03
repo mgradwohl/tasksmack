@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <memory>
 #include <thread>
 
@@ -678,11 +679,11 @@ TEST(StorageModelTest, PerDiskHistoryDiskDisappearsPreservesAlignment)
             << "Per-disk write history for " << entry.deviceName << " must be aligned to timestamps";
     }
 
-    // sdb was absent in sample 2: its last entry must be the 0.0 placeholder
+    // sdb was absent in sample 2: its last entry is a NaN gap, not a false 0 (#1015)
     const auto it = std::ranges::find_if(history, [](const PerDiskHistory& e) { return e.deviceName == "sdb"; });
     ASSERT_NE(it, history.end());
-    EXPECT_DOUBLE_EQ(it->readBytesPerSec.back(), 0.0);
-    EXPECT_DOUBLE_EQ(it->writeBytesPerSec.back(), 0.0);
+    EXPECT_TRUE(std::isnan(it->readBytesPerSec.back()));
+    EXPECT_TRUE(std::isnan(it->writeBytesPerSec.back()));
 }
 
 // Regression test for #777: per-disk state/history maps must not retain an entry forever
@@ -783,8 +784,8 @@ TEST(StorageModelTest, PerDiskHistoryNewDiskAppearsBackfillsPlaceholders)
 
     ASSERT_EQ(history.size(), 2U);
     // Every per-disk series is index-aligned with the shared timestamp axis:
-    // the newly discovered disk is backfilled with 0.0 for samples taken
-    // before it appeared.
+    // the newly discovered disk is backfilled with NaN (no reading) for samples
+    // taken before it appeared.
     for (const auto& entry : history)
     {
         EXPECT_EQ(entry.readBytesPerSec.size(), timestamps.size()) << entry.deviceName;
@@ -794,9 +795,9 @@ TEST(StorageModelTest, PerDiskHistoryNewDiskAppearsBackfillsPlaceholders)
     const auto it = std::ranges::find_if(history, [](const PerDiskHistory& e) { return e.deviceName == "nvme0n1"; });
     ASSERT_NE(it, history.end());
     ASSERT_EQ(it->readBytesPerSec.size(), 2U);
-    // Sample 1 predates the disk: backfilled placeholder.
-    EXPECT_DOUBLE_EQ(it->readBytesPerSec.front(), 0.0);
-    EXPECT_DOUBLE_EQ(it->writeBytesPerSec.front(), 0.0);
+    // Sample 1 predates the disk: a NaN gap, not a false 0 (#1015).
+    EXPECT_TRUE(std::isnan(it->readBytesPerSec.front()));
+    EXPECT_TRUE(std::isnan(it->writeBytesPerSec.front()));
     // Sample 2 is its real (finite, non-negative) rate.
     EXPECT_GE(it->readBytesPerSec.back(), 0.0);
 }

@@ -71,7 +71,7 @@ class StorageModel : public ISamplable
     /// Per-device I/O history for charting individual disks.
     /// Each entry is strictly aligned to historyTimestamps(): every per-disk
     /// vector has the same length as historyTimestamps(). Samples where a disk
-    /// was absent (disappeared or not yet seen) are represented as 0.0.
+    /// was absent (disappeared or not yet seen) are NaN: no reading, drawn as a gap.
     [[nodiscard]] std::vector<PerDiskHistory> perDiskHistory() const;
     [[nodiscard]] std::shared_ptr<const StoragePublication> publication() const noexcept;
     [[nodiscard]] std::uint64_t publicationVersion() const noexcept;

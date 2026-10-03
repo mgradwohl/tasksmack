@@ -524,6 +524,13 @@ TEST(FormatTest, FormatBytesPerSecFormatsCorrectly)
     EXPECT_TRUE(result.contains("/s"));
 }
 
+TEST(FormatTest, FormatBytesPerSecOrNAShowsNAForAMissingSample)
+{
+    EXPECT_EQ(UI::Format::formatBytesPerSecOrNA(std::numeric_limits<double>::quiet_NaN()), "N/A");
+    EXPECT_EQ(UI::Format::formatBytesPerSecOrNA(std::numeric_limits<double>::infinity()), "N/A");
+    EXPECT_EQ(UI::Format::formatBytesPerSecOrNA(2048.0), UI::Format::formatBytesPerSec(2048.0));
+}
+
 TEST(FormatTest, FormatBytesPerSecWithUnitFormatsCorrectly)
 {
     const auto unit = UI::Format::chooseByteUnit(1024.0);

@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -522,9 +523,10 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         m_NetRxHistory.push(static_cast<float>(snap.netRxBytesPerSec));
         m_NetTxHistory.push(static_cast<float>(snap.netTxBytesPerSec));
 
-        // Per-interface network history. New interfaces get zero backfill (clamped to
-        // ring capacity) so they align with m_Timestamps. Known interfaces absent from
-        // this sample get a 0.0F placeholder so every series stays index-aligned.
+        // Per-interface network history. New interfaces are backfilled (clamped to ring
+        // capacity) so they align with m_Timestamps, and known interfaces absent from this
+        // sample get a placeholder, so every series stays index-aligned. Both are NaN, not 0:
+        // nothing was measured, and a chart must show a gap there rather than a false zero (#1015).
         // Avoid allocating a hash-set on the hot path: the interface list is small
         // (typically < 10 entries), so a linear scan is cheaper than hashing.
         auto ifacePresent = [&snap](const std::string& name) -> bool
@@ -544,7 +546,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
                     const std::size_t backfillCount = std::min(m_Timestamps.size(), capacity - 1);
                     for (std::size_t j = 0; j < backfillCount; ++j)
                     {
-                        it->second.push(0.0F);
+                        it->second.push(std::numeric_limits<float>::quiet_NaN());
                     }
                 }
                 return it->second;
@@ -553,7 +555,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
             ensureAligned(m_PerInterfaceTxHistory, name).push(static_cast<float>(ifaceSnap.txBytesPerSec));
             m_InterfaceLastSeenSeconds[name] = nowSeconds;
         }
-        // Push 0.0F placeholder for known interfaces absent from this sample.
+        // Push a NaN placeholder for known interfaces absent from this sample.
         // Iterating m_PerInterfaceRxHistory and mutating only the mapped values
         // (not inserting/erasing keys) does not invalidate the iterator, so no
         // scratch vector is needed.  m_PerInterfaceTxHistory always has the same
@@ -562,14 +564,14 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         {
             if (!ifacePresent(name))
             {
-                rxBuf.push(0.0F);
-                m_PerInterfaceTxHistory.at(name).push(0.0F);
+                rxBuf.push(std::numeric_limits<float>::quiet_NaN());
+                m_PerInterfaceTxHistory.at(name).push(std::numeric_limits<float>::quiet_NaN());
             }
         }
 
         // Prune interfaces absent for longer than the configured history window: by that point
-        // their buffers hold nothing but the 0.0F padding just pushed above, so removing the
-        // entry changes nothing observable (a fully zero-padded buffer and a missing key both
+        // their buffers hold nothing but the NaN padding just pushed above, so removing the
+        // entry changes nothing observable (a fully NaN-padded buffer and a missing key both
         // present as "no recent data" via netRxHistoryForInterface()/netTxHistoryForInterface()),
         // but retaining it forever would grow these maps without bound on a machine with
         // churning interfaces (#776). Matches trimHistory()'s own wall-clock cutoff below.

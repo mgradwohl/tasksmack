@@ -327,6 +327,13 @@ struct ByteUnit
     return formatBytesPerSecWithUnit(bytesPerSec, unit);
 }
 
+/// formatBytesPerSec for a history sample: "N/A" for NaN, which marks a sample where nothing was
+/// measured (the interface or disk was absent), so a tooltip never shows "nan B/s" (#1015).
+[[nodiscard]] inline auto formatBytesPerSecOrNA(double bytesPerSec) -> std::string
+{
+    return std::isfinite(bytesPerSec) ? formatBytesPerSec(bytesPerSec) : std::string{"N/A"};
+}
+
 // ============================================================================
 // Decimal-aligned numeric parts for table column rendering
 // ============================================================================

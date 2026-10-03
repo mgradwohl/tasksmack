@@ -8,6 +8,7 @@
 #include "UI/Format.h"
 #include "UI/HistoryPlotHeight.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/RateAxis.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -82,11 +83,9 @@ void renderDiskCell(const std::string& deviceName,
                     float cellHeight,
                     std::optional<float>& cachedOverhead)
 {
-    const double diskMax = std::max({readData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(readData)),
-                                     writeData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(writeData)),
-                                     currentRead,
-                                     currentWrite,
-                                     1.0});
+    // maxOfSeries, not max_element: a per-disk series holds NaN for samples where the disk was
+    // absent (#1015), and max_element's answer depends on where a NaN sits.
+    const double diskMax = std::max({UI::Widgets::maxOfSeries(readData, writeData), currentRead, currentWrite, 1.0});
 
     const NowBar readBar{.valueText = UI::Format::formatBytesPerSec(currentRead),
                          .label = "Read",
@@ -164,10 +163,10 @@ void renderDiskCell(const std::string& deviceName,
                         ImGui::Separator();
                         ImGui::TextColored(theme.scheme().chartIo,
                                            "Read: %s",
-                                           UI::Format::formatBytesPerSec(static_cast<double>(readData[*idxVal])).c_str());
+                                           UI::Format::formatBytesPerSecOrNA(static_cast<double>(readData[*idxVal])).c_str());
                         ImGui::TextColored(theme.scheme().chartIoWrite,
                                            "Write: %s",
-                                           UI::Format::formatBytesPerSec(static_cast<double>(writeData[*idxVal])).c_str());
+                                           UI::Format::formatBytesPerSecOrNA(static_cast<double>(writeData[*idxVal])).c_str());
                         ImGui::EndTooltip();
                     }
                 }

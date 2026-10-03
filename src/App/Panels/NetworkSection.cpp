@@ -5,6 +5,7 @@
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/RateAxis.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -270,14 +271,9 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                               smoothedSent,
                               smoothedRecv,
                               1.0});
-    if (!ifaceSentData.empty())
-    {
-        netMax = std::max(netMax, static_cast<double>(*std::ranges::max_element(ifaceSentData)));
-    }
-    if (!ifaceRecvData.empty())
-    {
-        netMax = std::max(netMax, static_cast<double>(*std::ranges::max_element(ifaceRecvData)));
-    }
+    // maxOfSeries, not max_element: a per-interface series holds NaN for samples where the
+    // interface was absent (#1015), and max_element's answer depends on where a NaN sits.
+    netMax = std::max(netMax, UI::Widgets::maxOfSeries(ifaceSentData, ifaceRecvData));
 
     // Determine labels based on selection
     const std::string ifaceDisplayName = showingInterface ? interfaces[static_cast<size_t>(selectedInterface)].name : "Network";
@@ -425,10 +421,10 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                             ImGui::TextColored(theme.scheme().textPrimary, "%s:", ifaceDisplayName.c_str());
                             ImGui::TextColored(theme.scheme().chartNetTx,
                                                "  Sent: %s",
-                                               UI::Format::formatBytesPerSec(static_cast<double>(ifaceSentData[*idxVal])).c_str());
+                                               UI::Format::formatBytesPerSecOrNA(static_cast<double>(ifaceSentData[*idxVal])).c_str());
                             ImGui::TextColored(theme.scheme().chartNetRx,
                                                "  Received: %s",
-                                               UI::Format::formatBytesPerSec(static_cast<double>(ifaceRecvData[*idxVal])).c_str());
+                                               UI::Format::formatBytesPerSecOrNA(static_cast<double>(ifaceRecvData[*idxVal])).c_str());
                         }
                         else
                         {

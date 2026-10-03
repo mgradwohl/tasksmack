@@ -17,6 +17,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -1230,6 +1231,52 @@ TEST(SystemModelTest, PerInterfaceHistoryPrunedAfterExtendedAbsence)
 
     // eth0, still present every cycle, must be unaffected.
     EXPECT_FALSE(model.netRxHistoryForInterface("eth0").empty());
+}
+
+// #1015: a sample where an interface was not present is a NaN gap in its history, not a false 0 --
+// both the backfill before it first appears and the placeholder while it is absent.
+TEST(SystemModelTest, PerInterfaceHistoryRecordsMissingSamplesAsNaN)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    Domain::SystemModel model(std::move(probe));
+
+    const auto eth0 = makeInterfaceCounters("eth0", 1000, 500);
+    const auto wlan0 = makeInterfaceCounters("wlan0", 2000, 1000);
+    const auto withoutWlan = makeSystemCounters(
+        makeCpuCounters(100, 0, 50, 850), makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024), 0, {}, 1000, 500, {eth0});
+    const auto withWlan = makeSystemCounters(makeCpuCounters(100, 0, 50, 850),
+                                             makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024),
+                                             0,
+                                             {},
+                                             3000,
+                                             1500,
+                                             {eth0, wlan0});
+
+    // History starts with the second sample (the first has nothing to take a delta against).
+    model.updateFromCounters(withoutWlan, 1.0);
+    model.updateFromCounters(withoutWlan, 2.0); // history[0]: wlan0 not seen yet
+    model.updateFromCounters(withWlan, 3.0);    // history[1]: wlan0 present
+    model.updateFromCounters(withoutWlan, 4.0); // history[2]: wlan0 gone
+
+    const auto timestamps = model.timestamps();
+    const auto rx = model.netRxHistoryForInterface("wlan0");
+    const auto tx = model.netTxHistoryForInterface("wlan0");
+    ASSERT_EQ(rx.size(), timestamps.size());
+    ASSERT_EQ(tx.size(), timestamps.size());
+    ASSERT_EQ(rx.size(), 3U);
+
+    EXPECT_TRUE(std::isnan(rx[0]));
+    EXPECT_TRUE(std::isnan(tx[0]));
+    EXPECT_TRUE(std::isfinite(rx[1]));
+    EXPECT_TRUE(std::isfinite(tx[1]));
+    EXPECT_TRUE(std::isnan(rx[2]));
+    EXPECT_TRUE(std::isnan(tx[2]));
+
+    // eth0, present every sample, has no gaps.
+    for (const float value : model.netRxHistoryForInterface("eth0"))
+    {
+        EXPECT_TRUE(std::isfinite(value));
+    }
 }
 
 TEST(SystemModelTest, PerInterfaceNetworkRatesWithVariableTimeDelta)
