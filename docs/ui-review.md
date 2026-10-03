@@ -193,9 +193,9 @@ None of this needs a redesign. The app's technical, information-dense character 
   - Each CPU core cell repeats "Time (s)" and its ticks.
 - **Scope:** Small–Medium · **Issue:** [#1206](https://github.com/mgradwohl/tasksmack/issues/1206)
 
-### UI-019 — Minimum window size not derived from content; dead space in large windows
+### UI-019 — Minimum window size ignores panel and status-bar content; dead space in large windows
 - **Current:**
-  - 200×200 dp minimum: the FPS readout overprints and the toolbar collides; at 900×700, "Network and …" truncates.
+  - The minimum is the scaled 200×200 dp base, widened only to fit the title bar (`TitleBarLayer.cpp` ~L1131-1148); panel and status-bar content isn't considered. At that minimum the FPS readout overprints and the toolbar collides; at 900×700, "Network and …" truncates.
   - Maximized, the GPU tab leaves about 40 % of the window empty; Even Huger shows one chart.
   - The Process GPU tab repeats single-GPU data.
 - **Scope:** Small–Medium · **Issue:** [#1207](https://github.com/mgradwohl/tasksmack/issues/1207)
@@ -234,7 +234,7 @@ None of this needs a redesign. The app's technical, information-dense character 
 | ID | Finding | Source | Scope | Issue |
 |---|---|---|---|---|
 | UI-024 | Interface Status lists 13 down or virtual adapters out of 17 | `NetworkSection.cpp` | Small | [#1211](https://github.com/mgradwohl/tasksmack/issues/1211) |
-| UI-025 | About credits only Inter; Font Awesome (CC BY 4.0) and Sixtyfour are missing; tagline repeats the name | `AboutLayer.cpp` | Tiny | [#1212](https://github.com/mgradwohl/tasksmack/issues/1212) |
+| UI-025 | About credits only Inter; Font Awesome (CC BY 4.0) and Sixtyfour are missing, and the installed `assets/fonts/LICENSE.txt` carries only Inter's notice although all three fonts ship; tagline repeats the name | `AboutLayer.cpp`, `assets/fonts/LICENSE.txt` | Tiny | [#1212](https://github.com/mgradwohl/tasksmack/issues/1212) |
 | UI-026 | Priority badge text and slider thumb contrast | `ProcessDetailsPanel.cpp` ~L2487–2522 | Tiny | existing [#1130](https://github.com/mgradwohl/tasksmack/issues/1130) (thumb added) |
 | UI-027 | Grid lines invisible (1.01:1 on Tokyo Night) | `Theme.cpp:491` | Small | part of [#1191](https://github.com/mgradwohl/tasksmack/issues/1191) |
 | UI-028 | Processes filter hint drawn in the "running" green | `ProcessesPanel.cpp:567` | Tiny | part of [#1196](https://github.com/mgradwohl/tasksmack/issues/1196) |
@@ -1042,17 +1042,18 @@ The table gives each theme's hue family for each semantic key. Bold marks the ou
   - Processes is dense, which is right, but noisy: on Windows, SHR and Status are all "-" and VIRT is about 2 TB everywhere (#1210).
   - Interface Status is dominated by down adapters (#1211).
 - **Responsive:**
-  - At 200×200 dp, controls overprint; at 900×700, tab labels truncate (#1207).
+  - At the minimum window size (the 200×200 dp base, widened only for the title bar), controls overprint; at 900×700, tab labels truncate (#1207).
   - OS-level maximize breaks layout (#1208).
 - **DPI and font combinations:**
 
 | Combination | Assessment | How assessed |
 |---|---|---|
-| 100 %/Small | body text 8 px, chart text smaller still: too small | reasoned |
+| 100 %/Small | body and chart text both 8 px (chart text can't go below Small): too small | reasoned |
 | 100 %/Medium | chart text ~8 px | reasoned |
-| 150 %/Normal | fine; chart text small | observed |
+| 150 %/Extra Large | fine; chart text one step smaller | observed |
+| 150 %/Large | chart text at the Medium size, about 16 px; fine | reasoned |
 | 175 %/Extra Large | tabs, NowBars and padding scale well; a 1366-wide window keeps a usable plot | observed |
-| 200 %/Normal | ImPlot plot/label padding and ticks deliberately unscaled (#1055) — fine | reasoned |
+| 200 %/Medium | ImPlot plot/label padding and ticks deliberately unscaled (#1055) — fine | reasoned |
 
   Line weights scale (#1055); 1 px borders stay hairlines by design.
 
@@ -1155,7 +1156,7 @@ The table gives each theme's hue family for each semantic key. Bold marks the ou
 | UI-022 | [#1210](https://github.com/mgradwohl/tasksmack/issues/1210) | Medium Impact | Small | N/A vs zero; unsupported columns; empty states |
 | UI-023 | [#977](https://github.com/mgradwohl/tasksmack/issues/977) (existing) | Medium Impact | Small–Medium | Icon vocabulary and spacing |
 | UI-024 | [#1211](https://github.com/mgradwohl/tasksmack/issues/1211) | Polish | Small | Hide down/virtual interfaces |
-| UI-025 | [#1212](https://github.com/mgradwohl/tasksmack/issues/1212) | Polish | Tiny | About credits (Font Awesome CC BY 4.0, Sixtyfour) |
+| UI-025 | [#1212](https://github.com/mgradwohl/tasksmack/issues/1212) | Polish | Tiny | About credits and bundled font licence notices (Font Awesome CC BY 4.0, Sixtyfour) |
 | UI-026 | [#1130](https://github.com/mgradwohl/tasksmack/issues/1130) (existing) | Polish | Tiny | Priority badge and slider thumb contrast |
 | UI-027–035 | see Polish Findings | Polish | Tiny–Small | Folded into the issues listed there |
 
