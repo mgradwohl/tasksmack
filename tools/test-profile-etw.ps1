@@ -60,11 +60,12 @@ try {
     # Compared with the token's own mandatory label as whoami reports it, not inferred from
     # administrator membership, so this holds for any account (e.g. LocalSystem is System).
     $own = Get-ProcessIntegrityLevel -ProcessId $PID
-    $label = (whoami /groups | Select-String 'Mandatory Label\\(\w+) Mandatory Level' | Select-Object -First 1)
-    Assert-True ($null -ne $label) 'whoami /groups reported no mandatory label'
-    $expected = switch ($label.Matches[0].Groups[1].Value) { 'Untrusted' { 'Untrusted' } 'Low' { 'Low' } 'Medium' { 'Medium' } 'High' { 'High' } 'System' { 'System' } default { "whoami:$_" } }
-    if ($label.Line -match 'Medium Plus') { $expected = 'MediumPlus' }
-    Assert-True ($own -eq $expected) "This process's integrity measured as '$own', whoami reports '$expected'"
+    # The label's SID (S-1-16-<RID>) is language-independent, unlike its display name, and covers
+    # every level including Medium Plus (0x2100).
+    $label = (whoami /groups | Select-String 'S-1-16-(\d+)' | Select-Object -First 1)
+    Assert-True ($null -ne $label) 'whoami /groups reported no mandatory label SID'
+    $expected = ConvertTo-IntegrityLevelName ([long]$label.Matches[0].Groups[1].Value)
+    Assert-True ($own -eq $expected) "This process's integrity measured as '$own', whoami reports '$expected' ($($label.Matches[0].Value))"
     Assert-True ((Get-ProcessIntegrityLevel -ProcessId 999999) -eq 'Unknown') 'A missing process must be Unknown'
     Assert-True ((ConvertTo-IntegrityLevelName 0x2000) -eq 'Medium' -and (ConvertTo-IntegrityLevelName 0x3000) -eq 'High') 'Well-known RIDs'
     Assert-True ((ConvertTo-IntegrityLevelName 0x2500) -eq '0x2500') 'An unknown RID must be shown as hex, not mislabelled'

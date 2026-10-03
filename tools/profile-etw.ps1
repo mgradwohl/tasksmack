@@ -453,7 +453,13 @@ if ($ElevatedTarget) {
 }
 else {
     $controlDir = Join-Path $perfDir "$prefix-control-$Timestamp"
-    New-Item -ItemType Directory -Path $controlDir -Force | Out-Null
+    # Never reuse one: a failed run leaves its directory behind, and its stale
+    # collector-started/stop-requested markers would let the target start before this run's WPR
+    # session does, or stop the collector at once. Same rule as the resize run directory.
+    if (Test-Path -LiteralPath $controlDir) {
+        throw "Capture control directory already exists: $controlDir. It is left by an earlier run with -Timestamp $Timestamp; pass a different -Timestamp, or delete the directory once that run is no longer needed."
+    }
+    New-Item -ItemType Directory -Path $controlDir | Out-Null
     $argList = $commonArgs + @('-Role', 'Collector', '-ControlDirectory', $controlDir)
     "LAUNCH=$hostExe $($argList -join ' ')" | Set-Content -Path $launcherLogPath -Encoding utf8
 
