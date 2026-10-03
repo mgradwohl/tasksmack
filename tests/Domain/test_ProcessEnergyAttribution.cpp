@@ -133,18 +133,34 @@ TEST(ProcessEnergyTest, FailedReadKeepsTotalsAndRestartsTheBaseline)
     EXPECT_EQ(sample[1].energyMicrojoules, 1'000U);
 }
 
+TEST(ProcessEnergyTest, NewlyStartedProcessesShareIsNotGivenToOthers)
+{
+    // An established process uses 10 ticks while a new one uses 90: the established one gets 10% of
+    // the interval's energy, not all of it (#1217 review).
+    Attributor attributor;
+    std::vector<Platform::ProcessCounters> first{process(1, 100)};
+    attributor.attribute(first, 0, 0);
+
+    std::vector<Platform::ProcessCounters> second{process(1, 110), process(2, 90)};
+    attributor.attribute(second, 1'000, 0);
+
+    EXPECT_EQ(second[0].energyMicrojoules, 100U);
+    EXPECT_EQ(second[1].energyMicrojoules, 0U); // first seen: not credited
+}
+
 TEST(ProcessEnergyTest, ReusedPidIsANewProcess)
 {
     Attributor attributor;
     std::vector<Platform::ProcessCounters> first{process(7, 100, 1), process(8, 100)};
     attributor.attribute(first, 0, 0);
 
-    // PID 7 now belongs to a different process (new start time): no credit on its first sample.
+    // PID 7 now belongs to a different process (new start time): it's a new process, so it gets no
+    // credit on its first sample, but its 900 ticks still count, leaving process 8 its 100 of 1,000.
     std::vector<Platform::ProcessCounters> second{process(7, 900, 2), process(8, 200)};
     attributor.attribute(second, 4'000, 0);
 
     EXPECT_EQ(second[0].energyMicrojoules, 0U);
-    EXPECT_EQ(second[1].energyMicrojoules, 4'000U);
+    EXPECT_EQ(second[1].energyMicrojoules, 400U);
 }
 
 } // namespace

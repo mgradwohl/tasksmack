@@ -53,7 +53,8 @@ class Attributor
     /// across a failed read spans more than one interval, and crediting it on the next interval's
     /// CPU shares would spike whoever happened to be busy then.
     /// A process seen for the first time is credited nothing (its CPU time so far may predate the
-    /// interval); processes that have exited are forgotten.
+    /// interval) but its CPU time still counts toward the interval's total, so its share is left
+    /// unattributed rather than given to the others; processes that have exited are forgotten.
     void attribute(std::span<Platform::ProcessCounters> processes, std::optional<std::uint64_t> systemEnergyUj, std::uint64_t maxRangeUj)
     {
         const std::uint64_t intervalEnergyUj = (systemEnergyUj.has_value() && m_PreviousSystemEnergyUj.has_value())
@@ -66,7 +67,15 @@ class Attributor
         {
             const auto it = m_State.find(keyOf(processes[i]));
             const std::uint64_t cpuTime = processes[i].userTime + processes[i].systemTime;
-            if (it != m_State.end() && cpuTime >= it->second.cpuTime)
+            if (it == m_State.end())
+            {
+                // First seen: it isn't credited (its CPU time may predate the interval), but its CPU
+                // time still counts in the denominator, so its share isn't handed to the processes
+                // already known, which spiked whenever a busy process started (#1217 review). For a
+                // newly started process all of it is this interval's. The share is left unattributed.
+                totalCpuDelta += cpuTime;
+            }
+            else if (cpuTime >= it->second.cpuTime)
             {
                 m_CpuDeltas[i] = cpuTime - it->second.cpuTime;
                 totalCpuDelta += m_CpuDeltas[i];
