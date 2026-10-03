@@ -20,6 +20,10 @@
 #include <vector>
 
 #ifndef _WIN32
+#include <csignal>
+
+#include <sys/resource.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -1231,6 +1235,46 @@ TEST_F(UserConfigSaveLoadFixture, SaveLeavesNoTemporaryFileBehind)
 }
 
 #ifndef _WIN32
+TEST_F(UserConfigSaveLoadFixture, FailedWriteLeavesTheOriginalIntactAndALaterSaveSucceeds)
+{
+    // The data-loss path the atomic replace exists for: writing the new file fails partway. The
+    // original must stay byte-for-byte, the temporary file must go, and the change must still be
+    // saved by the next successful save (#1222 review).
+    const auto path = UserConfig::get().configPath();
+    const std::string original = "[theme]\nid = \"arctic-fire\"\n";
+    writeFile(path, original);
+    auto& config = UserConfig::get();
+    config.load();
+    config.settings().themeId = "mocha";
+
+    // Save in a child whose file-size limit is far below the new file's size, so the write fails
+    // with EFBIG once the buffer is flushed (SIGXFSZ ignored so it is an error, not a kill).
+    const pid_t child = fork();
+    ASSERT_GE(child, 0);
+    if (child == 0)
+    {
+        std::signal(SIGXFSZ, SIG_IGN);
+        constexpr rlim_t TOO_SMALL = 64;
+        const rlimit limit{.rlim_cur = TOO_SMALL, .rlim_max = TOO_SMALL};
+        setrlimit(RLIMIT_FSIZE, &limit);
+        UserConfig::get().save();
+        _exit(0);
+    }
+    int status = 0;
+    ASSERT_EQ(waitpid(child, &status, 0), child);
+    ASSERT_TRUE(WIFEXITED(status));
+
+    std::ifstream in(path, std::ios::binary);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(in), {}), original);
+    for (const auto& entry : std::filesystem::directory_iterator(m_TempDir))
+    {
+        EXPECT_NE(entry.path().extension(), ".tmp") << entry.path();
+    }
+
+    config.save();
+    EXPECT_EQ(parsed(path)["theme"]["id"].value<std::string>(), "mocha");
+}
+
 TEST_F(UserConfigSaveLoadFixture, SymlinkedConfigKeepsItsLinkAndUpdatesItsTarget)
 {
     // A dotfiles-managed config is often a symlink: saving must write through it (#1222 review).
