@@ -321,11 +321,12 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasNice = true,       // From /proc/[pid]/stat
                                .hasPageFaults = true, // From /proc/[pid]/stat (minflt + majflt)
                                .hasPeakRss = false,
-                               .hasCpuAffinity = true,                     // From sched_getaffinity
-                               .hasNetworkCounters = hasNetworkCounters,   // From Netlink INET_DIAG (if available)
-                               .hasPowerUsage = m_HasPowerCap,             // Available if RAPL is detected
-                               .hasStatus = true,                          // From cgroup freezer state
-                               .hasReducedPrivileges = reducedPrivileges}; // Non-root: incomplete FD/IO data
+                               .hasCpuAffinity = true,                    // From sched_getaffinity
+                               .hasNetworkCounters = hasNetworkCounters,  // From Netlink INET_DIAG (if available)
+                               .hasPowerUsage = m_HasPowerCap,            // Available if RAPL is detected
+                               .hasStatus = true,                         // From cgroup freezer state
+                               .hasReducedPrivileges = reducedPrivileges, // Non-root: incomplete FD/IO data
+                               .hasSharedMemory = true};                  // From /proc/[pid]/statm
 }
 
 uint64_t LinuxProcessProbe::totalCpuTime() const

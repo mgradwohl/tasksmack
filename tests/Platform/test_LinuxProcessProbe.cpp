@@ -72,6 +72,9 @@ TEST(LinuxProcessProbeTest, CapabilitiesReportedCorrectly)
     EXPECT_TRUE(caps.hasUserSystemTime);
     EXPECT_TRUE(caps.hasStartTime);
     EXPECT_TRUE(caps.hasThreadCount);
+    // Shared memory comes from /proc/[pid]/statm; the process details chart draws it only when
+    // this is set (#1035).
+    EXPECT_TRUE(caps.hasSharedMemory);
 }
 
 TEST(LinuxProcessProbeTest, ReducedPrivilegesMatchesEuid)

@@ -664,17 +664,8 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
 
 } // namespace
 
-WindowsProcessProbe::WindowsProcessProbe() : m_HasPowerMonitoring(detectPowerMonitoring())
+WindowsProcessProbe::WindowsProcessProbe()
 {
-    if (m_HasPowerMonitoring)
-    {
-        spdlog::info("Power monitoring available on Windows");
-    }
-    else
-    {
-        spdlog::debug("Power monitoring not available on Windows");
-    }
-
     m_HasNetworkCounters = detectNetworkCounters();
     if (m_HasNetworkCounters)
     {
@@ -833,12 +824,6 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
 
     std::erase_if(m_DetailCache,
                   [generation = m_DetailCacheGeneration](const auto& entry) { return entry.second.generation != generation; });
-
-    // Attribute energy to processes if power monitoring is available
-    if (m_HasPowerMonitoring)
-    {
-        attributeEnergyToProcesses(results);
-    }
 
     // Attach per-process network counters if available (best effort)
     applyNetworkCounters(results);
@@ -1081,11 +1066,14 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         // Network counters: Requires ETW (Event Tracing for Windows) or GetPerTcpConnectionEStats
         // See GitHub issue for implementation tracking
         .hasNetworkCounters = m_HasNetworkCounters,
-        .hasPowerUsage = m_HasPowerMonitoring, // Available if energy monitoring detected
-        .hasStatus = true,                     // From NtQueryInformationProcess ProcessExtendedBasicInformation
-        .hasPublisher = true,                  // From GetFileVersionInfo on process image path
-        .hasProcessType = true,                // Classified from path + GetGuiResources
-        .hasGdiObjects = true,                 // From GetGuiResources(GR_GDIOBJECTS)
+        // Not measured on Windows. A fabricated figure (a fixed 1 J per sample shared out by CPU
+        // time) used to stand in for it, which read ~2 W regardless of load and depended only on
+        // the refresh rate (#1028). Real per-process energy needs the EMI energy meters or ETW.
+        .hasPowerUsage = false,
+        .hasStatus = true,      // From NtQueryInformationProcess ProcessExtendedBasicInformation
+        .hasPublisher = true,   // From GetFileVersionInfo on process image path
+        .hasProcessType = true, // Classified from path + GetGuiResources
+        .hasGdiObjects = true,  // From GetGuiResources(GR_GDIOBJECTS)
         .hasReducedPrivileges =
             reducedPrivileges &&
             m_NetworkCountersAccessDenied, // Non-admin + EStats access-denied: network data unavailable due to privilege
@@ -1133,23 +1121,6 @@ uint64_t WindowsProcessProbe::systemTotalMemory() const
     return 0;
 }
 
-bool WindowsProcessProbe::detectPowerMonitoring()
-{
-    // On Windows, we use a simplified approach: check if we can read battery status
-    // This provides a basic system-wide energy estimate via battery discharge rate
-    // More sophisticated approaches would use PDH (Performance Data Helper) or EMI (Energy Metering Interface)
-
-    SYSTEM_POWER_STATUS powerStatus{};
-    if (GetSystemPowerStatus(&powerStatus) == 0)
-    {
-        return false;
-    }
-
-    // Power monitoring available if we have battery info or AC power with metrics
-    // ACLineStatus: 0 = offline (battery), 1 = online (AC), 255 = unknown
-    return powerStatus.ACLineStatus != 255;
-}
-
 void WindowsProcessProbe::calculateDetailTTLsFromTotalRAM(std::chrono::milliseconds& lightTTL, std::chrono::milliseconds& heavyTTL) noexcept
 {
     // Query total physical RAM and delegate the tier decision to the pure helper in
@@ -1169,73 +1140,6 @@ void WindowsProcessProbe::calculateDetailTTLsFromTotalRAM(std::chrono::milliseco
     const auto ttls = calculateDetailTTLsFromTotalRAMBytes(memStatus.ullTotalPhys);
     lightTTL = ttls.light;
     heavyTTL = ttls.heavy;
-}
-
-uint64_t WindowsProcessProbe::readSystemEnergy() const
-{
-    // Windows doesn't provide direct energy counters like Linux RAPL
-    // This is a simplified implementation using battery discharge estimation
-    // For production, consider using:
-    // - PDH (Performance Data Helper) counters for power
-    // - EMI (Energy Metering Interface) if available
-    // - WMI queries for battery metrics
-
-    SYSTEM_POWER_STATUS powerStatus{};
-    if (GetSystemPowerStatus(&powerStatus) == 0)
-    {
-        return 0;
-    }
-
-    // Estimate energy based on battery percentage and system state
-    // This is a rough approximation - actual implementation would need more sophisticated tracking
-    // Battery life percent: 0-100, 255 = unknown
-    if (powerStatus.BatteryLifePercent > 100)
-    {
-        return 0;
-    }
-
-    // Use a synthetic energy value based on battery state
-    // In a real implementation, this would integrate battery discharge rate over time
-    // For now, return a cumulative-like value that changes with battery state
-
-    // Increment synthetic energy counter (this simulates cumulative energy consumption)
-    // In production, this would read actual hardware counters or integrate power over time
-    // fetch_add returns the value *before* the increment; add the increment to get the new total.
-    const uint64_t newEnergy = m_SyntheticEnergy.fetch_add(1000000, std::memory_order_relaxed) + 1000000;
-
-    return newEnergy;
-}
-
-void WindowsProcessProbe::attributeEnergyToProcesses(std::vector<ProcessCounters>& processes) const
-{
-    // Read current system-wide energy
-    const uint64_t systemEnergy = readSystemEnergy();
-    if (systemEnergy == 0)
-    {
-        return;
-    }
-
-    // Calculate total CPU time across all processes
-    uint64_t totalProcessCpuTime = 0;
-    for (const auto& proc : processes)
-    {
-        totalProcessCpuTime += (proc.userTime + proc.systemTime);
-    }
-
-    // Avoid division by zero
-    if (totalProcessCpuTime == 0)
-    {
-        return;
-    }
-
-    // Attribute energy proportionally based on CPU usage
-    // This is an approximation: energy per process = systemEnergy * (processCpuTime / totalCpuTime)
-    for (auto& proc : processes)
-    {
-        const uint64_t processCpuTime = proc.userTime + proc.systemTime;
-        const double cpuProportion = static_cast<double>(processCpuTime) / static_cast<double>(totalProcessCpuTime);
-        proc.energyMicrojoules = static_cast<uint64_t>(static_cast<double>(systemEnergy) * cpuProportion);
-    }
 }
 
 bool WindowsProcessProbe::detectNetworkCounters()

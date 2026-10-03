@@ -23,7 +23,8 @@ namespace Platform
 WindowsGPUProbe::WindowsGPUProbe()
     : m_DXGIProbe(std::make_unique<DXGIGPUProbe>()),
       m_NVMLProbe(std::make_unique<NVMLGPUProbe>()),
-      m_PDHProbe(std::make_unique<PDHGPUProbe>())
+      m_PDHProbe(std::make_unique<PDHGPUProbe>()),
+      m_PDHAdapterProbe(std::make_unique<PDHGPUProbe>())
 {
     std::string probeSummary = "DXGI";
     if (m_NVMLProbe->isAvailable())
@@ -173,28 +174,26 @@ void WindowsGPUProbe::mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiC
 {
     // Skip if no PDH, or if all GPUs already have utilization data from NVML
     // (0% at idle is a valid NVML reading, not a sentinel).
-    if (!m_PDHProbe || !m_PDHProbe->isAvailable())
+    if (!m_PDHAdapterProbe || !m_PDHAdapterProbe->isAvailable())
     {
         return;
     }
+
+    // Collect on this sampler's own query every sample, even when NVML covers every GPU and the
+    // result is not used: PDH rates are computed between consecutive collects, so a query left
+    // idle would make its first use after an NVML gap a warm-up with no data, and the next one
+    // span however long the gap was.
+    static_cast<void>(m_PDHAdapterProbe->readProcessGPUCounters());
     if (allGPUsHaveNVMLUtilization(dxgiCounters, nvmlSourcedIds))
     {
         return;
     }
 
-    // Read per-process GPU data from PDH
-    auto processCounters = m_PDHProbe->readProcessGPUCounters();
-    if (processCounters.empty())
-    {
-        return;
-    }
-
-    // Sum utilization per GPU LUID.
-    // PDH ProcessGPUCounters::gpuId is "GPU_0x{HighPart}_0x{LowPart}" — the same
-    // format as GPUInfo::luidId from DXGI. Group process contributions per GPU so
-    // we assign the correct utilization to each physical adapter instead of the
-    // system-wide sum to every adapter (which inflated multi-GPU readings).
-    const auto utilizationByLuid = sumProcessUtilizationByGPUId(processCounters);
+    // The per-adapter figure from that collect: per engine the sum over processes, then the
+    // busiest engine (Task Manager's definition), keyed by "GPU_0x{HighPart}_0x{LowPart}" -- the
+    // same format as GPUInfo::luidId from DXGI. Summing process totals instead counted parallel
+    // engines as if they were serial (#1033).
+    const auto utilizationByLuid = m_PDHAdapterProbe->adapterUtilization();
     if (utilizationByLuid.empty())
     {
         return;

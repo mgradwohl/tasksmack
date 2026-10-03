@@ -138,6 +138,10 @@ class ProcessesPanel : public Panel
     /// Convenience accessor so ShellLayer does not need to include Domain/ProcessModel.h.
     [[nodiscard]] bool hasReducedPrivileges() const;
 
+    /// What the process probe can report (all false without a model). Fixed for the probe's
+    /// lifetime, so safe to read from the UI thread at any time.
+    [[nodiscard]] Platform::ProcessCapabilities processCapabilities() const;
+
   private:
     // shared_ptr (not unique_ptr): BackgroundSampler observes this model via a weak_ptr rather
     // than a raw pointer, so the sampler thread can never outlive-dereference it regardless of
