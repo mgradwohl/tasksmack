@@ -84,6 +84,27 @@ void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap
     smoothed.memoryPercent = initializeOrSmooth(smoothed.memoryPercent, snap.memoryUsedPercent, alpha, initialized);
     smoothed.temperatureC = initializeOrSmooth(smoothed.temperatureC, static_cast<double>(snap.temperatureC), alpha, initialized);
     smoothed.powerWatts = initializeOrSmooth(smoothed.powerWatts, snap.powerDrawWatts, alpha, initialized);
+    smoothed.encoderPercent = initializeOrSmooth(smoothed.encoderPercent, snap.encoderUtilPercent, alpha, initialized);
+    smoothed.decoderPercent = initializeOrSmooth(smoothed.decoderPercent, snap.decoderUtilPercent, alpha, initialized);
+    if (snap.gpuClockMHz > 0)
+    {
+        smoothed.clockMHz = initializeOrSmooth(smoothed.clockMHz, static_cast<double>(snap.gpuClockMHz), alpha, smoothed.clockInitialized);
+        smoothed.clockInitialized = true;
+    }
+    else
+    {
+        smoothed.clockInitialized = false;
+    }
+    if (snap.fanSpeedAvailable)
+    {
+        smoothed.fanPercent =
+            initializeOrSmooth(smoothed.fanPercent, static_cast<double>(snap.fanSpeedPercent), alpha, smoothed.fanInitialized);
+        smoothed.fanInitialized = true;
+    }
+    else
+    {
+        smoothed.fanInitialized = false;
+    }
     smoothed.initialized = true;
 }
 
@@ -433,11 +454,11 @@ void renderGpuSection(RenderContext& ctx)
         // shows N/A instead of removing the bar and shifting every bar after it (#995).
         if (caps.hasClockSpeeds)
         {
-            const double clockPercent = (static_cast<double>(snap.gpuClockMHz) / static_cast<double>(maxClockMHz)) * 100.0;
-            gpuCoreBars.push_back(snap.gpuClockMHz > 0 ? NowBar{.valueText = std::format("{} MHz", snap.gpuClockMHz),
+            const double clockPercent = (smoothed.clockMHz / static_cast<double>(maxClockMHz)) * 100.0;
+            gpuCoreBars.push_back(snap.gpuClockMHz > 0 ? NowBar{.valueText = std::format("{:.0f} MHz", smoothed.clockMHz),
                                                                 .label = "GPU Clock",
-                                                                .tooltipText = std::format("GPU Clock: {} MHz ({} of {:.0f} MHz)",
-                                                                                           snap.gpuClockMHz,
+                                                                .tooltipText = std::format("GPU Clock: {:.0f} MHz ({} of {:.0f} MHz)",
+                                                                                           smoothed.clockMHz,
                                                                                            UI::Format::percentCompact(clockPercent),
                                                                                            static_cast<double>(maxClockMHz)),
                                                                 .value01 = UI::Format::percent01(clockPercent),
@@ -450,15 +471,15 @@ void renderGpuSection(RenderContext& ctx)
         }
         if (caps.hasEncoderDecoder)
         {
-            gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(snap.encoderUtilPercent),
+            gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.encoderPercent),
                                    .label = "Encoder",
                                    .tooltipText = {},
-                                   .value01 = UI::Format::percent01(snap.encoderUtilPercent),
+                                   .value01 = UI::Format::percent01(smoothed.encoderPercent),
                                    .color = theme.scheme().gpuEncoder});
-            gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(snap.decoderUtilPercent),
+            gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.decoderPercent),
                                    .label = "Decoder",
                                    .tooltipText = {},
-                                   .value01 = UI::Format::percent01(snap.decoderUtilPercent),
+                                   .value01 = UI::Format::percent01(smoothed.decoderPercent),
                                    .color = theme.scheme().gpuDecoder});
         }
 
@@ -490,17 +511,16 @@ void renderGpuSection(RenderContext& ctx)
         // failed to read the sensor (see fanSpeedAvailable's comment in GPUSnapshot.h).
         if (caps.hasFanSpeed)
         {
-            gpuThermalBars.push_back(snap.fanSpeedAvailable
-                                         ? NowBar{.valueText = std::format("{}%", snap.fanSpeedPercent),
-                                                  .label = "GPU Fan Speed",
-                                                  .tooltipText = {},
-                                                  .value01 = UI::Format::percent01(static_cast<double>(snap.fanSpeedPercent)),
-                                                  .color = theme.scheme().gpuFan}
-                                         : NowBar{.valueText = "N/A",
-                                                  .label = "GPU Fan Speed",
-                                                  .tooltipText = "GPU Fan Speed: unavailable this sample",
-                                                  .value01 = 0.0,
-                                                  .color = theme.scheme().textMuted});
+            gpuThermalBars.push_back(snap.fanSpeedAvailable ? NowBar{.valueText = std::format("{:.0f}%", smoothed.fanPercent),
+                                                                     .label = "GPU Fan Speed",
+                                                                     .tooltipText = {},
+                                                                     .value01 = UI::Format::percent01(smoothed.fanPercent),
+                                                                     .color = theme.scheme().gpuFan}
+                                                            : NowBar{.valueText = "N/A",
+                                                                     .label = "GPU Fan Speed",
+                                                                     .tooltipText = "GPU Fan Speed: unavailable this sample",
+                                                                     .value01 = 0.0,
+                                                                     .color = theme.scheme().textMuted});
         }
 
         // Use max bar count across both charts for x-axis alignment

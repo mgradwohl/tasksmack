@@ -195,6 +195,10 @@ class ProcessDetailsPanel : public Panel
         double gpuUtilPercent = 0.0;
         double gpuMemoryBytes = 0.0;
         double gdiObjectCount = 0.0;
+        // Memory bars, as percents of system RAM like the Memory chart
+        double memoryUsedPercent = 0.0;
+        double memorySharedPercent = 0.0;
+        double memoryVirtualPercent = 0.0;
         bool initialized = false;
     } m_SmoothedUsage;
 

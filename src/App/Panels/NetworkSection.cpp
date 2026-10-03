@@ -72,6 +72,7 @@ void renderDiskIOSection(RenderContext& ctx)
         .smoothedReadBytesPerSec = ctx.smoothedDiskReadBytesPerSec,
         .smoothedWriteBytesPerSec = ctx.smoothedDiskWriteBytesPerSec,
         .smoothedInitialized = ctx.smoothedDiskInitialized,
+        .smoothedPerDisk = ctx.smoothedPerDisk,
         .fill = ctx.fill,
     };
     StorageSection::renderStorageSection(storageCtx);
@@ -255,15 +256,15 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     const double smoothedSent = ctx.smoothedNetSentBytesPerSec != nullptr ? *ctx.smoothedNetSentBytesPerSec : targetSent;
     const double smoothedRecv = ctx.smoothedNetRecvBytesPerSec != nullptr ? *ctx.smoothedNetRecvBytesPerSec : targetRecv;
 
-    // Calculate max across all data for consistent Y axis
-    double netMax = std::max({sentData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(sentData)),
-                              recvData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(recvData)),
-                              smoothedSent,
-                              smoothedRecv,
-                              1.0});
-    // maxOfSeries, not max_element: a per-interface series holds NaN for samples where the
-    // interface was absent (#1015), and max_element's answer depends on where a NaN sits.
-    netMax = std::max(netMax, UI::Widgets::maxOfSeries(ifaceSentData, ifaceRecvData));
+    // One upper bound for the chart's Y axis and its bars, so a bar and its line show a value at the
+    // same height (#1003). It covers every series drawn on this axis, not just the totals: a
+    // selected interface is plotted here too, and total vs per-interface rates are derived
+    // independently, so the interface rate can exceed the total's. The interface vectors are empty
+    // when none is selected, and hold NaN where the interface was absent; maxOfSeries() ignores both.
+    const double netAxisUpper =
+        UI::Widgets::easedRateAxisUpperBound("##SystemNetHistory",
+                                             UI::Widgets::maxOfSeries(sentData, recvData, ifaceSentData, ifaceRecvData),
+                                             UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
 
     // Determine labels based on selection
     // Name the interface the way the picker above does (#1009).
@@ -274,12 +275,12 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     const NowBar sentBar{.valueText = UI::Format::formatBytesPerSec(smoothedSent),
                          .label = sentBarLabel,
                          .tooltipText = {},
-                         .value01 = std::clamp(smoothedSent / netMax, 0.0, 1.0),
+                         .value01 = UI::Widgets::normalizeToUnitInterval(smoothedSent, netAxisUpper),
                          .color = theme.scheme().chartNetTx};
     const NowBar recvBar{.valueText = UI::Format::formatBytesPerSec(smoothedRecv),
                          .label = recvBarLabel,
                          .tooltipText = {},
-                         .value01 = std::clamp(smoothedRecv / netMax, 0.0, 1.0),
+                         .value01 = UI::Widgets::normalizeToUnitInterval(smoothedRecv, netAxisUpper),
                          .color = theme.scheme().chartNetRx};
 
     // Determine plot title based on selection
@@ -305,18 +306,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     auto plot = [&]()
     {
         const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
-            UI::Widgets::rateHistoryConfig("##SystemNetHistory",
-                                           axis.xMin,
-                                           axis.xMax,
-                                           formatAxisBytesPerSec,
-                                           // Every series drawn on this axis, not just the
-                                           // totals: a selected interface is plotted here too,
-                                           // and total vs per-interface rates are derived
-                                           // independently, so the interface rate can exceed
-                                           // the total's. The interface vectors are empty when
-                                           // none is selected; maxOfSeries() ignores those.
-                                           UI::Widgets::maxOfSeries(sentData, recvData, ifaceSentData, ifaceRecvData),
-                                           UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC),
+            UI::Widgets::rateHistoryConfigWithUpper("##SystemNetHistory", axis.xMin, axis.xMax, formatAxisBytesPerSec, netAxisUpper),
             plotHeight));
         if (chart.active())
         {

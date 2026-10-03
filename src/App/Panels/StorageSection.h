@@ -4,9 +4,20 @@
 #include "UI/FillPlotLayout.h"
 
 #include <chrono>
+#include <string>
+#include <unordered_map>
 
 namespace App::StorageSection
 {
+
+/// Smoothed NowBar values for one disk in the per-disk grid, so its bars ease like every other
+/// NowBar instead of stepping to each new sample (#1012).
+struct SmoothedDiskRates
+{
+    double readBytesPerSec = 0.0;
+    double writeBytesPerSec = 0.0;
+    bool initialized = false;
+};
 
 /// Context struct containing all state needed to render the storage/disk I/O section.
 /// This allows the render function to be extracted from NetworkSection
@@ -28,6 +39,9 @@ struct RenderContext
     double* smoothedReadBytesPerSec = nullptr;
     double* smoothedWriteBytesPerSec = nullptr;
     bool* smoothedInitialized = nullptr;
+
+    // Per-disk smoothed NowBar values, keyed by device name. Null: the per-disk bars show raw values.
+    std::unordered_map<std::string, SmoothedDiskRates>* smoothedPerDisk = nullptr;
 
     // The tab's shared chart height (#959). Used by the single-disk chart; the per-disk grid takes
     // whatever height is left instead. Null keeps the fixed default height.

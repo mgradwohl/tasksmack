@@ -86,16 +86,12 @@ void renderDiskCell(const std::string& deviceName,
                     float cellHeight,
                     std::optional<float>& cachedOverhead)
 {
-    // A per-disk series holds NaN for samples where the disk was absent, and currentRead/Write are
-    // NaN when it is absent from the latest sample (#1015). maxOfSeries, not max_element, whose
-    // answer depends on where a NaN sits; and the bars show N/A rather than a false 0 B/s, as the
-    // GPU fan bar does for an unreadable sample.
-    const auto finiteOrZero = [](double value)
-    {
-        return std::isfinite(value) ? value : 0.0;
-    };
-    const double diskMax =
-        std::max({UI::Widgets::maxOfSeries(readData, writeData), finiteOrZero(currentRead), finiteOrZero(currentWrite), 1.0});
+    // One upper bound for the chart's Y axis and its bars, so a bar and its line show a value at the
+    // same height (#1003). A per-disk series holds NaN for samples where the disk was absent, and
+    // currentRead/Write are NaN when it is absent from the latest sample (#1015): maxOfSeries skips
+    // them, and the bars show N/A rather than a false 0 B/s, as the GPU fan bar does.
+    const double diskAxisUpper = UI::Widgets::easedRateAxisUpperBound(
+        "##DiskAxis", UI::Widgets::maxOfSeries(readData, writeData), UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
 
     const auto makeBar = [&](const char* label, double current, const ImVec4& color)
     {
@@ -110,7 +106,7 @@ void renderDiskCell(const std::string& deviceName,
         return NowBar{.valueText = UI::Format::formatBytesPerSec(current),
                       .label = label,
                       .tooltipText = {},
-                      .value01 = normalizeToUnitInterval(current, diskMax),
+                      .value01 = normalizeToUnitInterval(current, diskAxisUpper),
                       .color = color};
     };
     const NowBar readBar = makeBar("Read", currentRead, theme.scheme().chartIo);
@@ -138,12 +134,8 @@ void renderDiskCell(const std::string& deviceName,
         // this. ImPlotFlags_NoTitle keeps the plot title hidden (deviceName has no "##" prefix to
         // hide it via ImPlot's usual Label##ID convention) without needing to allocate a new
         // string just to add one (#823 review).
-        auto diskCfg = UI::Widgets::rateHistoryConfig(deviceName.c_str(),
-                                                      axisConfig.xMin,
-                                                      axisConfig.xMax,
-                                                      formatAxisBytesPerSec,
-                                                      UI::Widgets::maxOfSeries(readData, writeData),
-                                                      UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
+        auto diskCfg = UI::Widgets::rateHistoryConfigWithUpper(
+            deviceName.c_str(), axisConfig.xMin, axisConfig.xMax, formatAxisBytesPerSec, diskAxisUpper);
         diskCfg.flags |= ImPlotFlags_NoTitle;
         diskCfg.height = plotHeight;
         const UI::Widgets::HistoryChart chart(diskCfg);
@@ -257,6 +249,15 @@ void renderStorageSection(RenderContext& ctx)
             theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  Disk I/O by Device (%zu disks, %zu samples)", diskCount, historySize);
 
         // Pre-build device name → snapshot lookup to avoid O(n²) linear scans in the cell loop.
+        const double diskAlpha = computeAlpha(ctx.lastDeltaSeconds, ctx.refreshInterval);
+        if (ctx.smoothedPerDisk != nullptr)
+        {
+            // Forget disks no longer listed (unplugged and pruned from the history), so the map
+            // stays the size of the grid.
+            std::erase_if(*ctx.smoothedPerDisk,
+                          [&](const auto& entry)
+                          { return std::ranges::none_of(perDisk, [&](const auto& disk) { return disk.deviceName == entry.first; }); });
+        }
         std::unordered_map<std::string, const Domain::DiskSnapshot*> diskLookup;
         diskLookup.reserve(diskSnap.disks.size());
         for (const auto& d : diskSnap.disks)
@@ -358,6 +359,24 @@ void renderStorageSection(RenderContext& ctx)
                     diskRead = it->second->readBytesPerSec;
                     diskWrite = it->second->writeBytesPerSec;
                 }
+                if (ctx.smoothedPerDisk != nullptr)
+                {
+                    auto& smoothed = (*ctx.smoothedPerDisk)[disk.deviceName];
+                    if (std::isfinite(diskRead) && std::isfinite(diskWrite))
+                    {
+                        smoothed.readBytesPerSec = initializeOrSmooth(smoothed.readBytesPerSec, diskRead, diskAlpha, smoothed.initialized);
+                        smoothed.writeBytesPerSec =
+                            initializeOrSmooth(smoothed.writeBytesPerSec, diskWrite, diskAlpha, smoothed.initialized);
+                        smoothed.initialized = true;
+                        diskRead = smoothed.readBytesPerSec;
+                        diskWrite = smoothed.writeBytesPerSec;
+                    }
+                    else
+                    {
+                        // Absent this sample: the bars show N/A, and start afresh when the disk returns.
+                        smoothed.initialized = false;
+                    }
+                }
 
                 const std::vector<double> cellTimes(diskTimes.end() - static_cast<std::ptrdiff_t>(alignedCount), diskTimes.end());
                 renderDiskCell(
@@ -388,22 +407,19 @@ void renderStorageSection(RenderContext& ctx)
             writeData.push_back(static_cast<float>(writeTail[i]));
         }
 
-        // Calculate max across all data for consistent Y axis
-        const double diskMax = std::max({readData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(readData)),
-                                         writeData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(writeData)),
-                                         smoothedRead,
-                                         smoothedWrite,
-                                         1.0});
+        // One upper bound for the chart's Y axis and its bars (#1003).
+        const double diskAxisUpper = UI::Widgets::easedRateAxisUpperBound(
+            "##SystemDiskHistory", UI::Widgets::maxOfSeries(readData, writeData), UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
 
         const NowBar readBar{.valueText = UI::Format::formatBytesPerSec(smoothedRead),
                              .label = "Disk Read",
                              .tooltipText = {},
-                             .value01 = std::clamp(smoothedRead / diskMax, 0.0, 1.0),
+                             .value01 = normalizeToUnitInterval(smoothedRead, diskAxisUpper),
                              .color = theme.scheme().chartIo};
         const NowBar writeBar{.valueText = UI::Format::formatBytesPerSec(smoothedWrite),
                               .label = "Disk Write",
                               .tooltipText = {},
-                              .value01 = std::clamp(smoothedWrite / diskMax, 0.0, 1.0),
+                              .value01 = normalizeToUnitInterval(smoothedWrite, diskAxisUpper),
                               .color = theme.scheme().chartIoWrite};
 
         // Shares the tab's height with the network chart above it (#959).
@@ -411,12 +427,8 @@ void renderStorageSection(RenderContext& ctx)
         auto diskPlot = [&]()
         {
             const UI::Widgets::HistoryChart chart(
-                UI::Widgets::withHeight(UI::Widgets::rateHistoryConfig("##SystemDiskHistory",
-                                                                       diskAxis.xMin,
-                                                                       diskAxis.xMax,
-                                                                       formatAxisBytesPerSec,
-                                                                       UI::Widgets::maxOfSeries(readData, writeData),
-                                                                       UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC),
+                UI::Widgets::withHeight(UI::Widgets::rateHistoryConfigWithUpper(
+                                            "##SystemDiskHistory", diskAxis.xMin, diskAxis.xMax, formatAxisBytesPerSec, diskAxisUpper),
                                         plotHeight));
             if (chart.active())
             {

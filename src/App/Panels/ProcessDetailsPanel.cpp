@@ -81,10 +81,30 @@ template<typename T> [[nodiscard]] auto tailVector(const std::deque<T>& data, st
     return out;
 }
 
-// Use public seriesMax from ChartWidgets
-using UI::Widgets::seriesMax;
-
 // ImPlot series counts are int; keep conversion explicit + checked.
+
+/// Percent of system RAM per byte for this process's memory figures, from its own resident size and
+/// resident percent (memoryPercent = memoryBytes / totalSystemMemoryBytes * 100). 0 when either is
+/// zero, so every percent derived from it is 0 rather than a division by zero.
+[[nodiscard]] double memoryPercentPerByte(const Domain::ProcessSnapshot& snapshot)
+{
+    const double usedPercent = std::clamp(snapshot.memoryPercent, 0.0, 100.0);
+    if (usedPercent <= 0.0 || snapshot.memoryBytes == 0)
+    {
+        return 0.0;
+    }
+    return usedPercent / Domain::Numeric::toDouble(snapshot.memoryBytes);
+}
+
+/// `bytes` as a percent of system RAM, using memoryPercentPerByte().
+[[nodiscard]] double memoryBytesToPercent(std::uint64_t bytes, double percentPerByte)
+{
+    if (percentPerByte <= 0.0)
+    {
+        return 0.0;
+    }
+    return std::clamp(Domain::Numeric::toDouble(bytes) * percentPerByte, 0.0, 100.0);
+}
 
 } // namespace
 
@@ -174,21 +194,10 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
 
             // Use the process RSS percent as a scale factor to express other metrics as percents for consistent charting.
             const double usedPercent = std::clamp(snapshot->memoryPercent, 0.0, 100.0);
-            double scale = 0.0;
-            if (usedPercent > 0.0 && snapshot->memoryBytes > 0)
+            const double percentPerByte = memoryPercentPerByte(*snapshot);
+            auto toPercent = [percentPerByte](std::uint64_t bytes) -> double
             {
-                // memoryPercent = (memoryBytes / totalSystemMemoryBytes) * 100
-                // => X% of system = X * (memoryPercent / memoryBytes)
-                scale = usedPercent / Domain::Numeric::toDouble(snapshot->memoryBytes);
-            }
-
-            auto toPercent = [scale](std::uint64_t bytes) -> double
-            {
-                if (scale <= 0.0)
-                {
-                    return 0.0;
-                }
-                return std::clamp(Domain::Numeric::toDouble(bytes) * scale, 0.0, 100.0);
+                return memoryBytesToPercent(bytes, percentPerByte);
             };
 
             m_MemoryHistory.push_back(usedPercent);
@@ -505,6 +514,11 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
     // neutral baseline rather than tracking stale data. The history chart uses NaN for
     // nullopt samples instead, so the two representations serve different purposes.
     const double targetGdiObjects = std::max(0.0, Domain::Numeric::toDouble(snapshot.gdiObjectCount.value_or(0)));
+    // The Memory bars' percents, on the same RAM scale as the Memory chart's history.
+    const double percentPerByte = memoryPercentPerByte(snapshot);
+    const double targetMemUsedPercent = std::clamp(snapshot.memoryPercent, 0.0, 100.0);
+    const double targetMemSharedPercent = memoryBytesToPercent(snapshot.sharedBytes, percentPerByte);
+    const double targetMemVirtualPercent = memoryBytesToPercent(snapshot.virtualBytes, percentPerByte);
 
     const bool initialized = m_SmoothedUsage.initialized && (deltaTimeSeconds > 0.0F);
 
@@ -534,6 +548,11 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
     m_SmoothedUsage.gpuMemoryBytes = std::max(0.0, initializeOrSmooth(m_SmoothedUsage.gpuMemoryBytes, targetGpuMem, alpha, initialized));
     m_SmoothedUsage.gdiObjectCount =
         std::max(0.0, initializeOrSmooth(m_SmoothedUsage.gdiObjectCount, targetGdiObjects, alpha, initialized));
+    m_SmoothedUsage.memoryUsedPercent = initializeOrSmooth(m_SmoothedUsage.memoryUsedPercent, targetMemUsedPercent, alpha, initialized);
+    m_SmoothedUsage.memorySharedPercent =
+        initializeOrSmooth(m_SmoothedUsage.memorySharedPercent, targetMemSharedPercent, alpha, initialized);
+    m_SmoothedUsage.memoryVirtualPercent =
+        initializeOrSmooth(m_SmoothedUsage.memoryVirtualPercent, targetMemVirtualPercent, alpha, initialized);
     m_SmoothedUsage.initialized = true;
 }
 
@@ -925,14 +944,15 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
             const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
             std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
 
-            const double usedNow = usedData.empty() ? 0.0 : usedData.back();
-            const double sharedNow = sharedData.empty() ? 0.0 : sharedData.back();
-            const double virtNowVal = virtData.empty() ? 0.0 : virtData.back();
+            // Smoothed like every other NowBar (#1012); these were the raw latest history sample, so
+            // they stepped while the bars around them glided.
+            const double usedNow = m_SmoothedUsage.memoryUsedPercent;
+            const double sharedNow = m_SmoothedUsage.memorySharedPercent;
+            const double virtNowVal = m_SmoothedUsage.memoryVirtualPercent;
 
             std::vector<NowBar> memoryBars;
-            // No tooltipText: the hover tooltip is "label: value" (selectNowBarTooltip), percent-only to
-            // stay consistent with the bar, which is driven by history samples. Live smoothed bytes would
-            // mix sources and could disagree with the displayed bar value.
+            // No tooltipText: the hover tooltip is "label: value" (selectNowBarTooltip), percent-only
+            // to match the chart, which plots percents of RAM.
             memoryBars.push_back({.valueText = UI::Format::percentCompact(usedNow),
                                   .label = "Memory Used",
                                   .tooltipText = {},
@@ -1080,17 +1100,34 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
     std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
 
-    // Scale each NowBar against the larger of its historical peak and smoothed
-    // current value, preventing a fresh spike from overflowing the bar.
-    const double threadMax = seriesMax(threadData, m_SmoothedUsage.threadCount);
-    const double handleMax = seriesMax(handleData, m_SmoothedUsage.handleCount);
-    const double faultMax = seriesMax(faultData, m_SmoothedUsage.pageFaultsPerSec);
+#ifdef _WIN32
+    // The GDI history can be shorter than the others, and ends at the same newest sample, so it
+    // starts gdiTimeOffset timestamps in (#1001).
+    const size_t gdiAlignedCount = std::min(alignedCount, m_GdiHistory.size());
+    std::vector<double> gdiData = tailVector(m_GdiHistory, gdiAlignedCount);
+    const size_t gdiTimeOffset = Detail::seriesTimeOffset(alignedCount, gdiData.size());
+    const bool hasGdiSamples = Detail::hasAnySample(gdiData);
+#endif
+
+    // Threads, handles (and GDI objects) are counts on the left axis; page faults are a rate, on
+    // their own right-hand axis, so a fault spike no longer flattens the count lines (#1024). Each
+    // bound covers every series drawn on its axis, and each bar is scaled to its series' axis, so a
+    // bar and its line show a value at the same height (#1003).
+#ifdef _WIN32
+    const double countSeriesMax = std::max(UI::Widgets::maxOfSeries(threadData, handleData), UI::Widgets::maxOfSeries(gdiData));
+#else
+    const double countSeriesMax = UI::Widgets::maxOfSeries(threadData, handleData);
+#endif
+    const double countAxisUpper =
+        UI::Widgets::easedRateAxisUpperBound("##ProcThreadsFaults", countSeriesMax, UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
+    const double faultAxisUpper = UI::Widgets::easedRateAxisUpperBound(
+        "##ProcThreadsFaults/Y2", UI::Widgets::maxOfSeries(faultData), UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
 
     const NowBar threadsBar{.valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedUsage.threadCount), "threads"),
                             .label = "Threads",
                             .tooltipText =
                                 std::format("Threads: {}", UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.threadCount))),
-                            .value01 = (threadMax > 0.0) ? std::clamp(m_SmoothedUsage.threadCount / threadMax, 0.0, 1.0) : 0.0,
+                            .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.threadCount, countAxisUpper),
                             .color = theme.scheme().chartCpu};
 
 #ifdef _WIN32
@@ -1103,25 +1140,20 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
         .valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedUsage.handleCount), handleLabel),
         .label = handleLabel,
         .tooltipText = std::format("{}: {}", handleLabel, UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.handleCount))),
-        .value01 = (handleMax > 0.0) ? std::clamp(m_SmoothedUsage.handleCount / handleMax, 0.0, 1.0) : 0.0,
+        .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.handleCount, countAxisUpper),
         .color = theme.scheme().chartMemory};
 
     const NowBar faultsBar{.valueText = UI::Format::formatCountPerSecond(m_SmoothedUsage.pageFaultsPerSec),
                            .label = "Page Faults",
                            .tooltipText = {},
-                           .value01 = (faultMax > 0.0) ? std::clamp(m_SmoothedUsage.pageFaultsPerSec / faultMax, 0.0, 1.0) : 0.0,
-                           .color = theme.scheme().chartIo};
+                           .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.pageFaultsPerSec, faultAxisUpper),
+                           // The line's colour: this bar was chartIo while its line is accentColor(3) (#1004).
+                           .color = theme.accentColor(3)};
 
 #ifdef _WIN32
-    // GDI objects NowBar (Windows-only). The GDI history can be shorter than the others, and ends at
-    // the same newest sample, so it starts gdiTimeOffset timestamps in (#1001). A missing reading is
-    // NaN: it is skipped by the bar's scale and shown as N/A, and a series with no reading at all --
-    // a process TaskSmack cannot open -- is not drawn (#1000).
-    const size_t gdiAlignedCount = std::min(alignedCount, m_GdiHistory.size());
-    std::vector<double> gdiData = tailVector(m_GdiHistory, gdiAlignedCount);
-    const size_t gdiTimeOffset = Detail::seriesTimeOffset(alignedCount, gdiData.size());
-    const bool hasGdiSamples = Detail::hasAnySample(gdiData);
-    const double gdiMax = std::max({UI::Widgets::maxOfSeries(gdiData), m_SmoothedUsage.gdiObjectCount, 1.0});
+    // GDI objects NowBar (Windows-only). A missing reading is NaN: it is skipped by the axis bound
+    // and shown as N/A, and a series with no reading at all -- a process TaskSmack cannot open -- is
+    // not drawn (#1000).
     const NowBar gdiBar{
         .valueText =
             hasGdiSamples ? UI::Format::formatCountWithLabel(std::llround(m_SmoothedUsage.gdiObjectCount), "GDI") : std::string("N/A"),
@@ -1129,29 +1161,21 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
         .tooltipText = hasGdiSamples
                          ? std::format("GDI Objects: {}", UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.gdiObjectCount)))
                          : std::string("GDI Objects: N/A"),
-        .value01 = hasGdiSamples ? std::clamp(m_SmoothedUsage.gdiObjectCount / gdiMax, 0.0, 1.0) : 0.0,
+        .value01 = hasGdiSamples ? UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.gdiObjectCount, countAxisUpper) : 0.0,
         .color = theme.accentColor(4)};
-#endif
-
-    // Bound must cover every series drawn on this axis. GDI is plotted below on Windows, so leaving
-    // it out would let a GDI spike above the thread/handle/fault maxima be clipped by the locked
-    // axis -- something the previous auto-fit path could not do, since it fitted whatever was drawn.
-    double resourceAxisMax = UI::Widgets::maxOfSeries(threadData, handleData, faultData);
-#ifdef _WIN32
-    resourceAxisMax = std::max(resourceAxisMax, UI::Widgets::maxOfSeries(gdiData));
 #endif
 
     auto plot = [&]()
     {
-        const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(UI::Widgets::rateHistoryConfig("##ProcThreadsFaults",
-                                                                                                     axisConfig.xMin,
-                                                                                                     axisConfig.xMax,
-                                                                                                     formatAxisLocalized,
-                                                                                                     resourceAxisMax,
-                                                                                                     UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT),
-                                                                      fill.plotHeight()));
+        // One legend row: up to four short entries (with GDI on Windows) on a chart that shares the
+        // pane's height (see HistoryChartConfig::legendHorizontal).
+        const UI::Widgets::HistoryChart chart(
+            UI::Widgets::withHeight(UI::Widgets::withHorizontalLegend(UI::Widgets::rateHistoryConfigWithUpper(
+                                        "##ProcThreadsFaults", axisConfig.xMin, axisConfig.xMax, formatAxisLocalized, countAxisUpper)),
+                                    fill.plotHeight()));
         if (chart.active())
         {
+            chart.setupSecondaryRateAxis(faultAxisUpper, formatAxisLocalized);
             UI::Widgets::drawCollectingHint(alignedCount);
             const int plotCount = UI::Format::checkedCount(alignedCount);
             plotLineWithFill("Threads",
@@ -1172,6 +1196,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
                              2.0F,
                              true,
                              UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+            ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
             plotLineWithFill("Page Faults/s",
                              timeData.data(),
                              faultData.data(),
@@ -1181,6 +1206,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
                              2.0F,
                              true,
                              UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+            ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
 
 #ifdef _WIN32
             if (hasGdiSamples && gdiTimeOffset < timeData.size())
@@ -1275,8 +1301,8 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc, UI:
 
     // Compare the smoothed current rates with history when scaling the NowBars,
     // so either a historical or newly observed peak remains representable.
-    const double readMax = seriesMax(readData, m_SmoothedUsage.ioReadBytesPerSec);
-    const double writeMax = seriesMax(writeData, m_SmoothedUsage.ioWriteBytesPerSec);
+    const double ioAxisUpper = UI::Widgets::easedRateAxisUpperBound(
+        "##ProcIoHistory", UI::Widgets::maxOfSeries(readData, writeData), UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
 
     const auto readUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.ioReadBytesPerSec);
     const auto writeUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.ioWriteBytesPerSec);
@@ -1284,13 +1310,13 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc, UI:
     const NowBar readBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioReadBytesPerSec, readUnit),
                          .label = "Disk Read",
                          .tooltipText = {},
-                         .value01 = (readMax > 0.0) ? std::clamp(m_SmoothedUsage.ioReadBytesPerSec / readMax, 0.0, 1.0) : 0.0,
+                         .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.ioReadBytesPerSec, ioAxisUpper),
                          .color = theme.scheme().chartIo};
 
     const NowBar writeBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioWriteBytesPerSec, writeUnit),
                           .label = "Disk Write",
                           .tooltipText = {},
-                          .value01 = (writeMax > 0.0) ? std::clamp(m_SmoothedUsage.ioWriteBytesPerSec / writeMax, 0.0, 1.0) : 0.0,
+                          .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.ioWriteBytesPerSec, ioAxisUpper),
                           .color = theme.scheme().chartIoWrite};
 
     // Keep the plot and its hover tooltip together: both consume the same aligned
@@ -1298,12 +1324,8 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc, UI:
     auto plot = [&]()
     {
         const UI::Widgets::HistoryChart chart(
-            UI::Widgets::withHeight(UI::Widgets::rateHistoryConfig("##ProcIoHistory",
-                                                                   axisConfig.xMin,
-                                                                   axisConfig.xMax,
-                                                                   formatAxisBytesPerSec,
-                                                                   UI::Widgets::maxOfSeries(readData, writeData),
-                                                                   UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC),
+            UI::Widgets::withHeight(UI::Widgets::rateHistoryConfigWithUpper(
+                                        "##ProcIoHistory", axisConfig.xMin, axisConfig.xMax, formatAxisBytesPerSec, ioAxisUpper),
                                     fill.plotHeight()));
         if (chart.active())
         {
@@ -1382,8 +1404,8 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
 
     // Scale the NowBars against both the historical peak and smoothed current
     // value so a new traffic burst cannot exceed the normalized range.
-    const double sentMax = seriesMax(sentData, m_SmoothedUsage.netSentBytesPerSec);
-    const double recvMax = seriesMax(recvData, m_SmoothedUsage.netRecvBytesPerSec);
+    const double netAxisUpper = UI::Widgets::easedRateAxisUpperBound(
+        "##ProcNetworkHistory", UI::Widgets::maxOfSeries(sentData, recvData), UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
 
     const auto sentUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.netSentBytesPerSec);
     const auto recvUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.netRecvBytesPerSec);
@@ -1392,14 +1414,14 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
                          .label = "Network Sent",
                          .tooltipText = std::format("Avg Sent Rate: {}",
                                                     UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.netSentBytesPerSec, sentUnit)),
-                         .value01 = (sentMax > 0.0) ? std::clamp(m_SmoothedUsage.netSentBytesPerSec / sentMax, 0.0, 1.0) : 0.0,
+                         .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.netSentBytesPerSec, netAxisUpper),
                          .color = theme.scheme().chartNetTx};
 
     const NowBar recvBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.netRecvBytesPerSec, recvUnit),
                          .label = "Network Received",
                          .tooltipText = std::format("Avg Received Rate: {}",
                                                     UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.netRecvBytesPerSec, recvUnit)),
-                         .value01 = (recvMax > 0.0) ? std::clamp(m_SmoothedUsage.netRecvBytesPerSec / recvMax, 0.0, 1.0) : 0.0,
+                         .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.netRecvBytesPerSec, netAxisUpper),
                          .color = theme.scheme().chartNetRx};
 
     // The plot lambda owns rendering and hover lookup over the same aligned
@@ -1407,12 +1429,8 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
     auto plot = [&]()
     {
         const UI::Widgets::HistoryChart chart(
-            UI::Widgets::withHeight(UI::Widgets::rateHistoryConfig("##ProcNetworkHistory",
-                                                                   axisConfig.xMin,
-                                                                   axisConfig.xMax,
-                                                                   formatAxisBytesPerSec,
-                                                                   UI::Widgets::maxOfSeries(sentData, recvData),
-                                                                   UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC),
+            UI::Widgets::withHeight(UI::Widgets::rateHistoryConfigWithUpper(
+                                        "##ProcNetworkHistory", axisConfig.xMin, axisConfig.xMax, formatAxisBytesPerSec, netAxisUpper),
                                     fill.plotHeight()));
         if (chart.active())
         {
@@ -1493,23 +1511,21 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc, 
     std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
 
     // Use smoothed value for NowBar
-    const double powerMax = seriesMax(powerData, m_SmoothedUsage.powerWatts);
+    const double powerAxisUpper = UI::Widgets::easedRateAxisUpperBound(
+        "##ProcPowerHistory", UI::Widgets::maxOfSeries(powerData), UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS);
 
     const NowBar powerBar{.valueText = UI::Format::formatPowerOrZero(m_SmoothedUsage.powerWatts),
                           .label = "Power Usage",
                           .tooltipText = {},
-                          .value01 = (powerMax > 0.0) ? std::clamp(m_SmoothedUsage.powerWatts / powerMax, 0.0, 1.0) : 0.0,
+                          .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.powerWatts, powerAxisUpper),
                           .color = theme.scheme().textInfo};
 
     auto plot = [&]()
     {
-        const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(UI::Widgets::rateHistoryConfig("##ProcPowerHistory",
-                                                                                                     axisConfig.xMin,
-                                                                                                     axisConfig.xMax,
-                                                                                                     formatAxisWatts,
-                                                                                                     UI::Widgets::maxOfSeries(powerData),
-                                                                                                     UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS),
-                                                                      fill.plotHeight()));
+        const UI::Widgets::HistoryChart chart(
+            UI::Widgets::withHeight(UI::Widgets::rateHistoryConfigWithUpper(
+                                        "##ProcPowerHistory", axisConfig.xMin, axisConfig.xMax, formatAxisWatts, powerAxisUpper),
+                                    fill.plotHeight()));
         if (chart.active())
         {
             UI::Widgets::drawCollectingHint(powerData.size());
@@ -1829,17 +1845,15 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
             }
         };
 
-        // GPU Memory graph
+        // GPU Memory graph. One upper bound for its axis and its bar, so they agree (#1003).
+        const double gpuMemAxisUpper = UI::Widgets::easedRateAxisUpperBound(
+            "##GPUMemPlot", UI::Widgets::maxOfSeries(gpuMemVec), UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES);
         auto plotGpuMem = [&]()
         {
-            const UI::Widgets::HistoryChart chart(
-                UI::Widgets::withHeight(UI::Widgets::rateHistoryConfig("##GPUMemPlot",
-                                                                       axisConfig.xMin,
-                                                                       axisConfig.xMax,
-                                                                       UI::Widgets::formatAxisBytes,
-                                                                       UI::Widgets::maxOfSeries(gpuMemVec),
-                                                                       UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES),
-                                        fill.plotHeight()));
+            const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
+                UI::Widgets::rateHistoryConfigWithUpper(
+                    "##GPUMemPlot", axisConfig.xMin, axisConfig.xMax, UI::Widgets::formatAxisBytes, gpuMemAxisUpper),
+                fill.plotHeight()));
             if (chart.active())
             {
                 UI::Widgets::drawCollectingHint(alignedCount);
@@ -1890,12 +1904,11 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
             .color = theme.scheme().gpuUtilization,
         };
 
-        const double gpuMemMax = seriesMax(gpuMemVec, m_SmoothedUsage.gpuMemoryBytes);
         const NowBar gpuMemBar{
             .valueText = UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes),
             .label = "GPU Memory",
             .tooltipText = {},
-            .value01 = (gpuMemMax > 0.0) ? std::clamp(m_SmoothedUsage.gpuMemoryBytes / gpuMemMax, 0.0, 1.0) : 0.0,
+            .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.gpuMemoryBytes, gpuMemAxisUpper),
             .color = theme.scheme().gpuMemory,
         };
 

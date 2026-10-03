@@ -120,5 +120,33 @@ TEST(RateAxisTest, EasingWithNoPreviousBoundOrTimeIsTheTarget)
     EXPECT_DOUBLE_EQ(easeAxisUpperBound(10.0, 42.0, std::numeric_limits<double>::infinity()), 42.0);
 }
 
+// ========== stepEasedBound (#1003, #1011) ==========
+
+TEST(RateAxisTest, EasedBoundStartsAtTheTargetTheFirstTime)
+{
+    EasedBound bound;
+    EXPECT_DOUBLE_EQ(stepEasedBound(bound, 500.0, 10, 0.016), 500.0);
+}
+
+TEST(RateAxisTest, EasedBoundGivesTheSameAnswerTwiceInOneFrame)
+{
+    // A chart's axis and its NowBars both read the bound; a second read must not take a second step.
+    EasedBound bound;
+    (void) stepEasedBound(bound, 100.0, 1, 0.016);
+    const double axis = stepEasedBound(bound, 200.0, 2, 0.016);
+    const double bars = stepEasedBound(bound, 200.0, 2, 0.016);
+    EXPECT_DOUBLE_EQ(axis, bars);
+    EXPECT_GT(axis, 100.0);
+    EXPECT_LT(axis, 200.0);
+}
+
+TEST(RateAxisTest, EasedBoundRestartsAtTheTargetAfterAGap)
+{
+    // Not drawn for a while (its tab was hidden): start at the target, not from the stale value.
+    EasedBound bound;
+    (void) stepEasedBound(bound, 100.0, 1, 0.016);
+    EXPECT_DOUBLE_EQ(stepEasedBound(bound, 900.0, 50, 0.016), 900.0);
+}
+
 } // namespace
 } // namespace UI::Widgets

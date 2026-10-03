@@ -1,11 +1,13 @@
 #pragma once
 
+#include "App/Panels/StorageSection.h"
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
 #include "UI/FillPlotLayout.h"
 
 #include <chrono>
 #include <string>
+#include <unordered_map>
 
 namespace App::NetworkSection
 {
@@ -32,6 +34,7 @@ struct RenderContext
     double* smoothedDiskReadBytesPerSec = nullptr;
     double* smoothedDiskWriteBytesPerSec = nullptr;
     bool* smoothedDiskInitialized = nullptr;
+    std::unordered_map<std::string, StorageSection::SmoothedDiskRates>* smoothedPerDisk = nullptr;
 
     // Smoothed values for network (passed by reference so we can update them)
     double* smoothedNetSentBytesPerSec = nullptr;

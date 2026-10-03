@@ -97,4 +97,30 @@ inline constexpr double RATE_AXIS_EASE_SNAP_FRACTION = 0.002;
     return (std::abs(next - target) <= std::abs(target) * RATE_AXIS_EASE_SNAP_FRACTION) ? target : next;
 }
 
+/// One chart's eased upper bound, carried from frame to frame.
+struct EasedBound
+{
+    double value = 0.0;
+    int lastFrame = -1; ///< ImGui frame the value was last computed for; -1 = never.
+};
+
+/// Advance `bound` to `frame` toward `target` and return the bound to draw this frame.
+///
+/// - Asked again in the frame it was already computed for, it returns the same value: a chart's axis
+///   and its NowBars both read it, and must agree (#1003).
+/// - Continuing from the previous frame, it eases (easeAxisUpperBound).
+/// - Otherwise -- never drawn, or not drawn last frame (its tab was hidden) -- it starts at the
+///   target rather than easing in from a stale value.
+[[nodiscard]] inline double stepEasedBound(EasedBound& bound, double target, int frame, double deltaSeconds) noexcept
+{
+    if (bound.lastFrame == frame)
+    {
+        return bound.value;
+    }
+    const bool continuing = bound.lastFrame == frame - 1;
+    bound.value = continuing ? easeAxisUpperBound(bound.value, target, deltaSeconds) : target;
+    bound.lastFrame = frame;
+    return bound.value;
+}
+
 } // namespace UI::Widgets

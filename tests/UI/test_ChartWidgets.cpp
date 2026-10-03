@@ -1,4 +1,5 @@
 #include "UI/ChartWidgets.h"
+#include "UI/RateAxis.h"
 
 #include <gtest/gtest.h>
 
@@ -615,25 +616,33 @@ TEST(ChartWidgetsFormattersTest, FormatAxisBytesPerSecHandlesMegaAndGigaSuffixes
     EXPECT_EQ(std::string(buf), "2.0GB/s");
 }
 
-// ========== seriesMax / normalizeToUnitInterval ==========
+// ========== normalizeToUnitInterval ==========
 
-// #999: NaN marks a missing reading. Wherever it sits in the series, it must not become the
-// maximum, or every bar normalised by that maximum reads 0.
-TEST(ChartWidgetsTest, SeriesMaxIgnoresNaNWhereverItSits)
+TEST(ChartWidgetsTest, NormalizeToUnitIntervalScalesAndClamps)
 {
-    const double nan = std::numeric_limits<double>::quiet_NaN();
-    EXPECT_DOUBLE_EQ(seriesMax({nan, 2.0, 8.0}, 4.0), 8.0);
-    EXPECT_DOUBLE_EQ(seriesMax({2.0, nan, 8.0}, 4.0), 8.0);
-    EXPECT_DOUBLE_EQ(seriesMax({2.0, 8.0, nan}, 4.0), 8.0);
-    EXPECT_DOUBLE_EQ(seriesMax({nan, nan}, 4.0), 4.0);
-    EXPECT_DOUBLE_EQ(seriesMax({nan}, nan), 1.0);
+    EXPECT_DOUBLE_EQ(normalizeToUnitInterval(25.0, 100.0), 0.25);
+    EXPECT_DOUBLE_EQ(normalizeToUnitInterval(150.0, 100.0), 1.0);
+    EXPECT_DOUBLE_EQ(normalizeToUnitInterval(-5.0, 100.0), 0.0);
+    EXPECT_DOUBLE_EQ(normalizeToUnitInterval(5.0, 0.0), 0.0);
 }
 
-TEST(ChartWidgetsTest, SeriesMaxIgnoresInfinity)
+TEST(ChartWidgetsTest, NormalizeToUnitIntervalOfAMissingValueIsAnEmptyBar)
 {
-    const double inf = std::numeric_limits<double>::infinity();
-    EXPECT_DOUBLE_EQ(seriesMax({2.0, inf}, 3.0), 3.0);
-    EXPECT_DOUBLE_EQ(seriesMax({2.0}, inf), 2.0);
+    // std::clamp passes NaN straight through; a bar with no value must be empty, not NaN.
+    EXPECT_DOUBLE_EQ(normalizeToUnitInterval(std::numeric_limits<double>::quiet_NaN(), 100.0), 0.0);
+    EXPECT_DOUBLE_EQ(normalizeToUnitInterval(5.0, std::numeric_limits<double>::quiet_NaN()), 0.0);
+}
+
+// A bar normalised against its chart's axis bound sits at the same height as its line (#1003).
+TEST(ChartWidgetsTest, ABarScaledToItsAxisMatchesItsLine)
+{
+    const double upper = rateAxisUpperBound(1000.0, RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
+    const auto config = rateHistoryConfigWithUpper("##t", -300.0, 0.0, formatAxisBytesPerSec, upper);
+    ASSERT_TRUE(config.yLimits.has_value());
+    // The line's height for the peak value, as a fraction of the axis, equals the bar's.
+    const double lineFraction = 1000.0 / config.yLimits.value_or(std::pair{0.0, 1.0}).second;
+    EXPECT_DOUBLE_EQ(normalizeToUnitInterval(1000.0, upper), lineFraction);
+    EXPECT_LT(lineFraction, 1.0); // headroom above the peak, never a full bar beside a line at 91 %
 }
 
 // ========== forEachFiniteRun (#989) ==========
@@ -674,31 +683,6 @@ TEST(ChartWidgetsTest, FiniteRunsOfNothingFiniteIsNoRuns)
     EXPECT_TRUE(finiteRuns({}).empty());
     EXPECT_TRUE(finiteRuns({nan, nan}).empty());
     EXPECT_TRUE(finiteRuns({std::numeric_limits<float>::infinity()}).empty());
-}
-
-TEST(ChartWidgetsTest, SeriesMaxReturnsFloorWhenValuesEmptyAndCurrentBelowFloor)
-{
-    EXPECT_DOUBLE_EQ(seriesMax({}, 0.5), 1.0);
-}
-
-TEST(ChartWidgetsTest, SeriesMaxReturnsCurrentWhenValuesEmptyAndCurrentAboveFloor)
-{
-    EXPECT_DOUBLE_EQ(seriesMax({}, 5.0), 5.0);
-}
-
-TEST(ChartWidgetsTest, SeriesMaxReturnsHistoryMaxWhenLargerThanCurrentAndFloor)
-{
-    EXPECT_DOUBLE_EQ(seriesMax({2.0, 8.0, 3.0}, 4.0), 8.0);
-}
-
-TEST(ChartWidgetsTest, SeriesMaxReturnsCurrentWhenLargerThanHistory)
-{
-    EXPECT_DOUBLE_EQ(seriesMax({2.0, 3.0}, 10.0), 10.0);
-}
-
-TEST(ChartWidgetsTest, SeriesMaxReturnsFloorWhenAllValuesBelowOne)
-{
-    EXPECT_DOUBLE_EQ(seriesMax({0.1, 0.2}, 0.3), 1.0);
 }
 
 TEST(ChartWidgetsTest, NormalizeToUnitIntervalScalesWithinRange)

@@ -3,6 +3,7 @@
 #include "App/Panel.h"
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/MemorySection.h"
+#include "App/Panels/StorageSection.h"
 #include "Core/Event.h"
 #include "Domain/BackgroundSampler.h"
 #include "Domain/GPUModel.h"
@@ -141,14 +142,6 @@ class SystemMetricsPanel : public Panel
     // Use MemorySection's SmoothedMemory type
     MemorySection::SmoothedMemory m_SmoothedMemory;
 
-    struct SmoothedDiskIO
-    {
-        double readMBps = 0.0;
-        double writeMBps = 0.0;
-        double avgUtilization = 0.0;
-        bool initialized = false;
-    } m_SmoothedDiskIO;
-
     struct SmoothedPower
     {
         double watts = 0.0;
@@ -170,6 +163,9 @@ class SystemMetricsPanel : public Panel
         double writeBytesPerSec = 0.0;
         bool initialized = false;
     } m_SmoothedSystemIO;
+
+    // Per-disk NowBar values for the Network and I/O tab's disk grid (#1012)
+    std::unordered_map<std::string, StorageSection::SmoothedDiskRates> m_SmoothedPerDisk;
 
     struct SmoothedNetwork
     {
@@ -200,7 +196,6 @@ class SystemMetricsPanel : public Panel
     void updateCachedLayout();
     void updateSmoothedCpu(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);
     void updateSmoothedMemory(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);
-    void updateSmoothedDiskIO(const Domain::StorageSnapshot& snap, float deltaTimeSeconds);
     void updateSmoothedPower(float targetWatts, float targetBatteryPercent, float deltaTimeSeconds);
     void updateSmoothedResources(double targetThreads, double targetFaults, double targetHandles, float deltaTimeSeconds);
 };
