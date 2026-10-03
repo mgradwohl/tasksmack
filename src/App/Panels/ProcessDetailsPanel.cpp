@@ -1511,10 +1511,10 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
         }
     };
 
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_NETWORK_WIRED "  Network - Avg Rate (%zu samples)", alignedCount);
+    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_NETWORK_WIRED "  Network (%zu samples)", alignedCount);
     if (ImGui::IsItemHovered())
     {
-        ImGui::SetTooltip("Average network bytes/sec since monitoring started for this process.");
+        ImGui::SetTooltip("Network bytes/sec over each refresh interval, summed over the process's open TCP connections.");
     }
     renderHistoryWithNowBars("ProcessNetworkHistory", fill.plotHeight(), plot, {sentBar, recvBar}, false, PROCESS_NOW_BAR_COLUMNS);
     fill.addPlot();

@@ -30,7 +30,7 @@ namespace Core::FramePacing
 /// Whether "now" is still within an interaction's redraw grace window. Shared by both the
 /// forceInteractionRedraw (this frame) and keepInteractionRedrawActive (idle-sleep gate)
 /// checks in Application::run(), which compare the same two timestamps.
-[[nodiscard]] inline auto isWithinInteractionGrace(float nowSeconds, float interactionRedrawUntilSeconds) -> bool
+[[nodiscard]] inline auto isWithinInteractionGrace(double nowSeconds, double interactionRedrawUntilSeconds) -> bool
 {
     return nowSeconds < interactionRedrawUntilSeconds;
 }

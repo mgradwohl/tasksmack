@@ -85,13 +85,11 @@ See the built-in theme files (shipped alongside the application) for the expecte
 
 ---
 
-## Why does the network rate show averages instead of instantaneous values?
+## How are per-process network rates measured?
 
-Per-process network rates (`sent bytes/s`, `received bytes/s`) are **lifetime averages**: total bytes transferred by that process since it was first observed, divided by elapsed wall-clock time.
+Per-process network rates (`sent bytes/s`, `received bytes/s`) are the bytes transferred over the last refresh interval, divided by that interval, the same way per-process disk I/O rates are measured. They rise while a transfer runs and fall back to zero when it stops.
 
-This design avoids the instability of single-sample deltas for short-lived bursts, at the cost of responsiveness after behaviour changes. The averages converge toward instantaneous rates for long-running, steady-state connections.
-
-System-wide and per-interface rates *are* computed as short-interval deltas and update at the configured refresh cadence.
+The byte counts are summed over the process's open TCP connections. When a connection closes, its bytes leave the sum, so the rate for that one interval reads 0 instead of a negative value. System-wide and per-interface rates come from the interface counters and include all traffic.
 
 ---
 

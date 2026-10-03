@@ -202,8 +202,8 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     {
         const ProcessIdentity key{.pid = current.pid, .startTime = current.startTimeTicks};
 
-        // Single map operation replaces three separate find/insert calls for
-        // m_PrevCounters, m_NetworkBaselines, and m_PeakRss.
+        // Single map operation replaces separate find/insert calls for the previous
+        // counters and the peak RSS.
         // try_emplace returns {iterator, inserted}: inserted==true means a brand-new
         // process; inserted==false means we have state from the previous refresh.
         auto [it, inserted] = m_PerProcessState.try_emplace(key);
@@ -212,17 +212,6 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
 
         // --- previous CPU counters (for delta calculation) ---
         const Platform::ProcessCounters* previous = inserted ? nullptr : &state.counters;
-
-        // --- network baseline ---
-        // For new processes: initialise to current counters so the very first rate
-        // is 0 rather than a spike from pre-existing cumulative TCP counters.
-        // For existing processes: keep the original baseline untouched.
-        if (inserted)
-        {
-            state.networkBaseline.netSentBytes = current.netSentBytes;
-            state.networkBaseline.netReceivedBytes = current.netReceivedBytes;
-            state.networkBaseline.firstSeenTime = currentSampleTime;
-        }
 
         // --- peak RSS ---
         if (m_Capabilities.hasPeakRss && current.peakRssBytes > 0)
@@ -237,43 +226,6 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         auto snapshot =
             computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond, elapsedSeconds, timeDeltaUs);
         snapshot.peakMemoryBytes = state.peakRss;
-
-        // =======================================================================
-        // Network Rate Calculation (Baseline Approach)
-        // =======================================================================
-        // Formula: rate = (currentCounters - baselineCounters) / timeSinceFirstSeen
-        //
-        // This gives us average bytes/sec since we started monitoring this process.
-        // See ProcessModel.h for detailed explanation of why we use this approach
-        // instead of delta-based rates (TL;DR: Windows TCP EStats connection churn).
-        //
-        // We require a minimum time elapsed (0.5s) before computing rates to avoid
-        // division by tiny time values on first sample causing huge rate spikes.
-        // We also apply a sanity check ceiling (100 Gbps) as a safety net.
-        //
-        // Note: A more accurate approach (ETW, eBPF, etc.) could enable instantaneous
-        // rate calculation similar to I/O rates below. See ProcessModel.h for details.
-        // =======================================================================
-        constexpr double MIN_TIME_FOR_RATE = 0.5;          // seconds
-        constexpr double MAX_SANE_RATE = 12'500'000'000.0; // 100 Gbps in bytes/sec
-        const double timeSinceFirstSeen = std::chrono::duration<double>(currentSampleTime - state.networkBaseline.firstSeenTime).count();
-        if (timeSinceFirstSeen >= MIN_TIME_FOR_RATE)
-        {
-            // Only compute rate if current >= baseline (counter should never decrease
-            // for the same process, but handle it gracefully if it does)
-            if (current.netSentBytes >= state.networkBaseline.netSentBytes)
-            {
-                const std::uint64_t sentDelta = current.netSentBytes - state.networkBaseline.netSentBytes;
-                const double rate = Numeric::toDouble(sentDelta) / timeSinceFirstSeen;
-                snapshot.netSentBytesPerSec = (rate <= MAX_SANE_RATE) ? rate : 0.0;
-            }
-            if (current.netReceivedBytes >= state.networkBaseline.netReceivedBytes)
-            {
-                const std::uint64_t recvDelta = current.netReceivedBytes - state.networkBaseline.netReceivedBytes;
-                const double rate = Numeric::toDouble(recvDelta) / timeSinceFirstSeen;
-                snapshot.netReceivedBytesPerSec = (rate <= MAX_SANE_RATE) ? rate : 0.0;
-            }
-        }
 
         newSnapshots.push_back(std::move(snapshot));
 
@@ -290,8 +242,7 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     }
 
     // Prune dead processes: a single erase_if on one map instead of the previous
-    // two separate erase_if calls on m_PrevCounters and m_PeakRss plus the full
-    // rebuild of m_NetworkBaselines.
+    // two separate erase_if calls on m_PrevCounters and m_PeakRss.
     std::erase_if(m_PerProcessState, [gen = m_CurrentGeneration](const auto& entry) { return entry.second.generation != gen; });
 
     m_PrevTotalCpuTime = totalCpuTime;
@@ -799,14 +750,26 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
         //
         // This works correctly for I/O because the probes report per-process cumulative
         // transfer counters (Linux: /proc/[pid]/io; Windows: the SystemProcessInformation
-        // snapshot) that are stable and monotonically increasing (not affected
-        // by file handle churn the way network counters are affected by TCP connection churn).
-        //
-        // Network rates are computed separately in computeSnapshots() using the baseline
-        // approach - see comments there and in ProcessModel.h for details.
+        // snapshot) that are stable and monotonically increasing.
         snapshot.ioReadBytesPerSec = Numeric::counterRate(current.readBytes, previous->readBytes, elapsedSeconds);
         snapshot.ioWriteBytesPerSec = Numeric::counterRate(current.writeBytes, previous->writeBytes, elapsedSeconds);
         snapshot.pageFaultsPerSec = Numeric::counterRate(current.pageFaultCount, previous->pageFaultCount, elapsedSeconds);
+
+        // Network rates use the same per-interval delta (#1036). They were (bytes now - bytes when
+        // first seen) / time since first seen: a lifetime average, so a burst decayed over minutes
+        // and a long-watched process's line barely moved. The probes' network counters are sums
+        // over the process's *live* TCP connections, so a connection closing makes the sum drop:
+        // counterRate reports 0 for that interval rather than a wrapped or negative rate (bytes on
+        // the surviving connections in that one interval go uncounted). A rate above the 100 Gbps
+        // sanity ceiling -- a connection appearing with traffic from before it was first seen --
+        // is dropped to 0 too.
+        const auto netRate = [elapsedSeconds](std::uint64_t now, std::uint64_t before)
+        {
+            const double rate = Numeric::counterRate(now, before, elapsedSeconds);
+            return rate <= Sampling::MAX_SANE_RATE_BPS_DEFAULT ? rate : 0.0;
+        };
+        snapshot.netSentBytesPerSec = netRate(current.netSentBytes, previous->netSentBytes);
+        snapshot.netReceivedBytesPerSec = netRate(current.netReceivedBytes, previous->netReceivedBytes);
     }
 
     if (previous != nullptr && timeDeltaUs > 0)

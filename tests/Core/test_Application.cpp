@@ -403,9 +403,9 @@ TEST(FramePacingTest, IsInteractingWhenAnyReasonPresent)
 
 TEST(FramePacingTest, IsWithinInteractionGrace)
 {
-    EXPECT_TRUE(Core::FramePacing::isWithinInteractionGrace(1.0F, 1.5F));
-    EXPECT_FALSE(Core::FramePacing::isWithinInteractionGrace(1.5F, 1.5F));
-    EXPECT_FALSE(Core::FramePacing::isWithinInteractionGrace(2.0F, 1.5F));
+    EXPECT_TRUE(Core::FramePacing::isWithinInteractionGrace(1.0, 1.5));
+    EXPECT_FALSE(Core::FramePacing::isWithinInteractionGrace(1.5, 1.5));
+    EXPECT_FALSE(Core::FramePacing::isWithinInteractionGrace(2.0, 1.5));
 }
 
 TEST(FramePacingTest, VsyncTransitionDisablesOnInteractionStartWhenSpecRequestsVsync)
@@ -860,8 +860,8 @@ TEST(ApplicationTest, GetTimeReturnsMonotonicValue)
     {
         Core::Application app(spec);
 
-        float time1 = Core::Application::getTime();
-        float time2 = Core::Application::getTime();
+        const double time1 = Core::Application::getTime();
+        const double time2 = Core::Application::getTime();
 
         // Time should be monotonic
         EXPECT_GE(time2, time1);
@@ -886,8 +886,8 @@ TEST(ApplicationTest, GetTimeIsConsistent)
     {
         Core::Application app(spec);
 
-        float time1 = Core::Application::getTime();
-        float time2 = Core::Application::getTime();
+        const double time1 = Core::Application::getTime();
+        const double time2 = Core::Application::getTime();
 
         // Within a few microseconds, times should be nearly identical
         EXPECT_NEAR(time1, time2, 0.01F); // 10ms tolerance
