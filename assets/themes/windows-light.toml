@@ -105,11 +105,11 @@ fan = "#808080"               # Neutral Gray - GPU fan speed line
 [cpu_breakdown]
 user = "#004FA5"      # Windows Blue - user CPU time
 system = "#E74856"    # Red - system/kernel time
-iowait = "#FFB900"    # Gold - I/O wait time
+iowait = "#BD8100"    # Gold - I/O wait time
 idle = "#D0D0D0"      # Light gray - idle time
 user_fill = "#004FA559"      # Windows Blue with 35% alpha - user fill
 system_fill = "#E7485659"    # Red with 35% alpha - system fill
-iowait_fill = "#FFB90059"    # Gold with 35% alpha - iowait fill
+iowait_fill = "#BD810059"    # Gold with 35% alpha - iowait fill
 idle_fill = "#D0D0D033"      # Light gray with 20% alpha - idle fill
 
 [priority]

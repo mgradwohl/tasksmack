@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
+#include <utility>
 #include <vector>
 
 namespace UI
@@ -28,10 +29,11 @@ using ColorContrast::relativeLuminance;
 
 constexpr float SELECTED_ROW_MIN = 1.35F; // selected row vs plain and striped rows
 constexpr float HOVER_VS_SELECTED_MIN = 1.15F;
-constexpr float TEXT_MIN = 4.5F;         // primary text on the selected row
-constexpr float SELECTED_TAB_MIN = 1.3F; // selected tab vs unselected tab
-constexpr float OVERLINE_MIN = 3.0F;
-constexpr float CPU_USER_VS_TOTAL_MIN_DL = 15.0F; // CIELAB L* between CPU User and CPU Total (#1192)     // overline vs the selected tab
+constexpr float TEXT_MIN = 4.5F;                  // primary text on the selected row
+constexpr float SELECTED_TAB_MIN = 1.3F;          // selected tab vs unselected tab
+constexpr float OVERLINE_MIN = 3.0F;              // overline vs the selected tab
+constexpr float CPU_USER_VS_TOTAL_MIN_DL = 15.0F; // CIELAB L* between CPU User and CPU Total (#1192)
+constexpr float SERIES_MIN = 3.0F;                // a series colour (line, NowBar, legend swatch) on its background
 
 /// CIELAB L* (0..100) of an opaque colour. L* depends only on relative luminance.
 auto lightness(const ImVec4& color) -> float
@@ -163,6 +165,32 @@ TEST(BundledThemesTest, TooltipTextIsReadable)
         // Theme::applyImGuiStyle() does; chart tooltip rows use the primary text colour (#1192).
         const ImVec4 popup = flattenOver(scheme->popupBg, flattenOver(scheme->modalWindowDimBg, scheme->windowBg));
         EXPECT_GE(contrastRatio(scheme->textPrimary, popup), TEXT_MIN) << path.stem().string();
+    }
+}
+
+TEST(BundledThemesTest, CpuBandColoursAreVisibleOnThePlotAndInTheLegend)
+{
+    for (const auto& path : bundledThemes())
+    {
+        const auto scheme = ThemeLoader::loadTheme(path);
+        if (!scheme.has_value())
+        {
+            ADD_FAILURE() << "failed to load " << path;
+            continue;
+        }
+        const auto name = path.stem().string();
+
+        // ImPlot fills the plot area with PlotBg (childBg) over FrameBg, and the legend with
+        // LegendBg (popupBg) over the plot. The bands' edge lines and legend swatches use the
+        // opaque series colour (#1192).
+        const ImVec4 plot = flattenOver(scheme->childBg, flattenOver(scheme->frameBg, scheme->windowBg));
+        const ImVec4 legend = flattenOver(scheme->popupBg, plot);
+        for (const auto& [label, color] :
+             {std::pair{"user", scheme->cpuUser}, std::pair{"system", scheme->cpuSystem}, std::pair{"iowait", scheme->cpuIowait}})
+        {
+            EXPECT_GE(contrastRatio(color, plot), SERIES_MIN) << name << " cpu_breakdown." << label << " on the plot";
+            EXPECT_GE(contrastRatio(color, legend), SERIES_MIN) << name << " cpu_breakdown." << label << " in the legend";
+        }
     }
 }
 

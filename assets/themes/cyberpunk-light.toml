@@ -104,11 +104,11 @@ fan = "#F44BFF"               # Magenta - GPU fan speed line (theme-native)
 [cpu_breakdown]
 user = "#004DA3"      # Blue - user CPU time
 system = "#D32F2F"    # Red - system/kernel time
-iowait = "#F57C00"    # Orange - I/O wait time
+iowait = "#DA6600"    # Orange - I/O wait time
 idle = "#B0B0B0"      # Light gray - idle time
 user_fill = "#004DA359"      # Blue with 35% alpha - user fill
 system_fill = "#D32F2F59"    # Red with 35% alpha - system fill
-iowait_fill = "#F57C0059"    # Orange with 35% alpha - iowait fill
+iowait_fill = "#DA660059"    # Orange with 35% alpha - iowait fill
 idle_fill = "#B0B0B033"      # Light gray with 20% alpha - idle fill
 
 [priority]

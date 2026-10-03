@@ -75,11 +75,11 @@ fan = "#44475A"
 
 [cpu_breakdown]
 user = "#5DBDD1"
-system = "#FF5555"
+system = "#FF5E5C"
 iowait = "#FFB86C"
 idle = "#44475A"
 user_fill = "#5DBDD159"
-system_fill = "#FF555559"
+system_fill = "#FF5E5C59"
 iowait_fill = "#FFB86C59"
 idle_fill = "#44475A33"
 
