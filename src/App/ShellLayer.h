@@ -51,6 +51,11 @@ class ShellLayer : public Core::Layer
     // Used by renderStatusBar() to show a persistent lock indicator.
     bool m_HasReducedPrivileges = false;
 
+    // Deferred startup settings: the first onUpdate() raises RefreshRateChangedEvent and
+    // HistoryDurationChangedEvent with the loaded config, so panels get their starting values the
+    // same way they get later changes (#1079).
+    bool m_PendingStartupSettings = true;
+
     // Deferred startup notice: set in onAttach() if the privilege notice should fire.
     // Dispatched in the first onUpdate() call, after all layers are fully stacked.
     bool m_PendingPrivilegeNotice = false;

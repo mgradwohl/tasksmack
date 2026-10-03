@@ -2,7 +2,6 @@
 
 #include "App/Panel.h"
 #include "App/ShellMetrics.h"
-#include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/History.h"
@@ -148,13 +147,6 @@ ProcessDetailsPanel::ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActio
       m_ProcessActions(std::move(processActions)),
       m_ActionCapabilities(m_ProcessActions ? m_ProcessActions->actionCapabilities() : Platform::ProcessActionCapabilities{})
 {}
-
-void ProcessDetailsPanel::onAttach()
-{
-    const auto& settings = UserConfig::get().settings();
-    m_RefreshInterval = std::chrono::milliseconds(settings.refreshIntervalMs);
-    m_MaxHistorySeconds = Domain::Numeric::toDouble(settings.maxHistorySeconds);
-}
 
 /// Captures all computed layout values in one place for helper methods
 struct ProcessDetailsPanel::PrioritySliderContext

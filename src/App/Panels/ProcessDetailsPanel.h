@@ -45,10 +45,6 @@ class ProcessDetailsPanel : public Panel
     /// Call each frame with the snapshot for the selected process (or nullptr if none).
     void updateWithSnapshot(const Domain::ProcessSnapshot* snapshot, std::uint64_t snapshotVersion, float deltaTime);
 
-    /// Load the refresh interval and history window from UserConfig. After this, the panel follows
-    /// RefreshRateChangedEvent and HistoryDurationChangedEvent and does not read UserConfig again.
-    void onAttach() override;
-
     /// Render the panel (with ImGui window wrapper).
     /// @param open Pointer to visibility flag (for window close button).
     void render(bool* open) override;
@@ -152,6 +148,8 @@ class ProcessDetailsPanel : public Panel
     std::vector<double> m_GpuMemHistory;    // GPU memory bytes history
     std::vector<double> m_GdiHistory;       // GDI object count history (Windows-only)
     std::vector<double> m_Timestamps;
+    // Refresh interval and history window start at the SamplingConfig defaults; ShellLayer raises the
+    // configured values as events on its first update (#1079).
     double m_MaxHistorySeconds = Domain::Numeric::toDouble(Domain::Sampling::HISTORY_SECONDS_DEFAULT);
     // Sampling interval the NowBar smoothing is tuned to (#1072)
     std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
