@@ -29,6 +29,18 @@ Assert-True ($loss.LostEventsPct -eq 0.498) "Lost share $($loss.LostEventsPct), 
 # xperf's -detail output has no totals, only the lost-events warning.
 $detailOnly = Get-TraceLossSummary -Lines @("`t`t336273 Events were lost in this trace.  Data may be unreliable.", '{2cb15d1d-5fc1-11d2-abe1-00a0c911f518}        42756         8049624  Image')
 Assert-True ($detailOnly.Parsed -and $detailOnly.LostEvents -eq 336273) 'The lost-events warning line must be read'
+Assert-True ($null -eq $detailOnly.LostBuffers) "Without the plain pass the buffer count is unknown, not $($detailOnly.LostBuffers)"
+# Detail-only, with a small loss: 5 of 100,000 events is under the limit, but the verdict must say the
+# lost-buffer check could not run rather than treat the buffers as zero.
+$detailSmallLoss = Get-TraceLossSummary -Lines @("`t`t5 Events were lost in this trace.  Data may be unreliable.", '{2cb15d1d-5fc1-11d2-abe1-00a0c911f518}        99995         1  Image')
+Assert-True ($null -eq $detailSmallLoss.LostBuffers -and $detailSmallLoss.LostEventsPct -eq 0.005) "Detail-only small loss: $($detailSmallLoss | Out-String)"
+$detailVerdict = Get-TraceValidity -Loss $detailSmallLoss -Identity $null -AppUnresolved $null
+$detailText = $detailVerdict.Degraded -join ' '
+Assert-True ($detailVerdict.Status -eq 'Degraded' -and $detailText -like '*unknown number of buffers*' -and $detailText -like '*lost-buffer count could not be read*') "Unknown buffer count must be flagged: $detailText"
+Assert-True ($detailText -notlike '*0 buffers*') 'An unknown buffer count must not be reported as 0'
+# No loss in the -detail pass and no plain pass: still flagged, never silently Valid.
+$detailNoLoss = [pscustomobject]@{ Parsed = $true; LostEvents = 0; LostBuffers = $null; RecordedEvents = 1000; LostEventsRatio = 0.0; LostEventsPct = 0 }
+Assert-True ((Get-TraceValidity -Loss $detailNoLoss -Identity $null -AppUnresolved $null).Status -eq 'Degraded') 'An unchecked buffer count is Degraded'
 # Lost events but no provider totals (the -detail pass failed): the share is unknown, not 100 %.
 $noTotals = Get-TraceLossSummary -Lines @('Total # Lost Buffers : 0', 'Total # Lost Events  : 500')
 Assert-True ($noTotals.Parsed -and $noTotals.LostEvents -eq 500 -and $null -eq $noTotals.RecordedEvents) 'Lost count without totals'
@@ -73,6 +85,32 @@ try {
     Assert-True ($null -eq (Get-PeCodeViewInfo -Path $notPe)) 'A non-PE file must give no record'
 }
 finally { Remove-Item -LiteralPath $notPe -Force -ErrorAction SilentlyContinue }
+
+# Truncated copies of the host binary give no record (BinaryUnreadable) instead of throwing: cut
+# right after the COFF header, inside the optional header, inside the section table, and just
+# short of the debug directory's entries.
+$hostBytes = [IO.File]::ReadAllBytes($hostExe)
+$hostPe = [BitConverter]::ToInt32($hostBytes, 0x3C)
+$hostOptional = $hostPe + 24
+$hostSections = $hostOptional + [BitConverter]::ToUInt16($hostBytes, $hostPe + 20)
+$cuts = [ordered]@{
+    'after the COFF header'    = $hostOptional
+    'inside the optional header' = $hostOptional + 40
+    'inside the section table' = $hostSections + 20
+    'before the debug data'    = $hostSections + 40 * [BitConverter]::ToUInt16($hostBytes, $hostPe + 6)
+}
+foreach ($cut in $cuts.GetEnumerator()) {
+    $truncated = [IO.Path]::GetTempFileName()
+    try {
+        [IO.File]::WriteAllBytes($truncated, $hostBytes[0..($cut.Value - 1)])
+        $result = $null
+        try { $result = Get-PeCodeViewInfo -Path $truncated }
+        catch { throw "A PE truncated $($cut.Key) must not throw: $_" }
+        Assert-True ($null -eq $result) "A PE truncated $($cut.Key) must give no record"
+        Assert-True ((Test-SymbolIdentity -BinaryInfo $result -TraceIds $ids -ExpectedPdbLeaf 'TaskSmack.pdb').Status -eq 'BinaryUnreadable') "Truncated $($cut.Key) is BinaryUnreadable"
+    }
+    finally { Remove-Item -LiteralPath $truncated -Force -ErrorAction SilentlyContinue }
+}
 
 # ── Rows, unresolved share and the verdict (#873) ───────────────────────────────────────────
 $functionLines = @(

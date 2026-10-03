@@ -216,7 +216,8 @@ if (-not $SkipFunctions) {
 }
 $summaryLines += ''
 $summaryLines += "Trace validity: $($validity.Status.ToUpperInvariant())"
-$lossText = if ($loss.Parsed) { "$($loss.LostEvents) events, $($loss.LostBuffers) buffers" + $(if ($null -ne $loss.LostEventsPct) { " ($($loss.LostEventsPct)% of $($loss.RecordedEvents + $loss.LostEvents) events)" } else { '' }) } else { 'unknown (trace statistics not readable)' }
+$buffersText = if ($null -ne $loss.LostBuffers) { "$($loss.LostBuffers) buffers" } else { 'buffers unknown (lost-buffer count not readable)' }
+$lossText = if ($loss.Parsed) { "$($loss.LostEvents) events, $buffersText" + $(if ($null -ne $loss.LostEventsPct) { " ($($loss.LostEventsPct)% of $($loss.RecordedEvents + $loss.LostEvents) events)" } else { '' }) } else { 'unknown (trace statistics not readable)' }
 $summaryLines += "  Lost: $lossText"
 if ($identity) { $summaryLines += "  Symbol identity: $($identity.Status) - $($identity.Detail)" } else { $summaryLines += '  Symbol identity: not checked (-SkipFunctions)' }
 if ($appUnresolved -and $null -ne $appUnresolved.UnresolvedPct) { $summaryLines += "  Unresolved $ProcessName functions: $($appUnresolved.UnresolvedPct)% of its samples" }

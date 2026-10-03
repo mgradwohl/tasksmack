@@ -82,7 +82,9 @@ function Get-TraceLossSummary {
     return [pscustomobject]@{
         Parsed         = ($null -ne $lostEvents)
         LostEvents     = $lostEvents
-        LostBuffers    = if ($null -ne $lostBuffers) { $lostBuffers } else { 0 }
+        # $null when only the -detail pass ran: it has no buffer count, and an unknown count must
+        # not read as zero buffers lost.
+        LostBuffers    = $lostBuffers
         RecordedEvents = if ($providerRows -gt 0) { $recorded } else { $null }
         LostEventsRatio = $lostRatio
         LostEventsPct  = if ($null -ne $lostRatio) { [math]::Round(100.0 * $lostRatio, 3) } else { $null }
@@ -111,6 +113,9 @@ function Get-PeCodeViewInfo {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     $bytes = [IO.File]::ReadAllBytes($Path)
+    # Every structure is bounds-checked before it is read: a truncated or damaged binary gives
+    # $null (BinaryUnreadable), not an exception that aborts the analysis.
+    $fits = { param([int64]$Offset, [int64]$Length) $Offset -ge 0 -and $Offset + $Length -le $bytes.Length }
     if ($bytes.Length -lt 0x40 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { return $null } # 'MZ'
     $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
     if ($peOffset -le 0 -or $peOffset + 24 -gt $bytes.Length -or [BitConverter]::ToUInt32($bytes, $peOffset) -ne 0x00004550) { return $null } # 'PE\0\0'
@@ -118,8 +123,11 @@ function Get-PeCodeViewInfo {
     $sectionCount = [BitConverter]::ToUInt16($bytes, $fileHeader + 2)
     $optionalSize = [BitConverter]::ToUInt16($bytes, $fileHeader + 16)
     $optional = $fileHeader + 20
+    if (-not (& $fits $optional 2)) { return $null }
     $magic = [BitConverter]::ToUInt16($bytes, $optional)
     $dataDirectories = switch ($magic) { 0x10B { $optional + 96 } 0x20B { $optional + 112 } default { return $null } }
+    # The debug directory (index 6, 8 bytes) must lie inside both the optional header and the file.
+    if ($dataDirectories + 7 * 8 -gt $optional + $optionalSize -or -not (& $fits $dataDirectories (7 * 8))) { return $null }
     $debugRva = [BitConverter]::ToUInt32($bytes, $dataDirectories + 6 * 8) # IMAGE_DIRECTORY_ENTRY_DEBUG
     $debugSize = [BitConverter]::ToUInt32($bytes, $dataDirectories + 6 * 8 + 4)
     if ($debugRva -eq 0 -or $debugSize -eq 0) { return $null }
@@ -129,23 +137,25 @@ function Get-PeCodeViewInfo {
     $debugOffset = $null
     for ($i = 0; $i -lt $sectionCount; $i++) {
         $s = $sections + 40 * $i
+        if (-not (& $fits $s 40)) { return $null }
         $virtualSize = [BitConverter]::ToUInt32($bytes, $s + 8)
         $virtualAddress = [BitConverter]::ToUInt32($bytes, $s + 12)
         $rawSize = [BitConverter]::ToUInt32($bytes, $s + 16)
         $rawPointer = [BitConverter]::ToUInt32($bytes, $s + 20)
         $span = [Math]::Max($virtualSize, $rawSize)
         if ($debugRva -ge $virtualAddress -and $debugRva -lt $virtualAddress + $span) {
-            $debugOffset = $rawPointer + ($debugRva - $virtualAddress)
+            $debugOffset = [int64]$rawPointer + ($debugRva - $virtualAddress)
             break
         }
     }
     if ($null -eq $debugOffset) { return $null }
 
     for ($entry = $debugOffset; $entry + 28 -le $debugOffset + $debugSize; $entry += 28) {
+        if (-not (& $fits $entry 28)) { return $null }
         $type = [BitConverter]::ToUInt32($bytes, $entry + 12)
         $dataSize = [BitConverter]::ToUInt32($bytes, $entry + 16)
         $dataPointer = [BitConverter]::ToUInt32($bytes, $entry + 24)
-        if ($type -eq 2 -and $dataSize -ge 24 -and $dataPointer + 24 -le $bytes.Length) { # IMAGE_DEBUG_TYPE_CODEVIEW
+        if ($type -eq 2 -and $dataSize -ge 24 -and (& $fits $dataPointer 24)) { # IMAGE_DEBUG_TYPE_CODEVIEW
             if ([Text.Encoding]::ASCII.GetString($bytes, $dataPointer, 4) -ne 'RSDS') { continue }
             $guidBytes = New-Object byte[] 16
             [Array]::Copy($bytes, $dataPointer + 4, $guidBytes, 0, 16)
@@ -229,13 +239,20 @@ function Get-TraceValidity {
     if ($null -eq $Loss -or -not $Loss.Parsed) {
         $degraded.Add('Lost-event statistics could not be read; loss is unknown.')
     }
-    elseif ($Loss.LostEvents -gt 0 -or $Loss.LostBuffers -gt 0) {
-        $pctText = if ($null -ne $Loss.LostEventsPct) { " ($($Loss.LostEventsPct)% of events)" } else { '' }
-        $message = "$($Loss.LostEvents) events and $($Loss.LostBuffers) buffers were lost$pctText."
-        if ($Loss.LostBuffers -gt 0) { $invalid.Add("$message Whole buffers were lost, so samples are missing in bursts.") }
-        elseif ($null -eq $Loss.LostEventsRatio) { $invalid.Add("$message The share of events lost could not be computed.") }
-        elseif (100.0 * $Loss.LostEventsRatio -gt $MaxLostEventsPct) { $invalid.Add("$message That is above the $MaxLostEventsPct% limit; the missing samples are not spread evenly, so shares are unreliable.") }
-        else { $degraded.Add($message) }
+    else {
+        $buffersKnown = $null -ne $Loss.LostBuffers
+        if ($Loss.LostEvents -gt 0 -or ($buffersKnown -and $Loss.LostBuffers -gt 0)) {
+            $pctText = if ($null -ne $Loss.LostEventsPct) { " ($($Loss.LostEventsPct)% of events)" } else { '' }
+            $buffersText = if ($buffersKnown) { "$($Loss.LostBuffers) buffers were lost" } else { 'an unknown number of buffers were lost' }
+            $message = "$($Loss.LostEvents) events and $buffersText$pctText."
+            if ($buffersKnown -and $Loss.LostBuffers -gt 0) { $invalid.Add("$message Whole buffers were lost, so samples are missing in bursts.") }
+            elseif ($null -eq $Loss.LostEventsRatio) { $invalid.Add("$message The share of events lost could not be computed.") }
+            elseif (100.0 * $Loss.LostEventsRatio -gt $MaxLostEventsPct) { $invalid.Add("$message That is above the $MaxLostEventsPct% limit; the missing samples are not spread evenly, so shares are unreliable.") }
+            else { $degraded.Add($message) }
+        }
+        if (-not $buffersKnown) {
+            $degraded.Add('The lost-buffer count could not be read (only the -detail statistics were available), so whole-buffer loss was not checked.')
+        }
     }
 
     if ($null -ne $Identity) {
