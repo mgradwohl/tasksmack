@@ -9,6 +9,9 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <format>
+#include <optional>
+#include <string>
 #include <string_view>
 
 namespace App::Detail
@@ -96,6 +99,63 @@ inline constexpr std::array<HistoryOption, 4> HISTORY_OPTIONS = {{
     // NOLINTNEXTLINE(readability-qualified-auto) - iterator type varies by platform
     const auto it = std::ranges::find_if(HISTORY_OPTIONS, [seconds](const auto& opt) { return opt.valueSeconds == seconds; });
     return it != HISTORY_OPTIONS.end() ? static_cast<std::size_t>(it - HISTORY_OPTIONS.begin()) : 2;
+}
+
+// ========================================
+// Combo state and what Apply writes (#1120, #1151)
+// ========================================
+
+/// One Settings combo: the option matching the stored value when the dialog opened (nullopt when
+/// the stored value is none of the options, e.g. interval_ms = 750 in config.toml), and whether the
+/// user has picked an option since.
+struct ComboState
+{
+    std::optional<std::size_t> index;
+    bool touched = false;
+};
+
+/// What Apply should write for a combo: the option the user picked, or nothing for a control left
+/// untouched. Writing every control back used to replace stored values the dialog can't show with
+/// a fallback option (#1120), and to undo a font size changed by Ctrl+= while the dialog was open
+/// (#1151).
+template<typename Option, std::size_t N>
+[[nodiscard]] std::optional<Option> pickedOption(const ComboState& state, const std::array<Option, N>& options)
+{
+    if (!state.touched || !state.index.has_value() || *state.index >= N)
+    {
+        return std::nullopt;
+    }
+    return options[*state.index];
+}
+
+/// Index of the option whose value equals `value`, if there is one.
+template<typename Option, std::size_t N, typename Value, typename Projection>
+[[nodiscard]] std::optional<std::size_t> optionIndexOf(const std::array<Option, N>& options, const Value& value, Projection projection)
+{
+    // NOLINTNEXTLINE(readability-qualified-auto) - iterator type varies by platform
+    const auto it = std::ranges::find(options, value, projection);
+    if (it == options.end())
+    {
+        return std::nullopt;
+    }
+    return static_cast<std::size_t>(it - options.begin());
+}
+
+/// Combo preview for a refresh interval that isn't one of the options.
+[[nodiscard]] inline std::string customRefreshLabel(int ms)
+{
+    return std::format("Custom ({} ms)", ms);
+}
+
+/// Combo preview for a history window that isn't one of the options.
+[[nodiscard]] inline std::string customHistoryLabel(int seconds)
+{
+    if (seconds % 60 == 0)
+    {
+        const int minutes = seconds / 60;
+        return std::format("Custom ({} minute{})", minutes, minutes == 1 ? "" : "s");
+    }
+    return std::format("Custom ({} seconds)", seconds);
 }
 
 } // namespace App::Detail
