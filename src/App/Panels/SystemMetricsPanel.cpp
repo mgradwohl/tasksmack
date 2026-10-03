@@ -7,7 +7,6 @@
 #include "App/Panels/MemorySection.h"
 #include "App/Panels/NetworkSection.h"
 #include "App/ShellMetrics.h"
-#include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/BackgroundSampler.h"
@@ -158,9 +157,8 @@ SystemMetricsPanel::~SystemMetricsPanel()
 
 void SystemMetricsPanel::onAttach()
 {
-    auto& settings = UserConfig::get().settings();
-    m_RefreshInterval = std::chrono::milliseconds(settings.refreshIntervalMs);
-    m_MaxHistorySeconds = Domain::Numeric::toDouble(settings.maxHistorySeconds);
+    // m_RefreshInterval and m_MaxHistorySeconds start at the SamplingConfig defaults; ShellLayer
+    // raises the configured values as events on its first update (#1079).
     m_HistoryScrollSeconds = 0.0;
     m_ForceRefresh = true;
 
@@ -252,6 +250,12 @@ void SystemMetricsPanel::onEvent(Core::Event& event)
             m_IsActiveTab = (e.tabName() == "SystemOverview");
             return false;
         });
+    dispatcher.dispatch<Core::RefreshRateChangedEvent>(
+        [this](Core::RefreshRateChangedEvent& e)
+        {
+            setSamplingInterval(std::chrono::milliseconds(e.getIntervalMs()));
+            return false;
+        });
     dispatcher.dispatch<Core::HistoryDurationChangedEvent>(
         [this](Core::HistoryDurationChangedEvent& e)
         {
@@ -267,10 +271,6 @@ void SystemMetricsPanel::onEvent(Core::Event& event)
             if (m_GPUModel)
             {
                 m_GPUModel->setMaxHistorySeconds(m_MaxHistorySeconds);
-            }
-            if (m_ProcessModel)
-            {
-                m_ProcessModel->setMaxHistorySeconds(m_MaxHistorySeconds);
             }
             m_ForceRefresh = true;
             return false; // Allow others to react
