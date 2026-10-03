@@ -214,6 +214,9 @@ TEST(FormatTest, PercentHelpersTreatNaNAsNoReading)
     EXPECT_EQ(UI::Format::percentToInt(std::numeric_limits<float>::quiet_NaN()), 0);
     EXPECT_EQ(UI::Format::percentToInt(INF), std::numeric_limits<int>::max());
     EXPECT_EQ(UI::Format::percentToInt(-INF), 0);
+    EXPECT_EQ(UI::Format::percentToInt(std::numeric_limits<double>::max()), std::numeric_limits<int>::max());
+    EXPECT_EQ(UI::Format::percentToInt(std::numeric_limits<float>::max()), std::numeric_limits<int>::max());
+    EXPECT_EQ(UI::Format::percentToInt(3.0e9), std::numeric_limits<int>::max()); // beyond a 32-bit long
     EXPECT_EQ(UI::Format::percentCompact(NaN), "N/A");
     EXPECT_EQ(UI::Format::percentCompact(std::numeric_limits<float>::quiet_NaN()), "N/A");
     EXPECT_DOUBLE_EQ(UI::Format::clampPercent(NaN), 0.0);
