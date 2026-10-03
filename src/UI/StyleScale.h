@@ -16,7 +16,7 @@ namespace UI
 inline constexpr float STYLE_REFERENCE_PT = 8.0F;
 
 /// Floor on the scale factor. Only a guard against a degenerate font or display scale producing a
-/// zero-size style; the smallest real preset (Small, 6pt) is 0.75, well above it.
+/// zero-size style; the smallest real preset (Small, 7pt) is 0.875, well above it.
 inline constexpr float STYLE_SCALE_MIN = 0.25F;
 
 /// Factor the ImGuiStyle size literals are multiplied by, so padding, spacing, indents, scrollbars
