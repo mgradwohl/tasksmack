@@ -714,6 +714,14 @@ void Theme::registerTitleFont(ImFont* font)
     m_TitleFont = font;
 }
 
+void Theme::clearFontRegistrations()
+{
+    m_Fonts.fill(FontPair{});
+    m_TitleFont = nullptr;
+    m_ChromeIconFont = nullptr;
+    ++m_FontGeneration;
+}
+
 void Theme::setTitleBarHeightPx(float heightPx)
 {
     if (heightPx > 0.0F)

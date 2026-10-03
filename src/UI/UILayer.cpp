@@ -385,8 +385,11 @@ void UILayer::rebuildForDisplayScaleChange()
 
     // Fonts first, then the style, both before NewFrame(): the text and the chrome around it move
     // together, as the font-size presets do. Nothing keeps an ImFont* across frames except Theme,
-    // which loadAllFonts() re-registers, and with ImGuiBackendFlags_RendererHasTextures the backend
-    // re-uploads the atlas texture on the next render.
+    // whose registrations are dropped before the atlas is cleared -- an optional font that fails to
+    // reload is then null, not dangling -- and re-made by loadAllFonts(). Caches keyed on a font
+    // also see Theme::fontGeneration() advance. With ImGuiBackendFlags_RendererHasTextures the
+    // backend re-uploads the atlas texture on the next render.
+    Theme::get().clearFontRegistrations();
     ImGui::GetIO().Fonts->ClearFonts();
     loadAllFonts(m_AssetsDir, measured);
     // Queues the style rebuild; applyPendingStyleChanges() flushes it straight after this.
