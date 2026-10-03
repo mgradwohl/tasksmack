@@ -54,8 +54,9 @@ class WindowsGPUProbe : public IGPUProbe
     // Two PDH probes, one per sampler: m_PDHProbe for per-process counters (process sampler),
     // m_PDHAdapterProbe for adapter utilization (system sampler). PDH computes rates between
     // consecutive collects on a query, so with one shared query each sampler's reading covered
-    // only the slice since the *other* sampler's collect, and the two threads drove one query
-    // concurrently (#1034). Each query now spans its own sampler's whole interval.
+    // only the slice since the *other* sampler's collect (#1034). Each query now spans its own
+    // sampler's whole interval. (Access was already serialized by GPUModel's m_ProbeMutex; this
+    // is about the measurement window, not thread safety.)
     std::unique_ptr<PDHGPUProbe> m_PDHProbe;
     std::unique_ptr<PDHGPUProbe> m_PDHAdapterProbe;
 

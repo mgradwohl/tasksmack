@@ -178,16 +178,21 @@ void WindowsGPUProbe::mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiC
     {
         return;
     }
+
+    // Collect on this sampler's own query every sample, even when NVML covers every GPU and the
+    // result is not used: PDH rates are computed between consecutive collects, so a query left
+    // idle would make its first use after an NVML gap a warm-up with no data, and the next one
+    // span however long the gap was.
+    static_cast<void>(m_PDHAdapterProbe->readProcessGPUCounters());
     if (allGPUsHaveNVMLUtilization(dxgiCounters, nvmlSourcedIds))
     {
         return;
     }
 
-    // Collect on this sampler's own query, then take the per-adapter figure computed from it:
-    // per engine the sum over processes, then the busiest engine (Task Manager's definition),
-    // keyed by "GPU_0x{HighPart}_0x{LowPart}" -- the same format as GPUInfo::luidId from DXGI.
-    // Summing process totals instead counted parallel engines as if they were serial (#1033).
-    static_cast<void>(m_PDHAdapterProbe->readProcessGPUCounters());
+    // The per-adapter figure from that collect: per engine the sum over processes, then the
+    // busiest engine (Task Manager's definition), keyed by "GPU_0x{HighPart}_0x{LowPart}" -- the
+    // same format as GPUInfo::luidId from DXGI. Summing process totals instead counted parallel
+    // engines as if they were serial (#1033).
     const auto utilizationByLuid = m_PDHAdapterProbe->adapterUtilization();
     if (utilizationByLuid.empty())
     {
