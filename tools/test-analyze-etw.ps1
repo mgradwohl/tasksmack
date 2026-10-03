@@ -112,6 +112,46 @@ foreach ($cut in $cuts.GetEnumerator()) {
     finally { Remove-Item -LiteralPath $truncated -Force -ErrorAction SilentlyContinue }
 }
 
+# The CodeView payload itself cut short, or carrying an empty PDB path, is unreadable too rather
+# than an exception: cut right after its fixed RSDS/GUID/age fields, inside the path, and just
+# before the path's terminating NUL; and blank the path in an otherwise intact copy.
+$pdbBytes = [Text.Encoding]::UTF8.GetBytes($pe.Pdb)
+$rsds = -1
+for ($at = 0; $at -le $hostBytes.Length - 24 - $pdbBytes.Length; $at++) {
+    if ($hostBytes[$at] -ne 0x52 -or $hostBytes[$at + 1] -ne 0x53 -or $hostBytes[$at + 2] -ne 0x44 -or $hostBytes[$at + 3] -ne 0x53) { continue }
+    $same = $true
+    for ($k = 0; $k -lt $pdbBytes.Length -and $same; $k++) { $same = $hostBytes[$at + 24 + $k] -eq $pdbBytes[$k] }
+    if ($same) { $rsds = $at; break }
+}
+Assert-True ($rsds -gt 0) "The host's RSDS record for $($pe.Pdb) was not found"
+$payloadCuts = [ordered]@{
+    'after the CodeView fixed fields' = $rsds + 24
+    'inside the PDB path'             = $rsds + 24 + [int]($pdbBytes.Length / 2)
+    'before the PDB path terminator'  = $rsds + 24 + $pdbBytes.Length
+}
+foreach ($cut in $payloadCuts.GetEnumerator()) {
+    $truncated = [IO.Path]::GetTempFileName()
+    try {
+        [IO.File]::WriteAllBytes($truncated, $hostBytes[0..($cut.Value - 1)])
+        $result = $null
+        try { $result = Get-PeCodeViewInfo -Path $truncated }
+        catch { throw "A PE truncated $($cut.Key) must not throw: $_" }
+        Assert-True ($null -eq $result) "A PE truncated $($cut.Key) must give no record"
+    }
+    finally { Remove-Item -LiteralPath $truncated -Force -ErrorAction SilentlyContinue }
+}
+$blankPath = [IO.Path]::GetTempFileName()
+try {
+    $copy = [byte[]]$hostBytes.Clone()
+    $copy[$rsds + 24] = 0
+    [IO.File]::WriteAllBytes($blankPath, $copy)
+    $result = $null
+    try { $result = Get-PeCodeViewInfo -Path $blankPath }
+    catch { throw "A CodeView record with an empty PDB path must not throw: $_" }
+    Assert-True ($null -eq $result) 'A CodeView record with an empty PDB path must give no record'
+}
+finally { Remove-Item -LiteralPath $blankPath -Force -ErrorAction SilentlyContinue }
+
 # ── Rows, unresolved share and the verdict (#873) ───────────────────────────────────────────
 $functionLines = @(
     'TaskSmack.exe (4000),     80000,       0.03,         TaskSmack.exe!Domain::SystemModel::refresh'

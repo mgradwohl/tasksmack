@@ -155,19 +155,25 @@ function Get-PeCodeViewInfo {
         $type = [BitConverter]::ToUInt32($bytes, $entry + 12)
         $dataSize = [BitConverter]::ToUInt32($bytes, $entry + 16)
         $dataPointer = [BitConverter]::ToUInt32($bytes, $entry + 24)
-        if ($type -eq 2 -and $dataSize -ge 24 -and (& $fits $dataPointer 24)) { # IMAGE_DEBUG_TYPE_CODEVIEW
+        # IMAGE_DEBUG_TYPE_CODEVIEW. The whole declared payload must be in the file: RSDS, GUID, age
+        # and a NUL-terminated, non-empty PDB path. A record cut short anywhere is unreadable.
+        if ($type -eq 2 -and $dataSize -gt 24 -and (& $fits $dataPointer $dataSize)) {
             if ([Text.Encoding]::ASCII.GetString($bytes, $dataPointer, 4) -ne 'RSDS') { continue }
             $guidBytes = New-Object byte[] 16
             [Array]::Copy($bytes, $dataPointer + 4, $guidBytes, 0, 16)
             $age = [BitConverter]::ToUInt32($bytes, $dataPointer + 20)
-            $pathEnd = $dataPointer + 24
-            while ($pathEnd -lt $bytes.Length -and $pathEnd -lt $dataPointer + $dataSize -and $bytes[$pathEnd] -ne 0) { $pathEnd++ }
-            $pdb = [Text.Encoding]::UTF8.GetString($bytes, $dataPointer + 24, $pathEnd - ($dataPointer + 24))
+            $pathStart = [int64]$dataPointer + 24
+            $pathEnd = $pathStart
+            while ($pathEnd -lt $dataPointer + $dataSize -and $bytes[$pathEnd] -ne 0) { $pathEnd++ }
+            if ($pathEnd -ge $dataPointer + $dataSize -or $pathEnd -eq $pathStart) { return $null }
+            $pdb = [Text.Encoding]::UTF8.GetString($bytes, [int]$pathStart, [int]($pathEnd - $pathStart))
+            $pdbLeaf = Split-Path -Leaf $pdb
+            if ([string]::IsNullOrEmpty($pdbLeaf)) { return $null }
             return [pscustomobject]@{
                 Guid    = ([guid]::new($guidBytes)).ToString().ToLowerInvariant()
                 Age     = [int]$age
                 Pdb     = $pdb
-                PdbLeaf = (Split-Path -Leaf $pdb)
+                PdbLeaf = $pdbLeaf
             }
         }
     }
