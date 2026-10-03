@@ -71,6 +71,12 @@ parsePowerStatus(std::uint8_t acLineStatus, std::uint8_t batteryFlag, std::uint8
         // Battery is at 100% - consider it full regardless of AC status
         counters.state = BatteryState::Full;
     }
+    else if (acLineStatus == 1)
+    {
+        // On AC, not charging, below full: held by a charge limit or a paused charger. Linux
+        // reports this as "Not charging"; both map to NotCharging, not Discharging (#1158).
+        counters.state = BatteryState::NotCharging;
+    }
     else
     {
         counters.state = BatteryState::Discharging;

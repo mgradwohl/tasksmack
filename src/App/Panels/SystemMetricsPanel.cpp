@@ -994,6 +994,12 @@ void SystemMetricsPanel::renderOverview()
                 {
                     headerRight = std::format("{} {} 100%", ICON_FA_PLUG, ICON_FA_BATTERY_FULL);
                 }
+                else if (snap.power.isNotCharging)
+                {
+                    // Plugged in but held below full, often by a charge threshold: its real charge,
+                    // not "100%" (#1158).
+                    headerRight = std::format("{} {} {}% (not charging)", ICON_FA_PLUG, batteryIcon, chargeInt);
+                }
                 else if (snap.power.isDischarging)
                 {
                     if (snap.power.timeToEmptySec > 0)

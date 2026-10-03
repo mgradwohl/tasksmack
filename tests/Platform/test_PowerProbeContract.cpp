@@ -53,7 +53,8 @@ TEST(PowerProbeContractTest, ReadReturnsSaneCounters)
     {
         // Battery present: state should be valid
         EXPECT_TRUE(counters.state == BatteryState::Unknown || counters.state == BatteryState::Charging ||
-                    counters.state == BatteryState::Discharging || counters.state == BatteryState::Full);
+                    counters.state == BatteryState::Discharging || counters.state == BatteryState::Full ||
+                    counters.state == BatteryState::NotCharging);
 
         // Charge percent validation if supported
         if (caps.hasChargePercent)

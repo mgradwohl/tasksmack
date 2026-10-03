@@ -692,6 +692,7 @@ PowerStatus SystemModel::computePowerStatus(const Platform::PowerCounters& count
     status.isCharging = (counters.state == Platform::BatteryState::Charging);
     status.isDischarging = (counters.state == Platform::BatteryState::Discharging);
     status.isFull = (counters.state == Platform::BatteryState::Full);
+    status.isNotCharging = (counters.state == Platform::BatteryState::NotCharging);
 
     // Charge percentage
     status.chargePercent = counters.chargePercent;

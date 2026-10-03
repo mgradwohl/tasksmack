@@ -10,8 +10,10 @@
 
 #include <charconv>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -23,17 +25,24 @@ namespace Platform
 namespace
 {
 
-[[nodiscard]] bool isBatteryDevice(const std::string& devicePath)
+/// The first line of a small sysfs attribute, or empty if it can't be read.
+[[nodiscard]] std::string readFirstLine(const std::string& path)
 {
-    std::ifstream typeFile(devicePath + "/type");
-    if (!typeFile.is_open())
+    std::ifstream file(path);
+    std::string line;
+    if (file.is_open())
     {
-        return false;
+        std::getline(file, line);
     }
+    return line;
+}
 
-    std::string type;
-    std::getline(typeFile, type);
-    return type == "Battery";
+/// A power supply that belongs to a peripheral -- a wireless mouse, keyboard, pen or headset --
+/// rather than to the system (sysfs `scope` = "Device"). Its battery is not the system's, and its
+/// charging state says nothing about whether the machine is on AC (#1109).
+[[nodiscard]] bool isPeripheralSupply(const std::string& devicePath)
+{
+    return readFirstLine(devicePath + "/scope") == "Device";
 }
 
 [[nodiscard]] BatteryState parseBatteryState(const std::string& status)
@@ -52,7 +61,9 @@ namespace
     }
     if (status == "Not charging")
     {
-        return BatteryState::Full; // Treat as full if plugged but not charging
+        // Plugged in but not charging: often a charge threshold holding it at, say, 80%. Not Full,
+        // which showed "100%" (#1158); Windows reports the same situation the same way.
+        return BatteryState::NotCharging;
     }
     return BatteryState::Unknown;
 }
@@ -89,7 +100,18 @@ void LinuxPowerProbe::discoverBatteries()
         }
 
         const auto devicePath = entry.path().string();
-        if (isBatteryDevice(devicePath))
+        if (isPeripheralSupply(devicePath))
+        {
+            spdlog::debug("LinuxPowerProbe: ignoring peripheral power supply at {}", devicePath);
+            continue;
+        }
+        const std::string type = readFirstLine(devicePath + "/type");
+        if (type == "Mains" || type == "USB")
+        {
+            m_MainsPaths.push_back(devicePath);
+            continue;
+        }
+        if (type == "Battery")
         {
             const auto deviceName = entry.path().filename().string();
             // Primary system batteries typically start with BAT, CMB (ThinkPad), or similar
@@ -140,7 +162,7 @@ PowerCounters LinuxPowerProbe::read()
     if (m_BatteryPaths.empty())
     {
         counters.state = BatteryState::NotPresent;
-        counters.isOnAc = true; // Assume on AC if no battery
+        counters.isOnAc = readMainsOnline().value_or(true); // Assume on AC if no battery and no adapter says otherwise
         return counters;
     }
 
@@ -161,7 +183,10 @@ void LinuxPowerProbe::readBattery(PowerCounters& counters, const std::string& ba
     // Read battery state
     const auto status = readSysfsFile(batteryPath + "/status");
     counters.state = parseBatteryState(status);
-    counters.isOnAc = (counters.state == BatteryState::Charging || counters.state == BatteryState::Full);
+    // The AC adapter's own `online` is authoritative; the battery's status is only a fallback for
+    // machines that expose no adapter (#1109).
+    counters.isOnAc = readMainsOnline().value_or(counters.state == BatteryState::Charging || counters.state == BatteryState::Full ||
+                                                 counters.state == BatteryState::NotCharging);
 
     // Read charge percentage
     if (m_Capabilities.hasChargePercent)
@@ -205,7 +230,9 @@ void LinuxPowerProbe::readBattery(PowerCounters& counters, const std::string& ba
         // Try power_now first (µW)
         if (std::filesystem::exists(batteryPath + "/power_now"))
         {
-            const auto powerUw = readSysfsUInt64(batteryPath + "/power_now");
+            // Signed: the sysfs ABI lets some drivers report discharge as negative (#1158). The sign
+            // convention here comes from the battery state instead.
+            const auto powerUw = std::abs(readSysfsInt64(batteryPath + "/power_now"));
             counters.powerNowW = static_cast<double>(powerUw) / 1000000.0; // µW to W
 
             // Negate if charging (power going in)
@@ -217,7 +244,7 @@ void LinuxPowerProbe::readBattery(PowerCounters& counters, const std::string& ba
         // Fall back to current_now (µA) - need voltage
         else if (std::filesystem::exists(batteryPath + "/current_now"))
         {
-            const auto currentUa = readSysfsUInt64(batteryPath + "/current_now");
+            const auto currentUa = std::abs(readSysfsInt64(batteryPath + "/current_now")); // Signed, as power_now
             const auto voltageUv = readSysfsUInt64(batteryPath + "/voltage_now", 0);
 
             if (voltageUv > 0)
@@ -325,6 +352,36 @@ std::uint64_t LinuxPowerProbe::readSysfsUInt64(const std::string& path, std::uin
     }
 
     return value;
+}
+
+std::int64_t LinuxPowerProbe::readSysfsInt64(const std::string& path, std::int64_t fallback)
+{
+    const auto str = readSysfsFile(path);
+    std::int64_t value = 0;
+    const auto result = std::from_chars(str.data(), str.data() + str.size(), value);
+    if (str.empty() || result.ec != std::errc{})
+    {
+        return fallback;
+    }
+    return value;
+}
+
+std::optional<bool> LinuxPowerProbe::readMainsOnline() const
+{
+    std::optional<bool> online;
+    for (const auto& mainsPath : m_MainsPaths)
+    {
+        const int value = readSysfsInt(mainsPath + "/online", -1);
+        if (value == 1)
+        {
+            return true;
+        }
+        if (value == 0)
+        {
+            online = false;
+        }
+    }
+    return online;
 }
 
 int LinuxPowerProbe::readSysfsInt(const std::string& path, int fallback)
