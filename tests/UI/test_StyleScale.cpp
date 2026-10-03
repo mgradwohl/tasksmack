@@ -16,7 +16,7 @@ TEST(StyleScaleTest, MediumPresetOnAnUnscaledDisplayLeavesTheStyleUntouched)
 
 TEST(StyleScaleTest, ScaleTracksTheFontPreset)
 {
-    EXPECT_FLOAT_EQ(computeStyleScale(6.0F, 1.0F), 0.75F);  // Small
+    EXPECT_FLOAT_EQ(computeStyleScale(7.0F, 1.0F), 0.875F); // Small
     EXPECT_FLOAT_EQ(computeStyleScale(10.0F, 1.0F), 1.25F); // Large
     EXPECT_FLOAT_EQ(computeStyleScale(16.0F, 1.0F), 2.0F);  // Even Huger
 }
@@ -38,7 +38,7 @@ TEST(StyleScaleTest, SmallPresetIsAllowedToShrinkTheChrome)
     // Regression guard. An earlier version applied the factor through ScaleAllSizes(), whose
     // ImTrunc truncated the 1px border sizes to zero below 1.0, which forced a clamp at 1.0 and
     // left the Small preset with Medium's chrome. Scaling the literals directly removes the need.
-    EXPECT_LT(computeStyleScale(6.0F, 1.0F), 1.0F);
+    EXPECT_LT(computeStyleScale(7.0F, 1.0F), 1.0F);
 }
 
 TEST(StyleScaleTest, DegenerateInputsFallBackInsteadOfCollapsingTheStyle)
@@ -66,7 +66,7 @@ TEST(StyleScaleTest, LineWeightTracksTheStyleScale)
 {
     // A 2px series line beside text 2.8 times the reference size (Extra Large on 175%) (#971).
     EXPECT_FLOAT_EQ(scaledLineWeight(2.0F, computeStyleScale(12.0F, 1.75F)), 5.25F);
-    EXPECT_FLOAT_EQ(scaledLineWeight(2.0F, 0.75F), 1.5F); // Small
+    EXPECT_FLOAT_EQ(scaledLineWeight(2.0F, 0.875F), 1.75F); // Small
 }
 
 TEST(StyleScaleTest, LineWeightIsNeverThinnerThanOnePixel)
