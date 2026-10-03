@@ -24,6 +24,7 @@
 #include <pdhmsg.h>  // PDH_MORE_DATA, PDH_CSTATUS_NEW_DATA, etc.
 // clang-format on
 
+#include <algorithm>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
@@ -73,6 +74,10 @@ struct ParsedInstance
     std::int32_t pid = 0;
     std::string engineType;
     std::string gpuLuid; // LUID as string for GPU identification
+    /// Which engine of the adapter this instance measures: "phys_<n>_eng_<m>" for the full format,
+    /// "engtype_<type>" for the simplified one, empty for memory instances. Utilization is per
+    /// engine, so this is the key aggregation groups by (#1033).
+    std::string engineKey;
     bool valid = false;
 };
 
@@ -185,6 +190,7 @@ inline ParsedInstance parseInstanceName(const std::string& instanceName)
 
     if (suffix.starts_with(physToken))
     {
+        const std::string_view engineKeyStart = suffix.substr(1); // "phys_<n>..." without the leading '_'
         suffix.remove_prefix(physToken.size());
         if (!consumeDigits(suffix))
         {
@@ -207,6 +213,7 @@ inline ParsedInstance parseInstanceName(const std::string& instanceName)
             {
                 return result;
             }
+            result.engineKey = std::string(engineKeyStart.substr(0, engineKeyStart.size() - suffix.size()));
             suffix.remove_prefix(engtypeToken.size());
             // Some drivers (observed on Intel Arc) leave the type blank for engine indices
             // they haven't assigned a name to yet, e.g. "..._eng_10_engtype_" with nothing
@@ -223,6 +230,8 @@ inline ParsedInstance parseInstanceName(const std::string& instanceName)
         // valid instance, unnamed engine type.
         suffix.remove_prefix(engtypeToken.size());
         result.engineType = std::string(suffix);
+        // No engine index in this format; the type is the closest thing to an engine identity.
+        result.engineKey = "engtype_" + result.engineType;
     }
     else
     {
@@ -257,6 +266,47 @@ inline std::string normalizeEngineType(const std::string& rawType)
         return it->second;
     }
     return rawType; // Return as-is if unknown
+}
+
+/// Add one counter instance's utilization to a process's per-engine totals. Instances of the same
+/// engine (the same engineKey) add up; different engines are kept apart.
+inline void addEngineUtilization(std::vector<std::pair<std::string, double>>& byEngine, const std::string& engineKey, double utilization)
+{
+    const auto it = std::ranges::find(byEngine, engineKey, &std::pair<std::string, double>::first);
+    if (it != byEngine.end())
+    {
+        it->second += utilization;
+    }
+    else
+    {
+        byEngine.emplace_back(engineKey, utilization);
+    }
+}
+
+/// A process's GPU utilization: its busiest engine. Engines run in parallel, so summing them is
+/// not a utilization -- a video call with decode 40 %, 3D 20 % and copy 10 % used to read 70 %
+/// where Task Manager reads 40 % (#1033).
+[[nodiscard]] inline double busiestEngineUtilization(const std::vector<std::pair<std::string, double>>& byEngine) noexcept
+{
+    double busiest = 0.0;
+    for (const auto& [engineKey, utilization] : byEngine)
+    {
+        busiest = std::max(busiest, utilization);
+    }
+    return busiest;
+}
+
+/// An adapter's GPU utilization from its engines' totals (each already summed over processes):
+/// the busiest engine, capped at 100 because per-process readings of one engine are sampled
+/// independently and can add up to slightly more than the engine's capacity.
+[[nodiscard]] inline double adapterUtilizationFromEngines(const std::unordered_map<std::string, double>& engineTotals) noexcept
+{
+    double busiest = 0.0;
+    for (const auto& [engineKey, total] : engineTotals)
+    {
+        busiest = std::max(busiest, total);
+    }
+    return std::clamp(busiest, 0.0, 100.0);
 }
 
 } // namespace Platform::PDHGPUProbeImplDetail
@@ -312,6 +362,26 @@ struct PDHGPUProbe::Impl
     std::vector<ProcessGPUCounters> lastValidResults;
     std::chrono::steady_clock::time_point lastValidTimestamp;
 
+    /// How long a cached result may stand in for a failed collect. Beyond this the probe reports
+    /// no data rather than repeating an old busy reading as a frozen flat line (#1034).
+    static constexpr std::chrono::seconds MAX_STALE_RESULTS_AGE{2};
+
+    /// Per-adapter utilization from the most recent successful collect, keyed by "GPU_<luid>": for
+    /// each engine the sum over processes, then the busiest engine -- Task Manager's definition
+    /// (#1033). Empty until a collect has produced utilization.
+    std::unordered_map<std::string, double> lastAdapterUtilization;
+
+    /// lastValidResults if it is recent enough to stand in for a failed collect, else nothing.
+    [[nodiscard]] std::vector<ProcessGPUCounters> freshCachedResults() const
+    {
+        if (lastValidTimestamp.time_since_epoch().count() == 0 ||
+            (std::chrono::steady_clock::now() - lastValidTimestamp) > MAX_STALE_RESULTS_AGE)
+        {
+            return {};
+        }
+        return lastValidResults;
+    }
+
     /// Parsed metadata for a counter instance name. Cached because instance names repeat
     /// every sample and wide->UTF-8 conversion plus parsing is per-name work.
     struct CachedInstance
@@ -319,6 +389,7 @@ struct PDHGPUProbe::Impl
         std::int32_t pid = 0;
         std::string engineType; // Normalized display name; empty for memory instances
         std::string gpuLuid;
+        std::string engineKey; // ParsedInstance::engineKey
         bool valid = false;
     };
 
@@ -484,6 +555,7 @@ struct PDHGPUProbe::Impl
         cached.pid = parsed.pid;
         cached.engineType = parsed.engineType.empty() ? std::string{} : PDHGPUProbeImplDetail::normalizeEngineType(parsed.engineType);
         cached.gpuLuid = parsed.gpuLuid;
+        cached.engineKey = parsed.engineKey;
         cached.valid = parsed.valid;
         return instanceCache.emplace(std::move(wide), std::move(cached)).first->second;
     }

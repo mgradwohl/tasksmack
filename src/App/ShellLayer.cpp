@@ -93,6 +93,10 @@ void ShellLayer::onAttach()
     {
         m_PendingPrivilegeNotice = true;
     }
+
+    // The details pane draws only the series the process probe can fill (#1028, #1035). The
+    // capabilities are fixed for the probe's lifetime, so once is enough.
+    m_ProcessDetailsPanel.setProcessCapabilities(m_ProcessesPanel.processCapabilities());
 }
 
 void ShellLayer::onDetach()
