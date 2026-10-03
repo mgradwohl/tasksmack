@@ -69,9 +69,11 @@ function Get-TraceLossSummary {
             $providerRows++
         }
     }
-    $lostPct = $null
+    # The exact ratio is what limits are compared against; LostEventsPct is rounded for display,
+    # and rounding must not carry a value just over a limit back under it.
+    $lostRatio = $null
     if ($null -ne $lostEvents -and ($recorded + $lostEvents) -gt 0) {
-        $lostPct = [math]::Round(100.0 * $lostEvents / ($recorded + $lostEvents), 3)
+        $lostRatio = [double]$lostEvents / ($recorded + $lostEvents)
     }
     # A trace with no loss prints no warning, so a parsed header with no lost-event line means 0.
     if ($null -eq $lostEvents -and $null -ne $lostBuffers) { $lostEvents = 0 }
@@ -80,7 +82,8 @@ function Get-TraceLossSummary {
         LostEvents     = $lostEvents
         LostBuffers    = if ($null -ne $lostBuffers) { $lostBuffers } else { 0 }
         RecordedEvents = if ($providerRows -gt 0) { $recorded } else { $null }
-        LostEventsPct  = $lostPct
+        LostEventsRatio = $lostRatio
+        LostEventsPct  = if ($null -ne $lostRatio) { [math]::Round(100.0 * $lostRatio, 3) } else { $null }
     }
 }
 
@@ -176,6 +179,13 @@ function Test-SymbolIdentity {
         return [pscustomobject]@{ Status = 'NotInTrace'; Detail = "The trace recorded no image with $ExpectedPdbLeaf."; TraceCandidates = 0 }
     }
     $match = $candidates | Where-Object { $_.Guid -eq $BinaryInfo.Guid -and $_.Age -eq $BinaryInfo.Age } | Select-Object -First 1
+    # The dbgid listing covers every image in the system-wide trace, not just the analyzed process,
+    # so if more than one build with this PDB name ran, a match cannot say it is the analyzed one.
+    $distinctBuilds = @($candidates | ForEach-Object { "$($_.Guid)/$($_.Age)" } | Sort-Object -Unique)
+    if ($match -and $distinctBuilds.Count -gt 1) {
+        $captured = ($candidates | Sort-Object Guid, Age -Unique | ForEach-Object { "{$($_.Guid)} age $($_.Age)" }) -join ', '
+        return [pscustomobject]@{ Status = 'Ambiguous'; Detail = "The trace recorded $($distinctBuilds.Count) different builds with $ExpectedPdbLeaf ($captured). The symbol directory's binary is one of them, but which one the analyzed process ran cannot be told from the trace's image list."; TraceCandidates = $candidates.Count }
+    }
     if ($match) {
         return [pscustomobject]@{ Status = 'Match'; Detail = "Signature {$($BinaryInfo.Guid)} age $($BinaryInfo.Age) matches the captured image."; TraceCandidates = $candidates.Count }
     }
@@ -196,6 +206,7 @@ function Get-UnresolvedShare {
         Module          = $Module
         WeightUs        = $total
         UnresolvedUs    = $unresolved
+        UnresolvedRatio = if ($total -gt 0) { [double]$unresolved / $total } else { $null }
         UnresolvedPct   = if ($total -gt 0) { [math]::Round(100.0 * $unresolved / $total, 2) } else { $null }
     }
 }
@@ -220,8 +231,8 @@ function Get-TraceValidity {
         $pctText = if ($null -ne $Loss.LostEventsPct) { " ($($Loss.LostEventsPct)% of events)" } else { '' }
         $message = "$($Loss.LostEvents) events and $($Loss.LostBuffers) buffers were lost$pctText."
         if ($Loss.LostBuffers -gt 0) { $invalid.Add("$message Whole buffers were lost, so samples are missing in bursts.") }
-        elseif ($null -eq $Loss.LostEventsPct) { $invalid.Add("$message The share of events lost could not be computed.") }
-        elseif ($Loss.LostEventsPct -gt $MaxLostEventsPct) { $invalid.Add("$message That is above the $MaxLostEventsPct% limit; the missing samples are not spread evenly, so shares are unreliable.") }
+        elseif ($null -eq $Loss.LostEventsRatio) { $invalid.Add("$message The share of events lost could not be computed.") }
+        elseif (100.0 * $Loss.LostEventsRatio -gt $MaxLostEventsPct) { $invalid.Add("$message That is above the $MaxLostEventsPct% limit; the missing samples are not spread evenly, so shares are unreliable.") }
         else { $degraded.Add($message) }
     }
 
@@ -236,9 +247,10 @@ function Get-TraceValidity {
         }
     }
 
-    if ($null -ne $AppUnresolved -and $null -ne $AppUnresolved.UnresolvedPct -and $AppUnresolved.UnresolvedPct -gt 0) {
+    # Compared on the raw weight and exact ratio, not the rounded percentage.
+    if ($null -ne $AppUnresolved -and $AppUnresolved.UnresolvedUs -gt 0 -and $null -ne $AppUnresolved.UnresolvedRatio) {
         $message = "$($AppUnresolved.UnresolvedPct)% of $($AppUnresolved.Module)'s sampled weight has no resolved function."
-        if ($AppUnresolved.UnresolvedPct -gt $MaxUnresolvedPct) { $invalid.Add("$message Above the $MaxUnresolvedPct% limit.") }
+        if (100.0 * $AppUnresolved.UnresolvedRatio -gt $MaxUnresolvedPct) { $invalid.Add("$message Above the $MaxUnresolvedPct% limit.") }
         else { $degraded.Add($message) }
     }
 
@@ -291,8 +303,12 @@ $script:EtwPathPatterns = @('ntoskrnl.exe!Etwp*', 'ntoskrnl.exe!PerfInfoLogSysCa
 
 function Get-EtwOverhead {
     # Instrumentation overhead within the target process (#931): the share of its sampled weight
-    # spent in ETW's logging path. Reported as unavailable, not as a low share, when the kernel's
-    # functions did not resolve, since unresolved frames cannot match the patterns at all.
+    # spent in ETW's logging path. Unresolved kernel frames cannot match the patterns, yet any of
+    # them could be ETW logging, so:
+    #   - every kernel sample resolved   -> Measured, one share;
+    #   - some did not                   -> Bounded: no single share, only the range from "none of
+    #                                       the unresolved weight is ETW" to "all of it is";
+    #   - too few resolved to be useful  -> SymbolsUnavailable.
     param(
         [AllowEmptyCollection()][object[]]$FunctionRows,
         [int]$Top = 10,
@@ -306,12 +322,20 @@ function Get-EtwOverhead {
 
     $status = 'Measured'
     $note = $null
+    $minPct = $null
+    $maxPct = $null
     if ($processWeight -le 0) {
         $status = 'NoSamples'; $note = 'The process has no sampled weight in this range.'
     }
-    elseif ($kernel.WeightUs -gt 0 -and $kernelResolvedPct -lt $MinKernelResolvedPct) {
+    elseif ($kernel.WeightUs -gt 0 -and 100.0 * (1.0 - $kernel.UnresolvedRatio) -lt $MinKernelResolvedPct) {
         $status = 'SymbolsUnavailable'
         $note = "Only $kernelResolvedPct% of ntoskrnl.exe's sampled weight resolved to functions, so the ETW-path share cannot be measured. Check access to the Microsoft symbol server."
+    }
+    elseif ($kernel.UnresolvedUs -gt 0) {
+        $status = 'Bounded'
+        $minPct = [math]::Round(100.0 * $etwWeight / $processWeight, 2)
+        $maxPct = [math]::Round(100.0 * ($etwWeight + $kernel.UnresolvedUs) / $processWeight, 2)
+        $note = "$($kernel.UnresolvedUs) us of ntoskrnl.exe's samples did not resolve and could be ETW logging, so the share is between $minPct% and $maxPct%."
     }
 
     $topRows = @($etwRows | Sort-Object Weight -Descending | Select-Object -First $Top | ForEach-Object { [pscustomobject]@{ Function = $_.Symbol; WeightUs = $_.Weight } })
@@ -319,10 +343,13 @@ function Get-EtwOverhead {
         Status               = $status
         Note                 = $note
         ProcessWeightUs      = $processWeight
-        EtwPathWeightUs      = if ($status -eq 'Measured') { $etwWeight } else { $null }
+        EtwPathWeightUs      = if ($status -in 'Measured', 'Bounded') { $etwWeight } else { $null }
         EtwPathSharePct      = if ($status -eq 'Measured') { [math]::Round(100.0 * $etwWeight / $processWeight, 2) } else { $null }
+        EtwPathShareMinPct   = $minPct
+        EtwPathShareMaxPct   = $maxPct
+        KernelUnresolvedUs   = $kernel.UnresolvedUs
         KernelResolvedPct    = $kernelResolvedPct
         EtwPathPatterns      = $script:EtwPathPatterns
-        TopEtwPathFunctions  = if ($status -eq 'Measured') { $topRows } else { @() }
+        TopEtwPathFunctions  = if ($status -in 'Measured', 'Bounded') { $topRows } else { @() }
     }
 }

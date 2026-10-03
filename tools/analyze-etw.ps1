@@ -258,6 +258,9 @@ if ($Overhead) {
     if ($overheadResult.Status -eq 'Measured') {
         $summaryLines += "Instrumentation overhead: $($overheadResult.EtwPathSharePct)% of $ProcessName's sampled CPU is ETW's logging path ($([math]::Round($overheadResult.EtwPathWeightUs / 1000.0, 1)) ms of $([math]::Round($overheadResult.ProcessWeightUs / 1000.0, 1)) ms; kernel symbols $($overheadResult.KernelResolvedPct)% resolved)"
     }
+    elseif ($overheadResult.Status -eq 'Bounded') {
+        $summaryLines += "Instrumentation overhead: between $($overheadResult.EtwPathShareMinPct)% and $($overheadResult.EtwPathShareMaxPct)% of $ProcessName's sampled CPU is ETW's logging path - $($overheadResult.Note)"
+    }
     else {
         $summaryLines += "Instrumentation overhead: $($overheadResult.Status) - $($overheadResult.Note)"
     }

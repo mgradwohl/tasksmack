@@ -50,6 +50,13 @@ Assert-True ($mismatch.Status -eq 'Mismatch' -and $mismatch.Detail -like '*diffe
 $newerAge = [pscustomobject]@{ Guid = '917b0f96-811d-35c3-4c4c-44205044422e'; Age = 2; PdbLeaf = 'TaskSmack.pdb' }
 Assert-True ((Test-SymbolIdentity -BinaryInfo $newerAge -TraceIds $ids -ExpectedPdbLeaf 'TaskSmack.pdb').Status -eq 'Mismatch') 'The age is part of the identity'
 Assert-True ((Test-SymbolIdentity -BinaryInfo $sameBuild -TraceIds $ids -ExpectedPdbLeaf 'Other.pdb').Status -eq 'NotInTrace') 'An image the trace never loaded'
+# Two builds of TaskSmack ran during the system-wide trace: matching one of them cannot say it is
+# the analyzed process's.
+$twoBuilds = $ids + @([pscustomobject]@{ Guid = '00000000-1111-2222-3333-444444444444'; Age = 1; Pdb = 'D:\other\TaskSmack.pdb'; PdbLeaf = 'TaskSmack.pdb' })
+$ambiguous = Test-SymbolIdentity -BinaryInfo $sameBuild -TraceIds $twoBuilds -ExpectedPdbLeaf 'TaskSmack.pdb'
+Assert-True ($ambiguous.Status -eq 'Ambiguous' -and $ambiguous.Detail -like '*2 different builds*') "Two builds must be Ambiguous, got $($ambiguous.Status)"
+$sameTwice = $ids + @($ids[1])
+Assert-True ((Test-SymbolIdentity -BinaryInfo $sameBuild -TraceIds $sameTwice -ExpectedPdbLeaf 'TaskSmack.pdb').Status -eq 'Match') 'The same build loaded twice is still a Match'
 Assert-True ((Test-SymbolIdentity -BinaryInfo $null -TraceIds $ids -ExpectedPdbLeaf 'TaskSmack.pdb').Status -eq 'BinaryUnreadable') 'No CodeView record'
 
 # A real PE file: this PowerShell host carries a CodeView record; a text file does not.
@@ -80,23 +87,40 @@ Assert-True ($byPid.Count -eq 1 -and $byPid[0].Weight -eq 99999) 'Filtering by P
 $unresolved = Get-UnresolvedShare -FunctionRows $rows -Module 'TaskSmack.exe'
 Assert-True ($unresolved.WeightUs -eq 100000 -and $unresolved.UnresolvedPct -eq 20) "Unresolved share $($unresolved.UnresolvedPct), expected 20"
 
-$clean = [pscustomobject]@{ Parsed = $true; LostEvents = 0; LostBuffers = 0; RecordedEvents = 1000; LostEventsPct = 0 }
+$clean = [pscustomobject]@{ Parsed = $true; LostEvents = 0; LostBuffers = 0; RecordedEvents = 1000; LostEventsRatio = 0.0; LostEventsPct = 0 }
 $match = [pscustomobject]@{ Status = 'Match'; Detail = 'ok' }
-$allResolved = [pscustomobject]@{ Module = 'TaskSmack.exe'; UnresolvedPct = 0 }
+$allResolved = [pscustomobject]@{ Module = 'TaskSmack.exe'; UnresolvedUs = 0; UnresolvedRatio = 0.0; UnresolvedPct = 0 }
 Assert-True ((Get-TraceValidity -Loss $clean -Identity $match -AppUnresolved $allResolved).Status -eq 'Valid') 'A clean trace is Valid'
 
-$fewLost = [pscustomobject]@{ Parsed = $true; LostEvents = 5; LostBuffers = 0; RecordedEvents = 1000; LostEventsPct = 0.5 }
+$fewLost = [pscustomobject]@{ Parsed = $true; LostEvents = 5; LostBuffers = 0; RecordedEvents = 1000; LostEventsRatio = 0.005; LostEventsPct = 0.5 }
+# Just over the limit: 100,004 of 10,000,000 is 1.00004%, which rounds to 1.000 for display but must
+# still be Invalid -- limits compare the exact ratio.
+$justOver = Get-TraceLossSummary -Lines @('Total # Lost Buffers : 0', 'Total # Lost Events  : 100004', '{2cb15d1d-5fc1-11d2-abe1-00a0c911f518}        9899996         1  Image')
+Assert-True ($justOver.LostEventsPct -eq 1.0) "Display rounding: $($justOver.LostEventsPct)"
+Assert-True ((Get-TraceValidity -Loss $justOver -Identity $match -AppUnresolved $allResolved).Status -eq 'Invalid') 'Loss just over the limit must be Invalid despite rounding'
 Assert-True ((Get-TraceValidity -Loss $fewLost -Identity $match -AppUnresolved $allResolved).Status -eq 'Degraded') 'A little loss is Degraded'
-$manyLost = [pscustomobject]@{ Parsed = $true; LostEvents = 336273; LostBuffers = 0; RecordedEvents = 3000000; LostEventsPct = 10.08 }
+$manyLost = [pscustomobject]@{ Parsed = $true; LostEvents = 336273; LostBuffers = 0; RecordedEvents = 3000000; LostEventsRatio = 0.1008; LostEventsPct = 10.08 }
 $verdict = Get-TraceValidity -Loss $manyLost -Identity $match -AppUnresolved $allResolved
 Assert-True ($verdict.Status -eq 'Invalid' -and ($verdict.Invalid -join ' ') -like '*336273 events*') 'Heavy loss is Invalid, with the count'
-$lostBuffer = [pscustomobject]@{ Parsed = $true; LostEvents = 0; LostBuffers = 1; RecordedEvents = 1000; LostEventsPct = 0 }
+$lostBuffer = [pscustomobject]@{ Parsed = $true; LostEvents = 0; LostBuffers = 1; RecordedEvents = 1000; LostEventsRatio = 0.0; LostEventsPct = 0 }
 Assert-True ((Get-TraceValidity -Loss $lostBuffer -Identity $match -AppUnresolved $allResolved).Status -eq 'Invalid') 'Any lost buffer is Invalid'
 Assert-True ((Get-TraceValidity -Loss $clean -Identity $mismatch -AppUnresolved $allResolved).Status -eq 'Degraded') 'A mismatch whose functions resolved anyway (via the image''s PDB path) is flagged, not Invalid'
 Assert-True ((Get-TraceValidity -Loss $clean -Identity $mismatch -AppUnresolved $unresolved).Status -eq 'Invalid') 'A mismatch that left functions unresolved is Invalid through the unresolved share'
 Assert-True ((Get-TraceValidity -Loss $clean -Identity ([pscustomobject]@{ Status = 'NotInTrace'; Detail = 'x' }) -AppUnresolved $allResolved).Status -eq 'Degraded') 'Unverified identity is Degraded'
 Assert-True ((Get-TraceValidity -Loss $clean -Identity $match -AppUnresolved $unresolved).Status -eq 'Invalid') '20% unresolved is above the 10% limit'
 Assert-True ((Get-TraceValidity -Loss $clean -Identity $match -AppUnresolved $unresolved -MaxUnresolvedPct 25).Status -eq 'Degraded') 'The limit is configurable'
+# 1,000,040 of 10,000,000 us unresolved is 10.0004%: rounds to 10 but is over the 10% limit.
+$justOverUnresolved = Get-UnresolvedShare -Module 'TaskSmack.exe' -FunctionRows @(
+    [pscustomobject]@{ Weight = 8999960; Symbol = 'TaskSmack.exe!main' }
+    [pscustomobject]@{ Weight = 1000040; Symbol = 'TaskSmack.exe!"Unknown"' })
+Assert-True ($justOverUnresolved.UnresolvedPct -eq 10) "Display rounding: $($justOverUnresolved.UnresolvedPct)"
+Assert-True ((Get-TraceValidity -Loss $clean -Identity $match -AppUnresolved $justOverUnresolved).Status -eq 'Invalid') 'Unresolved just over the limit must be Invalid despite rounding'
+# A sliver of unresolved weight that rounds to 0.00% is still flagged.
+$sliver = Get-UnresolvedShare -Module 'TaskSmack.exe' -FunctionRows @(
+    [pscustomobject]@{ Weight = 100000000; Symbol = 'TaskSmack.exe!main' }
+    [pscustomobject]@{ Weight = 1; Symbol = 'TaskSmack.exe!"Unknown"' })
+Assert-True ($sliver.UnresolvedPct -eq 0 -and (Get-TraceValidity -Loss $clean -Identity $match -AppUnresolved $sliver).Status -eq 'Degraded') 'A rounded-to-zero unresolved share is still Degraded'
+Assert-True ((Get-TraceValidity -Loss $clean -Identity $ambiguous -AppUnresolved $allResolved).Status -eq 'Degraded') 'Ambiguous identity is Degraded'
 Assert-True ((Get-TraceValidity -Loss $unparsed -Identity $null -AppUnresolved $null).Status -eq 'Degraded') 'Unknown loss is not silently Valid'
 
 # ── Kernel symbols only (#931) ──────────────────────────────────────────────────────────────
@@ -129,5 +153,22 @@ $noKernelSymbols = @(Parse-XperfRows -Lines @(
 $unavailable = Get-EtwOverhead -FunctionRows $noKernelSymbols
 Assert-True ($unavailable.Status -eq 'SymbolsUnavailable' -and $null -eq $unavailable.EtwPathSharePct) 'Missing kernel symbols must not report a share'
 Assert-True ((Get-EtwOverhead -FunctionRows @()).Status -eq 'NoSamples') 'No samples'
+
+# Partly resolved kernel: 18,000 us of named non-ETW kernel samples, 2,000 us unknown. Any of the
+# unknown could be ETW logging, so no single share -- only bounds (0% to 2,000/100,000).
+$partial = @(Parse-XperfRows -Lines @(
+    'TaskSmack.exe (4000),     80000,       0.03,         TaskSmack.exe!main'
+    'TaskSmack.exe (4000),     18000,       0.01,         ntoskrnl.exe!KiPageFault'
+    'TaskSmack.exe (4000),      2000,       0.00,         ntoskrnl.exe!"Unknown"'
+) -TargetProcessName 'TaskSmack.exe')
+$bounded = Get-EtwOverhead -FunctionRows $partial
+Assert-True ($bounded.Status -eq 'Bounded' -and $null -eq $bounded.EtwPathSharePct) "Partial kernel resolution must not report a single share: $($bounded.Status) $($bounded.EtwPathSharePct)"
+Assert-True ($bounded.EtwPathShareMinPct -eq 0 -and $bounded.EtwPathShareMaxPct -eq 2) "Bounds $($bounded.EtwPathShareMinPct)-$($bounded.EtwPathShareMaxPct)"
+# Even a sliver of unresolved kernel weight that rounds the resolved share to 100% is Bounded.
+$tiny = @(Parse-XperfRows -Lines @(
+    'TaskSmack.exe (4000),  10000000,       0.03,         ntoskrnl.exe!KiPageFault'
+    'TaskSmack.exe (4000),         1,       0.00,         ntoskrnl.exe!"Unknown"'
+) -TargetProcessName 'TaskSmack.exe')
+Assert-True ((Get-EtwOverhead -FunctionRows $tiny).Status -eq 'Bounded') 'Any unresolved kernel weight is Bounded'
 
 Write-Host 'analyze-etw tests passed'
