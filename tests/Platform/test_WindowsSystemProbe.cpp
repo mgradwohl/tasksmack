@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <thread>
 
@@ -63,6 +64,35 @@ TEST(WindowsSystemProbeTest, ReadReturnsValidCounters)
     EXPECT_GT(counters.hostname.size(), 0ULL);
     EXPECT_GT(counters.cpuModel.size(), 0ULL);
     EXPECT_GT(counters.cpuCoreCount, 0U);
+}
+
+TEST(WindowsSystemProbeTest, NetworkTotalIsTheSumOfTheReportedInterfaces)
+{
+    // NDIS filter rows repeat their adapter's counters; counting them made Total several times the
+    // real traffic (#1030). With them skipped, Total is exactly the interfaces the probe reports,
+    // and no two reported interfaces carry the same non-zero counters.
+    WindowsSystemProbe probe;
+    const auto counters = probe.read();
+
+    std::uint64_t rx = 0;
+    std::uint64_t tx = 0;
+    for (std::size_t i = 0; i < counters.networkInterfaces.size(); ++i)
+    {
+        const auto& a = counters.networkInterfaces[i];
+        rx += a.rxBytes;
+        tx += a.txBytes;
+        for (std::size_t j = i + 1; j < counters.networkInterfaces.size(); ++j)
+        {
+            const auto& b = counters.networkInterfaces[j];
+            if (a.rxBytes != 0 || a.txBytes != 0)
+            {
+                EXPECT_FALSE(a.rxBytes == b.rxBytes && a.txBytes == b.txBytes)
+                    << "'" << a.name << "' and '" << b.name << "' report identical counters (a filter row counted twice?)";
+            }
+        }
+    }
+    EXPECT_EQ(counters.netRxBytes, rx);
+    EXPECT_EQ(counters.netTxBytes, tx);
 }
 
 TEST(WindowsSystemProbeTest, UptimeIncreases)

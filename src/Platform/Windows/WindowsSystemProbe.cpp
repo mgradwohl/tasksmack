@@ -422,6 +422,17 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
             continue;
         }
 
+        // Skip NDIS filter-module rows. GetIfTable2 lists one per filter bound to an adapter (WFP
+        // MAC layer, QoS Packet Scheduler, Native WiFi filter, Hyper-V switch extensions), each
+        // repeating its adapter's byte counters. Counting them made Total several times the real
+        // traffic: on a Wi-Fi laptop with WSL, Wi-Fi was counted 5 times and the WSL vEthernet
+        // adapter 4 times, 49.0 GB of lifetime bytes against 11.8 GB actual (#1030). The UI already
+        // hid these rows from the interface table; they now never reach it or the Total.
+        if (row.InterfaceAndOperStatusFlags.FilterInterface != 0)
+        {
+            continue;
+        }
+
         // 64-bit byte counters - no more 32-bit overflow issues
         const uint64_t rxBytes = row.InOctets;
         const uint64_t txBytes = row.OutOctets;
