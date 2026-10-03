@@ -19,32 +19,20 @@ function Parse-XperfRows {
         [int]$TargetProcessId
     )
 
-    $pattern = if ($TargetProcessId -ne 0) {
-        '^\s*(?:.+?) \(' + [regex]::Escape([string]$TargetProcessId) + '\),\s*([0-9]+),\s*([0-9.]+),\s*(.+)$'
-    }
-    else {
-        '^\s*' + [regex]::Escape($TargetProcessName) + ' \(([0-9]+)\),\s*([0-9]+),\s*([0-9.]+),\s*(.+)$'
-    }
+    # The name is always required, the PID too when one is given: the symbol-identity and
+    # unresolved-share checks are keyed to TargetProcessName, so a PID that belongs to another
+    # executable must select nothing rather than another process's samples.
+    $pidPattern = if ($TargetProcessId -ne 0) { [regex]::Escape([string]$TargetProcessId) } else { '[0-9]+' }
+    $pattern = '^\s*' + [regex]::Escape($TargetProcessName) + ' \((' + $pidPattern + ')\),\s*([0-9]+),\s*([0-9.]+),\s*(.+)$'
 
     foreach ($line in $Lines) {
         if ($line -match $pattern) {
-            if ($TargetProcessId -ne 0) {
-                [pscustomobject]@{
-                    ProcessName = $TargetProcessName
-                    ProcessId   = $TargetProcessId
-                    Weight      = [int64]$Matches[1]
-                    Usage       = [double]$Matches[2]
-                    Symbol      = $Matches[3].Trim()
-                }
-            }
-            else {
-                [pscustomobject]@{
-                    ProcessName = $TargetProcessName
-                    ProcessId   = [int]$Matches[1]
-                    Weight      = [int64]$Matches[2]
-                    Usage       = [double]$Matches[3]
-                    Symbol      = $Matches[4].Trim()
-                }
+            [pscustomobject]@{
+                ProcessName = $TargetProcessName
+                ProcessId   = [int]$Matches[1]
+                Weight      = [int64]$Matches[2]
+                Usage       = [double]$Matches[3]
+                Symbol      = $Matches[4].Trim()
             }
         }
     }

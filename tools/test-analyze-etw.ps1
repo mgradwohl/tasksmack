@@ -163,8 +163,14 @@ $functionLines = @(
 )
 $rows = @(Parse-XperfRows -Lines $functionLines -TargetProcessName 'TaskSmack.exe')
 Assert-True ($rows.Count -eq 5) "Expected the 5 TaskSmack rows, got $($rows.Count)"
-$byPid = @(Parse-XperfRows -Lines $functionLines -TargetProcessName 'TaskSmack.exe' -TargetProcessId 77)
-Assert-True ($byPid.Count -eq 1 -and $byPid[0].Weight -eq 99999) 'Filtering by PID'
+$byPid = @(Parse-XperfRows -Lines $functionLines -TargetProcessName 'TaskSmack.exe' -TargetProcessId 4000)
+Assert-True ($byPid.Count -eq 5 -and $byPid[0].ProcessId -eq 4000) 'Filtering by PID'
+$otherByPid = @(Parse-XperfRows -Lines $functionLines -TargetProcessName 'Other.exe' -TargetProcessId 77)
+Assert-True ($otherByPid.Count -eq 1 -and $otherByPid[0].Weight -eq 99999) 'Filtering by PID and the matching name'
+# A PID that belongs to another executable selects nothing: the identity and unresolved checks are
+# keyed to the name, so Other.exe's fully unresolved samples must not pass as TaskSmack.exe's.
+$mismatchedPid = @(Parse-XperfRows -Lines $functionLines -TargetProcessName 'TaskSmack.exe' -TargetProcessId 77)
+Assert-True ($mismatchedPid.Count -eq 0) "A PID of another process must select no rows, got $($mismatchedPid.Count)"
 
 $unresolved = Get-UnresolvedShare -FunctionRows $rows -Module 'TaskSmack.exe'
 Assert-True ($unresolved.WeightUs -eq 100000 -and $unresolved.UnresolvedPct -eq 20) "Unresolved share $($unresolved.UnresolvedPct), expected 20"

@@ -175,6 +175,9 @@ if ($PSBoundParameters.ContainsKey('ProcessId')) {
 
 $moduleRows = @(Parse-XperfRows @parseParams)
 if ($moduleRows.Count -eq 0) {
+    if ($PSBoundParameters.ContainsKey('ProcessId')) {
+        throw "No rows found for $ProcessName with PID $ProcessId in $moduleReport (the PID must belong to -ProcessName)"
+    }
     throw "No rows found for $ProcessName in $moduleReport"
 }
 
