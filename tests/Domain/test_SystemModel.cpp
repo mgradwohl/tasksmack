@@ -253,6 +253,30 @@ TEST(SystemModelTest, SwapMetricsCalculatedCorrectly)
     EXPECT_DOUBLE_EQ(snap.swapUsedPercent, 25.0);
 }
 
+TEST(SystemModelTest, SwapFreeAboveTotalReadsAsZeroUsed)
+{
+    // A probe once reported more free swap than total (#1026); the unsigned subtraction then
+    // wrapped to ~2^64 and swap read 100 %. Used must clamp at 0 instead.
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+    const auto mem = makeMemoryCounters(8ULL * 1024 * 1024 * 1024,
+                                        4ULL * 1024 * 1024 * 1024,
+                                        0,
+                                        0,
+                                        0,
+                                        4ULL * 1024 * 1024 * 1024, // 4 GB swap total
+                                        5ULL * 1024 * 1024 * 1024  // 5 GB "free"
+    );
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), mem));
+
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+
+    const auto snap = model.snapshot();
+    EXPECT_EQ(snap.swapUsedBytes, 0ULL);
+    EXPECT_DOUBLE_EQ(snap.swapUsedPercent, 0.0);
+}
+
 TEST(SystemModelTest, SwapZeroWhenNoSwap)
 {
     auto probe = std::make_unique<MockSystemProbe>();
