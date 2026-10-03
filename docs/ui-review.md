@@ -697,7 +697,7 @@ Key ratios: primary/window 10.59, primary/plot 8.32, muted/plot 6.36, disabled/w
 - **Strengths:** Strong text (primary 10.6, muted 8.1); all series but fan above 3:1 on #292E42.
 - **Weak combinations / concerns:**
   - Grid lines (`ui.window.border` #29303E80 over #292E42) are **1.01:1** -- invisible.
-  - `text_disabled` #565F89 2.76; `charts.gpu.fan` #565F89 2.17; selected row (#292E4280) 1.12; the selected tab is the window colour #1A1B26 and unselected tabs are darker #16161E (1.05) -- and the overline that the theme sets (#7AA2F7) is never drawn (F9).
+  - `text_disabled` #565F89 2.76; `charts.gpu.fan` #565F89 2.17; selected row (#292E4280) 1.12; the selected tab is the window colour #1A1B26 and unselected tabs are darker #16161E (1.05) -- and the overline that the theme sets (#7AA2F7) is never drawn (UI-001).
   - `charts.gpu.utilization` == `charts.gpu.decoder` #BB9AF7.
   - CVD is the weakest of the dark themes: amber #E0AF68 vs green #9ECE6A **deutan 0.9** (warning vs success, disk-sleep vs running, progress medium vs low, GPU temperature vs power, GDI vs Handles); blue #7AA2F7 vs purple #BB9AF7 **protan 0.3** (Threads vs Page Faults, GPU clock vs util); `charts.net_tx` #E0AF68 vs `charts.io_write` #FF9E64 deutan 1.4 on the same tab.
 - **Seen in screenshot:** theme-tokyo-night.png, tour/tokyo-0*.png: green CPU Total bar beside a blue Total line and a blue *User* bar; Memory 'Swap' drawn in the error pink #F7768E; Battery, Memory Used and Handles all the same green; in tour/tokyo-23-maximized.png the CPU tooltip lists Total and User in the same blue and Idle in near-invisible grey.
@@ -882,7 +882,7 @@ The table gives each theme's hue family for each semantic key. Bold marks the ou
 | Selection / accent | theme accent tint | ≥ 1.35:1 against the row, with an accent edge |
 | Load ramp | green → amber → red | in every theme; Monochrome expresses it through lightness plus low-chroma hues |
 
-3. **Pairs that appear together** (user/system, send/receive, read/write, warning/success, Threads/Faults) differ by ΔL* ≥ 20, with ΔE2000 ≥ 15 for normal vision and ≥ 8 under protan/deutan simulation.
+3. **Pairs that appear together** (user/system, send/receive, read/write, warning/success, Threads/Faults) differ by ΔL* ≥ 20, with ΔE2000 ≥ 12 for normal vision and ≥ 8 under protan/deutan simulation.
 4. **Contrast floors:**
    - primary text 7:1 (4.5 minimum) on the window, plot and selected row;
    - muted text 4.5:1 on the plot;
