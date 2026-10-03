@@ -181,6 +181,7 @@ void SystemMetricsPanel::onAttach()
 
     Domain::SamplerConfig samplerCfg;
     samplerCfg.interval = m_RefreshInterval;
+    samplerCfg.firstSampleAfterInterval = true; // seeded synchronously above (#1102)
     m_Sampler = std::make_unique<Domain::BackgroundSampler>(samplerCfg);
     m_Sampler->addSamplable(m_Model);
     m_Sampler->addSamplable(m_StorageModel);
@@ -223,6 +224,13 @@ void SystemMetricsPanel::onDetach()
 
 void SystemMetricsPanel::setSamplingInterval(std::chrono::milliseconds interval)
 {
+    // ShellLayer raises the configured interval once at startup (#1079); when it matches what is
+    // already running there's nothing to apply, and forcing an extra sample then just landed one a
+    // few ms after the last (#1102).
+    if (interval == m_RefreshInterval)
+    {
+        return;
+    }
     m_RefreshInterval = interval;
     if (m_Sampler)
     {
@@ -259,7 +267,12 @@ void SystemMetricsPanel::onEvent(Core::Event& event)
     dispatcher.dispatch<Core::HistoryDurationChangedEvent>(
         [this](Core::HistoryDurationChangedEvent& e)
         {
-            m_MaxHistorySeconds = Domain::Numeric::toDouble(e.getSeconds());
+            const double seconds = Domain::Numeric::toDouble(e.getSeconds());
+            if (seconds == m_MaxHistorySeconds)
+            {
+                return false; // unchanged (the startup event, #1102): nothing to trim or refresh
+            }
+            m_MaxHistorySeconds = seconds;
             if (m_Model)
             {
                 m_Model->setMaxHistorySeconds(m_MaxHistorySeconds);

@@ -361,7 +361,8 @@ void ProcessesPanel::onAttach()
     m_ProcessModel->refresh();
 
     // Wire sampler: polls the ProcessModel on each interval tick.
-    Domain::SamplerConfig const samplerCfg{m_AppliedSamplerInterval};
+    // Seeded synchronously above, so the first background sample waits a full interval (#1102).
+    Domain::SamplerConfig const samplerCfg{.interval = m_AppliedSamplerInterval, .firstSampleAfterInterval = true};
     m_Sampler = std::make_unique<Domain::BackgroundSampler>(samplerCfg);
     m_Sampler->addSamplable(m_ProcessModel);
     m_Sampler->start();
@@ -379,6 +380,11 @@ void ProcessesPanel::onAttach()
 
 void ProcessesPanel::setSamplingInterval(std::chrono::milliseconds interval)
 {
+    // Unchanged (the startup event, #1079): don't force a sample right after the last one (#1102).
+    if (interval == m_RefreshInterval)
+    {
+        return;
+    }
     m_RefreshInterval = interval;
     m_AppliedSamplerInterval = interval;
     if (m_Sampler)
@@ -418,6 +424,7 @@ void ProcessesPanel::onEvent(Core::Event& event)
         {
             const bool wasActive = m_IsActiveTab;
             m_IsActiveTab = (e.tabName() == "Processes");
+            m_ProcessDataShown = AdaptiveIntervalUtils::showsProcessData(e.tabName());
             if (!wasActive && m_IsActiveTab)
             {
                 // Catch up quickly when tab becomes visible again.
@@ -479,7 +486,7 @@ void ProcessesPanel::onUpdate(float deltaTime)
     const bool throttleForInteraction = interactionRedrawActive || (this->m_InteractionHoldSeconds > 0.0F);
     m_ProcessModel->setInteractionActive(throttleForInteraction);
     const auto desiredInterval =
-        AdaptiveIntervalUtils::chooseAdaptiveProcessInterval(m_RefreshInterval, m_IsActiveTab, throttleForInteraction);
+        AdaptiveIntervalUtils::chooseAdaptiveProcessInterval(m_RefreshInterval, m_ProcessDataShown, throttleForInteraction);
     if (desiredInterval != m_AppliedSamplerInterval)
     {
         m_AppliedSamplerInterval = desiredInterval;
