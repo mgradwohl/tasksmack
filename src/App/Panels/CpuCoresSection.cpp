@@ -39,6 +39,7 @@ using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderChartGrid;
 using UI::Widgets::renderHistoryWithNowBars;
 using UI::Widgets::smoothTowards;
+using UI::Widgets::tailAlignedSpan;
 
 /// Minimum plot height a core cell will shrink to before the grid prefers scrolling over squashing
 /// charts flat. The same font-relative floor the Overview's and the per-disk charts hold
@@ -215,8 +216,9 @@ void renderCpuCoresSection(RenderContext& ctx)
                             std::vector<float> timeData = buildTimeAxis(timestamps, samples.size(), nowSeconds);
                             const float plotHeight = std::max(minCorePlotHeight(), cellHeight - measuredOverhead);
 
-                            // Capture necessary variables by value/reference for lambda
-                            const auto& sampleData = samples;
+                            // timeData holds the newest min(samples, timestamps) entries; take the same
+                            // tail of the samples, so index i is the same sample in both.
+                            const auto sampleData = tailAlignedSpan(samples, timeData.size()).values;
                             const auto& themeRef = theme;
                             const auto& axisCfg = axisConfig;
 
