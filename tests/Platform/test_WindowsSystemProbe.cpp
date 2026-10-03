@@ -70,6 +70,23 @@ TEST(WindowsSystemProbeTest, ReadReturnsValidCounters)
     EXPECT_GT(counters.cpuCoreCount, 0U);
 }
 
+TEST(WindowsSystemProbeTest, NetworkTotalIsTheSumOfTheReportedInterfaces)
+{
+    // Total is exactly the interfaces the probe reports (#1030). Which rows are reported -- filter
+    // rows excluded -- is tested with controlled rows in isCountedNetworkRow's tests below.
+    WindowsSystemProbe probe;
+    const auto counters = probe.read();
+
+    std::uint64_t rx = 0;
+    std::uint64_t tx = 0;
+    for (const auto& iface : counters.networkInterfaces)
+    {
+        rx += iface.rxBytes;
+        tx += iface.txBytes;
+    }
+    EXPECT_EQ(counters.netRxBytes, rx);
+    EXPECT_EQ(counters.netTxBytes, tx);
+}
 TEST(WindowsSystemProbeTest, SwapIsThePageFileAndNeverExceedsIt)
 {
     // Swap used to come from the commit figures and underflowed to ~100 % (#1026). Whatever this
@@ -196,6 +213,31 @@ TEST(WindowsSystemProbeMathTest, ProcessorTimesClampComponentsThatOvershoot)
     EXPECT_EQ(dpcAboveBusy.irq, 60ULL);
     EXPECT_EQ(dpcAboveBusy.softirq, 40ULL);
     EXPECT_EQ(dpcAboveBusy.system, 0ULL);
+}
+
+TEST(WindowsSystemProbeMathTest, FilterRowsAreNotCountedWhateverTheirType)
+{
+    // Filter-module rows carry their adapter's type and counters; the flag alone excludes them.
+    EXPECT_FALSE(isCountedNetworkRow(IF_TYPE_WIFI, true));
+    EXPECT_FALSE(isCountedNetworkRow(IF_TYPE_ETHERNET, true));
+    EXPECT_FALSE(isCountedNetworkRow(IF_TYPE_VIRTUAL, true));
+}
+
+TEST(WindowsSystemProbeMathTest, RealInterfacesCountEvenWithIdenticalCounters)
+{
+    // Two distinct non-filter adapters can legitimately report the same bytes (e.g. both received
+    // the same broadcast and sent nothing); the decision depends only on type and the filter flag.
+    for (const std::uint32_t type : {IF_TYPE_ETHERNET, IF_TYPE_WIFI, IF_TYPE_TUNNEL_LINK, IF_TYPE_PPP_LINK, IF_TYPE_VIRTUAL})
+    {
+        EXPECT_TRUE(isCountedNetworkRow(type, false)) << type;
+    }
+}
+
+TEST(WindowsSystemProbeMathTest, LoopbackAndOtherTypesAreNotCounted)
+{
+    EXPECT_FALSE(isCountedNetworkRow(IF_TYPE_LOOPBACK, false));
+    EXPECT_FALSE(isCountedNetworkRow(1, false)); // IF_TYPE_OTHER
+    EXPECT_FALSE(isCountedNetworkRow(0, false));
 }
 
 TEST(WindowsSystemProbeTest, UptimeIncreases)
