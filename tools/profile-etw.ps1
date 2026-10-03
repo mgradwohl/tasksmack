@@ -269,7 +269,7 @@ function Invoke-ProfileTarget {
             if (-not $result.EndReason) { $result.EndReason = 'exited' }
         }
         else {
-            $result.EndReason = 'still running after the 4-hour wait'
+            $result.EndReason = Get-UnfinishedTargetReason -DurationSeconds $DurationSeconds
         }
     }
     else {
@@ -292,7 +292,7 @@ function Invoke-ProfileTarget {
 
 function Assert-TargetSucceeded {
     # After the manifest is written: a benchmark run that exited nonzero, or an app still running
-    # when the trace was stopped (past the 4-hour interactive wait), fails the capture -- the
+    # when the trace was stopped (see Get-UnfinishedTargetReason), fails the capture -- the
     # trace ended before the workload did. (The app's exit code is not checked: -DurationSeconds
     # ends it with a forced stop.)
     param($Target)
@@ -400,6 +400,9 @@ if ($Role -eq 'Collector') {
 
 # ── ElevatedRun role: the opt-in fully-elevated capture (-ElevatedTarget) ────────────────────
 if ($Role -eq 'ElevatedRun') {
+    # Without the switch the artifacts and manifest would be named and labelled as a normal-user
+    # capture while the target runs elevated.
+    if (-not $ElevatedTarget) { throw 'The elevated-run role requires -ElevatedTarget, so an elevated capture is never labelled as a normal-user one.' }
     if (-not (Test-IsAdministrator)) { throw 'The elevated-run role must run elevated.' }
     Start-Transcript -Path $childLogPath -Force | Out-Null
     try {
@@ -476,28 +479,37 @@ else {
     $collector = Start-Process -FilePath $hostExe -Verb RunAs -ArgumentList (ConvertTo-CommandLine $argList) -WorkingDirectory $repoRoot -PassThru
     $null = $collector.Handle
     $target = $null
+    $pendingError = $null
     try {
         Wait-CollectorMarker -Path (Join-Path $controlDir 'collector-started.json') -TimeoutSeconds 120 -Collector $collector -What 'ETW collector'
         Write-Host "ETW collector started; trace: $tracePath"
         $target = Invoke-ProfileTarget
+    }
+    catch {
+        # Held until the collector's status is known, so a collector failure is reported with it.
+        $pendingError = $_
     }
     finally {
         # Always ask the collector to stop, so a failed target still leaves a saved trace.
         Set-Content -LiteralPath (Join-Path $controlDir 'stop-requested') -Value (Get-Date).ToUniversalTime().ToString('o') -Encoding utf8
         $collectorExited = $collector.WaitForExit(600000)
     }
+    $collectorFailure = $null
     if (-not $collectorExited) {
         # Its exit code is not available while it runs; say so rather than read a stale value.
         "EXIT_CODE=still running" | Add-Content -Path $launcherLogPath -Encoding utf8
-        throw "The elevated ETW collector did not exit within 10 minutes of the stop request; the trace may not be saved. Check $childLogPath, and close the collector window when it finishes.$(Get-CollectorErrorDetail -ControlDirectory $controlDir)"
+        $collectorFailure = "The elevated ETW collector did not exit within 10 minutes of the stop request; the trace may not be saved. Check $childLogPath, and close the collector window when it finishes.$(Get-CollectorErrorDetail -ControlDirectory $controlDir)"
     }
-    "EXIT_CODE=$($collector.ExitCode)" | Add-Content -Path $launcherLogPath -Encoding utf8
-    if ($null -ne $target) {
-        Write-ProfileManifest -Target $target -BenchmarkMatches $benchmarkMatches -CollectorElevated $true
+    else {
+        "EXIT_CODE=$($collector.ExitCode)" | Add-Content -Path $launcherLogPath -Encoding utf8
+        if ($null -ne $target) {
+            Write-ProfileManifest -Target $target -BenchmarkMatches $benchmarkMatches -CollectorElevated $true
+        }
+        if ($collector.ExitCode -ne 0) {
+            $collectorFailure = "Elevated ETW collector failed with exit code $($collector.ExitCode).$(Get-CollectorErrorDetail -ControlDirectory $controlDir) Check $launcherLogPath and $childLogPath."
+        }
     }
-    if ($collector.ExitCode -ne 0) {
-        throw "Elevated ETW collector failed with exit code $($collector.ExitCode).$(Get-CollectorErrorDetail -ControlDirectory $controlDir) Check $launcherLogPath and $childLogPath."
-    }
+    Assert-CollectorOutcome -PendingError $pendingError -CollectorFailure $collectorFailure
     Remove-Item -LiteralPath $controlDir -Recurse -Force -ErrorAction SilentlyContinue
     Assert-TargetSucceeded $target
 }

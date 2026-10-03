@@ -121,11 +121,32 @@ try {
     Set-Content -LiteralPath $marker -Value '{}'
     Wait-CollectorMarker -Path $marker -TimeoutSeconds 1
 
+    # An app still running at the end names the wait that actually ran: 30 s after a forced stop
+    # for a fixed-duration run, the 4-hour wait only for an interactive one.
+    Assert-True ((Get-UnfinishedTargetReason -DurationSeconds 45) -like '*forced stop*') 'Fixed-duration runs must not report the 4-hour wait'
+    Assert-True ((Get-UnfinishedTargetReason -DurationSeconds 0) -like '*4-hour wait*') 'Interactive runs report the 4-hour wait'
+
+    # A collector failure is never hidden by an earlier error from the orchestrator: both are
+    # reported, and the original exception is kept as the inner one.
+    $pending = try { throw 'target launch failed' } catch { $_ }
+    Assert-CollectorOutcome -PendingError $null -CollectorFailure $null
+    Assert-Throws { Assert-CollectorOutcome -PendingError $null -CollectorFailure 'collector exit 7' } 'collector exit 7'
+    Assert-Throws { Assert-CollectorOutcome -PendingError $pending -CollectorFailure $null } 'target launch failed'
+    $combined = try { Assert-CollectorOutcome -PendingError $pending -CollectorFailure 'collector exit 7'; $null } catch { $_ }
+    Assert-True ($null -ne $combined) 'A pending error with a collector failure must throw'
+    Assert-True ($combined.ToString() -like '*target launch failed*' -and $combined.ToString() -like '*collector exit 7*') "Both failures must be reported: $combined"
+    Assert-True ($combined.Exception.InnerException.Message -eq 'target launch failed') 'The pending exception must be kept'
+
+    # The elevated-run role cannot run without -ElevatedTarget, which names and labels the capture
+    # as elevated. Checked before elevation, so this needs no elevated token.
+    $profileScript = Join-Path $PSScriptRoot 'profile-etw.ps1'
+    $unlabelled = & $hostExe -NoProfile -File $profileScript app -Role ElevatedRun -SkipBuild -OutputDirectory $root 2>&1 | Out-String
+    Assert-True ($LASTEXITCODE -ne 0 -and $unlabelled -like '*requires -ElevatedTarget*') "Expected the -ElevatedTarget refusal: $unlabelled"
+
     # ── Role lifecycle (#872): profile-etw.ps1 itself, against a stub wpr first on PATH ──────
     # The collector and the elevated-terminal refusal need an elevated token (GitHub's Windows
     # runners have one); the stub records every call and writes the trace file on -stop, so no
     # ETW session is started.
-    $profileScript = Join-Path $PSScriptRoot 'profile-etw.ps1'
     $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     if (-not $elevated) {
         Write-Host 'SKIP: profile-etw.ps1 role lifecycle tests need an elevated token.'

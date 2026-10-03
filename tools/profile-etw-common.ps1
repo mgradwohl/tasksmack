@@ -138,6 +138,29 @@ function Resolve-CaptureOutputDirectory {
     return $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)
 }
 
+function Get-UnfinishedTargetReason {
+    # Why an app was still running when the script stopped waiting for it. A fixed-duration run
+    # waits 30 s after its forced stop; only an interactive run waits the 4 hours.
+    param([int]$DurationSeconds)
+    if ($DurationSeconds -gt 0) { return 'still running 30 s after the forced stop at -DurationSeconds' }
+    return 'still running after the 4-hour wait'
+}
+
+function Assert-CollectorOutcome {
+    # Fails the capture once the collector has been told to stop and its status is known. An
+    # error from waiting for the collector or running the target is rethrown, with any collector
+    # failure added so it is never hidden behind that error; otherwise a collector failure alone
+    # is thrown.
+    param([System.Management.Automation.ErrorRecord]$PendingError, [string]$CollectorFailure)
+    if ($null -ne $PendingError) {
+        if ($CollectorFailure) {
+            throw [System.Exception]::new("$($PendingError.Exception.Message) The ETW collector also failed: $CollectorFailure", $PendingError.Exception)
+        }
+        throw $PendingError
+    }
+    if ($CollectorFailure) { throw $CollectorFailure }
+}
+
 function Get-CollectorErrorDetail {
     # The error the collector recorded in the control directory, as " Collector error: ...", or
     # an empty string. Its console window closes when it exits, so this is the only place it
