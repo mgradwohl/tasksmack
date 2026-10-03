@@ -412,7 +412,7 @@ TEST(BackgroundSamplerTest, VeryShortIntervalIsClamped)
     sampler.addSamplable(samplable);
 
     sampler.start();
-    std::this_thread::sleep_for(100ms);
+    samplable->waitForSamples(1);
     sampler.stop();
 
     EXPECT_GE(samplable->getSampleCount(), 1);
@@ -433,7 +433,9 @@ TEST(BackgroundSamplerTest, StartStopStartCycle)
     {
         sampler.start();
         EXPECT_TRUE(sampler.isRunning());
-        std::this_thread::sleep_for(100ms);
+        // Wait for this run's sample rather than sleeping a fixed time, which a loaded
+        // sanitizer runner can outlast (#1136).
+        samplable->waitForSamples(i + 1);
         sampler.stop();
         EXPECT_FALSE(sampler.isRunning());
     }

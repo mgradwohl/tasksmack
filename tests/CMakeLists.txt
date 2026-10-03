@@ -127,6 +127,19 @@ else()
 endif()
 
 # Test executable with all test sources
+# Every tests/**/test_*.cpp must be named in this file (in a platform branch if it is platform
+# specific); otherwise it is never built and its tests silently never run, as test_Numeric.cpp
+# wasn't for months (#1135).
+file(GLOB_RECURSE TASKSMACK_TEST_FILES RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/test_*.cpp")
+file(READ "${CMAKE_CURRENT_LIST_FILE}" TASKSMACK_TESTS_CMAKELISTS)
+foreach(test_file IN LISTS TASKSMACK_TEST_FILES)
+    string(FIND "${TASKSMACK_TESTS_CMAKELISTS}" "${test_file}" test_file_position)
+    if(test_file_position EQUAL -1)
+        message(FATAL_ERROR "tests/${test_file} is not listed in tests/CMakeLists.txt, so it would never be built or run")
+    endif()
+endforeach()
+
 add_executable(TaskSmackTests
     test_main.cpp
     Core/test_Application.cpp
@@ -138,6 +151,7 @@ add_executable(TaskSmackTests
     Core/test_Window.cpp
     Core/test_WindowEvents.cpp
     Domain/test_History.cpp
+    Domain/test_Numeric.cpp
     Domain/test_SingleLineText.cpp
     Domain/test_ProcessModel.cpp
     Domain/test_GPUModel.cpp
