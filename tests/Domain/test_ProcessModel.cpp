@@ -39,6 +39,28 @@ using TestMocks::MockProcessProbe;
 namespace
 {
 
+// Deterministic time source for tests that need a known interval between refreshes,
+// so rates and power are exact instead of depending on how long a sleep took (#1136).
+class ManualClock
+{
+  public:
+    [[nodiscard]] Domain::ProcessModel::NowFunction now()
+    {
+        return [this]
+        {
+            return m_Time;
+        };
+    }
+
+    void advance(Domain::ProcessModel::Clock::duration duration)
+    {
+        m_Time += duration;
+    }
+
+  private:
+    Domain::ProcessModel::Clock::time_point m_Time;
+};
+
 // Test constants for overflow scenarios
 constexpr uint64_t OVERFLOW_TEST_MARGIN = 10000; // Distance from max value for overflow tests
 
@@ -1205,11 +1227,11 @@ TEST(ProcessModelTest, PowerUsageCalculationFromEnergyDelta)
     rawProbe->withProcess(100, "power_proc").withPowerUsage(100, 1'000'000);
     rawProbe->setTotalCpuTime(100000);
 
-    Domain::ProcessModel model(std::move(probe));
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
     model.refresh();
 
-    // Wait a bit to ensure time delta > 0 (simulate 0.1 second passing)
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    clock.advance(std::chrono::milliseconds(100));
 
     // Second refresh: energy increased by 100,000 microjoules (0.1 joule)
     // If 100ms passed, power = 0.1J / 0.1s = 1W
@@ -1219,10 +1241,8 @@ TEST(ProcessModelTest, PowerUsageCalculationFromEnergyDelta)
 
     auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 1);
-    // Power should be approximately 1 watt (0.1J / 0.1s)
-    // Allow some tolerance due to timing variations
-    EXPECT_GT(snaps[0].powerWatts, 0.5);
-    EXPECT_LT(snaps[0].powerWatts, 2.0);
+    // 0.1 J over exactly 0.1 s
+    EXPECT_DOUBLE_EQ(snaps[0].powerWatts, 1.0);
 }
 
 TEST(ProcessModelTest, PowerUsageWithZeroEnergyDelta)
@@ -1234,10 +1254,11 @@ TEST(ProcessModelTest, PowerUsageWithZeroEnergyDelta)
     rawProbe->withProcess(100, "idle_proc").withPowerUsage(100, 1'000'000);
     rawProbe->setTotalCpuTime(100000);
 
-    Domain::ProcessModel model(std::move(probe));
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
     model.refresh();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    clock.advance(std::chrono::milliseconds(50));
 
     // Energy unchanged
     rawProbe->withProcess(100, "idle_proc").withPowerUsage(100, 1'000'000);
@@ -1258,10 +1279,11 @@ TEST(ProcessModelTest, PowerUsageHandlesEnergyCounterReset)
     rawProbe->withProcess(100, "proc").withPowerUsage(100, 5'000'000);
     rawProbe->setTotalCpuTime(100000);
 
-    Domain::ProcessModel model(std::move(probe));
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
     model.refresh();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    clock.advance(std::chrono::milliseconds(50));
 
     // Counter decreased (reset or wrap) - should be handled gracefully
     rawProbe->withProcess(100, "proc").withPowerUsage(100, 1'000'000);
@@ -1281,10 +1303,11 @@ TEST(ProcessModelTest, PowerUsageWithoutEnergyData)
     rawProbe->withProcess(100, "no_power_proc");
     rawProbe->setTotalCpuTime(100000);
 
-    Domain::ProcessModel model(std::move(probe));
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
     model.refresh();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    clock.advance(std::chrono::milliseconds(50));
 
     rawProbe->withProcess(100, "no_power_proc");
     rawProbe->setTotalCpuTime(200000);
@@ -1524,11 +1547,11 @@ TEST(ProcessModelTest, IoRatesCalculatedFromDeltas)
     rawProbe->setCounters({c1});
     rawProbe->setTotalCpuTime(100000);
 
-    Domain::ProcessModel model(std::move(probe));
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
     model.refresh();
 
-    // Sleep a bit to ensure time delta
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    clock.advance(std::chrono::milliseconds(100));
 
     // Second sample: process has read 3 MB total (delta = 2 MB), written 1.5 MB total (delta = 1 MB)
     Platform::ProcessCounters c2 = makeCounter(100, "test_proc", 'R', 2000, 1000);
@@ -1542,17 +1565,9 @@ TEST(ProcessModelTest, IoRatesCalculatedFromDeltas)
     auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 1);
 
-    // Should have positive rates (exact value depends on elapsed time)
-    EXPECT_GT(snaps[0].ioReadBytesPerSec, 0.0);
-    EXPECT_GT(snaps[0].ioWriteBytesPerSec, 0.0);
-
-    // Read delta = 2 MB, write delta = 1 MB
-    // With ~100ms elapsed, we expect roughly:
-    // Read: 2 MB / 0.1s = ~20 MB/s
-    // Write: 1 MB / 0.1s = ~10 MB/s
-    // Allow wide tolerance for timing variations
-    EXPECT_GT(snaps[0].ioReadBytesPerSec, 1024.0 * 1024.0); // At least 1 MB/s
-    EXPECT_GT(snaps[0].ioWriteBytesPerSec, 512.0 * 1024.0); // At least 512 KB/s
+    // Read delta = 2 MB, write delta = 1 MB, over exactly 0.1 s
+    EXPECT_DOUBLE_EQ(snaps[0].ioReadBytesPerSec, 20.0 * 1024.0 * 1024.0);
+    EXPECT_DOUBLE_EQ(snaps[0].ioWriteBytesPerSec, 10.0 * 1024.0 * 1024.0);
 }
 
 TEST(ProcessModelTest, IoRatesHandleNoActivity)
@@ -1567,10 +1582,11 @@ TEST(ProcessModelTest, IoRatesHandleNoActivity)
     rawProbe->setCounters({c1});
     rawProbe->setTotalCpuTime(100000);
 
-    Domain::ProcessModel model(std::move(probe));
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
     model.refresh();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    clock.advance(std::chrono::milliseconds(50));
 
     // Second sample: no change in I/O counters
     Platform::ProcessCounters c2 = makeCounter(100, "idle_proc", 'S', 1000, 500);
@@ -1604,10 +1620,11 @@ TEST(ProcessModelTest, IoRatesForMultipleProcesses)
     rawProbe->setCounters({c1a, c1b});
     rawProbe->setTotalCpuTime(100000);
 
-    Domain::ProcessModel model(std::move(probe));
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
     model.refresh();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    clock.advance(std::chrono::milliseconds(100));
 
     // Second sample: proc_a read 1 MB more, proc_b wrote 2 MB more
     Platform::ProcessCounters c2a = makeCounter(100, "proc_a", 'R', 1500, 0);
@@ -1639,13 +1656,13 @@ TEST(ProcessModelTest, IoRatesForMultipleProcesses)
     ASSERT_NE(snapA, nullptr);
     ASSERT_NE(snapB, nullptr);
 
-    // proc_a should have read rate > 0, write rate = 0
-    EXPECT_GT(snapA->ioReadBytesPerSec, 0.0);
+    // proc_a read 1 MB in 0.1 s, wrote nothing
+    EXPECT_DOUBLE_EQ(snapA->ioReadBytesPerSec, 10.0 * 1024.0 * 1024.0);
     EXPECT_DOUBLE_EQ(snapA->ioWriteBytesPerSec, 0.0);
 
-    // proc_b should have write rate > 0, read rate = 0
+    // proc_b wrote 2 MB in 0.1 s, read nothing
     EXPECT_DOUBLE_EQ(snapB->ioReadBytesPerSec, 0.0);
-    EXPECT_GT(snapB->ioWriteBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snapB->ioWriteBytesPerSec, 20.0 * 1024.0 * 1024.0);
 }
 
 TEST(ProcessModelTest, IoRatesHandleCounterWrapAround)
@@ -1661,10 +1678,11 @@ TEST(ProcessModelTest, IoRatesHandleCounterWrapAround)
     rawProbe->setCounters({c1});
     rawProbe->setTotalCpuTime(100000);
 
-    Domain::ProcessModel model(std::move(probe));
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
     model.refresh();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    clock.advance(std::chrono::milliseconds(50));
 
     // Second sample: counter appears to have decreased (wraparound or reset)
     // Our implementation should handle this gracefully by showing 0 rate
@@ -1697,10 +1715,11 @@ TEST(ProcessModelTest, NewProcessWithSamePidGetsZeroIoRates)
     rawProbe->setCounters({c1});
     rawProbe->setTotalCpuTime(100000);
 
-    Domain::ProcessModel model(std::move(probe));
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
     model.refresh();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    clock.advance(std::chrono::milliseconds(50));
 
     // New process reuses PID 100 but has different startTime
     Platform::ProcessCounters c2 = makeCounter(100, "new_proc", 'R', 100, 50, /*startTime*/ 2000);
@@ -1864,7 +1883,8 @@ TEST(ProcessModelTest, SystemHandleCountHistoryAggregatesAcrossProcesses)
     probe->setTotalCpuTime(100000);
 
     auto* rawProbe = probe.get();
-    Domain::ProcessModel model{std::move(probe)};
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
 
     // First sample — no history entry yet (needs two samples for a delta)
     auto c1 = makeCounter(100, "proc_a", 'R', 1000, 500);
@@ -1874,7 +1894,7 @@ TEST(ProcessModelTest, SystemHandleCountHistoryAggregatesAcrossProcesses)
     rawProbe->setCounters({c1, c2});
     model.refresh();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    clock.advance(std::chrono::milliseconds(10));
 
     c1.userTime += 100;
     c2.userTime += 100;
@@ -1893,14 +1913,15 @@ TEST(ProcessModelTest, SystemHandleCountHistoryAlignedWithTimestamps)
     probe->setTotalCpuTime(100000);
 
     auto* rawProbe = probe.get();
-    Domain::ProcessModel model{std::move(probe)};
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
 
     auto counter = makeCounter(100, "proc_a", 'R', 1000, 500);
     counter.handleCount = 5;
     rawProbe->setCounters({counter});
     model.refresh();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    clock.advance(std::chrono::milliseconds(10));
 
     counter.userTime += 100;
     rawProbe->setCounters({counter});
@@ -1966,7 +1987,8 @@ TEST(ProcessModelTest, PeakRssTracksMaximumMemory)
 
     // Keep raw pointer for test control before moving unique_ptr
     auto* rawProbe = probe.get();
-    Domain::ProcessModel model{std::move(probe)};
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
 
     // Start with 10MB
     auto counter = makeCounter(100, "proc1", 'R', 1000, 500, 1000, 10 * 1024 * 1024);
@@ -1977,7 +1999,7 @@ TEST(ProcessModelTest, PeakRssTracksMaximumMemory)
     ASSERT_EQ(snaps1.size(), 1);
     auto peak1 = snaps1[0].peakMemoryBytes;
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    clock.advance(std::chrono::milliseconds(10));
 
     // Increase to 20MB
     counter.rssBytes = 20 * 1024 * 1024;
@@ -1992,7 +2014,7 @@ TEST(ProcessModelTest, PeakRssTracksMaximumMemory)
     EXPECT_GT(peak2, peak1);
     EXPECT_EQ(peak2, 20 * 1024 * 1024);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    clock.advance(std::chrono::milliseconds(10));
 
     // Decrease to 15MB - peak should stay at 20MB
     counter.rssBytes = 15 * 1024 * 1024;
@@ -2014,7 +2036,8 @@ TEST(ProcessModelTest, PeakRssResetForNewProcess)
 
     // Keep raw pointer for test control before moving unique_ptr
     auto* rawProbe = probe.get();
-    Domain::ProcessModel model{std::move(probe)};
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
 
     // Process with PID 100
     auto counter1 = makeCounter(100, "proc1", 'R', 1000, 500, 1000, 20 * 1024 * 1024);
@@ -2025,7 +2048,7 @@ TEST(ProcessModelTest, PeakRssResetForNewProcess)
     ASSERT_EQ(snaps1.size(), 1);
     EXPECT_EQ(snaps1[0].peakMemoryBytes, 20 * 1024 * 1024);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    clock.advance(std::chrono::milliseconds(10));
 
     // New process with same PID but different start time (PID reuse)
     auto counter2 = makeCounter(100, "proc2", 'R', 500, 250, 2000, 5 * 1024 * 1024);
