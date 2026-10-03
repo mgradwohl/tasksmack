@@ -8,6 +8,7 @@
 // on the next frame. This is that measure-then-fill step, so each tab does not reimplement it.
 
 #include "UI/HistoryPlotHeight.h"
+#include "UI/Theme.h"
 
 #include <imgui.h>
 
@@ -50,7 +51,8 @@ class FillPlotLayout
                                              state.nonPlotHeight,
                                              // Nothing measured yet stays nothing: the first frame
                                              // under-fills (see computeFillPlotHeight()).
-                                             (state.plotCount == 0) ? 0 : state.plotCount + reservedShares))
+                                             (state.plotCount == 0) ? 0 : state.plotCount + reservedShares,
+                                             chartEmPx()))
     {}
 
     ~FillPlotLayout()

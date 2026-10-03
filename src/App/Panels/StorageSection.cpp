@@ -64,7 +64,7 @@ constexpr float MIN_DISK_CELL_WIDTH_EM = 30.0F;
 /// It was a fixed 60px, which at Even Huger is under three lines of axis text.
 [[nodiscard]] float minDiskPlotHeight()
 {
-    return std::floor(UI::Widgets::historyPlotMinHeight(ImGui::GetFontSize()));
+    return std::floor(UI::Widgets::historyPlotMinHeight(ImGui::GetFontSize(), UI::chartEmPx()));
 }
 
 /// Render a single disk cell (label + read/write NowBars + chart). cellHeight is the enclosing
