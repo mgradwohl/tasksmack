@@ -452,11 +452,10 @@ void Application::run()
 
     double lastTime = getTime();
 
-    // The difference is taken in double, then narrowed: a float delta is fine, a float clock is not (#1038).
     const auto computeDeltaTime = [&lastTime]() -> float
     {
         const double currentTime = getTime();
-        const auto deltaTime = static_cast<float>(std::min(currentTime - lastTime, static_cast<double>(MAX_DELTA_TIME)));
+        const float deltaTime = FramePacing::frameDeltaSeconds(lastTime, currentTime, MAX_DELTA_TIME);
         lastTime = currentTime;
         return deltaTime;
     };
@@ -979,11 +978,7 @@ Application& Application::get()
 
 double Application::getTime()
 {
-    // Nanoseconds as a double of seconds: exact to well under a microsecond for centuries of uptime.
-    // This was float(SDL_GetTicks()) / 1000 -- millisecond ticks in a float whose spacing grows with
-    // the value (~7.8 ms after a day, ~31 ms after three), so after a day or two deltaTime and every
-    // NowBar's smoothing were quantised to a few steps (#1038).
-    return static_cast<double>(SDL_GetTicksNS()) / 1.0e9;
+    return FramePacing::ticksNsToSeconds(SDL_GetTicksNS());
 }
 
 /// Set the global application instance for initialization or cleanup.

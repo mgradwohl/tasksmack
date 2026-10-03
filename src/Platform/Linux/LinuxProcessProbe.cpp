@@ -1143,7 +1143,8 @@ void LinuxProcessProbe::attributeNetworkToProcesses(std::vector<ProcessCounters>
     }
 
     // Query all TCP/UDP sockets with their byte counters
-    const std::vector<SocketStats> sockets = stats->queryAllSockets();
+    std::chrono::steady_clock::time_point sampledAt;
+    const std::vector<SocketStats> sockets = stats->queryAllSockets(&sampledAt);
     if (sockets.empty())
     {
         return;
@@ -1211,6 +1212,11 @@ void LinuxProcessProbe::attributeNetworkToProcesses(std::vector<ProcessCounters>
             proc.netReceivedBytes = received;
             proc.netSentBytes = sent;
         }
+        // The socket query is cached (DEFAULT_SOCKET_STATS_CACHE_TTL), so it can be older than this
+        // refresh. Stamp it on every process, with sockets or not, so ProcessModel takes network
+        // rates over the time between real queries rather than between refreshes.
+        proc.netSampleTimeNs =
+            static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(sampledAt.time_since_epoch()).count());
     }
 }
 #endif // TASKSMACK_HAS_NETLINK_SOCKET_STATS

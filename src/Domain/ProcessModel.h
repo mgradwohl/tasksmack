@@ -142,7 +142,9 @@ class ProcessModel : public ISamplable
     {
         Platform::ProcessCounters counters{}; // counters from last refresh (for delta)
         std::uint64_t peakRss = 0;            // tracked peak RSS
-        std::uint64_t generation = 0;         // refresh generation when last seen
+        double netSentBytesPerSec = 0.0;      // last network rates, held while the probe's read is cached
+        double netReceivedBytesPerSec = 0.0;
+        std::uint64_t generation = 0; // refresh generation when last seen
     };
 
     // Key for m_PerProcessState: the exact (pid, startTime) identity, distinct from the

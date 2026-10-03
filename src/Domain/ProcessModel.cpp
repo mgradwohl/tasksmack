@@ -30,6 +30,35 @@
 namespace Domain
 {
 
+namespace
+{
+
+// Any elapsed time below half the minimum configurable refresh interval is treated as "no previous
+// data" for rate purposes (see computeSnapshots()).
+constexpr double MIN_ELAPSED_FOR_RATES = static_cast<double>(Sampling::REFRESH_INTERVAL_MIN_MS) / 2000.0;
+
+// The seconds a process's network byte deltas cover, or nothing when there is no new reading to
+// take a rate from. When the probe stamps its network reads (netSampleTimeNs), that is the time
+// between the two reads, and an unchanged stamp means the probe returned its cached query again.
+// Otherwise the counters were read with each refresh, so it is the refresh interval.
+[[nodiscard]] auto networkElapsedSeconds(const Platform::ProcessCounters& current,
+                                         const Platform::ProcessCounters& previous,
+                                         double refreshElapsedSeconds) -> std::optional<double>
+{
+    if (current.netSampleTimeNs != 0 && previous.netSampleTimeNs != 0)
+    {
+        if (current.netSampleTimeNs <= previous.netSampleTimeNs)
+        {
+            return std::nullopt;
+        }
+        const double seconds = Numeric::toDouble(current.netSampleTimeNs - previous.netSampleTimeNs) / 1.0e9;
+        return seconds >= MIN_ELAPSED_FOR_RATES ? std::optional{seconds} : std::nullopt;
+    }
+    return refreshElapsedSeconds > 0.0 ? std::optional{refreshElapsedSeconds} : std::nullopt;
+}
+
+} // namespace
+
 ProcessModel::ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe, NowFunction now)
     : m_Probe(std::move(probe)), m_Now(std::move(now))
 {
@@ -165,7 +194,6 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         // Note: we zero out elapsed/timeDelta here so computeSnapshot() emits zero
         // rates; we do NOT prevent the history push below (handle counts etc. don't
         // depend on elapsed time and must still be recorded every cycle).
-        constexpr double MIN_ELAPSED_FOR_RATES = static_cast<double>(Sampling::REFRESH_INTERVAL_MIN_MS) / 2000.0;
         if (elapsedSeconds < MIN_ELAPSED_FOR_RATES)
         {
             elapsedSeconds = 0.0;
@@ -226,6 +254,36 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         auto snapshot =
             computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond, elapsedSeconds, timeDeltaUs);
         snapshot.peakMemoryBytes = state.peakRss;
+
+        // Network rates are the byte delta over the last interval (#1036). They were (bytes now -
+        // bytes when first seen) / time since first seen: a lifetime average, so a burst decayed
+        // over minutes and a long-watched process's line barely moved.
+        //  - The interval is the one between the probe's network reads (networkElapsedSeconds): a
+        //    probe may cache its query across refreshes, and a delta over the refresh interval
+        //    would then read 0 for the cached refreshes and several intervals' bytes for the next.
+        //  - While the probe returns the same cached read, the last rate is held, not zeroed.
+        //  - The counters are sums over the process's *live* connections, so a connection closing
+        //    makes the sum drop: counterRate reports 0 for that interval rather than a wrapped or
+        //    negative rate (bytes on the surviving connections in it go uncounted).
+        //  - A rate above the 100 Gbps sanity ceiling -- a connection appearing with traffic from
+        //    before it was first attributed -- is dropped to 0 too.
+        if (previous == nullptr)
+        {
+            state.netSentBytesPerSec = 0.0;
+            state.netReceivedBytesPerSec = 0.0;
+        }
+        else if (const auto netElapsed = networkElapsedSeconds(current, *previous, elapsedSeconds))
+        {
+            const auto netRate = [seconds = *netElapsed](std::uint64_t now, std::uint64_t before)
+            {
+                const double rate = Numeric::counterRate(now, before, seconds);
+                return rate <= Sampling::MAX_SANE_RATE_BPS_DEFAULT ? rate : 0.0;
+            };
+            state.netSentBytesPerSec = netRate(current.netSentBytes, previous->netSentBytes);
+            state.netReceivedBytesPerSec = netRate(current.netReceivedBytes, previous->netReceivedBytes);
+        }
+        snapshot.netSentBytesPerSec = state.netSentBytesPerSec;
+        snapshot.netReceivedBytesPerSec = state.netReceivedBytesPerSec;
 
         newSnapshots.push_back(std::move(snapshot));
 
@@ -754,22 +812,8 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
         snapshot.ioReadBytesPerSec = Numeric::counterRate(current.readBytes, previous->readBytes, elapsedSeconds);
         snapshot.ioWriteBytesPerSec = Numeric::counterRate(current.writeBytes, previous->writeBytes, elapsedSeconds);
         snapshot.pageFaultsPerSec = Numeric::counterRate(current.pageFaultCount, previous->pageFaultCount, elapsedSeconds);
-
-        // Network rates use the same per-interval delta (#1036). They were (bytes now - bytes when
-        // first seen) / time since first seen: a lifetime average, so a burst decayed over minutes
-        // and a long-watched process's line barely moved. The probes' network counters are sums
-        // over the process's *live* TCP connections, so a connection closing makes the sum drop:
-        // counterRate reports 0 for that interval rather than a wrapped or negative rate (bytes on
-        // the surviving connections in that one interval go uncounted). A rate above the 100 Gbps
-        // sanity ceiling -- a connection appearing with traffic from before it was first seen --
-        // is dropped to 0 too.
-        const auto netRate = [elapsedSeconds](std::uint64_t now, std::uint64_t before)
-        {
-            const double rate = Numeric::counterRate(now, before, elapsedSeconds);
-            return rate <= Sampling::MAX_SANE_RATE_BPS_DEFAULT ? rate : 0.0;
-        };
-        snapshot.netSentBytesPerSec = netRate(current.netSentBytes, previous->netSentBytes);
-        snapshot.netReceivedBytesPerSec = netRate(current.netReceivedBytes, previous->netReceivedBytes);
+        // Network rates are computed in computeSnapshots(), which has the per-process state they
+        // need (networkElapsedSeconds, held rates).
     }
 
     if (previous != nullptr && timeDeltaUs > 0)

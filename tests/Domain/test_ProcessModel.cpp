@@ -1044,12 +1044,14 @@ struct NetworkRateFixture
 
     // Advances the clock by @p elapsed (none for the first sample), then samples one process
     // whose open connections have sent and received the given byte totals.
-    auto sample(std::chrono::milliseconds elapsed, std::uint64_t sent, std::uint64_t received) -> Domain::ProcessSnapshot
+    // @p netSampleTimeNs: when the probe read the network counters (0 = with this refresh).
+    auto sample(std::chrono::milliseconds elapsed, std::uint64_t sent, std::uint64_t received, std::uint64_t netSampleTimeNs = 0)
+        -> Domain::ProcessSnapshot
     {
         currentTime += elapsed;
         totalCpuTime += 100000;
         probe->setCounters({});
-        probe->withProcess(100, "network_proc").withNetworkCounters(100, sent, received);
+        probe->withProcess(100, "network_proc").withNetworkCounters(100, sent, received).withNetworkSampleTime(100, netSampleTimeNs);
         probe->setTotalCpuTime(totalCpuTime);
         model->refresh();
         const auto snaps = model->snapshots();
@@ -1118,6 +1120,39 @@ TEST(ProcessModelTest, NetworkRatesZeroForImplausiblyShortInterval)
 
     const auto snap = fixture.sample(std::chrono::milliseconds{1}, 5000, 10000);
     EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 0.0);
+}
+
+TEST(ProcessModelTest, NetworkRatesUseTheProbeReadIntervalWhenItCaches)
+{
+    // #1063 review: the Linux probe caches its socket query for 500 ms. With 100 ms refreshes a steady
+    // 1 MB/s transfer read as four refreshes of 0 and then one of 5 MB/s when the rate was taken over
+    // the refresh interval. Over the time between the probe's reads, it is 1 MB/s throughout.
+    constexpr std::uint64_t MS = 1'000'000; // ns
+    NetworkRateFixture fixture;
+    fixture.sample(std::chrono::milliseconds{0}, 0, 0, 1000 * MS);
+
+    constexpr auto REFRESH = std::chrono::milliseconds{100};
+    auto snap = fixture.sample(REFRESH, 0, 0, 1000 * MS); // still the cached read
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 0.0);
+
+    // Fresh read 500 ms after the first: 500 KB over 0.5 s.
+    snap = fixture.sample(REFRESH, 0, 500'000, 1500 * MS);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 1'000'000.0);
+
+    // Cached refreshes after it hold the rate rather than reading 0.
+    for (int i = 0; i < 4; ++i)
+    {
+        snap = fixture.sample(REFRESH, 0, 500'000, 1500 * MS);
+        EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 1'000'000.0);
+    }
+
+    // The next fresh read: another 500 KB over 0.5 s, not 5x the rate.
+    snap = fixture.sample(REFRESH, 0, 1'000'000, 2000 * MS);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 1'000'000.0);
+
+    // Transfer stopped: the next fresh read drops it to 0.
+    snap = fixture.sample(REFRESH, 0, 1'000'000, 2500 * MS);
     EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 0.0);
 }
 
