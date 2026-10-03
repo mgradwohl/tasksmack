@@ -45,9 +45,10 @@ TEST(PowerProbeContractTest, ReadReturnsSaneCounters)
     // Basic state validation
     if (!caps.hasBattery)
     {
-        // No battery: should report NotPresent and be on AC
+        // No battery: NotPresent. isOnAc is the AC adapter's report where the platform exposes one
+        // (Linux power_supply `online`, #1109), so it may legitimately be false -- a UPS-fed desktop
+        // whose adapter reports offline -- and is not asserted here.
         EXPECT_EQ(counters.state, BatteryState::NotPresent);
-        EXPECT_TRUE(counters.isOnAc);
     }
     else
     {

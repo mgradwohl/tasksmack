@@ -10,7 +10,6 @@
 
 #include <charconv>
 #include <cstdint>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -24,6 +23,12 @@ namespace Platform
 
 namespace
 {
+
+/// |value| as unsigned. std::abs(INT64_MIN) is undefined behaviour; this is not (#1231 review).
+[[nodiscard]] constexpr std::uint64_t magnitude(std::int64_t value) noexcept
+{
+    return value < 0 ? std::uint64_t{0} - static_cast<std::uint64_t>(value) : static_cast<std::uint64_t>(value);
+}
 
 /// The first line of a small sysfs attribute, or empty if it can't be read.
 [[nodiscard]] std::string readFirstLine(const std::string& path)
@@ -232,7 +237,7 @@ void LinuxPowerProbe::readBattery(PowerCounters& counters, const std::string& ba
         {
             // Signed: the sysfs ABI lets some drivers report discharge as negative (#1158). The sign
             // convention here comes from the battery state instead.
-            const auto powerUw = std::abs(readSysfsInt64(batteryPath + "/power_now"));
+            const auto powerUw = magnitude(readSysfsInt64(batteryPath + "/power_now"));
             counters.powerNowW = static_cast<double>(powerUw) / 1000000.0; // µW to W
 
             // Negate if charging (power going in)
@@ -244,7 +249,7 @@ void LinuxPowerProbe::readBattery(PowerCounters& counters, const std::string& ba
         // Fall back to current_now (µA) - need voltage
         else if (std::filesystem::exists(batteryPath + "/current_now"))
         {
-            const auto currentUa = std::abs(readSysfsInt64(batteryPath + "/current_now")); // Signed, as power_now
+            const auto currentUa = magnitude(readSysfsInt64(batteryPath + "/current_now")); // Signed, as power_now
             const auto voltageUv = readSysfsUInt64(batteryPath + "/voltage_now", 0);
 
             if (voltageUv > 0)

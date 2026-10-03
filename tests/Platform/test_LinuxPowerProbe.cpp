@@ -622,6 +622,29 @@ TEST_F(LinuxPowerProbeUnitTest, AcAdapterOnlineDecidesAcState)
     }
 }
 
+TEST_F(LinuxPowerProbeUnitTest, NoBatteryWithOfflineAdapterIsNotOnAc)
+{
+    // The adapter is authoritative even without a battery (for example a UPS-fed desktop).
+    const auto ac = makeAcDevice("AC");
+    writeFile(ac / "online", "0");
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+    auto counters = probe.read();
+    EXPECT_EQ(counters.state, BatteryState::NotPresent);
+    EXPECT_FALSE(counters.isOnAc);
+}
+
+TEST_F(LinuxPowerProbeUnitTest, MostNegativeRateDoesNotOverflow)
+{
+    // std::abs(INT64_MIN) would be undefined behaviour; the magnitude is taken as unsigned.
+    const auto batPath = makeBatteryDevice("BAT0");
+    writeFile(batPath / "status", "Discharging");
+    writeFile(batPath / "power_now", "-9223372036854775808");
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+    EXPECT_NEAR(probe.read().powerNowW, 9223372036854.775808, 1.0);
+}
+
 TEST_F(LinuxPowerProbeUnitTest, DesktopWithOnlineAdapterAndNoBatteryIsOnAc)
 {
     const auto ac = makeAcDevice("AC");
