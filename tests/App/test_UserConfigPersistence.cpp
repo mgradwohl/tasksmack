@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -1247,6 +1248,58 @@ TEST_F(UserConfigSaveLoadFixture, SymlinkedConfigKeepsItsLinkAndUpdatesItsTarget
     EXPECT_EQ(parsed(target)["theme"]["id"].value<std::string>(), "mocha");
 }
 
+TEST_F(UserConfigSaveLoadFixture, SymlinkToAMissingFileCreatesTheTarget)
+{
+    // canonical() needs the target to exist; a link to a file not created yet must still be
+    // written through, not refused (#1222 review).
+    const auto link = UserConfig::get().configPath();
+    const auto target = m_TempDir / "not-yet-created.toml";
+    std::filesystem::create_symlink(target, link);
+
+    auto& config = UserConfig::get();
+    config.load();
+    config.settings().themeId = "mocha";
+    config.save();
+
+    EXPECT_TRUE(std::filesystem::is_symlink(link));
+    ASSERT_TRUE(std::filesystem::exists(target));
+    EXPECT_EQ(parsed(target)["theme"]["id"].value<std::string>(), "mocha");
+}
+
+TEST_F(UserConfigSaveLoadFixture, LinkLoopIsNotSaved)
+{
+    const auto link = UserConfig::get().configPath();
+    const auto other = m_TempDir / "other.toml";
+    std::filesystem::create_symlink(other, link);
+    std::filesystem::create_symlink(link, other);
+
+    auto& config = UserConfig::get();
+    config.load();
+    config.settings().themeId = "mocha";
+    config.save();
+
+    EXPECT_TRUE(std::filesystem::is_symlink(link));
+    EXPECT_TRUE(std::filesystem::is_symlink(other));
+}
+#endif
+
+TEST_F(UserConfigSaveLoadFixture, ConfigCreatedBeforeTheFirstSaveKeepsItsOtherSettings)
+{
+    // No file at startup, then one is created (or repaired) before TaskSmack's first save: only
+    // the setting changed in-app is written over it, not every runtime default (#1222 review).
+    auto& config = UserConfig::get();
+    config.load();
+    writeFile(UserConfig::get().configPath(), "[sampling]\ninterval_ms = 750\n");
+
+    config.settings().themeId = "mocha";
+    config.save();
+
+    const auto saved = parsed(UserConfig::get().configPath());
+    EXPECT_EQ(saved["sampling"]["interval_ms"].value<std::int64_t>(), 750);
+    EXPECT_EQ(saved["theme"]["id"].value<std::string>(), "mocha");
+}
+
+#ifndef _WIN32
 TEST_F(UserConfigSaveLoadFixture, UnreadableConfigFileIsNotReplaced)
 {
     if (::geteuid() == 0)

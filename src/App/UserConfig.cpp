@@ -471,7 +471,8 @@ void UserConfig::load()
         return;
     }
     m_IsLoaded = true;
-    m_HasSynced = false;
+    // The baseline save() merges against, until a file is read: the settings TaskSmack starts with.
+    m_Synced = m_Settings;
 
     // error_code overloads: an unreadable config directory falls back to defaults instead of
     // throwing out of startup (#1124).
@@ -494,7 +495,6 @@ void UserConfig::load()
         const auto config = toml::parse_file(m_ConfigPath.string());
         readSettings(config, m_Settings);
         m_Synced = m_Settings;
-        m_HasSynced = true;
         spdlog::info("Loaded config from {}", m_ConfigPath.string());
     }
     catch (const toml::parse_error& err)
@@ -521,15 +521,39 @@ void UserConfig::save()
     // A symlinked config is written through the link: the temporary file goes beside the link's
     // target and is renamed over the target, so the link survives (renaming over the link itself
     // would replace it with a regular file and leave the target stale, #1222 review).
+    // The chain is followed by hand rather than with canonical(), which needs the final target to
+    // exist: a link to a file not created yet is still written through.
     std::filesystem::path destination = m_ConfigPath;
-    if (std::filesystem::is_symlink(m_ConfigPath, ec))
+    constexpr int MAX_LINK_HOPS = 40; // the kernel's own limit before ELOOP
+    int linkHops = 0;
+    for (;;)
     {
-        destination = std::filesystem::canonical(m_ConfigPath, ec);
-        if (ec)
+        const std::filesystem::file_status linkStatus = std::filesystem::symlink_status(destination, ec);
+        if (linkStatus.type() == std::filesystem::file_type::not_found)
         {
-            spdlog::error("Not saving settings: can't resolve the link {}: {}", m_ConfigPath.string(), ec.message());
+            ec.clear(); // nothing there yet: the file will be created
+            break;
+        }
+        if (ec || !std::filesystem::is_symlink(linkStatus))
+        {
+            break;
+        }
+        if (++linkHops > MAX_LINK_HOPS)
+        {
+            spdlog::error("Not saving settings: {} is a loop of links", m_ConfigPath.string());
             return;
         }
+        const std::filesystem::path target = std::filesystem::read_symlink(destination, ec);
+        if (ec)
+        {
+            break;
+        }
+        destination = target.is_absolute() ? target : destination.parent_path() / target;
+    }
+    if (ec)
+    {
+        spdlog::error("Not saving settings: can't resolve the link {}: {}", m_ConfigPath.string(), ec.message());
+        return;
     }
 
     // Start from the file as it is. One that exists but can't be read or parsed is left alone:
@@ -554,13 +578,23 @@ void UserConfig::save()
             spdlog::error("Not saving settings: {} can't be read or parsed ({}); fix or remove it", m_ConfigPath.string(), err.what());
             return;
         }
-        originalPermissions = std::filesystem::status(destination, ec).permissions();
+        // Fail closed: a file whose permissions can't be read must not be replaced by one with the
+        // default mode, which could make a 0600 config world-readable.
+        const std::filesystem::file_status status = std::filesystem::status(destination, ec);
+        if (ec)
+        {
+            spdlog::error("Not saving settings: can't read the permissions of {}: {}", m_ConfigPath.string(), ec.message());
+            return;
+        }
+        originalPermissions = status.permissions();
     }
 
     // Write only what TaskSmack changed since it last read or wrote the file; everything else in
     // the file, including edits made while TaskSmack runs, stays as it is (#1122).
     const toml::table mine = buildTable(m_Settings);
-    UserConfigHelpers::mergeOwnedKeys(document, m_HasSynced ? buildTable(m_Synced) : toml::table{}, mine);
+    // A new file gets every setting; an existing one -- even one created or repaired since startup --
+    // gets only the keys whose value TaskSmack changed from its baseline.
+    UserConfigHelpers::mergeOwnedKeys(document, fileExists ? buildTable(m_Synced) : toml::table{}, mine);
 
     // Write a temporary file beside it and rename it over the original, so a crash mid-write can't
     // leave the config truncated or empty (#1122). This does not make the new contents durable
@@ -593,6 +627,13 @@ void UserConfig::save()
         // Keep the original's access restrictions (a 0600 config stays 0600). POSIX permission
         // bits only: Windows ACLs aren't copied.
         std::filesystem::permissions(tempPath, originalPermissions, ec);
+        if (ec)
+        {
+            spdlog::error("Not saving settings: can't give the new file the permissions of {}: {}", m_ConfigPath.string(), ec.message());
+            file.close();
+            std::filesystem::remove(tempPath, ec);
+            return;
+        }
     }
 
     file << "# TaskSmack user configuration\n";
@@ -633,7 +674,6 @@ void UserConfig::save()
 
     spdlog::info("Saved config to {}", m_ConfigPath.string());
     m_Synced = m_Settings;
-    m_HasSynced = true;
 
     // Reset so that the next load() call re-reads from disk (e.g., for test round-trips
     // or any future live-reload use case).

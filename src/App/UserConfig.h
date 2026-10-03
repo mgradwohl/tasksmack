@@ -155,7 +155,6 @@ class UserConfig
         m_ConfigPath = path;
         m_Settings = UserSettings{};
         m_Synced = UserSettings{};
-        m_HasSynced = false;
         m_IsLoaded = false;
     }
 
@@ -168,9 +167,9 @@ class UserConfig
     bool m_IsLoaded = false;
 
     // The settings as TaskSmack last read them from, or wrote them to, the file (the merge base for
-    // save(), #1122). m_HasSynced is false when there was no file to read.
+    // save(), #1122). With no readable file at startup it is the settings TaskSmack started with,
+    // so a file created or repaired before the first save only gets what TaskSmack changed.
     UserSettings m_Synced;
-    bool m_HasSynced = false;
 
     static auto getConfigDirectory() -> std::filesystem::path;
 };
