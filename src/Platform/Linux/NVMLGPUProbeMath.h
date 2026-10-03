@@ -25,19 +25,19 @@ namespace Platform::NVMLGPUProbeMath
 
 /// NVML_VALUE_NOT_AVAILABLE: what usedGpuMemory holds when NVML cannot report it (for example
 /// in containers, or without permission to see another user's process).
-inline constexpr std::uint64_t kValueNotAvailable = std::numeric_limits<std::uint64_t>::max();
+inline constexpr std::uint64_t VALUE_NOT_AVAILABLE = std::numeric_limits<std::uint64_t>::max();
 
 /// Size of one entry written by nvmlDeviceGet{Compute,Graphics}RunningProcesses. The legacy
 /// unversioned symbols write nvmlProcessInfo_v1_t {pid, usedGpuMemory}; the _v2 and _v3 entry
 /// points write nvmlProcessInfo_v2_t, which adds gpuInstanceId and computeInstanceId (#1092).
 /// pid sits at offset 0 and usedGpuMemory at offset 8 in both.
-inline constexpr std::size_t kProcessInfoV1Size = 16;
-inline constexpr std::size_t kProcessInfoV2Size = 24;
-inline constexpr std::size_t kProcessInfoMemoryOffset = 8;
+inline constexpr std::size_t PROCESS_INFO_V1_SIZE = 16;
+inline constexpr std::size_t PROCESS_INFO_V2_SIZE = 24;
+inline constexpr std::size_t PROCESS_INFO_MEMORY_OFFSET = 8;
 
 /// Upper bound on the entries we allocate for, whatever the driver reports: a corrupt count must
 /// not drive the sampler into repeated multi-gigabyte allocations. Matches the Windows probe.
-inline constexpr unsigned int kMaxPlausibleProcessCount = 65536;
+inline constexpr unsigned int MAX_PLAUSIBLE_PROCESS_COUNT = 65536;
 
 /// A running-process entry point chosen by chooseRunningProcessesSymbol().
 struct RunningProcessesSymbol
@@ -60,9 +60,9 @@ template<typename Resolve>
         std::size_t entrySize = 0;
     };
     constexpr std::array<Candidate, 3> CANDIDATES{{
-        {.suffix = "_v3", .entrySize = kProcessInfoV2Size},
-        {.suffix = "_v2", .entrySize = kProcessInfoV2Size},
-        {.suffix = "", .entrySize = kProcessInfoV1Size},
+        {.suffix = "_v3", .entrySize = PROCESS_INFO_V2_SIZE},
+        {.suffix = "_v2", .entrySize = PROCESS_INFO_V2_SIZE},
+        {.suffix = "", .entrySize = PROCESS_INFO_V1_SIZE},
     }};
     for (const auto& candidate : CANDIDATES)
     {
@@ -78,16 +78,16 @@ template<typename Resolve>
 
 /// A process's GPU instance and compute instance ids are only in the 24-byte entries; for MIG
 /// partitions one process can be listed once per instance (#1213 review).
-inline constexpr std::uint32_t kNoInstanceId = std::numeric_limits<std::uint32_t>::max();
-inline constexpr std::size_t kProcessInfoGpuInstanceOffset = 16;
-inline constexpr std::size_t kProcessInfoComputeInstanceOffset = 20;
+inline constexpr std::uint32_t NO_INSTANCE_ID = std::numeric_limits<std::uint32_t>::max();
+inline constexpr std::size_t PROCESS_INFO_GPU_INSTANCE_OFFSET = 16;
+inline constexpr std::size_t PROCESS_INFO_COMPUTE_INSTANCE_OFFSET = 20;
 
 struct RunningProcess
 {
     std::uint32_t pid = 0;
     std::optional<std::uint64_t> usedGpuMemoryBytes; ///< nullopt when NVML reports it unavailable
-    std::uint32_t gpuInstanceId = kNoInstanceId;     ///< kNoInstanceId for the legacy 16-byte entries
-    std::uint32_t computeInstanceId = kNoInstanceId;
+    std::uint32_t gpuInstanceId = NO_INSTANCE_ID;    ///< NO_INSTANCE_ID for the legacy 16-byte entries
+    std::uint32_t computeInstanceId = NO_INSTANCE_ID;
 };
 
 /// Lists the processes running on a device through one of the running-process entry points.
@@ -95,7 +95,7 @@ struct RunningProcess
 /// (count 0, null buffer) with NVML_ERROR_INSUFFICIENT_SIZE and the needed count whenever any
 /// process is running, and with NVML_SUCCESS only when none are. The list can also grow between
 /// the two calls, so the sized call is retried a few times with headroom. Counts are capped at
-/// kMaxPlausibleProcessCount; a list the driver says is longer than that is treated as unreadable.
+/// MAX_PLAUSIBLE_PROCESS_COUNT; a list the driver says is longer than that is treated as unreadable.
 template<typename Query> [[nodiscard]] std::vector<RunningProcess> queryRunningProcesses(const Query& query, std::size_t entrySize)
 {
     constexpr int MAX_ATTEMPTS = 3;
@@ -116,11 +116,11 @@ template<typename Query> [[nodiscard]] std::vector<RunningProcess> queryRunningP
     result = NVML::NVML_ERROR_INSUFFICIENT_SIZE;
     for (int attempt = 0; attempt < MAX_ATTEMPTS && result == NVML::NVML_ERROR_INSUFFICIENT_SIZE; ++attempt)
     {
-        if (count > kMaxPlausibleProcessCount)
+        if (count > MAX_PLAUSIBLE_PROCESS_COUNT)
         {
             return {};
         }
-        count = std::min(count + HEADROOM, kMaxPlausibleProcessCount);
+        count = std::min(count + HEADROOM, MAX_PLAUSIBLE_PROCESS_COUNT);
         buffer.assign(static_cast<std::size_t>(count) * entrySize, std::byte{0});
         result = query(&count, buffer.data());
     }
@@ -138,13 +138,13 @@ template<typename Query> [[nodiscard]] std::vector<RunningProcess> queryRunningP
         unsigned int pid = 0;
         std::uint64_t usedGpuMemory = 0;
         std::memcpy(&pid, entry, sizeof(pid));
-        std::memcpy(&usedGpuMemory, entry + kProcessInfoMemoryOffset, sizeof(usedGpuMemory));
+        std::memcpy(&usedGpuMemory, entry + PROCESS_INFO_MEMORY_OFFSET, sizeof(usedGpuMemory));
         RunningProcess process{.pid = pid,
-                               .usedGpuMemoryBytes = (usedGpuMemory == kValueNotAvailable) ? std::nullopt : std::optional{usedGpuMemory}};
-        if (entrySize >= kProcessInfoV2Size)
+                               .usedGpuMemoryBytes = (usedGpuMemory == VALUE_NOT_AVAILABLE) ? std::nullopt : std::optional{usedGpuMemory}};
+        if (entrySize >= PROCESS_INFO_V2_SIZE)
         {
-            std::memcpy(&process.gpuInstanceId, entry + kProcessInfoGpuInstanceOffset, sizeof(process.gpuInstanceId));
-            std::memcpy(&process.computeInstanceId, entry + kProcessInfoComputeInstanceOffset, sizeof(process.computeInstanceId));
+            std::memcpy(&process.gpuInstanceId, entry + PROCESS_INFO_GPU_INSTANCE_OFFSET, sizeof(process.gpuInstanceId));
+            std::memcpy(&process.computeInstanceId, entry + PROCESS_INFO_COMPUTE_INSTANCE_OFFSET, sizeof(process.computeInstanceId));
         }
         processes.push_back(process);
     }

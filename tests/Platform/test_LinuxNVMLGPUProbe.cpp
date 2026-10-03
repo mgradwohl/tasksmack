@@ -62,7 +62,7 @@ struct FakeProcess
 struct FakeRunningProcesses
 {
     std::vector<FakeProcess> processes;
-    std::size_t entrySize = NVMLGPUProbeMath::kProcessInfoV2Size;
+    std::size_t entrySize = NVMLGPUProbeMath::PROCESS_INFO_V2_SIZE;
     std::vector<FakeProcess> listedAfterCount;
     NVML::nvmlReturn_t countOnlyResult = NVML::NVML_ERROR_INSUFFICIENT_SIZE;
     int calls = 0;
@@ -94,7 +94,7 @@ struct FakeRunningProcesses
     }
 };
 
-FakeRunningProcesses makeFake(std::vector<FakeProcess> processes, std::size_t entrySize = NVMLGPUProbeMath::kProcessInfoV2Size)
+FakeRunningProcesses makeFake(std::vector<FakeProcess> processes, std::size_t entrySize = NVMLGPUProbeMath::PROCESS_INFO_V2_SIZE)
 {
     FakeRunningProcesses fake;
     fake.processes = std::move(processes);
@@ -130,7 +130,7 @@ TEST(NVMLGPUProbeMathTest, PrefersTheV3RunningProcessesSymbol)
         {"nvmlDeviceGetComputeRunningProcesses", "nvmlDeviceGetComputeRunningProcesses_v2", "nvmlDeviceGetComputeRunningProcesses_v3"}};
     const auto symbol = NVMLGPUProbeMath::chooseRunningProcessesSymbol("nvmlDeviceGetComputeRunningProcesses", resolver);
     EXPECT_EQ(symbol.name, "nvmlDeviceGetComputeRunningProcesses_v3");
-    EXPECT_EQ(symbol.entrySize, NVMLGPUProbeMath::kProcessInfoV2Size);
+    EXPECT_EQ(symbol.entrySize, NVMLGPUProbeMath::PROCESS_INFO_V2_SIZE);
 }
 
 TEST(NVMLGPUProbeMathTest, FallsBackToTheV2RunningProcessesSymbol)
@@ -138,7 +138,7 @@ TEST(NVMLGPUProbeMathTest, FallsBackToTheV2RunningProcessesSymbol)
     const FakeResolver resolver{{"nvmlDeviceGetGraphicsRunningProcesses", "nvmlDeviceGetGraphicsRunningProcesses_v2"}};
     const auto symbol = NVMLGPUProbeMath::chooseRunningProcessesSymbol("nvmlDeviceGetGraphicsRunningProcesses", resolver);
     EXPECT_EQ(symbol.name, "nvmlDeviceGetGraphicsRunningProcesses_v2");
-    EXPECT_EQ(symbol.entrySize, NVMLGPUProbeMath::kProcessInfoV2Size);
+    EXPECT_EQ(symbol.entrySize, NVMLGPUProbeMath::PROCESS_INFO_V2_SIZE);
 }
 
 TEST(NVMLGPUProbeMathTest, LegacyRunningProcessesSymbolUsesTheV1EntrySize)
@@ -148,7 +148,7 @@ TEST(NVMLGPUProbeMathTest, LegacyRunningProcessesSymbolUsesTheV1EntrySize)
     const auto symbol = NVMLGPUProbeMath::chooseRunningProcessesSymbol("nvmlDeviceGetComputeRunningProcesses", resolver);
     EXPECT_EQ(symbol.name, "nvmlDeviceGetComputeRunningProcesses");
     EXPECT_NE(symbol.address, nullptr);
-    EXPECT_EQ(symbol.entrySize, NVMLGPUProbeMath::kProcessInfoV1Size);
+    EXPECT_EQ(symbol.entrySize, NVMLGPUProbeMath::PROCESS_INFO_V1_SIZE);
 }
 
 TEST(NVMLGPUProbeMathTest, NoRunningProcessesSymbolExported)
@@ -185,12 +185,12 @@ TEST(NVMLGPUProbeMathTest, InsufficientSizeOnCountQueryMeansProcessesAreRunning)
 TEST(NVMLGPUProbeMathTest, LegacyV1EntriesAreReadAtTheirOwnStride)
 {
     auto fake = makeFake({{.pid = 10, .usedGpuMemory = 100}, {.pid = 20, .usedGpuMemory = 200}, {.pid = 30, .usedGpuMemory = 300}},
-                         NVMLGPUProbeMath::kProcessInfoV1Size);
+                         NVMLGPUProbeMath::PROCESS_INFO_V1_SIZE);
     const auto query = [&fake](unsigned int* count, void* buffer)
     {
         return fake(count, buffer);
     };
-    const auto processes = NVMLGPUProbeMath::queryRunningProcesses(query, NVMLGPUProbeMath::kProcessInfoV1Size);
+    const auto processes = NVMLGPUProbeMath::queryRunningProcesses(query, NVMLGPUProbeMath::PROCESS_INFO_V1_SIZE);
 
     ASSERT_EQ(processes.size(), 3U);
     EXPECT_EQ(processes[2].pid, 30U);
@@ -216,7 +216,7 @@ TEST(NVMLGPUProbeMathTest, RetriesWhenTheListGrowsBetweenCalls)
 
 TEST(NVMLGPUProbeMathTest, UnavailableMemoryIsNullopt)
 {
-    auto fake = makeFake({{.pid = 7, .usedGpuMemory = NVMLGPUProbeMath::kValueNotAvailable}});
+    auto fake = makeFake({{.pid = 7, .usedGpuMemory = NVMLGPUProbeMath::VALUE_NOT_AVAILABLE}});
     const auto query = [&fake](unsigned int* count, void* buffer)
     {
         return fake(count, buffer);
@@ -237,10 +237,10 @@ TEST(NVMLGPUProbeMathTest, ImplausibleProcessCountIsNotAllocated)
         {
             ++sizedCalls;
         }
-        *count = NVMLGPUProbeMath::kMaxPlausibleProcessCount + 1U;
+        *count = NVMLGPUProbeMath::MAX_PLAUSIBLE_PROCESS_COUNT + 1U;
         return NVML::NVML_ERROR_INSUFFICIENT_SIZE;
     };
-    EXPECT_TRUE(NVMLGPUProbeMath::queryRunningProcesses(query, NVMLGPUProbeMath::kProcessInfoV2Size).empty());
+    EXPECT_TRUE(NVMLGPUProbeMath::queryRunningProcesses(query, NVMLGPUProbeMath::PROCESS_INFO_V2_SIZE).empty());
     EXPECT_EQ(sizedCalls, 0);
 }
 
@@ -317,14 +317,14 @@ TEST(NVMLGPUProbeMathTest, InstanceIdsAreReadFromV2Entries)
             const std::uint32_t gpuInstance = 3;
             const std::uint32_t computeInstance = 1;
             std::memcpy(
-                static_cast<std::byte*>(buffer) + NVMLGPUProbeMath::kProcessInfoGpuInstanceOffset, &gpuInstance, sizeof(gpuInstance));
-            std::memcpy(static_cast<std::byte*>(buffer) + NVMLGPUProbeMath::kProcessInfoComputeInstanceOffset,
+                static_cast<std::byte*>(buffer) + NVMLGPUProbeMath::PROCESS_INFO_GPU_INSTANCE_OFFSET, &gpuInstance, sizeof(gpuInstance));
+            std::memcpy(static_cast<std::byte*>(buffer) + NVMLGPUProbeMath::PROCESS_INFO_COMPUTE_INSTANCE_OFFSET,
                         &computeInstance,
                         sizeof(computeInstance));
         }
         return result;
     };
-    const auto processes = NVMLGPUProbeMath::queryRunningProcesses(query, NVMLGPUProbeMath::kProcessInfoV2Size);
+    const auto processes = NVMLGPUProbeMath::queryRunningProcesses(query, NVMLGPUProbeMath::PROCESS_INFO_V2_SIZE);
     ASSERT_EQ(processes.size(), 1U);
     EXPECT_EQ(processes[0].gpuInstanceId, 3U);
     EXPECT_EQ(processes[0].computeInstanceId, 1U);
