@@ -571,6 +571,16 @@ the project's; in that case add required entries to `lsan.supp` directly.
 This suppression filters a known SDL3 LeakSanitizer false positive that affects
 Core window/application tests.
 
+UndefinedBehaviorSanitizer halts on the first error. The preset compiles with
+`-fno-sanitize-recover=undefined`, and `ctest --preset asan-ubsan` also injects:
+
+- `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1:$penv{UBSAN_OPTIONS}`
+
+As with `LSAN_OPTIONS`, any caller-provided `UBSAN_OPTIONS` are appended and take
+precedence. Without these, UBSan printed `runtime error:` and let the test pass,
+and `ctest --output-on-failure` hid the report, so undefined behaviour could
+never fail a run (#1090).
+
 ThreadSanitizer:
 
 ```bash
