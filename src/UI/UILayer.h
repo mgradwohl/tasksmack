@@ -32,7 +32,14 @@ class UILayer : public Core::Layer
   private:
     void beginFrame();
     void endFrame();
-    static void loadAllFonts(const std::filesystem::path& assetsDir);
+    static void loadAllFonts(const std::filesystem::path& assetsDir, float displayScale);
+    void rebuildForDisplayScaleChange();
+
+    // Where the fonts were loaded from, kept to rebuild them at a new display scale (#943).
+    std::filesystem::path m_AssetsDir;
+    // Set when SDL reports the window's display scale or display changed; checked and cleared at the
+    // next frame boundary, where the fonts and style can be rebuilt between frames (#943).
+    bool m_DisplayScaleCheckPending = false;
 
     // Per-frame render state shared between beginFrame() and endFrame()
     ImFont* m_PushedFont = nullptr; // font pushed in beginFrame, popped in endFrame

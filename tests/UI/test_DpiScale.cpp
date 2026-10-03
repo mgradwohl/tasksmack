@@ -7,6 +7,8 @@
 
 #include <gtest/gtest.h>
 
+#include <limits>
+
 namespace UI
 {
 namespace
@@ -42,6 +44,32 @@ TEST(DpiScaleTest, IsConstexprEvaluable)
     constexpr float result = computePointsToPixels(12.0F, 1.0F);
     static_assert(result > 0.0F);
     EXPECT_GT(result, 0.0F);
+}
+
+TEST(DpiScaleTest, MovingToADifferentlyScaledMonitorIsAChange)
+{
+    // Dragging the window from a 100% to a 175% monitor and back (#943).
+    EXPECT_TRUE(displayScaleChanged(1.0F, 1.75F));
+    EXPECT_TRUE(displayScaleChanged(1.75F, 1.0F));
+    EXPECT_TRUE(displayScaleChanged(1.0F, 1.25F));
+}
+
+TEST(DpiScaleTest, TheSameScaleIsNotAChange)
+{
+    // SDL reports the display-changed event for a move between monitors of the same scale too;
+    // nothing should be rebuilt then. Floating-point noise below the epsilon is not a change.
+    EXPECT_FALSE(displayScaleChanged(1.75F, 1.75F));
+    EXPECT_FALSE(displayScaleChanged(1.5F, 1.5F + (DISPLAY_SCALE_EPSILON / 2.0F)));
+}
+
+TEST(DpiScaleTest, AnUnusableMeasurementIsNotAChange)
+{
+    // SDL_GetWindowDisplayScale() returns 0.0 on failure; rebuilding the fonts at that density
+    // would make all text vanish.
+    EXPECT_FALSE(displayScaleChanged(1.0F, 0.0F));
+    EXPECT_FALSE(displayScaleChanged(1.0F, -1.0F));
+    EXPECT_FALSE(displayScaleChanged(1.0F, std::numeric_limits<float>::quiet_NaN()));
+    EXPECT_FALSE(displayScaleChanged(1.0F, std::numeric_limits<float>::infinity()));
 }
 
 } // namespace

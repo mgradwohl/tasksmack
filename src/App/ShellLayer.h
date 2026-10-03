@@ -33,6 +33,7 @@ class ShellLayer : public Core::Layer
   private:
     void renderTabBar();
     void renderStatusBar() const;
+    void applyBaseMinimumWindowSize();
 
     // Panels
     ProcessesPanel m_ProcessesPanel;
@@ -53,6 +54,10 @@ class ShellLayer : public Core::Layer
     // Deferred startup notice: set in onAttach() if the privilege notice should fire.
     // Dispatched in the first onUpdate() call, after all layers are fully stacked.
     bool m_PendingPrivilegeNotice = false;
+
+    // Display scale the base minimum window size was last set for. With native decorations nothing
+    // else sets the minimum, so it is re-applied when the scale changes (#943).
+    float m_MinimumSizeDisplayScale = 0.0F;
 
     // Render Metrics overlay (per-chart vertex count and CPU cost). Toggled with Ctrl+Shift+M.
     bool m_ShowRenderMetrics = false;

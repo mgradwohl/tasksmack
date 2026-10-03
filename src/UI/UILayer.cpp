@@ -26,18 +26,12 @@
 
 namespace
 {
-// Convert typographic points to pixels based on display DPI - math lives in
-// UI::computePointsToPixels() (DpiScale.h) so it's directly unit-testable; this wrapper just
-// supplies the live SDL display scale, which needs a real window (see #770).
-float pointsToPixels(float points)
+// The main window's display scale from SDL, 1.0 at 96 DPI; 1.0 without a window, and 0.0 if SDL
+// fails (callers reject that through UI::displayScaleChanged()).
+float measureDisplayScale()
 {
-    float scale = 1.0F;
     SDL_Window* window = Core::Application::get().getWindow().getHandle();
-    if (window != nullptr)
-    {
-        scale = SDL_GetWindowDisplayScale(window);
-    }
-    return UI::computePointsToPixels(points, scale);
+    return (window != nullptr) ? SDL_GetWindowDisplayScale(window) : 1.0F;
 }
 
 } // namespace
@@ -50,8 +44,15 @@ UILayer::UILayer() : Layer("UILayer")
 
 UILayer::~UILayer() = default;
 
-void UILayer::loadAllFonts(const std::filesystem::path& assetsDir)
+void UILayer::loadAllFonts(const std::filesystem::path& assetsDir, float displayScale)
 {
+    // Every size below is converted at this one measured scale -- the same value Theme scales the
+    // style by -- so the fonts and the chrome around them always agree (#943).
+    const auto pointsToPixels = [displayScale](float points)
+    {
+        return computePointsToPixels(points, displayScale);
+    };
+
     auto& theme = Theme::get();
     ImGuiIO& imguiIO = ImGui::GetIO();
 
@@ -258,18 +259,18 @@ void UILayer::onAttach()
         // Disable ImGui's default INI file - we store layout state in TOML config
         imguiIO.IniFilename = nullptr;
 
-        // Feed the measured display density to Theme before any style is built, so ImGuiStyle
-        // sizes scale with DPI as well as font size (#936). Fonts already use this scale via
-        // pointsToPixels(); the style did not, which is what left all padding fixed at 96 DPI.
-        if (SDL_Window* scaleWindow = Core::Application::get().getWindow().getHandle(); scaleWindow != nullptr)
-        {
-            Theme::get().setDisplayScale(SDL_GetWindowDisplayScale(scaleWindow));
-        }
+        // Measure the display density once and give the same value to Theme (which scales the
+        // ImGuiStyle by it, #936) and to the fonts, so the two cannot disagree. A failed
+        // measurement (0.0) leaves Theme at 1.0 and bakes the fonts at 1.0 to match.
+        const float measuredScale = measureDisplayScale();
+        Theme::get().setDisplayScale(measuredScale);
+        const float displayScale = Theme::get().displayScale();
 
         // Pre-bake fonts for all size presets
         // Locate assets directory once (searches build dir and FHS install paths)
-        const auto assetsDir = findAssetsDir();
-        loadAllFonts(assetsDir);
+        m_AssetsDir = findAssetsDir();
+        const auto& assetsDir = m_AssetsDir;
+        loadAllFonts(assetsDir, displayScale);
 
         // Load themes from TOML files (built-ins)
         auto themesDir = assetsDir / "themes";
@@ -363,6 +364,33 @@ void UILayer::onSDLEvent(SDL_Event* event)
 {
     // Pass SDL events to ImGui for input handling
     ImGui_ImplSDL3_ProcessEvent(event);
+
+    // Dragging the window to a differently scaled monitor, or changing the display's scale setting
+    // (#943). Only noted here: the fonts and style are rebuilt at the next frame boundary, in
+    // beginFrame(), because events can arrive while a frame is being laid out.
+    if (event->type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED || event->type == SDL_EVENT_WINDOW_DISPLAY_CHANGED)
+    {
+        m_DisplayScaleCheckPending = true;
+    }
+}
+
+void UILayer::rebuildForDisplayScaleChange()
+{
+    const float measured = measureDisplayScale();
+    if (!displayScaleChanged(Theme::get().displayScale(), measured))
+    {
+        return;
+    }
+    spdlog::info("Display scale changed from {:.2f} to {:.2f}; rebuilding fonts and style", Theme::get().displayScale(), measured);
+
+    // Fonts first, then the style, both before NewFrame(): the text and the chrome around it move
+    // together, as the font-size presets do. Nothing keeps an ImFont* across frames except Theme,
+    // which loadAllFonts() re-registers, and with ImGuiBackendFlags_RendererHasTextures the backend
+    // re-uploads the atlas texture on the next render.
+    ImGui::GetIO().Fonts->ClearFonts();
+    loadAllFonts(m_AssetsDir, measured);
+    // Queues the style rebuild; applyPendingStyleChanges() flushes it straight after this.
+    Theme::get().setDisplayScale(measured);
 }
 
 void UILayer::onEvent(Core::Event& event)
@@ -387,6 +415,12 @@ void UILayer::onEvent(Core::Event& event)
 
 void UILayer::beginFrame()
 {
+    if (m_DisplayScaleCheckPending)
+    {
+        m_DisplayScaleCheckPending = false;
+        rebuildForDisplayScaleChange();
+    }
+
     // Apply any pending theme change BEFORE starting the ImGui frame
     // This ensures all widgets rendered this frame use the new theme colors
     Theme::get().applyPendingStyleChanges();

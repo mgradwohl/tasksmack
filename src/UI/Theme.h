@@ -280,10 +280,10 @@ class Theme
     /// Record the display scale from SDL_GetWindowDisplayScale(), 1.0 at 96 DPI.
     ///
     /// Feeds the ImGuiStyle scale factor so chrome tracks display density as well as font size
-    /// (#936). Sampled once, after the window exists and before the fonts are baked, because the
-    /// font atlas is pre-baked at that same density: re-scaling the style alone when a window is
-    /// dragged to a differently scaled monitor would grow the chrome while the text stayed put. See
-    /// #943 for handling SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED across both.
+    /// (#936). The fonts are baked at the same density, so the two must change together: UILayer
+    /// re-measures the scale when SDL reports a display-scale change, rebuilds the fonts at the new
+    /// density and then calls this, so text and chrome rescale at the same frame boundary (#943).
+    /// Re-scaling the style alone would grow the chrome while the text stayed put.
     ///
     /// Queues the rebuild rather than performing it, like setTheme() -- see
     /// applyPendingStyleChanges(), which flushes it at the next frame boundary.

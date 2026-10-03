@@ -1,6 +1,7 @@
 #include "Theme.h"
 
 #include "ColorContrast.h"
+#include "DpiScale.h"
 #include "StyleScale.h"
 #include "ThemeLoader.h"
 
@@ -583,11 +584,9 @@ void Theme::setFontSize(FontSize size)
 
 void Theme::setDisplayScale(float scale)
 {
-    // Compared with a tolerance rather than ==: this is a "has the density actually changed" guard
-    // on a value SDL computes in floating point, and an exact comparison is both meaningless at
-    // that precision and flagged by CodeQL.
-    constexpr float SCALE_EPSILON = 1e-4F;
-    if (std::abs(scale - m_DisplayScale) < SCALE_EPSILON)
+    // Compared with a tolerance rather than ==, and ignoring an unusable scale (SDL reports 0.0 on
+    // failure) -- see displayScaleChanged().
+    if (!displayScaleChanged(m_DisplayScale, scale))
     {
         return;
     }
