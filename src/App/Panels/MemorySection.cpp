@@ -27,8 +27,8 @@ namespace App::MemorySection
 namespace
 {
 
-using UI::Widgets::buildTimeAxis;
 using UI::Widgets::computeAlpha;
+using UI::Widgets::frameTimeAxis;
 using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
@@ -98,7 +98,7 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
         alignedCount = std::min(alignedCount, swapCount);
     }
 
-    std::vector<double> timeData = buildTimeAxis(timestamps, alignedCount, nowSeconds);
+    const auto timeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
     const auto memData = UI::Widgets::tailAlignedSpan(memHist, alignedCount).values;
     const auto cachedData = UI::Widgets::tailAlignedSpan(cachedHist, alignedCount).values;
     const auto swapData = UI::Widgets::tailAlignedSpan(swapHist, alignedCount).values;

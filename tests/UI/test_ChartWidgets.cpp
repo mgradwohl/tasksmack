@@ -248,6 +248,51 @@ TEST(ChartWidgetsReduceTest, ReductionKeepsALeadingGap)
 
 // ========== reduceSeriesMinMax (#1010) ==========
 
+// ========== TimeAxisPool (#1018) ==========
+
+TEST(TimeAxisPoolTest, HandsOutDistinctBuffersWithinAFrame)
+{
+    TimeAxisPool pool;
+    auto& first = pool.acquire(1);
+    auto& second = pool.acquire(1);
+    EXPECT_NE(&first, &second);
+    EXPECT_EQ(pool.bufferCount(), 2U);
+}
+
+TEST(TimeAxisPoolTest, ReusesBuffersAndTheirCapacityInTheNextFrame)
+{
+    // The point of the pool: from the second frame on, building the axes allocates nothing.
+    TimeAxisPool pool;
+    const std::vector<double> timestamps = {1.0, 2.0, 3.0, 4.0};
+    auto& frame1 = pool.acquire(1);
+    fillTimeAxis(frame1, timestamps, 4, 5.0);
+    const double* storage = frame1.data();
+
+    auto& frame2 = pool.acquire(2);
+    EXPECT_EQ(&frame2, &frame1);
+    fillTimeAxis(frame2, timestamps, 3, 6.0);
+    EXPECT_EQ(frame2.data(), storage); // no reallocation for a shorter axis
+    EXPECT_EQ(frame2, (std::vector<double>{-4.0, -3.0, -2.0}));
+    EXPECT_EQ(pool.bufferCount(), 1U);
+}
+
+TEST(TimeAxisPoolTest, EarlierBuffersSurviveThePoolGrowingInTheSameFrame)
+{
+    // A chart holds a span of its axis while later charts in the frame acquire more buffers.
+    TimeAxisPool pool;
+    const std::vector<double> timestamps = {10.0, 20.0};
+    auto& first = pool.acquire(7);
+    fillTimeAxis(first, timestamps, 2, 20.0);
+    const std::span<const double> held(first);
+    for (int i = 0; i < 64; ++i)
+    {
+        static_cast<void>(pool.acquire(7));
+    }
+    ASSERT_EQ(held.size(), 2U);
+    EXPECT_DOUBLE_EQ(held[0], -10.0);
+    EXPECT_DOUBLE_EQ(held[1], 0.0);
+}
+
 TEST(ChartWidgetsReduceTest, BucketWidthIsAPowerOfTwoThatHoldsAsTheSpanDrifts)
 {
     // 300 s into 239 buckets: 1.255 s rounds up to 2 s, and stays 2 s as the span drifts.
@@ -936,7 +981,7 @@ TEST(ChartWidgetsTimeAxisTest, BuildTimeAxisReturnsEmptyWhenInputEmpty)
 TEST(ChartWidgetsTimeAxisTest, BuildTimeAxisDoublesReturnsRelativeTimes)
 {
     const std::vector<double> timestamps{10.0, 20.0, 30.0};
-    const auto axis = buildTimeAxisDoubles(timestamps, 3, 25.0);
+    const auto axis = buildTimeAxis(timestamps, 3, 25.0);
 
     ASSERT_EQ(axis.size(), 3U);
     EXPECT_DOUBLE_EQ(axis[0], -15.0);
@@ -947,7 +992,7 @@ TEST(ChartWidgetsTimeAxisTest, BuildTimeAxisDoublesReturnsRelativeTimes)
 TEST(ChartWidgetsTimeAxisTest, BuildTimeAxisDoublesRespectsDesiredCount)
 {
     const std::vector<double> timestamps{1.0, 3.0, 7.0, 9.0};
-    const auto axis = buildTimeAxisDoubles(timestamps, 2, 10.0);
+    const auto axis = buildTimeAxis(timestamps, 2, 10.0);
 
     ASSERT_EQ(axis.size(), 2U);
     EXPECT_DOUBLE_EQ(axis[0], -3.0);

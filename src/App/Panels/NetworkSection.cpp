@@ -31,9 +31,9 @@ namespace App::NetworkSection
 namespace
 {
 
-using UI::Widgets::buildTimeAxis;
 using UI::Widgets::computeAlpha;
 using UI::Widgets::formatAxisBytesPerSec;
+using UI::Widgets::frameTimeAxis;
 using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
@@ -233,7 +233,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                                   : makeTimeAxisConfig({}, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
 
     // Views into the published history, not per-frame copies of it (#1018).
-    std::vector<double> netTimes;
+    std::span<const double> netTimes;
     std::span<const float> sentData;
     std::span<const float> recvData;
     std::span<const float> ifaceSentData;
@@ -242,7 +242,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     if (aligned > 0)
     {
         // Use real-time for smooth scrolling (not netTimestamps.back() which freezes between refreshes)
-        netTimes = buildTimeAxis(netTimestamps, aligned, nowSeconds);
+        netTimes = frameTimeAxis(netTimestamps, aligned, nowSeconds);
         sentData = UI::Widgets::tailAlignedSpan(netTxHist, aligned).values;
         recvData = UI::Widgets::tailAlignedSpan(netRxHist, aligned).values;
 

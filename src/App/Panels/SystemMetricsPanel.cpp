@@ -43,6 +43,7 @@
 #include <memory>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -56,6 +57,7 @@ namespace
 using UI::Widgets::computeAlpha;
 using UI::Widgets::formatAxisLocalized;
 using UI::Widgets::formatAxisWatts;
+using UI::Widgets::frameTimeAxis;
 using UI::Widgets::plotLineWithFill;
 
 // Get the appropriate battery icon based on charge level
@@ -86,7 +88,6 @@ struct HistoryRange
     size_t count = 0;
 };
 
-using UI::Widgets::buildTimeAxis;
 using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
@@ -618,7 +619,7 @@ void SystemMetricsPanel::renderOverview()
     // CPU history with vertical now bars (total + breakdown)
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MICROCHIP "  CPU Usage (%zu samples)", cpuCount);
 
-    std::vector<double> cpuTimeData = buildTimeAxis(timestamps, cpuCount, nowSeconds);
+    const auto cpuTimeData = frameTimeAxis(timestamps, cpuCount, nowSeconds);
 
     const size_t breakdownCount =
         std::min({cpuUserHist.size(), cpuSystemHist.size(), cpuIowaitHist.size(), cpuIdleHist.size(), timestamps.size()});
@@ -626,7 +627,7 @@ void SystemMetricsPanel::renderOverview()
     const auto cpuSystemData = UI::Widgets::tailAlignedSpan(cpuSystemHist, breakdownCount).values;
     const auto cpuIowaitData = UI::Widgets::tailAlignedSpan(cpuIowaitHist, breakdownCount).values;
     const auto cpuIdleData = UI::Widgets::tailAlignedSpan(cpuIdleHist, breakdownCount).values;
-    std::vector<double> breakdownTimeData = buildTimeAxis(timestamps, breakdownCount, nowSeconds);
+    const auto breakdownTimeData = frameTimeAxis(timestamps, breakdownCount, nowSeconds);
 
     // I/O Wait is drawn -- fill, legend entry, tooltip row and bar -- only where the platform
     // reports it. Windows does not, and showed a permanently empty series and bar (#1031).
@@ -836,8 +837,8 @@ void SystemMetricsPanel::renderOverview()
                 }
             }
 
-            const std::vector<double> powerTimeData = buildTimeAxis(m_ProcessHistoryTimestamps, powerCount, nowSeconds);
-            const std::vector<double> batteryTimeData = buildTimeAxis(timestamps, batteryCount, nowSeconds);
+            const auto powerTimeData = frameTimeAxis(m_ProcessHistoryTimestamps, powerCount, nowSeconds);
+            const auto batteryTimeData = frameTimeAxis(timestamps, batteryCount, nowSeconds);
             const auto axis = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds);
             // Update smoothed values: the latest *reading*, skipping trailing gaps.
             const float targetPower = powerHist.empty() ? 0.0F : static_cast<float>(powerHist.back()); // updateSmoothedPower takes float
@@ -1100,14 +1101,14 @@ void SystemMetricsPanel::renderOverview()
                                            : makeTimeAxisConfig({}, m_MaxHistorySeconds, m_HistoryScrollSeconds);
 
         // Views into the panel's history, plotted as doubles -- no per-frame float copies (#1018).
-        std::vector<double> timeData;
+        std::span<const double> timeData;
         const auto faultData = UI::Widgets::tailAlignedSpan(pageFaultHist, alignedCount).values;
         const auto threadData = UI::Widgets::tailAlignedSpan(threadHist, alignedCount).values;
         const auto handleData = UI::Widgets::tailAlignedSpan(handleHist, alignedCount).values;
 
         if (alignedCount > 0)
         {
-            timeData = buildTimeAxis(procTimestamps, alignedCount, nowSeconds);
+            timeData = frameTimeAxis(procTimestamps, alignedCount, nowSeconds);
 
             // Update smoothed values
             const auto targetThreads = static_cast<double>(threadData.back());

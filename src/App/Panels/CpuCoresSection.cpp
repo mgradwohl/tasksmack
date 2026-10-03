@@ -28,9 +28,9 @@ namespace App::CpuCoresSection
 namespace
 {
 
-using UI::Widgets::buildTimeAxis;
 using UI::Widgets::ChartGridConfig;
 using UI::Widgets::computeAlpha;
+using UI::Widgets::frameTimeAxis;
 using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
@@ -227,7 +227,7 @@ void renderCpuCoresSection(RenderContext& ctx)
                             }
                             const float measuredOverhead = *cachedOverhead;
 
-                            std::vector<double> timeData = buildTimeAxis(timestamps, samples.size(), nowSeconds);
+                            const auto timeData = frameTimeAxis(timestamps, samples.size(), nowSeconds);
                             const float plotHeight = std::max(minCorePlotHeight(), cellHeight - measuredOverhead);
 
                             // timeData holds the newest min(samples, timestamps) entries; take the same

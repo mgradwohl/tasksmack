@@ -47,11 +47,11 @@
 namespace
 {
 
-using UI::Widgets::buildTimeAxisDoubles;
 using UI::Widgets::computeAlpha;
 using UI::Widgets::formatAxisBytesPerSec;
 using UI::Widgets::formatAxisLocalized;
 using UI::Widgets::formatAxisWatts;
+using UI::Widgets::frameTimeAxis;
 using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
@@ -809,7 +809,7 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
         const auto cpuSystemData = tailSpan(m_CpuSystemHistory, alignedCount);
 
         const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
-        std::vector<double> cpuTimeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
+        const auto cpuTimeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
 
         // Use smoothed values for NowBars for consistent animation
         const NowBar cpuTotalNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuPercent),
@@ -979,7 +979,7 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
             const auto virtData = tailSpan(m_VirtualHistory, alignedCount);
 
             const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
-            std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
+            const auto timeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
 
             // Smoothed like every other NowBar (#1012); these were the raw latest history sample, so
             // they stepped while the bars around them glided.
@@ -1149,7 +1149,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
     const auto faultData = tailSpan(m_PageFaultHistory, alignedCount);
 
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
-    std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
+    const auto timeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
 
 #ifdef _WIN32
     // The GDI history can be shorter than the others, and ends at the same newest sample, so it
@@ -1341,7 +1341,7 @@ void ProcessDetailsPanel::renderIoStats(UI::Widgets::FillPlotLayout& fill)
     const auto writeData = tailSpan(m_IoWriteHistory, alignedCount);
 
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
-    std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
+    const auto timeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
 
     // Compare the smoothed current rates with history when scaling the NowBars,
     // so either a historical or newly observed peak remains representable.
@@ -1439,7 +1439,7 @@ void ProcessDetailsPanel::renderNetworkStats(UI::Widgets::FillPlotLayout& fill)
     const auto recvData = tailSpan(m_NetRecvHistory, alignedCount);
 
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
-    std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
+    const auto timeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
 
     // Scale the NowBars against both the historical peak and smoothed current
     // value so a new traffic burst cannot exceed the normalized range.
@@ -1547,7 +1547,7 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc, 
     const auto powerData = tailSpan(m_PowerHistory, alignedCount);
     const auto timestamps = tailSpan(m_Timestamps, alignedCount);
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
-    std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
+    const auto timeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
 
     // Use smoothed value for NowBar
     const double powerAxisUpper = UI::Widgets::easedRateAxisUpperBound(
@@ -1830,7 +1830,7 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
         const auto gpuMemVec = tailSpan(m_GpuMemHistory, alignedCount);
 
         const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
-        std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
+        const auto timeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
 
         const int plotCount = UI::Format::checkedCount(alignedCount);
 

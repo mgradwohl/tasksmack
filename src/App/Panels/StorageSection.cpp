@@ -34,10 +34,10 @@ namespace App::StorageSection
 namespace
 {
 
-using UI::Widgets::buildTimeAxis;
 using UI::Widgets::ChartGridConfig;
 using UI::Widgets::computeAlpha;
 using UI::Widgets::formatAxisBytesPerSec;
+using UI::Widgets::frameTimeAxis;
 using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
@@ -232,10 +232,10 @@ void renderStorageSection(RenderContext& ctx)
                                           : makeTimeAxisConfig({}, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
 
     // Build shared time axis (float, relative)
-    std::vector<double> diskTimes;
+    std::span<const double> diskTimes;
     if (historySize > 0)
     {
-        diskTimes = buildTimeAxis(diskTimestamps, historySize, nowSeconds);
+        diskTimes = frameTimeAxis(diskTimestamps, historySize, nowSeconds);
     }
 
     // Update aggregate smoothed values
@@ -388,7 +388,7 @@ void renderStorageSection(RenderContext& ctx)
         const size_t alignedDisk = std::min({historySize, diskReadHist.size(), diskWriteHist.size()});
 
         // Take the newest alignedDisk entries of each series, so read, write and time line up by sample.
-        const std::vector<double> aggregateTimes = buildTimeAxis(diskTimestamps, alignedDisk, nowSeconds);
+        const auto aggregateTimes = frameTimeAxis(diskTimestamps, alignedDisk, nowSeconds);
         // Views into the published history, plotted as doubles -- no per-frame float copies (#1018).
         const auto readData = tailAlignedSpan(diskReadHist, alignedDisk).values;
         const auto writeData = tailAlignedSpan(diskWriteHist, alignedDisk).values;

@@ -888,15 +888,16 @@ template<typename T> struct TailAlignedSpan
     std::size_t offset = 0;
 };
 
-template<typename T> [[nodiscard]] inline TailAlignedSpan<T> tailAlignedSpan(const std::vector<T>& data, std::size_t count)
+template<typename T> [[nodiscard]] inline TailAlignedSpan<T> tailAlignedSpan(std::span<const T> data, std::size_t count)
 {
     const std::size_t clampedCount = std::min(count, data.size());
     const std::size_t offset = data.size() - clampedCount;
-    if (clampedCount == 0)
-    {
-        return {std::span<const T>{}, offset};
-    }
-    return {std::span<const T>(data.data() + offset, clampedCount), offset};
+    return {data.subspan(offset, clampedCount), offset};
+}
+
+template<typename T> [[nodiscard]] inline TailAlignedSpan<T> tailAlignedSpan(const std::vector<T>& data, std::size_t count)
+{
+    return tailAlignedSpan(std::span<const T>(data), count);
 }
 
 // Returns the tooltip string to display for a NowBar, using the fallback chain:
@@ -950,38 +951,76 @@ inline TimeAxisConfig makeTimeAxisConfig(std::span<const double> timestamps, dou
     return cfg;
 }
 
-/// Time axis for a history chart: the newest `desiredCount` timestamps as seconds before
-/// `nowSeconds` (pass historyFrameNowSeconds()).
+/// Write the time axis for a history chart into @p out: the newest `desiredCount` timestamps as
+/// seconds before `nowSeconds` (pass historyFrameNowSeconds()). Reuses @p out's capacity.
 ///
 /// double, not float: plotLineWithFill() adds now back to x to bucket samples in absolute time
 /// (reduceSeriesMinMax), and a float x carries a rounding error that changes as now advances, so a
 /// sample near a bucket boundary could still change bucket from frame to frame (#1051 review).
-inline std::vector<double> buildTimeAxis(std::span<const double> timestamps, size_t desiredCount, double nowSeconds)
+inline void fillTimeAxis(std::vector<double>& out, std::span<const double> timestamps, size_t desiredCount, double nowSeconds)
 {
     const size_t n = std::min(desiredCount, timestamps.size());
-    std::vector<double> timeData(n);
     const size_t offset = timestamps.size() - n;
+    out.resize(n);
     for (size_t i = 0; i < n; ++i)
     {
-        timeData[i] = timestamps[offset + i] - nowSeconds;
+        out[i] = timestamps[offset + i] - nowSeconds;
     }
+}
+
+/// fillTimeAxis() into a new vector.
+[[nodiscard]] inline std::vector<double> buildTimeAxis(std::span<const double> timestamps, size_t desiredCount, double nowSeconds)
+{
+    std::vector<double> timeData;
+    fillTimeAxis(timeData, timestamps, desiredCount, nowSeconds);
     return timeData;
 }
 
-inline std::vector<double> buildTimeAxisDoubles(std::span<const double> timestamps, size_t desiredCount, double nowSeconds)
+/// Buffers for one frame's time axes, reused from frame to frame (#1018).
+///
+/// x is "seconds before now", so every history chart rebuilds its time axis every frame; with a new
+/// vector each time that was a heap allocation per chart per frame. acquire() hands out the pool's
+/// buffers in turn and starts over when the frame number changes, so once each buffer has grown to
+/// its chart's length, building the axes allocates nothing. A buffer, and any span of it, stays valid
+/// until the same buffer is handed out again in a later frame.
+class TimeAxisPool
 {
-    const size_t n = std::min(desiredCount, timestamps.size());
-    std::vector<double> timeData(n);
-    const size_t offset = timestamps.size() - n;
-    if (n == 0)
+  public:
+    [[nodiscard]] std::vector<double>& acquire(int frame)
     {
-        return timeData;
+        if (frame != m_Frame)
+        {
+            m_Frame = frame;
+            m_Next = 0;
+        }
+        if (m_Next == m_Buffers.size())
+        {
+            // Growing the outer vector moves the inner ones, which keeps their heap buffers: spans
+            // already handed out this frame stay valid.
+            m_Buffers.emplace_back();
+        }
+        return m_Buffers[m_Next++];
     }
-    for (size_t i = 0; i < n; ++i)
+
+    [[nodiscard]] std::size_t bufferCount() const noexcept
     {
-        timeData[i] = timestamps[offset + i] - nowSeconds;
+        return m_Buffers.size();
     }
-    return timeData;
+
+  private:
+    std::vector<std::vector<double>> m_Buffers;
+    std::size_t m_Next = 0;
+    int m_Frame = -1;
+};
+
+/// The time axis for a history chart (see fillTimeAxis()), in a buffer from this frame's
+/// TimeAxisPool rather than a new vector. Valid for the rest of the ImGui frame. UI thread only.
+[[nodiscard]] inline std::span<const double> frameTimeAxis(std::span<const double> timestamps, size_t desiredCount, double nowSeconds)
+{
+    static TimeAxisPool pool;
+    auto& buffer = pool.acquire(ImGui::GetFrameCount());
+    fillTimeAxis(buffer, timestamps, desiredCount, nowSeconds);
+    return buffer;
 }
 
 inline auto hoveredIndexFromPlotX(const std::vector<float>& timeData, double mouseX) -> std::optional<size_t>
@@ -1018,7 +1057,7 @@ inline auto hoveredIndexFromPlotX(const std::vector<float>& timeData, double mou
     return (distUpper < distLower) ? upperIdx : lowerIdx;
 }
 
-inline auto hoveredIndexFromPlotX(const std::vector<double>& timeData, double mouseX) -> std::optional<size_t>
+inline auto hoveredIndexFromPlotX(std::span<const double> timeData, double mouseX) -> std::optional<size_t>
 {
     if (timeData.empty())
     {

@@ -28,8 +28,8 @@ namespace App::GpuSection
 namespace
 {
 
-using UI::Widgets::buildTimeAxis;
 using UI::Widgets::computeAlpha;
+using UI::Widgets::frameTimeAxis;
 using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
@@ -263,7 +263,7 @@ void renderGpuSection(RenderContext& ctx)
         const auto memUsedBytesData = tailAlignedSpan(history.memoryUsedBytes, alignedCount).values;
         const auto memTotalBytesData = tailAlignedSpan(history.memoryTotalBytes, alignedCount).values;
 
-        std::vector<double> timeData = buildTimeAxis(perGpuTimestamps, alignedCount, nowSeconds);
+        const auto timeData = frameTimeAxis(perGpuTimestamps, alignedCount, nowSeconds);
 
         // Compute per-GPU axis config from per-GPU timestamps so that X-axis scroll/limits
         // stay consistent with the data being plotted even when a GPU is intermittently absent
