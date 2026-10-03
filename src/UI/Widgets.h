@@ -1,39 +1,100 @@
 #pragma once
 
+#include "UI/ColorContrast.h"
+#include "UI/LineLayout.h"
+
 #include <imgui.h>
 
 #include <algorithm>
+#include <span>
 
 namespace UI::Widgets
 {
+
+/// Width for a WidthFixed label column that holds exactly `labels`, measured at the current font.
+/// See UI::LineLayout::labelColumnWidth() for why these are measured rather than authored (#966).
+[[nodiscard]] inline float measureLabelColumnWidth(std::span<const char* const> labels)
+{
+    float widest = 0.0F;
+    for (const char* label : labels)
+    {
+        widest = std::max(widest, ImGui::CalcTextSize(label).x);
+    }
+    return UI::LineLayout::labelColumnWidth(widest, ImGui::GetFontSize());
+}
 
 /// Minimum height in pixels for bar fill rendering.
 /// Ensures at least a 1px marker remains visible even when the value is 0%,
 /// providing visual feedback that the bar exists and is capable of showing data.
 constexpr float MIN_BAR_FILL_HEIGHT = 1.0F;
 
-/// Draw right-aligned text overlay on the previous ImGui item (e.g., plot, progress bar).
-/// Note: ImGui requires null-terminated const char*; std::string_view wouldn't add value here.
-/// Shadow-free to avoid double-vision; relies on theme contrast instead.
-/// @param text The text to display (null or empty is a no-op)
-/// @param paddingX Distance from the right edge in pixels (default: 8.0)
-inline void drawRightAlignedOverlayText(const char* text, float paddingX = 8.0F)
+/// The three fills a filledButton() is drawn with.
+struct ButtonFills
 {
-    if (text == nullptr || text[0] == '\0')
-    {
-        return;
-    }
+    ImVec4 resting;
+    ImVec4 hovered;
+    ImVec4 pressed;
+};
+
+/// A button with its own fill colours whose label stays readable in every state.
+///
+/// ImGui::Button() takes one text colour for all three of its states, but a themed fill moves
+/// between them -- and not consistently: some themes lighten the fill on hover, others darken it.
+/// One label colour therefore cannot be right for all three; measured across the bundled themes,
+/// sixteen of twenty had at least one state where the Apply label was under 3:1 contrast, several
+/// of them around 1.1 on hover, the state the user is in when about to click (#969).
+///
+/// So the button is submitted without a label and the label is drawn afterwards, in whichever of
+/// the two candidate colours reads better on the fill actually showing (see
+/// ColorContrast::readableTextOn()).
+///
+/// @param label           Visible label; also the button's ID. Drawn verbatim, so no "##" suffix.
+/// @param size            As for ImGui::Button(). A zero width fits the label.
+/// @param fills           The button's fill in each state.
+/// @param textPreferred   Label colour to use unless the alternate is clearly more readable.
+/// @param textAlternate   The other candidate; the theme's window background is a good choice.
+/// @return true when clicked, as ImGui::Button() does.
+inline bool
+filledButton(const char* label, const ImVec2& size, const ButtonFills& fills, const ImVec4& textPreferred, const ImVec4& textAlternate)
+{
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const ImVec2 labelSize = ImGui::CalcTextSize(label);
+    // The button is submitted with no visible label, so a zero size is resolved here against the
+    // real label, the way ImGui::Button() would have: a zero width would otherwise collapse, and
+    // the height should not depend on what ImGui measures for an empty string.
+    const ImVec2 buttonSize((size.x != 0.0F) ? size.x : (labelSize.x + (style.FramePadding.x * 2.0F)),
+                            (size.y != 0.0F) ? size.y : (labelSize.y + (style.FramePadding.y * 2.0F)));
+
+    ImGui::PushStyleColor(ImGuiCol_Button, fills.resting);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, fills.hovered);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, fills.pressed);
+    ImGui::PushID(label);
+    const bool clicked = ImGui::Button("##filled", buttonSize);
+    ImGui::PopID();
+    ImGui::PopStyleColor(3);
+
+    // The same rule ImGui::Button() uses to pick its fill, so the label is judged against the
+    // colour that was actually drawn.
+    const bool hovered = ImGui::IsItemHovered();
+    const bool held = ImGui::IsItemActive();
+    const ImVec4& shown = (held && hovered) ? fills.pressed : (hovered ? fills.hovered : fills.resting);
 
     const ImVec2 rectMin = ImGui::GetItemRectMin();
     const ImVec2 rectMax = ImGui::GetItemRectMax();
-    const ImVec2 textSize = ImGui::CalcTextSize(text);
+    const ImVec2 textPos(rectMin.x + (((rectMax.x - rectMin.x) - labelSize.x) * 0.5F),
+                         rectMin.y + (((rectMax.y - rectMin.y) - labelSize.y) * 0.5F));
+    // GetColorU32(ImVec4) applies the style's alpha, so a button inside BeginDisabled() gets a
+    // dimmed label like any other.
+    const ImU32 textColor = ImGui::GetColorU32(ColorContrast::readableTextOn(shown, textPreferred, textAlternate));
+    // Clipped to the button, as ImGui::Button() clips its own label: a caller may cap the width
+    // below the label's (the priority panel does, on a narrow pane), and an unclipped label would
+    // then be drawn over whatever is beside the button.
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    drawList->PushClipRect(rectMin, rectMax, true);
+    drawList->AddText(textPos, textColor, label);
+    drawList->PopClipRect();
 
-    const float x = rectMax.x - paddingX - textSize.x;
-    const float y = rectMin.y + ((rectMax.y - rectMin.y - textSize.y) * 0.5F);
-    const ImVec2 pos(x, y);
-
-    const ImU32 textCol = ImGui::GetColorU32(ImGuiCol_Text);
-    ImGui::GetWindowDrawList()->AddText(pos, textCol, text);
+    return clicked;
 }
 
 /// Draw a vertical bar (bottom-up fill) with the value and optional label centered underneath.

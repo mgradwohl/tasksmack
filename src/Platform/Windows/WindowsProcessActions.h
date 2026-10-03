@@ -6,7 +6,9 @@ namespace Platform
 {
 
 /// Windows implementation of IProcessActions.
-/// Uses TerminateProcess and related APIs.
+/// Uses TerminateProcess and related APIs. Each action opens a handle to the PID, confirms the
+/// process's creation time matches the target's, and acts through that handle. The handle pins the
+/// process object, so once the check passes a later reuse of the PID cannot redirect the action.
 class WindowsProcessActions : public IProcessActions
 {
   public:
@@ -19,15 +21,15 @@ class WindowsProcessActions : public IProcessActions
     WindowsProcessActions& operator=(WindowsProcessActions&&) = default;
 
     [[nodiscard]] ProcessActionCapabilities actionCapabilities() const override;
-    [[nodiscard]] ProcessActionResult terminate(int32_t pid) override;
-    [[nodiscard]] ProcessActionResult kill(int32_t pid) override;
-    [[nodiscard]] ProcessActionResult stop(int32_t pid) override;
-    [[nodiscard]] ProcessActionResult resume(int32_t pid) override;
-    [[nodiscard]] ProcessActionResult setPriority(int32_t pid, int32_t nice) override;
+    [[nodiscard]] ProcessActionResult terminate(const ProcessTarget& target) override;
+    [[nodiscard]] ProcessActionResult kill(const ProcessTarget& target) override;
+    [[nodiscard]] ProcessActionResult stop(const ProcessTarget& target) override;
+    [[nodiscard]] ProcessActionResult resume(const ProcessTarget& target) override;
+    [[nodiscard]] ProcessActionResult setPriority(const ProcessTarget& target, int32_t nice) override;
 
   private:
     /// Helper to terminate a process with given exit code
-    [[nodiscard]] static ProcessActionResult terminateProcess(int32_t pid, uint32_t exitCode);
+    [[nodiscard]] static ProcessActionResult terminateProcess(const ProcessTarget& target, uint32_t exitCode);
 };
 
 } // namespace Platform

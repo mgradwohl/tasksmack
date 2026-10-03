@@ -28,6 +28,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <format>
@@ -72,6 +73,9 @@ TEST(LinuxProcessProbeTest, CapabilitiesReportedCorrectly)
     EXPECT_TRUE(caps.hasUserSystemTime);
     EXPECT_TRUE(caps.hasStartTime);
     EXPECT_TRUE(caps.hasThreadCount);
+    // Shared memory comes from /proc/[pid]/statm; the process details chart draws it only when
+    // this is set (#1035).
+    EXPECT_TRUE(caps.hasSharedMemory);
 }
 
 TEST(LinuxProcessProbeTest, ReducedPrivilegesMatchesEuid)
@@ -110,8 +114,8 @@ TEST(LinuxProcessProbeTest, TotalCpuTimeIncreases)
 
     // Do some work to consume CPU
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    volatile int sum = 0;
-    for (int i = 0; i < 1000000; ++i)
+    volatile std::uint64_t sum = 0; // unsigned, so the busy loop's wrap-around is defined (#1090)
+    for (std::uint64_t i = 0; i < 1000000; ++i)
     {
         sum += i;
     }
@@ -344,10 +348,10 @@ TEST(LinuxProcessProbeTest, CpuTimeIncreasesBetweenSamples)
 
     // Do significant CPU work to ensure measurable time increase
     // Use multiple iterations and sleep to ensure CPU time is captured
-    volatile int sum = 0;
+    volatile std::uint64_t sum = 0; // unsigned, so the busy loop's wrap-around is defined (#1090)
     for (int iteration = 0; iteration < 5; ++iteration)
     {
-        for (int i = 0; i < 10000000; ++i)
+        for (std::uint64_t i = 0; i < 10000000; ++i)
         {
             sum += i;
         }
@@ -491,6 +495,39 @@ TEST(LinuxProcessProbeTest, IoCountersForSelfProcess)
     EXPECT_GE(selfProc->writeBytes, 0ULL);
 }
 
+TEST(LinuxProcessProbeTest, NetworkReadTimeIsStampedOnEveryProcess)
+{
+    // #1063 review: ProcessModel takes network rates over the time between the probe's socket reads,
+    // so every process must carry the read's time -- processes without sockets too, or the next
+    // read with sockets would fall back to the refresh interval and overstate its rate.
+    LinuxProcessProbe probe;
+    if (!probe.capabilities().hasNetworkCounters)
+    {
+        GTEST_SKIP() << "Per-process network counters not available (Netlink INET_DIAG)";
+    }
+    // Long enough that both enumerations below hit the same cached socket read.
+    probe.setSocketStatsCacheTtl(std::chrono::minutes{10});
+
+    const auto first = probe.enumerate();
+    ASSERT_FALSE(first.empty());
+    const std::uint64_t stamp = first.front().netSampleTimeNs;
+    EXPECT_NE(stamp, 0U);
+    for (const auto& proc : first)
+    {
+        EXPECT_EQ(proc.netSampleTimeNs, stamp) << "pid " << proc.pid;
+    }
+
+    // Within the socket cache's TTL the same read is returned with its original time, not a new one:
+    // a fresh stamp on a cache hit would make ProcessModel treat it as a new reading (rates of 0
+    // between real reads, then inflated ones when fresh counters arrive).
+    const auto second = probe.enumerate();
+    ASSERT_FALSE(second.empty());
+    for (const auto& proc : second)
+    {
+        EXPECT_EQ(proc.netSampleTimeNs, stamp) << "pid " << proc.pid;
+    }
+}
+
 TEST(LinuxProcessProbeTest, IoCountersIncreaseWithActivity)
 {
     LinuxProcessProbe probe;
@@ -547,6 +584,12 @@ TEST(LinuxProcessProbeTest, EnumerateHandlesKernelThreadsWithNullCmdline)
 {
     // Verify the empty-cmdline fallback branch by finding a real process whose
     // /proc/[pid]/cmdline is empty and asserting the probe formats command as "[name]".
+    //
+    // Only kernel threads (kthreadd, PID 2, and its children) are considered. Any other process
+    // with an empty cmdline at the moment of this check is one that exited after the probe read
+    // it -- a zombie's cmdline reads as empty -- and its earlier, non-empty command makes the
+    // assertion fail. Under a parallel ctest run, tests that fork short-lived children make that
+    // race likely. Where kernel threads are not visible (WSL, some containers) the test skips.
     LinuxProcessProbe probe;
     auto processes = probe.enumerate();
 
@@ -554,6 +597,10 @@ TEST(LinuxProcessProbeTest, EnumerateHandlesKernelThreadsWithNullCmdline)
                                  processes.end(),
                                  [](const ProcessCounters& proc)
                                  {
+                                     if (proc.pid != 2 && proc.parentPid != 2)
+                                     {
+                                         return false;
+                                     }
                                      const auto cmdlinePath = std::filesystem::path("/proc") / std::to_string(proc.pid) / "cmdline";
                                      std::ifstream cmdlineFile(cmdlinePath, std::ios::binary);
                                      if (!cmdlineFile.is_open())

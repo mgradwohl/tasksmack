@@ -24,6 +24,8 @@
 #include <pdhmsg.h>  // PDH_MORE_DATA, PDH_CSTATUS_NEW_DATA, etc.
 // clang-format on
 
+#include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
@@ -73,6 +75,10 @@ struct ParsedInstance
     std::int32_t pid = 0;
     std::string engineType;
     std::string gpuLuid; // LUID as string for GPU identification
+    /// Which engine of the adapter this instance measures: "phys_<n>_eng_<m>" for the full format,
+    /// "engtype_<type>" for the simplified one, empty for memory instances. Utilization is per
+    /// engine, so this is the key aggregation groups by (#1033).
+    std::string engineKey;
     bool valid = false;
 };
 
@@ -185,6 +191,7 @@ inline ParsedInstance parseInstanceName(const std::string& instanceName)
 
     if (suffix.starts_with(physToken))
     {
+        const std::string_view engineKeyStart = suffix.substr(1); // "phys_<n>..." without the leading '_'
         suffix.remove_prefix(physToken.size());
         if (!consumeDigits(suffix))
         {
@@ -207,6 +214,7 @@ inline ParsedInstance parseInstanceName(const std::string& instanceName)
             {
                 return result;
             }
+            result.engineKey = std::string(engineKeyStart.substr(0, engineKeyStart.size() - suffix.size()));
             suffix.remove_prefix(engtypeToken.size());
             // Some drivers (observed on Intel Arc) leave the type blank for engine indices
             // they haven't assigned a name to yet, e.g. "..._eng_10_engtype_" with nothing
@@ -223,6 +231,8 @@ inline ParsedInstance parseInstanceName(const std::string& instanceName)
         // valid instance, unnamed engine type.
         suffix.remove_prefix(engtypeToken.size());
         result.engineType = std::string(suffix);
+        // No engine index in this format; the type is the closest thing to an engine identity.
+        result.engineKey = "engtype_" + result.engineType;
     }
     else
     {
@@ -259,6 +269,82 @@ inline std::string normalizeEngineType(const std::string& rawType)
     return rawType; // Return as-is if unknown
 }
 
+/// The LUID in a "GPU Adapter Memory" instance name, "luid_0x<hi>_0x<lo>_phys_<n>", in the same
+/// "0x<hi>_0x<lo>" form parseInstanceName() produces, or empty if the name is not of that form.
+[[nodiscard]] inline std::string parseAdapterInstanceLuid(std::string_view name)
+{
+    constexpr std::string_view luidPrefix{"luid_"};
+    constexpr std::string_view physToken{"_phys_"};
+    if (!name.starts_with(luidPrefix))
+    {
+        return {};
+    }
+    name.remove_prefix(luidPrefix.size());
+    const auto physPos = name.find(physToken);
+    if (physPos == std::string_view::npos)
+    {
+        return {};
+    }
+    const std::string_view luid = name.substr(0, physPos);
+    const std::string_view phys = name.substr(physPos + physToken.size());
+    const auto isHexHalf = [](std::string_view half)
+    {
+        if (!half.starts_with("0x") || half.size() <= 2)
+        {
+            return false;
+        }
+        return std::ranges::all_of(half.substr(2), [](char ch) { return std::isxdigit(static_cast<unsigned char>(ch)) != 0; });
+    };
+    const auto sep = luid.find('_');
+    if (sep == std::string_view::npos || !isHexHalf(luid.substr(0, sep)) || !isHexHalf(luid.substr(sep + 1)) || phys.empty() ||
+        !std::ranges::all_of(phys, [](char ch) { return ch >= '0' && ch <= '9'; }))
+    {
+        return {};
+    }
+    return std::string(luid);
+}
+
+/// Add one counter instance's utilization to a process's per-engine totals. Instances of the same
+/// engine (the same engineKey) add up; different engines are kept apart.
+inline void addEngineUtilization(std::vector<std::pair<std::string, double>>& byEngine, const std::string& engineKey, double utilization)
+{
+    const auto it = std::ranges::find(byEngine, engineKey, &std::pair<std::string, double>::first);
+    if (it != byEngine.end())
+    {
+        it->second += utilization;
+    }
+    else
+    {
+        byEngine.emplace_back(engineKey, utilization);
+    }
+}
+
+/// A process's GPU utilization: its busiest engine. Engines run in parallel, so summing them is
+/// not a utilization -- a video call with decode 40 %, 3D 20 % and copy 10 % used to read 70 %
+/// where Task Manager reads 40 % (#1033).
+[[nodiscard]] inline double busiestEngineUtilization(const std::vector<std::pair<std::string, double>>& byEngine) noexcept
+{
+    double busiest = 0.0;
+    for (const auto& [engineKey, utilization] : byEngine)
+    {
+        busiest = std::max(busiest, utilization);
+    }
+    return busiest;
+}
+
+/// An adapter's GPU utilization from its engines' totals (each already summed over processes):
+/// the busiest engine, capped at 100 because per-process readings of one engine are sampled
+/// independently and can add up to slightly more than the engine's capacity.
+[[nodiscard]] inline double adapterUtilizationFromEngines(const std::unordered_map<std::string, double>& engineTotals) noexcept
+{
+    double busiest = 0.0;
+    for (const auto& [engineKey, total] : engineTotals)
+    {
+        busiest = std::max(busiest, total);
+    }
+    return std::clamp(busiest, 0.0, 100.0);
+}
+
 } // namespace Platform::PDHGPUProbeImplDetail
 
 namespace Platform
@@ -280,6 +366,10 @@ struct PDHGPUProbe::Impl
     static constexpr const wchar_t* UTILIZATION_COUNTER_PATH = L"\\GPU Engine(*)\\Utilization Percentage";
     static constexpr const wchar_t* DEDICATED_MEMORY_COUNTER_PATH = L"\\GPU Process Memory(*)\\Dedicated Usage";
     static constexpr const wchar_t* SHARED_MEMORY_COUNTER_PATH = L"\\GPU Process Memory(*)\\Shared Usage";
+    // Adapter-wide memory in use, for the GPU tab's Memory line (#1029). Instances are per adapter
+    // ("luid_0x..._0x..._phys_0"), so a handful at most.
+    static constexpr const wchar_t* ADAPTER_DEDICATED_COUNTER_PATH = L"\\GPU Adapter Memory(*)\\Dedicated Usage";
+    static constexpr const wchar_t* ADAPTER_SHARED_COUNTER_PATH = L"\\GPU Adapter Memory(*)\\Shared Usage";
 
     HMODULE pdhModule = nullptr;
     PdhOpenQueryFn pdhOpenQuery = nullptr;
@@ -300,9 +390,11 @@ struct PDHGPUProbe::Impl
     // each sample - no periodic PdhEnumObjectItems re-enumeration or counter rebuilds.
     // Measured on a 651-instance system: wildcard collect + array read is ~1 ms total vs
     // ~8-30 ms per collect for per-instance counters plus ~140 ms per re-enumeration.
-    PDH_HCOUNTER utilizationCounter = nullptr;     // "\GPU Engine(*)\Utilization Percentage"
-    PDH_HCOUNTER dedicatedMemoryCounter = nullptr; // "\GPU Process Memory(*)\Dedicated Usage"
-    PDH_HCOUNTER sharedMemoryCounter = nullptr;    // "\GPU Process Memory(*)\Shared Usage"
+    PDH_HCOUNTER utilizationCounter = nullptr;      // "\GPU Engine(*)\Utilization Percentage"
+    PDH_HCOUNTER dedicatedMemoryCounter = nullptr;  // "\GPU Process Memory(*)\Dedicated Usage"
+    PDH_HCOUNTER sharedMemoryCounter = nullptr;     // "\GPU Process Memory(*)\Shared Usage"
+    PDH_HCOUNTER adapterDedicatedCounter = nullptr; // "\GPU Adapter Memory(*)\Dedicated Usage"
+    PDH_HCOUNTER adapterSharedCounter = nullptr;    // "\GPU Adapter Memory(*)\Shared Usage"
 
     // Scratch buffer reused across PdhGetFormattedCounterArray calls to avoid
     // per-sample allocation churn.
@@ -312,6 +404,29 @@ struct PDHGPUProbe::Impl
     std::vector<ProcessGPUCounters> lastValidResults;
     std::chrono::steady_clock::time_point lastValidTimestamp;
 
+    /// How long a cached result may stand in for a failed collect. Beyond this the probe reports
+    /// no data rather than repeating an old busy reading as a frozen flat line (#1034).
+    static constexpr std::chrono::seconds MAX_STALE_RESULTS_AGE{2};
+
+    /// Per-adapter utilization from the most recent successful collect, keyed by "GPU_<luid>": for
+    /// each engine the sum over processes, then the busiest engine -- Task Manager's definition
+    /// (#1033). Empty until a collect has produced utilization.
+    std::unordered_map<std::string, double> lastAdapterUtilization;
+
+    /// Adapter-wide memory in use from the most recent collect, keyed by "GPU_<luid>".
+    std::unordered_map<std::string, AdapterMemoryUsage> lastAdapterMemory;
+
+    /// lastValidResults if it is recent enough to stand in for a failed collect, else nothing.
+    [[nodiscard]] std::vector<ProcessGPUCounters> freshCachedResults() const
+    {
+        if (lastValidTimestamp.time_since_epoch().count() == 0 ||
+            (std::chrono::steady_clock::now() - lastValidTimestamp) > MAX_STALE_RESULTS_AGE)
+        {
+            return {};
+        }
+        return lastValidResults;
+    }
+
     /// Parsed metadata for a counter instance name. Cached because instance names repeat
     /// every sample and wide->UTF-8 conversion plus parsing is per-name work.
     struct CachedInstance
@@ -319,6 +434,7 @@ struct PDHGPUProbe::Impl
         std::int32_t pid = 0;
         std::string engineType; // Normalized display name; empty for memory instances
         std::string gpuLuid;
+        std::string engineKey; // ParsedInstance::engineKey
         bool valid = false;
     };
 
@@ -459,7 +575,18 @@ struct PDHGPUProbe::Impl
         {
             addWildcardCounter(SHARED_MEMORY_COUNTER_PATH, sharedMemoryCounter);
         }
-        return utilizationCounter != nullptr || dedicatedMemoryCounter != nullptr || sharedMemoryCounter != nullptr;
+        if (adapterDedicatedCounter == nullptr)
+        {
+            addWildcardCounter(ADAPTER_DEDICATED_COUNTER_PATH, adapterDedicatedCounter);
+        }
+        if (adapterSharedCounter == nullptr)
+        {
+            addWildcardCounter(ADAPTER_SHARED_COUNTER_PATH, adapterSharedCounter);
+        }
+        // Any one active counter is worth a collect: the adapter-memory counters alone still give
+        // the GPU tab its Memory line (#1029).
+        return utilizationCounter != nullptr || dedicatedMemoryCounter != nullptr || sharedMemoryCounter != nullptr ||
+               adapterDedicatedCounter != nullptr || adapterSharedCounter != nullptr;
     }
 
     /// @brief Look up (or parse and cache) instance metadata for a wide instance name
@@ -484,6 +611,7 @@ struct PDHGPUProbe::Impl
         cached.pid = parsed.pid;
         cached.engineType = parsed.engineType.empty() ? std::string{} : PDHGPUProbeImplDetail::normalizeEngineType(parsed.engineType);
         cached.gpuLuid = parsed.gpuLuid;
+        cached.engineKey = parsed.engineKey;
         cached.valid = parsed.valid;
         return instanceCache.emplace(std::move(wide), std::move(cached)).first->second;
     }

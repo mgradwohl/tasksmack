@@ -44,30 +44,137 @@ if(WIN32)
     if(TASKSMACK_PWSH)
         add_test(NAME ResizeCaptureScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-profile-etw-resize.ps1)
+        add_test(NAME EtwCaptureScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-profile-etw.ps1)
     endif()
 endif()
 
+# Test sources. Every list is defined on every platform, so the registration check below can see
+# all of them; the platform branch then picks its own.
+set(COMMON_TEST_SOURCES
+    test_main.cpp
+    Core/test_Application.cpp
+    Core/test_EnvUtils.cpp
+    Core/test_Event.cpp
+    Core/test_Layer.cpp
+    Core/test_PathService.cpp
+    Core/test_VideoBackend.cpp
+    Core/test_Window.cpp
+    Core/test_WindowEvents.cpp
+    Domain/test_History.cpp
+    Domain/test_Numeric.cpp
+    Domain/test_SingleLineText.cpp
+    Domain/test_ProcessModel.cpp
+    Domain/test_GPUModel.cpp
+    Domain/test_ProcessStatus.cpp
+    Domain/test_SystemModel.cpp
+    Domain/test_StorageModel.cpp
+    Domain/test_BackgroundSampler.cpp
+    Domain/test_PriorityConfig.cpp
+    Domain/test_SamplingConfig.cpp
+    UI/test_ChartWidgets.cpp
+    UI/test_ChartGridLayout.cpp
+    UI/test_HistoryPlotHeight.cpp
+    UI/test_EmptyState.cpp
+    UI/test_Format.cpp
+    UI/test_RenderMetrics.cpp
+    UI/test_RateAxis.cpp
+    UI/test_BundledThemes.cpp
+    UI/test_ColorContrast.cpp
+    UI/test_StyleScale.cpp
+    UI/test_DialogMetrics.cpp
+    UI/test_LineLayout.cpp
+    UI/test_IconEncoding.cpp
+    App/test_DialogGeometry.cpp
+    UI/test_ThemeLoader.cpp
+    UI/test_AssetPath.cpp
+    UI/test_ThemeHeader.cpp
+    UI/test_WidgetsHeader.cpp
+    UI/test_IconLoader.cpp
+    UI/test_MonospaceFontPath.cpp
+    UI/test_DpiScale.cpp
+    App/test_ProcessColumnConfig.cpp
+    App/test_ProcessSortUtils.cpp
+    App/test_AdaptiveIntervalUtils.cpp
+    App/test_ProcessTreeFlatten.cpp
+    App/test_ProcessTreeIndent.cpp
+    App/test_ProcessTableFlags.cpp
+    App/test_ProcessTableLayout.cpp
+    App/test_ProcessTableSettings.cpp
+    App/test_ProcessDetailsLayout.cpp
+    App/test_GpuClockReference.cpp
+    App/test_GpuSectionEmptyState.cpp
+    App/test_ProcessRowFormat.cpp
+    Platform/test_CgroupFreezerPath.cpp
+    Platform/test_ProcessIdentity.cpp
+    Platform/test_ProcessName.cpp
+    App/test_FpsCounter.cpp
+    App/test_Panel.cpp
+    App/test_ProcessesPanel.cpp
+    App/test_ShellLayer.cpp
+    App/test_TitleBarGeometry.cpp
+    App/test_UserConfig.cpp
+    App/test_UserConfigHelpers.cpp
+    App/test_UserConfigPersistence.cpp
+    App/test_PanelTabs.cpp
+    App/test_PriorityHelpers.cpp
+    App/test_ProcessGpuHelpers.cpp
+    App/test_ProcessResourceHelpers.cpp
+    App/test_ProcessActionHelpers.cpp
+    App/test_SettingsLayerDetail.cpp
+    App/test_NetInterfaceUtils.cpp
+)
+set(WINDOWS_PLATFORM_TEST_SOURCES
+    Platform/test_ProcessProbeContract.cpp
+    Platform/test_SystemProbeContract.cpp
+    Platform/test_ProcessActionsContract.cpp
+    Platform/test_PathProviderContract.cpp
+    Platform/test_PowerProbeContract.cpp
+    Platform/test_WindowsProcessProbe.cpp
+    Platform/test_WindowsSystemProbe.cpp
+    Platform/test_WindowsProcessActions.cpp
+    Platform/test_WindowsDiskProbe.cpp
+    Platform/test_WindowsPathProvider.cpp
+    Platform/test_WindowsPowerProbe.cpp
+    Platform/test_WindowsNVMLGPUProbe.cpp
+    Platform/test_WindowsPDHGPUProbe.cpp
+    Platform/test_WindowsGPUProbe.cpp
+    Platform/test_WindowsDXGIGPUProbe.cpp
+    Platform/test_WindowsProcAddress.cpp
+    Platform/test_WinString.cpp
+)
+set(WINDOWS_INTEGRATION_TEST_SOURCES
+    Integration/test_CrossLayer.cpp
+    Integration/test_WindowsRealProbes.cpp
+)
+set(LINUX_PLATFORM_TEST_SOURCES
+    Platform/test_ProcessProbeContract.cpp
+    Platform/test_SystemProbeContract.cpp
+    Platform/test_ProcessActionsContract.cpp
+    Platform/test_PathProviderContract.cpp
+    Platform/test_PowerProbeContract.cpp
+    Platform/test_LinuxProcessProbe.cpp
+    Platform/test_LinuxSystemProbe.cpp
+    Platform/test_LinuxProcessActions.cpp
+    Platform/test_LinuxDiskProbe.cpp
+    Platform/test_LinuxPathProvider.cpp
+    Platform/test_LinuxPowerProbe.cpp
+    Platform/test_LinuxGPUProbe.cpp
+    Platform/test_LinuxNVMLGPUProbe.cpp
+    Platform/test_LinuxROCmGPUProbe.cpp
+    Platform/test_NetlinkSocketStats.cpp
+    Platform/test_DRMGPUProbe.cpp
+    Platform/test_Factory.cpp
+)
+set(LINUX_INTEGRATION_TEST_SOURCES
+    Integration/test_CrossLayer.cpp
+    Integration/test_LinuxRealProbes.cpp
+)
+
 # Platform-specific test sources
 if(WIN32)
-    set(PLATFORM_TEST_SOURCES
-        Platform/test_ProcessProbeContract.cpp
-        Platform/test_SystemProbeContract.cpp
-        Platform/test_ProcessActionsContract.cpp
-        Platform/test_PathProviderContract.cpp
-        Platform/test_PowerProbeContract.cpp
-        Platform/test_WindowsProcessProbe.cpp
-        Platform/test_WindowsSystemProbe.cpp
-        Platform/test_WindowsProcessActions.cpp
-        Platform/test_WindowsDiskProbe.cpp
-        Platform/test_WindowsPathProvider.cpp
-        Platform/test_WindowsPowerProbe.cpp
-        Platform/test_WindowsNVMLGPUProbe.cpp
-        Platform/test_WindowsPDHGPUProbe.cpp
-        Platform/test_WindowsGPUProbe.cpp
-        Platform/test_WindowsDXGIGPUProbe.cpp
-        Platform/test_WindowsProcAddress.cpp
-        Platform/test_WinString.cpp
-    )
+    set(PLATFORM_TEST_SOURCES ${WINDOWS_PLATFORM_TEST_SOURCES})
+    set(INTEGRATION_TEST_SOURCES ${WINDOWS_INTEGRATION_TEST_SOURCES})
     set(PLATFORM_SRC_UNDER_TEST
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/Factory.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessProbe.cpp
@@ -82,30 +189,9 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/PDHGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
     )
-    set(INTEGRATION_TEST_SOURCES
-        Integration/test_CrossLayer.cpp
-        Integration/test_WindowsRealProbes.cpp
-    )
 else()
-    set(PLATFORM_TEST_SOURCES
-        Platform/test_ProcessProbeContract.cpp
-        Platform/test_SystemProbeContract.cpp
-        Platform/test_ProcessActionsContract.cpp
-        Platform/test_PathProviderContract.cpp
-        Platform/test_PowerProbeContract.cpp
-        Platform/test_LinuxProcessProbe.cpp
-        Platform/test_LinuxSystemProbe.cpp
-        Platform/test_LinuxProcessActions.cpp
-        Platform/test_LinuxDiskProbe.cpp
-        Platform/test_LinuxPathProvider.cpp
-        Platform/test_LinuxPowerProbe.cpp
-        Platform/test_LinuxGPUProbe.cpp
-        Platform/test_LinuxNVMLGPUProbe.cpp
-        Platform/test_LinuxROCmGPUProbe.cpp
-        Platform/test_NetlinkSocketStats.cpp
-        Platform/test_DRMGPUProbe.cpp
-        Platform/test_Factory.cpp
-    )
+    set(PLATFORM_TEST_SOURCES ${LINUX_PLATFORM_TEST_SOURCES})
+    set(INTEGRATION_TEST_SOURCES ${LINUX_INTEGRATION_TEST_SOURCES})
     set(PLATFORM_SRC_UNDER_TEST
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/Factory.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessProbe.cpp
@@ -120,67 +206,29 @@ else()
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/ROCmGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/NetlinkSocketStats.cpp
     )
-    set(INTEGRATION_TEST_SOURCES
-        Integration/test_CrossLayer.cpp
-        Integration/test_LinuxRealProbes.cpp
-    )
 endif()
+
+# Every tests/**/test_*.cpp must be in one of the lists above; otherwise it is never built and its
+# tests silently never run, as test_Numeric.cpp wasn't for months (#1135). Compared against the
+# lists themselves, not the text of this file, so a mention in a comment doesn't count.
+set(TASKSMACK_REGISTERED_TEST_SOURCES
+    ${COMMON_TEST_SOURCES}
+    ${WINDOWS_PLATFORM_TEST_SOURCES}
+    ${WINDOWS_INTEGRATION_TEST_SOURCES}
+    ${LINUX_PLATFORM_TEST_SOURCES}
+    ${LINUX_INTEGRATION_TEST_SOURCES}
+)
+file(GLOB_RECURSE TASKSMACK_TEST_FILES RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/test_*.cpp")
+foreach(test_file IN LISTS TASKSMACK_TEST_FILES)
+    if(NOT test_file IN_LIST TASKSMACK_REGISTERED_TEST_SOURCES)
+        message(FATAL_ERROR "tests/${test_file} is not in any test source list in tests/CMakeLists.txt, so it would never be built or run")
+    endif()
+endforeach()
 
 # Test executable with all test sources
 add_executable(TaskSmackTests
-    test_main.cpp
-    Core/test_Application.cpp
-    Core/test_EnvUtils.cpp
-    Core/test_Event.cpp
-    Core/test_Layer.cpp
-    Core/test_PathService.cpp
-    Core/test_VideoBackend.cpp
-    Core/test_Window.cpp
-    Core/test_WindowEvents.cpp
-    Domain/test_History.cpp
-    Domain/test_SingleLineText.cpp
-    Domain/test_ProcessModel.cpp
-    Domain/test_GPUModel.cpp
-    Domain/test_ProcessStatus.cpp
-    Domain/test_SystemModel.cpp
-    Domain/test_StorageModel.cpp
-    Domain/test_BackgroundSampler.cpp
-    Domain/test_PriorityConfig.cpp
-    Domain/test_SamplingConfig.cpp
-    UI/test_ChartWidgets.cpp
-    UI/test_ChartGridLayout.cpp
-    UI/test_Format.cpp
-    UI/test_RenderMetrics.cpp
-    UI/test_RateAxis.cpp
-    UI/test_ThemeLoader.cpp
-    UI/test_AssetPath.cpp
-    UI/test_ThemeHeader.cpp
-    UI/test_WidgetsHeader.cpp
-    UI/test_IconLoader.cpp
-    UI/test_MonospaceFontPath.cpp
-    UI/test_DpiScale.cpp
-    App/test_ProcessColumnConfig.cpp
-    App/test_ProcessSortUtils.cpp
-    App/test_AdaptiveIntervalUtils.cpp
-    App/test_ProcessTreeFlatten.cpp
-    App/test_ProcessTreeIndent.cpp
-    App/test_ProcessTableFlags.cpp
-    App/test_ProcessRowFormat.cpp
-    Platform/test_CgroupFreezerPath.cpp
-    App/test_FpsCounter.cpp
-    App/test_Panel.cpp
-    App/test_ProcessesPanel.cpp
-    App/test_ShellLayer.cpp
-    App/test_TitleBarGeometry.cpp
-    App/test_UserConfig.cpp
-    App/test_UserConfigHelpers.cpp
-    App/test_UserConfigPersistence.cpp
-    App/test_PanelTabs.cpp
-    App/test_PriorityHelpers.cpp
-    App/test_ProcessActionHelpers.cpp
-    App/test_SettingsLayerDetail.cpp
-    App/test_NetInterfaceUtils.cpp
-    App/test_SingletonLayers.cpp
+    ${COMMON_TEST_SOURCES}
     ${PLATFORM_TEST_SOURCES}
     ${INTEGRATION_TEST_SOURCES}
     # Source files under test
@@ -270,6 +318,9 @@ if(UNIX AND NOT APPLE)
         TASKSMACK_TEST_GPU_MOCK_DIR="${CMAKE_CURRENT_BINARY_DIR}/mocks"
     )
 endif()
+
+# test_BundledThemes.cpp checks the shipped theme files themselves, from the source tree.
+target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_SOURCE_THEMES_DIR="${CMAKE_SOURCE_DIR}/assets/themes")
 
 if(WIN32)
     # Windows SDK version: GetIfTable2 and MIB_IF_TABLE2 are available on Vista+,

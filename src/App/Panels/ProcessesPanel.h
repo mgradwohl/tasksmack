@@ -119,6 +119,15 @@ class ProcessesPanel : public Panel
     /// Request an immediate refresh.
     void requestRefresh();
 
+    /// Hands a saved column layout (widths, order, sort) back to ImGui. Call before the table is
+    /// first rendered; the text is filtered first, so anything that is not a table layout is
+    /// ignored. See ProcessTableSettings.h (#952).
+    static void restoreTableLayout(std::string_view stored);
+
+    /// The table's current column layout as text for the config, or empty if the table has not been
+    /// rendered this session (in which case the caller should keep whatever it already has).
+    [[nodiscard]] std::string captureTableLayout() const;
+
     /// Access the underlying process model (non-owning).
     [[nodiscard]] Domain::ProcessModel* processModel() const
     {
@@ -129,13 +138,27 @@ class ProcessesPanel : public Panel
     /// Convenience accessor so ShellLayer does not need to include Domain/ProcessModel.h.
     [[nodiscard]] bool hasReducedPrivileges() const;
 
+    /// What the process probe can report (all false without a model). Fixed for the probe's
+    /// lifetime, so safe to read from the UI thread at any time.
+    [[nodiscard]] Platform::ProcessCapabilities processCapabilities() const;
+
   private:
     // shared_ptr (not unique_ptr): BackgroundSampler observes this model via a weak_ptr rather
     // than a raw pointer, so the sampler thread can never outlive-dereference it regardless of
     // destructor ordering.
     std::shared_ptr<Domain::ProcessModel> m_ProcessModel;
     std::unique_ptr<Domain::BackgroundSampler> m_Sampler;
+    // ImGui's ID for the process table, recorded when it is rendered; 0 until then. Needed to pick
+    // this table's section out of ImGui's settings text (#952).
+    std::uint32_t m_TableId = 0;
+
+    // The table's layout as captured on last entering tree view. Its sort is restored onto any
+    // later capture that has none, which tree view causes and which persists after leaving it.
+    // Empty until tree view is first entered.
+    std::string m_SortBackupLayout;
+
     std::int32_t m_SelectedPid = -1;
+    std::uint64_t m_SelectedUniqueKey = 0; // Selected process's identity: a PID can be reused
 
     std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
     std::chrono::milliseconds m_AppliedSamplerInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
@@ -151,6 +174,10 @@ class ProcessesPanel : public Panel
 
     // Tree view state
     bool m_TreeViewEnabled = false;
+
+    // Previous frame's table layout, feeding ProcessTableLayout::computeInnerWidth() (#924)
+    float m_OtherColumnsWidth = 0.0F;                  // Everything but the Command column's own content
+    float m_TableVisibleWidth = 0.0F;                  // Visible width of the table's scrolling area
     std::unordered_set<std::uint64_t> m_CollapsedKeys; // uniqueKeys that are collapsed in tree view
 
     // Snapshot cache: only re-fetch from ProcessModel when version changes (data updates at 1Hz,
@@ -175,7 +202,8 @@ class ProcessesPanel : public Panel
     std::string m_CachedSummaryStr;
 
     /// Cache for text size measurements to avoid repeated ImGui::CalcTextSize calls.
-    /// Invalidated when font changes (detected by comparing ImFont pointer).
+    /// Invalidated when the font changes: a different ImFont pointer, or a rebuilt font atlas
+    /// (UI::Theme::fontGeneration()), which can reuse the old pointer (#943).
     struct TextSizeCache
     {
         // Column header widths (indexed by ProcessColumn enum)
@@ -200,8 +228,13 @@ class ProcessesPanel : public Panel
         // small fixed-string-set widths.
         std::array<float, PRIORITY_LABELS.size()> priorityLabelWidths{};
 
-        // Font pointer used when cache was populated (for invalidation)
+        // Font pointer and font-atlas generation used when cache was populated (for invalidation)
         const ImFont* fontPtr = nullptr;
+        std::uint64_t fontGeneration = 0;
+
+        // Changes on every populate(): the identity RowFormatCache entries are stamped with, so a
+        // repopulate for any reason rebuilds their widths, even if the font kept its address.
+        std::uintptr_t stamp = 0;
 
         /// Check if cache is valid for current font
         [[nodiscard]] bool isValid() const noexcept;

@@ -101,7 +101,8 @@ class Application
     }
 
     [[nodiscard]] static Application& get();
-    [[nodiscard]] static float getTime();
+    /// Seconds since SDL started, as a double (nanosecond source; see #1038).
+    [[nodiscard]] static double getTime();
     static void setInstance(std::unique_ptr<Application> app);
 
   private:
@@ -112,12 +113,16 @@ class Application
     // touches this -- only test_Application.cpp uses it.
     friend struct ApplicationTestAccessor;
 
+    /// Raise a WindowCloseEvent for a close request and report whether to close: true unless a
+    /// layer handled the event, which vetoes the close (contract in WindowEvents.h).
+    [[nodiscard]] bool closeRequestAccepted();
+
     ApplicationSpecification m_Spec;
     PathService m_Paths;
     std::unique_ptr<Window> m_Window;
     std::vector<std::unique_ptr<Layer>> m_LayerStack;
     bool m_Running = false;
-    float m_InteractionRedrawUntil = 0.0F;
+    double m_InteractionRedrawUntil = 0.0;
     bool m_ResizePerfTraceEnabled = false;
     /// True while vsync has been temporarily disabled for an active resize/move interaction.
     /// Restored to the original setting (adaptive vsync) when the interaction ends.

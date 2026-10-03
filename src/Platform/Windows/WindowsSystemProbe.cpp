@@ -25,13 +25,17 @@
 
 #include "WinString.h"
 #include "WindowsProcAddress.h"
+#include "WindowsSystemProbeMath.h"
 
 #include <array>
 #include <chrono>
 #include <concepts>
 #include <format>
+#include <span>
 #include <type_traits>
 #include <vector>
+
+#include <psapi.h> // GetPerformanceInfo (K32GetPerformanceInfo, in kernel32)
 
 namespace Platform
 {
@@ -74,6 +78,12 @@ using NtQuerySystemInformationFn = NTSTATUS(WINAPI*)(ULONG systemInformationClas
 
 // System information class for per-processor performance
 constexpr ULONG SystemProcessorPerformanceInformation = 8;
+
+// System information class for page-file sizes (SYSTEM_PAGEFILE_INFORMATION chain)
+constexpr ULONG SystemPageFileInformationClass = 18;
+
+// STATUS_INFO_LENGTH_MISMATCH, spelled out: ntstatus.h conflicts with windows.h's subset.
+constexpr NTSTATUS STATUS_INFO_LENGTH_MISMATCH_VALUE = static_cast<NTSTATUS>(0xC0000004L);
 
 // Per-processor performance information structure
 // This matches the undocumented SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION
@@ -264,23 +274,14 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
     {
         const auto& info = perfInfo[i];
 
-        CpuCounters core{};
-        // KernelTime includes idle, so subtract to get actual kernel/system time
-        const uint64_t kernelTicks = largeIntegerToTicks(info.KernelTime);
-        const uint64_t idleTicks = largeIntegerToTicks(info.IdleTime);
-        const uint64_t userTicks = largeIntegerToTicks(info.UserTime);
-
-        core.idle = idleTicks;
-        core.system = kernelTicks - idleTicks; // Actual kernel time
-        core.user = userTicks;
-
-        // DPC and interrupt time are included in kernel time, but we can expose them
-        // as irq/softirq for more detail if desired
-        core.irq = largeIntegerToTicks(info.InterruptTime);
-        // DpcTime is deferred procedure calls (similar to softirq on Linux)
-        core.softirq = largeIntegerToTicks(info.DpcTime);
-
-        counters.cpuPerCore.push_back(core);
+        // KernelTime includes idle, and DPC/interrupt time are inside kernel time; processorTimes()
+        // splits them so CpuCounters::active() counts each tick once (#1032). DpcTime is the
+        // closest Windows analogue of Linux softirq.
+        counters.cpuPerCore.push_back(processorTimes(largeIntegerToTicks(info.KernelTime),
+                                                     largeIntegerToTicks(info.IdleTime),
+                                                     largeIntegerToTicks(info.UserTime),
+                                                     largeIntegerToTicks(info.DpcTime),
+                                                     largeIntegerToTicks(info.InterruptTime)));
     }
 
     spdlog::trace("Read per-core CPU for {} cores", coresReturned);
@@ -301,20 +302,58 @@ void WindowsSystemProbe::readMemoryCounters(SystemCounters& counters)
     counters.memory.freeBytes = memStatus.ullAvailPhys;
     counters.memory.availableBytes = memStatus.ullAvailPhys;
 
-    // Windows doesn't separate buffers/cached like Linux
-    // Total - Available gives us "used" which includes cached
-    // Leave buffersBytes and cachedBytes at 0
-
-    // Page file (swap)
-    counters.memory.swapTotalBytes = memStatus.ullTotalPageFile - memStatus.ullTotalPhys;
-    counters.memory.swapFreeBytes = memStatus.ullAvailPageFile - memStatus.ullAvailPhys;
-
-    // Clamp to 0 if physical is larger than page file
-    if (memStatus.ullTotalPageFile < memStatus.ullTotalPhys)
+    // Cached: the system cache, i.e. the standby list plus the system working set (#1027). That is
+    // the memory Windows holds as file cache and gives back on demand, the closest analogue of
+    // Linux's page cache, and what Task Manager calls "Cached". It is already inside "available",
+    // so Used (total - available) is unchanged. GetPerformanceInfo needs no privilege, unlike the
+    // per-list breakdown (SystemMemoryListInformation).
+    PERFORMANCE_INFORMATION perfInfo{};
+    perfInfo.cb = sizeof(perfInfo);
+    if (GetPerformanceInfo(&perfInfo, sizeof(perfInfo)) != 0)
     {
-        counters.memory.swapTotalBytes = 0;
-        counters.memory.swapFreeBytes = 0;
+        counters.memory.cachedBytes = static_cast<uint64_t>(perfInfo.SystemCache) * static_cast<uint64_t>(perfInfo.PageSize);
     }
+
+    // Swap: the page files' own sizes (#1026). The commit figures in MEMORYSTATUSEX describe RAM
+    // plus page file, and the "free page file" derived from them underflowed whenever the
+    // remaining commit was below the available RAM, which pinned swap at ~100 %.
+    const SwapBytes swap = readSwap();
+    counters.memory.swapTotalBytes = swap.totalBytes;
+    counters.memory.swapFreeBytes = swap.freeBytes;
+}
+
+SwapBytes WindowsSystemProbe::readSwap()
+{
+    const auto ntQuerySystemInformation = getNtQuerySystemInformation();
+    if (ntQuerySystemInformation == nullptr)
+    {
+        return {};
+    }
+
+    SYSTEM_INFO sysInfo{};
+    GetSystemInfo(&sysInfo);
+
+    // One entry is 32 bytes plus its file name; 4 KiB holds dozens of page files. Grow once if the
+    // OS says it needs more.
+    std::vector<std::byte> buffer(4096);
+    ULONG returnLength = 0;
+    NTSTATUS status =
+        ntQuerySystemInformation(SystemPageFileInformationClass, buffer.data(), static_cast<ULONG>(buffer.size()), &returnLength);
+    if (status == STATUS_INFO_LENGTH_MISMATCH_VALUE && returnLength > buffer.size())
+    {
+        buffer.resize(returnLength);
+        status = ntQuerySystemInformation(SystemPageFileInformationClass, buffer.data(), static_cast<ULONG>(buffer.size()), &returnLength);
+    }
+    if (status < 0)
+    {
+        spdlog::debug("NtQuerySystemInformation(SystemPageFileInformation) failed: 0x{:x}", static_cast<unsigned long>(status));
+        return {};
+    }
+
+    const std::size_t used = std::min<std::size_t>(returnLength, buffer.size());
+    const auto totals = sumPageFiles(std::span<const std::byte>(buffer.data(), used));
+    // No page file at all is a valid answer: swap is then zero, as it should read.
+    return totals.has_value() ? swapFromPageFiles(*totals, sysInfo.dwPageSize) : SwapBytes{};
 }
 
 void WindowsSystemProbe::readUptime(SystemCounters& counters)
@@ -399,29 +438,12 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
     {
         const MIB_IF_ROW2& row = table->Table[i];
 
-        // Filter interfaces:
-        // - Skip loopback (internal traffic)
-        // - Skip non-network interface types (Bluetooth, etc.)
-        // - Include Ethernet, Wi-Fi, and virtual adapters (VPN, Docker, etc.)
-        if (row.Type == IF_TYPE_SOFTWARE_LOOPBACK)
+        // Loopback, non-network types and NDIS filter-module rows are not interfaces of their own
+        // (#1030); see isCountedNetworkRow().
+        if (!isCountedNetworkRow(row.Type, row.InterfaceAndOperStatusFlags.FilterInterface != 0))
         {
             continue;
         }
-
-        // Only include network-type interfaces:
-        // IF_TYPE_ETHERNET_CSMACD (6) - Ethernet
-        // IF_TYPE_IEEE80211 (71) - Wi-Fi
-        // IF_TYPE_TUNNEL (131) - VPN tunnels
-        // IF_TYPE_PPP (23) - PPP connections
-        // IF_TYPE_PROP_VIRTUAL (53) - Virtual adapters (Hyper-V, Docker, etc.)
-        const bool isNetworkInterface = (row.Type == IF_TYPE_ETHERNET_CSMACD || row.Type == IF_TYPE_IEEE80211 ||
-                                         row.Type == IF_TYPE_TUNNEL || row.Type == IF_TYPE_PPP || row.Type == IF_TYPE_PROP_VIRTUAL);
-
-        if (!isNetworkInterface)
-        {
-            continue;
-        }
-
         // 64-bit byte counters - no more 32-bit overflow issues
         const uint64_t rxBytes = row.InOctets;
         const uint64_t txBytes = row.OutOctets;

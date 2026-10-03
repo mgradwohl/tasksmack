@@ -1,9 +1,13 @@
 #pragma once
 
+#include "App/Panels/StorageSection.h"
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
+#include "UI/FillPlotLayout.h"
 
 #include <chrono>
+#include <string>
+#include <unordered_map>
 
 namespace App::NetworkSection
 {
@@ -30,14 +34,22 @@ struct RenderContext
     double* smoothedDiskReadBytesPerSec = nullptr;
     double* smoothedDiskWriteBytesPerSec = nullptr;
     bool* smoothedDiskInitialized = nullptr;
+    std::unordered_map<std::string, StorageSection::SmoothedDiskRates>* smoothedPerDisk = nullptr;
 
     // Smoothed values for network (passed by reference so we can update them)
     double* smoothedNetSentBytesPerSec = nullptr;
     double* smoothedNetRecvBytesPerSec = nullptr;
     bool* smoothedNetInitialized = nullptr;
 
-    // Selected network interface (-1 = "Total" / all interfaces combined)
-    int* selectedNetworkInterface = nullptr;
+    // Name of the selected network interface (empty = "Total" / all interfaces combined)
+    std::string* selectedNetworkInterface = nullptr;
+
+    // The tab's chart-height measurements from the previous frame (#959). Null keeps the fixed
+    // default height for every chart.
+    UI::Widgets::PlotFillState* fillState = nullptr;
+
+    // Set by renderNetworkSection() while the tab's fill scope is open; not for callers.
+    UI::Widgets::FillPlotLayout* fill = nullptr;
 };
 
 /// Render the Disk I/O section with history chart.

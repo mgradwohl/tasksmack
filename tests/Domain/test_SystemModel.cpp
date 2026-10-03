@@ -17,6 +17,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
+#include <cstdint>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -251,6 +253,30 @@ TEST(SystemModelTest, SwapMetricsCalculatedCorrectly)
     EXPECT_EQ(snap.swapTotalBytes, 4ULL * 1024 * 1024 * 1024);
     EXPECT_EQ(snap.swapUsedBytes, 1ULL * 1024 * 1024 * 1024);
     EXPECT_DOUBLE_EQ(snap.swapUsedPercent, 25.0);
+}
+
+TEST(SystemModelTest, SwapFreeAboveTotalReadsAsZeroUsed)
+{
+    // A probe once reported more free swap than total (#1026); the unsigned subtraction then
+    // wrapped to ~2^64 and swap read 100 %. Used must clamp at 0 instead.
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+    const auto mem = makeMemoryCounters(8ULL * 1024 * 1024 * 1024,
+                                        4ULL * 1024 * 1024 * 1024,
+                                        0,
+                                        0,
+                                        0,
+                                        4ULL * 1024 * 1024 * 1024, // 4 GB swap total
+                                        5ULL * 1024 * 1024 * 1024  // 5 GB "free"
+    );
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), mem));
+
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+
+    const auto snap = model.snapshot();
+    EXPECT_EQ(snap.swapUsedBytes, 0ULL);
+    EXPECT_DOUBLE_EQ(snap.swapUsedPercent, 0.0);
 }
 
 TEST(SystemModelTest, SwapZeroWhenNoSwap)
@@ -999,16 +1025,16 @@ TEST(SystemModelTest, NetworkHistoryTrimmedByTime)
     auto rxHistory = model.netRxHistory();
     auto timestamps = model.timestamps();
 
-    // Time-based trimming keeps only samples within the 10-second window:
-    // cutoff = 15 - 10 = 5, so samples t=5..15 remain (11 entries).
-    EXPECT_EQ(rxHistory.size(), 11U);
-    EXPECT_EQ(timestamps.size(), 11U);
+    // Time-based trimming keeps the samples within the 10-second window plus the newest one
+    // before it (#1016): cutoff = 15 - 10 = 5, so samples t=4..15 remain (12 entries).
+    EXPECT_EQ(rxHistory.size(), 12U);
+    EXPECT_EQ(timestamps.size(), 12U);
 
     // Verify window boundaries
     if (!timestamps.empty())
     {
         EXPECT_DOUBLE_EQ(timestamps.back(), 15.0);
-        EXPECT_DOUBLE_EQ(timestamps.front(), 5.0);
+        EXPECT_DOUBLE_EQ(timestamps.front(), 4.0);
     }
 }
 // ==========================================================================
@@ -1142,6 +1168,57 @@ TEST(SystemModelTest, PerInterfaceNetworkRatesHandleNewInterface)
     EXPECT_DOUBLE_EQ(snap.networkInterfaces[1].txBytesPerSec, 0.0);
 }
 
+TEST(SystemModelTest, TotalNetworkRateDoesNotSpikeWhenAnInterfaceAppears)
+{
+    // #1030: an interface appearing used to deliver its whole lifetime byte count into the Total
+    // in one sample (here 10 GB, as WSL's vEthernet adapter did). Total is now the sum of the
+    // per-interface rates, and a new interface has no rate until its second sample.
+    auto probe = std::make_unique<MockSystemProbe>();
+    const auto mem = makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024);
+    const auto wifi1 = makeInterfaceCounters("Wi-Fi", 1'000'000, 500'000);
+    const auto counters1 = makeSystemCounters(makeCpuCounters(100, 0, 50, 850), mem, 0, {}, 1'000'000, 500'000, {wifi1});
+    probe->setCounters(counters1);
+    Domain::SystemModel model(std::move(probe));
+    model.updateFromCounters(counters1, 1.0);
+
+    constexpr std::uint64_t WSL_LIFETIME_RX = 10'000'000'000ULL;
+    const auto wifi2 = makeInterfaceCounters("Wi-Fi", 1'002'000, 501'000);
+    const auto vEthernet = makeInterfaceCounters("vEthernet (WSL)", WSL_LIFETIME_RX, 1'000'000'000ULL);
+    const auto counters2 = makeSystemCounters(
+        makeCpuCounters(200, 0, 100, 1700), mem, 0, {}, 1'002'000 + WSL_LIFETIME_RX, 501'000 + 1'000'000'000ULL, {wifi2, vEthernet});
+    model.updateFromCounters(counters2, 2.0);
+
+    const auto snap = model.snapshot();
+    EXPECT_DOUBLE_EQ(snap.netRxBytesPerSec, 2000.0);
+    EXPECT_DOUBLE_EQ(snap.netTxBytesPerSec, 1000.0);
+}
+
+TEST(SystemModelTest, TotalNetworkRateKeepsTheRemainingInterfacesWhenOneDisappears)
+{
+    // The opposite edge: an interface vanishing used to read as a counter rollback and drop the
+    // Total to 0 for that sample, although the remaining interfaces were still moving data.
+    auto probe = std::make_unique<MockSystemProbe>();
+    const auto mem = makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024);
+    const auto counters1 = makeSystemCounters(makeCpuCounters(100, 0, 50, 850),
+                                              mem,
+                                              0,
+                                              {},
+                                              3000,
+                                              1500,
+                                              {makeInterfaceCounters("eth0", 1000, 500), makeInterfaceCounters("wlan0", 2000, 1000)});
+    probe->setCounters(counters1);
+    Domain::SystemModel model(std::move(probe));
+    model.updateFromCounters(counters1, 1.0);
+
+    const auto counters2 =
+        makeSystemCounters(makeCpuCounters(200, 0, 100, 1700), mem, 0, {}, 2000, 1000, {makeInterfaceCounters("eth0", 2000, 1000)});
+    model.updateFromCounters(counters2, 2.0);
+
+    const auto snap = model.snapshot();
+    EXPECT_DOUBLE_EQ(snap.netRxBytesPerSec, 1000.0);
+    EXPECT_DOUBLE_EQ(snap.netTxBytesPerSec, 500.0);
+}
+
 TEST(SystemModelTest, PerInterfaceNetworkRatesHandleInterfaceRemoval)
 {
     auto probe = std::make_unique<MockSystemProbe>();
@@ -1230,6 +1307,52 @@ TEST(SystemModelTest, PerInterfaceHistoryPrunedAfterExtendedAbsence)
 
     // eth0, still present every cycle, must be unaffected.
     EXPECT_FALSE(model.netRxHistoryForInterface("eth0").empty());
+}
+
+// #1015: a sample where an interface was not present is a NaN gap in its history, not a false 0 --
+// both the backfill before it first appears and the placeholder while it is absent.
+TEST(SystemModelTest, PerInterfaceHistoryRecordsMissingSamplesAsNaN)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    Domain::SystemModel model(std::move(probe));
+
+    const auto eth0 = makeInterfaceCounters("eth0", 1000, 500);
+    const auto wlan0 = makeInterfaceCounters("wlan0", 2000, 1000);
+    const auto withoutWlan = makeSystemCounters(
+        makeCpuCounters(100, 0, 50, 850), makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024), 0, {}, 1000, 500, {eth0});
+    const auto withWlan = makeSystemCounters(makeCpuCounters(100, 0, 50, 850),
+                                             makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024),
+                                             0,
+                                             {},
+                                             3000,
+                                             1500,
+                                             {eth0, wlan0});
+
+    // History starts with the second sample (the first has nothing to take a delta against).
+    model.updateFromCounters(withoutWlan, 1.0);
+    model.updateFromCounters(withoutWlan, 2.0); // history[0]: wlan0 not seen yet
+    model.updateFromCounters(withWlan, 3.0);    // history[1]: wlan0 present
+    model.updateFromCounters(withoutWlan, 4.0); // history[2]: wlan0 gone
+
+    const auto timestamps = model.timestamps();
+    const auto rx = model.netRxHistoryForInterface("wlan0");
+    const auto tx = model.netTxHistoryForInterface("wlan0");
+    ASSERT_EQ(rx.size(), timestamps.size());
+    ASSERT_EQ(tx.size(), timestamps.size());
+    ASSERT_EQ(rx.size(), 3U);
+
+    EXPECT_TRUE(std::isnan(rx[0]));
+    EXPECT_TRUE(std::isnan(tx[0]));
+    EXPECT_TRUE(std::isfinite(rx[1]));
+    EXPECT_TRUE(std::isfinite(tx[1]));
+    EXPECT_TRUE(std::isnan(rx[2]));
+    EXPECT_TRUE(std::isnan(tx[2]));
+
+    // eth0, present every sample, has no gaps.
+    for (const float value : model.netRxHistoryForInterface("eth0"))
+    {
+        EXPECT_TRUE(std::isfinite(value));
+    }
 }
 
 TEST(SystemModelTest, PerInterfaceNetworkRatesWithVariableTimeDelta)

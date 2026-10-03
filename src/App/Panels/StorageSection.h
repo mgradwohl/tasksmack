@@ -1,11 +1,23 @@
 #pragma once
 
 #include "Domain/StorageModel.h"
+#include "UI/FillPlotLayout.h"
 
 #include <chrono>
+#include <string>
+#include <unordered_map>
 
 namespace App::StorageSection
 {
+
+/// Smoothed NowBar values for one disk in the per-disk grid, so its bars ease like every other
+/// NowBar instead of stepping to each new sample (#1012).
+struct SmoothedDiskRates
+{
+    double readBytesPerSec = 0.0;
+    double writeBytesPerSec = 0.0;
+    bool initialized = false;
+};
 
 /// Context struct containing all state needed to render the storage/disk I/O section.
 /// This allows the render function to be extracted from NetworkSection
@@ -27,7 +39,21 @@ struct RenderContext
     double* smoothedReadBytesPerSec = nullptr;
     double* smoothedWriteBytesPerSec = nullptr;
     bool* smoothedInitialized = nullptr;
+
+    // Per-disk smoothed NowBar values, keyed by device name. Null: the per-disk bars show raw values.
+    std::unordered_map<std::string, SmoothedDiskRates>* smoothedPerDisk = nullptr;
+
+    // The tab's shared chart height (#959). Used by the single-disk chart; the per-disk grid takes
+    // whatever height is left instead. Null keeps the fixed default height.
+    UI::Widgets::FillPlotLayout* fill = nullptr;
 };
+
+/// Whether the section shows one chart per disk in a grid that fills the remaining height, rather
+/// than a single aggregate chart.
+[[nodiscard]] inline bool usesDiskGrid(const Domain::StoragePublication* publication) noexcept
+{
+    return (publication != nullptr) && (publication->perDiskHistory.size() > 1);
+}
 
 /// Render the Disk I/O section with history chart and now bars.
 /// @param ctx Render context containing model and smoothed values

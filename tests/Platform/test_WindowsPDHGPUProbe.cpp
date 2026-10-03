@@ -313,6 +313,8 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, AllCountersFailingToAddReturnsEmptyWithNo
     m_scenario->failToAdd[Impl::UTILIZATION_COUNTER_PATH] = true;
     m_scenario->failToAdd[Impl::DEDICATED_MEMORY_COUNTER_PATH] = true;
     m_scenario->failToAdd[Impl::SHARED_MEMORY_COUNTER_PATH] = true;
+    m_scenario->failToAdd[Impl::ADAPTER_DEDICATED_COUNTER_PATH] = true;
+    m_scenario->failToAdd[Impl::ADAPTER_SHARED_COUNTER_PATH] = true;
 
     PDHGPUProbe probe(std::move(impl));
     EXPECT_TRUE(probe.readProcessGPUCounters().empty());
@@ -340,6 +342,8 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, AllCountersFailingToAddReturnsStaleCacheW
     m_scenario->failToAdd[Impl::UTILIZATION_COUNTER_PATH] = true;
     m_scenario->failToAdd[Impl::DEDICATED_MEMORY_COUNTER_PATH] = true;
     m_scenario->failToAdd[Impl::SHARED_MEMORY_COUNTER_PATH] = true;
+    m_scenario->failToAdd[Impl::ADAPTER_DEDICATED_COUNTER_PATH] = true;
+    m_scenario->failToAdd[Impl::ADAPTER_SHARED_COUNTER_PATH] = true;
 
     PDHGPUProbe probe(std::move(impl));
     const auto results = probe.readProcessGPUCounters();
@@ -366,6 +370,168 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, CollectQueryDataFailureReturnsCachedResul
     const auto failedResults = probe.readProcessGPUCounters();
     ASSERT_EQ(failedResults.size(), 1U);
     EXPECT_EQ(failedResults[0].pid, 800);
+}
+
+// =============================================================================
+// Engine aggregation (#1033) and staleness (#1034)
+// =============================================================================
+
+TEST(ParseInstanceNameTest, EngineKeyIdentifiesTheEngineInEachFormat)
+{
+    EXPECT_EQ(PDHGPUProbeImplDetail::parseInstanceName("pid_1_luid_0x0_0x1_phys_0_eng_3_engtype_3D").engineKey, "phys_0_eng_3");
+    EXPECT_EQ(PDHGPUProbeImplDetail::parseInstanceName("pid_1_luid_0x0_0x1_phys_1_eng_12_engtype_").engineKey, "phys_1_eng_12");
+    EXPECT_EQ(PDHGPUProbeImplDetail::parseInstanceName("pid_1_luid_0x0_0x1_engtype_Copy").engineKey, "engtype_Copy");
+    // Memory instances measure no engine.
+    EXPECT_EQ(PDHGPUProbeImplDetail::parseInstanceName("pid_1_luid_0x0_0x1_phys_0").engineKey, "");
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, ProcessUtilizationIsItsBusiestEngineNotTheSum)
+{
+    // A video call: decode 40 %, 3D 20 %, copy 10 %. Engines run in parallel, so the process is
+    // 40 % busy (Task Manager's figure), not 70 %.
+    auto impl = makeInjectedImpl();
+    m_scenario->items[impl->utilizationCounter] = {
+        {.name = L"pid_1000_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .doubleValue = 20.0},
+        {.name = L"pid_1000_luid_0x0_0x1_phys_0_eng_1_engtype_VideoDecode", .doubleValue = 40.0},
+        {.name = L"pid_1000_luid_0x0_0x1_phys_0_eng_2_engtype_Copy", .doubleValue = 10.0},
+    };
+    PDHGPUProbe probe(std::move(impl));
+
+    const auto results = probe.readProcessGPUCounters();
+    ASSERT_EQ(results.size(), 1U);
+    EXPECT_DOUBLE_EQ(results[0].gpuUtilPercent, 40.0);
+    EXPECT_EQ(results[0].activeEngines.size(), 3U);
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, AdapterUtilizationSumsProcessesPerEngineThenTakesTheBusiest)
+{
+    // Two processes share the 3D engine (30 + 30 = 60 %); a third decodes at 50 %. The adapter is
+    // 60 % busy, not 110 % clamped to 100.
+    auto impl = makeInjectedImpl();
+    m_scenario->items[impl->utilizationCounter] = {
+        {.name = L"pid_1100_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .doubleValue = 30.0},
+        {.name = L"pid_1101_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .doubleValue = 30.0},
+        {.name = L"pid_1102_luid_0x0_0x1_phys_0_eng_1_engtype_VideoDecode", .doubleValue = 50.0},
+        {.name = L"pid_1103_luid_0x0_0x2_phys_0_eng_0_engtype_3D", .doubleValue = 5.0},
+    };
+    PDHGPUProbe probe(std::move(impl));
+    static_cast<void>(probe.readProcessGPUCounters());
+
+    const auto byAdapter = probe.adapterUtilization();
+    ASSERT_EQ(byAdapter.size(), 2U);
+    EXPECT_DOUBLE_EQ(byAdapter.at("GPU_0x0_0x1"), 60.0);
+    EXPECT_DOUBLE_EQ(byAdapter.at("GPU_0x0_0x2"), 5.0);
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, AdapterUtilizationIsCappedAtOneHundred)
+{
+    // Per-process readings of one engine are sampled independently and can add up past 100.
+    auto impl = makeInjectedImpl();
+    m_scenario->items[impl->utilizationCounter] = {
+        {.name = L"pid_1200_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .doubleValue = 70.0},
+        {.name = L"pid_1201_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .doubleValue = 45.0},
+    };
+    PDHGPUProbe probe(std::move(impl));
+    static_cast<void>(probe.readProcessGPUCounters());
+
+    EXPECT_DOUBLE_EQ(probe.adapterUtilization().at("GPU_0x0_0x1"), 100.0);
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, StaleCacheIsNotRepeatedAfterACollectFailure)
+{
+    // A failed collect may fall back to a recent result, but not to one older than
+    // MAX_STALE_RESULTS_AGE: that repeated an old busy reading as a frozen flat line (#1034).
+    auto impl = makeInjectedImpl();
+    ProcessGPUCounters cached;
+    cached.pid = 1300;
+    cached.gpuUtilPercent = 80.0;
+    impl->lastValidResults = {cached};
+    impl->lastValidTimestamp = std::chrono::steady_clock::now() - Impl::MAX_STALE_RESULTS_AGE - std::chrono::seconds(1);
+    impl->lastAdapterUtilization = {{"GPU_0x0_0x1", 80.0}};
+    m_scenario->collectStatus = static_cast<PDH_STATUS>(PDH_CSTATUS_NO_INSTANCE);
+    PDHGPUProbe probe(std::move(impl));
+
+    EXPECT_TRUE(probe.readProcessGPUCounters().empty());
+    EXPECT_TRUE(probe.adapterUtilization().empty());
+}
+
+TEST(ParseAdapterInstanceLuidTest, AcceptsAdapterInstancesOnly)
+{
+    EXPECT_EQ(PDHGPUProbeImplDetail::parseAdapterInstanceLuid("luid_0x00000000_0x0001752D_phys_0"), "0x00000000_0x0001752D");
+    EXPECT_EQ(PDHGPUProbeImplDetail::parseAdapterInstanceLuid("luid_0x0_0x1_phys_12"), "0x0_0x1");
+    EXPECT_TRUE(PDHGPUProbeImplDetail::parseAdapterInstanceLuid("pid_1_luid_0x0_0x1_phys_0").empty());
+    EXPECT_TRUE(PDHGPUProbeImplDetail::parseAdapterInstanceLuid("luid_0x0_0x1").empty());
+    EXPECT_TRUE(PDHGPUProbeImplDetail::parseAdapterInstanceLuid("luid_0xZZ_0x1_phys_0").empty());
+    EXPECT_TRUE(PDHGPUProbeImplDetail::parseAdapterInstanceLuid("luid_0x0_0x1_phys_").empty());
+    EXPECT_TRUE(PDHGPUProbeImplDetail::parseAdapterInstanceLuid("luid_0x_0x1_phys_0").empty());
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, AdapterMemoryIsReadFromTheAdapterCounters)
+{
+    // The GPU tab's Memory line used to be TaskSmack's own usage (DXGI QueryVideoMemoryInfo);
+    // it now comes from the adapter-wide counters, summed over physical nodes (#1029).
+    auto impl = makeInjectedImpl();
+    ASSERT_NE(impl->adapterDedicatedCounter, nullptr);
+    ASSERT_NE(impl->adapterSharedCounter, nullptr);
+    m_scenario->items[impl->adapterDedicatedCounter] = {
+        {.name = L"luid_0x0_0x1_phys_0", .largeValue = 300},
+        {.name = L"luid_0x0_0x2_phys_0", .largeValue = 5000},
+    };
+    m_scenario->items[impl->adapterSharedCounter] = {
+        {.name = L"luid_0x0_0x1_phys_0", .largeValue = 1000},
+        {.name = L"luid_0x0_0x1_phys_1", .largeValue = 500},
+        {.name = L"not_an_adapter_instance", .largeValue = 999},
+    };
+    PDHGPUProbe probe(std::move(impl));
+    static_cast<void>(probe.readProcessGPUCounters());
+
+    const auto memory = probe.adapterMemory();
+    ASSERT_EQ(memory.size(), 2U);
+    EXPECT_EQ(memory.at("GPU_0x0_0x1").dedicatedBytes, 300ULL);
+    EXPECT_EQ(memory.at("GPU_0x0_0x1").sharedBytes, 1500ULL);
+    EXPECT_EQ(memory.at("GPU_0x0_0x2").dedicatedBytes, 5000ULL);
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, AdapterMemoryIsCollectedWhenOnlyTheAdapterCountersAreAvailable)
+{
+    // With the engine and process-memory counters unavailable, the adapter counters alone must
+    // still be collected, or the GPU tab's Memory line reads zero (#1029).
+    m_scenario->failToAdd[Impl::UTILIZATION_COUNTER_PATH] = true;
+    m_scenario->failToAdd[Impl::DEDICATED_MEMORY_COUNTER_PATH] = true;
+    m_scenario->failToAdd[Impl::SHARED_MEMORY_COUNTER_PATH] = true;
+    auto impl = makeInjectedImpl();
+    ASSERT_EQ(impl->utilizationCounter, nullptr);
+    ASSERT_NE(impl->adapterSharedCounter, nullptr);
+    m_scenario->items[impl->adapterSharedCounter] = {{.name = L"luid_0x0_0x1_phys_0", .largeValue = 1234}};
+    PDHGPUProbe probe(std::move(impl));
+
+    static_cast<void>(probe.readProcessGPUCounters());
+
+    const auto memory = probe.adapterMemory();
+    ASSERT_EQ(memory.size(), 1U);
+    EXPECT_EQ(memory.at("GPU_0x0_0x1").sharedBytes, 1234ULL);
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, AdapterMemoryIsReadOnTheWarmUpCollect)
+{
+    // The adapter memory counters are gauges, so the first collect already has them; skipping
+    // them during warm-up published the first GPU refresh with 0 bytes in use (#1029).
+    auto impl = makeInjectedImpl();
+    impl->warmedUp = false;
+    m_scenario->items[impl->adapterSharedCounter] = {{.name = L"luid_0x0_0x1_phys_0", .largeValue = 1234}};
+    m_scenario->items[impl->utilizationCounter] = {
+        {.name = L"pid_802_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .doubleValue = 5.0},
+    };
+    PDHGPUProbe probe(std::move(impl));
+
+    const auto results = probe.readProcessGPUCounters();
+
+    // Utilization is still a warm-up: no process rates yet.
+    EXPECT_TRUE(results.empty());
+    EXPECT_TRUE(probe.adapterUtilization().empty());
+    const auto memory = probe.adapterMemory();
+    ASSERT_EQ(memory.size(), 1U);
+    EXPECT_EQ(memory.at("GPU_0x0_0x1").sharedBytes, 1234ULL);
 }
 
 TEST_F(WindowsPDHGPUProbeInjectedTest, MemoryCounterSkipsFailingCstatusAndMalformedNames)

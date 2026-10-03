@@ -46,20 +46,35 @@ class WindowsGPUProbe : public IGPUProbe
     [[nodiscard]] GPUCapabilities capabilities() const override;
 
   private:
-    [[nodiscard]] std::unordered_set<std::string> mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounters);
+    [[nodiscard]] std::unordered_set<std::string> mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounters,
+                                                                        std::unordered_set<std::string>& nvmlMemoryIds);
     void mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiCounters, const std::unordered_set<std::string>& nvmlSourcedIds);
 
     std::unique_ptr<DXGIGPUProbe> m_DXGIProbe;
     std::unique_ptr<NVMLGPUProbe> m_NVMLProbe;
+    // Two PDH probes, one per sampler: m_PDHProbe for per-process counters (process sampler),
+    // m_PDHAdapterProbe for adapter utilization (system sampler). PDH computes rates between
+    // consecutive collects on a query, so with one shared query each sampler's reading covered
+    // only the slice since the *other* sampler's collect (#1034). Each query now spans its own
+    // sampler's whole interval. (Access was already serialized by GPUModel's m_ProbeMutex; this
+    // is about the measurement window, not thread safety.)
     std::unique_ptr<PDHGPUProbe> m_PDHProbe;
+    std::unique_ptr<PDHGPUProbe> m_PDHAdapterProbe;
 
     // Map DXGI GPU index to NVML GPU index (for merging data)
     std::unordered_map<uint32_t, uint32_t> m_DXGIToNVMLMap;
+
+    // NVML device ids in enumeration order -- the order m_DXGIToNVMLMap's NVML indices refer to.
+    std::vector<std::string> m_NVMLEnumeratedIds;
 
     // Map DXGI GPU id ("GPU0") to LUID-based id ("GPU_0x00000000_0x0000D3A0")
     // Built during enumerateGPUs(), used in mergePDHAdapterUtilization()
     // to assign per-GPU utilization from PDH counters (which are keyed by LUID)
     std::unordered_map<std::string, std::string> m_DXGIIdToLuidId;
+
+    // Map DXGI GPU id ("GPU0") to whether it is integrated, which decides whether its memory in
+    // use is the shared or the dedicated segment. Built during enumerateGPUs().
+    std::unordered_map<std::string, bool> m_DXGIIdIsIntegrated;
 };
 
 } // namespace Platform

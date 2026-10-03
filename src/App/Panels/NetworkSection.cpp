@@ -5,20 +5,23 @@
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/RateAxis.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
 #include <implot.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cinttypes>
 #include <cstddef>
 #include <format>
 #include <functional>
-#include <limits>
 #include <optional>
+#include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -28,10 +31,9 @@ namespace App::NetworkSection
 namespace
 {
 
-using UI::Widgets::buildTimeAxis;
 using UI::Widgets::computeAlpha;
-using UI::Widgets::formatAgeSeconds;
 using UI::Widgets::formatAxisBytesPerSec;
+using UI::Widgets::frameTimeAxis;
 using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
@@ -56,6 +58,12 @@ void updateSmoothedNetwork(double targetSent, double targetRecv, float deltaTime
     *ctx.smoothedNetInitialized = true;
 }
 
+// One label per series, shared by its legend entry, tooltip row and NowBar (#1008).
+constexpr const char* TOTAL_SENT_LABEL = "Sent";
+constexpr const char* TOTAL_RECV_LABEL = "Received";
+constexpr const char* TOTAL_SENT_BEHIND_LABEL = "Sent (Total)";
+constexpr const char* TOTAL_RECV_BEHIND_LABEL = "Received (Total)";
+
 } // namespace
 
 void renderDiskIOSection(RenderContext& ctx)
@@ -70,6 +78,8 @@ void renderDiskIOSection(RenderContext& ctx)
         .smoothedReadBytesPerSec = ctx.smoothedDiskReadBytesPerSec,
         .smoothedWriteBytesPerSec = ctx.smoothedDiskWriteBytesPerSec,
         .smoothedInitialized = ctx.smoothedDiskInitialized,
+        .smoothedPerDisk = ctx.smoothedPerDisk,
+        .fill = ctx.fill,
     };
     StorageSection::renderStorageSection(storageCtx);
 }
@@ -96,30 +106,19 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
 
     const auto interfaceCount = interfaces.size();
 
-    // Get selected interface (or default to -1)
-    int selectedInterface = (ctx.selectedNetworkInterface != nullptr) ? *ctx.selectedNetworkInterface : -1;
-
-    // Clamp selected interface to current range so indexing into interfaceNames is always safe.
-    // Interfaces can disappear (e.g., USB adapter unplugged, VPN disconnected).
-    if (std::cmp_greater_equal(selectedInterface, interfaceCount))
+    // The selection is held by interface name (see resolveInterfaceSelection). selectedInterface is
+    // this frame's index for it: -1 = "Total".
+    const auto selection = NetInterfaceUtils::resolveInterfaceSelection(
+        interfaces, ctx.selectedNetworkInterface != nullptr ? std::string_view{*ctx.selectedNetworkInterface} : std::string_view{});
+    int selectedInterface = selection.index.has_value() ? UI::Format::checkedCount(*selection.index) : -1;
+    if (selection.lost && ctx.selectedNetworkInterface != nullptr)
     {
-        // Guard against potential overflow when converting from size_t to int.
-        // While extremely unlikely (would require SIZE_MAX interfaces), be defensive.
-        constexpr auto maxIntIndex = static_cast<size_t>(std::numeric_limits<int>::max());
-        if ((interfaceCount == 0) || (interfaceCount > maxIntIndex))
+        // The interface went away (adapter unplugged, VPN disconnected): show Total, and restart
+        // the bars rather than letting them glide from the old interface's values.
+        ctx.selectedNetworkInterface->clear();
+        if (ctx.smoothedNetInitialized != nullptr)
         {
-            // Fall back to "Total" mode when no interfaces or index would overflow int.
-            selectedInterface = -1;
-        }
-        else
-        {
-            selectedInterface = static_cast<int>(interfaceCount) - 1;
-        }
-
-        // Update the caller's value
-        if (ctx.selectedNetworkInterface != nullptr)
-        {
-            *ctx.selectedNetworkInterface = selectedInterface;
+            *ctx.smoothedNetInitialized = false;
         }
     }
 
@@ -132,6 +131,12 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     {
         dropdownWidth = std::max(dropdownWidth, ImGui::CalcTextSize(name.c_str()).x + comboExtraWidth);
     }
+
+    // Never wider than the pane. Interface names are long ("Realtek Gaming USB 2.5GbE Family
+    // Controller"), and a combo measured from the longest one ran under the scrollbar on a narrow
+    // window, taking its drop-down arrow out of view (#966). ImGui clips the preview text, so a
+    // capped combo stays fully operable.
+    dropdownWidth = std::min(dropdownWidth, ImGui::GetContentRegionAvail().x);
 
     // Interface selector
     ImGui::SetNextItemWidth(dropdownWidth);
@@ -150,7 +155,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                 selectedInterface = selectionValue;
                 if (ctx.selectedNetworkInterface != nullptr)
                 {
-                    *ctx.selectedNetworkInterface = selectedInterface;
+                    *ctx.selectedNetworkInterface = (i == 0) ? std::string{} : interfaces[i - 1].name;
                 }
                 // Reset smoothed values when changing interface
                 if (ctx.smoothedNetInitialized != nullptr)
@@ -227,27 +232,28 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     const auto axis = aligned > 0 ? makeTimeAxisConfig(netTimestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds)
                                   : makeTimeAxisConfig({}, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
 
-    std::vector<float> netTimes;
-    std::vector<float> sentData;
-    std::vector<float> recvData;
-    std::vector<float> ifaceSentData;
-    std::vector<float> ifaceRecvData;
+    // Views into the published history, not per-frame copies of it (#1018).
+    std::span<const double> netTimes;
+    std::span<const float> sentData;
+    std::span<const float> recvData;
+    std::span<const float> ifaceSentData;
+    std::span<const float> ifaceRecvData;
 
     if (aligned > 0)
     {
         // Use real-time for smooth scrolling (not netTimestamps.back() which freezes between refreshes)
-        netTimes = buildTimeAxis(netTimestamps, aligned, nowSeconds);
-        sentData.assign(netTxHist.end() - static_cast<std::ptrdiff_t>(aligned), netTxHist.end());
-        recvData.assign(netRxHist.end() - static_cast<std::ptrdiff_t>(aligned), netRxHist.end());
+        netTimes = frameTimeAxis(netTimestamps, aligned, nowSeconds);
+        sentData = UI::Widgets::tailAlignedSpan(netTxHist, aligned).values;
+        recvData = UI::Widgets::tailAlignedSpan(netRxHist, aligned).values;
 
         // Per-interface history (if available and same length as total)
         if (showingInterface && ifaceTxHist.size() >= aligned)
         {
-            ifaceSentData.assign(ifaceTxHist.end() - static_cast<std::ptrdiff_t>(aligned), ifaceTxHist.end());
+            ifaceSentData = UI::Widgets::tailAlignedSpan(ifaceTxHist, aligned).values;
         }
         if (showingInterface && ifaceRxHist.size() >= aligned)
         {
-            ifaceRecvData.assign(ifaceRxHist.end() - static_cast<std::ptrdiff_t>(aligned), ifaceRxHist.end());
+            ifaceRecvData = UI::Widgets::tailAlignedSpan(ifaceRxHist, aligned).values;
         }
     }
 
@@ -257,35 +263,35 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     const double smoothedSent = ctx.smoothedNetSentBytesPerSec != nullptr ? *ctx.smoothedNetSentBytesPerSec : targetSent;
     const double smoothedRecv = ctx.smoothedNetRecvBytesPerSec != nullptr ? *ctx.smoothedNetRecvBytesPerSec : targetRecv;
 
-    // Calculate max across all data for consistent Y axis
-    double netMax = std::max({sentData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(sentData)),
-                              recvData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(recvData)),
-                              smoothedSent,
-                              smoothedRecv,
-                              1.0});
-    if (!ifaceSentData.empty())
-    {
-        netMax = std::max(netMax, static_cast<double>(*std::ranges::max_element(ifaceSentData)));
-    }
-    if (!ifaceRecvData.empty())
-    {
-        netMax = std::max(netMax, static_cast<double>(*std::ranges::max_element(ifaceRecvData)));
-    }
+    // One upper bound for the chart's Y axis and its bars, so a bar and its line show a value at the
+    // same height (#1003). It covers every series drawn on this axis, not just the totals: a
+    // selected interface is plotted here too, and total vs per-interface rates are derived
+    // independently, so the interface rate can exceed the total's. The interface vectors are empty
+    // when none is selected, and hold NaN where the interface was absent; maxOfSeries() ignores both.
+    const double netAxisUpper =
+        UI::Widgets::easedRateAxisUpperBound("##SystemNetHistory",
+                                             UI::Widgets::maxOfSeries(sentData, recvData, ifaceSentData, ifaceRecvData),
+                                             UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
 
     // Determine labels based on selection
-    const std::string ifaceDisplayName = showingInterface ? interfaces[static_cast<size_t>(selectedInterface)].name : "Network";
-    const std::string sentBarLabel = showingInterface ? std::format("{} Sent", ifaceDisplayName) : "Network Sent";
-    const std::string recvBarLabel = showingInterface ? std::format("{} Received", ifaceDisplayName) : "Network Received";
+    // Name the interface the way the picker above does (#1009).
+    const std::string ifaceDisplayName = showingInterface ? interfaceNames[static_cast<size_t>(selectedInterface) + 1] : "Network";
+    // One label per series, shared by its legend entry, tooltip row and NowBar (#1008). The bars show
+    // the selected interface when there is one, else the totals.
+    const std::string ifaceSentLabel = std::format("{} Sent", ifaceDisplayName);
+    const std::string ifaceRecvLabel = std::format("{} Received", ifaceDisplayName);
+    const std::string sentBarLabel = showingInterface ? ifaceSentLabel : std::string(TOTAL_SENT_LABEL);
+    const std::string recvBarLabel = showingInterface ? ifaceRecvLabel : std::string(TOTAL_RECV_LABEL);
 
     const NowBar sentBar{.valueText = UI::Format::formatBytesPerSec(smoothedSent),
                          .label = sentBarLabel,
                          .tooltipText = {},
-                         .value01 = std::clamp(smoothedSent / netMax, 0.0, 1.0),
+                         .value01 = UI::Widgets::normalizeToUnitInterval(smoothedSent, netAxisUpper),
                          .color = theme.scheme().chartNetTx};
     const NowBar recvBar{.valueText = UI::Format::formatBytesPerSec(smoothedRecv),
                          .label = recvBarLabel,
                          .tooltipText = {},
-                         .value01 = std::clamp(smoothedRecv / netMax, 0.0, 1.0),
+                         .value01 = UI::Widgets::normalizeToUnitInterval(smoothedRecv, netAxisUpper),
                          .color = theme.scheme().chartNetRx};
 
     // Determine plot title based on selection
@@ -295,7 +301,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     std::string plotTitle = "Total";
     if (usingInterfaceHistory)
     {
-        plotTitle = interfaces[static_cast<size_t>(selectedInterface)].name;
+        plotTitle = ifaceDisplayName;
     }
     else if (interfaceHistoryUnavailable)
     {
@@ -306,57 +312,48 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     const auto ifaceSentColor = UI::withAlpha(theme.scheme().chartNetTx, 0.7F);
     const auto ifaceRecvColor = UI::withAlpha(theme.scheme().chartNetRx, 0.7F);
 
+    // Shares the tab's height with the disk chart or grid below it (#959).
+    const float plotHeight = (ctx.fill != nullptr) ? ctx.fill->plotHeight() : HISTORY_PLOT_HEIGHT_DEFAULT;
     auto plot = [&]()
     {
-        const UI::Widgets::HistoryChart chart(
-            UI::Widgets::rateHistoryConfig("##SystemNetHistory",
-                                           axis.xMin,
-                                           axis.xMax,
-                                           formatAxisBytesPerSec,
-                                           // Every series drawn on this axis, not just the
-                                           // totals: a selected interface is plotted here too,
-                                           // and total vs per-interface rates are derived
-                                           // independently, so the interface rate can exceed
-                                           // the total's. The interface vectors are empty when
-                                           // none is selected; maxOfSeries() ignores those.
-                                           UI::Widgets::maxOfSeries(sentData, recvData, ifaceSentData, ifaceRecvData),
-                                           UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC));
+        const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
+            UI::Widgets::rateHistoryConfigWithUpper("##SystemNetHistory", axis.xMin, axis.xMax, formatAxisBytesPerSec, netAxisUpper),
+            plotHeight));
         if (chart.active())
         {
+            UI::Widgets::drawCollectingHint(aligned); // The same "no data yet" state on every chart (#1013)
             const int count = UI::Format::checkedCount(aligned);
 
             // When an interface is selected, show both total (muted) and interface (bright)
             if (usingInterfaceHistory)
             {
                 // Total lines (muted, in background)
-                plotLineWithFill("Sent (Total)",
+                plotLineWithFill(TOTAL_SENT_BEHIND_LABEL,
                                  netTimes.data(),
                                  sentData.data(),
                                  count,
                                  ifaceSentColor,
                                  std::nullopt,
                                  2.0F,
-                                 true,
+                                 false, // line only: the interface fills in front are the series
                                  UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
-                plotLineWithFill("Received (Total)",
+                plotLineWithFill(TOTAL_RECV_BEHIND_LABEL,
                                  netTimes.data(),
                                  recvData.data(),
                                  count,
                                  ifaceRecvColor,
                                  std::nullopt,
                                  2.0F,
-                                 true,
+                                 false, // line only: the interface fills in front are the series
                                  UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
 
                 // Interface-specific lines (bright, in foreground)
-                const auto ifaceSentLabel = std::format("{} Sent", ifaceDisplayName);
-                const auto ifaceRecvLabel = std::format("{} Received", ifaceDisplayName);
                 plotLineWithFill(ifaceSentLabel.c_str(),
                                  netTimes.data(),
                                  ifaceSentData.data(),
                                  count,
                                  theme.scheme().chartNetTx,
-                                 std::nullopt,
+                                 theme.scheme().chartNetTxFill,
                                  2.0F,
                                  true,
                                  UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -365,7 +362,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                                  ifaceRecvData.data(),
                                  count,
                                  theme.scheme().chartNetRx,
-                                 std::nullopt,
+                                 theme.scheme().chartNetRxFill,
                                  2.0F,
                                  true,
                                  UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -373,21 +370,21 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
             else
             {
                 // Just total
-                plotLineWithFill("Sent",
+                plotLineWithFill(TOTAL_SENT_LABEL,
                                  netTimes.data(),
                                  sentData.data(),
                                  count,
                                  theme.scheme().chartNetTx,
-                                 std::nullopt,
+                                 theme.scheme().chartNetTxFill,
                                  2.0F,
                                  true,
                                  UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
-                plotLineWithFill("Received",
+                plotLineWithFill(TOTAL_RECV_LABEL,
                                  netTimes.data(),
                                  recvData.data(),
                                  count,
                                  theme.scheme().chartNetRx,
-                                 std::nullopt,
+                                 theme.scheme().chartNetRxFill,
                                  2.0F,
                                  true,
                                  UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
@@ -400,39 +397,28 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                 {
                     if (*idxVal < aligned)
                     {
-                        ImGui::BeginTooltip();
-                        const auto ageText = formatAgeSeconds(static_cast<double>(netTimes[*idxVal]));
-                        ImGui::TextUnformatted(ageText.c_str());
-                        ImGui::Separator();
+                        const auto rate = [](float value)
+                        {
+                            return UI::Format::formatBytesPerSecOrNA(static_cast<double>(value));
+                        };
+                        std::vector<UI::Widgets::TooltipRow> rows;
                         if (usingInterfaceHistory)
                         {
-                            // Show both total and interface values
-                            ImGui::TextColored(theme.scheme().textMuted, "Total:");
-                            ImGui::TextColored(ifaceSentColor,
-                                               "  Sent: %s",
-                                               UI::Format::formatBytesPerSec(static_cast<double>(sentData[*idxVal])).c_str());
-                            ImGui::TextColored(ifaceRecvColor,
-                                               "  Received: %s",
-                                               UI::Format::formatBytesPerSec(static_cast<double>(recvData[*idxVal])).c_str());
-                            ImGui::Spacing();
-                            ImGui::TextColored(theme.scheme().textPrimary, "%s:", ifaceDisplayName.c_str());
-                            ImGui::TextColored(theme.scheme().chartNetTx,
-                                               "  Sent: %s",
-                                               UI::Format::formatBytesPerSec(static_cast<double>(ifaceSentData[*idxVal])).c_str());
-                            ImGui::TextColored(theme.scheme().chartNetRx,
-                                               "  Received: %s",
-                                               UI::Format::formatBytesPerSec(static_cast<double>(ifaceRecvData[*idxVal])).c_str());
+                            rows.push_back(
+                                {.label = ifaceSentLabel, .color = theme.scheme().chartNetTx, .value = rate(ifaceSentData[*idxVal])});
+                            rows.push_back(
+                                {.label = ifaceRecvLabel, .color = theme.scheme().chartNetRx, .value = rate(ifaceRecvData[*idxVal])});
+                            rows.push_back({.label = TOTAL_SENT_BEHIND_LABEL, .color = ifaceSentColor, .value = rate(sentData[*idxVal])});
+                            rows.push_back({.label = TOTAL_RECV_BEHIND_LABEL, .color = ifaceRecvColor, .value = rate(recvData[*idxVal])});
                         }
                         else
                         {
-                            ImGui::TextColored(theme.scheme().chartNetTx,
-                                               "Sent: %s",
-                                               UI::Format::formatBytesPerSec(static_cast<double>(sentData[*idxVal])).c_str());
-                            ImGui::TextColored(theme.scheme().chartNetRx,
-                                               "Received: %s",
-                                               UI::Format::formatBytesPerSec(static_cast<double>(recvData[*idxVal])).c_str());
+                            rows.push_back(
+                                {.label = TOTAL_SENT_LABEL, .color = theme.scheme().chartNetTx, .value = rate(sentData[*idxVal])});
+                            rows.push_back(
+                                {.label = TOTAL_RECV_LABEL, .color = theme.scheme().chartNetRx, .value = rate(recvData[*idxVal])});
                         }
-                        ImGui::EndTooltip();
+                        UI::Widgets::renderHistoryTooltip(netTimes[*idxVal], rows);
                     }
                 }
             }
@@ -447,8 +433,11 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         ImGui::Spacing();
     }
     constexpr size_t NETWORK_NOW_BAR_COLUMNS = 2; // Sent, Recv
-    renderHistoryWithNowBars(
-        "SystemNetHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {sentBar, recvBar}, false, NETWORK_NOW_BAR_COLUMNS);
+    renderHistoryWithNowBars("SystemNetHistoryLayout", plotHeight, plot, {sentBar, recvBar}, false, NETWORK_NOW_BAR_COLUMNS);
+    if (ctx.fill != nullptr)
+    {
+        ctx.fill->addPlot();
+    }
     ImGui::Spacing();
 
     // Interface status table - filtered and sorted (virtual/bluetooth hidden by default)
@@ -464,7 +453,17 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
 
         if (ImGui::BeginTable("##InterfaceTable", 6, tableFlags))
         {
-            ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 30.0F);
+            // Wide enough for its header and for any of the icons it can hold, at the current font.
+            // It was a fixed 30px on a non-resizable table: the header was cut to "T..." from Extra
+            // Large up on a scaled display, and to "..." at Even Huger (#966).
+            constexpr auto TYPE_COLUMN_CONTENTS =
+                std::to_array<const char*>({"Type", ICON_FA_NETWORK_WIRED, ICON_FA_HOUSE, ICON_FA_WIFI, ICON_FA_ETHERNET});
+            float typeColumnWidth = 0.0F;
+            for (const char* text : TYPE_COLUMN_CONTENTS)
+            {
+                typeColumnWidth = std::max(typeColumnWidth, ImGui::CalcTextSize(text).x);
+            }
+            ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, typeColumnWidth);
             ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_None, 2.5F);
             ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_None, 0.8F);
             ImGui::TableSetupColumn("Speed", ImGuiTableColumnFlags_None, 1.0F);
@@ -580,25 +579,48 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
 void renderNetworkSection(RenderContext& ctx)
 {
     const auto& theme = UI::Theme::get();
-    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
 
     // Network content first, at its own natural (non-stretching) height; the disk grid renders
     // after it and fills whatever's left via ImGui::GetContentRegionAvail() (see
     // StorageSection::renderStorageSection) -- reversed from the disk-then-network order this
     // tab used before #823's grid work, which let the disk grid's now-space-filling behavior
     // greedily consume the whole tab and push the network chart/table below it off-screen.
-    if (ctx.systemPublication == nullptr || !ctx.hasNetworkCounters)
+    //
+    // The charts share the tab's height like every other tab's (#959). With one disk that is just
+    // the network chart and the disk chart. With several, the per-disk grid still takes whatever
+    // is left, so it is not measured: it is reserved one share of the height, and the fill scope
+    // closes before it renders. The network chart and the grid then split the tab between them.
+    const bool diskGrid = StorageSection::usesDiskGrid(ctx.storagePublication);
     {
-        ImGui::TextUnformatted("Network monitoring not available on this platform.");
-    }
-    else
-    {
-        renderNetworkChartAndTable(ctx, theme, nowSeconds);
-    }
+        std::optional<UI::Widgets::FillPlotLayout> fill;
+        if (ctx.fillState != nullptr)
+        {
+            fill.emplace(*ctx.fillState, diskGrid ? 1U : 0U);
+            ctx.fill = &*fill;
+        }
 
-    ImGui::Separator();
-    ImGui::Spacing();
-    renderDiskIOSection(ctx);
+        if (ctx.systemPublication == nullptr || !ctx.hasNetworkCounters)
+        {
+            ImGui::TextUnformatted("Network monitoring not available on this platform.");
+        }
+        else
+        {
+            renderNetworkChartAndTable(ctx, theme, nowSeconds);
+        }
+
+        ImGui::Separator();
+        ImGui::Spacing();
+        if (!diskGrid)
+        {
+            renderDiskIOSection(ctx);
+        }
+        ctx.fill = nullptr;
+    }
+    if (diskGrid)
+    {
+        renderDiskIOSection(ctx);
+    }
 }
 
 } // namespace App::NetworkSection

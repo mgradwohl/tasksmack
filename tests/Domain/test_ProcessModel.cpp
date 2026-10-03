@@ -10,6 +10,7 @@
 
 #include "Domain/GPUModel.h"
 #include "Domain/ProcessModel.h"
+#include "Domain/SamplingConfig.h"
 #include "Mocks/MockGPUProbe.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/GPUTypes.h"
@@ -21,6 +22,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -36,6 +38,28 @@ using TestMocks::MockProcessProbe;
 
 namespace
 {
+
+// Deterministic time source for tests that need a known interval between refreshes,
+// so rates and power are exact instead of depending on how long a sleep took (#1136).
+class ManualClock
+{
+  public:
+    [[nodiscard]] Domain::ProcessModel::NowFunction now()
+    {
+        return [this]
+        {
+            return m_Time;
+        };
+    }
+
+    void advance(Domain::ProcessModel::Clock::duration duration)
+    {
+        m_Time += duration;
+    }
+
+  private:
+    Domain::ProcessModel::Clock::time_point m_Time;
+};
 
 // Test constants for overflow scenarios
 constexpr uint64_t OVERFLOW_TEST_MARGIN = 10000; // Distance from max value for overflow tests
@@ -1021,130 +1045,158 @@ TEST(ProcessModelTest, NetworkRatesZeroOnFirstRefresh)
     EXPECT_DOUBLE_EQ(snaps[0].netReceivedBytesPerSec, 0.0); // No previous data
 }
 
+namespace
+{
+
+// Drives a ProcessModel's sample times through the injectable clock, so the network rate tests
+// get exact intervals instead of depending on a real sleep.
+struct NetworkRateFixture
+{
+    Domain::ProcessModel::Clock::time_point currentTime;
+    MockProcessProbe* probe = nullptr;
+    std::unique_ptr<Domain::ProcessModel> model;
+    std::uint64_t totalCpuTime = 100000;
+
+    NetworkRateFixture()
+    {
+        auto owned = std::make_unique<MockProcessProbe>();
+        probe = owned.get();
+        model = std::make_unique<Domain::ProcessModel>(std::move(owned), [this] { return currentTime; });
+    }
+
+    // Advances the clock by @p elapsed (none for the first sample), then samples one process
+    // whose open connections have sent and received the given byte totals.
+    // @p netSampleTimeNs: when the probe read the network counters (0 = with this refresh).
+    auto sample(std::chrono::milliseconds elapsed, std::uint64_t sent, std::uint64_t received, std::uint64_t netSampleTimeNs = 0)
+        -> Domain::ProcessSnapshot
+    {
+        currentTime += elapsed;
+        totalCpuTime += 100000;
+        probe->setCounters({});
+        probe->withProcess(100, "network_proc").withNetworkCounters(100, sent, received).withNetworkSampleTime(100, netSampleTimeNs);
+        probe->setTotalCpuTime(totalCpuTime);
+        model->refresh();
+        const auto snaps = model->snapshots();
+        EXPECT_EQ(snaps.size(), 1U);
+        return snaps.empty() ? Domain::ProcessSnapshot{} : snaps.front();
+    }
+};
+
+} // namespace
+
 TEST(ProcessModelTest, NetworkRatesCalculatedFromDeltas)
 {
-    // Note: Network rates now use baseline approach with 0.5s minimum time
-    // This test verifies rates are computed correctly after minimum time elapsed
-    auto probe = std::make_unique<MockProcessProbe>();
-    auto* rawProbe = probe.get();
+    NetworkRateFixture fixture;
+    fixture.sample(std::chrono::milliseconds{0}, 1000, 2000);
 
-    // First sample: 1000 sent, 2000 received (establishes baseline)
-    rawProbe->withProcess(100, "network_proc").withNetworkCounters(100, 1000, 2000);
-    rawProbe->setTotalCpuTime(100000);
+    const auto snap = fixture.sample(std::chrono::milliseconds{500}, 2000, 4000);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 2000.0);     // 1000 bytes / 0.5 s
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 4000.0); // 2000 bytes / 0.5 s
+}
 
-    Domain::ProcessModel model(std::move(probe));
-    model.refresh();
+TEST(ProcessModelTest, NetworkRatesFollowTheLastIntervalNotTheLifetimeAverage)
+{
+    // #1036: the rate was (bytes now - bytes when first seen) / time since first seen, so a
+    // burst decayed slowly instead of dropping to zero when the transfer stopped.
+    NetworkRateFixture fixture;
+    fixture.sample(std::chrono::milliseconds{0}, 0, 0);
 
-    // Wait minimum time (0.5s) for rates to be computed
-    std::this_thread::sleep_for(std::chrono::milliseconds(550));
+    auto snap = fixture.sample(std::chrono::seconds{1}, 1'000'000, 3'000'000);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 1'000'000.0);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 3'000'000.0);
 
-    // Second sample: 2000 sent (+1000 from baseline), 4000 received (+2000 from baseline)
-    rawProbe->setCounters({});
-    rawProbe->withProcess(100, "network_proc").withNetworkCounters(100, 2000, 4000);
-    rawProbe->setTotalCpuTime(200000);
-    model.refresh();
+    // Transfer stopped: the lifetime average would still read 500 KB/s and 1.5 MB/s here.
+    snap = fixture.sample(std::chrono::seconds{1}, 1'000'000, 3'000'000);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 0.0);
 
-    auto snaps = model.snapshots();
-    ASSERT_EQ(snaps.size(), 1);
-
-    // With ~550ms elapsed and baseline approach:
-    // sent: 1000 bytes / 0.55s = ~1800 B/s
-    // recv: 2000 bytes / 0.55s = ~3600 B/s
-    EXPECT_GT(snaps[0].netSentBytesPerSec, 1000.0);
-    EXPECT_LT(snaps[0].netSentBytesPerSec, 3000.0);
-    EXPECT_GT(snaps[0].netReceivedBytesPerSec, 2000.0);
-    EXPECT_LT(snaps[0].netReceivedBytesPerSec, 6000.0);
+    // A later, smaller transfer shows at its own rate, not diluted by the time already watched.
+    snap = fixture.sample(std::chrono::seconds{1}, 1'010'000, 3'020'000);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 10'000.0);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 20'000.0);
 }
 
 TEST(ProcessModelTest, NetworkRatesHandleCounterDecrease)
 {
-    auto probe = std::make_unique<MockProcessProbe>();
-    auto* rawProbe = probe.get();
+    // The counters are sums over live connections; one closing makes the sum drop. That interval
+    // reads 0, not a wrapped (huge) or negative rate, and the next interval is measured from the
+    // lower sum.
+    NetworkRateFixture fixture;
+    fixture.sample(std::chrono::milliseconds{0}, 2000, 4000);
 
-    rawProbe->withProcess(100, "proc").withNetworkCounters(100, 2000, 4000);
-    rawProbe->setTotalCpuTime(100000);
+    auto snap = fixture.sample(std::chrono::seconds{1}, 500, 1000);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 0.0);
 
-    Domain::ProcessModel model(std::move(probe));
-    model.refresh();
-
-    // Wait minimum time for rates
-    std::this_thread::sleep_for(std::chrono::milliseconds(550));
-
-    // Counter decreased (process restarted or counter wrapped)
-    rawProbe->setCounters({});
-    rawProbe->withProcess(100, "proc").withNetworkCounters(100, 500, 1000);
-    rawProbe->setTotalCpuTime(200000);
-    model.refresh();
-
-    auto snaps = model.snapshots();
-    ASSERT_EQ(snaps.size(), 1);
-    // Should be 0 (no rate calculated when counter decreases)
-    EXPECT_DOUBLE_EQ(snaps[0].netSentBytesPerSec, 0.0);
-    EXPECT_DOUBLE_EQ(snaps[0].netReceivedBytesPerSec, 0.0);
+    snap = fixture.sample(std::chrono::seconds{1}, 1500, 1500);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 1000.0);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 500.0);
 }
 
-TEST(ProcessModelTest, NetworkRatesUseBaselineApproach)
+TEST(ProcessModelTest, NetworkRatesZeroForImplausiblyShortInterval)
 {
-    // Test that network rates are computed as average since first seen
-    // This handles TCP connection churn by using (current - baseline) / timeSinceFirstSeen
-    // Note: Minimum time of 0.5s required before rates are computed
-    auto probe = std::make_unique<MockProcessProbe>();
-    auto* rawProbe = probe.get();
+    // An interval under half the minimum refresh interval (the seed refresh followed at once by
+    // the sampler's first) is treated as no previous data, so it cannot divide by a tiny time.
+    NetworkRateFixture fixture;
+    fixture.sample(std::chrono::milliseconds{0}, 1000, 2000);
 
-    // First sample: baseline is established at 1000 sent, 2000 received
-    rawProbe->withProcess(100, "network_proc").withNetworkCounters(100, 1000, 2000);
-    rawProbe->setTotalCpuTime(100000);
+    auto snap = fixture.sample(std::chrono::milliseconds{1}, 5000, 10000);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 0.0);
 
-    Domain::ProcessModel model(std::move(probe));
-    model.refresh();
-
-    // Wait minimum time (0.5s) before rates can be computed
-    std::this_thread::sleep_for(std::chrono::milliseconds(550));
-
-    // Second sample: 2000 sent (+1000 from baseline), 4000 received (+2000 from baseline)
-    // Time since first seen is ~550ms, so rates should be ~1800 B/s and ~3600 B/s
-    rawProbe->setCounters({});
-    rawProbe->withProcess(100, "network_proc").withNetworkCounters(100, 2000, 4000);
-    rawProbe->setTotalCpuTime(200000);
-    model.refresh();
-
-    auto snaps = model.snapshots();
-    ASSERT_EQ(snaps.size(), 1);
-
-    // Rates should be reasonable (baseline approach: delta from first seen / time since first seen)
-    // With ~550ms elapsed and 1000 bytes sent delta: ~1800 B/s (allow range for timing variance)
-    EXPECT_GT(snaps[0].netSentBytesPerSec, 1000.0);
-    EXPECT_LT(snaps[0].netSentBytesPerSec, 3000.0);
-    EXPECT_GT(snaps[0].netReceivedBytesPerSec, 2000.0);
-    EXPECT_LT(snaps[0].netReceivedBytesPerSec, 6000.0);
+    // From a nonzero rate (#1063 review): a too-short interval resets the rate to 0, not the last
+    // rate republished -- only a repeated cached read from a probe that stamps its reads holds it.
+    snap = fixture.sample(std::chrono::seconds{1}, 6000, 12000);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 1000.0);
+    snap = fixture.sample(std::chrono::milliseconds{1}, 6000, 12000);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 0.0);
 }
 
-TEST(ProcessModelTest, NetworkRatesZeroBeforeMinimumTime)
+TEST(ProcessModelTest, NetworkRatesUseTheProbeReadIntervalWhenItCaches)
 {
-    // Test that network rates remain 0 until minimum time (0.5s) has elapsed
-    auto probe = std::make_unique<MockProcessProbe>();
-    auto* rawProbe = probe.get();
+    // #1063 review: the Linux probe caches its socket query for 500 ms. With 100 ms refreshes a steady
+    // 1 MB/s transfer read as four refreshes of 0 and then one of 5 MB/s when the rate was taken over
+    // the refresh interval. Over the time between the probe's reads, it is 1 MB/s throughout.
+    constexpr std::uint64_t MS = 1'000'000; // ns
+    NetworkRateFixture fixture;
+    fixture.sample(std::chrono::milliseconds{0}, 0, 0, 1000 * MS);
 
-    rawProbe->withProcess(100, "network_proc").withNetworkCounters(100, 1000, 2000);
-    rawProbe->setTotalCpuTime(100000);
+    constexpr auto REFRESH = std::chrono::milliseconds{100};
+    auto snap = fixture.sample(REFRESH, 0, 0, 1000 * MS); // still the cached read
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 0.0);
 
-    Domain::ProcessModel model(std::move(probe));
-    model.refresh();
+    // Fresh read 500 ms after the first: 500 KB over 0.5 s.
+    snap = fixture.sample(REFRESH, 0, 500'000, 1500 * MS);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 1'000'000.0);
 
-    // Wait less than minimum time
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // Cached refreshes after it hold the rate rather than reading 0.
+    for (int i = 0; i < 4; ++i)
+    {
+        snap = fixture.sample(REFRESH, 0, 500'000, 1500 * MS);
+        EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 1'000'000.0);
+    }
 
-    rawProbe->setCounters({});
-    rawProbe->withProcess(100, "network_proc").withNetworkCounters(100, 5000, 10000);
-    rawProbe->setTotalCpuTime(200000);
-    model.refresh();
+    // The next fresh read: another 500 KB over 0.5 s, not 5x the rate.
+    snap = fixture.sample(REFRESH, 0, 1'000'000, 2000 * MS);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 1'000'000.0);
 
-    auto snaps = model.snapshots();
-    ASSERT_EQ(snaps.size(), 1);
+    // Transfer stopped: the next fresh read drops it to 0.
+    snap = fixture.sample(REFRESH, 0, 1'000'000, 2500 * MS);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 0.0);
+}
 
-    // Rates should still be 0 because minimum time hasn't elapsed
-    EXPECT_DOUBLE_EQ(snaps[0].netSentBytesPerSec, 0.0);
-    EXPECT_DOUBLE_EQ(snaps[0].netReceivedBytesPerSec, 0.0);
+TEST(ProcessModelTest, NetworkRatesAboveSanityCeilingAreDropped)
+{
+    // A connection that appears carrying traffic from before it was first seen can add far more
+    // bytes than one interval could carry; such a rate is reported as 0, not as a spike.
+    NetworkRateFixture fixture;
+    fixture.sample(std::chrono::milliseconds{0}, 0, 0);
+
+    const auto huge = static_cast<std::uint64_t>(Domain::Sampling::MAX_SANE_RATE_BPS_DEFAULT) * 2U;
+    const auto snap = fixture.sample(std::chrono::seconds{1}, huge, 1000);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 1000.0);
 }
 
 // =============================================================================
@@ -1175,11 +1227,11 @@ TEST(ProcessModelTest, PowerUsageCalculationFromEnergyDelta)
     rawProbe->withProcess(100, "power_proc").withPowerUsage(100, 1'000'000);
     rawProbe->setTotalCpuTime(100000);
 
-    Domain::ProcessModel model(std::move(probe));
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
     model.refresh();
 
-    // Wait a bit to ensure time delta > 0 (simulate 0.1 second passing)
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    clock.advance(std::chrono::milliseconds(100));
 
     // Second refresh: energy increased by 100,000 microjoules (0.1 joule)
     // If 100ms passed, power = 0.1J / 0.1s = 1W
@@ -1189,10 +1241,8 @@ TEST(ProcessModelTest, PowerUsageCalculationFromEnergyDelta)
 
     auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 1);
-    // Power should be approximately 1 watt (0.1J / 0.1s)
-    // Allow some tolerance due to timing variations
-    EXPECT_GT(snaps[0].powerWatts, 0.5);
-    EXPECT_LT(snaps[0].powerWatts, 2.0);
+    // 0.1 J over exactly 0.1 s
+    EXPECT_DOUBLE_EQ(snaps[0].powerWatts, 1.0);
 }
 
 TEST(ProcessModelTest, PowerUsageWithZeroEnergyDelta)
@@ -1204,10 +1254,11 @@ TEST(ProcessModelTest, PowerUsageWithZeroEnergyDelta)
     rawProbe->withProcess(100, "idle_proc").withPowerUsage(100, 1'000'000);
     rawProbe->setTotalCpuTime(100000);
 
-    Domain::ProcessModel model(std::move(probe));
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
     model.refresh();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    clock.advance(std::chrono::milliseconds(50));
 
     // Energy unchanged
     rawProbe->withProcess(100, "idle_proc").withPowerUsage(100, 1'000'000);
@@ -1228,10 +1279,11 @@ TEST(ProcessModelTest, PowerUsageHandlesEnergyCounterReset)
     rawProbe->withProcess(100, "proc").withPowerUsage(100, 5'000'000);
     rawProbe->setTotalCpuTime(100000);
 
-    Domain::ProcessModel model(std::move(probe));
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
     model.refresh();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    clock.advance(std::chrono::milliseconds(50));
 
     // Counter decreased (reset or wrap) - should be handled gracefully
     rawProbe->withProcess(100, "proc").withPowerUsage(100, 1'000'000);
@@ -1251,10 +1303,11 @@ TEST(ProcessModelTest, PowerUsageWithoutEnergyData)
     rawProbe->withProcess(100, "no_power_proc");
     rawProbe->setTotalCpuTime(100000);
 
-    Domain::ProcessModel model(std::move(probe));
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
     model.refresh();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    clock.advance(std::chrono::milliseconds(50));
 
     rawProbe->withProcess(100, "no_power_proc");
     rawProbe->setTotalCpuTime(200000);
@@ -1494,11 +1547,11 @@ TEST(ProcessModelTest, IoRatesCalculatedFromDeltas)
     rawProbe->setCounters({c1});
     rawProbe->setTotalCpuTime(100000);
 
-    Domain::ProcessModel model(std::move(probe));
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
     model.refresh();
 
-    // Sleep a bit to ensure time delta
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    clock.advance(std::chrono::milliseconds(100));
 
     // Second sample: process has read 3 MB total (delta = 2 MB), written 1.5 MB total (delta = 1 MB)
     Platform::ProcessCounters c2 = makeCounter(100, "test_proc", 'R', 2000, 1000);
@@ -1512,17 +1565,9 @@ TEST(ProcessModelTest, IoRatesCalculatedFromDeltas)
     auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 1);
 
-    // Should have positive rates (exact value depends on elapsed time)
-    EXPECT_GT(snaps[0].ioReadBytesPerSec, 0.0);
-    EXPECT_GT(snaps[0].ioWriteBytesPerSec, 0.0);
-
-    // Read delta = 2 MB, write delta = 1 MB
-    // With ~100ms elapsed, we expect roughly:
-    // Read: 2 MB / 0.1s = ~20 MB/s
-    // Write: 1 MB / 0.1s = ~10 MB/s
-    // Allow wide tolerance for timing variations
-    EXPECT_GT(snaps[0].ioReadBytesPerSec, 1024.0 * 1024.0); // At least 1 MB/s
-    EXPECT_GT(snaps[0].ioWriteBytesPerSec, 512.0 * 1024.0); // At least 512 KB/s
+    // Read delta = 2 MB, write delta = 1 MB, over exactly 0.1 s
+    EXPECT_DOUBLE_EQ(snaps[0].ioReadBytesPerSec, 20.0 * 1024.0 * 1024.0);
+    EXPECT_DOUBLE_EQ(snaps[0].ioWriteBytesPerSec, 10.0 * 1024.0 * 1024.0);
 }
 
 TEST(ProcessModelTest, IoRatesHandleNoActivity)
@@ -1537,10 +1582,11 @@ TEST(ProcessModelTest, IoRatesHandleNoActivity)
     rawProbe->setCounters({c1});
     rawProbe->setTotalCpuTime(100000);
 
-    Domain::ProcessModel model(std::move(probe));
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
     model.refresh();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    clock.advance(std::chrono::milliseconds(50));
 
     // Second sample: no change in I/O counters
     Platform::ProcessCounters c2 = makeCounter(100, "idle_proc", 'S', 1000, 500);
@@ -1574,10 +1620,11 @@ TEST(ProcessModelTest, IoRatesForMultipleProcesses)
     rawProbe->setCounters({c1a, c1b});
     rawProbe->setTotalCpuTime(100000);
 
-    Domain::ProcessModel model(std::move(probe));
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
     model.refresh();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    clock.advance(std::chrono::milliseconds(100));
 
     // Second sample: proc_a read 1 MB more, proc_b wrote 2 MB more
     Platform::ProcessCounters c2a = makeCounter(100, "proc_a", 'R', 1500, 0);
@@ -1609,13 +1656,13 @@ TEST(ProcessModelTest, IoRatesForMultipleProcesses)
     ASSERT_NE(snapA, nullptr);
     ASSERT_NE(snapB, nullptr);
 
-    // proc_a should have read rate > 0, write rate = 0
-    EXPECT_GT(snapA->ioReadBytesPerSec, 0.0);
+    // proc_a read 1 MB in 0.1 s, wrote nothing
+    EXPECT_DOUBLE_EQ(snapA->ioReadBytesPerSec, 10.0 * 1024.0 * 1024.0);
     EXPECT_DOUBLE_EQ(snapA->ioWriteBytesPerSec, 0.0);
 
-    // proc_b should have write rate > 0, read rate = 0
+    // proc_b wrote 2 MB in 0.1 s, read nothing
     EXPECT_DOUBLE_EQ(snapB->ioReadBytesPerSec, 0.0);
-    EXPECT_GT(snapB->ioWriteBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snapB->ioWriteBytesPerSec, 20.0 * 1024.0 * 1024.0);
 }
 
 TEST(ProcessModelTest, IoRatesHandleCounterWrapAround)
@@ -1631,10 +1678,11 @@ TEST(ProcessModelTest, IoRatesHandleCounterWrapAround)
     rawProbe->setCounters({c1});
     rawProbe->setTotalCpuTime(100000);
 
-    Domain::ProcessModel model(std::move(probe));
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
     model.refresh();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    clock.advance(std::chrono::milliseconds(50));
 
     // Second sample: counter appears to have decreased (wraparound or reset)
     // Our implementation should handle this gracefully by showing 0 rate
@@ -1667,10 +1715,11 @@ TEST(ProcessModelTest, NewProcessWithSamePidGetsZeroIoRates)
     rawProbe->setCounters({c1});
     rawProbe->setTotalCpuTime(100000);
 
-    Domain::ProcessModel model(std::move(probe));
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
     model.refresh();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    clock.advance(std::chrono::milliseconds(50));
 
     // New process reuses PID 100 but has different startTime
     Platform::ProcessCounters c2 = makeCounter(100, "new_proc", 'R', 100, 50, /*startTime*/ 2000);
@@ -1760,6 +1809,25 @@ TEST(ProcessModelTest, StartTimeEpochZeroIsPassedThrough)
     EXPECT_EQ(snaps[0].startTimeEpoch, 0);
 }
 
+TEST(ProcessModelTest, StartTimeTicksArePassedThrough)
+{
+    // The raw start time is what process actions verify before acting (#973). If the model ever
+    // stopped copying it, every action from the UI would carry an unknown identity and be refused,
+    // and neither the dispatch tests (hand-built snapshots) nor the platform contract tests
+    // (which bypass the model) would notice.
+    auto probe = std::make_unique<MockProcessProbe>();
+    constexpr uint64_t START_TICKS = 133'987'654'321'000'000ULL; // A FILETIME-sized value
+    probe->setCounters({makeCounter(100, "ticks_test", 'R', 1000, 500, START_TICKS)});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].startTimeTicks, START_TICKS);
+}
+
 // =============================================================================
 // System-Level History Tests (for untested functions)
 // =============================================================================
@@ -1815,7 +1883,8 @@ TEST(ProcessModelTest, SystemHandleCountHistoryAggregatesAcrossProcesses)
     probe->setTotalCpuTime(100000);
 
     auto* rawProbe = probe.get();
-    Domain::ProcessModel model{std::move(probe)};
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
 
     // First sample — no history entry yet (needs two samples for a delta)
     auto c1 = makeCounter(100, "proc_a", 'R', 1000, 500);
@@ -1825,7 +1894,7 @@ TEST(ProcessModelTest, SystemHandleCountHistoryAggregatesAcrossProcesses)
     rawProbe->setCounters({c1, c2});
     model.refresh();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    clock.advance(std::chrono::milliseconds(10));
 
     c1.userTime += 100;
     c2.userTime += 100;
@@ -1844,14 +1913,15 @@ TEST(ProcessModelTest, SystemHandleCountHistoryAlignedWithTimestamps)
     probe->setTotalCpuTime(100000);
 
     auto* rawProbe = probe.get();
-    Domain::ProcessModel model{std::move(probe)};
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
 
     auto counter = makeCounter(100, "proc_a", 'R', 1000, 500);
     counter.handleCount = 5;
     rawProbe->setCounters({counter});
     model.refresh();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    clock.advance(std::chrono::milliseconds(10));
 
     counter.userTime += 100;
     rawProbe->setCounters({counter});
@@ -1882,7 +1952,7 @@ TEST(ProcessModelTest, HistoryTimestampsAreEmptyInitially)
 
 TEST(ProcessModelTest, ZeroHistoryRetentionKeepsOnlyCurrentSample)
 {
-    // Drives sample time via the injectable clock instead of a real sleep, so the two
+    // Drives sample time via the injectable clock instead of a real sleep, so the
     // pushed history entries get distinct, deterministic timestamps regardless of
     // scheduler/clock-resolution timing.
     auto currentTime = Domain::ProcessModel::Clock::time_point{};
@@ -1896,9 +1966,13 @@ TEST(ProcessModelTest, ZeroHistoryRetentionKeepsOnlyCurrentSample)
     model.updateFromCounters({counter}, 300000);
     ASSERT_EQ(model.historyTimestamps().size(), 2);
 
+    currentTime += std::chrono::milliseconds(10);
+    model.updateFromCounters({counter}, 400000);
+    ASSERT_EQ(model.historyTimestamps().size(), 3);
+
     model.setMaxHistorySeconds(0.0);
-    // With a zero-second window the cutoff equals the newest timestamp, so
-    // trimming keeps only the current sample.
+    // With a zero-second window the cutoff equals the newest timestamp, so trimming keeps only the
+    // current sample: an anchor before a zero-length window is never kept (keepTrimAnchor).
     EXPECT_EQ(model.historyTimestamps().size(), 1);
 }
 
@@ -1913,7 +1987,8 @@ TEST(ProcessModelTest, PeakRssTracksMaximumMemory)
 
     // Keep raw pointer for test control before moving unique_ptr
     auto* rawProbe = probe.get();
-    Domain::ProcessModel model{std::move(probe)};
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
 
     // Start with 10MB
     auto counter = makeCounter(100, "proc1", 'R', 1000, 500, 1000, 10 * 1024 * 1024);
@@ -1924,7 +1999,7 @@ TEST(ProcessModelTest, PeakRssTracksMaximumMemory)
     ASSERT_EQ(snaps1.size(), 1);
     auto peak1 = snaps1[0].peakMemoryBytes;
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    clock.advance(std::chrono::milliseconds(10));
 
     // Increase to 20MB
     counter.rssBytes = 20 * 1024 * 1024;
@@ -1939,7 +2014,7 @@ TEST(ProcessModelTest, PeakRssTracksMaximumMemory)
     EXPECT_GT(peak2, peak1);
     EXPECT_EQ(peak2, 20 * 1024 * 1024);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    clock.advance(std::chrono::milliseconds(10));
 
     // Decrease to 15MB - peak should stay at 20MB
     counter.rssBytes = 15 * 1024 * 1024;
@@ -1961,7 +2036,8 @@ TEST(ProcessModelTest, PeakRssResetForNewProcess)
 
     // Keep raw pointer for test control before moving unique_ptr
     auto* rawProbe = probe.get();
-    Domain::ProcessModel model{std::move(probe)};
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
 
     // Process with PID 100
     auto counter1 = makeCounter(100, "proc1", 'R', 1000, 500, 1000, 20 * 1024 * 1024);
@@ -1972,7 +2048,7 @@ TEST(ProcessModelTest, PeakRssResetForNewProcess)
     ASSERT_EQ(snaps1.size(), 1);
     EXPECT_EQ(snaps1[0].peakMemoryBytes, 20 * 1024 * 1024);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    clock.advance(std::chrono::milliseconds(10));
 
     // New process with same PID but different start time (PID reuse)
     auto counter2 = makeCounter(100, "proc2", 'R', 500, 250, 2000, 5 * 1024 * 1024);
@@ -2249,6 +2325,56 @@ TEST(ProcessModelTest, MergeGPUDataWithLUIDBasedMatching)
     EXPECT_EQ(snaps[0].gpuMemoryBytes, 768ULL * 1024 * 1024); // 512 + 256 MB
     // Should include both GPU names
     EXPECT_FALSE(snaps[0].gpuDevices.empty());
+}
+
+// The per-GPU breakdown carries each adapter's integrated flag, not just its name. It used to be
+// left at its default, so the process details pane called every adapter "Discrete" (#963).
+TEST(ProcessModelTest, MergeGPUDataCarriesIntegratedFlagPerGpu)
+{
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "test_proc", 'R', 1000, 500)});
+    processProbe->setTotalCpuTime(100000);
+
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    gpuProbe->withCapabilities(caps);
+    gpuProbe->withGPU("GPU0", "Integrated GPU", "Vendor", /*isIntegrated=*/true).withGPU("GPU1", "Discrete GPU", "Vendor", false);
+    gpuProbe->withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024);
+    gpuProbe->withProcessGPU(100, "GPU1", 256ULL * 1024 * 1024);
+    // An adapter the GPU model does not know: there is nothing to look the flag up from, so it
+    // must stay at the default rather than inherit a neighbour's.
+    gpuProbe->withProcessGPU(100, "GPU99", 128ULL * 1024 * 1024);
+
+    const auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    Domain::ProcessModel processModel(std::move(processProbe));
+    processModel.setGPUModel(gpuModel);
+
+    gpuModel->refresh();
+    processModel.refresh();
+
+    auto snaps = processModel.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    ASSERT_EQ(snaps[0].perGpuUsage.size(), 3);
+
+    for (const auto& usage : snaps[0].perGpuUsage)
+    {
+        if (usage.gpuId == "GPU0")
+        {
+            EXPECT_EQ(usage.gpuName, "Integrated GPU");
+            EXPECT_TRUE(usage.isIntegrated);
+        }
+        else if (usage.gpuId == "GPU1")
+        {
+            EXPECT_EQ(usage.gpuName, "Discrete GPU");
+            EXPECT_FALSE(usage.isIntegrated);
+        }
+        else
+        {
+            EXPECT_EQ(usage.gpuId, "GPU99");
+            EXPECT_FALSE(usage.isIntegrated);
+        }
+    }
 }
 
 // =============================================================================

@@ -1,9 +1,11 @@
 #include "ElevationNoticeLayer.h"
 
+#include "App/DialogGeometry.h"
 #include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
+#include "UI/DialogMetrics.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -11,37 +13,15 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <cassert>
 #include <string_view>
 
 namespace App
 {
 
-ElevationNoticeLayer* ElevationNoticeLayer::s_Instance = nullptr;
-
 ElevationNoticeLayer::ElevationNoticeLayer() : Core::Layer("ElevationNoticeLayer")
 {}
 
 ElevationNoticeLayer::~ElevationNoticeLayer() = default;
-
-void ElevationNoticeLayer::onAttach()
-{
-    // Layer lifecycle is guaranteed to be called from main thread only (SDL/ImGui requirement).
-    // s_Instance is set by setInstance() immediately after pushLayer() returns.
-    // During onAttach(), verify that either the singleton is not yet set (before setInstance),
-    // or it already points to this instance (setInstance was called before pushLayer).
-    assert((s_Instance == nullptr || s_Instance == this) && "ElevationNoticeLayer: expected s_Instance to be null (first initialization) "
-                                                            "or already set to this instance (setInstance called before pushLayer)");
-}
-
-void ElevationNoticeLayer::onDetach()
-{
-    // Clear singleton instance to avoid dangling pointer after this layer is destroyed.
-    if (s_Instance == this)
-    {
-        s_Instance = nullptr;
-    }
-}
 
 void ElevationNoticeLayer::onUpdate([[maybe_unused]] float deltaTime)
 {
@@ -83,10 +63,25 @@ void ElevationNoticeLayer::renderDialog()
     {
         const ImGuiViewport* viewport = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5F, 0.5F));
-        ImGui::SetNextWindowSize(ImVec2(480.0F, 0.0F), ImGuiCond_Appearing);
-
         ImGui::OpenPopup("Limited Data Available");
         m_OpenRequested = false;
+    }
+
+    // 45 em is exactly the former fixed 480px at the reference configuration, clamped so a large
+    // font on a small window cannot push the dialog off-screen. This modal is the first thing a user
+    // sees when running unelevated and it blocks input until dismissed, so its proportions matter
+    // more than the usual cosmetic case (#937).
+    //
+    // Reapplied on every frame the popup is open, not once with ImGuiCond_Appearing. ImGui only lets
+    // SetNextWindowSize override ImGuiWindowFlags_AlwaysAutoResize on frames where the size was
+    // actually set by the API -- see size_auto_fit_x_always in imgui.cpp and the comment above it --
+    // so a one-shot Appearing size is discarded by auto-fit from the second frame on and the clamp
+    // never binds. Height stays 0 so it still auto-fits its content.
+    if (ImGui::IsPopupOpen("Limited Data Available"))
+    {
+        const ImGuiViewport* sizingViewport = ImGui::GetMainViewport();
+        const float widthPx = UI::DialogMetrics::computeDialogWidth(ImGui::GetFontSize(), ELEVATION_WIDTH_EM, sizingViewport->WorkSize.x);
+        ImGui::SetNextWindowSize(ImVec2(widthPx, 0.0F));
     }
 
     const ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking;
@@ -116,7 +111,13 @@ void ElevationNoticeLayer::renderDialog()
                                               "Some per-process data may be unavailable.";
 #endif
 
+        // Wrapped to the window, because the width above is now a real constraint rather than a
+        // suggestion: on a narrow window the clamp can leave less content width than the longest
+        // line needs, and unwrapped text is simply clipped. The explicit blank lines in bodyText
+        // still separate the paragraphs; wrapping only reflows within them.
+        ImGui::PushTextWrapPos(0.0F);
         ImGui::TextUnformatted(bodyText.data(), bodyText.data() + bodyText.size());
+        ImGui::PopTextWrapPos();
 
         ImGui::Spacing();
         ImGui::Spacing();
@@ -128,8 +129,11 @@ void ElevationNoticeLayer::renderDialog()
         ImGui::Separator();
         ImGui::Spacing();
 
-        // Right-align OK button
-        const float buttonWidth = 100.0F;
+        // Right-align OK button. The floor is 9.375 em, exactly the former fixed 100px at the
+        // reference configuration; the measured-label term only takes over if the label grows wider
+        // than that. A fixed-pixel button is a real interaction cost on a HiDPI display (#937).
+        const float buttonWidth =
+            UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize("OK").x, ImGui::GetFontSize(), ELEVATION_BUTTON_MIN_EM);
         const float availX = ImGui::GetContentRegionAvail().x;
         const float offset = std::max(0.0F, availX - buttonWidth);
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
@@ -151,14 +155,6 @@ void ElevationNoticeLayer::renderDialog()
         ImGui::PopStyleColor(); // textPrimary
         ImGui::EndPopup();
     }
-}
-
-/// Set the singleton instance (non-owning; layer is owned by the application's layer stack).
-/// THREAD-SAFETY: Must only be called from main thread during initialization,
-/// before any code (onAttach's assert, onDetach's clear) reads s_Instance.
-void ElevationNoticeLayer::setInstance(ElevationNoticeLayer& layer)
-{
-    s_Instance = &layer;
 }
 
 } // namespace App

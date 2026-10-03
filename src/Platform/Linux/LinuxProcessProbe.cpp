@@ -14,6 +14,7 @@
 
 #include "Platform/ProcessTypes.h"
 #include "ProcParsing.h"
+#include "ProcessName.h"
 
 #include <spdlog/spdlog.h>
 
@@ -320,11 +321,12 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasNice = true,       // From /proc/[pid]/stat
                                .hasPageFaults = true, // From /proc/[pid]/stat (minflt + majflt)
                                .hasPeakRss = false,
-                               .hasCpuAffinity = true,                     // From sched_getaffinity
-                               .hasNetworkCounters = hasNetworkCounters,   // From Netlink INET_DIAG (if available)
-                               .hasPowerUsage = m_HasPowerCap,             // Available if RAPL is detected
-                               .hasStatus = true,                          // From cgroup freezer state
-                               .hasReducedPrivileges = reducedPrivileges}; // Non-root: incomplete FD/IO data
+                               .hasCpuAffinity = true,                    // From sched_getaffinity
+                               .hasNetworkCounters = hasNetworkCounters,  // From Netlink INET_DIAG (if available)
+                               .hasPowerUsage = m_HasPowerCap,            // Available if RAPL is detected
+                               .hasStatus = true,                         // From cgroup freezer state
+                               .hasReducedPrivileges = reducedPrivileges, // Non-root: incomplete FD/IO data
+                               .hasSharedMemory = true};                  // From /proc/[pid]/statm
 }
 
 uint64_t LinuxProcessProbe::totalCpuTime() const
@@ -610,6 +612,15 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
         // File opened and fully read but is empty: genuine kernel thread — use bracketed name.
         counters.command = "[" + counters.name + "]";
         return;
+    }
+
+    // The kernel caps the name in /proc/[pid]/stat at 15 characters. Where it has been cut, the
+    // full name is usually recoverable from the arguments, which are still NUL-separated at this
+    // point -- so this costs no extra read. See ProcessName.h for when the result is trusted (#951).
+    if (const std::string_view fullName = ProcessName::resolveFullName(counters.name, std::string_view(buf.data(), buf.size()));
+        fullName.size() != counters.name.size())
+    {
+        counters.name = std::string(fullName);
     }
 
     // Replace NUL argument separators with spaces, then trim trailing space.
@@ -1132,7 +1143,24 @@ void LinuxProcessProbe::attributeNetworkToProcesses(std::vector<ProcessCounters>
     }
 
     // Query all TCP/UDP sockets with their byte counters
-    const std::vector<SocketStats> sockets = stats->queryAllSockets();
+    std::chrono::steady_clock::time_point sampledAt;
+    const std::vector<SocketStats> sockets = stats->queryAllSockets(&sampledAt);
+
+    // The socket query is cached (DEFAULT_SOCKET_STATS_CACHE_TTL), so it can be older than this
+    // refresh. Stamp it on every process -- with sockets or not, and before the early returns below
+    // for an empty result -- so ProcessModel takes network rates over the time between real queries
+    // rather than between refreshes. An unstamped read in between would make the next real one fall
+    // back to the refresh interval and overstate its rate (#1063 review). A failed query
+    // (unavailable) leaves sampledAt unset and the processes unstamped.
+    if (sampledAt != std::chrono::steady_clock::time_point{})
+    {
+        const auto sampleTimeNs =
+            static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(sampledAt.time_since_epoch()).count());
+        for (auto& proc : processes)
+        {
+            proc.netSampleTimeNs = sampleTimeNs;
+        }
+    }
     if (sockets.empty())
     {
         return;

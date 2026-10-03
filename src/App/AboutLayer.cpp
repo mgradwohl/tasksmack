@@ -1,10 +1,12 @@
 #include "App/AboutLayer.h"
 
+#include "App/DialogGeometry.h"
 #include "App/PlatformOpen.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
 #include "UI/AssetPath.h"
+#include "UI/DialogMetrics.h"
 #include "UI/IconLoader.h"
 #include "UI/Theme.h"
 #include "version.h"
@@ -14,15 +16,12 @@
 
 #include <algorithm>
 #include <array>
-#include <cassert>
 #include <filesystem>
 #include <string>
 #include <string_view>
 
 namespace App
 {
-
-AboutLayer* AboutLayer::s_Instance = nullptr;
 
 AboutLayer::AboutLayer() : Core::Layer("AboutLayer")
 {}
@@ -31,21 +30,7 @@ AboutLayer::~AboutLayer() = default;
 
 void AboutLayer::onAttach()
 {
-    // Layer lifecycle is guaranteed to be called from main thread only (SDL/ImGui requirement).
-    // s_Instance is set by setInstance() immediately after pushLayer() returns.
-    // During onAttach(), verify that either the singleton is not yet set (before setInstance),
-    // or it already points to this instance (setInstance was called before pushLayer).
-    assert((s_Instance == nullptr || s_Instance == this) && "AboutLayer singleton must be nullptr or point to this instance");
     loadIcon();
-}
-
-void AboutLayer::onDetach()
-{
-    // Clear singleton instance to avoid dangling pointer after this layer is destroyed.
-    if (s_Instance == this)
-    {
-        s_Instance = nullptr;
-    }
 }
 
 void AboutLayer::onUpdate([[maybe_unused]] float deltaTime)
@@ -94,10 +79,14 @@ void AboutLayer::renderAboutDialog()
         m_OpenRequested = false;
     }
 
-    constexpr float marginPt = 24.0F;
-    const ImGuiIO& io = ImGui::GetIO();
-    const float pixelsPerPoint = 96.0F / 72.0F; // Approx. 96 DPI
-    const float marginPx = marginPt * pixelsPerPoint * std::max(1.0F, io.FontGlobalScale);
+    // Margin around the dialog's contents. Formerly 24pt converted through a literal 96/72 with the
+    // comment "Approx. 96 DPI", which is simply wrong on any scaled display, and then multiplied by
+    // io.FontGlobalScale clamped to >= 1.0 -- a stand-in for the font size that cannot compensate
+    // downward and is not the font size anyway. One em already carries both the Font Size setting
+    // and the display density. 3 em is exactly the 32px that expression produced at the reference
+    // configuration, so the dialog is unchanged there (#935).
+    const float emPx = ImGui::GetFontSize();
+    const float marginPx = ABOUT_MARGIN_EM * emPx;
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(marginPx, marginPx));
 
     const ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking;
@@ -114,7 +103,10 @@ void AboutLayer::renderAboutDialog()
 
         // Icon on the left
         ImGui::BeginGroup();
-        const float iconMax = 96.0F;
+        // 9 em is exactly the former fixed 96px at the reference configuration, so the icon now
+        // grows and shrinks with the text beside it instead of towering over it at Small and being
+        // swamped by it at Even Huger (#935).
+        const float iconMax = ABOUT_ICON_EM * emPx;
         ImGui::Dummy(ImVec2(0.0F, iconVerticalOffset));
         if (m_Icon.valid())
         {
@@ -173,8 +165,10 @@ void AboutLayer::renderAboutDialog()
 
         ImGui::Dummy(ImVec2(0.0F, marginPx));
 
-        // Center the OK button.
-        constexpr float buttonWidth = 120.0F;
+        // Center the OK button. The floor is 11.25 em, exactly the former fixed 120px at the
+        // reference configuration; the measured-label term only takes over if a translation or a
+        // very large font makes the label wider than that (#935).
+        const float buttonWidth = UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize("OK").x, emPx, ABOUT_BUTTON_MIN_EM);
         const float availX = ImGui::GetContentRegionAvail().x;
         const float offset = std::max(0.0F, (availX - buttonWidth) * 0.5F);
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
@@ -219,14 +213,6 @@ void AboutLayer::loadIcon()
     }
 
     spdlog::warn("About dialog icon not found; continuing without image");
-}
-
-/// Set the singleton instance (non-owning; layer is owned by the application's layer stack).
-/// THREAD-SAFETY: Must only be called from main thread during initialization,
-/// before any code (onAttach's assert, onDetach's clear) reads s_Instance.
-void AboutLayer::setInstance(AboutLayer& layer)
-{
-    s_Instance = &layer;
 }
 
 } // namespace App

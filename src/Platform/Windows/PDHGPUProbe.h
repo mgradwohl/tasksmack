@@ -5,10 +5,19 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace Platform
 {
+
+/// GPU memory in use on one adapter, from the PDH "GPU Adapter Memory" counters.
+struct AdapterMemoryUsage
+{
+    std::uint64_t dedicatedBytes = 0;
+    std::uint64_t sharedBytes = 0;
+};
 
 /// @brief PDH-based GPU probe for per-process GPU engine utilization
 ///
@@ -48,6 +57,17 @@ class PDHGPUProbe
     /// @brief Read per-process GPU utilization counters
     /// @return Vector of per-process GPU counters with utilization percentages
     [[nodiscard]] std::vector<ProcessGPUCounters> readProcessGPUCounters();
+
+    /// Per-adapter GPU utilization from the most recent readProcessGPUCounters() call, keyed by
+    /// "GPU_<luid>" (DXGI's luidId format). For each engine the sum over processes, then the
+    /// busiest engine, as Task Manager defines it (#1033). Empty before the first collect with
+    /// utilization, and after a collect fails and the cached results have gone stale.
+    [[nodiscard]] std::unordered_map<std::string, double> adapterUtilization() const;
+
+    /// Adapter-wide GPU memory in use from the most recent readProcessGPUCounters() call, keyed by
+    /// "GPU_<luid>". Unlike DXGI's QueryVideoMemoryInfo, which reports only the calling process,
+    /// this covers every process on the adapter (#1029).
+    [[nodiscard]] std::unordered_map<std::string, AdapterMemoryUsage> adapterMemory() const;
 
     /// @brief Get capabilities of this probe
     [[nodiscard]] GPUCapabilities capabilities() const;

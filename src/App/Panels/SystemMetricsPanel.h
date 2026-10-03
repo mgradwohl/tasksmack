@@ -3,17 +3,22 @@
 #include "App/Panel.h"
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/MemorySection.h"
+#include "App/Panels/StorageSection.h"
 #include "Core/Event.h"
 #include "Domain/BackgroundSampler.h"
 #include "Domain/GPUModel.h"
+#include "Domain/Numeric.h"
 #include "Domain/ProcessModel.h"
+#include "Domain/SamplingConfig.h"
 #include "Domain/StorageModel.h"
 #include "Domain/StorageSnapshot.h"
 #include "Domain/SystemModel.h"
 #include "Domain/SystemSnapshot.h"
+#include "UI/FillPlotLayout.h"
 #include "UI/Theme.h"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -51,14 +56,11 @@ class SystemMetricsPanel : public Panel
     /// Request an immediate refresh.
     void requestRefresh();
 
-    /// Inject process model for aggregated system histories (non-owning).
+    /// Inject process model for aggregated system histories (non-owning, read-only: ProcessesPanel
+    /// owns it and sets its history length, #1078).
     void setProcessModel(Domain::ProcessModel* model)
     {
         m_ProcessModel = model;
-        if (m_ProcessModel != nullptr)
-        {
-            m_ProcessModel->setMaxHistorySeconds(m_MaxHistorySeconds);
-        }
     }
 
     /// Render the panel (with ImGui window wrapper).
@@ -83,7 +85,6 @@ class SystemMetricsPanel : public Panel
 
   private:
     void renderOverview();
-    void renderCpuSection();
 
     std::unique_ptr<Domain::BackgroundSampler> m_Sampler;
     // shared_ptr (not unique_ptr): BackgroundSampler observes these models via weak_ptr rather
@@ -103,21 +104,32 @@ class SystemMetricsPanel : public Panel
     std::vector<double> m_ProcessThreadCountHistory;
     std::vector<double> m_ProcessHandleCountHistory;
 
-    double m_MaxHistorySeconds = 300.0;
+    double m_MaxHistorySeconds = Domain::Numeric::toDouble(Domain::Sampling::HISTORY_SECONDS_DEFAULT);
     double m_HistoryScrollSeconds = 0.0;
     double m_CurrentNowSeconds = 0.0;
     std::vector<double> m_TimestampsCache;
 
     // Render scratch buffers for stacked CPU breakdown chart (reused across frames to avoid per-frame heap allocation)
-    std::vector<float> m_CpuStackY0;
-    std::vector<float> m_CpuStackYUser;
-    std::vector<float> m_CpuStackYSystem;
-    std::vector<float> m_CpuStackYIowait;
+    // double, to match the double time axis ImPlot pairs them with (UI::Widgets::buildTimeAxis)
+    std::vector<double> m_CpuStackX;
+    std::vector<double> m_CpuStackY0;
+    std::vector<double> m_CpuStackYUser;
+    std::vector<double> m_CpuStackYSystem;
+    std::vector<double> m_CpuStackYIowait;
+    std::vector<double> m_CpuStackSystem; // raw System and I/O Wait, to choose reduced points by (#1022)
+    std::vector<double> m_CpuStackIowait;
 
-    std::chrono::milliseconds m_RefreshInterval{1000};
+    std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
     bool m_ForceRefresh = false;
     float m_LastDeltaSeconds = 0.0F;
     bool m_IsActiveTab = true; // System Overview is default tab
+
+    // Previous frame's Overview layout, feeding UI::Widgets::FillPlotLayout (#922)
+    UI::Widgets::PlotFillState m_OverviewFill;
+    // The GPU tab's, shared by every GPU's charts (#959)
+    UI::Widgets::PlotFillState m_GpuFill;
+    // The Network and I/O tab's (#959)
+    UI::Widgets::PlotFillState m_NetworkFill;
 
     struct SmoothedCpu
     {
@@ -131,14 +143,6 @@ class SystemMetricsPanel : public Panel
 
     // Use MemorySection's SmoothedMemory type
     MemorySection::SmoothedMemory m_SmoothedMemory;
-
-    struct SmoothedDiskIO
-    {
-        double readMBps = 0.0;
-        double writeMBps = 0.0;
-        double avgUtilization = 0.0;
-        bool initialized = false;
-    } m_SmoothedDiskIO;
 
     struct SmoothedPower
     {
@@ -162,6 +166,9 @@ class SystemMetricsPanel : public Panel
         bool initialized = false;
     } m_SmoothedSystemIO;
 
+    // Per-disk NowBar values for the Network and I/O tab's disk grid (#1012)
+    std::unordered_map<std::string, StorageSection::SmoothedDiskRates> m_SmoothedPerDisk;
+
     struct SmoothedNetwork
     {
         double sentBytesPerSec = 0.0;
@@ -169,8 +176,8 @@ class SystemMetricsPanel : public Panel
         bool initialized = false;
     } m_SmoothedNetwork;
 
-    // Selected network interface (-1 means "Total" / all interfaces combined)
-    int m_SelectedNetworkInterface = -1;
+    // Name of the selected network interface; empty means "Total" / all interfaces combined
+    std::string m_SelectedNetworkInterface;
 
     // GPU smoothed values (uses type from GpuSection)
     std::unordered_map<std::string, GpuSection::SmoothedGPU> m_SmoothedGPUs;
@@ -191,7 +198,6 @@ class SystemMetricsPanel : public Panel
     void updateCachedLayout();
     void updateSmoothedCpu(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);
     void updateSmoothedMemory(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);
-    void updateSmoothedDiskIO(const Domain::StorageSnapshot& snap, float deltaTimeSeconds);
     void updateSmoothedPower(float targetWatts, float targetBatteryPercent, float deltaTimeSeconds);
     void updateSmoothedResources(double targetThreads, double targetFaults, double targetHandles, float deltaTimeSeconds);
 };

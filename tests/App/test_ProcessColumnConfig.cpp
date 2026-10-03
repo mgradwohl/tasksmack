@@ -1,15 +1,75 @@
+#include "App/DialogGeometry.h"
 #include "App/ProcessColumnConfig.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cstddef>
+#include <limits>
 #include <vector>
 
 namespace App
 {
 namespace
 {
+
+// ========== Default Width Scaling (#913) ==========
+
+// At the reference em the authored pixel widths must come back unchanged, so the table looks the
+// same as before at the Medium preset on an unscaled display.
+TEST(ProcessColumnConfigTest, ScaledDefaultWidthIsAuthoredWidthAtReferenceEm)
+{
+    for (const auto col : allProcessColumns())
+    {
+        const auto info = getColumnInfo(col);
+        EXPECT_FLOAT_EQ(scaledDefaultWidth(info, REFERENCE_EM_PX), info.defaultWidth) << info.configKey;
+    }
+}
+
+TEST(ProcessColumnConfigTest, ScaledDefaultWidthTracksTheFont)
+{
+    const auto name = getColumnInfo(ProcessColumn::Name);
+
+    // Even Huger is twice the Medium body font, Small seven eighths of it.
+    EXPECT_FLOAT_EQ(scaledDefaultWidth(name, REFERENCE_EM_PX * 2.0F), name.defaultWidth * 2.0F);
+    EXPECT_FLOAT_EQ(scaledDefaultWidth(name, REFERENCE_EM_PX * 0.875F), name.defaultWidth * 0.875F);
+}
+
+// Every column keeps the same width in ems at every font, which is the property that stops a
+// column sized for its content at one preset from clipping that content at another.
+TEST(ProcessColumnConfigTest, ScaledDefaultWidthIsConstantInEms)
+{
+    for (const auto col : allProcessColumns())
+    {
+        const auto info = getColumnInfo(col);
+        const float atReference = scaledDefaultWidth(info, REFERENCE_EM_PX) / REFERENCE_EM_PX;
+        for (const float em : {8.0F, 13.5F, 21.5F, 43.0F})
+        {
+            EXPECT_NEAR(scaledDefaultWidth(info, em) / em, atReference, 1e-4F) << info.configKey << " em=" << em;
+        }
+    }
+}
+
+TEST(ProcessColumnConfigTest, ScaledDefaultWidthFallsBackOnUnusableEm)
+{
+    const auto name = getColumnInfo(ProcessColumn::Name);
+
+    for (const float em : {0.0F, -8.0F, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()})
+    {
+        EXPECT_FLOAT_EQ(scaledDefaultWidth(name, em), name.defaultWidth);
+    }
+}
+
+// Every column must start with a positive width: ProcessesPanel treats a non-positive default as a
+// stretch column, which collapses under the table's horizontal scrolling.
+TEST(ProcessColumnConfigTest, EveryColumnHasAPositiveDefaultWidth)
+{
+    for (const auto col : allProcessColumns())
+    {
+        const auto info = getColumnInfo(col);
+        EXPECT_GT(info.defaultWidth, 0.0F) << info.configKey;
+    }
+}
 
 // ========== Column Count and Index Conversion ==========
 

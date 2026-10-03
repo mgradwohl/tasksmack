@@ -95,10 +95,10 @@ class TitleBarLayer : public Core::Layer
         bool hasPendingCommit = false;
         int pendingWidth = 0;
         int pendingHeight = 0;
-        float lastSizeCommitTime = 0.0F;
+        double lastSizeCommitTime = 0.0;
         int lastImmediatePixelW = 0;
         int lastImmediatePixelH = 0;
-        float lastImmediateEventTime = 0.0F;
+        double lastImmediateEventTime = 0.0;
     };
 
     void beginWindowInteraction(const SDL_Event& event);
@@ -141,6 +141,11 @@ class TitleBarLayer : public Core::Layer
     InteractionMode m_InteractionMode = InteractionMode::None;
     DragState m_Drag{};
     ResizeState m_Resize{};
+
+    // Smallest size the window may be resized to, from the title bar's own content and the display
+    // scale (see computeMinimumWindowSize()). Recomputed each frame the bar is drawn; applied to
+    // custom edge-drags here and handed to SDL for every other way a window gets resized (#970).
+    WindowMinimumSize m_MinimumSize{};
 
     ResizeEdge m_CachedHoverEdge = ResizeEdge::None;
     int m_LastCursorMouseLocalX = 0;

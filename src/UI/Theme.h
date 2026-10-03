@@ -17,7 +17,7 @@ namespace UI
 /// Font size presets
 enum class FontSize : std::uint8_t
 {
-    Small = 0,  // 6pt / 8pt
+    Small = 0,  // 7pt / 9pt
     Medium,     // 8pt / 10pt (default)
     Large,      // 10pt / 12pt
     ExtraLarge, // 12pt / 14pt
@@ -204,6 +204,54 @@ struct FontSizeConfig
     float largePt = 0.0F;   // Headings
 };
 
+/// Font size presets in points (body / headings), indexed by FontSize. Fonts are rasterised at
+/// pt * 96 / 72 px at 100 % display scale, so Small's 7 pt body is about 9.3 px: no preset sets body
+/// text under 9 px (#1194).
+inline constexpr auto FONT_SIZE_PRESETS = std::to_array<FontSizeConfig>({
+    {.name = "Small", .regularPt = 7.0F, .largePt = 9.0F},
+    {.name = "Medium", .regularPt = 8.0F, .largePt = 10.0F},
+    {.name = "Large", .regularPt = 10.0F, .largePt = 12.0F},
+    {.name = "Extra Large", .regularPt = 12.0F, .largePt = 14.0F},
+    {.name = "Huge", .regularPt = 14.0F, .largePt = 16.0F},
+    {.name = "Even Huger", .regularPt = 16.0F, .largePt = 18.0F},
+});
+static_assert(FONT_SIZE_PRESETS.size() == FONT_SIZE_COUNT);
+
+/// The preset chart axis, legend and hint text is drawn at for a given body preset: one step smaller
+/// than the body text, but never below Medium, so chart text stays at least Medium's body size
+/// (about 10.7 px at 100 %) except at Small, where it matches the body text (#1194).
+[[nodiscard]] constexpr auto chartFontSize(FontSize bodySize) -> FontSize
+{
+    switch (bodySize)
+    {
+    case FontSize::Small:
+        return FontSize::Small;
+    case FontSize::Medium:
+    case FontSize::Large:
+        return FontSize::Medium;
+    case FontSize::ExtraLarge:
+        return FontSize::Large;
+    case FontSize::Huge:
+        return FontSize::ExtraLarge;
+    case FontSize::EvenHuger:
+        return FontSize::Huge;
+    case FontSize::Count:
+        break;
+    }
+    return FontSize::Small;
+}
+
+/// Chart text size as a fraction of body text size at a given body preset (1.0 at Small and Medium).
+[[nodiscard]] constexpr auto chartFontScale(FontSize bodySize) -> float
+{
+    const auto body = static_cast<std::size_t>(bodySize);
+    if (body >= FONT_SIZE_PRESETS.size())
+    {
+        return 1.0F;
+    }
+    return FONT_SIZE_PRESETS[static_cast<std::size_t>(chartFontSize(bodySize))].regularPt / FONT_SIZE_PRESETS[body].regularPt;
+}
+
 /// Global theme manager - provides access to color schemes and font settings
 class Theme
 {
@@ -244,9 +292,18 @@ class Theme
     /// Apply current theme colors to ImGui style
     void applyImGuiStyle() const;
 
-    /// Apply any pending theme change (call at start of frame before rendering)
-    /// Returns true if a theme was applied
-    auto applyPendingTheme() -> bool;
+    /// Flush any queued theme, font-size or display-scale change.
+    ///
+    /// Must be called at the start of a frame, before any widget is laid out. Every one of those
+    /// changes rewrites the global ImGui and ImPlot styles, and the settings dialog triggers them
+    /// from an Apply button *inside* a live frame, so applying them where they are requested would
+    /// leave that frame half laid out against the old style and half against the new one. setTheme()
+    /// has deferred for this reason since it was written; setFontSize() and setDisplayScale() now
+    /// defer the same way.
+    ///
+    /// @return true if a theme change was applied (a style-only rebuild does not count, as callers
+    ///         use this to decide whether to re-read theme colors).
+    auto applyPendingStyleChanges() -> bool;
 
     /// Get current color scheme
     [[nodiscard]] auto scheme() const -> const ColorScheme&;
@@ -268,13 +325,42 @@ class Theme
 
     // ============ Font Size Management ============
 
+    /// Record the display scale from SDL_GetWindowDisplayScale(), 1.0 at 96 DPI.
+    ///
+    /// Feeds the ImGuiStyle scale factor so chrome tracks display density as well as font size
+    /// (#936). The fonts are baked at the same density, so the two must change together: UILayer
+    /// re-measures the scale when SDL reports a display-scale change, rebuilds the fonts at the new
+    /// density and then calls this, so text and chrome rescale at the same frame boundary (#943).
+    /// Re-scaling the style alone would grow the chrome while the text stayed put.
+    ///
+    /// Queues the rebuild rather than performing it, like setTheme() -- see
+    /// applyPendingStyleChanges(), which flushes it at the next frame boundary.
+    void setDisplayScale(float scale);
+
+    [[nodiscard]] auto displayScale() const -> float
+    {
+        return m_DisplayScale;
+    }
+
+    /// Factor applyImGuiStyle() multiplies its size literals by: the font preset relative to
+    /// Medium, times the display scale (see computeStyleScale()).
+    ///
+    /// For the few call sites that push their own padding over the style's -- the tab bars, the
+    /// shell's content gutter -- so that what they push scales the same way as what they replace.
+    /// A literal pushed over a scaled style value is the fixed-pixel bug again (#971).
+    [[nodiscard]] auto styleScale() const -> float;
+
     /// Get current font size preset
     [[nodiscard]] auto currentFontSize() const -> FontSize
     {
         return m_CurrentFontSize;
     }
 
-    /// Set font size preset (triggers font rebuild on next frame)
+    /// Select a font size preset.
+    ///
+    /// Does not rebuild any font: every preset is pre-baked into the atlas at startup, so this
+    /// only changes which one regularFont()/largeFont() hand out. It does queue a style rebuild,
+    /// so padding and spacing follow the new size -- see applyPendingStyleChanges().
     void setFontSize(FontSize size);
 
     /// Get font size config
@@ -298,8 +384,8 @@ class Theme
     /// Get the current monospace font (based on font size setting); falls back to regular if unset
     [[nodiscard]] auto monospaceFont() const -> ImFont*;
 
-    /// Get a smaller font for chart axis labels and legends (one size below current)
-    [[nodiscard]] auto smallerFont() const -> ImFont*;
+    /// Get the font for chart axis labels, legends and hints (see chartFontSize())
+    [[nodiscard]] auto chartFont() const -> ImFont*;
 
     /// Get the title font (Sixtyfour pixel font for custom title bar)
     [[nodiscard]] auto titleFont() const -> ImFont*;
@@ -309,6 +395,21 @@ class Theme
 
     /// Register the title-bar display font (called by UILayer during initialization).
     void registerTitleFont(ImFont* font);
+
+    /// Forget every registered font, before the font atlas is cleared to be rebuilt (#943).
+    ///
+    /// The title and chrome-icon fonts are optional -- re-registered only if their files load -- so
+    /// without this a failed reload would leave them pointing into the freed atlas. Also advances
+    /// fontGeneration().
+    void clearFontRegistrations();
+
+    /// Counts font atlas rebuilds. A cache keyed on an ImFont* must also compare this: a rebuilt
+    /// atlas can hand out a font at the address the old one had, so the pointer alone cannot tell
+    /// the fonts apart (#943).
+    [[nodiscard]] auto fontGeneration() const -> std::uint64_t
+    {
+        return m_FontGeneration;
+    }
 
     /// Register the fixed-size icon font used for the title bar's window and app controls.
     ///
@@ -347,8 +448,14 @@ class Theme
     std::vector<ColorScheme> m_LoadedSchemes;
     std::size_t m_CurrentThemeIndex = 0;
     std::optional<std::size_t> m_PendingThemeIndex; // Deferred theme change (applied next frame)
+    // Set when a font-size or display-scale change needs the style rebuilt; flushed at the next
+    // frame boundary by applyPendingStyleChanges().
+    bool m_StyleDirty = false;
 
     FontSize m_CurrentFontSize = FontSize::Medium;
+
+    // Display density, 1.0 at 96 DPI. Defaults to 1.0 so the style is sane before the window exists.
+    float m_DisplayScale = 1.0F;
     std::array<FontSizeConfig, FONT_SIZE_COUNT> m_FontSizes;
 
     // Pre-baked fonts for each size preset (regular and large variants)
@@ -363,6 +470,7 @@ class Theme
     ImFont* m_ChromeIconFont = nullptr; // Fixed-size Font Awesome for title-bar controls
     // Pixel size m_ChromeIconFont was rasterized at; overwritten by registerChromeIconFont().
     float m_ChromeIconFontSizePx = 18.0F;
+    std::uint64_t m_FontGeneration = 0; // see fontGeneration()
     // Title bar height in pixels. Defaults to 24pt at a 1.0 display scale so geometry is usable
     // before fonts load; overwritten by setTitleBarHeightPx().
     float m_TitleBarHeightPx = 32.0F;
@@ -378,6 +486,13 @@ constexpr ImVec4 hexToImVec4(std::uint32_t hex)
             static_cast<float>((hex >> 8) & 0xFF) / 255.0F,
             static_cast<float>(hex & 0xFF) / 255.0F,
             1.0F};
+}
+
+/// One em of chart text (axis labels, legends, hints) at the current preset and display scale. Call
+/// it outside a PlotFontGuard: it scales the body em, ImGui::GetFontSize(), by chartFontScale().
+[[nodiscard]] inline auto chartEmPx() -> float
+{
+    return ImGui::GetFontSize() * chartFontScale(Theme::get().currentFontSize());
 }
 
 /// Return a copy of a color with a different alpha value.

@@ -175,6 +175,13 @@ class MockProcessProbe : public Platform::IProcessProbe
         return *this;
     }
 
+    /// When the network counters were read (ProcessCounters::netSampleTimeNs), for a probe that caches them.
+    MockProcessProbe& withNetworkSampleTime(int32_t pid, uint64_t sampleTimeNs)
+    {
+        findOrCreateProcess(pid, [sampleTimeNs](Platform::ProcessCounters& c) { c.netSampleTimeNs = sampleTimeNs; });
+        return *this;
+    }
+
     MockProcessProbe& withIoCounters(int32_t pid, uint64_t readBytes, uint64_t writeBytes)
     {
         findOrCreateProcess(pid,
@@ -448,37 +455,42 @@ class MockProcessActions : public Platform::IProcessActions
         return m_Capabilities;
     }
 
-    [[nodiscard]] Platform::ProcessActionResult terminate(int32_t pid) override
+    [[nodiscard]] Platform::ProcessActionResult terminate(const Platform::ProcessTarget& target) override
     {
-        m_LastTerminatePid = pid;
+        m_LastTerminatePid = target.pid;
+        m_LastTarget = target;
         ++m_TerminateCount;
         return m_TerminateResult;
     }
 
-    [[nodiscard]] Platform::ProcessActionResult kill(int32_t pid) override
+    [[nodiscard]] Platform::ProcessActionResult kill(const Platform::ProcessTarget& target) override
     {
-        m_LastKillPid = pid;
+        m_LastKillPid = target.pid;
+        m_LastTarget = target;
         ++m_KillCount;
         return m_KillResult;
     }
 
-    [[nodiscard]] Platform::ProcessActionResult stop(int32_t pid) override
+    [[nodiscard]] Platform::ProcessActionResult stop(const Platform::ProcessTarget& target) override
     {
-        m_LastStopPid = pid;
+        m_LastStopPid = target.pid;
+        m_LastTarget = target;
         ++m_StopCount;
         return m_StopResult;
     }
 
-    [[nodiscard]] Platform::ProcessActionResult resume(int32_t pid) override
+    [[nodiscard]] Platform::ProcessActionResult resume(const Platform::ProcessTarget& target) override
     {
-        m_LastResumePid = pid;
+        m_LastResumePid = target.pid;
+        m_LastTarget = target;
         ++m_ResumeCount;
         return m_ResumeResult;
     }
 
-    [[nodiscard]] Platform::ProcessActionResult setPriority(int32_t pid, int32_t nice) override
+    [[nodiscard]] Platform::ProcessActionResult setPriority(const Platform::ProcessTarget& target, int32_t nice) override
     {
-        m_LastSetPriorityPid = pid;
+        m_LastSetPriorityPid = target.pid;
+        m_LastTarget = target;
         m_LastSetPriorityNice = nice;
         ++m_SetPriorityCount;
         return m_SetPriorityResult;
@@ -507,6 +519,11 @@ class MockProcessActions : public Platform::IProcessActions
     [[nodiscard]] int32_t lastSetPriorityNice() const
     {
         return m_LastSetPriorityNice;
+    }
+    /// Target passed to whichever action was called most recently.
+    [[nodiscard]] Platform::ProcessTarget lastTarget() const
+    {
+        return m_LastTarget;
     }
 
     [[nodiscard]] int terminateCount() const
@@ -544,6 +561,7 @@ class MockProcessActions : public Platform::IProcessActions
     int32_t m_LastResumePid = 0;
     int32_t m_LastSetPriorityPid = 0;
     int32_t m_LastSetPriorityNice = 0;
+    Platform::ProcessTarget m_LastTarget;
 
     int m_TerminateCount = 0;
     int m_KillCount = 0;

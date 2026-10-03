@@ -639,6 +639,43 @@ TEST_F(UserConfigSaveLoadFixture, ShowPrivilegeNoticeTrueIsSavedAndLoaded)
     EXPECT_TRUE(config.settings().showPrivilegeNotice);
 }
 
+// ========== Process table layout persistence (#952) ==========
+
+TEST(UserSettingsTest, ProcessTableLayoutDefaultsToEmpty)
+{
+    const UserSettings settings;
+    EXPECT_TRUE(settings.processTableLayout.empty());
+}
+
+// The layout is multi-line text with brackets, '=' and '^' in it; it must come back byte for byte,
+// or ImGui restores a different layout from the one that was saved.
+TEST_F(UserConfigSaveLoadFixture, ProcessTableLayoutIsSavedAndLoaded)
+{
+    const std::string layout = "[Table][0xA7EC3B99,3]\n"
+                               "RefScale=11\n"
+                               "Column 0  Width=61 Order=0 ID=0x20E34941\n"
+                               "Column 1  Width=229 Order=2 Sort=0^ ID=0x4637146C\n"
+                               "Column 2  Weight=1.0000 Order=1 ID=0x0B8C089F\n";
+    auto& config = UserConfig::get();
+
+    config.settings().processTableLayout = layout;
+    config.save();
+    config.settings().processTableLayout.clear();
+    config.load();
+    EXPECT_EQ(config.settings().processTableLayout, layout);
+}
+
+TEST_F(UserConfigSaveLoadFixture, EmptyProcessTableLayoutRoundTrips)
+{
+    auto& config = UserConfig::get();
+
+    config.settings().processTableLayout.clear();
+    config.save();
+    config.settings().processTableLayout = "stale";
+    config.load();
+    EXPECT_TRUE(config.settings().processTableLayout.empty());
+}
+
 // ========== chartAntiAliasing Persistence (perf-plan #843 phase 1) ==========
 
 TEST(UserSettingsTest, ChartAntiAliasingDefaultsToTrue)

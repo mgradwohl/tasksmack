@@ -5,6 +5,7 @@
 #include "Numeric.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/IGPUProbe.h"
+#include "SamplingConfig.h"
 
 #include <spdlog/spdlog.h>
 
@@ -53,12 +54,13 @@ GPUModel::GPUModel(std::unique_ptr<Platform::IGPUProbe> probe)
     try
     {
         m_GPUInfo = m_Probe->enumerateGPUs();
+        m_GPUInfoKnown = true;
         spdlog::info("GPUModel: Detected {} GPU(s)", m_GPUInfo.size());
 
         // Initialize history buffers for each GPU
         for (const auto& info : m_GPUInfo)
         {
-            m_Histories.emplace(info.id, History<GPUSnapshot, GPU_HISTORY_CAPACITY>{});
+            m_Histories.emplace(info.id, HistoryBuffer<GPUSnapshot>{Sampling::historyCapacityForSeconds(m_MaxHistorySeconds)});
         }
     }
     catch (const std::exception& e)
@@ -68,6 +70,11 @@ GPUModel::GPUModel(std::unique_ptr<Platform::IGPUProbe> probe)
 }
 
 void GPUModel::refresh()
+{
+    refreshAt(std::chrono::steady_clock::now());
+}
+
+void GPUModel::refreshAt(std::chrono::steady_clock::time_point now)
 {
     if (!m_Probe)
     {
@@ -82,7 +89,7 @@ void GPUModel::refresh()
             const std::scoped_lock probeLock(m_ProbeMutex);
             currentCounters = m_Probe->readGPUCounters();
         }
-        auto currentTime = std::chrono::steady_clock::now();
+        const auto currentTime = now;
 
         // Calculate time delta
         auto timeDelta = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - m_PrevSampleTime);
@@ -114,22 +121,15 @@ void GPUModel::refresh()
             const double nowSec = std::chrono::duration<double>(currentTime.time_since_epoch()).count();
             m_HistoryTimestamps.push_back(nowSec);
 
-            // Trim timestamps to match history capacity
-            if (m_HistoryTimestamps.size() > GPU_HISTORY_CAPACITY)
-            {
-                m_HistoryTimestamps.erase(m_HistoryTimestamps.begin(),
-                                          m_HistoryTimestamps.begin() +
-                                              static_cast<std::ptrdiff_t>(m_HistoryTimestamps.size() - GPU_HISTORY_CAPACITY));
-            }
-
             // Push to history under lock protection — stamp capture time first so that
             // per-GPU timestamps stay aligned with each GPU's own history entries.
             for (auto& [gpuId, snapshot] : m_Snapshots)
             {
                 snapshot.captureTimeSec = nowSec;
-                auto histIt = m_Histories.try_emplace(gpuId).first;
+                auto histIt = m_Histories.try_emplace(gpuId, Sampling::historyCapacityForSeconds(m_MaxHistorySeconds)).first;
                 histIt->second.push(snapshot);
             }
+            trimHistory(nowSec);
             publish();
 
             m_PrevCounters.clear();
@@ -144,6 +144,69 @@ void GPUModel::refresh()
     catch (const std::exception& e)
     {
         spdlog::error("GPUModel::refresh: {}", e.what());
+    }
+}
+
+void GPUModel::setMaxHistorySeconds(double seconds)
+{
+    const std::unique_lock lock(m_Mutex);
+    m_MaxHistorySeconds = Sampling::clampHistorySeconds(seconds);
+    applyHistoryCapacity();
+    if (!m_HistoryTimestamps.empty())
+    {
+        trimHistory(m_HistoryTimestamps.back());
+    }
+}
+
+double GPUModel::maxHistorySeconds() const
+{
+    const std::shared_lock lock(m_Mutex);
+    return m_MaxHistorySeconds;
+}
+
+void GPUModel::applyHistoryCapacity()
+{
+    // Sized for the window at the fastest supported refresh cadence; trimHistory() governs
+    // actual retention, as in SystemModel and StorageModel.
+    const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
+    for (auto& [gpuId, history] : m_Histories)
+    {
+        history.setCapacity(capacity);
+    }
+}
+
+void GPUModel::trimHistory(double nowSeconds)
+{
+    const double cutoff = nowSeconds - m_MaxHistorySeconds;
+    // Like HistoryUtils::discardBefore, keep the newest sample before the cutoff, so the charts'
+    // lines run off the window's left edge instead of leaving a strip there (#1016).
+    // Only while a newer sample remains: an anchor with nothing after it would be drawn connected to
+    // the next sample across the gap.
+    auto keepFrom = std::ranges::lower_bound(m_HistoryTimestamps, cutoff);
+    if (keepFrom != m_HistoryTimestamps.begin() && keepFrom != m_HistoryTimestamps.end() &&
+        HistoryUtils::keepTrimAnchor(*(keepFrom - 1), *keepFrom, cutoff, m_HistoryTimestamps.back()))
+    {
+        --keepFrom;
+    }
+    m_HistoryTimestamps.erase(m_HistoryTimestamps.begin(), keepFrom);
+
+    // Each GPU has its own timestamps (a GPU missing from a sample has no entry for it), so
+    // trim each ring by its own capture times rather than by one shared count.
+    for (auto& [gpuId, history] : m_Histories)
+    {
+        std::size_t staleCount = 0;
+        while (staleCount < history.size() && history.ref(staleCount).captureTimeSec < cutoff)
+        {
+            ++staleCount;
+        }
+        // A GPU absent for the whole window has no sample after the cutoff: drop them all, rather than
+        // keep one that would later be joined to its next sample across the absence.
+        const bool keepAnchor = staleCount > 0 && staleCount < history.size() &&
+                                HistoryUtils::keepTrimAnchor(history.ref(staleCount - 1).captureTimeSec,
+                                                             history.ref(staleCount).captureTimeSec,
+                                                             cutoff,
+                                                             history.ref(history.size() - 1).captureTimeSec);
+        history.discardFront(keepAnchor ? staleCount - 1 : staleCount);
     }
 }
 
@@ -168,6 +231,7 @@ void GPUModel::publish()
     // the version past what was actually published.
     publication->version = m_PublicationVersion + 1;
     publication->gpuInfo = m_GPUInfo;
+    publication->gpuInfoKnown = m_GPUInfoKnown;
     publication->capabilities = m_Capabilities;
     publication->snapshots.reserve(m_Snapshots.size());
     for (const auto& [gpuId, snapshot] : m_Snapshots)
@@ -177,8 +241,9 @@ void GPUModel::publish()
     for (const auto& [gpuId, history] : m_Histories)
     {
         auto& publishedHistory = publication->histories[gpuId];
-        publishedHistory.snapshots.reserve(history.size());
         publishedHistory.timestamps.reserve(history.size());
+        publishedHistory.memoryUsedBytes.reserve(history.size());
+        publishedHistory.memoryTotalBytes.reserve(history.size());
         publishedHistory.utilization.reserve(history.size());
         publishedHistory.memoryPercent.reserve(history.size());
         publishedHistory.gpuClock.reserve(history.size());
@@ -189,9 +254,11 @@ void GPUModel::publish()
         publishedHistory.fanSpeed.reserve(history.size());
         for (std::size_t index = 0; index < history.size(); ++index)
         {
-            const auto sample = history[index];
-            publishedHistory.snapshots.push_back(sample);
+            // ref(), not operator[]: a reference, so no GPUSnapshot (and its strings) is copied.
+            const auto& sample = history.ref(index);
             publishedHistory.timestamps.push_back(sample.captureTimeSec);
+            publishedHistory.memoryUsedBytes.push_back(sample.memoryUsedBytes);
+            publishedHistory.memoryTotalBytes.push_back(sample.memoryTotalBytes);
             publishedHistory.utilization.push_back(static_cast<float>(sample.utilizationPercent));
             publishedHistory.memoryPercent.push_back(static_cast<float>(sample.memoryUsedPercent));
             publishedHistory.gpuClock.push_back(static_cast<float>(sample.gpuClockMHz));

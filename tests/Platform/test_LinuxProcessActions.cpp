@@ -5,16 +5,38 @@
 /// of process actions. We avoid actually terminating processes to keep
 /// tests safe and non-destructive.
 
+#include "Platform/IProcessActions.h"
 #include "Platform/Linux/LinuxProcessActions.h"
+#include "Platform/Linux/ProcStatStartTime.h"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cerrno>
+#include <cstdint>
+#include <fstream>
+#include <iterator>
+#include <string>
+
+// NOLINTNEXTLINE(modernize-deprecated-headers) - POSIX signal.h provides kill(), csignal does not
+#include <signal.h>
+#include <sys/resource.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 namespace Platform
 {
 namespace
 {
+
+/// This test process as an action target, with the start time read the same way the probe reads it.
+[[nodiscard]] ProcessTarget ownTarget()
+{
+    std::ifstream stat("/proc/self/stat");
+    const std::string line((std::istreambuf_iterator<char>(stat)), std::istreambuf_iterator<char>());
+    return {.pid = static_cast<std::int32_t>(getpid()), .startTimeTicks = ProcStat::parseStartTime(line).value_or(0)};
+}
 
 // =============================================================================
 // Construction and Capabilities
@@ -48,7 +70,7 @@ TEST(LinuxProcessActionsTest, TerminateNonExistentProcess)
 
     // PID 99999 is very unlikely to exist
     int32_t nonExistentPid = 99999;
-    auto result = actions.terminate(nonExistentPid);
+    const auto result = actions.terminate({.pid = nonExistentPid, .startTimeTicks = 1});
 
     // Should fail
     EXPECT_FALSE(result.success);
@@ -61,7 +83,7 @@ TEST(LinuxProcessActionsTest, KillNonExistentProcess)
 
     // PID 99999 is very unlikely to exist
     int32_t nonExistentPid = 99999;
-    auto result = actions.kill(nonExistentPid);
+    const auto result = actions.kill({.pid = nonExistentPid, .startTimeTicks = 1});
 
     // Should fail
     EXPECT_FALSE(result.success);
@@ -74,7 +96,7 @@ TEST(LinuxProcessActionsTest, StopNonExistentProcess)
 
     // PID 99999 is very unlikely to exist
     int32_t nonExistentPid = 99999;
-    auto result = actions.stop(nonExistentPid);
+    const auto result = actions.stop({.pid = nonExistentPid, .startTimeTicks = 1});
 
     // Should fail
     EXPECT_FALSE(result.success);
@@ -87,7 +109,7 @@ TEST(LinuxProcessActionsTest, ResumeNonExistentProcess)
 
     // PID 99999 is very unlikely to exist
     int32_t nonExistentPid = 99999;
-    auto result = actions.resume(nonExistentPid);
+    const auto result = actions.resume({.pid = nonExistentPid, .startTimeTicks = 1});
 
     // Should fail
     EXPECT_FALSE(result.success);
@@ -99,12 +121,12 @@ TEST(LinuxProcessActionsTest, TerminateInvalidPid)
     LinuxProcessActions actions;
 
     // pid=0 is invalid (sendSignal() guards pid <= 0)
-    auto resultZero = actions.terminate(0);
+    const auto resultZero = actions.terminate({.pid = 0, .startTimeTicks = 1});
     EXPECT_FALSE(resultZero.success);
     EXPECT_GT(resultZero.errorMessage.size(), 0ULL);
 
     // Negative pid is also invalid
-    auto resultNeg = actions.terminate(-1);
+    const auto resultNeg = actions.terminate({.pid = -1, .startTimeTicks = 1});
     EXPECT_FALSE(resultNeg.success);
     EXPECT_GT(resultNeg.errorMessage.size(), 0ULL);
 }
@@ -113,11 +135,11 @@ TEST(LinuxProcessActionsTest, KillInvalidPid)
 {
     LinuxProcessActions actions;
 
-    auto resultZero = actions.kill(0);
+    const auto resultZero = actions.kill({.pid = 0, .startTimeTicks = 1});
     EXPECT_FALSE(resultZero.success);
     EXPECT_GT(resultZero.errorMessage.size(), 0ULL);
 
-    auto resultNeg = actions.kill(-1);
+    const auto resultNeg = actions.kill({.pid = -1, .startTimeTicks = 1});
     EXPECT_FALSE(resultNeg.success);
     EXPECT_GT(resultNeg.errorMessage.size(), 0ULL);
 }
@@ -126,11 +148,11 @@ TEST(LinuxProcessActionsTest, StopInvalidPid)
 {
     LinuxProcessActions actions;
 
-    auto resultZero = actions.stop(0);
+    const auto resultZero = actions.stop({.pid = 0, .startTimeTicks = 1});
     EXPECT_FALSE(resultZero.success);
     EXPECT_GT(resultZero.errorMessage.size(), 0ULL);
 
-    auto resultNeg = actions.stop(-1);
+    const auto resultNeg = actions.stop({.pid = -1, .startTimeTicks = 1});
     EXPECT_FALSE(resultNeg.success);
     EXPECT_GT(resultNeg.errorMessage.size(), 0ULL);
 }
@@ -139,11 +161,11 @@ TEST(LinuxProcessActionsTest, ResumeInvalidPid)
 {
     LinuxProcessActions actions;
 
-    auto resultZero = actions.resume(0);
+    const auto resultZero = actions.resume({.pid = 0, .startTimeTicks = 1});
     EXPECT_FALSE(resultZero.success);
     EXPECT_GT(resultZero.errorMessage.size(), 0ULL);
 
-    auto resultNeg = actions.resume(-1);
+    const auto resultNeg = actions.resume({.pid = -1, .startTimeTicks = 1});
     EXPECT_FALSE(resultNeg.success);
     EXPECT_GT(resultNeg.errorMessage.size(), 0ULL);
 }
@@ -158,7 +180,7 @@ TEST(LinuxProcessActionsTest, SetPriorityNonExistentProcess)
 
     // PID 99999 is very unlikely to exist
     int32_t nonExistentPid = 99999;
-    auto result = actions.setPriority(nonExistentPid, 0);
+    const auto result = actions.setPriority({.pid = nonExistentPid, .startTimeTicks = 1}, 0);
 
     // Should fail
     EXPECT_FALSE(result.success);
@@ -170,11 +192,11 @@ TEST(LinuxProcessActionsTest, SetPriorityInvalidPid)
     LinuxProcessActions actions;
 
     // Test with invalid PIDs
-    auto result1 = actions.setPriority(0, 0);
+    const auto result1 = actions.setPriority({.pid = 0, .startTimeTicks = 1}, 0);
     EXPECT_FALSE(result1.success);
     EXPECT_GT(result1.errorMessage.size(), 0ULL);
 
-    auto result2 = actions.setPriority(-1, 0);
+    const auto result2 = actions.setPriority({.pid = -1, .startTimeTicks = 1}, 0);
     EXPECT_FALSE(result2.success);
     EXPECT_GT(result2.errorMessage.size(), 0ULL);
 }
@@ -188,7 +210,7 @@ TEST(LinuxProcessActionsTest, SetPriorityOwnProcess)
     auto ownPid = static_cast<int32_t>(getpid());
 
     // Lowering priority (raising nice value) should work without root
-    auto result = actions.setPriority(ownPid, 10);
+    const auto result = actions.setPriority(ownTarget(), 10);
 
     // This may succeed or fail depending on current priority
     // If we're already at a high nice value, this should succeed
@@ -198,7 +220,7 @@ TEST(LinuxProcessActionsTest, SetPriorityOwnProcess)
     if (result.success)
     {
         // Attempt to reset to 0 (may fail without privileges - see note above)
-        auto resetResult = actions.setPriority(ownPid, 0);
+        const auto resetResult = actions.setPriority(ownTarget(), 0);
         if (!resetResult.success)
         {
             // Log warning but don't fail - lowering nice requires privileges
@@ -219,8 +241,8 @@ TEST(LinuxProcessActionsTest, SetPriorityClampsBoundaryValues)
 
     // Test extreme values - they should be clamped internally
     // These may fail due to permissions, but shouldn't crash
-    auto result1 = actions.setPriority(ownPid, -100); // Way below -20
-    auto result2 = actions.setPriority(ownPid, 100);  // Way above 19
+    const auto result1 = actions.setPriority(ownTarget(), -100); // Way below -20
+    const auto result2 = actions.setPriority(ownTarget(), 100);  // Way above 19
 
     // Either succeeds or has an error message, but no crash
     if (!result1.success)
@@ -236,7 +258,7 @@ TEST(LinuxProcessActionsTest, SetPriorityClampsBoundaryValues)
     // Note: This may fail without root privileges (see SetPriorityOwnProcess note).
     if (result2.success)
     {
-        auto resetResult = actions.setPriority(ownPid, 0);
+        const auto resetResult = actions.setPriority(ownTarget(), 0);
         if (!resetResult.success)
         {
             GTEST_LOG_(WARNING) << "Test cleanup: Failed to reset priority for PID " << ownPid << ": " << resetResult.errorMessage;
@@ -251,14 +273,143 @@ TEST(LinuxProcessActionsTest, SetPriorityClampsBoundaryValues)
 TEST(LinuxProcessActionsTest, ResumeOwnProcess_Succeeds)
 {
     // Send SIGCONT to our own process - safe because it's a no-op on a running process
-    // but exercises the sendSignal() success path (lines ~114-116 in LinuxProcessActions.cpp).
+    // but exercises the whole sendSignal() success path: pidfd, identity check, send.
+    // (See also the child-process tests below, which check the refusal path leaves a process alone.)
     LinuxProcessActions actions;
-    auto ownPid = static_cast<int32_t>(getpid());
 
-    auto result = actions.resume(ownPid);
+    const auto result = actions.resume(ownTarget());
 
     EXPECT_TRUE(result.success);
     EXPECT_TRUE(result.errorMessage.empty());
+}
+
+// =============================================================================
+// Identity (#973), against a real child process that only waits to be killed.
+// =============================================================================
+
+/// A forked child that sleeps until signalled, killed and reaped on scope exit if still running.
+class SleepingChild
+{
+  public:
+    SleepingChild() : m_Pid(fork())
+    {
+        if (m_Pid == 0)
+        {
+            for (;;)
+            {
+                pause();
+            }
+        }
+    }
+    SleepingChild(const SleepingChild&) = delete;
+    SleepingChild& operator=(const SleepingChild&) = delete;
+    SleepingChild(SleepingChild&&) = delete;
+    SleepingChild& operator=(SleepingChild&&) = delete;
+    ~SleepingChild()
+    {
+        if (m_Pid > 0 && !m_Reaped)
+        {
+            ::kill(m_Pid, SIGKILL);
+            waitpid(m_Pid, nullptr, 0);
+        }
+    }
+
+    [[nodiscard]] bool started() const
+    {
+        return m_Pid > 0;
+    }
+    [[nodiscard]] bool alive()
+    {
+        // NOLINTNEXTLINE(misc-include-cleaner) - WNOHANG is provided by <sys/wait.h>
+        return !reap(WNOHANG);
+    }
+    [[nodiscard]] bool exitsSoon()
+    {
+        for (int attempt = 0; attempt < 500; ++attempt)
+        {
+            // NOLINTNEXTLINE(misc-include-cleaner) - WNOHANG is provided by <sys/wait.h>
+            if (reap(WNOHANG))
+            {
+                return true;
+            }
+            usleep(10'000);
+        }
+        return false;
+    }
+    [[nodiscard]] ProcessTarget target() const
+    {
+        std::ifstream stat("/proc/" + std::to_string(m_Pid) + "/stat");
+        const std::string line((std::istreambuf_iterator<char>(stat)), std::istreambuf_iterator<char>());
+        return {.pid = static_cast<std::int32_t>(m_Pid), .startTimeTicks = ProcStat::parseStartTime(line).value_or(0)};
+    }
+
+  private:
+    bool reap(int options)
+    {
+        if (!m_Reaped && waitpid(m_Pid, nullptr, options) == m_Pid)
+        {
+            m_Reaped = true;
+        }
+        return m_Reaped;
+    }
+
+    pid_t m_Pid = -1;
+    bool m_Reaped = false;
+};
+
+TEST(LinuxProcessActionsTest, KillWithADifferentStartTimeLeavesTheProcessRunning)
+{
+    SleepingChild child;
+    ASSERT_TRUE(child.started());
+    ProcessTarget reused = child.target();
+    ASSERT_NE(reused.startTimeTicks, 0ULL);
+    reused.startTimeTicks += 1; // Same PID, a different process as far as the action can tell.
+
+    LinuxProcessActions actions;
+    const auto result = actions.kill(reused);
+
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.errorMessage.find("different process"), std::string::npos) << result.errorMessage;
+    EXPECT_TRUE(child.alive());
+}
+
+TEST(LinuxProcessActionsTest, SetPriorityReachesTheProcessOnlyWhenTheStartTimeMatches)
+{
+    // Raising niceness needs no privilege, so this runs anywhere. The refused call must leave the
+    // child's niceness alone; the matching call must change it, which also exercises the check
+    // made after setpriority(2) that the target was not reaped in between.
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+    const ProcessTarget target = child.target();
+    ASSERT_NE(target.startTimeTicks, 0ULL);
+    errno = 0;
+    const int before = getpriority(PRIO_PROCESS, static_cast<id_t>(target.pid));
+    ASSERT_EQ(errno, 0);
+    const int raised = std::min(before + 5, 19);
+    ASSERT_NE(raised, before) << "child already at the lowest priority";
+
+    LinuxProcessActions actions;
+    ProcessTarget reused = target;
+    reused.startTimeTicks += 1;
+    const auto refused = actions.setPriority(reused, raised);
+    EXPECT_FALSE(refused.success);
+    EXPECT_EQ(getpriority(PRIO_PROCESS, static_cast<id_t>(target.pid)), before);
+
+    const auto applied = actions.setPriority(target, raised);
+    EXPECT_TRUE(applied.success) << applied.errorMessage;
+    EXPECT_EQ(getpriority(PRIO_PROCESS, static_cast<id_t>(target.pid)), raised);
+}
+
+TEST(LinuxProcessActionsTest, KillWithTheMatchingStartTimeEndsTheProcess)
+{
+    SleepingChild child;
+    ASSERT_TRUE(child.started());
+
+    LinuxProcessActions actions;
+    const auto result = actions.kill(child.target());
+
+    EXPECT_TRUE(result.success) << result.errorMessage;
+    EXPECT_TRUE(child.exitsSoon());
 }
 
 } // namespace

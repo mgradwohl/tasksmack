@@ -5,18 +5,24 @@
 #include "Core/Event.h"
 #include "Core/Layer.h"
 #include "Domain/ProcessSnapshot.h"
+#include "FontSizeChange.h"
+#include "ShellMetrics.h"
+#include "TitleBarGeometry.h"
 #include "TitleBarLayer.h"
+#include "UI/DpiScale.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/RenderMetrics.h"
 #include "UI/Theme.h"
 #include "UserConfig.h"
 
+#include <SDL3/SDL.h>
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 
-#include <chrono>
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <string>
 #include <utility>
 
@@ -39,8 +45,18 @@ void ShellLayer::onAttach()
     config.load();
     config.applyToApplication();
 
+    // The window may not be made smaller than the base minimum at this display's scale. Set here
+    // because the shell is always present: TitleBarLayer widens the minimum to cover its own
+    // content, but it is not created when native decorations are in use (#745), and without this
+    // the window would have no SDL-level minimum at all in that mode. UILayer attaches first, so
+    // the display scale is already known (#970).
+    applyBaseMinimumWindowSize();
+
     // Initialize panels
     m_Tabs.onAttach();
+
+    // Give ImGui back the Processes table's saved column layout before it is first drawn (#952).
+    ProcessesPanel::restoreTableLayout(config.settings().processTableLayout);
 
     // Share the process model with panels that render system-level aggregates
     if (auto* processModel = m_ProcessesPanel.processModel(); processModel != nullptr)
@@ -60,7 +76,7 @@ void ShellLayer::onAttach()
     // so the system tab label is built once here.
     m_CachedSystemTabLabel = std::string(ICON_FA_COMPUTER) + "  " + m_SystemMetricsPanel.hostname();
     m_CachedDetailsTabLabel = std::string(ICON_FA_CIRCLE_INFO) + "  Select a process";
-    m_CachedLabelPid = -1;
+    m_CachedLabelText.clear();
 
     // Cache privilege status and trigger the startup notice if needed.
     // Elevation state is constant for process lifetime; cache once at startup.
@@ -70,6 +86,23 @@ void ShellLayer::onAttach()
     if (m_HasReducedPrivileges && UserConfig::get().settings().showPrivilegeNotice)
     {
         m_PendingPrivilegeNotice = true;
+    }
+
+    // The details pane draws only the series the process probe can fill (#1028, #1035). The
+    // capabilities are fixed for the probe's lifetime, so once is enough.
+    m_ProcessDetailsPanel.setProcessCapabilities(m_ProcessesPanel.processCapabilities());
+}
+
+void ShellLayer::applyBaseMinimumWindowSize()
+{
+    m_MinimumSizeDisplayScale = UI::Theme::get().displayScale();
+    if (SDL_Window* sdlWindow = Core::Application::get().getWindow().getHandle(); sdlWindow != nullptr)
+    {
+        const WindowMinimumSize baseMinimum = computeMinimumWindowSize(m_MinimumSizeDisplayScale, 0.0F);
+        if (!SDL_SetWindowMinimumSize(sdlWindow, baseMinimum.width, baseMinimum.height))
+        {
+            spdlog::warn("SDL_SetWindowMinimumSize({}, {}) failed: {}", baseMinimum.width, baseMinimum.height, SDL_GetError());
+        }
     }
 }
 
@@ -95,6 +128,13 @@ void ShellLayer::onDetach()
 
     settings.windowMaximized = window.isMaximized();
 
+    // Column widths, order and sort of the Processes table (#952). Empty means the table was never
+    // drawn this session, so whatever was loaded is kept.
+    if (std::string layout = m_ProcessesPanel.captureTableLayout(); !layout.empty())
+    {
+        settings.processTableLayout = std::move(layout);
+    }
+
     config.save();
 
     m_Tabs.onDetach();
@@ -103,23 +143,25 @@ void ShellLayer::onDetach()
 
 void ShellLayer::onEvent(Core::Event& event)
 {
-    // Handle app-wide coordination events
-    Core::EventDispatcher dispatcher(event);
-    dispatcher.dispatch<Core::RefreshRateChangedEvent>(
-        [this](Core::RefreshRateChangedEvent& e)
-        {
-            const auto interval = std::chrono::milliseconds(e.getIntervalMs());
-            m_ProcessesPanel.setSamplingInterval(interval);
-            m_SystemMetricsPanel.setSamplingInterval(interval);
-            return false; // Do not consume; allow others to react as well
-        });
-
-    // Forward events to all panels
+    // Forward events to all panels; each handles the settings events it needs itself
     m_Tabs.onEvent(event);
 }
 
 void ShellLayer::onUpdate(float deltaTime)
 {
+    // Publish the loaded settings on the first update, after all layers are stacked, through the
+    // same events the Settings dialog raises when they change (#1079). Panels start from the
+    // SamplingConfig defaults and take their configured values from these.
+    if (m_PendingStartupSettings)
+    {
+        m_PendingStartupSettings = false;
+        const auto& settings = UserConfig::get().settings();
+        Core::RefreshRateChangedEvent refreshEvent(settings.refreshIntervalMs);
+        Core::Application::get().raiseEvent(refreshEvent);
+        Core::HistoryDurationChangedEvent historyEvent(settings.maxHistorySeconds);
+        Core::Application::get().raiseEvent(historyEvent);
+    }
+
     // Dispatch the startup privilege notice on the first update, after all layers are stacked.
     if (m_PendingPrivilegeNotice)
     {
@@ -129,6 +171,15 @@ void ShellLayer::onUpdate(float deltaTime)
     }
 
     m_FpsCounter.update(deltaTime);
+
+    // With native decorations, follow a display-scale change (#943). Not with the borderless title
+    // bar: TitleBarLayer re-derives a wider minimum from the scale every frame, and re-applying the
+    // base here would overwrite it.
+    if (!Core::Application::get().getWindow().isBorderless() &&
+        UI::displayScaleChanged(m_MinimumSizeDisplayScale, UI::Theme::get().displayScale()))
+    {
+        applyBaseMinimumWindowSize();
+    }
 
     // Update panels
     m_Tabs.onUpdate(deltaTime);
@@ -180,25 +231,31 @@ void ShellLayer::onUpdate(float deltaTime)
     }
     m_ProcessDetailsPanel.updateWithSnapshot(selectedSnapshot, selectedSnapshotVersion, deltaTime);
 
-    // Update the cached details tab label only when the selected process changes.
-    // Rebuilding on every frame would allocate three std::string objects per frame at 60 fps.
-    if (selectedPid != m_CachedLabelPid)
+    // Rebuild the cached details tab label only when its text actually changes. Rebuilding on
+    // every frame would allocate three std::string objects per frame at 60 fps; comparing the
+    // panel's label against the cached text allocates nothing.
+    //
+    // Keyed on the text itself, not on the selection's identity. Identity is the wrong key: the
+    // label also changes when nothing about the selection does -- most simply when the selected
+    // process's first snapshot arrives a frame after the selection, which used to leave the tab
+    // titled "Select a process" for as long as that process stayed selected.
+    if (const std::string& labelText = m_ProcessDetailsPanel.tabLabel(); labelText != m_CachedLabelText)
     {
-        m_CachedLabelPid = selectedPid;
-        m_CachedDetailsTabLabel = std::string(ICON_FA_CIRCLE_INFO) + "  " + m_ProcessDetailsPanel.tabLabel();
+        m_CachedLabelText = labelText;
+        m_CachedDetailsTabLabel = std::string(ICON_FA_CIRCLE_INFO) + "  " + labelText;
     }
 
     // Handle keyboard shortcuts for font size
     const ImGuiIO& io = ImGui::GetIO();
     if (io.KeyCtrl && !io.KeyShift && !io.KeyAlt)
     {
-        if (ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd))
+        // Theme steps to the next preset; changeFontSize() then saves it and raises the event (#1076).
+        auto& theme = UI::Theme::get();
+        const bool grow = ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd);
+        const bool shrink = ImGui::IsKeyPressed(ImGuiKey_Minus) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract);
+        if ((grow && theme.increaseFontSize()) || (shrink && theme.decreaseFontSize()))
         {
-            UI::Theme::get().increaseFontSize();
-        }
-        else if (ImGui::IsKeyPressed(ImGuiKey_Minus) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract))
-        {
-            UI::Theme::get().decreaseFontSize();
+            changeFontSize(theme.currentFontSize());
         }
     }
 
@@ -240,10 +297,14 @@ void ShellLayer::onRender()
     ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - statusBarHeight - titleBarHeight));
     ImGui::SetNextWindowViewport(viewport->ID);
 
+    // Deliberately without ImGuiWindowFlags_NoSavedSettings. A table inherits that flag from its
+    // top-level window, and with it ImGui neither records nor restores the table's column layout --
+    // which is what stopped the Processes table's widths and order surviving a restart (#952).
+    // Nothing of this window's own is persisted as a result: its position and size are set every
+    // frame above, and ImGui's ini file is disabled, so its settings entry only ever lives in memory.
     const ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
                                          ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus |
-                                         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
-                                         ImGuiWindowFlags_NoSavedSettings;
+                                         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0F);
@@ -255,12 +316,14 @@ void ShellLayer::onRender()
 
         renderTabBar();
 
-        // Render content area with padding
-        constexpr float CONTENT_PADDING_H = 12.0F;
-        constexpr float CONTENT_PADDING_V = 4.0F;
+        // Render content area with padding. Authored at the reference configuration and scaled
+        // like the style it overrides, so the gutter keeps its proportion to the text (#971).
+        const float styleScale = UI::Theme::get().styleScale();
+        const float contentPaddingH = ShellMetrics::CONTENT_PADDING_H * styleScale;
+        const float contentPaddingV = ShellMetrics::CONTENT_PADDING_V * styleScale;
 
         // Add padding by using a child window with border that provides internal padding
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(CONTENT_PADDING_H, CONTENT_PADDING_V));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(contentPaddingH, contentPaddingV));
 
         // Let ImGui own child sizing so each panel can consume full available height without
         // shell-level scrollbar reservations that affect non-process tabs.
@@ -284,18 +347,25 @@ void ShellLayer::onRender()
 
 void ShellLayer::renderTabBar()
 {
-    // Add top edge padding for visual balance
-    constexpr float TOP_EDGE_PADDING = 4.0F;
-    ImGui::Dummy(ImVec2(0.0F, TOP_EDGE_PADDING));
+    // Every size here is authored at the reference configuration and scaled like the ImGuiStyle
+    // values around it. As pixel literals pushed over a scaled style they kept one size while the
+    // text they frame grew and shrank: the tabs' padding was more than a line of text at Small and
+    // about half a line at Even Huger (#971).
+    const float styleScale = UI::Theme::get().styleScale();
 
-    // Add left indent to align main tabs with panel tabs below (content area has 12px padding)
-    constexpr float LEFT_INDENT = 12.0F;
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + LEFT_INDENT);
+    // Add top edge padding for visual balance
+    ImGui::Dummy(ImVec2(0.0F, ShellMetrics::TOP_EDGE_PADDING * styleScale));
+
+    // Add left indent to align main tabs with panel tabs below (same as the content area's gutter)
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ShellMetrics::CONTENT_PADDING_H * styleScale));
 
     // Add horizontal padding inside tabs and vertical padding for taller tabs
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(16.0F, 10.0F));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                        ImVec2(ShellMetrics::TAB_PADDING_X * styleScale, ShellMetrics::MAIN_TAB_PADDING_Y * styleScale));
 
-    if (ImGui::BeginTabBar("##MainTabBar", ImGuiTabBarFlags_NoCloseWithMiddleMouseButton | ImGuiTabBarFlags_NoTooltip))
+    if (ImGui::BeginTabBar("##MainTabBar",
+                           ImGuiTabBarFlags_NoCloseWithMiddleMouseButton | ImGuiTabBarFlags_NoTooltip |
+                               ImGuiTabBarFlags_DrawSelectedOverline))
     {
         // Track previous tab to emit change event if selection changes
         const auto* previousTab = &m_Tabs.activeTab();
@@ -353,7 +423,8 @@ void ShellLayer::renderStatusBar() const
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0F); // Show top border
     // Center text vertically within the status bar
     const float verticalPadding = (statusBarHeight - ImGui::GetFontSize()) * 0.5F;
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0F, verticalPadding));
+    const float statusBarPaddingX = ShellMetrics::STATUS_BAR_PADDING_X * UI::Theme::get().styleScale();
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(statusBarPaddingX, verticalPadding));
 
     if (ImGui::Begin("##StatusBar", nullptr, windowFlags))
     {
@@ -397,13 +468,19 @@ void ShellLayer::renderStatusBar() const
             }
         }
 
-        // Right-align FPS display
-        const char* fpsText = "%.1f FPS (%.2f ms)";
-        const float fpsWidth = ImGui::CalcTextSize(fpsText).x + 50.0F; // Extra space for numbers
-        ImGui::SameLine(ImGui::GetWindowWidth() - fpsWidth);
-        ImGui::Text("%.1f FPS (%.2f ms)",
-                    static_cast<double>(m_FpsCounter.displayedFps()),
-                    static_cast<double>(m_FpsCounter.frameTime() * 1000.0F));
+        // Right-align FPS display. The text is formatted first and then measured, so the readout
+        // ends at the status bar's padding at any font and any value. It used to be positioned from
+        // the width of the *format string* plus a fixed 50px, which is not the width of what is
+        // drawn (#971).
+        std::array<char, 48> fpsText{};
+        const auto fpsEnd = std::format_to_n(fpsText.data(),
+                                             fpsText.size() - 1,
+                                             "{:.1f} FPS ({:.2f} ms)",
+                                             static_cast<double>(m_FpsCounter.displayedFps()),
+                                             static_cast<double>(m_FpsCounter.displayedFrameTime() * 1000.0F));
+        const float fpsWidth = ImGui::CalcTextSize(fpsText.data(), fpsEnd.out).x;
+        ImGui::SameLine(ImGui::GetWindowWidth() - statusBarPaddingX - fpsWidth);
+        ImGui::TextUnformatted(fpsText.data(), fpsEnd.out);
     }
     ImGui::End();
     ImGui::PopStyleVar(3);

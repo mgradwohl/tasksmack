@@ -82,9 +82,9 @@ class MockGPUProbe : public Platform::IGPUProbe
 {
   public:
     // Builder pattern methods for fluent API
-    MockGPUProbe& withGPU(const std::string& id, const std::string& name, const std::string& vendor = "Test")
+    MockGPUProbe& withGPU(const std::string& id, const std::string& name, const std::string& vendor = "Test", bool isIntegrated = false)
     {
-        m_GPUInfo.push_back(makeGPUInfo(id, name, vendor));
+        m_GPUInfo.push_back(makeGPUInfo(id, name, vendor, isIntegrated));
         m_Counters.push_back(makeGPUCounters(id));
         return *this;
     }
@@ -100,6 +100,13 @@ class MockGPUProbe : public Platform::IGPUProbe
             }
         }
         m_Counters.push_back(std::move(counters));
+        return *this;
+    }
+
+    /// Stop reporting counters for `gpuId`, as if it had dropped out (it stays enumerated).
+    MockGPUProbe& withoutGPUCounters(const std::string& gpuId)
+    {
+        std::erase_if(m_Counters, [&gpuId](const auto& counter) { return counter.gpuId == gpuId; });
         return *this;
     }
 
@@ -150,10 +157,21 @@ class MockGPUProbe : public Platform::IGPUProbe
         return *this;
     }
 
+    /// Makes enumerateGPUs() throw, simulating a probe that cannot list its devices.
+    MockGPUProbe& withEnumerationThrowing()
+    {
+        m_ThrowOnEnumerate = true;
+        return *this;
+    }
+
     // IGPUProbe interface implementation
     [[nodiscard]] std::vector<Platform::GPUInfo> enumerateGPUs() override
     {
         ++m_EnumerateCount;
+        if (m_ThrowOnEnumerate)
+        {
+            throw std::runtime_error("MockGPUProbe: simulated enumerateGPUs() failure");
+        }
         return m_GPUInfo;
     }
 
@@ -248,6 +266,7 @@ class MockGPUProbe : public Platform::IGPUProbe
     std::vector<Platform::ProcessGPUCounters> m_ProcessCounters;
     Platform::GPUCapabilities m_Capabilities;
     mutable bool m_ThrowOnNextCapabilitiesQuery = false;
+    bool m_ThrowOnEnumerate = false;
 
     std::atomic<std::uint32_t> m_EnumerateCount{0};
     std::atomic<std::uint32_t> m_ReadCountersCount{0};

@@ -6,7 +6,7 @@
 // (lld-link) requires every referenced symbol to be defined.
 //
 // Theme.cpp is excluded from the test build because applyImGuiStyle() and
-// applyPendingTheme() call ImGui/ImPlot runtime APIs that require an active
+// applyPendingStyleChanges() call ImGui/ImPlot runtime APIs that require an active
 // rendering context.  The stubs here satisfy the linker without a context.
 
 #include "UI/Theme.h"

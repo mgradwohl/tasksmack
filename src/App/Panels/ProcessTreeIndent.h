@@ -12,6 +12,17 @@
 namespace App::ProcessTreeIndent
 {
 
+/// Indent per tree level, in ems: 16px at the reference em (32/3 px), the fixed pixel value it
+/// replaces. As pixels it did not follow the font, so at Extra Large on a 175% display a child was
+/// indented by less than half a character and was hard to tell from a root (#971).
+inline constexpr float INDENT_PER_LEVEL_EM = 1.5F;
+
+/// Name text kept visible past the expander however deep the row, in ems: 72px at the reference em.
+/// The point of the reservation is "a recognisable chunk of the process name" (#906, #913); as a
+/// fixed 72px that was about thirteen characters at the reference font and about three at Even
+/// Huger on a scaled display, which defeated it.
+inline constexpr float MIN_NAME_WIDTH_EM = 6.75F;
+
 /// Indent to apply to a tree row's Name cell, clamped so the expander and a minimum slice of the
 /// name always stay inside the cell.
 ///

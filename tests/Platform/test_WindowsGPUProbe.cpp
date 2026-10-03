@@ -1,6 +1,7 @@
 #ifdef _WIN32
 
 #include "Platform/GPUTypes.h"
+#include "Platform/Windows/PDHGPUProbe.h"
 #include "Platform/Windows/WindowsGPUProbe.h"
 #include "Platform/Windows/WindowsGPUProbeMath.h"
 
@@ -85,7 +86,7 @@ TEST(GpuNamesMatchTest, TwoDistinctAllWhitespaceNamesDoNotMatch)
 }
 
 // ==========================================================================
-// mergeNVMLIntoDXGICounters / allGPUsHaveNVMLUtilization / sumProcessUtilizationByGPUId /
+// mergeNVMLIntoDXGICounters / allGPUsHaveNVMLUtilization /
 // assignPDHUtilizationToDXGICounters: pure merge logic extracted from WindowsGPUProbe, no
 // NVML/PDH hardware required.
 // ==========================================================================
@@ -109,6 +110,7 @@ TEST(MergeNVMLIntoDXGICountersTest, UnmappedDXGIIndexIsSkipped)
     dxgi[0].utilizationPercent = 5.0;
 
     std::vector<GPUCounters> nvml(1);
+    nvml[0].gpuId = "uuid-0";
     nvml[0].utilizationPercent = 99.0;
 
     // No mapping for DXGI index 0 -> nothing should change.
@@ -140,6 +142,7 @@ TEST(MergeNVMLIntoDXGICountersTest, MergesMappedGPUAndReportsIdAsSourced)
     dxgi[0].memoryTotalBytes = 0; // DXGI didn't report total memory
 
     std::vector<GPUCounters> nvml(1);
+    nvml[0].gpuId = "uuid-0";
     nvml[0].temperatureC = 65;
     nvml[0].powerDrawWatts = 150.5;
     nvml[0].powerLimitWatts = 300.0;
@@ -175,6 +178,7 @@ TEST(MergeNVMLIntoDXGICountersTest, ZeroNVMLMemoryTotalKeepsDXGIMemoryValues)
     dxgi[0].memoryTotalBytes = 999;
 
     std::vector<GPUCounters> nvml(1);
+    nvml[0].gpuId = "uuid-0";
     nvml[0].memoryUsedBytes = 222;
     nvml[0].memoryTotalBytes = 0; // NVML query failed for memory; DXGI's numbers must survive
 
@@ -205,33 +209,6 @@ TEST(AllGPUsHaveNVMLUtilizationTest, FalseWhenAnyGPUIsMissing)
     dxgi[1].gpuId = "GPU1";
 
     EXPECT_FALSE(allGPUsHaveNVMLUtilization(dxgi, {"GPU0"}));
-}
-
-TEST(SumProcessUtilizationByGPUIdTest, SumsMultipleProcessesOnSameGPU)
-{
-    std::vector<ProcessGPUCounters> procs(2);
-    procs[0].gpuId = "GPU_0x0_0x1";
-    procs[0].gpuUtilPercent = 30.0;
-    procs[1].gpuId = "GPU_0x0_0x1";
-    procs[1].gpuUtilPercent = 45.0;
-
-    const auto byGpu = sumProcessUtilizationByGPUId(procs);
-
-    ASSERT_TRUE(byGpu.contains("GPU_0x0_0x1"));
-    EXPECT_DOUBLE_EQ(byGpu.at("GPU_0x0_0x1"), 75.0);
-}
-
-TEST(SumProcessUtilizationByGPUIdTest, SkipsNonPositiveUtilization)
-{
-    std::vector<ProcessGPUCounters> procs(2);
-    procs[0].gpuId = "GPU_0x0_0x1";
-    procs[0].gpuUtilPercent = 0.0;
-    procs[1].gpuId = "GPU_0x0_0x1";
-    procs[1].gpuUtilPercent = -1.0; // shouldn't occur in practice, but must not create a bucket
-
-    const auto byGpu = sumProcessUtilizationByGPUId(procs);
-
-    EXPECT_TRUE(byGpu.empty());
 }
 
 TEST(AssignPDHUtilizationToDXGICountersTest, AssignsClampedUtilizationForMatchedLuid)
@@ -291,6 +268,178 @@ TEST(AssignPDHUtilizationToDXGICountersTest, LeavesUtilizationUntouchedWhenLuidH
 // ==========================================================================
 // Basic Smoke Tests
 // ==========================================================================
+
+// =============================================================================
+// mapDXGIToNVML / assignPDHMemoryToDXGICounters (#1040, #1029)
+// =============================================================================
+
+namespace
+{
+GPUInfo makeInfo(const std::string& name, const std::string& vendor)
+{
+    GPUInfo info;
+    info.name = name;
+    info.vendor = vendor;
+    return info;
+}
+} // namespace
+
+TEST(MapDXGIToNVMLTest, IdenticalCardsMapToDistinctNVMLDevices)
+{
+    // Two identical cards used to both map to NVML device 0, so the second showed the first's data.
+    const std::vector<GPUInfo> dxgi = {makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA"), makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA")};
+    const std::vector<GPUInfo> nvml = {makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA"), makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA")};
+
+    const auto mapping = mapDXGIToNVML(dxgi, nvml);
+    ASSERT_EQ(mapping.size(), 2U);
+    EXPECT_EQ(mapping.at(0), 0U);
+    EXPECT_EQ(mapping.at(1), 1U);
+}
+
+TEST(MapDXGIToNVMLTest, NonNVIDIAAdaptersAndSurplusCardsStayUnmapped)
+{
+    // A hybrid laptop's Intel iGPU is never mapped; a third identical card with only two NVML
+    // devices is left unmapped rather than sharing one.
+    const std::vector<GPUInfo> dxgi = {
+        makeInfo("Intel(R) Arc(TM) 140T GPU", "Intel"),
+        makeInfo("NVIDIA GeForce RTX 4060 Laptop GPU", "NVIDIA"),
+        makeInfo("NVIDIA GeForce RTX 4060 Laptop GPU", "NVIDIA"),
+    };
+    const std::vector<GPUInfo> nvml = {makeInfo("NVIDIA GeForce RTX 4060 Laptop GPU", "NVIDIA")};
+
+    const auto mapping = mapDXGIToNVML(dxgi, nvml);
+    ASSERT_EQ(mapping.size(), 1U);
+    EXPECT_EQ(mapping.at(1), 0U);
+    EXPECT_FALSE(mapping.contains(0));
+    EXPECT_FALSE(mapping.contains(2));
+}
+
+TEST(AssignSensorCapabilitiesTest, EachAdapterTakesItsOwnNVMLDevicesSensors)
+{
+    // Sensors are per adapter (#1040): the iGPU has none, and of two identical NVIDIA cards the
+    // passively cooled one reports no fan.
+    std::vector<GPUInfo> dxgi = {
+        makeInfo("Intel(R) Arc(TM) 140T GPU", "Intel"),
+        makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA"),
+        makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA"),
+    };
+    std::vector<GPUInfo> nvml = {makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA"), makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA")};
+    GPUCapabilities cooled;
+    cooled.hasTemperature = true;
+    cooled.hasFanSpeed = true;
+    GPUCapabilities fanless;
+    fanless.hasTemperature = true;
+    nvml[0].sensorCapabilities = cooled;
+    nvml[1].sensorCapabilities = fanless;
+
+    assignSensorCapabilities(dxgi, nvml, mapDXGIToNVML(dxgi, nvml), GPUCapabilities{});
+
+    ASSERT_TRUE(dxgi[0].sensorCapabilities.has_value());
+    EXPECT_FALSE(dxgi[0].sensorCapabilities.value_or(GPUCapabilities{}).hasTemperature);
+    ASSERT_TRUE(dxgi[1].sensorCapabilities.has_value());
+    EXPECT_TRUE(dxgi[1].sensorCapabilities.value_or(GPUCapabilities{}).hasFanSpeed);
+    ASSERT_TRUE(dxgi[2].sensorCapabilities.has_value());
+    EXPECT_TRUE(dxgi[2].sensorCapabilities.value_or(GPUCapabilities{}).hasTemperature);
+    EXPECT_FALSE(dxgi[2].sensorCapabilities.value_or(GPUCapabilities{}).hasFanSpeed);
+}
+
+TEST(AssignSensorCapabilitiesTest, AMappedDeviceWithoutItsOwnSetTakesTheNVMLProbes)
+{
+    std::vector<GPUInfo> dxgi = {makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA")};
+    const std::vector<GPUInfo> nvml = {makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA")};
+    GPUCapabilities probeCaps;
+    probeCaps.hasPowerMetrics = true;
+
+    assignSensorCapabilities(dxgi, nvml, mapDXGIToNVML(dxgi, nvml), probeCaps);
+
+    ASSERT_TRUE(dxgi[0].sensorCapabilities.has_value());
+    EXPECT_TRUE(dxgi[0].sensorCapabilities.value_or(GPUCapabilities{}).hasPowerMetrics);
+}
+
+TEST(OrderNVMLCountersByIdsTest, CountersFollowEnumerationOrderByDeviceId)
+{
+    // NVML reads counters from an unordered map, so they can come back in either order; the
+    // DXGI-to-NVML mapping holds enumeration positions, so they are put back by id (#1040).
+    std::vector<GPUCounters> read(2);
+    read[0].gpuId = "GPU-uuid-B";
+    read[0].temperatureC = 70;
+    read[1].gpuId = "GPU-uuid-A";
+    read[1].temperatureC = 40;
+
+    const auto ordered = orderNVMLCountersByIds(read, {"GPU-uuid-A", "GPU-uuid-B", "GPU-uuid-C"});
+
+    ASSERT_EQ(ordered.size(), 3U);
+    EXPECT_EQ(ordered[0].gpuId, "GPU-uuid-A");
+    EXPECT_EQ(ordered[0].temperatureC, 40);
+    EXPECT_EQ(ordered[1].gpuId, "GPU-uuid-B");
+    EXPECT_EQ(ordered[1].temperatureC, 70);
+    EXPECT_TRUE(ordered[2].gpuId.empty()); // Not read this time: a placeholder the merge skips
+}
+
+TEST(MergeNVMLIntoDXGICountersTest, PlaceholderForAnUnreadDeviceIsSkipped)
+{
+    std::vector<GPUCounters> dxgi(1);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[0].temperatureC = 55;
+    const std::vector<GPUCounters> nvml(1); // Placeholder: empty gpuId
+
+    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0U, 0U}});
+
+    EXPECT_TRUE(sourced.empty());
+    EXPECT_EQ(dxgi[0].temperatureC, 55);
+}
+
+TEST(MergeNVMLIntoDXGICountersTest, MemoryIdsListOnlyGPUsWhoseNVMLMemoryReadSucceeded)
+{
+    // A GPU NVML covers for utilization but whose memory read failed (total 0) must still get the
+    // PDH memory fallback, so it is not reported as having NVML memory (#1029).
+    std::vector<GPUCounters> dxgi(2);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[1].gpuId = "GPU1";
+    std::vector<GPUCounters> nvml(2);
+    nvml[0].gpuId = "uuid-0";
+    nvml[0].memoryTotalBytes = 8ULL << 30U;
+    nvml[0].memoryUsedBytes = 1ULL << 30U;
+    nvml[1].gpuId = "uuid-1"; // Memory read failed
+
+    std::unordered_set<std::string> memoryIds;
+    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0U, 0U}, {1U, 1U}}, &memoryIds);
+
+    EXPECT_EQ(sourced.size(), 2U);
+    EXPECT_EQ(memoryIds, (std::unordered_set<std::string>{"GPU0"}));
+}
+
+TEST(AssignPDHMemoryToDXGICountersTest, IntegratedUsesSharedDiscreteUsesDedicated)
+{
+    std::vector<GPUCounters> dxgi(2);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[1].gpuId = "GPU1";
+    const std::unordered_map<std::string, AdapterMemoryUsage> memory = {
+        {"GPU_0x0_0x1", {.dedicatedBytes = 128, .sharedBytes = 1'500'000'000}},
+        {"GPU_0x0_0x2", {.dedicatedBytes = 3'000'000'000, .sharedBytes = 200}},
+    };
+    const std::unordered_map<std::string, std::string> idToLuid = {{"GPU0", "GPU_0x0_0x1"}, {"GPU1", "GPU_0x0_0x2"}};
+    const std::unordered_map<std::string, bool> integrated = {{"GPU0", true}, {"GPU1", false}};
+
+    assignPDHMemoryToDXGICounters(dxgi, memory, idToLuid, integrated, {});
+
+    EXPECT_EQ(dxgi[0].memoryUsedBytes, 1'500'000'000ULL);
+    EXPECT_EQ(dxgi[1].memoryUsedBytes, 3'000'000'000ULL);
+}
+
+TEST(AssignPDHMemoryToDXGICountersTest, LeavesNVMLSourcedAndUnmappedGPUsAlone)
+{
+    std::vector<GPUCounters> dxgi(2);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[0].memoryUsedBytes = 42; // From NVML
+    dxgi[1].gpuId = "GPU1";       // No LUID mapping
+    const std::unordered_map<std::string, AdapterMemoryUsage> memory = {{"GPU_0x0_0x1", {.dedicatedBytes = 999, .sharedBytes = 0}}};
+
+    assignPDHMemoryToDXGICounters(dxgi, memory, {{"GPU0", "GPU_0x0_0x1"}}, {{"GPU0", false}}, {"GPU0"});
+
+    EXPECT_EQ(dxgi[0].memoryUsedBytes, 42ULL);
+    EXPECT_EQ(dxgi[1].memoryUsedBytes, 0ULL);
+}
 
 TEST(WindowsGPUProbeTest, ConstructionDoesNotThrow)
 {

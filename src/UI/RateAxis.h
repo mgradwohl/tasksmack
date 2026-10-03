@@ -70,4 +70,57 @@ template<std::ranges::input_range... Rs>
     return std::max({maxOfSeries(series)...});
 }
 
+/// Time constants for easing a rate chart's Y upper bound toward rateAxisUpperBound() (#1011).
+/// Rising is quick, so a new peak is clipped for only a few frames; falling is slower, so the chart
+/// settles rather than snapping when a peak scrolls out of the window.
+inline constexpr double RATE_AXIS_EASE_UP_TAU_SECONDS = 0.12;
+inline constexpr double RATE_AXIS_EASE_DOWN_TAU_SECONDS = 0.5;
+/// Within this fraction of the target the eased bound snaps to it, so it settles exactly instead of
+/// creeping toward it forever (and the axis labels stop changing).
+inline constexpr double RATE_AXIS_EASE_SNAP_FRACTION = 0.002;
+
+/// One frame of easing a rate chart's Y upper bound from `current` toward `target`.
+///
+/// Rate charts recompute their upper bound from the visible data every frame, so when a peak entered
+/// or left the window the whole chart rescaled in a single frame. This moves the bound exponentially
+/// instead, with RATE_AXIS_EASE_UP/DOWN_TAU_SECONDS. A non-finite or non-positive `current` (no
+/// previous bound) or `deltaSeconds` returns `target` unchanged.
+[[nodiscard]] inline double easeAxisUpperBound(double current, double target, double deltaSeconds) noexcept
+{
+    if (!std::isfinite(current) || current <= 0.0 || !std::isfinite(deltaSeconds) || deltaSeconds <= 0.0 || !std::isfinite(target))
+    {
+        return target;
+    }
+    const double tau = (target > current) ? RATE_AXIS_EASE_UP_TAU_SECONDS : RATE_AXIS_EASE_DOWN_TAU_SECONDS;
+    const double alpha = 1.0 - std::exp(-deltaSeconds / tau);
+    const double next = current + ((target - current) * alpha);
+    return (std::abs(next - target) <= std::abs(target) * RATE_AXIS_EASE_SNAP_FRACTION) ? target : next;
+}
+
+/// One chart's eased upper bound, carried from frame to frame.
+struct EasedBound
+{
+    double value = 0.0;
+    int lastFrame = -1; ///< ImGui frame the value was last computed for; -1 = never.
+};
+
+/// Advance `bound` to `frame` toward `target` and return the bound to draw this frame.
+///
+/// - Asked again in the frame it was already computed for, it returns the same value: a chart's axis
+///   and its NowBars both read it, and must agree (#1003).
+/// - Continuing from the previous frame, it eases (easeAxisUpperBound).
+/// - Otherwise -- never drawn, or not drawn last frame (its tab was hidden) -- it starts at the
+///   target rather than easing in from a stale value.
+[[nodiscard]] inline double stepEasedBound(EasedBound& bound, double target, int frame, double deltaSeconds) noexcept
+{
+    if (bound.lastFrame == frame)
+    {
+        return bound.value;
+    }
+    const bool continuing = bound.lastFrame == frame - 1;
+    bound.value = continuing ? easeAxisUpperBound(bound.value, target, deltaSeconds) : target;
+    bound.lastFrame = frame;
+    return bound.value;
+}
+
 } // namespace UI::Widgets

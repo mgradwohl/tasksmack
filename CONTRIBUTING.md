@@ -333,7 +333,9 @@ For `Platform::IProcessActions` (process kill/terminate/stop/resume/setPriority)
 `TestMocks::MockProcessActions` in the same header: it lets each action's result be configured
 independently (`setKillResult(...)`, etc.) and tracks the last pid (and, for `setPriority`, the
 nice value) and call count per method, so a test can assert both what was called and with what
-argument.
+argument. Every action takes a `Platform::ProcessTarget` (PID plus the probe's raw start time),
+not a bare PID, and real implementations refuse the action unless the process at that PID has that
+start time (#973); `lastTarget()` returns the whole target the most recent action received.
 
 ### Testing App/UI code that needs a live ImGui context
 
@@ -568,6 +570,16 @@ the project's; in that case add required entries to `lsan.supp` directly.
 
 This suppression filters a known SDL3 LeakSanitizer false positive that affects
 Core window/application tests.
+
+UndefinedBehaviorSanitizer halts on the first error. The preset compiles with
+`-fno-sanitize-recover=undefined`, and `ctest --preset asan-ubsan` also injects:
+
+- `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1:$penv{UBSAN_OPTIONS}`
+
+As with `LSAN_OPTIONS`, any caller-provided `UBSAN_OPTIONS` are appended and take
+precedence. Without these, UBSan printed `runtime error:` and let the test pass,
+and `ctest --output-on-failure` hid the report, so undefined behaviour could
+never fail a run (#1090).
 
 ThreadSanitizer:
 
@@ -842,9 +854,12 @@ heaptrack_print perf-data/heaptrack-app-<timestamp>.gz
 ### Windows — CPU profiling (ETW)
 
 Use `tools/profile-etw.ps1` to capture and `tools/analyze-etw.ps1` to analyze.
-Legacy `app`/`bench` capture self-elevates the wrapper **and workload**; the scripts build
-before prompting for elevation by default. For normal-user resize diagnosis, use the
-separated `resize` procedure below instead (#872).
+Run captures from a **normal (non-elevated) terminal**. `app` and `bench` elevate only the WPR
+collector (one UAC prompt) and run the target at ordinary-user integrity, because an elevated
+target sees and does different things, which skews what is measured (#872). The target's
+measured integrity level is written to `perf-data/etw-<mode>-<timestamp>.manifest.json`. The
+scripts build before prompting for elevation. For resize diagnosis, use the `resize`
+procedure below.
 
 ```powershell
 # App trace — exercise the app, then close it (defaults to win-optimized)
@@ -861,6 +876,9 @@ pwsh tools/profile-etw.ps1 app -Preset win-profile
 # Unattended/scripted app trace — run for a fixed window and close automatically
 pwsh tools/profile-etw.ps1 app -DurationSeconds 45
 
+# Deliberately elevated target (the old behaviour), labelled etw-app-elevated-*
+pwsh tools/profile-etw.ps1 app -DurationSeconds 45 -ElevatedTarget
+
 # Analyze a captured trace
 pwsh tools/analyze-etw.ps1 -TracePath .\perf-data\etw-app-<timestamp>.etl
 
@@ -873,7 +891,7 @@ vtune -collect hotspots -- .\build\win-profile\bin\TaskSmack.exe
 
 Notes:
 - `wpr`, `xperf`, and `wpa` ship with the Windows Performance Toolkit (install via Windows SDK).
-- ETW capture requires elevation; `profile-etw.ps1` relaunches itself as Administrator automatically and validates all output artifacts before returning.
+- ETW recording requires elevation. By default `profile-etw.ps1` elevates only a separate WPR collector, not the target, and validates all output artifacts before returning; `-ElevatedTarget` is the explicit opt-in that runs the target elevated too. From an elevated terminal the script refuses unless `-ElevatedTarget` is passed, since the target would inherit the elevation.
 - Captures use unique WPR instance names and never cancel an existing recording. If
   another recorder prevents startup, leave it alone and coordinate with its owner.
 - Prefer `win-optimized` for real-world timing; use `win-profile` when you need function-level symbol attribution.
@@ -884,6 +902,11 @@ Notes:
 - The default `-BenchmarkFilter` for `bench` mode covers every probe/model refresh path plus
   the PDH per-process GPU path and core `History` container operations; pass `.*` to profile
   the entire suite instead.
+- `bench` checks the filter first, like `tools/profile-perf.sh` (#874). A filter matching no
+  benchmark fails before recording. One matching several warns and lists them: each benchmark
+  gets the same minimum time, so a cheap one is looped more and gets as many samples as an
+  expensive one. For hotspot attribution, match exactly one benchmark. The matched names are in
+  the manifest.
 
 #### Same-run resize diagnostics (normal-user app, elevated collector)
 
@@ -1015,8 +1038,9 @@ correlate GPU/DWM events. Sampled CPU totals alone do not explain a two-second w
 Repeat the same workload across multiple captures on the affected hardware. Record max
 and counts strictly above 100/250 ms alongside rolling p99; absence of a reproduced freeze
 in one run is not a root-cause fix. Script lifecycle/error tests run via
-`ctest --preset win-debug -R ResizeCaptureScript` when PowerShell 7 is available, or
-`pwsh -File tools\test-profile-etw-resize.ps1`; they mock WPR and never start a recording.
+`ctest --preset win-debug -R "ResizeCaptureScript|EtwCaptureScript"` when PowerShell 7 is
+available, or `pwsh -File tools\test-profile-etw-resize.ps1` and
+`pwsh -File tools\test-profile-etw.ps1`; they mock WPR and never start a recording.
 
 ### Compile-Time Profiling (-ftime-trace)
 

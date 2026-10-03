@@ -44,10 +44,14 @@ struct ProcessCounters
     // Network counters (cumulative bytes)
     std::uint64_t netSentBytes = 0;
     std::uint64_t netReceivedBytes = 0;
+    // When the network counters were read from the OS, as std::chrono::steady_clock nanoseconds since
+    // its epoch; 0 = read with this refresh. A probe that caches its network query for longer than a
+    // refresh interval sets it, so rates are taken over the time between real reads (#1063 review).
+    std::uint64_t netSampleTimeNs = 0;
 
-    // Power usage (optional, platform-dependent)
-    // On Windows: from PROCESS_POWER_THROTTLING_STATE
-    // On Linux: from powercap sysfs (per-package energy counters)
+    // Power usage (optional, platform-dependent; see ProcessCapabilities::hasPowerUsage)
+    // On Linux: from powercap sysfs (per-package energy counters), shared out by CPU time
+    // On Windows: not populated; always 0 (#1028)
     std::uint64_t energyMicrojoules = 0; // Cumulative energy consumption in microjoules
 
     // Publisher / vendor info (optional, Windows-only via PE version info)
@@ -90,6 +94,7 @@ struct ProcessCapabilities
                                        // Windows: non-admin AND EStats was specifically denied (ERROR_ACCESS_DENIED).
                                        //          Remains false when EStats is simply unsupported, because
                                        //          running as Administrator would not restore those counters.
+    bool hasSharedMemory = false;      // Whether ProcessCounters::sharedBytes is filled (Linux: statm; not on Windows)
 };
 
 } // namespace Platform

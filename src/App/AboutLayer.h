@@ -8,7 +8,7 @@
 namespace App
 {
 
-/// About dialog layer (singleton).
+/// About dialog layer. Opened by raising Core::OpenAboutEvent.
 /// Thread safety: All layer lifecycle methods (onAttach/onDetach/onUpdate/onRender)
 /// are guaranteed to be called from the main thread only, as required by SDL and ImGui.
 class AboutLayer : public Core::Layer
@@ -23,24 +23,17 @@ class AboutLayer : public Core::Layer
     AboutLayer& operator=(AboutLayer&&) = delete;
 
     void onAttach() override;
-    void onDetach() override;
     void onUpdate(float deltaTime) override;
     void onRender() override;
     void onEvent(Core::Event& event) override;
 
-    // Set singleton without taking ownership (use when layer is in layer stack)
-    static void setInstance(AboutLayer& layer);
-    void requestOpen();
-
   private:
+    void requestOpen();
     void renderAboutDialog();
     void loadIcon();
 
     bool m_OpenRequested = false;
     UI::Texture m_Icon;
-
-    // Non-owning singleton pointer; points to a layer owned by the application's layer stack
-    static AboutLayer* s_Instance;
 };
 
 } // namespace App

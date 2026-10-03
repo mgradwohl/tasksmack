@@ -12,7 +12,9 @@
 /// environments. The FramePacingTest suite is pure logic extracted from Application::run() (see
 /// Core/FramePacing.h) and always runs, headless or not.
 
+#include "Core/AnimationRequest.h"
 #include "Core/Application.h"
+#include "Core/Event.h"
 #include "Core/FramePacing.h"
 #include "Core/HeadlessVideoDriverTestUtils.h"
 #include "Core/Layer.h"
@@ -27,6 +29,7 @@
 #include <spdlog/sinks/ostream_sink.h>
 #include <spdlog/spdlog.h>
 
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
@@ -212,6 +215,65 @@ class ThrowingOnAttachLayer : public Core::Layer
     void onDetach() override;
 };
 
+/// Layer that handles WindowCloseEvent, returning `veto` from its handler, and counts how many it saw.
+class CloseListenerLayer : public Core::Layer
+{
+  public:
+    CloseListenerLayer(const std::string& name, bool veto) : Layer(name), m_Veto(veto)
+    {}
+
+    void onEvent(Core::Event& event) override
+    {
+        Core::EventDispatcher dispatcher(event);
+        dispatcher.dispatch<Core::WindowCloseEvent>(
+            [this](Core::WindowCloseEvent&)
+            {
+                ++m_CloseEventsSeen;
+                return m_Veto;
+            });
+    }
+
+    [[nodiscard]] int closeEventsSeen() const
+    {
+        return m_CloseEventsSeen;
+    }
+
+  private:
+    bool m_Veto;
+    int m_CloseEventsSeen = 0;
+};
+
+/// Layer that calls Window::requestClose() on its first update, as the custom title bar's Close
+/// button does, and stops the app itself after `stopAfter` updates so a vetoed close still ends.
+class CloseRequestingLayer : public Core::Layer
+{
+  public:
+    explicit CloseRequestingLayer(int stopAfter) : Layer("CloseRequester"), m_StopAfter(stopAfter)
+    {}
+
+    void onUpdate(float /*deltaTime*/) override
+    {
+        ++m_UpdateCount;
+        if (m_UpdateCount == 1)
+        {
+            Core::Application::get().getWindow().requestClose();
+        }
+        if (m_UpdateCount >= m_StopAfter)
+        {
+            Core::Application::get().stop();
+        }
+    }
+
+    [[nodiscard]] int updateCount() const
+    {
+        return m_UpdateCount;
+    }
+
+  private:
+    int m_StopAfter;
+    int m_UpdateCount = 0;
+};
+
 /// Static vector to track layer detach order across Application destruction
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 std::vector<std::string> g_DetachOrder;
@@ -248,6 +310,11 @@ struct ApplicationTestAccessor
     [[nodiscard]] static bool geometryChangedThisFrame(const Application& app)
     {
         return app.m_WindowGeometryChangedThisFrame;
+    }
+
+    [[nodiscard]] static bool closeRequestAccepted(Application& app)
+    {
+        return app.closeRequestAccepted();
     }
 };
 } // namespace Core
@@ -356,6 +423,102 @@ TEST(ApplicationTest, PushLayerCallsOnAttach)
     }
 }
 
+TEST(ApplicationTest, CloseRequestIsAcceptedUnlessALayerVetoesIt)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "CloseVetoTest";
+
+    try
+    {
+        Core::Application app(spec);
+
+        // No handler: the close goes ahead.
+        EXPECT_TRUE(Core::ApplicationTestAccessor::closeRequestAccepted(app));
+
+        // A layer that only observes the close returns false and does not stop it (#1073).
+        auto& observer = app.pushLayer<CloseListenerLayer>("Observer", false);
+        EXPECT_TRUE(Core::ApplicationTestAccessor::closeRequestAccepted(app));
+        EXPECT_EQ(observer.closeEventsSeen(), 1);
+
+        // A layer that handles it vetoes the close, and the layers below it never see the event.
+        auto& vetoer = app.pushLayer<CloseListenerLayer>("Vetoer", true);
+        EXPECT_FALSE(Core::ApplicationTestAccessor::closeRequestAccepted(app));
+        EXPECT_EQ(vetoer.closeEventsSeen(), 1);
+        EXPECT_EQ(observer.closeEventsSeen(), 1);
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
+TEST(ApplicationTest, RequestCloseRaisesWindowCloseEventAndStopsWhenAccepted)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "RequestCloseAcceptedTest";
+
+    try
+    {
+        Core::Application app(spec);
+        const auto& observer = app.pushLayer<CloseListenerLayer>("Observer", false);
+        // The fallback stop is far off: the close request should end the loop long before it.
+        const auto& requester = app.pushLayer<CloseRequestingLayer>(100);
+
+        app.run();
+
+        // Window::requestClose() reaches layers as a WindowCloseEvent (#1077), and with no veto the
+        // loop ends on the frame after the request instead of running on to the fallback stop.
+        EXPECT_EQ(observer.closeEventsSeen(), 1);
+        EXPECT_EQ(requester.updateCount(), 1);
+        EXPECT_FALSE(app.getWindow().shouldClose());
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
+TEST(ApplicationTest, RequestCloseIsVetoedByAHandlingLayer)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "RequestCloseVetoedTest";
+
+    try
+    {
+        Core::Application app(spec);
+        const auto& vetoer = app.pushLayer<CloseListenerLayer>("Vetoer", true);
+        constexpr int STOP_AFTER = 3;
+        const auto& requester = app.pushLayer<CloseRequestingLayer>(STOP_AFTER);
+
+        app.run();
+
+        // The veto keeps the loop running until the layer's own stop, and the request is cleared
+        // once raised, so it is not raised again on every later frame.
+        EXPECT_EQ(vetoer.closeEventsSeen(), 1);
+        EXPECT_EQ(requester.updateCount(), STOP_AFTER);
+        EXPECT_FALSE(app.getWindow().shouldClose());
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
 TEST(ApplicationTest, PushMultipleLayers)
 {
     if (!hasDisplay())
@@ -401,11 +564,67 @@ TEST(FramePacingTest, IsInteractingWhenAnyReasonPresent)
     EXPECT_FALSE(Core::FramePacing::computeIsInteracting(false, false, 0));
 }
 
+TEST(FramePacingTest, FrameDeltaStaysExactAtLargeUptime)
+{
+    // #1038: at 2^18 s (about three days) of uptime a float clock's spacing is ~31 ms, so a 16 ms
+    // frame read as 0 or ~31 ms. The double clock from nanosecond ticks keeps it at 16 ms.
+    constexpr std::uint64_t NS_PER_SECOND = 1'000'000'000;
+    constexpr std::uint64_t uptimeNs = (std::uint64_t{1} << 18U) * NS_PER_SECOND;
+    constexpr std::uint64_t frameNs = 16'000'000;
+
+    const double previous = Core::FramePacing::ticksNsToSeconds(uptimeNs);
+    const double current = Core::FramePacing::ticksNsToSeconds(uptimeNs + frameNs);
+    EXPECT_NEAR(Core::FramePacing::frameDeltaSeconds(previous, current, 0.1F), 0.016F, 1.0e-6F);
+
+    // The same reading through a float clock, for contrast: the delta is quantised away from 16 ms.
+    const auto floatPrevious = static_cast<float>(previous);
+    const auto floatCurrent = static_cast<float>(current);
+    EXPECT_GT(std::abs((floatCurrent - floatPrevious) - 0.016F), 0.01F);
+
+    // Still capped at the maximum delta.
+    EXPECT_FLOAT_EQ(Core::FramePacing::frameDeltaSeconds(previous, previous + 5.0, 0.1F), 0.1F);
+}
+
+TEST(FramePacingTest, AnimationPacingHoldsASteadyRateWhateverTheInput)
+{
+    // #1037: while something animates, frames start once per period. The wait is the rest of the
+    // period since the last frame started, so a frame that took 5 ms waits about 11.7 ms at 60 FPS.
+    constexpr double PERIOD = 1.0 / 60.0;
+    EXPECT_NEAR(Core::FramePacing::computeAnimationWaitSeconds(true, false, false, 0.005, PERIOD), PERIOD - 0.005, 1e-12);
+    // A frame that already took the whole period (a 60 Hz vsync swap, or a slow frame) waits nothing.
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationWaitSeconds(true, false, false, PERIOD, PERIOD), 0.0);
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationWaitSeconds(true, false, false, 0.040, PERIOD), 0.0);
+}
+
+TEST(FramePacingTest, AnimationPacingOnlyAppliesWhileAnimatingVisiblyOutsideAnInteraction)
+{
+    constexpr double PERIOD = 1.0 / 60.0;
+    // Nothing animating: the idle path (~20 FPS, woken by input) applies instead.
+    EXPECT_FALSE(Core::FramePacing::isAnimationPaced(false, false, false));
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationWaitSeconds(false, false, false, 0.0, PERIOD), 0.0);
+    // A move/resize keeps its own redraw path; a minimized window keeps its own sleep.
+    EXPECT_FALSE(Core::FramePacing::isAnimationPaced(true, true, false));
+    EXPECT_FALSE(Core::FramePacing::isAnimationPaced(true, false, true));
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationWaitSeconds(true, true, false, 0.0, PERIOD), 0.0);
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationWaitSeconds(true, false, true, 0.0, PERIOD), 0.0);
+    EXPECT_TRUE(Core::FramePacing::isAnimationPaced(true, false, false));
+}
+
+TEST(AnimationRequestTest, ConsumeReportsAndClearsARequest)
+{
+    static_cast<void>(Core::AnimationRequest::consume()); // start clear
+    EXPECT_FALSE(Core::AnimationRequest::consume());
+    Core::AnimationRequest::request();
+    Core::AnimationRequest::request(); // several requests in one frame are one request
+    EXPECT_TRUE(Core::AnimationRequest::consume());
+    EXPECT_FALSE(Core::AnimationRequest::consume());
+}
+
 TEST(FramePacingTest, IsWithinInteractionGrace)
 {
-    EXPECT_TRUE(Core::FramePacing::isWithinInteractionGrace(1.0F, 1.5F));
-    EXPECT_FALSE(Core::FramePacing::isWithinInteractionGrace(1.5F, 1.5F));
-    EXPECT_FALSE(Core::FramePacing::isWithinInteractionGrace(2.0F, 1.5F));
+    EXPECT_TRUE(Core::FramePacing::isWithinInteractionGrace(1.0, 1.5));
+    EXPECT_FALSE(Core::FramePacing::isWithinInteractionGrace(1.5, 1.5));
+    EXPECT_FALSE(Core::FramePacing::isWithinInteractionGrace(2.0, 1.5));
 }
 
 TEST(FramePacingTest, VsyncTransitionDisablesOnInteractionStartWhenSpecRequestsVsync)
@@ -860,8 +1079,8 @@ TEST(ApplicationTest, GetTimeReturnsMonotonicValue)
     {
         Core::Application app(spec);
 
-        float time1 = Core::Application::getTime();
-        float time2 = Core::Application::getTime();
+        const double time1 = Core::Application::getTime();
+        const double time2 = Core::Application::getTime();
 
         // Time should be monotonic
         EXPECT_GE(time2, time1);
@@ -886,8 +1105,8 @@ TEST(ApplicationTest, GetTimeIsConsistent)
     {
         Core::Application app(spec);
 
-        float time1 = Core::Application::getTime();
-        float time2 = Core::Application::getTime();
+        const double time1 = Core::Application::getTime();
+        const double time2 = Core::Application::getTime();
 
         // Within a few microseconds, times should be nearly identical
         EXPECT_NEAR(time1, time2, 0.01F); // 10ms tolerance

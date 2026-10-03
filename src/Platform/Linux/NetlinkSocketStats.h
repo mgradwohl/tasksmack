@@ -54,7 +54,9 @@ class NetlinkSocketStats
     /// Query all TCP and UDP sockets with byte counters.
     /// Returns a vector of SocketStats with inode and byte counters.
     /// Results are cached; subsequent calls within the TTL return cached data.
-    [[nodiscard]] std::vector<SocketStats> queryAllSockets();
+    /// @param sampledAt If non-null, receives when the returned data was read from the kernel
+    ///                  (the original query time for a cache hit).
+    [[nodiscard]] std::vector<SocketStats> queryAllSockets(std::chrono::steady_clock::time_point* sampledAt = nullptr);
 
     /// Force a fresh kernel query, completely bypassing the cache.
     /// This does NOT update the internal cache; subsequent queryAllSockets() calls
@@ -82,9 +84,10 @@ class NetlinkSocketStats
     mutable std::mutex m_SocketMutex; // Protects socket operations and cache state for thread safety
 
     // Cache state
-    std::chrono::milliseconds m_CacheTtl;                  // Cache time-to-live
-    std::chrono::steady_clock::time_point m_LastQueryTime; // When cache was last populated
-    std::vector<SocketStats> m_CachedResults;              // Cached socket stats
+    std::chrono::milliseconds m_CacheTtl;                   // Cache time-to-live
+    std::chrono::steady_clock::time_point m_LastQueryTime;  // When cache was last populated
+    std::vector<SocketStats> m_CachedResults;               // Cached socket stats
+    std::chrono::steady_clock::time_point m_LastSampleTime; // When the last kernel query ran (even with TTL 0)
 
     /// Query sockets for a specific protocol (IPPROTO_TCP or IPPROTO_UDP)
     void querySockets(int protocol, std::vector<SocketStats>& results);

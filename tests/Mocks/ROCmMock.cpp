@@ -1,6 +1,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <utility>
 
 namespace
 {
@@ -41,12 +42,26 @@ enum rsmi_memory_type_t : std::uint32_t
 };
 // NOLINTEND(cppcoreguidelines-use-enum-class, performance-enum-size, readability-identifier-naming)
 
+// The ROCm 6 layout (has_deep_sleep, 33 frequencies), as the real librocm_smi64.so.6 writes it.
+// Deliberately not shared with the probe: a mock that copies the probe's own struct cannot catch
+// the probe getting the library's ABI wrong (#1088).
 struct rsmi_frequencies_t
 {
+    bool has_deep_sleep;
     std::uint32_t num_supported;
     std::uint32_t current;
     // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays) - must match AMD ROCm SMI API ABI
-    std::uint64_t frequency[32];
+    std::uint64_t frequency[33];
+};
+static_assert(sizeof(rsmi_frequencies_t) == 280, "must match ROCm 6 rocm_smi.h");
+
+// NOLINTNEXTLINE(readability-identifier-naming) - must match AMD ROCm SMI API
+struct rsmi_version_t
+{
+    std::uint32_t major;
+    std::uint32_t minor;
+    std::uint32_t patch;
+    const char* build;
 };
 
 struct MockRocmDevice
@@ -78,7 +93,7 @@ struct MockRocmDevice
     rsmi_frequencies_t result{};
     result.num_supported = numSupported;
     result.current = current;
-    result.frequency[current < 32U ? current : 0U] = activeFrequency;
+    result.frequency[current < 33U ? current : 0U] = activeFrequency;
     return result;
 }
 
@@ -157,6 +172,17 @@ const std::array<MockRocmDevice, 3> MOCK_DEVICES{{
     return &MOCK_DEVICES[deviceIndex];
 }
 
+// Test controls (#1162), set through tasksmackRocmMockConfigure(): device-id lookups (unique id and
+// PCI id) fail once they have been called more than g_IdCallsBeforeFailure times (-1: never).
+int g_IdCallsBeforeFailure = -1;
+unsigned int g_IdCalls = 0;
+
+[[nodiscard]] bool idLookupFails()
+{
+    ++g_IdCalls;
+    return g_IdCallsBeforeFailure >= 0 && std::cmp_greater(g_IdCalls, g_IdCallsBeforeFailure);
+}
+
 } // namespace
 
 extern "C"
@@ -212,6 +238,10 @@ extern "C"
         {
             return RSMI_STATUS_INVALID_ARGS;
         }
+        if (idLookupFails())
+        {
+            return RSMI_STATUS_NOT_FOUND;
+        }
         if (!device->hasPciId)
         {
             return RSMI_STATUS_NOT_FOUND;
@@ -227,6 +257,10 @@ extern "C"
         if (device == nullptr)
         {
             return RSMI_STATUS_INVALID_ARGS;
+        }
+        if (idLookupFails())
+        {
+            return RSMI_STATUS_NOT_FOUND;
         }
         if (!device->hasUniqueId)
         {
@@ -359,6 +393,28 @@ extern "C"
         }
 
         *maxSpeed = 255; // RSMI_MAX_FAN_SPEED
+        return RSMI_STATUS_SUCCESS;
+    }
+
+    // Test controls (not part of ROCm SMI). See g_IdCallsBeforeFailure; also resets the counter.
+    void tasksmackRocmMockConfigure(int idCallsBeforeFailure)
+    {
+        g_IdCallsBeforeFailure = idCallsBeforeFailure;
+        g_IdCalls = 0;
+    }
+
+    unsigned int tasksmackRocmMockIdCalls()
+    {
+        return g_IdCalls;
+    }
+
+    rsmi_status_t rsmi_version_get(rsmi_version_t* version)
+    {
+        if (version == nullptr)
+        {
+            return RSMI_STATUS_INVALID_ARGS;
+        }
+        *version = rsmi_version_t{.major = 6U, .minor = 0U, .patch = 0U, .build = "mock"};
         return RSMI_STATUS_SUCCESS;
     }
 

@@ -23,7 +23,8 @@ namespace Platform
 WindowsGPUProbe::WindowsGPUProbe()
     : m_DXGIProbe(std::make_unique<DXGIGPUProbe>()),
       m_NVMLProbe(std::make_unique<NVMLGPUProbe>()),
-      m_PDHProbe(std::make_unique<PDHGPUProbe>())
+      m_PDHProbe(std::make_unique<PDHGPUProbe>()),
+      m_PDHAdapterProbe(std::make_unique<PDHGPUProbe>())
 {
     std::string probeSummary = "DXGI";
     if (m_NVMLProbe->isAvailable())
@@ -45,53 +46,33 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
     if (m_DXGIProbe)
     {
         auto gpus = m_DXGIProbe->enumerateGPUs();
+        std::vector<GPUInfo> nvmlGPUs;
+        GPUCapabilities nvmlCaps{};
+        m_DXGIToNVMLMap.clear();
 
         // If NVML is available, try to match NVIDIA GPUs for enhanced data
         if (m_NVMLProbe && m_NVMLProbe->isAvailable())
         {
-            auto nvmlGPUs = m_NVMLProbe->enumerateGPUs();
+            nvmlGPUs = m_NVMLProbe->enumerateGPUs();
+            nvmlCaps = m_NVMLProbe->capabilities();
             spdlog::debug("WindowsGPUProbe: Found {} DXGI GPUs and {} NVML GPUs", gpus.size(), nvmlGPUs.size());
 
-            // Build mapping between DXGI and NVML GPUs (match by name)
-            m_DXGIToNVMLMap.clear();
+            // Map NVIDIA DXGI adapters to NVML devices by name, each NVML device claimed once so
+            // identical cards do not all map to the first (#1040).
+            m_DXGIToNVMLMap = mapDXGIToNVML(gpus, nvmlGPUs);
+            // The mapping holds enumeration positions; counter reads are reordered to match by id.
+            m_NVMLEnumeratedIds.clear();
+            for (const auto& nvmlGPU : nvmlGPUs)
+            {
+                m_NVMLEnumeratedIds.push_back(nvmlGPU.id);
+            }
             for (std::size_t dxgiIdx = 0; dxgiIdx < gpus.size(); ++dxgiIdx)
             {
-                const auto& dxgiGPU = gpus[dxgiIdx];
-                spdlog::debug("WindowsGPUProbe: DXGI GPU {}: '{}' (vendor: {})", dxgiIdx, dxgiGPU.name, dxgiGPU.vendor);
-
-                // Only try to match NVIDIA GPUs
-                if (dxgiGPU.vendor != "NVIDIA")
+                if (gpus[dxgiIdx].vendor == "NVIDIA" && !m_DXGIToNVMLMap.contains(static_cast<uint32_t>(dxgiIdx)))
                 {
-                    continue;
-                }
-
-                // Find matching NVML GPU by name
-                bool matched = false;
-                for (std::size_t nvmlIdx = 0; nvmlIdx < nvmlGPUs.size(); ++nvmlIdx)
-                {
-                    const auto& nvmlGPU = nvmlGPUs[nvmlIdx];
-                    spdlog::debug("WindowsGPUProbe: Comparing DXGI '{}' with NVML '{}'", dxgiGPU.name, nvmlGPU.name);
-
-                    // Match by name using robust comparison
-                    if (gpuNamesMatch(dxgiGPU.name, nvmlGPU.name))
-                    {
-                        m_DXGIToNVMLMap[static_cast<uint32_t>(dxgiIdx)] = static_cast<uint32_t>(nvmlIdx);
-                        spdlog::info("WindowsGPUProbe: Mapped DXGI GPU {} to NVML GPU {} ('{}' <-> '{}')",
-                                     dxgiIdx,
-                                     nvmlIdx,
-                                     dxgiGPU.name,
-                                     nvmlGPU.name);
-                        matched = true;
-                        break;
-                    }
-                }
-
-                if (!matched)
-                {
-                    spdlog::warn("WindowsGPUProbe: Failed to match DXGI GPU '{}' with any NVML GPU", dxgiGPU.name);
+                    spdlog::warn("WindowsGPUProbe: Failed to match DXGI GPU '{}' with any NVML GPU", gpus[dxgiIdx].name);
                 }
             }
-
             spdlog::info("WindowsGPUProbe: Created {} DXGI-to-NVML mappings", m_DXGIToNVMLMap.size());
         }
         else
@@ -106,8 +87,12 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
         // Clear before rebuilding because enumerateGPUs() may be called multiple times
         // (e.g., on device change) and the adapter list can change between calls.
         m_DXGIIdToLuidId.clear();
+        m_DXGIIdIsIntegrated.clear();
+        // Sensor metrics are per adapter: its own NVML device's, or none without one (#1040).
+        assignSensorCapabilities(gpus, nvmlGPUs, m_DXGIToNVMLMap, nvmlCaps);
         for (const auto& gpu : gpus)
         {
+            m_DXGIIdIsIntegrated[gpu.id] = gpu.isIntegrated;
             if (!gpu.luidId.empty())
             {
                 m_DXGIIdToLuidId[gpu.id] = gpu.luidId;
@@ -131,20 +116,29 @@ std::vector<GPUCounters> WindowsGPUProbe::readGPUCounters()
     // Get base counters from DXGI
     auto counters = m_DXGIProbe->readGPUCounters();
 
-    // Merge NVML enhancements for NVIDIA GPUs; returns IDs that got NVML utilization
+    // Merge NVML enhancements for NVIDIA GPUs; returns IDs that got NVML utilization, and fills
+    // nvmlMemoryIds with those whose NVML memory read actually succeeded.
     std::unordered_set<std::string> nvmlSourcedIds;
+    std::unordered_set<std::string> nvmlMemoryIds;
     if (m_NVMLProbe && m_NVMLProbe->isAvailable())
     {
-        nvmlSourcedIds = mergeNVMLEnhancements(counters);
+        nvmlSourcedIds = mergeNVMLEnhancements(counters, nvmlMemoryIds);
     }
 
     // For GPUs without NVML, merge PDH per-adapter utilization matched to each adapter
     mergePDHAdapterUtilization(counters, nvmlSourcedIds);
 
+    // And their memory in use, from the same collect: adapter-wide, not this process's (#1029).
+    if (m_PDHAdapterProbe && m_PDHAdapterProbe->isAvailable())
+    {
+        assignPDHMemoryToDXGICounters(counters, m_PDHAdapterProbe->adapterMemory(), m_DXGIIdToLuidId, m_DXGIIdIsIntegrated, nvmlMemoryIds);
+    }
+
     return counters;
 }
 
-std::unordered_set<std::string> WindowsGPUProbe::mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounters)
+std::unordered_set<std::string> WindowsGPUProbe::mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounters,
+                                                                       std::unordered_set<std::string>& nvmlMemoryIds)
 {
     if (!m_NVMLProbe || !m_NVMLProbe->isAvailable())
     {
@@ -165,7 +159,10 @@ std::unordered_set<std::string> WindowsGPUProbe::mergeNVMLEnhancements(std::vect
                   nvmlCounters.size(),
                   m_DXGIToNVMLMap.size());
 
-    return mergeNVMLIntoDXGICounters(dxgiCounters, nvmlCounters, m_DXGIToNVMLMap);
+    // m_DXGIToNVMLMap holds positions in enumeration order; NVML reads counters in hash order, so
+    // put them back in enumeration order by device id first (#1040).
+    return mergeNVMLIntoDXGICounters(
+        dxgiCounters, orderNVMLCountersByIds(nvmlCounters, m_NVMLEnumeratedIds), m_DXGIToNVMLMap, &nvmlMemoryIds);
 }
 
 void WindowsGPUProbe::mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiCounters,
@@ -173,28 +170,26 @@ void WindowsGPUProbe::mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiC
 {
     // Skip if no PDH, or if all GPUs already have utilization data from NVML
     // (0% at idle is a valid NVML reading, not a sentinel).
-    if (!m_PDHProbe || !m_PDHProbe->isAvailable())
+    if (!m_PDHAdapterProbe || !m_PDHAdapterProbe->isAvailable())
     {
         return;
     }
+
+    // Collect on this sampler's own query every sample, even when NVML covers every GPU and the
+    // result is not used: PDH rates are computed between consecutive collects, so a query left
+    // idle would make its first use after an NVML gap a warm-up with no data, and the next one
+    // span however long the gap was.
+    static_cast<void>(m_PDHAdapterProbe->readProcessGPUCounters());
     if (allGPUsHaveNVMLUtilization(dxgiCounters, nvmlSourcedIds))
     {
         return;
     }
 
-    // Read per-process GPU data from PDH
-    auto processCounters = m_PDHProbe->readProcessGPUCounters();
-    if (processCounters.empty())
-    {
-        return;
-    }
-
-    // Sum utilization per GPU LUID.
-    // PDH ProcessGPUCounters::gpuId is "GPU_0x{HighPart}_0x{LowPart}" — the same
-    // format as GPUInfo::luidId from DXGI. Group process contributions per GPU so
-    // we assign the correct utilization to each physical adapter instead of the
-    // system-wide sum to every adapter (which inflated multi-GPU readings).
-    const auto utilizationByLuid = sumProcessUtilizationByGPUId(processCounters);
+    // The per-adapter figure from that collect: per engine the sum over processes, then the
+    // busiest engine (Task Manager's definition), keyed by "GPU_0x{HighPart}_0x{LowPart}" -- the
+    // same format as GPUInfo::luidId from DXGI. Summing process totals instead counted parallel
+    // engines as if they were serial (#1033).
+    const auto utilizationByLuid = m_PDHAdapterProbe->adapterUtilization();
     if (utilizationByLuid.empty())
     {
         return;

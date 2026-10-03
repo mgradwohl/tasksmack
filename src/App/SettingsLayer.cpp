@@ -1,5 +1,7 @@
 #include "SettingsLayer.h"
 
+#include "App/DialogGeometry.h"
+#include "App/FontSizeChange.h"
 #include "App/PlatformOpen.h"
 #include "App/SettingsLayerDetail.h"
 #include "App/UserConfig.h"
@@ -9,30 +11,44 @@
 #include "Core/Layer.h"
 #include "Core/VideoBackend.h"
 #include "UI/AssetPath.h"
+#include "UI/DialogMetrics.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
+#include "UI/Widgets.h"
 
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 
-#include <cassert>
+#include <algorithm>
 #include <cstddef>
 #include <filesystem>
+#include <format>
+#include <optional>
 #include <string>
 
 namespace App
 {
 
 // Import Detail types and functions into this translation unit
-using Detail::findFontSizeIndex;
-using Detail::findHistoryIndex;
-using Detail::findRefreshRateIndex;
+using Detail::ComboState;
 using Detail::FONT_SIZE_OPTIONS;
 using Detail::HISTORY_OPTIONS;
+using Detail::optionIndexOf;
+using Detail::pickedOption;
 using Detail::REFRESH_RATE_OPTIONS;
 
 namespace
 {
+
+// Button labels. The dialog's width is worked out from these before the buttons are drawn (see the
+// combo sizing in renderSettingsDialog()), so each is named once and used for both.
+constexpr const char* EDIT_CONFIG_LABEL = ICON_FA_FILE_PEN "  Edit Config File";
+constexpr const char* OPEN_THEMES_LABEL = ICON_FA_FOLDER "  Open Themes Folder";
+constexpr const char* CANCEL_LABEL = "Cancel";
+constexpr const char* APPLY_LABEL = "Apply";
+#ifndef _WIN32
+constexpr const char* NATIVE_DECORATIONS_LABEL = "Use native window decorations instead of the custom title bar";
+#endif
 
 // Get the themes directory path using multi-path asset resolution
 [[nodiscard]] auto getThemesDir() -> std::filesystem::path
@@ -42,30 +58,10 @@ namespace
 
 } // namespace
 
-SettingsLayer* SettingsLayer::s_Instance = nullptr;
-
 SettingsLayer::SettingsLayer() : Core::Layer("SettingsLayer")
 {}
 
 SettingsLayer::~SettingsLayer() = default;
-
-void SettingsLayer::onAttach()
-{
-    // Layer lifecycle is guaranteed to be called from main thread only (SDL/ImGui requirement).
-    // s_Instance is set by setInstance() immediately after pushLayer() returns.
-    // During onAttach(), verify that either the singleton is not yet set (before setInstance),
-    // or it already points to this instance (setInstance was called before pushLayer).
-    assert((s_Instance == nullptr || s_Instance == this) && "SettingsLayer singleton must be nullptr or point to this instance");
-}
-
-void SettingsLayer::onDetach()
-{
-    // Clear singleton instance to avoid dangling pointer after this layer is destroyed.
-    if (s_Instance == this)
-    {
-        s_Instance = nullptr;
-    }
-}
 
 void SettingsLayer::onUpdate([[maybe_unused]] float deltaTime)
 {
@@ -104,21 +100,20 @@ void SettingsLayer::loadCurrentSettings()
 
     // Load theme options
     m_Themes = themeManager.discoveredThemes();
-    m_SelectedThemeIndex = 0;
 
-    for (std::size_t i = 0; i < m_Themes.size(); ++i)
-    {
-        if (m_Themes[i].id == settings.themeId)
-        {
-            m_SelectedThemeIndex = i;
-            break;
-        }
-    }
+    // Each combo starts on the stored value, or on none when the stored value isn't an option
+    // (an interval set in config.toml, a theme file that's gone); nothing is touched yet.
+    const auto themeIt = std::ranges::find(m_Themes, settings.themeId, &UI::DiscoveredTheme::id);
+    m_ThemeChoice = ComboState{.index = (themeIt != m_Themes.end()) ? std::optional{static_cast<std::size_t>(themeIt - m_Themes.begin())}
+                                                                    : std::nullopt};
+    m_FontSizeChoice = ComboState{.index = optionIndexOf(FONT_SIZE_OPTIONS, settings.fontSize, &Detail::FontSizeOption::value)};
+    m_RefreshRateChoice =
+        ComboState{.index = optionIndexOf(REFRESH_RATE_OPTIONS, settings.refreshIntervalMs, &Detail::RefreshRateOption::valueMs)};
+    m_HistoryChoice = ComboState{.index = optionIndexOf(HISTORY_OPTIONS, settings.maxHistorySeconds, &Detail::HistoryOption::valueSeconds)};
 
-    // Load other settings
-    m_SelectedFontSizeIndex = findFontSizeIndex(settings.fontSize);
-    m_SelectedRefreshRateIndex = findRefreshRateIndex(settings.refreshIntervalMs);
-    m_SelectedHistoryIndex = findHistoryIndex(settings.maxHistorySeconds);
+    m_CustomThemePreview = std::format("Custom ({})", settings.themeId);
+    m_CustomRefreshPreview = Detail::customRefreshLabel(settings.refreshIntervalMs);
+    m_CustomHistoryPreview = Detail::customHistoryLabel(settings.maxHistorySeconds);
     m_ForceNativeDecorationsOnWayland = settings.forceNativeWindowDecorationsOnWayland;
 }
 
@@ -128,10 +123,12 @@ void SettingsLayer::applySettings()
     auto& settings = config.settings();
     auto& themeManager = UI::Theme::get();
 
+    // Only the combos the user picked are written (#1120, #1151): see Detail::pickedOption.
+
     // Apply theme
-    if (m_SelectedThemeIndex < m_Themes.size())
+    if (m_ThemeChoice.touched && m_ThemeChoice.index.has_value() && *m_ThemeChoice.index < m_Themes.size())
     {
-        const std::string& newThemeId = m_Themes[m_SelectedThemeIndex].id;
+        const std::string& newThemeId = m_Themes[*m_ThemeChoice.index].id;
         if (newThemeId != settings.themeId)
         {
             settings.themeId = newThemeId;
@@ -146,23 +143,17 @@ void SettingsLayer::applySettings()
     }
 
     // Apply font size
-    const auto newFontSize = FONT_SIZE_OPTIONS[m_SelectedFontSizeIndex].value;
-    if (newFontSize != settings.fontSize)
+    if (const auto font = pickedOption(m_FontSizeChoice, FONT_SIZE_OPTIONS); font.has_value() && font->value != settings.fontSize)
     {
-        settings.fontSize = newFontSize;
-        themeManager.setFontSize(newFontSize);
-        // Notify panels to invalidate font-dependent caches
-        {
-            Core::FontSizeChangedEvent event(static_cast<int>(newFontSize));
-            Core::Application::get().raiseEvent(event);
-        }
-        spdlog::info("Font size changed to {}", m_SelectedFontSizeIndex);
+        changeFontSize(font->value);
+        spdlog::info("Font size changed to {}", font->label);
     }
 
     // Apply refresh rate
-    const int newRefreshMs = REFRESH_RATE_OPTIONS[m_SelectedRefreshRateIndex].valueMs;
-    if (newRefreshMs != settings.refreshIntervalMs)
+    if (const auto refresh = pickedOption(m_RefreshRateChoice, REFRESH_RATE_OPTIONS);
+        refresh.has_value() && refresh->valueMs != settings.refreshIntervalMs)
     {
+        const int newRefreshMs = refresh->valueMs;
         settings.refreshIntervalMs = newRefreshMs;
         // Notify panels/samplers of interval change via event
         {
@@ -173,9 +164,10 @@ void SettingsLayer::applySettings()
     }
 
     // Apply history duration
-    const int newHistorySeconds = HISTORY_OPTIONS[m_SelectedHistoryIndex].valueSeconds;
-    if (newHistorySeconds != settings.maxHistorySeconds)
+    if (const auto history = pickedOption(m_HistoryChoice, HISTORY_OPTIONS);
+        history.has_value() && history->valueSeconds != settings.maxHistorySeconds)
     {
+        const int newHistorySeconds = history->valueSeconds;
         settings.maxHistorySeconds = newHistorySeconds;
         // Notify panels/models to adjust history window via event
         {
@@ -215,7 +207,15 @@ void SettingsLayer::renderSettingsDialog()
     // Center the popup
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5F, 0.5F));
-    ImGui::SetNextWindowSize(ImVec2(450.0F, 0.0F), ImGuiCond_Appearing);
+    // No explicit width. The former fixed 450px is gone and nothing replaces it: the popup is
+    // ImGuiWindowFlags_AlwaysAutoResize and every column below is measured from the text it has to
+    // hold, so auto-fit already produces exactly the width the content needs at the current font.
+    //
+    // Deliberately not re-expressed as an em multiple. ImGui honours SetNextWindowSize over
+    // AlwaysAutoResize only on frames where the size was genuinely set by the API, so an
+    // ImGuiCond_Appearing width is discarded by auto-fit from the second frame on -- it would be
+    // inert code that merely looked like it was doing something. See #947's review of the same
+    // pattern in ElevationNoticeLayer, where the width is authored and so is reapplied every frame.
 
     const ImGuiWindowFlags popupFlags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove;
 
@@ -231,26 +231,97 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::Separator();
         ImGui::Spacing();
 
-        // Theme dropdown
-        constexpr float LABEL_WIDTH = 150.0F;
-        constexpr float COMBO_WIDTH = 250.0F;
+        // Column geometry, measured from the text it has to hold rather than fixed at 150/250px.
+        // Those constants only looked right at one font size: at Small the labels used a fraction of
+        // the 150px column and the 250px combos dwarfed values like "Small" and "250 ms", while at
+        // Even Huger 150px was barely enough for "Metric Refresh Rate" (#921).
+        //
+        // Measuring is better than an em multiple here because these columns hold variable text: it
+        // is self-documenting, it tracks the theme list and option arrays if either gains an entry,
+        // and it absorbs the glyph-metric differences between platforms automatically.
+        const float emPx = ImGui::GetFontSize();
+        const float labelGap = style.ItemSpacing.x * 2.0F;
+        const float widestLabel = std::max({ImGui::CalcTextSize("Theme").x,
+                                            ImGui::CalcTextSize("Font Size").x,
+                                            ImGui::CalcTextSize("Metric Refresh Rate").x,
+                                            ImGui::CalcTextSize("Metric History").x});
+        const float valueColumn = UI::DialogMetrics::computeValueColumnStart(widestLabel, labelGap);
 
+        // What a combo needs beyond its text: ImGui's frame padding either side, plus the arrow
+        // button, which it draws as a square of the frame height.
+        const float comboDecoration = (style.FramePadding.x * 2.0F) + ImGui::GetFrameHeight();
+
+        float widestAppearanceValue = 0.0F;
+        for (const auto& themeEntry : m_Themes)
+        {
+            widestAppearanceValue = std::max(widestAppearanceValue, ImGui::CalcTextSize(themeEntry.name.c_str()).x);
+        }
+        for (const auto& option : FONT_SIZE_OPTIONS)
+        {
+            widestAppearanceValue =
+                std::max(widestAppearanceValue, ImGui::CalcTextSize(option.label.data(), option.label.data() + option.label.size()).x);
+        }
+        if (!m_ThemeChoice.index.has_value())
+        {
+            widestAppearanceValue = std::max(widestAppearanceValue, ImGui::CalcTextSize(m_CustomThemePreview.c_str()).x);
+        }
+        // Capped against the viewport. Theme names are read from a user's TOML with no length limit
+        // (ThemeLoader), so measuring them is unbounded: a long name would otherwise widen this
+        // auto-resizing popup past the window and put the combo's arrow and the buttons below it out
+        // of reach. The floor keeps the control usable if the cap bites; ImGui clips the combo's
+        // preview text, so a long name degrades to truncation rather than an unreachable control.
+        const float comboMinWidth = (MIN_COMBO_EM * emPx) + comboDecoration;
+
+        // The dialog auto-fits its widest row, and that is usually not a combo row: the two
+        // ADVANCED buttons and the Cancel/Apply pair are both wider. Sized only to their own text,
+        // the combos stopped short of the dialog's right edge, in line with neither the separators
+        // nor Apply (#972). Those rows are measured from text as well, so the width they will give
+        // the dialog is known here, and the combos are widened to reach it.
+        const float advancedRowWidth = ImGui::CalcTextSize(EDIT_CONFIG_LABEL).x + ImGui::CalcTextSize(OPEN_THEMES_LABEL).x +
+                                       (style.FramePadding.x * 4.0F) + style.ItemSpacing.x;
+        const float actionButtonWidth =
+            std::max(UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize(CANCEL_LABEL).x, emPx, SETTINGS_BUTTON_MIN_EM),
+                     UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize(APPLY_LABEL).x, emPx, SETTINGS_BUTTON_MIN_EM));
+        const float actionRowWidth = (actionButtonWidth * 2.0F) + style.ItemSpacing.x;
+        // On native Wayland the ADVANCED section also has a checkbox, and its label makes that row
+        // the widest in the dialog. A checkbox is a square of the frame height, then its label.
+#ifndef _WIN32
+        const float checkboxRowWidth =
+            Core::VideoBackend::isWayland()
+                ? (ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + ImGui::CalcTextSize(NATIVE_DECORATIONS_LABEL).x)
+                : 0.0F;
+#else
+        const float checkboxRowWidth = 0.0F;
+#endif
+        const float widestOtherRow = std::max({advancedRowWidth, actionRowWidth, checkboxRowWidth});
+
+        const float appearanceComboWidth = UI::DialogMetrics::computeCappedControlWidth(
+            UI::DialogMetrics::computeFilledControlWidth(
+                widestAppearanceValue + comboDecoration, valueColumn, style.WindowPadding.x, widestOtherRow),
+            valueColumn,
+            style.WindowPadding.x * 2.0F,
+            viewport->WorkSize.x,
+            comboMinWidth);
+
+        // Theme dropdown
         ImGui::AlignTextToFramePadding();
         ImGui::Text("Theme");
-        ImGui::SameLine(LABEL_WIDTH);
-        ImGui::SetNextItemWidth(COMBO_WIDTH);
+        ImGui::SameLine(valueColumn);
+        ImGui::SetNextItemWidth(appearanceComboWidth);
 
         if (!m_Themes.empty())
         {
-            const char* currentTheme = m_Themes[m_SelectedThemeIndex].name.c_str();
+            const char* currentTheme = (m_ThemeChoice.index.has_value() && *m_ThemeChoice.index < m_Themes.size())
+                                         ? m_Themes[*m_ThemeChoice.index].name.c_str()
+                                         : m_CustomThemePreview.c_str();
             if (ImGui::BeginCombo("##Theme", currentTheme))
             {
                 for (std::size_t i = 0; i < m_Themes.size(); ++i)
                 {
-                    const bool isSelected = (m_SelectedThemeIndex == i);
+                    const bool isSelected = (m_ThemeChoice.index == i);
                     if (ImGui::Selectable(m_Themes[i].name.c_str(), isSelected))
                     {
-                        m_SelectedThemeIndex = i;
+                        m_ThemeChoice = ComboState{.index = i, .touched = true};
                     }
                     if (isSelected)
                     {
@@ -266,20 +337,23 @@ void SettingsLayer::renderSettingsDialog()
         // Font Size dropdown
         ImGui::AlignTextToFramePadding();
         ImGui::Text("Font Size");
-        ImGui::SameLine(LABEL_WIDTH);
-        ImGui::SetNextItemWidth(COMBO_WIDTH);
+        ImGui::SameLine(valueColumn);
+        ImGui::SetNextItemWidth(appearanceComboWidth);
 
         // NOLINT comments below: label is always initialized from a string literal, so .data() is null-terminated
-        const char* currentFontSize =
-            FONT_SIZE_OPTIONS[m_SelectedFontSizeIndex].label.data(); // NOLINT(bugprone-suspicious-stringview-data-usage)
+        // The font size always matches an option (the enum has no other values), but a Ctrl+= change
+        // while the dialog is open moves it, so the preview follows the live setting.
+        const auto liveFontIndex = optionIndexOf(FONT_SIZE_OPTIONS, UserConfig::get().settings().fontSize, &Detail::FontSizeOption::value);
+        const std::size_t fontPreviewIndex = (m_FontSizeChoice.touched ? m_FontSizeChoice.index : liveFontIndex).value_or(1);
+        const char* currentFontSize = FONT_SIZE_OPTIONS[fontPreviewIndex].label.data(); // NOLINT(bugprone-suspicious-stringview-data-usage)
         if (ImGui::BeginCombo("##FontSize", currentFontSize))
         {
             for (std::size_t i = 0; i < FONT_SIZE_OPTIONS.size(); ++i)
             {
-                const bool isSelected = (m_SelectedFontSizeIndex == i);
+                const bool isSelected = (fontPreviewIndex == i);
                 if (ImGui::Selectable(FONT_SIZE_OPTIONS[i].label.data(), isSelected)) // NOLINT(bugprone-suspicious-stringview-data-usage)
                 {
-                    m_SelectedFontSizeIndex = i;
+                    m_FontSizeChoice = ComboState{.index = i, .touched = true};
                 }
                 if (isSelected)
                 {
@@ -297,9 +371,32 @@ void SettingsLayer::renderSettingsDialog()
         // ========================================
         // PERFORMANCE Section
         // ========================================
-        constexpr float PERF_COMBO_WIDTH = 150.0F;
-        // Right-align with Appearance combos: start at LABEL_WIDTH + (COMBO_WIDTH - PERF_COMBO_WIDTH)
-        const float perfLabelWidth = LABEL_WIDTH + (COMBO_WIDTH - PERF_COMBO_WIDTH);
+        // The performance combos hold much shorter values ("250 ms", "5 minutes") than the theme
+        // names above, so they get their own measured width and keep the established look by sharing
+        // the Appearance combos' right edge.
+        float widestPerfValue = 0.0F;
+        for (const auto& option : REFRESH_RATE_OPTIONS)
+        {
+            widestPerfValue =
+                std::max(widestPerfValue, ImGui::CalcTextSize(option.label.data(), option.label.data() + option.label.size()).x);
+        }
+        for (const auto& option : HISTORY_OPTIONS)
+        {
+            widestPerfValue =
+                std::max(widestPerfValue, ImGui::CalcTextSize(option.label.data(), option.label.data() + option.label.size()).x);
+        }
+        // A stored value that isn't an option shows as "Custom (...)", which can be the widest.
+        if (!m_RefreshRateChoice.index.has_value())
+        {
+            widestPerfValue = std::max(widestPerfValue, ImGui::CalcTextSize(m_CustomRefreshPreview.c_str()).x);
+        }
+        if (!m_HistoryChoice.index.has_value())
+        {
+            widestPerfValue = std::max(widestPerfValue, ImGui::CalcTextSize(m_CustomHistoryPreview.c_str()).x);
+        }
+        const float perfComboWidth = UI::DialogMetrics::computeCappedControlWidth(
+            widestPerfValue + comboDecoration, valueColumn, style.WindowPadding.x * 2.0F, viewport->WorkSize.x, comboMinWidth);
+        const float perfLabelWidth = UI::DialogMetrics::computeRightAlignedStart(valueColumn, appearanceComboWidth, perfComboWidth);
 
         ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GAUGE_HIGH "  PERFORMANCE");
         ImGui::Separator();
@@ -309,19 +406,21 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::AlignTextToFramePadding();
         ImGui::Text("Metric Refresh Rate");
         ImGui::SameLine(perfLabelWidth);
-        ImGui::SetNextItemWidth(PERF_COMBO_WIDTH);
+        ImGui::SetNextItemWidth(perfComboWidth);
 
         const char* currentRefresh =
-            REFRESH_RATE_OPTIONS[m_SelectedRefreshRateIndex].label.data(); // NOLINT(bugprone-suspicious-stringview-data-usage)
+            m_RefreshRateChoice.index.has_value()
+                ? REFRESH_RATE_OPTIONS[*m_RefreshRateChoice.index].label.data() // NOLINT(bugprone-suspicious-stringview-data-usage)
+                : m_CustomRefreshPreview.c_str();
         if (ImGui::BeginCombo("##RefreshRate", currentRefresh))
         {
             for (std::size_t i = 0; i < REFRESH_RATE_OPTIONS.size(); ++i)
             {
-                const bool isSelected = (m_SelectedRefreshRateIndex == i);
+                const bool isSelected = (m_RefreshRateChoice.index == i);
                 if (ImGui::Selectable(REFRESH_RATE_OPTIONS[i].label.data(), // NOLINT(bugprone-suspicious-stringview-data-usage)
                                       isSelected))
                 {
-                    m_SelectedRefreshRateIndex = i;
+                    m_RefreshRateChoice = ComboState{.index = i, .touched = true};
                 }
                 if (isSelected)
                 {
@@ -337,18 +436,20 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::AlignTextToFramePadding();
         ImGui::Text("Metric History");
         ImGui::SameLine(perfLabelWidth);
-        ImGui::SetNextItemWidth(PERF_COMBO_WIDTH);
+        ImGui::SetNextItemWidth(perfComboWidth);
 
         const char* currentHistory =
-            HISTORY_OPTIONS[m_SelectedHistoryIndex].label.data(); // NOLINT(bugprone-suspicious-stringview-data-usage)
+            m_HistoryChoice.index.has_value()
+                ? HISTORY_OPTIONS[*m_HistoryChoice.index].label.data() // NOLINT(bugprone-suspicious-stringview-data-usage)
+                : m_CustomHistoryPreview.c_str();
         if (ImGui::BeginCombo("##History", currentHistory))
         {
             for (std::size_t i = 0; i < HISTORY_OPTIONS.size(); ++i)
             {
-                const bool isSelected = (m_SelectedHistoryIndex == i);
+                const bool isSelected = (m_HistoryChoice.index == i);
                 if (ImGui::Selectable(HISTORY_OPTIONS[i].label.data(), isSelected)) // NOLINT(bugprone-suspicious-stringview-data-usage)
                 {
-                    m_SelectedHistoryIndex = i;
+                    m_HistoryChoice = ComboState{.index = i, .touched = true};
                 }
                 if (isSelected)
                 {
@@ -373,13 +474,13 @@ void SettingsLayer::renderSettingsDialog()
         // Button row for config file and themes folder
         // Push text color to ensure visibility on button backgrounds
         ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
-        if (ImGui::Button(ICON_FA_FILE_PEN "  Edit Config File"))
+        if (ImGui::Button(EDIT_CONFIG_LABEL))
         {
             // Result intentionally ignored - openWithSystemHandler logs warnings on failure
             (void) App::PlatformOpen::openWithSystemHandler(UserConfig::get().configPath());
         }
         ImGui::SameLine();
-        if (ImGui::Button(ICON_FA_FOLDER "  Open Themes Folder"))
+        if (ImGui::Button(OPEN_THEMES_LABEL))
         {
             // Result intentionally ignored - openWithSystemHandler logs warnings on failure
             (void) App::PlatformOpen::openWithSystemHandler(getThemesDir());
@@ -393,7 +494,7 @@ void SettingsLayer::renderSettingsDialog()
         if (Core::VideoBackend::isWayland())
         {
             ImGui::Spacing();
-            ImGui::Checkbox("Use native window decorations instead of the custom title bar", &m_ForceNativeDecorationsOnWayland);
+            ImGui::Checkbox(NATIVE_DECORATIONS_LABEL, &m_ForceNativeDecorationsOnWayland);
             ImGui::TextColored(theme.scheme().textMuted, "Takes effect after restarting TaskSmack.");
         }
 #endif
@@ -408,8 +509,11 @@ void SettingsLayer::renderSettingsDialog()
         // ========================================
         // Buttons
         // ========================================
-        const float buttonWidth = 100.0F;
-        const float totalButtonWidth = (buttonWidth * 2.0F) + style.ItemSpacing.x;
+        // Floor of 9.375 em is exactly the former fixed 100px at the reference configuration; the
+        // measured term takes over for whichever of the two labels is wider once the font grows.
+        // (Computed above as actionButtonWidth, where the combos need it to find the dialog's width.)
+        const float buttonWidth = actionButtonWidth;
+        const float totalButtonWidth = actionRowWidth;
         const float availWidth = ImGui::GetContentRegionAvail().x;
 
         // Right-align buttons
@@ -417,7 +521,7 @@ void SettingsLayer::renderSettingsDialog()
 
         // Push text color to ensure visibility on button backgrounds
         ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
-        if (ImGui::Button("Cancel", ImVec2(buttonWidth, 0.0F)))
+        if (ImGui::Button(CANCEL_LABEL, ImVec2(buttonWidth, 0.0F)))
         {
             ImGui::CloseCurrentPopup();
         }
@@ -425,30 +529,26 @@ void SettingsLayer::renderSettingsDialog()
 
         ImGui::SameLine();
 
-        // Apply button with success color for positive action
-        ImGui::PushStyleColor(ImGuiCol_Button, theme.scheme().successButton);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme.scheme().successButtonHovered);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, theme.scheme().successButtonActive);
-        ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
-
-        if (ImGui::Button("Apply", ImVec2(buttonWidth, 0.0F)))
+        // Apply button with success color for positive action. Its label is drawn in whichever of
+        // the theme's two poles -- its text colour or its window background -- reads better on the
+        // fill showing in the button's current state; the ordinary text colour was nearly invisible
+        // on it in most of the bundled themes (#969).
+        if (UI::Widgets::filledButton(APPLY_LABEL,
+                                      ImVec2(buttonWidth, 0.0F),
+                                      {
+                                          .resting = theme.scheme().successButton,
+                                          .hovered = theme.scheme().successButtonHovered,
+                                          .pressed = theme.scheme().successButtonActive,
+                                      },
+                                      theme.scheme().textPrimary,
+                                      theme.scheme().windowBg))
         {
             applySettings();
             ImGui::CloseCurrentPopup();
         }
 
-        ImGui::PopStyleColor(4); // Button, ButtonHovered, ButtonActive, Text
-
         ImGui::EndPopup();
     }
-}
-
-/// Set the singleton instance (non-owning; layer is owned by the application's layer stack).
-/// THREAD-SAFETY: Must only be called from main thread during initialization,
-/// before any code (onAttach's assert, onDetach's clear) reads s_Instance.
-void SettingsLayer::setInstance(SettingsLayer& layer)
-{
-    s_Instance = &layer;
 }
 
 } // namespace App

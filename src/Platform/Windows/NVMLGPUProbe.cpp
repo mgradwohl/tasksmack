@@ -165,6 +165,7 @@ bool NVMLGPUProbe::initializeNVML()
 void NVMLGPUProbe::shutdownNVML()
 {
     m_DeviceHandles.clear();
+    m_DeviceIds.clear();
 
     if (m_Initialized && m_NVML.Shutdown != nullptr)
     {
@@ -270,6 +271,8 @@ std::vector<GPUInfo> NVMLGPUProbe::enumerateGPUs()
             info.id = std::format("NVML_GPU{}", i);
         }
 
+        m_DeviceIds[i] = info.id;
+
         // NVML only works with NVIDIA GPUs
         info.vendor = "NVIDIA";
 
@@ -285,6 +288,17 @@ std::vector<GPUInfo> NVMLGPUProbe::enumerateGPUs()
         info.isIntegrated = false;
 
         info.deviceIndex = i;
+
+        // Which sensors this device actually reports: capabilities() covers NVML as a whole, but
+        // e.g. a passively cooled card has no fan reading, and a laptop GPU may not report power
+        // (#1040). A read that fails now is treated as unsupported for this device.
+        unsigned int probeValue = 0;
+        GPUCapabilities sensors = capabilities();
+        sensors.hasTemperature = m_NVML.DeviceGetTemperature(device, NVML_TEMPERATURE_GPU, &probeValue) == NVML_SUCCESS;
+        sensors.hasPowerMetrics = m_NVML.DeviceGetPowerUsage(device, &probeValue) == NVML_SUCCESS;
+        sensors.hasClockSpeeds = m_NVML.DeviceGetClockInfo(device, NVML_CLOCK_GRAPHICS, &probeValue) == NVML_SUCCESS;
+        sensors.hasFanSpeed = m_NVML.DeviceGetFanSpeed(device, &probeValue) == NVML_SUCCESS;
+        info.sensorCapabilities = sensors;
 
         spdlog::debug("NVMLGPUProbe: Enumerated NVIDIA GPU {}: {}", i, info.name);
 
@@ -308,16 +322,18 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
     {
         GPUCounters counter{};
 
-        // Get UUID for ID
-        std::array<char, NVML_DEVICE_UUID_BUFFER_SIZE> uuid{};
-        nvmlReturn_t result = m_NVML.DeviceGetUUID(device, uuid.data(), NVML_DEVICE_UUID_BUFFER_SIZE);
-        if (result == NVML_SUCCESS)
+        // The id enumeration reported for this device, so the two always agree; the UUID is
+        // queried only for a device enumeration did not record.
+        nvmlReturn_t result = NVML_SUCCESS;
+        if (const auto knownId = m_DeviceIds.find(index); knownId != m_DeviceIds.end())
         {
-            counter.gpuId = uuid.data();
+            counter.gpuId = knownId->second;
         }
         else
         {
-            counter.gpuId = std::format("NVML_GPU{}", index);
+            std::array<char, NVML_DEVICE_UUID_BUFFER_SIZE> uuid{};
+            result = m_NVML.DeviceGetUUID(device, uuid.data(), NVML_DEVICE_UUID_BUFFER_SIZE);
+            counter.gpuId = result == NVML_SUCCESS ? std::string(uuid.data()) : std::format("NVML_GPU{}", index);
         }
 
         // Memory info (raw counters only)

@@ -114,9 +114,15 @@ void drawChromeGlyphMatched(
     ImGui::GetWindowDrawList()->AddText(font, matchedPx, pos, ImGui::GetColorU32(ImGuiCol_Text), text);
 }
 
-// Shared resize border thickness — must stay in sync between hit-test and cursor detection.
-constexpr float RESIZE_BORDER_THICKNESS = 8.0F;
-constexpr float RESIZE_SIZE_COMMIT_INTERVAL_SECONDS = 1.0F / 20.0F;
+// Shared resize border thickness -- must stay in sync between hit-test and cursor detection, so
+// both ask here. Scaled with the display like the title bar itself; see
+// computeResizeBorderThickness(). Valid outside an ImGui frame, which SDL's hit-test callback needs.
+[[nodiscard]] auto resizeBorderThickness() -> float
+{
+    return computeResizeBorderThickness(UI::Theme::get().displayScale());
+}
+
+constexpr double RESIZE_SIZE_COMMIT_INTERVAL_SECONDS = 1.0 / 20.0;
 
 // Conditionally time an operation and accumulate the duration into accumMs.
 // When traceEnabled is false the call reduces to a branch and a direct callable invocation.
@@ -216,7 +222,7 @@ SDL_HitTestResult hitTestCallback(SDL_Window* sdlWindow, const SDL_Point* area, 
                                 windowWidth,
                                 windowHeight,
                                 titleBarHeight,
-                                RESIZE_BORDER_THICKNESS,
+                                resizeBorderThickness(),
                                 isMaximized,
                                 layer->isPointInControlArea(x, y),
                                 Core::VideoBackend::isWayland());
@@ -401,7 +407,7 @@ auto TitleBarLayer::isPointInControlArea(float x, float y) const -> bool
 
 auto TitleBarLayer::detectResizeEdge(float x, float y, int windowWidth, int windowHeight, bool isMaximized) -> ResizeEdge
 {
-    return computeDetectResizeEdge(x, y, windowWidth, windowHeight, isMaximized, RESIZE_BORDER_THICKNESS);
+    return computeDetectResizeEdge(x, y, windowWidth, windowHeight, isMaximized, resizeBorderThickness());
 }
 
 void TitleBarLayer::handleTitleBarDoubleClick(const SDL_Event& event) const
@@ -698,12 +704,19 @@ void TitleBarLayer::updateResize(
     const int dx = mx - m_Resize.startMouseGlobalX;
     const int dy = my - m_Resize.startMouseGlobalY;
 
-    const auto [newX, newY, newWidth, newHeight] = computeResizeGeometry(
-        m_Resize.edge, m_Resize.startWindowX, m_Resize.startWindowY, m_Resize.startWindowWidth, m_Resize.startWindowHeight, dx, dy);
+    const auto [newX, newY, newWidth, newHeight] = computeResizeGeometry(m_Resize.edge,
+                                                                         m_Resize.startWindowX,
+                                                                         m_Resize.startWindowY,
+                                                                         m_Resize.startWindowWidth,
+                                                                         m_Resize.startWindowHeight,
+                                                                         dx,
+                                                                         dy,
+                                                                         m_MinimumSize.width,
+                                                                         m_MinimumSize.height);
 
     const bool positionChanged = (newX != m_Resize.lastAppliedX) || (newY != m_Resize.lastAppliedY);
     const bool sizeChanged = (newWidth != m_Resize.lastAppliedWidth) || (newHeight != m_Resize.lastAppliedHeight);
-    const float now = Core::Application::getTime();
+    const double now = Core::Application::getTime();
     bool sizeCommitApplied = false;
 
     if (positionChanged)
@@ -758,8 +771,8 @@ void TitleBarLayer::updateResize(
         int pixelW = 0;
         int pixelH = 0;
         SDL_GetWindowSizeInPixels(window.getHandle(), &pixelW, &pixelH);
-        constexpr float MIN_RESIZE_EVENT_INTERVAL_SECONDS = 1.0F / 120.0F;
-        const float resizeEventNow = Core::Application::getTime();
+        constexpr double MIN_RESIZE_EVENT_INTERVAL_SECONDS = 1.0 / 120.0;
+        const double resizeEventNow = Core::Application::getTime();
         const bool pixelSizeChanged = (pixelW != m_Resize.lastImmediatePixelW) || (pixelH != m_Resize.lastImmediatePixelH);
         const bool intervalElapsed = (resizeEventNow - m_Resize.lastImmediateEventTime) >= MIN_RESIZE_EVENT_INTERVAL_SECONDS;
         if (pixelSizeChanged && intervalElapsed)
@@ -1105,6 +1118,7 @@ void TitleBarLayer::renderTitleBar()
     ImGui::SetCursorPosY(titleY);
 
     ImGui::TextColored(scheme.textPrimary, "TaskSmack");
+    const float wordmarkWidth = ImGui::GetItemRectSize().x;
 
     if (titleFont != nullptr)
     {
@@ -1113,6 +1127,27 @@ void TitleBarLayer::renderTitleBar()
 
     // Right side buttons
     const float BUTTON_WIDTH = computeTitleBarButtonWidth(titleBarHeight, TITLE_BAR_BUTTON_ASPECT);
+
+    // The window may not be made narrower than what this bar has to show, or shorter than the base
+    // minimum at this display scale. Derived from the sizes just used for drawing, so it cannot
+    // drift from them, and handed to SDL only when it changes (#970). ShellLayer has already set
+    // the scaled base minimum at attach; this widens it to cover the bar.
+    const WindowMinimumSize minimumSize =
+        computeMinimumWindowSize(UI::Theme::get().displayScale(),
+                                 computeTitleBarContentWidth(iconX,
+                                                             ICON_SIZE,
+                                                             titleBarHeight * TITLE_BAR_TITLE_GAP_RATIO,
+                                                             wordmarkWidth,
+                                                             BUTTON_WIDTH,
+                                                             titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO));
+    if (minimumSize.width != m_MinimumSize.width || minimumSize.height != m_MinimumSize.height)
+    {
+        m_MinimumSize = minimumSize;
+        if (!SDL_SetWindowMinimumSize(window.getHandle(), minimumSize.width, minimumSize.height))
+        {
+            spdlog::warn("SDL_SetWindowMinimumSize({}, {}) failed: {}", minimumSize.width, minimumSize.height, SDL_GetError());
+        }
+    }
     const float BUTTON_HEIGHT = titleBarHeight;
     const auto rightX = static_cast<float>(windowWidth);
 
@@ -1254,7 +1289,8 @@ void TitleBarLayer::renderSystemMenu()
 
     // Set position for the popup (below the icon)
     const float titleBarHeight = height();
-    ImGui::SetNextWindowPos(ImVec2(8.0F, titleBarHeight), ImGuiCond_Appearing);
+    // Under the icon, which sits at this same fraction of the bar height from the left edge.
+    ImGui::SetNextWindowPos(ImVec2(titleBarHeight * TITLE_BAR_EDGE_MARGIN_RATIO, titleBarHeight), ImGuiCond_Appearing);
 
     if (ImGui::BeginPopup("##SystemMenu"))
     {

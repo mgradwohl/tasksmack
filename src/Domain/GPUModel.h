@@ -5,6 +5,7 @@
 #include "ISamplable.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/IGPUProbe.h"
+#include "SamplingConfig.h"
 
 #include <atomic>
 #include <chrono>
@@ -23,13 +24,16 @@
 namespace Domain
 {
 
-// GPU history capacity: 5 minutes at 1 second intervals = 300 samples
-inline constexpr size_t GPU_HISTORY_CAPACITY = 300;
-
+/// One GPU's history as published to the UI: numeric series only, all the same length and aligned
+/// sample-for-sample. Whole GPUSnapshots are not republished: each carries four identity strings,
+/// and with the history sized to the window (up to 18,001 samples at 1800 s / 100 ms) copying them
+/// on every refresh was the bulk of the sampler thread's work. GPUModel::history() still returns
+/// them for a caller that needs one.
 struct GPUPublishedHistory
 {
-    std::vector<GPUSnapshot> snapshots;
     std::vector<double> timestamps;
+    std::vector<std::uint64_t> memoryUsedBytes;
+    std::vector<std::uint64_t> memoryTotalBytes;
     std::vector<float> utilization;
     std::vector<float> memoryPercent;
     std::vector<float> gpuClock;
@@ -45,6 +49,9 @@ struct GPUPublication
     std::uint64_t version = 0;
     std::vector<GPUSnapshot> snapshots;
     std::vector<Platform::GPUInfo> gpuInfo;
+    /// False if enumerating the GPUs failed, in which case an empty gpuInfo means "could not look",
+    /// not "looked and found none". Consumers that report the absence of a GPU must check this.
+    bool gpuInfoKnown = false;
     Platform::GPUCapabilities capabilities;
     std::unordered_map<std::string, GPUPublishedHistory> histories;
 };
@@ -91,6 +98,16 @@ class GPUModel : public ISamplable
     // Refresh metrics (called by sampler thread)
     void refresh();
 
+    /// Same as refresh(), but with an explicit "now" instead of reading
+    /// std::chrono::steady_clock::now(), so time-based history trimming can be tested
+    /// deterministically. Mirrors StorageModel::sampleAt().
+    void refreshAt(std::chrono::steady_clock::time_point now);
+
+    /// History window in seconds. Like SystemModel and StorageModel, samples older than this
+    /// are dropped, so the GPU charts cover the same window as every other chart (#993).
+    void setMaxHistorySeconds(double seconds);
+    [[nodiscard]] double maxHistorySeconds() const;
+
     // Get current snapshots (thread-safe)
     [[nodiscard]] std::vector<GPUSnapshot> snapshots() const;
 
@@ -134,6 +151,9 @@ class GPUModel : public ISamplable
     std::unique_ptr<Platform::IGPUProbe> m_Probe;
     mutable std::mutex m_ProbeMutex;
     std::vector<Platform::GPUInfo> m_GPUInfo;
+    // False if the constructor's enumerateGPUs() threw, leaving m_GPUInfo empty for a reason other
+    // than there being no GPUs. Published as GPUPublication::gpuInfoKnown.
+    bool m_GPUInfoKnown = false;
     Platform::GPUCapabilities m_Capabilities;
     // False if the constructor's capabilities() query threw, leaving m_Capabilities at its
     // default (all-false) values. readProcessGPUCounters() must not treat that as proof
@@ -142,8 +162,7 @@ class GPUModel : public ISamplable
 
     // Current snapshots per GPU
     using SnapshotMap = std::unordered_map<std::string, GPUSnapshot, TransparentStringHash, TransparentStringEqual>;
-    using HistoryMap =
-        std::unordered_map<std::string, History<GPUSnapshot, GPU_HISTORY_CAPACITY>, TransparentStringHash, TransparentStringEqual>;
+    using HistoryMap = std::unordered_map<std::string, HistoryBuffer<GPUSnapshot>, TransparentStringHash, TransparentStringEqual>;
     using CounterMap = std::unordered_map<std::string, Platform::GPUCounters, TransparentStringHash, TransparentStringEqual>;
 
     SnapshotMap m_Snapshots;
@@ -153,6 +172,9 @@ class GPUModel : public ISamplable
 
     // Timestamps for history data
     std::vector<double> m_HistoryTimestamps;
+
+    // History window; ring capacities are sized from it by applyHistoryCapacity().
+    double m_MaxHistorySeconds = Sampling::HISTORY_SECONDS_DEFAULT;
 
     // Previous counters for rate calculation
     CounterMap m_PrevCounters;
@@ -175,6 +197,12 @@ class GPUModel : public ISamplable
     template<typename Projection>
     [[nodiscard]] std::vector<float> getHistoryFieldByProjection(std::string_view gpuId, Projection project) const;
     void publish();
+
+    // Size every history ring for m_MaxHistorySeconds at the fastest refresh cadence (caller holds m_Mutex).
+    void applyHistoryCapacity();
+    // Drop samples older than m_MaxHistorySeconds before nowSeconds, except the newest of them while a
+    // newer sample remains, like HistoryUtils::discardBefore (#1016) (caller holds m_Mutex).
+    void trimHistory(double nowSeconds);
 };
 
 } // namespace Domain

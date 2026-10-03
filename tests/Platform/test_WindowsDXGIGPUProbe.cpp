@@ -26,6 +26,15 @@ namespace
 // vendorIdToName: pure lookup, no hardware required.
 // =============================================================================
 
+TEST(AdapterMemoryTotalBytesTest, IntegratedUsesSharedSystemMemoryDiscreteUsesDedicated)
+{
+    // A fixed figure from the adapter description, not the moving per-process budget (#1029).
+    constexpr std::uint64_t DEDICATED = 128ULL * 1024 * 1024;
+    constexpr std::uint64_t SHARED = 16ULL * 1024 * 1024 * 1024;
+    EXPECT_EQ(adapterMemoryTotalBytes(true, DEDICATED, SHARED), SHARED);
+    EXPECT_EQ(adapterMemoryTotalBytes(false, DEDICATED, SHARED), DEDICATED);
+}
+
 TEST(VendorIdToNameTest, KnownVendorIdsMapCorrectly)
 {
     EXPECT_EQ(vendorIdToName(0x10DE), "NVIDIA");

@@ -1436,6 +1436,32 @@ TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRxFill_FallsBackToAlphaScaledLin
     EXPECT_NEAR(theme->chartNetRxFill.w, (theme->chartNetRx.w * k_AlphaScale), k_Tolerance);
 }
 
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_GpuFills_FallBackToAlphaScaledLineColorWhenAbsent)
+{
+    // k_FullThemeTomlBody's [charts.gpu] sets the line colours but none of utilization_fill,
+    // memory_fill or clock_fill. Each fill falls back to its line colour at 0.35x alpha, like the
+    // other chart fills -- it used to be the opaque line colour, which covered the chart (#1022).
+    const std::string toml = std::string("[meta]\nname = \"GPU Fill Fallback\"\n\n") + k_FullThemeTomlBody;
+    createThemeFile("gpu-fill-fallback.toml", toml);
+
+    auto theme = ThemeLoader::loadTheme(m_TempDir / "gpu-fill-fallback.toml");
+    ASSERT_TRUE(theme.has_value());
+
+    constexpr float k_AlphaScale = 0.35F;
+    constexpr float k_Tolerance = 0.01F;
+    const auto expectScaled = [&](const ImVec4& fill, const ImVec4& line, const char* name)
+    {
+        EXPECT_NEAR(fill.x, line.x, k_Tolerance) << name;
+        EXPECT_NEAR(fill.y, line.y, k_Tolerance) << name;
+        EXPECT_NEAR(fill.z, line.z, k_Tolerance) << name;
+        EXPECT_NEAR(fill.w, line.w * k_AlphaScale, k_Tolerance) << name;
+    };
+    const auto scheme = theme.value_or(decltype(theme)::value_type{});
+    expectScaled(scheme.gpuUtilizationFill, scheme.gpuUtilization, "utilization");
+    expectScaled(scheme.gpuMemoryFill, scheme.gpuMemory, "memory");
+    expectScaled(scheme.gpuClockFill, scheme.gpuClock, "clock");
+}
+
 // ========== Priority Badge Text Color Tests ==========
 
 TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_PriorityBadgeTextColor_ParsedWhenPresent)

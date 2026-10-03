@@ -1,6 +1,9 @@
 #pragma once
 
+#include "App/DialogGeometry.h"
+
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -123,7 +126,7 @@ struct ProcessColumnInfo
     std::string_view name;        // Display name in header (can be short like "S")
     std::string_view menuName;    // Display name in context menu (full name like "State")
     std::string_view configKey;   // Key used in config file
-    float defaultWidth;           // Default column width
+    float defaultWidth;           // Default column width in px at REFERENCE_EM_PX; see scaledDefaultWidth()
     bool defaultVisible;          // Visible by default
     bool canHide;                 // Whether user can hide this column
     std::string_view description; // Tooltip description
@@ -223,6 +226,31 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
     // clang-format on
 
     return infos[toIndex(col)];
+}
+
+/// Default width of a column in pixels at the current font.
+///
+/// The widths in getColumnInfo() are authored in pixels at the reference em (the Medium preset on a
+/// 1.0 display scale), where they are sized to their content -- Name's 120px holds about 24
+/// characters there. Handing those pixels to ImGui unscaled pinned them to that one font: the table
+/// settings are not persisted (ImGui's ini is disabled), so every launch laid the columns out from
+/// the raw pixel values whatever font was active. At Even Huger the same 120px held 14 characters
+/// and clipped names the kernel had already capped at 15; at Small every column was a third wider
+/// than its content needed (#913).
+///
+/// ImGui rescales a live table's widths itself when the font changes (ImGuiTable::RefScale), so
+/// this only has to make the *starting* widths font-relative.
+///
+/// @param info  Column metadata from getColumnInfo().
+/// @param emPx  One em, i.e. ImGui::GetFontSize().
+/// @return Width in pixels; the authored width unchanged if emPx is not a usable size.
+[[nodiscard]] inline auto scaledDefaultWidth(const ProcessColumnInfo& info, float emPx) noexcept -> float
+{
+    if (!std::isfinite(emPx) || emPx <= 0.0F)
+    {
+        return info.defaultWidth;
+    }
+    return info.defaultWidth * (emPx / REFERENCE_EM_PX);
 }
 
 /// Column visibility settings for persistence

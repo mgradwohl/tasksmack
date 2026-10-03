@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <span>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -314,8 +315,39 @@ template<typename T> [[nodiscard]] std::vector<T> toVector(const HistoryBuffer<T
     return result;
 }
 
-/// Count leading timestamps strictly older than `cutoff`, then discard that
-/// many entries from the timestamp ring and every aligned ring in O(1) each.
+/// Whether a trim keeps `anchor`, the newest sample before `cutoff`, given `next`, the oldest sample
+/// at or after it, and `newest`, the newest sample overall.
+///
+/// The anchor sits just before the window's left edge, so a chart's line runs off the edge of the
+/// axis instead of starting a fraction of a refresh interval inside it and leaving an empty strip
+/// after every trim (#1016). That only holds while the anchor is the sample just before the window:
+/// a step from it to `next` longer than the window itself (newest - cutoff) is a gap -- sampling
+/// paused, or the source was absent -- and keeping it would draw the old value connected across the
+/// gap. So it is kept only when the step is no longer than the window.
+[[nodiscard]] inline bool keepTrimAnchor(double anchor, double next, double cutoff, double newest) noexcept
+{
+    const double window = newest - cutoff;
+    return (next - anchor) <= window;
+}
+
+/// How many leading entries of `timestamps` (oldest first) a trim to `cutoff` removes: every entry
+/// before the cutoff except the newest of them when keepTrimAnchor() says to keep it, which needs a
+/// newer sample to remain. The same rule as discardBefore(), for contiguous histories.
+[[nodiscard]] inline std::size_t trimCountBefore(std::span<const double> timestamps, double cutoff) noexcept
+{
+    const auto firstInWindow = std::ranges::find_if(timestamps, [cutoff](double t) { return t >= cutoff; });
+    const auto keepFrom = static_cast<std::size_t>(firstInWindow - timestamps.begin());
+    if (keepFrom > 0 && keepFrom < timestamps.size() &&
+        keepTrimAnchor(timestamps[keepFrom - 1], timestamps[keepFrom], cutoff, timestamps.back()))
+    {
+        return keepFrom - 1;
+    }
+    return keepFrom;
+}
+
+/// Discard the leading entries older than `cutoff` from the timestamp ring and every aligned ring,
+/// in O(1) each -- all but the newest of them when keepTrimAnchor() says to keep it, which needs a
+/// newer sample to remain.
 /// Returns the number of discarded entries.
 template<typename... Buffers>
 [[nodiscard]] std::size_t discardBefore(HistoryBuffer<double>& timestamps, double cutoff, Buffers&... alignedBuffers)
@@ -324,6 +356,11 @@ template<typename... Buffers>
     while (removeCount < timestamps.size() && timestamps.ref(removeCount) < cutoff)
     {
         ++removeCount;
+    }
+    if (removeCount > 0 && removeCount < timestamps.size() &&
+        keepTrimAnchor(timestamps.ref(removeCount - 1), timestamps.ref(removeCount), cutoff, timestamps.latest()))
+    {
+        --removeCount; // keep the newest sample before the cutoff (see keepTrimAnchor)
     }
 
     timestamps.discardFront(removeCount);

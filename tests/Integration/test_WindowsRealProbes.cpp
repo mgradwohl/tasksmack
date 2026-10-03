@@ -414,7 +414,7 @@ TEST(WindowsRealProbesTest, ProcessActionsStopReturnsError)
     Platform::WindowsProcessActions actions;
 
     // Verify stop returns an error since it's not supported
-    auto result = actions.stop(static_cast<int32_t>(GetCurrentProcessId()));
+    const auto result = actions.stop({.pid = static_cast<int32_t>(GetCurrentProcessId()), .startTimeTicks = 1});
     EXPECT_FALSE(result.success);
     EXPECT_FALSE(result.errorMessage.empty());
 }
@@ -424,7 +424,7 @@ TEST(WindowsRealProbesTest, ProcessActionsResumeReturnsError)
     Platform::WindowsProcessActions actions;
 
     // Verify resume returns an error since it's not supported
-    auto result = actions.resume(static_cast<int32_t>(GetCurrentProcessId()));
+    const auto result = actions.resume({.pid = static_cast<int32_t>(GetCurrentProcessId()), .startTimeTicks = 1});
     EXPECT_FALSE(result.success);
     EXPECT_FALSE(result.errorMessage.empty());
 }
