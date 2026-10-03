@@ -318,9 +318,16 @@ void UILayer::onAttach()
         // name instead of hiding all of them (#1127). The error_code overload keeps an unreadable
         // directory from throwing out of onAttach.
         const auto userThemesDir = Core::Application::get().paths().userConfigDir() / "themes";
-        if (std::error_code ec; std::filesystem::is_directory(userThemesDir, ec))
+        std::error_code ec;
+        if (std::filesystem::is_directory(userThemesDir, ec))
         {
             Theme::get().loadThemes(userThemesDir);
+        }
+        else if (ec && ec != std::errc::no_such_file_or_directory)
+        {
+            // An absent directory is normal and stays quiet; anything else (permissions, a
+            // symlink loop) would otherwise drop the user's themes without a word.
+            spdlog::warn("Skipping user themes in {}: {}", userThemesDir.string(), ec.message());
         }
 
         // Apply default/fallback theme colors (user config will override later)
