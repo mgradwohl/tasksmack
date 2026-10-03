@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <span>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -327,6 +328,21 @@ template<typename T> [[nodiscard]] std::vector<T> toVector(const HistoryBuffer<T
 {
     const double window = newest - cutoff;
     return (next - anchor) <= window;
+}
+
+/// How many leading entries of `timestamps` (oldest first) a trim to `cutoff` removes: every entry
+/// before the cutoff except the newest of them when keepTrimAnchor() says to keep it, which needs a
+/// newer sample to remain. The same rule as discardBefore(), for contiguous histories.
+[[nodiscard]] inline std::size_t trimCountBefore(std::span<const double> timestamps, double cutoff) noexcept
+{
+    const auto firstInWindow = std::ranges::find_if(timestamps, [cutoff](double t) { return t >= cutoff; });
+    const auto keepFrom = static_cast<std::size_t>(firstInWindow - timestamps.begin());
+    if (keepFrom > 0 && keepFrom < timestamps.size() &&
+        keepTrimAnchor(timestamps[keepFrom - 1], timestamps[keepFrom], cutoff, timestamps.back()))
+    {
+        return keepFrom - 1;
+    }
+    return keepFrom;
 }
 
 /// Discard the leading entries older than `cutoff` from the timestamp ring and every aligned ring,
