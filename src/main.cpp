@@ -288,6 +288,20 @@ auto runAppGuarded() -> int
         {}
         return EXIT_FAILURE;
     }
+    catch (...)
+    {
+        // Something not derived from std::exception: same guarded exit, with a generic message.
+        try
+        {
+            spdlog::critical("TaskSmack stopped on an unexpected error of an unknown type");
+#ifdef _WIN32
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "TaskSmack", "TaskSmack stopped on an unexpected error.", nullptr);
+#endif
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) - reporting is best effort; the exit code still says it failed
+        {}
+        return EXIT_FAILURE;
+    }
 }
 
 } // namespace

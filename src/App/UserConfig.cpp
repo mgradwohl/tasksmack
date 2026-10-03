@@ -518,12 +518,26 @@ void UserConfig::save()
         }
     }
 
+    // A symlinked config is written through the link: the temporary file goes beside the link's
+    // target and is renamed over the target, so the link survives (renaming over the link itself
+    // would replace it with a regular file and leave the target stale, #1222 review).
+    std::filesystem::path destination = m_ConfigPath;
+    if (std::filesystem::is_symlink(m_ConfigPath, ec))
+    {
+        destination = std::filesystem::canonical(m_ConfigPath, ec);
+        if (ec)
+        {
+            spdlog::error("Not saving settings: can't resolve the link {}: {}", m_ConfigPath.string(), ec.message());
+            return;
+        }
+    }
+
     // Start from the file as it is. One that exists but can't be read or parsed is left alone:
     // replacing it would lose every setting and unknown key in it, and a malformed file is the
     // user's to repair (#1122).
     toml::table document;
     std::filesystem::perms originalPermissions = std::filesystem::perms::unknown;
-    const bool fileExists = std::filesystem::exists(m_ConfigPath, ec);
+    const bool fileExists = std::filesystem::exists(destination, ec);
     if (ec)
     {
         spdlog::error("Not saving settings: can't check {}: {}", m_ConfigPath.string(), ec.message());
@@ -533,14 +547,14 @@ void UserConfig::save()
     {
         try
         {
-            document = toml::parse_file(m_ConfigPath.string());
+            document = toml::parse_file(destination.string());
         }
         catch (const toml::parse_error& err)
         {
             spdlog::error("Not saving settings: {} can't be read or parsed ({}); fix or remove it", m_ConfigPath.string(), err.what());
             return;
         }
-        originalPermissions = std::filesystem::status(m_ConfigPath, ec).permissions();
+        originalPermissions = std::filesystem::status(destination, ec).permissions();
     }
 
     // Write only what TaskSmack changed since it last read or wrote the file; everything else in
@@ -557,7 +571,7 @@ void UserConfig::save()
     std::random_device random;
     for (int attempt = 0; attempt < 8 && !file.is_open(); ++attempt)
     {
-        tempPath = m_ConfigPath;
+        tempPath = destination;
         tempPath += std::format(".{:08x}.tmp", random());
         if (std::filesystem::exists(tempPath, ec))
         {
@@ -609,7 +623,7 @@ void UserConfig::save()
         return;
     }
 
-    std::filesystem::rename(tempPath, m_ConfigPath, ec);
+    std::filesystem::rename(tempPath, destination, ec);
     if (ec)
     {
         spdlog::error("Failed to replace {} with the new config: {}", m_ConfigPath.string(), ec.message());

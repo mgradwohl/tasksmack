@@ -79,11 +79,11 @@ class PanelTabs
             }
             catch (const std::exception& e)
             {
-                spdlog::error("Panel '{}' threw while detaching: {}", tab.eventName, e.what());
+                logDetachFailure(tab.eventName, e.what());
             }
             catch (...)
             {
-                spdlog::error("Panel '{}' threw while detaching", tab.eventName);
+                logDetachFailure(tab.eventName, "unknown exception");
             }
         }
     }
@@ -110,6 +110,18 @@ class PanelTabs
     }
 
   private:
+    /// Best-effort report of a panel throwing while detaching. Formatting can itself throw (e.g.
+    /// out of memory), and that must not interrupt the teardown either (as guardLayerCall does).
+    static void logDetachFailure(const std::string& panel, const char* what) noexcept
+    {
+        try
+        {
+            spdlog::error("Panel '{}' threw while detaching: {}", panel, what);
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) - logging is best effort and must not throw
+        {}
+    }
+
     std::vector<Tab> m_Tabs;
     std::size_t m_ActiveIndex = 0;
 };

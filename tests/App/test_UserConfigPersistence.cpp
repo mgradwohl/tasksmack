@@ -1230,6 +1230,23 @@ TEST_F(UserConfigSaveLoadFixture, SaveLeavesNoTemporaryFileBehind)
 }
 
 #ifndef _WIN32
+TEST_F(UserConfigSaveLoadFixture, SymlinkedConfigKeepsItsLinkAndUpdatesItsTarget)
+{
+    // A dotfiles-managed config is often a symlink: saving must write through it (#1222 review).
+    const auto link = UserConfig::get().configPath();
+    const auto target = m_TempDir / "dotfiles-config.toml";
+    writeFile(target, "[theme]\nid = \"arctic-fire\"\n");
+    std::filesystem::create_symlink(target, link);
+
+    auto& config = UserConfig::get();
+    config.load();
+    config.settings().themeId = "mocha";
+    config.save();
+
+    EXPECT_TRUE(std::filesystem::is_symlink(link));
+    EXPECT_EQ(parsed(target)["theme"]["id"].value<std::string>(), "mocha");
+}
+
 TEST_F(UserConfigSaveLoadFixture, UnreadableConfigFileIsNotReplaced)
 {
     if (::geteuid() == 0)
