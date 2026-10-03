@@ -13,37 +13,15 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <cassert>
 #include <string_view>
 
 namespace App
 {
 
-ElevationNoticeLayer* ElevationNoticeLayer::s_Instance = nullptr;
-
 ElevationNoticeLayer::ElevationNoticeLayer() : Core::Layer("ElevationNoticeLayer")
 {}
 
 ElevationNoticeLayer::~ElevationNoticeLayer() = default;
-
-void ElevationNoticeLayer::onAttach()
-{
-    // Layer lifecycle is guaranteed to be called from main thread only (SDL/ImGui requirement).
-    // s_Instance is set by setInstance() immediately after pushLayer() returns.
-    // During onAttach(), verify that either the singleton is not yet set (before setInstance),
-    // or it already points to this instance (setInstance was called before pushLayer).
-    assert((s_Instance == nullptr || s_Instance == this) && "ElevationNoticeLayer: expected s_Instance to be null (first initialization) "
-                                                            "or already set to this instance (setInstance called before pushLayer)");
-}
-
-void ElevationNoticeLayer::onDetach()
-{
-    // Clear singleton instance to avoid dangling pointer after this layer is destroyed.
-    if (s_Instance == this)
-    {
-        s_Instance = nullptr;
-    }
-}
 
 void ElevationNoticeLayer::onUpdate([[maybe_unused]] float deltaTime)
 {
@@ -177,14 +155,6 @@ void ElevationNoticeLayer::renderDialog()
         ImGui::PopStyleColor(); // textPrimary
         ImGui::EndPopup();
     }
-}
-
-/// Set the singleton instance (non-owning; layer is owned by the application's layer stack).
-/// THREAD-SAFETY: Must only be called from main thread during initialization,
-/// before any code (onAttach's assert, onDetach's clear) reads s_Instance.
-void ElevationNoticeLayer::setInstance(ElevationNoticeLayer& layer)
-{
-    s_Instance = &layer;
 }
 
 } // namespace App

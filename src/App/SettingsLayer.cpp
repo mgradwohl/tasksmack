@@ -20,7 +20,6 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <cassert>
 #include <cstddef>
 #include <filesystem>
 #include <string>
@@ -57,30 +56,10 @@ constexpr const char* NATIVE_DECORATIONS_LABEL = "Use native window decorations 
 
 } // namespace
 
-SettingsLayer* SettingsLayer::s_Instance = nullptr;
-
 SettingsLayer::SettingsLayer() : Core::Layer("SettingsLayer")
 {}
 
 SettingsLayer::~SettingsLayer() = default;
-
-void SettingsLayer::onAttach()
-{
-    // Layer lifecycle is guaranteed to be called from main thread only (SDL/ImGui requirement).
-    // s_Instance is set by setInstance() immediately after pushLayer() returns.
-    // During onAttach(), verify that either the singleton is not yet set (before setInstance),
-    // or it already points to this instance (setInstance was called before pushLayer).
-    assert((s_Instance == nullptr || s_Instance == this) && "SettingsLayer singleton must be nullptr or point to this instance");
-}
-
-void SettingsLayer::onDetach()
-{
-    // Clear singleton instance to avoid dangling pointer after this layer is destroyed.
-    if (s_Instance == this)
-    {
-        s_Instance = nullptr;
-    }
-}
 
 void SettingsLayer::onUpdate([[maybe_unused]] float deltaTime)
 {
@@ -544,14 +523,6 @@ void SettingsLayer::renderSettingsDialog()
 
         ImGui::EndPopup();
     }
-}
-
-/// Set the singleton instance (non-owning; layer is owned by the application's layer stack).
-/// THREAD-SAFETY: Must only be called from main thread during initialization,
-/// before any code (onAttach's assert, onDetach's clear) reads s_Instance.
-void SettingsLayer::setInstance(SettingsLayer& layer)
-{
-    s_Instance = &layer;
 }
 
 } // namespace App

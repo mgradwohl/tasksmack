@@ -223,26 +223,12 @@ auto runApp() -> int
     // Push shell layer (docking workspace with panels)
     appRef.pushLayer<App::ShellLayer>();
 
-    // About dialog layer (modal overlay)
-    // NOTE: AboutLayer tracks its non-owning singleton pointer (s_Instance) via setInstance(),
-    // used internally to detect a double-attach; nothing outside the class reads it.
-    // CRITICAL: onAttach() is called inside pushLayer(), so setInstance() must be called
-    // immediately after layer creation but BEFORE pushing it to the stack.
-    // We create a bare instance, register it as the singleton, then push it.
-    // This awkward pattern is necessary because pushLayer() manages layer ownership
-    // and calls onAttach() immediately.
-    auto& aboutLayerRef = appRef.pushLayer<App::AboutLayer>();
-    App::AboutLayer::setInstance(aboutLayerRef);
-
-    // Settings dialog layer (modal overlay)
-    // NOTE: SettingsLayer follows the same singleton pattern as AboutLayer.
-    auto& settingsLayerRef = appRef.pushLayer<App::SettingsLayer>();
-    App::SettingsLayer::setInstance(settingsLayerRef);
-
-    // Elevation notice layer (modal overlay, shown at startup when running without elevated privileges)
-    // NOTE: ElevationNoticeLayer follows the same singleton pattern as AboutLayer.
-    auto& elevationNoticeLayerRef = appRef.pushLayer<App::ElevationNoticeLayer>();
-    App::ElevationNoticeLayer::setInstance(elevationNoticeLayerRef);
+    // Dialog layers (modal overlays), opened by OpenAboutEvent, OpenSettingsEvent and
+    // OpenElevationNoticeEvent. The elevation notice is shown at startup when running without
+    // elevated privileges.
+    appRef.pushLayer<App::AboutLayer>();
+    appRef.pushLayer<App::SettingsLayer>();
+    appRef.pushLayer<App::ElevationNoticeLayer>();
 
     // Run the application
     appRef.run();

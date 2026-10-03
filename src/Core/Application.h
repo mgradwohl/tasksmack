@@ -113,6 +113,10 @@ class Application
     // touches this -- only test_Application.cpp uses it.
     friend struct ApplicationTestAccessor;
 
+    /// Raise a WindowCloseEvent for a close request and report whether to close: true unless a
+    /// layer handled the event, which vetoes the close (contract in WindowEvents.h).
+    [[nodiscard]] bool closeRequestAccepted();
+
     ApplicationSpecification m_Spec;
     PathService m_Paths;
     std::unique_ptr<Window> m_Window;

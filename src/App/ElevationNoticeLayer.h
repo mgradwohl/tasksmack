@@ -25,24 +25,16 @@ class ElevationNoticeLayer : public Core::Layer
     ElevationNoticeLayer(ElevationNoticeLayer&&) = delete;
     ElevationNoticeLayer& operator=(ElevationNoticeLayer&&) = delete;
 
-    void onAttach() override;
-    void onDetach() override;
     void onUpdate(float deltaTime) override;
     void onRender() override;
     void onEvent(Core::Event& event) override;
 
-    // Set singleton without taking ownership (use when layer is in layer stack)
-    static void setInstance(ElevationNoticeLayer& layer);
-    void requestOpen();
-
   private:
+    void requestOpen();
     void renderDialog();
 
     bool m_OpenRequested = false;
     bool m_DontShowAgain = false;
-
-    // Non-owning singleton pointer; points to a layer owned by the application's layer stack
-    static ElevationNoticeLayer* s_Instance;
 };
 
 } // namespace App

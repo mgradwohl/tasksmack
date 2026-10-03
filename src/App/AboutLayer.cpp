@@ -16,15 +16,12 @@
 
 #include <algorithm>
 #include <array>
-#include <cassert>
 #include <filesystem>
 #include <string>
 #include <string_view>
 
 namespace App
 {
-
-AboutLayer* AboutLayer::s_Instance = nullptr;
 
 AboutLayer::AboutLayer() : Core::Layer("AboutLayer")
 {}
@@ -33,21 +30,7 @@ AboutLayer::~AboutLayer() = default;
 
 void AboutLayer::onAttach()
 {
-    // Layer lifecycle is guaranteed to be called from main thread only (SDL/ImGui requirement).
-    // s_Instance is set by setInstance() immediately after pushLayer() returns.
-    // During onAttach(), verify that either the singleton is not yet set (before setInstance),
-    // or it already points to this instance (setInstance was called before pushLayer).
-    assert((s_Instance == nullptr || s_Instance == this) && "AboutLayer singleton must be nullptr or point to this instance");
     loadIcon();
-}
-
-void AboutLayer::onDetach()
-{
-    // Clear singleton instance to avoid dangling pointer after this layer is destroyed.
-    if (s_Instance == this)
-    {
-        s_Instance = nullptr;
-    }
 }
 
 void AboutLayer::onUpdate([[maybe_unused]] float deltaTime)
@@ -230,14 +213,6 @@ void AboutLayer::loadIcon()
     }
 
     spdlog::warn("About dialog icon not found; continuing without image");
-}
-
-/// Set the singleton instance (non-owning; layer is owned by the application's layer stack).
-/// THREAD-SAFETY: Must only be called from main thread during initialization,
-/// before any code (onAttach's assert, onDetach's clear) reads s_Instance.
-void AboutLayer::setInstance(AboutLayer& layer)
-{
-    s_Instance = &layer;
 }
 
 } // namespace App

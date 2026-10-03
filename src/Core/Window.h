@@ -39,9 +39,10 @@ class Window
     static void setVSync(bool enabled);
 
     [[nodiscard]] bool shouldClose() const noexcept;
+    /// Ask to close the window. Application::run() picks this up after the event drain and raises
+    /// WindowCloseEvent, so a layer can veto it like an OS close request (#1077).
     void requestClose() noexcept;
-    void clearCloseRequest() noexcept; // Reset close flag after handling
-                                       // WindowCloseEvent
+    void clearCloseRequest() noexcept; // Reset the close flag once run() has raised WindowCloseEvent
 
     /// Return the current logical width in screen coordinates.
     /// Queries SDL directly so the value stays accurate after user-initiated
