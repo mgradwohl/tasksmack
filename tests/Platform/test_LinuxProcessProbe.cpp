@@ -780,8 +780,20 @@ TEST(LinuxProcessProbeTest, ReadableRaplCounterEnablesPowerUsage)
     writeFile(powercap.path / "intel-rapl:0" / "energy_uj", "123456\n");
     writeFile(powercap.path / "intel-rapl:0" / "max_energy_range_uj", "262143328850\n");
 
+    // user nice system idle iowait irq softirq steal: busy is user + nice + system.
+    writeFile(proc.path / "stat", "cpu  100 20 30 400 50 6 7 8 0 0\ncpu0 100 20 30 400 50 6 7 8 0 0\n");
+
     const LinuxProcessProbe probe(proc.path, powercap.path);
     EXPECT_TRUE(probe.capabilities().hasPowerUsage);
+
+    // The raw reading ProcessModel shares out per interval (#1093): a regression dropping the
+    // wrap range or miscounting busy ticks would otherwise pass the model tests, which inject them.
+    const auto reading = probe.readPackageEnergy();
+    ASSERT_TRUE(reading.has_value());
+    EXPECT_EQ(reading->energyUj, 123456U);
+    EXPECT_EQ(reading->maxRangeUj, 262143328850U);
+    ASSERT_TRUE(reading->busyCpuTicks.has_value());
+    EXPECT_EQ(*reading->busyCpuTicks, 150U);
 }
 
 TEST(LinuxProcessProbeTest, UnreadableRaplCounterDisablesPowerUsage)
