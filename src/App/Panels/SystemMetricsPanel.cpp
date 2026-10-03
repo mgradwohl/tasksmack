@@ -693,6 +693,26 @@ void SystemMetricsPanel::renderOverview()
                                        {ImPlotProp_FillColor, theme.scheme().cpuIowaitFill});
                 }
 
+                // A 1px edge along the top of each band, under the band's own label. ImPlot draws a
+                // legend icon in its item's colour at that colour's alpha, so a band alone showed its
+                // 35% fill as the swatch: a dull block unlike the band's opaque NowBar. The edge
+                // shares the label, so it is the same legend item, and its opaque colour becomes the
+                // swatch; hiding the item from the legend hides both (#1192).
+                const auto bandEdge = [&](const char* label, const std::vector<double>& top, const ImVec4& color)
+                {
+                    ImPlot::PlotLine(label,
+                                     m_CpuStackX.data(),
+                                     top.data(),
+                                     stackCount,
+                                     {ImPlotProp_LineColor, color, ImPlotProp_LineWeight, UI::Widgets::lineWeight(1.0F)});
+                };
+                bandEdge(CPU_USER_LABEL, yUserTop, theme.scheme().cpuUser);
+                bandEdge(CPU_SYSTEM_LABEL, ySystemTop, theme.scheme().cpuSystem);
+                if (showIowait)
+                {
+                    bandEdge(CPU_IOWAIT_LABEL, yIowaitTop, theme.scheme().cpuIowait);
+                }
+
                 // Total over the stack. It is 100 - idle, so it includes irq, softirq and steal time
                 // the three bands do not: without it the "CPU Total" bar had no series, and the top
                 // of the stack understated the load whenever that other time was significant.
@@ -733,7 +753,7 @@ void SystemMetricsPanel::renderOverview()
                        .label = CPU_TOTAL_LABEL,
                        .tooltipText = {},
                        .value01 = UI::Format::percent01(m_SmoothedCpu.total),
-                       .color = theme.progressColor(m_SmoothedCpu.total)});
+                       .color = theme.scheme().chartCpu}); // The Total line's colour (#1192)
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.user),
                        .label = CPU_USER_LABEL,
                        .tooltipText = {},
