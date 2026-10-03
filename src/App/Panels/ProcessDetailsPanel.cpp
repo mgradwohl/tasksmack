@@ -19,6 +19,7 @@
 #include "UI/EmptyState.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/RateAxis.h"
 #include "UI/TabContent.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
@@ -340,6 +341,8 @@ void ProcessDetailsPanel::renderContent()
                 }
                 else
                 {
+                    // The two history charts share the tab's height, like the other tabs' charts
+                    // (#959). The metrics table and per-GPU breakdown above them count as non-plot.
                     UI::Widgets::FillPlotLayout fill(m_GpuFill);
                     renderGpuUsage(m_CachedSnapshot, fill);
                 }

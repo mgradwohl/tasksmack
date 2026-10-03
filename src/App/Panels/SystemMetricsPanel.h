@@ -122,8 +122,10 @@ class SystemMetricsPanel : public Panel
 
     // Previous frame's Overview layout, feeding UI::Widgets::FillPlotLayout (#922)
     UI::Widgets::PlotFillState m_OverviewFill;
-    // Same, for the GPU tab (#959)
+    // The GPU tab's, shared by every GPU's charts (#959)
     UI::Widgets::PlotFillState m_GpuFill;
+    // The Network and I/O tab's (#959)
+    UI::Widgets::PlotFillState m_NetworkFill;
 
     struct SmoothedCpu
     {

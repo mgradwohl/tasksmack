@@ -15,7 +15,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
-#include <cstdint>
 #include <format>
 #include <optional>
 #include <span>
@@ -31,6 +30,7 @@ namespace
 using UI::Widgets::buildTimeAxis;
 using UI::Widgets::computeAlpha;
 using UI::Widgets::formatAgeSeconds;
+using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
@@ -124,10 +124,6 @@ void renderGpuSection(RenderContext& ctx)
 
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 
-    // Every GPU's charts share the tab's height, like the Overview tab's (#959).
-    UI::Widgets::PlotFillState localFill;
-    UI::Widgets::FillPlotLayout fill(ctx.plotFill != nullptr ? *ctx.plotFill : localFill);
-
     ImGui::Text("GPU Monitoring (%zu GPU%s)", gpuSnapshots.size(), gpuSnapshots.size() == 1 ? "" : "s");
     ImGui::Spacing();
 
@@ -136,6 +132,16 @@ void renderGpuSection(RenderContext& ctx)
     {
         updateSmoothedGPU(snap.gpuId, snap, ctx);
     }
+
+    // Every chart on the tab, across all GPUs, gets the same share of its height.
+    const float plotHeight = (ctx.fill != nullptr) ? ctx.fill->plotHeight() : HISTORY_PLOT_HEIGHT_DEFAULT;
+    const auto countPlot = [&ctx]
+    {
+        if (ctx.fill != nullptr)
+        {
+            ctx.fill->addPlot();
+        }
+    };
 
     // Scratch buffers for normalizeToPercent — declared before the GPU loop so they are reused
     // across multiple GPU iterations in the same frame (resize only allocates when count grows).
@@ -236,7 +242,7 @@ void renderGpuSection(RenderContext& ctx)
         auto gpuCorePlot = [&]()
         {
             const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
-                UI::Widgets::percentHistoryConfig("##GPUCoreHistory", axisConfig.xMin, axisConfig.xMax), fill.plotHeight()));
+                UI::Widgets::percentHistoryConfig("##GPUCoreHistory", axisConfig.xMin, axisConfig.xMax), plotHeight));
             if (chart.active())
             {
                 if (!utilData.empty())
@@ -491,8 +497,8 @@ void renderGpuSection(RenderContext& ctx)
         const size_t gpuNowBarColumns = std::max(gpuCoreBars.size(), gpuThermalBars.size());
 
         const std::string coreLayoutId = std::format("GPUCoreLayout{}", gpuIdx);
-        renderHistoryWithNowBars(coreLayoutId.c_str(), fill.plotHeight(), gpuCorePlot, gpuCoreBars, false, gpuNowBarColumns);
-        fill.addPlot();
+        renderHistoryWithNowBars(coreLayoutId.c_str(), plotHeight, gpuCorePlot, gpuCoreBars, false, gpuNowBarColumns);
+        countPlot();
 
         // Show notes for unavailable core metrics
         {
@@ -531,7 +537,7 @@ void renderGpuSection(RenderContext& ctx)
             auto gpuThermalPlot = [&]()
             {
                 const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
-                    UI::Widgets::percentHistoryConfig("##GPUThermalHistory", axisConfig.xMin, axisConfig.xMax), fill.plotHeight()));
+                    UI::Widgets::percentHistoryConfig("##GPUThermalHistory", axisConfig.xMin, axisConfig.xMax), plotHeight));
                 if (chart.active())
                 {
                     // Temperature (normalized to 0-100%)
@@ -647,15 +653,14 @@ void renderGpuSection(RenderContext& ctx)
             if (!gpuThermalBars.empty())
             {
                 const std::string thermalLayoutId = std::format("GPUThermalLayout{}", gpuIdx);
-                renderHistoryWithNowBars(
-                    thermalLayoutId.c_str(), fill.plotHeight(), gpuThermalPlot, gpuThermalBars, false, gpuNowBarColumns);
+                renderHistoryWithNowBars(thermalLayoutId.c_str(), plotHeight, gpuThermalPlot, gpuThermalBars, false, gpuNowBarColumns);
             }
             else
             {
                 // No current data, just render the plot without now bars
                 gpuThermalPlot();
             }
-            fill.addPlot();
+            countPlot();
 
             // Show notes for unavailable metrics
             std::vector<std::string> unavailableNotes;

@@ -431,10 +431,11 @@ void SystemMetricsPanel::renderContent()
                     .lastDeltaSeconds = m_LastDeltaSeconds,
                     .refreshInterval = m_RefreshInterval,
                     .smoothedGPUs = &m_SmoothedGPUs,
-                    .plotFill = &m_GpuFill,
                 };
                 {
                     const UI::Widgets::TabContentScope content("##GpuContent");
+                    UI::Widgets::FillPlotLayout fill(m_GpuFill);
+                    gpuCtx.fill = &fill;
                     GpuSection::renderGpuSection(gpuCtx);
                 }
                 ImGui::EndTabItem();
@@ -462,6 +463,7 @@ void SystemMetricsPanel::renderContent()
                     .smoothedNetRecvBytesPerSec = &m_SmoothedNetwork.recvBytesPerSec,
                     .smoothedNetInitialized = &m_SmoothedNetwork.initialized,
                     .selectedNetworkInterface = &m_SelectedNetworkInterface,
+                    .fillState = &m_NetworkFill,
                 };
                 {
                     const UI::Widgets::TabContentScope content("##NetworkContent");

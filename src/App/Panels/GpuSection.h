@@ -114,9 +114,9 @@ struct RenderContext
     // Smoothed values per GPU (map keyed by GPU ID)
     std::unordered_map<std::string, SmoothedGPU>* smoothedGPUs = nullptr;
 
-    // The tab's state for the shared chart-height rule (#959). The fill needs the previous frame's
-    // measurement, so with null the charts stay at the minimum height every frame.
-    UI::Widgets::PlotFillState* plotFill = nullptr;
+    // Shares the tab's height among every expanded GPU's charts, as the other tabs' charts do
+    // (#959). Null keeps the fixed default height.
+    UI::Widgets::FillPlotLayout* fill = nullptr;
 };
 
 /// Render the GPU section with utilization, memory, thermal, and power charts.
