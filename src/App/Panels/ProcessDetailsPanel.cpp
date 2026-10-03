@@ -149,6 +149,13 @@ ProcessDetailsPanel::ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActio
       m_ActionCapabilities(m_ProcessActions ? m_ProcessActions->actionCapabilities() : Platform::ProcessActionCapabilities{})
 {}
 
+void ProcessDetailsPanel::onAttach()
+{
+    const auto& settings = UserConfig::get().settings();
+    m_RefreshInterval = std::chrono::milliseconds(settings.refreshIntervalMs);
+    m_MaxHistorySeconds = Domain::Numeric::toDouble(settings.maxHistorySeconds);
+}
+
 /// Captures all computed layout values in one place for helper methods
 struct ProcessDetailsPanel::PrioritySliderContext
 {
@@ -444,6 +451,14 @@ void ProcessDetailsPanel::onEvent(Core::Event& event)
             return false; // Don't consume - other panels might care
         });
 
+    // Listen for refresh interval changes (NowBar smoothing)
+    dispatcher.dispatch<Core::RefreshRateChangedEvent>(
+        [this](Core::RefreshRateChangedEvent& e)
+        {
+            m_RefreshInterval = std::chrono::milliseconds(e.getIntervalMs());
+            return false;
+        });
+
     // Listen for history duration changes
     dispatcher.dispatch<Core::HistoryDurationChangedEvent>(
         [this](Core::HistoryDurationChangedEvent& e)
@@ -511,8 +526,7 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t uniqueK
 
 void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& snapshot, float deltaTimeSeconds)
 {
-    const auto refreshMs = std::chrono::milliseconds(App::UserConfig::get().settings().refreshIntervalMs);
-    const double alpha = computeAlpha(deltaTimeSeconds, refreshMs);
+    const double alpha = computeAlpha(deltaTimeSeconds, m_RefreshInterval);
 
     const double targetCpu = UI::Format::clampPercent(snapshot.cpuPercent);
     const double targetResident = Domain::Numeric::toDouble(snapshot.memoryBytes);
