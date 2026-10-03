@@ -114,8 +114,8 @@ TEST(LinuxProcessProbeTest, TotalCpuTimeIncreases)
 
     // Do some work to consume CPU
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    volatile int sum = 0;
-    for (int i = 0; i < 1000000; ++i)
+    volatile std::uint64_t sum = 0; // unsigned, so the busy loop's wrap-around is defined (#1090)
+    for (std::uint64_t i = 0; i < 1000000; ++i)
     {
         sum += i;
     }
@@ -348,10 +348,10 @@ TEST(LinuxProcessProbeTest, CpuTimeIncreasesBetweenSamples)
 
     // Do significant CPU work to ensure measurable time increase
     // Use multiple iterations and sleep to ensure CPU time is captured
-    volatile int sum = 0;
+    volatile std::uint64_t sum = 0; // unsigned, so the busy loop's wrap-around is defined (#1090)
     for (int iteration = 0; iteration < 5; ++iteration)
     {
-        for (int i = 0; i < 10000000; ++i)
+        for (std::uint64_t i = 0; i < 10000000; ++i)
         {
             sum += i;
         }
