@@ -155,6 +155,7 @@ add_executable(TaskSmackTests
     UI/test_Format.cpp
     UI/test_RenderMetrics.cpp
     UI/test_RateAxis.cpp
+    UI/test_BundledThemes.cpp
     UI/test_ColorContrast.cpp
     UI/test_StyleScale.cpp
     UI/test_DialogMetrics.cpp
@@ -287,6 +288,9 @@ if(UNIX AND NOT APPLE)
         TASKSMACK_TEST_GPU_MOCK_DIR="${CMAKE_CURRENT_BINARY_DIR}/mocks"
     )
 endif()
+
+# test_BundledThemes.cpp checks the shipped theme files themselves, from the source tree.
+target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_SOURCE_THEMES_DIR="${CMAKE_SOURCE_DIR}/assets/themes")
 
 if(WIN32)
     # Windows SDK version: GetIfTable2 and MIB_IF_TABLE2 are available on Vista+,
