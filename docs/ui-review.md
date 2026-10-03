@@ -55,7 +55,7 @@ None of this needs a redesign. The app's technical, information-dense character 
 - **Source:** `ProcessesPanel.cpp` `Selectable(SpanAllColumns)` ~L1029 → `ui.header.normal`, often at 50 % alpha. `BeginTabBar` without `ImGuiTabBarFlags_DrawSelectedOverline` at `ShellLayer.cpp:366`, `SystemMetricsPanel.cpp:404` and `ProcessDetailsPanel.cpp:338`.
 - **Current:** the selection fill differs from a normal row by 1.01–1.27:1, and hover looks like selection. In 9 themes the unselected tabs are the filled ones. Confirmed on screen in all 20 themes.
 - **Why:** selection decides which process Terminate, Kill and Priority act on.
-- **Change:** an opaque accent tint ≥ 1.35:1, plus an optional accent edge; pass the overline flag. Candidate colours are per theme below.
+- **Change:** an opaque accent tint ≥ 1.35:1, plus an optional accent edge; pass the overline flag. Candidate colours are per theme below. They are fill-only candidates: `status.*` text on the selected row needs the theme-wide status/text palette change tracked in #1167 (moved there from #1190's criteria).
 - **Scope:** Small · **Issue:** [#1190](https://github.com/mgradwohl/tasksmack/issues/1190)
 
 ### UI-002 — Chart series, NowBars and grid lines below visible contrast
@@ -176,8 +176,8 @@ None of this needs a redesign. The app's technical, information-dense character 
 
 ### UI-016 — Unix "nice" shown on Windows
 - **Source:** `ProcessDetailsPanel.cpp` ~L717, ~L2286, ~L2374–2382.
-- **Current:** a 40-step slider for 6 Windows priority classes.
-- **Change:** a priority-class control on Windows.
+- **Current:** a 40-step slider that collapses onto 5 settable Windows priority classes. `WindowsProcessActionsMath.h` deliberately never sets Realtime; only the probe can report a sixth, Realtime class.
+- **Change:** a priority-class control on Windows with the five settable classes, showing Realtime read-only when a process already has it.
 - **Scope:** Small–Medium · **Issue:** [#1204](https://github.com/mgradwohl/tasksmack/issues/1204)
 
 ### UI-017 — GPU clock, temperature and power on an unexplained % axis
@@ -189,7 +189,7 @@ None of this needs a redesign. The app's technical, information-dense character 
 - **Current:**
   - Process Resources shows 0–450 and 0–250 axes with no key.
   - Battery's axis is hidden.
-  - Resources reserves 4 NowBar columns vs CPU's 3, so the time axes don't align.
+  - On Windows, Resources reserves 4 NowBar columns (the GDI bar) vs CPU's 3, so the time axes don't align. Linux uses 3 and aligns.
   - Each CPU core cell repeats "Time (s)" and its ticks.
 - **Scope:** Small–Medium · **Issue:** [#1206](https://github.com/mgradwohl/tasksmack/issues/1206)
 
@@ -234,7 +234,7 @@ None of this needs a redesign. The app's technical, information-dense character 
 | ID | Finding | Source | Scope | Issue |
 |---|---|---|---|---|
 | UI-024 | Interface Status lists 13 down or virtual adapters out of 17 | `NetworkSection.cpp` | Small | [#1211](https://github.com/mgradwohl/tasksmack/issues/1211) |
-| UI-025 | About credits only Inter; Font Awesome (CC BY 4.0) and Sixtyfour are missing, and the installed `assets/fonts/LICENSE.txt` carries only Inter's notice although all three fonts ship; tagline repeats the name | `AboutLayer.cpp`, `assets/fonts/LICENSE.txt` | Tiny | [#1212](https://github.com/mgradwohl/tasksmack/issues/1212) |
+| UI-025 | About credits only Inter; Font Awesome (icons CC BY 4.0, font files SIL OFL 1.1) and Sixtyfour are missing, and the installed `assets/fonts/LICENSE.txt` carries only Inter's notice although all three fonts ship; tagline repeats the name | `AboutLayer.cpp`, `assets/fonts/LICENSE.txt` | Tiny | [#1212](https://github.com/mgradwohl/tasksmack/issues/1212) |
 | UI-026 | Priority badge text and slider thumb contrast | `ProcessDetailsPanel.cpp` ~L2487–2522 | Tiny | existing [#1130](https://github.com/mgradwohl/tasksmack/issues/1130) (thumb added) |
 | UI-027 | Grid lines invisible (1.01:1 on Tokyo Night) | `Theme.cpp:491` | Small | part of [#1191](https://github.com/mgradwohl/tasksmack/issues/1191) |
 | UI-028 | Processes filter hint drawn in the "running" green | `ProcessesPanel.cpp:567` | Tiny | part of [#1196](https://github.com/mgradwohl/tasksmack/issues/1196) |
@@ -988,7 +988,7 @@ The table gives each theme's hue family for each semantic key. Bold marks the ou
 | Command line row | text | COPY button | Tooltip | Common task |
 | Network legend | Sent / Received | ARROW_UP / ARROW_DOWN | Yes | Direction not carried by colour alone |
 | Disk legend | Read / Write | ARROW_DOWN / ARROW_UP | Yes | Same reason |
-| Interface Status | coloured "Up"/"Down" | CIRCLE_CHECK / CIRCLE_XMARK + text | Yes | Not colour-only |
+| Interface Status | coloured "Up"/"Down" | CIRCLE_CHECK / CIRCLE_XMARK + text | Yes | Faster scanning; the Up/Down words already avoid a colour-only cue |
 | Interface Type column | inline mapping, icon only | shared `getInterfaceTypeIcon` + tooltip | Tooltip | One mapping |
 | Per-disk cell | raw device name | HARD_DRIVE | Yes | Context |
 | Battery charging | BOLT (also the section icon) | CHARGING_STATION | Yes | One glyph per meaning |
@@ -1006,7 +1006,7 @@ The table gives each theme's hue family for each semantic key. Bold marks the ou
 | CPU total + stacked (Overview) | Total bar uses the load ramp, not its line's colour; User = Total blue; band swatches are 35 % fills | legend inside the plot; 1 dp % ticks | User/Total same colour; Idle row near-invisible | #1192, #1193, #1198, #1202 |
 | CPU Cores grid | threshold-coloured bars vs blue lines | each of 16 cells repeats "Time (s)" and ticks; "Core N" is a logical CPU | — | #1206, #1203 |
 | Memory & Swap | Swap in disk-read red (= error hex in 13 themes); Cached in CPU blue; 3 fills | legend clips "Peak Used" at small sizes | — | #1196, #1198 |
-| Power & Battery | estimate labelled "Power" in CPU blue; battery in memory green | battery axis hidden; battery plotted on a Watts axis | "1:05" ambiguous | #1196, #1206, #1202 |
+| Power & Battery | estimate labelled "Power" in CPU blue; battery in memory green | battery on a hidden, unidentified 0–100 % Y2 axis beside the Watts axis | "1:05" ambiguous | #1196, #1206, #1202 |
 | System Resources | Page Faults = Handles in Cyberpunk and Dracula | unidentified Y2 | "/s" duplicated | #1197, #1206, #1202 |
 | GPU Core & Video | memory = decoder in 4 themes; up to 5 series, ≥ 3 fills | maximized: one chart, ~40 % empty; 21 y ticks at 5 % steps | covers the x labels | #1197, #1198, #1207, #1202 |
 | GPU Thermal & Power | normalised to an unexplained %; temperature in the warning colour | — | precision 0/1/2 dp | #1205, #1196 |
@@ -1014,7 +1014,7 @@ The table gives each theme's hue family for each semantic key. Bold marks the ou
 | Disk I/O | read in the error red; write = network send colour | ticks at 95.4 MB/s steps | — | #1196, #1202 |
 | Process CPU | User = Total swatch | fixed 0–100 % of the machine (flat line) | integer % | #1195, #1192 |
 | Process Memory | Virtual bar is a large error-red block | 0–100 % of RAM; Virtual on an unlabelled Y2 | — | #1195, #1206, #1196 |
-| Process Resources | GDI vs Handles collide in Monochrome | 4 NowBar columns vs 3 (misaligned); unexplained 0–450 / 0–250 axes | "/s" duplicated; GDI N/A only in the tooltip | #1206, #1197 |
+| Process Resources | GDI vs Handles collide in Monochrome | on Windows, 4 NowBar columns (GDI) vs 3 (misaligned); unexplained 0–450 / 0–250 axes | "/s" duplicated; GDI N/A only in the tooltip | #1206, #1197 |
 | Process GPU | — | headers use CHART_LINE; colons; memory axis at 19.1 MB steps | — | #1202, #977 |
 
 **Every chart:**
@@ -1066,7 +1066,6 @@ The table gives each theme's hue family for each semantic key. Bold marks the ou
   - Tooltip text in series colours is below 4.5:1 (#1192).
 - **Colour-only distinctions:**
   - NowBars have no labels.
-  - Interface Up/Down is coloured text only.
   - The CPU Total bar's severity is colour only.
   - Network total vs interface differs only by alpha.
   - Fixes: #1193, #1211, #1198.
@@ -1111,7 +1110,7 @@ The table gives each theme's hue family for each semantic key. Bold marks the ou
 14. Hide SHR and Status by default on Windows (#1210).
 15. Route the 8 bare empty states through `renderEmptyState` (#1210).
 16. Use one icon-spacing helper (#977).
-17. Credit Font Awesome and Sixtyfour in About (#1212).
+17. Credit Font Awesome (icons CC BY 4.0, font files SIL OFL 1.1) and Sixtyfour in About (#1212).
 18. Fix the Cyberpunk load-ramp order and the fallback accents (#1196).
 19. Give Dracula's `charts.gpu.fan` a visible colour (#1191).
 20. Use the `…` glyph instead of three periods (#1203).
@@ -1156,7 +1155,7 @@ The table gives each theme's hue family for each semantic key. Bold marks the ou
 | UI-022 | [#1210](https://github.com/mgradwohl/tasksmack/issues/1210) | Medium Impact | Small | N/A vs zero; unsupported columns; empty states |
 | UI-023 | [#977](https://github.com/mgradwohl/tasksmack/issues/977) (existing) | Medium Impact | Small–Medium | Icon vocabulary and spacing |
 | UI-024 | [#1211](https://github.com/mgradwohl/tasksmack/issues/1211) | Polish | Small | Hide down/virtual interfaces |
-| UI-025 | [#1212](https://github.com/mgradwohl/tasksmack/issues/1212) | Polish | Tiny | About credits and bundled font licence notices (Font Awesome CC BY 4.0, Sixtyfour) |
+| UI-025 | [#1212](https://github.com/mgradwohl/tasksmack/issues/1212) | Polish | Tiny | About credits and bundled font licence notices (Font Awesome: icons CC BY 4.0, font files SIL OFL 1.1; Sixtyfour) |
 | UI-026 | [#1130](https://github.com/mgradwohl/tasksmack/issues/1130) (existing) | Polish | Tiny | Priority badge and slider thumb contrast |
 | UI-027–035 | see Polish Findings | Polish | Tiny–Small | Folded into the issues listed there |
 
