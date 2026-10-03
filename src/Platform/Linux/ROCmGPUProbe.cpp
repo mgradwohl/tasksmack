@@ -117,8 +117,17 @@ struct rsmi_version_t
     const char* build;
 };
 
-// rsmi_frequencies_t changed layout across ROCm versions, so it is never declared here: the
-// probe passes ROCmGPUProbeMath::RsmiFrequenciesBuffer and decodes it by library version (#1088).
+// rsmi_frequencies_t changed layout across ROCm versions, so it is only forward-declared: the
+// function pointer keeps the library's real signature, and the probe passes the address of a
+// ROCmGPUProbeMath::RsmiFrequenciesBuffer, which is larger than every layout (#1088).
+// NOLINTNEXTLINE(readability-identifier-naming) - must match AMD ROCm SMI API
+struct rsmi_frequencies_t;
+
+[[nodiscard]] rsmi_frequencies_t* asFrequencies(Platform::ROCmGPUProbeMath::RsmiFrequenciesBuffer& buffer) noexcept
+{
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - opaque C struct filled by the library
+    return reinterpret_cast<rsmi_frequencies_t*>(buffer.bytes.data());
+}
 
 } // anonymous namespace
 
@@ -146,8 +155,8 @@ struct ROCmGPUProbe::Impl
     rsmi_status_t (*rsmi_dev_temp_metric_get)(std::uint32_t, rsmi_temperature_type_t, rsmi_temperature_metric_t, std::int64_t*) = nullptr;
     rsmi_status_t (*rsmi_dev_power_ave_get)(std::uint32_t, std::uint32_t, std::uint64_t*) = nullptr;
     rsmi_status_t (*rsmi_dev_power_cap_get)(std::uint32_t, std::uint32_t, std::uint64_t*) = nullptr;
-    // Takes rsmi_frequencies_t*, whose layout depends on the library version: see frequenciesLayout.
-    rsmi_status_t (*rsmi_dev_gpu_clk_freq_get)(std::uint32_t, rsmi_clk_type_t, void*) = nullptr;
+    // rsmi_frequencies_t's layout depends on the library version: see frequenciesLayout.
+    rsmi_status_t (*rsmi_dev_gpu_clk_freq_get)(std::uint32_t, rsmi_clk_type_t, rsmi_frequencies_t*) = nullptr;
     rsmi_status_t (*rsmi_version_get)(rsmi_version_t*) = nullptr;
     rsmi_status_t (*rsmi_dev_fan_speed_get)(std::uint32_t, std::uint32_t, std::int64_t*) = nullptr;
     rsmi_status_t (*rsmi_dev_fan_speed_max_get)(std::uint32_t, std::uint32_t, std::uint64_t*) = nullptr;
@@ -447,7 +456,7 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
 
         // GPU clock speed (system clock)
         ROCmGPUProbeMath::RsmiFrequenciesBuffer gpuFreq;
-        result = m_Impl->rsmi_dev_gpu_clk_freq_get(deviceIdx, RSMI_CLK_TYPE_SYS, gpuFreq.bytes.data());
+        result = m_Impl->rsmi_dev_gpu_clk_freq_get(deviceIdx, RSMI_CLK_TYPE_SYS, asFrequencies(gpuFreq));
         if (const auto hz = ROCmGPUProbeMath::currentFrequencyHz(gpuFreq, m_Impl->frequenciesLayout);
             result == RSMI_STATUS_SUCCESS && hz.has_value())
         {
@@ -456,7 +465,7 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
 
         // Memory clock speed
         ROCmGPUProbeMath::RsmiFrequenciesBuffer memFreq;
-        result = m_Impl->rsmi_dev_gpu_clk_freq_get(deviceIdx, RSMI_CLK_TYPE_MEM, memFreq.bytes.data());
+        result = m_Impl->rsmi_dev_gpu_clk_freq_get(deviceIdx, RSMI_CLK_TYPE_MEM, asFrequencies(memFreq));
         if (const auto hz = ROCmGPUProbeMath::currentFrequencyHz(memFreq, m_Impl->frequenciesLayout);
             result == RSMI_STATUS_SUCCESS && hz.has_value())
         {
