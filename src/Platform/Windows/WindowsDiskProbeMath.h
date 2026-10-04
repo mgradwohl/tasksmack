@@ -55,25 +55,56 @@ namespace Platform
     return index;
 }
 
-/// Cumulative busy time of a disk, in 100 ns units, from DISK_PERFORMANCE's QueryTime and
-/// IdleTime (#1108).
-///
-/// QueryTime is the system time of the query and IdleTime the cumulative time the disk had
-/// nothing outstanding, both in 100 ns units, so QueryTime - IdleTime grows by exactly the time
-/// the disk was busy between two queries. Its absolute value is meaningless, but it is monotonic
-/// and only its delta is used. Summing ReadTime and WriteTime instead counts every queued request
-/// separately, so overlapping I/O (queue depth > 1) outran wall time and pinned utilisation at
-/// 100 %.
-///
-/// @return nullopt when IdleTime is not usable: zero or negative (the driver does not track it)
-///         or larger than QueryTime (inconsistent); the caller falls back to ReadTime + WriteTime.
-[[nodiscard]] constexpr std::optional<std::uint64_t> diskBusyTime100ns(std::int64_t queryTime, std::int64_t idleTime) noexcept
+/// Per-disk state for advanceDiskBusy(): the baseline its busy time is measured from.
+struct DiskBusyClock
 {
-    if (idleTime <= 0 || queryTime <= 0 || idleTime > queryTime)
+    std::int64_t baseElapsed100ns = 0; ///< Monotonic time at the baseline
+    std::int64_t baseIdle100ns = 0;    ///< IdleTime at the baseline
+    std::uint64_t baseBusy100ns = 0;   ///< Busy time carried over from before the baseline
+    std::uint64_t lastBusy100ns = 0;   ///< Last value returned; the result never goes below it
+    std::int64_t lastIdle100ns = 0;
+    bool started = false;
+};
+
+/// Cumulative busy time of a disk, in 100 ns units, from DISK_PERFORMANCE's IdleTime (#1108).
+///
+/// IdleTime is the cumulative time the disk had nothing outstanding, so between two reads the disk
+/// was busy for the elapsed time less the growth in IdleTime. Summing ReadTime and WriteTime
+/// instead counts every queued request separately, so overlapping I/O (queue depth > 1) outran
+/// wall time and pinned utilisation at 100 %.
+///
+/// The elapsed time is the caller's monotonic clock, not DISK_PERFORMANCE's QueryTime: QueryTime is
+/// adjustable system time, so a clock correction would have read as disk activity (a +5 s step
+/// turned a 60 %-busy second into 100 %) and a backward one as idleness. The result is measured
+/// from a baseline (the first read, or the read after IdleTime or the clock went backwards, e.g. a
+/// counter reset) and never decreases, so StorageModel's delta over its own elapsed time is the
+/// busy fraction.
+///
+/// @param elapsed100ns  The caller's monotonic clock now, in 100 ns units.
+/// @param idle100ns     DISK_PERFORMANCE.IdleTime.
+/// @return nullopt when IdleTime is not usable (zero or negative: the driver does not track it);
+///         the caller falls back to ReadTime + WriteTime.
+[[nodiscard]] constexpr std::optional<std::uint64_t>
+advanceDiskBusy(DiskBusyClock& clock, std::int64_t elapsed100ns, std::int64_t idle100ns) noexcept
+{
+    if (idle100ns <= 0)
     {
         return std::nullopt;
     }
-    return static_cast<std::uint64_t>(queryTime - idleTime);
+    if (!clock.started || idle100ns < clock.lastIdle100ns || elapsed100ns < clock.baseElapsed100ns)
+    {
+        clock.baseElapsed100ns = elapsed100ns;
+        clock.baseIdle100ns = idle100ns;
+        clock.baseBusy100ns = clock.lastBusy100ns;
+        clock.started = true;
+    }
+    clock.lastIdle100ns = idle100ns;
+
+    const std::int64_t span = elapsed100ns - clock.baseElapsed100ns;
+    const std::int64_t idleSpan = idle100ns - clock.baseIdle100ns;
+    const std::uint64_t busySinceBase = span > idleSpan ? static_cast<std::uint64_t>(span - idleSpan) : 0U;
+    clock.lastBusy100ns = std::max(clock.lastBusy100ns, clock.baseBusy100ns + busySinceBase);
+    return clock.lastBusy100ns;
 }
 
 /// How often WindowsDiskProbe re-enumerates physical disks when nothing has failed, so a disk

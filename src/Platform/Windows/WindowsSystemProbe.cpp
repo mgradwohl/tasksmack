@@ -298,9 +298,10 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
     // so a machine with more than 64 logical processors (several groups) showed one group's
     // cores (#1107). NtQuerySystemInformationEx takes the group as input: query each in turn and
     // append them in group order.
+    const WORD groupCount = GetActiveProcessorGroupCount();
+    const bool multiGroup = groupCount > 1;
     if (const auto ntQueryEx = getNtQuerySystemInformationEx(); ntQueryEx != nullptr)
     {
-        const WORD groupCount = GetActiveProcessorGroupCount();
         std::vector<CpuCounters> cores;
         cores.reserve(m_NumCores);
         bool allGroupsRead = groupCount > 0;
@@ -327,12 +328,33 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
         if (allGroupsRead)
         {
             counters.cpuPerCore = std::move(cores);
+            if (multiGroup)
+            {
+                // Total from the same all-group counters as the per-core grid (#1107).
+                counters.cpuTotal = sumCpuCounters(counters.cpuPerCore);
+                m_LastAllGroupTotal = counters.cpuTotal;
+            }
             spdlog::trace("Read per-core CPU for {} cores in {} processor groups", counters.cpuPerCore.size(), groupCount);
             return;
         }
     }
 
-    // Fallback without NtQuerySystemInformationEx: the calling thread's processor group only.
+    if (multiGroup)
+    {
+        // A group query failed. The one-group fallback below would put the calling thread's group
+        // into the slots of group 0 (and whichever came before it), and SystemModel matches cores
+        // by position, so failure and recovery samples would compare different CPUs. Report no
+        // per-core data this sample, and repeat the last all-group Total rather than switch its
+        // source to a one-group counter (#1107).
+        if (m_LastAllGroupTotal.has_value())
+        {
+            counters.cpuTotal = *m_LastAllGroupTotal;
+        }
+        spdlog::debug("Per-core CPU unavailable this sample: a processor group query failed");
+        return;
+    }
+
+    // Fallback without NtQuerySystemInformationEx on a single-group machine.
     auto ntQuery = getNtQuerySystemInformation();
     if (ntQuery == nullptr)
     {

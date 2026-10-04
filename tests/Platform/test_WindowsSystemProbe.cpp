@@ -279,6 +279,29 @@ TEST(WindowsSystemProbeMathTest, ProcessorGroupReturnLengthIsClampedToTheBuffer)
     EXPECT_EQ(cores.size(), 3U);
 }
 
+// #1107 review: on a machine with several processor groups, Total is the sum of every group's
+// cores, so an idle group and a busy group of equal size read about 50 %, not one group's figure.
+TEST(SumCpuCountersTest, TotalIsTheSumOfEveryCoreInEveryGroup)
+{
+    std::vector<CpuCounters> cores(4);
+    cores[0].user = 100; // Group 0: busy
+    cores[1].user = 100;
+    cores[2].idle = 100; // Group 1: idle
+    cores[3].idle = 100;
+    cores[3].irq = 7;
+
+    const CpuCounters total = sumCpuCounters(cores);
+    EXPECT_EQ(total.user, 200U);
+    EXPECT_EQ(total.idle, 200U);
+    EXPECT_EQ(total.irq, 7U);
+    EXPECT_EQ(total.total(), 407U);
+}
+
+TEST(SumCpuCountersTest, NoCoresIsAllZero)
+{
+    EXPECT_EQ(sumCpuCounters({}).total(), 0U);
+}
+
 TEST(WindowsSystemProbeTest, PerCoreCountMatchesCoreCount)
 {
     // Per-core entries and the reported core count must both cover every processor group (#1107).

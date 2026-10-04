@@ -26,7 +26,10 @@
 #include "WinString.h"
 #include "WindowsDiskProbeMath.h"
 
+#include <cstdint>
+#include <ratio>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -96,6 +99,9 @@ struct WindowsDiskProbe::Impl
     FailureLogLimiter readFailures;  // keyed by PDH instance name, e.g. "1 D:"
     FailureLogLimiter parseFailures; // keyed by PDH instance name
 
+    // Busy-time baselines per disk, keyed by PDH instance name (#1108); sampler thread only.
+    std::unordered_map<std::string, DiskBusyClock> busyClocks;
+
     void enumerate();
 };
 
@@ -110,14 +116,16 @@ namespace
 [[nodiscard]] HANDLE openPhysicalDriveForPerfQuery(int driveIndex, FailureLogLimiter& failures)
 {
     const std::wstring devicePath = L"\\\\.\\PhysicalDrive" + std::to_wstring(driveIndex);
+    // Converted before the drive is opened: wideToUtf8 allocates and can throw, and nothing that
+    // can throw may run while the raw handle below is not yet owned by a DiskHandle.
+    const std::string path = WinString::wideToUtf8(devicePath);
     HANDLE handle = CreateFileW(devicePath.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
     if (handle == INVALID_HANDLE_VALUE)
     {
-        // Capture GetLastError() before any other call (including wideToUtf8's internal
-        // WideCharToMultiByte) can overwrite it - argument evaluation order is unspecified,
-        // so inlining GetLastError() as a call argument risks logging the wrong error.
+        // Capture GetLastError() before any other call can overwrite it - argument evaluation
+        // order is unspecified, so inlining GetLastError() as a call argument risks logging the
+        // wrong error.
         const DWORD lastError = GetLastError();
-        const std::string path = WinString::wideToUtf8(devicePath);
         const auto level = failures.recordFailure(path) ? spdlog::level::warn : spdlog::level::debug;
         spdlog::log(level, "WindowsDiskProbe: CreateFileW failed for {}, GetLastError={}", path, lastError);
         return INVALID_HANDLE_VALUE;
@@ -127,17 +135,16 @@ namespace
     DWORD bytesReturned = 0;
     if (DeviceIoControl(handle, IOCTL_DISK_PERFORMANCE, nullptr, 0, &perf, sizeof(perf), &bytesReturned, nullptr) == 0)
     {
-        // Capture the error and close the handle before the heap-allocating wideToUtf8()/warn()
-        // calls below, so an allocation failure there can't skip CloseHandle and leak the handle.
+        // Capture the error and close the handle before the heap-allocating log calls below, so
+        // an allocation failure there can't skip CloseHandle and leak the handle.
         const DWORD lastError = GetLastError();
         CloseHandle(handle);
-        const std::string path = WinString::wideToUtf8(devicePath);
         const auto level = failures.recordFailure(path) ? spdlog::level::warn : spdlog::level::debug;
         spdlog::log(level, "WindowsDiskProbe: IOCTL_DISK_PERFORMANCE probe failed for {}, GetLastError={}", path, lastError);
         return INVALID_HANDLE_VALUE;
     }
 
-    failures.recordSuccess(WinString::wideToUtf8(devicePath));
+    failures.recordSuccess(path); // Erasing from the set does not allocate, so cannot throw
     return handle;
 }
 
@@ -157,6 +164,19 @@ void WindowsDiskProbe::Impl::enumerate()
     // PhysicalDisk counters (Disk Read Bytes/sec, etc.) are pre-computed rates, not the
     // cumulative counts DiskCounters documents and StorageModel's delta-then-rate math
     // requires; IOCTL_DISK_PERFORMANCE below provides the real cumulative source instead.
+    // PdhEnumObjectItemsW answers from PDH's cached object list, so a disk attached after the
+    // first enumeration never appeared. Refreshing the list (PdhEnumObjects with bRefresh = TRUE,
+    // per PdhEnumObjectItems' remarks) first is what lets a rescan see it (#1159).
+    DWORD objectListSize = 0;
+    const PDH_STATUS refresh = PdhEnumObjectsW(nullptr, nullptr, nullptr, &objectListSize, PERF_DETAIL_WIZARD, TRUE);
+    if (refresh != ERROR_SUCCESS && static_cast<DWORD>(refresh) != PDH_MORE_DATA)
+    {
+        spdlog::debug("WindowsDiskProbe: refreshing the PDH object list failed (0x{:08X}), keeping {} disks",
+                      static_cast<DWORD>(refresh),
+                      disks.size());
+        return;
+    }
+
     DWORD counterBufferSize = 0;
     DWORD instanceBufferSize = 0;
     PDH_STATUS status = PdhEnumObjectItemsW(
@@ -304,6 +324,10 @@ SystemDiskCounters WindowsDiskProbe::read()
     }
 
     bool anyFailure = false;
+    // The busy-time clock (#1108): monotonic, in DISK_PERFORMANCE's 100 ns units.
+    const std::int64_t now100ns = std::chrono::duration_cast<std::chrono::duration<std::int64_t, std::ratio<1, 10'000'000>>>(
+                                      std::chrono::steady_clock::now().time_since_epoch())
+                                      .count();
     for (const auto& diskHandle : m_Impl->disks)
     {
         DISK_PERFORMANCE perf{};
@@ -342,11 +366,11 @@ SystemDiskCounters WindowsDiskProbe::read()
         disk.readTimeMs = clampNonNegativeQuadPart(perf.ReadTime.QuadPart) / 10000ULL;
         disk.writeTimeMs = clampNonNegativeQuadPart(perf.WriteTime.QuadPart) / 10000ULL;
 
-        // Busy time is QueryTime - IdleTime, whose delta is the wall time the disk had I/O
-        // outstanding. ReadTime + WriteTime counts each queued request separately, so
+        // Busy time is the monotonic elapsed time less the growth in IdleTime: the time the disk had
+        // I/O outstanding. ReadTime + WriteTime counts each queued request separately, so
         // overlapping I/O outran wall time and utilisation read 100 % (#1108); it remains only
         // the fallback for drivers that do not report IdleTime.
-        if (const auto busy100ns = diskBusyTime100ns(perf.QueryTime.QuadPart, perf.IdleTime.QuadPart))
+        if (const auto busy100ns = advanceDiskBusy(m_Impl->busyClocks[diskHandle.instanceName], now100ns, perf.IdleTime.QuadPart))
         {
             disk.ioTimeMs = *busy100ns / 10000ULL;
         }

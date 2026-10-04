@@ -4,6 +4,7 @@
 #include "Platform/Windows/WindowsSystemProbeMath.h"
 
 #include <cstddef>
+#include <optional>
 #include <string>
 
 namespace Platform
@@ -39,6 +40,11 @@ class WindowsSystemProbe : public ISystemProbe
     static void readNetworkCounters(SystemCounters& counters);
 
     std::size_t m_NumCores{0};
+
+    // The last all-group Total on a machine with several processor groups (#1107). A sample whose
+    // group query fails repeats it rather than switching Total to a one-group source, which the
+    // model would compare against the all-group sum. Sampler thread only.
+    mutable std::optional<CpuCounters> m_LastAllGroupTotal;
 
     // Cached static info (read once)
     std::string m_Hostname;

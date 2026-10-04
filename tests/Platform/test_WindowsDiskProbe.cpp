@@ -112,13 +112,14 @@ TEST(ParsePhysicalDriveIndexTest, MaxIntIndexIsAccepted)
 }
 
 // =============================================================================
-// diskBusyTime100ns: pure math, no hardware required. Utilisation is Δbusy / Δwall, so
-// busy time must not grow faster than wall time even when reads and writes overlap (#1108).
+// advanceDiskBusy: pure math, no hardware required. Utilisation is Δbusy / Δelapsed, so busy
+// time must not grow faster than elapsed time even when reads and writes overlap (#1108), and it
+// must follow a monotonic clock, not DISK_PERFORMANCE's adjustable QueryTime.
 // =============================================================================
 
-// One second in DISK_PERFORMANCE's 100 ns units, and a plausible QueryTime (FILETIME-scale).
+// One second in DISK_PERFORMANCE's 100 ns units, and a plausible monotonic clock reading.
 constexpr std::int64_t ONE_SECOND_100NS = 10'000'000;
-constexpr std::int64_t QUERY_TIME_BASE = 134'000'000'000'000'000;
+constexpr std::int64_t ELAPSED_BASE = 7'000 * ONE_SECOND_100NS;
 
 /// Utilisation percent over a window, computed the way StorageModel does: Δms / window ms.
 [[nodiscard]] double utilisationPercent(std::uint64_t ioTimeMsBefore, std::uint64_t ioTimeMsAfter, double windowMs)
@@ -130,8 +131,8 @@ constexpr std::int64_t QUERY_TIME_BASE = 134'000'000'000'000'000;
 // write service overlap in the remaining 0.6 s (queue depth > 1).
 struct OverlappingIoWindow
 {
-    std::int64_t queryBefore = QUERY_TIME_BASE;
-    std::int64_t queryAfter = QUERY_TIME_BASE + ONE_SECOND_100NS;
+    std::int64_t elapsedBefore = ELAPSED_BASE;
+    std::int64_t elapsedAfter = ELAPSED_BASE + ONE_SECOND_100NS;
     std::int64_t idleBefore = 50 * ONE_SECOND_100NS;
     std::int64_t idleAfter = (50 * ONE_SECOND_100NS) + (4 * ONE_SECOND_100NS / 10);
     std::int64_t readBefore = 20 * ONE_SECOND_100NS;
@@ -140,11 +141,12 @@ struct OverlappingIoWindow
     std::int64_t writeAfter = (30 * ONE_SECOND_100NS) + (5 * ONE_SECOND_100NS / 10);
 };
 
-TEST(DiskBusyTime100nsTest, OverlappingReadWriteStaysBelowWindow)
+TEST(AdvanceDiskBusyTest, OverlappingReadWriteStaysBelowWindow)
 {
     const OverlappingIoWindow w;
-    const auto before = diskBusyTime100ns(w.queryBefore, w.idleBefore);
-    const auto after = diskBusyTime100ns(w.queryAfter, w.idleAfter);
+    DiskBusyClock clock;
+    const auto before = advanceDiskBusy(clock, w.elapsedBefore, w.idleBefore);
+    const auto after = advanceDiskBusy(clock, w.elapsedAfter, w.idleAfter);
     ASSERT_TRUE(before.has_value());
     ASSERT_TRUE(after.has_value());
 
@@ -153,7 +155,7 @@ TEST(DiskBusyTime100nsTest, OverlappingReadWriteStaysBelowWindow)
     EXPECT_DOUBLE_EQ(percent, 60.0);
 }
 
-TEST(DiskBusyTime100nsTest, OldReadPlusWriteFormulaExceedsWindowOnSameValues)
+TEST(AdvanceDiskBusyTest, OldReadPlusWriteFormulaExceedsWindowOnSameValues)
 {
     // The pre-#1108 formula: ioTime = ReadTime + WriteTime. The same window reads 120 %, which
     // StorageModel clamped to a constant 100 % whenever I/O overlapped.
@@ -165,32 +167,63 @@ TEST(DiskBusyTime100nsTest, OldReadPlusWriteFormulaExceedsWindowOnSameValues)
     EXPECT_GT(utilisationPercent(oldBefore, oldAfter, 1000.0), 100.0);
 }
 
-TEST(DiskBusyTime100nsTest, BusyTimeIsQueryMinusIdle)
+// #1108 review: QueryTime is adjustable system time. With busy = QueryTime - IdleTime, a +5 s clock
+// correction during a 60 %-busy second added 5 s of "busy" time (clamped to 100 %), and a backward
+// one read as idle. Busy time now follows the caller's monotonic clock, which a correction leaves
+// alone, so the same second reads 60 % whatever the system clock did.
+TEST(AdvanceDiskBusyTest, SystemClockCorrectionsDoNotReadAsDiskActivity)
 {
-    EXPECT_EQ(diskBusyTime100ns(1000, 400), std::optional<std::uint64_t>{600});
+    const OverlappingIoWindow w;
+    constexpr std::int64_t CLOCK_STEP = 5 * ONE_SECOND_100NS;
+
+    // The old formula, with QueryTime stepping forward by the correction as well as the second.
+    const std::int64_t oldBusyBefore = (ELAPSED_BASE + 100) - w.idleBefore;
+    const std::int64_t oldBusyAfter = (ELAPSED_BASE + 100 + ONE_SECOND_100NS + CLOCK_STEP) - w.idleAfter;
+    EXPECT_GT(utilisationPercent(
+                  static_cast<std::uint64_t>(oldBusyBefore) / 10000ULL, static_cast<std::uint64_t>(oldBusyAfter) / 10000ULL, 1000.0),
+              100.0);
+
+    DiskBusyClock clock;
+    const auto before = advanceDiskBusy(clock, w.elapsedBefore, w.idleBefore);
+    const auto after = advanceDiskBusy(clock, w.elapsedAfter, w.idleAfter);
+    EXPECT_DOUBLE_EQ(utilisationPercent(before.value_or(0) / 10000ULL, after.value_or(0) / 10000ULL, 1000.0), 60.0);
 }
 
-TEST(DiskBusyTime100nsTest, ZeroIdleTimeFallsBack)
+TEST(AdvanceDiskBusyTest, BusyIsElapsedLessIdleGrowthSinceTheFirstRead)
 {
-    // A driver that does not track IdleTime reports 0; QueryTime - 0 would read 100 % busy.
-    EXPECT_FALSE(diskBusyTime100ns(QUERY_TIME_BASE, 0).has_value());
+    DiskBusyClock clock;
+    EXPECT_EQ(advanceDiskBusy(clock, 1000, 400), std::optional<std::uint64_t>{0});
+    EXPECT_EQ(advanceDiskBusy(clock, 2000, 700), std::optional<std::uint64_t>{700});  // 1000 elapsed, 300 idle
+    EXPECT_EQ(advanceDiskBusy(clock, 2500, 1200), std::optional<std::uint64_t>{700}); // All idle: no change
 }
 
-TEST(DiskBusyTime100nsTest, NegativeInputsFallBack)
+TEST(AdvanceDiskBusyTest, ZeroOrNegativeIdleTimeFallsBack)
 {
-    EXPECT_FALSE(diskBusyTime100ns(QUERY_TIME_BASE, -1).has_value());
-    EXPECT_FALSE(diskBusyTime100ns(-1, 5).has_value());
-    EXPECT_FALSE(diskBusyTime100ns(std::numeric_limits<std::int64_t>::min(), std::numeric_limits<std::int64_t>::min()).has_value());
+    // A driver that does not track IdleTime reports 0; elapsed - 0 would read 100 % busy.
+    DiskBusyClock clock;
+    EXPECT_FALSE(advanceDiskBusy(clock, ELAPSED_BASE, 0).has_value());
+    EXPECT_FALSE(advanceDiskBusy(clock, ELAPSED_BASE, -1).has_value());
+    EXPECT_FALSE(advanceDiskBusy(clock, ELAPSED_BASE, std::numeric_limits<std::int64_t>::min()).has_value());
 }
 
-TEST(DiskBusyTime100nsTest, IdleGreaterThanQueryFallsBack)
+TEST(AdvanceDiskBusyTest, NeverDecreasesWhenIdleOutpacesElapsed)
 {
-    EXPECT_FALSE(diskBusyTime100ns(400, 1000).has_value());
+    // Idle growing faster than the clock (skew between the two) reads as no busy time, not negative.
+    DiskBusyClock clock;
+    ASSERT_TRUE(advanceDiskBusy(clock, 1000, 100).has_value());
+    EXPECT_EQ(advanceDiskBusy(clock, 2000, 600), std::optional<std::uint64_t>{500});
+    EXPECT_EQ(advanceDiskBusy(clock, 2100, 900), std::optional<std::uint64_t>{500});
 }
 
-TEST(DiskBusyTime100nsTest, IdleEqualToQueryIsZeroBusy)
+TEST(AdvanceDiskBusyTest, AnIdleCounterResetRebaselinesWithoutLosingBusyTime)
 {
-    EXPECT_EQ(diskBusyTime100ns(1000, 1000), std::optional<std::uint64_t>{0});
+    // IdleTime going backwards (the counter reset, e.g. the device came back) starts a new
+    // baseline; busy time carries on from where it was rather than jumping or going backwards.
+    DiskBusyClock clock;
+    ASSERT_TRUE(advanceDiskBusy(clock, 1000, 100).has_value());
+    EXPECT_EQ(advanceDiskBusy(clock, 2000, 600), std::optional<std::uint64_t>{500});
+    EXPECT_EQ(advanceDiskBusy(clock, 3000, 50), std::optional<std::uint64_t>{500});   // Reset: new baseline
+    EXPECT_EQ(advanceDiskBusy(clock, 4000, 350), std::optional<std::uint64_t>{1200}); // 500 + (1000 - 300)
 }
 
 // =============================================================================

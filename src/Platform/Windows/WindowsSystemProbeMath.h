@@ -147,6 +147,28 @@ std::size_t appendProcessorGroup(std::vector<CpuCounters>& cores, std::span<cons
     return returned;
 }
 
+/// The machine-wide CPU counters as the sum of per-core ones (#1107). On a machine with several
+/// processor groups the probe takes Total from every group's cores, so Total and the per-core grid
+/// come from the same counters: GetSystemTimes is not documented to cover every group.
+[[nodiscard]] inline CpuCounters sumCpuCounters(std::span<const CpuCounters> cores) noexcept
+{
+    CpuCounters total;
+    for (const CpuCounters& core : cores)
+    {
+        total.user += core.user;
+        total.nice += core.nice;
+        total.system += core.system;
+        total.idle += core.idle;
+        total.iowait += core.iowait;
+        total.irq += core.irq;
+        total.softirq += core.softirq;
+        total.steal += core.steal;
+        total.guest += core.guest;
+        total.guestNice += core.guestNice;
+    }
+    return total;
+}
+
 /// IANA ifType values GetIfTable2 reports (ipifcons.h), spelled out so this header stays free of
 /// Windows includes.
 inline constexpr std::uint32_t IF_TYPE_ETHERNET = 6;
