@@ -294,6 +294,7 @@ void LinuxSystemProbe::readMemoryCounters(SystemCounters& counters, const std::f
         else if (key == "MemAvailable")
         {
             counters.memory.availableBytes = value * KB;
+            counters.memory.hasAvailableBytes = true;
         }
         else if (key == "Buffers")
         {
