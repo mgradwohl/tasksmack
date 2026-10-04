@@ -1393,6 +1393,23 @@ TEST_F(UserConfigSaveLoadFixture, SaveKeepsTheConfigFilesPermissions)
     EXPECT_EQ(std::filesystem::status(path).permissions() & std::filesystem::perms::all, restricted);
 }
 
+TEST_F(UserConfigSaveLoadFixture, StagingFileIsNeverReadableByOthers)
+{
+    // The staging file is created owner-only (#1222 review), so a brand-new config is 0600 rather
+    // than umask-readable, while an existing config's own, wider mode is still restored.
+    auto& config = UserConfig::get();
+    config.save();
+    const auto path = config.configPath();
+    const auto ownerOnly = std::filesystem::perms::owner_read | std::filesystem::perms::owner_write;
+    EXPECT_EQ(std::filesystem::status(path).permissions() & std::filesystem::perms::all, ownerOnly);
+
+    const auto shared = ownerOnly | std::filesystem::perms::group_read | std::filesystem::perms::others_read;
+    std::filesystem::permissions(path, shared);
+    config.settings().themeId = "mocha";
+    config.save();
+    EXPECT_EQ(std::filesystem::status(path).permissions() & std::filesystem::perms::all, shared);
+}
+
 TEST_F(UserConfigSaveLoadFixture, UnreadableConfigDirectoryFallsBackToDefaults)
 {
     if (::geteuid() == 0)

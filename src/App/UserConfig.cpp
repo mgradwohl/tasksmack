@@ -41,6 +41,7 @@
 #else
 #include <array>
 
+#include <fcntl.h>
 #include <pwd.h>
 #include <unistd.h>
 #endif
@@ -612,7 +613,20 @@ void UserConfig::save()
         {
             continue;
         }
-#if defined(__cpp_lib_ios_noreplace)
+#ifndef _WIN32
+        // Created exclusively and owner-only from the start: created with the umask (often 0644) and
+        // narrowed afterwards, another user could open it in between and keep reading through that
+        // descriptor once the settings are written (#1222 review). The original's mode is restored
+        // only after writing, just before the rename.
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+        const int fd = ::open(tempPath.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
+        if (fd < 0)
+        {
+            continue;
+        }
+        ::close(fd);
+        file.open(tempPath, std::ios::out | std::ios::trunc);
+#elif defined(__cpp_lib_ios_noreplace)
         file.open(tempPath, std::ios::out | std::ios::noreplace);
 #else
         file.open(tempPath, std::ios::out | std::ios::trunc);
@@ -623,20 +637,6 @@ void UserConfig::save()
         spdlog::error("Failed to create a temporary file beside {}", m_ConfigPath.string());
         return;
     }
-    if (originalPermissions != std::filesystem::perms::unknown)
-    {
-        // Keep the original's access restrictions (a 0600 config stays 0600). POSIX permission
-        // bits only: Windows ACLs aren't copied.
-        std::filesystem::permissions(tempPath, originalPermissions, ec);
-        if (ec)
-        {
-            spdlog::error("Not saving settings: can't give the new file the permissions of {}: {}", m_ConfigPath.string(), ec.message());
-            file.close();
-            std::filesystem::remove(tempPath, ec);
-            return;
-        }
-    }
-
     file << "# TaskSmack user configuration\n";
     file << "# Written by TaskSmack. Keys it doesn't use are kept, but comments in this file are not.\n";
     file << "# Edits made while TaskSmack is running are kept unless TaskSmack changes the same setting.\n";
@@ -663,6 +663,19 @@ void UserConfig::save()
         spdlog::error("Failed to write {}: stream error after write", tempPath.string());
         std::filesystem::remove(tempPath, ec);
         return;
+    }
+
+    if (originalPermissions != std::filesystem::perms::unknown)
+    {
+        // Give the written file the original's mode (a 0600 config stays 0600, a 0644 one stays
+        // 0644) only now that it is complete. POSIX permission bits only: Windows ACLs aren't copied.
+        std::filesystem::permissions(tempPath, originalPermissions, ec);
+        if (ec)
+        {
+            spdlog::error("Not saving settings: can't give the new file the permissions of {}: {}", m_ConfigPath.string(), ec.message());
+            std::filesystem::remove(tempPath, ec);
+            return;
+        }
     }
 
     std::filesystem::rename(tempPath, destination, ec);
