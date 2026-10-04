@@ -1044,6 +1044,29 @@ TEST(SystemModelTest, RegressedCpuFieldDoesNotUnderflowIntoPinned100Percent)
     EXPECT_DOUBLE_EQ(snap.cpuTotal.iowaitPercent, 0.0);
 }
 
+TEST(SystemModelTest, RegressedIowaitDoesNotCancelIdleGrowth)
+{
+    // #1157: total = 100% - (idle + iowait). If iowait regresses by more than idle grew, one delta of
+    // (idle + iowait) clamps to 0 and reports the CPU 100% busy although idle grew. Each part is
+    // rollback-guarded on its own instead.
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+    // user=1000 system=500 idle=8500 iowait=1000 -> total 11000
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(1000, 0, 500, 8500, 1000, 0), makeMemoryCounters(1024, 512)));
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+
+    // user +1500, idle +500, iowait 1000 -> 400 (regressed): total 12400, delta 1400. idle + iowait
+    // went 9500 -> 9400, which a combined delta would clamp to 0 (100% busy).
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(2500, 0, 500, 9000, 400, 0), makeMemoryCounters(1024, 512)));
+    model.refresh();
+
+    const auto snap = model.snapshot();
+    EXPECT_DOUBLE_EQ(snap.cpuTotal.iowaitPercent, 0.0);
+    EXPECT_DOUBLE_EQ(snap.cpuTotal.idlePercent, 100.0 * 500.0 / 1400.0);
+    EXPECT_DOUBLE_EQ(snap.cpuTotal.totalPercent, 100.0 - (100.0 * 500.0 / 1400.0));
+}
+
 TEST(SystemModelTest, UptimeTracked)
 {
     auto probe = std::make_unique<MockSystemProbe>();

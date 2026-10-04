@@ -736,8 +736,9 @@ CpuUsage SystemModel::computeCpuUsage(const Platform::CpuCounters& current, cons
 
     // Total = 100% - (idle + iowait). iowait is idle time spent waiting on I/O: shown as its own
     // breakdown band, but not busy, which also matches Windows, where that time is plain idle
-    // (#1157).
-    usage.totalPercent = 100.0 - percent(current.idleTotal(), previous.idleTotal());
+    // (#1157). Built from the two rollback-guarded percentages, not from one delta of their sum: a
+    // regressing iowait would otherwise cancel real idle growth and report the core 100% busy.
+    usage.totalPercent = 100.0 - (usage.idlePercent + usage.iowaitPercent);
 
     // Clamp to valid range
     usage.totalPercent = std::clamp(usage.totalPercent, 0.0, 100.0);
