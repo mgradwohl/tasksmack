@@ -864,8 +864,17 @@ void ProcessesPanel::renderContent()
             // Show tooltip with full column name and description on hover
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
             {
-                // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - constexpr string literals are null-terminated
-                ImGui::SetTooltip("%s\n%s", info.menuName.data(), info.description.data());
+                const std::string_view note = columnCapabilityNote(col, processCapabilities().hasUdpNetworkCounters);
+                if (note.empty())
+                {
+                    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - constexpr string literals are null-terminated
+                    ImGui::SetTooltip("%s\n%s", info.menuName.data(), info.description.data());
+                }
+                else
+                {
+                    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - constexpr string literals are null-terminated
+                    ImGui::SetTooltip("%s\n%s\n%s", info.menuName.data(), info.description.data(), note.data());
+                }
             }
 
             ++headerIdx;

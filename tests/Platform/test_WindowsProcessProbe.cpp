@@ -4,13 +4,18 @@
 #include "Platform/ProcessTypes.h"
 #include "Platform/Windows/WindowsProcessProbe.h"
 #include "Platform/Windows/WindowsProcessProbeMath.h"
+#include "Platform/Windows/WindowsTcpRows.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -96,6 +101,64 @@ TEST(WindowsProcessProbeTest, ReducedPrivilegesIsConsistent)
 
     // Stronger check: if network counters are available, privilege notice must not fire.
     if (caps.hasNetworkCounters)
+    {
+        EXPECT_FALSE(caps.hasReducedPrivileges);
+    }
+}
+
+namespace
+{
+bool isTestProcessElevated()
+{
+    HANDLE token = nullptr;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token) == FALSE)
+    {
+        return false;
+    }
+    TOKEN_ELEVATION elevation{};
+    DWORD size = sizeof(elevation);
+    const bool ok = GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size) != FALSE;
+    CloseHandle(token);
+    return ok && elevation.TokenIsElevated != 0;
+}
+} // namespace
+
+TEST(WindowsProcessProbeTest, NonElevatedNeverClaimsNetworkCounters)
+{
+    // #1161: non-elevated, the old dummy-row probe could get ERROR_NOT_FOUND and claim per-process
+    // network counters, then report 0 B for every process with no lock icon. EStats now requires
+    // an elevated token: non-elevated reports the counters unavailable for privilege.
+    if (isTestProcessElevated())
+    {
+        GTEST_SKIP() << "Test process is elevated; the non-elevated path cannot run here";
+    }
+
+    WindowsProcessProbe probe;
+    for (int sample = 0; sample < 2; ++sample)
+    {
+        for (const auto& proc : probe.enumerate())
+        {
+            EXPECT_EQ(proc.netSentBytes, 0ULL) << proc.name;
+            EXPECT_EQ(proc.netReceivedBytes, 0ULL) << proc.name;
+        }
+    }
+    const auto caps = probe.capabilities();
+    EXPECT_FALSE(caps.hasNetworkCounters);
+    EXPECT_TRUE(caps.hasReducedPrivileges);
+}
+
+TEST(WindowsProcessProbeTest, NetworkFlagsStayConsistentAfterSampling)
+{
+    // The first real samples may revoke EStats availability (#1161); whichever way they go, the
+    // capability invariant must still hold afterwards, and elevated never shows the lock icon.
+    WindowsProcessProbe probe;
+    for (int sample = 0; sample < 3; ++sample)
+    {
+        (void) probe.enumerate();
+    }
+    const auto caps = probe.capabilities();
+    EXPECT_FALSE(caps.hasNetworkCounters && caps.hasReducedPrivileges);
+    if (isTestProcessElevated())
     {
         EXPECT_FALSE(caps.hasReducedPrivileges);
     }
@@ -765,6 +828,373 @@ TEST(CalculateDetailTTLsFromTotalRAMBytesTest, ZeroBytesFallsIntoLowestTier)
     const auto ttls = calculateDetailTTLsFromTotalRAMBytes(0);
     EXPECT_EQ(ttls.light, std::chrono::milliseconds(4000));
     EXPECT_EQ(ttls.heavy, std::chrono::milliseconds(15000));
+}
+
+// ---------------------------------------------------------------------------
+// accumulateEStatsRow (#1100): the per-row decision shared by the IPv4 and IPv6 EStats walks
+// ---------------------------------------------------------------------------
+
+TEST(AccumulateEStatsRowTest, Ipv4AndIpv6RowsForTheSamePidSum)
+{
+    // Before #1100 only the AF_INET table was walked, so a process whose traffic was all IPv6
+    // (most browser/CDN traffic on a dual-stack network) read ~0. Both walks now feed the same
+    // per-PID map through this helper, so a v4 row and a v6 row for one PID must add up.
+    PerPidNetworkBytes perPid;
+    constexpr std::uint32_t PID = 4242;
+
+    // IPv4 row
+    EXPECT_EQ(accumulateEStatsRow(perPid, PID, TCP_STATE_ESTABLISHED, 0, 1'000, 2'000), EStatsRowOutcome::Accumulated);
+    // IPv6 row (same helper, same map)
+    EXPECT_EQ(accumulateEStatsRow(perPid, PID, TCP_STATE_ESTABLISHED, 0, 30'000, 40'000), EStatsRowOutcome::Accumulated);
+    // Another process
+    EXPECT_EQ(accumulateEStatsRow(perPid, 7, TCP_STATE_ESTABLISHED, 0, 5, 6), EStatsRowOutcome::Accumulated);
+
+    ASSERT_EQ(perPid.size(), 2U);
+    EXPECT_EQ(perPid.at(PID).first, 31'000ULL);
+    EXPECT_EQ(perPid.at(PID).second, 42'000ULL);
+    EXPECT_EQ(perPid.at(7).first, 5ULL);
+    EXPECT_EQ(perPid.at(7).second, 6ULL);
+}
+
+TEST(AccumulateEStatsRowTest, NonEstablishedRowsAreSkipped)
+{
+    PerPidNetworkBytes perPid;
+    constexpr std::uint32_t LISTEN = 2;
+    constexpr std::uint32_t TIME_WAIT = 11;
+
+    EXPECT_EQ(accumulateEStatsRow(perPid, 1, LISTEN, 0, 100, 100), EStatsRowOutcome::SkippedState);
+    EXPECT_EQ(accumulateEStatsRow(perPid, 1, TIME_WAIT, 0, 100, 100), EStatsRowOutcome::SkippedState);
+    EXPECT_TRUE(perPid.empty());
+}
+
+TEST(AccumulateEStatsRowTest, FailedReadsAreSkipped)
+{
+    PerPidNetworkBytes perPid;
+    constexpr std::uint32_t ERROR_NOT_FOUND_CODE = 1168;
+    constexpr std::uint32_t ERROR_ACCESS_DENIED_CODE = 5;
+
+    EXPECT_EQ(accumulateEStatsRow(perPid, 1, TCP_STATE_ESTABLISHED, ERROR_NOT_FOUND_CODE, 100, 100), EStatsRowOutcome::ReadFailed);
+    EXPECT_EQ(accumulateEStatsRow(perPid, 1, TCP_STATE_ESTABLISHED, ERROR_ACCESS_DENIED_CODE, 100, 100), EStatsRowOutcome::ReadFailed);
+    // A failed read must not even create a zero entry for the PID.
+    EXPECT_TRUE(perPid.empty());
+}
+
+TEST(AccumulateEStatsRowTest, CountersAboveOneTerabyteAreRejected)
+{
+    PerPidNetworkBytes perPid;
+    constexpr std::uint32_t PID = 9;
+
+    EXPECT_EQ(accumulateEStatsRow(perPid, PID, TCP_STATE_ESTABLISHED, 0, MAX_SANE_ESTATS_CONNECTION_BYTES + 1, 0),
+              EStatsRowOutcome::Garbage);
+    EXPECT_EQ(accumulateEStatsRow(perPid, PID, TCP_STATE_ESTABLISHED, 0, 0, MAX_SANE_ESTATS_CONNECTION_BYTES + 1),
+              EStatsRowOutcome::Garbage);
+    EXPECT_TRUE(perPid.empty());
+
+    // Exactly 1 TB is still accepted (the cap is exclusive).
+    EXPECT_EQ(accumulateEStatsRow(perPid, PID, TCP_STATE_ESTABLISHED, 0, MAX_SANE_ESTATS_CONNECTION_BYTES, 0),
+              EStatsRowOutcome::Accumulated);
+    EXPECT_EQ(perPid.at(PID).first, MAX_SANE_ESTATS_CONNECTION_BYTES);
+}
+
+TEST(AccumulateEStatsRowTest, ZeroByteEstablishedRowStillRegistersThePid)
+{
+    // A just-opened connection reads OK with zero bytes; it is accumulated (the PID has a
+    // network presence at 0 B), matching the pre-#1100 IPv4 loop.
+    PerPidNetworkBytes perPid;
+    EXPECT_EQ(accumulateEStatsRow(perPid, 3, TCP_STATE_ESTABLISHED, 0, 0, 0), EStatsRowOutcome::Accumulated);
+    ASSERT_EQ(perPid.count(3), 1U);
+    EXPECT_EQ(perPid.at(3).first, 0ULL);
+}
+
+TEST(EStatsSampleCountsTest, Ipv4AndIpv6TalliesAdd)
+{
+    EStatsSampleCounts v4{
+        .total = 10,
+        .established = 4,
+        .enabled = 4,
+        .readOk = 3,
+        .saneReads = 2,
+        .readNotFound = 1,
+        .readFailedOther = 0,
+        .accessDenied = 0,
+        .hasData = 2,
+        .garbage = 1,
+    };
+    const EStatsSampleCounts v6{
+        .total = 5,
+        .established = 2,
+        .enabled = 1,
+        .readOk = 2,
+        .saneReads = 2,
+        .readNotFound = 0,
+        .readFailedOther = 1,
+        .accessDenied = 1,
+        .hasData = 1,
+        .garbage = 0,
+    };
+    v4 += v6;
+    EXPECT_EQ(v4.total, 15U);
+    EXPECT_EQ(v4.established, 6U);
+    EXPECT_EQ(v4.enabled, 5U);
+    EXPECT_EQ(v4.readOk, 5U);
+    EXPECT_EQ(v4.saneReads, 4U);
+    EXPECT_EQ(v4.readNotFound, 1U);
+    EXPECT_EQ(v4.readFailedOther, 1U);
+    EXPECT_EQ(v4.accessDenied, 1U);
+    EXPECT_EQ(v4.hasData, 3U);
+    EXPECT_EQ(v4.garbage, 1U);
+}
+
+TEST(RecordEStatsRowTest, TalliesEachOutcome)
+{
+    // The real per-row tally both table walks use (#1161): NOT_FOUND is counted apart from other
+    // read failures, and a garbage read is a successful read but not a sane one.
+    PerPidNetworkBytes perPid;
+    EStatsSampleCounts counts;
+    constexpr std::uint32_t LISTEN = 2;
+    constexpr std::uint64_t TOO_BIG = MAX_SANE_ESTATS_CONNECTION_BYTES + 1;
+
+    (void) recordEStatsRow(counts, perPid, 1, LISTEN, std::nullopt, NO_ERROR, 9, 9);             // not counted
+    (void) recordEStatsRow(counts, perPid, 1, TCP_STATE_ESTABLISHED, NO_ERROR, NO_ERROR, 10, 0); // sane, has data
+    (void) recordEStatsRow(counts, perPid, 1, TCP_STATE_ESTABLISHED, NO_ERROR, NO_ERROR, 0, 0);  // sane, no data
+    (void) recordEStatsRow(counts, perPid, 2, TCP_STATE_ESTABLISHED, NO_ERROR, NO_ERROR, TOO_BIG, 0);
+    (void) recordEStatsRow(counts, perPid, 3, TCP_STATE_ESTABLISHED, ERROR_NOT_FOUND, ERROR_NOT_FOUND, 0, 0);
+    (void) recordEStatsRow(counts, perPid, 4, TCP_STATE_ESTABLISHED, std::nullopt, ERROR_INVALID_PARAMETER, 0, 0);
+    (void) recordEStatsRow(counts, perPid, 5, TCP_STATE_ESTABLISHED, ERROR_ACCESS_DENIED, ERROR_ACCESS_DENIED, 0, 0);
+
+    EXPECT_EQ(counts.established, 6U);
+    EXPECT_EQ(counts.enabled, 3U);
+    EXPECT_EQ(counts.readOk, 3U);
+    EXPECT_EQ(counts.saneReads, 2U);
+    EXPECT_EQ(counts.hasData, 1U);
+    EXPECT_EQ(counts.garbage, 1U);
+    EXPECT_EQ(counts.readNotFound, 1U);
+    EXPECT_EQ(counts.readFailedOther, 1U); // ACCESS_DENIED is tallied as accessDenied, not here
+    EXPECT_EQ(counts.accessDenied, 1U);
+    ASSERT_EQ(perPid.size(), 1U);
+    EXPECT_EQ(perPid.at(1).first, 10ULL);
+}
+
+// ---------------------------------------------------------------------------
+// classifyEStatsProbe (#1161): does a real sample prove EStats works?
+// ---------------------------------------------------------------------------
+
+/// Replays a per-row (enableStatus, readStatus) error sequence for ESTABLISHED rows into the
+/// tallies the probe's table walks produce, so each test reads as "the OS returned X, Y, Z".
+struct EStatsRowResult
+{
+    DWORD enableStatus = NO_ERROR;
+    DWORD readStatus = NO_ERROR;
+    std::uint64_t bytesOut = 0;
+    std::uint64_t bytesIn = 0;
+};
+
+EStatsSampleCounts tallyEstablishedRows(const std::vector<EStatsRowResult>& rows)
+{
+    EStatsSampleCounts counts;
+    counts.total = rows.size();
+    PerPidNetworkBytes perPid;
+    std::uint32_t pid = 100;
+    for (const auto& row : rows)
+    {
+        (void) recordEStatsRow(counts, perPid, pid++, TCP_STATE_ESTABLISHED, row.enableStatus, row.readStatus, row.bytesOut, row.bytesIn);
+    }
+    return counts;
+}
+
+TEST(ClassifyEStatsProbeTest, AllAccessDeniedIsUnavailable)
+{
+    const auto counts = tallyEstablishedRows({
+        {.enableStatus = ERROR_ACCESS_DENIED, .readStatus = ERROR_ACCESS_DENIED},
+        {.enableStatus = ERROR_ACCESS_DENIED, .readStatus = ERROR_ACCESS_DENIED},
+    });
+    EXPECT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Unavailable);
+}
+
+TEST(ClassifyEStatsProbeTest, AnyAccessDeniedIsUnavailableEvenIfSomeReadsWork)
+{
+    const auto counts = tallyEstablishedRows({
+        {.enableStatus = NO_ERROR, .readStatus = NO_ERROR},
+        {.enableStatus = ERROR_ACCESS_DENIED, .readStatus = ERROR_NOT_FOUND},
+    });
+    EXPECT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Unavailable);
+}
+
+TEST(ClassifyEStatsProbeTest, DummyRowNotFoundThenEveryRealReadFailingIsUnavailable)
+{
+    // The #1161 case: the constructor's dummy-row probe returned ERROR_NOT_FOUND (which the old
+    // detection treated as "available"), then every real established connection's Set/Get
+    // fails without ever saying ACCESS_DENIED. The old code kept hasNetworkCounters = true and
+    // showed 0 B for every process with no lock icon; a real sample now proves it unavailable.
+    const auto counts = tallyEstablishedRows({
+        {.enableStatus = ERROR_NOT_FOUND, .readStatus = ERROR_NOT_FOUND},
+        {.enableStatus = ERROR_INVALID_PARAMETER, .readStatus = ERROR_NOT_FOUND},
+        {.enableStatus = ERROR_NOT_FOUND, .readStatus = ERROR_INVALID_PARAMETER},
+    });
+    ASSERT_EQ(counts.accessDenied, 0U);
+    EXPECT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Unavailable);
+}
+
+TEST(ClassifyEStatsProbeTest, ZeroEstablishedConnectionsIsUndetermined)
+{
+    // Nothing to read proves nothing either way: keep trying on the next sample rather than
+    // declaring the feature dead on an idle machine.
+    EXPECT_EQ(classifyEStatsProbe(EStatsSampleCounts{}), EStatsProbeResult::Undetermined);
+
+    EStatsSampleCounts onlyListeners;
+    onlyListeners.total = 40; // e.g. all LISTEN / TIME_WAIT rows
+    EXPECT_EQ(classifyEStatsProbe(onlyListeners), EStatsProbeResult::Undetermined);
+}
+
+TEST(ClassifyEStatsProbeTest, SuccessfulReadsAreAvailable)
+{
+    const auto counts = tallyEstablishedRows({
+        {.enableStatus = NO_ERROR, .readStatus = NO_ERROR},
+        {.enableStatus = NO_ERROR, .readStatus = NO_ERROR},
+    });
+    EXPECT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Available);
+}
+
+TEST(ClassifyEStatsProbeTest, ReadsWorkingWithoutEnableAreAvailable)
+{
+    // Collection may already have been enabled by another (elevated) process, so a failed
+    // enable with a successful read still proves the counters are real.
+    const auto counts = tallyEstablishedRows({
+        {.enableStatus = ERROR_NOT_FOUND, .readStatus = NO_ERROR},
+        {.enableStatus = ERROR_NOT_FOUND, .readStatus = ERROR_NOT_FOUND}, // connection closed mid-walk
+    });
+    EXPECT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Available);
+}
+
+TEST(ClassifyEStatsProbeTest, OnlyNotFoundReadsAreUndetermined)
+{
+    // Every snapshotted connection closed before its EStats read: ERROR_NOT_FOUND for all of
+    // them is an ordinary race, not proof the API is unusable. Before this fix one such sample
+    // permanently disabled the network column.
+    const auto counts = tallyEstablishedRows({
+        {.enableStatus = ERROR_NOT_FOUND, .readStatus = ERROR_NOT_FOUND},
+        {.enableStatus = ERROR_NOT_FOUND, .readStatus = ERROR_NOT_FOUND},
+    });
+    ASSERT_EQ(counts.readNotFound, 2U);
+    EXPECT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Undetermined);
+}
+
+TEST(ClassifyEStatsProbeTest, NotFoundSampleThenSuccessfulSampleIsAvailable)
+{
+    const auto raced = tallyEstablishedRows({{.enableStatus = ERROR_NOT_FOUND, .readStatus = ERROR_NOT_FOUND}});
+    ASSERT_EQ(classifyEStatsProbe(raced, 0), EStatsProbeResult::Undetermined);
+
+    // The probe counted one inconclusive sample; the next one reads a live connection.
+    const auto next = tallyEstablishedRows({{.enableStatus = NO_ERROR, .readStatus = NO_ERROR, .bytesOut = 512, .bytesIn = 2048}});
+    EXPECT_EQ(classifyEStatsProbe(next, 1), EStatsProbeResult::Available);
+}
+
+TEST(ClassifyEStatsProbeTest, ReadAccessDeniedIsUnavailable)
+{
+    // ACCESS_DENIED from the read alone (enable succeeded or was skipped) is just as conclusive.
+    const auto counts = tallyEstablishedRows({
+        {.enableStatus = NO_ERROR, .readStatus = ERROR_ACCESS_DENIED},
+        {.enableStatus = ERROR_NOT_FOUND, .readStatus = ERROR_NOT_FOUND},
+    });
+    EXPECT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Unavailable);
+}
+
+TEST(ClassifyEStatsProbeTest, GarbageOnlyReadsAreNotAvailable)
+{
+    // A > 1 TB counter is rejected and never reaches perPid, so a sample of only garbage reads
+    // proves nothing; it used to count as a successful read and verify EStats with no data.
+    const auto counts = tallyEstablishedRows({
+        {.enableStatus = NO_ERROR, .readStatus = NO_ERROR, .bytesOut = MAX_SANE_ESTATS_CONNECTION_BYTES + 1},
+        {.enableStatus = NO_ERROR, .readStatus = NO_ERROR, .bytesIn = MAX_SANE_ESTATS_CONNECTION_BYTES + 1},
+    });
+    ASSERT_EQ(counts.readOk, 2U);
+    ASSERT_EQ(counts.saneReads, 0U);
+    EXPECT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Undetermined);
+}
+
+TEST(ClassifyEStatsProbeTest, InconclusiveSamplesInARowBecomeUnavailable)
+{
+    // A race does not repeat on every sample: after MAX_INCONCLUSIVE_ESTATS_SAMPLES consecutive
+    // NOT_FOUND/garbage-only samples the reads plainly never work, so stop claiming the column.
+    const auto notFound = tallyEstablishedRows({{.enableStatus = ERROR_NOT_FOUND, .readStatus = ERROR_NOT_FOUND}});
+    const auto garbage = tallyEstablishedRows({{.readStatus = NO_ERROR, .bytesOut = MAX_SANE_ESTATS_CONNECTION_BYTES + 1}});
+    for (std::size_t prior = 0; prior + 1 < MAX_INCONCLUSIVE_ESTATS_SAMPLES; ++prior)
+    {
+        EXPECT_EQ(classifyEStatsProbe(notFound, prior), EStatsProbeResult::Undetermined) << prior;
+        EXPECT_EQ(classifyEStatsProbe(garbage, prior), EStatsProbeResult::Undetermined) << prior;
+    }
+    EXPECT_EQ(classifyEStatsProbe(notFound, MAX_INCONCLUSIVE_ESTATS_SAMPLES - 1), EStatsProbeResult::Unavailable);
+    EXPECT_EQ(classifyEStatsProbe(garbage, MAX_INCONCLUSIVE_ESTATS_SAMPLES - 1), EStatsProbeResult::Unavailable);
+
+    // An idle sample is never inconclusive in that sense, whatever the streak.
+    EXPECT_EQ(classifyEStatsProbe(EStatsSampleCounts{}, MAX_INCONCLUSIVE_ESTATS_SAMPLES), EStatsProbeResult::Undetermined);
+}
+
+// ---------------------------------------------------------------------------
+// toTcpRow / toTcp6Row (#1100): owner-PID table row -> the row EStats identifies a connection by
+// ---------------------------------------------------------------------------
+
+/// Decode a port the TCP tables store in network byte order in the low 16 bits of a DWORD.
+constexpr std::uint16_t portFromNetworkOrder(DWORD raw)
+{
+    return static_cast<std::uint16_t>(((raw & 0xFFU) << 8U) | ((raw >> 8U) & 0xFFU));
+}
+
+TEST(TcpRowConversionTest, Ipv4OwnerRowMapsEveryField)
+{
+    MIB_TCPROW_OWNER_PID owner{};
+    owner.dwState = MIB_TCP_STATE_ESTAB;
+    owner.dwLocalAddr = 0x0100007FU;  // 127.0.0.1 in network byte order
+    owner.dwLocalPort = 0x0000BB01U;  // 443 in network byte order
+    owner.dwRemoteAddr = 0x0A01A8C0U; // 192.168.1.10 in network byte order
+    owner.dwRemotePort = 0x0000D2C3U; // 50130 in network byte order
+    owner.dwOwningPid = 4242;
+
+    const MIB_TCPROW row = toTcpRow(owner);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access) - Windows API requires union access
+    EXPECT_EQ(row.dwState, static_cast<DWORD>(MIB_TCP_STATE_ESTAB));
+    EXPECT_EQ(row.dwLocalAddr, owner.dwLocalAddr);
+    EXPECT_EQ(row.dwRemoteAddr, owner.dwRemoteAddr);
+    // Ports are copied verbatim, still in network byte order (what EStats expects).
+    EXPECT_EQ(row.dwLocalPort, owner.dwLocalPort);
+    EXPECT_EQ(row.dwRemotePort, owner.dwRemotePort);
+    EXPECT_EQ(portFromNetworkOrder(row.dwLocalPort), 443U);
+    EXPECT_EQ(portFromNetworkOrder(row.dwRemotePort), 50130U);
+}
+
+TEST(TcpRowConversionTest, Ipv6OwnerRowMapsEveryField)
+{
+    MIB_TCP6ROW_OWNER_PID owner{};
+    // 2001:db8::1 and fe80::abcd: distinct, asymmetric bytes so a swapped or truncated copy shows.
+    constexpr std::array<UCHAR, 16> LOCAL{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01};
+    constexpr std::array<UCHAR, 16> REMOTE{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xab, 0xcd};
+    std::memcpy(owner.ucLocalAddr, LOCAL.data(), LOCAL.size());
+    std::memcpy(owner.ucRemoteAddr, REMOTE.data(), REMOTE.size());
+    owner.dwLocalScopeId = 0;
+    owner.dwRemoteScopeId = 12;       // link-local remote: interface index matters
+    owner.dwLocalPort = 0x0000BB01U;  // 443 in network byte order
+    owner.dwRemotePort = 0x0000D2C3U; // 50130 in network byte order
+    owner.dwState = MIB_TCP_STATE_ESTAB;
+    owner.dwOwningPid = 4242;
+
+    const MIB_TCP6ROW row = toTcp6Row(owner);
+    EXPECT_EQ(row.State, MIB_TCP_STATE_ESTAB);
+    EXPECT_EQ(std::memcmp(&row.LocalAddr, LOCAL.data(), LOCAL.size()), 0);
+    EXPECT_EQ(std::memcmp(&row.RemoteAddr, REMOTE.data(), REMOTE.size()), 0);
+    EXPECT_EQ(row.dwLocalScopeId, 0U);
+    EXPECT_EQ(row.dwRemoteScopeId, 12U);
+    EXPECT_EQ(row.dwLocalPort, owner.dwLocalPort);
+    EXPECT_EQ(row.dwRemotePort, owner.dwRemotePort);
+    EXPECT_EQ(portFromNetworkOrder(row.dwLocalPort), 443U);
+    EXPECT_EQ(portFromNetworkOrder(row.dwRemotePort), 50130U);
+}
+
+TEST(TcpRowConversionTest, Ipv6StateComesFromTheOwnerRow)
+{
+    // The state is mapped, not hard-coded to ESTABLISHED.
+    MIB_TCP6ROW_OWNER_PID owner{};
+    owner.dwState = MIB_TCP_STATE_TIME_WAIT;
+    EXPECT_EQ(toTcp6Row(owner).State, MIB_TCP_STATE_TIME_WAIT);
 }
 
 } // namespace

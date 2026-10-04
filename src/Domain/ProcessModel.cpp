@@ -50,9 +50,10 @@ struct NetworkInterval
     double seconds = 0.0;
 };
 
-// When the probe stamps its network reads (netSampleTimeNs), the interval is the time between the
-// two reads, and an unchanged stamp means the probe returned its cached query again -- the only
-// case that holds the last rate. Otherwise the counters were read with each refresh, so it is the
+// When the network reads are stamped (netSampleTimeNs: by the probe, or by SocketTrafficAccumulator
+// from the probe's socket readings), the interval is the time between the two reads, and an
+// unchanged stamp means the probe returned its cached query again (or none) -- the only case that
+// holds the last rate. Otherwise the counters were read with each refresh, so it is the
 // refresh interval; one suppressed as too short (refreshElapsedSeconds 0) resets the rate to 0
 // rather than republishing an old one (#1063 review).
 [[nodiscard]] auto networkInterval(const Platform::ProcessCounters& current,
@@ -127,6 +128,11 @@ void ProcessModel::refresh()
 
     auto currentCounters = m_Probe->enumerate();
     const std::uint64_t currentTotalCpuTime = m_Probe->totalCpuTime();
+
+    // Per-process network bytes from per-connection readings: monotonic, so a connection closing or
+    // being attributed late doesn't make a process's counter drop or jump (#1099). Probes that report
+    // per-process network counters themselves return no reading, and theirs are used as-is.
+    m_NetTraffic.apply(m_Probe->readSocketTraffic(), currentCounters);
 
     // Per-process power from a package energy counter: share each interval's energy by each
     // process's CPU time in that interval. Probes that report per-process energy themselves
@@ -294,11 +300,13 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         //    probe may cache its query across refreshes, and a delta over the refresh interval
         //    would then read 0 for the cached refreshes and several intervals' bytes for the next.
         //  - While the probe returns the same cached read, the last rate is held, not zeroed.
-        //  - The counters are sums over the process's *live* connections, so a connection closing
-        //    makes the sum drop: counterRate reports 0 for that interval rather than a wrapped or
-        //    negative rate (bytes on the surviving connections in it go uncounted).
-        //  - A rate above the 100 Gbps sanity ceiling -- a connection appearing with traffic from
-        //    before it was first attributed -- is dropped to 0 too.
+        //  - From a probe that reports per-connection readings (Linux) the counters are monotonic:
+        //    refresh() accumulates each connection's own growth (SocketTrafficAccumulator), so a
+        //    connection closing or being attributed late no longer makes them drop or jump (#1099).
+        //    Windows still reports the sum over the process's *live* connections, which drops when
+        //    one closes: counterRate reports 0 for that interval rather than a wrapped or negative rate.
+        //  - A rate above the 100 Gbps sanity ceiling -- e.g. a connection appearing with traffic
+        //    from before it was first attributed, on Windows -- is dropped to 0 too.
         const NetworkInterval netInterval = previous != nullptr ? networkInterval(current, *previous, elapsedSeconds) : NetworkInterval{};
         if (netInterval.kind == NetworkInterval::Kind::Measure)
         {
