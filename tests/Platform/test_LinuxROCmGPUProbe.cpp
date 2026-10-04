@@ -225,6 +225,45 @@ TEST(LinuxROCmGPUProbeTest, DeviceIdsAreResolvedOnceAtLoad)
     EXPECT_GT(callsAtLoad, 0U);
 }
 
+// #1111: a sensor read that fails (busy, GPU reset) is marked unread, not reported as a real 0, and
+// the reads that still succeed stay available.
+TEST(LinuxROCmGPUProbeTest, FailedSensorReadsAreMarkedUnavailable)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    void* library = dlopen("librocm_smi64.so.6", RTLD_NOW);
+    ASSERT_NE(library, nullptr);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) -- dlsym returns void* by POSIX definition
+    const auto failSensorReads = reinterpret_cast<void (*)(int)>(dlsym(library, "tasksmackRocmMockFailSensorReads"));
+    ASSERT_NE(failSensorReads, nullptr);
+
+    ROCmGPUProbe probe;
+    ASSERT_TRUE(probe.isAvailable());
+    const auto good = probe.readGPUCounters();
+    failSensorReads(1);
+    const auto failed = probe.readGPUCounters();
+    failSensorReads(0);
+    dlclose(library);
+
+    ASSERT_FALSE(good.empty());
+    EXPECT_TRUE(good[0].utilizationAvailable);
+    EXPECT_TRUE(good[0].memoryAvailable);
+    EXPECT_TRUE(good[0].temperatureAvailable);
+    EXPECT_TRUE(good[0].powerAvailable);
+    EXPECT_TRUE(good[0].gpuClockAvailable);
+
+    ASSERT_EQ(failed.size(), good.size());
+    EXPECT_FALSE(failed[0].utilizationAvailable);
+    EXPECT_FALSE(failed[0].memoryAvailable);
+    EXPECT_FALSE(failed[0].temperatureAvailable);
+    EXPECT_FALSE(failed[0].powerAvailable);
+    EXPECT_FALSE(failed[0].gpuClockAvailable);
+    EXPECT_EQ(failed[0].memoryClockMHz, good[0].memoryClockMHz); // reads that still succeed are unaffected
+}
+
 TEST(LinuxROCmGPUProbeTest, BasicOperationsDoNotThrow)
 {
     ROCmGPUProbe probe;
