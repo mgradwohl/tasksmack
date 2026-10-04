@@ -73,4 +73,12 @@ enum class Action : std::uint8_t
     return currentPixelSize.first > 0 && currentPixelSize.second > 0 && currentPixelSize != lastPixelSize;
 }
 
+/// Whether a framebuffer size from a resize event is a real size. A minimised window reports 0x0;
+/// that is neither a WindowResizedEvent nor a resize interaction, so it must not start the
+/// interaction frame pacing (FramePacing::computeIsInteracting counts resize events).
+[[nodiscard]] constexpr bool isRealPixelSize(std::pair<int, int> pixelSize) noexcept
+{
+    return pixelSize.first > 0 && pixelSize.second > 0;
+}
+
 } // namespace Core::WindowEventRouting

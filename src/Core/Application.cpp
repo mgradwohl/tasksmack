@@ -559,11 +559,13 @@ void Application::run()
             // grace period that keeps a live resize responsive.
             const auto handleResize = [&](std::pair<int, int> pixelSize)
             {
-                ++resizeEventCount;
-                if (pixelSize.first <= 0 || pixelSize.second <= 0)
+                // A 0x0 framebuffer (minimised) is not a resize: neither raised nor counted as an
+                // interaction, so it can't start the interaction pacing.
+                if (!WindowEventRouting::isRealPixelSize(pixelSize))
                 {
                     return;
                 }
+                ++resizeEventCount;
                 lastResizePixelSize = pixelSize;
                 WindowResizedEvent resizeEvent(pixelSize.first, pixelSize.second);
                 raiseEvent(resizeEvent);

@@ -67,5 +67,16 @@ TEST(WindowEventRoutingTest, ExposeWithAnEmptyFramebufferIsNotAResize)
     EXPECT_FALSE(exposeChangesSize({1280, 720}, {1280, 0}));
 }
 
+TEST(WindowEventRoutingTest, AZeroSizedFramebufferIsNotARealSize)
+{
+    // #1253 review: a minimised window's 0x0 PIXEL_SIZE_CHANGED must not count as a resize
+    // interaction, or minimising starts the interaction frame pacing.
+    EXPECT_FALSE(isRealPixelSize({0, 0}));
+    EXPECT_FALSE(isRealPixelSize({1280, 0}));
+    EXPECT_FALSE(isRealPixelSize({0, 720}));
+    EXPECT_FALSE(isRealPixelSize({-1, 720}));
+    EXPECT_TRUE(isRealPixelSize({1280, 720}));
+}
+
 } // namespace
 } // namespace Core::WindowEventRouting
