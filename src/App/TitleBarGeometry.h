@@ -98,7 +98,7 @@ inline constexpr float RESIZE_BORDER_REFERENCE_PX = 8.0F;
 /// half the physical size it is at 100% (#970). Scaled, it is a constant physical size like the bar.
 /// Never thinner than the reference: a scale below 1.0 must not shrink an already small target.
 ///
-/// @param displayScale  Display scale from SDL_GetWindowDisplayScale(); 1.0 at 96 DPI.
+/// @param displayScale  UI scale in window units (UI::windowUnitScale); 1.0 at 96 DPI.
 [[nodiscard]] inline auto computeResizeBorderThickness(const float displayScale) -> float
 {
     const float scale = (std::isfinite(displayScale) && displayScale > 1.0F) ? displayScale : 1.0F;
@@ -149,7 +149,7 @@ struct WindowMinimumSize
 /// buttons alone need about 197px at 100% and about 393px at 200%. So the window could be dragged
 /// narrower than its own title bar, and the buttons were drawn over the wordmark (#970).
 ///
-/// @param displayScale             Display scale from SDL_GetWindowDisplayScale(); 1.0 at 96 DPI.
+/// @param displayScale             UI scale in window units (UI::windowUnitScale); 1.0 at 96 DPI.
 /// @param titleBarContentWidthPx   From computeTitleBarContentWidth(); 0 if not yet known.
 [[nodiscard]] inline auto computeMinimumWindowSize(const float displayScale, const float titleBarContentWidthPx) -> WindowMinimumSize
 {
