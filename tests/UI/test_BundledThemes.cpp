@@ -202,12 +202,13 @@ TEST(BundledThemesTest, CpuBandColoursAreVisibleOnThePlotAndInTheLegend)
 struct Backgrounds
 {
     ImVec4 window;
-    ImVec4 frame;  ///< ImPlot's frame, and the NowBar track
-    ImVec4 plot;   ///< PlotBg (childBg) over the frame
-    ImVec4 popup;  ///< popupBg over the modal backdrop, as Theme::applyImGuiStyle() flattens it
-    ImVec4 row;    ///< TableRowBg over the window
-    ImVec4 stripe; ///< TableRowBgAlt over the window
-    ImVec4 selected;
+    ImVec4 frame;          ///< ImPlot's frame, and the NowBar track
+    ImVec4 plot;           ///< PlotBg (childBg) over the frame
+    ImVec4 popup;          ///< popupBg over the modal backdrop, as Theme::applyImGuiStyle() flattens it
+    ImVec4 row;            ///< TableRowBg over the window
+    ImVec4 stripe;         ///< TableRowBgAlt over the window
+    ImVec4 selected;       ///< The selection fill (Header) over a plain row
+    ImVec4 selectedStripe; ///< The selection fill over a striped row
 };
 
 auto backgroundsOf(const ColorScheme& scheme) -> Backgrounds
@@ -220,6 +221,7 @@ auto backgroundsOf(const ColorScheme& scheme) -> Backgrounds
     b.row = flattenOver(scheme.tableRowBg, b.window);
     b.stripe = flattenOver(scheme.tableRowBgAlt, b.window);
     b.selected = flattenOver(scheme.header, b.row);
+    b.selectedStripe = flattenOver(scheme.header, b.stripe);
     return b;
 }
 
@@ -354,6 +356,8 @@ TEST(BundledThemesTest, StatusColoursAreReadableOnEveryRow)
             EXPECT_GE(contrastRatio(color, bg.row), TEXT_MIN) << name << " status." << key << " on a plain row";
             EXPECT_GE(contrastRatio(color, bg.stripe), TEXT_MIN) << name << " status." << key << " on a striped row";
             EXPECT_GE(contrastRatio(color, bg.selected), TEXT_MIN) << name << " status." << key << " on the selected row";
+            EXPECT_GE(contrastRatio(color, bg.selectedStripe), TEXT_MIN)
+                << name << " status." << key << " on the selected row when it is striped";
         }
     }
 }
