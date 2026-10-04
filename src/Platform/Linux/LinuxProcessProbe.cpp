@@ -6,6 +6,7 @@
 
 #include "CgroupFreezeStatus.h"
 #include "Domain/SamplingConfig.h"
+#include "Platform/IProcessProbe.h"
 #include "Platform/PlatformConfig.h"
 #include "UserNameLookup.h"
 
@@ -133,7 +134,12 @@ LinuxProcessProbe::LinuxProcessProbe() : LinuxProcessProbe(std::filesystem::path
 {}
 
 LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot)
+    : LinuxProcessProbe(std::move(procRoot), std::filesystem::path("/sys/class/powercap"))
+{}
+
+LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot, std::filesystem::path powercapRoot)
     : m_ProcRoot(std::move(procRoot)),
+      m_PowercapRoot(std::move(powercapRoot)),
       m_TicksPerSecond(sysconf(_SC_CLK_TCK)),
       m_PageSize(toU64PositiveOr(sysconf(_SC_PAGESIZE), 4096ULL)),
       m_BootTimeEpoch(readBootTime(m_ProcRoot))
@@ -262,12 +268,6 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
     if (errorCode)
     {
         spdlog::warn("Error iterating {}: {}", procPath.string(), errorCode.message());
-    }
-
-    // Attribute energy to processes if power monitoring is available
-    if (m_HasPowerCap)
-    {
-        attributeEnergyToProcesses(processes);
     }
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
@@ -803,6 +803,12 @@ std::string LinuxProcessProbe::getProcessStatus(int32_t pid, const std::filesyst
 }
 uint64_t LinuxProcessProbe::readTotalCpuTime() const
 {
+    const auto times = readCpuTimes();
+    return times.has_value() ? times->total : 0;
+}
+
+std::optional<LinuxProcessProbe::CpuTimes> LinuxProcessProbe::readCpuTimes() const
+{
     // Format: /proc/stat — first line: "cpu user nice system idle iowait irq softirq steal …"
     // We only need the first line, so 256 bytes is ample.
 
@@ -812,7 +818,7 @@ uint64_t LinuxProcessProbe::readTotalCpuTime() const
     if (len == 0)
     {
         spdlog::warn("Failed to open {}", statPath);
-        return 0;
+        return std::nullopt;
     }
 
     const char* p = buf.data();
@@ -822,7 +828,7 @@ uint64_t LinuxProcessProbe::readTotalCpuTime() const
     if (len < 4 || p[0] != 'c' || p[1] != 'p' || p[2] != 'u' || p[3] != ' ')
     {
         spdlog::warn("Failed to parse {}", statPath);
-        return 0;
+        return std::nullopt;
     }
     p += 4; // skip "cpu "
 
@@ -846,11 +852,12 @@ uint64_t LinuxProcessProbe::readTotalCpuTime() const
         !parseNum(p, lineEnd, iowait) || !parseNum(p, lineEnd, irq) || !parseNum(p, lineEnd, softirq) || !parseNum(p, lineEnd, steal))
     {
         spdlog::warn("Failed to parse {}", statPath);
-        return 0;
+        return std::nullopt;
     }
 
-    // Total CPU time = all fields combined
-    return user + nice + system + idle + iowait + irq + softirq + steal;
+    // Total CPU time = all fields combined. Busy = the time processes' own utime + stime account
+    // for (user, nice and system), the interval denominator for energy attribution (#1093).
+    return CpuTimes{.total = user + nice + system + idle + iowait + irq + softirq + steal, .busy = user + nice + system};
 }
 
 uint64_t LinuxProcessProbe::readBootTime(const std::filesystem::path& procRoot)
@@ -945,110 +952,95 @@ uint64_t LinuxProcessProbe::systemTotalMemory() const
 
 bool LinuxProcessProbe::detectPowerCap()
 {
-    // Try to find Intel RAPL package energy file
-    // Common paths: /sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj
-    const std::vector<std::string> possiblePaths = {
-        "/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj",
-        "/sys/class/powercap/intel-rapl:0/energy_uj",
+    // energy_uj has been root-only (0400) since the Platypus fix (CVE-2020-8694), so a file that
+    // exists is not enough: detection used to accept one by existence and then report 0 W for
+    // every process for a normal user (#1103). Only a file we can open counts.
+    const auto isReadable = [](const std::filesystem::path& path)
+    {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+        const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        if (fd == -1)
+        {
+            return false;
+        }
+        ::close(fd);
+        return true;
     };
 
-    for (const auto& path : possiblePaths)
+    std::vector<std::filesystem::path> candidates = {
+        m_PowercapRoot / "intel-rapl" / "intel-rapl:0" / "energy_uj",
+        m_PowercapRoot / "intel-rapl:0" / "energy_uj",
+    };
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(m_PowercapRoot, ec), end; !ec && it != end; it.increment(ec))
     {
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — POSIX open() is variadic
-        const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
-        if (fd != -1)
+        if (it->path().filename().string().starts_with("intel-rapl"))
         {
-            ::close(fd);
-            m_PowerCapPath = path;
-            return true;
+            candidates.push_back(it->path() / "energy_uj");
+            candidates.push_back(it->path() / "intel-rapl:0" / "energy_uj");
         }
     }
 
-    // Try to enumerate powercap directory
-    std::error_code ec;
-    const std::filesystem::path powercapDir("/sys/class/powercap");
-    if (std::filesystem::exists(powercapDir, ec) && std::filesystem::is_directory(powercapDir, ec))
+    for (const auto& path : candidates)
     {
-        for (const auto& entry : std::filesystem::directory_iterator(powercapDir, ec))
+        if (!isReadable(path))
         {
-            if (entry.is_directory() && entry.path().filename().string().starts_with("intel-rapl"))
-            {
-                std::filesystem::path energyFile = entry.path() / "energy_uj";
-                if (std::filesystem::exists(energyFile, ec))
-                {
-                    m_PowerCapPath = energyFile.string();
-                    return true;
-                }
+            continue;
+        }
+        m_PowerCapPath = path.string();
 
-                // Try package:0 subdirectory
-                const std::filesystem::path packageDir = entry.path() / "intel-rapl:0";
-                energyFile = packageDir / "energy_uj";
-                if (std::filesystem::exists(energyFile, ec))
-                {
-                    m_PowerCapPath = energyFile.string();
-                    return true;
-                }
+        // Where the counter wraps back to 0, so a wrap reads as the energy used, not a drop.
+        std::array<char, 32> buf{};
+        const std::string rangePath = (path.parent_path() / "max_energy_range_uj").string();
+        if (const std::size_t len = readProcFile(rangePath.c_str(), buf.data(), buf.size()); len > 0)
+        {
+            const char* p = buf.data();
+            if (!parseNum(p, buf.data() + len, m_PowerCapMaxRangeUj))
+            {
+                m_PowerCapMaxRangeUj = 0;
             }
         }
+        return true;
     }
 
     return false;
 }
 
-uint64_t LinuxProcessProbe::readSystemEnergy() const
+std::optional<uint64_t> LinuxProcessProbe::readSystemEnergy() const
 {
     if (m_PowerCapPath.empty())
     {
-        return 0;
+        return std::nullopt;
     }
 
     std::array<char, 32> buf{};
     const std::size_t len = readProcFile(m_PowerCapPath.c_str(), buf.data(), buf.size());
     if (len == 0)
     {
-        return 0;
+        return std::nullopt;
     }
 
     const char* p = buf.data();
     uint64_t energyUj = 0;
     if (!parseNum(p, buf.data() + len, energyUj))
     {
-        return 0;
+        return std::nullopt;
     }
 
     return energyUj; // Already in microjoules
 }
 
-void LinuxProcessProbe::attributeEnergyToProcesses(std::vector<ProcessCounters>& processes) const
+std::optional<PackageEnergyReading> LinuxProcessProbe::readPackageEnergy() const
 {
-    // Read system-wide energy
-    const uint64_t systemEnergy = readSystemEnergy();
-    if (systemEnergy == 0)
+    if (!m_HasPowerCap)
     {
-        return;
+        return std::nullopt;
     }
-
-    // Calculate total CPU time across all processes
-    uint64_t totalProcessCpuTime = 0;
-    for (const auto& proc : processes)
-    {
-        totalProcessCpuTime += (proc.userTime + proc.systemTime);
-    }
-
-    // Avoid division by zero
-    if (totalProcessCpuTime == 0)
-    {
-        return;
-    }
-
-    // Attribute energy proportionally based on CPU usage
-    // This is an approximation: energy per process = systemEnergy * (processCpuTime / totalCpuTime)
-    for (auto& proc : processes)
-    {
-        const uint64_t processCpuTime = proc.userTime + proc.systemTime;
-        const double cpuProportion = static_cast<double>(processCpuTime) / static_cast<double>(totalProcessCpuTime);
-        proc.energyMicrojoules = static_cast<uint64_t>(static_cast<double>(systemEnergy) * cpuProportion);
-    }
+    // Raw read only: ProcessModel shares it out between processes per interval (#1093).
+    const auto cpuTimes = readCpuTimes();
+    return PackageEnergyReading{.energyUj = readSystemEnergy(),
+                                .maxRangeUj = m_PowerCapMaxRangeUj,
+                                .busyCpuTicks = cpuTimes.has_value() ? std::optional{cpuTimes->busy} : std::nullopt};
 }
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
