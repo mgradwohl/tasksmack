@@ -691,6 +691,9 @@ PowerStatus SystemModel::computePowerStatus(const Platform::PowerCounters& count
     PowerStatus status;
 
     status.hasBattery = m_PowerCapabilities.hasBattery;
+    // Before the no-battery return: on a battery-less machine isOnAc is still the adapter's report
+    // (#1109), which consumers need.
+    status.isOnAc = counters.isOnAc;
 
     if (!status.hasBattery)
     {
@@ -698,10 +701,10 @@ PowerStatus SystemModel::computePowerStatus(const Platform::PowerCounters& count
     }
 
     // Basic state
-    status.isOnAc = counters.isOnAc;
     status.isCharging = (counters.state == Platform::BatteryState::Charging);
     status.isDischarging = (counters.state == Platform::BatteryState::Discharging);
     status.isFull = (counters.state == Platform::BatteryState::Full);
+    status.isNotCharging = (counters.state == Platform::BatteryState::NotCharging);
 
     // Charge percentage
     status.chargePercent = counters.chargePercent;
