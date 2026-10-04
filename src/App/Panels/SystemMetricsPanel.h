@@ -51,7 +51,7 @@ class SystemMetricsPanel : public Panel
     void onUpdate(float deltaTime) override;
 
     /// Set the refresh interval (applied by onUpdate cadence checks).
-    void setSamplingInterval(std::chrono::milliseconds interval);
+    void setSamplingInterval(std::chrono::milliseconds interval, bool forceSample = true);
 
     /// Request an immediate refresh.
     void requestRefresh();
