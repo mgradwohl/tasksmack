@@ -88,6 +88,8 @@ The process table is the primary view. It lists all running processes with htop-
 
 Column visibility is toggled via the column header context menu and persisted across sessions.
 
+A cell reading **-** is a value of 0 (or one that doesn't apply). A cell reading **N/A** is a value TaskSmack could not read for that process: on Linux, without root, the FD count, I/O rates and network rates of other users' processes. Process Details shows the same values as N/A, with a gap in their charts, and the system totals leave them out. Sorting puts N/A below every reading.
+
 **Sorting** is available on any column with a single click. Click again to reverse order.
 
 **Filtering** narrows the list to processes whose names or command lines match typed text.

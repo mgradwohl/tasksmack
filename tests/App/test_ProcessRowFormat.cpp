@@ -24,6 +24,7 @@ using ProcessRowFormat::formatAlignedPowerString;
 using ProcessRowFormat::getOrBuildRowFormatCache;
 using ProcessRowFormat::makeAlignedCellText;
 using ProcessRowFormat::RowFormatCache;
+using ProcessRowFormat::UNAVAILABLE_CELL_TEXT;
 
 /// Builds a minimal-but-representative snapshot: every field buildRowFormatCache() reads is set
 /// to a distinguishable, non-default value so a wrong field mapping (e.g. resident vs. virtualMem
@@ -175,6 +176,25 @@ TEST(ProcessRowFormatTest, BuildRowFormatCacheUsesDashForZeroRateAndOptionalFiel
     EXPECT_EQ(fmt.pageFaults.text, "-");
     EXPECT_EQ(fmt.gdiObjects.text, "-"); // gdiObjectCount is std::nullopt
     EXPECT_EQ(fmt.gpuEngines, "-");      // gpuEngines is empty
+}
+
+TEST(ProcessRowFormatTest, UnreadableValuesShowNotAvailableRatherThanADash)
+{
+    // #1110: without root, another user's FD count, I/O and network rates can't be read. They showed
+    // "-", the same as a process that really had none; now they read "N/A".
+    ProcessSnapshot snap = makeSnapshot();
+    snap.handleCountAvailable = false;
+    snap.ioAvailable = false;
+    snap.networkAvailable = false;
+
+    const RowFormatCache fmt = buildRowFormatCache(snap);
+
+    EXPECT_EQ(fmt.handles.text, UNAVAILABLE_CELL_TEXT);
+    EXPECT_EQ(fmt.ioRead.text, UNAVAILABLE_CELL_TEXT);
+    EXPECT_EQ(fmt.ioWrite.text, UNAVAILABLE_CELL_TEXT);
+    EXPECT_EQ(fmt.netSent.text, UNAVAILABLE_CELL_TEXT);
+    EXPECT_EQ(fmt.netRecv.text, UNAVAILABLE_CELL_TEXT);
+    EXPECT_NE(UNAVAILABLE_CELL_TEXT, "-");
 }
 
 TEST(ProcessRowFormatTest, BuildRowFormatCacheStampsFreshAlignedCellTextAsUnmeasured)
