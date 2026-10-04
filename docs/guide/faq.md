@@ -106,7 +106,7 @@ On Windows the byte counts are still summed over the process's open TCP connecti
 
 ## Why doesn't the network Total match the sum of the interfaces?
 
-On Linux the Total counts hardware interfaces only: network cards, Wi-Fi, USB adapters, and Hyper-V or virtio NICs. Bridges, `veth` pairs, VPN tunnels, VLANs, and bonds carry traffic that also crosses a hardware interface, so counting them as well would double it. These interfaces are still listed and selectable on their own. When no hardware interface exists, as inside a container, every interface counts.
+The Total counts hardware interfaces only. On Linux these are network cards, Wi-Fi, USB adapters, and Hyper-V or virtio NICs; bridges, `veth` pairs, VPN tunnels, VLANs, and bonds are left out. On Windows they are the adapters Windows reports as hardware; VPN adapters, Hyper-V and WSL `vEthernet` adapters, WAN Miniports, and tunnels such as Teredo are left out. Those interfaces carry traffic that also crosses a hardware interface, so counting them as well would double it. They are still listed and selectable on their own. When no hardware interface exists, as inside a container, every interface counts.
 
 ---
 
