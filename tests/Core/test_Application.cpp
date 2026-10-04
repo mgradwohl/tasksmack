@@ -274,6 +274,51 @@ class CloseRequestingLayer : public Core::Layer
     int m_UpdateCount = 0;
 };
 
+/// Layer that pushes one SDL event of `eventType` (addressed to the app's window) on its first update,
+/// as the OS would deliver it, and stops the app itself after `stopAfter` updates so a run whose
+/// event does not stop it still ends.
+class SdlEventPushingLayer : public Core::Layer
+{
+  public:
+    SdlEventPushingLayer(std::uint32_t eventType, int stopAfter) : Layer("SdlEventPusher"), m_EventType(eventType), m_StopAfter(stopAfter)
+    {}
+
+    void onUpdate(float /*deltaTime*/) override
+    {
+        ++m_UpdateCount;
+        if (m_UpdateCount == 1)
+        {
+            SDL_Event event{};
+            event.type = m_EventType;
+            if (m_EventType >= SDL_EVENT_WINDOW_FIRST && m_EventType <= SDL_EVENT_WINDOW_LAST)
+            {
+                event.window.windowID = SDL_GetWindowID(Core::Application::get().getWindow().getHandle());
+            }
+            m_Pushed = SDL_PushEvent(&event);
+        }
+        if (m_UpdateCount >= m_StopAfter)
+        {
+            Core::Application::get().stop();
+        }
+    }
+
+    [[nodiscard]] int updateCount() const
+    {
+        return m_UpdateCount;
+    }
+
+    [[nodiscard]] bool pushed() const
+    {
+        return m_Pushed;
+    }
+
+  private:
+    std::uint32_t m_EventType;
+    int m_StopAfter;
+    int m_UpdateCount = 0;
+    bool m_Pushed = false;
+};
+
 /// Layer whose onDetach() logs to g_DetachOrder, then throws, to verify detachAllLayers() still
 /// detaches the layers below it (#1124).
 class ThrowingOnDetachLayer : public Core::Layer
@@ -529,6 +574,92 @@ TEST(ApplicationTest, RequestCloseIsVetoedByAHandlingLayer)
         EXPECT_EQ(vetoer.closeEventsSeen(), 1);
         EXPECT_EQ(requester.updateCount(), STOP_AFTER);
         EXPECT_FALSE(app.getWindow().shouldClose());
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
+// #1150: SDL's default posts SDL_EVENT_QUIT after a close request on the last window, so one Alt+F4
+// raised two WindowCloseEvents and the QUIT would override a veto. Application turns that off.
+TEST(ApplicationTest, ClosingTheLastWindowDoesNotAlsoPostQuit)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "QuitOnLastWindowCloseTest";
+
+    try
+    {
+        const Core::Application app(spec);
+        EXPECT_FALSE(SDL_GetHintBoolean(SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE, true));
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
+// #1150: a close request (Alt+F4, the OS close button) raises exactly one WindowCloseEvent, and a
+// veto keeps the app running.
+TEST(ApplicationTest, CloseRequestedRaisesOneVetoableWindowCloseEvent)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "CloseRequestedOnceTest";
+
+    try
+    {
+        Core::Application app(spec);
+        const auto& vetoer = app.pushLayer<CloseListenerLayer>("Vetoer", true);
+        constexpr int STOP_AFTER = 5;
+        const auto& pusher = app.pushLayer<SdlEventPushingLayer>(SDL_EVENT_WINDOW_CLOSE_REQUESTED, STOP_AFTER);
+
+        app.run();
+
+        ASSERT_TRUE(pusher.pushed()) << SDL_GetError();
+        EXPECT_EQ(vetoer.closeEventsSeen(), 1);
+        EXPECT_EQ(pusher.updateCount(), STOP_AFTER);
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
+// #1150: SIGINT, SIGTERM and OS logout arrive as SDL_EVENT_QUIT. That is not a close request a
+// layer may veto: it raises no WindowCloseEvent and always stops the app.
+TEST(ApplicationTest, SdlQuitStopsTheAppAndCannotBeVetoed)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "QuitNotVetoableTest";
+
+    try
+    {
+        Core::Application app(spec);
+        const auto& vetoer = app.pushLayer<CloseListenerLayer>("Vetoer", true);
+        // The fallback stop is far off: the QUIT should end the loop long before it.
+        constexpr int STOP_AFTER = 100;
+        const auto& pusher = app.pushLayer<SdlEventPushingLayer>(SDL_EVENT_QUIT, STOP_AFTER);
+
+        app.run();
+
+        ASSERT_TRUE(pusher.pushed()) << SDL_GetError();
+        EXPECT_EQ(vetoer.closeEventsSeen(), 0);
+        EXPECT_LT(pusher.updateCount(), STOP_AFTER);
     }
     catch (const std::exception& e)
     {
