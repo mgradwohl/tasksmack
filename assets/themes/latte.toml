@@ -58,7 +58,7 @@ io_fill = "#D20F394D"
 io_write_fill = "#C74A004D"
 net_tx_fill = "#8839EF4D"
 net_rx_fill = "#0080874D"
-peak_line = "#4C4F69B3"
+peak_line = "#474A64B3"
 
 [charts.gpu]
 utilization = "#8839EF"

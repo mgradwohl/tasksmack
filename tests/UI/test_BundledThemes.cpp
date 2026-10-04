@@ -270,6 +270,12 @@ TEST(BundledThemesTest, EverySeriesIsVisibleOnThePlotAndTheNowBarTrack)
             EXPECT_GE(contrastRatio(color, bg.plot), SERIES_MIN) << name << " " << key << " on the plot";
             EXPECT_GE(contrastRatio(color, bg.frame), SERIES_MIN) << name << " " << key << " on the NowBar track";
         }
+
+        // The peak line is drawn translucent, so it is judged as drawn: composited over each background.
+        EXPECT_GE(contrastRatio(flattenOver(scheme->chartPeakLine, bg.plot), bg.plot), SERIES_MIN)
+            << name << " charts.peak_line on the plot";
+        EXPECT_GE(contrastRatio(flattenOver(scheme->chartPeakLine, bg.frame), bg.frame), SERIES_MIN)
+            << name << " charts.peak_line on the NowBar track";
     }
 }
 

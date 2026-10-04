@@ -78,7 +78,7 @@ io_fill = "#D32F2F4D"        # Red with 30% alpha - I/O read fill
 io_write_fill = "#DD63004D"   # Hot Orange with 30% alpha - I/O write fill
 net_tx_fill = "#815CFF4D"    # Vivid Violet with 30% alpha - Network TX fill
 net_rx_fill = "#0094B14D"    # Electric Cyan with 30% alpha - Network RX fill
-peak_line = "#F57C00B3"      # Orange with 70% alpha - peak reference line
+peak_line = "#9B4C00B3"      # Orange with 70% alpha - peak reference line
 
 # =============================================================================
 # GPU METRICS COLORS
