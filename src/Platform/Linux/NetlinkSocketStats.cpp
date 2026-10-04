@@ -569,21 +569,48 @@ bool NetlinkSocketStats::queryDump(int protocol, int family, std::vector<SocketS
                 continue;
             }
 
+            // The kernel sets NLM_F_DUMP_INTR on a dump whose socket table changed mid-walk: its
+            // contents are inconsistent, so the whole dump is a failed reading.
+            if ((nlh->nlmsg_flags & NLM_F_DUMP_INTR) != 0)
+            {
+                spdlog::debug("inet_diag dump for family {} was interrupted", family);
+                return false;
+            }
+
             if (nlh->nlmsg_type == NLMSG_DONE)
             {
+                // NLMSG_DONE carries the dump's status: negative is an error part-way through.
+                if (NLMSG_PAYLOAD(nlh, 0) >= sizeof(int))
+                {
+                    int status = 0;
+                    std::memcpy(&status, NLMSG_DATA(nlh), sizeof(status));
+                    if (status < 0)
+                    {
+                        spdlog::debug("inet_diag dump for family {} failed: {}", family, safeStrerror(-status));
+                        return false;
+                    }
+                }
                 return true;
             }
 
             if (nlh->nlmsg_type == NLMSG_ERROR)
             {
-                // The kernel's answer to this request -- e.g. ENOENT when the family's diag module
-                // is absent (IPv6 disabled). The dump is over and has no sockets; that's complete.
                 const auto* err = static_cast<const nlmsgerr*>(NLMSG_DATA(nlh));
-                if (err->error != 0)
+                if (err->error == 0)
                 {
-                    spdlog::debug("Netlink error for family {}: {}", family, safeStrerror(-err->error));
+                    continue; // An ACK, not the end of the dump: keep reading until NLMSG_DONE
                 }
-                return true;
+                if (err->error == -ENOENT)
+                {
+                    // The family's diag module is absent (IPv6 disabled): the dump is over and has
+                    // no sockets; that's complete.
+                    return true;
+                }
+                // Any other error (EBUSY, ENOMEM, ...) is a failed reading, not an empty one: taken as
+                // complete it would drop every socket's baseline and credit their lifetime bytes when
+                // they reappear.
+                spdlog::debug("Netlink error for family {}: {}", family, safeStrerror(-err->error));
+                return false;
             }
 
             if (nlh->nlmsg_type == SOCK_DIAG_BY_FAMILY)

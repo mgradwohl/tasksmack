@@ -63,10 +63,16 @@ class SocketTrafficAccumulator
             Totals credit;
             if (const auto previous = m_Sockets.find(sample.key); previous != m_Sockets.end())
             {
-                // A counter that went backwards belongs to a different connection reusing the key:
-                // nothing is credited for it this interval; it is the new baseline.
-                credit.received = growth(sample.bytesReceived, previous->second.bytesReceived);
-                credit.sent = growth(sample.bytesSent, previous->second.bytesSent);
+                // A counter that went backwards in either direction means a different connection is
+                // reusing the key: nothing is credited for it this interval in either direction (its
+                // other counter isn't comparable with the old connection's either); both are the new
+                // baseline.
+                const bool reused = sample.bytesReceived < previous->second.bytesReceived || sample.bytesSent < previous->second.bytesSent;
+                if (!reused)
+                {
+                    credit.received = sample.bytesReceived - previous->second.bytesReceived;
+                    credit.sent = sample.bytesSent - previous->second.bytesSent;
+                }
             }
             else if (m_HasReading)
             {
@@ -158,11 +164,6 @@ class SocketTrafficAccumulator
             return pidHash ^ (startHash + 0x9e3779b97f4a7c15ULL + (pidHash << 6U) + (pidHash >> 2U));
         }
     };
-
-    [[nodiscard]] static constexpr std::uint64_t growth(std::uint64_t now, std::uint64_t before) noexcept
-    {
-        return now >= before ? now - before : 0;
-    }
 
     [[nodiscard]] static constexpr std::uint64_t saturatingAdd(std::uint64_t a, std::uint64_t b) noexcept
     {

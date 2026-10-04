@@ -1098,8 +1098,11 @@ void LinuxProcessProbe::attributeNetworkToProcesses(std::vector<ProcessCounters>
 
     const std::scoped_lock lock{m_NetTrafficMutex};
     // The socket query is cached (DEFAULT_SOCKET_STATS_CACHE_TTL), so the same reading can come
-    // back for several refreshes; it is folded in once.
-    if (isNewReading && sampledAt != m_LastNetReadingTime)
+    // back for several refreshes; it is folded in once. Only a strictly newer one: concurrent
+    // enumerate() calls query and scan /proc before this lock, so an older reading can arrive after
+    // a newer one was folded, and folding it would rewind the socket baselines and count the
+    // traffic in between twice.
+    if (isNewReading && sampledAt > m_LastNetReadingTime)
     {
         std::vector<SocketTrafficSample> samples;
         samples.reserve(sockets.size());

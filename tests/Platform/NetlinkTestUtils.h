@@ -40,13 +40,17 @@ struct FakeSocket
 };
 
 /// Append one netlink message (header + payload) to a datagram, padded to NLMSG_ALIGNTO.
-inline void
-appendMessage(Datagram& datagram, std::uint16_t type, std::uint32_t sequence, std::uint32_t portId, std::span<const std::byte> payload)
+inline void appendMessage(Datagram& datagram,
+                          std::uint16_t type,
+                          std::uint32_t sequence,
+                          std::uint32_t portId,
+                          std::span<const std::byte> payload,
+                          std::uint16_t flags = NLM_F_MULTI)
 {
     nlmsghdr header{};
     header.nlmsg_len = static_cast<std::uint32_t>(NLMSG_LENGTH(payload.size()));
     header.nlmsg_type = type;
-    header.nlmsg_flags = NLM_F_MULTI;
+    header.nlmsg_flags = flags;
     header.nlmsg_seq = sequence;
     header.nlmsg_pid = portId;
     const std::size_t offset = datagram.size();
@@ -70,10 +74,13 @@ appendMessage(Datagram& datagram, std::uint16_t type, std::uint32_t sequence, st
     attribute.rta_type = INET_DIAG_INFO;
     attribute.rta_len = static_cast<unsigned short>(RTA_LENGTH(sizeof(info)));
 
-    Datagram payload(sizeof(message) + RTA_SPACE(sizeof(info)));
+    // Byte offsets into a byte buffer, indexed rather than added to the pointer.
+    const std::size_t attributeOffset = sizeof(message);
+    const std::size_t infoOffset = attributeOffset + RTA_LENGTH(0);
+    Datagram payload(attributeOffset + RTA_SPACE(sizeof(info)));
     std::memcpy(payload.data(), &message, sizeof(message));
-    std::memcpy(payload.data() + sizeof(message), &attribute, sizeof(attribute));
-    std::memcpy(payload.data() + sizeof(message) + RTA_LENGTH(0), &info, sizeof(info));
+    std::memcpy(&payload[attributeOffset], &attribute, sizeof(attribute));
+    std::memcpy(&payload[infoOffset], &info, sizeof(info));
     return payload;
 }
 
@@ -89,11 +96,12 @@ appendMessage(Datagram& datagram, std::uint16_t type, std::uint32_t sequence, st
 }
 
 /// A datagram holding the dump's NLMSG_DONE.
-[[nodiscard]] inline Datagram doneDatagram(std::uint32_t sequence, std::uint32_t portId)
+/// `status` is the dump's result (negative errno on failure); `flags` may add NLM_F_DUMP_INTR.
+[[nodiscard]] inline Datagram
+doneDatagram(std::uint32_t sequence, std::uint32_t portId, std::int32_t status = 0, std::uint16_t flags = NLM_F_MULTI)
 {
     Datagram datagram;
-    const std::int32_t status = 0;
-    appendMessage(datagram, NLMSG_DONE, sequence, portId, std::as_bytes(std::span{&status, 1}));
+    appendMessage(datagram, NLMSG_DONE, sequence, portId, std::as_bytes(std::span{&status, 1}), flags);
     return datagram;
 }
 
@@ -135,7 +143,7 @@ class ScriptedNetlinkTransport final : public INetlinkTransport
         nlmsghdr header{};
         inet_diag_req_v2 body{};
         std::memcpy(&header, request.data(), sizeof(header));
-        std::memcpy(&body, request.data() + sizeof(header), sizeof(body));
+        std::memcpy(&body, request.subspan(sizeof(header)).data(), sizeof(body));
         const Request parsed{.family = body.sdiag_family, .protocol = body.sdiag_protocol, .sequence = header.nlmsg_seq};
         requests.push_back(parsed);
         if (onRequest)

@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -530,6 +531,79 @@ TEST(NetlinkSocketStatsScriptedTest, AnErrorReplyForOneFamilyIsAnEmptyCompleteDu
     EXPECT_NE(sampledAt, std::chrono::steady_clock::time_point{});
     ASSERT_EQ(sockets.size(), 1U);
     EXPECT_EQ(sockets[0].bytesSent, 5U);
+}
+
+// #1261 review: a terminal message is not always a successful dump. Each of these must make the
+// reading fail (no timestamp, nothing returned), never an empty or partial "complete" reading.
+namespace
+{
+void expectFailedReadingWhenIpv6Replies(ScriptedNetlinkTransport::Reply ipv6Reply)
+{
+    using namespace std::chrono_literals;
+    ScriptedStats scripted(0ms);
+    const std::array ipv4{FakeSocket{.inode = 11, .bytesSent = 5}};
+    scripted.transport->onRequest = [&](const ScriptedNetlinkTransport::Request& request)
+    {
+        if (request.family == AF_INET6)
+        {
+            auto reply = ipv6Reply;
+            for (auto& datagram : reply)
+            {
+                // Re-address the scripted datagrams to this request's sequence number.
+                nlmsghdr header{};
+                std::memcpy(&header, datagram->data(), sizeof(header));
+                header.nlmsg_seq = request.sequence;
+                std::memcpy(datagram->data(), &header, sizeof(header));
+            }
+            return reply;
+        }
+        return completeDump(request, ipv4);
+    };
+    std::chrono::steady_clock::time_point sampledAt;
+    const auto sockets = scripted.stats->queryAllSockets(&sampledAt);
+    EXPECT_EQ(sampledAt, std::chrono::steady_clock::time_point{});
+    EXPECT_TRUE(sockets.empty());
+}
+} // namespace
+
+TEST(NetlinkSocketStatsScriptedTest, AnErrorOtherThanEnoentIsAFailedReading)
+{
+    expectFailedReadingWhenIpv6Replies({errorDatagram(0, ScriptedNetlinkTransport::PORT_ID, -EBUSY)});
+}
+
+TEST(NetlinkSocketStatsScriptedTest, ADoneWithANegativeStatusIsAFailedReading)
+{
+    expectFailedReadingWhenIpv6Replies({doneDatagram(0, ScriptedNetlinkTransport::PORT_ID, -ENOMEM)});
+}
+
+TEST(NetlinkSocketStatsScriptedTest, AnInterruptedDumpIsAFailedReading)
+{
+    expectFailedReadingWhenIpv6Replies(
+        {doneDatagram(0, ScriptedNetlinkTransport::PORT_ID, 0, static_cast<std::uint16_t>(NLM_F_MULTI | NLM_F_DUMP_INTR))});
+}
+
+TEST(NetlinkSocketStatsScriptedTest, AnAckIsNotTheEndOfTheDump)
+{
+    // A zero-error NLMSG_ERROR is an ACK: the dump continues to NLMSG_DONE, and the sockets after it
+    // are part of the reading.
+    using namespace std::chrono_literals;
+    ScriptedStats scripted(0ms);
+    const std::array sockets{FakeSocket{.inode = 31, .bytesSent = 7}};
+    scripted.transport->onRequest = [&](const ScriptedNetlinkTransport::Request& request)
+    {
+        ScriptedNetlinkTransport::Reply reply{errorDatagram(request.sequence, ScriptedNetlinkTransport::PORT_ID, 0)};
+        if (request.family == AF_INET)
+        {
+            reply.emplace_back(socketsDatagram(sockets, request.sequence, ScriptedNetlinkTransport::PORT_ID));
+        }
+        reply.emplace_back(doneDatagram(request.sequence, ScriptedNetlinkTransport::PORT_ID));
+        return reply;
+    };
+    std::chrono::steady_clock::time_point sampledAt;
+    const auto result = scripted.stats->queryAllSockets(&sampledAt);
+    EXPECT_NE(sampledAt, std::chrono::steady_clock::time_point{});
+    ASSERT_EQ(result.size(), 1U);
+    EXPECT_EQ(result[0].inode, 31U);
 }
 
 TEST(NetlinkSocketStatsScriptedTest, NullTransportIsUnavailable)

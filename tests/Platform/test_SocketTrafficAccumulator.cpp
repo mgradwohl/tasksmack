@@ -118,6 +118,23 @@ TEST(SocketTrafficAccumulatorTest, CountersNeverDecrease)
     EXPECT_EQ(previous, 40U + 5U + 7U);
 }
 
+TEST(SocketTrafficAccumulatorTest, ARollbackInOneDirectionRebaselinesBoth)
+{
+    // #1261 review: received going backwards means a different connection reuses the key, so its
+    // sent counter isn't comparable with the old connection's either. 1000/100 -> 10/5000 must
+    // credit nothing (not 4900 sent bytes), and the next reading counts growth from 10/5000.
+    SocketTrafficAccumulator accumulator;
+    std::vector processes{process(10)};
+    read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 1'000, .bytesSent = 100}}, processes);
+    read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 10, .bytesSent = 5'000}}, processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 0U);
+    EXPECT_EQ(processes[0].netSentBytes, 0U);
+
+    read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 30, .bytesSent = 5'400}}, processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 20U);
+    EXPECT_EQ(processes[0].netSentBytes, 400U);
+}
+
 TEST(SocketTrafficAccumulatorTest, PublishWithoutANewReadingRepeatsTheTotals)
 {
     SocketTrafficAccumulator accumulator;
