@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <format>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -283,19 +284,58 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     const std::string sentBarLabel = showingInterface ? ifaceSentLabel : std::string(TOTAL_SENT_LABEL);
     const std::string recvBarLabel = showingInterface ? ifaceRecvLabel : std::string(TOTAL_RECV_LABEL);
 
-    const NowBar sentBar{.valueText = UI::Format::formatBytesPerSec(smoothedSent),
-                         .label = sentBarLabel,
-                         .tooltipText = {},
-                         .value01 = UI::Widgets::normalizeToUnitInterval(smoothedSent, netAxisUpper),
-                         .color = theme.scheme().chartNetTx};
-    const NowBar recvBar{.valueText = UI::Format::formatBytesPerSec(smoothedRecv),
-                         .label = recvBarLabel,
-                         .tooltipText = {},
-                         .value01 = UI::Widgets::normalizeToUnitInterval(smoothedRecv, netAxisUpper),
-                         .color = theme.scheme().chartNetRx};
-
     // Determine plot title based on selection
     const bool usingInterfaceHistory = showingInterface && !ifaceSentData.empty() && !ifaceRecvData.empty();
+
+    // Colors for interface-specific lines (lighter/dashed to distinguish from total)
+    const auto ifaceSentColor = UI::withAlpha(theme.scheme().chartNetTx, 0.7F);
+    const auto ifaceRecvColor = UI::withAlpha(theme.scheme().chartNetRx, 0.7F);
+
+    const std::array netBars{
+        NowBar{
+            .valueText = UI::Format::formatBytesPerSec(smoothedSent),
+            .label = sentBarLabel,
+            .tooltipText = {},
+            .value01 = UI::Widgets::normalizeToUnitInterval(smoothedSent, netAxisUpper),
+            .color = theme.scheme().chartNetTx,
+        },
+        NowBar{
+            .valueText = UI::Format::formatBytesPerSec(smoothedRecv),
+            .label = recvBarLabel,
+            .tooltipText = {},
+            .value01 = UI::Widgets::normalizeToUnitInterval(smoothedRecv, netAxisUpper),
+            .color = theme.scheme().chartNetRx,
+        },
+    };
+
+    // With an interface selected the chart also draws the machine totals -- muted behind the
+    // interface's lines, or alone when the interface has no history yet. They have no bar, but their
+    // current values belong in the value strip like every series the chart draws (#1193): the latest
+    // sample, as their tooltip rows show. The labels are views of constants and the values short
+    // rates, so building these allocates nothing.
+    std::array<UI::Widgets::ValueStripEntry, 2> totalEntries{};
+    std::span<const UI::Widgets::ValueStripEntry> stripExtras;
+    if (showingInterface)
+    {
+        const auto latestRate = [](std::span<const float> data)
+        {
+            return UI::Format::formatBytesPerSecOrNA(data.empty() ? std::numeric_limits<double>::quiet_NaN()
+                                                                  : static_cast<double>(data.back()));
+        };
+        totalEntries = {
+            UI::Widgets::ValueStripEntry{
+                .label = TOTAL_SENT_BEHIND_LABEL,
+                .value = latestRate(sentData),
+                .color = usingInterfaceHistory ? ifaceSentColor : theme.scheme().chartNetTx,
+            },
+            UI::Widgets::ValueStripEntry{
+                .label = TOTAL_RECV_BEHIND_LABEL,
+                .value = latestRate(recvData),
+                .color = usingInterfaceHistory ? ifaceRecvColor : theme.scheme().chartNetRx,
+            },
+        };
+        stripExtras = totalEntries;
+    }
     const bool interfaceHistoryUnavailable = showingInterface && !usingInterfaceHistory;
 
     std::string plotTitle = "Total";
@@ -307,10 +347,6 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     {
         plotTitle = std::format("Total (selected: {}, history unavailable)", ifaceDisplayName);
     }
-
-    // Colors for interface-specific lines (lighter/dashed to distinguish from total)
-    const auto ifaceSentColor = UI::withAlpha(theme.scheme().chartNetTx, 0.7F);
-    const auto ifaceRecvColor = UI::withAlpha(theme.scheme().chartNetRx, 0.7F);
 
     // Shares the tab's height with the disk chart or grid below it (#959).
     const float plotHeight = (ctx.fill != nullptr) ? ctx.fill->plotHeight() : HISTORY_PLOT_HEIGHT_DEFAULT;
@@ -433,7 +469,9 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         ImGui::Spacing();
     }
     constexpr size_t NETWORK_NOW_BAR_COLUMNS = 2; // Sent, Recv
-    renderHistoryWithNowBars("SystemNetHistoryLayout", plotHeight, plot, {sentBar, recvBar}, false, NETWORK_NOW_BAR_COLUMNS);
+    UI::Widgets::renderNowBarValueStrip(netBars, stripExtras);
+    renderHistoryWithNowBars(
+        "SystemNetHistoryLayout", plotHeight, plot, netBars, false, NETWORK_NOW_BAR_COLUMNS, false, UI::Widgets::NowBarValues::None);
     if (ctx.fill != nullptr)
     {
         ctx.fill->addPlot();
