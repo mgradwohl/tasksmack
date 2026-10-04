@@ -1,8 +1,12 @@
 #pragma once
 
+#include "Platform/GPUTypes.h"
+
 #include <cstdint>
 #include <format>
+#include <optional>
 #include <string>
+#include <utility>
 
 namespace Platform
 {
@@ -69,6 +73,30 @@ namespace Platform
     return false;
 }
 
+/// The D3DKMT_ADAPTERTYPE bits shouldListAdapter() decides on, as plain bools so this header stays
+/// free of the Windows kernel-mode headers.
+struct AdapterTypeBits
+{
+    bool softwareDevice = false;
+    bool indirectDisplayDevice = false;
+};
+
+/// Whether DXGIGPUProbe lists a DXGI adapter as a GPU. A software adapter (WARP, the Basic Render
+/// Driver) is not one; nor is an indirect-display adapter (a DisplayLink dock, Miracast), which DXGI
+/// reports under the name, vendor and device id of the GPU it renders on, so it showed as a
+/// duplicate of that GPU and doubled the VRAM total (#1251). A failed adapter-type query keeps the
+/// adapter: dropping a real GPU is worse than a possible duplicate.
+/// @param softwareFlag DXGI_ADAPTER_DESC1::Flags has DXGI_ADAPTER_FLAG_SOFTWARE
+/// @param adapterType The adapter's D3DKMT adapter type, or nullopt when it could not be read
+[[nodiscard]] constexpr bool shouldListAdapter(bool softwareFlag, std::optional<AdapterTypeBits> adapterType)
+{
+    if (softwareFlag)
+    {
+        return false;
+    }
+    return !adapterType.has_value() || (!adapterType->softwareDevice && !adapterType->indirectDisplayDevice);
+}
+
 /// An adapter's memory size, from DXGI_ADAPTER_DESC1: the shared system memory an integrated GPU
 /// may use, or a discrete GPU's dedicated VRAM. Fixed for the adapter's lifetime, unlike the
 /// per-process budget QueryVideoMemoryInfo reports, which moved over time and made the GPU tab's
@@ -76,6 +104,21 @@ namespace Platform
 [[nodiscard]] constexpr uint64_t adapterMemoryTotalBytes(bool isIntegrated, uint64_t dedicatedVideoMemory, uint64_t sharedSystemMemory)
 {
     return isIntegrated ? sharedSystemMemory : dedicatedVideoMemory;
+}
+
+/// The counters DXGIGPUProbe reads for one adapter: its id and memory size. DXGI reads neither
+/// utilization nor the adapter's memory in use, so both start unread; NVML or PDH marks them
+/// available when it supplies a reading. Defaulting to available published DXGI's placeholder 0%
+/// and 0 B as real samples whenever PDH was warming up or unavailable (#1245).
+[[nodiscard]] inline GPUCounters makeDXGIAdapterCounters(std::string gpuId, uint64_t memoryTotalBytes)
+{
+    GPUCounters counter{};
+    counter.gpuId = std::move(gpuId);
+    counter.memoryTotalBytes = memoryTotalBytes;
+    counter.memoryUsedBytes = 0;
+    counter.utilizationAvailable = false;
+    counter.memoryAvailable = false;
+    return counter;
 }
 
 } // namespace Platform

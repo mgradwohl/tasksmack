@@ -270,15 +270,14 @@ inline void assignPDHMemoryToDXGICounters(std::vector<GPUCounters>& dxgiCounters
         }
         const auto integratedIt = dxgiIdIsIntegrated.find(counter.gpuId);
         const bool integrated = (integratedIt != dxgiIdIsIntegrated.end()) && integratedIt->second;
-        const std::uint64_t usedBytes = integrated ? memIt->second.sharedBytes : memIt->second.dedicatedBytes;
-        // PDHGPUProbe adds an adapter's entry for whichever segment it read with a non-zero value, so
-        // a 0 in the segment used here means that segment wasn't read: leave the counter as it is
-        // rather than publishing a real-looking 0 (#1111).
-        if (usedBytes == 0)
+        const AdapterMemoryUsage& usage = memIt->second;
+        // The entry may exist because only the other segment was read: then this one is unread, a
+        // gap (#1111). A segment that was read is a reading, 0 bytes included (#1246).
+        if (!(integrated ? usage.sharedRead : usage.dedicatedRead))
         {
             continue;
         }
-        counter.memoryUsedBytes = usedBytes;
+        counter.memoryUsedBytes = integrated ? usage.sharedBytes : usage.dedicatedBytes;
         counter.memoryAvailable = true; // A real reading, even after a failed NVML read (#1111)
     }
 }
@@ -348,6 +347,7 @@ mergeNVMLIntoDXGICounters(std::vector<GPUCounters>& dxgiCounters,
         if (nvmlCounter.utilizationAvailable)
         {
             dxgiCounter.utilizationPercent = nvmlCounter.utilizationPercent;
+            dxgiCounter.utilizationAvailable = true;  // DXGI's counter starts unread (#1245)
             nvmlSourcedIds.insert(dxgiCounter.gpuId); // Track so PDH merge doesn't overwrite a valid 0%
         }
         else
@@ -360,6 +360,7 @@ mergeNVMLIntoDXGICounters(std::vector<GPUCounters>& dxgiCounters,
         {
             dxgiCounter.memoryUsedBytes = nvmlCounter.memoryUsedBytes;
             dxgiCounter.memoryTotalBytes = nvmlCounter.memoryTotalBytes;
+            dxgiCounter.memoryAvailable = true; // DXGI's counter starts unread (#1245)
             if (nvmlMemoryIds != nullptr)
             {
                 nvmlMemoryIds->insert(dxgiCounter.gpuId);
@@ -410,12 +411,17 @@ mergeNVMLIntoDXGICounters(std::vector<GPUCounters>& dxgiCounters,
 /// Pure assignment logic extracted from WindowsGPUProbe::mergePDHAdapterUtilization(): for each
 /// DXGI counter not already covered by NVML, looks up its LUID-based id in @p dxgiIdToLuidId and,
 /// if PDH reported a utilization for that LUID in @p utilizationByGpuId, assigns it (clamped to
-/// [0, 100]) and marks it available. Counters with no LUID mapping or no matching PDH data keep
-/// their utilization value but are marked unread, so they publish as a gap (#1111).
+/// [0, 100]) and marks it available. Counters with no LUID mapping are marked unread, a gap
+/// (#1111). A mapped counter with no PDH entry is idle (0%, read) when @p absentMeansIdle -- the
+/// map is from a successful collect, and PDH has GPU Engine instances only for processes using the
+/// adapter -- and unread otherwise, or when its LUID is in @p unreadLuids: it had engine items this
+/// collect but none was readable, which is not idleness (#1166).
 inline void assignPDHUtilizationToDXGICounters(std::vector<GPUCounters>& dxgiCounters,
                                                const std::unordered_map<std::string, double>& utilizationByGpuId,
                                                const std::unordered_map<std::string, std::string>& dxgiIdToLuidId,
-                                               const std::unordered_set<std::string>& nvmlSourcedIds)
+                                               const std::unordered_set<std::string>& nvmlSourcedIds,
+                                               bool absentMeansIdle = false,
+                                               const std::unordered_set<std::string>& unreadLuids = {})
 {
     for (auto& dxgiCounter : dxgiCounters)
     {
@@ -439,7 +445,12 @@ inline void assignPDHUtilizationToDXGICounters(std::vector<GPUCounters>& dxgiCou
             dxgiCounter.utilizationPercent = std::clamp(utilIt->second, 0.0, 100.0);
             dxgiCounter.utilizationAvailable = true; // A real reading, even after a failed NVML read (#1111)
         }
-        // If no PDH data found for this GPU's LUID, utilization stays unread
+        else if (absentMeansIdle && !unreadLuids.contains(mapIt->second))
+        {
+            dxgiCounter.utilizationPercent = 0.0; // Nothing ran on it this interval (#1166)
+            dxgiCounter.utilizationAvailable = true;
+        }
+        // Otherwise no PDH data for this GPU's LUID: utilization stays unread
     }
 }
 
