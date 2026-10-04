@@ -247,9 +247,9 @@ void renderGpuSection(RenderContext& ctx)
         const auto& powerHist = history.power;
         const auto& fanHist = history.fanSpeed;
 
-        // Per-GPU timestamps: only includes samples when this GPU was present,
-        // so they stay aligned with the per-GPU history vectors even when the GPU
-        // was intermittently absent (global timestamps include samples this GPU never recorded).
+        // Per-GPU timestamps: one per refresh since this GPU was first seen, aligned with the
+        // per-GPU history vectors. A refresh it was missing from has an entry too, whose values
+        // are NaN, so the absence is drawn as a gap (#1146).
         const auto& perGpuTimestamps = history.timestamps;
 
         const size_t alignedCount = std::min({utilHist.size(), memHist.size(), perGpuTimestamps.size()});
@@ -266,9 +266,10 @@ void renderGpuSection(RenderContext& ctx)
 
         const auto timeData = frameTimeAxis(perGpuTimestamps, alignedCount, nowSeconds);
 
-        // Compute per-GPU axis config from per-GPU timestamps so that X-axis scroll/limits
-        // stay consistent with the data being plotted even when a GPU is intermittently absent
-        // (global timestamps would include samples this GPU never recorded, causing a mismatch).
+        // Compute per-GPU axis config from per-GPU timestamps so that X-axis scroll/limits stay
+        // consistent with the data being plotted. A refresh the GPU was missing from has a (gap)
+        // entry of its own, but the GPU's history can still start later than the global one (a GPU
+        // first seen mid-run) or be pruned on its own, so the global timestamps could mismatch.
         const auto axisConfig = makeTimeAxisConfig(perGpuTimestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
 
         const float maxClockMHz = gpuClockReferenceMHz(clockData, snap.gpuClockMHz);
@@ -403,11 +404,16 @@ void renderGpuSection(RenderContext& ctx)
                             {
                                 rows.push_back({.label = CLOCK_LABEL,
                                                 .color = theme.scheme().gpuClock,
-                                                .value = std::format(
-                                                    "{:.0f} MHz ({} of {:.0f} MHz)",
+                                                .value = UI::Widgets::formatSampleOrNA(
                                                     *clockMHz,
-                                                    UI::Format::percentCompact((*clockMHz / static_cast<double>(maxClockMHz)) * 100.0),
-                                                    static_cast<double>(maxClockMHz))});
+                                                    [maxClockMHz](double mhz)
+                                                    {
+                                                        return std::format(
+                                                            "{:.0f} MHz ({} of {:.0f} MHz)",
+                                                            mhz,
+                                                            UI::Format::percentCompact((mhz / static_cast<double>(maxClockMHz)) * 100.0),
+                                                            static_cast<double>(maxClockMHz));
+                                                    })});
                             }
                         }
                         if (caps.hasEncoderDecoder && !encoderData.empty())
@@ -649,15 +655,21 @@ void renderGpuSection(RenderContext& ctx)
                                 }
                                 return static_cast<double>(series[*idxVal - aligned.offset]);
                             };
+                            // "N/A" for a sample with no reading, such as while the GPU was missing (#1146).
                             const auto ofReference = [](double value, double reference, std::string_view unit, std::string_view note)
                             {
-                                return std::format("{:.0f}{} ({} of {:.0f}{}{})",
-                                                   value,
-                                                   unit,
-                                                   UI::Format::percentCompact((value / reference) * 100.0),
-                                                   reference,
-                                                   unit,
-                                                   note);
+                                return UI::Widgets::formatSampleOrNA(value,
+                                                                     [&](double reading)
+                                                                     {
+                                                                         return std::format(
+                                                                             "{:.0f}{} ({} of {:.0f}{}{})",
+                                                                             reading,
+                                                                             unit,
+                                                                             UI::Format::percentCompact((reading / reference) * 100.0),
+                                                                             reference,
+                                                                             unit,
+                                                                             note);
+                                                                     });
                             };
                             std::vector<UI::Widgets::TooltipRow> rows;
                             if (caps.hasTemperature && !tempData.empty())

@@ -132,8 +132,9 @@ class GPUModel : public ISamplable
     // Get global timestamps for all GPU history samples (one per refresh call)
     [[nodiscard]] std::vector<double> historyTimestamps() const;
 
-    // Get per-GPU timestamps (only samples where the GPU was present).
-    // Length matches the per-GPU history vectors (utilizationHistory, etc.).
+    // Get per-GPU timestamps: one per refresh since the GPU was first seen, including refreshes it
+    // was missing from, whose history entries are NaN gaps (#1146). Length matches the per-GPU
+    // history vectors (utilizationHistory, etc.).
     [[nodiscard]] std::vector<double> historyTimestamps(std::string_view gpuId) const;
 
     // GPU info (static, rarely changes)
