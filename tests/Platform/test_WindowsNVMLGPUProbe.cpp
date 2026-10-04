@@ -1,5 +1,6 @@
 #ifdef _WIN32
 
+#include "Platform/GPUTypes.h"
 #include "Platform/NVMLTypes.h"
 #include "Platform/Windows/NVMLGPUProbe.h"
 
@@ -222,6 +223,9 @@ struct FakeDeviceData
     unsigned int memClockMhz = 10500;
     unsigned int utilizationGpu = 37;
     unsigned int fanPercent = 48;
+    unsigned int pciBus = 0x01;
+    unsigned int pciDevice = 0x00;
+    unsigned int pciDeviceId = 0x268410DEU; // (device ID << 16) | vendor ID, as NVML encodes it
     bool nameOk = true;
     bool uuidOk = true;
     bool vbiosOk = true;
@@ -233,6 +237,7 @@ struct FakeDeviceData
     bool memClockOk = true;
     bool utilizationOk = true;
     bool fanOk = true;
+    bool pciInfoOk = true;
 };
 
 struct FakeProcessQuery
@@ -447,6 +452,20 @@ nvmlReturn_t fakeDeviceGetFanSpeed(nvmlDevice_t device, unsigned int* speed)
     return NVML_SUCCESS;
 }
 
+nvmlReturn_t fakeDeviceGetPciInfo(nvmlDevice_t device, nvmlPciInfo_t* pci)
+{
+    const auto& d = fakeState().devices.at(deviceIndexOf(device));
+    if (!d.pciInfoOk)
+    {
+        return NVML_ERROR_NOT_SUPPORTED;
+    }
+    *pci = nvmlPciInfo_t{};
+    pci->bus = d.pciBus;
+    pci->device = d.pciDevice;
+    pci->pciDeviceId = d.pciDeviceId;
+    return NVML_SUCCESS;
+}
+
 nvmlReturn_t
 queryFakeProcesses(std::unordered_map<unsigned int, FakeProcessQuery>& table, unsigned int deviceIndex, unsigned int* count, void* buffer)
 {
@@ -548,6 +567,7 @@ struct NVMLGPUProbeTestAccessor
         fns.DeviceGetUtilizationRates = fakeDeviceGetUtilizationRates;
         fns.DeviceGetVbiosVersion = fakeDeviceGetVbiosVersion;
         fns.DeviceGetFanSpeed = fakeDeviceGetFanSpeed;
+        fns.DeviceGetPciInfo = fakeDeviceGetPciInfo;
         fns.DeviceGetComputeRunningProcesses = fakeDeviceGetComputeRunningProcesses;
         fns.DeviceGetGraphicsRunningProcesses = fakeDeviceGetGraphicsRunningProcesses;
         return fns;
@@ -623,6 +643,67 @@ TEST_F(NVMLGPUProbeFakeTest, EnumerateFallsBackToIndexBasedIdWhenUuidFails)
     const auto gpus = probe.enumerateGPUs();
     ASSERT_EQ(gpus.size(), 1U);
     EXPECT_EQ(gpus[0].id, "NVML_GPU0");
+}
+
+// #1091: the PCI identity NVML reports is what pairs each NVML device with its DXGI adapter, so each
+// device must carry its own bus, device number and PCI device id.
+TEST_F(NVMLGPUProbeFakeTest, EnumerateRecordsEachDevicesPciIdentity)
+{
+    fakeState().deviceCount = 2;
+    deviceData(0).pciBus = 0x01;
+    deviceData(0).pciDevice = 0x00;
+    deviceData(0).pciDeviceId = 0x268410DEU;
+    deviceData(1).pciBus = 0x41;
+    deviceData(1).pciDevice = 0x03;
+    deviceData(1).pciDeviceId = 0x270410DEU;
+
+    NVMLGPUProbe probe;
+    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
+
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 2U);
+    ASSERT_TRUE(gpus[0].pciLocation.has_value());
+    EXPECT_EQ(gpus[0].pciLocation.value_or(PciLocation{}), (PciLocation{.bus = 0x01, .device = 0x00}));
+    EXPECT_EQ(gpus[0].pciDeviceId, 0x268410DEU);
+    ASSERT_TRUE(gpus[1].pciLocation.has_value());
+    EXPECT_EQ(gpus[1].pciLocation.value_or(PciLocation{}), (PciLocation{.bus = 0x41, .device = 0x03}));
+    EXPECT_EQ(gpus[1].pciDeviceId, 0x270410DEU);
+}
+
+// A failed PCI query leaves that device's identity unknown -- no location and a zero id -- rather than
+// a default location such as bus 0, which could match another adapter.
+TEST_F(NVMLGPUProbeFakeTest, EnumerateLeavesPciIdentityUnknownWhenTheQueryFails)
+{
+    fakeState().deviceCount = 2;
+    deviceData(0).pciInfoOk = false;
+    deviceData(1).pciBus = 0x41;
+
+    NVMLGPUProbe probe;
+    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
+
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 2U);
+    EXPECT_FALSE(gpus[0].pciLocation.has_value());
+    EXPECT_EQ(gpus[0].pciDeviceId, 0U);
+    ASSERT_TRUE(gpus[1].pciLocation.has_value());
+    EXPECT_EQ(gpus[1].pciLocation.value_or(PciLocation{}).bus, 0x41U);
+}
+
+// Drivers without nvmlDeviceGetPciInfo_v3/_v2 enumerate as before, with no PCI identity.
+TEST_F(NVMLGPUProbeFakeTest, EnumerateLeavesPciIdentityUnknownWithoutThePciFunction)
+{
+    fakeState().deviceCount = 1;
+    deviceData(0).pciBus = 0x41; // Would be reported, were the function there
+
+    NVMLGPUProbe probe;
+    auto fns = NVMLGPUProbeTestAccessor::fullFakeFunctions();
+    fns.DeviceGetPciInfo = nullptr;
+    NVMLGPUProbeTestAccessor::inject(probe, fns, /*initialized=*/true);
+
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    EXPECT_FALSE(gpus[0].pciLocation.has_value());
+    EXPECT_EQ(gpus[0].pciDeviceId, 0U);
 }
 
 TEST_F(NVMLGPUProbeFakeTest, EnumerateLeavesDriverVersionUnknownWhenVbiosFails)

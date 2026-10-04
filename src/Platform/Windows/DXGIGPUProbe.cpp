@@ -1,5 +1,6 @@
 #include "DXGIGPUProbe.h"
 
+#include "DXGIAdapterLocation.h"
 #include "DXGIGPUProbeMath.h"
 #include "Platform/GPUTypes.h"
 #include "WinString.h"
@@ -29,6 +30,7 @@
 
 #include <cstring>
 #include <format>
+#include <optional>
 
 namespace Platform
 {
@@ -126,11 +128,17 @@ std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
                 // Device index
                 info.deviceIndex = adapterIndex;
 
-                spdlog::debug("DXGIGPUProbe: Enumerated GPU {}: {} ({}) - LUID: {}, Integrated: {}",
+                // PCI identity, in NVML's pciDeviceId encoding, for matching to NVML (#1091)
+                info.pciDeviceId = (static_cast<std::uint32_t>(desc.DeviceId) << 16U) | (desc.VendorId & 0xFFFFU);
+                info.pciLocation = adapterPciLocation(desc.AdapterLuid);
+
+                spdlog::debug("DXGIGPUProbe: Enumerated GPU {}: {} ({}) - LUID: {}, PCI: {}, Integrated: {}",
                               adapterIndex,
                               info.name,
                               info.vendor,
                               info.luidId,
+                              info.pciLocation ? std::format("{:02x}:{:02x}", info.pciLocation->bus, info.pciLocation->device)
+                                               : std::string("unknown"),
                               info.isIntegrated);
 
                 gpus.push_back(std::move(info));
