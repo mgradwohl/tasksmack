@@ -15,7 +15,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <format>
 #include <optional>
 #include <string>
 #include <utility>
@@ -32,7 +31,6 @@ using UI::Widgets::frameTimeAxis;
 using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
-using UI::Widgets::NowBar;
 using UI::Widgets::NowBarList;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
