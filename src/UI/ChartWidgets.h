@@ -239,7 +239,10 @@ inline void renderHistoryTooltip(double relativeSeconds, std::span<const Tooltip
 ///
 /// NaN marks a sample with no reading. Splitting a series into its finite runs is how a gap is drawn
 /// as a gap by renderers that do not handle NaN themselves (ImPlot's shaded renderer, #989).
-template<typename T, typename OnRun> inline void forEachFiniteRun(const T* values, int count, OnRun&& onRun)
+// onRun is called once per run, so it is used as an lvalue rather than forwarded; a forwarding
+// reference keeps mutable lambdas and stateful functors working.
+template<typename T, typename OnRun>
+inline void forEachFiniteRun(const T* values, int count, OnRun&& onRun) // NOLINT(cppcoreguidelines-missing-std-forward)
 {
     int runStart = 0;
     while (runStart < count)
@@ -898,7 +901,8 @@ class NowBarList
   public:
     static constexpr std::size_t CAPACITY = 8;
 
-    void push_back(NowBar bar)
+    // Named like std::vector::push_back: NowBarList replaced a std::vector at every call site (#1067).
+    void push_back(NowBar bar) // NOLINT(readability-identifier-naming)
     {
         assert(m_Size < CAPACITY && "NowBarList is full: raise CAPACITY");
         if (m_Size < CAPACITY)

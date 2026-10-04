@@ -10,7 +10,6 @@
 #include <implot.h>
 #include <spdlog/spdlog.h>
 
-#include <cmath>
 #include <cstddef>
 #include <filesystem>
 #include <string>
