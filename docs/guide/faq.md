@@ -106,6 +106,19 @@ System-wide and per-interface throughput should still appear.
 
 ---
 
+## Why does the FPS in the status bar change?
+
+TaskSmack only draws as many frames as the screen needs. The FPS readout in the bottom-right corner shows the rate it is drawing at, averaged over half a second:
+
+- **Idle, about 20 FPS or less:** nothing on screen moves faster than half a pixel per frame at that rate. With the default 300-second history, the charts scroll only a few pixels a second.
+- **Brief bursts, up to about 60 FPS:** a new sample has arrived and the now-bars or a chart's scale are easing to it, or a chart with a short history window scrolls quickly.
+- **Moving the mouse or typing:** frames are capped at about 60 FPS. The cap is rounded to a whole number of display refreshes, for example 60 at 60 or 120 Hz, 75 at 75 Hz, and 72 at 144 Hz, so motion stays even with vsync.
+- **Minimized, or covered by other windows:** about 5 FPS. Whether a covered window is detected depends on the desktop: X11 and Wayland can report it, Windows does not.
+
+The readout shows the real frame time, so a stalled machine that draws 6 frames a second shows about 6 FPS.
+
+---
+
 ## Developer setup and `clangd` problems
 
 Developer troubleshooting is maintained in the canonical [contributor guide](../../CONTRIBUTING.md), including prerequisite checks, LLVM setup, CMake presets, and `compile_commands.json`.

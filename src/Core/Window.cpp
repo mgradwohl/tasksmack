@@ -663,6 +663,40 @@ bool Window::isMinimized() const noexcept
     return (SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_MINIMIZED) != 0;
 }
 
+bool Window::isOccluded() const noexcept
+{
+    if (m_Handle == nullptr)
+    {
+        return false;
+    }
+    // SDL sets the flag on SDL_EVENT_WINDOW_OCCLUDED and clears it on SDL_EVENT_WINDOW_EXPOSED.
+    return (SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_OCCLUDED) != 0;
+}
+
+double Window::getDisplayRefreshRate() const noexcept
+{
+    if (m_Handle == nullptr)
+    {
+        return 0.0;
+    }
+    const SDL_DisplayID display = SDL_GetDisplayForWindow(m_Handle);
+    if (display == 0)
+    {
+        return 0.0;
+    }
+    const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(display);
+    if (mode == nullptr)
+    {
+        return 0.0;
+    }
+    // The exact rational rate when SDL has it (59.94 Hz is 60000/1001), else the rounded float.
+    if (mode->refresh_rate_numerator > 0 && mode->refresh_rate_denominator > 0)
+    {
+        return static_cast<double>(mode->refresh_rate_numerator) / static_cast<double>(mode->refresh_rate_denominator);
+    }
+    return static_cast<double>(mode->refresh_rate);
+}
+
 void Window::setHitTestCallback(SDL_HitTest callback, void* callbackData) const
 {
     if (m_Handle == nullptr)

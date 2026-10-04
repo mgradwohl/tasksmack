@@ -100,6 +100,13 @@ class Window
 
     [[nodiscard]] bool isMaximized() const;
     [[nodiscard]] bool isMinimized() const noexcept;
+    /// Whether the window is fully covered or otherwise not visible (SDL_WINDOW_OCCLUDED): set when
+    /// SDL reports SDL_EVENT_WINDOW_OCCLUDED (X11 and Wayland do; Windows does not), cleared on the
+    /// next SDL_EVENT_WINDOW_EXPOSED. The frame loop treats it like minimized (#1125).
+    [[nodiscard]] bool isOccluded() const noexcept;
+    /// The refresh rate of the display the window is on, in Hz, or 0 when SDL does not know it.
+    /// Queries SDL; Application caches it and re-reads it when the window changes display (#1126).
+    [[nodiscard]] double getDisplayRefreshRate() const noexcept;
     void maximize();
     void restore();
     void minimize() const;

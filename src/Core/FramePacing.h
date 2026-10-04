@@ -7,6 +7,7 @@
 // App/TitleBarGeometry.h, App/Panels/AdaptiveIntervalUtils.h).
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 
 namespace Core::FramePacing
@@ -99,39 +100,104 @@ computeVsyncTransition(bool wasInteracting, bool isInteracting, bool vsyncReques
     return !keepInteractionRedrawActive || !geometryChangedLastFrame;
 }
 
-/// How long to wait before the next frame so that, while something on screen is animating, frames
-/// start at most once per @p periodSeconds (#1037). The wait does not depend on input: before, the
-/// loop slept only when no events had arrived, so the charts ran at the idle rate (~20 FPS) with the
-/// mouse still and at the display rate while it moved, and visibly changed speed between the two.
-///
-/// Returns 0 (no pacing: use the idle path) unless the previous frame requested animation
-/// (Core::AnimationRequest). Never paces a move/resize interaction, which has its own redraw path,
-/// or a minimized window, which has its own sleep. With vsync on and a display at or below the
-/// target rate, the swap already took the period and the wait is 0: the cap is the lower of the
-/// two rates.
-[[nodiscard]] inline auto
-computeAnimationWaitSeconds(bool animating, bool isInteracting, bool isMinimized, double secondsSinceFrameStart, double periodSeconds)
-    -> double
+/// The display refresh rate to pace frames against (#1126): @p queriedHz from the window's display
+/// mode, or @p fallbackHz when SDL reports none (0 means "unspecified") or nonsense.
+[[nodiscard]] constexpr auto effectiveRefreshHz(double queriedHz, double fallbackHz) noexcept -> double
 {
-    if (!animating || isInteracting || isMinimized)
+    // A NaN fails the comparison, so it falls back too; an infinite rate would make the period 0.
+    return (queriedHz > 0.0 && queriedHz < 10000.0) ? queriedHz : fallbackHz;
+}
+
+/// How many display refreshes (vblanks) one frame spans when targeting @p targetFps on a display
+/// refreshing at @p refreshHz: max(1, round(refresh / target)). Frames paced at a whole number of
+/// refreshes present on every n-th vblank, instead of the uneven one/two (75 Hz) or two/three
+/// (144 Hz) vblank gaps a fixed 1/60 s period gave with vsync (#1126). An infinite target means "the
+/// display rate" (1).
+[[nodiscard]] inline auto vblanksPerFrame(double refreshHz, double targetFps) noexcept -> int
+{
+    if (!(refreshHz > 0.0) || !(targetFps > 0.0))
+    {
+        return 1;
+    }
+    return std::max(1, static_cast<int>(std::lround(refreshHz / targetFps)));
+}
+
+/// The minimum time between frame starts when targeting @p targetFps on a @p refreshHz display:
+/// vblanksPerFrame() refreshes.
+///
+/// With vsync pacing the swap (@p vsyncPaced) and n > 1, the wait aims half a refresh short of n:
+/// the previous swap returned just after a vblank, so a frame started a full n refreshes later would
+/// start just *after* the n-th vblank and its swap would wait for the next one, spanning n + 1. Starting
+/// mid-interval lets the swap land on the n-th. For n == 1 the swap itself already took a refresh,
+/// so the full period is a cap that rarely waits -- and it still caps the rate when the swap does not
+/// block (a compositor that queues frames, or adaptive vsync running late).
+[[nodiscard]] inline auto framePeriodSeconds(double refreshHz, double targetFps, bool vsyncPaced) noexcept -> double
+{
+    if (!(refreshHz > 0.0))
+    {
+        return (targetFps > 0.0) ? 1.0 / targetFps : 0.0;
+    }
+    const int vblanks = vblanksPerFrame(refreshHz, targetFps);
+    const double refreshPeriod = 1.0 / refreshHz;
+    if (vsyncPaced && vblanks > 1)
+    {
+        return (static_cast<double>(vblanks) - 0.5) * refreshPeriod;
+    }
+    return static_cast<double>(vblanks) * refreshPeriod;
+}
+
+/// The animation rate to pace the next frame at, from the highest rate the previous frame asked for
+/// (Core::AnimationRequest::consume(), 0 = nothing moved visibly), capped at @p maxFps. Returns 0 --
+/// take the idle path -- when nothing asked for more than @p idleFps: the idle path already renders
+/// that often without input, so pacing a slower motion would only cost frames (#1125).
+[[nodiscard]] inline auto computeAnimationRate(double requestedFps, double idleFps, double maxFps) noexcept -> double
+{
+    if (!(requestedFps > idleFps))
     {
         return 0.0;
     }
+    return std::min(requestedFps, maxFps);
+}
+
+/// The frame rate the loop caps the next regular (not move/resize) frame at, or 0 for none: the idle
+/// path, which sleeps until an event or the idle timeout.
+///
+/// - Hidden (minimized or occluded): 0. Nothing on screen to animate, so the hidden idle sleep
+///   applies (#1125: a covered window used to keep animating at 60 fps).
+/// - Input arrived this drain: @p inputFps. Input-driven frames used to be uncapped -- the display
+///   rate with vsync, unbounded without (#1153) -- now they share the full animation rate.
+/// - Otherwise @p animationFps (computeAnimationRate()): charts animate at a steady rate whatever the
+///   input (#1037), but only as fast as their on-screen motion needs (#1125).
+[[nodiscard]] inline auto computeFrameRateCap(double animationFps, bool hadInput, bool isHidden, double inputFps) noexcept -> double
+{
+    if (isHidden)
+    {
+        return 0.0;
+    }
+    return hadInput ? std::max(animationFps, inputFps) : animationFps;
+}
+
+/// How long to wait before starting a frame so that frames start at most once per @p periodSeconds,
+/// given the time since the last frame started. Uses a plain delay, not an event wait: an event that
+/// arrives meanwhile waits at most one period, and the next drain handles it.
+[[nodiscard]] inline auto computeFrameWaitSeconds(double secondsSinceFrameStart, double periodSeconds) noexcept -> double
+{
     return std::max(0.0, periodSeconds - secondsSinceFrameStart);
 }
 
-/// Whether the loop paces this frame for animation (see computeAnimationWaitSeconds()) instead of
-/// taking the idle path.
-[[nodiscard]] inline auto isAnimationPaced(bool animating, bool isInteracting, bool isMinimized) -> bool
+/// The frame's real duration, for an FPS readout: the difference between two frame-clock readings,
+/// *not* capped like frameDeltaSeconds(). The cap protects animation from a jump after a stall; an
+/// FPS readout fed the capped delta reports "10 FPS" for any frame slower than 100 ms (#1152).
+[[nodiscard]] constexpr auto frameIntervalSeconds(double previousSeconds, double currentSeconds) noexcept -> double
 {
-    return animating && !isInteracting && !isMinimized;
+    return std::max(0.0, currentSeconds - previousSeconds);
 }
 
-/// Idle-sleep duration: a longer sleep while minimized (nothing visible to update) than the
-/// normal idle rate.
-[[nodiscard]] inline auto computeIdleSleepMs(bool isMinimized, int idleFrameSleepMs, int minimizedFrameSleepMs) -> int
+/// Idle-sleep duration: a longer sleep while hidden -- minimized or occluded (#1125), nothing
+/// visible to update -- than the normal idle rate.
+[[nodiscard]] inline auto computeIdleSleepMs(bool isHidden, int idleFrameSleepMs, int minimizedFrameSleepMs) -> int
 {
-    return isMinimized ? minimizedFrameSleepMs : idleFrameSleepMs;
+    return isHidden ? minimizedFrameSleepMs : idleFrameSleepMs;
 }
 
 } // namespace Core::FramePacing
