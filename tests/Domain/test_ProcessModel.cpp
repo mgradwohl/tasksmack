@@ -1199,6 +1199,99 @@ TEST(ProcessModelTest, NetworkRatesAboveSanityCeilingAreDropped)
     EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 1000.0);
 }
 
+namespace
+{
+
+// Drives a ProcessModel whose probe reports per-connection readings (readSocketTraffic(), as the
+// Linux probe does) instead of per-process network counters, so the model accumulates them (#1099).
+struct SocketTrafficFixture
+{
+    static constexpr std::uint64_t MS = 1'000'000; // ns
+    static constexpr std::int32_t PID = 100;
+
+    Domain::ProcessModel::Clock::time_point currentTime;
+    MockProcessProbe* probe = nullptr;
+    std::unique_ptr<Domain::ProcessModel> model;
+    std::uint64_t totalCpuTime = 100000;
+
+    SocketTrafficFixture()
+    {
+        auto owned = std::make_unique<MockProcessProbe>();
+        probe = owned.get();
+        probe->withProcess(PID, "network_proc");
+        model = std::make_unique<Domain::ProcessModel>(std::move(owned), [this] { return currentTime; });
+    }
+
+    // Advances the clock by one second, then refreshes with `reading` as the probe's socket reading.
+    auto sample(Platform::SocketTrafficReading reading) -> Domain::ProcessSnapshot
+    {
+        currentTime += std::chrono::seconds{1};
+        totalCpuTime += 100000;
+        probe->setTotalCpuTime(totalCpuTime);
+        probe->setSocketTraffic(std::move(reading));
+        model->refresh();
+        const auto snaps = model->snapshots();
+        EXPECT_EQ(snaps.size(), 1U);
+        return snaps.empty() ? Domain::ProcessSnapshot{} : snaps.front();
+    }
+};
+
+} // namespace
+
+TEST(ProcessModelTest, AClosingSocketDoesNotZeroTheProcessNetworkRate)
+{
+    // #1099: the per-process counter was the sum over the process's live sockets, so when socket 12
+    // closed it dropped from 6000 to 3000 and the process read 0 B/s for the interval in which
+    // socket 11 moved 2000 bytes. Accumulated from per-socket deltas it only ever grows.
+    constexpr std::uint64_t MS = SocketTrafficFixture::MS;
+    constexpr std::int32_t PID = SocketTrafficFixture::PID;
+    SocketTrafficFixture fixture;
+    fixture.sample({.sockets = {{.key = 11, .pid = PID, .bytesReceived = 1'000}, {.key = 12, .pid = PID, .bytesReceived = 5'000}},
+                    .sampleTimeNs = 1000 * MS});
+
+    auto snap = fixture.sample({.sockets = {{.key = 11, .pid = PID, .bytesReceived = 3'000}}, .sampleTimeNs = 2000 * MS}); // 12 closed
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 2'000.0);
+
+    snap = fixture.sample({.sockets = {{.key = 11, .pid = PID, .bytesReceived = 6'000}}, .sampleTimeNs = 3000 * MS});
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 3'000.0);
+}
+
+TEST(ProcessModelTest, AnOlderSocketReadingIsNotFolded)
+{
+    // A reading older than the last one folded must not rewind the socket baselines: folded, socket
+    // 11 back at 1000 and then at 4000 again would count the 2000 bytes from 1000 to 3000 twice.
+    constexpr std::uint64_t MS = SocketTrafficFixture::MS;
+    constexpr std::int32_t PID = SocketTrafficFixture::PID;
+    SocketTrafficFixture fixture;
+    fixture.sample({.sockets = {{.key = 11, .pid = PID, .bytesReceived = 1'000}}, .sampleTimeNs = 1000 * MS});
+    auto snap = fixture.sample({.sockets = {{.key = 11, .pid = PID, .bytesReceived = 3'000}}, .sampleTimeNs = 2000 * MS});
+    ASSERT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 2'000.0);
+
+    snap = fixture.sample({.sockets = {{.key = 11, .pid = PID, .bytesReceived = 1'000}}, .sampleTimeNs = 1500 * MS});
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 2'000.0) << "the stale reading holds the last rate";
+
+    snap = fixture.sample({.sockets = {{.key = 11, .pid = PID, .bytesReceived = 4'000}}, .sampleTimeNs = 3000 * MS});
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 1'000.0) << "1000 bytes over the second since the last folded reading";
+}
+
+TEST(ProcessModelTest, AFailedSocketReadingHoldsTheLastNetworkRate)
+{
+    // A failed reading (sampleTimeNs 0) republishes the last totals and their time: the rate holds,
+    // and the next reading is measured over the time since the last good one, not as a burst.
+    constexpr std::uint64_t MS = SocketTrafficFixture::MS;
+    constexpr std::int32_t PID = SocketTrafficFixture::PID;
+    SocketTrafficFixture fixture;
+    fixture.sample({.sockets = {{.key = 11, .pid = PID, .bytesReceived = 0}}, .sampleTimeNs = 1000 * MS});
+    auto snap = fixture.sample({.sockets = {{.key = 11, .pid = PID, .bytesReceived = 1'000}}, .sampleTimeNs = 2000 * MS});
+    ASSERT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 1'000.0);
+
+    snap = fixture.sample({});
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 1'000.0);
+
+    snap = fixture.sample({.sockets = {{.key = 11, .pid = PID, .bytesReceived = 3'000}}, .sampleTimeNs = 4000 * MS});
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 1'000.0); // 2000 bytes over the 2 s since the last good reading
+}
+
 // =============================================================================
 // Power Usage Calculation Tests
 // =============================================================================

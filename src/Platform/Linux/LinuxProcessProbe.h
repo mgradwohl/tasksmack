@@ -57,11 +57,21 @@ class LinuxProcessProbe : public IProcessProbe
     /// @param ttlMs Time-to-live in milliseconds for cached socket stats
     /// Use this to override the default cache TTL at runtime (e.g., from user config)
     void setSocketStatsCacheTtl(std::chrono::milliseconds ttlMs) override;
+
+    /// Every TCP socket's cumulative byte counters from Netlink INET_DIAG, each attributed to the
+    /// process holding it via the inode-to-PID map. Raw readings only: Domain accumulates them into
+    /// per-process totals (#1099).
+    [[nodiscard]] SocketTrafficReading readSocketTraffic() const override;
+
+    /// Test seam: attribute network traffic from `socketStats` (e.g. one over a scripted netlink
+    /// transport) instead of the real socket. Not thread-safe; call before sampling starts.
+    void setSocketStatsForTesting(std::shared_ptr<NetlinkSocketStats> socketStats);
 #endif
 
-    /// Test seam: called by enumerate() where its variable-latency tail (network attribution) runs,
-    /// so a test can change /proc/stat during that tail and check the CPU total was taken before it
-    /// (#1119). Not thread-safe against a concurrent enumerate(); set it before sampling starts.
+    /// Test seam: called at the end of enumerate(), after it captured the CPU total, so a test can
+    /// change /proc/stat before totalCpuTime() is called and check the total was taken with the
+    /// processes' stat reads (#1119). Not thread-safe against a concurrent enumerate(); set it before
+    /// sampling starts.
     void setEnumerateTailHookForTesting(std::function<void()> hook)
     {
         m_EnumerateTailHook = std::move(hook);
@@ -160,8 +170,9 @@ class LinuxProcessProbe : public IProcessProbe
     [[nodiscard]] std::optional<uint64_t> readSystemEnergy() const;
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
-    /// Attribute network bytes to processes using Netlink socket stats
-    void attributeNetworkToProcesses(std::vector<ProcessCounters>& processes) const;
+
+    /// The inode-to-PID map, rebuilt from /proc/[pid]/fd when its TTL has expired (see m_InodeToPidCache).
+    [[nodiscard]] std::shared_ptr<const std::unordered_map<std::uint64_t, std::int32_t>> currentInodeToPidMap() const;
 
     /// Thread-safe copy of the current NetlinkSocketStats instance (see m_SocketStats).
     [[nodiscard]] std::shared_ptr<NetlinkSocketStats> socketStats() const;
