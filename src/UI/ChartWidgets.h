@@ -769,8 +769,38 @@ inline void reduceAlignedPoints(
 /// Sound because the reductions anchor their buckets in absolute time: the indices kept depend only
 /// on the samples, which a Key names -- the data generation they were read under, how many there
 /// are, and the point budget -- with `dataId` telling apart series that share a generation and a
-/// length (two lines in one chart). A generation of 0 is never cached: points() then rebuilds on
+/// length (two lines in one chart; see seriesFingerprint()). A generation of 0 is never cached: points() then rebuilds on
 /// every call, which is the uncached behaviour.
+/// A ReducedPointsCache::Key::dataId for a series, from its content rather than its address: the
+/// first and last samples' bit patterns. Some series are copied into a buffer rebuilt every frame (a
+/// local vector, a normalised copy), so an address would change each frame and the cache would
+/// never hit. Two series under the same (plot, label) cache entry, generation and length -- e.g.
+/// the network chart switched to another interface -- almost always differ in an end sample; if
+/// they don't, only the choice of points is stale until the next generation, never the values.
+template<typename TY> [[nodiscard]] std::uintptr_t seriesFingerprint(const TY* yData, int count) noexcept
+{
+    if (count <= 0)
+    {
+        return 0;
+    }
+    const auto bitsOf = [](TY value) -> std::uint64_t
+    {
+        if constexpr (std::is_floating_point_v<TY>)
+        {
+            return std::bit_cast<std::uint64_t>(static_cast<double>(value));
+        }
+        else
+        {
+            return static_cast<std::uint64_t>(value);
+        }
+    };
+    const std::uint64_t first = bitsOf(yData[0]);
+    const std::uint64_t last = bitsOf(yData[count - 1]);
+    // Mix so (a, b) and (b, a) differ (boost::hash_combine's constant).
+    const std::uint64_t mixed = first ^ (last + 0x9e3779b97f4a7c15ULL + (first << 6U) + (first >> 2U));
+    return static_cast<std::uintptr_t>(mixed);
+}
+
 class ReducedPointsCache
 {
   public:
@@ -993,7 +1023,7 @@ inline void plotLineWithFill(const char* label,
         static ReducedPointsCache uncached; // Scratch only: a generation-0 key is never kept
         const ChartDataScope scope = activeChartDataScope();
         const ReducedPointsCache::Key key{.generation = scope.generation,
-                                          .dataId = std::bit_cast<std::uintptr_t>(yData),
+                                          .dataId = seriesFingerprint(yData, count),
                                           .count = static_cast<std::size_t>(count),
                                           .maxOut = effectiveMax};
         ReducedPointsCache& cache = (scope.generation != 0) ? seriesReductionCache(scope.plotId, label) : uncached;

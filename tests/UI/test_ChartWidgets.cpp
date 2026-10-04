@@ -808,6 +808,25 @@ TEST(ChartWidgetsReduceTest, AlignedPointsAcceptFloatSeriesAndKeepEverySampleOfA
     EXPECT_TRUE(std::ranges::any_of(points, [](const ReducedPoint& p) { return p.index == 1234; }));
 }
 
+TEST(SeriesFingerprintTest, DependsOnContentNotAddress)
+{
+    // #1139 review: a series copied into a buffer rebuilt every frame has a new address each frame,
+    // so the cache key must come from the samples, or that chart never hits the cache.
+    const std::vector<float> a{1.0F, 2.0F, 3.0F};
+    const std::vector<float> copy = a; // same samples, different storage
+    EXPECT_NE(a.data(), copy.data());
+    EXPECT_EQ(UI::Widgets::seriesFingerprint(a.data(), 3), UI::Widgets::seriesFingerprint(copy.data(), 3));
+
+    const std::vector<float> otherEnd{1.0F, 2.0F, 4.0F};
+    const std::vector<float> swapped{3.0F, 2.0F, 1.0F};
+    EXPECT_NE(UI::Widgets::seriesFingerprint(a.data(), 3), UI::Widgets::seriesFingerprint(otherEnd.data(), 3));
+    EXPECT_NE(UI::Widgets::seriesFingerprint(a.data(), 3), UI::Widgets::seriesFingerprint(swapped.data(), 3));
+    EXPECT_EQ(UI::Widgets::seriesFingerprint(a.data(), 0), 0U);
+
+    const std::vector<double> d{1.0, 2.0, 3.0};
+    EXPECT_EQ(UI::Widgets::seriesFingerprint(d.data(), 3), UI::Widgets::seriesFingerprint(a.data(), 3)); // float widened
+}
+
 TEST(ReducedPointsCacheTest, RebuildsOnlyWhenTheKeyChanges)
 {
     ReducedPointsCache cache;
