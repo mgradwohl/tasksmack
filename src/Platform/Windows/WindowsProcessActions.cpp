@@ -99,7 +99,9 @@ template<typename DescribeOpenFailure>
 struct CloseRequest
 {
     DWORD pid = 0;
-    int windowsAsked = 0;
+    int eligible = 0;     ///< Windows that should be asked
+    int failed = 0;       ///< Of those, how many PostMessage refused
+    DWORD firstError = 0; ///< GetLastError() for the first refusal
 };
 
 /// Posts WM_CLOSE to each of the target's top-level windows that a user would close (see
@@ -110,10 +112,17 @@ BOOL CALLBACK postCloseToProcessWindow(HWND window, LPARAM param)
     auto* request = reinterpret_cast<CloseRequest*>(param); // NOLINT(performance-no-int-to-ptr) - EnumWindows' LPARAM
     DWORD windowPid = 0;
     GetWindowThreadProcessId(window, &windowPid);
-    if (isCloseRequestWindow(windowPid, request->pid, IsWindowVisible(window) != 0, GetWindow(window, GW_OWNER) != nullptr) &&
-        PostMessageW(window, WM_CLOSE, 0, 0) != 0)
+    if (!isCloseRequestWindow(windowPid, request->pid, IsWindowVisible(window) != 0, GetWindow(window, GW_OWNER) != nullptr))
     {
-        ++request->windowsAsked;
+        return TRUE;
+    }
+    ++request->eligible;
+    if (PostMessageW(window, WM_CLOSE, 0, 0) == 0)
+    {
+        if (request->failed++ == 0)
+        {
+            request->firstError = GetLastError();
+        }
     }
     return TRUE;
 }
@@ -148,12 +157,12 @@ ProcessActionResult WindowsProcessActions::terminate(const ProcessTarget& target
 
     CloseRequest request{.pid = static_cast<DWORD>(target.pid)};
     EnumWindows(postCloseToProcessWindow, reinterpret_cast<LPARAM>(&request));
-    if (std::string failure = closeRequestFailure(target.pid, request.windowsAsked); !failure.empty())
+    if (std::string failure = closeRequestFailure(target.pid, request.eligible, request.failed, request.firstError); !failure.empty())
     {
         spdlog::info("{}", failure);
         return ProcessActionResult::error(std::move(failure));
     }
-    spdlog::info("Asked {} window(s) of process {} to close", request.windowsAsked, target.pid);
+    spdlog::info("Asked {} window(s) of process {} to close", request.eligible, target.pid);
     return ProcessActionResult::ok();
 }
 
