@@ -162,6 +162,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxProcessProbe.cpp
     Platform/test_LinuxSystemProbe.cpp
     Platform/test_LinuxProcessActions.cpp
+    Platform/test_LinuxProcessStatus.cpp
     Platform/test_LinuxDiskProbe.cpp
     Platform/test_LinuxPathProvider.cpp
     Platform/test_LinuxPowerProbe.cpp
