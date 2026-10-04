@@ -76,6 +76,17 @@ TEST(ProcessRowFormatTest, FormatAlignedPercentStringAppendsUnitSuffix)
     EXPECT_EQ(formatAlignedPercentString(25.0), "25.0%");
 }
 
+// #1195 review: Process Details shows the same percents as the Processes table, so the two must
+// never disagree -- not at a rounding boundary such as 6.25, and not in the decimal separator.
+TEST(ProcessRowFormatTest, ProcessDetailsPercentMatchesTheTableEverywhere)
+{
+    for (int hundredths = 0; hundredths <= 10'000; hundredths += 5)
+    {
+        const double percent = hundredths / 100.0;
+        EXPECT_EQ(UI::Format::percentOneDecimal(percent), formatAlignedPercentString(percent)) << "at " << percent;
+    }
+}
+
 TEST(ProcessRowFormatTest, FormatAlignedBytesStringUsesGivenUnit)
 {
     const auto formatted =

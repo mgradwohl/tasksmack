@@ -102,18 +102,6 @@ template<std::integral T> [[nodiscard]] inline auto percentCompact(T percent) ->
     return std::format("{:L}%", percent);
 }
 
-/// "0.6%", one decimal, as the Processes table shows a process's CPU and memory percents, or "N/A"
-/// for NaN. A process's share of the machine is usually under a few percent, where percentCompact()
-/// rounded it to "0%" or "1%" (#1195).
-[[nodiscard]] inline auto percentOneDecimal(double percent) -> std::string
-{
-    if (std::isnan(percent))
-    {
-        return "N/A";
-    }
-    return std::format("{:.1Lf}%", percent);
-}
-
 [[nodiscard]] inline auto formatId(std::int64_t value) -> std::string
 {
     return std::format("{}", value);
@@ -645,6 +633,23 @@ struct AlignedBytesParts
     parts.decimalDigit = static_cast<char>('0' + fractionalDigit);
 
     return parts;
+}
+
+/// "0.6%", one decimal, exactly as the Processes table shows a process's CPU and memory percents
+/// (the same splitPercentForAlignment() rounding and "." separator), or "N/A" for NaN. A process's
+/// share of the machine is usually under a few percent, where percentCompact() rounded it to "0%"
+/// or "1%" (#1195).
+[[nodiscard]] inline auto percentOneDecimal(double percent) -> std::string
+{
+    if (std::isnan(percent))
+    {
+        return "N/A";
+    }
+    const auto parts = splitPercentForAlignment(percent);
+    std::string out(parts.wholePart);
+    out.push_back(parts.decimalDigit);
+    out.append(AlignedPercentParts::unitPart);
+    return out;
 }
 
 /// Split a power value (watts) into parts for decimal-aligned rendering

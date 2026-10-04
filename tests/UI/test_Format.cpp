@@ -359,7 +359,8 @@ TEST(FormatTest, PercentCompactFormatsCorrectly)
 TEST(FormatTest, PercentOneDecimalKeepsTheFractionOfSmallPercents)
 {
     EXPECT_EQ(UI::Format::percentOneDecimal(0.6), "0.6%");
-    EXPECT_EQ(UI::Format::percentOneDecimal(6.25), "6.2%");
+    EXPECT_EQ(UI::Format::percentOneDecimal(6.25), "6.3%"); // Rounds half up, as the Processes table does
+    EXPECT_EQ(UI::Format::percentOneDecimal(99.96), "100.0%");
     EXPECT_EQ(UI::Format::percentOneDecimal(0.0), "0.0%");
     EXPECT_EQ(UI::Format::percentOneDecimal(std::numeric_limits<double>::quiet_NaN()), "N/A");
 }
