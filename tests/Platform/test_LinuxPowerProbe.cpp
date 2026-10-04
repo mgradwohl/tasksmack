@@ -638,6 +638,21 @@ TEST_F(LinuxPowerProbeUnitTest, MostNegativeRateDoesNotOverflow)
     EXPECT_NEAR(probe.read().powerNowW, 9223372036854.775808, 1.0);
 }
 
+TEST_F(LinuxPowerProbeUnitTest, UsbPowerDeliveryChargerIsAnAdapter)
+{
+    // A USB-C laptop's charger shows up as type USB_PD (or USB_C, ...), not Mains or plain USB.
+    const auto charger = m_SysRoot / "ucsi-source-psy-USBC000:001";
+    std::filesystem::create_directories(charger);
+    writeFile(charger / "type", "USB_PD");
+    writeFile(charger / "online", "1");
+    const auto bat = makeBatteryDevice("BAT0");
+    writeFile(bat / "status", "Discharging"); // stale; the adapter says otherwise
+    writeFile(bat / "capacity", "70");
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+    EXPECT_TRUE(probe.read().isOnAc);
+}
+
 TEST_F(LinuxPowerProbeUnitTest, DesktopWithOnlineAdapterAndNoBatteryIsOnAc)
 {
     const auto ac = makeAcDevice("AC");

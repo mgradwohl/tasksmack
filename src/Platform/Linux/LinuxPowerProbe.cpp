@@ -111,7 +111,9 @@ void LinuxPowerProbe::discoverBatteries()
             continue;
         }
         const std::string type = readFirstLine(devicePath + "/type");
-        if (type == "Mains" || type == "USB")
+        // Adapters: "Mains", and USB charging sources in all their kernel spellings ("USB",
+        // "USB_C", "USB_PD", "USB_PD_DRP", "USB_DCP", "USB_CDP", ...), which USB-C laptops use (#1231 review).
+        if (type == "Mains" || type.starts_with("USB"))
         {
             m_MainsPaths.push_back(devicePath);
             continue;
