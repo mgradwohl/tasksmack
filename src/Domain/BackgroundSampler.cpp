@@ -226,6 +226,16 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
             if (m_RefreshRequested)
             {
                 m_RefreshRequested = false;
+                // A refresh forced right after a sample -- a settings change landing just after a
+                // scheduled one -- would sample milliseconds later, giving the models no usable
+                // deltas: Total 0%/Idle 0% CPU and false 0 B/s rates that stay on the charts for the
+                // whole window. Hold it until at least the fastest supported interval has passed
+                // since this sample started (#1102).
+                const auto earliest = startTime + std::chrono::milliseconds(Sampling::REFRESH_INTERVAL_MIN_MS);
+                if (std::chrono::steady_clock::now() < earliest)
+                {
+                    m_WakeCondition.wait_until(wakeLock, stopToken, earliest, [] { return false; });
+                }
                 break;
             }
 
