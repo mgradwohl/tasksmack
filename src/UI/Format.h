@@ -79,7 +79,7 @@ template<std::floating_point T> [[nodiscard]] inline auto percentToInt(T percent
     }
     // Saturate before rounding: std::lround is unspecified outside long's range, which is only
     // 32 bits on Windows, so a huge finite value (or infinity) must not reach it (#1227 review).
-    constexpr double INT_LIMIT = static_cast<double>(std::numeric_limits<int>::max());
+    constexpr auto INT_LIMIT = static_cast<double>(std::numeric_limits<int>::max());
     if (static_cast<double>(percent) >= INT_LIMIT)
     {
         return std::numeric_limits<int>::max();
