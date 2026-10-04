@@ -43,6 +43,7 @@ coverage-output.txt
 /perf-data/pgo-hot*.txt
 /perf-data/pgo-hot*.json
 /perf-data/SymCache/
+/perf-data/KernelSymbols/
 /perf-data/*.data
 /perf-data/*.log
 /perf-data/*-report.txt
