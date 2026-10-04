@@ -7,9 +7,16 @@
 namespace Core
 {
 
-/// Window close event - raised by Application::run() when the OS or the user asks to close the
-/// window: SDL_EVENT_QUIT, SDL_EVENT_WINDOW_CLOSE_REQUESTED (such as Alt+F4), or
-/// Window::requestClose() (the custom title bar's Close button and system menu).
+/// Window close event - raised by Application::run() when the user asks to close the window:
+/// SDL_EVENT_WINDOW_CLOSE_REQUESTED (such as Alt+F4 or the OS close button) or
+/// Window::requestClose() (the custom title bar's Close button and system menu). Each close request
+/// raises it exactly once (#1150).
+///
+/// It is NOT raised for SDL_EVENT_QUIT. That is how SIGINT, SIGTERM and an OS logout or shutdown
+/// arrive, and run() stops on it unconditionally, so no layer can block the OS terminating the app.
+/// Application disables SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE so closing the window does not also post
+/// an SDL_EVENT_QUIT that would raise a second event and override a veto (see
+/// Core/WindowEventRouting.h).
 ///
 /// Contract: marking this event handled VETOES the close. If no layer handles it, run() calls
 /// stop() and the app shuts down. A layer that only wants to observe the close (to flush state,

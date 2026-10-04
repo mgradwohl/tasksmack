@@ -23,6 +23,28 @@ namespace UI::Widgets
     return UI::LineLayout::labelColumnWidth(widest, ImGui::GetFontSize());
 }
 
+/// Pull the current window back inside the main viewport's work area if it overhangs it. Call it
+/// right after Begin()/BeginPopupModal(), every frame the window is open.
+///
+/// A dialog positioned once, when it appears, stays there while its size changes (a font change)
+/// and while the main window shrinks underneath it, and can end up with its buttons beyond the
+/// window's edge (#1129). A dialog the user can drag keeps its position whenever it already fits;
+/// this only moves it when part of it would be out of reach. Pair it with a size constraint capped
+/// at the viewport (UI::DialogMetrics::computeDialogMaxExtent()) so the window is never larger than
+/// what it is being fitted into.
+inline void keepCurrentWindowInViewport()
+{
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const ImVec2 pos = ImGui::GetWindowPos();
+    const ImVec2 size = ImGui::GetWindowSize();
+    const ImVec2 clamped(UI::LineLayout::clampSpanStart(pos.x, size.x, viewport->WorkPos.x, viewport->WorkSize.x),
+                         UI::LineLayout::clampSpanStart(pos.y, size.y, viewport->WorkPos.y, viewport->WorkSize.y));
+    if (clamped.x != pos.x || clamped.y != pos.y)
+    {
+        ImGui::SetWindowPos(clamped);
+    }
+}
+
 /// Minimum height in pixels for bar fill rendering.
 /// Ensures at least a 1px marker remains visible even when the value is 0%,
 /// providing visual feedback that the bar exists and is capable of showing data.

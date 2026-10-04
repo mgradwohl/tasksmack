@@ -63,7 +63,9 @@ set(COMMON_TEST_SOURCES
     Core/test_PathService.cpp
     Core/test_VideoBackend.cpp
     Core/test_Window.cpp
+    Core/test_WindowEventRouting.cpp
     Core/test_WindowEvents.cpp
+    Core/test_WindowGeometry.cpp
     Domain/test_History.cpp
     Domain/test_Numeric.cpp
     Domain/test_SingleLineText.cpp

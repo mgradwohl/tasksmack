@@ -113,18 +113,22 @@ void ShellLayer::onDetach()
     auto& config = UserConfig::get();
     config.captureFromApplication();
 
-    // Capture current window geometry/state.
-    auto& window = Core::Application::get().getWindow();
-    const auto [width, height] = window.getSize();
+    // Capture the window's normal (restored) geometry plus whether it is maximized. While it is
+    // maximized its live size and position are the maximized ones; saving those made them the
+    // restore target on the next launch, so Restore did nothing (#1121). When the normal rectangle
+    // is unknown (maximized by the OS/compositor rather than by Window::maximize()), the geometry
+    // saved last time is kept.
+    const auto& window = Core::Application::get().getWindow();
     auto& settings = config.settings();
-    settings.windowWidth = width;
-    settings.windowHeight = height;
-
-    if (Core::Window::supportsPositioning())
+    if (const auto normal = window.getNormalGeometry(); normal.has_value())
     {
-        const auto [x, y] = window.getPosition();
-        settings.windowPosX = x;
-        settings.windowPosY = y;
+        settings.windowWidth = normal->width;
+        settings.windowHeight = normal->height;
+        if (Core::Window::supportsPositioning())
+        {
+            settings.windowPosX = normal->x;
+            settings.windowPosY = normal->y;
+        }
     }
 
     settings.windowMaximized = window.isMaximized();

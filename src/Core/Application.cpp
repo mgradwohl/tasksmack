@@ -9,6 +9,7 @@
 #include "Core/ResizePerfTrace.h"
 #include "Core/VideoBackend.h"
 #include "Core/Window.h"
+#include "Core/WindowEventRouting.h"
 #include "Core/WindowEvents.h"
 #include "version.h"
 
@@ -367,6 +368,12 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
 #ifndef _WIN32
         ensureXdgRuntimeDir();
 #endif
+        // Closing the last window must not also post SDL_EVENT_QUIT (SDL's default). With it, one
+        // Alt+F4 raised two WindowCloseEvents, and since run() treats SDL_EVENT_QUIT as a
+        // non-vetoable termination request (SIGINT/SIGTERM, logout), it would also override a
+        // layer's veto of the close request. The window's close request is handled on its own
+        // (#1150).
+        SDL_SetHint(SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE, "0");
         if (!SDL_Init(SDL_INIT_VIDEO))
         {
             spdlog::critical("Failed to initialize SDL: {}", SDL_GetError());
@@ -507,6 +514,10 @@ void Application::run()
         }
     };
 
+    // The framebuffer size of the last WindowResizedEvent, so an SDL_EVENT_WINDOW_EXPOSED can tell
+    // a repaint (same size) from a resize that surfaced only as an expose (#1154).
+    std::pair<int, int> lastResizePixelSize = m_Window->getSizeInPixels();
+
     spdlog::info("Entering main loop");
 
     while (m_Running)
@@ -544,41 +555,63 @@ void Application::run()
                 guardLayerCall(layer, "onSDLEvent", [&] { layer->onSDLEvent(&sdlEvent); });
             }
 
-            // Translate window close requests into a WindowCloseEvent. A layer that handles it
-            // vetoes the close; unhandled, the app stops (contract in WindowEvents.h).
-            if ((sdlEvent.type == SDL_EVENT_QUIT || sdlEvent.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) && closeRequestAccepted())
-            {
-                stop();
-            }
-
-            // Drive viewport updates from resize-related events.
-            // On Windows, interactive border drag can surface WINDOW_RESIZED/EXPOSED before
-            // (or instead of) WINDOW_PIXEL_SIZE_CHANGED in some paths. Handle all relevant
-            // variants and use physical pixel size when explicit dimensions are unavailable.
-            if (sdlEvent.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
+            // Raise a WindowResizedEvent for a new framebuffer size and start the interaction
+            // grace period that keeps a live resize responsive.
+            const auto handleResize = [&](std::pair<int, int> pixelSize)
             {
                 ++resizeEventCount;
-                WindowResizedEvent resizeEvent(sdlEvent.window.data1, sdlEvent.window.data2);
+                if (pixelSize.first <= 0 || pixelSize.second <= 0)
+                {
+                    return;
+                }
+                lastResizePixelSize = pixelSize;
+                WindowResizedEvent resizeEvent(pixelSize.first, pixelSize.second);
                 raiseEvent(resizeEvent);
                 needsResizeRedraw = true;
                 m_InteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
-            }
-            else if (sdlEvent.type == SDL_EVENT_WINDOW_RESIZED || sdlEvent.type == SDL_EVENT_WINDOW_EXPOSED)
+            };
+
+            switch (WindowEventRouting::classify(sdlEvent.type))
             {
-                ++resizeEventCount;
-                const auto [pixelW, pixelH] = m_Window->getSizeInPixels();
-                if (pixelW > 0 && pixelH > 0)
+            case WindowEventRouting::Action::VetoableClose:
+                // A close request becomes a WindowCloseEvent. A layer that handles it vetoes the
+                // close; unhandled, the app stops (contract in WindowEvents.h).
+                if (closeRequestAccepted())
                 {
-                    WindowResizedEvent resizeEvent(pixelW, pixelH);
-                    raiseEvent(resizeEvent);
-                    needsResizeRedraw = true;
-                    m_InteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
+                    stop();
                 }
-            }
-            else if (sdlEvent.type == SDL_EVENT_WINDOW_MOVED)
-            {
+                break;
+            case WindowEventRouting::Action::Quit:
+                // SIGINT/SIGTERM and OS logout/shutdown: always stops, and is not raised as a
+                // WindowCloseEvent, so no layer can veto it (#1150).
+                stop();
+                break;
+            // Drive viewport updates from resize-related events. On Windows, interactive border
+            // drag can surface WINDOW_RESIZED/EXPOSED before (or instead of)
+            // WINDOW_PIXEL_SIZE_CHANGED in some paths, so the physical pixel size is queried when
+            // the event does not carry it.
+            case WindowEventRouting::Action::PixelSizeChanged:
+                handleResize({sdlEvent.window.data1, sdlEvent.window.data2});
+                break;
+            case WindowEventRouting::Action::Resized:
+                handleResize(m_Window->getSizeInPixels());
+                break;
+            case WindowEventRouting::Action::Exposed:
+                // A plain redraw request (#1154): having drained an event already rules out the
+                // idle sleep, so the regular frame below repaints. Only an expose that reveals a
+                // new size counts as a resize.
+                if (const auto pixelSize = m_Window->getSizeInPixels();
+                    WindowEventRouting::exposeChangesSize(lastResizePixelSize, pixelSize))
+                {
+                    handleResize(pixelSize);
+                }
+                break;
+            case WindowEventRouting::Action::Moved:
                 ++resizeEventCount;
                 m_InteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
+                break;
+            case WindowEventRouting::Action::None:
+                break;
             }
 
             // P0: Drain time budget — break if this batch has spent too long in the drain
