@@ -57,6 +57,7 @@ set(COMMON_TEST_SOURCES
     test_main.cpp
     Core/test_Application.cpp
     Core/test_EnvUtils.cpp
+    Core/test_ApplicationEvents.cpp
     Core/test_Event.cpp
     Core/test_Layer.cpp
     Core/test_PathService.cpp

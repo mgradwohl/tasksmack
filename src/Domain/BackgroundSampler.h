@@ -18,6 +18,11 @@ namespace Domain
 struct SamplerConfig
 {
     std::chrono::milliseconds interval{1000}; // 1 second default
+
+    /// The owner has just taken a sample itself (a synchronous seed before start()), so wait one
+    /// interval before the first background sample. Sampling again straight away gave deltas over a
+    /// few ms: 0% CPU and 0 B/s points at every startup (#1102).
+    bool firstSampleAfterInterval = false;
 };
 
 /// Background sampler that runs sampling on a separate thread.
