@@ -4,10 +4,11 @@
 
 #include "LinuxProcessProbe.h"
 
-#include "CgroupFreezerPath.h"
+#include "CgroupFreezeStatus.h"
 #include "Domain/SamplingConfig.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/PlatformConfig.h"
+#include "UserNameLookup.h"
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 #include "NetlinkSocketStats.h"
@@ -30,11 +31,9 @@
 #include <cstdio>
 #include <exception>
 #include <filesystem>
-#include <format>
 #include <limits>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -91,7 +90,6 @@ template<std::integral T> [[nodiscard]] constexpr auto toU64PositiveOr(T value, 
     return static_cast<uint64_t>(value);
 }
 
-using CgroupPath::buildContainedCgroupPath;
 using ProcParsing::FdGuard;
 using ProcParsing::parseNum;
 using ProcParsing::readProcFile;
@@ -123,20 +121,8 @@ std::mutex& getUsernameCacheMutex()
         return it->second;
     }
 
-    // Look up username from passwd database (thread-safe version)
-    struct passwd pwBuf = {};
-    struct passwd* pwResult = nullptr;
-    std::array<char, 1024> buffer{};
-    std::string username;
-    if (getpwuid_r(uid, &pwBuf, buffer.data(), buffer.size(), &pwResult) == 0 && pwResult != nullptr && pwResult->pw_name != nullptr)
-    {
-        username = pwResult->pw_name;
-    }
-    else
-    {
-        // Fall back to UID as string
-        username = std::to_string(uid);
-    }
+    // Look up username from passwd database (thread-safe version); fall back to the UID as a string.
+    std::string username = lookUpUserName(uid, ::getpwuid_r).value_or(std::to_string(uid));
 
     cache[uid] = username;
     return username;
@@ -560,6 +546,15 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
     // Format: /proc/[pid]/cmdline
     // Arguments are separated by NUL bytes
 
+    // A zombie has no command line left, and /proc/<pid>/cmdline may also be unreadable for another
+    // user's process even though stat showed state Z. Either way it must not get the kernel-thread
+    // label: mark it <defunct>, as ps does (#1155).
+    if (counters.state == 'Z')
+    {
+        counters.command = counters.name + " <defunct>";
+        return;
+    }
+
     const std::string cmdlinePath = (procRoot / std::to_string(pid) / "cmdline").string();
 
     // Open once: distinguishes "unreadable" (permission denied, hidepid) from
@@ -609,7 +604,7 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
 
     if (buf.empty())
     {
-        // File opened and fully read but is empty: genuine kernel thread — use bracketed name.
+        // File opened and fully read but empty: a kernel thread (zombies were handled above).
         counters.command = "[" + counters.name + "]";
         return;
     }
@@ -791,90 +786,16 @@ bool LinuxProcessProbe::checkIoCountersAvailability(const std::filesystem::path&
 
 std::string LinuxProcessProbe::getProcessStatus(int32_t pid, const std::filesystem::path& procRoot)
 {
-    // Try cgroup v2 first: freezer.state
-    const auto cgroupV2FreezerPath = std::format("/sys/fs/cgroup/{}/freezer.state", pid);
-    {
-        std::array<char, 16> stateBuf{};
-        const std::size_t stateLen = readProcFile(cgroupV2FreezerPath.c_str(), stateBuf.data(), stateBuf.size());
-        if (stateLen > 0)
-        {
-            const std::string_view state(stateBuf.data(), stateLen);
-            if (state.starts_with("FROZEN") || state.starts_with("FREEZING"))
-            {
-                return "Suspended";
-            }
-        }
-    }
-
-    // Fallback to cgroup v1 freezer hierarchy
-    // /proc/[pid]/cgroup lists all cgroups for the process
+    // /proc/<pid>/cgroup names the process's cgroups: the v2 "0::<path>" line and/or v1 lines,
+    // including the freezer controller's. isCgroupFrozen() checks the matching freeze state.
+    // Read to EOF: a cgroup path can approach PATH_MAX, and a truncated one would point the check
+    // at the wrong cgroup.events (#1228 review).
     const auto cgroupPath = (procRoot / std::to_string(pid) / "cgroup").string();
-    constexpr std::size_t CGROUP_BUF = 2048;
-    std::array<char, CGROUP_BUF> cgroupBuf{};
-    const std::size_t cgroupLen = readProcFile(cgroupPath.c_str(), cgroupBuf.data(), CGROUP_BUF);
-    if (cgroupLen > 0)
+    const std::vector<char> cgroupContents = ProcParsing::readProcFileFull(cgroupPath.c_str());
+    if (!cgroupContents.empty() &&
+        CgroupPath::isCgroupFrozen(std::string_view(cgroupContents.data(), cgroupContents.size()), std::filesystem::path("/sys/fs/cgroup")))
     {
-        const char* p = cgroupBuf.data();
-        const char* const end = cgroupBuf.data() + cgroupLen;
-        while (p < end)
-        {
-            const char* lineEnd = p;
-            while (lineEnd < end && *lineEnd != '\n')
-            {
-                ++lineEnd;
-            }
-
-            // Format: hierarchy-ID:controllers:cgroup-path
-            const char* firstColon = p;
-            while (firstColon < lineEnd && *firstColon != ':')
-            {
-                ++firstColon;
-            }
-            const char* secondColon = (firstColon < lineEnd) ? firstColon + 1 : lineEnd;
-            while (secondColon < lineEnd && *secondColon != ':')
-            {
-                ++secondColon;
-            }
-
-            if (firstColon < lineEnd && secondColon < lineEnd)
-            {
-                const std::string_view controllers(firstColon + 1, static_cast<std::size_t>(secondColon - firstColon - 1));
-                const std::string_view cgroupSubPath(secondColon + 1, static_cast<std::size_t>(lineEnd - secondColon - 1));
-
-                // Check if this line has the freezer controller
-                if (controllers.contains("freezer"))
-                {
-                    // Build path: /sys/fs/cgroup/freezer/<cgroup-path>/freezer.state
-                    // Skip if cgroupSubPath is empty or doesn't start with /
-                    if (!cgroupSubPath.empty() && cgroupSubPath[0] == '/')
-                    {
-                        // cgroupSubPath came out of /proc/<pid>/cgroup, so it is untrusted input to
-                        // a file-access function (CodeQL cpp/path-injection). Validate containment
-                        // before opening anything: a ".." component would escape the freezer
-                        // hierarchy and make the FROZEN/FREEZING prefix test below a content oracle
-                        // for arbitrary readable files.
-                        const std::optional<std::filesystem::path> freezePathV1 = buildContainedCgroupPath(
-                            std::filesystem::path("/sys/fs/cgroup/freezer"), cgroupSubPath.substr(1), "freezer.state");
-                        if (freezePathV1.has_value())
-                        {
-                            const std::string freezePathStr = freezePathV1->string();
-                            std::array<char, 16> freezeStateBuf{};
-                            const std::size_t freezeLen = readProcFile(freezePathStr.c_str(), freezeStateBuf.data(), freezeStateBuf.size());
-                            if (freezeLen > 0)
-                            {
-                                const std::string_view state(freezeStateBuf.data(), freezeLen);
-                                if (state.starts_with("FROZEN") || state.starts_with("FREEZING"))
-                                {
-                                    return "Suspended";
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            p = (lineEnd < end) ? lineEnd + 1 : end;
-        }
+        return "Suspended";
     }
 
     // No special status
