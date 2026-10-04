@@ -8,6 +8,7 @@
 #include "UI/DialogMetrics.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
+#include "UI/Widgets.h"
 
 #include <imgui.h>
 #include <spdlog/spdlog.h>
@@ -82,11 +83,18 @@ void ElevationNoticeLayer::renderDialog()
         const ImGuiViewport* sizingViewport = ImGui::GetMainViewport();
         const float widthPx = UI::DialogMetrics::computeDialogWidth(ImGui::GetFontSize(), ELEVATION_WIDTH_EM, sizingViewport->WorkSize.x);
         ImGui::SetNextWindowSize(ImVec2(widthPx, 0.0F));
+        // The height is held to the viewport too, every frame: the auto-fitted height grows with
+        // the font and display scale, and without a cap the OK button could fall below the window
+        // with this modal blocking everything else. Content that no longer fits scrolls (#1129).
+        ImGui::SetNextWindowSizeConstraints(ImVec2(0.0F, 0.0F),
+                                            ImVec2(UI::DialogMetrics::computeDialogMaxExtent(sizingViewport->WorkSize.x),
+                                                   UI::DialogMetrics::computeDialogMaxExtent(sizingViewport->WorkSize.y)));
     }
 
     const ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking;
     if (ImGui::BeginPopupModal("Limited Data Available", nullptr, flags))
     {
+        UI::Widgets::keepCurrentWindowInViewport();
         const auto& theme = UI::Theme::get();
         ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
 

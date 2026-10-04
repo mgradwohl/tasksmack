@@ -159,5 +159,74 @@ TEST(DialogMetricsTest, FilledWidthSurvivesDegenerateInput)
     EXPECT_FLOAT_EQ(computeFilledControlWidth(nan, nan, nan, nan), 0.0F);
     EXPECT_FLOAT_EQ(computeFilledControlWidth(-5.0F, 259.0F, 21.0F, 100.0F), 0.0F);
 }
+
+// ---- Keeping dialogs within the viewport (#1129) ----
+
+TEST(DialogMetricsTest, DialogMaxExtentIsTheViewportFraction)
+{
+    EXPECT_FLOAT_EQ(computeDialogMaxExtent(400.0F), 400.0F * MAX_VIEWPORT_FRACTION);
+    EXPECT_LT(computeDialogMaxExtent(400.0F), 400.0F);
+}
+
+TEST(DialogMetricsTest, DialogMaxExtentIsUnboundedForAnUnusableViewport)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_EQ(computeDialogMaxExtent(0.0F), std::numeric_limits<float>::max());
+    EXPECT_EQ(computeDialogMaxExtent(-1.0F), std::numeric_limits<float>::max());
+    EXPECT_EQ(computeDialogMaxExtent(nan), std::numeric_limits<float>::max());
+}
+
+// The issue's scenario: a 400px-tall window. The dialog may take 360px; with 120px of title bar,
+// padding and button row reserved, the body scrolls past 240px and the buttons stay inside.
+TEST(DialogMetricsTest, ScrollableBodyLeavesRoomForThePinnedRows)
+{
+    const float dialogMax = computeDialogMaxExtent(400.0F);
+    const float body = computeScrollableBodyMaxHeight(dialogMax, 120.0F, 40.0F);
+    EXPECT_FLOAT_EQ(body, 240.0F);
+    EXPECT_LE(body + 120.0F, 400.0F);
+}
+
+TEST(DialogMetricsTest, ScrollableBodyKeepsItsFloorWhenNothingFits)
+{
+    EXPECT_FLOAT_EQ(computeScrollableBodyMaxHeight(100.0F, 120.0F, 40.0F), 40.0F);
+}
+
+TEST(DialogMetricsTest, ScrollableBodyIsUnboundedWithoutADialogCap)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_EQ(computeScrollableBodyMaxHeight(std::numeric_limits<float>::max(), 120.0F, 40.0F), std::numeric_limits<float>::max());
+    EXPECT_EQ(computeScrollableBodyMaxHeight(nan, 120.0F, 40.0F), std::numeric_limits<float>::max());
+    EXPECT_EQ(computeScrollableBodyMaxHeight(0.0F, 120.0F, 40.0F), std::numeric_limits<float>::max());
+}
+
+TEST(DialogMetricsTest, ScrollableBodySurvivesDegenerateReservations)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FLOAT_EQ(computeScrollableBodyMaxHeight(360.0F, nan, 40.0F), 360.0F);
+    EXPECT_FLOAT_EQ(computeScrollableBodyMaxHeight(360.0F, -50.0F, 40.0F), 360.0F);
+    EXPECT_FLOAT_EQ(computeScrollableBodyMaxHeight(360.0F, 400.0F, nan), 0.0F);
+}
+TEST(DialogMetricsTest, ActionButtonsKeepTheirWidthWhenThePairFits)
+{
+    EXPECT_FLOAT_EQ(fitActionButtonPairWidth(150.0F, 8.0F, 400.0F), 150.0F);
+}
+
+TEST(DialogMetricsTest, ActionButtonsShrinkSoThePairFitsANarrowRow)
+{
+    // #1253 review: at a large font preset the capped dialog is narrower than the Cancel/Apply pair;
+    // both shrink equally so the pair (plus the gap) exactly fills the row.
+    const float width = fitActionButtonPairWidth(300.0F, 8.0F, 400.0F);
+    EXPECT_FLOAT_EQ(width, 196.0F);
+    EXPECT_FLOAT_EQ((width * 2.0F) + 8.0F, 400.0F);
+}
+
+TEST(DialogMetricsTest, ActionButtonsSurviveDegenerateInputs)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FLOAT_EQ(fitActionButtonPairWidth(150.0F, 8.0F, nan), 150.0F);
+    EXPECT_FLOAT_EQ(fitActionButtonPairWidth(150.0F, 8.0F, 0.0F), 150.0F);
+    EXPECT_FLOAT_EQ(fitActionButtonPairWidth(150.0F, 8.0F, 4.0F), 0.0F);
+    EXPECT_FLOAT_EQ(fitActionButtonPairWidth(nan, 8.0F, 400.0F), 0.0F);
+}
 } // namespace
 } // namespace UI::DialogMetrics

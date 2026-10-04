@@ -1,5 +1,7 @@
 #include "Core/HeadlessVideoDriverTestUtils.h"
+#include "Core/VideoBackend.h"
 #include "Core/Window.h"
+#include "Core/WindowGeometry.h"
 
 #include <SDL3/SDL.h>
 #include <gtest/gtest.h>
@@ -7,6 +9,7 @@
 #include <cstdlib>
 #include <exception>
 #include <string_view>
+#include <utility>
 
 namespace
 {
@@ -295,6 +298,121 @@ TEST_F(WindowTest, IsMaximizedTracksStateForBorderlessWindow)
         // After restore(), the flag must be cleared.
         window.restore();
         EXPECT_FALSE(window.isMaximized());
+    }
+    catch (const std::exception& e)
+    {
+        if (isOffscreenVideoDriver())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
+
+TEST_F(WindowTest, NormalGeometryIsTheLiveGeometryWhenNotMaximized)
+{
+    try
+    {
+        const Window window(
+            WindowSpecification{.Title = "NormalGeometryTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        const auto normalGeometry = window.getNormalGeometry();
+        ASSERT_TRUE(normalGeometry.has_value());
+        const WindowGeometry::Rect normal = normalGeometry.value_or(WindowGeometry::Rect{});
+        const auto [width, height] = window.getSize();
+        EXPECT_EQ(normal.width, width);
+        EXPECT_EQ(normal.height, height);
+    }
+    catch (const std::exception& e)
+    {
+        if (isOffscreenVideoDriver())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
+
+// #1121: the geometry saved on exit while maximized must be the size the window restores to, not
+// the maximized size.
+TEST_F(WindowTest, NormalGeometrySurvivesMaximize)
+{
+    try
+    {
+        Window window(
+            WindowSpecification{.Title = "NormalGeometryMaxTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        const auto beforeGeometry = window.getNormalGeometry();
+        ASSERT_TRUE(beforeGeometry.has_value());
+        const WindowGeometry::Rect before = beforeGeometry.value_or(WindowGeometry::Rect{});
+
+        window.maximize();
+        if (!window.isMaximized())
+        {
+            GTEST_SKIP() << "Maximize unavailable on this display (headless environment)";
+        }
+
+        const auto normalGeometry = window.getNormalGeometry();
+        if (!normalGeometry.has_value())
+        {
+            GTEST_SKIP() << "Compositor-managed maximize did not leave a known restore rectangle";
+        }
+        const WindowGeometry::Rect normal = normalGeometry.value_or(WindowGeometry::Rect{});
+        EXPECT_EQ(normal.width, before.width);
+        EXPECT_EQ(normal.height, before.height);
+
+        // A second maximize() must not replace the restore rectangle with the maximized one.
+        window.maximize();
+        const auto againGeometry = window.getNormalGeometry();
+        ASSERT_TRUE(againGeometry.has_value());
+        const WindowGeometry::Rect again = againGeometry.value_or(WindowGeometry::Rect{});
+        EXPECT_EQ(again.width, before.width);
+        EXPECT_EQ(again.height, before.height);
+    }
+    catch (const std::exception& e)
+    {
+        if (isOffscreenVideoDriver())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
+
+// #1128: a saved position on no connected display must not be applied as-is.
+TEST_F(WindowTest, ApplySavedGeometryKeepsAnOffScreenPositionOnADisplay)
+{
+    // supportsPositioning() reads the cached backend, which Application normally detects after
+    // SDL_Init; this fixture has no Application, so detect it here.
+    VideoBackend::initialize();
+    if (isOffscreenVideoDriver() || !Window::supportsPositioning())
+    {
+        GTEST_SKIP() << "Window positioning is not supported by this video driver";
+    }
+    try
+    {
+        Window window(WindowSpecification{.Title = "SavedGeometryTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        window.applySavedGeometry(std::pair{-50'000, -50'000}, false);
+
+        int displayCount = 0;
+        SDL_DisplayID* displays = SDL_GetDisplays(&displayCount);
+        if (displays == nullptr || displayCount <= 0)
+        {
+            SDL_free(displays);
+            GTEST_SKIP() << "No display bounds available";
+        }
+        const auto [x, y] = window.getPosition();
+        const SDL_Point topLeft{.x = x, .y = y};
+        bool onADisplay = false;
+        for (int i = 0; i < displayCount; ++i)
+        {
+            SDL_Rect bounds{};
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) - SDL returns a C array
+            if (SDL_GetDisplayBounds(displays[i], &bounds) && SDL_PointInRect(&topLeft, &bounds))
+            {
+                onADisplay = true;
+            }
+        }
+        SDL_free(displays);
+        EXPECT_TRUE(onADisplay) << "window top-left at (" << x << ", " << y << ")";
     }
     catch (const std::exception& e)
     {

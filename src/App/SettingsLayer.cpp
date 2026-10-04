@@ -22,6 +22,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <format>
+#include <limits>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -214,9 +215,15 @@ void SettingsLayer::renderSettingsDialog()
         m_OpenRequested = false;
     }
 
-    // Center the popup
+    // Kept centred and within the viewport on every frame it is open, not only when it appears: its
+    // height grows with the font preset and display scale, and the main window can shrink while it
+    // is open. It is NoMove, so re-centring never fights the user. The size cap stops it outgrowing
+    // the viewport; the scrolling body below keeps the buttons inside it (#1129).
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5F, 0.5F));
+    const ImVec2 dialogMaxSize(UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.x),
+                               UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.y));
+    ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Always, ImVec2(0.5F, 0.5F));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(0.0F, 0.0F), dialogMaxSize);
     // No explicit width. The former fixed 450px is gone and nothing replaces it: the popup is
     // ImGuiWindowFlags_AlwaysAutoResize and every column below is measured from the text it has to
     // hold, so auto-fit already produces exactly the width the content needs at the current font.
@@ -233,6 +240,28 @@ void SettingsLayer::renderSettingsDialog()
     {
         const auto& theme = UI::Theme::get();
         const ImGuiStyle& style = ImGui::GetStyle();
+
+        // Escape cancels, as the Cancel button does -- unless one of the combos was open. With
+        // keyboard navigation on (UILayer), ImGui's own Escape handling in NewFrame() closes that
+        // combo and hands focus back to this dialog within the same frame, so the same key press
+        // would otherwise close the combo and then the whole dialog.
+        if (!m_ComboOpenLastFrame && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+            ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+        {
+            ImGui::CloseCurrentPopup();
+        }
+        bool comboOpen = false;
+
+        // Everything above the Cancel/Apply row scrolls in a child sized to its content, but never
+        // taller than leaves room for that row below it, so the buttons stay on screen at any font
+        // size in any window height (#1129). Reserved: the title bar, the window padding, and the
+        // footer (separator, spacing and the button row) with the item spacing between them.
+        const float footerHeight = (style.ItemSpacing.y * 3.0F) + 1.0F + ImGui::GetFrameHeight();
+        const float reservedHeight = ImGui::GetFrameHeight() + (style.WindowPadding.y * 2.0F) + footerHeight;
+        const float bodyMaxHeight =
+            UI::DialogMetrics::computeScrollableBodyMaxHeight(dialogMaxSize.y, reservedHeight, ImGui::GetFrameHeightWithSpacing() * 2.0F);
+        ImGui::SetNextWindowSizeConstraints(ImVec2(0.0F, 0.0F), ImVec2(std::numeric_limits<float>::max(), bodyMaxHeight));
+        ImGui::BeginChild("##SettingsBody", ImVec2(0.0F, 0.0F), ImGuiChildFlags_AutoResizeX | ImGuiChildFlags_AutoResizeY);
 
         // ========================================
         // APPEARANCE Section
@@ -305,11 +334,14 @@ void SettingsLayer::renderSettingsDialog()
 #endif
         const float widestOtherRow = std::max({advancedRowWidth, actionRowWidth, checkboxRowWidth});
 
+        // The rows are laid out inside the scrolling body, which has no padding of its own: its
+        // content starts at 0, flush with the dialog's content edge. The row budget allows for the
+        // dialog's padding either side plus the body's scrollbar, which appears when it scrolls.
+        const float rowSurrounding = (style.WindowPadding.x * 2.0F) + style.ScrollbarSize;
         const float appearanceComboWidth = UI::DialogMetrics::computeCappedControlWidth(
-            UI::DialogMetrics::computeFilledControlWidth(
-                widestAppearanceValue + comboDecoration, valueColumn, style.WindowPadding.x, widestOtherRow),
+            UI::DialogMetrics::computeFilledControlWidth(widestAppearanceValue + comboDecoration, valueColumn, 0.0F, widestOtherRow),
             valueColumn,
-            style.WindowPadding.x * 2.0F,
+            rowSurrounding,
             viewport->WorkSize.x,
             comboMinWidth);
 
@@ -326,6 +358,7 @@ void SettingsLayer::renderSettingsDialog()
                                          : m_CustomThemePreview.c_str();
             if (ImGui::BeginCombo("##Theme", currentTheme))
             {
+                comboOpen = true;
                 for (std::size_t i = 0; i < m_Themes.size(); ++i)
                 {
                     const bool isSelected = (m_ThemeChoice.index == i);
@@ -362,6 +395,7 @@ void SettingsLayer::renderSettingsDialog()
         const char* currentFontSize = FONT_SIZE_OPTIONS[fontPreviewIndex].label.data(); // NOLINT(bugprone-suspicious-stringview-data-usage)
         if (ImGui::BeginCombo("##FontSize", currentFontSize))
         {
+            comboOpen = true;
             for (std::size_t i = 0; i < FONT_SIZE_OPTIONS.size(); ++i)
             {
                 const bool isSelected = (fontPreviewIndex == i);
@@ -409,7 +443,7 @@ void SettingsLayer::renderSettingsDialog()
             widestPerfValue = std::max(widestPerfValue, ImGui::CalcTextSize(m_CustomHistoryPreview.c_str()).x);
         }
         const float perfComboWidth = UI::DialogMetrics::computeCappedControlWidth(
-            widestPerfValue + comboDecoration, valueColumn, style.WindowPadding.x * 2.0F, viewport->WorkSize.x, comboMinWidth);
+            widestPerfValue + comboDecoration, valueColumn, rowSurrounding, viewport->WorkSize.x, comboMinWidth);
         const float perfLabelWidth = UI::DialogMetrics::computeRightAlignedStart(valueColumn, appearanceComboWidth, perfComboWidth);
 
         ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GAUGE_HIGH "  PERFORMANCE");
@@ -428,6 +462,7 @@ void SettingsLayer::renderSettingsDialog()
                 : m_CustomRefreshPreview.c_str();
         if (ImGui::BeginCombo("##RefreshRate", currentRefresh))
         {
+            comboOpen = true;
             for (std::size_t i = 0; i < REFRESH_RATE_OPTIONS.size(); ++i)
             {
                 const bool isSelected = (m_RefreshRateChoice.index == i);
@@ -458,6 +493,7 @@ void SettingsLayer::renderSettingsDialog()
                 : m_CustomHistoryPreview.c_str();
         if (ImGui::BeginCombo("##History", currentHistory))
         {
+            comboOpen = true;
             for (std::size_t i = 0; i < HISTORY_OPTIONS.size(); ++i)
             {
                 const bool isSelected = (m_HistoryChoice.index == i);
@@ -517,21 +553,26 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::Spacing();
         ImGui::Spacing();
         ImGui::Spacing();
+
+        ImGui::EndChild(); // ##SettingsBody
+
         ImGui::Separator();
         ImGui::Spacing();
 
         // ========================================
-        // Buttons
+        // Buttons (pinned below the scrolling body)
         // ========================================
         // Floor of 9.375 em is exactly the former fixed 100px at the reference configuration; the
         // measured term takes over for whichever of the two labels is wider once the font grows.
         // (Computed above as actionButtonWidth, where the combos need it to find the dialog's width.)
-        const float buttonWidth = actionButtonWidth;
-        const float totalButtonWidth = actionRowWidth;
+        // Shrunk to the row when the viewport-capped dialog is narrower than the pair (#1129), so
+        // Cancel can't be pushed off the left edge.
         const float availWidth = ImGui::GetContentRegionAvail().x;
+        const float buttonWidth = UI::DialogMetrics::fitActionButtonPairWidth(actionButtonWidth, style.ItemSpacing.x, availWidth);
+        const float totalButtonWidth = (buttonWidth * 2.0F) + style.ItemSpacing.x;
 
         // Right-align buttons
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + availWidth - totalButtonWidth);
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0F, availWidth - totalButtonWidth));
 
         // Push text color to ensure visibility on button backgrounds
         ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
@@ -561,7 +602,12 @@ void SettingsLayer::renderSettingsDialog()
             ImGui::CloseCurrentPopup();
         }
 
+        m_ComboOpenLastFrame = comboOpen;
         ImGui::EndPopup();
+    }
+    else
+    {
+        m_ComboOpenLastFrame = false;
     }
 }
 

@@ -220,4 +220,12 @@ TaskSmack persists settings in several places:
 | Window state, column visibility, theme, font, sampling, history, and advanced metric/UI settings | `config.toml` in the user config directory (`%APPDATA%\TaskSmack\` on Windows, `~/.config/tasksmack/` on Linux) |
 | User themes | `%APPDATA%\TaskSmack\themes\` (Windows) or `~/.config/tasksmack/themes/` (Linux) |
 
+### Window size and position
+
+TaskSmack reopens at the size and position it had when it was closed, and maximized if it was maximized. Closing it while maximized keeps the size and position it had before it was maximized, so Restore returns there on the next launch. (Native Wayland does not let apps position their windows, so there only the size and maximized state are restored.)
+
+If the saved position is no longer on any connected display (a monitor was unplugged, say), TaskSmack opens centered on the primary display instead, and a saved size larger than the display is shrunk to fit it.
+
+Dialogs (Settings, About and the privilege notice) are kept inside the main window. When the font size or display scaling makes the Settings dialog taller than the window, its options scroll and the Cancel and Apply buttons stay visible; Escape also cancels it.
+
 To reset all layout and theme settings, delete the `config.toml` file in the user config directory. TaskSmack will recreate it with defaults on the next launch.
