@@ -1,6 +1,7 @@
 /// @file test_WindowsProcessProbe.cpp
 /// @brief Integration tests for Platform::WindowsProcessProbe
 
+#include "Domain/SocketTrafficAccumulator.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/Windows/WindowsProcessProbe.h"
 #include "Platform/Windows/WindowsProcessProbeMath.h"
@@ -18,6 +19,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 // clang-format off
@@ -141,6 +143,7 @@ TEST(WindowsProcessProbeTest, NonElevatedNeverClaimsNetworkCounters)
             EXPECT_EQ(proc.netSentBytes, 0ULL) << proc.name;
             EXPECT_EQ(proc.netReceivedBytes, 0ULL) << proc.name;
         }
+        EXPECT_EQ(probe.readSocketTraffic().sampleTimeNs, 0U); // no reading, not "every connection closed"
     }
     const auto caps = probe.capabilities();
     EXPECT_FALSE(caps.hasNetworkCounters);
@@ -155,6 +158,7 @@ TEST(WindowsProcessProbeTest, NetworkFlagsStayConsistentAfterSampling)
     for (int sample = 0; sample < 3; ++sample)
     {
         (void) probe.enumerate();
+        (void) probe.readSocketTraffic(); // the EStats walk, which classifies availability (#1256)
     }
     const auto caps = probe.capabilities();
     EXPECT_FALSE(caps.hasNetworkCounters && caps.hasReducedPrivileges);
@@ -831,79 +835,41 @@ TEST(CalculateDetailTTLsFromTotalRAMBytesTest, ZeroBytesFallsIntoLowestTier)
 }
 
 // ---------------------------------------------------------------------------
-// accumulateEStatsRow (#1100): the per-row decision shared by the IPv4 and IPv6 EStats walks
+// classifyEStatsRow (#1100): the per-row decision shared by the IPv4 and IPv6 EStats walks
 // ---------------------------------------------------------------------------
 
-TEST(AccumulateEStatsRowTest, Ipv4AndIpv6RowsForTheSamePidSum)
+TEST(ClassifyEStatsRowTest, SaneEstablishedReadsAreReported)
 {
-    // Before #1100 only the AF_INET table was walked, so a process whose traffic was all IPv6
-    // (most browser/CDN traffic on a dual-stack network) read ~0. Both walks now feed the same
-    // per-PID map through this helper, so a v4 row and a v6 row for one PID must add up.
-    PerPidNetworkBytes perPid;
-    constexpr std::uint32_t PID = 4242;
-
-    // IPv4 row
-    EXPECT_EQ(accumulateEStatsRow(perPid, PID, TCP_STATE_ESTABLISHED, 0, 1'000, 2'000), EStatsRowOutcome::Accumulated);
-    // IPv6 row (same helper, same map)
-    EXPECT_EQ(accumulateEStatsRow(perPid, PID, TCP_STATE_ESTABLISHED, 0, 30'000, 40'000), EStatsRowOutcome::Accumulated);
-    // Another process
-    EXPECT_EQ(accumulateEStatsRow(perPid, 7, TCP_STATE_ESTABLISHED, 0, 5, 6), EStatsRowOutcome::Accumulated);
-
-    ASSERT_EQ(perPid.size(), 2U);
-    EXPECT_EQ(perPid.at(PID).first, 31'000ULL);
-    EXPECT_EQ(perPid.at(PID).second, 42'000ULL);
-    EXPECT_EQ(perPid.at(7).first, 5ULL);
-    EXPECT_EQ(perPid.at(7).second, 6ULL);
+    EXPECT_EQ(classifyEStatsRow(TCP_STATE_ESTABLISHED, 0, 1'000, 2'000), EStatsRowOutcome::Accumulated);
+    // A just-opened connection reads OK with zero bytes; it is still reported, so Domain tracks it
+    // from now on.
+    EXPECT_EQ(classifyEStatsRow(TCP_STATE_ESTABLISHED, 0, 0, 0), EStatsRowOutcome::Accumulated);
 }
 
-TEST(AccumulateEStatsRowTest, NonEstablishedRowsAreSkipped)
+TEST(ClassifyEStatsRowTest, NonEstablishedRowsAreSkipped)
 {
-    PerPidNetworkBytes perPid;
     constexpr std::uint32_t LISTEN = 2;
     constexpr std::uint32_t TIME_WAIT = 11;
 
-    EXPECT_EQ(accumulateEStatsRow(perPid, 1, LISTEN, 0, 100, 100), EStatsRowOutcome::SkippedState);
-    EXPECT_EQ(accumulateEStatsRow(perPid, 1, TIME_WAIT, 0, 100, 100), EStatsRowOutcome::SkippedState);
-    EXPECT_TRUE(perPid.empty());
+    EXPECT_EQ(classifyEStatsRow(LISTEN, 0, 100, 100), EStatsRowOutcome::SkippedState);
+    EXPECT_EQ(classifyEStatsRow(TIME_WAIT, 0, 100, 100), EStatsRowOutcome::SkippedState);
 }
 
-TEST(AccumulateEStatsRowTest, FailedReadsAreSkipped)
+TEST(ClassifyEStatsRowTest, FailedReadsAreNotReported)
 {
-    PerPidNetworkBytes perPid;
     constexpr std::uint32_t ERROR_NOT_FOUND_CODE = 1168;
     constexpr std::uint32_t ERROR_ACCESS_DENIED_CODE = 5;
 
-    EXPECT_EQ(accumulateEStatsRow(perPid, 1, TCP_STATE_ESTABLISHED, ERROR_NOT_FOUND_CODE, 100, 100), EStatsRowOutcome::ReadFailed);
-    EXPECT_EQ(accumulateEStatsRow(perPid, 1, TCP_STATE_ESTABLISHED, ERROR_ACCESS_DENIED_CODE, 100, 100), EStatsRowOutcome::ReadFailed);
-    // A failed read must not even create a zero entry for the PID.
-    EXPECT_TRUE(perPid.empty());
+    EXPECT_EQ(classifyEStatsRow(TCP_STATE_ESTABLISHED, ERROR_NOT_FOUND_CODE, 100, 100), EStatsRowOutcome::ReadFailed);
+    EXPECT_EQ(classifyEStatsRow(TCP_STATE_ESTABLISHED, ERROR_ACCESS_DENIED_CODE, 100, 100), EStatsRowOutcome::ReadFailed);
 }
 
-TEST(AccumulateEStatsRowTest, CountersAboveOneTerabyteAreRejected)
+TEST(ClassifyEStatsRowTest, CountersAboveOneTerabyteAreRejected)
 {
-    PerPidNetworkBytes perPid;
-    constexpr std::uint32_t PID = 9;
-
-    EXPECT_EQ(accumulateEStatsRow(perPid, PID, TCP_STATE_ESTABLISHED, 0, MAX_SANE_ESTATS_CONNECTION_BYTES + 1, 0),
-              EStatsRowOutcome::Garbage);
-    EXPECT_EQ(accumulateEStatsRow(perPid, PID, TCP_STATE_ESTABLISHED, 0, 0, MAX_SANE_ESTATS_CONNECTION_BYTES + 1),
-              EStatsRowOutcome::Garbage);
-    EXPECT_TRUE(perPid.empty());
-
+    EXPECT_EQ(classifyEStatsRow(TCP_STATE_ESTABLISHED, 0, MAX_SANE_ESTATS_CONNECTION_BYTES + 1, 0), EStatsRowOutcome::Garbage);
+    EXPECT_EQ(classifyEStatsRow(TCP_STATE_ESTABLISHED, 0, 0, MAX_SANE_ESTATS_CONNECTION_BYTES + 1), EStatsRowOutcome::Garbage);
     // Exactly 1 TB is still accepted (the cap is exclusive).
-    EXPECT_EQ(accumulateEStatsRow(perPid, PID, TCP_STATE_ESTABLISHED, 0, MAX_SANE_ESTATS_CONNECTION_BYTES, 0),
-              EStatsRowOutcome::Accumulated);
-    EXPECT_EQ(perPid.at(PID).first, MAX_SANE_ESTATS_CONNECTION_BYTES);
-}
-
-TEST(AccumulateEStatsRowTest, ZeroByteEstablishedRowStillRegistersThePid)
-{
-    // A just-opened connection reads OK with zero bytes; it is accumulated (the PID has a
-    // network presence at 0 B), matching the pre-#1100 IPv4 loop.
-    PerPidNetworkBytes perPid;
-    EXPECT_EQ(accumulateEStatsRow(perPid, 3, TCP_STATE_ESTABLISHED, 0, 0, 0), EStatsRowOutcome::Accumulated);
-    ASSERT_EQ(perPid.count(3), 1U);
-    EXPECT_EQ(perPid.at(3).first, 0ULL);
+    EXPECT_EQ(classifyEStatsRow(TCP_STATE_ESTABLISHED, 0, MAX_SANE_ESTATS_CONNECTION_BYTES, 0), EStatsRowOutcome::Accumulated);
 }
 
 TEST(EStatsSampleCountsTest, Ipv4AndIpv6TalliesAdd)
@@ -949,18 +915,17 @@ TEST(RecordEStatsRowTest, TalliesEachOutcome)
 {
     // The real per-row tally both table walks use (#1161): NOT_FOUND is counted apart from other
     // read failures, and a garbage read is a successful read but not a sane one.
-    PerPidNetworkBytes perPid;
     EStatsSampleCounts counts;
     constexpr std::uint32_t LISTEN = 2;
     constexpr std::uint64_t TOO_BIG = MAX_SANE_ESTATS_CONNECTION_BYTES + 1;
 
-    (void) recordEStatsRow(counts, perPid, 1, LISTEN, std::nullopt, NO_ERROR, 9, 9);             // not counted
-    (void) recordEStatsRow(counts, perPid, 1, TCP_STATE_ESTABLISHED, NO_ERROR, NO_ERROR, 10, 0); // sane, has data
-    (void) recordEStatsRow(counts, perPid, 1, TCP_STATE_ESTABLISHED, NO_ERROR, NO_ERROR, 0, 0);  // sane, no data
-    (void) recordEStatsRow(counts, perPid, 2, TCP_STATE_ESTABLISHED, NO_ERROR, NO_ERROR, TOO_BIG, 0);
-    (void) recordEStatsRow(counts, perPid, 3, TCP_STATE_ESTABLISHED, ERROR_NOT_FOUND, ERROR_NOT_FOUND, 0, 0);
-    (void) recordEStatsRow(counts, perPid, 4, TCP_STATE_ESTABLISHED, std::nullopt, ERROR_INVALID_PARAMETER, 0, 0);
-    (void) recordEStatsRow(counts, perPid, 5, TCP_STATE_ESTABLISHED, ERROR_ACCESS_DENIED, ERROR_ACCESS_DENIED, 0, 0);
+    (void) recordEStatsRow(counts, LISTEN, std::nullopt, NO_ERROR, 9, 9);             // not counted
+    (void) recordEStatsRow(counts, TCP_STATE_ESTABLISHED, NO_ERROR, NO_ERROR, 10, 0); // sane, has data
+    (void) recordEStatsRow(counts, TCP_STATE_ESTABLISHED, NO_ERROR, NO_ERROR, 0, 0);  // sane, no data
+    (void) recordEStatsRow(counts, TCP_STATE_ESTABLISHED, NO_ERROR, NO_ERROR, TOO_BIG, 0);
+    (void) recordEStatsRow(counts, TCP_STATE_ESTABLISHED, ERROR_NOT_FOUND, ERROR_NOT_FOUND, 0, 0);
+    (void) recordEStatsRow(counts, TCP_STATE_ESTABLISHED, std::nullopt, ERROR_INVALID_PARAMETER, 0, 0);
+    (void) recordEStatsRow(counts, TCP_STATE_ESTABLISHED, ERROR_ACCESS_DENIED, ERROR_ACCESS_DENIED, 0, 0);
 
     EXPECT_EQ(counts.established, 6U);
     EXPECT_EQ(counts.enabled, 3U);
@@ -971,8 +936,6 @@ TEST(RecordEStatsRowTest, TalliesEachOutcome)
     EXPECT_EQ(counts.readNotFound, 1U);
     EXPECT_EQ(counts.readFailedOther, 1U); // ACCESS_DENIED is tallied as accessDenied, not here
     EXPECT_EQ(counts.accessDenied, 1U);
-    ASSERT_EQ(perPid.size(), 1U);
-    EXPECT_EQ(perPid.at(1).first, 10ULL);
 }
 
 // ---------------------------------------------------------------------------
@@ -993,11 +956,9 @@ EStatsSampleCounts tallyEstablishedRows(const std::vector<EStatsRowResult>& rows
 {
     EStatsSampleCounts counts;
     counts.total = rows.size();
-    PerPidNetworkBytes perPid;
-    std::uint32_t pid = 100;
     for (const auto& row : rows)
     {
-        (void) recordEStatsRow(counts, perPid, pid++, TCP_STATE_ESTABLISHED, row.enableStatus, row.readStatus, row.bytesOut, row.bytesIn);
+        (void) recordEStatsRow(counts, TCP_STATE_ESTABLISHED, row.enableStatus, row.readStatus, row.bytesOut, row.bytesIn);
     }
     return counts;
 }
@@ -1101,7 +1062,7 @@ TEST(ClassifyEStatsProbeTest, ReadAccessDeniedIsUnavailable)
 
 TEST(ClassifyEStatsProbeTest, GarbageOnlyReadsAreNotAvailable)
 {
-    // A > 1 TB counter is rejected and never reaches perPid, so a sample of only garbage reads
+    // A > 1 TB counter is rejected and never reported, so a sample of only garbage reads
     // proves nothing; it used to count as a successful read and verify EStats with no data.
     const auto counts = tallyEstablishedRows({
         {.enableStatus = NO_ERROR, .readStatus = NO_ERROR, .bytesOut = MAX_SANE_ESTATS_CONNECTION_BYTES + 1},
@@ -1195,6 +1156,288 @@ TEST(TcpRowConversionTest, Ipv6StateComesFromTheOwnerRow)
     MIB_TCP6ROW_OWNER_PID owner{};
     owner.dwState = MIB_TCP_STATE_TIME_WAIT;
     EXPECT_EQ(toTcp6Row(owner).State, MIB_TCP_STATE_TIME_WAIT);
+}
+
+// ---------------------------------------------------------------------------
+// estatsConnectionKey (#1256): a stable per-connection key for SocketTrafficAccumulator
+// ---------------------------------------------------------------------------
+
+TcpConnectionEndpoints ipv4Endpoints(std::uint8_t localLast, std::uint32_t localPort, std::uint8_t remoteLast, std::uint32_t remotePort)
+{
+    TcpConnectionEndpoints endpoints;
+    endpoints.family = TcpAddressFamily::IPv4;
+    endpoints.localAddr = {192, 168, 1, localLast};
+    endpoints.localPort = localPort;
+    endpoints.remoteAddr = {10, 0, 0, remoteLast};
+    endpoints.remotePort = remotePort;
+    return endpoints;
+}
+
+TEST(EStatsConnectionKeyTest, SameConnectionHasTheSameKey)
+{
+    const auto endpoints = ipv4Endpoints(10, 0xBB01, 20, 0xD2C3);
+    EXPECT_EQ(estatsConnectionKey(endpoints), estatsConnectionKey(endpoints));
+    EXPECT_NE(estatsConnectionKey(endpoints), 0U);
+    EXPECT_NE(estatsConnectionKey(TcpConnectionEndpoints{}), 0U); // 0 is reserved by the accumulator
+}
+
+TEST(EStatsConnectionKeyTest, UndefinedUpperPortBitsDoNotChangeTheKey)
+{
+    // The owner-PID tables leave the upper 16 bits of the port DWORDs undefined.
+    const auto clean = ipv4Endpoints(10, 0x0000BB01U, 20, 0x0000D2C3U);
+    const auto dirty = ipv4Endpoints(10, 0xDEADBB01U, 20, 0x1234D2C3U);
+    EXPECT_EQ(estatsConnectionKey(clean), estatsConnectionKey(dirty));
+}
+
+TEST(EStatsConnectionKeyTest, SwappedEndpointsAreDifferentConnections)
+{
+    // Both ends of a loopback connection are in the table, owned by different processes.
+    auto forward = ipv4Endpoints(1, 0x1111, 1, 0x2222);
+    forward.localAddr = {127, 0, 0, 1};
+    forward.remoteAddr = {127, 0, 0, 1};
+    auto backward = forward;
+    std::swap(backward.localPort, backward.remotePort);
+    EXPECT_NE(estatsConnectionKey(forward), estatsConnectionKey(backward));
+
+    const auto a = ipv4Endpoints(10, 0x1111, 20, 0x2222);
+    TcpConnectionEndpoints b = a;
+    std::swap(b.localAddr, b.remoteAddr);
+    std::swap(b.localPort, b.remotePort);
+    EXPECT_NE(estatsConnectionKey(a), estatsConnectionKey(b));
+}
+
+TEST(EStatsConnectionKeyTest, EachFieldDistinguishesConnections)
+{
+    const auto base = ipv4Endpoints(10, 0xBB01, 20, 0xD2C3);
+    const std::uint64_t baseKey = estatsConnectionKey(base);
+    EXPECT_NE(estatsConnectionKey(ipv4Endpoints(11, 0xBB01, 20, 0xD2C3)), baseKey);
+    EXPECT_NE(estatsConnectionKey(ipv4Endpoints(10, 0xBB02, 20, 0xD2C3)), baseKey);
+    EXPECT_NE(estatsConnectionKey(ipv4Endpoints(10, 0xBB01, 21, 0xD2C3)), baseKey);
+    EXPECT_NE(estatsConnectionKey(ipv4Endpoints(10, 0xBB01, 20, 0xD2C4)), baseKey);
+
+    TcpConnectionEndpoints v6;
+    v6.family = TcpAddressFamily::IPv6;
+    v6.localAddr = {0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01};
+    v6.remoteAddr = {0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02};
+    v6.localPort = 0x1111;
+    v6.remotePort = 0x2222;
+    v6.localScopeId = 7;
+    v6.remoteScopeId = 7;
+    TcpConnectionEndpoints otherScope = v6;
+    otherScope.remoteScopeId = 8; // the same link-local addresses on another interface
+    EXPECT_NE(estatsConnectionKey(v6), estatsConnectionKey(otherScope));
+}
+
+TEST(EStatsConnectionKeyTest, Ipv4AndIpv6KeysNeverCollide)
+{
+    // The family is the key's top bit, so no IPv4 key can equal an IPv6 one -- not even for the
+    // same address bytes and ports.
+    constexpr std::uint64_t FAMILY_BIT = 1ULL << 63U;
+    for (std::uint8_t last = 0; last < 64; ++last)
+    {
+        const auto v4 = ipv4Endpoints(last, 0x1111, last, 0x2222);
+        TcpConnectionEndpoints v6 = v4;
+        v6.family = TcpAddressFamily::IPv6;
+        EXPECT_EQ(estatsConnectionKey(v4) & FAMILY_BIT, 0U);
+        EXPECT_EQ(estatsConnectionKey(v6) & FAMILY_BIT, FAMILY_BIT);
+    }
+}
+
+TEST(EStatsConnectionKeyTest, OwnerRowsGiveTheSameKeyEveryRead)
+{
+    MIB_TCPROW_OWNER_PID owner{};
+    owner.dwState = MIB_TCP_STATE_ESTAB;
+    owner.dwLocalAddr = 0x0100007FU;
+    owner.dwLocalPort = 0x0000BB01U;
+    owner.dwRemoteAddr = 0x0A01A8C0U;
+    owner.dwRemotePort = 0x0000D2C3U;
+    MIB_TCPROW_OWNER_PID nextRead = owner;
+    nextRead.dwLocalPort |= 0xABCD0000U; // undefined upper bits differ between reads
+    nextRead.dwOwningPid = 99;           // the key is the connection's, not its owner's
+    EXPECT_EQ(estatsConnectionKey(toConnectionEndpoints(owner)), estatsConnectionKey(toConnectionEndpoints(nextRead)));
+
+    const TcpConnectionEndpoints endpoints = toConnectionEndpoints(owner);
+    EXPECT_EQ(endpoints.family, TcpAddressFamily::IPv4);
+    EXPECT_EQ(endpoints.localAddr[0], 127U);
+    EXPECT_EQ(endpoints.localAddr[3], 1U);
+    EXPECT_EQ(endpoints.remoteAddr[0], 192U);
+    EXPECT_EQ(endpoints.remoteAddr[3], 10U);
+
+    MIB_TCP6ROW_OWNER_PID owner6{};
+    constexpr std::array<UCHAR, 16> LOCAL{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01};
+    std::memcpy(owner6.ucLocalAddr, LOCAL.data(), LOCAL.size());
+    owner6.dwRemoteScopeId = 12;
+    const TcpConnectionEndpoints endpoints6 = toConnectionEndpoints(owner6);
+    EXPECT_EQ(endpoints6.family, TcpAddressFamily::IPv6);
+    EXPECT_EQ(endpoints6.localAddr[0], 0x20U);
+    EXPECT_EQ(endpoints6.localAddr[15], 0x01U);
+    EXPECT_EQ(endpoints6.remoteScopeId, 12U);
+}
+
+// ---------------------------------------------------------------------------
+// EStats walks through Domain::SocketTrafficAccumulator (#1256): a process's network counter is
+// monotonic, whatever its connections do between samples
+// ---------------------------------------------------------------------------
+
+/// Feeds fabricated EStats walks through makeSocketTrafficReading() and the accumulator
+/// ProcessModel uses, as readSocketTraffic() and ProcessModel::refresh() do.
+struct EStatsTrafficHarness
+{
+    static constexpr std::uint32_t PID = 4242;
+    static constexpr std::uint64_t START_TICKS = 1'000;
+    static constexpr std::uint64_t SECOND_NS = 1'000'000'000ULL;
+
+    EStatsLastSamples lastSamples;
+    Domain::SocketTrafficAccumulator accumulator;
+    std::uint64_t nowNs = 0;
+
+    static EStatsConnectionRead good(std::uint64_t key, std::uint64_t received, std::uint64_t sent, std::uint32_t pid = PID)
+    {
+        return {.key = key, .pid = pid, .outcome = EStatsRowOutcome::Accumulated, .bytesReceived = received, .bytesSent = sent};
+    }
+
+    static EStatsConnectionRead failed(std::uint64_t key, EStatsRowOutcome outcome = EStatsRowOutcome::ReadFailed)
+    {
+        return {.key = key, .pid = PID, .outcome = outcome};
+    }
+
+    /// One sample: returns the process's (received, sent) totals.
+    std::pair<std::uint64_t, std::uint64_t>
+    sample(const std::vector<EStatsConnectionRead>& reads, bool complete = true, std::uint64_t startTicks = START_TICKS)
+    {
+        nowNs += SECOND_NS;
+        std::vector<ProcessCounters> processes(1);
+        processes[0].pid = static_cast<std::int32_t>(PID);
+        processes[0].startTimeTicks = startTicks;
+        accumulator.apply(makeSocketTrafficReading(reads, complete, nowNs, lastSamples), processes);
+        return {processes[0].netReceivedBytes, processes[0].netSentBytes};
+    }
+};
+
+TEST(EStatsSocketTrafficTest, ClosingAConnectionDoesNotLowerTheProcessTotal)
+{
+    // The old per-PID sum read 1'000 + 100 = 1'100, then 200 once B closed: a negative delta, and
+    // the process showed 0 B/s however much A moved (#1256).
+    EStatsTrafficHarness h;
+    (void) h.sample({EStatsTrafficHarness::good(1, 100, 10), EStatsTrafficHarness::good(2, 1'000, 100)}); // baseline
+    EXPECT_EQ(h.sample({EStatsTrafficHarness::good(1, 150, 20), EStatsTrafficHarness::good(2, 1'500, 200)}),
+              std::make_pair(std::uint64_t{550}, std::uint64_t{110}));
+    // B closed; A moved 50 more in each direction.
+    EXPECT_EQ(h.sample({EStatsTrafficHarness::good(1, 200, 70)}), std::make_pair(std::uint64_t{600}, std::uint64_t{160}));
+    // Every connection closed: the total holds.
+    EXPECT_EQ(h.sample({}), std::make_pair(std::uint64_t{600}, std::uint64_t{160}));
+}
+
+TEST(EStatsSocketTrafficTest, Ipv4AndIpv6ConnectionsOfOneProcessAddUp)
+{
+    // Before #1100 only IPv4 was walked; both families now feed the same reading.
+    TcpConnectionEndpoints v4;
+    v4.localPort = 0x1111;
+    TcpConnectionEndpoints v6 = v4;
+    v6.family = TcpAddressFamily::IPv6;
+    const std::uint64_t key4 = estatsConnectionKey(v4);
+    const std::uint64_t key6 = estatsConnectionKey(v6);
+
+    EStatsTrafficHarness h;
+    (void) h.sample({EStatsTrafficHarness::good(key4, 0, 0), EStatsTrafficHarness::good(key6, 0, 0)});
+    EXPECT_EQ(h.sample({EStatsTrafficHarness::good(key4, 1'000, 2'000), EStatsTrafficHarness::good(key6, 30'000, 40'000)}),
+              std::make_pair(std::uint64_t{31'000}, std::uint64_t{42'000}));
+}
+
+TEST(EStatsSocketTrafficTest, AFailedRowReadDoesNotSpike)
+{
+    // A connection whose EStats read fails for one sample (or reads garbage) is reported with its
+    // last sample. Left out, it would look closed and then new: its 10'000 lifetime bytes would
+    // land in one interval.
+    for (const EStatsRowOutcome outcome : {EStatsRowOutcome::ReadFailed, EStatsRowOutcome::Garbage})
+    {
+        EStatsTrafficHarness h;
+        (void) h.sample({EStatsTrafficHarness::good(1, 10'000, 5'000)}); // baseline
+        EXPECT_EQ(h.sample({EStatsTrafficHarness::failed(1, outcome)}), std::make_pair(std::uint64_t{0}, std::uint64_t{0}));
+        EXPECT_EQ(h.sample({EStatsTrafficHarness::good(1, 10'300, 5'030)}), std::make_pair(std::uint64_t{300}, std::uint64_t{30}));
+    }
+}
+
+TEST(EStatsSocketTrafficTest, AFailedReadIsForgottenOnceTheConnectionLeavesTheTable)
+{
+    EStatsLastSamples lastSamples;
+    const std::vector<EStatsConnectionRead> first{EStatsTrafficHarness::good(1, 100, 10), EStatsTrafficHarness::good(2, 200, 20)};
+    EXPECT_EQ(buildSocketTrafficSamples(first, lastSamples).size(), 2U);
+
+    // Connection 1 failed its read and is re-reported; connection 2 is gone from the table.
+    const std::vector<EStatsConnectionRead> second{EStatsTrafficHarness::failed(1)};
+    const auto samples = buildSocketTrafficSamples(second, lastSamples);
+    ASSERT_EQ(samples.size(), 1U);
+    EXPECT_EQ(samples[0].key, 1U);
+    EXPECT_EQ(samples[0].bytesReceived, 100U);
+    EXPECT_EQ(lastSamples.size(), 1U);
+    EXPECT_FALSE(lastSamples.contains(2));
+}
+
+TEST(EStatsSocketTrafficTest, AConnectionWithNoGoodReadYetIsLeftOut)
+{
+    EStatsLastSamples lastSamples;
+    const std::vector<EStatsConnectionRead> reads{
+        EStatsTrafficHarness::failed(7),
+        EStatsTrafficHarness::failed(8, EStatsRowOutcome::Garbage),
+        {.key = 9, .pid = 1, .outcome = EStatsRowOutcome::SkippedState},
+    };
+    EXPECT_TRUE(buildSocketTrafficSamples(reads, lastSamples).empty());
+    EXPECT_TRUE(lastSamples.empty());
+}
+
+TEST(EStatsSocketTrafficTest, ASampleWithAnUnreadableTableIsSkipped)
+{
+    // If the IPv4 or IPv6 table can't be read, its connections are missing from the walk. Reported,
+    // they'd look closed and then new; the sample reports no reading instead, and the next complete
+    // one measures from the last.
+    EStatsTrafficHarness h;
+    (void) h.sample({EStatsTrafficHarness::good(1, 1'000, 100), EStatsTrafficHarness::good(2, 2'000, 200)}); // baseline
+
+    const EStatsLastSamples before = h.lastSamples;
+    const auto partial = makeSocketTrafficReading({}, false, 123, h.lastSamples);
+    EXPECT_EQ(partial.sampleTimeNs, 0U);
+    EXPECT_TRUE(partial.sockets.empty());
+    EXPECT_EQ(h.lastSamples.size(), before.size());
+
+    // Only connection 1's table was read this sample: skipped, totals held.
+    EXPECT_EQ(h.sample({EStatsTrafficHarness::good(1, 1'100, 110)}, false), std::make_pair(std::uint64_t{0}, std::uint64_t{0}));
+    // Both back: only the growth since the baseline is credited.
+    EXPECT_EQ(h.sample({EStatsTrafficHarness::good(1, 1'300, 130), EStatsTrafficHarness::good(2, 2'500, 250)}),
+              std::make_pair(std::uint64_t{800}, std::uint64_t{80}));
+}
+
+TEST(EStatsSocketTrafficTest, AReusedPidStartsFromZero)
+{
+    // A process identified by PID and start time: a new process reusing the PID doesn't inherit
+    // the old one's bytes (SocketTrafficAccumulator).
+    EStatsTrafficHarness h;
+    (void) h.sample({EStatsTrafficHarness::good(1, 0, 0)});
+    EXPECT_EQ(h.sample({EStatsTrafficHarness::good(1, 500, 50)}), std::make_pair(std::uint64_t{500}, std::uint64_t{50}));
+    constexpr std::uint64_t NEW_START = EStatsTrafficHarness::START_TICKS + 1;
+    EXPECT_EQ(h.sample({EStatsTrafficHarness::good(2, 40, 4)}, true, NEW_START), std::make_pair(std::uint64_t{40}, std::uint64_t{4}));
+}
+
+TEST(WindowsProcessProbeTest, EnumerateLeavesNetworkCountersToTheSocketReading)
+{
+    // Per-process network bytes come from readSocketTraffic() through Domain's accumulator (#1256);
+    // enumerate() no longer writes a sum over live connections.
+    WindowsProcessProbe probe;
+    for (const auto& proc : probe.enumerate())
+    {
+        EXPECT_EQ(proc.netSentBytes, 0ULL) << proc.name;
+        EXPECT_EQ(proc.netReceivedBytes, 0ULL) << proc.name;
+    }
+    const auto reading = probe.readSocketTraffic();
+    if (!probe.capabilities().hasNetworkCounters)
+    {
+        EXPECT_EQ(reading.sampleTimeNs, 0U);
+        EXPECT_TRUE(reading.sockets.empty());
+    }
+    for (const auto& socket : reading.sockets)
+    {
+        EXPECT_NE(socket.key, 0U);
+    }
 }
 
 } // namespace

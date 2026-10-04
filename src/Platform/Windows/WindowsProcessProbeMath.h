@@ -1,11 +1,16 @@
 #pragma once
 
+#include "Platform/ProcessTypes.h"
+
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace Platform
 {
@@ -65,30 +70,23 @@ inline constexpr std::uint32_t TCP_STATE_ESTABLISHED = 5;
 /// garbage/uninitialized data, not real traffic.
 inline constexpr std::uint64_t MAX_SANE_ESTATS_CONNECTION_BYTES = 1'000'000'000'000ULL; // 1 TB
 
-/// Cumulative (sent, received) EStats byte counts keyed by owning PID.
-using PerPidNetworkBytes = std::unordered_map<std::uint32_t, std::pair<std::uint64_t, std::uint64_t>>;
-
-/// What accumulateEStatsRow() did with one TCP table row.
+/// What classifyEStatsRow() made of one TCP table row.
 enum class EStatsRowOutcome : std::uint8_t
 {
     SkippedState, // Not ESTABLISHED: no EStats calls are made for it
     ReadFailed,   // GetPerTcp[6]ConnectionEStats returned an error
     Garbage,      // A counter exceeded MAX_SANE_ESTATS_CONNECTION_BYTES
-    Accumulated,  // Byte counts were added to the owning PID
+    Accumulated,  // A sane read: the connection's byte counts are reported
 };
 
 /// Per-row decision shared by the IPv4 and IPv6 EStats loops (#1100), extracted so both address
-/// families aggregate identically and the decision is unit-testable without a live TCP table.
+/// families decide identically and the decision is unit-testable without a live TCP table.
 /// The caller still checks the state first so it can skip the Set/Get EStats calls for
 /// non-ESTABLISHED rows; the check is repeated here so the function is self-contained.
 /// @param readStatus Return value of GetPerTcp[6]ConnectionEStats (0 == NO_ERROR); ignored for
 ///                   non-ESTABLISHED rows.
-inline EStatsRowOutcome accumulateEStatsRow(PerPidNetworkBytes& perPid,
-                                            std::uint32_t pid,
-                                            std::uint32_t state,
-                                            std::uint32_t readStatus,
-                                            std::uint64_t bytesOut,
-                                            std::uint64_t bytesIn)
+[[nodiscard]] constexpr EStatsRowOutcome
+classifyEStatsRow(std::uint32_t state, std::uint32_t readStatus, std::uint64_t bytesOut, std::uint64_t bytesIn) noexcept
 {
     if (state != TCP_STATE_ESTABLISHED)
     {
@@ -102,10 +100,6 @@ inline EStatsRowOutcome accumulateEStatsRow(PerPidNetworkBytes& perPid,
     {
         return EStatsRowOutcome::Garbage;
     }
-
-    auto& agg = perPid[pid];
-    agg.first += bytesOut;
-    agg.second += bytesIn;
     return EStatsRowOutcome::Accumulated;
 }
 
@@ -146,22 +140,20 @@ struct EStatsSampleCounts
     }
 };
 
-/// Record one ESTABLISHED-or-not table row: accumulate its bytes via accumulateEStatsRow() and
-/// tally the Set/Get results into @p counts (#1161). Shared by the IPv4 and IPv6 walks so the
-/// tallies classifyEStatsProbe() judges are unit-testable from fabricated error codes.
+/// Record one ESTABLISHED-or-not table row: classify it via classifyEStatsRow() and tally the
+/// Set/Get results into @p counts (#1161). Shared by the IPv4 and IPv6 walks so the tallies
+/// classifyEStatsProbe() judges are unit-testable from fabricated error codes.
 /// @param enableStatus Return value of SetPerTcp[6]ConnectionEStats, or std::nullopt if no enable
 ///                     was attempted.
 /// @param readStatus   Return value of GetPerTcp[6]ConnectionEStats.
 inline EStatsRowOutcome recordEStatsRow(EStatsSampleCounts& counts,
-                                        PerPidNetworkBytes& perPid,
-                                        std::uint32_t pid,
                                         std::uint32_t state,
                                         std::optional<std::uint32_t> enableStatus,
                                         std::uint32_t readStatus,
                                         std::uint64_t bytesOut,
                                         std::uint64_t bytesIn)
 {
-    const EStatsRowOutcome outcome = accumulateEStatsRow(perPid, pid, state, readStatus, bytesOut, bytesIn);
+    const EStatsRowOutcome outcome = classifyEStatsRow(state, readStatus, bytesOut, bytesIn);
     if (outcome == EStatsRowOutcome::SkippedState)
     {
         return outcome;
@@ -257,6 +249,156 @@ inline constexpr std::size_t MAX_INCONCLUSIVE_ESTATS_SAMPLES = 3;
         return EStatsProbeResult::Unavailable;
     }
     return EStatsProbeResult::Undetermined;
+}
+
+/// Address family of a TCP connection (#1256).
+enum class TcpAddressFamily : std::uint8_t
+{
+    IPv4,
+    IPv6,
+};
+
+/// The endpoints that identify one TCP connection for its lifetime, as the owner-PID TCP tables
+/// report them (#1256). Kept free of <windows.h>; WindowsTcpRows.h fills it from the table rows.
+struct TcpConnectionEndpoints
+{
+    TcpAddressFamily family = TcpAddressFamily::IPv4;
+    std::array<std::uint8_t, 16> localAddr{}; // IPv4: the first 4 bytes, in network order
+    std::uint32_t localScopeId = 0;           // IPv6 only
+    std::uint32_t localPort = 0;              // As the table stores it; only the low 16 bits are used
+    std::array<std::uint8_t, 16> remoteAddr{};
+    std::uint32_t remoteScopeId = 0;
+    std::uint32_t remotePort = 0;
+};
+
+/// A stable key for one TCP connection, for Domain::SocketTrafficAccumulator (#1256): a 64-bit
+/// FNV-1a hash of the family, both addresses, scope ids and ports, in local-then-remote order, so
+/// the same connection always has the same key and swapped endpoints (the other side of a loopback
+/// connection) have different ones.
+///  - Only the low 16 bits of each port are hashed: the owner-PID tables leave the upper 16 bits of
+///    the port DWORDs undefined, which would change the key from one read to the next.
+///  - The top bit is the family (clear for IPv4, set for IPv6), so an IPv4 and an IPv6 key never
+///    collide.
+///  - Never 0, which the accumulator reserves (it skips key 0).
+[[nodiscard]] constexpr std::uint64_t estatsConnectionKey(const TcpConnectionEndpoints& endpoints) noexcept
+{
+    constexpr std::uint64_t FNV_OFFSET_BASIS = 0xcbf29ce484222325ULL;
+    constexpr std::uint64_t FNV_PRIME = 0x100000001b3ULL;
+    constexpr std::uint64_t FAMILY_BIT = 1ULL << 63U;
+    constexpr std::uint32_t PORT_MASK = 0xFFFFU;
+
+    const bool isIPv6 = endpoints.family == TcpAddressFamily::IPv6;
+    const std::size_t addrBytes = isIPv6 ? 16 : 4;
+
+    std::uint64_t hash = FNV_OFFSET_BASIS;
+    const auto mixByte = [&hash](std::uint8_t byte)
+    {
+        hash ^= byte;
+        hash *= FNV_PRIME;
+    };
+    const auto mixU32 = [&mixByte](std::uint32_t value)
+    {
+        for (unsigned shift = 0; shift < 32; shift += 8)
+        {
+            mixByte(static_cast<std::uint8_t>((value >> shift) & 0xFFU));
+        }
+    };
+    const auto mixEndpoint = [&](const std::array<std::uint8_t, 16>& addr, std::uint32_t scopeId, std::uint32_t port)
+    {
+        for (std::size_t i = 0; i < addrBytes; ++i)
+        {
+            mixByte(addr.at(i));
+        }
+        mixU32(isIPv6 ? scopeId : 0U);
+        mixU32(port & PORT_MASK);
+    };
+
+    mixByte(isIPv6 ? 6U : 4U);
+    mixEndpoint(endpoints.localAddr, endpoints.localScopeId, endpoints.localPort);
+    mixEndpoint(endpoints.remoteAddr, endpoints.remoteScopeId, endpoints.remotePort);
+
+    if (isIPv6)
+    {
+        return hash | FAMILY_BIT;
+    }
+    const std::uint64_t key = hash & ~FAMILY_BIT;
+    return key == 0 ? 1 : key;
+}
+
+/// One ESTABLISHED connection's EStats read in one walk of the TCP tables (#1256).
+struct EStatsConnectionRead
+{
+    std::uint64_t key = 0; // estatsConnectionKey()
+    std::uint32_t pid = 0; // Owning PID from the table row
+    EStatsRowOutcome outcome = EStatsRowOutcome::ReadFailed;
+    std::uint64_t bytesReceived = 0; // DataBytesIn; meaningful only when outcome == Accumulated
+    std::uint64_t bytesSent = 0;     // DataBytesOut; likewise
+};
+
+/// The last sample reported for each connection still in the TCP tables, by key (#1256).
+using EStatsLastSamples = std::unordered_map<std::uint64_t, SocketTrafficSample>;
+
+/// Turn one complete walk of the TCP tables into the per-connection samples readSocketTraffic()
+/// reports (#1256), and remember them for the next walk.
+///
+/// A connection whose EStats read failed or returned garbage this walk is still in the table, so
+/// it is reported with its last good sample rather than left out: Domain::SocketTrafficAccumulator
+/// would take a connection missing from one reading as closed, and the same connection back in the
+/// next as new, crediting all its lifetime bytes to the process in one interval. A connection with
+/// no good read yet is left out until it has one. Connections no longer in the table (closed, or
+/// out of ESTABLISHED) are dropped from @p lastSamples.
+///
+/// Call only for a complete walk: if either table could not be read, report no reading and leave
+/// @p lastSamples alone.
+/// @param reads        This walk's ESTABLISHED rows (SkippedState rows are ignored).
+/// @param lastSamples  The previous walk's samples; replaced by this walk's.
+[[nodiscard]] inline std::vector<SocketTrafficSample> buildSocketTrafficSamples(std::span<const EStatsConnectionRead> reads,
+                                                                                EStatsLastSamples& lastSamples)
+{
+    std::vector<SocketTrafficSample> samples;
+    samples.reserve(reads.size());
+    EStatsLastSamples next;
+    next.reserve(reads.size());
+    for (const auto& read : reads)
+    {
+        const auto pid = static_cast<std::int32_t>(read.pid);
+        if (read.outcome == EStatsRowOutcome::Accumulated)
+        {
+            const SocketTrafficSample sample{.key = read.key, .pid = pid, .bytesReceived = read.bytesReceived, .bytesSent = read.bytesSent};
+            samples.push_back(sample);
+            next.insert_or_assign(read.key, sample);
+        }
+        else if (read.outcome == EStatsRowOutcome::ReadFailed || read.outcome == EStatsRowOutcome::Garbage)
+        {
+            if (const auto previous = lastSamples.find(read.key); previous != lastSamples.end())
+            {
+                SocketTrafficSample sample = previous->second;
+                sample.pid = pid;
+                samples.push_back(sample);
+                next.insert_or_assign(read.key, sample);
+            }
+        }
+    }
+    lastSamples = std::move(next);
+    return samples;
+}
+
+/// The reading readSocketTraffic() reports for one walk of the TCP tables (#1256).
+/// @param complete      Both tables were read. If not, the walk is missing connections that are
+///                      still open, and reported they would look closed and then, back in the next
+///                      reading, new -- crediting their lifetime bytes. So no reading is reported
+///                      (sampleTimeNs 0, which Domain doesn't fold) and @p lastSamples is kept.
+/// @param sampleTimeNs  When the walk was taken (steady_clock ns); non-zero.
+[[nodiscard]] inline SocketTrafficReading makeSocketTrafficReading(std::span<const EStatsConnectionRead> reads,
+                                                                   bool complete,
+                                                                   std::uint64_t sampleTimeNs,
+                                                                   EStatsLastSamples& lastSamples)
+{
+    if (!complete)
+    {
+        return {};
+    }
+    return SocketTrafficReading{.sockets = buildSocketTrafficSamples(reads, lastSamples), .sampleTimeNs = sampleTimeNs};
 }
 
 } // namespace Platform

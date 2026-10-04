@@ -35,6 +35,7 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -850,8 +851,8 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
     std::erase_if(m_DetailCache,
                   [generation = m_DetailCacheGeneration](const auto& entry) { return entry.second.generation != generation; });
 
-    // Attach per-process network counters if available (best effort)
-    applyNetworkCounters(results);
+    // Per-process network bytes are not written here: readSocketTraffic() reports each connection's
+    // counters and Domain turns them into monotonic per-process totals (#1256).
 
     spdlog::trace("Enumerated {} processes", results.size());
     return results;
@@ -1277,12 +1278,18 @@ static_assert(ESTATS_NO_ERROR == NO_ERROR);
 static_assert(ESTATS_ERROR_ACCESS_DENIED == ERROR_ACCESS_DENIED);
 static_assert(ESTATS_ERROR_NOT_FOUND == ERROR_NOT_FOUND);
 
-/// Enable and read EStats for one ESTABLISHED connection, then hand the result to the shared
-/// recordEStatsRow() decision. RowT is MIB_TCPROW or MIB_TCP6ROW (#1100); the Set/Get
-/// function pointers are the matching IPv4 or IPv6 pair.
+/// Enable and read EStats for one ESTABLISHED connection, hand the result to the shared
+/// recordEStatsRow() tally, and append the read to `reads` (#1256). RowT is MIB_TCPROW or
+/// MIB_TCP6ROW (#1100); the Set/Get function pointers are the matching IPv4 or IPv6 pair.
 template<typename RowT, typename SetFn, typename GetFn>
-void readEStatsRow(
-    RowT& row, std::uint32_t pid, std::uint32_t state, SetFn setFn, GetFn getFn, PerPidNetworkBytes& perPid, EStatsSampleCounts& counts)
+void readEStatsRow(RowT& row,
+                   std::uint64_t key,
+                   std::uint32_t pid,
+                   std::uint32_t state,
+                   SetFn setFn,
+                   GetFn getFn,
+                   std::vector<EStatsConnectionRead>& reads,
+                   EStatsSampleCounts& counts)
 {
     // Try to enable EStats collection (requires admin, may fail)
     std::optional<std::uint32_t> enableStatus;
@@ -1298,27 +1305,48 @@ void readEStatsRow(
     const DWORD readStatus =
         getFn(&row, TcpConnectionEstatsData, nullptr, 0, 0, nullptr, 0, 0, reinterpret_cast<PUCHAR>(&rod), 0, sizeof(rod));
 
-    (void) recordEStatsRow(counts, perPid, pid, state, enableStatus, readStatus, rod.DataBytesOut, rod.DataBytesIn);
+    const EStatsRowOutcome outcome = recordEStatsRow(counts, state, enableStatus, readStatus, rod.DataBytesOut, rod.DataBytesIn);
+    reads.push_back(
+        EStatsConnectionRead{.key = key, .pid = pid, .outcome = outcome, .bytesReceived = rod.DataBytesIn, .bytesSent = rod.DataBytesOut});
 }
 
 } // namespace
 
-PerPidNetworkBytes WindowsProcessProbe::collectNetworkByteCounts() const
+SocketTrafficReading WindowsProcessProbe::readSocketTraffic() const
 {
-    PerPidNetworkBytes perPid;
-
     if (!m_HasNetworkCounters)
     {
-        return perPid;
+        return {};
     }
 
-    // IPv4 and IPv6 connections of the same process sum into one entry (#1100): on a dual-stack
-    // network most browser/CDN traffic is IPv6, which an IPv4-only walk reported as ~0.
-    EStatsSampleCounts counts = collectTcp4ByteCounts(perPid);
-    counts += collectTcp6ByteCounts(perPid);
+    // Every ESTABLISHED IPv4 and IPv6 connection (#1100), read connection by connection: Domain
+    // turns successive readings into monotonic per-process totals, so a closing connection no
+    // longer takes its bytes out of its process's counter (#1256, Linux: #1099).
+    std::vector<EStatsConnectionRead> reads;
+    EStatsSampleCounts counts;
+    const bool ipv4Complete = collectTcp4Reads(reads, counts);
+    const bool ipv6Complete = collectTcp6Reads(reads, counts);
+    if (!verifyEStats(counts))
+    {
+        return {};
+    }
 
-    // Log diagnostics periodically (once per ~60 samples). Atomic: enumerate() may run on
-    // several threads, and this is a const member.
+    // A table that could not be read leaves its connections out of the walk: no reading this
+    // sample (see makeSocketTrafficReading()).
+    const bool complete = ipv4Complete && ipv6Complete;
+    if (!complete)
+    {
+        spdlog::debug("TCP EStats: {} table unreadable this sample; no socket reading", ipv4Complete ? "IPv6" : "IPv4");
+    }
+    const auto sampleTimeNs = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+    const std::scoped_lock lock{m_SocketTrafficMutex};
+    return makeSocketTrafficReading(reads, complete, sampleTimeNs, m_LastSocketSamples);
+}
+
+bool WindowsProcessProbe::verifyEStats(const EStatsSampleCounts& counts) const
+{
+    // Log diagnostics periodically (once per ~60 samples). Atomic: this is a const member.
     static std::atomic<std::size_t> sampleCount{0};
     if (sampleCount.fetch_add(1, std::memory_order_relaxed) % 60 == 0)
     {
@@ -1366,7 +1394,7 @@ PerPidNetworkBytes WindowsProcessProbe::collectNetworkByteCounts() const
             }
             m_HasNetworkCounters.store(false, std::memory_order_relaxed);
             m_EStatsVerified.store(true, std::memory_order_relaxed);
-            return {};
+            return false;
         case EStatsProbeResult::Undetermined:
             // Idle samples (no established connections) carry no evidence and leave the streak
             // alone; an inconclusive one (only NOT_FOUND / garbage) extends it. Try again next sample.
@@ -1377,26 +1405,24 @@ PerPidNetworkBytes WindowsProcessProbe::collectNetworkByteCounts() const
             break;
         }
     }
-
-    return perPid;
+    return true;
 }
 
-EStatsSampleCounts WindowsProcessProbe::collectTcp4ByteCounts(PerPidNetworkBytes& perPid) const
+bool WindowsProcessProbe::collectTcp4Reads(std::vector<EStatsConnectionRead>& reads, EStatsSampleCounts& counts) const
 {
-    EStatsSampleCounts counts;
     if (m_GetPerTcpConnectionEStats == nullptr)
     {
-        return counts;
+        return true;
     }
 
     const std::vector<unsigned char> buffer = readOwnerPidTcpTable(AF_INET);
     if (buffer.empty())
     {
-        return counts;
+        return false;
     }
 
     const auto* table = reinterpret_cast<const MIB_TCPTABLE_OWNER_PID*>(buffer.data());
-    counts.total = table->dwNumEntries;
+    counts.total += table->dwNumEntries;
 
     for (DWORD i = 0; i < table->dwNumEntries; ++i)
     {
@@ -1410,29 +1436,34 @@ EStatsSampleCounts WindowsProcessProbe::collectTcp4ByteCounts(PerPidNetworkBytes
         }
 
         MIB_TCPROW row = toTcpRow(ownerRow);
-        readEStatsRow(
-            row, ownerRow.dwOwningPid, ownerRow.dwState, m_SetPerTcpConnectionEStats, m_GetPerTcpConnectionEStats, perPid, counts);
+        readEStatsRow(row,
+                      estatsConnectionKey(toConnectionEndpoints(ownerRow)),
+                      ownerRow.dwOwningPid,
+                      ownerRow.dwState,
+                      m_SetPerTcpConnectionEStats,
+                      m_GetPerTcpConnectionEStats,
+                      reads,
+                      counts);
     }
 
-    return counts;
+    return true;
 }
 
-EStatsSampleCounts WindowsProcessProbe::collectTcp6ByteCounts(PerPidNetworkBytes& perPid) const
+bool WindowsProcessProbe::collectTcp6Reads(std::vector<EStatsConnectionRead>& reads, EStatsSampleCounts& counts) const
 {
-    EStatsSampleCounts counts;
     if (m_GetPerTcp6ConnectionEStats == nullptr || m_SetPerTcp6ConnectionEStats == nullptr)
     {
-        return counts;
+        return true;
     }
 
     const std::vector<unsigned char> buffer = readOwnerPidTcpTable(AF_INET6);
     if (buffer.empty())
     {
-        return counts;
+        return false;
     }
 
     const auto* table = reinterpret_cast<const MIB_TCP6TABLE_OWNER_PID*>(buffer.data());
-    counts.total = table->dwNumEntries;
+    counts.total += table->dwNumEntries;
 
     for (DWORD i = 0; i < table->dwNumEntries; ++i)
     {
@@ -1444,35 +1475,17 @@ EStatsSampleCounts WindowsProcessProbe::collectTcp6ByteCounts(PerPidNetworkBytes
         }
 
         MIB_TCP6ROW row = toTcp6Row(ownerRow);
-        readEStatsRow(
-            row, ownerRow.dwOwningPid, ownerRow.dwState, m_SetPerTcp6ConnectionEStats, m_GetPerTcp6ConnectionEStats, perPid, counts);
+        readEStatsRow(row,
+                      estatsConnectionKey(toConnectionEndpoints(ownerRow)),
+                      ownerRow.dwOwningPid,
+                      ownerRow.dwState,
+                      m_SetPerTcp6ConnectionEStats,
+                      m_GetPerTcp6ConnectionEStats,
+                      reads,
+                      counts);
     }
 
-    return counts;
-}
-
-void WindowsProcessProbe::applyNetworkCounters(std::vector<ProcessCounters>& processes) const
-{
-    if (!m_HasNetworkCounters)
-    {
-        return;
-    }
-
-    const auto perPid = collectNetworkByteCounts();
-    if (perPid.empty())
-    {
-        return;
-    }
-
-    for (auto& proc : processes)
-    {
-        auto it = perPid.find(static_cast<uint32_t>(proc.pid));
-        if (it != perPid.end())
-        {
-            proc.netSentBytes = it->second.first;
-            proc.netReceivedBytes = it->second.second;
-        }
-    }
+    return true;
 }
 
 // NOLINTEND(misc-include-cleaner)
