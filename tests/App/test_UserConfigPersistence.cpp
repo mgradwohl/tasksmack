@@ -1516,6 +1516,56 @@ TEST_F(UserConfigSaveLoadFixture, SaveKeepsTheConfigsAccessControlList)
 }
 #endif
 
+TEST_F(UserConfigSaveLoadFixture, FailedStagingLeavesAnExistingFileAlone)
+{
+    // Every candidate staging name taken: the save fails, and the file that already had that name
+    // -- someone else's -- must not be deleted on the way out (#1222 review).
+    auto& config = UserConfig::get();
+    config.setTempNameSourceForTesting([] { return std::uint32_t{0xDEADBEEF}; });
+    const auto theirs = m_TempDir / ".tasksmack-config.deadbeef.tmp";
+    writeFile(theirs, "not TaskSmack's");
+
+    config.settings().themeId = "mocha";
+    config.save();
+
+    ASSERT_TRUE(std::filesystem::exists(theirs));
+    std::ifstream in(theirs);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(in), {}), "not TaskSmack's");
+    EXPECT_FALSE(std::filesystem::exists(config.configPath())); // nothing was saved
+}
+
+TEST_F(UserConfigSaveLoadFixture, SaveKeepsTheConfigsOwningGroup)
+{
+    // In a setgid directory a new file takes the directory's group. The replacement must keep the
+    // original config's group instead, or that group's members could read a 0640 config (#1222 review).
+    std::vector<gid_t> groups(static_cast<std::size_t>(::getgroups(0, nullptr)));
+    groups.resize(static_cast<std::size_t>(::getgroups(static_cast<int>(groups.size()), groups.data())));
+    std::erase(groups, ::getegid());
+    if (groups.size() < 2)
+    {
+        GTEST_SKIP() << "needs membership of two supplementary groups";
+    }
+    const gid_t directoryGroup = groups[0];
+    const gid_t configGroup = groups[1];
+    ASSERT_EQ(::chown(m_TempDir.c_str(), static_cast<uid_t>(-1), directoryGroup), 0);
+    ASSERT_EQ(::chmod(m_TempDir.c_str(), 02770), 0); // setgid: new files take directoryGroup
+
+    auto& config = UserConfig::get();
+    config.save();
+    const auto path = config.configPath();
+    ASSERT_EQ(::chown(path.c_str(), static_cast<uid_t>(-1), configGroup), 0);
+    ASSERT_EQ(::chmod(path.c_str(), 0640), 0);
+
+    config.settings().themeId = "mocha";
+    config.save();
+
+    struct stat saved = {};
+    ASSERT_EQ(::stat(path.c_str(), &saved), 0);
+    EXPECT_EQ(saved.st_gid, configGroup) << "the replacement took the directory's group";
+    EXPECT_EQ(saved.st_mode & 0777, 0640U);
+    EXPECT_EQ(parsed(path)["theme"]["id"].value<std::string>(), "mocha");
+}
+
 TEST_F(UserConfigSaveLoadFixture, UnreadableConfigDirectoryFallsBackToDefaults)
 {
     if (::geteuid() == 0)

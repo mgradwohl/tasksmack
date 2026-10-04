@@ -512,14 +512,25 @@ constexpr const char* POSIX_ACL_ACCESS_XATTR = "system.posix_acl_access";
 }
 #endif
 
-/// Writes all of `contents` to `fd`, retrying short writes and EINTR, then -- if @p mode is set --
-/// applies it with fchmod() on the same descriptor, after @p accessAcl if set (a raw POSIX access
+/// Writes all of `contents` to `fd`, retrying short writes and EINTR, then sets @p owner (fchown),
+/// @p accessAcl and @p mode (fchmod) where given, all on the same descriptor -- after @p accessAcl if set (a raw POSIX access
 /// ACL to install, or empty to remove an inherited one), then closes it. False if any write, the fchmod
 /// or the close failed; the descriptor is closed either way. fchmod on the descriptor, not chmod on
 /// the path: the path could have been replaced by a symlink to another of the user's files, whose
 /// mode chmod would then change (#1222 review).
-[[nodiscard]] bool
-writeAllAndClose(int fd, std::string_view contents, std::optional<mode_t> mode, const std::optional<std::vector<char>>& accessAcl)
+/// The original config's owner, so the replacement keeps it: in a setgid directory the staging file
+/// would otherwise take the directory's group, whose members could then read it (#1222 review).
+struct FileOwner
+{
+    uid_t uid;
+    gid_t gid;
+};
+
+[[nodiscard]] bool writeAllAndClose(int fd,
+                                    std::string_view contents,
+                                    std::optional<FileOwner> owner,
+                                    std::optional<mode_t> mode,
+                                    const std::optional<std::vector<char>>& accessAcl)
 {
     bool ok = true;
     while (ok && !contents.empty())
@@ -531,6 +542,11 @@ writeAllAndClose(int fd, std::string_view contents, std::optional<mode_t> mode, 
             continue;
         }
         contents.remove_prefix(static_cast<std::size_t>(n));
+    }
+    // Owner first: changing it can clear mode bits, and the ACL's owning-group entry refers to it.
+    if (ok && owner.has_value() && ::fchown(fd, owner->uid, owner->gid) != 0)
+    {
+        ok = false;
     }
 #if defined(__linux__) && __has_include(<sys/xattr.h>)
     // The original's access ACL, or none if it had none -- a new file in a directory with a default
@@ -732,41 +748,44 @@ void UserConfig::save()
     const std::string contents = std::move(text).str();
 
     std::filesystem::path tempPath;
-    // Removes the staging file on any way out of save() -- an early return or an exception -- until
-    // the rename has published it.
+    // Removes the staging file on any way out of save() -- an early return or an exception -- but
+    // only once this save has created it (a candidate name that already existed is someone else's),
+    // and not after the rename has published it.
     class StagingFileGuard
     {
       public:
-        explicit StagingFileGuard(const std::filesystem::path& path) : m_Path(path)
-        {}
+        StagingFileGuard() = default;
         StagingFileGuard(const StagingFileGuard&) = delete;
         StagingFileGuard& operator=(const StagingFileGuard&) = delete;
         StagingFileGuard(StagingFileGuard&&) = delete;
         StagingFileGuard& operator=(StagingFileGuard&&) = delete;
         ~StagingFileGuard()
         {
-            if (!m_Published && !m_Path.empty())
+            if (!m_Path.empty())
             {
                 std::error_code removeError;
                 std::filesystem::remove(m_Path, removeError);
             }
         }
+        void created(const std::filesystem::path& path)
+        {
+            m_Path = path;
+        }
         void published() noexcept
         {
-            m_Published = true;
+            m_Path.clear();
         }
 
       private:
-        const std::filesystem::path& m_Path;
-        bool m_Published = false;
+        std::filesystem::path m_Path;
     };
-    StagingFileGuard stagingGuard(tempPath);
+    StagingFileGuard stagingGuard;
     std::random_device random;
     const auto nextTempPath = [&]
     {
         // A short name of its own in the same directory, not "<name>.<hex>.tmp": a target whose own
         // name is near the filesystem's 255-byte limit would leave no room for a suffix (#1222 review).
-        return destination.parent_path() / std::format(".tasksmack-config.{:08x}.tmp", random());
+        return destination.parent_path() / std::format(".tasksmack-config.{:08x}.tmp", m_TempNameSource ? m_TempNameSource() : random());
     };
 #ifndef _WIN32
     // Created exclusively (O_EXCL) and owner-only from the start, and written through that same
@@ -776,6 +795,18 @@ void UserConfig::save()
     // review). The original's mode is restored only after writing, just before the rename.
     // The original's mode (a 0600 config stays 0600, a 0644 one stays 0644), applied only once the
     // file is complete, on the open descriptor.
+    std::optional<FileOwner> owner;
+    if (fileExists)
+    {
+        struct stat original = {};
+        if (::stat(destination.c_str(), &original) != 0)
+        {
+            spdlog::error(
+                "Not saving settings: can't read the owner of {}: {}", m_ConfigPath.string(), std::system_category().message(errno));
+            return;
+        }
+        owner = FileOwner{.uid = original.st_uid, .gid = original.st_gid};
+    }
     const std::optional<mode_t> mode = (originalPermissions != std::filesystem::perms::unknown)
                                          ? std::optional<mode_t>(static_cast<mode_t>(originalPermissions & std::filesystem::perms::mask))
                                          : std::nullopt;
@@ -816,7 +847,8 @@ void UserConfig::save()
         spdlog::error("Failed to create a temporary file beside {}: {}", m_ConfigPath.string(), std::system_category().message(errno));
         return;
     }
-    const bool written = writeAllAndClose(fd, contents, mode, accessAcl);
+    stagingGuard.created(tempPath);
+    const bool written = writeAllAndClose(fd, contents, owner, mode, accessAcl);
 #else
     std::ofstream file;
     for (int attempt = 0; attempt < 8 && !file.is_open(); ++attempt)
@@ -837,6 +869,7 @@ void UserConfig::save()
         spdlog::error("Failed to create a temporary file beside {}", m_ConfigPath.string());
         return;
     }
+    stagingGuard.created(tempPath);
     file << contents;
     file.close();
     bool written = static_cast<bool>(file);
@@ -850,7 +883,6 @@ void UserConfig::save()
     if (!written)
     {
         spdlog::error("Not saving settings: couldn't write {} or give it the permissions of {}", tempPath.string(), m_ConfigPath.string());
-        std::filesystem::remove(tempPath, ec);
         return;
     }
 
@@ -858,7 +890,6 @@ void UserConfig::save()
     if (ec)
     {
         spdlog::error("Failed to replace {} with the new config: {}", m_ConfigPath.string(), ec.message());
-        std::filesystem::remove(tempPath, ec);
         return;
     }
 

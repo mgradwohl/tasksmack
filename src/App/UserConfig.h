@@ -4,9 +4,12 @@
 #include "Domain/SamplingConfig.h"
 #include "UI/Theme.h"
 
+#include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace App
 {
@@ -156,6 +159,14 @@ class UserConfig
         m_Settings = UserSettings{};
         m_Synced = UserSettings{};
         m_IsLoaded = false;
+        m_TempNameSource = nullptr;
+    }
+
+    /// Replaces the random number that names save()'s staging file, so a test can make every
+    /// candidate name collide. Reset by resetConfigPathForTesting().
+    void setTempNameSourceForTesting(std::function<std::uint32_t()> source)
+    {
+        m_TempNameSource = std::move(source);
     }
 
   private:
@@ -170,6 +181,7 @@ class UserConfig
     // save(), #1122). With no readable file at startup it is the settings TaskSmack started with,
     // so a file created or repaired before the first save only gets what TaskSmack changed.
     UserSettings m_Synced;
+    std::function<std::uint32_t()> m_TempNameSource; // Testing only; empty means std::random_device
 
     static auto getConfigDirectory() -> std::filesystem::path;
 };
