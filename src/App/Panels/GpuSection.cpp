@@ -225,7 +225,10 @@ void renderGpuSection(RenderContext& ctx)
         // A GPU the probe is leaving asleep is labelled so (#1117).
         const std::string headerLabel = gpuHeaderLabel(ICON_FA_MICROCHIP, gpuName, isIntegrated, snap.memoryTotalBytes, snap.suspended);
 
-        ImGui::PushID(static_cast<int>(gpuIdx)); // gpuIdx is a small index; explicit narrowing to match ImGui API
+        // Scoped by the adapter's stable id, not its position: snapshots omit a GPU that couldn't be
+        // read, so another adapter can take its index and would inherit its collapsed state. The
+        // label's ###gpuHeader suffix keeps the id fixed as the label changes ("(Sleeping)", VRAM).
+        ImGui::PushID(snap.gpuId.c_str());
         const bool expanded = ImGui::CollapsingHeader(headerLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
         ImGui::PopID();
 
