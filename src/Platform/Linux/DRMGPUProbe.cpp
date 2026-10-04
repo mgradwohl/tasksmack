@@ -380,8 +380,13 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
         GPUCounters counter{};
         counter.gpuId = card.gpuId;
 
-        // Read temperature from hwmon (if available)
-        if (!card.hwmonPath.empty())
+        // Read temperature from hwmon (if available). capabilities() advertises temperature for
+        // every card, so a card without hwmon has an unread temperature, not 0 °C (#1111).
+        if (card.hwmonPath.empty())
+        {
+            counter.temperatureAvailable = false;
+        }
+        else
         {
             // Intel GPUs typically expose temp1_input (in millidegrees Celsius)
             const std::string tempPath = card.hwmonPath + "/temp1_input";

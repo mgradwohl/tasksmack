@@ -549,9 +549,10 @@ TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_NoSysfsFiles_ReturnsZeros)
     EXPECT_EQ(counters[0].gpuClockMHz, 0U);
     EXPECT_EQ(counters[0].memoryUsedBytes, 0ULL);
     EXPECT_EQ(counters[0].memoryTotalBytes, 0ULL);
-    // No clock file: unread, so the history has a gap rather than a real-looking 0 (#1111). With no
-    // hwmon there is no temperature sensor at all; capabilities hide it, so it isn't marked unread.
+    // No clock file and no hwmon: both unread, so the history has gaps rather than a real-looking 0
+    // (capabilities() advertises temperature for every card) (#1111).
     EXPECT_FALSE(counters[0].gpuClockAvailable);
+    EXPECT_FALSE(counters[0].temperatureAvailable);
 }
 
 TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_HwmonTemperature_IsRead)

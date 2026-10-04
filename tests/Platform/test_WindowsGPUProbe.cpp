@@ -461,6 +461,25 @@ TEST(MergeNVMLIntoDXGICountersTest, MemoryIdsListOnlyGPUsWhoseNVMLMemoryReadSucc
     EXPECT_FALSE(dxgi[1].memoryAvailable);
 }
 
+TEST(AssignPDHMemoryToDXGICountersTest, AnUnreadSegmentLeavesTheCounterUnavailable)
+{
+    // #1111: PDH read only the shared segment of a discrete GPU (the dedicated array failed), so its
+    // entry exists with dedicatedBytes 0. That is not a reading: the counter stays unread.
+    std::vector<GPUCounters> dxgi(1);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[0].memoryAvailable = false;
+    const std::unordered_map<std::string, AdapterMemoryUsage> memory = {
+        {"GPU_0x0_0x1", {.dedicatedBytes = 0, .sharedBytes = 200}},
+    };
+    const std::unordered_map<std::string, std::string> idToLuid = {{"GPU0", "GPU_0x0_0x1"}};
+    const std::unordered_map<std::string, bool> integrated = {{"GPU0", false}};
+
+    assignPDHMemoryToDXGICounters(dxgi, memory, idToLuid, integrated, {});
+
+    EXPECT_FALSE(dxgi[0].memoryAvailable);
+    EXPECT_EQ(dxgi[0].memoryUsedBytes, 0U);
+}
+
 TEST(AssignPDHMemoryToDXGICountersTest, PDHReadingRestoresAvailabilityAfterAFailedNVMLRead)
 {
     // #1111: a GPU whose NVML memory read failed is marked unread by the merge; PDH's reading is
