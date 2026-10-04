@@ -1640,7 +1640,8 @@ inline void renderHistoryWithNowBars(const char* tableId,
                                      bool barsOnly = false,
                                      size_t minBarColumns = 0,
                                      bool compactSpacing = false,
-                                     NowBarValues values = NowBarValues::Strip)
+                                     NowBarValues values = NowBarValues::Strip,
+                                     std::span<const ValueStripEntry> stripExtras = {})
 {
     // Renders a history plot side-by-side with a compact "now" bar column. When barsOnly is true we
     // skip the ImPlot area and show only the bars (used when history is unavailable). The table layout
@@ -1655,7 +1656,9 @@ inline void renderHistoryWithNowBars(const char* tableId,
 
     if (values == NowBarValues::Strip)
     {
-        renderNowBarValueStrip(bars);
+        // stripExtras: series the chart draws without a bar (a peak line), so the strip lists every
+        // series its tooltip does.
+        renderNowBarValueStrip(bars, stripExtras);
     }
 
     if (barsOnly)
@@ -1773,10 +1776,18 @@ inline void renderHistoryWithNowBars(const char* tableId,
                                      bool barsOnly = false,
                                      size_t minBarColumns = 0,
                                      bool compactSpacing = false,
-                                     NowBarValues values = NowBarValues::Strip)
+                                     NowBarValues values = NowBarValues::Strip,
+                                     std::span<const ValueStripEntry> stripExtras = {})
 {
-    renderHistoryWithNowBars(
-        tableId, plotHeight, plotFn, std::span<const NowBar>(bars.begin(), bars.size()), barsOnly, minBarColumns, compactSpacing, values);
+    renderHistoryWithNowBars(tableId,
+                             plotHeight,
+                             plotFn,
+                             std::span<const NowBar>(bars.begin(), bars.size()),
+                             barsOnly,
+                             minBarColumns,
+                             compactSpacing,
+                             values,
+                             stripExtras);
 }
 
 } // namespace UI::Widgets

@@ -1123,8 +1123,24 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
 
             ImGui::Spacing();
             ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MEMORY "  Memory (%zu samples)", alignedCount);
-            renderHistoryWithNowBars(
-                "ProcessMemoryOverviewLayout", fill.plotHeight(), memoryPlot, memoryBars, false, PROCESS_NOW_BAR_COLUMNS);
+            // Peak Used is a line with a tooltip row but no bar; list it in the value strip too (#1193).
+            const std::array peakEntry{UI::Widgets::ValueStripEntry{
+                .label = MEM_PEAK_LABEL,
+                .value = UI::Format::percentCompact(m_PeakMemoryPercent),
+                .color = theme.scheme().chartPeakLine,
+            }};
+            const std::span<const UI::Widgets::ValueStripEntry> stripExtras = (m_PeakMemoryPercent > 0.0)
+                                                                                ? std::span<const UI::Widgets::ValueStripEntry>(peakEntry)
+                                                                                : std::span<const UI::Widgets::ValueStripEntry>{};
+            renderHistoryWithNowBars("ProcessMemoryOverviewLayout",
+                                     fill.plotHeight(),
+                                     memoryPlot,
+                                     memoryBars,
+                                     false,
+                                     PROCESS_NOW_BAR_COLUMNS,
+                                     false,
+                                     UI::Widgets::NowBarValues::Strip,
+                                     stripExtras);
             fill.addPlot();
             ImGui::Spacing();
         }
