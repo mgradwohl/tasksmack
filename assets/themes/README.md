@@ -155,8 +155,17 @@ active = "#00838F"
 
 ```toml
 [priority]
-badge_text_color = "#FFFFFF"  # Text color drawn on priority indicator badges
+badge_text_color = "#FFFFFF"  # Preferred text color on priority indicator badges
 ```
+
+`badge_text_color` is the *preferred* badge text, not a fixed one. The badge's fill moves along the
+`high` / `normal` / `low` gradient with the nice value, so for each fill TaskSmack draws:
+
+1. `badge_text_color`, when it has at least 4.5:1 contrast (WCAG AA) on that fill;
+2. otherwise the theme's window background (`[ui.window] background`), when that has at least 4.5:1;
+3. otherwise pure black or white, whichever contrasts more.
+
+Pick the colour you want on most of the gradient; the fallback only covers the fills it can't be read on.
 
 ### `[ui.*]` - ImGui UI Element Colors
 

@@ -2554,8 +2554,9 @@ void ProcessDetailsPanel::drawPriorityBadge(ImDrawList* drawList, const Priority
     const ImVec2 arrowRight(badgeX + ctx.metrics.badgeArrowSize, badgeMax.y);
     drawList->AddTriangleFilled(arrowLeft, arrowRight, arrowTip, badgeColorU32);
 
-    // The theme's badge text colour, or its window background when that reads clearly better on this
-    // badge's fill: a fixed colour was unreadable on the nice-0 badge in most dark themes (#1130).
+    // The theme's badge text colour when it reaches 4.5:1 on this badge's fill, else its window
+    // background when that does, else black or white (badgeTextFor): a fixed colour was unreadable on
+    // the nice-0 badge in most dark themes (#1130).
     const UI::ColorScheme& scheme = UI::Theme::get().scheme();
     const ImU32 badgeTextColorU32 = ImGui::ColorConvertFloat4ToU32(
         Detail::badgeTextFor(Detail::unpackColor(badgeColorU32), scheme.priorityBadgeTextColor, scheme.windowBg));
