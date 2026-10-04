@@ -296,6 +296,22 @@ TEST(ReniceThreadsTest, ThreadsStartedDuringThePassAreReniced)
     EXPECT_EQ(listing, 3);
 }
 
+TEST(ReniceThreadsTest, ExitedWorkersIdReusedByANewThreadIsReniced)
+{
+    // Worker 101 exits (ESRCH) and a new thread of the same process reuses 101 before the next
+    // listing: it must be reniced, not taken as already done (#1228 review).
+    int calls101 = 0;
+    const auto change = reniceThreads(
+        100,
+        [](std::int32_t) { return ThreadList{std::vector<id_t>{100, 101}}; },
+        [&calls101](id_t tid) { return (tid == 101 && ++calls101 == 1) ? ESRCH : 0; },
+        [](std::int32_t, id_t) { return true; });
+    ASSERT_TRUE(change.has_value());
+    EXPECT_EQ(calls101, 2);
+    EXPECT_EQ(change->changed, 2U);
+    EXPECT_FALSE(change->threadsKeptStarting);
+}
+
 TEST(ReniceThreadsTest, ThreadsThatNeverStopStartingAreReported)
 {
     id_t next = 100;
@@ -310,7 +326,8 @@ TEST(ReniceThreadsTest, ThreadsThatNeverStopStartingAreReported)
 
 TEST(ReniceThreadsTest, ListingFailures)
 {
-    // The first listing failing is an error; a later one is kept unless the process just exited.
+    // The first listing failing is an error; a later one is always kept, ENOENT included: the task
+    // directory also goes away when only the leader has exited (#1228 review).
     const auto denied = std::make_error_code(std::errc::permission_denied);
     const auto first = reniceThreads(
         100,
@@ -320,8 +337,7 @@ TEST(ReniceThreadsTest, ListingFailures)
     ASSERT_FALSE(first.has_value());
     EXPECT_EQ(first.error(), denied);
 
-    for (const auto& [later, kept] :
-         {std::pair{denied, true}, std::pair{std::make_error_code(std::errc::no_such_file_or_directory), false}})
+    for (const auto& [later, kept] : {std::pair{denied, true}, std::pair{std::make_error_code(std::errc::no_such_file_or_directory), true}})
     {
         int listing = 0;
         const auto change = reniceThreads(

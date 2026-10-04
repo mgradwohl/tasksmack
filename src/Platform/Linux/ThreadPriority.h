@@ -24,7 +24,7 @@ struct PriorityChange
     std::size_t failed = 0;
     int firstError = 0;
     bool threadsKeptStarting = false; // new threads were still appearing after the last pass
-    std::error_code relistError;      // a later listing failed for a reason other than the process exiting
+    std::error_code relistError;      // a listing after the first failed (for any reason)
     std::size_t unconfirmed = 0;      // worker threads that left the process around the call (TID maybe reused)
 };
 
@@ -33,10 +33,12 @@ struct PriorityChange
 /// `isThreadOf(pid, tid)` -- injectable so the bookkeeping can be tested deterministically.
 ///
 /// A thread can start another between the listing and its own renice; the new one inherits the old
-/// nice and isn't in that listing. So the threads are listed again after each pass until a pass finds none it hasn't already set, giving up
-/// after a bounded number of passes (#1228 review). A thread that exits meanwhile (ESRCH) is neither a change nor a failure -- except the
-/// main thread, whose exit means the process's. Only the first listing's failure is an error; a later one means the process has gone, which
-/// the caller's pidfd check reports.
+/// nice and isn't in that listing. So the threads are listed again after each pass until a pass
+/// finds none it hasn't already set, giving up after a bounded number of passes (#1228 review).
+/// A worker that exits meanwhile (ESRCH) is neither a change nor a failure, and its ID is forgotten
+/// in case a new thread reuses it; the main thread's exit is a failure. The first listing's failure
+/// is an error; a later one is returned in relistError for the caller to report after its pidfd
+/// check.
 template<typename ListThreads, typename SetNice, typename IsThreadOf>
 [[nodiscard]] std::expected<PriorityChange, std::error_code>
 reniceThreads(std::int32_t pid, ListThreads listThreads, SetNice setNice, IsThreadOf isThreadOf)
@@ -53,12 +55,11 @@ reniceThreads(std::int32_t pid, ListThreads listThreads, SetNice setNice, IsThre
             {
                 return std::unexpected(tids.error());
             }
-            // The process exiting meanwhile is for the caller's pidfd check to report; any other
-            // failure leaves threads started since the last listing unchecked (#1228 review).
-            if (tids.error() != std::errc::no_such_file_or_directory && tids.error() != std::errc::no_such_process)
-            {
-                change.relistError = tids.error();
-            }
+            // Kept whatever it is: even ENOENT/ESRCH doesn't prove the process exited --
+            // /proc/<pid>/task goes away when the leader calls pthread_exit while other threads
+            // run on. The caller's pidfd check reports a real exit first; a live process with an
+            // incomplete relist is reported as such (#1228 review).
+            change.relistError = tids.error();
             return change;
         }
         bool foundNew = false;
@@ -83,6 +84,9 @@ reniceThreads(std::int32_t pid, ListThreads listThreads, SetNice setNice, IsThre
             }
             if (err == ESRCH && std::cmp_not_equal(tid, pid))
             {
+                // Exited: forget the ID, so if a new thread of this process reuses it before the
+                // next listing it is reniced rather than taken as already done (#1228 review).
+                seen.erase(tid);
                 continue;
             }
             ++change.failed;
