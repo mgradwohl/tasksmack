@@ -898,6 +898,17 @@ namespace
 }
 } // namespace
 
+TEST(ChartWidgetsTest, FiniteRunsAcceptAMutableCallback)
+{
+    // A stateful callback with a non-const operator() must still bind (#1224 review).
+    const std::vector<float> values{1.0F, std::numeric_limits<float>::quiet_NaN(), 2.0F};
+    int runCount = 0;
+    UI::Widgets::forEachFiniteRun(values.data(),
+                                  static_cast<int>(values.size()),
+                                  [count = 0, &runCount](int /*start*/, int /*length*/) mutable { runCount = ++count; });
+    EXPECT_EQ(runCount, 2);
+}
+
 TEST(ChartWidgetsTest, FiniteRunsOfAnUnbrokenSeriesIsOneRun)
 {
     EXPECT_EQ(finiteRuns({1.0F, 2.0F, 3.0F}), (std::vector<std::pair<int, int>>{{0, 3}}));
