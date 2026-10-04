@@ -1245,6 +1245,37 @@ TEST(ProcessModelTest, PowerUsageCalculationFromEnergyDelta)
     EXPECT_DOUBLE_EQ(snaps[0].powerWatts, 1.0);
 }
 
+// #1093: a probe that reports a package energy counter (Linux RAPL) has it shared out per interval
+// by each process's CPU time in that interval, under ProcessModel's sampling lock.
+TEST(ProcessModelTest, PackageEnergyIsSharedByIntervalCpuTime)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withProcess(1, "busy").withCpuTime(1, 100, 0);
+    rawProbe->withProcess(2, "idle_daemon").withCpuTime(2, 1'000'000, 0); // lots of lifetime CPU
+    rawProbe->setTotalCpuTime(10'000);
+    rawProbe->setPackageEnergy(Platform::PackageEnergyReading{.energyUj = 5'000'000, .maxRangeUj = 0, .busyCpuTicks = std::nullopt});
+
+    Domain::ProcessModel::Clock::time_point now{};
+    Domain::ProcessModel model(std::move(probe), [&now] { return now; });
+    model.refresh();
+
+    // One second later: the busy process used all the CPU, and the package used 2 J.
+    now += std::chrono::seconds(1);
+    rawProbe->withCpuTime(1, 200, 0);
+    rawProbe->setTotalCpuTime(10'100);
+    rawProbe->setPackageEnergy(Platform::PackageEnergyReading{.energyUj = 7'000'000, .maxRangeUj = 0, .busyCpuTicks = std::nullopt});
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    const auto busy = std::ranges::find_if(snaps, [](const Domain::ProcessSnapshot& s) { return s.pid == 1; });
+    const auto idle = std::ranges::find_if(snaps, [](const Domain::ProcessSnapshot& s) { return s.pid == 2; });
+    ASSERT_NE(busy, snaps.end());
+    ASSERT_NE(idle, snaps.end());
+    EXPECT_DOUBLE_EQ(busy->powerWatts, 2.0);
+    EXPECT_DOUBLE_EQ(idle->powerWatts, 0.0);
+}
+
 TEST(ProcessModelTest, PowerUsageWithZeroEnergyDelta)
 {
     auto probe = std::make_unique<MockProcessProbe>();
