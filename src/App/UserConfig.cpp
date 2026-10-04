@@ -47,6 +47,8 @@
 
 #include <fcntl.h>
 #include <pwd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 #endif
 
@@ -473,9 +475,12 @@ auto UserConfig::getConfigDirectory() -> std::filesystem::path
 namespace
 {
 
-/// Writes all of `contents` to `fd`, retrying short writes and EINTR, then closes it. False if any
-/// write or the close failed; the descriptor is closed either way.
-[[nodiscard]] bool writeAllAndClose(int fd, std::string_view contents)
+/// Writes all of `contents` to `fd`, retrying short writes and EINTR, then -- if @p mode is set --
+/// applies it with fchmod() on the same descriptor, then closes it. False if any write, the fchmod
+/// or the close failed; the descriptor is closed either way. fchmod on the descriptor, not chmod on
+/// the path: the path could have been replaced by a symlink to another of the user's files, whose
+/// mode chmod would then change (#1222 review).
+[[nodiscard]] bool writeAllAndClose(int fd, std::string_view contents, std::optional<mode_t> mode)
 {
     bool ok = true;
     while (ok && !contents.empty())
@@ -487,6 +492,10 @@ namespace
             continue;
         }
         contents.remove_prefix(static_cast<std::size_t>(n));
+    }
+    if (ok && mode.has_value() && ::fchmod(fd, *mode) != 0)
+    {
+        ok = false;
     }
     if (::close(fd) != 0)
     {
@@ -694,7 +703,12 @@ void UserConfig::save()
         spdlog::error("Failed to create a temporary file beside {}: {}", m_ConfigPath.string(), std::system_category().message(errno));
         return;
     }
-    const bool written = writeAllAndClose(fd, contents);
+    // The original's mode (a 0600 config stays 0600, a 0644 one stays 0644), applied only once the
+    // file is complete, on the open descriptor.
+    const std::optional<mode_t> mode = (originalPermissions != std::filesystem::perms::unknown)
+                                         ? std::optional<mode_t>(static_cast<mode_t>(originalPermissions & std::filesystem::perms::mask))
+                                         : std::nullopt;
+    const bool written = writeAllAndClose(fd, contents, mode);
 #else
     std::ofstream file;
     for (int attempt = 0; attempt < 8 && !file.is_open(); ++attempt)
@@ -717,26 +731,19 @@ void UserConfig::save()
     }
     file << contents;
     file.close();
-    const bool written = static_cast<bool>(file);
+    bool written = static_cast<bool>(file);
+    if (written && originalPermissions != std::filesystem::perms::unknown)
+    {
+        // Windows' permission bits are only the read-only attribute; ACLs aren't copied.
+        std::filesystem::permissions(tempPath, originalPermissions, ec);
+        written = !ec;
+    }
 #endif
     if (!written)
     {
-        spdlog::error("Failed to write {}", tempPath.string());
+        spdlog::error("Not saving settings: couldn't write {} or give it the permissions of {}", tempPath.string(), m_ConfigPath.string());
         std::filesystem::remove(tempPath, ec);
         return;
-    }
-
-    if (originalPermissions != std::filesystem::perms::unknown)
-    {
-        // Give the written file the original's mode (a 0600 config stays 0600, a 0644 one stays
-        // 0644) only now that it is complete. POSIX permission bits only: Windows ACLs aren't copied.
-        std::filesystem::permissions(tempPath, originalPermissions, ec);
-        if (ec)
-        {
-            spdlog::error("Not saving settings: can't give the new file the permissions of {}: {}", m_ConfigPath.string(), ec.message());
-            std::filesystem::remove(tempPath, ec);
-            return;
-        }
     }
 
     std::filesystem::rename(tempPath, destination, ec);
