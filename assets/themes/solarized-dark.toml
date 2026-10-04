@@ -16,8 +16,8 @@ colors = [
     "#268BD2",  # Blue
     "#859900",  # Green
     "#2AA198",  # Cyan
-    "#B58900",  # Yellow
-    "#D2511C",  # Orange
+    "#BC9B59",  # Yellow
+    "#BA6948",  # Orange
     "#6E73C6",  # Violet
     "#D93D87",  # Magenta
     "#E43A35",  # Red
@@ -25,15 +25,15 @@ colors = [
 
 [progress]
 low = "#859900"       # 0-50%   - Green (healthy)
-medium = "#B58900"    # 50-80%  - Yellow (caution)
-high = "#E43A35"      # 80-100% - Red (critical)
+medium = "#BC9B59"    # 50-80%  - Yellow (caution)
+high = "#CA574A"      # 80-100% - Red (critical)
 
 [semantic]
 text_primary = "#CEDADC"
 text_disabled = "#586E75"
 text_muted = "#869DA4"
-text_error = "#FF6959"
-text_warning = "#C09314"
+text_error = "#EE7666"
+text_warning = "#DFB458"
 text_success = "#8FA315"
 text_info = "#469FE7"
 

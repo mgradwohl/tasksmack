@@ -21,7 +21,7 @@ colors = [
     "#E95420",  # Ubuntu Orange
     "#19B6EE",  # Ubuntu Blue
     "#77DD77",  # Light Green
-    "#A65AC4",  # Purple
+    "#9A66AE",  # Purple
     "#ED7014",  # Dark Orange
     "#3584E4",  # Blue
     "#FFBE00",  # Yellow
@@ -47,7 +47,7 @@ text_disabled = "#C0C0C0"  # Brighter gray for disabled text
 text_muted = "#CCCCCC"     # Much brighter for chart axis labels
 text_error = "#FF655E"     # Light Red - error messages
 text_warning = "#FFA348"   # Light Orange - warning messages
-text_success = "#33D17A"   # Light Green - success messages
+text_success = "#51D384"   # Light Green - success messages
 text_info = "#62A0EA"      # Light Blue - informational text
 
 # =============================================================================

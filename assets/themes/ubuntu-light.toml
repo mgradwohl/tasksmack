@@ -33,9 +33,9 @@ colors = [
 # Colors for progress bars based on percentage thresholds
 # =============================================================================
 [progress]
-low = "#39A241"       # 0-50%   - Light Green (healthy)
+low = "#529F52"       # 0-50%   - Light Green (healthy)
 medium = "#CF7B00"    # 50-80%  - Orange (caution)
-high = "#F44336"      # 80-100% - Red (critical)
+high = "#DC2925"      # 80-100% - Red (critical)
 
 # =============================================================================
 # SEMANTIC TEXT COLORS
@@ -45,7 +45,7 @@ high = "#F44336"      # 80-100% - Red (critical)
 text_primary = "#111111"   # Near-black for high contrast on light bg
 text_disabled = "#6B6B6B"  # Muted gray for disabled text
 text_muted = "#686868"     # Gray - dimmed text
-text_error = "#C01C28"     # Red - error messages
+text_error = "#A72E2D"     # Red - error messages
 text_warning = "#B14900"   # Orange - warning messages
 text_success = "#007849"   # Green - success messages
 text_info = "#0067CA"      # Blue - informational text
@@ -67,13 +67,13 @@ idle = "#585858"       # Gray - idle kernel thread (I)
 # Colors for specific metric lines in graphs
 # =============================================================================
 [charts]
-cpu = "#3584E4"       # Blue - CPU usage line
+cpu = "#3B88E8"       # Blue - CPU usage line
 memory = "#26A269"    # Green - memory usage line
 io = "#C01C28"        # Red - I/O read usage line
 io_write = "#009DB1"        # Cyan - I/O write usage line
 net_tx = "#F16322"          # Ubuntu Orange (brighter) - Network transmit (sent) line
 net_rx = "#8B4CC6"          # Purple - Network receive line
-cpu_fill = "#3584E44D"       # Blue with 30% alpha - CPU fill
+cpu_fill = "#3B88E84D"       # Blue with 30% alpha - CPU fill
 memory_fill = "#26A2694D"    # Green with 30% alpha - memory fill
 io_fill = "#C01C284D"        # Red with 30% alpha - I/O read fill
 io_write_fill = "#009DB14D"   # Cyan with 30% alpha - I/O write fill

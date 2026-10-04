@@ -21,7 +21,7 @@ colors = [
     "#0A7ED8",  # Windows Blue (slightly brighter)
     "#E35C63",  # Red
     "#0F8E42",  # Green
-    "#7F7AD6",  # Purple
+    "#9089CA",  # Purple
     "#E86B05",  # Orange
     "#009FAF",  # Teal
     "#B78800",  # Gold
@@ -45,9 +45,9 @@ high = "#E74856"      # 80-100% - Red (critical)
 text_primary = "#0F0F0F"   # Near-black for strong contrast on light bg
 text_disabled = "#666666"  # Muted gray for disabled text
 text_muted = "#6A6A6A"     # Gray - dimmed text
-text_error = "#C50F1F"     # Red - error messages
+text_error = "#950E16"     # Red - error messages
 text_warning = "#BA4300"   # Orange - warning messages
-text_success = "#107C10"   # Green - success messages
+text_success = "#2A7A2D"   # Green - success messages
 text_info = "#006BBF"      # Blue - informational text
 
 # =============================================================================
@@ -68,13 +68,13 @@ idle = "#575757"       # Gray - idle kernel thread (I)
 # =============================================================================
 [charts]
 cpu = "#0078D4"       # Windows Blue - CPU usage line
-memory = "#107C10"    # Green - memory usage line
+memory = "#117720"    # Green - memory usage line
 io = "#E74856"        # Red - I/O read usage line
 io_write = "#8764B8"        # Purple - I/O write usage line (was Network Received's teal, #1197)
 net_tx = "#E86B05"          # Orange - Network transmit (sent) line
 net_rx = "#009FAF"          # Teal - Network receive line
 cpu_fill = "#0078D44D"       # Windows Blue with 30% alpha - CPU fill
-memory_fill = "#107C104D"    # Green with 30% alpha - memory fill
+memory_fill = "#1177204D"    # Green with 30% alpha - memory fill
 io_fill = "#E748564D"        # Red with 30% alpha - I/O read fill
 io_write_fill = "#8764B84D"   # Purple with 30% alpha - I/O write fill
 net_tx_fill = "#E86B054D"    # Orange with 30% alpha - Network TX fill

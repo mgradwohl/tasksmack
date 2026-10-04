@@ -16,15 +16,15 @@ colors = [
     "#83A598",  # Bright Blue (aqua-blue)
     "#FB4934",  # Bright Red
     "#B8BB26",  # Bright Yellow-Green
-    "#D3869B",  # Bright Purple
-    "#FABD2F",  # Bright Yellow
+    "#EE97AF",  # Bright Purple
+    "#F9C86D",  # Bright Yellow
     "#8EC07C",  # Bright Aqua
     "#FE8019",  # Bright Orange
     "#928374",  # Neutral Gray
 ]
 
 [progress]
-low = "#B8BB26"       # 0-50%   - Bright green-yellow (healthy)
+low = "#BBB868"       # 0-50%   - Bright green-yellow (healthy)
 medium = "#FABD2F"    # 50-80%  - Bright yellow (caution)
 high = "#FB4934"      # 80-100% - Bright red (critical)
 
@@ -32,8 +32,8 @@ high = "#FB4934"      # 80-100% - Bright red (critical)
 text_primary = "#EBDBB2"
 text_disabled = "#928374"
 text_muted = "#B0A18C"
-text_error = "#FF7B62"
-text_warning = "#FABD2F"
+text_error = "#F78068"
+text_warning = "#F9C86D"
 text_success = "#B8BB26"
 text_info = "#88AA9D"
 

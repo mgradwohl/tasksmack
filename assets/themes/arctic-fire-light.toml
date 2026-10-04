@@ -20,7 +20,7 @@ colors = [
     "#2E7FCB",  # Glacial Blue
     "#D96A32",  # Warm Ember
     "#3A9B68",  # Alpine Green
-    "#7C64C8",  # Aurora Purple
+    "#7867A2",  # Aurora Purple
     "#AC8500",  # Polar Gold
     "#D8638D",  # Sunlit Rose
     "#5C9A00",  # Ice Lime
@@ -32,9 +32,9 @@ colors = [
 # Colors for progress bars based on percentage thresholds
 # =============================================================================
 [progress]
-low = "#459B4D"       # 0-50%   - Green (healthy)
+low = "#4F9A53"       # 0-50%   - Green (healthy)
 medium = "#B77F00"    # 50-80%  - Amber (caution)
-high = "#E53935"      # 80-100% - Red (critical)
+high = "#D22327"      # 80-100% - Red (critical)
 
 # =============================================================================
 # SEMANTIC TEXT COLORS
@@ -45,8 +45,8 @@ text_primary = "#0F1419"   # Dark charcoal for contrast on light bg
 text_disabled = "#666666"  # Muted gray for disabled text
 text_muted = "#6A6A6A"     # Gray - dimmed/secondary text
 text_error = "#CC272A"     # Red - error messages
-text_warning = "#A85300"   # Orange - warning messages
-text_success = "#207A2A"   # Green - success messages
+text_warning = "#763300"   # Orange - warning messages
+text_success = "#1A7626"   # Green - success messages
 text_info = "#006BC3"      # Blue - informational text
 
 # =============================================================================
@@ -67,13 +67,13 @@ idle = "#575757"       # Gray - idle kernel thread (I)
 # =============================================================================
 [charts]
 cpu = "#1976D2"       # Blue - CPU usage line
-memory = "#388E3C"    # Green - memory usage line
+memory = "#338E4B"    # Green - memory usage line
 io = "#B2001A"        # Red - I/O read usage line
 io_write = "#0098AC"        # Cyan - I/O write usage line
 net_tx = "#AC8500"          # Polar Gold - Network transmit (sent) line
 net_rx = "#7C64C8"          # Aurora Purple - Network receive line
 cpu_fill = "#1976D24D"       # Blue with 30% alpha - CPU fill
-memory_fill = "#388E3C4D"    # Green with 30% alpha - memory fill
+memory_fill = "#338E4B4D"    # Green with 30% alpha - memory fill
 io_fill = "#B2001A4D"        # Red with 30% alpha - I/O read fill
 io_write_fill = "#0098AC4D"   # Cyan with 30% alpha - I/O write fill
 net_tx_fill = "#AC85004D"    # Polar Gold with 30% alpha - Network TX fill

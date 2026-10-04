@@ -20,8 +20,8 @@ colors = [
     "#397939",  # Darkest
     "#2E7D32",
     "#388E3C",
-    "#43A047",
-    "#4CAF50",
+    "#438944",
+    "#8BC093",
     "#66BB6A",
     "#81C784",
     "#A5D6A7",  # Lightest
@@ -46,8 +46,8 @@ text_primary = "#F0FFF0"   # Very bright green-white for maximum contrast
 text_disabled = "#A8D8A8"  # Brighter green-gray for disabled text
 text_muted = "#C8E8C8"     # Much brighter muted green for axis labels
 text_error = "#B9F6CA"     # Bright glow (stands out)
-text_warning = "#81C784"   # Bright green
-text_success = "#4CAF50"   # Medium green
+text_warning = "#93D295"   # Bright green
+text_success = "#3FA345"   # Medium green
 text_info = "#66BB6A"      # Light green
 
 # =============================================================================

@@ -16,8 +16,8 @@ colors = [
     "#88C0D0",  # Nord Frost 2 (cyan-blue)
     "#D2727A",  # Aurora Red
     "#A3BE8C",  # Aurora Green
-    "#B48EAD",  # Aurora Purple
-    "#EBCB8B",  # Aurora Yellow
+    "#B18FAB",  # Aurora Purple
+    "#F1CF88",  # Aurora Yellow
     "#D08770",  # Aurora Orange
     "#81A1C1",  # Nord Frost 3 (blue)
     "#6D90BC",  # Nord Frost 4 (deep blue)
@@ -25,15 +25,15 @@ colors = [
 
 [progress]
 low = "#A3BE8C"       # 0-50%   - Aurora Green (healthy)
-medium = "#EBCB8B"    # 50-80%  - Aurora Yellow (caution)
+medium = "#F1CF88"    # 50-80%  - Aurora Yellow (caution)
 high = "#D2727A"      # 80-100% - Aurora Red (critical)
 
 [semantic]
 text_primary = "#ECEFF4"
 text_disabled = "#D8DEE9"
 text_muted = "#D8DEE9"
-text_error = "#F6929A"
-text_warning = "#EBCB8B"
+text_error = "#FDB4B8"
+text_warning = "#F1CF88"
 text_success = "#A3BE8C"
 text_info = "#88C0D0"
 

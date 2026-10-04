@@ -16,15 +16,15 @@ colors = [
     "#7AA2F7",  # Blue
     "#F7768E",  # Red/Pink
     "#9ECE6A",  # Green
-    "#BB9AF7",  # Purple/Magenta
-    "#E0AF68",  # Yellow/Amber
+    "#CCB3F5",  # Purple/Magenta
+    "#C2A279",  # Yellow/Amber
     "#7DCFFF",  # Cyan
     "#FF9E64",  # Orange
     "#2AC3DE",  # Teal
 ]
 
 [progress]
-low = "#9ECE6A"       # 0-50%   - Green (healthy)
+low = "#BFDF99"       # 0-50%   - Green (healthy)
 medium = "#E0AF68"    # 50-80%  - Amber (caution)
 high = "#F7768E"      # 80-100% - Red/Pink (critical)
 
@@ -33,7 +33,7 @@ text_primary = "#C0CAF5"
 text_disabled = "#565F89"
 text_muted = "#A9B1D6"
 text_error = "#F7768E"
-text_warning = "#E0AF68"
+text_warning = "#C1934E"
 text_success = "#9ECE6A"
 text_info = "#7AA2F7"
 

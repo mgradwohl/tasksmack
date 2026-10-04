@@ -21,10 +21,10 @@ colors = [
     "#0094B1",  # Electric Cyan
     "#815CFF",  # Vivid Violet
     "#1E9D00",  # Neon Lime
-    "#DD6300",  # Hot Orange
+    "#FF315A",  # Crimson Neon
     "#E134ED",  # Magenta
     "#998800",  # Laser Yellow
-    "#FF315A",  # Crimson Neon
+    "#DD6300",  # Hot Orange
 ]
 
 # =============================================================================
@@ -44,9 +44,9 @@ high = "#E26000"      # 80-100% - Hot Orange (critical)
 text_primary = "#0D0D12"   # Dark near-black for contrast on light bg
 text_disabled = "#5E5E6A"  # Muted gray-violet for disabled text
 text_muted = "#676767"     # Gray
-text_error = "#C82227"     # Red - error messages
-text_warning = "#A35000"   # Orange - warning messages
-text_success = "#1C7727"   # Green - success messages
+text_error = "#A00517"     # Red - error messages
+text_warning = "#A94B0E"   # Orange - warning messages
+text_success = "#2E7539"   # Green - success messages
 text_info = "#0068BE"      # Blue - informational text
 
 # =============================================================================

@@ -19,8 +19,8 @@ version = "1.0"
 colors = [
     "#FF4081",  # Neon Pink
     "#00E5FF",  # Electric Blue
-    "#7C4DFF",  # Violet
     "#76FF03",  # Neon Green
+    "#7C4DFF",  # Violet
     "#FF6D00",  # Hot Orange
     "#E040FB",  # Magenta
     "#FFEA00",  # Yellow
@@ -46,7 +46,7 @@ text_disabled = "#C8C5DD"  # Brighter lavender-gray for disabled text
 text_muted = "#D0D0E0"     # Much brighter for chart axis labels
 text_error = "#FF1744"     # Red - error messages
 text_warning = "#FFEA00"   # Yellow - warning messages
-text_success = "#76FF03"   # Neon Green - success messages
+text_success = "#6DD328"   # Neon Green - success messages
 text_info = "#00E5FF"      # Electric Blue - informational text
 
 # =============================================================================
@@ -115,8 +115,8 @@ idle_fill = "#66668033"      # Muted with 20% alpha - idle fill
 
 [priority]
 high   = "#FF1744"     # Red (accents[7])
-normal = "#76FF03"     # Neon Green (accents[3])
-low    = "#7C4DFF"     # Violet (accents[2])
+normal = "#76FF03"     # Neon Green (accents[2])
+low    = "#7C4DFF"     # Violet (accents[3])
 badge_text_color = "#FFFFFF"  # Preferred badge text; a fill it is too faint on gets the other text colour (#1130)
 
 [buttons.close]

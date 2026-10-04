@@ -16,15 +16,15 @@ colors = [
     "#076678",  # Dark Blue
     "#9D0006",  # Dark Red
     "#79740E",  # Dark Olive Green
-    "#8F3F71",  # Dark Purple
-    "#AC6E08",  # Dark Amber
+    "#933468",  # Dark Purple
+    "#99754B",  # Dark Amber
     "#427B58",  # Dark Aqua/Teal
     "#AF3A03",  # Dark Orange
     "#88796B",  # Neutral Gray
 ]
 
 [progress]
-low = "#79740E"       # 0-50%   - Dark olive green (healthy)
+low = "#756F3A"       # 0-50%   - Dark olive green (healthy)
 medium = "#AC6E08"    # 50-80%  - Dark amber (caution)
 high = "#9D0006"      # 80-100% - Dark red (critical)
 
@@ -32,8 +32,8 @@ high = "#9D0006"      # 80-100% - Dark red (critical)
 text_primary = "#3C3836"
 text_disabled = "#928374"
 text_muted = "#65594E"
-text_error = "#9D0006"
-text_warning = "#815100"
+text_error = "#7E0F09"
+text_warning = "#6C4E2F"
 text_success = "#625E00"
 text_info = "#056577"
 
