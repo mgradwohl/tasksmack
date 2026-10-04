@@ -1,6 +1,7 @@
 #include "NVMLGPUProbe.h"
 
 #include "NVMLGPUProbeMath.h"
+#include "PciRuntimePm.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/NVMLTypes.h"
 
@@ -9,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -35,8 +37,17 @@ struct NVMLGPUProbe::Impl
         nvmlDevice_t handle = nullptr;
         std::uint32_t index = 0;
         std::string id;
+        // PCI identity from nvmlDeviceGetPciInfo, when the driver exports it (#1091, #1117).
+        std::optional<PciLocation> pciLocation;
+        std::uint32_t pciDeviceId = 0;
+        // The device's sysfs directory, whose power/runtime_status says whether it is asleep
+        // (#1117). Empty when NVML can't report the PCI address: the device is then always queried.
+        std::string sysfsPath;
+        // The last memory total read while the GPU was awake, reported while it sleeps (#1117).
+        std::uint64_t lastMemoryTotalBytes = 0;
     };
     std::vector<Device> devices;
+    std::string pciDevicesRoot;
 
     // A running-process entry point and the size of the entries it writes (#1092). The entries are
     // nvmlProcessInfo_v1_t or _v2_t depending on the symbol, so the struct is opaque here: the
@@ -67,7 +78,15 @@ struct NVMLGPUProbe::Impl
     nvmlReturn_t (*nvmlDeviceGetClockInfo)(nvmlDevice_t, nvmlClockType_t, unsigned int*) = nullptr;
     nvmlReturn_t (*nvmlDeviceGetFanSpeed)(nvmlDevice_t, unsigned int*) = nullptr;
     nvmlReturn_t (*nvmlDeviceGetPcieThroughput)(nvmlDevice_t, nvmlPcieUtilCounter_t, unsigned int*) = nullptr;
+    // Optional: nvml.h maps nvmlDeviceGetPciInfo to the _v3 export; older drivers have only _v2 (same struct).
+    nvmlReturn_t (*nvmlDeviceGetPciInfo)(nvmlDevice_t, nvmlPciInfo_t*) = nullptr;
     const char* (*nvmlErrorString)(nvmlReturn_t) = nullptr;
+
+    /// Whether the device is runtime-suspended now, so must not be queried (#1117).
+    [[nodiscard]] static bool asleep(const Device& device)
+    {
+        return PciRuntimePm::isRuntimeSuspended(device.sysfsPath);
+    }
 
     bool loadNVML();
     [[nodiscard]] RunningProcessesQuery loadRunningProcessesQuery(const std::string& baseName) const;
@@ -137,6 +156,13 @@ bool NVMLGPUProbe::Impl::loadNVML()
     // optional so a minimal/older NVML build missing it doesn't block loading the rest of
     // the counters.
     LOAD_NVML_FUNC_OPTIONAL(nvmlDeviceGetPcieThroughput);
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast) - dlsym returns void* by POSIX definition
+    nvmlDeviceGetPciInfo = reinterpret_cast<decltype(nvmlDeviceGetPciInfo)>(dlsym(nvmlHandle, "nvmlDeviceGetPciInfo_v3"));
+    if (nvmlDeviceGetPciInfo == nullptr)
+    {
+        nvmlDeviceGetPciInfo = reinterpret_cast<decltype(nvmlDeviceGetPciInfo)>(dlsym(nvmlHandle, "nvmlDeviceGetPciInfo_v2"));
+    }
+    // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
     computeProcesses = loadRunningProcessesQuery("nvmlDeviceGetComputeRunningProcesses");
     graphicsProcesses = loadRunningProcessesQuery("nvmlDeviceGetGraphicsRunningProcesses");
     if (computeProcesses.fn == nullptr || graphicsProcesses.fn == nullptr)
@@ -187,7 +213,20 @@ bool NVMLGPUProbe::Impl::loadNVML()
         char uuid[NVML_DEVICE_UUID_BUFFER_SIZE]{};
         std::string id =
             (nvmlDeviceGetUUID(handle, uuid, sizeof(uuid)) == NVML_SUCCESS) ? std::string(uuid) : "nvidia-" + std::to_string(i);
-        devices.push_back({.handle = handle, .index = i, .id = std::move(id)});
+        Device device;
+        device.handle = handle;
+        device.index = i;
+        device.id = std::move(id);
+
+        // PCI identity, read once: it says where the device's power/runtime_status is (#1117).
+        nvmlPciInfo_t pci{};
+        if (nvmlDeviceGetPciInfo != nullptr && nvmlDeviceGetPciInfo(handle, &pci) == NVML_SUCCESS)
+        {
+            device.pciLocation = PciLocation{.bus = pci.bus, .device = pci.device};
+            device.pciDeviceId = pci.pciDeviceId;
+            device.sysfsPath = pciDevicesRoot + "/" + NVMLGPUProbeMath::sysfsPciAddress(pci);
+        }
+        devices.push_back(std::move(device));
     }
 
     initialized = true;
@@ -233,8 +272,9 @@ std::string NVMLGPUProbe::Impl::getNVMLError(nvmlReturn_t result) const
 }
 
 // Constructor
-NVMLGPUProbe::NVMLGPUProbe() : m_Impl(std::make_unique<Impl>())
+NVMLGPUProbe::NVMLGPUProbe(std::string pciDevicesRoot) : m_Impl(std::make_unique<Impl>())
 {
+    m_Impl->pciDevicesRoot = std::move(pciDevicesRoot);
     m_Impl->loadNVML();
 }
 
@@ -281,6 +321,23 @@ std::vector<GPUInfo> NVMLGPUProbe::enumerateGPUs()
         }
 
         info.id = dev.id;
+        info.pciLocation = dev.pciLocation;
+        info.pciDeviceId = dev.pciDeviceId;
+
+        // Which sensors this device actually reports: capabilities() covers NVML as a whole, but a
+        // passively cooled card has no fan reading and a laptop GPU may not report power, as on
+        // Windows (#1040, #1112). A read that fails now is treated as unsupported for this device.
+        // A sleeping GPU isn't woken to find out (#1117): the probe's capabilities apply to it.
+        if (!Impl::asleep(dev))
+        {
+            unsigned int probeValue = 0;
+            GPUCapabilities sensors = capabilities();
+            sensors.hasTemperature = m_Impl->nvmlDeviceGetTemperature(device, NVML_TEMPERATURE_GPU, &probeValue) == NVML_SUCCESS;
+            sensors.hasPowerMetrics = m_Impl->nvmlDeviceGetPowerUsage(device, &probeValue) == NVML_SUCCESS;
+            sensors.hasClockSpeeds = m_Impl->nvmlDeviceGetClockInfo(device, NVML_CLOCK_GRAPHICS, &probeValue) == NVML_SUCCESS;
+            sensors.hasFanSpeed = m_Impl->nvmlDeviceGetFanSpeed(device, &probeValue) == NVML_SUCCESS;
+            info.sensorCapabilities = sensors;
+        }
 
         gpus.push_back(std::move(info));
     }
@@ -298,11 +355,26 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
     std::vector<GPUCounters> counters;
     counters.reserve(m_Impl->devices.size());
 
-    for (const auto& dev : m_Impl->devices)
+    for (auto& dev : m_Impl->devices)
     {
         nvmlDevice_t device = dev.handle;
         GPUCounters counter;
         counter.gpuId = dev.id;
+
+        // A runtime-suspended GPU gets no NVML query at all, which would wake it (#1117): every
+        // reading is unavailable this sample, and the memory total is the last one read awake.
+        if (Impl::asleep(dev))
+        {
+            counter.suspended = true;
+            counter.utilizationAvailable = false;
+            counter.temperatureAvailable = false;
+            counter.powerAvailable = false;
+            counter.gpuClockAvailable = false;
+            counter.memoryAvailable = false;
+            counter.memoryTotalBytes = dev.lastMemoryTotalBytes;
+            counters.push_back(std::move(counter));
+            continue;
+        }
 
         // Memory info
         nvmlMemory_t memInfo{};
@@ -311,6 +383,7 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
         {
             counter.memoryUsedBytes = memInfo.used;
             counter.memoryTotalBytes = memInfo.total;
+            dev.lastMemoryTotalBytes = memInfo.total;
             // Note: memoryUtilPercent is computed in Domain layer from raw bytes
         }
         else
@@ -425,6 +498,11 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
 
     for (const auto& dev : m_Impl->devices)
     {
+        // A sleeping GPU runs no processes, and asking would wake it (#1117).
+        if (Impl::asleep(dev))
+        {
+            continue;
+        }
         // One row per process on this device, combined from both lists (instances under MIG summed).
         for (const auto& usage : NVMLGPUProbeMath::combineRunningProcesses(runningProcesses(m_Impl->computeProcesses, dev.handle),
                                                                            runningProcesses(m_Impl->graphicsProcesses, dev.handle)))

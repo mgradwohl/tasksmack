@@ -222,13 +222,8 @@ void renderGpuSection(RenderContext& ctx)
         // GPU header with collapsible section
         // Discrete: show VRAM amount after name, label as "Discrete"
         // Integrated: no VRAM amount (shares system RAM), label as "Shared Memory"
-        std::string vramInfo;
-        if (!isIntegrated && snap.memoryTotalBytes > 0)
-        {
-            vramInfo = std::format(", {} VRAM", UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes)));
-        }
-        const std::string headerLabel =
-            std::format("{} {}{} [{}]", ICON_FA_MICROCHIP, gpuName, vramInfo, isIntegrated ? "Shared Memory" : "Discrete");
+        // A GPU the probe is leaving asleep is labelled so (#1117).
+        const std::string headerLabel = gpuHeaderLabel(ICON_FA_MICROCHIP, gpuName, isIntegrated, snap.memoryTotalBytes, snap.suspended);
 
         ImGui::PushID(static_cast<int>(gpuIdx)); // gpuIdx is a small index; explicit narrowing to match ImGui API
         const bool expanded = ImGui::CollapsingHeader(headerLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen);

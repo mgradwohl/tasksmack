@@ -4,7 +4,9 @@
 #include "Platform/IGPUProbe.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Platform
@@ -57,7 +59,17 @@ class DRMGPUProbe : public IGPUProbe
     [[nodiscard]] static std::string findHwmonPath(const std::string& devicePath);
     [[nodiscard]] static std::string getVendorName(const std::string& vendorId);
     [[nodiscard]] static uint32_t parseHexUint32(const std::string& hexStr);
-    [[nodiscard]] static bool detectIsIntegrated(const std::string& vendorId, uint32_t pciClass, uint64_t vramTotal);
+    /// Integrated vs discrete (#1113). Dedicated memory, or a 3D-controller class, means discrete;
+    /// otherwise an Intel GPU's PCI bus decides when known -- every Intel iGPU is a root-complex
+    /// integrated endpoint on bus 0 (00:02.0), while Arc/discrete cards sit behind a PCIe port on a
+    /// non-zero bus. i915 exposes no dedicated-memory file at all, so before this an Arc on i915
+    /// classified as integrated. Without a bus, the class/VRAM fallback applies as before.
+    [[nodiscard]] static bool
+    detectIsIntegrated(const std::string& vendorId, uint32_t pciClass, uint64_t vramTotal, std::optional<uint32_t> pciBus);
+    /// The bus number of a sysfs PCI address ("0000:03:00.0" -> 3), or nullopt if `address` isn't one.
+    [[nodiscard]] static std::optional<uint32_t> pciBusFromAddress(std::string_view address);
+    /// Dedicated (device-local) memory, in bytes, from whichever driver file the card has; 0 if none.
+    [[nodiscard]] static uint64_t readVramTotal(const DRMCard& card);
     [[nodiscard]] GPUInfo cardToGPUInfo(const DRMCard& card) const;
 
     bool m_Available{false};

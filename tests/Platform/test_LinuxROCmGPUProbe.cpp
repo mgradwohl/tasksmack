@@ -3,12 +3,15 @@
 #include "Platform/GpuMockLibraryTestUtils.h"
 #include "Platform/Linux/ROCmGPUProbe.h"
 #include "Platform/Linux/ROCmGPUProbeMath.h"
+#include "Platform/ScopedTempDir.h"
 
 #include <gtest/gtest.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <optional>
 
 #include <dlfcn.h>
@@ -401,6 +404,81 @@ TEST(LinuxROCmGPUProbeTest, MockLibraryReturnsExpectedCountersAndFallbacks)
     EXPECT_DOUBLE_EQ(counters[2].computeUtilPercent, 0.0);
     EXPECT_DOUBLE_EQ(counters[2].encoderUtilPercent, 0.0);
     EXPECT_DOUBLE_EQ(counters[2].decoderUtilPercent, 0.0);
+}
+
+// ROCm SMI's BDF id packs (domain << 32) | (bus << 8) | (device << 3) | function (#1117).
+TEST(ROCmGPUProbeMathTest, SysfsPciAddressUnpacksTheBdfId)
+{
+    EXPECT_EQ(ROCmGPUProbeMath::sysfsPciAddress(0x0300ULL), "0000:03:00.0");
+    EXPECT_EQ(ROCmGPUProbeMath::sysfsPciAddress(9001ULL), "0000:23:05.1"); // 0x2329
+    EXPECT_EQ(ROCmGPUProbeMath::sysfsPciAddress((1ULL << 32U) | 0xC100ULL), "0001:c1:00.0");
+}
+
+// #1112: each device's sensors, from which reads succeed at enumeration. Mock device 1 has no
+// junction sensor, no fan and an unreadable GPU clock; device 0 has all of them.
+TEST(LinuxROCmGPUProbeTest, SensorCapabilitiesArePerDevice)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    ROCmGPUProbe probe("/nonexistent/tasksmack/pci");
+    ASSERT_TRUE(probe.isAvailable());
+
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 3U);
+
+    ASSERT_TRUE(gpus[0].sensorCapabilities.has_value());
+    const auto full = gpus[0].sensorCapabilities.value_or(GPUCapabilities{});
+    EXPECT_TRUE(full.hasTemperature);
+    EXPECT_TRUE(full.hasHotspotTemp);
+    EXPECT_TRUE(full.hasPowerMetrics);
+    EXPECT_TRUE(full.hasClockSpeeds);
+    EXPECT_TRUE(full.hasFanSpeed);
+
+    ASSERT_TRUE(gpus[1].sensorCapabilities.has_value());
+    const auto partial = gpus[1].sensorCapabilities.value_or(GPUCapabilities{});
+    EXPECT_TRUE(partial.hasTemperature);
+    EXPECT_FALSE(partial.hasHotspotTemp);
+    EXPECT_TRUE(partial.hasPowerMetrics);
+    EXPECT_FALSE(partial.hasClockSpeeds);
+    EXPECT_FALSE(partial.hasFanSpeed);
+}
+
+// #1117: a runtime-suspended AMD GPU (mock device 1, PCI id 9001 = 0000:23:05.1) is left alone:
+// its readings are unavailable and it is marked asleep, while the others are read as usual.
+TEST(LinuxROCmGPUProbeTest, RuntimeSuspendedGpuIsNotRead)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const TestSupport::ScopedTempDir pciRoot("tasksmack_rocm_runtime_pm");
+    const auto statusPath = pciRoot.path / "0000:23:05.1" / "power" / "runtime_status";
+    std::filesystem::create_directories(statusPath.parent_path());
+    std::ofstream(statusPath) << "active\n";
+
+    ROCmGPUProbe probe(pciRoot.path.string());
+    ASSERT_TRUE(probe.isAvailable());
+    ASSERT_EQ(probe.readGPUCounters().size(), 3U); // awake: records the VRAM total
+
+    std::ofstream(statusPath) << "suspended\n";
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 3U);
+    EXPECT_EQ(counters[1].gpuId, "9001");
+    EXPECT_TRUE(counters[1].suspended);
+    EXPECT_FALSE(counters[1].utilizationAvailable);
+    EXPECT_FALSE(counters[1].temperatureAvailable);
+    EXPECT_FALSE(counters[1].powerAvailable);
+    EXPECT_FALSE(counters[1].memoryAvailable);
+    EXPECT_EQ(counters[1].temperatureC, 0);
+    EXPECT_EQ(counters[1].memoryTotalBytes, 8ULL * 1024ULL * 1024ULL * 1024ULL);
+    EXPECT_FALSE(counters[0].suspended);
+    EXPECT_EQ(counters[0].temperatureC, 65);
+
+    EXPECT_FALSE(probe.enumerateGPUs()[1].sensorCapabilities.has_value()); // not woken to probe
 }
 
 } // namespace

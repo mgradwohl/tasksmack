@@ -1,5 +1,6 @@
 #include "ROCmGPUProbe.h"
 
+#include "PciRuntimePm.h"
 #include "Platform/GPUTypes.h"
 #include "ROCmGPUProbeMath.h"
 
@@ -143,6 +144,18 @@ struct ROCmGPUProbe::Impl
     // Device ids resolved once at load, parallel to devices (#1162): re-deriving them on every
     // read let a transient lookup failure turn a GPU into a different "amd_N" id for one sample.
     std::vector<std::string> deviceIds;
+    // Each device's sysfs directory, parallel to devices, whose power/runtime_status says whether it
+    // is asleep (#1117); empty when ROCm SMI can't report its PCI address (it is then always read).
+    std::vector<std::string> sysfsPaths;
+    // The last VRAM total read while each device was awake, reported while it sleeps (#1117).
+    std::vector<std::uint64_t> lastMemoryTotalBytes;
+    std::string pciDevicesRoot;
+
+    /// Whether device `deviceIdx` is runtime-suspended now, so must not be queried (#1117).
+    [[nodiscard]] bool asleep(std::uint32_t deviceIdx) const
+    {
+        return deviceIdx < sysfsPaths.size() && PciRuntimePm::isRuntimeSuspended(sysfsPaths[deviceIdx]);
+    }
 
     // ROCm SMI function pointers
     rsmi_status_t (*rsmi_init)(std::uint64_t) = nullptr;
@@ -285,6 +298,16 @@ bool ROCmGPUProbe::Impl::loadROCmSMI()
         devices.push_back(i);
         deviceIds.push_back(deriveDeviceId(i));
     }
+    // PCI addresses, looked up after every id so a failing lookup here can't change an id.
+    sysfsPaths.assign(deviceCount, std::string{});
+    lastMemoryTotalBytes.assign(deviceCount, 0);
+    for (std::uint32_t i = 0; i < deviceCount; ++i)
+    {
+        if (std::uint64_t bdfId = 0; rsmi_dev_pci_id_get(i, &bdfId) == RSMI_STATUS_SUCCESS)
+        {
+            sysfsPaths[i] = pciDevicesRoot + "/" + ROCmGPUProbeMath::sysfsPciAddress(bdfId);
+        }
+    }
 
     initialized = true;
     spdlog::info("ROCmGPUProbe: Initialized successfully with {} AMD GPU(s)", deviceCount);
@@ -302,6 +325,8 @@ void ROCmGPUProbe::Impl::unloadROCmSMI()
     deviceCount = 0;
     devices.clear();
     deviceIds.clear();
+    sysfsPaths.clear();
+    lastMemoryTotalBytes.clear();
 }
 
 std::string ROCmGPUProbe::Impl::getROCmError(rsmi_status_t result) const
@@ -316,8 +341,9 @@ std::string ROCmGPUProbe::Impl::deriveDeviceId(std::uint32_t deviceIdx) const
     return ROCmGPUProbeMath::deriveDeviceId(deviceIdx, rsmi_dev_unique_id_get, rsmi_dev_pci_id_get);
 }
 
-ROCmGPUProbe::ROCmGPUProbe() : m_Impl(std::make_unique<Impl>())
+ROCmGPUProbe::ROCmGPUProbe(std::string pciDevicesRoot) : m_Impl(std::make_unique<Impl>())
 {
+    m_Impl->pciDevicesRoot = std::move(pciDevicesRoot);
     m_Impl->loadROCmSMI();
 }
 
@@ -374,6 +400,29 @@ std::vector<GPUInfo> ROCmGPUProbe::enumerateGPUs()
         // We could read from /sys/module/amdgpu/version, but keeping it simple for now
         info.driverVersion = "ROCm";
 
+        // Which sensors this device actually reports (#1112): capabilities() covers ROCm SMI as a
+        // whole, but e.g. an APU or a passively cooled card has no fan, and older parts have no
+        // junction sensor. A read that fails now is treated as unsupported for this device. A
+        // sleeping GPU isn't woken to find out (#1117): the probe's capabilities apply to it.
+        if (!m_Impl->asleep(deviceIdx))
+        {
+            GPUCapabilities sensors = capabilities();
+            std::int64_t probeTemp = 0;
+            sensors.hasTemperature =
+                m_Impl->rsmi_dev_temp_metric_get(deviceIdx, RSMI_TEMP_TYPE_EDGE, RSMI_TEMP_CURRENT, &probeTemp) == RSMI_STATUS_SUCCESS;
+            sensors.hasHotspotTemp =
+                m_Impl->rsmi_dev_temp_metric_get(deviceIdx, RSMI_TEMP_TYPE_JUNCTION, RSMI_TEMP_CURRENT, &probeTemp) == RSMI_STATUS_SUCCESS;
+            std::uint64_t probePower = 0;
+            sensors.hasPowerMetrics = m_Impl->rsmi_dev_power_ave_get(deviceIdx, 0, &probePower) == RSMI_STATUS_SUCCESS;
+            ROCmGPUProbeMath::RsmiFrequenciesBuffer probeFreq;
+            const rsmi_status_t freqResult = m_Impl->rsmi_dev_gpu_clk_freq_get(deviceIdx, RSMI_CLK_TYPE_SYS, asFrequencies(probeFreq));
+            sensors.hasClockSpeeds =
+                freqResult == RSMI_STATUS_SUCCESS && ROCmGPUProbeMath::currentFrequencyHz(probeFreq, m_Impl->frequenciesLayout).has_value();
+            std::int64_t probeFan = 0;
+            sensors.hasFanSpeed = sensors.hasFanSpeed && m_Impl->rsmi_dev_fan_speed_get(deviceIdx, 0, &probeFan) == RSMI_STATUS_SUCCESS;
+            info.sensorCapabilities = sensors;
+        }
+
         gpus.push_back(std::move(info));
     }
 
@@ -398,6 +447,21 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
         // The id cached at load (#1162), the same value enumerateGPUs() reports as GPUInfo::id, so
         // a lookup failing later can't give this sample a different id.
         counter.gpuId = m_Impl->deviceIds[deviceIdx];
+
+        // A runtime-suspended GPU gets no ROCm SMI query at all, which would wake it (#1117): every
+        // reading is unavailable this sample, and the VRAM total is the last one read awake.
+        if (m_Impl->asleep(deviceIdx))
+        {
+            counter.suspended = true;
+            counter.utilizationAvailable = false;
+            counter.temperatureAvailable = false;
+            counter.powerAvailable = false;
+            counter.gpuClockAvailable = false;
+            counter.memoryAvailable = false;
+            counter.memoryTotalBytes = m_Impl->lastMemoryTotalBytes[deviceIdx];
+            counters.push_back(std::move(counter));
+            continue;
+        }
 
         // GPU utilization (0-100%)
         std::uint32_t busyPercent = 0;
@@ -428,6 +492,7 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
         if (result == RSMI_STATUS_SUCCESS)
         {
             counter.memoryTotalBytes = memTotal;
+            m_Impl->lastMemoryTotalBytes[deviceIdx] = memTotal;
         }
         else
         {

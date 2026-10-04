@@ -1,13 +1,18 @@
 #include "DRMGPUProbe.h"
 
+#include "PciRuntimePm.h"
 #include "Platform/GPUTypes.h"
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -259,16 +264,68 @@ uint32_t DRMGPUProbe::parseHexUint32(const std::string& hexStr)
     }
 }
 
-bool DRMGPUProbe::detectIsIntegrated(const std::string& vendorId, uint32_t pciClass, uint64_t vramTotal)
+std::optional<uint32_t> DRMGPUProbe::pciBusFromAddress(std::string_view address)
+{
+    // "DDDD:BB:DD.F": a hex domain (four or more digits), then two-digit bus and device, then the function.
+    const auto firstColon = address.find(':');
+    if (firstColon == std::string_view::npos || firstColon < 4)
+    {
+        return std::nullopt;
+    }
+    const std::string_view rest = address.substr(firstColon + 1);
+    constexpr std::size_t BUS_DEVICE_FUNCTION_LENGTH = 7; // "BB:DD.F"
+    if (rest.size() != BUS_DEVICE_FUNCTION_LENGTH || rest[2] != ':' || rest[5] != '.')
+    {
+        return std::nullopt;
+    }
+    const auto isHex = [](char c)
+    {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+    };
+    if (!std::ranges::all_of(address.substr(0, firstColon), isHex) || !isHex(rest[0]) || !isHex(rest[1]) || !isHex(rest[3]) ||
+        !isHex(rest[4]))
+    {
+        return std::nullopt;
+    }
+    return parseHexUint32(std::string(rest.substr(0, 2)));
+}
+
+uint64_t DRMGPUProbe::readVramTotal(const DRMCard& card)
+{
+    // amdgpu-style mem_info_vram_total, then xe's per-tile VRAM size (xe dGPUs, kernel 6.8+). i915
+    // exposes neither, so an i915 dGPU is told apart by its PCI bus instead (detectIsIntegrated).
+    const uint64_t vramTotal = readSysfsUint64(card.devicePath + "/mem_info_vram_total");
+    if (vramTotal > 0)
+    {
+        return vramTotal;
+    }
+    return readSysfsUint64(card.devicePath + "/tile0/physical_vram_size_bytes");
+}
+
+bool DRMGPUProbe::detectIsIntegrated(const std::string& vendorId, uint32_t pciClass, uint64_t vramTotal, std::optional<uint32_t> pciBus)
 {
     const uint32_t classSubclass = (pciClass & PCI_CLASS_SUBCLASS_MASK);
     const uint32_t vendor = parseHexUint32(vendorId);
+
+    // Dedicated memory means a discrete GPU, whatever its class or bus.
+    if (vramTotal > 0)
+    {
+        return false;
+    }
 
     // 3D controller (compute-only, no display output) is always discrete.
     // Examples: NVIDIA MX/RTX laptop cards, Intel Arc in compute mode.
     if (classSubclass == PCI_CLASS_3D_CONTROLLER)
     {
         return false;
+    }
+
+    // Intel iGPUs are root-complex integrated endpoints on bus 0 (always 00:02.0); Intel discrete
+    // GPUs (DG1, Arc A/B) sit behind a PCIe switch on a non-zero bus. Unlike VRAM files, the bus is
+    // there under both i915 and xe (#1113).
+    if ((vendor == PCI_VENDOR_INTEL || vendor == 0) && pciBus.has_value())
+    {
+        return *pciBus == 0;
     }
 
     // VGA-compatible controllers have display output.
@@ -341,10 +398,8 @@ GPUInfo DRMGPUProbe::cardToGPUInfo(const DRMCard& card) const
 
     info.name = deviceName;
 
-    // Read memory info from driver-specific files.
-    // i915: /sys/class/drm/cardX/device/mem_info_vram_total (discrete only)
-    const std::string vramTotalPath = card.devicePath + "/mem_info_vram_total";
-    const uint64_t vramTotal = readSysfsUint64(vramTotalPath);
+    // Dedicated memory, if the driver reports it (see readVramTotal()).
+    const uint64_t vramTotal = readVramTotal(card);
 
     // Read PCI class from sysfs to distinguish integrated from discrete using
     // the PCI class/subclass, with VRAM presence as a secondary signal.
@@ -353,7 +408,16 @@ GPUInfo DRMGPUProbe::cardToGPUInfo(const DRMCard& card) const
     const std::string pciClassStr = readSysfsString(pciClassPath);
     const uint32_t pciClass = parseHexUint32(pciClassStr);
 
-    info.isIntegrated = detectIsIntegrated(vendorId, pciClass, vramTotal);
+    info.isIntegrated = detectIsIntegrated(vendorId, pciClass, vramTotal, pciBusFromAddress(card.gpuId));
+
+    // Which sensors this card has (#1112). The probe-wide capabilities are OR'd with NVML's and
+    // ROCm's on Linux, so without this an Intel iGPU beside an NVIDIA dGPU drew NVML's Power and Fan
+    // series stuck at 0, and a temperature line although i915 iGPUs have no hwmon at all.
+    GPUCapabilities sensors = capabilities();
+    std::error_code fsErr;
+    sensors.hasTemperature = !card.hwmonPath.empty() && Fs::exists(card.hwmonPath + "/temp1_input", fsErr);
+    sensors.hasClockSpeeds = Fs::exists(card.cardPath + "/gt_cur_freq_mhz", fsErr);
+    info.sensorCapabilities = sensors;
 
     return info;
 }
@@ -379,6 +443,20 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
     {
         GPUCounters counter{};
         counter.gpuId = card.gpuId;
+
+        // A runtime-suspended card is left alone (#1117): an i915/xe dGPU's hwmon read takes a
+        // runtime-PM reference and would wake it every sample.
+        if (PciRuntimePm::isRuntimeSuspended(card.devicePath))
+        {
+            counter.suspended = true;
+            counter.utilizationAvailable = false;
+            counter.temperatureAvailable = false;
+            counter.powerAvailable = false;
+            counter.gpuClockAvailable = false;
+            counter.memoryAvailable = false;
+            counters.push_back(counter);
+            continue;
+        }
 
         // Read temperature from hwmon (if available). capabilities() advertises temperature for
         // every card, so a card without hwmon has an unread temperature, not 0 °C (#1111).
@@ -415,20 +493,19 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
             counter.gpuClockAvailable = false;
         }
 
-        // Read memory info (used/total) if available
-        // i915 discrete: /sys/class/drm/cardX/device/mem_info_vram_used
-        const std::string vramUsedPath = card.devicePath + "/mem_info_vram_used";
-        const uint64_t vramUsed = readSysfsUint64(vramUsedPath);
-        if (vramUsed > 0)
+        // Memory used/total, where the driver reports both (mem_info_vram_used/_total). An iGPU has
+        // no dedicated memory, and i915/xe report no "used" figure in sysfs, so for them memory is
+        // not read rather than published as a real-looking 0% (#1115). The total alone (xe's VRAM
+        // size) is still passed on, so a discrete card's VRAM size is known.
+        const std::string vramUsedStr = readSysfsString(card.devicePath + "/mem_info_vram_used");
+        counter.memoryTotalBytes = readVramTotal(card);
+        if (!vramUsedStr.empty() && counter.memoryTotalBytes > 0)
         {
-            counter.memoryUsedBytes = vramUsed;
+            counter.memoryUsedBytes = readSysfsUint64(card.devicePath + "/mem_info_vram_used");
         }
-
-        const std::string vramTotalPath = card.devicePath + "/mem_info_vram_total";
-        const uint64_t vramTotal = readSysfsUint64(vramTotalPath);
-        if (vramTotal > 0)
+        else
         {
-            counter.memoryTotalBytes = vramTotal;
+            counter.memoryAvailable = false;
         }
 
         // GPU utilization: Not directly available via sysfs for Intel
