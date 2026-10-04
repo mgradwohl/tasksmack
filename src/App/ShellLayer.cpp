@@ -156,9 +156,9 @@ void ShellLayer::onUpdate(float deltaTime)
     {
         m_PendingStartupSettings = false;
         const auto& settings = UserConfig::get().settings();
-        Core::RefreshRateChangedEvent refreshEvent(settings.refreshIntervalMs);
+        Core::RefreshRateChangedEvent refreshEvent(settings.refreshIntervalMs, /*initial=*/true);
         Core::Application::get().raiseEvent(refreshEvent);
-        Core::HistoryDurationChangedEvent historyEvent(settings.maxHistorySeconds);
+        Core::HistoryDurationChangedEvent historyEvent(settings.maxHistorySeconds, /*initial=*/true);
         Core::Application::get().raiseEvent(historyEvent);
     }
 

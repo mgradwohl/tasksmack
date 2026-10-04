@@ -43,12 +43,19 @@ class ProcessSelectedEvent : public Event
 class RefreshRateChangedEvent : public Event
 {
   public:
-    explicit RefreshRateChangedEvent(int intervalMs) : m_IntervalMs(intervalMs)
+    /// @param initial True for the configured value ShellLayer delivers once at startup (#1079):
+    ///        apply it, but don't force a sample, since the models were just seeded (#1102).
+    explicit RefreshRateChangedEvent(int intervalMs, bool initial = false) : m_IntervalMs(intervalMs), m_Initial(initial)
     {}
 
     [[nodiscard]] auto getIntervalMs() const -> int
     {
         return m_IntervalMs;
+    }
+
+    [[nodiscard]] auto isInitial() const -> bool
+    {
+        return m_Initial;
     }
 
     [[nodiscard]] auto toString() const -> std::string override
@@ -60,6 +67,7 @@ class RefreshRateChangedEvent : public Event
 
   private:
     int m_IntervalMs;
+    bool m_Initial;
 };
 
 /// History duration changed event - emitted when user changes the history window (seconds)
@@ -67,8 +75,15 @@ class RefreshRateChangedEvent : public Event
 class HistoryDurationChangedEvent : public Event
 {
   public:
-    explicit HistoryDurationChangedEvent(int seconds) : m_Seconds(seconds)
+    /// @param initial True for the configured value ShellLayer delivers once at startup (#1079):
+    ///        apply it, but don't force a sample (#1102).
+    explicit HistoryDurationChangedEvent(int seconds, bool initial = false) : m_Seconds(seconds), m_Initial(initial)
     {}
+
+    [[nodiscard]] auto isInitial() const -> bool
+    {
+        return m_Initial;
+    }
 
     [[nodiscard]] auto getSeconds() const -> int
     {
@@ -84,6 +99,7 @@ class HistoryDurationChangedEvent : public Event
 
   private:
     int m_Seconds;
+    bool m_Initial;
 };
 
 /// Theme changed event - emitted when user selects a different UI theme
