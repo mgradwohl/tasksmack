@@ -116,6 +116,7 @@ class SystemMetricsPanel : public Panel
     std::vector<double> m_CpuStackYUser;
     std::vector<double> m_CpuStackYSystem;
     std::vector<double> m_CpuStackYIowait;
+    std::vector<double> m_CpuStackYBusy;  // Bottom of the I/O Wait band: the busy total, 100 - idle - iowait
     std::vector<double> m_CpuStackSystem; // raw System and I/O Wait, to choose reduced points by (#1022)
     std::vector<double> m_CpuStackIowait;
 

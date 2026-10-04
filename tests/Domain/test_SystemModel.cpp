@@ -1056,15 +1056,18 @@ TEST(SystemModelTest, RegressedIowaitDoesNotCancelIdleGrowth)
     Domain::SystemModel model(std::move(probe));
     model.refresh();
 
-    // user +1500, idle +500, iowait 1000 -> 400 (regressed): total 12400, delta 1400. idle + iowait
-    // went 9500 -> 9400, which a combined delta would clamp to 0 (100% busy).
+    // user +1500, idle +500, iowait 1000 -> 400 (regressed, counted as 0). idle + iowait went
+    // 9500 -> 9400, which a combined delta would clamp to 0 (100% busy). The denominator is the sum
+    // of the guarded per-field deltas, 2000, not total()'s 1400 in which the rollback cancelled
+    // 600 ticks of real growth.
     rawProbe->setCounters(makeSystemCounters(makeCpuCounters(2500, 0, 500, 9000, 400, 0), makeMemoryCounters(1024, 512)));
     model.refresh();
 
     const auto snap = model.snapshot();
     EXPECT_DOUBLE_EQ(snap.cpuTotal.iowaitPercent, 0.0);
-    EXPECT_DOUBLE_EQ(snap.cpuTotal.idlePercent, 100.0 * 500.0 / 1400.0);
-    EXPECT_DOUBLE_EQ(snap.cpuTotal.totalPercent, 100.0 - (100.0 * 500.0 / 1400.0));
+    EXPECT_DOUBLE_EQ(snap.cpuTotal.idlePercent, 25.0);
+    EXPECT_DOUBLE_EQ(snap.cpuTotal.userPercent, 75.0);
+    EXPECT_DOUBLE_EQ(snap.cpuTotal.totalPercent, 75.0);
 }
 
 TEST(SystemModelTest, UptimeTracked)

@@ -713,8 +713,17 @@ CpuUsage SystemModel::computeCpuUsage(const Platform::CpuCounters& current, cons
 
     // counterDelta() clamps to 0 instead of wrapping if a field regresses (a transiently stale
     // counter, a probe restarting its counts, etc.) - without it, an unsigned underflow here would
-    // silently pin the reported percentage at 100%.
-    const std::uint64_t totalDelta = Numeric::counterDelta(current.total(), previous.total());
+    // silently pin the reported percentage at 100%. The denominator is the sum of the same guarded
+    // per-field deltas (guest excluded, as in total()), so a regressed field counts as 0 in both the
+    // numerators and the denominator, rather than also cancelling other fields' growth (#1157).
+    const auto fieldDelta = [&current, &previous](std::uint64_t Platform::CpuCounters::* field)
+    {
+        return Numeric::counterDelta(current.*field, previous.*field);
+    };
+    const std::uint64_t totalDelta = fieldDelta(&Platform::CpuCounters::user) + fieldDelta(&Platform::CpuCounters::nice) +
+                                     fieldDelta(&Platform::CpuCounters::system) + fieldDelta(&Platform::CpuCounters::idle) +
+                                     fieldDelta(&Platform::CpuCounters::iowait) + fieldDelta(&Platform::CpuCounters::irq) +
+                                     fieldDelta(&Platform::CpuCounters::softirq) + fieldDelta(&Platform::CpuCounters::steal);
     if (totalDelta == 0)
     {
         return usage; // Avoid division by zero
@@ -728,7 +737,8 @@ CpuUsage SystemModel::computeCpuUsage(const Platform::CpuCounters& current, cons
         return 100.0 * (Numeric::toDouble(delta) / totalDeltaDouble);
     };
 
-    usage.userPercent = percent(current.user + current.nice, previous.user + previous.nice);
+    usage.userPercent =
+        100.0 * (Numeric::toDouble(fieldDelta(&Platform::CpuCounters::user) + fieldDelta(&Platform::CpuCounters::nice)) / totalDeltaDouble);
     usage.systemPercent = percent(current.system, previous.system);
     usage.idlePercent = percent(current.idle, previous.idle);
     usage.iowaitPercent = percent(current.iowait, previous.iowait);
