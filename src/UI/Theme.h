@@ -326,13 +326,19 @@ class Theme
 
     // ============ Font Size Management ============
 
-    /// Record the display scale from SDL_GetWindowDisplayScale(), 1.0 at 96 DPI.
+    /// Record the UI scale in window units (SDL display scale over pixel density, UI::windowUnitScale),
+    /// 1.0 at 96 DPI.
     ///
-    /// Feeds the ImGuiStyle scale factor so chrome tracks display density as well as font size
-    /// (#936). The fonts are baked at the same density, so the two must change together: UILayer
+    /// Feeds the ImGuiStyle scale factor so chrome tracks the UI scale as well as font size (#936).
+    /// Font *sizes* are computed in the same window units, so the two must change together: UILayer
     /// re-measures the scale when SDL reports a display-scale change, rebuilds the fonts at the new
-    /// density and then calls this, so text and chrome rescale at the same frame boundary (#943).
+    /// scale and then calls this, so text and chrome rescale at the same frame boundary (#943).
     /// Re-scaling the style alone would grow the chrome while the text stayed put.
+    ///
+    /// Raster density is not part of this scale: ImGui rasterises at the window's pixel density
+    /// itself (DisplayFramebufferScale). On native Wayland the display scale and the density change
+    /// together, so this ratio -- and with it the fonts and style -- stays put, and no rebuild is
+    /// needed; ImGui alone picks up the new density (#1096).
     ///
     /// Queues the rebuild rather than performing it, like setTheme() -- see
     /// applyPendingStyleChanges(), which flushes it at the next frame boundary.
