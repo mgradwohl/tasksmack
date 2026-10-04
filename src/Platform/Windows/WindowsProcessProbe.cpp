@@ -29,11 +29,11 @@
 
 #include "WinString.h"
 #include "WindowsProcAddress.h"
+#include "WindowsTcpRows.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <bit>
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
@@ -1272,56 +1272,33 @@ static_assert(TCP_STATE_ESTABLISHED == static_cast<std::uint32_t>(MIB_TCP_STATE_
     return buffer;
 }
 
+// The pure EStats tallies (WindowsProcessProbeMath.h) spell these out to stay <windows.h>-free.
+static_assert(ESTATS_NO_ERROR == NO_ERROR);
+static_assert(ESTATS_ERROR_ACCESS_DENIED == ERROR_ACCESS_DENIED);
+static_assert(ESTATS_ERROR_NOT_FOUND == ERROR_NOT_FOUND);
+
 /// Enable and read EStats for one ESTABLISHED connection, then hand the result to the shared
-/// accumulateEStatsRow() decision. RowT is MIB_TCPROW or MIB_TCP6ROW (#1100); the Set/Get
+/// recordEStatsRow() decision. RowT is MIB_TCPROW or MIB_TCP6ROW (#1100); the Set/Get
 /// function pointers are the matching IPv4 or IPv6 pair.
 template<typename RowT, typename SetFn, typename GetFn>
 void readEStatsRow(
     RowT& row, std::uint32_t pid, std::uint32_t state, SetFn setFn, GetFn getFn, PerPidNetworkBytes& perPid, EStatsSampleCounts& counts)
 {
-    ++counts.established;
-    bool accessDenied = false;
-
     // Try to enable EStats collection (requires admin, may fail)
+    std::optional<std::uint32_t> enableStatus;
     if (setFn != nullptr)
     {
         TCP_ESTATS_DATA_RW_v0 rw{};
         rw.EnableCollection = TRUE;
-        const DWORD enableStatus = setFn(&row, TcpConnectionEstatsData, reinterpret_cast<PUCHAR>(&rw), 0, sizeof(rw), 0);
-        if (enableStatus == NO_ERROR)
-        {
-            ++counts.enabled;
-        }
-        accessDenied = (enableStatus == ERROR_ACCESS_DENIED);
+        enableStatus = setFn(&row, TcpConnectionEstatsData, reinterpret_cast<PUCHAR>(&rw), 0, sizeof(rw), 0);
     }
 
     // Read the stats (may work even if enable failed, if another process enabled it)
     TCP_ESTATS_DATA_ROD_v0 rod{};
     const DWORD readStatus =
         getFn(&row, TcpConnectionEstatsData, nullptr, 0, 0, nullptr, 0, 0, reinterpret_cast<PUCHAR>(&rod), 0, sizeof(rod));
-    accessDenied = accessDenied || (readStatus == ERROR_ACCESS_DENIED);
-    if (accessDenied)
-    {
-        ++counts.accessDenied;
-    }
 
-    switch (accumulateEStatsRow(perPid, pid, state, readStatus, rod.DataBytesOut, rod.DataBytesIn))
-    {
-    case EStatsRowOutcome::Accumulated:
-        ++counts.readOk;
-        if (rod.DataBytesOut > 0 || rod.DataBytesIn > 0)
-        {
-            ++counts.hasData;
-        }
-        break;
-    case EStatsRowOutcome::Garbage:
-        ++counts.readOk;
-        ++counts.garbage; // > 1 TB: garbage/uninitialized data, connection skipped
-        break;
-    case EStatsRowOutcome::ReadFailed:
-    case EStatsRowOutcome::SkippedState:
-        break;
-    }
+    (void) recordEStatsRow(counts, perPid, pid, state, enableStatus, readStatus, rod.DataBytesOut, rod.DataBytesIn);
 }
 
 } // namespace
@@ -1346,33 +1323,40 @@ PerPidNetworkBytes WindowsProcessProbe::collectNetworkByteCounts() const
     if (sampleCount.fetch_add(1, std::memory_order_relaxed) % 60 == 0)
     {
         spdlog::debug("TCP EStats (IPv4+IPv6): {} total, {} established, {} enabled, {} read OK, {} have data, {} garbage, "
-                      "{} access denied",
+                      "{} not found, {} other read failures, {} access denied",
                       counts.total,
                       counts.established,
                       counts.enabled,
                       counts.readOk,
                       counts.hasData,
                       counts.garbage,
+                      counts.readNotFound,
+                      counts.readFailedOther,
                       counts.accessDenied);
     }
 
     // Safety net (#1161): the constructor's dummy-row probe cannot prove EStats works. Until a
     // sample with established connections has, classify each one; if it proves the counters
-    // unusable, stop claiming them instead of reporting 0 B for every process.
+    // unusable, stop claiming them instead of reporting 0 B for every process. A sample whose
+    // only failures are ERROR_NOT_FOUND (connections closed mid-walk) or garbage counters is
+    // inconclusive; only MAX_INCONCLUSIVE_ESTATS_SAMPLES of those in a row disable EStats.
     if (!m_EStatsVerified.load(std::memory_order_relaxed))
     {
-        switch (classifyEStatsProbe(counts))
+        switch (classifyEStatsProbe(counts, m_EStatsInconclusiveSamples.load(std::memory_order_relaxed)))
         {
         case EStatsProbeResult::Available:
             m_EStatsVerified.store(true, std::memory_order_relaxed);
             spdlog::debug(
-                "TCP EStats verified on a real sample ({} of {} established connections read)", counts.readOk, counts.established);
+                "TCP EStats verified on a real sample ({} of {} established connections read)", counts.saneReads, counts.established);
             break;
         case EStatsProbeResult::Unavailable:
             spdlog::warn("Per-process network counters disabled: TCP EStats failed on real connections "
-                         "({} established, {} read OK, {} access denied)",
+                         "({} established, {} sane reads, {} garbage, {} not found, {} other read failures, {} access denied)",
                          counts.established,
-                         counts.readOk,
+                         counts.saneReads,
+                         counts.garbage,
+                         counts.readNotFound,
+                         counts.readFailedOther,
                          counts.accessDenied);
             // Only reached when elevated (non-elevated never uses EStats), so capabilities() keeps
             // hasReducedPrivileges false here: the two flags still never hold together.
@@ -1384,7 +1368,13 @@ PerPidNetworkBytes WindowsProcessProbe::collectNetworkByteCounts() const
             m_EStatsVerified.store(true, std::memory_order_relaxed);
             return {};
         case EStatsProbeResult::Undetermined:
-            break; // No established connections yet: try again next sample
+            // Idle samples (no established connections) carry no evidence and leave the streak
+            // alone; an inconclusive one (only NOT_FOUND / garbage) extends it. Try again next sample.
+            if (counts.established > 0)
+            {
+                m_EStatsInconclusiveSamples.fetch_add(1, std::memory_order_relaxed);
+            }
+            break;
         }
     }
 
@@ -1419,14 +1409,7 @@ EStatsSampleCounts WindowsProcessProbe::collectTcp4ByteCounts(PerPidNetworkBytes
             continue;
         }
 
-        MIB_TCPROW row{};
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access) - Windows API requires union access
-        row.dwState = ownerRow.dwState;
-        row.dwLocalAddr = ownerRow.dwLocalAddr;
-        row.dwLocalPort = ownerRow.dwLocalPort;
-        row.dwRemoteAddr = ownerRow.dwRemoteAddr;
-        row.dwRemotePort = ownerRow.dwRemotePort;
-
+        MIB_TCPROW row = toTcpRow(ownerRow);
         readEStatsRow(
             row, ownerRow.dwOwningPid, ownerRow.dwState, m_SetPerTcpConnectionEStats, m_GetPerTcpConnectionEStats, perPid, counts);
     }
@@ -1460,18 +1443,7 @@ EStatsSampleCounts WindowsProcessProbe::collectTcp6ByteCounts(PerPidNetworkBytes
             continue;
         }
 
-        // MIB_TCP6ROW identifies the connection by address + scope id + port on both ends; the
-        // owner-PID row stores the addresses as raw 16-byte arrays.
-        MIB_TCP6ROW row{
-            .State = MIB_TCP_STATE_ESTAB, // Filtered to ESTABLISHED above
-            .LocalAddr = std::bit_cast<IN6_ADDR>(ownerRow.ucLocalAddr),
-            .dwLocalScopeId = ownerRow.dwLocalScopeId,
-            .dwLocalPort = ownerRow.dwLocalPort,
-            .RemoteAddr = std::bit_cast<IN6_ADDR>(ownerRow.ucRemoteAddr),
-            .dwRemoteScopeId = ownerRow.dwRemoteScopeId,
-            .dwRemotePort = ownerRow.dwRemotePort,
-        };
-
+        MIB_TCP6ROW row = toTcp6Row(ownerRow);
         readEStatsRow(
             row, ownerRow.dwOwningPid, ownerRow.dwState, m_SetPerTcp6ConnectionEStats, m_GetPerTcp6ConnectionEStats, perPid, counts);
     }

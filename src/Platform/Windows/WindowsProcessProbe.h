@@ -76,6 +76,9 @@ class WindowsProcessProbe : public IProcessProbe
     std::chrono::milliseconds m_HeavyDetailTTL{5000};  // Default; tuned by total physical RAM in constructor
     HMODULE m_IphlpModule = nullptr;                   // Non-null only when loaded by this class (must be freed in destructor)
 
+    // Samples in a row whose established EStats reads were only NOT_FOUND / garbage (#1161)
+    mutable std::atomic<std::size_t> m_EStatsInconclusiveSamples{0};
+
     // EStats function signatures
     using GetPerTcpConnectionEStatsFn =
         DWORD(WINAPI*)(PMIB_TCPROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG);
