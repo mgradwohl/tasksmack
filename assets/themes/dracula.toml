@@ -15,9 +15,9 @@ version = "1.0"
 colors = [
     "#FF79C6",  # Pink
     "#8BE9FD",  # Cyan
-    "#BD93F9",  # Purple
     "#50FA7B",  # Green
-    "#FFB86C",  # Orange
+    "#BD93F9",  # Purple
+    "#ECA24F",  # Orange
     "#FF5E5C",  # Red
     "#F1FA8C",  # Yellow
     "#8594C8",  # Comment (muted blue)
@@ -25,7 +25,7 @@ colors = [
 
 [progress]
 low = "#50FA7B"       # 0-50%   - Green (healthy)
-medium = "#FFB86C"    # 50-80%  - Orange (caution)
+medium = "#FFA73C"    # 50-80%  - Orange (caution)
 high = "#FF5E5C"      # 80-100% - Red (critical)
 
 [semantic]
@@ -33,7 +33,7 @@ text_primary = "#F8F8F2"
 text_disabled = "#6272A4"
 text_muted = "#A7B5EC"
 text_error = "#FF9D94"
-text_warning = "#FFB86C"
+text_warning = "#FFA73C"
 text_success = "#50FA7B"
 text_info = "#8BE9FD"
 
@@ -65,20 +65,20 @@ utilization = "#BD93F9"
 utilization_fill = "#BD93F94D"
 memory = "#F1FA8C"
 memory_fill = "#F1FA8C4D"
-temperature = "#FFB86C"
+temperature = "#E7A258"
 power = "#50FA7B"
 encoder = "#8BE9FD"
-decoder = "#FF79C6"
+decoder = "#F89BCE"
 clock = "#8594C8"
 clock_fill = "#8594C8CC"
 fan = "#9194A9"
 
 [cpu_breakdown]
-user = "#5DBDD1"
+user = "#57B8CB"
 system = "#FF5E5C"
 iowait = "#FFB86C"
 idle = "#44475A"
-user_fill = "#5DBDD159"
+user_fill = "#57B8CB59"
 system_fill = "#FF5E5C59"
 iowait_fill = "#FFB86C59"
 idle_fill = "#44475A33"

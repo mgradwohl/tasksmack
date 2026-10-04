@@ -16,15 +16,15 @@ colors = [
     "#89B4FA",  # Blue
     "#F38BA8",  # Red/Pink
     "#A6E3A1",  # Green
-    "#CBA6F7",  # Mauve
-    "#FAB387",  # Peach
+    "#B39DCC",  # Mauve
+    "#FAA773",  # Peach
     "#F5C2E7",  # Pink (Flamingo)
     "#F9E2AF",  # Yellow
     "#74C7EC",  # Sapphire
 ]
 
 [progress]
-low = "#A6E3A1"       # 0-50%   - Green (healthy)
+low = "#B8E9B3"       # 0-50%   - Green (healthy)
 medium = "#FAB387"    # 50-80%  - Peach (caution)
 high = "#F38BA8"      # 80-100% - Red/Pink (critical)
 
@@ -33,7 +33,7 @@ text_primary = "#CDD6F4"
 text_disabled = "#6C7086"
 text_muted = "#959BB4"
 text_error = "#F38BA8"
-text_warning = "#FAB387"
+text_warning = "#FAA773"
 text_success = "#A6E3A1"
 text_info = "#89B4FA"
 
@@ -61,13 +61,13 @@ net_rx_fill = "#94E2D54D"
 peak_line = "#CDD6F4B3"
 
 [charts.gpu]
-utilization = "#CBA6F7"
-utilization_fill = "#CBA6F74D"
+utilization = "#AA90C7"
+utilization_fill = "#AA90C74D"
 memory = "#F9E2AF"
 memory_fill = "#F9E2AF4D"
-temperature = "#FAB387"
+temperature = "#F5A674"
 power = "#A6E3A1"
-encoder = "#74C7EC"
+encoder = "#5589A1"
 decoder = "#F5C2E7"
 clock = "#89B4FA"
 clock_fill = "#89B4FACC"
