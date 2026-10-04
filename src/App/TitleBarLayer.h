@@ -153,6 +153,10 @@ class TitleBarLayer : public Core::Layer
     // scale (see computeMinimumWindowSize()). Recomputed each frame the bar is drawn; applied to
     // custom edge-drags here and handed to SDL for every other way a window gets resized (#970).
     WindowMinimumSize m_MinimumSize{};
+    // The minimum before capMinimumToUsable(), and the display it was capped for: the display's
+    // usable bounds are re-read only when one of them changes (#1207).
+    WindowMinimumSize m_DesiredMinimumSize{};
+    SDL_DisplayID m_MinimumSizeDisplayId = 0;
     // The panels' share of that minimum (#1207), from setContentMinimumWidth().
     float m_ContentMinimumWidthPx = 0.0F;
 

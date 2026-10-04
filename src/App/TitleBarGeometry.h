@@ -140,6 +140,8 @@ struct WindowMinimumSize
 {
     int width = Core::WINDOW_MIN_DIMENSION;
     int height = Core::WINDOW_MIN_DIMENSION;
+
+    friend constexpr auto operator==(const WindowMinimumSize&, const WindowMinimumSize&) -> bool = default;
 };
 
 /// Narrowest a plot beside its NowBar column may get, in ems: below this the Overview's charts are
@@ -197,6 +199,34 @@ inline constexpr float MIN_PLOT_WIDTH_EM = 15.0F;
     // Narrowing: both operands are clamped to [WINDOW_MIN_DIMENSION, WINDOW_MAX_DIMENSION] first.
     return {.width = static_cast<int>(std::min(std::max(base, std::ceil(content)), maxDimension)),
             .height = static_cast<int>(std::min(base, maxDimension))};
+}
+
+/// The minimum window size held inside the usable bounds of the display the window is on (#1207).
+///
+/// The content-derived minimum grows with the font size and the display scale, so on a small
+/// display at a large font it can be wider than the screen's work area. Uncapped, the window could
+/// not fit on-screen and maximize could not satisfy its own minimum. Capped, the panels lay out
+/// narrower than their content wants instead (see computeContentMinimumWidth()).
+///
+/// @param minimum       From computeMinimumWindowSize().
+/// @param usableWidth   Width of the display's usable bounds (SDL_GetDisplayUsableBounds), in the
+///                      same window coordinates as @p minimum; 0 or less when unknown, which leaves
+///                      the width uncapped.
+/// @param usableHeight  Likewise for the height.
+/// @return @p minimum, each dimension capped to the usable one but never below
+///         Core::WINDOW_MIN_DIMENSION, the floor computeResizeGeometry() holds a drag to.
+[[nodiscard]] constexpr auto capMinimumToUsable(const WindowMinimumSize minimum, const int usableWidth, const int usableHeight)
+    -> WindowMinimumSize
+{
+    const auto cap = [](const int wanted, const int usable)
+    {
+        if (usable <= 0 || wanted <= usable)
+        {
+            return wanted;
+        }
+        return std::max(usable, Core::WINDOW_MIN_DIMENSION);
+    };
+    return {.width = cap(minimum.width, usableWidth), .height = cap(minimum.height, usableHeight)};
 }
 
 /// Whether the status bar's right-aligned FPS readout fits beside what is on its left (#1207).

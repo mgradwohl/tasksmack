@@ -110,10 +110,17 @@ void ShellLayer::onAttach()
 void ShellLayer::applyBaseMinimumWindowSize()
 {
     m_MinimumSizeDisplayScale = UI::Theme::get().displayScale();
-    if (SDL_Window* sdlWindow = Core::Application::get().getWindow().getHandle(); sdlWindow != nullptr)
+    const auto& window = Core::Application::get().getWindow();
+    m_MinimumSizeDisplayId = window.getDisplayId();
+    if (SDL_Window* sdlWindow = window.getHandle(); sdlWindow != nullptr)
     {
+        // Held inside the display's usable bounds, so a large font on a small display cannot leave
+        // a window that does not fit on-screen (#1207).
+        const auto [usableWidth, usableHeight] = window.getUsableDisplaySize().value_or(std::pair{0, 0});
         const WindowMinimumSize baseMinimum =
-            computeMinimumWindowSize(m_MinimumSizeDisplayScale, 0.0F, static_cast<float>(m_ContentMinimumWidthPx));
+            capMinimumToUsable(computeMinimumWindowSize(m_MinimumSizeDisplayScale, 0.0F, static_cast<float>(m_ContentMinimumWidthPx)),
+                               usableWidth,
+                               usableHeight);
         if (!SDL_SetWindowMinimumSize(sdlWindow, baseMinimum.width, baseMinimum.height))
         {
             spdlog::warn("SDL_SetWindowMinimumSize({}, {}) failed: {}", baseMinimum.width, baseMinimum.height, SDL_GetError());
@@ -210,11 +217,13 @@ void ShellLayer::onUpdate(float deltaTime)
 
     m_FpsCounter.update(deltaTime);
 
-    // With native decorations, follow a display-scale change (#943). Not with the borderless title
-    // bar: TitleBarLayer re-derives a wider minimum from the scale every frame, and re-applying the
-    // base here would overwrite it.
-    if (!Core::Application::get().getWindow().isBorderless() &&
-        UI::displayScaleChanged(m_MinimumSizeDisplayScale, UI::Theme::get().displayScale()))
+    // With native decorations, follow a display-scale change (#943), or a move to another display,
+    // whose usable bounds the minimum is capped to (#1207). Not with the borderless title bar:
+    // TitleBarLayer re-derives a wider minimum from the scale every frame, and re-applying the base
+    // here would overwrite it.
+    if (const auto& window = Core::Application::get().getWindow();
+        !window.isBorderless() && (UI::displayScaleChanged(m_MinimumSizeDisplayScale, UI::Theme::get().displayScale()) ||
+                                   window.getDisplayId() != m_MinimumSizeDisplayId))
     {
         applyBaseMinimumWindowSize();
     }

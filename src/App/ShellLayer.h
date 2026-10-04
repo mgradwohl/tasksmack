@@ -7,6 +7,8 @@
 #include "Panels/ProcessesPanel.h"
 #include "Panels/SystemMetricsPanel.h"
 
+#include <SDL3/SDL_video.h>
+
 #include <cstdint>
 #include <string>
 
@@ -74,6 +76,9 @@ class ShellLayer : public Core::Layer
     // Display scale the base minimum window size was last set for. With native decorations nothing
     // else sets the minimum, so it is re-applied when the scale changes (#943).
     float m_MinimumSizeDisplayScale = 0.0F;
+    // Display the minimum was last capped to the usable bounds of; re-applied on a move to another
+    // display (#1207).
+    SDL_DisplayID m_MinimumSizeDisplayId = 0;
     // Width the panels need (#1207): handed to the title bar, or with native decorations part of the
     // minimum applied here. Whole pixels, so it is re-applied only when it really changes.
     int m_ContentMinimumWidthPx = 0;

@@ -80,9 +80,16 @@ inline constexpr int MIN_VISIBLE_EXTENT = 64;
 ///                           the client-side maximize itself falls back to SDL_MaximizeWindow(),
 ///                           whose own MAXIMIZED event must not be adopted again, or the two would
 ///                           undo each other on every event.
-[[nodiscard]] constexpr bool shouldAdoptSystemMaximize(bool borderless, bool clientSideBackend, bool usableBoundsKnown) noexcept
+/// @param stillMaximized     Whether SDL_WINDOW_MAXIMIZED is still set when the event is handled.
+/// @param minimized          Whether SDL_WINDOW_MINIMIZED is set when the event is handled. SDL
+///                           events are queued, so the MAXIMIZED notification can be drained after
+///                           a later OS restore or minimize already changed the window; adopting it
+///                           then would undo that newer action, so only a window that is still
+///                           maximized and not minimized is adopted (#1208).
+[[nodiscard]] constexpr bool
+shouldAdoptSystemMaximize(bool borderless, bool clientSideBackend, bool usableBoundsKnown, bool stillMaximized, bool minimized) noexcept
 {
-    return borderless && clientSideBackend && usableBoundsKnown;
+    return borderless && clientSideBackend && usableBoundsKnown && stillMaximized && !minimized;
 }
 
 /// Length of the overlap of the half-open spans [aStart, aStart + aLength) and

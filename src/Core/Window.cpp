@@ -494,6 +494,22 @@ void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, boo
     }
 }
 
+auto Window::getDisplayId() const noexcept -> SDL_DisplayID
+{
+    return m_Handle != nullptr ? SDL_GetDisplayForWindow(m_Handle) : 0;
+}
+
+auto Window::getUsableDisplaySize() const -> std::optional<std::pair<int, int>>
+{
+    const SDL_DisplayID displayID = getDisplayId();
+    SDL_Rect usableBounds{};
+    if (displayID == 0 || !SDL_GetDisplayUsableBounds(displayID, &usableBounds) || usableBounds.w <= 0 || usableBounds.h <= 0)
+    {
+        return std::nullopt;
+    }
+    return std::pair{usableBounds.w, usableBounds.h};
+}
+
 bool Window::isMaximized() const
 {
     if (m_Handle == nullptr)
@@ -584,12 +600,17 @@ void Window::adoptSystemMaximize()
         return;
     }
 
-    const bool borderless = (SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_BORDERLESS) != 0;
+    // Read the live flags, not the event: a queued MAXIMIZED can be handled after a later OS restore
+    // or minimize, which adopting it would undo (#1208).
+    const SDL_WindowFlags flags = SDL_GetWindowFlags(m_Handle);
+    const bool borderless = (flags & SDL_WINDOW_BORDERLESS) != 0;
+    const bool stillMaximized = (flags & SDL_WINDOW_MAXIMIZED) != 0;
+    const bool minimized = (flags & SDL_WINDOW_MINIMIZED) != 0;
     const bool clientSideBackend = VideoBackend::supportsClientSideMaximize();
     SDL_Rect usableBounds{};
     const SDL_DisplayID displayID = SDL_GetDisplayForWindow(m_Handle);
     const bool usableBoundsKnown = displayID != 0 && SDL_GetDisplayUsableBounds(displayID, &usableBounds);
-    if (!WindowGeometry::shouldAdoptSystemMaximize(borderless, clientSideBackend, usableBoundsKnown))
+    if (!WindowGeometry::shouldAdoptSystemMaximize(borderless, clientSideBackend, usableBoundsKnown, stillMaximized, minimized))
     {
         return;
     }

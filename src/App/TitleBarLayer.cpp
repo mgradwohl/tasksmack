@@ -322,6 +322,13 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
         return;
     }
 
+    // A display was added, removed or changed mode, or its work area moved: re-read the usable
+    // bounds the minimum window size is capped to on the next frame the bar is drawn (#1207).
+    if (event->type >= SDL_EVENT_DISPLAY_FIRST && event->type <= SDL_EVENT_DISPLAY_LAST)
+    {
+        m_MinimumSizeDisplayId = 0;
+    }
+
     // Handle Alt+Space to open system menu
     // On Linux, Alt+Space may be consumed by the window manager, so we check both:
     // 1. Space pressed while Alt is held (normal case)
@@ -1132,7 +1139,7 @@ void TitleBarLayer::renderTitleBar()
     // (#1207), or shorter than the base minimum at this display scale. Derived from the sizes just used for drawing, so it cannot
     // drift from them, and handed to SDL only when it changes (#970). ShellLayer has already set
     // the scaled base minimum at attach; this widens it to cover the bar.
-    const WindowMinimumSize minimumSize =
+    const WindowMinimumSize desiredMinimumSize =
         computeMinimumWindowSize(UI::Theme::get().displayScale(),
                                  computeTitleBarContentWidth(iconX,
                                                              ICON_SIZE,
@@ -1141,12 +1148,23 @@ void TitleBarLayer::renderTitleBar()
                                                              BUTTON_WIDTH,
                                                              titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO),
                                  m_ContentMinimumWidthPx);
-    if (minimumSize.width != m_MinimumSize.width || minimumSize.height != m_MinimumSize.height)
+    // Held inside the current display's usable bounds, or a large font on a small display would
+    // leave a window that cannot fit on-screen or be maximized (#1207). The bounds are read only
+    // when the wanted minimum or the display changes.
+    const SDL_DisplayID displayId = window.getDisplayId();
+    if (desiredMinimumSize != m_DesiredMinimumSize || displayId != m_MinimumSizeDisplayId)
     {
-        m_MinimumSize = minimumSize;
-        if (!SDL_SetWindowMinimumSize(window.getHandle(), minimumSize.width, minimumSize.height))
+        m_DesiredMinimumSize = desiredMinimumSize;
+        m_MinimumSizeDisplayId = displayId;
+        const auto [usableWidth, usableHeight] = window.getUsableDisplaySize().value_or(std::pair{0, 0});
+        const WindowMinimumSize minimumSize = capMinimumToUsable(desiredMinimumSize, usableWidth, usableHeight);
+        if (minimumSize != m_MinimumSize)
         {
-            spdlog::warn("SDL_SetWindowMinimumSize({}, {}) failed: {}", minimumSize.width, minimumSize.height, SDL_GetError());
+            m_MinimumSize = minimumSize;
+            if (!SDL_SetWindowMinimumSize(window.getHandle(), minimumSize.width, minimumSize.height))
+            {
+                spdlog::warn("SDL_SetWindowMinimumSize({}, {}) failed: {}", minimumSize.width, minimumSize.height, SDL_GetError());
+            }
         }
     }
     const float BUTTON_HEIGHT = titleBarHeight;

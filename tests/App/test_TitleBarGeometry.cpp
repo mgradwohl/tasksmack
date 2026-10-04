@@ -1112,6 +1112,41 @@ TEST(TitleBarGeometryTest, MinimumWidthCoversThePanelContent)
 }
 
 // The status bar's FPS readout was drawn over "Ready" in a narrow window; it is left out instead.
+TEST(TitleBarGeometryTest, MinimumIsCappedToTheDisplaysUsableBounds)
+{
+    // A large font on a small display: four NowBars and 15 em of plot wanted more than the work
+    // area, so the window could not fit on-screen and maximize could not satisfy it (#1207).
+    const WindowMinimumSize wanted{.width = 1600, .height = 400};
+    const auto capped = capMinimumToUsable(wanted, 1280, 984);
+    EXPECT_EQ(capped.width, 1280);
+    EXPECT_EQ(capped.height, 400);
+
+    EXPECT_EQ(capMinimumToUsable(WindowMinimumSize{.width = 900, .height = 1200}, 1920, 1040).height, 1040);
+}
+
+TEST(TitleBarGeometryTest, MinimumThatFitsTheDisplayIsUnchanged)
+{
+    const WindowMinimumSize wanted{.width = 700, .height = 400};
+    EXPECT_EQ(capMinimumToUsable(wanted, 1920, 1040), wanted);
+    EXPECT_EQ(capMinimumToUsable(wanted, 700, 400), wanted); // exactly the usable size
+}
+
+TEST(TitleBarGeometryTest, MinimumIsUncappedWhenTheUsableBoundsAreUnknown)
+{
+    const WindowMinimumSize wanted{.width = 1600, .height = 1200};
+    EXPECT_EQ(capMinimumToUsable(wanted, 0, 0), wanted);
+    EXPECT_EQ(capMinimumToUsable(wanted, -1, 1040).width, 1600);
+    EXPECT_EQ(capMinimumToUsable(wanted, -1, 1040).height, 1040);
+}
+
+TEST(TitleBarGeometryTest, CappedMinimumNeverFallsBelowTheBaseMinimum)
+{
+    const WindowMinimumSize wanted{.width = 1600, .height = 1200};
+    const auto capped = capMinimumToUsable(wanted, 50, 50);
+    EXPECT_EQ(capped.width, MIN);
+    EXPECT_EQ(capped.height, MIN);
+}
+
 TEST(TitleBarGeometryTest, StatusBarReadoutOnlyWhenItFits)
 {
     EXPECT_TRUE(computeStatusBarReadoutFits(60.0F, 300.0F, 8.0F));

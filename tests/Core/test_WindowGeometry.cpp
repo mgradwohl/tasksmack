@@ -53,21 +53,31 @@ TEST(WindowGeometryTest, AnOsMaximizeOfTheBorderlessWindowIsAdoptedOnClientSideB
 {
     // Win+Up / ShowWindow(SW_MAXIMIZE) on Windows: the OS sized the window from the primary screen,
     // a quarter of a 175 % display, so it is replaced by the client-side maximize.
-    EXPECT_TRUE(shouldAdoptSystemMaximize(true, true, true));
+    EXPECT_TRUE(shouldAdoptSystemMaximize(true, true, true, true, false));
 }
 
 TEST(WindowGeometryTest, AnOsMaximizeIsLeftAloneWhereTheOsGetsItRight)
 {
-    EXPECT_FALSE(shouldAdoptSystemMaximize(true, false, true)); // native Wayland compositor maximize
-    EXPECT_FALSE(shouldAdoptSystemMaximize(false, true, true)); // a window with an OS frame
-    EXPECT_FALSE(shouldAdoptSystemMaximize(false, false, true));
+    EXPECT_FALSE(shouldAdoptSystemMaximize(true, false, true, true, false)); // native Wayland compositor maximize
+    EXPECT_FALSE(shouldAdoptSystemMaximize(false, true, true, true, false)); // a window with an OS frame
+    EXPECT_FALSE(shouldAdoptSystemMaximize(false, false, true, true, false));
 }
 
 TEST(WindowGeometryTest, TheSdlMaximizeFallbackIsNotAdoptedAgain)
 {
     // Without the display's usable bounds maximize() itself falls back to SDL_MaximizeWindow();
     // adopting that MAXIMIZED event would restore and re-maximize on every event.
-    EXPECT_FALSE(shouldAdoptSystemMaximize(true, true, false));
+    EXPECT_FALSE(shouldAdoptSystemMaximize(true, true, false, true, false));
+}
+
+TEST(WindowGeometryTest, AStaleOsMaximizeNotificationIsNotAdopted)
+{
+    // SDL events are queued: the MAXIMIZED notification can be drained after a later OS restore or
+    // minimize already changed the window. Adopting it then would undo that newer action (#1208).
+    EXPECT_FALSE(shouldAdoptSystemMaximize(true, true, true, false, false)); // restored since
+    EXPECT_FALSE(shouldAdoptSystemMaximize(true, true, true, true, true));   // minimized since
+    EXPECT_FALSE(shouldAdoptSystemMaximize(true, true, true, false, true));
+    EXPECT_TRUE(shouldAdoptSystemMaximize(true, true, true, true, false)); // still maximized
 }
 
 // ---- spanOverlap / isReachableOn ----
