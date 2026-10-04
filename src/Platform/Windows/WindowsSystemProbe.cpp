@@ -331,8 +331,7 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
             if (multiGroup)
             {
                 // Total from the same all-group counters as the per-core grid (#1107).
-                counters.cpuTotal = sumCpuCounters(counters.cpuPerCore);
-                m_LastAllGroupTotal = counters.cpuTotal;
+                counters.cpuTotal = multiGroupTotal(sumCpuCounters(counters.cpuPerCore), m_LastAllGroupTotal);
             }
             spdlog::trace("Read per-core CPU for {} cores in {} processor groups", counters.cpuPerCore.size(), groupCount);
             return;
@@ -344,12 +343,9 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
         // A group query failed. The one-group fallback below would put the calling thread's group
         // into the slots of group 0 (and whichever came before it), and SystemModel matches cores
         // by position, so failure and recovery samples would compare different CPUs. Report no
-        // per-core data this sample, and repeat the last all-group Total rather than switch its
-        // source to a one-group counter (#1107).
-        if (m_LastAllGroupTotal.has_value())
-        {
-            counters.cpuTotal = *m_LastAllGroupTotal;
-        }
+        // per-core data this sample, and never a one-group Total: the last all-group one, or a
+        // zeroed one before the first complete read (see multiGroupTotal) (#1107).
+        counters.cpuTotal = multiGroupTotal(std::nullopt, m_LastAllGroupTotal);
         spdlog::debug("Per-core CPU unavailable this sample: a processor group query failed");
         return;
     }

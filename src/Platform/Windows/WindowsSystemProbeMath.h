@@ -169,6 +169,23 @@ std::size_t appendProcessorGroup(std::vector<CpuCounters>& cores, std::span<cons
     return total;
 }
 
+/// The Total a multi-group machine reports this sample (#1107): the all-group sum when every group
+/// was read, otherwise the last one. Before the first complete read there is no all-group Total, and
+/// reporting a one-group counter instead would become SystemModel's baseline and be compared with
+/// the all-group sum on recovery, so the other groups' lifetime counters would land in one interval
+/// as a spike. A zeroed Total is reported until then: the model sees no change, and the first
+/// complete read measures from zero (the average since boot) rather than spiking.
+[[nodiscard]] inline CpuCounters multiGroupTotal(const std::optional<CpuCounters>& allGroupNow,
+                                                 std::optional<CpuCounters>& lastAllGroup) noexcept
+{
+    if (allGroupNow.has_value())
+    {
+        lastAllGroup = allGroupNow;
+        return *allGroupNow;
+    }
+    return lastAllGroup.value_or(CpuCounters{});
+}
+
 /// IANA ifType values GetIfTable2 reports (ipifcons.h), spelled out so this header stays free of
 /// Windows includes.
 inline constexpr std::uint32_t IF_TYPE_ETHERNET = 6;

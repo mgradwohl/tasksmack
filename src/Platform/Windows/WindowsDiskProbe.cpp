@@ -4,6 +4,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -252,6 +253,12 @@ void WindowsDiskProbe::Impl::enumerate()
     }
     disks = std::move(found);
     hasDisks.store(!disks.empty(), std::memory_order_release);
+
+    // Forget the busy-time baseline of every disk that is gone, so one re-attached under the same
+    // instance name starts afresh instead of counting the time it was away as busy (#1108).
+    std::erase_if(busyClocks,
+                  [this](const auto& entry)
+                  { return std::ranges::none_of(disks, [&](const DiskHandle& disk) { return disk.instanceName == entry.first; }); });
 }
 
 WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())

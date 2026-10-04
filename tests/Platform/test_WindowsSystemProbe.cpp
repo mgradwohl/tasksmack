@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <span>
 #include <thread>
 #include <vector>
@@ -300,6 +301,42 @@ TEST(SumCpuCountersTest, TotalIsTheSumOfEveryCoreInEveryGroup)
 TEST(SumCpuCountersTest, NoCoresIsAllZero)
 {
     EXPECT_EQ(sumCpuCounters({}).total(), 0U);
+}
+
+// #1107 review: a multi-group machine never reports a one-group Total. Before the first complete
+// all-group read it reports a zeroed one; the first complete read then measures from zero (the
+// average since boot) instead of comparing the all-group sum with a one-group baseline, which put
+// the other groups' lifetime counters into one interval as a spike.
+TEST(MultiGroupTotalTest, FirstReadFailureThenRecoveryDoesNotSpike)
+{
+    std::optional<CpuCounters> last;
+    const CpuCounters failed = multiGroupTotal(std::nullopt, last);
+    EXPECT_EQ(failed.total(), 0U);
+    EXPECT_FALSE(last.has_value());
+
+    CpuCounters allGroups; // Lifetime counters of every group: 25 % busy since boot
+    allGroups.user = 250;
+    allGroups.idle = 750;
+    const CpuCounters recovered = multiGroupTotal(allGroups, last);
+    ASSERT_TRUE(last.has_value());
+
+    // The model's busy share over the recovery interval: the since-boot average, not a spike.
+    const double busy = static_cast<double>(recovered.active() - failed.active());
+    const double span = static_cast<double>(recovered.total() - failed.total());
+    EXPECT_DOUBLE_EQ(100.0 * busy / span, 25.0);
+}
+
+TEST(MultiGroupTotalTest, ALaterFailureRepeatsTheLastAllGroupTotal)
+{
+    std::optional<CpuCounters> last;
+    CpuCounters allGroups;
+    allGroups.user = 40;
+    allGroups.idle = 60;
+    (void) multiGroupTotal(allGroups, last);
+
+    const CpuCounters failed = multiGroupTotal(std::nullopt, last);
+    EXPECT_EQ(failed.user, 40U);
+    EXPECT_EQ(failed.idle, 60U);
 }
 
 TEST(WindowsSystemProbeTest, PerCoreCountMatchesCoreCount)
