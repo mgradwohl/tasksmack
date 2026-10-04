@@ -327,8 +327,10 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
 
 uint64_t LinuxProcessProbe::totalCpuTime() const
 {
-    // The value enumerate() captured after its stat pass, once; otherwise a fresh read.
-    if (const uint64_t captured = m_TotalCpuTimeAtEnumerate.exchange(0, std::memory_order_relaxed); captured != 0)
+    // The value enumerate() captured after its stat pass, once -- even a failed read's 0; otherwise a
+    // fresh read.
+    if (const uint64_t captured = m_TotalCpuTimeAtEnumerate.exchange(NO_CAPTURED_TOTAL, std::memory_order_relaxed);
+        captured != NO_CAPTURED_TOTAL)
     {
         return captured;
     }
