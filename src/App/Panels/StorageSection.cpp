@@ -44,6 +44,7 @@ using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::normalizeToUnitInterval;
 using UI::Widgets::NowBar;
+using UI::Widgets::NowBarValues;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderChartGrid;
 using UI::Widgets::renderHistoryWithNowBars;
@@ -114,11 +115,16 @@ void renderDiskCell(const std::string& deviceName,
                       .value01 = normalizeToUnitInterval(current, diskAxisUpper),
                       .color = color};
     };
-    const NowBar readBar = makeBar(READ_LABEL, currentRead, theme.scheme().chartIo);
-    const NowBar writeBar = makeBar(WRITE_LABEL, currentWrite, theme.scheme().chartIoWrite);
+    const std::array diskBars{
+        makeBar(READ_LABEL, currentRead, theme.scheme().chartIo),
+        makeBar(WRITE_LABEL, currentWrite, theme.scheme().chartIoWrite),
+    };
 
     const float cellContentTop = ImGui::GetCursorPosY();
     ImGui::TextColored(theme.scheme().textPrimary, "%.*s", static_cast<int>(deviceName.size()), deviceName.data());
+    // The disk's current rates, readable without hovering (#1193), on their own line under its name
+    // so every cell keeps the height the overhead below is measured from.
+    UI::Widgets::renderNowBarValueStrip(diskBars);
     if (!cachedOverhead.has_value())
     {
         // renderHistoryWithNowBars wraps the chart+bars in its own table, whose CellPadding.y
@@ -193,7 +199,8 @@ void renderDiskCell(const std::string& deviceName,
     // null-terminated C-string at zero extra cost -- reusing it as the RenderMetrics/table id
     // keeps per-disk RenderMetrics entries from collapsing into one (#823 review), without
     // reintroducing the per-frame heap allocation a formatted id had.
-    renderHistoryWithNowBars(deviceName.c_str(), plotHeight, diskPlotFn, {readBar, writeBar}, false, STORAGE_NOW_BAR_COLUMNS);
+    renderHistoryWithNowBars(
+        deviceName.c_str(), plotHeight, diskPlotFn, diskBars, false, STORAGE_NOW_BAR_COLUMNS, false, NowBarValues::None);
 }
 
 } // namespace

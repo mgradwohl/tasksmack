@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <format>
 #include <functional>
@@ -1517,13 +1518,63 @@ class RenderMetricsScope
     bool m_Measure = false;
 };
 
+/// Whether renderHistoryWithNowBars() prints each bar's current value above the chart (#1193).
+enum class NowBarValues : std::uint8_t
+{
+    Strip, ///< A line of "swatch label value" entries above the chart
+    None,  ///< No strip: grid cells, which show the value in their own label and have a fixed height
+};
+
+/// Each bar's current value, readable without hovering (#1193): a swatch in the bar's colour, its
+/// label in muted text and its value in primary text, wrapping to another line when the row is full.
+/// The value is the bar's valueText, the same string its tooltip shows, already built for the frame,
+/// so this adds no allocation.
+inline void renderNowBarValueStrip(std::span<const NowBar> bars)
+{
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float lineHeight = ImGui::GetTextLineHeight();
+    const float side = std::floor(lineHeight * TOOLTIP_SWATCH_LINE_FRACTION);
+    const float inset = std::floor((lineHeight - side) * 0.5F);
+    const float rowRight = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+    const ImVec4 muted = UI::Theme::get().scheme().textMuted;
+    for (size_t i = 0; i < bars.size(); ++i)
+    {
+        const NowBar& bar = bars[i];
+        const float labelWidth = bar.label.empty() ? 0.0F : ImGui::CalcTextSize(bar.label.c_str()).x + style.ItemInnerSpacing.x;
+        const float entryWidth = side + style.ItemInnerSpacing.x + labelWidth + ImGui::CalcTextSize(bar.valueText.c_str()).x;
+        if (i > 0)
+        {
+            ImGui::SameLine(0.0F, style.ItemSpacing.x * 2.0F);
+            if (ImGui::GetCursorPosX() + entryWidth > rowRight)
+            {
+                ImGui::NewLine();
+            }
+        }
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(at.x, at.y + inset),
+                                                  ImVec2(at.x + side, at.y + inset + side),
+                                                  ImGui::ColorConvertFloat4ToU32(withAlpha(bar.color, 1.0F)));
+        ImGui::Dummy(ImVec2(side, lineHeight));
+        if (!bar.label.empty())
+        {
+            ImGui::SameLine(0.0F, style.ItemInnerSpacing.x);
+            ImGui::PushStyleColor(ImGuiCol_Text, muted);
+            ImGui::TextUnformatted(bar.label.c_str());
+            ImGui::PopStyleColor();
+        }
+        ImGui::SameLine(0.0F, style.ItemInnerSpacing.x);
+        ImGui::TextUnformatted(bar.valueText.c_str());
+    }
+}
+
 inline void renderHistoryWithNowBars(const char* tableId,
                                      float plotHeight,
                                      const std::function<void()>& plotFn,
                                      std::span<const NowBar> bars,
                                      bool barsOnly = false,
                                      size_t minBarColumns = 0,
-                                     bool compactSpacing = false)
+                                     bool compactSpacing = false,
+                                     NowBarValues values = NowBarValues::Strip)
 {
     // Renders a history plot side-by-side with a compact "now" bar column. When barsOnly is true we
     // skip the ImPlot area and show only the bars (used when history is unavailable). The table layout
@@ -1534,6 +1585,11 @@ inline void renderHistoryWithNowBars(const char* tableId,
     {
         plotFn();
         return;
+    }
+
+    if (values == NowBarValues::Strip)
+    {
+        renderNowBarValueStrip(bars);
     }
 
     if (barsOnly)
@@ -1650,10 +1706,11 @@ inline void renderHistoryWithNowBars(const char* tableId,
                                      std::initializer_list<NowBar> bars,
                                      bool barsOnly = false,
                                      size_t minBarColumns = 0,
-                                     bool compactSpacing = false)
+                                     bool compactSpacing = false,
+                                     NowBarValues values = NowBarValues::Strip)
 {
     renderHistoryWithNowBars(
-        tableId, plotHeight, plotFn, std::span<const NowBar>(bars.begin(), bars.size()), barsOnly, minBarColumns, compactSpacing);
+        tableId, plotHeight, plotFn, std::span<const NowBar>(bars.begin(), bars.size()), barsOnly, minBarColumns, compactSpacing, values);
 }
 
 } // namespace UI::Widgets
