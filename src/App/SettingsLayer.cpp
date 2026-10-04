@@ -565,12 +565,14 @@ void SettingsLayer::renderSettingsDialog()
         // Floor of 9.375 em is exactly the former fixed 100px at the reference configuration; the
         // measured term takes over for whichever of the two labels is wider once the font grows.
         // (Computed above as actionButtonWidth, where the combos need it to find the dialog's width.)
-        const float buttonWidth = actionButtonWidth;
-        const float totalButtonWidth = actionRowWidth;
+        // Shrunk to the row when the viewport-capped dialog is narrower than the pair (#1129), so
+        // Cancel can't be pushed off the left edge.
         const float availWidth = ImGui::GetContentRegionAvail().x;
+        const float buttonWidth = UI::DialogMetrics::fitActionButtonPairWidth(actionButtonWidth, style.ItemSpacing.x, availWidth);
+        const float totalButtonWidth = (buttonWidth * 2.0F) + style.ItemSpacing.x;
 
         // Right-align buttons
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + availWidth - totalButtonWidth);
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0F, availWidth - totalButtonWidth));
 
         // Push text color to ensure visibility on button backgrounds
         ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);

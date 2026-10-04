@@ -78,6 +78,26 @@ inline constexpr float BUTTON_LABEL_PADDING_EM = 1.0F;
     return std::max(forLabel, safeMinEm * safeEm);
 }
 
+/// Width of each of a dialog's two side-by-side action buttons (Cancel / Apply) on a row
+/// @p availWidthPx wide: their preferred width, shrunk equally when the pair doesn't fit, so neither
+/// button is pushed off the row. A capped dialog (#1129) can be narrower than the pair at large font
+/// presets; right-aligned at their preferred width, Cancel would start left of the row's edge.
+///
+/// @param preferredWidthPx  From computeActionButtonWidth().
+/// @param spacingPx         Gap between the two buttons (ItemSpacing.x).
+/// @param availWidthPx      Width of the row.
+[[nodiscard]] inline float fitActionButtonPairWidth(float preferredWidthPx, float spacingPx, float availWidthPx) noexcept
+{
+    const float preferred = (std::isfinite(preferredWidthPx) && preferredWidthPx > 0.0F) ? preferredWidthPx : 0.0F;
+    const float spacing = (std::isfinite(spacingPx) && spacingPx > 0.0F) ? spacingPx : 0.0F;
+    if (!std::isfinite(availWidthPx) || availWidthPx <= 0.0F)
+    {
+        return preferred;
+    }
+    const float fitting = std::max(0.0F, (availWidthPx - spacing) / 2.0F);
+    return std::min(preferred, fitting);
+}
+
 /// Left edge of the value column in a dialog laid out as label / control rows.
 ///
 /// Measured from the widest label rather than guessed, so the column is exactly as wide as the text

@@ -373,7 +373,12 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
         // non-vetoable termination request (SIGINT/SIGTERM, logout), it would also override a
         // layer's veto of the close request. The window's close request is handled on its own
         // (#1150).
-        SDL_SetHint(SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE, "0");
+        // Override priority: at normal priority an SDL_QUIT_ON_LAST_WINDOW_CLOSE environment
+        // variable wins and SDL_SetHint() returns false, which would bring the double close back.
+        if (!SDL_SetHintWithPriority(SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE, "0", SDL_HINT_OVERRIDE))
+        {
+            spdlog::warn("Could not disable SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE: {}", SDL_GetError());
+        }
         if (!SDL_Init(SDL_INIT_VIDEO))
         {
             spdlog::critical("Failed to initialize SDL: {}", SDL_GetError());

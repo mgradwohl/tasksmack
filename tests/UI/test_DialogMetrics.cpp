@@ -206,5 +206,27 @@ TEST(DialogMetricsTest, ScrollableBodySurvivesDegenerateReservations)
     EXPECT_FLOAT_EQ(computeScrollableBodyMaxHeight(360.0F, -50.0F, 40.0F), 360.0F);
     EXPECT_FLOAT_EQ(computeScrollableBodyMaxHeight(360.0F, 400.0F, nan), 0.0F);
 }
+TEST(DialogMetricsTest, ActionButtonsKeepTheirWidthWhenThePairFits)
+{
+    EXPECT_FLOAT_EQ(fitActionButtonPairWidth(150.0F, 8.0F, 400.0F), 150.0F);
+}
+
+TEST(DialogMetricsTest, ActionButtonsShrinkSoThePairFitsANarrowRow)
+{
+    // #1253 review: at a large font preset the capped dialog is narrower than the Cancel/Apply pair;
+    // both shrink equally so the pair (plus the gap) exactly fills the row.
+    const float width = fitActionButtonPairWidth(300.0F, 8.0F, 400.0F);
+    EXPECT_FLOAT_EQ(width, 196.0F);
+    EXPECT_FLOAT_EQ((width * 2.0F) + 8.0F, 400.0F);
+}
+
+TEST(DialogMetricsTest, ActionButtonsSurviveDegenerateInputs)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FLOAT_EQ(fitActionButtonPairWidth(150.0F, 8.0F, nan), 150.0F);
+    EXPECT_FLOAT_EQ(fitActionButtonPairWidth(150.0F, 8.0F, 0.0F), 150.0F);
+    EXPECT_FLOAT_EQ(fitActionButtonPairWidth(150.0F, 8.0F, 4.0F), 0.0F);
+    EXPECT_FLOAT_EQ(fitActionButtonPairWidth(nan, 8.0F, 400.0F), 0.0F);
+}
 } // namespace
 } // namespace UI::DialogMetrics

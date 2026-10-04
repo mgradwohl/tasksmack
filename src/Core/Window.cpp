@@ -568,7 +568,13 @@ void Window::maximize()
 
     // Fall back to SDL's built-in maximize for non-borderless windows or on error
     rememberRestoreRect();
-    SDL_MaximizeWindow(m_Handle);
+    if (SDL_MaximizeWindow(m_Handle) && (SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_BORDERLESS) != 0)
+    {
+        // A borderless window on a client-side-maximize backend that got here (the display bounds
+        // were unavailable): isMaximized() reads only the tracked flag there, so set it, or
+        // getNormalGeometry() would save this maximized rectangle as the normal one (#1121).
+        m_IsMaximizedBorderless = true;
+    }
 }
 
 void Window::rememberRestoreRect()
@@ -609,6 +615,10 @@ void Window::restore()
         // X11, XWayland, Windows: restore to manually-saved position and size
         if (m_IsMaximizedBorderless && m_RestoreWidth > 0 && m_RestoreHeight > 0)
         {
+            if ((SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_MAXIMIZED) != 0)
+            {
+                SDL_RestoreWindow(m_Handle); // Maximized through the SDL fallback in maximize()
+            }
             SDL_SetWindowPosition(m_Handle, m_RestoreX, m_RestoreY);
             SDL_SetWindowSize(m_Handle, m_RestoreWidth, m_RestoreHeight);
             m_IsMaximizedBorderless = false;
