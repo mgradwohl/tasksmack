@@ -326,7 +326,8 @@ class Theme
 
     // ============ Font Size Management ============
 
-    /// Record the display scale from SDL_GetWindowDisplayScale(), 1.0 at 96 DPI.
+    /// Record the UI scale in window units (SDL display scale over pixel density, UI::windowUnitScale),
+    /// 1.0 at 96 DPI.
     ///
     /// Feeds the ImGuiStyle scale factor so chrome tracks display density as well as font size
     /// (#936). The fonts are baked at the same density, so the two must change together: UILayer
