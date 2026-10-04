@@ -52,7 +52,8 @@ void logSamplerLoopException(std::string_view message,
 } // namespace
 
 BackgroundSampler::BackgroundSampler(SamplerConfig config)
-    : m_Config{std::chrono::milliseconds(Sampling::clampRefreshInterval(config.interval.count()))}
+    : m_Config{.interval = std::chrono::milliseconds(Sampling::clampRefreshInterval(config.interval.count())),
+               .firstSampleAfterInterval = config.firstSampleAfterInterval}
 {
     spdlog::debug("BackgroundSampler: created with {}ms interval", m_Config.interval.count());
 }
@@ -142,6 +143,11 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
     spdlog::debug("BackgroundSampler: thread started");
     auto nextExceptionLogTime = std::chrono::steady_clock::time_point::min();
     std::size_t suppressedExceptionCount = 0;
+    bool skipFirstSample = false;
+    {
+        const std::scoped_lock lock(m_ConfigMutex);
+        skipFirstSample = m_Config.firstSampleAfterInterval;
+    }
 
     while (!stopToken.stop_requested())
     {
@@ -149,6 +155,12 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
         bool hadException = false;
 
         std::vector<std::weak_ptr<ISamplable>> currentSamplables;
+        if (skipFirstSample)
+        {
+            // Already seeded by the owner (SamplerConfig::firstSampleAfterInterval): this pass only waits.
+            skipFirstSample = false;
+        }
+        else
         {
             std::scoped_lock const lock(m_SamplablesMutex);
             currentSamplables = m_Samplables;
@@ -227,7 +239,11 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
                 const std::scoped_lock lock(m_ConfigMutex);
                 currentInterval = m_Config.interval;
             }
-            deadline = std::chrono::steady_clock::now() + currentInterval;
+            // Rebase on when this sample started, not on now: resetting the wait on every change
+            // let repeated changes (the interaction throttle toggling during a drag) postpone
+            // sampling indefinitely, and a faster interval took a whole interval to apply (#1118).
+            // A deadline already past samples immediately.
+            deadline = startTime + currentInterval;
         }
     }
 

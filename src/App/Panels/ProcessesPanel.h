@@ -114,7 +114,7 @@ class ProcessesPanel : public Panel
     }
 
     /// Set the refresh interval (applied by onUpdate cadence checks).
-    void setSamplingInterval(std::chrono::milliseconds interval);
+    void setSamplingInterval(std::chrono::milliseconds interval, bool forceSample = true);
 
     /// Request an immediate refresh.
     void requestRefresh();
@@ -164,6 +164,9 @@ class ProcessesPanel : public Panel
     std::chrono::milliseconds m_AppliedSamplerInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
     bool m_ForceRefresh = false;
     bool m_IsActiveTab = false;
+    // Whether the active main tab shows any process data, which sets the sampling rate (#1097). True
+    // at start: the default System tab shows process-derived charts.
+    bool m_ProcessDataShown = true;
     float m_InteractionHoldSeconds = 0.0F;
 
     // Column visibility
