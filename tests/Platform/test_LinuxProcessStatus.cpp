@@ -4,6 +4,7 @@
 #include "Platform/Linux/CgroupFreezeStatus.h"
 #include "Platform/Linux/LinuxProcessProbe.h"
 #include "Platform/Linux/PriorityErrorMessage.h"
+#include "Platform/Linux/ThreadPriority.h"
 #include "Platform/Linux/UserNameLookup.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/ScopedTempDir.h"
@@ -15,10 +16,14 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <expected>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <vector>
 
 #include <pwd.h>
 #include <sys/wait.h>
@@ -202,6 +207,121 @@ TEST(UserNameLookupTest, UnknownUidIsNullopt)
         return 0;
     };
     EXPECT_FALSE(lookUpUserName(4242, noSuchUser).has_value());
+}
+
+// reniceThreads (#1104/#1228 review): the pass bookkeeping, with /proc and setpriority faked.
+
+using ThreadList = std::expected<std::vector<id_t>, std::error_code>;
+
+TEST(ReniceThreadsTest, PartialFailureIsCountedNotReportedAsSuccess)
+{
+    constexpr std::int32_t PID = 100;
+    const std::map<id_t, int> results{{100, 0}, {101, EPERM}, {102, 0}};
+    const auto change = reniceThreads(
+        PID,
+        [](std::int32_t) { return ThreadList{std::vector<id_t>{100, 101, 102}}; },
+        [&results](id_t tid) { return results.at(tid); },
+        [](std::int32_t, id_t) { return true; });
+
+    ASSERT_TRUE(change.has_value());
+    EXPECT_EQ(change->changed, 2U);
+    EXPECT_EQ(change->failed, 1U);
+    EXPECT_EQ(change->firstError, EPERM);
+}
+
+TEST(ReniceThreadsTest, ExitedWorkerIsSkippedButAnExitedLeaderFails)
+{
+    const auto workerGone = reniceThreads(
+        100,
+        [](std::int32_t) { return ThreadList{std::vector<id_t>{100, 101}}; },
+        [](id_t tid) { return tid == 101 ? ESRCH : 0; },
+        [](std::int32_t, id_t) { return true; });
+    ASSERT_TRUE(workerGone.has_value());
+    EXPECT_EQ(workerGone->changed, 1U);
+    EXPECT_EQ(workerGone->failed, 0U);
+
+    const auto leaderGone = reniceThreads(
+        100,
+        [](std::int32_t) { return ThreadList{std::vector<id_t>{100}}; },
+        [](id_t) { return ESRCH; },
+        [](std::int32_t, id_t) { return true; });
+    ASSERT_TRUE(leaderGone.has_value());
+    EXPECT_EQ(leaderGone->failed, 1U);
+    EXPECT_EQ(leaderGone->firstError, ESRCH);
+}
+
+TEST(ReniceThreadsTest, WorkerThatLeftTheProcessIsUnconfirmed)
+{
+    // The call succeeded but the TID is no longer the target's: it may have been reused elsewhere.
+    const auto change = reniceThreads(
+        100,
+        [](std::int32_t) { return ThreadList{std::vector<id_t>{100, 101}}; },
+        [](id_t) { return 0; },
+        [](std::int32_t, id_t tid) { return tid != 101; });
+    ASSERT_TRUE(change.has_value());
+    EXPECT_EQ(change->changed, 1U);
+    EXPECT_EQ(change->unconfirmed, 1U);
+}
+
+TEST(ReniceThreadsTest, ThreadsStartedDuringThePassAreReniced)
+{
+    // The second listing shows a thread created during the first pass; the third shows nothing new.
+    int listing = 0;
+    std::vector<id_t> reniced;
+    const auto change = reniceThreads(
+        100,
+        [&listing](std::int32_t)
+        { return ++listing == 1 ? ThreadList{std::vector<id_t>{100, 101}} : ThreadList{std::vector<id_t>{100, 101, 102}}; },
+        [&reniced](id_t tid)
+        {
+            reniced.push_back(tid);
+            return 0;
+        },
+        [](std::int32_t, id_t) { return true; });
+    ASSERT_TRUE(change.has_value());
+    EXPECT_EQ(change->changed, 3U);
+    EXPECT_EQ(reniced, (std::vector<id_t>{100, 101, 102}));
+    EXPECT_FALSE(change->threadsKeptStarting);
+    EXPECT_EQ(listing, 3);
+}
+
+TEST(ReniceThreadsTest, ThreadsThatNeverStopStartingAreReported)
+{
+    id_t next = 100;
+    const auto change = reniceThreads(
+        100,
+        [&next](std::int32_t) { return ThreadList{std::vector<id_t>{next++}}; },
+        [](id_t) { return 0; },
+        [](std::int32_t, id_t) { return true; });
+    ASSERT_TRUE(change.has_value());
+    EXPECT_TRUE(change->threadsKeptStarting);
+}
+
+TEST(ReniceThreadsTest, ListingFailures)
+{
+    // The first listing failing is an error; a later one is kept unless the process just exited.
+    const auto denied = std::make_error_code(std::errc::permission_denied);
+    const auto first = reniceThreads(
+        100,
+        [&](std::int32_t) { return ThreadList{std::unexpected(denied)}; },
+        [](id_t) { return 0; },
+        [](std::int32_t, id_t) { return true; });
+    ASSERT_FALSE(first.has_value());
+    EXPECT_EQ(first.error(), denied);
+
+    for (const auto& [later, kept] :
+         {std::pair{denied, true}, std::pair{std::make_error_code(std::errc::no_such_file_or_directory), false}})
+    {
+        int listing = 0;
+        const auto change = reniceThreads(
+            100,
+            [&, later = later](std::int32_t)
+            { return ++listing == 1 ? ThreadList{std::vector<id_t>{100}} : ThreadList{std::unexpected(later)}; },
+            [](id_t) { return 0; },
+            [](std::int32_t, id_t) { return true; });
+        ASSERT_TRUE(change.has_value());
+        EXPECT_EQ(static_cast<bool>(change->relistError), kept) << later.message();
+    }
 }
 
 } // namespace
