@@ -48,7 +48,7 @@ file I edit or write, so hand-running the formatter is a backstop, not a require
 Test: `ctest --preset debug` / `ctest --preset win-debug` (Google Test; mocks in `tests/Mocks/MockProbes.h`;
 use `EXPECT_DOUBLE_EQ`, not `EXPECT_EQ`, on floats).
 
-Naming: `PascalCase` classes, `camelCase` functions, `m_camelCase` members, `UPPER_SNAKE_CASE` constants.
+Naming: `PascalCase` classes, `camelCase` functions, `m_PascalCase` members, `UPPER_SNAKE_CASE` constants.
 Sampling literals live in `src/Domain/SamplingConfig.h` — reuse them, don't re-declare.
 
 Python tooling (GLAD codegen, IWYU, pre-commit) expects the project venv: `source .venv/bin/activate` before
