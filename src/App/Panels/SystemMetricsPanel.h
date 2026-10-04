@@ -14,6 +14,7 @@
 #include "Domain/StorageSnapshot.h"
 #include "Domain/SystemModel.h"
 #include "Domain/SystemSnapshot.h"
+#include "UI/ChartWidgets.h"
 #include "UI/FillPlotLayout.h"
 #include "UI/Theme.h"
 
@@ -97,6 +98,10 @@ class SystemMetricsPanel : public Panel
     std::shared_ptr<const Domain::SystemPublication> m_SystemPublication;
     std::shared_ptr<const Domain::StoragePublication> m_StoragePublication;
     std::shared_ptr<const Domain::GPUPublication> m_GPUPublication;
+    // Taken (UI::Widgets::nextChartDataGeneration()) whenever any history this panel charts changes --
+    // a system, storage or GPU publication adopted, or the process histories copied -- so the charts
+    // keep their reduced points until then (HistoryChartConfig::dataGeneration, #1139).
+    std::uint64_t m_ChartDataGeneration = 0;
     std::uint64_t m_ProcessHistoryVersion = 0;
     std::vector<double> m_ProcessHistoryTimestamps;
     std::vector<double> m_ProcessPowerHistory;
@@ -116,8 +121,9 @@ class SystemMetricsPanel : public Panel
     std::vector<double> m_CpuStackYUser;
     std::vector<double> m_CpuStackYSystem;
     std::vector<double> m_CpuStackYIowait;
-    std::vector<double> m_CpuStackSystem; // raw System and I/O Wait, to choose reduced points by (#1022)
-    std::vector<double> m_CpuStackIowait;
+    // The stacked bands' reduced points (#1022), kept until the next publication (#1139)
+    UI::Widgets::ReducedPointsCache m_CpuStackReduction;
+    std::vector<double> m_CpuStackYBusy; // Bottom of the I/O Wait band: the busy total, 100 - idle - iowait
 
     std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
     bool m_ForceRefresh = false;

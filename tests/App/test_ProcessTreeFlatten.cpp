@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <tuple>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -196,6 +197,139 @@ TEST(ProcessTreeFlattenTest, StartingDepthOffsetsEveryRow)
     ASSERT_EQ(rows.size(), 2U);
     EXPECT_EQ(rows[0].depth, 5);
     EXPECT_EQ(rows[1].depth, 6);
+}
+
+// =============================================================================
+// Whole-tree build and its cache (#1138)
+// =============================================================================
+
+/// The rows renderTreeView() used to build every frame: a hash set of the filtered indices, a second
+/// one of the filtered children, then one collectProcessTreeRows() walk per root. buildProcessTreeRows()
+/// must produce exactly these.
+[[nodiscard]] std::vector<ProcessTreeRow> referenceTreeRows(const std::vector<ProcessSnapshot>& snapshots,
+                                                            const std::vector<std::size_t>& filteredIndices,
+                                                            const std::unordered_set<std::uint64_t>& collapsedKeys)
+{
+    const std::unordered_set<std::size_t> filteredSet(filteredIndices.begin(), filteredIndices.end());
+    std::unordered_set<std::size_t> isChild;
+    for (const std::size_t idx : filteredIndices)
+    {
+        for (const std::size_t child : snapshots[idx].childrenIndices)
+        {
+            if (filteredSet.contains(child))
+            {
+                isChild.insert(child);
+            }
+        }
+    }
+    std::vector<ProcessTreeRow> rows;
+    for (const std::size_t idx : filteredIndices)
+    {
+        if (!isChild.contains(idx))
+        {
+            collectProcessTreeRows(snapshots, filteredSet, collapsedKeys, idx, 0, rows);
+        }
+    }
+    return rows;
+}
+
+void expectSameRows(const std::vector<ProcessTreeRow>& actual, const std::vector<ProcessTreeRow>& expected)
+{
+    ASSERT_EQ(actual.size(), expected.size());
+    for (std::size_t i = 0; i < actual.size(); ++i)
+    {
+        EXPECT_EQ(actual[i].procIdx, expected[i].procIdx) << "row " << i;
+        EXPECT_EQ(actual[i].depth, expected[i].depth) << "row " << i;
+        EXPECT_EQ(actual[i].hasChildren, expected[i].hasChildren) << "row " << i;
+        EXPECT_EQ(actual[i].isExpanded, expected[i].isExpanded) << "row " << i;
+    }
+}
+
+/// Two trees and a lone process: 0 -> {1 -> {3, 4}, 2}, 5 -> {6}, 7.
+[[nodiscard]] std::vector<ProcessSnapshot> forest()
+{
+    return {makeSnapshot(100, {1, 2}),
+            makeSnapshot(101, {3, 4}),
+            makeSnapshot(102),
+            makeSnapshot(103),
+            makeSnapshot(104),
+            makeSnapshot(105, {6}),
+            makeSnapshot(106),
+            makeSnapshot(107)};
+}
+
+TEST(ProcessTreeFlattenTest, WholeTreeBuildMatchesThePerFrameWalkItReplaces)
+{
+    const auto snapshots = forest();
+    ProcessTreeFlatten::TreeFlattenScratch scratch;
+    std::vector<ProcessTreeRow> rows;
+
+    const std::vector<std::size_t> all = {0, 1, 2, 3, 4, 5, 6, 7};
+    ProcessTreeFlatten::buildProcessTreeRows(snapshots, all, {}, scratch, rows);
+    expectSameRows(rows, referenceTreeRows(snapshots, all, {}));
+    ASSERT_EQ(rows.size(), 8U);
+
+    // A filtered-out parent promotes its filtered children to roots; a collapsed node hides its own.
+    const std::vector<std::size_t> filtered = {1, 3, 4, 5, 6, 7};
+    const std::unordered_set<std::uint64_t> collapsed = {105};
+    ProcessTreeFlatten::buildProcessTreeRows(snapshots, filtered, collapsed, scratch, rows);
+    expectSameRows(rows, referenceTreeRows(snapshots, filtered, collapsed));
+    ASSERT_EQ(rows.size(), 5U); // 1, 3, 4, 5 (collapsed: 6 hidden), 7
+    EXPECT_TRUE(rows[3].hasChildren);
+    EXPECT_FALSE(rows[3].isExpanded);
+}
+
+TEST(ProcessTreeFlattenTest, WholeTreeBuildIgnoresAChildIndexOutOfRange)
+{
+    // The hash sets treated an unknown index as filtered out; the bitmaps must too, not read past
+    // their end.
+    const std::vector<ProcessSnapshot> snapshots = {makeSnapshot(10, {1, 99}), makeSnapshot(11)};
+    ProcessTreeFlatten::TreeFlattenScratch scratch;
+    std::vector<ProcessTreeRow> rows;
+    ProcessTreeFlatten::buildProcessTreeRows(snapshots, {0, 1}, {}, scratch, rows);
+    ASSERT_EQ(rows.size(), 2U);
+    EXPECT_EQ(rows[0].procIdx, 0U);
+    EXPECT_TRUE(rows[0].hasChildren);
+    EXPECT_EQ(rows[1].procIdx, 1U);
+    EXPECT_EQ(rows[1].depth, 1);
+}
+
+TEST(ProcessTreeRowsCacheTest, RebuildsOnlyWhenTheSnapshotFilterOrCollapseStateChanges)
+{
+    const auto snapshots = forest();
+    std::vector<std::size_t> filtered = {0, 1, 2, 3, 4, 5, 6, 7};
+    std::unordered_set<std::uint64_t> collapsed;
+    ProcessTreeFlatten::ProcessTreeRowsCache cache;
+    ProcessTreeFlatten::ProcessTreeRowsKey key{.snapshotVersion = 1, .filterGeneration = 1, .collapseGeneration = 0};
+
+    EXPECT_EQ(cache.rows(key, snapshots, filtered, collapsed).size(), 8U);
+    EXPECT_EQ(cache.rows(key, snapshots, filtered, collapsed).size(), 8U); // a later frame: no rebuild
+    EXPECT_EQ(cache.buildCount(), 1U);
+
+    // Collapse toggle: the panel advances collapseGeneration with the set.
+    collapsed.insert(101);
+    ++key.collapseGeneration;
+    const auto& afterCollapse = cache.rows(key, snapshots, filtered, collapsed);
+    expectSameRows(afterCollapse, referenceTreeRows(snapshots, filtered, collapsed));
+    EXPECT_EQ(afterCollapse.size(), 6U);
+    EXPECT_EQ(cache.buildCount(), 2U);
+
+    // Filter change: the panel advances filterGeneration when it rebuilds the indices.
+    filtered = {5, 6, 7};
+    ++key.filterGeneration;
+    EXPECT_EQ(cache.rows(key, snapshots, filtered, collapsed).size(), 3U);
+    EXPECT_EQ(cache.buildCount(), 3U);
+
+    // New snapshot.
+    ++key.snapshotVersion;
+    std::ignore = cache.rows(key, snapshots, filtered, collapsed);
+    EXPECT_EQ(cache.buildCount(), 4U);
+    std::ignore = cache.rows(key, snapshots, filtered, collapsed);
+    EXPECT_EQ(cache.buildCount(), 4U);
+
+    cache.invalidate();
+    std::ignore = cache.rows(key, snapshots, filtered, collapsed);
+    EXPECT_EQ(cache.buildCount(), 5U);
 }
 
 } // namespace

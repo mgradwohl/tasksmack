@@ -271,23 +271,26 @@ void renderCpuCoresSection(RenderContext& ctx)
                             // tail of the samples, so index i is the same sample in both.
                             const auto sampleData = tailAlignedSpan(samples, timeData.size()).values;
                             const auto& themeRef = theme;
-                            const auto& axisCfg = axisConfig;
 
-                            const auto plotFn = [&timeData, &sampleData, &themeRef, &axisCfg, &coreLabel, &coreName, plotHeight]
+                            // coreLabel.c_str() (not a constant "##PerCorePlot"), so RenderMetrics
+                            // records a distinct entry per core instead of collapsing every core's
+                            // plot into one: HistoryChart reads config.id verbatim as its
+                            // RenderMetrics key, ignoring the surrounding PushID(coreIdx) scope
+                            // entirely -- that scope only disambiguates ImGui/ImPlot's own widget
+                            // state, not this. ImPlotFlags_NoTitle keeps the plot title hidden
+                            // (coreLabel has no "##" prefix to hide it via ImPlot's usual
+                            // Label##ID convention) without needing to allocate a new string just
+                            // to add one (#823 review).
+                            auto coreCfg = UI::Widgets::percentHistoryConfig(coreLabel.c_str(), axisConfig.xMin, axisConfig.xMax);
+                            coreCfg.flags |= ImPlotFlags_NoTitle;
+                            coreCfg.showLegend = false;
+                            coreCfg.height = plotHeight;
+                            // Every core's history comes from the one publication, so each chart keeps
+                            // its reduced points until the next one (#1139).
+                            coreCfg.dataGeneration = ctx.chartDataGeneration;
+
+                            const auto plotFn = [&timeData, &sampleData, &themeRef, &coreCfg, &coreName]
                             {
-                                // coreLabel.c_str() (not a constant "##PerCorePlot"), so RenderMetrics
-                                // records a distinct entry per core instead of collapsing every core's
-                                // plot into one: HistoryChart reads config.id verbatim as its
-                                // RenderMetrics key, ignoring the surrounding PushID(coreIdx) scope
-                                // entirely -- that scope only disambiguates ImGui/ImPlot's own widget
-                                // state, not this. ImPlotFlags_NoTitle keeps the plot title hidden
-                                // (coreLabel has no "##" prefix to hide it via ImPlot's usual
-                                // Label##ID convention) without needing to allocate a new string just
-                                // to add one (#823 review).
-                                auto coreCfg = UI::Widgets::percentHistoryConfig(coreLabel.c_str(), axisCfg.xMin, axisCfg.xMax);
-                                coreCfg.flags |= ImPlotFlags_NoTitle;
-                                coreCfg.showLegend = false;
-                                coreCfg.height = plotHeight;
                                 const UI::Widgets::HistoryChart chart(coreCfg);
                                 if (chart.active())
                                 {
@@ -348,11 +351,20 @@ void updateSmoothedPerCore(const Domain::SystemSnapshot& snap, RenderContext& ct
     const size_t knownCores = std::min(ctx.smoothedPerCore->size(), numCores);
     ctx.smoothedPerCore->resize(numCores, 0.0);
 
+    // Indexed by core id, like snap.cpuPerCore. A core id with no reading this sample (NaN, e.g. an
+    // offline core) shows N/A rather than easing towards 0%, and starts at its value when it comes
+    // back rather than easing up from the stale one (#1229).
     for (size_t i = 0; i < numCores; ++i)
     {
-        const double target = clampPercent(snap.cpuPerCore[i].totalPercent);
         double& current = (*ctx.smoothedPerCore)[i];
-        const bool initialized = (i < knownCores) && (ctx.lastDeltaSeconds > 0.0F);
+        const double reading = snap.cpuPerCore[i].totalPercent;
+        if (std::isnan(reading))
+        {
+            current = std::numeric_limits<double>::quiet_NaN();
+            continue;
+        }
+        const double target = clampPercent(reading);
+        const bool initialized = (i < knownCores) && !std::isnan(current) && (ctx.lastDeltaSeconds > 0.0F);
         current = clampPercent(initializeOrSmooth(current, target, alpha, initialized));
     }
 }
