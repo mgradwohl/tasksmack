@@ -95,13 +95,44 @@ template<typename DescribeOpenFailure>
     return {.handle = std::move(handle), .result = ProcessActionResult::ok()};
 }
 
+/// EnumWindows state for Terminate: the process whose windows to close, and how many were asked.
+struct CloseRequest
+{
+    DWORD pid = 0;
+    int eligible = 0;     ///< Windows that should be asked
+    int failed = 0;       ///< Of those, how many PostMessage refused
+    DWORD firstError = 0; ///< GetLastError() for the first refusal
+};
+
+/// Posts WM_CLOSE to each of the target's top-level windows that a user would close (see
+/// isCloseRequestWindow). PostMessage, not SendMessage: the target may show a "save changes?"
+/// prompt, and TaskSmack must not wait on it.
+BOOL CALLBACK postCloseToProcessWindow(HWND window, LPARAM param)
+{
+    auto* request = reinterpret_cast<CloseRequest*>(param); // NOLINT(performance-no-int-to-ptr) - EnumWindows' LPARAM
+    DWORD windowPid = 0;
+    GetWindowThreadProcessId(window, &windowPid);
+    const bool isToolWindow = (static_cast<DWORD>(GetWindowLongPtrW(window, GWL_EXSTYLE)) & WS_EX_TOOLWINDOW) != 0;
+    if (!isCloseRequestWindow(windowPid, request->pid, IsWindowVisible(window) != 0, GetWindow(window, GW_OWNER) != nullptr, isToolWindow))
+    {
+        return TRUE;
+    }
+    ++request->eligible;
+    // GetLastError() straight after the refused PostMessage, before any other call can reset it.
+    if (PostMessageW(window, WM_CLOSE, 0, 0) == 0 && request->failed++ == 0)
+    {
+        request->firstError = GetLastError();
+    }
+    return TRUE;
+}
+
 } // namespace
 
 ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
 {
     return ProcessActionCapabilities{
-        .canTerminate = true,   // TerminateProcess
-        .canKill = true,        // TerminateProcess (same as terminate on Windows)
+        .canTerminate = true,   // WM_CLOSE to the process's windows: a request it may answer (#1094)
+        .canKill = true,        // TerminateProcess
         .canStop = false,       // Windows doesn't have SIGSTOP equivalent
         .canContinue = false,   // Windows doesn't have SIGCONT equivalent
         .canSetPriority = true, // SetPriorityClass
@@ -110,13 +141,38 @@ ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
 
 ProcessActionResult WindowsProcessActions::terminate(const ProcessTarget& target)
 {
-    spdlog::info("Terminating process {}", target.pid);
-    return terminateProcess(target, 1);
+    // A request to exit, as SIGTERM is on Linux: close the process's windows, so it can save, ask
+    // to, or refuse. It used to be TerminateProcess, the same as Kill, though the UI promised a
+    // graceful shutdown and users pick Terminate over Kill to keep unsaved work (#1094).
+    spdlog::info("Asking process {} to close", target.pid);
+    // The verified handle is held while the windows are enumerated, so the PID cannot be reused
+    // by another process between the identity check and the close requests.
+    const VerifiedProcess process = openVerified(
+        target, SYNCHRONIZE, [&target](DWORD error) { return std::format("Failed to open process {}: error {}", target.pid, error); });
+    if (!process.handle)
+    {
+        return process.result;
+    }
+
+    CloseRequest request{.pid = static_cast<DWORD>(target.pid)};
+    // The callback never stops the enumeration, so a zero return is a failure: some windows may not
+    // have been examined, and the counts below would describe only part of the process.
+    if (EnumWindows(postCloseToProcessWindow, reinterpret_cast<LPARAM>(&request)) == 0)
+    {
+        return ProcessActionResult::error(
+            std::format("Could not list the windows of process {} to ask it to close: error {}", target.pid, GetLastError()));
+    }
+    if (std::string failure = closeRequestFailure(target.pid, request.eligible, request.failed, request.firstError); !failure.empty())
+    {
+        spdlog::info("{}", failure);
+        return ProcessActionResult::error(std::move(failure));
+    }
+    spdlog::info("Asked {} window(s) of process {} to close", request.eligible, target.pid);
+    return ProcessActionResult::ok();
 }
 
 ProcessActionResult WindowsProcessActions::kill(const ProcessTarget& target)
 {
-    // On Windows, kill is the same as terminate
     spdlog::info("Killing process {}", target.pid);
     return terminateProcess(target, 9);
 }

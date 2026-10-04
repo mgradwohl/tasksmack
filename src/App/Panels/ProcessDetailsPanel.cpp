@@ -2236,7 +2236,7 @@ void ProcessDetailsPanel::renderActionButtons()
             }
             if (ImGui::IsItemHovered())
             {
-                ImGui::SetTooltip("Request graceful shutdown");
+                ImGui::SetTooltip("Ask the process to exit: it can save its work first, or refuse");
             }
         }
 
