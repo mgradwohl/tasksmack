@@ -885,6 +885,11 @@ pwsh tools/analyze-etw.ps1 -TracePath .\perf-data\etw-app-<timestamp>.etl
 # Skip function decoding (faster, module-level only)
 pwsh tools/analyze-etw.ps1 -TracePath .\perf-data\etw-app-<timestamp>.etl -SkipFunctions
 
+# Also measure the recording's own cost inside TaskSmack (ETW logging path), optionally
+# within an interval in microseconds from trace start
+pwsh tools/analyze-etw.ps1 -TracePath .\perf-data\etw-app-<timestamp>.etl -Overhead
+pwsh tools/analyze-etw.ps1 -TracePath .\run\trace.etl -SymbolPath .\run\bin -Overhead -RangeStartUs 12000000 -RangeEndUs 13064000
+
 # Optional VTune workflow if installed
 vtune -collect hotspots -- .\build\win-profile\bin\TaskSmack.exe
 ```
@@ -896,6 +901,23 @@ Notes:
   another recorder prevents startup, leave it alone and coordinate with its owner.
 - Prefer `win-optimized` for real-world timing; use `win-profile` when you need function-level symbol attribution.
 - Function decoding against `win-optimized` binaries may be limited (no debug info); `analyze-etw.ps1` degrades gracefully with an explanatory message.
+- `analyze-etw.ps1` judges every trace before you rely on it (#873) and prints, and writes to
+  `<trace>-analysis.json`, a **Valid / Degraded / Invalid** verdict with reasons:
+  - **Lost events and buffers**, as a count and a share of all events. More than 1% lost, or
+    any lost buffer, is Invalid (`-MaxLostEventsPct`).
+  - **Symbol identity**: the binary in `-SymbolPath` must be the build the trace captured; its
+    PDB signature and age are compared with the ones the trace recorded. A mismatch is flagged.
+  - **Unresolved functions**: the share of the target module's samples with no function name.
+    More than 10% is Invalid (`-MaxUnresolvedPct`).
+
+  An Invalid trace is still exported for inspection, but the script exits with code 3 unless
+  `-AllowInvalid` is passed. In the reports, `ProcessSharePct` is a share of the process's
+  sampled CPU and `AppCodeSharePct` a share of `TaskSmack.exe!*` samples only; `CpuMs` is
+  absolute sampled CPU.
+- `-Overhead` (#931) reports how much of the process's sampled CPU was ETW's own logging path,
+  in `<trace>-overhead.json`, so a capture can answer "how much of this was my own measurement?"
+  It downloads only the kernel PDB the trace recorded, into `perf-data\KernelSymbols`; if the
+  kernel's functions still do not resolve, it says so instead of reporting a low share.
 - Capture uses `tools/TaskSmackCPU.wprp`, a custom WPR profile with larger buffers than the
   built-in `CPU` profile, to avoid the "trace has dropped N events" warning that the built-in
   profile produces on machines with many logical cores under system-wide sampling.
@@ -1038,9 +1060,10 @@ correlate GPU/DWM events. Sampled CPU totals alone do not explain a two-second w
 Repeat the same workload across multiple captures on the affected hardware. Record max
 and counts strictly above 100/250 ms alongside rolling p99; absence of a reproduced freeze
 in one run is not a root-cause fix. Script lifecycle/error tests run via
-`ctest --preset win-debug -R "ResizeCaptureScript|EtwCaptureScript"` when PowerShell 7 is
-available, or `pwsh -File tools\test-profile-etw-resize.ps1` and
-`pwsh -File tools\test-profile-etw.ps1`; they mock WPR and never start a recording.
+`ctest --preset win-debug -R "ResizeCaptureScript|EtwCaptureScript|EtwAnalysisScript"` when
+PowerShell 7 is available, or `pwsh -File tools\test-profile-etw-resize.ps1`,
+`pwsh -File tools\test-profile-etw.ps1` and `pwsh -File tools\test-analyze-etw.ps1`. The
+capture tests mock WPR and never start a recording; the analysis tests use canned xperf output.
 
 ### Compile-Time Profiling (-ftime-trace)
 
