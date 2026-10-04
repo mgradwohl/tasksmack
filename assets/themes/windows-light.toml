@@ -116,7 +116,7 @@ idle_fill = "#D0D0D033"      # Light gray with 20% alpha - idle fill
 high   = "#E74856"     # Red (matches progress.high)
 normal = "#107C10"     # Green (matches progress.low)
 low    = "#7F7AD6"     # Purple
-badge_text_color = "#1A1A1A"  # Near-black - readable on all priority badge colors (light theme)
+badge_text_color = "#1A1A1A"  # Preferred badge text; a fill it is too faint on gets the other text colour (#1130)
 
 [buttons.close]
 hovered = "#CC1A1A"     # Dark red hover

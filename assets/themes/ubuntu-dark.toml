@@ -116,7 +116,7 @@ idle_fill = "#3D3D3D33"      # Dark gray with 20% alpha - idle fill
 high   = "#E01B24"     # Ubuntu Red (matches progress.high)
 normal = "#33D17A"     # Ubuntu Green (matches progress.low)
 low    = "#9A9CFF"     # Light Purple
-badge_text_color = "#FFFFFF"  # White - readable on all priority badge colors
+badge_text_color = "#FFFFFF"  # Preferred badge text; a fill it is too faint on gets the other text colour (#1130)
 
 [buttons.close]
 hovered = "#CC1A1A"     # Dark red hover

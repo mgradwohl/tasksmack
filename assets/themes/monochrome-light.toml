@@ -116,7 +116,7 @@ idle_fill = "#C8E6C933"      # Very light green with 20% alpha - idle fill
 high   = "#1B5E20"     # Darkest green (most alarming on light background)
 normal = "#4CAF50"     # Medium green
 low    = "#81C784"     # Light green (least prominent)
-badge_text_color = "#1A1A1A"  # Near-black - readable on all priority badge colors (light theme)
+badge_text_color = "#1A1A1A"  # Preferred badge text; a fill it is too faint on gets the other text colour (#1130)
 
 [buttons.close]
 hovered = "#CC1A1A"     # Dark red hover

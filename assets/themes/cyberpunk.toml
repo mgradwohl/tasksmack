@@ -117,7 +117,7 @@ idle_fill = "#66668033"      # Muted with 20% alpha - idle fill
 high   = "#FF1744"     # Red (accents[7])
 normal = "#76FF03"     # Neon Green (accents[3])
 low    = "#7C4DFF"     # Violet (accents[2])
-badge_text_color = "#FFFFFF"  # White - readable on all priority badge colors
+badge_text_color = "#FFFFFF"  # Preferred badge text; a fill it is too faint on gets the other text colour (#1130)
 
 [buttons.close]
 hovered = "#CC1A1A"     # Dark red hover
