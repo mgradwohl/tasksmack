@@ -119,6 +119,18 @@ TEST(WindowGeometryTest, AWindowLargerThanTheDisplayIsShrunkToFit)
     EXPECT_EQ(fitRectToDisplays(saved, displays, 0, MIN_VISIBLE), (Rect{.x = 0, .y = 0, .width = 1366, .height = 728}));
 }
 
+TEST(WindowGeometryTest, ShrinkingAWindowReachableOnlyByItsFarEdgeMovesItOnScreen)
+{
+    // #1253 review: 64 px of this 3000-wide window are on the 1920-wide display. Shrinking it to the
+    // display's width while keeping x = -2936 would leave it entirely off-screen, so it is moved just
+    // far enough to lie on the display (x clamped to 0); y was already fine and is kept.
+    const std::array displays{Rect{.x = 0, .y = 0, .width = 1920, .height = 1080}};
+    const Rect saved{.x = -2936, .y = 100, .width = 3000, .height = 720};
+    const Rect fitted = fitRectToDisplays(saved, displays, 0, MIN_VISIBLE);
+    EXPECT_EQ(fitted, (Rect{.x = 0, .y = 100, .width = 1920, .height = 720}));
+    EXPECT_TRUE(isReachableOn(fitted, displays[0], MIN_VISIBLE));
+}
+
 TEST(WindowGeometryTest, AnOffScreenWindowLargerThanThePrimaryIsShrunkAndCentred)
 {
     const std::array displays{Rect{.x = 0, .y = 0, .width = 1366, .height = 728}};

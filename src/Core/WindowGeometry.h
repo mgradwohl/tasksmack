@@ -134,6 +134,21 @@ inline constexpr int MIN_VISIBLE_EXTENT = 64;
         Rect fitted = saved;
         fitted.width = std::min(saved.width, display.width);
         fitted.height = std::min(saved.height, display.height);
+        // Shrinking keeps the origin, so a window reachable only by its far edge (mostly off the left
+        // of the display) can lose that edge: {-2936, 100, 3000, 720} on a 1920-wide display would
+        // become {-2936, 100, 1920, 720}, entirely off-screen. Then move it just far enough to lie
+        // on the display, keeping as much of the saved position as fits.
+        if (!isReachableOn(fitted, display, minVisible))
+        {
+            const auto clampAxis = [](int pos, int length, int start, int span)
+            {
+                const std::int64_t lo = start;
+                const std::int64_t hi = static_cast<std::int64_t>(start) + span - length; // >= lo: length <= span
+                return static_cast<int>(std::clamp<std::int64_t>(pos, lo, hi));
+            };
+            fitted.x = clampAxis(fitted.x, fitted.width, display.x, display.width);
+            fitted.y = clampAxis(fitted.y, fitted.height, display.y, display.height);
+        }
         return fitted;
     }
 
