@@ -444,15 +444,35 @@ TEST(LinuxROCmGPUProbeTest, ATransientFailureAtEnumerationKeepsTheSensors)
     EXPECT_TRUE(full.hasClockSpeeds);
     const auto partial = gpus[1].sensorCapabilities.value_or(GPUCapabilities{});
     // The junction read isn't failed by the mock, so its definitive NOT_FOUND still means unsupported.
-    // (Device 1's clock is masked by the busy reply here; kept as supported, it shows a gap until read.)
     EXPECT_FALSE(partial.hasHotspotTemp);
 
     ASSERT_FALSE(counters.empty());
     EXPECT_TRUE(counters[0].temperatureAvailable);
 }
 
+// #1272 review: a clock sample that can't be decoded at enumeration keeps the clock capability (the
+// chart and bar stay), and each undecodable reading is reported unavailable -- a gap -- not hidden.
+TEST(LinuxROCmGPUProbeTest, AnUndecodableClockAtEnumerationKeepsTheClock)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    ROCmGPUProbe probe("/nonexistent/tasksmack/pci");
+    ASSERT_TRUE(probe.isAvailable());
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_GE(gpus.size(), 2U);
+    EXPECT_TRUE(gpus[1].sensorCapabilities.value_or(GPUCapabilities{}).hasClockSpeeds); // mock device 1: index out of range
+
+    const auto counters = probe.readGPUCounters();
+    ASSERT_GE(counters.size(), 2U);
+    EXPECT_FALSE(counters[1].gpuClockAvailable);
+    EXPECT_TRUE(counters[0].gpuClockAvailable);
+}
+
 // #1112: each device's sensors, from which reads succeed at enumeration. Mock device 1 has no
-// junction sensor, no fan and an unreadable GPU clock; device 0 has all of them.
+// junction sensor, no fan and an undecodable GPU clock sample; device 0 has all of them.
 TEST(LinuxROCmGPUProbeTest, SensorCapabilitiesArePerDevice)
 {
     const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
@@ -479,7 +499,9 @@ TEST(LinuxROCmGPUProbeTest, SensorCapabilitiesArePerDevice)
     EXPECT_TRUE(partial.hasTemperature);
     EXPECT_FALSE(partial.hasHotspotTemp);
     EXPECT_TRUE(partial.hasPowerMetrics);
-    EXPECT_FALSE(partial.hasClockSpeeds);
+    // Its clock query succeeds but the sample can't be decoded (current index out of range). That
+    // isn't "unsupported": the clock is kept and its readings are unavailable until one decodes.
+    EXPECT_TRUE(partial.hasClockSpeeds);
     EXPECT_FALSE(partial.hasFanSpeed);
 }
 

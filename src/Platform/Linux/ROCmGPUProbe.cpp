@@ -422,10 +422,10 @@ std::vector<GPUInfo> ROCmGPUProbe::enumerateGPUs()
             sensors.hasPowerMetrics = supported(m_Impl->rsmi_dev_power_ave_get(deviceIdx, 0, &probePower));
             ROCmGPUProbeMath::RsmiFrequenciesBuffer probeFreq;
             const rsmi_status_t freqResult = m_Impl->rsmi_dev_gpu_clk_freq_get(deviceIdx, RSMI_CLK_TYPE_SYS, asFrequencies(probeFreq));
-            // A successful read must also parse; a transient failure keeps the clock.
-            sensors.hasClockSpeeds = (freqResult == RSMI_STATUS_SUCCESS)
-                                       ? ROCmGPUProbeMath::currentFrequencyHz(probeFreq, m_Impl->frequenciesLayout).has_value()
-                                       : supported(freqResult);
+            // Only a definitive answer removes the clock. A sample that came back but can't be decoded
+            // now (a zero frequency, an out-of-range current index) may decode next time, and
+            // readGPUCounters() already reports such samples as unavailable (a gap).
+            sensors.hasClockSpeeds = supported(freqResult);
             std::int64_t probeFan = 0;
             sensors.hasFanSpeed = sensors.hasFanSpeed && supported(m_Impl->rsmi_dev_fan_speed_get(deviceIdx, 0, &probeFan));
             info.sensorCapabilities = sensors;
