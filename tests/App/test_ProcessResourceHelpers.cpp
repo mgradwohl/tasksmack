@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <limits>
+#include <optional>
 #include <vector>
 
 namespace App::Detail
@@ -54,6 +55,32 @@ TEST(ProcessResourceHelpersTest, ASeriesWithNoSampleIsNotDrawn)
     EXPECT_FALSE(hasAnySample(std::vector<double>{}));
     EXPECT_FALSE(hasAnySample(std::vector<double>{MISSING, MISSING}));
     EXPECT_TRUE(hasAnySample(std::vector<double>{MISSING, 0.0}));
+}
+
+TEST(ProcessResourceHelpersTest, MissingReadingMakesTheValueUnavailableAndTheNextStartsFresh)
+{
+    // valid -> missing -> valid: the missing sample doesn't ease the value toward 0, and the next
+    // reading is taken as-is rather than smoothed from the stale value (#1148).
+    SmoothedOptionalReading gdi = smoothOptionalReading({}, 100.0, 0.5, false);
+    EXPECT_TRUE(gdi.available);
+    EXPECT_DOUBLE_EQ(gdi.value, 100.0);
+
+    gdi = smoothOptionalReading(gdi, 200.0, 0.5, true);
+    EXPECT_TRUE(gdi.available);
+    EXPECT_DOUBLE_EQ(gdi.value, 150.0); // smoothed halfway
+
+    gdi = smoothOptionalReading(gdi, std::nullopt, 0.5, true);
+    EXPECT_FALSE(gdi.available);
+    EXPECT_DOUBLE_EQ(gdi.value, 150.0); // not eased toward 0
+
+    gdi = smoothOptionalReading(gdi, 40.0, 0.5, true);
+    EXPECT_TRUE(gdi.available);
+    EXPECT_DOUBLE_EQ(gdi.value, 40.0); // starts fresh
+}
+
+TEST(ProcessResourceHelpersTest, OptionalReadingIsNeverNegative)
+{
+    EXPECT_DOUBLE_EQ(smoothOptionalReading({}, -5.0, 0.5, false).value, 0.0);
 }
 
 } // namespace

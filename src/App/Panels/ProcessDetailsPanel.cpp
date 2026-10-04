@@ -537,10 +537,6 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
     const double targetPower = std::max(0.0, snapshot.powerWatts);
     const double targetGpuUtil = UI::Format::clampPercent(snapshot.gpuUtilPercent);
     const double targetGpuMem = Domain::Numeric::toDouble(snapshot.gpuMemoryBytes);
-    // Use 0 when GDI count is unavailable (nullopt) so the exponential smoother keeps a
-    // neutral baseline rather than tracking stale data. The history chart uses NaN for
-    // nullopt samples instead, so the two representations serve different purposes.
-    const double targetGdiObjects = std::max(0.0, Domain::Numeric::toDouble(snapshot.gdiObjectCount.value_or(0)));
     // The Memory bars' percents, on the same RAM scale as the Memory chart's history.
     const double percentPerByte = memoryPercentPerByte(snapshot);
     const double targetMemUsedPercent = std::clamp(snapshot.memoryPercent, 0.0, 100.0);
@@ -572,8 +568,15 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
     m_SmoothedUsage.gpuUtilPercent =
         UI::Format::clampPercent(initializeOrSmooth(m_SmoothedUsage.gpuUtilPercent, targetGpuUtil, alpha, initialized));
     m_SmoothedUsage.gpuMemoryBytes = std::max(0.0, initializeOrSmooth(m_SmoothedUsage.gpuMemoryBytes, targetGpuMem, alpha, initialized));
-    m_SmoothedUsage.gdiObjectCount =
-        std::max(0.0, initializeOrSmooth(m_SmoothedUsage.gdiObjectCount, targetGdiObjects, alpha, initialized));
+    // A sample with no GDI reading isn't smoothed toward 0: the NowBar shows N/A for it instead,
+    // matching the gap in the line, and the next reading starts afresh (#1148).
+    const auto gdi = Detail::smoothOptionalReading(
+        {.value = m_SmoothedUsage.gdiObjectCount, .available = m_SmoothedUsage.gdiInitialized},
+        snapshot.gdiObjectCount.has_value() ? std::optional<double>(Domain::Numeric::toDouble(*snapshot.gdiObjectCount)) : std::nullopt,
+        alpha,
+        initialized);
+    m_SmoothedUsage.gdiObjectCount = gdi.value;
+    m_SmoothedUsage.gdiInitialized = gdi.available;
     m_SmoothedUsage.memoryUsedPercent = initializeOrSmooth(m_SmoothedUsage.memoryUsedPercent, targetMemUsedPercent, alpha, initialized);
     m_SmoothedUsage.memorySharedPercent =
         initializeOrSmooth(m_SmoothedUsage.memorySharedPercent, targetMemSharedPercent, alpha, initialized);
@@ -1215,13 +1218,15 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
     // and shown as N/A, and a series with no reading at all -- a process TaskSmack cannot open -- is
     // not drawn (#1000).
     const NowBar gdiBar{
-        .valueText =
-            hasGdiSamples ? UI::Format::formatCountWithLabel(std::llround(m_SmoothedUsage.gdiObjectCount), "GDI") : std::string("N/A"),
+        .valueText = m_SmoothedUsage.gdiInitialized ? UI::Format::formatCountWithLabel(std::llround(m_SmoothedUsage.gdiObjectCount), "GDI")
+                                                    : std::string("N/A"),
         .label = GDI_LABEL,
-        .tooltipText = hasGdiSamples ? UI::Widgets::formatTooltipRow(
-                                           GDI_LABEL, UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.gdiObjectCount)))
-                                     : UI::Widgets::formatTooltipRow(GDI_LABEL, "N/A"),
-        .value01 = hasGdiSamples ? UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.gdiObjectCount, countAxisUpper) : 0.0,
+        .tooltipText =
+            m_SmoothedUsage.gdiInitialized
+                ? UI::Widgets::formatTooltipRow(GDI_LABEL, UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.gdiObjectCount)))
+                : UI::Widgets::formatTooltipRow(GDI_LABEL, "N/A"),
+        .value01 =
+            m_SmoothedUsage.gdiInitialized ? UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.gdiObjectCount, countAxisUpper) : 0.0,
         .color = theme.accentColor(4)};
 #endif
 
@@ -1939,7 +1944,7 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
             .valueText = UI::Format::percentCompact(m_SmoothedUsage.gpuUtilPercent),
             .label = GPU_UTIL_LABEL,
             .tooltipText = {},
-            .value01 = m_SmoothedUsage.gpuUtilPercent / 100.0,
+            .value01 = UI::Format::percent01(m_SmoothedUsage.gpuUtilPercent),
             .color = theme.scheme().gpuUtilization,
         };
 
