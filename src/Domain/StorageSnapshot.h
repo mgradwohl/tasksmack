@@ -33,6 +33,9 @@ struct DiskSnapshot
     double avgWriteTimeMs = 0.0;
 
     bool isPhysicalDevice = true;
+    // Whether the rate fields were measured. False for a disk's first sample and for a seed
+    // transition too short to measure, whose rates read 0; their history records a gap (#1102).
+    bool hasRates = false;
 };
 
 /// Aggregate storage metrics across all devices.

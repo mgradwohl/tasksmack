@@ -26,6 +26,17 @@
 namespace Domain
 {
 
+namespace
+{
+/// A system-wide rate for the history: NaN when no disk had measured rates in that sample (the
+/// seed transition), so the chart shows a gap rather than a false 0 B/s (#1102).
+[[nodiscard]] double totalRateOrNaN(const StorageSnapshot& snapshot, double StorageSnapshot::* total)
+{
+    const bool anyRates = std::ranges::any_of(snapshot.disks, &DiskSnapshot::hasRates);
+    return anyRates ? snapshot.*total : std::numeric_limits<double>::quiet_NaN();
+}
+} // namespace
+
 StorageModel::StorageModel(std::unique_ptr<Platform::IDiskProbe> probe)
     : m_Probe(std::move(probe)), m_StartTime(std::chrono::steady_clock::now())
 {
@@ -140,8 +151,10 @@ void StorageModel::sampleAt(const std::chrono::steady_clock::time_point now)
                     writeHistory.push(std::numeric_limits<double>::quiet_NaN());
                 }
             }
-            m_DiskReadHistory[name].push(disk.readBytesPerSec);
-            m_DiskWriteHistory[name].push(disk.writeBytesPerSec);
+            // A disk without measured rates yet has a gap here, not a false 0 B/s (#1102).
+            constexpr double NO_READING = std::numeric_limits<double>::quiet_NaN();
+            m_DiskReadHistory[name].push(disk.hasRates ? disk.readBytesPerSec : NO_READING);
+            m_DiskWriteHistory[name].push(disk.hasRates ? disk.writeBytesPerSec : NO_READING);
             m_DiskLastSeenSeconds[name] = nowSeconds;
         }
         // Append a NaN placeholder for known disks absent from this sample.
@@ -233,8 +246,8 @@ void StorageModel::publish()
     for (std::size_t i = 0; i < m_History.size(); ++i)
     {
         const auto& snapshot = m_History.ref(i);
-        publication->totalReadHistory.push_back(snapshot.totalReadBytesPerSec);
-        publication->totalWriteHistory.push_back(snapshot.totalWriteBytesPerSec);
+        publication->totalReadHistory.push_back(totalRateOrNaN(snapshot, &StorageSnapshot::totalReadBytesPerSec));
+        publication->totalWriteHistory.push_back(totalRateOrNaN(snapshot, &StorageSnapshot::totalWriteBytesPerSec));
     }
     publication->perDiskHistory.reserve(m_DiskOrder.size());
     for (const auto& name : m_DiskOrder)
@@ -300,6 +313,7 @@ StorageModel::computeDiskSnapshot(const Platform::DiskCounters& current, DiskSta
     const std::uint64_t deltaIoTime = Numeric::counterDelta(current.ioTimeMs, state.prevCounters.ioTimeMs);
 
     // Compute rates
+    snap.hasRates = true;
     snap.readBytesPerSec = static_cast<double>(deltaReadSectors * current.sectorSize) / deltaSeconds;
     snap.writeBytesPerSec = static_cast<double>(deltaWriteSectors * current.sectorSize) / deltaSeconds;
     snap.readOpsPerSec = Numeric::toDouble(deltaReadOps) / deltaSeconds;
@@ -359,7 +373,7 @@ std::vector<double> StorageModel::totalReadHistory() const
     out.reserve(m_History.size());
     for (std::size_t i = 0; i < m_History.size(); ++i)
     {
-        out.push_back(m_History.ref(i).totalReadBytesPerSec);
+        out.push_back(totalRateOrNaN(m_History.ref(i), &StorageSnapshot::totalReadBytesPerSec));
     }
     return out;
 }
@@ -371,7 +385,7 @@ std::vector<double> StorageModel::totalWriteHistory() const
     out.reserve(m_History.size());
     for (std::size_t i = 0; i < m_History.size(); ++i)
     {
-        out.push_back(m_History.ref(i).totalWriteBytesPerSec);
+        out.push_back(totalRateOrNaN(m_History.ref(i), &StorageSnapshot::totalWriteBytesPerSec));
     }
     return out;
 }
