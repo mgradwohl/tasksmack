@@ -406,6 +406,10 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
         {
             counter.utilizationPercent = static_cast<double>(busyPercent);
         }
+        else
+        {
+            counter.utilizationAvailable = false; // Unread this sample: not a real 0% (#1111)
+        }
 
         // Memory usage (VRAM)
         std::uint64_t memUsed = 0;
@@ -414,12 +418,20 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
         {
             counter.memoryUsedBytes = memUsed;
         }
+        else
+        {
+            counter.memoryAvailable = false; // Unread this sample: not a real 0% (#1111)
+        }
 
         std::uint64_t memTotal = 0;
         result = m_Impl->rsmi_dev_memory_total_get(deviceIdx, RSMI_MEM_TYPE_VRAM, &memTotal);
         if (result == RSMI_STATUS_SUCCESS)
         {
             counter.memoryTotalBytes = memTotal;
+        }
+        else
+        {
+            counter.memoryAvailable = false;
         }
 
         // Memory utilization percentage is computed by Domain layer from memoryUsedBytes/memoryTotalBytes
@@ -431,6 +443,10 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
         if (result == RSMI_STATUS_SUCCESS)
         {
             counter.temperatureC = static_cast<std::int32_t>(tempMilliC / 1000); // Convert milli-degrees to degrees
+        }
+        else
+        {
+            counter.temperatureAvailable = false;
         }
 
         // Hotspot temperature (junction temperature)
@@ -452,6 +468,10 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
         {
             counter.powerDrawWatts = static_cast<double>(powerMicroW) / 1000000.0; // Convert µW to W
         }
+        else
+        {
+            counter.powerAvailable = false;
+        }
 
         // Power limit (power cap in microwatts)
         std::uint64_t powerCapMicroW = 0;
@@ -468,6 +488,10 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
             result == RSMI_STATUS_SUCCESS && hz.has_value())
         {
             counter.gpuClockMHz = static_cast<std::uint32_t>(*hz / 1000000); // Convert Hz to MHz
+        }
+        else
+        {
+            counter.gpuClockAvailable = false;
         }
 
         // Memory clock speed

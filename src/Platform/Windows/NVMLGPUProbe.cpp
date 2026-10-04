@@ -364,6 +364,10 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
             counter.memoryUsedBytes = memInfo.used;
             counter.memoryTotalBytes = memInfo.total;
         }
+        else
+        {
+            counter.memoryAvailable = false; // Unread this sample: not a real 0% (#1111)
+        }
 
         // Temperature (GPU die)
         unsigned int temp = 0;
@@ -372,6 +376,10 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
         {
             counter.temperatureC = static_cast<int32_t>(temp);
         }
+        else
+        {
+            counter.temperatureAvailable = false; // Unread this sample (timeout, GPU lost, TDR): not a real 0 (#1111)
+        }
 
         // Power usage (milliwatts) - raw counter only
         unsigned int powerMilliwatts = 0;
@@ -379,6 +387,10 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
         if (result == NVML_SUCCESS)
         {
             counter.powerDrawWatts = static_cast<double>(powerMilliwatts) / 1000.0;
+        }
+        else
+        {
+            counter.powerAvailable = false; // Unread this sample (timeout, GPU lost, TDR): not a real 0 (#1111)
         }
 
         // Power limit (milliwatts) - raw counter only
@@ -396,6 +408,10 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
         {
             counter.gpuClockMHz = gpuClock;
         }
+        else
+        {
+            counter.gpuClockAvailable = false; // Unread this sample (timeout, GPU lost, TDR): not a real 0 (#1111)
+        }
 
         // Memory clock (MHz)
         unsigned int memClock = 0;
@@ -411,6 +427,10 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
         if (result == NVML_SUCCESS)
         {
             counter.utilizationPercent = static_cast<double>(util.gpu);
+        }
+        else
+        {
+            counter.utilizationAvailable = false; // Unread this sample (timeout, GPU lost, TDR): not a real 0 (#1111)
         }
 
         // Fan speed: NVML returns percentage 0-100 directly, so the max is always 100 (see

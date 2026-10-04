@@ -104,6 +104,34 @@ TEST(MergeNVMLIntoDXGICountersTest, EmptyNVMLCountersLeavesDXGICountersUntouched
     EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 42.0);
 }
 
+TEST(MergeNVMLIntoDXGICountersTest, FailedNVMLUtilizationReadLeavesThePDHFallbackAvailable)
+{
+    // #1111: NVML's utilization read failed (timeout, TDR). The GPU must not be marked NVML-sourced
+    // with a real-looking 0%, which suppressed the valid PDH utilization; the read validity of the
+    // other fields comes along so they publish as gaps.
+    std::vector<GPUCounters> dxgi(1);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[0].utilizationPercent = 37.0; // a later PDH merge fills this in
+
+    std::vector<GPUCounters> nvml(1);
+    nvml[0].gpuId = "uuid-0";
+    nvml[0].utilizationAvailable = false;
+    nvml[0].utilizationPercent = 0.0;
+    nvml[0].temperatureAvailable = false;
+    nvml[0].powerAvailable = true;
+    nvml[0].powerDrawWatts = 80.0;
+
+    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0, 0}});
+
+    EXPECT_FALSE(sourced.contains("GPU0"));
+    EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 37.0);
+    // Unread until PDH supplies a reading, so no PDH sample means a gap, not DXGI's placeholder.
+    EXPECT_FALSE(dxgi[0].utilizationAvailable);
+    EXPECT_FALSE(dxgi[0].temperatureAvailable);
+    EXPECT_TRUE(dxgi[0].powerAvailable);
+    EXPECT_DOUBLE_EQ(dxgi[0].powerDrawWatts, 80.0);
+}
+
 TEST(MergeNVMLIntoDXGICountersTest, UnmappedDXGIIndexIsSkipped)
 {
     std::vector<GPUCounters> dxgi(1);
@@ -212,6 +240,26 @@ TEST(AllGPUsHaveNVMLUtilizationTest, FalseWhenAnyGPUIsMissing)
     EXPECT_FALSE(allGPUsHaveNVMLUtilization(dxgi, {"GPU0"}));
 }
 
+TEST(AssignPDHUtilizationToDXGICountersTest, PDHReadingRestoresAvailabilityAfterAFailedNVMLRead)
+{
+    // #1111: a GPU whose NVML utilization read failed is marked unread by the merge; PDH's reading
+    // is real, so it makes the field available again. Without PDH data it stays unread (a gap).
+    std::vector<GPUCounters> dxgi(2);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[0].utilizationAvailable = false;
+    dxgi[1].gpuId = "GPU1";
+    dxgi[1].utilizationAvailable = false;
+
+    const std::unordered_map<std::string, double> byLuid = {{"GPU_0xLUID0", 42.0}};
+    const std::unordered_map<std::string, std::string> idToLuid = {{"GPU0", "GPU_0xLUID0"}, {"GPU1", "GPU_0xLUID1"}};
+
+    assignPDHUtilizationToDXGICounters(dxgi, byLuid, idToLuid, {});
+
+    EXPECT_TRUE(dxgi[0].utilizationAvailable);
+    EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 42.0);
+    EXPECT_FALSE(dxgi[1].utilizationAvailable);
+}
+
 TEST(AssignPDHUtilizationToDXGICountersTest, AssignsClampedUtilizationForMatchedLuid)
 {
     std::vector<GPUCounters> dxgi(1);
@@ -238,6 +286,7 @@ TEST(AssignPDHUtilizationToDXGICountersTest, SkipsGPUsAlreadySourcedFromNVML)
     assignPDHUtilizationToDXGICounters(dxgi, byLuid, idToLuid, {"GPU0"});
 
     EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 7.0) << "NVML-sourced GPUs must not be overwritten by PDH";
+    EXPECT_TRUE(dxgi[0].utilizationAvailable);
 }
 
 TEST(AssignPDHUtilizationToDXGICountersTest, LeavesUtilizationUntouchedWhenNoLuidMapping)
@@ -250,6 +299,7 @@ TEST(AssignPDHUtilizationToDXGICountersTest, LeavesUtilizationUntouchedWhenNoLui
     assignPDHUtilizationToDXGICounters(dxgi, {{"GPU_0xLUID", 50.0}}, {}, {});
 
     EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 3.0);
+    EXPECT_FALSE(dxgi[0].utilizationAvailable) << "no PDH reading: a gap, not a real-looking value (#1111)";
 }
 
 TEST(AssignPDHUtilizationToDXGICountersTest, LeavesUtilizationUntouchedWhenLuidHasNoPDHData)
@@ -264,6 +314,7 @@ TEST(AssignPDHUtilizationToDXGICountersTest, LeavesUtilizationUntouchedWhenLuidH
     assignPDHUtilizationToDXGICounters(dxgi, {{"GPU_0xOther", 50.0}}, idToLuid, {});
 
     EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 3.0);
+    EXPECT_FALSE(dxgi[0].utilizationAvailable) << "no PDH reading: a gap, not a real-looking value (#1111)";
 }
 
 // ==========================================================================
@@ -491,12 +542,56 @@ TEST(MergeNVMLIntoDXGICountersTest, MemoryIdsListOnlyGPUsWhoseNVMLMemoryReadSucc
     nvml[0].memoryTotalBytes = 8ULL << 30U;
     nvml[0].memoryUsedBytes = 1ULL << 30U;
     nvml[1].gpuId = "uuid-1"; // Memory read failed
+    nvml[1].memoryAvailable = false;
 
     std::unordered_set<std::string> memoryIds;
     const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0U, 0U}, {1U, 1U}}, &memoryIds);
 
     EXPECT_EQ(sourced.size(), 2U);
     EXPECT_EQ(memoryIds, (std::unordered_set<std::string>{"GPU0"}));
+    // #1111: unread until PDH supplies the memory, so no PDH reading means a gap, not 0 bytes.
+    EXPECT_TRUE(dxgi[0].memoryAvailable);
+    EXPECT_FALSE(dxgi[1].memoryAvailable);
+}
+
+TEST(AssignPDHMemoryToDXGICountersTest, AnUnreadSegmentLeavesTheCounterUnavailable)
+{
+    // #1111: PDH read only the shared segment of a discrete GPU (the dedicated array failed), so its
+    // entry exists with dedicatedBytes 0. That is not a reading: the counter stays unread.
+    std::vector<GPUCounters> dxgi(1);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[0].memoryAvailable = false;
+    const std::unordered_map<std::string, AdapterMemoryUsage> memory = {
+        {"GPU_0x0_0x1", {.dedicatedBytes = 0, .sharedBytes = 200}},
+    };
+    const std::unordered_map<std::string, std::string> idToLuid = {{"GPU0", "GPU_0x0_0x1"}};
+    const std::unordered_map<std::string, bool> integrated = {{"GPU0", false}};
+
+    assignPDHMemoryToDXGICounters(dxgi, memory, idToLuid, integrated, {});
+
+    EXPECT_FALSE(dxgi[0].memoryAvailable);
+    EXPECT_EQ(dxgi[0].memoryUsedBytes, 0U);
+}
+
+TEST(AssignPDHMemoryToDXGICountersTest, PDHReadingRestoresAvailabilityAfterAFailedNVMLRead)
+{
+    // #1111: a GPU whose NVML memory read failed is marked unread by the merge; PDH's reading is
+    // real, so it makes memory available again. Without a PDH reading it stays unread (a gap).
+    std::vector<GPUCounters> dxgi(2);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[0].memoryAvailable = false;
+    dxgi[1].gpuId = "GPU1";
+    dxgi[1].memoryAvailable = false;
+    const std::unordered_map<std::string, AdapterMemoryUsage> memory = {
+        {"GPU_0x0_0x1", {.dedicatedBytes = 3'000'000'000, .sharedBytes = 200}},
+    };
+    const std::unordered_map<std::string, std::string> idToLuid = {{"GPU0", "GPU_0x0_0x1"}, {"GPU1", "GPU_0x0_0x2"}};
+
+    assignPDHMemoryToDXGICounters(dxgi, memory, idToLuid, {}, {});
+
+    EXPECT_TRUE(dxgi[0].memoryAvailable);
+    EXPECT_EQ(dxgi[0].memoryUsedBytes, 3'000'000'000U);
+    EXPECT_FALSE(dxgi[1].memoryAvailable);
 }
 
 TEST(AssignPDHMemoryToDXGICountersTest, IntegratedUsesSharedDiscreteUsesDedicated)
@@ -529,6 +624,9 @@ TEST(AssignPDHMemoryToDXGICountersTest, LeavesNVMLSourcedAndUnmappedGPUsAlone)
 
     EXPECT_EQ(dxgi[0].memoryUsedBytes, 42ULL);
     EXPECT_EQ(dxgi[1].memoryUsedBytes, 0ULL);
+    // #1111: NVML's memory stays available; the unmapped GPU has no reading, so it's a gap, not 0 bytes.
+    EXPECT_TRUE(dxgi[0].memoryAvailable);
+    EXPECT_FALSE(dxgi[1].memoryAvailable);
 }
 
 TEST(WindowsGPUProbeTest, ConstructionDoesNotThrow)
