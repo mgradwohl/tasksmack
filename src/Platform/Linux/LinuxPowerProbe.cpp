@@ -42,6 +42,13 @@ namespace
     return line;
 }
 
+/// An AC adapter type: "Mains", and USB charging sources in all their kernel spellings ("USB",
+/// "USB_C", "USB_PD", "USB_PD_DRP", "USB_DCP", "USB_CDP", ...), which USB-C laptops use (#1231 review).
+[[nodiscard]] bool isAdapterType(const std::string& type)
+{
+    return type == "Mains" || type.starts_with("USB");
+}
+
 /// A power supply that belongs to a peripheral -- a wireless mouse, keyboard, pen or headset --
 /// rather than to the system (sysfs `scope` = "Device"). Its battery is not the system's, and its
 /// charging state says nothing about whether the machine is on AC (#1109).
@@ -111,13 +118,6 @@ void LinuxPowerProbe::discoverBatteries()
             continue;
         }
         const std::string type = readFirstLine(devicePath + "/type");
-        // Adapters: "Mains", and USB charging sources in all their kernel spellings ("USB",
-        // "USB_C", "USB_PD", "USB_PD_DRP", "USB_DCP", "USB_CDP", ...), which USB-C laptops use (#1231 review).
-        if (type == "Mains" || type.starts_with("USB"))
-        {
-            m_MainsPaths.push_back(devicePath);
-            continue;
-        }
         if (type == "Battery")
         {
             const auto deviceName = entry.path().filename().string();
@@ -375,10 +375,20 @@ std::int64_t LinuxPowerProbe::readSysfsInt64(const std::string& path, std::int64
 
 std::optional<bool> LinuxPowerProbe::readMainsOnline() const
 {
+    // Listed afresh on every read, not cached at construction: a USB-C/PD charger's power-supply
+    // device appears only when it is plugged in, possibly long after the probe was created (#1231
+    // review). /sys/class/power_supply holds a handful of entries, so this is cheap.
+    namespace Fs = std::filesystem;
     std::optional<bool> online;
-    for (const auto& mainsPath : m_MainsPaths)
+    std::error_code ec;
+    for (Fs::directory_iterator it(m_PowerSupplyRoot, ec), end; !ec && it != end; it.increment(ec))
     {
-        const int value = readSysfsInt(mainsPath + "/online", -1);
+        const std::string devicePath = it->path().string();
+        if (isPeripheralSupply(devicePath) || !isAdapterType(readFirstLine(devicePath + "/type")))
+        {
+            continue;
+        }
+        const int value = readSysfsInt(devicePath + "/online", -1);
         if (value == 1)
         {
             return true;

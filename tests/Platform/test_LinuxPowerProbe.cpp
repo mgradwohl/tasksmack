@@ -68,9 +68,9 @@ TEST(LinuxPowerProbeTest, ReadSucceeds)
     }
     else
     {
-        // No battery present
+        // No battery present. isOnAc is the adapter's report where there is one (#1109), so it may
+        // be false on a battery-less host whose adapter reports offline; not asserted.
         EXPECT_EQ(counters.state, BatteryState::NotPresent);
-        EXPECT_TRUE(counters.isOnAc);
     }
 }
 
@@ -650,6 +650,23 @@ TEST_F(LinuxPowerProbeUnitTest, UsbPowerDeliveryChargerIsAnAdapter)
     writeFile(bat / "capacity", "70");
 
     LinuxPowerProbe probe(m_SysRoot.string());
+    EXPECT_TRUE(probe.read().isOnAc);
+}
+
+TEST_F(LinuxPowerProbeUnitTest, AdapterPluggedInAfterConstructionIsSeen)
+{
+    // A USB-C/PD charger's device appears on hot-plug; the probe must not only know the adapters
+    // that existed when it was created (#1231 review).
+    const auto bat = makeBatteryDevice("BAT0");
+    writeFile(bat / "status", "Discharging"); // stale
+    writeFile(bat / "capacity", "70");
+    LinuxPowerProbe probe(m_SysRoot.string());
+    EXPECT_FALSE(probe.read().isOnAc);
+
+    const auto charger = m_SysRoot / "ucsi-source-psy-USBC000:001";
+    std::filesystem::create_directories(charger);
+    writeFile(charger / "type", "USB_PD");
+    writeFile(charger / "online", "1");
     EXPECT_TRUE(probe.read().isOnAc);
 }
 

@@ -36,11 +36,10 @@ class LinuxPowerProbe : public IPowerProbe
     [[nodiscard]] static int readSysfsInt(const std::string& path, int fallback = -1);
     [[nodiscard]] static std::int64_t readSysfsInt64(const std::string& path, std::int64_t fallback = 0);
     /// Whether an AC adapter reports power: true if any is online, false if all report offline,
-    /// nullopt when there is none or none can be read.
+    /// nullopt when there is none or none can be read. Adapters are listed on every call.
     [[nodiscard]] std::optional<bool> readMainsOnline() const;
 
     std::vector<std::string> m_BatteryPaths; // Paths like "/sys/class/power_supply/BAT0"
-    std::vector<std::string> m_MainsPaths;   // AC adapters, like "/sys/class/power_supply/AC"
     std::string m_PowerSupplyRoot;           // Root sysfs path (injectable for testing)
     PowerCapabilities m_Capabilities;
 };
