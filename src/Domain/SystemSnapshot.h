@@ -26,6 +26,7 @@ struct PowerStatus
     bool isCharging = false;
     bool isDischarging = false;
     bool isFull = false;
+    bool isNotCharging = false; // Plugged in but held below full (#1158)
 
     // Charge percentage (0-100, or -1 if unavailable)
     int chargePercent = -1;
