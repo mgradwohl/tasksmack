@@ -169,6 +169,7 @@ inline void assignPDHMemoryToDXGICounters(std::vector<GPUCounters>& dxgiCounters
         const auto integratedIt = dxgiIdIsIntegrated.find(counter.gpuId);
         const bool integrated = (integratedIt != dxgiIdIsIntegrated.end()) && integratedIt->second;
         counter.memoryUsedBytes = integrated ? memIt->second.sharedBytes : memIt->second.dedicatedBytes;
+        counter.memoryAvailable = true; // A real reading, even after a failed NVML read (#1111)
     }
 }
 
@@ -253,6 +254,12 @@ mergeNVMLIntoDXGICounters(std::vector<GPUCounters>& dxgiCounters,
             {
                 nvmlMemoryIds->insert(dxgiCounter.gpuId);
             }
+        }
+        else if (!nvmlCounter.memoryAvailable)
+        {
+            // Unread until the PDH memory fallback supplies a reading; with none, this sample's
+            // memory is a gap rather than DXGI's placeholder 0 bytes (#1111).
+            dxgiCounter.memoryAvailable = false;
         }
     }
     return nvmlSourcedIds;

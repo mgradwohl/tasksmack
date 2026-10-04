@@ -449,12 +449,37 @@ TEST(MergeNVMLIntoDXGICountersTest, MemoryIdsListOnlyGPUsWhoseNVMLMemoryReadSucc
     nvml[0].memoryTotalBytes = 8ULL << 30U;
     nvml[0].memoryUsedBytes = 1ULL << 30U;
     nvml[1].gpuId = "uuid-1"; // Memory read failed
+    nvml[1].memoryAvailable = false;
 
     std::unordered_set<std::string> memoryIds;
     const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0U, 0U}, {1U, 1U}}, &memoryIds);
 
     EXPECT_EQ(sourced.size(), 2U);
     EXPECT_EQ(memoryIds, (std::unordered_set<std::string>{"GPU0"}));
+    // #1111: unread until PDH supplies the memory, so no PDH reading means a gap, not 0 bytes.
+    EXPECT_TRUE(dxgi[0].memoryAvailable);
+    EXPECT_FALSE(dxgi[1].memoryAvailable);
+}
+
+TEST(AssignPDHMemoryToDXGICountersTest, PDHReadingRestoresAvailabilityAfterAFailedNVMLRead)
+{
+    // #1111: a GPU whose NVML memory read failed is marked unread by the merge; PDH's reading is
+    // real, so it makes memory available again. Without a PDH reading it stays unread (a gap).
+    std::vector<GPUCounters> dxgi(2);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[0].memoryAvailable = false;
+    dxgi[1].gpuId = "GPU1";
+    dxgi[1].memoryAvailable = false;
+    const std::unordered_map<std::string, AdapterMemoryUsage> memory = {
+        {"GPU_0x0_0x1", {.dedicatedBytes = 3'000'000'000, .sharedBytes = 200}},
+    };
+    const std::unordered_map<std::string, std::string> idToLuid = {{"GPU0", "GPU_0x0_0x1"}, {"GPU1", "GPU_0x0_0x2"}};
+
+    assignPDHMemoryToDXGICounters(dxgi, memory, idToLuid, {}, {});
+
+    EXPECT_TRUE(dxgi[0].memoryAvailable);
+    EXPECT_EQ(dxgi[0].memoryUsedBytes, 3'000'000'000U);
+    EXPECT_FALSE(dxgi[1].memoryAvailable);
 }
 
 TEST(AssignPDHMemoryToDXGICountersTest, IntegratedUsesSharedDiscreteUsesDedicated)
