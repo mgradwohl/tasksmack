@@ -655,6 +655,13 @@ void UserConfig::save()
     text << "#   [process_table] layout: saved column widths, order and sort (written by TaskSmack; delete it to reset)\n";
     text << "#   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.\n\n";
     text << document;
+    // Stream exceptions are off, so a failed insertion (say, allocation) only sets badbit; its
+    // output would be incomplete. Stop before staging anything over the intact config.
+    if (!text)
+    {
+        spdlog::error("Not saving settings: couldn't serialise them");
+        return;
+    }
     const std::string contents = std::move(text).str();
 
     std::filesystem::path tempPath;
