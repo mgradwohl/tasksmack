@@ -1440,15 +1440,10 @@ TEST_F(UserConfigSaveLoadFixture, SavesUnderAUmaskThatMasksOwnerWrite)
 }
 
 #if defined(__linux__) && __has_include(<sys/xattr.h>)
-TEST_F(UserConfigSaveLoadFixture, SaveKeepsTheConfigsAccessControlList)
+/// A raw POSIX ACL xattr (version 2, then {tag, perm, id} entries) granting user `nobody` read:
+/// user::rw-, user:nobody:r--, group::---, mask::r--, other::---. Its mode bits read as 0640.
+[[nodiscard]] std::vector<char> nobodyCanReadAcl()
 {
-    // A named-user read grant with group::--- and mask::r-- reports mode 0640. Copying only that
-    // mode to the new file would let the whole group read it; the ACL must come along (#1222 review).
-    auto& config = UserConfig::get();
-    config.save();
-    const auto path = config.configPath();
-
-    // Raw system.posix_acl_access: version 2, then {tag, perm, id} entries.
     std::vector<char> acl;
     const auto put = [&acl](const auto value)
     {
@@ -1457,16 +1452,53 @@ TEST_F(UserConfigSaveLoadFixture, SaveKeepsTheConfigsAccessControlList)
     };
     constexpr std::uint32_t UNDEFINED_ID = 0xFFFFFFFF;
     put(std::uint32_t{2});
-    for (const auto& [tag, perm, id] : {std::tuple<std::uint16_t, std::uint16_t, std::uint32_t>{0x01, 6, UNDEFINED_ID}, // user::rw-
-                                        {0x02, 4, 65534},                                                               // user:nobody:r--
-                                        {0x04, 0, UNDEFINED_ID},                                                        // group::---
-                                        {0x10, 4, UNDEFINED_ID},                                                        // mask::r--
-                                        {0x20, 0, UNDEFINED_ID}})                                                       // other::---
+    for (const auto& [tag, perm, id] : {std::tuple<std::uint16_t, std::uint16_t, std::uint32_t>{0x01, 6, UNDEFINED_ID},
+                                        {0x02, 4, 65534},
+                                        {0x04, 0, UNDEFINED_ID},
+                                        {0x10, 4, UNDEFINED_ID},
+                                        {0x20, 0, UNDEFINED_ID}})
     {
         put(tag);
         put(perm);
         put(id);
     }
+    return acl;
+}
+
+TEST_F(UserConfigSaveLoadFixture, SaveDropsAnAclTheOriginalDidNotHave)
+{
+    // The staging file inherits the directory's default ACL; if the original config had none, the
+    // replacement must not either, or its named grants would expose it (#1222 review).
+    auto& config = UserConfig::get();
+    config.save(); // before the default ACL exists: no ACL of its own
+    const auto path = config.configPath();
+    std::vector<char> probe(256);
+    ASSERT_LT(::getxattr(path.c_str(), "system.posix_acl_access", probe.data(), probe.size()), 0);
+
+    const auto acl = nobodyCanReadAcl();
+    if (::setxattr(m_TempDir.c_str(), "system.posix_acl_default", acl.data(), acl.size(), 0) != 0)
+    {
+        GTEST_SKIP() << "filesystem has no POSIX ACLs: " << std::strerror(errno);
+    }
+
+    config.settings().themeId = "mocha";
+    config.save();
+
+    EXPECT_LT(::getxattr(path.c_str(), "system.posix_acl_access", probe.data(), probe.size()), 0)
+        << "the replacement kept an ACL inherited from the directory";
+    EXPECT_EQ(errno, ENODATA);
+    EXPECT_EQ(parsed(path)["theme"]["id"].value<std::string>(), "mocha");
+}
+
+TEST_F(UserConfigSaveLoadFixture, SaveKeepsTheConfigsAccessControlList)
+{
+    // A named-user read grant with group::--- and mask::r-- reports mode 0640. Copying only that
+    // mode to the new file would let the whole group read it; the ACL must come along (#1222 review).
+    auto& config = UserConfig::get();
+    config.save();
+    const auto path = config.configPath();
+
+    const auto acl = nobodyCanReadAcl();
     if (::setxattr(path.c_str(), "system.posix_acl_access", acl.data(), acl.size(), 0) != 0)
     {
         GTEST_SKIP() << "filesystem has no POSIX ACLs: " << std::strerror(errno);

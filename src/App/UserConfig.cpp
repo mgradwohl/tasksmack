@@ -22,7 +22,6 @@
 #include <limits>
 #include <optional>
 #include <random>
-#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -514,12 +513,13 @@ constexpr const char* POSIX_ACL_ACCESS_XATTR = "system.posix_acl_access";
 #endif
 
 /// Writes all of `contents` to `fd`, retrying short writes and EINTR, then -- if @p mode is set --
-/// applies it with fchmod() on the same descriptor, and @p accessAcl (a raw POSIX access ACL, if
-/// any) with fsetxattr(), then closes it. False if any write, the fchmod
+/// applies it with fchmod() on the same descriptor, after @p accessAcl if set (a raw POSIX access
+/// ACL to install, or empty to remove an inherited one), then closes it. False if any write, the fchmod
 /// or the close failed; the descriptor is closed either way. fchmod on the descriptor, not chmod on
 /// the path: the path could have been replaced by a symlink to another of the user's files, whose
 /// mode chmod would then change (#1222 review).
-[[nodiscard]] bool writeAllAndClose(int fd, std::string_view contents, std::optional<mode_t> mode, std::span<const char> accessAcl)
+[[nodiscard]] bool
+writeAllAndClose(int fd, std::string_view contents, std::optional<mode_t> mode, const std::optional<std::vector<char>>& accessAcl)
 {
     bool ok = true;
     while (ok && !contents.empty())
@@ -532,20 +532,29 @@ constexpr const char* POSIX_ACL_ACCESS_XATTR = "system.posix_acl_access";
         }
         contents.remove_prefix(static_cast<std::size_t>(n));
     }
-    if (ok && mode.has_value() && ::fchmod(fd, *mode) != 0)
-    {
-        ok = false;
-    }
 #if defined(__linux__) && __has_include(<sys/xattr.h>)
-    // After the mode, which it would otherwise overwrite: the ACL's own mask and named entries
-    // are what keep a 0640-looking file from being readable by the whole group.
-    if (ok && !accessAcl.empty() && ::fsetxattr(fd, POSIX_ACL_ACCESS_XATTR, accessAcl.data(), accessAcl.size(), 0) != 0)
+    // The original's access ACL, or none if it had none -- a new file in a directory with a default
+    // ACL inherits one, and with the original's mode restored its named grants could expose the
+    // file to users who couldn't read the original (#1222 review). Before the mode, which then
+    // leaves the ACL's mask matching the original's group bits.
+    if (ok && accessAcl.has_value())
     {
-        ok = false;
+        if (!accessAcl->empty())
+        {
+            ok = ::fsetxattr(fd, POSIX_ACL_ACCESS_XATTR, accessAcl->data(), accessAcl->size(), 0) == 0;
+        }
+        else if (::fremovexattr(fd, POSIX_ACL_ACCESS_XATTR) != 0)
+        {
+            ok = (errno == ENODATA || errno == ENOTSUP);
+        }
     }
 #else
     (void) accessAcl;
 #endif
+    if (ok && mode.has_value() && ::fchmod(fd, *mode) != 0)
+    {
+        ok = false;
+    }
     if (::close(fd) != 0)
     {
         ok = false;
@@ -723,6 +732,35 @@ void UserConfig::save()
     const std::string contents = std::move(text).str();
 
     std::filesystem::path tempPath;
+    // Removes the staging file on any way out of save() -- an early return or an exception -- until
+    // the rename has published it.
+    class StagingFileGuard
+    {
+      public:
+        explicit StagingFileGuard(const std::filesystem::path& path) : m_Path(path)
+        {}
+        StagingFileGuard(const StagingFileGuard&) = delete;
+        StagingFileGuard& operator=(const StagingFileGuard&) = delete;
+        StagingFileGuard(StagingFileGuard&&) = delete;
+        StagingFileGuard& operator=(StagingFileGuard&&) = delete;
+        ~StagingFileGuard()
+        {
+            if (!m_Published && !m_Path.empty())
+            {
+                std::error_code removeError;
+                std::filesystem::remove(m_Path, removeError);
+            }
+        }
+        void published() noexcept
+        {
+            m_Published = true;
+        }
+
+      private:
+        const std::filesystem::path& m_Path;
+        bool m_Published = false;
+    };
+    StagingFileGuard stagingGuard(tempPath);
     std::random_device random;
     const auto nextTempPath = [&]
     {
@@ -736,6 +774,32 @@ void UserConfig::save()
     // target truncated, and a umask without owner-write would make the reopen fail. Created with the
     // umask and narrowed afterwards, another user could open it in between and keep reading (#1222
     // review). The original's mode is restored only after writing, just before the rename.
+    // The original's mode (a 0600 config stays 0600, a 0644 one stays 0644), applied only once the
+    // file is complete, on the open descriptor.
+    const std::optional<mode_t> mode = (originalPermissions != std::filesystem::perms::unknown)
+                                         ? std::optional<mode_t>(static_cast<mode_t>(originalPermissions & std::filesystem::perms::mask))
+                                         : std::nullopt;
+    // nullopt: leave the new file's ACL as created (a brand-new config inherits the directory's
+    // default ACL, as any new file would).
+    std::optional<std::vector<char>> accessAcl;
+#if defined(__linux__) && __has_include(<sys/xattr.h>)
+    // Mode bits alone don't carry an extended ACL: a named-user grant with group::--- and
+    // mask::r-- reports 0640, and that mode on a fresh file would let the whole group read it.
+    // Copy the access ACL too, or don't replace the file (#1222 review). Read before the staging
+    // file exists, so nothing between creating and writing it can fail or throw.
+    if (fileExists)
+    {
+        auto acl = readAccessAcl(destination);
+        if (!acl.has_value())
+        {
+            spdlog::error("Not saving settings: can't read the access control list of {}: {}",
+                          m_ConfigPath.string(),
+                          std::system_category().message(errno));
+            return;
+        }
+        accessAcl = std::move(acl);
+    }
+#endif
     int fd = -1;
     for (int attempt = 0; attempt < 8 && fd < 0; ++attempt)
     {
@@ -752,31 +816,6 @@ void UserConfig::save()
         spdlog::error("Failed to create a temporary file beside {}: {}", m_ConfigPath.string(), std::system_category().message(errno));
         return;
     }
-    // The original's mode (a 0600 config stays 0600, a 0644 one stays 0644), applied only once the
-    // file is complete, on the open descriptor.
-    const std::optional<mode_t> mode = (originalPermissions != std::filesystem::perms::unknown)
-                                         ? std::optional<mode_t>(static_cast<mode_t>(originalPermissions & std::filesystem::perms::mask))
-                                         : std::nullopt;
-    std::vector<char> accessAcl;
-#if defined(__linux__) && __has_include(<sys/xattr.h>)
-    // Mode bits alone don't carry an extended ACL: a named-user grant with group::--- and
-    // mask::r-- reports 0640, and that mode on a fresh file would let the whole group read it.
-    // Copy the access ACL too, or don't replace the file (#1222 review).
-    if (fileExists)
-    {
-        auto acl = readAccessAcl(destination);
-        if (!acl.has_value())
-        {
-            spdlog::error("Not saving settings: can't read the access control list of {}: {}",
-                          m_ConfigPath.string(),
-                          std::system_category().message(errno));
-            ::close(fd);
-            std::filesystem::remove(tempPath, ec);
-            return;
-        }
-        accessAcl = std::move(*acl);
-    }
-#endif
     const bool written = writeAllAndClose(fd, contents, mode, accessAcl);
 #else
     std::ofstream file;
@@ -823,6 +862,7 @@ void UserConfig::save()
         return;
     }
 
+    stagingGuard.published();
     spdlog::info("Saved config to {}", m_ConfigPath.string());
     m_Synced = m_Settings;
 
