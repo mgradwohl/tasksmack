@@ -2021,7 +2021,12 @@ inline void renderHistoryWithNowBars(const char* tableId,
     // custom label; spacing mirrors ImGui style spacing to stay consistent with surrounding widgets.
     if (bars.empty())
     {
+        // Scoped by tableId like the table path below (BeginTable pushes its ID), so a chart drawn
+        // per item -- one per GPU, per disk -- gets a distinct plot ID either way, and with it its own
+        // ImPlot state and point cache (seriesReductionCache keys on the plot ID, #1139).
+        ImGui::PushID(tableId);
         plotFn();
+        ImGui::PopID();
         return;
     }
 
