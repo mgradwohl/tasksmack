@@ -761,23 +761,26 @@ void UserConfig::save()
         StagingFileGuard& operator=(StagingFileGuard&&) = delete;
         ~StagingFileGuard()
         {
-            if (!m_Path.empty())
+            if (m_Path != nullptr)
             {
                 std::error_code removeError;
-                std::filesystem::remove(m_Path, removeError);
+                std::filesystem::remove(*m_Path, removeError);
             }
         }
-        void created(const std::filesystem::path& path)
+        // Borrows the path rather than copying it, so arming can't throw (and so leak the file and,
+        // on POSIX, its descriptor) once the file exists (#1222 review). tempPath outlives the guard
+        // and isn't changed after the file is created.
+        void created(const std::filesystem::path& path) noexcept
         {
-            m_Path = path;
+            m_Path = &path;
         }
         void published() noexcept
         {
-            m_Path.clear();
+            m_Path = nullptr;
         }
 
       private:
-        std::filesystem::path m_Path;
+        const std::filesystem::path* m_Path = nullptr;
     };
     StagingFileGuard stagingGuard;
     std::random_device random;
