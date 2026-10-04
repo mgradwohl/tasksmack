@@ -71,12 +71,29 @@ namespace UI::Format
 
 template<std::floating_point T> [[nodiscard]] inline auto percentToInt(T percent) -> int
 {
-    const T clamped = std::max(percent, static_cast<T>(0));
-    return toIntSaturated(std::lround(static_cast<double>(clamped)));
+    // NaN (a sample with no reading) would survive std::max and reach std::lround, whose result
+    // is unspecified for it -- "-2,147,483,648%" in practice (#1148). Infinity likewise.
+    if (!(percent > static_cast<T>(0))) // Also catches NaN
+    {
+        return 0;
+    }
+    // Saturate before rounding: std::lround is unspecified outside long's range, which is only
+    // 32 bits on Windows, so a huge finite value (or infinity) must not reach it (#1227 review).
+    constexpr auto INT_LIMIT = static_cast<double>(std::numeric_limits<int>::max());
+    if (static_cast<double>(percent) >= INT_LIMIT)
+    {
+        return std::numeric_limits<int>::max();
+    }
+    return toIntSaturated(std::lround(static_cast<double>(percent)));
 }
 
+/// "42%", or "N/A" for NaN, which marks a sample with no reading.
 template<std::floating_point T> [[nodiscard]] inline auto percentCompact(T percent) -> std::string
 {
+    if (std::isnan(percent))
+    {
+        return "N/A";
+    }
     return std::format("{:L}%", percentToInt(percent));
 }
 
@@ -824,10 +841,15 @@ struct AlignedBytesParts
 // UI Numeric Utilities (for ImGui/ImPlot interop)
 // ============================================================================
 
-/// Clamp a percentage value to [0, 100]
+/// Clamp a percentage value to [0, 100]; NaN (no reading) becomes 0, which std::clamp alone
+/// would pass through into bar geometry (#1148).
 [[nodiscard]] constexpr auto clampPercent(double percent) noexcept -> double
 {
-    return std::clamp(percent, 0.0, 100.0);
+    if (!(percent > 0.0))
+    {
+        return 0.0;
+    }
+    return std::min(percent, 100.0);
 }
 
 /// Clamp a percentage to [0, 100] and convert to [0, 1] range for ImGui

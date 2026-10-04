@@ -597,7 +597,7 @@ TEST(SystemModelTest, PerCoreHistoryStaysAlignedOnCoreCountDecrease)
 {
     // Establish two cores over three samples, then simulate a transient probe
     // read that reports only one core.  The retained ring for core 1 must
-    // receive a 0.0F placeholder so every core series stays the same length
+    // receive a NaN placeholder (a gap, #1146) so every core series stays the same length
     // as the timestamp axis.  A subsequent sample with two cores again must
     // resume normal values.
     auto probe = std::make_unique<MockSystemProbe>();
@@ -635,11 +635,11 @@ TEST(SystemModelTest, PerCoreHistoryStaysAlignedOnCoreCountDecrease)
         // All series must be the same length as the timestamp axis
         EXPECT_EQ(cores[0].size(), ts.size());
         EXPECT_EQ(cores[1].size(), ts.size());
-        // Absent core 1 must have received a 0.0F placeholder for this sample
-        EXPECT_FLOAT_EQ(cores[1].back(), 0.0F);
+        // Absent core 1 must have received a NaN placeholder (a gap, not a fake 0%) for this sample
+        EXPECT_TRUE(std::isnan(cores[1].back()));
     }
 
-    // Sample 4: two cores return → core 1 still gets 0.0F this sample because
+    // Sample 4: two cores return → core 1 still gets NaN this sample because
     // m_PrevCounters only has 1 core from sample 3 (min-of-two logic), so no
     // delta is computable for core 1 yet.  What matters is that the ring stays aligned.
     std::vector<Platform::CpuCounters> cores4 = {makeCpuCounters(3000, 0, 3000, 24000), makeCpuCounters(4000, 0, 4000, 22000)};
@@ -652,9 +652,54 @@ TEST(SystemModelTest, PerCoreHistoryStaysAlignedOnCoreCountDecrease)
         ASSERT_EQ(cores.size(), 2);
         EXPECT_EQ(cores[0].size(), ts.size());
         EXPECT_EQ(cores[1].size(), ts.size());
-        // Core 1 still shows 0.0F (prev counters only had 1 core); alignment is the key invariant
-        EXPECT_FLOAT_EQ(cores[1].back(), 0.0F);
+        // Core 1 still has no reading (prev counters only had 1 core); alignment is the key invariant
+        EXPECT_TRUE(std::isnan(cores[1].back()));
     }
+}
+
+TEST(SystemModelTest, HotAddedCoreIsBackfilledWithGaps)
+{
+    // A core that appears mid-run gets NaN for the samples before it existed (a gap, not a fake
+    // 0%, #1146), so its ring stays aligned with the timestamp axis.
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+    const auto oneCore = [&](std::uint64_t busy, std::uint64_t idle)
+    {
+        rawProbe->setCounters(
+            makeSystemCounters(makeCpuCounters(busy, 0, 0, idle), makeMemoryCounters(1024, 512), 0, {makeCpuCounters(busy, 0, 0, idle)}));
+    };
+    const auto twoCores = [&](std::uint64_t busy, std::uint64_t idle)
+    {
+        rawProbe->setCounters(makeSystemCounters(makeCpuCounters(2 * busy, 0, 0, 2 * idle),
+                                                 makeMemoryCounters(1024, 512),
+                                                 0,
+                                                 {makeCpuCounters(busy, 0, 0, idle), makeCpuCounters(busy, 0, 0, idle)}));
+    };
+
+    oneCore(0, 0);
+    Domain::SystemModel model(std::move(probe));
+    model.refresh(); // baseline
+    oneCore(100, 100);
+    model.refresh();
+    oneCore(200, 200);
+    model.refresh();
+    twoCores(300, 300); // the previous sample had one core, so core 1 has no delta yet
+    model.refresh();
+    twoCores(400, 400);
+    model.refresh();
+
+    const auto ts = model.timestamps();
+    const auto cores = model.perCoreHistory();
+    ASSERT_EQ(cores.size(), 2U);
+    ASSERT_EQ(cores[0].size(), ts.size());
+    ASSERT_EQ(cores[1].size(), ts.size());
+    ASSERT_GE(ts.size(), 2U);
+    for (std::size_t i = 0; i + 1 < cores[1].size(); ++i)
+    {
+        EXPECT_TRUE(std::isnan(cores[1][i])) << "sample " << i;
+        EXPECT_FALSE(std::isnan(cores[0][i])) << "sample " << i;
+    }
+    EXPECT_FLOAT_EQ(cores[1].back(), 50.0F);
 }
 
 // =============================================================================
@@ -1709,6 +1754,7 @@ TEST(SystemModelTest, PowerStatus_HasBattery_WhenPowerProbeReportsIt)
     EXPECT_FALSE(power.isCharging);
     EXPECT_TRUE(power.isDischarging);
     EXPECT_FALSE(power.isFull);
+    EXPECT_FALSE(power.isNotCharging);
     EXPECT_EQ(power.chargePercent, 75);
     EXPECT_DOUBLE_EQ(power.powerWatts, 12.5);
     EXPECT_EQ(power.healthPercent, 95);
@@ -1771,4 +1817,55 @@ TEST(SystemModelTest, PowerStatus_Full)
     EXPECT_FALSE(power.isCharging);
     EXPECT_FALSE(power.isDischarging);
     EXPECT_TRUE(power.isFull);
+}
+
+TEST(SystemModelTest, PowerStatus_NoBatteryKeepsTheAdapterReport)
+{
+    // With no battery, isOnAc is still the adapter's own report (#1109), online or not.
+    for (const bool online : {true, false})
+    {
+        auto sysProbe = std::make_unique<MockSystemProbe>();
+        sysProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(1024, 512)));
+        auto powerProbe = std::make_unique<MockPowerProbe>();
+        powerProbe->setCapabilities(Platform::PowerCapabilities{});
+        Platform::PowerCounters counters;
+        counters.state = Platform::BatteryState::NotPresent;
+        counters.isOnAc = online;
+        powerProbe->setCounters(counters);
+
+        Domain::SystemModel model(std::move(sysProbe), std::move(powerProbe));
+        model.refresh();
+
+        const auto& power = model.snapshot().power;
+        EXPECT_FALSE(power.hasBattery);
+        EXPECT_EQ(power.isOnAc, online);
+    }
+}
+
+TEST(SystemModelTest, PowerStatus_NotCharging)
+{
+    // Plugged in but held below full (#1158): its own state, not Full or Discharging.
+    auto sysProbe = std::make_unique<MockSystemProbe>();
+    sysProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(1024, 512)));
+
+    auto powerProbe = std::make_unique<MockPowerProbe>();
+    Platform::PowerCapabilities caps;
+    caps.hasBattery = true;
+    powerProbe->setCapabilities(caps);
+
+    Platform::PowerCounters counters;
+    counters.state = Platform::BatteryState::NotCharging;
+    counters.isOnAc = true;
+    counters.chargePercent = 80;
+    powerProbe->setCounters(counters);
+
+    Domain::SystemModel model(std::move(sysProbe), std::move(powerProbe));
+    model.refresh();
+
+    const auto& power = model.snapshot().power;
+    EXPECT_TRUE(power.isOnAc);
+    EXPECT_TRUE(power.isNotCharging);
+    EXPECT_FALSE(power.isFull);
+    EXPECT_FALSE(power.isDischarging);
+    EXPECT_EQ(power.chargePercent, 80);
 }

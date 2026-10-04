@@ -170,6 +170,7 @@ struct ColorScheme
     ImVec4 tabDimmedSelectedOverline;
     ImVec4 dockingPreview;
     ImVec4 dockingEmptyBg;
+    ImVec4 plotGrid; ///< Chart grid lines: ui.plot.grid, 1.3-1.8:1 on the plot (#1191); ui.window.border if absent
     ImVec4 plotLines;
     ImVec4 plotLinesHovered;
     ImVec4 plotHistogram;

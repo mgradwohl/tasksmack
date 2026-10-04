@@ -21,11 +21,11 @@ colors = [
     "#E95420",  # Ubuntu Orange
     "#19B6EE",  # Ubuntu Blue
     "#77DD77",  # Light Green
-    "#8E44AD",  # Purple
+    "#A65AC4",  # Purple
     "#ED7014",  # Dark Orange
     "#3584E4",  # Blue
     "#FFBE00",  # Yellow
-    "#C7162B",  # Red
+    "#E2383E",  # Red
 ]
 
 # =============================================================================
@@ -35,7 +35,7 @@ colors = [
 [progress]
 low = "#33D17A"       # 0-50%   - Green (healthy)
 medium = "#ED7014"    # 50-80%  - Orange (caution)
-high = "#E01B24"      # 80-100% - Red (critical)
+high = "#EB2A2B"      # 80-100% - Red (critical)
 
 # =============================================================================
 # SEMANTIC TEXT COLORS
@@ -45,7 +45,7 @@ high = "#E01B24"      # 80-100% - Red (critical)
 text_primary = "#F8F8F8"   # Bright white for maximum contrast on dark bg
 text_disabled = "#C0C0C0"  # Brighter gray for disabled text
 text_muted = "#CCCCCC"     # Much brighter for chart axis labels
-text_error = "#ED333B"     # Light Red - error messages
+text_error = "#FF655E"     # Light Red - error messages
 text_warning = "#FFA348"   # Light Orange - warning messages
 text_success = "#33D17A"   # Light Green - success messages
 text_info = "#62A0EA"      # Light Blue - informational text
@@ -56,11 +56,11 @@ text_info = "#62A0EA"      # Light Blue - informational text
 # =============================================================================
 [status]
 running = "#33D17A"    # Light Green - active/running (R)
-sleeping = "#62A0EA"   # Light Blue - sleeping (S)
+sleeping = "#76B2FE"   # Light Blue - sleeping (S)
 disk_sleep = "#FFA348" # Light Orange - uninterruptible I/O (D)
-zombie = "#F66151"     # Light Magenta - defunct process (Z) - distinct from charts.io red
-stopped = "#9A9CFF"    # Light Purple - stopped/traced (T/t)
-idle = "#808080"       # Gray - idle kernel thread (I)
+zombie = "#FF907E"     # Light Magenta - defunct process (Z) - distinct from charts.io red
+stopped = "#A6A6FF"    # Light Purple - stopped/traced (T/t)
+idle = "#AFAFAF"       # Gray - idle kernel thread (I)
 
 # =============================================================================
 # CHART LINE COLORS
@@ -86,8 +86,8 @@ peak_line = "#F5C211B3"      # Gold with 70% alpha - peak reference line
 # Colors for GPU monitoring graphs, bars, and badges
 # =============================================================================
 [charts.gpu]
-utilization = "#9141AC"           # Purple - GPU utilization line
-utilization_fill = "#9141AC4D"    # Purple with 30% alpha - GPU fill
+utilization = "#A958C4"           # Purple - GPU utilization line
+utilization_fill = "#A958C44D"    # Purple with 30% alpha - GPU fill
 memory = "#19B6EE"                # Ubuntu Blue - GPU memory line (distinct from io Red)
 memory_fill = "#19B6EE4D"         # Ubuntu Blue with 30% alpha - GPU memory fill
 temperature = "#F5C211"           # Gold - GPU temperature line
@@ -244,6 +244,7 @@ empty_background = "#242424"
 # ImGui plot widgets
 # =============================================================================
 [ui.plot]
+grid = "#494949"
 lines = "#62A0EA"
 lines_hovered = "#ED333B"
 histogram = "#33D17A"

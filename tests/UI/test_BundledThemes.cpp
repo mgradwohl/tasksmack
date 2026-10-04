@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -33,6 +34,9 @@ constexpr float TEXT_MIN = 4.5F;                  // primary text on the selecte
 constexpr float SELECTED_TAB_MIN = 1.3F;          // selected tab vs unselected tab
 constexpr float OVERLINE_MIN = 3.0F;              // overline vs the selected tab
 constexpr float CPU_USER_VS_TOTAL_MIN_DL = 15.0F; // CIELAB L* between CPU User and CPU Total (#1192)
+constexpr float PRIMARY_TEXT_MIN = 7.0F;          // primary text on the window and plot (#1167)
+constexpr float GRID_MIN = 1.3F;                  // grid lines on the plot: visible...
+constexpr float GRID_MAX = 1.8F;                  // ...but quieter than any series (#1191)
 constexpr float SERIES_MIN = 3.0F;                // a series colour (line, NowBar, legend swatch) on its background
 
 /// CIELAB L* (0..100) of an opaque colour. L* depends only on relative luminance.
@@ -190,6 +194,170 @@ TEST(BundledThemesTest, CpuBandColoursAreVisibleOnThePlotAndInTheLegend)
         {
             EXPECT_GE(contrastRatio(color, plot), SERIES_MIN) << name << " cpu_breakdown." << label << " on the plot";
             EXPECT_GE(contrastRatio(color, legend), SERIES_MIN) << name << " cpu_breakdown." << label << " in the legend";
+        }
+    }
+}
+
+/// The backgrounds a theme's colours are drawn on, composited the way ImGui and ImPlot draw them.
+struct Backgrounds
+{
+    ImVec4 window;
+    ImVec4 frame;          ///< ImPlot's frame, and the NowBar track
+    ImVec4 plot;           ///< PlotBg (childBg) over the frame
+    ImVec4 popup;          ///< popupBg over the modal backdrop, as Theme::applyImGuiStyle() flattens it
+    ImVec4 row;            ///< TableRowBg over the window
+    ImVec4 stripe;         ///< TableRowBgAlt over the window
+    ImVec4 selected;       ///< The selection fill (Header) over a plain row
+    ImVec4 selectedStripe; ///< The selection fill over a striped row
+};
+
+auto backgroundsOf(const ColorScheme& scheme) -> Backgrounds
+{
+    Backgrounds b{};
+    b.window = flattenOver(scheme.windowBg, scheme.windowBg);
+    b.frame = flattenOver(scheme.frameBg, b.window);
+    b.plot = flattenOver(scheme.childBg, b.frame);
+    b.popup = flattenOver(scheme.popupBg, flattenOver(scheme.modalWindowDimBg, b.window));
+    b.row = flattenOver(scheme.tableRowBg, b.window);
+    b.stripe = flattenOver(scheme.tableRowBgAlt, b.window);
+    b.selected = flattenOver(scheme.header, b.row);
+    b.selectedStripe = flattenOver(scheme.header, b.stripe);
+    return b;
+}
+
+// #1191: every series colour -- lines, NowBars, legend swatches -- is at least 3:1 on the plot and on
+// the NowBar track (WCAG 1.4.11). A bar that fades into its track reads as zero.
+TEST(BundledThemesTest, EverySeriesIsVisibleOnThePlotAndTheNowBarTrack)
+{
+    for (const auto& path : bundledThemes())
+    {
+        const auto scheme = ThemeLoader::loadTheme(path);
+        if (!scheme.has_value())
+        {
+            ADD_FAILURE() << "failed to load " << path;
+            continue;
+        }
+        const auto name = path.stem().string();
+        const Backgrounds bg = backgroundsOf(*scheme);
+
+        std::vector<std::pair<std::string, ImVec4>> series{
+            {"charts.cpu", scheme->chartCpu},
+            {"charts.memory", scheme->chartMemory},
+            {"charts.io", scheme->chartIo},
+            {"charts.io_write", scheme->chartIoWrite},
+            {"charts.net_tx", scheme->chartNetTx},
+            {"charts.net_rx", scheme->chartNetRx},
+            {"cpu_breakdown.user", scheme->cpuUser},
+            {"cpu_breakdown.system", scheme->cpuSystem},
+            {"cpu_breakdown.iowait", scheme->cpuIowait},
+            {"charts.gpu.utilization", scheme->gpuUtilization},
+            {"charts.gpu.memory", scheme->gpuMemory},
+            {"charts.gpu.temperature", scheme->gpuTemperature},
+            {"charts.gpu.power", scheme->gpuPower},
+            {"charts.gpu.encoder", scheme->gpuEncoder},
+            {"charts.gpu.decoder", scheme->gpuDecoder},
+            {"charts.gpu.clock", scheme->gpuClock},
+            {"charts.gpu.fan", scheme->gpuFan},
+            {"progress.low", scheme->progressLow},
+            {"progress.medium", scheme->progressMedium},
+            {"progress.high", scheme->progressHigh},
+        };
+        for (std::size_t i = 0; i < scheme->accents.size(); ++i)
+        {
+            series.emplace_back("accents[" + std::to_string(i) + "]", scheme->accents[i]);
+        }
+
+        for (const auto& [key, color] : series)
+        {
+            EXPECT_GE(contrastRatio(color, bg.plot), SERIES_MIN) << name << " " << key << " on the plot";
+            EXPECT_GE(contrastRatio(color, bg.frame), SERIES_MIN) << name << " " << key << " on the NowBar track";
+        }
+
+        // The peak line is drawn translucent, so it is judged as drawn: composited over each background.
+        EXPECT_GE(contrastRatio(flattenOver(scheme->chartPeakLine, bg.plot), bg.plot), SERIES_MIN)
+            << name << " charts.peak_line on the plot";
+        EXPECT_GE(contrastRatio(flattenOver(scheme->chartPeakLine, bg.frame), bg.frame), SERIES_MIN)
+            << name << " charts.peak_line on the NowBar track";
+    }
+}
+
+// #1191: grid lines can be seen, but stay quieter than the data.
+TEST(BundledThemesTest, GridLinesAreVisibleButQuiet)
+{
+    for (const auto& path : bundledThemes())
+    {
+        const auto scheme = ThemeLoader::loadTheme(path);
+        if (!scheme.has_value())
+        {
+            ADD_FAILURE() << "failed to load " << path;
+            continue;
+        }
+        const Backgrounds bg = backgroundsOf(*scheme);
+        const float ratio = contrastRatio(flattenOver(scheme->plotGrid, bg.plot), bg.plot);
+        EXPECT_GE(ratio, GRID_MIN) << path.stem().string();
+        EXPECT_LE(ratio, GRID_MAX) << path.stem().string();
+    }
+}
+
+// #1167: every text role is readable (4.5:1) wherever it is drawn: the window, the plot (axis labels
+// and hints use text_muted) and popups; primary text reaches 7:1 on the window and plot.
+TEST(BundledThemesTest, TextRolesAreReadableOnEveryBackground)
+{
+    for (const auto& path : bundledThemes())
+    {
+        const auto scheme = ThemeLoader::loadTheme(path);
+        if (!scheme.has_value())
+        {
+            ADD_FAILURE() << "failed to load " << path;
+            continue;
+        }
+        const auto name = path.stem().string();
+        const Backgrounds bg = backgroundsOf(*scheme);
+        EXPECT_GE(contrastRatio(scheme->textPrimary, bg.window), PRIMARY_TEXT_MIN) << name << " text_primary on the window";
+        EXPECT_GE(contrastRatio(scheme->textPrimary, bg.plot), PRIMARY_TEXT_MIN) << name << " text_primary on the plot";
+        for (const auto& [key, color] : {
+                 std::pair{"text_primary", scheme->textPrimary},
+                 std::pair{"text_muted", scheme->textMuted},
+                 std::pair{"text_error", scheme->textError},
+                 std::pair{"text_warning", scheme->textWarning},
+                 std::pair{"text_success", scheme->textSuccess},
+                 std::pair{"text_info", scheme->textInfo},
+             })
+        {
+            EXPECT_GE(contrastRatio(color, bg.window), TEXT_MIN) << name << " semantic." << key << " on the window";
+            EXPECT_GE(contrastRatio(color, bg.plot), TEXT_MIN) << name << " semantic." << key << " on the plot";
+            EXPECT_GE(contrastRatio(color, bg.popup), TEXT_MIN) << name << " semantic." << key << " in popups";
+        }
+    }
+}
+
+// #1167: process status letters are readable on plain, striped and selected rows.
+TEST(BundledThemesTest, StatusColoursAreReadableOnEveryRow)
+{
+    for (const auto& path : bundledThemes())
+    {
+        const auto scheme = ThemeLoader::loadTheme(path);
+        if (!scheme.has_value())
+        {
+            ADD_FAILURE() << "failed to load " << path;
+            continue;
+        }
+        const auto name = path.stem().string();
+        const Backgrounds bg = backgroundsOf(*scheme);
+        for (const auto& [key, color] : {
+                 std::pair{"running", scheme->statusRunning},
+                 std::pair{"sleeping", scheme->statusSleeping},
+                 std::pair{"disk_sleep", scheme->statusDiskSleep},
+                 std::pair{"zombie", scheme->statusZombie},
+                 std::pair{"stopped", scheme->statusStopped},
+                 std::pair{"idle", scheme->statusIdle},
+             })
+        {
+            EXPECT_GE(contrastRatio(color, bg.row), TEXT_MIN) << name << " status." << key << " on a plain row";
+            EXPECT_GE(contrastRatio(color, bg.stripe), TEXT_MIN) << name << " status." << key << " on a striped row";
+            EXPECT_GE(contrastRatio(color, bg.selected), TEXT_MIN) << name << " status." << key << " on the selected row";
+            EXPECT_GE(contrastRatio(color, bg.selectedStripe), TEXT_MIN)
+                << name << " status." << key << " on the selected row when it is striped";
         }
     }
 }

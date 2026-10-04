@@ -8,6 +8,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -1475,6 +1476,31 @@ TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRx_FallsBackToCpuMemoryWhenAbsen
     expectColorNear(theme->chartNetTx, theme->chartCpu);
     // When absent, net_rx falls back to chartMemory (#10893E)
     expectColorNear(theme->chartNetRx, theme->chartMemory);
+}
+
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_PlotGrid_FallsBackToBorderWhenAbsent)
+{
+    // k_FullThemeTomlBody has no ui.plot.grid. A theme written before the key existed keeps the grid
+    // it had: the window border (#1191).
+    const std::string toml = std::string("[meta]\nname = \"Fallback Grid\"\n\n") + k_FullThemeTomlBody;
+    createThemeFile("fallback-grid.toml", toml);
+
+    auto theme = ThemeLoader::loadTheme(m_TempDir / "fallback-grid.toml");
+    ASSERT_TRUE(theme.has_value());
+    expectColorNear(theme->plotGrid, theme->border);
+}
+
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_PlotGrid_ReadsTheKeyWhenPresent)
+{
+    std::string body = k_FullThemeTomlBody;
+    const auto plotSection = body.find("[ui.plot]\n");
+    ASSERT_NE(plotSection, std::string::npos);
+    body.insert(plotSection + std::string_view("[ui.plot]\n").size(), "grid = \"#123456\"\n");
+    createThemeFile("explicit-grid.toml", std::string("[meta]\nname = \"Explicit Grid\"\n\n") + body);
+
+    auto theme = ThemeLoader::loadTheme(m_TempDir / "explicit-grid.toml");
+    ASSERT_TRUE(theme.has_value());
+    expectColorNear(theme->plotGrid, ThemeLoader::hexToImVec4("#123456"));
 }
 
 TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRxFill_FallsBackToAlphaScaledLineColorWhenAbsent)

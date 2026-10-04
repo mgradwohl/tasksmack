@@ -86,6 +86,15 @@ TEST(ParsePowerStatusTest, FullChargeReportsFullRegardlessOfAc)
     EXPECT_EQ(onAc.state, BatteryState::Full);
 }
 
+TEST(ParsePowerStatusTest, OnAcBelowFullNotChargingReportsNotCharging)
+{
+    // Held below full by a charge limit while plugged in: NotCharging, as Linux reports it (#1158).
+    const auto counters = parsePowerStatus(1, BATTERY_FLAG_DISCHARGING, 80, BATTERY_LIFE_TIME_UNKNOWN);
+    EXPECT_EQ(counters.state, BatteryState::NotCharging);
+    EXPECT_TRUE(counters.isOnAc);
+    EXPECT_EQ(counters.chargePercent, 80);
+}
+
 TEST(ParsePowerStatusTest, PartialChargeNotChargingReportsDischarging)
 {
     const auto counters = parsePowerStatus(0, BATTERY_FLAG_DISCHARGING, 42, BATTERY_LIFE_TIME_UNKNOWN);
@@ -172,7 +181,7 @@ TEST(WindowsPowerProbeTest, ReadSucceeds)
         // Battery state should be one of the valid states
         EXPECT_TRUE(counters.state == BatteryState::Unknown || counters.state == BatteryState::Charging ||
                     counters.state == BatteryState::Discharging || counters.state == BatteryState::Full ||
-                    counters.state == BatteryState::NotPresent);
+                    counters.state == BatteryState::NotCharging || counters.state == BatteryState::NotPresent);
     }
     else
     {

@@ -25,25 +25,25 @@ colors = [
 
 [progress]
 low = "#4A6600"       # 0-50%   - Dark green (healthy)
-medium = "#B58900"    # 50-80%  - Yellow (caution)
+medium = "#A67D00"    # 50-80%  - Yellow (caution)
 high = "#DC322F"      # 80-100% - Red (critical)
 
 [semantic]
-text_primary = "#4A5B60"
+text_primary = "#2E3E43"
 text_disabled = "#93A1A1"
-text_muted = "#93A1A1"
-text_error = "#DC322F"
-text_warning = "#B58900"
+text_muted = "#586566"
+text_error = "#C5141F"
+text_warning = "#7E5E00"
 text_success = "#4A6600"
-text_info = "#2075BA"
+text_info = "#0066A7"
 
 [status]
-running = "#4A6600"
-sleeping = "#2075BA"
-disk_sleep = "#B58900"
-zombie = "#DC322F"
-stopped = "#D33682"
-idle = "#93A1A1"
+running = "#466000"
+sleeping = "#005B96"
+disk_sleep = "#6F5300"
+zombie = "#B30017"
+stopped = "#AB0062"
+idle = "#4D5A5A"
 
 [charts]
 cpu = "#2075BA"
@@ -58,7 +58,7 @@ io_fill = "#C0291F4D"
 io_write_fill = "#B03B0E4D"
 net_tx_fill = "#1D8C824D"
 net_rx_fill = "#5A5AAA4D"
-peak_line = "#657B83B3"
+peak_line = "#485D65B3"
 
 [charts.gpu]
 utilization = "#5A5AAA"
@@ -71,7 +71,7 @@ encoder = "#1D8C82"
 decoder = "#B02662"
 clock = "#2075BA"
 clock_fill = "#2075BACC"
-fan = "#93A1A1"
+fan = "#798686"
 
 [cpu_breakdown]
 user = "#004D8D"
@@ -164,6 +164,7 @@ preview = "#2075BAB3"
 empty_background = "#FDF6E3"
 
 [ui.plot]
+grid = "#C9C2AF"
 lines = "#2075BA"
 lines_hovered = "#DC322F"
 histogram = "#4A6600"

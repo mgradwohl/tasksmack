@@ -475,8 +475,8 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         const std::size_t numCores = std::min(counters.cpuPerCore.size(), m_PrevCounters.cpuPerCore.size());
         snap.cpuPerCore.reserve(numCores);
 
-        // Resize per-core history if needed (new cores get zero backfill so all
-        // rings stay in lockstep with m_Timestamps)
+        // Resize per-core history if needed. A new core's ring is backfilled with NaN -- no reading,
+        // drawn as a gap (#1146) -- so all rings stay in lockstep with m_Timestamps.
         if (m_PerCoreHistory.size() < numCores)
         {
             const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
@@ -488,7 +488,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
                 m_PerCoreHistory[i].setCapacity(capacity);
                 for (std::size_t j = 0; j < backfillCount; ++j)
                 {
-                    m_PerCoreHistory[i].push(0.0F);
+                    m_PerCoreHistory[i].push(std::numeric_limits<float>::quiet_NaN());
                 }
             }
         }
@@ -624,8 +624,9 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
 
         m_Timestamps.push(nowSeconds);
 
-        // Advance rings for present cores; push 0.0F for any retained rings beyond
-        // the reported core count so every core series stays aligned with m_Timestamps.
+        // Advance rings for present cores; push NaN (a gap, not a fake 0%) for any retained rings
+        // beyond the reported core count, such as an offlined core, so every core series stays
+        // aligned with m_Timestamps (#1146).
         for (std::size_t i = 0; i < m_PerCoreHistory.size(); ++i)
         {
             if (i < snap.cpuPerCore.size())
@@ -634,7 +635,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
             }
             else
             {
-                m_PerCoreHistory[i].push(0.0F);
+                m_PerCoreHistory[i].push(std::numeric_limits<float>::quiet_NaN());
             }
         }
 
@@ -691,6 +692,9 @@ PowerStatus SystemModel::computePowerStatus(const Platform::PowerCounters& count
     PowerStatus status;
 
     status.hasBattery = m_PowerCapabilities.hasBattery;
+    // Before the no-battery return: on a battery-less machine isOnAc is still the adapter's report
+    // (#1109), which consumers need.
+    status.isOnAc = counters.isOnAc;
 
     if (!status.hasBattery)
     {
@@ -698,10 +702,10 @@ PowerStatus SystemModel::computePowerStatus(const Platform::PowerCounters& count
     }
 
     // Basic state
-    status.isOnAc = counters.isOnAc;
     status.isCharging = (counters.state == Platform::BatteryState::Charging);
     status.isDischarging = (counters.state == Platform::BatteryState::Discharging);
     status.isFull = (counters.state == Platform::BatteryState::Full);
+    status.isNotCharging = (counters.state == Platform::BatteryState::NotCharging);
 
     // Charge percentage
     status.chargePercent = counters.chargePercent;

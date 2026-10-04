@@ -18,13 +18,13 @@ version = "1.0"
 [accents]
 colors = [
     "#2E7FCB",  # Glacial Blue
-    "#FF8A50",  # Warm Ember
-    "#4FAF7A",  # Alpine Green
+    "#D96A32",  # Warm Ember
+    "#3A9B68",  # Alpine Green
     "#7C64C8",  # Aurora Purple
-    "#F6C445",  # Polar Gold
-    "#E46E97",  # Sunlit Rose
-    "#A8F04F",  # Ice Lime
-    "#FF9E7A",  # Soft Coral
+    "#AC8500",  # Polar Gold
+    "#D8638D",  # Sunlit Rose
+    "#5C9A00",  # Ice Lime
+    "#CC7250",  # Soft Coral
 ]
 
 # =============================================================================
@@ -32,8 +32,8 @@ colors = [
 # Colors for progress bars based on percentage thresholds
 # =============================================================================
 [progress]
-low = "#66BB6A"       # 0-50%   - Green (healthy)
-medium = "#FFB300"    # 50-80%  - Amber (caution)
+low = "#459B4D"       # 0-50%   - Green (healthy)
+medium = "#B77F00"    # 50-80%  - Amber (caution)
 high = "#E53935"      # 80-100% - Red (critical)
 
 # =============================================================================
@@ -43,23 +43,23 @@ high = "#E53935"      # 80-100% - Red (critical)
 [semantic]
 text_primary = "#0F1419"   # Dark charcoal for contrast on light bg
 text_disabled = "#666666"  # Muted gray for disabled text
-text_muted = "#999999"     # Gray - dimmed/secondary text
-text_error = "#D32F2F"     # Red - error messages
-text_warning = "#F57C00"   # Orange - warning messages
-text_success = "#388E3C"   # Green - success messages
-text_info = "#1976D2"      # Blue - informational text
+text_muted = "#6A6A6A"     # Gray - dimmed/secondary text
+text_error = "#CC272A"     # Red - error messages
+text_warning = "#A85300"   # Orange - warning messages
+text_success = "#207A2A"   # Green - success messages
+text_info = "#006BC3"      # Blue - informational text
 
 # =============================================================================
 # PROCESS STATUS COLORS
 # Colors for process states in the process list
 # =============================================================================
 [status]
-running = "#388E3C"    # Green - active/running (R)
-sleeping = "#1976D2"   # Blue - sleeping (S)
-disk_sleep = "#F57C00" # Orange - uninterruptible I/O (D)
-zombie = "#D32F2F"     # Red - defunct process (Z)
-stopped = "#FF7043"    # Orange - stopped/traced (T/t)
-idle = "#B0B0B0"       # Gray - idle kernel thread (I)
+running = "#006618"    # Green - active/running (R)
+sleeping = "#0058A3"   # Blue - sleeping (S)
+disk_sleep = "#8B4400" # Orange - uninterruptible I/O (D)
+zombie = "#B2001A"     # Red - defunct process (Z)
+stopped = "#A82500"    # Orange - stopped/traced (T/t)
+idle = "#575757"       # Gray - idle kernel thread (I)
 
 # =============================================================================
 # CHART LINE COLORS
@@ -69,16 +69,16 @@ idle = "#B0B0B0"       # Gray - idle kernel thread (I)
 cpu = "#1976D2"       # Blue - CPU usage line
 memory = "#388E3C"    # Green - memory usage line
 io = "#D32F2F"        # Red - I/O read usage line
-io_write = "#00BCD4"        # Cyan - I/O write usage line
-net_tx = "#F6C445"          # Polar Gold - Network transmit (sent) line
+io_write = "#0098AC"        # Cyan - I/O write usage line
+net_tx = "#AC8500"          # Polar Gold - Network transmit (sent) line
 net_rx = "#7C64C8"          # Aurora Purple - Network receive line
 cpu_fill = "#1976D24D"       # Blue with 30% alpha - CPU fill
 memory_fill = "#388E3C4D"    # Green with 30% alpha - memory fill
 io_fill = "#D32F2F4D"        # Red with 30% alpha - I/O read fill
-io_write_fill = "#00BCD44D"   # Cyan with 30% alpha - I/O write fill
-net_tx_fill = "#F6C4454D"    # Polar Gold with 30% alpha - Network TX fill
+io_write_fill = "#0098AC4D"   # Cyan with 30% alpha - I/O write fill
+net_tx_fill = "#AC85004D"    # Polar Gold with 30% alpha - Network TX fill
 net_rx_fill = "#7C64C84D"    # Aurora Purple with 30% alpha - Network RX fill
-peak_line = "#F57C00B3"      # Orange with 70% alpha - peak reference line
+peak_line = "#9E4E00B3"      # Orange with 70% alpha - peak reference line
 
 # =============================================================================
 # GPU METRICS COLORS
@@ -87,14 +87,14 @@ peak_line = "#F57C00B3"      # Orange with 70% alpha - peak reference line
 [charts.gpu]
 utilization = "#7B1FA2"           # Purple - GPU utilization line
 utilization_fill = "#7B1FA24D"    # Purple with 30% alpha - GPU fill
-memory = "#E46E97"                # Sunlit Rose - GPU memory line (distinct from io Red)
-memory_fill = "#E46E974D"         # Sunlit Rose with 30% alpha - GPU memory fill
-temperature = "#F57C00"           # Gold - GPU temperature line
+memory = "#D8638D"                # Sunlit Rose - GPU memory line (distinct from io Red)
+memory_fill = "#D8638D4D"         # Sunlit Rose with 30% alpha - GPU memory fill
+temperature = "#D86D00"           # Gold - GPU temperature line
 power = "#388E3C"                 # Green - GPU power draw line
 encoder = "#0097A7"               # Teal - GPU encoder utilization
 decoder = "#C2185B"               # Magenta - GPU decoder utilization
-clock = "#64B5F6"             # Light Blue - GPU clock speed line
-clock_fill = "#64B5F6CC"      # Light Blue with 80% alpha - GPU clock fill
+clock = "#3691CF"             # Light Blue - GPU clock speed line
+clock_fill = "#3691CFCC"      # Light Blue with 80% alpha - GPU clock fill
 fan = "#546E7A"               # Dark Blue Gray - GPU fan speed line
 
 # =============================================================================
@@ -243,6 +243,7 @@ empty_background = "#FAFAFA"
 # ImGui plot widgets
 # =============================================================================
 [ui.plot]
+grid = "#BDCBDF"
 lines = "#1976D2"
 lines_hovered = "#D32F2F"
 histogram = "#388E3C"

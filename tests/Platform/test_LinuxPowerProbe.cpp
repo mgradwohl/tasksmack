@@ -64,13 +64,13 @@ TEST(LinuxPowerProbeTest, ReadSucceeds)
         // Battery state should be one of the valid states
         EXPECT_TRUE(counters.state == BatteryState::Unknown || counters.state == BatteryState::Charging ||
                     counters.state == BatteryState::Discharging || counters.state == BatteryState::Full ||
-                    counters.state == BatteryState::NotPresent);
+                    counters.state == BatteryState::NotCharging || counters.state == BatteryState::NotPresent);
     }
     else
     {
-        // No battery present
+        // No battery present. isOnAc is the adapter's report where there is one (#1109), so it may
+        // be false on a battery-less host whose adapter reports offline; not asserted.
         EXPECT_EQ(counters.state, BatteryState::NotPresent);
-        EXPECT_TRUE(counters.isOnAc);
     }
 }
 
@@ -114,16 +114,9 @@ TEST(LinuxPowerProbeTest, BatteryStateIsValid)
         GTEST_SKIP() << "No battery detected";
     }
 
-    // Verify state is consistent with AC status
-    if (counters.isOnAc)
-    {
-        EXPECT_TRUE(counters.state == BatteryState::Charging || counters.state == BatteryState::Full ||
-                    counters.state == BatteryState::Unknown);
-    }
-    else
-    {
-        EXPECT_TRUE(counters.state == BatteryState::Discharging || counters.state == BatteryState::Unknown);
-    }
+    // AC status comes from the adapter and is independent of the battery's own state (#1109), so
+    // only the battery-presence contract holds: a present battery never reports NotPresent.
+    EXPECT_NE(counters.state, BatteryState::NotPresent);
 }
 
 TEST(LinuxPowerProbeTest, ChargePercentInValidRange)
@@ -302,17 +295,19 @@ TEST_F(LinuxPowerProbeUnitTest, Battery_Full_ReturnsCorrectState)
     EXPECT_EQ(counters.chargePercent, 100);
 }
 
-TEST_F(LinuxPowerProbeUnitTest, Battery_NotCharging_TreatedAsFull)
+TEST_F(LinuxPowerProbeUnitTest, Battery_NotCharging_ReportsNotCharging)
 {
-    // "Not charging" (plugged in but at 100%) maps to Full state
+    // "Not charging": plugged in but held below full, typically by a charge threshold. It used to
+    // map to Full, so an 80% battery showed "100%" (#1158).
     const auto batPath = makeBatteryDevice("BAT0");
     writeFile(batPath / "status", "Not charging");
-    writeFile(batPath / "capacity", "100");
+    writeFile(batPath / "capacity", "80");
 
     LinuxPowerProbe probe(m_SysRoot.string());
 
     auto counters = probe.read();
-    EXPECT_EQ(counters.state, BatteryState::Full);
+    EXPECT_EQ(counters.state, BatteryState::NotCharging);
+    EXPECT_EQ(counters.chargePercent, 80);
     EXPECT_TRUE(counters.isOnAc);
 }
 
@@ -475,6 +470,27 @@ TEST_F(LinuxPowerProbeUnitTest, Battery_CurrentNow_UsesVoltageForPower)
     EXPECT_NEAR(counters.powerNowW, 24.0, 0.01);
 }
 
+TEST_F(LinuxPowerProbeUnitTest, NegativeCurrentAndPowerAreReadAsMagnitudes)
+{
+    // The sysfs ABI lets some (non-ACPI, ARM, Chromebook) drivers report discharge as negative;
+    // parsing as unsigned failed and read 0 W (#1158).
+    const auto batPath = makeBatteryDevice("BAT0");
+    writeFile(batPath / "status", "Discharging");
+    writeFile(batPath / "capacity", "50");
+    writeFile(batPath / "current_now", "-2000000"); // -2 A
+    writeFile(batPath / "voltage_now", "12000000"); // 12 V
+    {
+        LinuxPowerProbe probe(m_SysRoot.string());
+        EXPECT_NEAR(probe.read().powerNowW, 24.0, 0.01);
+    }
+
+    writeFile(batPath / "power_now", "-15000000"); // -15 W, preferred over current_now
+    {
+        LinuxPowerProbe probe(m_SysRoot.string());
+        EXPECT_NEAR(probe.read().powerNowW, 15.0, 0.01);
+    }
+}
+
 TEST_F(LinuxPowerProbeUnitTest, Battery_CurrentNow_ZeroVoltage_NoPowerComputed)
 {
     const auto batPath = makeBatteryDevice("BAT0");
@@ -561,9 +577,117 @@ TEST_F(LinuxPowerProbeUnitTest, MultipleBatteries_PrimaryUsedForRead)
     EXPECT_EQ(counters.chargePercent, 40);
 }
 
+TEST_F(LinuxPowerProbeUnitTest, DeviceScopedBatteryIsNotTheSystemBattery)
+{
+    // A wireless mouse's battery (scope = Device) on a desktop: no system battery, and its
+    // "Discharging" must not make the machine look like it is on battery (#1109).
+    const auto mouse = makeBatteryDevice("hidpp_battery_0");
+    writeFile(mouse / "scope", "Device");
+    writeFile(mouse / "status", "Discharging");
+    writeFile(mouse / "capacity", "88");
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+
+    EXPECT_FALSE(probe.capabilities().hasBattery);
+    auto counters = probe.read();
+    EXPECT_EQ(counters.state, BatteryState::NotPresent);
+    EXPECT_TRUE(counters.isOnAc);
+}
+
+TEST_F(LinuxPowerProbeUnitTest, AcAdapterOnlineDecidesAcState)
+{
+    // The adapter's own `online` is authoritative; the battery's status is only a fallback (#1109).
+    const auto ac = makeAcDevice("AC");
+    const auto bat = makeBatteryDevice("BAT0");
+    writeFile(bat / "status", "Unknown");
+    writeFile(bat / "capacity", "60");
+
+    writeFile(ac / "online", "1");
+    {
+        LinuxPowerProbe probe(m_SysRoot.string());
+        EXPECT_TRUE(probe.read().isOnAc);
+    }
+    writeFile(ac / "online", "0");
+    writeFile(bat / "status", "Full"); // stale or misreported: the adapter says otherwise
+    {
+        LinuxPowerProbe probe(m_SysRoot.string());
+        EXPECT_FALSE(probe.read().isOnAc);
+    }
+}
+
+TEST_F(LinuxPowerProbeUnitTest, NoBatteryWithOfflineAdapterIsNotOnAc)
+{
+    // The adapter is authoritative even without a battery (for example a UPS-fed desktop).
+    const auto ac = makeAcDevice("AC");
+    writeFile(ac / "online", "0");
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+    auto counters = probe.read();
+    EXPECT_EQ(counters.state, BatteryState::NotPresent);
+    EXPECT_FALSE(counters.isOnAc);
+}
+
+TEST_F(LinuxPowerProbeUnitTest, MostNegativeRateDoesNotOverflow)
+{
+    // std::abs(INT64_MIN) would be undefined behaviour; the magnitude is taken as unsigned.
+    const auto batPath = makeBatteryDevice("BAT0");
+    writeFile(batPath / "status", "Discharging");
+    writeFile(batPath / "power_now", "-9223372036854775808");
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+    EXPECT_NEAR(probe.read().powerNowW, 9223372036854.775808, 1.0);
+}
+
+TEST_F(LinuxPowerProbeUnitTest, UsbPowerDeliveryChargerIsAnAdapter)
+{
+    // A USB-C laptop's charger shows up as type USB_PD (or USB_C, ...), not Mains or plain USB.
+    const auto charger = m_SysRoot / "ucsi-source-psy-USBC000:001";
+    std::filesystem::create_directories(charger);
+    writeFile(charger / "type", "USB_PD");
+    writeFile(charger / "online", "1");
+    const auto bat = makeBatteryDevice("BAT0");
+    writeFile(bat / "status", "Discharging"); // stale; the adapter says otherwise
+    writeFile(bat / "capacity", "70");
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+    EXPECT_TRUE(probe.read().isOnAc);
+}
+
+TEST_F(LinuxPowerProbeUnitTest, AdapterPluggedInAfterConstructionIsSeen)
+{
+    // A USB-C/PD charger's device appears on hot-plug; the probe must not only know the adapters
+    // that existed when it was created (#1231 review).
+    const auto bat = makeBatteryDevice("BAT0");
+    writeFile(bat / "status", "Discharging"); // stale
+    writeFile(bat / "capacity", "70");
+    LinuxPowerProbe probe(m_SysRoot.string());
+    EXPECT_FALSE(probe.read().isOnAc);
+
+    const auto charger = m_SysRoot / "ucsi-source-psy-USBC000:001";
+    std::filesystem::create_directories(charger);
+    writeFile(charger / "type", "USB_PD");
+    writeFile(charger / "online", "1");
+    EXPECT_TRUE(probe.read().isOnAc);
+}
+
+TEST_F(LinuxPowerProbeUnitTest, DesktopWithOnlineAdapterAndNoBatteryIsOnAc)
+{
+    const auto ac = makeAcDevice("AC");
+    writeFile(ac / "online", "1");
+    const auto mouse = makeBatteryDevice("hidpp_battery_0");
+    writeFile(mouse / "scope", "Device");
+    writeFile(mouse / "status", "Discharging");
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+    auto counters = probe.read();
+    EXPECT_EQ(counters.state, BatteryState::NotPresent);
+    EXPECT_TRUE(counters.isOnAc);
+}
+
 TEST_F(LinuxPowerProbeUnitTest, PeripheralBattery_DiscoveredWhenNoPrimary)
 {
-    // "hidpp_battery_0" does not start with "BAT" or "CMB" but is still a Battery type
+    // "hidpp_battery_0" does not start with "BAT" or "CMB" but is still a Battery type. With no
+    // `scope` to say it belongs to a device, it is still used when there is no primary battery.
     const auto periph = makeBatteryDevice("hidpp_battery_0");
     writeFile(periph / "status", "Discharging");
     writeFile(periph / "capacity", "88");
