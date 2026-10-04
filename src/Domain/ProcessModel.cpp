@@ -34,7 +34,7 @@ namespace
 {
 
 // Any elapsed time below half the minimum configurable refresh interval is treated as "no previous
-// data" for rate purposes (see computeSnapshots()).
+// data" for rate purposes (see computeSnapshotsLocked()).
 constexpr double MIN_ELAPSED_FOR_RATES = static_cast<double>(Sampling::REFRESH_INTERVAL_MIN_MS) / 2000.0;
 
 // What a refresh's network counters allow: a rate over `seconds`, holding the last rate, or none.
@@ -121,20 +121,32 @@ void ProcessModel::refresh()
         return;
     }
 
+    // One sample end to end under the sampling lock, so energy attribution (which keeps state
+    // between samples) can never apply an older sample after a newer one (#1093).
+    std::scoped_lock const samplingLock(m_SamplingMutex);
+
     auto currentCounters = m_Probe->enumerate();
     const std::uint64_t currentTotalCpuTime = m_Probe->totalCpuTime();
 
-    computeSnapshots(currentCounters, currentTotalCpuTime);
+    // Per-process power from a package energy counter: share each interval's energy by each
+    // process's CPU time in that interval. Probes that report per-process energy themselves
+    // return nullopt and their energyMicrojoules is used as-is.
+    if (const auto packageEnergy = m_Probe->readPackageEnergy())
+    {
+        m_EnergyAttributor.attribute(currentCounters, packageEnergy->energyUj, packageEnergy->maxRangeUj, packageEnergy->busyCpuTicks);
+    }
+
+    computeSnapshotsLocked(currentCounters, currentTotalCpuTime);
 }
 
 void ProcessModel::updateFromCounters(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime)
 {
-    computeSnapshots(counters, totalCpuTime);
+    std::scoped_lock const samplingLock(m_SamplingMutex);
+    computeSnapshotsLocked(counters, totalCpuTime);
 }
 
-void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime)
+void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime)
 {
-    std::scoped_lock const samplingLock(m_SamplingMutex);
 
     struct CachedGpuSnapshotFields
     {
@@ -833,7 +845,7 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
         snapshot.ioReadBytesPerSec = Numeric::counterRate(current.readBytes, previous->readBytes, elapsedSeconds);
         snapshot.ioWriteBytesPerSec = Numeric::counterRate(current.writeBytes, previous->writeBytes, elapsedSeconds);
         snapshot.pageFaultsPerSec = Numeric::counterRate(current.pageFaultCount, previous->pageFaultCount, elapsedSeconds);
-        // Network rates are computed in computeSnapshots(), which has the per-process state they
+        // Network rates are computed in computeSnapshotsLocked(), which has the per-process state they
         // need (networkInterval, held rates).
     }
 
