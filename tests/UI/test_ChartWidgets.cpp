@@ -778,9 +778,18 @@ TEST(ChartWidgetsFormattersTest, FormatAxisPercentFormatsOneDecimal)
 TEST(ChartWidgetsFormattersTest, FormatAxisPercentClampsTinyNegativeToZero)
 {
     char buf[32]{};
-    const int len = formatAxisPercent(-0.1, buf, static_cast<int>(sizeof(buf)), nullptr);
+    const int len = formatAxisPercent(-0.01, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
     EXPECT_EQ(std::string(buf), "0.0%");
+}
+
+// #1195: a percent axis can scale down to 5 %, so a small tick must keep its value.
+TEST(ChartWidgetsFormattersTest, FormatAxisPercentKeepsSmallTicks)
+{
+    char buf[32]{};
+    const int len = formatAxisPercent(0.2, buf, static_cast<int>(sizeof(buf)), nullptr);
+    EXPECT_GT(len, 0);
+    EXPECT_EQ(std::string(buf), "0.2%");
 }
 
 TEST(ChartWidgetsFormattersTest, FormatAxisLocalizedHandlesGigaSuffix)
