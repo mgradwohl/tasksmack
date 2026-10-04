@@ -70,6 +70,9 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
     // are active even after the retry.
     if (!m_Impl->ensureCounters())
     {
+        // Nothing was read, so the adapter figures are unread: a gap, not the last reading repeated
+        // as if fresh (#1166).
+        m_Impl->clearAdapterReadings();
         // Cached results stand in only while recent; after that, no data rather than a frozen
         // repeat of an old reading (#1034).
         spdlog::debug("PDHGPUProbe: No counters active; returning recent cached results if any");
@@ -82,15 +85,12 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
     if (status != ERROR_SUCCESS)
     {
         spdlog::debug("PDHGPUProbe: PdhCollectQueryData failed: 0x{:x}", static_cast<unsigned>(status));
+        // The adapter figures are unread on every failed collect, however recent the per-process
+        // cache: the previous reading published again would look fresh (#1166).
+        m_Impl->clearAdapterReadings();
         // Cached results stand in only while recent; after that, no data rather than a frozen
         // repeat of an old reading (#1034).
-        auto cached = m_Impl->freshCachedResults();
-        if (cached.empty())
-        {
-            m_Impl->lastAdapterUtilization.clear();
-            m_Impl->lastAdapterMemory.clear();
-        }
-        return cached;
+        return m_Impl->freshCachedResults();
     }
 
     // Adapter-wide memory in use (#1029). These are gauges, not rates, so they are read on the
@@ -131,6 +131,9 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
     if (!m_Impl->warmedUp)
     {
         m_Impl->warmedUp = true;
+        // No rates yet, so no adapter utilization: a gap, not 0% or a reading from before a
+        // counter re-add (#1166).
+        m_Impl->lastAdapterUtilization.clear();
         spdlog::debug("PDHGPUProbe: Warm-up sample collected, returning cached results");
         // Return cached results during warm-up to avoid UI gaps
         m_Impl->lastValidTimestamp = std::chrono::steady_clock::now();

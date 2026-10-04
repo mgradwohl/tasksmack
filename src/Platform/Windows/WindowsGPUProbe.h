@@ -36,7 +36,7 @@ class WindowsGPUProbe : public IGPUProbe
     /// the DXGI→LUID mapping required for per-adapter PDH utilization merging.
     /// Without a prior call to enumerateGPUs(), the PDH per-adapter utilization
     /// merge is unavailable, so PDH-backed adapter utilization will be missing
-    /// (and may remain 0% unless another source populates it). NVML may still
+    /// (unread, a gap, unless another source populates it). NVML may still
     /// provide utilizationPercent independently for supported NVIDIA adapters.
     /// A debug message may also be logged when PDH adapter utilization data is
     /// present but the DXGI→LUID mapping needed to merge that data is missing.

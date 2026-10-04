@@ -410,11 +410,20 @@ struct PDHGPUProbe::Impl
 
     /// Per-adapter utilization from the most recent successful collect, keyed by "GPU_<luid>": for
     /// each engine the sum over processes, then the busiest engine -- Task Manager's definition
-    /// (#1033). Empty until a collect has produced utilization.
+    /// (#1033). Empty until a collect has produced utilization, and again after a warm-up collect or
+    /// a failed one (#1166).
     std::unordered_map<std::string, double> lastAdapterUtilization;
 
     /// Adapter-wide memory in use from the most recent collect, keyed by "GPU_<luid>".
     std::unordered_map<std::string, AdapterMemoryUsage> lastAdapterMemory;
+
+    /// Forget the adapter readings after a read that produced none (no counters, a failed
+    /// collect), so callers see them as unread rather than the previous reading again (#1166).
+    void clearAdapterReadings() noexcept
+    {
+        lastAdapterUtilization.clear();
+        lastAdapterMemory.clear();
+    }
 
     /// lastValidResults if it is recent enough to stand in for a failed collect, else nothing.
     [[nodiscard]] std::vector<ProcessGPUCounters> freshCachedResults() const

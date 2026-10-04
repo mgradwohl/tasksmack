@@ -132,6 +132,27 @@ TEST(MergeNVMLIntoDXGICountersTest, FailedNVMLUtilizationReadLeavesThePDHFallbac
     EXPECT_DOUBLE_EQ(dxgi[0].powerDrawWatts, 80.0);
 }
 
+TEST(MergeNVMLIntoDXGICountersTest, NVMLReadingsMakeDXGIsUnreadFieldsAvailable)
+{
+    // #1245: DXGI's counters start unread; NVML's successful reads make them available.
+    std::vector<GPUCounters> dxgi(1);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[0].utilizationAvailable = false;
+    dxgi[0].memoryAvailable = false;
+    std::vector<GPUCounters> nvml(1);
+    nvml[0].gpuId = "uuid-0";
+    nvml[0].utilizationPercent = 0.0; // A real idle reading
+    nvml[0].memoryTotalBytes = 8ULL << 30U;
+    nvml[0].memoryUsedBytes = 1ULL << 30U;
+
+    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0, 0}});
+
+    EXPECT_TRUE(sourced.contains("GPU0"));
+    EXPECT_TRUE(dxgi[0].utilizationAvailable);
+    EXPECT_TRUE(dxgi[0].memoryAvailable);
+    EXPECT_EQ(dxgi[0].memoryUsedBytes, 1ULL << 30U);
+}
+
 TEST(MergeNVMLIntoDXGICountersTest, UnmappedDXGIIndexIsSkipped)
 {
     std::vector<GPUCounters> dxgi(1);

@@ -211,17 +211,15 @@ std::vector<GPUCounters> DXGIGPUProbe::readGPUCounters()
             if (isListedAdapter(
                     desc.Flags, static_cast<std::int32_t>(desc.AdapterLuid.HighPart), static_cast<std::uint32_t>(desc.AdapterLuid.LowPart)))
             {
-                GPUCounters counter{};
-                counter.gpuId = std::format("GPU{}", adapterIndex);
-
                 // The adapter's own memory size. Usage is not read here: QueryVideoMemoryInfo
                 // reports the calling process's usage and budget, not the adapter's, so the GPU tab
                 // used to chart TaskSmack's own few MB as the GPU's memory (#1029). WindowsGPUProbe
-                // fills memoryUsedBytes from PDH's adapter-wide counters (or NVML).
+                // fills memoryUsedBytes from PDH's adapter-wide counters (or NVML); until then
+                // utilization and memory are unread, not a real 0 (#1245).
                 const bool integrated = isIntegratedGPUFromDesc(desc.VendorId, desc.Flags, desc.DedicatedVideoMemory);
-                counter.memoryTotalBytes = adapterMemoryTotalBytes(integrated, desc.DedicatedVideoMemory, desc.SharedSystemMemory);
-                counter.memoryUsedBytes = 0;
-                counters.push_back(std::move(counter));
+                counters.push_back(
+                    makeDXGIAdapterCounters(std::format("GPU{}", adapterIndex),
+                                            adapterMemoryTotalBytes(integrated, desc.DedicatedVideoMemory, desc.SharedSystemMemory)));
             }
         }
 

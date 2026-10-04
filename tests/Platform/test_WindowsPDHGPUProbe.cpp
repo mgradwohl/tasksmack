@@ -455,6 +455,73 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, StaleCacheIsNotRepeatedAfterACollectFailu
     EXPECT_TRUE(probe.adapterUtilization().empty());
 }
 
+TEST_F(WindowsPDHGPUProbeInjectedTest, WarmUpCollectLeavesAdapterUtilizationUnread)
+{
+    // The warm-up collect has no rates: its adapter utilization is unread, not 0% and not a
+    // reading left over from before a counter re-add (#1166).
+    auto impl = makeInjectedImpl();
+    impl->warmedUp = false;
+    impl->lastAdapterUtilization = {{"GPU_0x0_0x1", 80.0}};
+    m_scenario->items[impl->utilizationCounter] = {
+        {.name = L"pid_1310_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .doubleValue = 5.0},
+    };
+    PDHGPUProbe probe(std::move(impl));
+
+    static_cast<void>(probe.readProcessGPUCounters());
+    EXPECT_TRUE(probe.adapterUtilization().empty());
+
+    // The next collect has rates.
+    static_cast<void>(probe.readProcessGPUCounters());
+    EXPECT_DOUBLE_EQ(probe.adapterUtilization().at("GPU_0x0_0x1"), 5.0);
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, AFailedCollectClearsTheAdapterReadingsEvenWithAFreshProcessCache)
+{
+    // A failed collect may hand back the recent per-process results (#1034), but the adapter's
+    // utilization and memory were not read: reusing them made a stale value look fresh (#1166).
+    auto impl = makeInjectedImpl();
+    m_scenario->items[impl->utilizationCounter] = {
+        {.name = L"pid_1320_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .doubleValue = 30.0},
+    };
+    m_scenario->items[impl->adapterSharedCounter] = {{.name = L"luid_0x0_0x1_phys_0", .largeValue = 1234}};
+    PDHGPUProbe probe(std::move(impl));
+    ASSERT_EQ(probe.readProcessGPUCounters().size(), 1U);
+    ASSERT_FALSE(probe.adapterUtilization().empty());
+    ASSERT_FALSE(probe.adapterMemory().empty());
+
+    m_scenario->collectStatus = static_cast<PDH_STATUS>(PDH_CSTATUS_NO_INSTANCE);
+    const auto cached = probe.readProcessGPUCounters();
+
+    EXPECT_EQ(cached.size(), 1U) << "the recent per-process results still stand in";
+    EXPECT_TRUE(probe.adapterUtilization().empty());
+    EXPECT_TRUE(probe.adapterMemory().empty());
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, NoActiveCountersClearsTheAdapterReadings)
+{
+    auto impl = std::make_unique<Impl>();
+    impl->pdhOpenQuery = fakeOpenQuery;
+    impl->pdhCloseQuery = fakeCloseQuery;
+    impl->pdhAddEnglishCounter = fakeAddEnglishCounter;
+    impl->pdhCollectQueryData = fakeCollectQueryData;
+    impl->pdhGetFormattedCounterArray = fakeGetFormattedCounterArray;
+    impl->query = reinterpret_cast<PDH_HQUERY>(static_cast<std::uintptr_t>(1));
+    impl->initialized = true;
+    impl->lastAdapterUtilization = {{"GPU_0x0_0x1", 80.0}};
+    impl->lastAdapterMemory = {{"GPU_0x0_0x1", {.dedicatedBytes = 1, .sharedBytes = 2}}};
+    m_scenario->failToAdd[Impl::UTILIZATION_COUNTER_PATH] = true;
+    m_scenario->failToAdd[Impl::DEDICATED_MEMORY_COUNTER_PATH] = true;
+    m_scenario->failToAdd[Impl::SHARED_MEMORY_COUNTER_PATH] = true;
+    m_scenario->failToAdd[Impl::ADAPTER_DEDICATED_COUNTER_PATH] = true;
+    m_scenario->failToAdd[Impl::ADAPTER_SHARED_COUNTER_PATH] = true;
+    PDHGPUProbe probe(std::move(impl));
+
+    static_cast<void>(probe.readProcessGPUCounters());
+
+    EXPECT_TRUE(probe.adapterUtilization().empty());
+    EXPECT_TRUE(probe.adapterMemory().empty());
+}
+
 TEST(ParseAdapterInstanceLuidTest, AcceptsAdapterInstancesOnly)
 {
     EXPECT_EQ(PDHGPUProbeImplDetail::parseAdapterInstanceLuid("luid_0x00000000_0x0001752D_phys_0"), "0x00000000_0x0001752D");

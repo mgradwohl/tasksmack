@@ -348,6 +348,7 @@ mergeNVMLIntoDXGICounters(std::vector<GPUCounters>& dxgiCounters,
         if (nvmlCounter.utilizationAvailable)
         {
             dxgiCounter.utilizationPercent = nvmlCounter.utilizationPercent;
+            dxgiCounter.utilizationAvailable = true;  // DXGI's counter starts unread (#1245)
             nvmlSourcedIds.insert(dxgiCounter.gpuId); // Track so PDH merge doesn't overwrite a valid 0%
         }
         else
@@ -360,6 +361,7 @@ mergeNVMLIntoDXGICounters(std::vector<GPUCounters>& dxgiCounters,
         {
             dxgiCounter.memoryUsedBytes = nvmlCounter.memoryUsedBytes;
             dxgiCounter.memoryTotalBytes = nvmlCounter.memoryTotalBytes;
+            dxgiCounter.memoryAvailable = true; // DXGI's counter starts unread (#1245)
             if (nvmlMemoryIds != nullptr)
             {
                 nvmlMemoryIds->insert(dxgiCounter.gpuId);

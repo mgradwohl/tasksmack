@@ -60,13 +60,13 @@ class PDHGPUProbe
 
     /// Per-adapter GPU utilization from the most recent readProcessGPUCounters() call, keyed by
     /// "GPU_<luid>" (DXGI's luidId format). For each engine the sum over processes, then the
-    /// busiest engine, as Task Manager defines it (#1033). Empty before the first collect with
-    /// utilization, and after a collect fails and the cached results have gone stale.
+    /// busiest engine, as Task Manager defines it (#1033). Empty -- unread -- after a warm-up collect
+    /// (no rates yet) and after any failed collect, so neither publishes 0% or a stale reading (#1166).
     [[nodiscard]] std::unordered_map<std::string, double> adapterUtilization() const;
 
     /// Adapter-wide GPU memory in use from the most recent readProcessGPUCounters() call, keyed by
     /// "GPU_<luid>". Unlike DXGI's QueryVideoMemoryInfo, which reports only the calling process,
-    /// this covers every process on the adapter (#1029).
+    /// this covers every process on the adapter (#1029). Empty after a failed collect (#1166).
     [[nodiscard]] std::unordered_map<std::string, AdapterMemoryUsage> adapterMemory() const;
 
     /// @brief Get capabilities of this probe

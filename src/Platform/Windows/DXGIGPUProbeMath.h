@@ -1,9 +1,12 @@
 #pragma once
 
+#include "Platform/GPUTypes.h"
+
 #include <cstdint>
 #include <format>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace Platform
 {
@@ -101,6 +104,21 @@ struct AdapterTypeBits
 [[nodiscard]] constexpr uint64_t adapterMemoryTotalBytes(bool isIntegrated, uint64_t dedicatedVideoMemory, uint64_t sharedSystemMemory)
 {
     return isIntegrated ? sharedSystemMemory : dedicatedVideoMemory;
+}
+
+/// The counters DXGIGPUProbe reads for one adapter: its id and memory size. DXGI reads neither
+/// utilization nor the adapter's memory in use, so both start unread; NVML or PDH marks them
+/// available when it supplies a reading. Defaulting to available published DXGI's placeholder 0%
+/// and 0 B as real samples whenever PDH was warming up or unavailable (#1245).
+[[nodiscard]] inline GPUCounters makeDXGIAdapterCounters(std::string gpuId, uint64_t memoryTotalBytes)
+{
+    GPUCounters counter{};
+    counter.gpuId = std::move(gpuId);
+    counter.memoryTotalBytes = memoryTotalBytes;
+    counter.memoryUsedBytes = 0;
+    counter.utilizationAvailable = false;
+    counter.memoryAvailable = false;
+    return counter;
 }
 
 } // namespace Platform

@@ -268,6 +268,18 @@ TEST(AdapterMemoryTotalBytesTest, IntegratedUsesSharedSystemMemoryDiscreteUsesDe
     EXPECT_EQ(adapterMemoryTotalBytes(false, DEDICATED, SHARED), DEDICATED);
 }
 
+TEST(MakeDXGIAdapterCountersTest, UtilizationAndMemoryInUseStartUnread)
+{
+    // DXGI reads neither: with PDH warming up or unavailable, its placeholder 0% and 0 B published
+    // as real samples (#1245). NVML or PDH marks them available when it has a reading.
+    const auto counter = makeDXGIAdapterCounters("GPU0", 16ULL << 30U);
+
+    EXPECT_EQ(counter.gpuId, "GPU0");
+    EXPECT_EQ(counter.memoryTotalBytes, 16ULL << 30U);
+    EXPECT_FALSE(counter.utilizationAvailable);
+    EXPECT_FALSE(counter.memoryAvailable);
+}
+
 TEST(VendorIdToNameTest, KnownVendorIdsMapCorrectly)
 {
     EXPECT_EQ(vendorIdToName(0x10DE), "NVIDIA");
@@ -370,6 +382,12 @@ TEST(DXGIGPUProbeTest, ReadGPUCountersMatchesEnumeration)
     auto counters = probe.readGPUCounters();
 
     EXPECT_EQ(gpus.size(), counters.size());
+    for (const auto& counter : counters)
+    {
+        // DXGI alone reads neither (#1245).
+        EXPECT_FALSE(counter.utilizationAvailable);
+        EXPECT_FALSE(counter.memoryAvailable);
+    }
 }
 
 TEST(DXGIGPUProbeTest, ReadProcessGPUCountersIsAlwaysEmpty)

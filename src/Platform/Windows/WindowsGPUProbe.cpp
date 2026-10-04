@@ -113,7 +113,8 @@ std::vector<GPUCounters> WindowsGPUProbe::readGPUCounters()
         return {};
     }
 
-    // Get base counters from DXGI
+    // Get base counters from DXGI: utilization and memory in use start unread, so an adapter
+    // neither NVML nor PDH reads this sample publishes a gap rather than 0% and 0 B (#1245).
     auto counters = m_DXGIProbe->readGPUCounters();
 
     // Merge NVML enhancements for NVIDIA GPUs; returns IDs that got NVML utilization, and fills
@@ -192,7 +193,7 @@ void WindowsGPUProbe::mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiC
     const auto utilizationByLuid = m_PDHAdapterProbe->adapterUtilization();
     if (utilizationByLuid.empty())
     {
-        return;
+        return; // Warm-up or a failed collect: DXGI's counters stay unread, a gap, not 0% (#1245)
     }
 
     // Assign per-GPU utilization by matching each DXGI counter's LUID-based id
