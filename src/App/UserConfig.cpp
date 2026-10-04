@@ -13,17 +13,18 @@
 #include <toml++/toml.hpp>
 
 #include <algorithm>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <format>
-#include <fstream>
-#include <ios>
 #include <limits>
 #include <optional>
 #include <random>
+#include <sstream>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 
@@ -37,6 +38,9 @@
 #endif
 #include <windows.h>
 #include <shlobj.h>
+
+#include <fstream>
+#include <ios>
 // clang-format on
 #else
 #include <array>
@@ -465,6 +469,35 @@ auto UserConfig::getConfigDirectory() -> std::filesystem::path
 #endif
 }
 
+#ifndef _WIN32
+namespace
+{
+
+/// Writes all of `contents` to `fd`, retrying short writes and EINTR, then closes it. False if any
+/// write or the close failed; the descriptor is closed either way.
+[[nodiscard]] bool writeAllAndClose(int fd, std::string_view contents)
+{
+    bool ok = true;
+    while (ok && !contents.empty())
+    {
+        const auto n = ::write(fd, contents.data(), contents.size());
+        if (n < 0)
+        {
+            ok = (errno == EINTR);
+            continue;
+        }
+        contents.remove_prefix(static_cast<std::size_t>(n));
+    }
+    if (::close(fd) != 0)
+    {
+        ok = false;
+    }
+    return ok;
+}
+
+} // namespace
+#endif
+
 void UserConfig::load()
 {
     if (m_IsLoaded)
@@ -601,32 +634,70 @@ void UserConfig::save()
     // leave the config truncated or empty (#1122). This does not make the new contents durable
     // across a power loss: nothing is synced to disk. Each save gets its own, exclusively created
     // temporary file, so two TaskSmack instances can't write into the same one.
+    std::ostringstream text;
+    text << "# TaskSmack user configuration\n";
+    text << "# Written by TaskSmack. Keys it doesn't use are kept, but comments in this file are not.\n";
+    text << "# Edits made while TaskSmack is running are kept unless TaskSmack changes the same setting.\n";
+    text << "# Notes:\n";
+    text << "#   [sampling] interval_ms: refresh cadence (100-5000ms); affects all samplers\n";
+    text << "#   [sampling] history_max_seconds: timeline history window (10-1800s)\n";
+    text << "#   [sampling] socket_stats_cache_ttl_ms: Linux only; per-process network stat cache TTL (0-5000ms)\n";
+    text << "#   [metrics] min_time_for_rate_seconds: delay before computing network rates (0.0-5.0s); avoids early spikes\n";
+    text << "#   [metrics] max_sane_rate_bps: sanity check for network/IO rates (bytes/sec); clamps outliers\n";
+    text << "#   [metrics] integrated_gpu_vram_threshold_mb: GPU classification threshold (16-512MB)\n";
+    text << "#   [ui] chart_smooth_factor: exponential smoothing for charts (0.0-0.95); 0=no smoothing, 0.95=max smoothing\n";
+    text << "#   [ui] chart_tau_ms_min/max: adaptive smoothing time constant range (ms); affects chart responsiveness\n";
+    text << "#   [ui] progress_color_low/high_threshold: color change percentages for progress bars\n";
+    text << "#   [ui] show_privilege_notice: show startup dialog when running without elevated privileges (true/false)\n";
+    text << "#   [ui] chart_anti_aliasing: smooth chart line/fill edges (true/false); disable for lower CPU/GPU cost "
+            "on integrated GPUs\n";
+    text << "#   [process_columns]: toggle columns on/off; true shows the column\n";
+    text << "#   [process_table] layout: saved column widths, order and sort (written by TaskSmack; delete it to reset)\n";
+    text << "#   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.\n\n";
+    text << document;
+    const std::string contents = std::move(text).str();
+
     std::filesystem::path tempPath;
-    std::ofstream file;
     std::random_device random;
-    for (int attempt = 0; attempt < 8 && !file.is_open(); ++attempt)
+    const auto nextTempPath = [&]
     {
         // A short name of its own in the same directory, not "<name>.<hex>.tmp": a target whose own
         // name is near the filesystem's 255-byte limit would leave no room for a suffix (#1222 review).
-        tempPath = destination.parent_path() / std::format(".tasksmack-config.{:08x}.tmp", random());
+        return destination.parent_path() / std::format(".tasksmack-config.{:08x}.tmp", random());
+    };
+#ifndef _WIN32
+    // Created exclusively (O_EXCL) and owner-only from the start, and written through that same
+    // descriptor. Reopening the path would lose both: a substituted symlink could be followed and its
+    // target truncated, and a umask without owner-write would make the reopen fail. Created with the
+    // umask and narrowed afterwards, another user could open it in between and keep reading (#1222
+    // review). The original's mode is restored only after writing, just before the rename.
+    int fd = -1;
+    for (int attempt = 0; attempt < 8 && fd < 0; ++attempt)
+    {
+        tempPath = nextTempPath();
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+        fd = ::open(tempPath.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
+        if (fd < 0 && errno != EEXIST)
+        {
+            break;
+        }
+    }
+    if (fd < 0)
+    {
+        spdlog::error("Failed to create a temporary file beside {}: {}", m_ConfigPath.string(), std::system_category().message(errno));
+        return;
+    }
+    const bool written = writeAllAndClose(fd, contents);
+#else
+    std::ofstream file;
+    for (int attempt = 0; attempt < 8 && !file.is_open(); ++attempt)
+    {
+        tempPath = nextTempPath();
         if (std::filesystem::exists(tempPath, ec))
         {
             continue;
         }
-#ifndef _WIN32
-        // Created exclusively and owner-only from the start: created with the umask (often 0644) and
-        // narrowed afterwards, another user could open it in between and keep reading through that
-        // descriptor once the settings are written (#1222 review). The original's mode is restored
-        // only after writing, just before the rename.
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
-        const int fd = ::open(tempPath.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
-        if (fd < 0)
-        {
-            continue;
-        }
-        ::close(fd);
-        file.open(tempPath, std::ios::out | std::ios::trunc);
-#elif defined(__cpp_lib_ios_noreplace)
+#if defined(__cpp_lib_ios_noreplace)
         file.open(tempPath, std::ios::out | std::ios::noreplace);
 #else
         file.open(tempPath, std::ios::out | std::ios::trunc);
@@ -637,30 +708,13 @@ void UserConfig::save()
         spdlog::error("Failed to create a temporary file beside {}", m_ConfigPath.string());
         return;
     }
-    file << "# TaskSmack user configuration\n";
-    file << "# Written by TaskSmack. Keys it doesn't use are kept, but comments in this file are not.\n";
-    file << "# Edits made while TaskSmack is running are kept unless TaskSmack changes the same setting.\n";
-    file << "# Notes:\n";
-    file << "#   [sampling] interval_ms: refresh cadence (100-5000ms); affects all samplers\n";
-    file << "#   [sampling] history_max_seconds: timeline history window (10-1800s)\n";
-    file << "#   [sampling] socket_stats_cache_ttl_ms: Linux only; per-process network stat cache TTL (0-5000ms)\n";
-    file << "#   [metrics] min_time_for_rate_seconds: delay before computing network rates (0.0-5.0s); avoids early spikes\n";
-    file << "#   [metrics] max_sane_rate_bps: sanity check for network/IO rates (bytes/sec); clamps outliers\n";
-    file << "#   [metrics] integrated_gpu_vram_threshold_mb: GPU classification threshold (16-512MB)\n";
-    file << "#   [ui] chart_smooth_factor: exponential smoothing for charts (0.0-0.95); 0=no smoothing, 0.95=max smoothing\n";
-    file << "#   [ui] chart_tau_ms_min/max: adaptive smoothing time constant range (ms); affects chart responsiveness\n";
-    file << "#   [ui] progress_color_low/high_threshold: color change percentages for progress bars\n";
-    file << "#   [ui] show_privilege_notice: show startup dialog when running without elevated privileges (true/false)\n";
-    file << "#   [ui] chart_anti_aliasing: smooth chart line/fill edges (true/false); disable for lower CPU/GPU cost "
-            "on integrated GPUs\n";
-    file << "#   [process_columns]: toggle columns on/off; true shows the column\n";
-    file << "#   [process_table] layout: saved column widths, order and sort (written by TaskSmack; delete it to reset)\n";
-    file << "#   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.\n\n";
-    file << document;
+    file << contents;
     file.close();
-    if (!file)
+    const bool written = static_cast<bool>(file);
+#endif
+    if (!written)
     {
-        spdlog::error("Failed to write {}: stream error after write", tempPath.string());
+        spdlog::error("Failed to write {}", tempPath.string());
         std::filesystem::remove(tempPath, ec);
         return;
     }

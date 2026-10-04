@@ -23,6 +23,7 @@
 #include <csignal>
 
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -1408,6 +1409,29 @@ TEST_F(UserConfigSaveLoadFixture, StagingFileIsNeverReadableByOthers)
     config.settings().themeId = "mocha";
     config.save();
     EXPECT_EQ(std::filesystem::status(path).permissions() & std::filesystem::perms::all, shared);
+}
+
+TEST_F(UserConfigSaveLoadFixture, SavesUnderAUmaskThatMasksOwnerWrite)
+{
+    // The staging file is written through the descriptor that created it: reopening its path
+    // failed with EACCES under a umask without owner-write, so nothing was ever saved (#1222 review).
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root can write a mode-0400 file anyway";
+    }
+    auto& config = UserConfig::get();
+    config.settings().themeId = "mocha";
+    const mode_t previous = ::umask(0277);
+    config.save();
+    config.settings().themeId = "latte";
+    config.save(); // replacing a 0400 config works too
+    ::umask(previous);
+
+    EXPECT_EQ(parsed(config.configPath())["theme"]["id"].value<std::string>(), "latte");
+    for (const auto& entry : std::filesystem::directory_iterator(m_TempDir))
+    {
+        EXPECT_NE(entry.path().extension(), ".tmp") << entry.path();
+    }
 }
 
 TEST_F(UserConfigSaveLoadFixture, UnreadableConfigDirectoryFallsBackToDefaults)
