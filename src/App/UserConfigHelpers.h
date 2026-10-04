@@ -7,7 +7,9 @@
 #include <algorithm>
 #include <filesystem>
 #include <functional>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace App::UserConfigHelpers
 {
@@ -86,6 +88,82 @@ inline void loadAndNarrowIntWithClamp(
         return false;
     }
     return !std::ranges::any_of(normalized, [](const auto& part) { return part == ".."; });
+}
+
+/// Three-way merge of TaskSmack's own settings into `document`, the config file as it is now
+/// (#1122). `base` holds TaskSmack's keys as it last read or wrote them, `mine` as they are now;
+/// both are one level of [section] tables holding values. A key TaskSmack changed since `base` takes
+/// TaskSmack's value, or is removed if TaskSmack no longer writes it (a cleared window position).
+/// Every other key keeps whatever the file has, so edits made outside TaskSmack while it runs,
+/// including deleting a key, survive. Keys TaskSmack doesn't own are never touched.
+inline void mergeOwnedKeys(toml::table& document, const toml::table& base, const toml::table& mine)
+{
+    const auto sameValue = [](const toml::node* a, const toml::node* b)
+    {
+        if (a == nullptr || b == nullptr)
+        {
+            return a == b;
+        }
+        return toml::node_view<const toml::node>{a} == toml::node_view<const toml::node>{b};
+    };
+
+    std::vector<std::string> sections;
+    for (const toml::table* owned : {&base, &mine})
+    {
+        for (const auto& [key, value] : *owned)
+        {
+            if (std::ranges::find(sections, key.str()) == sections.end())
+            {
+                sections.emplace_back(key.str());
+            }
+        }
+    }
+
+    for (const auto& section : sections)
+    {
+        const toml::table* baseSection = base.get_as<toml::table>(section);
+        const toml::table* mineSection = mine.get_as<toml::table>(section);
+        std::vector<std::string> keys;
+        for (const toml::table* owned : {baseSection, mineSection})
+        {
+            if (owned == nullptr)
+            {
+                continue;
+            }
+            for (const auto& [key, value] : *owned)
+            {
+                if (std::ranges::find(keys, key.str()) == keys.end())
+                {
+                    keys.emplace_back(key.str());
+                }
+            }
+        }
+
+        for (const auto& key : keys)
+        {
+            const toml::node* baseValue = (baseSection != nullptr) ? baseSection->get(key) : nullptr;
+            const toml::node* mineValue = (mineSection != nullptr) ? mineSection->get(key) : nullptr;
+            if (sameValue(baseValue, mineValue))
+            {
+                continue; // TaskSmack didn't change it: the file's value (or its absence) stands
+            }
+
+            toml::table* documentSection = document.get_as<toml::table>(section);
+            if (mineValue != nullptr)
+            {
+                if (documentSection == nullptr)
+                {
+                    document.insert_or_assign(section, toml::table{});
+                    documentSection = document.get_as<toml::table>(section);
+                }
+                documentSection->insert_or_assign(key, *mineValue);
+            }
+            else if (documentSection != nullptr)
+            {
+                documentSection->erase(key);
+            }
+        }
+    }
 }
 
 } // namespace App::UserConfigHelpers
