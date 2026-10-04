@@ -55,6 +55,16 @@ struct ResizePerfOperations
     return (static_cast<double>(end - start) * 1000.0) / static_cast<double>(SDL_GetPerformanceFrequency());
 }
 
+/// How an operation's optional success flag reads in the resize trace log.
+[[nodiscard]] inline const char* queriedResultText(std::optional<bool> result) noexcept
+{
+    if (!result.has_value())
+    {
+        return "not-queried";
+    }
+    return *result ? "true" : "false";
+}
+
 inline void recordResizePerfOperation(
     ResizePerfOperation operation, std::uint64_t start, std::uint64_t end, std::optional<bool> result, int requestedA, int requestedB)
 {
@@ -82,7 +92,7 @@ inline void recordResizePerfOperation(
                      durationMs,
                      requestedA,
                      requestedB,
-                     result.has_value() ? (*result ? "true" : "false") : "not-queried",
+                     queriedResultText(result),
                      failed ? SDL_GetError() : "");
     }
 }

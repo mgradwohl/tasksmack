@@ -77,7 +77,16 @@ filledButton(const char* label, const ImVec2& size, const ButtonFills& fills, co
     // colour that was actually drawn.
     const bool hovered = ImGui::IsItemHovered();
     const bool held = ImGui::IsItemActive();
-    const ImVec4& shown = (held && hovered) ? fills.pressed : (hovered ? fills.hovered : fills.resting);
+    const ImVec4* shownFill = &fills.resting;
+    if (held && hovered)
+    {
+        shownFill = &fills.pressed;
+    }
+    else if (hovered)
+    {
+        shownFill = &fills.hovered;
+    }
+    const ImVec4& shown = *shownFill;
 
     const ImVec2 rectMin = ImGui::GetItemRectMin();
     const ImVec2 rectMax = ImGui::GetItemRectMax();

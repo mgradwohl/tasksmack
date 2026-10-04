@@ -14,6 +14,7 @@
 #include <functional>
 #include <string>
 #include <system_error>
+#include <utility>
 
 namespace Core
 {
@@ -46,7 +47,7 @@ template<typename AbsoluteCallable, typename CurrentPathCallable>
 resolveAbsolutePath(const std::filesystem::path& raw, AbsoluteCallable&& absoluteFn, CurrentPathCallable&& currentPathFn)
 {
     std::error_code ec;
-    const std::filesystem::path abs = absoluteFn(raw, ec);
+    const std::filesystem::path abs = std::forward<AbsoluteCallable>(absoluteFn)(raw, ec);
     if (!ec)
     {
         return abs.lexically_normal();
@@ -56,7 +57,7 @@ resolveAbsolutePath(const std::filesystem::path& raw, AbsoluteCallable&& absolut
     if (raw.is_relative())
     {
         std::error_code cwdEc;
-        const std::filesystem::path cwd = currentPathFn(cwdEc);
+        const std::filesystem::path cwd = std::forward<CurrentPathCallable>(currentPathFn)(cwdEc);
         if (!cwdEc)
         {
             return (cwd / raw).lexically_normal();

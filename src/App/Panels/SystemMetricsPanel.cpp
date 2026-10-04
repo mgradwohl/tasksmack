@@ -14,7 +14,6 @@
 #include "Domain/Numeric.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/StorageModel.h"
-#include "Domain/StorageSnapshot.h"
 #include "Domain/SystemModel.h"
 #include "Platform/Factory.h"
 #include "PowerStatusText.h"

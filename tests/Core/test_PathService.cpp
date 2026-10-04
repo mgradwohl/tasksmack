@@ -165,6 +165,31 @@ TEST(ResolveAbsolutePathTest, FailingAbsoluteWithRelativeRawComposesWithCurrentP
     EXPECT_EQ(result, (cwd / raw).lexically_normal());
 }
 
+TEST(ResolveAbsolutePathTest, AcceptsMutableCallables)
+{
+    // Each callable is invoked at most once and may be a mutable lambda (#1224 review).
+    int absoluteCalls = 0;
+    int currentPathCalls = 0;
+    const auto result = resolveAbsolutePath(
+        "rel",
+        [&absoluteCalls](const std::filesystem::path& p, std::error_code& ec) mutable
+        {
+            ++absoluteCalls;
+            ec.clear();
+            return std::filesystem::path("/base") / p;
+        },
+        [&currentPathCalls](std::error_code& ec) mutable
+        {
+            ++currentPathCalls;
+            ec.clear();
+            return std::filesystem::path("/unused");
+        });
+
+    EXPECT_EQ(result, std::filesystem::path("/base/rel"));
+    EXPECT_EQ(absoluteCalls, 1);
+    EXPECT_EQ(currentPathCalls, 0); // Only consulted when absoluteFn fails
+}
+
 TEST(ResolveAbsolutePathTest, FailingAbsoluteWithAbsoluteRawSkipsCurrentPathFallback)
 {
     // raw is already absolute, so the relative-composition branch must not be taken even
