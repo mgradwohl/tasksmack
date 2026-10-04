@@ -1241,6 +1241,9 @@ static_assert(TCP_STATE_ESTABLISHED == static_cast<std::uint32_t>(MIB_TCP_STATE_
 
 /// Fetch one address family's GetExtendedTcpTable(TCP_TABLE_OWNER_PID_ALL) snapshot.
 /// Returns an empty buffer on any failure (the sample then has no rows for that family).
+/// Connections open between the size query and the fill, so a fill that reports the buffer is now
+/// too small is retried with the new size plus headroom rather than dropping the family's rows
+/// for the sample.
 [[nodiscard]] std::vector<unsigned char> readOwnerPidTcpTable(ULONG addressFamily)
 {
     DWORD tableSize = 0;
@@ -1250,8 +1253,18 @@ static_assert(TCP_STATE_ESTABLISHED == static_cast<std::uint32_t>(MIB_TCP_STATE_
         return {};
     }
 
-    std::vector<unsigned char> buffer(tableSize);
-    status = GetExtendedTcpTable(buffer.data(), &tableSize, FALSE, addressFamily, TCP_TABLE_OWNER_PID_ALL, 0);
+    std::vector<unsigned char> buffer;
+    for (int attempt = 0; attempt < 3; ++attempt)
+    {
+        constexpr DWORD HEADROOM_BYTES = 4096; // Room for a few dozen connections opened meanwhile
+        buffer.assign(static_cast<std::size_t>(tableSize) + HEADROOM_BYTES, 0);
+        tableSize = static_cast<DWORD>(buffer.size());
+        status = GetExtendedTcpTable(buffer.data(), &tableSize, FALSE, addressFamily, TCP_TABLE_OWNER_PID_ALL, 0);
+        if (status != ERROR_INSUFFICIENT_BUFFER)
+        {
+            break;
+        }
+    }
     if (status != NO_ERROR)
     {
         return {};
