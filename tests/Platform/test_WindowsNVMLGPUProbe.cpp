@@ -1,5 +1,6 @@
 #ifdef _WIN32
 
+#include "Platform/GPUTypes.h"
 #include "Platform/NVMLTypes.h"
 #include "Platform/Windows/NVMLGPUProbe.h"
 
