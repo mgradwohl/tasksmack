@@ -71,6 +71,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_SingleLineText.cpp
     Domain/test_ProcessEnergyAttribution.cpp
     Domain/test_ProcessModel.cpp
+    Domain/test_SocketTrafficAccumulator.cpp
     Domain/test_GPUModel.cpp
     Domain/test_ProcessStatus.cpp
     Domain/test_SystemModel.cpp

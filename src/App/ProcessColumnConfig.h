@@ -228,6 +228,20 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
     return infos[toIndex(col)];
 }
 
+/// What a column's header tooltip adds to its description about what the platform leaves out, or
+/// empty. The network columns say when they count TCP only: UDP traffic -- QUIC/HTTP3, video calls,
+/// games, DNS -- isn't attributed per process, and a browser streaming over HTTP/3 reads about
+/// 0 B/s (#1101).
+/// @param hasUdpNetworkCounters  ProcessCapabilities::hasUdpNetworkCounters.
+[[nodiscard]] constexpr auto columnCapabilityNote(ProcessColumn col, bool hasUdpNetworkCounters) -> std::string_view
+{
+    if ((col == ProcessColumn::NetSent || col == ProcessColumn::NetReceived) && !hasUdpNetworkCounters)
+    {
+        return "TCP only: UDP traffic (QUIC/HTTP3, video calls, games, DNS) is not counted";
+    }
+    return {};
+}
+
 /// Default width of a column in pixels at the current font.
 ///
 /// The widths in getColumnInfo() are authored in pixels at the reference em (the Medium preset on a

@@ -11,6 +11,7 @@
 
 #include "Domain/SamplingConfig.h"
 #include "Domain/SystemModel.h"
+#include "Domain/SystemSnapshot.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/PowerTypes.h"
 #include "Platform/SystemTypes.h"
@@ -23,7 +24,9 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 // Use shared mock from TestMocks namespace
@@ -1456,6 +1459,56 @@ TEST(SystemModelTest, PerInterfaceNetworkRatesComputedFromDeltas)
     // wlan0: (2500-2000) / 1.0 = 500 rx/s, (1200-1000) / 1.0 = 200 tx/s
     EXPECT_DOUBLE_EQ(snap.networkInterfaces[1].rxBytesPerSec, 500.0);
     EXPECT_DOUBLE_EQ(snap.networkInterfaces[1].txBytesPerSec, 200.0);
+}
+
+namespace
+{
+/// Total rates after two samples one second apart, in which each interface moves `rxDelta` rx and
+/// `txDelta` tx bytes; each entry is an interface name and whether it is virtual.
+Domain::SystemSnapshot totalAfterOneSecond(const std::vector<std::pair<std::string, bool>>& interfaces, uint64_t rxDelta, uint64_t txDelta)
+{
+    std::vector<Platform::SystemCounters::InterfaceCounters> before;
+    std::vector<Platform::SystemCounters::InterfaceCounters> after;
+    for (const auto& [name, isVirtual] : interfaces)
+    {
+        auto first = makeInterfaceCounters(name, 1000, 1000);
+        first.isVirtual = isVirtual;
+        auto second = makeInterfaceCounters(name, 1000 + rxDelta, 1000 + txDelta);
+        second.isVirtual = isVirtual;
+        before.push_back(first);
+        after.push_back(second);
+    }
+    const auto cpu = makeCpuCounters(100, 0, 50, 850);
+    const auto memory = makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024);
+    auto probe = std::make_unique<MockSystemProbe>();
+    Domain::SystemModel model(std::move(probe));
+    model.updateFromCounters(makeSystemCounters(cpu, memory, 0, {}, 0, 0, before), 1.0);
+    model.updateFromCounters(makeSystemCounters(makeCpuCounters(200, 0, 100, 1700), memory, 0, {}, 0, 0, after), 2.0);
+    return model.snapshot();
+}
+} // namespace
+
+TEST(SystemModelTest, NetworkTotalLeavesOutVirtualInterfaces)
+{
+    // #1106: a VPN tunnel (or a docker bridge, a WSL vEthernet) carries traffic that also crosses the
+    // hardware NIC; summing both showed about twice the real throughput.
+    const auto snap = totalAfterOneSecond({{"eth0", false}, {"wg0", true}, {"docker0", true}}, 5000, 700);
+    EXPECT_DOUBLE_EQ(snap.netRxBytesPerSec, 5000.0);
+    EXPECT_DOUBLE_EQ(snap.netTxBytesPerSec, 700.0);
+
+    // ...while each virtual interface keeps its own rate and stays marked for the UI.
+    ASSERT_EQ(snap.networkInterfaces.size(), 3U);
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[1].rxBytesPerSec, 5000.0);
+    EXPECT_FALSE(snap.networkInterfaces[0].isVirtual);
+    EXPECT_TRUE(snap.networkInterfaces[1].isVirtual);
+}
+
+TEST(SystemModelTest, NetworkTotalCountsEveryInterfaceWhenAllAreVirtual)
+{
+    // Inside a container eth0 is a veth: with no hardware interface the Total must not read 0.
+    const auto snap = totalAfterOneSecond({{"eth0", true}, {"eth1", true}}, 300, 100);
+    EXPECT_DOUBLE_EQ(snap.netRxBytesPerSec, 600.0);
+    EXPECT_DOUBLE_EQ(snap.netTxBytesPerSec, 200.0);
 }
 
 TEST(SystemModelTest, PerInterfaceNetworkRatesHandleNewInterface)

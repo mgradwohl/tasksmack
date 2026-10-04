@@ -65,6 +65,16 @@ class IProcessProbe
         return std::nullopt;
     }
 
+    /// Reads every connection's raw cumulative byte counters, each attributed to its owning process
+    /// (stateless; Domain keeps the per-connection baselines and per-process totals, #1099). Called by
+    /// ProcessModel straight after enumerate() and totalCpuTime(). The default returns an empty reading
+    /// (sampleTimeNs 0): a probe that doesn't override it reports ProcessCounters::netSentBytes /
+    /// netReceivedBytes from enumerate() itself, which are then used as-is.
+    [[nodiscard]] virtual SocketTrafficReading readSocketTraffic() const
+    {
+        return {};
+    }
+
     /// Set socket stats cache TTL (Linux only; no-op on Windows).
     /// @param ttlMs Time-to-live in milliseconds for cached socket stats
     /// @note This is a performance optimization cache, separate from the user's refresh interval.
