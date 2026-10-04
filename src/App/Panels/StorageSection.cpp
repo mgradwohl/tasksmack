@@ -287,8 +287,9 @@ void renderStorageSection(RenderContext& ctx)
         // cellHeight that only fits a plot smaller than minDiskPlotHeight() once the real overhead is
         // subtracted, which then clips invisibly against the cell's NoScrollbar instead of the
         // grid falling back to more rows/scrolling (#823 review).
-        const float approxLabelOverhead = (ImGui::GetStyle().WindowPadding.y * 2.0F) + ImGui::GetTextLineHeight() +
-                                          ImGui::GetStyle().ItemSpacing.y + (ImGui::GetStyle().CellPadding.y * 2.0F);
+        // Two text lines: the disk's name and, under it, its Read/Write value strip (#1193).
+        const float approxLabelOverhead = (ImGui::GetStyle().WindowPadding.y * 2.0F) + (ImGui::GetTextLineHeight() * 2.0F) +
+                                          (ImGui::GetStyle().ItemSpacing.y * 2.0F) + (ImGui::GetStyle().CellPadding.y * 2.0F);
 
         // Measured once (by renderDiskCell, on the first disk) and reused for the rest -- see
         // renderDiskCell's doc comment. Cached across frames too, not just across disks within
