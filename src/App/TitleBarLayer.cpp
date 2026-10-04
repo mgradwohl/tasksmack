@@ -324,7 +324,7 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
 
     // A display was added, removed or changed mode, or its work area moved: re-read the usable
     // bounds the minimum window size is capped to on the next frame the bar is drawn (#1207).
-    if (event->type >= SDL_EVENT_DISPLAY_FIRST && event->type <= SDL_EVENT_DISPLAY_LAST)
+    if (invalidatesUsableBounds(event->type))
     {
         m_MinimumSizeDisplayId = 0;
     }

@@ -192,6 +192,17 @@ void ShellLayer::onEvent(Core::Event& event)
     m_Tabs.onEvent(event);
 }
 
+void ShellLayer::onSDLEvent(SDL_Event* event)
+{
+    // A display changed mode or its work area moved -- possibly the same display, at the same scale --
+    // so re-read the usable bounds the native-decorated minimum is capped to on the next update, as
+    // TitleBarLayer does for the borderless bar (#1207).
+    if (event != nullptr && invalidatesUsableBounds(event->type))
+    {
+        m_MinimumSizeDisplayId = 0;
+    }
+}
+
 void ShellLayer::onUpdate(float deltaTime)
 {
     // Publish the loaded settings on the first update, after all layers are stacked, through the

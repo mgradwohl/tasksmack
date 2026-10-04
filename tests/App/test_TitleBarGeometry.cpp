@@ -1192,5 +1192,18 @@ TEST(ComputeResizeGeometryTest, SuppliedMinimum_IsHeldInsideTheAbsoluteBounds)
     EXPECT_EQ(tooLarge.width, MAX);
     EXPECT_EQ(tooLarge.height, MAX);
 }
+
+// #1282 review: a resolution change on the same display keeps its id and the wanted width, so only the
+// display event can trigger the refresh -- it must be recognised, and unrelated events must not.
+TEST(TitleBarGeometryTest, DisplayModeChangesInvalidateTheUsableBoundsCap)
+{
+    EXPECT_TRUE(invalidatesUsableBounds(SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED));
+    EXPECT_TRUE(invalidatesUsableBounds(SDL_EVENT_DISPLAY_USABLE_BOUNDS_CHANGED));
+    EXPECT_TRUE(invalidatesUsableBounds(SDL_EVENT_DISPLAY_ADDED));
+    EXPECT_TRUE(invalidatesUsableBounds(SDL_EVENT_DISPLAY_REMOVED));
+    EXPECT_FALSE(invalidatesUsableBounds(SDL_EVENT_WINDOW_RESIZED));
+    EXPECT_FALSE(invalidatesUsableBounds(SDL_EVENT_MOUSE_MOTION));
+}
+
 } // namespace
 } // namespace App

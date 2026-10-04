@@ -33,6 +33,7 @@ class ShellLayer : public Core::Layer
     void onUpdate(float deltaTime) override;
     void onRender() override;
     void onEvent(Core::Event& event) override;
+    void onSDLEvent(SDL_Event* event) override;
 
     /// The custom title bar, when there is one (not with native decorations, #745). It owns the
     /// window's minimum size then, and is handed the panels' share of it each frame (#1207).

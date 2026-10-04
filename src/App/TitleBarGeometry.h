@@ -2,6 +2,7 @@
 
 #include "Core/WindowConstants.h"
 
+#include <SDL3/SDL_events.h>
 #include <SDL3/SDL_video.h>
 
 #include <algorithm>
@@ -215,6 +216,15 @@ inline constexpr float MIN_PLOT_WIDTH_EM = 15.0F;
 /// @param usableHeight  Likewise for the height.
 /// @return @p minimum, each dimension capped to the usable one but never below
 ///         Core::WINDOW_MIN_DIMENSION, the floor computeResizeGeometry() holds a drag to.
+/// Whether an SDL event can change a display's usable bounds -- added, removed, moved, a mode or
+/// orientation change on the same display -- so a minimum window size capped to them must be
+/// re-derived (#1207). A same-display resolution change keeps the display id and the content's
+/// wanted width, so neither alone triggers a refresh.
+[[nodiscard]] constexpr bool invalidatesUsableBounds(const std::uint32_t eventType) noexcept
+{
+    return eventType >= SDL_EVENT_DISPLAY_FIRST && eventType <= SDL_EVENT_DISPLAY_LAST;
+}
+
 [[nodiscard]] constexpr auto capMinimumToUsable(const WindowMinimumSize minimum, const int usableWidth, const int usableHeight)
     -> WindowMinimumSize
 {
