@@ -394,6 +394,27 @@ TEST(PriorityHelpersTest, FixedBadgeTextWasUnreadableOnArcticFireNormal)
 }
 
 // Neither pole readable (two mid greys on a mid grey): black or white, whichever is better, wins.
+// #1252 review: the theme's badge text is kept whenever it is readable, even if its window background
+// would contrast more; the background is used only when the badge text fails the floor.
+TEST(PriorityHelpersTest, BadgeTextKeepsAReadablePreferredColourInOrder)
+{
+    const ImVec4 white{1.0F, 1.0F, 1.0F, 1.0F};
+    const ImVec4 black{0.0F, 0.0F, 0.0F, 1.0F};
+    // On a dark #222222 fill, grey #8A8A8A is about 4.6:1 -- readable -- while white is about 15.9:1.
+    // readableTextOn()'s "clearly better" margin swapped to white; the documented order keeps grey.
+    const ImVec4 darkFill{34.0F / 255.0F, 34.0F / 255.0F, 34.0F / 255.0F, 1.0F};
+    const ImVec4 grey{138.0F / 255.0F, 138.0F / 255.0F, 138.0F / 255.0F, 1.0F};
+    ASSERT_GE(UI::ColorContrast::contrastRatio(grey, darkFill), PRIORITY_BADGE_TEXT_MIN_CONTRAST);
+    ASSERT_FLOAT_EQ(UI::ColorContrast::readableTextOn(darkFill, grey, white).x, 1.0F); // The old choice
+    EXPECT_FLOAT_EQ(badgeTextFor(darkFill, grey, white).x, grey.x);
+
+    // A light fill white fails on: the alternate (black) is used.
+    const ImVec4 lightGreen{0.0F, 0.9F, 0.46F, 1.0F};
+    ASSERT_LT(UI::ColorContrast::contrastRatio(white, lightGreen), PRIORITY_BADGE_TEXT_MIN_CONTRAST);
+    const ImVec4 switched = badgeTextFor(lightGreen, white, black);
+    EXPECT_FLOAT_EQ(switched.x, 0.0F);
+}
+
 TEST(PriorityHelpersTest, BadgeTextFallsBackToBlackOrWhite)
 {
     const ImVec4 grey{0.5F, 0.5F, 0.5F, 1.0F};

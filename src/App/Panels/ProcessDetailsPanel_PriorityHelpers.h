@@ -238,9 +238,11 @@ inline constexpr float PRIORITY_BADGE_TEXT_MIN_CONTRAST = 4.5F;
  *
  * The nice value was drawn in the theme's fixed priority.badge_text over whatever getNiceColor()
  * produced, so on most dark themes white text sat on a light green badge at nice 0 (Arctic Fire 1.67:1).
- * The same two-pole choice UI::Widgets::filledButton() makes: the theme's badge text colour, or its
- * window background when that reads clearly better. If neither pole reaches the WCAG small-text floor
- * on this fill, pure black or white -- whichever contrasts more -- always does (at least 4.58:1).
+ * The theme's two poles, checked against the WCAG small-text floor in order: its badge text colour
+ * when that is readable on this fill, otherwise its window background when that is. If neither
+ * reaches the floor, pure black or white -- whichever contrasts more -- always does (at least
+ * 4.58:1). Unlike readableTextOn()'s "clearly better" margin, a readable preferred colour is kept
+ * however much better the alternate would be.
  *
  * @param fill The badge's fill, i.e. getNiceColor() at the nice value shown
  * @param badgeText The theme's priority.badge_text, kept when it is readable
@@ -249,11 +251,13 @@ inline constexpr float PRIORITY_BADGE_TEXT_MIN_CONTRAST = 4.5F;
  */
 [[nodiscard]] inline auto badgeTextFor(const ImVec4& fill, const ImVec4& badgeText, const ImVec4& windowBg) noexcept -> ImVec4
 {
-    ImVec4 chosen = UI::ColorContrast::readableTextOn(fill, badgeText, windowBg);
-    chosen.w = 1.0F;
-    if (UI::ColorContrast::contrastRatio(chosen, fill) >= PRIORITY_BADGE_TEXT_MIN_CONTRAST)
+    for (ImVec4 pole : {badgeText, windowBg})
     {
-        return chosen;
+        pole.w = 1.0F;
+        if (UI::ColorContrast::contrastRatio(pole, fill) >= PRIORITY_BADGE_TEXT_MIN_CONTRAST)
+        {
+            return pole;
+        }
     }
     const ImVec4 black{0.0F, 0.0F, 0.0F, 1.0F};
     const ImVec4 white{1.0F, 1.0F, 1.0F, 1.0F};
