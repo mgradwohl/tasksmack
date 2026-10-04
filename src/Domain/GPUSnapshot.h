@@ -18,6 +18,11 @@ struct GPUSnapshot
     // Use only for relative age/duration calculations between samples, not as an absolute time.
     double captureTimeSec = 0.0;
 
+    // False for a history placeholder recorded while this GPU was missing from a read (eGPU unplugged,
+    // driver reset, failed enumeration). Its history values publish as NaN, so the charts show a gap
+    // across the absence instead of a line joining the samples either side of it (#1146).
+    bool sampled = true;
+
     // Identity
     std::string gpuId;  // Unique identifier (e.g., "GPU0", "GPU1")
     std::string luidId; // LUID-based identifier for PDH matching (e.g., "GPU_0x00000000_0x0000F78E")

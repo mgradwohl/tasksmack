@@ -22,9 +22,9 @@ colors = [
     "#E35C63",  # Red
     "#0F8E42",  # Green
     "#7F7AD6",  # Purple
-    "#FA7A1C",  # Orange
-    "#00B5C8",  # Teal
-    "#FFC228",  # Gold
+    "#E86B05",  # Orange
+    "#009FAF",  # Teal
+    "#B78800",  # Gold
     "#D9008A",  # Magenta
 ]
 
@@ -34,7 +34,7 @@ colors = [
 # =============================================================================
 [progress]
 low = "#107C10"       # 0-50%   - Green (healthy)
-medium = "#FFB900"    # 50-80%  - Gold (caution)
+medium = "#BB8700"    # 50-80%  - Gold (caution)
 high = "#E74856"      # 80-100% - Red (critical)
 
 # =============================================================================
@@ -44,23 +44,23 @@ high = "#E74856"      # 80-100% - Red (critical)
 [semantic]
 text_primary = "#0F0F0F"   # Near-black for strong contrast on light bg
 text_disabled = "#666666"  # Muted gray for disabled text
-text_muted = "#8A8A8A"     # Gray - dimmed text
+text_muted = "#6A6A6A"     # Gray - dimmed text
 text_error = "#C50F1F"     # Red - error messages
-text_warning = "#CA5010"   # Orange - warning messages
+text_warning = "#BA4300"   # Orange - warning messages
 text_success = "#107C10"   # Green - success messages
-text_info = "#0078D4"      # Blue - informational text
+text_info = "#006BBF"      # Blue - informational text
 
 # =============================================================================
 # PROCESS STATUS COLORS
 # Colors for process states in the process list
 # =============================================================================
 [status]
-running = "#107C10"    # Green - active/running (R)
-sleeping = "#0078D4"   # Blue - sleeping (S)
-disk_sleep = "#CA5010" # Orange - uninterruptible I/O (D)
-zombie = "#C50F1F"     # Red - defunct process (Z)
-stopped = "#8E8CD8"    # Purple - stopped/traced (T/t)
-idle = "#A0A0A0"       # Gray - idle kernel thread (I)
+running = "#006605"    # Green - active/running (R)
+sleeping = "#00589F"   # Blue - sleeping (S)
+disk_sleep = "#9B3600" # Orange - uninterruptible I/O (D)
+zombie = "#B30019"     # Red - defunct process (Z)
+stopped = "#4D5095"    # Purple - stopped/traced (T/t)
+idle = "#575757"       # Gray - idle kernel thread (I)
 
 # =============================================================================
 # CHART LINE COLORS
@@ -70,16 +70,16 @@ idle = "#A0A0A0"       # Gray - idle kernel thread (I)
 cpu = "#0078D4"       # Windows Blue - CPU usage line
 memory = "#107C10"    # Green - memory usage line
 io = "#E74856"        # Red - I/O read usage line
-io_write = "#00BCD4"        # Cyan - I/O write usage line
-net_tx = "#FA7A1C"          # Orange - Network transmit (sent) line
-net_rx = "#00B5C8"          # Teal - Network receive line
+io_write = "#009EB3"        # Cyan - I/O write usage line
+net_tx = "#E86B05"          # Orange - Network transmit (sent) line
+net_rx = "#009FAF"          # Teal - Network receive line
 cpu_fill = "#0078D44D"       # Windows Blue with 30% alpha - CPU fill
 memory_fill = "#107C104D"    # Green with 30% alpha - memory fill
 io_fill = "#E748564D"        # Red with 30% alpha - I/O read fill
-io_write_fill = "#00BCD44D"   # Cyan with 30% alpha - I/O write fill
-net_tx_fill = "#FA7A1C4D"    # Orange with 30% alpha - Network TX fill
-net_rx_fill = "#00B5C84D"    # Teal with 30% alpha - Network RX fill
-peak_line = "#F7630CB3"      # Orange with 70% alpha - peak reference line
+io_write_fill = "#009EB34D"   # Cyan with 30% alpha - I/O write fill
+net_tx_fill = "#E86B054D"    # Orange with 30% alpha - Network TX fill
+net_rx_fill = "#009FAF4D"    # Teal with 30% alpha - Network RX fill
+peak_line = "#BB4600B3"      # Orange with 70% alpha - peak reference line
 
 # =============================================================================
 # GPU METRICS COLORS
@@ -90,7 +90,7 @@ utilization = "#8764B8"           # Purple - GPU utilization line
 utilization_fill = "#8764B84D"    # Purple with 30% alpha - GPU fill
 memory = "#D9008A"                # Magenta - GPU memory line (distinct from io Red)
 memory_fill = "#D9008A4D"         # Magenta with 30% alpha - GPU memory fill
-temperature = "#F7630C"           # Gold - GPU temperature line
+temperature = "#F46007"           # Gold - GPU temperature line
 power = "#107C10"                 # Green - GPU power draw line
 encoder = "#038387"               # Teal - GPU encoder utilization
 decoder = "#BF0077"               # Dark Magenta - GPU decoder utilization
@@ -244,6 +244,7 @@ empty_background = "#F3F3F3"
 # ImGui plot widgets
 # =============================================================================
 [ui.plot]
+grid = "#CCD2DA"
 lines = "#0078D4"
 lines_hovered = "#E74856"
 histogram = "#107C10"

@@ -39,11 +39,11 @@ text_info = "#7AA2F7"
 
 [status]
 running = "#9ECE6A"
-sleeping = "#7AA2F7"
+sleeping = "#7DA5FA"
 disk_sleep = "#E0AF68"
-zombie = "#F7768E"
+zombie = "#FF7D95"
 stopped = "#BB9AF7"
-idle = "#414868"
+idle = "#9EA4C9"
 
 [charts]
 cpu = "#7AA2F7"
@@ -71,7 +71,7 @@ encoder = "#7DCFFF"
 decoder = "#BB9AF7"
 clock = "#7AA2F7"
 clock_fill = "#7AA2F7CC"
-fan = "#565F89"
+fan = "#6E76A2"
 
 [cpu_breakdown]
 user = "#ABD0FF"
@@ -164,6 +164,7 @@ preview = "#7AA2F7B3"
 empty_background = "#1A1B26"
 
 [ui.plot]
+grid = "#414857"
 lines = "#7AA2F7"
 lines_hovered = "#F7768E"
 histogram = "#9ECE6A"

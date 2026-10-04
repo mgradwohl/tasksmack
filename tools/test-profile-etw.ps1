@@ -62,7 +62,10 @@ try {
     $own = Get-ProcessIntegrityLevel -ProcessId $PID
     # The label's SID (S-1-16-<RID>) is language-independent, unlike its display name, and covers
     # every level including Medium Plus (0x2100).
-    $label = (whoami /groups | Select-String 'S-1-16-(\d+)' | Select-Object -First 1)
+    # Windows' whoami by full path: with Git for Windows' usr\bin first on PATH (a CTest run from Git
+    # Bash), a bare `whoami` is GNU coreutils' whoami, which rejects /groups.
+    $whoami = Join-Path $env:SystemRoot 'System32\whoami.exe'
+    $label = (& $whoami /groups | Select-String 'S-1-16-(\d+)' | Select-Object -First 1)
     Assert-True ($null -ne $label) 'whoami /groups reported no mandatory label SID'
     $expected = ConvertTo-IntegrityLevelName ([long]$label.Matches[0].Groups[1].Value)
     Assert-True ($own -eq $expected) "This process's integrity measured as '$own', whoami reports '$expected' ($($label.Matches[0].Value))"

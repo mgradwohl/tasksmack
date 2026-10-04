@@ -57,11 +57,11 @@ text_info = "#00E5FF"      # Electric Blue - informational text
 # =============================================================================
 [status]
 running = "#76FF03"    # Neon Green - active/running (R)
-sleeping = "#7C4DFF"   # Violet - sleeping (S)
+sleeping = "#BC96FF"   # Violet - sleeping (S)
 disk_sleep = "#FFEA00" # Electric Yellow - uninterruptible I/O (D) - diagnostic state
-zombie = "#FF1744"     # Red - defunct process (Z) - diagnostic state
-stopped = "#FF4081"    # Hot Pink - stopped/traced (T/t)
-idle = "#666680"       # Muted purple-gray - idle kernel thread (I)
+zombie = "#FF8583"     # Red - defunct process (Z) - diagnostic state
+stopped = "#FF82A1"    # Hot Pink - stopped/traced (T/t)
+idle = "#A7A7C3"       # Muted purple-gray - idle kernel thread (I)
 
 # =============================================================================
 # CHART LINE COLORS
@@ -245,6 +245,7 @@ empty_background = "#0F0A1A"
 # ImGui plot widgets
 # =============================================================================
 [ui.plot]
+grid = "#4B2563"
 lines = "#00E5FF"
 lines_hovered = "#FF4081"
 histogram = "#76FF03"

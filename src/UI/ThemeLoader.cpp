@@ -440,6 +440,9 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
         scheme.dockingEmptyBg = getColor(tbl, "ui.docking.empty_background");
 
         // Plot colors
+        // Grid lines were the window border, which nearly vanished on the plot (1.01:1 on Tokyo Night).
+        // Themes without their own grid colour keep that behaviour (#1191).
+        scheme.plotGrid = getColor(tbl, "ui.plot.grid", scheme.border);
         scheme.plotLines = getColor(tbl, "ui.plot.lines");
         scheme.plotLinesHovered = getColor(tbl, "ui.plot.lines_hovered");
         scheme.plotHistogram = getColor(tbl, "ui.plot.histogram");

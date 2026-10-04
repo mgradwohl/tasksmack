@@ -23,6 +23,10 @@ function Write-ResizeCaptureJson {
     Move-Item -LiteralPath $temporary -Destination $Path -Force
 }
 
+# Windows' whoami by full path: in a shell with Git for Windows' usr\bin on PATH (Git Bash, or a
+# CTest run started from one) a bare `whoami` is GNU coreutils' whoami, which rejects /all.
+$WhoamiExe = Join-Path $env:SystemRoot 'System32\whoami.exe'
+
 function Invoke-ResizeCaptureCommand {
     param([string]$Exe, [string[]]$Arguments, [string]$Log)
     $PSNativeCommandUseErrorActionPreference = $false
@@ -225,7 +229,7 @@ function Invoke-ResizeCapture {
         Write-ResizeCaptureJson $collectorPath $collector
         $started = $false
         try {
-            Invoke-ResizeCaptureCommand whoami @('/all') (Join-Path $RunDirectory 'collector-token.txt')
+            Invoke-ResizeCaptureCommand $WhoamiExe @('/all') (Join-Path $RunDirectory 'collector-token.txt')
             # Retains the resolved providers, keywords and stack settings for the profile actually
             # used, so a capture's configuration is recoverable from its own artifacts instead of
             # having to be inferred from the samples afterwards (#912). A focused profile spec is a
@@ -330,7 +334,7 @@ function Invoke-ResizeCapture {
         $previousTrace = $env:TASKSMACK_TRACE_RESIZE_PERF
         $previousLog = $env:TASKSMACK_LOG_LEVEL
         try {
-            Invoke-ResizeCaptureCommand whoami @('/all') (Join-Path $RunDirectory 'app-launcher-token.txt')
+            Invoke-ResizeCaptureCommand $WhoamiExe @('/all') (Join-Path $RunDirectory 'app-launcher-token.txt')
             $env:TASKSMACK_TRACE_RESIZE_PERF = '1'
             $env:TASKSMACK_LOG_LEVEL = 'info'
             $app.StartUtc = [DateTimeOffset]::UtcNow.ToString('o')

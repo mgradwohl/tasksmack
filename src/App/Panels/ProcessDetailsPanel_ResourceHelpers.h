@@ -44,4 +44,29 @@ namespace App::Detail
     return std::ranges::any_of(series, [](double value) { return !std::isnan(value); });
 }
 
+/// A smoothed NowBar value whose reading can be missing (GDI objects on Windows).
+struct SmoothedOptionalReading
+{
+    double value = 0.0;
+    bool available = false; // whether the latest sample had a reading
+};
+
+/// One smoothing step for a reading that can be missing. A missing reading leaves the value where it
+/// was and marks it unavailable, so the NowBar shows N/A as the line shows a gap, rather than easing
+/// toward 0; the next reading then starts afresh instead of smoothing from the stale value (#1148).
+/// @p canSmooth is false on the first frame or when no time has passed.
+[[nodiscard]] constexpr SmoothedOptionalReading
+smoothOptionalReading(SmoothedOptionalReading state, std::optional<double> reading, double alpha, bool canSmooth) noexcept
+{
+    if (!reading.has_value())
+    {
+        state.available = false;
+        return state;
+    }
+    const double target = std::max(0.0, *reading);
+    state.value = (canSmooth && state.available) ? std::max(0.0, state.value + (alpha * (target - state.value))) : target;
+    state.available = true;
+    return state;
+}
+
 } // namespace App::Detail
