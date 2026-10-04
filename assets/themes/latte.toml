@@ -15,63 +15,63 @@ version = "1.0"
 colors = [
     "#1E66F5",  # Blue
     "#D20F39",  # Red
-    "#40A02B",  # Green
+    "#1D850A",  # Green
     "#8839EF",  # Mauve
-    "#FE640B",  # Peach
-    "#EA76CB",  # Pink
-    "#DF8E1D",  # Yellow
-    "#209FB5",  # Sapphire
+    "#C74A00",  # Peach
+    "#B8489D",  # Pink
+    "#A46400",  # Yellow
+    "#007F92",  # Sapphire
 ]
 
 [progress]
-low = "#40A02B"       # 0-50%   - Green (healthy)
-medium = "#DF8E1D"    # 50-80%  - Yellow (caution)
+low = "#1D850A"       # 0-50%   - Green (healthy)
+medium = "#A46400"    # 50-80%  - Yellow (caution)
 high = "#D20F39"      # 80-100% - Red (critical)
 
 [semantic]
-text_primary = "#4C4F69"
+text_primary = "#33364E"
 text_disabled = "#9CA0B0"
-text_muted = "#8C8FA1"
-text_error = "#D20F39"
-text_warning = "#FE640B"
-text_success = "#40A02B"
-text_info = "#1E66F5"
+text_muted = "#555869"
+text_error = "#B4002E"
+text_warning = "#9C3800"
+text_success = "#0C6700"
+text_info = "#004FC7"
 
 [status]
-running = "#40A02B"
-sleeping = "#1E66F5"
-disk_sleep = "#FE640B"
-zombie = "#D20F39"
-stopped = "#8839EF"
-idle = "#9CA0B0"
+running = "#0B6200"
+sleeping = "#004CBF"
+disk_sleep = "#953500"
+zombie = "#AB002B"
+stopped = "#6C1DD5"
+idle = "#505462"
 
 [charts]
 cpu = "#1E66F5"
-memory = "#40A02B"
+memory = "#1D850A"
 io = "#D20F39"
-io_write = "#FE640B"
+io_write = "#C74A00"
 net_tx = "#8839EF"
-net_rx = "#179299"
+net_rx = "#008087"
 cpu_fill = "#1E66F54D"
-memory_fill = "#40A02B4D"
+memory_fill = "#1D850A4D"
 io_fill = "#D20F394D"
-io_write_fill = "#FE640B4D"
+io_write_fill = "#C74A004D"
 net_tx_fill = "#8839EF4D"
-net_rx_fill = "#1792994D"
+net_rx_fill = "#0080874D"
 peak_line = "#4C4F69B3"
 
 [charts.gpu]
 utilization = "#8839EF"
 utilization_fill = "#8839EF4D"
-memory = "#DF8E1D"
-memory_fill = "#DF8E1D4D"
-temperature = "#FE640B"
-power = "#40A02B"
-encoder = "#209FB5"
-decoder = "#EA76CB"
+memory = "#A46400"
+memory_fill = "#A464004D"
+temperature = "#C74A00"
+power = "#1D850A"
+encoder = "#007F92"
+decoder = "#B8489D"
 clock = "#1E66F5"
 clock_fill = "#1E66F5CC"
-fan = "#9CA0B0"
+fan = "#6F7382"
 
 [cpu_breakdown]
 user = "#003DC1"
@@ -164,6 +164,7 @@ preview = "#8839EFB3"
 empty_background = "#EFF1F5"
 
 [ui.plot]
+grid = "#A9ADB9"
 lines = "#1E66F5"
 lines_hovered = "#D20F39"
 histogram = "#40A02B"

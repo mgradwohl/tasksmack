@@ -17,46 +17,46 @@ colors = [
     "#9D0006",  # Dark Red
     "#79740E",  # Dark Olive Green
     "#8F3F71",  # Dark Purple
-    "#B57614",  # Dark Amber
+    "#AC6E08",  # Dark Amber
     "#427B58",  # Dark Aqua/Teal
     "#AF3A03",  # Dark Orange
-    "#928374",  # Neutral Gray
+    "#88796B",  # Neutral Gray
 ]
 
 [progress]
 low = "#79740E"       # 0-50%   - Dark olive green (healthy)
-medium = "#B57614"    # 50-80%  - Dark amber (caution)
+medium = "#AC6E08"    # 50-80%  - Dark amber (caution)
 high = "#9D0006"      # 80-100% - Dark red (critical)
 
 [semantic]
 text_primary = "#3C3836"
 text_disabled = "#928374"
-text_muted = "#7C6F64"
+text_muted = "#65594E"
 text_error = "#9D0006"
-text_warning = "#B57614"
-text_success = "#79740E"
-text_info = "#076678"
+text_warning = "#815100"
+text_success = "#625E00"
+text_info = "#056577"
 
 [status]
-running = "#79740E"
-sleeping = "#076678"
-disk_sleep = "#B57614"
+running = "#5A5600"
+sleeping = "#005C6D"
+disk_sleep = "#774A00"
 zombie = "#9D0006"
-stopped = "#8F3F71"
-idle = "#928374"
+stopped = "#87376A"
+idle = "#605244"
 
 [charts]
 cpu = "#076678"
 memory = "#79740E"
 io = "#9D0006"
 io_write = "#AF3A03"
-net_tx = "#B57614"
+net_tx = "#AC6E08"
 net_rx = "#8F3F71"
 cpu_fill = "#0766784D"
 memory_fill = "#79740E4D"
 io_fill = "#9D00064D"
 io_write_fill = "#AF3A034D"
-net_tx_fill = "#B576144D"
+net_tx_fill = "#AC6E084D"
 net_rx_fill = "#8F3F714D"
 peak_line = "#3C3836B3"
 
@@ -65,13 +65,13 @@ utilization = "#8F3F71"
 utilization_fill = "#8F3F714D"
 memory = "#427B58"
 memory_fill = "#427B584D"
-temperature = "#B57614"
+temperature = "#AC6E08"
 power = "#79740E"
 encoder = "#427B58"
 decoder = "#9D0006"
 clock = "#076678"
 clock_fill = "#076678CC"
-fan = "#928374"
+fan = "#88796B"
 
 [cpu_breakdown]
 user = "#003F50"
@@ -164,6 +164,7 @@ preview = "#076678B3"
 empty_background = "#FBF1C7"
 
 [ui.plot]
+grid = "#C5B698"
 lines = "#076678"
 lines_hovered = "#9D0006"
 histogram = "#79740E"

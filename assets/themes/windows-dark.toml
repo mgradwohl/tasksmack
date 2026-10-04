@@ -57,10 +57,10 @@ text_info = "#60CDFF"      # Light Blue - informational text
 [status]
 running = "#6CCB5F"    # Light Green - active/running (R)
 sleeping = "#60CDFF"   # Light Blue - sleeping (S)
-disk_sleep = "#F7630C" # Orange - uninterruptible I/O (D)
-zombie = "#F1707B"     # Light Red - defunct process (Z)
-stopped = "#8E8CD8"    # Purple - stopped/traced (T/t)
-idle = "#808080"       # Gray - idle kernel thread (I)
+disk_sleep = "#FF8547" # Orange - uninterruptible I/O (D)
+zombie = "#FF8089"     # Light Red - defunct process (Z)
+stopped = "#A29FED"    # Purple - stopped/traced (T/t)
+idle = "#A7A7A7"       # Gray - idle kernel thread (I)
 
 # =============================================================================
 # CHART LINE COLORS
@@ -96,7 +96,7 @@ encoder = "#00B7C3"               # Teal - GPU encoder utilization
 decoder = "#E3008C"               # Magenta - GPU decoder utilization
 clock = "#60CDFF"             # Windows Light Blue - GPU clock speed line (theme-native)
 clock_fill = "#60CDFFCC"      # Windows Light Blue with 80% alpha - GPU clock fill
-fan = "#5F5F5F"               # Windows Gray - GPU fan speed line
+fan = "#757575"               # Windows Gray - GPU fan speed line
 
 # =============================================================================
 # CPU BREAKDOWN COLORS
@@ -244,6 +244,7 @@ empty_background = "#202020"
 # ImGui plot widgets
 # =============================================================================
 [ui.plot]
+grid = "#444444"
 lines = "#60CDFF"
 lines_hovered = "#F1707B"
 histogram = "#6CCB5F"

@@ -19,12 +19,12 @@ version = "1.0"
 [accents]
 colors = [
     "#F16322",  # Ubuntu Orange (brighter)
-    "#1CA9E8",  # Ubuntu Blue (crisper)
-    "#6FD86F",  # Light Green
+    "#0098D3",  # Ubuntu Blue (crisper)
+    "#36A33E",  # Light Green
     "#8B4CC6",  # Purple
-    "#F07F1E",  # Dark Orange
+    "#DE7108",  # Dark Orange
     "#3A8FEA",  # Blue
-    "#FFC533",  # Yellow
+    "#B58800",  # Yellow
     "#CC2333",  # Red
 ]
 
@@ -33,8 +33,8 @@ colors = [
 # Colors for progress bars based on percentage thresholds
 # =============================================================================
 [progress]
-low = "#77DD77"       # 0-50%   - Light Green (healthy)
-medium = "#FF9800"    # 50-80%  - Orange (caution)
+low = "#39A241"       # 0-50%   - Light Green (healthy)
+medium = "#CF7B00"    # 50-80%  - Orange (caution)
 high = "#F44336"      # 80-100% - Red (critical)
 
 # =============================================================================
@@ -44,23 +44,23 @@ high = "#F44336"      # 80-100% - Red (critical)
 [semantic]
 text_primary = "#111111"   # Near-black for high contrast on light bg
 text_disabled = "#6B6B6B"  # Muted gray for disabled text
-text_muted = "#888888"     # Gray - dimmed text
+text_muted = "#686868"     # Gray - dimmed text
 text_error = "#C01C28"     # Red - error messages
-text_warning = "#E66100"   # Orange - warning messages
-text_success = "#26A269"   # Green - success messages
-text_info = "#1C71D8"      # Blue - informational text
+text_warning = "#B14900"   # Orange - warning messages
+text_success = "#007849"   # Green - success messages
+text_info = "#0067CA"      # Blue - informational text
 
 # =============================================================================
 # PROCESS STATUS COLORS
 # Colors for process states in the process list
 # =============================================================================
 [status]
-running = "#26A269"    # Green - active/running (R)
-sleeping = "#1C71D8"   # Blue - sleeping (S)
-disk_sleep = "#E66100" # Orange - uninterruptible I/O (D)
+running = "#00663E"    # Green - active/running (R)
+sleeping = "#0057AD"   # Blue - sleeping (S)
+disk_sleep = "#973D00" # Orange - uninterruptible I/O (D)
 zombie = "#A51D2D"     # Magenta - defunct process (Z) - distinct from charts.io red
-stopped = "#8E44AD"    # Purple - stopped/traced (T/t)
-idle = "#A0A0A0"       # Gray - idle kernel thread (I)
+stopped = "#80379F"    # Purple - stopped/traced (T/t)
+idle = "#585858"       # Gray - idle kernel thread (I)
 
 # =============================================================================
 # CHART LINE COLORS
@@ -70,13 +70,13 @@ idle = "#A0A0A0"       # Gray - idle kernel thread (I)
 cpu = "#3584E4"       # Blue - CPU usage line
 memory = "#26A269"    # Green - memory usage line
 io = "#C01C28"        # Red - I/O read usage line
-io_write = "#00BCD4"        # Cyan - I/O write usage line
+io_write = "#009DB1"        # Cyan - I/O write usage line
 net_tx = "#F16322"          # Ubuntu Orange (brighter) - Network transmit (sent) line
 net_rx = "#8B4CC6"          # Purple - Network receive line
 cpu_fill = "#3584E44D"       # Blue with 30% alpha - CPU fill
 memory_fill = "#26A2694D"    # Green with 30% alpha - memory fill
 io_fill = "#C01C284D"        # Red with 30% alpha - I/O read fill
-io_write_fill = "#00BCD44D"   # Cyan with 30% alpha - I/O write fill
+io_write_fill = "#009DB14D"   # Cyan with 30% alpha - I/O write fill
 net_tx_fill = "#F163224D"    # Ubuntu Orange with 30% alpha - Network TX fill
 net_rx_fill = "#8B4CC64D"    # Purple with 30% alpha - Network RX fill
 peak_line = "#E5A50AB3"      # Gold with 70% alpha - peak reference line
@@ -88,9 +88,9 @@ peak_line = "#E5A50AB3"      # Gold with 70% alpha - peak reference line
 [charts.gpu]
 utilization = "#613583"           # Purple - GPU utilization line
 utilization_fill = "#6135834D"    # Purple with 30% alpha - GPU fill
-memory = "#F07F1E"                # Dark Orange - GPU memory line (distinct from io Red)
-memory_fill = "#F07F1E4D"         # Dark Orange with 30% alpha - GPU memory fill
-temperature = "#E5A50A"           # Gold - GPU temperature line
+memory = "#DE7108"                # Dark Orange - GPU memory line (distinct from io Red)
+memory_fill = "#DE71084D"         # Dark Orange with 30% alpha - GPU memory fill
+temperature = "#BA8500"           # Gold - GPU temperature line
 power = "#26A269"                 # Green - GPU power draw line
 encoder = "#1C71D8"               # Ubuntu Blue - GPU encoder utilization
 decoder = "#A51D2D"               # Dark Red - GPU decoder utilization
@@ -244,6 +244,7 @@ empty_background = "#FAFAFA"
 # ImGui plot widgets
 # =============================================================================
 [ui.plot]
+grid = "#D7CFC4"
 lines = "#3584E4"
 lines_hovered = "#C01C28"
 histogram = "#26A269"

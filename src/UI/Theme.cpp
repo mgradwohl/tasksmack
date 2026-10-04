@@ -141,6 +141,7 @@ void Theme::loadDefaultFallbackTheme()
     fallback.tabDimmedSelectedOverline = ImVec4(0.60F, 0.82F, 1.0F, 0.50F);
     fallback.dockingPreview = ImVec4(0.26F, 0.59F, 0.98F, 0.70F);
     fallback.dockingEmptyBg = ImVec4(0.20F, 0.20F, 0.20F, 1.0F);
+    fallback.plotGrid = ImVec4(0.27F, 0.31F, 0.38F, 1.0F); // About 1.5:1 on the fallback plot (#1191)
     fallback.plotLines = ImVec4(0.61F, 0.61F, 0.61F, 1.0F);
     fallback.plotLinesHovered = ImVec4(1.0F, 0.43F, 0.35F, 1.0F);
     fallback.plotHistogram = ImVec4(0.90F, 0.70F, 0.0F, 1.0F);
@@ -481,7 +482,7 @@ void Theme::applyImGuiStyle() const
     plotStyle.Colors[ImPlotCol_InlayText] = s.textPrimary;
     plotStyle.Colors[ImPlotCol_AxisText] = s.textMuted;
     plotStyle.Colors[ImPlotCol_AxisTick] = s.textMuted;
-    plotStyle.Colors[ImPlotCol_AxisGrid] = s.border;
+    plotStyle.Colors[ImPlotCol_AxisGrid] = s.plotGrid;
     plotStyle.Colors[ImPlotCol_TitleText] = s.textPrimary;
     plotStyle.Colors[ImPlotCol_PlotBg] = s.childBg;
     plotStyle.Colors[ImPlotCol_FrameBg] = s.frameBg;

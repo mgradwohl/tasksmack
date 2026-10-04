@@ -31,7 +31,7 @@ high = "#F38BA8"      # 80-100% - Red/Pink (critical)
 [semantic]
 text_primary = "#CDD6F4"
 text_disabled = "#6C7086"
-text_muted = "#9399B2"
+text_muted = "#959BB4"
 text_error = "#F38BA8"
 text_warning = "#FAB387"
 text_success = "#A6E3A1"
@@ -43,7 +43,7 @@ sleeping = "#89B4FA"
 disk_sleep = "#FAB387"
 zombie = "#F38BA8"
 stopped = "#CBA6F7"
-idle = "#585B70"
+idle = "#A5A8C0"
 
 [charts]
 cpu = "#89B4FA"
@@ -71,7 +71,7 @@ encoder = "#74C7EC"
 decoder = "#F5C2E7"
 clock = "#89B4FA"
 clock_fill = "#89B4FACC"
-fan = "#585B70"
+fan = "#797C92"
 
 [cpu_breakdown]
 user = "#B8E2FF"
@@ -164,6 +164,7 @@ preview = "#CBA6F7B3"
 empty_background = "#1E1E2E"
 
 [ui.plot]
+grid = "#494B5E"
 lines = "#89B4FA"
 lines_hovered = "#F38BA8"
 histogram = "#A6E3A1"
