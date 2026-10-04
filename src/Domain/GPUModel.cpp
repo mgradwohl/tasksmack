@@ -46,6 +46,14 @@ template<typename T> [[nodiscard]] float readingOrNaN(const GPUSnapshot& sample,
     return available ? sampleOrNaN(sample, value) : std::numeric_limits<float>::quiet_NaN();
 }
 
+/// The GPU clock: NaN when the read failed or returned 0 MHz. A 0 is the probes' "couldn't read it"
+/// (DRM, and NVML on a suspended GPU), and the Clock NowBar already shows N/A for it (#995), so the
+/// line has a gap there too rather than diving to 0 (#1111).
+[[nodiscard]] float gpuClockOrNaN(const GPUSnapshot& sample)
+{
+    return readingOrNaN(sample, sample.gpuClockMHz, sample.gpuClockAvailable && sample.gpuClockMHz > 0);
+}
+
 /// The fan speed as a float: NaN when it couldn't be read, not 0.0F, so the chart shows a gap
 /// rather than a flat "0%" indistinguishable from an idle fan.
 [[nodiscard]] float fanSpeedOrNaN(const GPUSnapshot& sample)
@@ -311,11 +319,13 @@ void GPUModel::publish()
             // ref(), not operator[]: a reference, so no GPUSnapshot (and its strings) is copied.
             const auto& sample = history.ref(index);
             publishedHistory.timestamps.push_back(sample.captureTimeSec);
-            publishedHistory.memoryUsedBytes.push_back(sample.memoryUsedBytes);
-            publishedHistory.memoryTotalBytes.push_back(sample.memoryTotalBytes);
+            // An unread memory sample keeps no bytes: a 0 total is the "no byte figures" marker, so
+            // the tooltip shows N/A rather than a placeholder "0 / <total>" (#1111).
+            publishedHistory.memoryUsedBytes.push_back(sample.memoryAvailable ? sample.memoryUsedBytes : 0);
+            publishedHistory.memoryTotalBytes.push_back(sample.memoryAvailable ? sample.memoryTotalBytes : 0);
             publishedHistory.utilization.push_back(readingOrNaN(sample, sample.utilizationPercent, sample.utilizationAvailable));
             publishedHistory.memoryPercent.push_back(readingOrNaN(sample, sample.memoryUsedPercent, sample.memoryAvailable));
-            publishedHistory.gpuClock.push_back(readingOrNaN(sample, sample.gpuClockMHz, sample.gpuClockAvailable));
+            publishedHistory.gpuClock.push_back(gpuClockOrNaN(sample));
             publishedHistory.encoder.push_back(sampleOrNaN(sample, sample.encoderUtilPercent));
             publishedHistory.decoder.push_back(sampleOrNaN(sample, sample.decoderUtilPercent));
             publishedHistory.temperature.push_back(readingOrNaN(sample, sample.temperatureC, sample.temperatureAvailable));
@@ -531,8 +541,7 @@ std::vector<float> GPUModel::memoryPercentHistory(std::string_view gpuId) const
 
 std::vector<float> GPUModel::gpuClockHistory(std::string_view gpuId) const
 {
-    return getHistoryFieldByProjection(
-        gpuId, [](const GPUSnapshot& sample) { return readingOrNaN(sample, sample.gpuClockMHz, sample.gpuClockAvailable); });
+    return getHistoryFieldByProjection(gpuId, gpuClockOrNaN);
 }
 
 std::vector<float> GPUModel::encoderHistory(std::string_view gpuId) const
