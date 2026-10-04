@@ -460,10 +460,11 @@ void renderStorageSection(RenderContext& ctx)
                             const std::array rows{
                                 UI::Widgets::TooltipRow{.label = READ_LABEL,
                                                         .color = theme.scheme().chartIo,
-                                                        .value = UI::Format::formatBytesPerSec(static_cast<double>(readData[*idxVal]))},
+                                                        .value = UI::Format::formatBytesPerSecOrNA(static_cast<double>(readData[*idxVal]))},
                                 UI::Widgets::TooltipRow{.label = WRITE_LABEL,
                                                         .color = theme.scheme().chartIoWrite,
-                                                        .value = UI::Format::formatBytesPerSec(static_cast<double>(writeData[*idxVal]))},
+                                                        .value =
+                                                            UI::Format::formatBytesPerSecOrNA(static_cast<double>(writeData[*idxVal]))},
                             };
                             UI::Widgets::renderHistoryTooltip(aggregateTimes[*idxVal], rows);
                         }
