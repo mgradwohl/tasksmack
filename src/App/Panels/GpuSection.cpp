@@ -94,13 +94,24 @@ void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap
 
     auto& smoothed = (*ctx.smoothedGPUs)[gpuId];
     const bool initialized = smoothed.initialized;
-    smoothed.utilizationPercent = initializeOrSmooth(smoothed.utilizationPercent, snap.utilizationPercent, alpha, initialized);
-    smoothed.memoryPercent = initializeOrSmooth(smoothed.memoryPercent, snap.memoryUsedPercent, alpha, initialized);
-    smoothed.temperatureC = initializeOrSmooth(smoothed.temperatureC, static_cast<double>(snap.temperatureC), alpha, initialized);
-    smoothed.powerWatts = initializeOrSmooth(smoothed.powerWatts, snap.powerDrawWatts, alpha, initialized);
+    // A field this sample couldn't read keeps its last value and is marked uninitialized (its bar
+    // shows N/A); the next reading starts afresh rather than easing from it (#1111).
+    const auto smoothReading = [alpha](double& value, bool& valueInitialized, bool available, double reading)
+    {
+        if (available)
+        {
+            value = initializeOrSmooth(value, reading, alpha, valueInitialized);
+        }
+        valueInitialized = available;
+    };
+    smoothReading(smoothed.utilizationPercent, smoothed.utilizationInitialized, snap.utilizationAvailable, snap.utilizationPercent);
+    smoothReading(smoothed.memoryPercent, smoothed.memoryInitialized, snap.memoryAvailable, snap.memoryUsedPercent);
+    smoothReading(
+        smoothed.temperatureC, smoothed.temperatureInitialized, snap.temperatureAvailable, static_cast<double>(snap.temperatureC));
+    smoothReading(smoothed.powerWatts, smoothed.powerInitialized, snap.powerAvailable, snap.powerDrawWatts);
     smoothed.encoderPercent = initializeOrSmooth(smoothed.encoderPercent, snap.encoderUtilPercent, alpha, initialized);
     smoothed.decoderPercent = initializeOrSmooth(smoothed.decoderPercent, snap.decoderUtilPercent, alpha, initialized);
-    if (snap.gpuClockMHz > 0)
+    if (snap.gpuClockAvailable && snap.gpuClockMHz > 0)
     {
         smoothed.clockMHz = initializeOrSmooth(smoothed.clockMHz, static_cast<double>(snap.gpuClockMHz), alpha, smoothed.clockInitialized);
         smoothed.clockInitialized = true;
@@ -443,13 +454,28 @@ void renderGpuSection(RenderContext& ctx)
         };
 
         // Build now bars for chart 1: utilization, memory, clock, encoder, decoder
+        // A bar for a reading this sample couldn't take: N/A in muted text, as the line has a gap,
+        // rather than a real-looking 0 (#1111).
+        const auto unavailableBar = [&theme](const char* label)
+        {
+            return NowBar{.valueText = "N/A",
+                          .label = label,
+                          .tooltipText = std::format("{}: unavailable this sample", label),
+                          .value01 = 0.0,
+                          .color = theme.scheme().textMuted};
+        };
         NowBarList gpuCoreBars;
-        gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.utilizationPercent),
-                               .label = UTIL_LABEL,
-                               .tooltipText = {},
-                               .value01 = UI::Format::percent01(smoothed.utilizationPercent),
-                               .color = theme.scheme().gpuUtilization});
-        if (snap.memoryTotalBytes > 0)
+        gpuCoreBars.push_back(smoothed.utilizationInitialized ? NowBar{.valueText = UI::Format::percentCompact(smoothed.utilizationPercent),
+                                                                       .label = UTIL_LABEL,
+                                                                       .tooltipText = {},
+                                                                       .value01 = UI::Format::percent01(smoothed.utilizationPercent),
+                                                                       .color = theme.scheme().gpuUtilization}
+                                                              : unavailableBar(UTIL_LABEL));
+        if (!smoothed.memoryInitialized)
+        {
+            gpuCoreBars.push_back(unavailableBar(MEMORY_LABEL));
+        }
+        else if (snap.memoryTotalBytes > 0)
         {
             // Use the snapshot's own computed percent and raw byte values so the percent
             // and byte figures always come from the same sample and cannot show an
@@ -478,20 +504,20 @@ void renderGpuSection(RenderContext& ctx)
         if (caps.hasClockSpeeds)
         {
             const double clockPercent = (smoothed.clockMHz / static_cast<double>(maxClockMHz)) * 100.0;
-            gpuCoreBars.push_back(snap.gpuClockMHz > 0 ? NowBar{.valueText = std::format("{:.0f} MHz", smoothed.clockMHz),
-                                                                .label = CLOCK_LABEL,
-                                                                .tooltipText = std::format("{}: {:.0f} MHz ({} of {:.0f} MHz)",
-                                                                                           CLOCK_LABEL,
-                                                                                           smoothed.clockMHz,
-                                                                                           UI::Format::percentCompact(clockPercent),
-                                                                                           static_cast<double>(maxClockMHz)),
-                                                                .value01 = UI::Format::percent01(clockPercent),
-                                                                .color = theme.scheme().gpuClock}
-                                                       : NowBar{.valueText = "N/A",
-                                                                .label = CLOCK_LABEL,
-                                                                .tooltipText = "Clock: unavailable this sample",
-                                                                .value01 = 0.0,
-                                                                .color = theme.scheme().textMuted});
+            gpuCoreBars.push_back(smoothed.clockInitialized ? NowBar{.valueText = std::format("{:.0f} MHz", smoothed.clockMHz),
+                                                                     .label = CLOCK_LABEL,
+                                                                     .tooltipText = std::format("{}: {:.0f} MHz ({} of {:.0f} MHz)",
+                                                                                                CLOCK_LABEL,
+                                                                                                smoothed.clockMHz,
+                                                                                                UI::Format::percentCompact(clockPercent),
+                                                                                                static_cast<double>(maxClockMHz)),
+                                                                     .value01 = UI::Format::percent01(clockPercent),
+                                                                     .color = theme.scheme().gpuClock}
+                                                            : NowBar{.valueText = "N/A",
+                                                                     .label = CLOCK_LABEL,
+                                                                     .tooltipText = "Clock: unavailable this sample",
+                                                                     .value01 = 0.0,
+                                                                     .color = theme.scheme().textMuted});
         }
         if (caps.hasEncoderDecoder)
         {
@@ -514,20 +540,24 @@ void renderGpuSection(RenderContext& ctx)
         if (caps.hasTemperature)
         {
             const double tempPercent = (smoothed.temperatureC / static_cast<double>(maxTempC)) * 100.0;
-            gpuThermalBars.push_back({.valueText = std::format("{}°C", static_cast<int>(smoothed.temperatureC)),
-                                      .label = TEMP_LABEL,
-                                      .tooltipText = {},
-                                      .value01 = UI::Format::percent01(tempPercent),
-                                      .color = theme.scheme().gpuTemperature});
+            gpuThermalBars.push_back(smoothed.temperatureInitialized
+                                         ? NowBar{.valueText = std::format("{}°C", static_cast<int>(smoothed.temperatureC)),
+                                                  .label = TEMP_LABEL,
+                                                  .tooltipText = {},
+                                                  .value01 = UI::Format::percent01(tempPercent),
+                                                  .color = theme.scheme().gpuTemperature}
+                                         : unavailableBar(TEMP_LABEL));
         }
         if (caps.hasPowerMetrics)
         {
             const double powerPercent = (smoothed.powerWatts / static_cast<double>(maxPowerW)) * 100.0;
-            gpuThermalBars.push_back({.valueText = std::format("{:.1f}W", smoothed.powerWatts),
-                                      .label = POWER_LABEL,
-                                      .tooltipText = std::format("{}: {:.2Lf} W", POWER_LABEL, smoothed.powerWatts),
-                                      .value01 = UI::Format::percent01(powerPercent),
-                                      .color = theme.scheme().gpuPower});
+            gpuThermalBars.push_back(smoothed.powerInitialized
+                                         ? NowBar{.valueText = std::format("{:.1f}W", smoothed.powerWatts),
+                                                  .label = POWER_LABEL,
+                                                  .tooltipText = std::format("{}: {:.2Lf} W", POWER_LABEL, smoothed.powerWatts),
+                                                  .value01 = UI::Format::percent01(powerPercent),
+                                                  .color = theme.scheme().gpuPower}
+                                         : unavailableBar(POWER_LABEL));
         }
         // Keep pushing a bar (stable column count) whenever the capability is present, so the
         // now-bar layout doesn't jitter frame-to-frame as fanSpeedAvailable flips on a transient

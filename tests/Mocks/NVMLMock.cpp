@@ -177,6 +177,7 @@ constexpr unsigned int NO_FAILING_HANDLE = std::numeric_limits<unsigned int>::ma
 unsigned int g_FailingHandleIndex = NO_FAILING_HANDLE;
 int g_UuidCallsBeforeFailure = -1; // -1: never fail
 unsigned int g_UuidCalls = 0;
+bool g_FailSensorReads = false; // utilization, memory, temperature, power and graphics clock time out (#1111)
 
 } // namespace
 
@@ -252,6 +253,10 @@ extern "C"
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
         }
+        if (g_FailSensorReads)
+        {
+            return NVML::NVML_ERROR_TIMEOUT;
+        }
         *memory = dev->memory;
         return NVML::NVML_SUCCESS;
     }
@@ -262,6 +267,10 @@ extern "C"
         if (dev == nullptr)
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        if (g_FailSensorReads)
+        {
+            return NVML::NVML_ERROR_TIMEOUT;
         }
         utilization->gpu = dev->utilizationPercent;
         utilization->memory = 0;
@@ -276,6 +285,10 @@ extern "C"
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
         }
+        if (g_FailSensorReads)
+        {
+            return NVML::NVML_ERROR_TIMEOUT;
+        }
         *temperature = dev->temperatureC;
         return NVML::NVML_SUCCESS;
     }
@@ -286,6 +299,10 @@ extern "C"
         if (dev == nullptr)
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        if (g_FailSensorReads)
+        {
+            return NVML::NVML_ERROR_TIMEOUT;
         }
         *power = dev->powerMilliwatts;
         return NVML::NVML_SUCCESS;
@@ -308,6 +325,10 @@ extern "C"
         if (dev == nullptr)
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        if (g_FailSensorReads && type != NVML::NVML_CLOCK_MEM)
+        {
+            return NVML::NVML_ERROR_TIMEOUT;
         }
         *clock = (type == NVML::NVML_CLOCK_MEM) ? dev->memoryClockMHz : dev->graphicsClockMHz;
         return NVML::NVML_SUCCESS;
@@ -363,6 +384,13 @@ extern "C"
         g_FailingHandleIndex = failingHandleIndex;
         g_UuidCallsBeforeFailure = uuidCallsBeforeFailure;
         g_UuidCalls = 0;
+    }
+
+    // Test control: make the utilization, memory, temperature, power and graphics-clock reads fail with
+    // NVML_ERROR_TIMEOUT, as a busy or resetting GPU does (#1111).
+    void tasksmackNvmlMockFailSensorReads(int fail)
+    {
+        g_FailSensorReads = (fail != 0);
     }
 
     unsigned int tasksmackNvmlMockUuidCalls()

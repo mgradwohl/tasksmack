@@ -30,6 +30,16 @@ struct GPUSnapshot
     std::string vendor;
     bool isIntegrated = false;
 
+    // Whether this sample's read of each field succeeded. False when a supported sensor couldn't be
+    // read this time (NVML_ERROR_TIMEOUT, GPU lost, a driver reset): its value is then meaningless,
+    // not a real 0 -- GPUModel publishes NaN for it and the bar shows N/A (#1111). Default true, so a
+    // probe that never fails a read needn't set them.
+    bool utilizationAvailable = true;
+    bool temperatureAvailable = true;
+    bool powerAvailable = true;
+    bool gpuClockAvailable = true;
+    bool memoryAvailable = true; // used/total bytes, and so the memory percent
+
     // Utilization (0-100)
     double utilizationPercent = 0.0;
     double memoryUtilPercent = 0.0;

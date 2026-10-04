@@ -111,6 +111,18 @@ struct nvmlProcessInfo_t
     unsigned int computeInstanceId; // For MIG support
 };
 
+/// NVML PCI information (nvmlDeviceGetPciInfo_v3 / _v2): the device's PCI location and ids.
+struct nvmlPciInfo_t
+{
+    char busIdLegacy[16]; // NOLINT(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - mirrors the C struct
+    unsigned int domain;
+    unsigned int bus;
+    unsigned int device;
+    unsigned int pciDeviceId; // (device ID << 16) | vendor ID
+    unsigned int pciSubSystemId;
+    char busId[32]; // NOLINT(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - mirrors the C struct
+};
+
 // NOLINTEND(readability-identifier-naming)
 
 } // namespace Platform::NVML

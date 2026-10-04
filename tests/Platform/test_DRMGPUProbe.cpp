@@ -549,6 +549,11 @@ TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_NoSysfsFiles_ReturnsZeros)
     EXPECT_EQ(counters[0].gpuClockMHz, 0U);
     EXPECT_EQ(counters[0].memoryUsedBytes, 0ULL);
     EXPECT_EQ(counters[0].memoryTotalBytes, 0ULL);
+    // No clock file and no hwmon: both unread, so the history has gaps rather than a real-looking 0
+    // (capabilities() advertises temperature for every card) (#1111).
+    EXPECT_FALSE(counters[0].gpuClockAvailable);
+    EXPECT_FALSE(counters[0].temperatureAvailable);
+    EXPECT_FALSE(counters[0].utilizationAvailable); // DRM never reads utilization (#1115)
 }
 
 TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_HwmonTemperature_IsRead)
@@ -567,6 +572,7 @@ TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_HwmonTemperature_IsRead)
     const auto counters = probe.readGPUCounters();
     ASSERT_EQ(counters.size(), 1U);
     EXPECT_EQ(counters[0].temperatureC, 65);
+    EXPECT_TRUE(counters[0].temperatureAvailable);
 }
 
 TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_HwmonZeroTemp_IsIgnored)
@@ -583,8 +589,9 @@ TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_HwmonZeroTemp_IsIgnored)
 
     const auto counters = probe.readGPUCounters();
     ASSERT_EQ(counters.size(), 1U);
-    // A zero reading from the file should leave temperatureC at 0
+    // A zero reading from the file should leave temperatureC at 0, marked unread (#1111)
     EXPECT_EQ(counters[0].temperatureC, 0);
+    EXPECT_FALSE(counters[0].temperatureAvailable);
 }
 
 TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_GpuFrequency_IsRead)
@@ -603,6 +610,7 @@ TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_GpuFrequency_IsRead)
     const auto counters = probe.readGPUCounters();
     ASSERT_EQ(counters.size(), 1U);
     EXPECT_EQ(counters[0].gpuClockMHz, 1200U);
+    EXPECT_TRUE(counters[0].gpuClockAvailable);
 }
 
 TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_ZeroFrequency_IsIgnored)

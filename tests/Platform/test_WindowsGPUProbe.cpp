@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -101,6 +102,34 @@ TEST(MergeNVMLIntoDXGICountersTest, EmptyNVMLCountersLeavesDXGICountersUntouched
 
     EXPECT_TRUE(sourced.empty());
     EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 42.0);
+}
+
+TEST(MergeNVMLIntoDXGICountersTest, FailedNVMLUtilizationReadLeavesThePDHFallbackAvailable)
+{
+    // #1111: NVML's utilization read failed (timeout, TDR). The GPU must not be marked NVML-sourced
+    // with a real-looking 0%, which suppressed the valid PDH utilization; the read validity of the
+    // other fields comes along so they publish as gaps.
+    std::vector<GPUCounters> dxgi(1);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[0].utilizationPercent = 37.0; // a later PDH merge fills this in
+
+    std::vector<GPUCounters> nvml(1);
+    nvml[0].gpuId = "uuid-0";
+    nvml[0].utilizationAvailable = false;
+    nvml[0].utilizationPercent = 0.0;
+    nvml[0].temperatureAvailable = false;
+    nvml[0].powerAvailable = true;
+    nvml[0].powerDrawWatts = 80.0;
+
+    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0, 0}});
+
+    EXPECT_FALSE(sourced.contains("GPU0"));
+    EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 37.0);
+    // Unread until PDH supplies a reading, so no PDH sample means a gap, not DXGI's placeholder.
+    EXPECT_FALSE(dxgi[0].utilizationAvailable);
+    EXPECT_FALSE(dxgi[0].temperatureAvailable);
+    EXPECT_TRUE(dxgi[0].powerAvailable);
+    EXPECT_DOUBLE_EQ(dxgi[0].powerDrawWatts, 80.0);
 }
 
 TEST(MergeNVMLIntoDXGICountersTest, UnmappedDXGIIndexIsSkipped)
@@ -211,6 +240,26 @@ TEST(AllGPUsHaveNVMLUtilizationTest, FalseWhenAnyGPUIsMissing)
     EXPECT_FALSE(allGPUsHaveNVMLUtilization(dxgi, {"GPU0"}));
 }
 
+TEST(AssignPDHUtilizationToDXGICountersTest, PDHReadingRestoresAvailabilityAfterAFailedNVMLRead)
+{
+    // #1111: a GPU whose NVML utilization read failed is marked unread by the merge; PDH's reading
+    // is real, so it makes the field available again. Without PDH data it stays unread (a gap).
+    std::vector<GPUCounters> dxgi(2);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[0].utilizationAvailable = false;
+    dxgi[1].gpuId = "GPU1";
+    dxgi[1].utilizationAvailable = false;
+
+    const std::unordered_map<std::string, double> byLuid = {{"GPU_0xLUID0", 42.0}};
+    const std::unordered_map<std::string, std::string> idToLuid = {{"GPU0", "GPU_0xLUID0"}, {"GPU1", "GPU_0xLUID1"}};
+
+    assignPDHUtilizationToDXGICounters(dxgi, byLuid, idToLuid, {});
+
+    EXPECT_TRUE(dxgi[0].utilizationAvailable);
+    EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 42.0);
+    EXPECT_FALSE(dxgi[1].utilizationAvailable);
+}
+
 TEST(AssignPDHUtilizationToDXGICountersTest, AssignsClampedUtilizationForMatchedLuid)
 {
     std::vector<GPUCounters> dxgi(1);
@@ -237,6 +286,7 @@ TEST(AssignPDHUtilizationToDXGICountersTest, SkipsGPUsAlreadySourcedFromNVML)
     assignPDHUtilizationToDXGICounters(dxgi, byLuid, idToLuid, {"GPU0"});
 
     EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 7.0) << "NVML-sourced GPUs must not be overwritten by PDH";
+    EXPECT_TRUE(dxgi[0].utilizationAvailable);
 }
 
 TEST(AssignPDHUtilizationToDXGICountersTest, LeavesUtilizationUntouchedWhenNoLuidMapping)
@@ -249,6 +299,7 @@ TEST(AssignPDHUtilizationToDXGICountersTest, LeavesUtilizationUntouchedWhenNoLui
     assignPDHUtilizationToDXGICounters(dxgi, {{"GPU_0xLUID", 50.0}}, {}, {});
 
     EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 3.0);
+    EXPECT_FALSE(dxgi[0].utilizationAvailable) << "no PDH reading: a gap, not a real-looking value (#1111)";
 }
 
 TEST(AssignPDHUtilizationToDXGICountersTest, LeavesUtilizationUntouchedWhenLuidHasNoPDHData)
@@ -263,6 +314,7 @@ TEST(AssignPDHUtilizationToDXGICountersTest, LeavesUtilizationUntouchedWhenLuidH
     assignPDHUtilizationToDXGICounters(dxgi, {{"GPU_0xOther", 50.0}}, idToLuid, {});
 
     EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 3.0);
+    EXPECT_FALSE(dxgi[0].utilizationAvailable) << "no PDH reading: a gap, not a real-looking value (#1111)";
 }
 
 // ==========================================================================
@@ -284,46 +336,135 @@ GPUInfo makeInfo(const std::string& name, const std::string& vendor)
 }
 } // namespace
 
-TEST(MapDXGIToNVMLTest, IdenticalCardsMapToDistinctNVMLDevices)
+GPUInfo makeLocatedInfo(const std::string& name, std::uint32_t bus, std::uint32_t pciDeviceId = 0)
 {
-    // Two identical cards used to both map to NVML device 0, so the second showed the first's data.
-    const std::vector<GPUInfo> dxgi = {makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA"), makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA")};
-    const std::vector<GPUInfo> nvml = {makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA"), makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA")};
+    GPUInfo info = makeInfo(name, "NVIDIA");
+    info.pciLocation = PciLocation{.bus = bus, .device = 0};
+    info.pciDeviceId = pciDeviceId;
+    return info;
+}
+
+// #1091: two identical cards, with the monitor on the one at bus 0x02, so DXGI lists it first while
+// NVML orders by bus. The PCI location pairs each adapter with its own device.
+TEST(MapDXGIToNVMLTest, IdenticalCardsMapByPciLocationWhateverTheOrder)
+{
+    const std::vector<GPUInfo> dxgi = {makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x02), makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x01)};
+    const std::vector<GPUInfo> nvml = {makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x01), makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x02)};
 
     const auto mapping = mapDXGIToNVML(dxgi, nvml);
     ASSERT_EQ(mapping.size(), 2U);
+    EXPECT_EQ(mapping.at(0), 1U);
+    EXPECT_EQ(mapping.at(1), 0U);
+}
+
+// #1091: without a location, identical cards cannot be told apart. They stay unmapped rather than
+// being paired by enumeration order, which showed one card's sensors as the other's.
+TEST(MapDXGIToNVMLTest, IdenticalCardsWithoutLocationStayUnmapped)
+{
+    const std::vector<GPUInfo> dxgi = {makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA"), makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA")};
+    const std::vector<GPUInfo> nvml = {makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA"), makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA")};
+
+    EXPECT_TRUE(mapDXGIToNVML(dxgi, nvml).empty());
+}
+
+// #1091: "RTX 4060" is a substring of "RTX 4060 Ti". Enumerated in opposite orders, the 4060 used to
+// claim the Ti's NVML device and the two cards' sensors were swapped. Exact names win now.
+TEST(MapDXGIToNVMLTest, ExactNameWinsOverASubstringClaim)
+{
+    const std::vector<GPUInfo> dxgi = {makeInfo("GeForce RTX 4060", "NVIDIA"), makeInfo("GeForce RTX 4060 Ti", "NVIDIA")};
+    const std::vector<GPUInfo> nvml = {makeInfo("GeForce RTX 4060 Ti", "NVIDIA"), makeInfo("GeForce RTX 4060", "NVIDIA")};
+
+    const auto mapping = mapDXGIToNVML(dxgi, nvml);
+    ASSERT_EQ(mapping.size(), 2U);
+    EXPECT_EQ(mapping.at(0), 1U);
+    EXPECT_EQ(mapping.at(1), 0U);
+}
+
+// DXGI names carry "NVIDIA " and NVML's usually do not; that difference alone still counts as exact.
+TEST(MapDXGIToNVMLTest, VendorPrefixDoesNotStopAnExactMatch)
+{
+    const std::vector<GPUInfo> dxgi = {makeInfo("NVIDIA GeForce RTX 4060 Ti", "NVIDIA"), makeInfo("NVIDIA GeForce RTX 4060", "NVIDIA")};
+    const std::vector<GPUInfo> nvml = {makeInfo("GeForce RTX 4060", "NVIDIA"), makeInfo("GeForce RTX 4060 Ti", "NVIDIA")};
+
+    const auto mapping = mapDXGIToNVML(dxgi, nvml);
+    ASSERT_EQ(mapping.size(), 2U);
+    EXPECT_EQ(mapping.at(0), 1U);
+    EXPECT_EQ(mapping.at(1), 0U);
+}
+
+// Different PCI device ids are different cards, even when the names would match.
+TEST(MapDXGIToNVMLTest, DifferentPciDeviceIdsNeverMatch)
+{
+    GPUInfo adapter = makeInfo("NVIDIA GeForce RTX 4060", "NVIDIA");
+    adapter.pciDeviceId = 0x288210DEU;
+    GPUInfo device = makeInfo("GeForce RTX 4060", "NVIDIA");
+    device.pciDeviceId = 0x280310DEU;
+
+    EXPECT_TRUE(mapDXGIToNVML({adapter}, {device}).empty());
+}
+
+// #1091 review: each probe skips a device it fails to read, so a lone "RTX 4060" adapter and a lone
+// "RTX 4060 Ti" device can be all that is left. A name inside another, with NVML's PCI identity
+// unknown, does not make them the same card.
+TEST(MapDXGIToNVMLTest, SubstringMatchNeedsAKnownEqualPciDeviceId)
+{
+    GPUInfo adapter = makeInfo("NVIDIA GeForce RTX 4060", "NVIDIA");
+    adapter.pciDeviceId = 0x288210DEU;
+    const GPUInfo unknownDevice = makeInfo("NVIDIA GeForce RTX 4060 Ti", "NVIDIA");
+    EXPECT_TRUE(mapDXGIToNVML({adapter}, {unknownDevice}).empty());
+    EXPECT_TRUE(mapDXGIToNVML({makeInfo("NVIDIA GeForce RTX 4060", "NVIDIA")}, {unknownDevice}).empty());
+
+    // The same model on both sides, named differently, still maps by substring.
+    GPUInfo laptopAdapter = makeInfo("NVIDIA GeForce RTX 4060 Laptop GPU", "NVIDIA");
+    laptopAdapter.pciDeviceId = 0x28E010DEU;
+    GPUInfo knownDevice = makeInfo("GeForce RTX 4060 Laptop", "NVIDIA");
+    knownDevice.pciDeviceId = 0x28E010DEU;
+    const auto mapping = mapDXGIToNVML({laptopAdapter}, {knownDevice});
+    ASSERT_EQ(mapping.size(), 1U);
     EXPECT_EQ(mapping.at(0), 0U);
-    EXPECT_EQ(mapping.at(1), 1U);
+}
+
+// Different PCI locations are different cards, even when the names match exactly.
+TEST(MapDXGIToNVMLTest, DifferentPciLocationsNeverMatchByName)
+{
+    EXPECT_TRUE(
+        mapDXGIToNVML({makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x01)}, {makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x02)}).empty());
 }
 
 TEST(MapDXGIToNVMLTest, NonNVIDIAAdaptersAndSurplusCardsStayUnmapped)
 {
-    // A hybrid laptop's Intel iGPU is never mapped; a third identical card with only two NVML
-    // devices is left unmapped rather than sharing one.
+    // A hybrid laptop's Intel iGPU is never mapped. Two identical NVIDIA adapters and one NVML device
+    // without locations are ambiguous -- either could be it -- so neither is mapped.
     const std::vector<GPUInfo> dxgi = {
         makeInfo("Intel(R) Arc(TM) 140T GPU", "Intel"),
         makeInfo("NVIDIA GeForce RTX 4060 Laptop GPU", "NVIDIA"),
         makeInfo("NVIDIA GeForce RTX 4060 Laptop GPU", "NVIDIA"),
     };
     const std::vector<GPUInfo> nvml = {makeInfo("NVIDIA GeForce RTX 4060 Laptop GPU", "NVIDIA")};
+    EXPECT_TRUE(mapDXGIToNVML(dxgi, nvml).empty());
 
-    const auto mapping = mapDXGIToNVML(dxgi, nvml);
+    // With locations, the adapter at the device's location takes it and the other stays unmapped.
+    const std::vector<GPUInfo> locatedDxgi = {
+        makeInfo("Intel(R) Arc(TM) 140T GPU", "Intel"),
+        makeLocatedInfo("NVIDIA GeForce RTX 4060 Laptop GPU", 0x02),
+        makeLocatedInfo("NVIDIA GeForce RTX 4060 Laptop GPU", 0x01),
+    };
+    const std::vector<GPUInfo> locatedNvml = {makeLocatedInfo("NVIDIA GeForce RTX 4060 Laptop GPU", 0x01)};
+    const auto mapping = mapDXGIToNVML(locatedDxgi, locatedNvml);
     ASSERT_EQ(mapping.size(), 1U);
-    EXPECT_EQ(mapping.at(1), 0U);
-    EXPECT_FALSE(mapping.contains(0));
-    EXPECT_FALSE(mapping.contains(2));
+    EXPECT_EQ(mapping.at(2), 0U);
 }
 
 TEST(AssignSensorCapabilitiesTest, EachAdapterTakesItsOwnNVMLDevicesSensors)
 {
     // Sensors are per adapter (#1040): the iGPU has none, and of two identical NVIDIA cards the
-    // passively cooled one reports no fan.
+    // passively cooled one reports no fan. The identical cards are told apart by PCI location (#1091).
     std::vector<GPUInfo> dxgi = {
         makeInfo("Intel(R) Arc(TM) 140T GPU", "Intel"),
-        makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA"),
-        makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA"),
+        makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x01),
+        makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x02),
     };
-    std::vector<GPUInfo> nvml = {makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA"), makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA")};
+    std::vector<GPUInfo> nvml = {makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x01), makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x02)};
     GPUCapabilities cooled;
     cooled.hasTemperature = true;
     cooled.hasFanSpeed = true;
@@ -401,12 +542,56 @@ TEST(MergeNVMLIntoDXGICountersTest, MemoryIdsListOnlyGPUsWhoseNVMLMemoryReadSucc
     nvml[0].memoryTotalBytes = 8ULL << 30U;
     nvml[0].memoryUsedBytes = 1ULL << 30U;
     nvml[1].gpuId = "uuid-1"; // Memory read failed
+    nvml[1].memoryAvailable = false;
 
     std::unordered_set<std::string> memoryIds;
     const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0U, 0U}, {1U, 1U}}, &memoryIds);
 
     EXPECT_EQ(sourced.size(), 2U);
     EXPECT_EQ(memoryIds, (std::unordered_set<std::string>{"GPU0"}));
+    // #1111: unread until PDH supplies the memory, so no PDH reading means a gap, not 0 bytes.
+    EXPECT_TRUE(dxgi[0].memoryAvailable);
+    EXPECT_FALSE(dxgi[1].memoryAvailable);
+}
+
+TEST(AssignPDHMemoryToDXGICountersTest, AnUnreadSegmentLeavesTheCounterUnavailable)
+{
+    // #1111: PDH read only the shared segment of a discrete GPU (the dedicated array failed), so its
+    // entry exists with dedicatedBytes 0. That is not a reading: the counter stays unread.
+    std::vector<GPUCounters> dxgi(1);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[0].memoryAvailable = false;
+    const std::unordered_map<std::string, AdapterMemoryUsage> memory = {
+        {"GPU_0x0_0x1", {.dedicatedBytes = 0, .sharedBytes = 200}},
+    };
+    const std::unordered_map<std::string, std::string> idToLuid = {{"GPU0", "GPU_0x0_0x1"}};
+    const std::unordered_map<std::string, bool> integrated = {{"GPU0", false}};
+
+    assignPDHMemoryToDXGICounters(dxgi, memory, idToLuid, integrated, {});
+
+    EXPECT_FALSE(dxgi[0].memoryAvailable);
+    EXPECT_EQ(dxgi[0].memoryUsedBytes, 0U);
+}
+
+TEST(AssignPDHMemoryToDXGICountersTest, PDHReadingRestoresAvailabilityAfterAFailedNVMLRead)
+{
+    // #1111: a GPU whose NVML memory read failed is marked unread by the merge; PDH's reading is
+    // real, so it makes memory available again. Without a PDH reading it stays unread (a gap).
+    std::vector<GPUCounters> dxgi(2);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[0].memoryAvailable = false;
+    dxgi[1].gpuId = "GPU1";
+    dxgi[1].memoryAvailable = false;
+    const std::unordered_map<std::string, AdapterMemoryUsage> memory = {
+        {"GPU_0x0_0x1", {.dedicatedBytes = 3'000'000'000, .sharedBytes = 200}},
+    };
+    const std::unordered_map<std::string, std::string> idToLuid = {{"GPU0", "GPU_0x0_0x1"}, {"GPU1", "GPU_0x0_0x2"}};
+
+    assignPDHMemoryToDXGICounters(dxgi, memory, idToLuid, {}, {});
+
+    EXPECT_TRUE(dxgi[0].memoryAvailable);
+    EXPECT_EQ(dxgi[0].memoryUsedBytes, 3'000'000'000U);
+    EXPECT_FALSE(dxgi[1].memoryAvailable);
 }
 
 TEST(AssignPDHMemoryToDXGICountersTest, IntegratedUsesSharedDiscreteUsesDedicated)
@@ -439,6 +624,9 @@ TEST(AssignPDHMemoryToDXGICountersTest, LeavesNVMLSourcedAndUnmappedGPUsAlone)
 
     EXPECT_EQ(dxgi[0].memoryUsedBytes, 42ULL);
     EXPECT_EQ(dxgi[1].memoryUsedBytes, 0ULL);
+    // #1111: NVML's memory stays available; the unmapped GPU has no reading, so it's a gap, not 0 bytes.
+    EXPECT_TRUE(dxgi[0].memoryAvailable);
+    EXPECT_FALSE(dxgi[1].memoryAvailable);
 }
 
 TEST(WindowsGPUProbeTest, ConstructionDoesNotThrow)

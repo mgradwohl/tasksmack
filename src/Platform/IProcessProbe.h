@@ -44,7 +44,9 @@ class IProcessProbe
     [[nodiscard]] virtual ProcessCapabilities capabilities() const = 0;
 
     /// Total system CPU time (sum of all cores, all states).
-    /// Used for calculating per-process CPU%.
+    /// Used for calculating per-process CPU%. Called straight after enumerate(), a probe may return
+    /// the total it captured at the end of that enumeration's per-process reads, so both cover the
+    /// same interval (#1119).
     [[nodiscard]] virtual uint64_t totalCpuTime() const = 0;
 
     /// Clock ticks per second (e.g., sysconf(_SC_CLK_TCK) on Linux).
