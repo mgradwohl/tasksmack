@@ -70,9 +70,9 @@ class Window
         return m_GLContext;
     }
 
-    /// Move the window, then wait for the windowing system to apply it (SDL_SyncWindow) so a
-    /// following getPosition() or maximize() sees the new position. Startup-only: like setSize(),
-    /// it can block for a window-manager round trip, so never call it from the render loop.
+    /// Move the window. Asynchronous (no SDL_SyncWindow): the custom title bar calls it on every
+    /// drag and left/top-resize step. On X11 getPosition() may report the old position until the
+    /// window manager applies the move.
     void setPosition(int x, int y) const;
     [[nodiscard]] auto getPosition() const -> std::pair<int, int>;
     [[nodiscard]] static bool supportsPositioning() noexcept;
@@ -94,7 +94,8 @@ class Window
     /// @p position when positioning is supported and the position is reachable on a connected
     /// display (otherwise centre it on the primary display, #1128), then maximize if @p maximized.
     /// The normal rectangle is applied before maximizing so it becomes the restore target (#1121).
-    /// Startup-only, for the same reason as setPosition().
+    /// Startup-only: before maximizing it waits for the window manager (SDL_SyncWindow), like
+    /// setSize(), so never call it from the render loop.
     void applySavedGeometry(std::optional<std::pair<int, int>> position, bool maximized);
 
     [[nodiscard]] bool isMaximized() const;

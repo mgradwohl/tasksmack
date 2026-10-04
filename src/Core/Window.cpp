@@ -305,12 +305,9 @@ void Window::setPosition(int x, int y) const
     {
         return;
     }
+    // Asynchronous: the custom title bar calls this on every drag and left/top-resize step, so it
+    // must not wait for the window manager. applySavedGeometry() syncs once where it needs to.
     SDL_SetWindowPosition(m_Handle, x, y);
-    // On asynchronous windowing systems (X11) the move is only a request until the window manager
-    // answers, and SDL_GetWindowPosition keeps returning the old position until then. Startup
-    // follows setPosition() with maximize(), which records the current position as the restore
-    // target, so wait for the move to land first (#1121).
-    SDL_SyncWindow(m_Handle);
 }
 
 auto Window::getPosition() const -> std::pair<int, int>
@@ -488,6 +485,11 @@ void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, boo
 
     if (maximized)
     {
+        // On asynchronous windowing systems (X11) a move or resize is only a request until the
+        // window manager answers, and SDL_GetWindowPosition keeps returning the old position until
+        // then. maximize() records the current rectangle as the restore target, so wait for the
+        // normal rectangle to land first (#1121). Once, at startup -- never on a hot path.
+        SDL_SyncWindow(m_Handle);
         maximize();
     }
 }
