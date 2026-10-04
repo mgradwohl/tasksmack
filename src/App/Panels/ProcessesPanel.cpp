@@ -74,6 +74,7 @@ constexpr std::string_view UNIT_POWER = " WW";           // Power (mW is wider t
 // Static UI labels (cached for text size measurements)
 constexpr std::string_view TREE_VIEW_LABEL = "Tree View";
 constexpr std::string_view LIST_VIEW_LABEL = "List View";
+constexpr const char* FILTER_HINT = "Filter by name...";
 
 [[nodiscard]] auto lowerAscii(char ch) -> int
 {
@@ -294,6 +295,27 @@ void ProcessesPanel::TextSizeCache::populate()
         const auto& label = PRIORITY_LABELS[i];
         priorityLabelWidths[i] = ImGui::CalcTextSize(label.data(), label.data() + label.size()).x;
     }
+}
+
+float ProcessesPanel::measureToolbarMinimumWidth()
+{
+    // Mirrors render()'s toolbar row; see ProcessTableLayout::computeToolbarMinimumWidth().
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float emPx = ImGui::GetFontSize();
+    const float hintWidth = ImGui::CalcTextSize(FILTER_HINT).x;
+    const float filterForHint = hintWidth + (style.FramePadding.x * 2.0F);
+    const float filterWanted = ProcessTableLayout::computeFilterWidth(hintWidth, style.FramePadding.x, emPx, 0.0F);
+
+    // The clear button only shows while filtering, but the row must not overlap when it does. The
+    // count is the wider of its two forms at a large, fixed count, so the minimum stays put.
+    const float clearButton = ImGui::CalcTextSize(ICON_FA_XMARK).x + (style.FramePadding.x * 2.0F);
+    const float count =
+        std::max(ImGui::CalcTextSize("99,999 processes, 9,999 running").x, ImGui::CalcTextSize("99,999 / 99,999 processes").x);
+    const float toggleButton = std::max(ImGui::CalcTextSize(TREE_VIEW_LABEL.data(), TREE_VIEW_LABEL.data() + TREE_VIEW_LABEL.size()).x,
+                                        ImGui::CalcTextSize(LIST_VIEW_LABEL.data(), LIST_VIEW_LABEL.data() + LIST_VIEW_LABEL.size()).x) +
+                               (style.FramePadding.x * 2.0F);
+    const float rest = (style.ItemSpacing.x * 3.0F) + clearButton + count + toggleButton;
+    return ProcessTableLayout::computeToolbarMinimumWidth(filterWanted, filterForHint, rest);
 }
 
 float ProcessesPanel::TextSizeCache::getPriorityLabelWidth(std::string_view label) const noexcept
@@ -594,7 +616,6 @@ void ProcessesPanel::renderContent()
     // Search bar
     const auto& theme = UI::Theme::get();
     // Sized from the font and the hint it has to show, not a fixed 200px (#965).
-    constexpr const char* FILTER_HINT = "Filter by name...";
     ImGui::SetNextItemWidth(ProcessTableLayout::computeFilterWidth(
         ImGui::CalcTextSize(FILTER_HINT).x, ImGui::GetStyle().FramePadding.x, ImGui::GetFontSize(), ImGui::GetContentRegionAvail().x));
     ImGui::PushStyleColor(ImGuiCol_TextDisabled, theme.scheme().statusRunning);

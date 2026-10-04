@@ -1128,8 +1128,8 @@ void TitleBarLayer::renderTitleBar()
     // Right side buttons
     const float BUTTON_WIDTH = computeTitleBarButtonWidth(titleBarHeight, TITLE_BAR_BUTTON_ASPECT);
 
-    // The window may not be made narrower than what this bar has to show, or shorter than the base
-    // minimum at this display scale. Derived from the sizes just used for drawing, so it cannot
+    // The window may not be made narrower than what this bar or the panels below it have to show
+    // (#1207), or shorter than the base minimum at this display scale. Derived from the sizes just used for drawing, so it cannot
     // drift from them, and handed to SDL only when it changes (#970). ShellLayer has already set
     // the scaled base minimum at attach; this widens it to cover the bar.
     const WindowMinimumSize minimumSize =
@@ -1139,7 +1139,8 @@ void TitleBarLayer::renderTitleBar()
                                                              titleBarHeight * TITLE_BAR_TITLE_GAP_RATIO,
                                                              wordmarkWidth,
                                                              BUTTON_WIDTH,
-                                                             titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO));
+                                                             titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO),
+                                 m_ContentMinimumWidthPx);
     if (minimumSize.width != m_MinimumSize.width || minimumSize.height != m_MinimumSize.height)
     {
         m_MinimumSize = minimumSize;

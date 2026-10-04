@@ -139,6 +139,12 @@ class ProcessesPanel : public Panel
     /// Convenience accessor so ShellLayer does not need to include Domain/ProcessModel.h.
     [[nodiscard]] bool hasReducedPrivileges() const;
 
+    /// Narrowest the toolbar row (filter, clear button, process count, tree-view toggle) can be
+    /// without overlapping, at the current font and style, for the window's content minimum (#1207).
+    /// Measured with a worst-case process count so it does not change as processes come and go.
+    /// Needs a frame.
+    [[nodiscard]] static float measureToolbarMinimumWidth();
+
     /// What the process probe can report (all false without a model). Fixed for the probe's
     /// lifetime, so safe to read from the UI thread at any time.
     [[nodiscard]] Platform::ProcessCapabilities processCapabilities() const;

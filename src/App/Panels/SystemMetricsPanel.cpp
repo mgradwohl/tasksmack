@@ -111,6 +111,10 @@ void showCpuBreakdownTooltip(const UI::ColorScheme& scheme,
     UI::Widgets::renderHistoryTooltip(ageSeconds, rows);
 }
 
+// Kept at 4 even without I/O Wait: every Overview chart reserves the same bar columns so their
+// time axes line up.
+constexpr size_t OVERVIEW_NOW_BAR_COLUMNS = 4; // CPU: Total, User, System, I/O Wait
+
 // Network interface utilities (isVirtualInterface, isBluetoothInterface, getSortedFilteredInterfaces)
 // are now in App/Panels/NetInterfaceUtils.h to avoid duplication with NetworkPanel.cpp
 
@@ -119,6 +123,15 @@ void showCpuBreakdownTooltip(const UI::ColorScheme& scheme,
 SystemMetricsPanel::SystemMetricsPanel() : Panel("System")
 {}
 
+float SystemMetricsPanel::overviewNowBarColumnWidth()
+{
+    // As the Overview lays it out: OVERVIEW_NOW_BAR_COLUMNS bars with item spacing between them, in
+    // a table column that ImGui separates from the plot with CellPadding.x either side (#1207).
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const auto columns = static_cast<float>(OVERVIEW_NOW_BAR_COLUMNS);
+    return (UI::Widgets::nowBarWidth(ImGui::GetFontSize()) * columns) + (style.ItemSpacing.x * (columns - 1.0F)) +
+           (style.CellPadding.x * 2.0F);
+}
 SystemMetricsPanel::~SystemMetricsPanel()
 {
     // Mirrors onDetach()'s order/completeness (#782): BackgroundSampler observes the models via
@@ -829,9 +842,6 @@ void SystemMetricsPanel::renderOverview()
         });
     }
 
-    // Kept at 4 even without I/O Wait: every Overview chart reserves the same bar columns so their
-    // time axes line up.
-    constexpr size_t OVERVIEW_NOW_BAR_COLUMNS = 4; // CPU: Total, User, System, I/O Wait
     renderHistoryWithNowBars("OverviewCPUHistoryLayout", plotHeight, cpuPlot, cpuBars, false, OVERVIEW_NOW_BAR_COLUMNS);
     fill.addPlot();
 

@@ -13,6 +13,8 @@
 namespace App
 {
 
+class TitleBarLayer;
+
 class ShellLayer : public Core::Layer
 {
   public:
@@ -30,10 +32,19 @@ class ShellLayer : public Core::Layer
     void onRender() override;
     void onEvent(Core::Event& event) override;
 
+    /// The custom title bar, when there is one (not with native decorations, #745). It owns the
+    /// window's minimum size then, and is handed the panels' share of it each frame (#1207).
+    /// Non-owning; the application's layer stack outlives both layers' use of it.
+    void setTitleBar(TitleBarLayer* titleBar) noexcept
+    {
+        m_TitleBar = titleBar;
+    }
+
   private:
     void renderTabBar();
     void renderStatusBar() const;
     void applyBaseMinimumWindowSize();
+    void applyContentMinimumWidth(float widthPx);
 
     // Panels
     ProcessesPanel m_ProcessesPanel;
@@ -63,6 +74,10 @@ class ShellLayer : public Core::Layer
     // Display scale the base minimum window size was last set for. With native decorations nothing
     // else sets the minimum, so it is re-applied when the scale changes (#943).
     float m_MinimumSizeDisplayScale = 0.0F;
+    // Width the panels need (#1207): handed to the title bar, or with native decorations part of the
+    // minimum applied here. Whole pixels, so it is re-applied only when it really changes.
+    int m_ContentMinimumWidthPx = 0;
+    TitleBarLayer* m_TitleBar = nullptr;
 
     // Render Metrics overlay (per-chart vertex count and CPU cost). Toggled with Ctrl+Shift+M.
     bool m_ShowRenderMetrics = false;
