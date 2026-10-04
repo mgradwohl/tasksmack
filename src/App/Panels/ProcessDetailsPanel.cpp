@@ -1126,8 +1126,24 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
 
             ImGui::Spacing();
             ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MEMORY "  Memory (%zu samples)", alignedCount);
-            renderHistoryWithNowBars(
-                "ProcessMemoryOverviewLayout", fill.plotHeight(), memoryPlot, memoryBars, false, PROCESS_NOW_BAR_COLUMNS);
+            // Peak Used is a line with a tooltip row but no bar; list it in the value strip too (#1193).
+            const std::array peakEntry{UI::Widgets::ValueStripEntry{
+                .label = MEM_PEAK_LABEL,
+                .value = UI::Format::percentCompact(m_PeakMemoryPercent),
+                .color = theme.scheme().chartPeakLine,
+            }};
+            const std::span<const UI::Widgets::ValueStripEntry> stripExtras = (m_PeakMemoryPercent > 0.0)
+                                                                                ? std::span<const UI::Widgets::ValueStripEntry>(peakEntry)
+                                                                                : std::span<const UI::Widgets::ValueStripEntry>{};
+            renderHistoryWithNowBars("ProcessMemoryOverviewLayout",
+                                     fill.plotHeight(),
+                                     memoryPlot,
+                                     memoryBars,
+                                     false,
+                                     PROCESS_NOW_BAR_COLUMNS,
+                                     false,
+                                     UI::Widgets::NowBarValues::Strip,
+                                     stripExtras);
             fill.addPlot();
             ImGui::Spacing();
         }
@@ -1186,7 +1202,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
     const double faultAxisUpper = UI::Widgets::easedRateAxisUpperBound(
         "##ProcThreadsFaults/Y2", UI::Widgets::maxOfSeries(faultData), UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
 
-    const NowBar threadsBar{.valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedUsage.threadCount), "threads"),
+    const NowBar threadsBar{.valueText = UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.threadCount)),
                             .label = THREADS_LABEL,
                             .tooltipText = UI::Widgets::formatTooltipRow(
                                 THREADS_LABEL, UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.threadCount))),
@@ -1200,7 +1216,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
 #endif
 
     const NowBar handlesBar{
-        .valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedUsage.handleCount), handleLabel),
+        .valueText = UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.handleCount)),
         .label = handleLabel,
         .tooltipText = std::format("{}: {}", handleLabel, UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.handleCount))),
         .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.handleCount, countAxisUpper),
@@ -1218,7 +1234,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
     // and shown as N/A, and a series with no reading at all -- a process TaskSmack cannot open -- is
     // not drawn (#1000).
     const NowBar gdiBar{
-        .valueText = m_SmoothedUsage.gdiInitialized ? UI::Format::formatCountWithLabel(std::llround(m_SmoothedUsage.gdiObjectCount), "GDI")
+        .valueText = m_SmoothedUsage.gdiInitialized ? UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.gdiObjectCount))
                                                     : std::string("N/A"),
         .label = GDI_LABEL,
         .tooltipText =

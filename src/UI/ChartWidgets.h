@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <format>
 #include <functional>
@@ -1521,13 +1522,126 @@ class RenderMetricsScope
     bool m_Measure = false;
 };
 
+/// Whether renderHistoryWithNowBars() prints each bar's current value above the chart (#1193).
+enum class NowBarValues : std::uint8_t
+{
+    Strip, ///< A line of "swatch label value" entries above the chart
+    None,  ///< No strip: grid cells, which show the value in their own label and have a fixed height
+};
+
+/// A value strip entry for a series with no NowBar, e.g. the network totals drawn behind a selected
+/// interface. The label is a view, typically of a constant; `value` holds a short formatted rate or
+/// percent, which fits std::string's small-buffer storage, so building one allocates nothing.
+struct ValueStripEntry
+{
+    std::string_view label;
+    std::string value;
+    ImVec4 color;
+};
+
+namespace Detail
+{
+/// Lays out one value strip entry: a swatch in `color` (alpha kept, so a translucent series reads as
+/// muted), then `head` in muted text -- with `colon` appended when `head` does not already end in one
+/// -- and `tail` in primary text. With `wrap`, an entry that does not fit the row starts a new line;
+/// without it the row runs on and the container clips it.
+inline void drawValueStripEntry(
+    std::string_view head, std::string_view tail, const ImVec4& color, bool first, bool wrap, float rowRight, const ImVec4& muted)
+{
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float lineHeight = ImGui::GetTextLineHeight();
+    const float side = std::floor(lineHeight * TOOLTIP_SWATCH_LINE_FRACTION);
+    const float inset = std::floor((lineHeight - side) * 0.5F);
+    const bool addColon = !head.empty() && !head.ends_with(':');
+    const float headWidth = head.empty() ? 0.0F
+                                         : ImGui::CalcTextSize(head.data(), head.data() + head.size()).x +
+                                               (addColon ? ImGui::CalcTextSize(":").x : 0.0F) + style.ItemInnerSpacing.x;
+    const float entryWidth = side + style.ItemInnerSpacing.x + headWidth + ImGui::CalcTextSize(tail.data(), tail.data() + tail.size()).x;
+    if (!first)
+    {
+        ImGui::SameLine(0.0F, style.ItemSpacing.x * 2.0F);
+        if (wrap && ImGui::GetCursorPosX() + entryWidth > rowRight)
+        {
+            ImGui::NewLine();
+        }
+    }
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    ImGui::GetWindowDrawList()->AddRectFilled(
+        ImVec2(at.x, at.y + inset), ImVec2(at.x + side, at.y + inset + side), ImGui::ColorConvertFloat4ToU32(color));
+    ImGui::Dummy(ImVec2(side, lineHeight));
+    if (!head.empty())
+    {
+        ImGui::SameLine(0.0F, style.ItemInnerSpacing.x);
+        ImGui::PushStyleColor(ImGuiCol_Text, muted);
+        ImGui::TextUnformatted(head.data(), head.data() + head.size());
+        if (addColon)
+        {
+            ImGui::SameLine(0.0F, 0.0F);
+            ImGui::TextUnformatted(":");
+        }
+        ImGui::PopStyleColor();
+    }
+    ImGui::SameLine(0.0F, style.ItemInnerSpacing.x);
+    ImGui::TextUnformatted(tail.data(), tail.data() + tail.size());
+}
+} // namespace Detail
+
+/// How renderNowBarValueStrip() lays out its entries.
+enum class ValueStripLayout : std::uint8_t
+{
+    Wrap,    ///< Each bar's tooltip text; entries that do not fit start a new line
+    Compact, ///< One line of "label: valueText": for containers that budget exactly one line (grid
+             ///< cells), where a longer tooltip text could run past the edge. The hover keeps it.
+};
+
+/// Each series' current value, readable without hovering (#1193): per bar, a swatch in the bar's
+/// colour and the same text its tooltip shows -- its tooltipText when it has one (richer, e.g. bytes
+/// beside a percent), otherwise the tooltip's own fallback "label: valueText" -- with the leading
+/// "label:" muted; then any `extras`, series the chart draws without a bar. Bar strings are already
+/// built for the frame, so the bars add no allocation.
+inline void renderNowBarValueStrip(std::span<const NowBar> bars,
+                                   std::span<const ValueStripEntry> extras = {},
+                                   ValueStripLayout layout = ValueStripLayout::Wrap)
+{
+    const bool wrap = layout == ValueStripLayout::Wrap;
+    const float rowRight = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+    const ImVec4 muted = UI::Theme::get().scheme().textMuted;
+    bool first = true;
+    for (const NowBar& bar : bars)
+    {
+        std::string_view head = bar.label;
+        std::string_view tail = bar.valueText;
+        if (wrap && !bar.tooltipText.empty())
+        {
+            // A tooltipText that starts with "label:" ("Handles: 266,257") splits like the fallback.
+            const std::string_view tip = bar.tooltipText;
+            const bool labelled = !bar.label.empty() && tip.starts_with(bar.label) && tip.substr(bar.label.size()).starts_with(':');
+            head = labelled ? tip.substr(0, bar.label.size() + 1) : std::string_view{};
+            tail = labelled ? tip.substr(bar.label.size() + 1) : tip;
+            if (tail.starts_with(' '))
+            {
+                tail.remove_prefix(1);
+            }
+        }
+        Detail::drawValueStripEntry(head, tail, bar.color, first, wrap, rowRight, muted);
+        first = false;
+    }
+    for (const ValueStripEntry& entry : extras)
+    {
+        Detail::drawValueStripEntry(entry.label, entry.value, entry.color, first, wrap, rowRight, muted);
+        first = false;
+    }
+}
+
 inline void renderHistoryWithNowBars(const char* tableId,
                                      float plotHeight,
                                      const std::function<void()>& plotFn,
                                      std::span<const NowBar> bars,
                                      bool barsOnly = false,
                                      size_t minBarColumns = 0,
-                                     bool compactSpacing = false)
+                                     bool compactSpacing = false,
+                                     NowBarValues values = NowBarValues::Strip,
+                                     std::span<const ValueStripEntry> stripExtras = {})
 {
     // Renders a history plot side-by-side with a compact "now" bar column. When barsOnly is true we
     // skip the ImPlot area and show only the bars (used when history is unavailable). The table layout
@@ -1538,6 +1652,13 @@ inline void renderHistoryWithNowBars(const char* tableId,
     {
         plotFn();
         return;
+    }
+
+    if (values == NowBarValues::Strip)
+    {
+        // stripExtras: series the chart draws without a bar (a peak line), so the strip lists every
+        // series its tooltip does.
+        renderNowBarValueStrip(bars, stripExtras);
     }
 
     if (barsOnly)
@@ -1654,10 +1775,19 @@ inline void renderHistoryWithNowBars(const char* tableId,
                                      std::initializer_list<NowBar> bars,
                                      bool barsOnly = false,
                                      size_t minBarColumns = 0,
-                                     bool compactSpacing = false)
+                                     bool compactSpacing = false,
+                                     NowBarValues values = NowBarValues::Strip,
+                                     std::span<const ValueStripEntry> stripExtras = {})
 {
-    renderHistoryWithNowBars(
-        tableId, plotHeight, plotFn, std::span<const NowBar>(bars.begin(), bars.size()), barsOnly, minBarColumns, compactSpacing);
+    renderHistoryWithNowBars(tableId,
+                             plotHeight,
+                             plotFn,
+                             std::span<const NowBar>(bars.begin(), bars.size()),
+                             barsOnly,
+                             minBarColumns,
+                             compactSpacing,
+                             values,
+                             stripExtras);
 }
 
 } // namespace UI::Widgets
