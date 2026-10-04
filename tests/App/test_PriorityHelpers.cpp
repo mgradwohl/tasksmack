@@ -461,5 +461,80 @@ TEST(PriorityHelpersTest, BadgeTextAndThumbAreReadableInEveryBundledTheme)
         }
     }
 }
+
+// =============================================================================
+// Windows priority classes (#1204)
+// =============================================================================
+
+TEST(WindowsPriorityClassTest, TheControlOffersExactlyTheFiveSettableClasses)
+{
+    ASSERT_EQ(SETTABLE_WINDOWS_PRIORITY_CLASSES.size(), 5U);
+    EXPECT_EQ(SETTABLE_WINDOWS_PRIORITY_CLASSES.front(), WindowsPriorityClass::Idle);
+    EXPECT_EQ(SETTABLE_WINDOWS_PRIORITY_CLASSES.back(), WindowsPriorityClass::High);
+    EXPECT_EQ(std::ranges::count(SETTABLE_WINDOWS_PRIORITY_CLASSES, WindowsPriorityClass::Realtime), 0);
+}
+
+TEST(WindowsPriorityClassTest, EveryClassRoundTripsThroughItsNiceValue)
+{
+    for (const auto priorityClass : {
+             WindowsPriorityClass::Idle,
+             WindowsPriorityClass::BelowNormal,
+             WindowsPriorityClass::Normal,
+             WindowsPriorityClass::AboveNormal,
+             WindowsPriorityClass::High,
+             WindowsPriorityClass::Realtime,
+         })
+    {
+        EXPECT_EQ(windowsPriorityClassFromNice(windowsPriorityClassNice(priorityClass)), priorityClass)
+            << windowsPriorityClassName(priorityClass);
+    }
+}
+
+TEST(WindowsPriorityClassTest, RepresentativeNiceValuesAvoidTheLabelThresholds)
+{
+    // -5 and -10, the values the probe used to report, are where the next class down starts.
+    EXPECT_EQ(Domain::Priority::getPriorityLabel(windowsPriorityClassNice(WindowsPriorityClass::AboveNormal)), "Above Normal");
+    EXPECT_EQ(Domain::Priority::getPriorityLabel(windowsPriorityClassNice(WindowsPriorityClass::High)), "High");
+    for (const auto priorityClass : SETTABLE_WINDOWS_PRIORITY_CLASSES)
+    {
+        const int32_t nice = windowsPriorityClassNice(priorityClass);
+        EXPECT_NE(nice, Domain::Priority::HIGH_THRESHOLD);
+        EXPECT_NE(nice, Domain::Priority::ABOVE_NORMAL_THRESHOLD);
+        EXPECT_NE(nice, Domain::Priority::BELOW_NORMAL_THRESHOLD);
+        EXPECT_NE(nice, Domain::Priority::IDLE_THRESHOLD);
+    }
+}
+
+TEST(WindowsPriorityClassTest, NamesMatchTheProcessesTableAndRealtimeIsNamed)
+{
+    EXPECT_EQ(windowsPriorityClassName(WindowsPriorityClass::Idle), "Idle");
+    EXPECT_EQ(windowsPriorityClassName(WindowsPriorityClass::BelowNormal), "Below Normal");
+    EXPECT_EQ(windowsPriorityClassName(WindowsPriorityClass::Normal), "Normal");
+    EXPECT_EQ(windowsPriorityClassName(WindowsPriorityClass::AboveNormal), "Above Normal");
+    EXPECT_EQ(windowsPriorityClassName(WindowsPriorityClass::High), "High");
+    EXPECT_EQ(windowsPriorityClassName(WindowsPriorityClass::Realtime), "Realtime");
+}
+
+TEST(WindowsPriorityClassTest, AnyNiceValueFallsInOneClass)
+{
+    EXPECT_EQ(windowsPriorityClassFromNice(-19), WindowsPriorityClass::High);
+    EXPECT_EQ(windowsPriorityClassFromNice(-10), WindowsPriorityClass::AboveNormal);
+    EXPECT_EQ(windowsPriorityClassFromNice(-5), WindowsPriorityClass::Normal);
+    EXPECT_EQ(windowsPriorityClassFromNice(5), WindowsPriorityClass::BelowNormal);
+    EXPECT_EQ(windowsPriorityClassFromNice(15), WindowsPriorityClass::Idle);
+    EXPECT_EQ(windowsPriorityClassFromNice(-100), WindowsPriorityClass::Realtime);
+    EXPECT_EQ(windowsPriorityClassFromNice(100), WindowsPriorityClass::Idle);
+}
+
+TEST(WindowsPriorityClassTest, OverviewTextHasNoNiceWordingWithWindowsClasses)
+{
+    EXPECT_EQ(priorityDisplayText(-7, true), "Above Normal");
+    EXPECT_EQ(priorityDisplayText(-20, true), "Realtime");
+    EXPECT_EQ(priorityDisplayText(0, true).find("nice"), std::string::npos);
+    // Elsewhere the nice value stays.
+    EXPECT_EQ(priorityDisplayText(0, false), "Normal (nice: 0)");
+    EXPECT_EQ(priorityDisplayText(-20, false), "High (nice: -20)");
+}
+
 } // namespace
 } // namespace App::Detail
