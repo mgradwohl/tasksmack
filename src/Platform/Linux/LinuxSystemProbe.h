@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -23,6 +24,10 @@ class LinuxSystemProbe : public ISystemProbe
     /// Testability constructor: reads from a custom proc root instead of /proc.
     /// Useful for unit tests that supply synthetic /proc content.
     explicit LinuxSystemProbe(std::filesystem::path procRoot);
+
+    /// Testability constructor that also takes the network-interface sysfs root (normally
+    /// /sys/class/net), where interfaces are classified as hardware or virtual (#1106).
+    LinuxSystemProbe(std::filesystem::path procRoot, std::filesystem::path sysClassNetRoot);
 
     ~LinuxSystemProbe() override = default;
 
@@ -57,6 +62,11 @@ class LinuxSystemProbe : public ISystemProbe
     /// @param isUp Current operational state (for detecting down→up transitions)
     [[nodiscard]] uint64_t getInterfaceLinkSpeed(const std::string& ifaceName, bool isUp);
 
+    /// True when the interface has no backing device (no <sysClassNetRoot>/<iface>/device; it lives
+    /// under /sys/devices/virtual/net): loopback, bridges, veth pairs, VLANs, bonds, tun/tap,
+    /// WireGuard. Their traffic also crosses a hardware interface, so the Total leaves them out (#1106).
+    [[nodiscard]] static bool isVirtualInterface(const std::filesystem::path& sysClassNetRoot, std::string_view ifaceName);
+
     /// Read interface operational state from sysfs (up/down/unknown).
     [[nodiscard]] static bool readInterfaceOperState(const std::string& ifaceName);
 
@@ -68,6 +78,7 @@ class LinuxSystemProbe : public ISystemProbe
     void cleanupStaleInterfaceCacheEntries(const std::vector<std::string>& currentInterfaces);
 
     std::filesystem::path m_ProcRoot;
+    std::filesystem::path m_SysClassNetRoot;
     long m_TicksPerSecond;
     std::size_t m_NumCores;
 

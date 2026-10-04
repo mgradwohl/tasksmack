@@ -101,6 +101,7 @@ struct SystemSnapshot
         double txBytesPerSec = 0.0; // Transmit rate
         bool isUp = false;          // Interface operational status
         uint64_t linkSpeedMbps = 0; // Link speed (0 if unknown)
+        bool isVirtual = false;     // Software interface left out of the Total (see Platform InterfaceCounters)
     };
     std::vector<InterfaceSnapshot> networkInterfaces;
 
