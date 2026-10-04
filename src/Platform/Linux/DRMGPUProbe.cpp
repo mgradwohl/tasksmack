@@ -491,9 +491,10 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
         }
 
         // Memory used/total, where the driver reports both (mem_info_vram_used/_total). An iGPU has
-        // no dedicated memory, and i915/xe report no "used" figure in sysfs, so for them memory is
-        // not read rather than published as a real-looking 0% (#1115). The total alone (xe's VRAM
-        // size) is still passed on, so a discrete card's VRAM size is known.
+        // no dedicated memory, and i915/xe report neither figure in sysfs, so for them memory is not
+        // read rather than published as a real-looking 0% (#1115). A total the driver does report is
+        // still passed on (and remembered for while the card sleeps); Intel VRAM capacity needs the
+        // DRM query ioctl (#1283).
         const std::string vramUsedStr = readSysfsString(card.devicePath + "/mem_info_vram_used");
         counter.memoryTotalBytes = readVramTotal(card);
         card.lastMemoryTotalBytes = counter.memoryTotalBytes;
