@@ -88,6 +88,7 @@ set(COMMON_TEST_SOURCES
     UI/test_LineLayout.cpp
     UI/test_IconEncoding.cpp
     App/test_DialogGeometry.cpp
+    UI/test_ThemeCatalog.cpp
     UI/test_ThemeLoader.cpp
     UI/test_AssetPath.cpp
     UI/test_ThemeHeader.cpp
