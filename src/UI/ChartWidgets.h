@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <format>
 #include <functional>
@@ -1517,13 +1518,92 @@ class RenderMetricsScope
     bool m_Measure = false;
 };
 
+/// Whether renderHistoryWithNowBars() prints each bar's current value above the chart (#1193).
+enum class NowBarValues : std::uint8_t
+{
+    Strip, ///< A line of "swatch label value" entries above the chart
+    None,  ///< No strip: grid cells, which show the value in their own label and have a fixed height
+};
+
+/// Each bar's current value, readable without hovering (#1193): a swatch in the bar's colour, then
+/// the same text its tooltip shows -- its tooltipText when it has one (richer, e.g. bytes beside a
+/// percent), otherwise "label: valueText", the tooltip's own fallback -- with the leading "label:" in
+/// muted text, wrapping to another line when the row is full. Both strings are already built for the
+/// frame, so this adds no allocation. The swatch keeps the colour's alpha, so a muted series (drawn
+/// translucent) reads as muted here too.
+inline void renderNowBarValueStrip(std::span<const NowBar> bars)
+{
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float lineHeight = ImGui::GetTextLineHeight();
+    const float side = std::floor(lineHeight * TOOLTIP_SWATCH_LINE_FRACTION);
+    const float inset = std::floor((lineHeight - side) * 0.5F);
+    const float rowRight = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+    const ImVec4 muted = UI::Theme::get().scheme().textMuted;
+    for (size_t i = 0; i < bars.size(); ++i)
+    {
+        const NowBar& bar = bars[i];
+        // Split the entry into a muted "label:" and the rest. A tooltipText that starts with the
+        // bar's label and a colon ("Handles: 266,257") splits the same way as the fallback.
+        std::string_view head;
+        std::string_view tail;
+        if (!bar.tooltipText.empty())
+        {
+            const std::string_view tip = bar.tooltipText;
+            const bool labelled = !bar.label.empty() && tip.starts_with(bar.label) && tip.substr(bar.label.size()).starts_with(':');
+            head = labelled ? tip.substr(0, bar.label.size() + 1) : std::string_view{};
+            tail = labelled ? tip.substr(bar.label.size() + 1) : tip;
+            if (tail.starts_with(' '))
+            {
+                tail.remove_prefix(1);
+            }
+        }
+        else
+        {
+            head = bar.label;
+            tail = bar.valueText;
+        }
+        const float colonWidth = (bar.tooltipText.empty() && !head.empty()) ? ImGui::CalcTextSize(":").x : 0.0F;
+        const float headWidth =
+            head.empty() ? 0.0F : ImGui::CalcTextSize(head.data(), head.data() + head.size()).x + colonWidth + style.ItemInnerSpacing.x;
+        const float entryWidth =
+            side + style.ItemInnerSpacing.x + headWidth + ImGui::CalcTextSize(tail.data(), tail.data() + tail.size()).x;
+        if (i > 0)
+        {
+            ImGui::SameLine(0.0F, style.ItemSpacing.x * 2.0F);
+            if (ImGui::GetCursorPosX() + entryWidth > rowRight)
+            {
+                ImGui::NewLine();
+            }
+        }
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        ImGui::GetWindowDrawList()->AddRectFilled(
+            ImVec2(at.x, at.y + inset), ImVec2(at.x + side, at.y + inset + side), ImGui::ColorConvertFloat4ToU32(bar.color));
+        ImGui::Dummy(ImVec2(side, lineHeight));
+        if (!head.empty())
+        {
+            ImGui::SameLine(0.0F, style.ItemInnerSpacing.x);
+            ImGui::PushStyleColor(ImGuiCol_Text, muted);
+            ImGui::TextUnformatted(head.data(), head.data() + head.size());
+            if (bar.tooltipText.empty())
+            {
+                ImGui::SameLine(0.0F, 0.0F);
+                ImGui::TextUnformatted(":");
+            }
+            ImGui::PopStyleColor();
+        }
+        ImGui::SameLine(0.0F, style.ItemInnerSpacing.x);
+        ImGui::TextUnformatted(tail.data(), tail.data() + tail.size());
+    }
+}
+
 inline void renderHistoryWithNowBars(const char* tableId,
                                      float plotHeight,
                                      const std::function<void()>& plotFn,
                                      std::span<const NowBar> bars,
                                      bool barsOnly = false,
                                      size_t minBarColumns = 0,
-                                     bool compactSpacing = false)
+                                     bool compactSpacing = false,
+                                     NowBarValues values = NowBarValues::Strip)
 {
     // Renders a history plot side-by-side with a compact "now" bar column. When barsOnly is true we
     // skip the ImPlot area and show only the bars (used when history is unavailable). The table layout
@@ -1534,6 +1614,11 @@ inline void renderHistoryWithNowBars(const char* tableId,
     {
         plotFn();
         return;
+    }
+
+    if (values == NowBarValues::Strip)
+    {
+        renderNowBarValueStrip(bars);
     }
 
     if (barsOnly)
@@ -1650,10 +1735,11 @@ inline void renderHistoryWithNowBars(const char* tableId,
                                      std::initializer_list<NowBar> bars,
                                      bool barsOnly = false,
                                      size_t minBarColumns = 0,
-                                     bool compactSpacing = false)
+                                     bool compactSpacing = false,
+                                     NowBarValues values = NowBarValues::Strip)
 {
     renderHistoryWithNowBars(
-        tableId, plotHeight, plotFn, std::span<const NowBar>(bars.begin(), bars.size()), barsOnly, minBarColumns, compactSpacing);
+        tableId, plotHeight, plotFn, std::span<const NowBar>(bars.begin(), bars.size()), barsOnly, minBarColumns, compactSpacing, values);
 }
 
 } // namespace UI::Widgets
