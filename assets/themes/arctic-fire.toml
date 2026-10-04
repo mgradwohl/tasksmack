@@ -44,7 +44,7 @@ high = "#E53935"      # 80-100% - Crimson (critical)
 text_primary = "#F0F4FA"   # Bright off-white for maximum contrast on dark bg
 text_disabled = "#C0C8D0"  # Brighter blue-gray for disabled text
 text_muted = "#D0D8E0"     # Much brighter for chart axis labels
-text_error = "#E53935"     # Crimson - error messages
+text_error = "#FF5248"     # Crimson - error messages
 text_warning = "#FFB300"   # Amber - warning messages
 text_success = "#00E676"   # Emerald - success messages
 text_info = "#42A5F5"      # Blue - informational text
@@ -57,11 +57,11 @@ text_info = "#42A5F5"      # Blue - informational text
 # =============================================================================
 [status]
 running = "#00E676"    # Emerald - active/running (R)
-sleeping = "#42A5F5"   # Blue - sleeping (S)
+sleeping = "#8AC2FF"   # Blue - sleeping (S)
 disk_sleep = "#FFB300" # Amber - uninterruptible I/O (D) - diagnostic state
-zombie = "#E53935"     # Crimson - defunct process (Z) - diagnostic state
-stopped = "#FF7043"    # Orange - stopped/traced (T/t)
-idle = "#808080"       # Gray - idle kernel thread (I)
+zombie = "#FFA698"     # Crimson - defunct process (Z) - diagnostic state
+stopped = "#FFA88B"    # Orange - stopped/traced (T/t)
+idle = "#BDBDBD"       # Gray - idle kernel thread (I)
 
 # =============================================================================
 # CHART LINE COLORS
@@ -97,7 +97,7 @@ encoder = "#26C6DA"               # Teal - GPU encoder utilization
 decoder = "#EC407A"               # Magenta - GPU decoder utilization
 clock = "#64B5F6"             # Light Blue - GPU clock speed line
 clock_fill = "#64B5F6CC"      # Light Blue with 80% alpha - GPU clock fill
-fan = "#546E7A"               # Dark Blue Gray - GPU fan speed line
+fan = "#5D7783"               # Dark Blue Gray - GPU fan speed line
 
 # =============================================================================
 # CPU BREAKDOWN COLORS
@@ -245,6 +245,7 @@ empty_background = "#141A24"
 # ImGui plot widgets
 # =============================================================================
 [ui.plot]
+grid = "#35425B"
 lines = "#42A5F5"
 lines_hovered = "#FF7043"
 histogram = "#00E676"
