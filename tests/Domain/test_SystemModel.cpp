@@ -826,6 +826,7 @@ TEST(SystemModelTest, ImplausibleCoreIdIsDropped)
     ASSERT_EQ(snap.cpuPerCore.size(), 1U);
     EXPECT_DOUBLE_EQ(snap.cpuPerCore[0].totalPercent, 50.0);
     EXPECT_EQ(model.perCoreHistory().size(), 1U);
+    EXPECT_EQ(snap.coreCount, 1); // the dropped id isn't counted as a core either
 }
 
 TEST(SystemModelTest, HotAddedCoreIsBackfilledWithGaps)

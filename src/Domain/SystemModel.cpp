@@ -399,8 +399,10 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
 {
     SystemSnapshot snap;
 
-    // Core count
-    snap.coreCount = static_cast<int>(counters.cpuPerCore.size());
+    // Core count: the cores reported this sample, not counting an implausible id coreSlotCount()
+    // drops, so the UI never shows a core that has no slot (#1229).
+    snap.coreCount = static_cast<int>(
+        std::ranges::count_if(counters.cpuPerCore, [](const Platform::CpuCounters& core) { return core.coreId < MAX_CORE_SLOTS; }));
 
     // Memory (always available)
     snap.memoryTotalBytes = counters.memory.totalBytes;
