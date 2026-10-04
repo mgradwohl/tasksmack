@@ -15,6 +15,7 @@
 #include "Platform/SystemTypes.h"
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -684,6 +685,8 @@ makeInterfaceCounters(const std::string& name, uint64_t rxBytes = 0, uint64_t tx
 }
 
 /// Create a complete SystemCounters struct.
+/// Per-core entries are given contiguous core ids 0..N-1 by position, as a probe with every core
+/// online reports them; set cpuPerCore[i].coreId afterwards to model an offline core (#1229).
 inline Platform::SystemCounters makeSystemCounters(const Platform::CpuCounters& cpu,
                                                    const Platform::MemoryCounters& memory,
                                                    uint64_t uptime = 0,
@@ -697,6 +700,10 @@ inline Platform::SystemCounters makeSystemCounters(const Platform::CpuCounters& 
     s.memory = memory;
     s.uptimeSeconds = uptime;
     s.cpuPerCore = std::move(perCore);
+    for (std::size_t i = 0; i < s.cpuPerCore.size(); ++i)
+    {
+        s.cpuPerCore[i].coreId = i;
+    }
     s.netRxBytes = netRxBytes;
     s.netTxBytes = netTxBytes;
     s.networkInterfaces = std::move(networkInterfaces);

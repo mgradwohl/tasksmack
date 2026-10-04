@@ -21,7 +21,8 @@ namespace
 {
 [[nodiscard]] uint64_t cpuComponentSum(const CpuCounters& c)
 {
-    return c.user + c.nice + c.system + c.idle + c.iowait + c.irq + c.softirq + c.steal + c.guest + c.guestNice;
+    // guest/guestNice are inside user/nice, so total() leaves them out (#1157).
+    return c.user + c.nice + c.system + c.idle + c.iowait + c.irq + c.softirq + c.steal;
 }
 
 } // namespace

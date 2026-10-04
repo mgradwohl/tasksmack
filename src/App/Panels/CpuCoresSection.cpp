@@ -348,11 +348,20 @@ void updateSmoothedPerCore(const Domain::SystemSnapshot& snap, RenderContext& ct
     const size_t knownCores = std::min(ctx.smoothedPerCore->size(), numCores);
     ctx.smoothedPerCore->resize(numCores, 0.0);
 
+    // Indexed by core id, like snap.cpuPerCore. A core id with no reading this sample (NaN, e.g. an
+    // offline core) shows N/A rather than easing towards 0%, and starts at its value when it comes
+    // back rather than easing up from the stale one (#1229).
     for (size_t i = 0; i < numCores; ++i)
     {
-        const double target = clampPercent(snap.cpuPerCore[i].totalPercent);
         double& current = (*ctx.smoothedPerCore)[i];
-        const bool initialized = (i < knownCores) && (ctx.lastDeltaSeconds > 0.0F);
+        const double reading = snap.cpuPerCore[i].totalPercent;
+        if (std::isnan(reading))
+        {
+            current = std::numeric_limits<double>::quiet_NaN();
+            continue;
+        }
+        const double target = clampPercent(reading);
+        const bool initialized = (i < knownCores) && !std::isnan(current) && (ctx.lastDeltaSeconds > 0.0F);
         current = clampPercent(initializeOrSmooth(current, target, alpha, initialized));
     }
 }
