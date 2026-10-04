@@ -38,7 +38,7 @@ TaskSmack has a strict layered architecture: App → UI → Core → Domain → 
 
 ## 5. Conventions
 
-- Naming: `PascalCase` classes, `camelCase` functions, `m_camelCase` members, `UPPER_SNAKE_CASE` constants.
+- Naming: `PascalCase` classes, `camelCase` functions, `m_PascalCase` members, `UPPER_SNAKE_CASE` constants.
 - Include order: matching header → project headers → third-party → stdlib, blank line between groups; `#pragma once` in headers.
 - GLAD before SDL: `#include <glad/gl.h>` then `#include <SDL3/SDL.h>`.
 - Reuse constants from `src/Domain/SamplingConfig.h`; flag re-declared sampling literals.
