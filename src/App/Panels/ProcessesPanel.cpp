@@ -693,6 +693,7 @@ void ProcessesPanel::renderContent()
         // Reset sorted indices to natural order so the next list-view sort starts from scratch.
         // This keeps m_CachedFilteredIndices always in natural order for tree view.
         m_CachedSortedIndices = m_CachedFilteredIndices;
+        m_SortPending = true; // In tree view the sort below is skipped; leaving it must still sort (#1174)
     }
 
     // Process count with state summary (filtered/total)
@@ -727,6 +728,8 @@ void ProcessesPanel::renderContent()
         }
         else
         {
+            // ImGui need not mark the sort specs dirty on the way back, so force the sort (#1174).
+            m_SortPending = true;
             spdlog::debug("ProcessesPanel: Switched to flat list view");
         }
     }
@@ -881,7 +884,8 @@ void ProcessesPanel::renderContent()
                 // Only re-sort when the sort spec changed (SpecsDirty) or when the filtered data
                 // changed (filterDirty). Clearing SpecsDirty prevents a redundant O(n log n) sort
                 // on every frame when neither the data nor the sort column has changed.
-                if (sortSpecs->SpecsCount > 0 && (sortSpecs->SpecsDirty || filterDirty))
+                // m_SortPending covers rows reset to natural order while in tree view (#1174).
+                if (sortSpecs->SpecsCount > 0 && (sortSpecs->SpecsDirty || filterDirty || m_SortPending))
                 {
                     const ImGuiTableColumnSortSpecs& spec = sortSpecs->Specs[0];
                     const bool ascending = (spec.SortDirection == ImGuiSortDirection_Ascending);
@@ -905,6 +909,7 @@ void ProcessesPanel::renderContent()
                         [&currentSnapshots, sortCol, ascending](size_t a, size_t b)
                         { return ProcessSortUtils::compareByColumn(currentSnapshots[a], currentSnapshots[b], sortCol, ascending); });
                     sortSpecs->SpecsDirty = false;
+                    m_SortPending = false;
                 }
             }
         } // End of sorting (disabled in tree view mode)

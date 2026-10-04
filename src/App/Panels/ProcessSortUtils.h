@@ -6,13 +6,10 @@
 namespace App::ProcessSortUtils
 {
 
-/// Pure comparison logic for sorting the process table, extracted from
-/// ProcessesPanel's ImGui table-sort handling so it can be unit-tested without an
-/// ImGui context. Mirrors the column -> field mapping ProcessesPanel uses when
-/// building the table (see ProcessColumnConfig.h for the column list).
-/// @return true if `a` should sort before `b` for the given column and direction.
+/// The column's own key comparison, with no tie-breaker: equal keys compare false both ways.
+/// @return true if `a`'s key for `column` sorts before `b`'s in the given direction.
 [[nodiscard]] inline bool
-compareByColumn(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot& b, ProcessColumn column, bool ascending)
+compareColumnKey(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot& b, ProcessColumn column, bool ascending)
 {
     auto compare = [ascending](const auto& lhs, const auto& rhs) -> bool
     {
@@ -99,6 +96,37 @@ compareByColumn(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot&
     default:
         return false;
     }
+}
+
+/// Pure comparison logic for sorting the process table, extracted from
+/// ProcessesPanel's ImGui table-sort handling so it can be unit-tested without an
+/// ImGui context. Mirrors the column -> field mapping ProcessesPanel uses when
+/// building the table (see ProcessColumnConfig.h for the column list).
+///
+/// Rows whose keys tie (most processes sit at 0.0% CPU) are ordered by PID, then by unique key,
+/// in the same direction, so the order is total: std::ranges::sort is not stable, and without a
+/// tie-breaker the tied rows reshuffled on every refresh (#1174).
+/// @return true if `a` should sort before `b` for the given column and direction.
+[[nodiscard]] inline bool
+compareByColumn(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot& b, ProcessColumn column, bool ascending)
+{
+    if (column >= ProcessColumn::Count)
+    {
+        return false; // Not a real column: no order at all, not even by PID.
+    }
+    if (compareColumnKey(a, b, column, ascending))
+    {
+        return true;
+    }
+    if (compareColumnKey(b, a, column, ascending))
+    {
+        return false;
+    }
+    if (a.pid != b.pid)
+    {
+        return ascending ? (a.pid < b.pid) : (b.pid < a.pid);
+    }
+    return ascending ? (a.uniqueKey < b.uniqueKey) : (b.uniqueKey < a.uniqueKey);
 }
 
 } // namespace App::ProcessSortUtils
