@@ -291,15 +291,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     const auto ifaceSentColor = UI::withAlpha(theme.scheme().chartNetTx, 0.7F);
     const auto ifaceRecvColor = UI::withAlpha(theme.scheme().chartNetRx, 0.7F);
 
-    // The bars first, then -- with an interface selected -- the machine totals drawn muted behind it.
-    // The totals have no bar, but their current values belong in the value strip above the chart
-    // like every other series it draws (#1193); they are the latest sample, as their tooltip rows show.
-    const auto latestRate = [](std::span<const float> data)
-    {
-        return UI::Format::formatBytesPerSecOrNA(data.empty() ? std::numeric_limits<double>::quiet_NaN()
-                                                              : static_cast<double>(data.back()));
-    };
-    const std::array netEntries{
+    const std::array netBars{
         NowBar{
             .valueText = UI::Format::formatBytesPerSec(smoothedSent),
             .label = sentBarLabel,
@@ -314,22 +306,36 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
             .value01 = UI::Widgets::normalizeToUnitInterval(smoothedRecv, netAxisUpper),
             .color = theme.scheme().chartNetRx,
         },
-        NowBar{
-            .valueText = usingInterfaceHistory ? latestRate(sentData) : std::string{},
-            .label = TOTAL_SENT_BEHIND_LABEL,
-            .tooltipText = {},
-            .value01 = 0.0,
-            .color = ifaceSentColor,
-        },
-        NowBar{
-            .valueText = usingInterfaceHistory ? latestRate(recvData) : std::string{},
-            .label = TOTAL_RECV_BEHIND_LABEL,
-            .tooltipText = {},
-            .value01 = 0.0,
-            .color = ifaceRecvColor,
-        },
     };
-    const std::span<const NowBar> netBars = std::span(netEntries).first(2);
+
+    // With an interface selected the chart also draws the machine totals -- muted behind the
+    // interface's lines, or alone when the interface has no history yet. They have no bar, but their
+    // current values belong in the value strip like every series the chart draws (#1193): the latest
+    // sample, as their tooltip rows show. The labels are views of constants and the values short
+    // rates, so building these allocates nothing.
+    std::array<UI::Widgets::ValueStripEntry, 2> totalEntries{};
+    std::span<const UI::Widgets::ValueStripEntry> stripExtras;
+    if (showingInterface)
+    {
+        const auto latestRate = [](std::span<const float> data)
+        {
+            return UI::Format::formatBytesPerSecOrNA(data.empty() ? std::numeric_limits<double>::quiet_NaN()
+                                                                  : static_cast<double>(data.back()));
+        };
+        totalEntries = {
+            UI::Widgets::ValueStripEntry{
+                .label = TOTAL_SENT_BEHIND_LABEL,
+                .value = latestRate(sentData),
+                .color = usingInterfaceHistory ? ifaceSentColor : theme.scheme().chartNetTx,
+            },
+            UI::Widgets::ValueStripEntry{
+                .label = TOTAL_RECV_BEHIND_LABEL,
+                .value = latestRate(recvData),
+                .color = usingInterfaceHistory ? ifaceRecvColor : theme.scheme().chartNetRx,
+            },
+        };
+        stripExtras = totalEntries;
+    }
     const bool interfaceHistoryUnavailable = showingInterface && !usingInterfaceHistory;
 
     std::string plotTitle = "Total";
@@ -463,7 +469,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         ImGui::Spacing();
     }
     constexpr size_t NETWORK_NOW_BAR_COLUMNS = 2; // Sent, Recv
-    UI::Widgets::renderNowBarValueStrip(std::span(netEntries).first(usingInterfaceHistory ? 4 : 2));
+    UI::Widgets::renderNowBarValueStrip(netBars, stripExtras);
     renderHistoryWithNowBars(
         "SystemNetHistoryLayout", plotHeight, plot, netBars, false, NETWORK_NOW_BAR_COLUMNS, false, UI::Widgets::NowBarValues::None);
     if (ctx.fill != nullptr)

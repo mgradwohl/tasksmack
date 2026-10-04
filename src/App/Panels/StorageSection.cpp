@@ -122,9 +122,10 @@ void renderDiskCell(const std::string& deviceName,
 
     const float cellContentTop = ImGui::GetCursorPosY();
     ImGui::TextColored(theme.scheme().textPrimary, "%.*s", static_cast<int>(deviceName.size()), deviceName.data());
-    // The disk's current rates, readable without hovering (#1193), on their own line under its name
-    // so every cell keeps the height the overhead below is measured from.
-    UI::Widgets::renderNowBarValueStrip(diskBars);
+    // The disk's current rates, readable without hovering (#1193), on their own line under its name.
+    // Exactly one line, never wrapped: the overhead below is measured once and the grid budgets one
+    // strip line per cell, so a wrapped row would push the chart past the cell's bottom.
+    UI::Widgets::renderNowBarValueStrip(diskBars, {}, false);
     if (!cachedOverhead.has_value())
     {
         // renderHistoryWithNowBars wraps the chart+bars in its own table, whose CellPadding.y

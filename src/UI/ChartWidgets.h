@@ -1525,29 +1525,81 @@ enum class NowBarValues : std::uint8_t
     None,  ///< No strip: grid cells, which show the value in their own label and have a fixed height
 };
 
-/// Each bar's current value, readable without hovering (#1193): a swatch in the bar's colour, then
-/// the same text its tooltip shows -- its tooltipText when it has one (richer, e.g. bytes beside a
-/// percent), otherwise "label: valueText", the tooltip's own fallback -- with the leading "label:" in
-/// muted text, wrapping to another line when the row is full. Both strings are already built for the
-/// frame, so this adds no allocation. The swatch keeps the colour's alpha, so a muted series (drawn
-/// translucent) reads as muted here too.
-inline void renderNowBarValueStrip(std::span<const NowBar> bars)
+/// A value strip entry for a series with no NowBar, e.g. the network totals drawn behind a selected
+/// interface. The label is a view, typically of a constant; `value` holds a short formatted rate or
+/// percent, which fits std::string's small-buffer storage, so building one allocates nothing.
+struct ValueStripEntry
+{
+    std::string_view label;
+    std::string value;
+    ImVec4 color;
+};
+
+namespace detail
+{
+/// Lays out one value strip entry: a swatch in `color` (alpha kept, so a translucent series reads as
+/// muted), then `head` in muted text -- with `colon` appended when `head` does not already end in one
+/// -- and `tail` in primary text. With `wrap`, an entry that does not fit the row starts a new line;
+/// without it the row runs on and the container clips it.
+inline void drawValueStripEntry(
+    std::string_view head, std::string_view tail, const ImVec4& color, bool first, bool wrap, float rowRight, const ImVec4& muted)
 {
     const ImGuiStyle& style = ImGui::GetStyle();
     const float lineHeight = ImGui::GetTextLineHeight();
     const float side = std::floor(lineHeight * TOOLTIP_SWATCH_LINE_FRACTION);
     const float inset = std::floor((lineHeight - side) * 0.5F);
+    const bool addColon = !head.empty() && !head.ends_with(':');
+    const float headWidth = head.empty() ? 0.0F
+                                         : ImGui::CalcTextSize(head.data(), head.data() + head.size()).x +
+                                               (addColon ? ImGui::CalcTextSize(":").x : 0.0F) + style.ItemInnerSpacing.x;
+    const float entryWidth = side + style.ItemInnerSpacing.x + headWidth + ImGui::CalcTextSize(tail.data(), tail.data() + tail.size()).x;
+    if (!first)
+    {
+        ImGui::SameLine(0.0F, style.ItemSpacing.x * 2.0F);
+        if (wrap && ImGui::GetCursorPosX() + entryWidth > rowRight)
+        {
+            ImGui::NewLine();
+        }
+    }
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    ImGui::GetWindowDrawList()->AddRectFilled(
+        ImVec2(at.x, at.y + inset), ImVec2(at.x + side, at.y + inset + side), ImGui::ColorConvertFloat4ToU32(color));
+    ImGui::Dummy(ImVec2(side, lineHeight));
+    if (!head.empty())
+    {
+        ImGui::SameLine(0.0F, style.ItemInnerSpacing.x);
+        ImGui::PushStyleColor(ImGuiCol_Text, muted);
+        ImGui::TextUnformatted(head.data(), head.data() + head.size());
+        if (addColon)
+        {
+            ImGui::SameLine(0.0F, 0.0F);
+            ImGui::TextUnformatted(":");
+        }
+        ImGui::PopStyleColor();
+    }
+    ImGui::SameLine(0.0F, style.ItemInnerSpacing.x);
+    ImGui::TextUnformatted(tail.data(), tail.data() + tail.size());
+}
+} // namespace detail
+
+/// Each series' current value, readable without hovering (#1193): per bar, a swatch in the bar's
+/// colour and the same text its tooltip shows -- its tooltipText when it has one (richer, e.g. bytes
+/// beside a percent), otherwise the tooltip's own fallback "label: valueText" -- with the leading
+/// "label:" muted; then any `extras`, series the chart draws without a bar. Bar strings are already
+/// built for the frame, so the bars add no allocation. `wrap` = false keeps the strip on one line,
+/// for containers whose height budgets exactly one (grid cells).
+inline void renderNowBarValueStrip(std::span<const NowBar> bars, std::span<const ValueStripEntry> extras = {}, bool wrap = true)
+{
     const float rowRight = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
     const ImVec4 muted = UI::Theme::get().scheme().textMuted;
-    for (size_t i = 0; i < bars.size(); ++i)
+    bool first = true;
+    for (const NowBar& bar : bars)
     {
-        const NowBar& bar = bars[i];
-        // Split the entry into a muted "label:" and the rest. A tooltipText that starts with the
-        // bar's label and a colon ("Handles: 266,257") splits the same way as the fallback.
-        std::string_view head;
-        std::string_view tail;
+        std::string_view head = bar.label;
+        std::string_view tail = bar.valueText;
         if (!bar.tooltipText.empty())
         {
+            // A tooltipText that starts with "label:" ("Handles: 266,257") splits like the fallback.
             const std::string_view tip = bar.tooltipText;
             const bool labelled = !bar.label.empty() && tip.starts_with(bar.label) && tip.substr(bar.label.size()).starts_with(':');
             head = labelled ? tip.substr(0, bar.label.size() + 1) : std::string_view{};
@@ -1557,42 +1609,13 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars)
                 tail.remove_prefix(1);
             }
         }
-        else
-        {
-            head = bar.label;
-            tail = bar.valueText;
-        }
-        const float colonWidth = (bar.tooltipText.empty() && !head.empty()) ? ImGui::CalcTextSize(":").x : 0.0F;
-        const float headWidth =
-            head.empty() ? 0.0F : ImGui::CalcTextSize(head.data(), head.data() + head.size()).x + colonWidth + style.ItemInnerSpacing.x;
-        const float entryWidth =
-            side + style.ItemInnerSpacing.x + headWidth + ImGui::CalcTextSize(tail.data(), tail.data() + tail.size()).x;
-        if (i > 0)
-        {
-            ImGui::SameLine(0.0F, style.ItemSpacing.x * 2.0F);
-            if (ImGui::GetCursorPosX() + entryWidth > rowRight)
-            {
-                ImGui::NewLine();
-            }
-        }
-        const ImVec2 at = ImGui::GetCursorScreenPos();
-        ImGui::GetWindowDrawList()->AddRectFilled(
-            ImVec2(at.x, at.y + inset), ImVec2(at.x + side, at.y + inset + side), ImGui::ColorConvertFloat4ToU32(bar.color));
-        ImGui::Dummy(ImVec2(side, lineHeight));
-        if (!head.empty())
-        {
-            ImGui::SameLine(0.0F, style.ItemInnerSpacing.x);
-            ImGui::PushStyleColor(ImGuiCol_Text, muted);
-            ImGui::TextUnformatted(head.data(), head.data() + head.size());
-            if (bar.tooltipText.empty())
-            {
-                ImGui::SameLine(0.0F, 0.0F);
-                ImGui::TextUnformatted(":");
-            }
-            ImGui::PopStyleColor();
-        }
-        ImGui::SameLine(0.0F, style.ItemInnerSpacing.x);
-        ImGui::TextUnformatted(tail.data(), tail.data() + tail.size());
+        detail::drawValueStripEntry(head, tail, bar.color, first, wrap, rowRight, muted);
+        first = false;
+    }
+    for (const ValueStripEntry& entry : extras)
+    {
+        detail::drawValueStripEntry(entry.label, entry.value, entry.color, first, wrap, rowRight, muted);
+        first = false;
     }
 }
 
