@@ -13,26 +13,26 @@
 namespace Core::AnimationRequest
 {
 
-namespace detail
+namespace Detail
 {
 [[nodiscard]] inline auto flag() noexcept -> bool&
 {
     static bool requested = false;
     return requested;
 }
-} // namespace detail
+} // namespace Detail
 
 /// Ask for the next frame at the animation rate: call while drawing something that moves.
 inline void request() noexcept
 {
-    detail::flag() = true;
+    Detail::flag() = true;
 }
 
 /// Whether anything asked since the last call, clearing the request.
 [[nodiscard]] inline auto consume() noexcept -> bool
 {
-    const bool requested = detail::flag();
-    detail::flag() = false;
+    const bool requested = Detail::flag();
+    Detail::flag() = false;
     return requested;
 }
 

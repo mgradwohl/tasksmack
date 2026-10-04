@@ -38,7 +38,7 @@ Checks: >
 # - readability-function-cognitive-complexity + readability-identifier-length: too noisy for panel/render/math code.
 # - readability-use-concise-preprocessor-directives: project standard prefers #ifdef/#ifndef.
 
-WarningsAsErrors: ''
+WarningsAsErrors: '*'
 SystemHeaders: false
 
 # Only report warnings for headers directly under src/ or tests/ (not in build/).
