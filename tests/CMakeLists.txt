@@ -87,6 +87,7 @@ set(COMMON_TEST_SOURCES
     UI/test_RateAxis.cpp
     UI/test_BundledThemes.cpp
     UI/test_ColorContrast.cpp
+    UI/test_ColorDifference.cpp
     UI/test_StyleScale.cpp
     UI/test_DialogMetrics.cpp
     UI/test_LineLayout.cpp

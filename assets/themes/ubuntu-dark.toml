@@ -21,7 +21,7 @@ colors = [
     "#E95420",  # Ubuntu Orange
     "#19B6EE",  # Ubuntu Blue
     "#77DD77",  # Light Green
-    "#A65AC4",  # Purple
+    "#9A66AE",  # Purple
     "#ED7014",  # Dark Orange
     "#3584E4",  # Blue
     "#FFBE00",  # Yellow
@@ -47,7 +47,7 @@ text_disabled = "#C0C0C0"  # Brighter gray for disabled text
 text_muted = "#CCCCCC"     # Much brighter for chart axis labels
 text_error = "#FF655E"     # Light Red - error messages
 text_warning = "#FFA348"   # Light Orange - warning messages
-text_success = "#33D17A"   # Light Green - success messages
+text_success = "#51D384"   # Light Green - success messages
 text_info = "#62A0EA"      # Light Blue - informational text
 
 # =============================================================================
@@ -71,13 +71,13 @@ cpu = "#3584E4"       # Blue - CPU usage line
 memory = "#33D17A"    # Light Green - memory usage line
 io = "#ED333B"        # Light Red - I/O read usage line
 io_write = "#26C6DA"        # Cyan - I/O write usage line
-net_tx = "#E95420"          # Ubuntu Orange - Network transmit (sent) line
+net_tx = "#ED7014"          # Ubuntu Orange - Network transmit (sent) line
 net_rx = "#9A9CFF"          # Light Purple - Network receive line
 cpu_fill = "#3584E44D"       # Blue with 30% alpha - CPU fill
 memory_fill = "#33D17A4D"    # Light Green with 30% alpha - memory fill
 io_fill = "#ED333B4D"        # Light Red with 30% alpha - I/O read fill
 io_write_fill = "#26C6DA4D"   # Cyan with 30% alpha - I/O write fill
-net_tx_fill = "#E954204D"    # Ubuntu Orange with 30% alpha - Network TX fill
+net_tx_fill = "#ED70144D"    # Ubuntu Orange with 30% alpha - Network TX fill
 net_rx_fill = "#9A9CFF4D"    # Light Purple with 30% alpha - Network RX fill
 peak_line = "#F5C211B3"      # Gold with 70% alpha - peak reference line
 
@@ -88,8 +88,8 @@ peak_line = "#F5C211B3"      # Gold with 70% alpha - peak reference line
 [charts.gpu]
 utilization = "#A958C4"           # Purple - GPU utilization line
 utilization_fill = "#A958C44D"    # Purple with 30% alpha - GPU fill
-memory = "#19B6EE"                # Ubuntu Blue - GPU memory line (distinct from io Red)
-memory_fill = "#19B6EE4D"         # Ubuntu Blue with 30% alpha - GPU memory fill
+memory = "#33D17A"                # Green - GPU memory line (#1197) (distinct from io Red)
+memory_fill = "#33D17A4D"         # Green with 30% alpha - GPU memory fill
 temperature = "#F5C211"           # Gold - GPU temperature line
 power = "#33D17A"                 # Green - GPU power draw line
 encoder = "#33C7DE"               # Teal - GPU encoder utilization
@@ -116,7 +116,7 @@ idle_fill = "#3D3D3D33"      # Dark gray with 20% alpha - idle fill
 high   = "#E01B24"     # Ubuntu Red (matches progress.high)
 normal = "#33D17A"     # Ubuntu Green (matches progress.low)
 low    = "#9A9CFF"     # Light Purple
-badge_text_color = "#FFFFFF"  # White - readable on all priority badge colors
+badge_text_color = "#FFFFFF"  # Preferred badge text; a fill it is too faint on gets the other text colour (#1130)
 
 [buttons.close]
 hovered = "#CC1A1A"     # Dark red hover
