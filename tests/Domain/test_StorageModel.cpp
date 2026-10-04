@@ -597,13 +597,15 @@ TEST(StorageModelTest, PerDiskHistoryRatesNonNegative)
 
     const auto history = model.perDiskHistory();
     ASSERT_EQ(history.size(), 1U);
+    // Each rate is either a gap (no measured rate yet: the seed sample and a too-short seed
+    // transition, #1102) or a real, non-negative rate -- never negative.
     for (const double rate : history[0].readBytesPerSec)
     {
-        EXPECT_GE(rate, 0.0);
+        EXPECT_TRUE(std::isnan(rate) || rate >= 0.0) << rate;
     }
     for (const double rate : history[0].writeBytesPerSec)
     {
-        EXPECT_GE(rate, 0.0);
+        EXPECT_TRUE(std::isnan(rate) || rate >= 0.0) << rate;
     }
 }
 
@@ -798,8 +800,46 @@ TEST(StorageModelTest, PerDiskHistoryNewDiskAppearsBackfillsPlaceholders)
     // Sample 1 predates the disk: a NaN gap, not a false 0 (#1015).
     EXPECT_TRUE(std::isnan(it->readBytesPerSec.front()));
     EXPECT_TRUE(std::isnan(it->writeBytesPerSec.front()));
-    // Sample 2 is its real (finite, non-negative) rate.
-    EXPECT_GE(it->readBytesPerSec.back(), 0.0);
+    // Sample 2 is its first reading: no rate can be measured yet, so it is a gap too (#1102).
+    EXPECT_TRUE(std::isnan(it->readBytesPerSec.back()));
+}
+
+TEST(StorageModelTest, SeedSampleIsAGapNotAFalseZero)
+{
+    // #1102: the seed sample and an implausibly short seed transition have no measured rate; their
+    // history -- per disk and total -- shows a gap, and the first real interval shows the real rate.
+    auto probe = std::make_unique<Mocks::MockDiskProbe>();
+    auto* mockProbe = probe.get();
+    Platform::SystemDiskCounters counters;
+    Platform::DiskCounters sda;
+    sda.deviceName = "sda";
+    sda.sectorSize = 512;
+    sda.readSectors = 1000;
+    counters.disks.push_back(sda);
+    mockProbe->setNextCounters(counters);
+
+    Domain::StorageModel model(std::move(probe));
+    const auto start = std::chrono::steady_clock::now();
+    model.sampleAt(start); // seed
+    counters.disks[0].readSectors = 1100;
+    mockProbe->setNextCounters(counters);
+    model.sampleAt(start + std::chrono::milliseconds(5)); // seed transition, too short
+    counters.disks[0].readSectors = 3100;
+    mockProbe->setNextCounters(counters);
+    model.sampleAt(start + std::chrono::milliseconds(1005)); // a real second
+
+    const auto history = model.perDiskHistory();
+    ASSERT_EQ(history.size(), 1U);
+    ASSERT_EQ(history[0].readBytesPerSec.size(), 3U);
+    EXPECT_TRUE(std::isnan(history[0].readBytesPerSec[0]));
+    EXPECT_TRUE(std::isnan(history[0].readBytesPerSec[1]));
+    EXPECT_DOUBLE_EQ(history[0].readBytesPerSec[2], 2000.0 * 512.0);
+
+    const auto totals = model.totalReadHistory();
+    ASSERT_EQ(totals.size(), 3U);
+    EXPECT_TRUE(std::isnan(totals[0]));
+    EXPECT_TRUE(std::isnan(totals[1]));
+    EXPECT_DOUBLE_EQ(totals[2], 2000.0 * 512.0);
 }
 
 // =============================================================================

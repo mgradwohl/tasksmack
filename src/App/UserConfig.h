@@ -4,9 +4,12 @@
 #include "Domain/SamplingConfig.h"
 #include "UI/Theme.h"
 
+#include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace App
 {
@@ -113,7 +116,11 @@ class UserConfig
     /// Load settings from config file (call on startup)
     void load();
 
-    /// Save settings to config file.
+    /// Save settings to the config file by replacing it with a new file, so a crash mid-write can't
+    /// leave it truncated. Only the settings TaskSmack changed since it last read or wrote the file
+    /// are written (UserConfigHelpers::mergeOwnedKeys): keys it doesn't own, and edits made to the
+    /// file while TaskSmack runs, are kept. A file that exists but can't be read or parsed is left
+    /// alone and nothing is saved.
     /// Resets the loaded flag so a subsequent load() call will re-read from disk.
     void save();
 
@@ -150,7 +157,16 @@ class UserConfig
     {
         m_ConfigPath = path;
         m_Settings = UserSettings{};
+        m_Synced = UserSettings{};
         m_IsLoaded = false;
+        m_TempNameSource = nullptr;
+    }
+
+    /// Replaces the random number that names save()'s staging file, so a test can make every
+    /// candidate name collide. Reset by resetConfigPathForTesting().
+    void setTempNameSourceForTesting(std::function<std::uint32_t()> source)
+    {
+        m_TempNameSource = std::move(source);
     }
 
   private:
@@ -160,6 +176,12 @@ class UserConfig
     std::filesystem::path m_ConfigPath;
     UserSettings m_Settings;
     bool m_IsLoaded = false;
+
+    // The settings as TaskSmack last read them from, or wrote them to, the file (the merge base for
+    // save(), #1122). With no readable file at startup it is the settings TaskSmack started with,
+    // so a file created or repaired before the first save only gets what TaskSmack changed.
+    UserSettings m_Synced;
+    std::function<std::uint32_t()> m_TempNameSource; // Testing only; empty means std::random_device
 
     static auto getConfigDirectory() -> std::filesystem::path;
 };

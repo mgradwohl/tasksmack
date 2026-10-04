@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -254,7 +255,23 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
         }
     }
 
-    renderHistoryWithNowBars("MemorySwapHistoryLayout", ctx.plotHeight, memoryPlot, memoryBars, false, static_cast<size_t>(nowBarColumns));
+    // Peak Used is a line with a tooltip row but no bar; list it in the value strip too (#1193).
+    const std::array peakEntry{UI::Widgets::ValueStripEntry{
+        .label = PEAK_LABEL,
+        .value = UI::Format::percentCompact(peakMemPercent),
+        .color = theme.scheme().chartPeakLine,
+    }};
+    const std::span<const UI::Widgets::ValueStripEntry> stripExtras =
+        (peakMemPercent > 0.0) ? std::span<const UI::Widgets::ValueStripEntry>(peakEntry) : std::span<const UI::Widgets::ValueStripEntry>{};
+    renderHistoryWithNowBars("MemorySwapHistoryLayout",
+                             ctx.plotHeight,
+                             memoryPlot,
+                             memoryBars,
+                             false,
+                             static_cast<size_t>(nowBarColumns),
+                             false,
+                             UI::Widgets::NowBarValues::Strip,
+                             stripExtras);
 }
 
 } // namespace App::MemorySection

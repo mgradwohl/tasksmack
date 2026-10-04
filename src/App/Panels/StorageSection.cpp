@@ -44,6 +44,7 @@ using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::normalizeToUnitInterval;
 using UI::Widgets::NowBar;
+using UI::Widgets::NowBarValues;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderChartGrid;
 using UI::Widgets::renderHistoryWithNowBars;
@@ -114,11 +115,18 @@ void renderDiskCell(const std::string& deviceName,
                       .value01 = normalizeToUnitInterval(current, diskAxisUpper),
                       .color = color};
     };
-    const NowBar readBar = makeBar(READ_LABEL, currentRead, theme.scheme().chartIo);
-    const NowBar writeBar = makeBar(WRITE_LABEL, currentWrite, theme.scheme().chartIoWrite);
+    const std::array diskBars{
+        makeBar(READ_LABEL, currentRead, theme.scheme().chartIo),
+        makeBar(WRITE_LABEL, currentWrite, theme.scheme().chartIoWrite),
+    };
 
     const float cellContentTop = ImGui::GetCursorPosY();
     ImGui::TextColored(theme.scheme().textPrimary, "%.*s", static_cast<int>(deviceName.size()), deviceName.data());
+    // The disk's current rates, readable without hovering (#1193), on their own line under its name.
+    // Compact: exactly one line of "Read: 1.2 MB/s" / "Read: N/A", never wrapped -- the overhead below
+    // is measured once and the grid budgets one strip line per cell, and the longer "not reported
+    // this sample" tooltip text would not fit a minimum-width cell. Hovering a bar still shows it.
+    UI::Widgets::renderNowBarValueStrip(diskBars, {}, UI::Widgets::ValueStripLayout::Compact);
     if (!cachedOverhead.has_value())
     {
         // renderHistoryWithNowBars wraps the chart+bars in its own table, whose CellPadding.y
@@ -193,7 +201,8 @@ void renderDiskCell(const std::string& deviceName,
     // null-terminated C-string at zero extra cost -- reusing it as the RenderMetrics/table id
     // keeps per-disk RenderMetrics entries from collapsing into one (#823 review), without
     // reintroducing the per-frame heap allocation a formatted id had.
-    renderHistoryWithNowBars(deviceName.c_str(), plotHeight, diskPlotFn, {readBar, writeBar}, false, STORAGE_NOW_BAR_COLUMNS);
+    renderHistoryWithNowBars(
+        deviceName.c_str(), plotHeight, diskPlotFn, diskBars, false, STORAGE_NOW_BAR_COLUMNS, false, NowBarValues::None);
 }
 
 } // namespace
@@ -280,8 +289,9 @@ void renderStorageSection(RenderContext& ctx)
         // cellHeight that only fits a plot smaller than minDiskPlotHeight() once the real overhead is
         // subtracted, which then clips invisibly against the cell's NoScrollbar instead of the
         // grid falling back to more rows/scrolling (#823 review).
-        const float approxLabelOverhead = (ImGui::GetStyle().WindowPadding.y * 2.0F) + ImGui::GetTextLineHeight() +
-                                          ImGui::GetStyle().ItemSpacing.y + (ImGui::GetStyle().CellPadding.y * 2.0F);
+        // Two text lines: the disk's name and, under it, its Read/Write value strip (#1193).
+        const float approxLabelOverhead = (ImGui::GetStyle().WindowPadding.y * 2.0F) + (ImGui::GetTextLineHeight() * 2.0F) +
+                                          (ImGui::GetStyle().ItemSpacing.y * 2.0F) + (ImGui::GetStyle().CellPadding.y * 2.0F);
 
         // Measured once (by renderDiskCell, on the first disk) and reused for the rest -- see
         // renderDiskCell's doc comment. Cached across frames too, not just across disks within
@@ -450,10 +460,11 @@ void renderStorageSection(RenderContext& ctx)
                             const std::array rows{
                                 UI::Widgets::TooltipRow{.label = READ_LABEL,
                                                         .color = theme.scheme().chartIo,
-                                                        .value = UI::Format::formatBytesPerSec(static_cast<double>(readData[*idxVal]))},
+                                                        .value = UI::Format::formatBytesPerSecOrNA(static_cast<double>(readData[*idxVal]))},
                                 UI::Widgets::TooltipRow{.label = WRITE_LABEL,
                                                         .color = theme.scheme().chartIoWrite,
-                                                        .value = UI::Format::formatBytesPerSec(static_cast<double>(writeData[*idxVal]))},
+                                                        .value =
+                                                            UI::Format::formatBytesPerSecOrNA(static_cast<double>(writeData[*idxVal]))},
                             };
                             UI::Widgets::renderHistoryTooltip(aggregateTimes[*idxVal], rows);
                         }

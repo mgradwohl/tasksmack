@@ -444,10 +444,11 @@ Application::~Application()
 
 void Application::detachAllLayers()
 {
-    // Detach layers in reverse order (topmost first)
+    // Detach layers in reverse order (topmost first). Guarded like every other per-layer callback
+    // (#778): a layer that throws while detaching must not stop the rest being torn down (#1124).
     for (auto& layer : std::views::reverse(m_LayerStack))
     {
-        layer->onDetach();
+        guardLayerCall(layer, "onDetach", [&] { layer->onDetach(); });
     }
     m_LayerStack.clear();
 }
