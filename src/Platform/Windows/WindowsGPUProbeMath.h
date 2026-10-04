@@ -143,7 +143,8 @@ inline void assignSensorCapabilities(std::vector<GPUInfo>& dxgiGPUs,
 ///
 /// DXGI's QueryVideoMemoryInfo reports the *calling process's* usage, so the GPU tab used to show
 /// TaskSmack's own few MB as the GPU's memory (#1029). An integrated GPU's memory is the shared
-/// segment; a discrete GPU's is its dedicated VRAM.
+/// segment; a discrete GPU's is its dedicated VRAM. A GPU this fills in is marked available; one
+/// it can't fill (no LUID mapping, no PDH entry, the segment unread) is marked unread (#1111).
 inline void assignPDHMemoryToDXGICounters(std::vector<GPUCounters>& dxgiCounters,
                                           const std::unordered_map<std::string, AdapterMemoryUsage>& memoryByLuidId,
                                           const std::unordered_map<std::string, std::string>& dxgiIdToLuidId,
@@ -156,6 +157,9 @@ inline void assignPDHMemoryToDXGICounters(std::vector<GPUCounters>& dxgiCounters
         {
             continue;
         }
+        // DXGI's used bytes are a placeholder 0: unread until a PDH reading is assigned below, so a
+        // PDH warm-up, failed collect or missing adapter entry is a gap, not 0 bytes (#1111).
+        counter.memoryAvailable = false;
         const auto luidIt = dxgiIdToLuidId.find(counter.gpuId);
         if (luidIt == dxgiIdToLuidId.end())
         {
@@ -308,9 +312,8 @@ mergeNVMLIntoDXGICounters(std::vector<GPUCounters>& dxgiCounters,
 /// Pure assignment logic extracted from WindowsGPUProbe::mergePDHAdapterUtilization(): for each
 /// DXGI counter not already covered by NVML, looks up its LUID-based id in @p dxgiIdToLuidId and,
 /// if PDH reported a utilization for that LUID in @p utilizationByGpuId, assigns it (clamped to
-/// [0, 100]). Counters with no
-/// LUID mapping or no matching PDH data are left untouched (utilization stays whatever the
-/// caller initialized it to, typically 0).
+/// [0, 100]) and marks it available. Counters with no LUID mapping or no matching PDH data keep
+/// their utilization value but are marked unread, so they publish as a gap (#1111).
 inline void assignPDHUtilizationToDXGICounters(std::vector<GPUCounters>& dxgiCounters,
                                                const std::unordered_map<std::string, double>& utilizationByGpuId,
                                                const std::unordered_map<std::string, std::string>& dxgiIdToLuidId,
@@ -322,6 +325,9 @@ inline void assignPDHUtilizationToDXGICounters(std::vector<GPUCounters>& dxgiCou
         {
             continue; // Already filled by NVML
         }
+        // DXGI has no utilization of its own: unread until a PDH reading is assigned below, so a PDH
+        // warm-up, failed collect or missing adapter entry is a gap, not 0% (#1111).
+        dxgiCounter.utilizationAvailable = false;
 
         const auto mapIt = dxgiIdToLuidId.find(dxgiCounter.gpuId);
         if (mapIt == dxgiIdToLuidId.end())
@@ -335,7 +341,7 @@ inline void assignPDHUtilizationToDXGICounters(std::vector<GPUCounters>& dxgiCou
             dxgiCounter.utilizationPercent = std::clamp(utilIt->second, 0.0, 100.0);
             dxgiCounter.utilizationAvailable = true; // A real reading, even after a failed NVML read (#1111)
         }
-        // If no PDH data found for this GPU's LUID, utilization (and its availability) stays untouched
+        // If no PDH data found for this GPU's LUID, utilization stays unread
     }
 }
 

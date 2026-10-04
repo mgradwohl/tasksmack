@@ -432,8 +432,9 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
         }
 
         // GPU utilization: Not directly available via sysfs for Intel
-        // Would require reading i915_gem_objects debugfs or using IGT tools
-        // Leave at 0 for now (future enhancement)
+        // Would require reading i915_gem_objects debugfs or using IGT tools (future enhancement, #1115).
+        // Never read, so it publishes as a gap / N/A rather than a real-looking 0% (#1111).
+        counter.utilizationAvailable = false;
 
         counters.push_back(counter);
     }

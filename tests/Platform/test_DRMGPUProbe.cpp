@@ -553,6 +553,7 @@ TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_NoSysfsFiles_ReturnsZeros)
     // (capabilities() advertises temperature for every card) (#1111).
     EXPECT_FALSE(counters[0].gpuClockAvailable);
     EXPECT_FALSE(counters[0].temperatureAvailable);
+    EXPECT_FALSE(counters[0].utilizationAvailable); // DRM never reads utilization (#1115)
 }
 
 TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_HwmonTemperature_IsRead)

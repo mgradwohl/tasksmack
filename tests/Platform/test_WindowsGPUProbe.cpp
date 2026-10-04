@@ -285,6 +285,7 @@ TEST(AssignPDHUtilizationToDXGICountersTest, SkipsGPUsAlreadySourcedFromNVML)
     assignPDHUtilizationToDXGICounters(dxgi, byLuid, idToLuid, {"GPU0"});
 
     EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 7.0) << "NVML-sourced GPUs must not be overwritten by PDH";
+    EXPECT_TRUE(dxgi[0].utilizationAvailable);
 }
 
 TEST(AssignPDHUtilizationToDXGICountersTest, LeavesUtilizationUntouchedWhenNoLuidMapping)
@@ -297,6 +298,7 @@ TEST(AssignPDHUtilizationToDXGICountersTest, LeavesUtilizationUntouchedWhenNoLui
     assignPDHUtilizationToDXGICounters(dxgi, {{"GPU_0xLUID", 50.0}}, {}, {});
 
     EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 3.0);
+    EXPECT_FALSE(dxgi[0].utilizationAvailable) << "no PDH reading: a gap, not a real-looking value (#1111)";
 }
 
 TEST(AssignPDHUtilizationToDXGICountersTest, LeavesUtilizationUntouchedWhenLuidHasNoPDHData)
@@ -311,6 +313,7 @@ TEST(AssignPDHUtilizationToDXGICountersTest, LeavesUtilizationUntouchedWhenLuidH
     assignPDHUtilizationToDXGICounters(dxgi, {{"GPU_0xOther", 50.0}}, idToLuid, {});
 
     EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 3.0);
+    EXPECT_FALSE(dxgi[0].utilizationAvailable) << "no PDH reading: a gap, not a real-looking value (#1111)";
 }
 
 // ==========================================================================
@@ -531,6 +534,9 @@ TEST(AssignPDHMemoryToDXGICountersTest, LeavesNVMLSourcedAndUnmappedGPUsAlone)
 
     EXPECT_EQ(dxgi[0].memoryUsedBytes, 42ULL);
     EXPECT_EQ(dxgi[1].memoryUsedBytes, 0ULL);
+    // #1111: NVML's memory stays available; the unmapped GPU has no reading, so it's a gap, not 0 bytes.
+    EXPECT_TRUE(dxgi[0].memoryAvailable);
+    EXPECT_FALSE(dxgi[1].memoryAvailable);
 }
 
 TEST(WindowsGPUProbeTest, ConstructionDoesNotThrow)
