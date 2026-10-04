@@ -966,6 +966,29 @@ TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_RuntimeSuspendedCard_IsNotRead)
     EXPECT_EQ(counters[0].gpuClockMHz, 300U);
 }
 
+TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_SuspendedXeCardKeepsItsVramCapacity)
+{
+    // #1272 review: a sleeping xe dGPU isn't read, but its VRAM capacity is still known; reporting 0
+    // would drop the header's capacity label and the Overview VRAM total.
+    const auto pciDir = makeCardAt("card1", "0000:03:00.0", "xe");
+    std::filesystem::create_directories(pciDir / "tile0");
+    writeFile(pciDir / "tile0" / "physical_vram_size_bytes", "17179869184"); // 16 GiB
+    std::filesystem::create_directories(pciDir / "power");
+    writeFile(pciDir / "power" / "runtime_status", "active");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_EQ(counters[0].memoryTotalBytes, 17179869184ULL);
+
+    writeFile(pciDir / "power" / "runtime_status", "suspended");
+    counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_TRUE(counters[0].suspended);
+    EXPECT_EQ(counters[0].memoryTotalBytes, 17179869184ULL);
+    EXPECT_FALSE(counters[0].memoryAvailable); // used bytes aren't read while it sleeps
+}
+
 } // namespace
 } // namespace Platform
 

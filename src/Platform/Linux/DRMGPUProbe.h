@@ -49,6 +49,9 @@ class DRMGPUProbe : public IGPUProbe
         bool isRenderOnly{false}; // renderD* nodes are compute-only
         std::string driver;       // i915, xe, amdgpu, nouveau, etc.
         std::string gpuId;        // Unique ID for tracking
+        // VRAM capacity from the last read while awake, reported while the card is runtime-suspended
+        // (and so not read), as NVML/ROCm do: capacity doesn't change when a card sleeps (#1117).
+        uint64_t lastMemoryTotalBytes{0};
     };
 
     bool initialize();

@@ -439,7 +439,7 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
 {
     std::vector<GPUCounters> counters;
 
-    for (const auto& card : m_Cards)
+    for (auto& card : m_Cards)
     {
         GPUCounters counter{};
         counter.gpuId = card.gpuId;
@@ -454,6 +454,7 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
             counter.powerAvailable = false;
             counter.gpuClockAvailable = false;
             counter.memoryAvailable = false;
+            counter.memoryTotalBytes = card.lastMemoryTotalBytes; // Known capacity, not re-read
             counters.push_back(counter);
             continue;
         }
@@ -499,6 +500,7 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
         // size) is still passed on, so a discrete card's VRAM size is known.
         const std::string vramUsedStr = readSysfsString(card.devicePath + "/mem_info_vram_used");
         counter.memoryTotalBytes = readVramTotal(card);
+        card.lastMemoryTotalBytes = counter.memoryTotalBytes;
         if (!vramUsedStr.empty() && counter.memoryTotalBytes > 0)
         {
             counter.memoryUsedBytes = readSysfsUint64(card.devicePath + "/mem_info_vram_used");
