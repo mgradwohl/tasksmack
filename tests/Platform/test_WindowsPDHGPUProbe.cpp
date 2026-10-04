@@ -552,10 +552,41 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, WarmUpCollectLeavesAdapterUtilizationUnre
 
     static_cast<void>(probe.readProcessGPUCounters());
     EXPECT_TRUE(probe.adapterUtilization().empty());
+    EXPECT_FALSE(probe.adapterUtilizationCurrent());
 
     // The next collect has rates.
     static_cast<void>(probe.readProcessGPUCounters());
     EXPECT_DOUBLE_EQ(probe.adapterUtilization().at("GPU_0x0_0x1"), 5.0);
+    EXPECT_TRUE(probe.adapterUtilizationCurrent());
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, ASuccessfulCollectWithNoEngineActivityIsCurrentNotUnread)
+{
+    // PDH has GPU Engine instances only for processes using an adapter. A successful collect with
+    // none is an idle GPU: current (so it publishes 0%), not unread like a warm-up (#1166).
+    auto impl = makeInjectedImpl(PDHGPUProbe::Role::Adapter);
+    impl->warmedUp = true;
+    m_scenario->items[impl->utilizationCounter] = {};
+    PDHGPUProbe probe(std::move(impl));
+
+    static_cast<void>(probe.readProcessGPUCounters());
+    EXPECT_TRUE(probe.adapterUtilization().empty());
+    EXPECT_TRUE(probe.adapterUtilizationCurrent());
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, WarmUpDoesNotMakeAnOldProcessCacheLookFresh)
+{
+    // The warm-up after a counter re-add used to return the cached per-process results and stamp
+    // them as just read, so results from long before stood in for another staleness window.
+    auto impl = makeInjectedImpl(PDHGPUProbe::Role::Process);
+    impl->warmedUp = false;
+    ProcessGPUCounters old;
+    old.pid = 4242;
+    impl->lastValidResults = {old};
+    impl->lastValidTimestamp = std::chrono::steady_clock::now() - std::chrono::minutes{5};
+    PDHGPUProbe probe(std::move(impl));
+
+    EXPECT_TRUE(probe.readProcessGPUCounters().empty());
 }
 
 TEST_F(WindowsPDHGPUProbeInjectedTest, AFailedCollectClearsTheAdapterReadingsEvenWithAFreshProcessCache)

@@ -411,12 +411,15 @@ mergeNVMLIntoDXGICounters(std::vector<GPUCounters>& dxgiCounters,
 /// Pure assignment logic extracted from WindowsGPUProbe::mergePDHAdapterUtilization(): for each
 /// DXGI counter not already covered by NVML, looks up its LUID-based id in @p dxgiIdToLuidId and,
 /// if PDH reported a utilization for that LUID in @p utilizationByGpuId, assigns it (clamped to
-/// [0, 100]) and marks it available. Counters with no LUID mapping or no matching PDH data keep
-/// their utilization value but are marked unread, so they publish as a gap (#1111).
+/// [0, 100]) and marks it available. Counters with no LUID mapping are marked unread, a gap
+/// (#1111). A mapped counter with no PDH entry is idle (0%, read) when @p absentMeansIdle -- the
+/// map is from a successful collect, and PDH has GPU Engine instances only for processes using the
+/// adapter -- and unread otherwise (#1166).
 inline void assignPDHUtilizationToDXGICounters(std::vector<GPUCounters>& dxgiCounters,
                                                const std::unordered_map<std::string, double>& utilizationByGpuId,
                                                const std::unordered_map<std::string, std::string>& dxgiIdToLuidId,
-                                               const std::unordered_set<std::string>& nvmlSourcedIds)
+                                               const std::unordered_set<std::string>& nvmlSourcedIds,
+                                               bool absentMeansIdle = false)
 {
     for (auto& dxgiCounter : dxgiCounters)
     {
@@ -440,7 +443,12 @@ inline void assignPDHUtilizationToDXGICounters(std::vector<GPUCounters>& dxgiCou
             dxgiCounter.utilizationPercent = std::clamp(utilIt->second, 0.0, 100.0);
             dxgiCounter.utilizationAvailable = true; // A real reading, even after a failed NVML read (#1111)
         }
-        // If no PDH data found for this GPU's LUID, utilization stays unread
+        else if (absentMeansIdle)
+        {
+            dxgiCounter.utilizationPercent = 0.0; // Nothing ran on it this interval (#1166)
+            dxgiCounter.utilizationAvailable = true;
+        }
+        // Otherwise no PDH data for this GPU's LUID: utilization stays unread
     }
 }
 

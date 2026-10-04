@@ -190,16 +190,18 @@ void WindowsGPUProbe::mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiC
     // busiest engine (Task Manager's definition), keyed by "GPU_0x{HighPart}_0x{LowPart}" -- the
     // same format as GPUInfo::luidId from DXGI. Summing process totals instead counted parallel
     // engines as if they were serial (#1033).
-    const auto utilizationByLuid = m_PDHAdapterProbe->adapterUtilization();
-    if (utilizationByLuid.empty())
+    if (!m_PDHAdapterProbe->adapterUtilizationCurrent())
     {
         return; // Warm-up or a failed collect: DXGI's counters stay unread, a gap, not 0% (#1245)
     }
+    // A successful collect with no engine instances for an adapter means nothing ran on it: an
+    // idle GPU reads 0%, not a permanent gap (#1166).
+    const auto utilizationByLuid = m_PDHAdapterProbe->adapterUtilization();
 
     // Assign per-GPU utilization by matching each DXGI counter's LUID-based id
     // to the corresponding PDH bucket. m_DXGIIdToLuidId is populated in
     // enumerateGPUs() and maps "GPU0" → "GPU_0x00000000_0x0000D3A0".
-    assignPDHUtilizationToDXGICounters(dxgiCounters, utilizationByLuid, m_DXGIIdToLuidId, nvmlSourcedIds);
+    assignPDHUtilizationToDXGICounters(dxgiCounters, utilizationByLuid, m_DXGIIdToLuidId, nvmlSourcedIds, /*absentMeansIdle=*/true);
 }
 
 std::vector<ProcessGPUCounters> WindowsGPUProbe::readProcessGPUCounters()

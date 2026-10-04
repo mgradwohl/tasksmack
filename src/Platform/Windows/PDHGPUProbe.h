@@ -83,6 +83,10 @@ class PDHGPUProbe
     /// busiest engine, as Task Manager defines it (#1033). Empty -- unread -- after a warm-up collect
     /// (no rates yet) and after any failed collect, so neither publishes 0% or a stale reading (#1166).
     [[nodiscard]] std::unordered_map<std::string, double> adapterUtilization() const;
+    /// Whether adapterUtilization() comes from a successful, warmed-up collect. When it does, an
+    /// adapter absent from it had no GPU Engine instances -- nothing ran on it -- so it is idle (0%),
+    /// not unread; when it does not (warm-up, failed collect), every adapter is unread (#1166).
+    [[nodiscard]] bool adapterUtilizationCurrent() const;
 
     /// Adapter-wide GPU memory in use (Role::Adapter only) from the most recent readProcessGPUCounters() call, keyed by
     /// "GPU_<luid>". Unlike DXGI's QueryVideoMemoryInfo, which reports only the calling process,

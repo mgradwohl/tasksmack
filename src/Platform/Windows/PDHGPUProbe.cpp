@@ -108,10 +108,11 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
         // No rates yet, so no adapter utilization: a gap, not 0% or a reading from before a
         // counter re-add (#1166).
         m_Impl->lastAdapterUtilization.clear();
-        spdlog::debug("PDHGPUProbe: Warm-up sample collected, returning cached results");
-        // Return cached results during warm-up to avoid UI gaps
-        m_Impl->lastValidTimestamp = std::chrono::steady_clock::now();
-        return m_Impl->lastValidResults;
+        m_Impl->adapterUtilizationCurrent = false;
+        spdlog::debug("PDHGPUProbe: Warm-up sample collected, returning recent cached results if any");
+        // Cached results stand in during warm-up only while recent. Refreshing their timestamp here
+        // made results from before a counter re-add count as fresh for another staleness window.
+        return m_Impl->freshCachedResults();
     }
 
     if (m_Impl->role == Role::Adapter)
@@ -334,11 +335,17 @@ void PDHGPUProbe::readAdapterUtilization()
     {
         m_Impl->lastAdapterUtilization["GPU_" + gpuLuid] = adapterUtilizationFromEngines(engines);
     }
+    m_Impl->adapterUtilizationCurrent = true;
 }
 
 std::unordered_map<std::string, double> PDHGPUProbe::adapterUtilization() const
 {
     return m_Impl ? m_Impl->lastAdapterUtilization : std::unordered_map<std::string, double>{};
+}
+
+bool PDHGPUProbe::adapterUtilizationCurrent() const
+{
+    return m_Impl && m_Impl->adapterUtilizationCurrent;
 }
 
 std::unordered_map<std::string, AdapterMemoryUsage> PDHGPUProbe::adapterMemory() const

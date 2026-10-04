@@ -281,6 +281,23 @@ TEST(AssignPDHUtilizationToDXGICountersTest, PDHReadingRestoresAvailabilityAfter
     EXPECT_FALSE(dxgi[1].utilizationAvailable);
 }
 
+// #1166: PDH has GPU Engine instances only for processes using an adapter, so after a successful
+// collect an adapter with none is idle -- 0% -- not a permanent gap. Without a successful collect
+// (warm-up, failure) it stays unread.
+TEST(AssignPDHUtilizationToDXGICountersTest, AnAdapterWithNoEngineActivityIsIdleAfterASuccessfulCollect)
+{
+    std::vector<GPUCounters> dxgi(1);
+    dxgi[0].gpuId = "GPU0";
+    const std::unordered_map<std::string, std::string> idToLuid = {{"GPU0", "GPU_0xLUID"}};
+
+    assignPDHUtilizationToDXGICounters(dxgi, {}, idToLuid, {}, /*absentMeansIdle=*/true);
+    EXPECT_TRUE(dxgi[0].utilizationAvailable);
+    EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 0.0);
+
+    assignPDHUtilizationToDXGICounters(dxgi, {}, idToLuid, {}, /*absentMeansIdle=*/false);
+    EXPECT_FALSE(dxgi[0].utilizationAvailable);
+}
+
 TEST(AssignPDHUtilizationToDXGICountersTest, AssignsClampedUtilizationForMatchedLuid)
 {
     std::vector<GPUCounters> dxgi(1);

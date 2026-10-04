@@ -416,6 +416,9 @@ struct PDHGPUProbe::Impl
     /// (#1033). Empty until a collect has produced utilization, and again after a warm-up collect or
     /// a failed one (#1166).
     std::unordered_map<std::string, double> lastAdapterUtilization;
+    // Whether lastAdapterUtilization comes from a successful, warmed-up collect. An adapter missing
+    // from it then had no engine activity -- idle, 0% -- rather than unread (#1166).
+    bool adapterUtilizationCurrent = false;
 
     /// Adapter-wide memory in use from the most recent collect, keyed by "GPU_<luid>".
     std::unordered_map<std::string, AdapterMemoryUsage> lastAdapterMemory;
@@ -425,6 +428,7 @@ struct PDHGPUProbe::Impl
     void clearAdapterReadings() noexcept
     {
         lastAdapterUtilization.clear();
+        adapterUtilizationCurrent = false;
         lastAdapterMemory.clear();
     }
 
