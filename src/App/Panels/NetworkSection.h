@@ -6,6 +6,7 @@
 #include "UI/FillPlotLayout.h"
 
 #include <chrono>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 
@@ -20,6 +21,9 @@ struct RenderContext
     // Models (non-owning pointers)
     const Domain::SystemPublication* systemPublication = nullptr;
     const Domain::StoragePublication* storagePublication = nullptr;
+    // Generation of the histories charted (UI::Widgets::nextChartDataGeneration()), so the charts keep
+    // their reduced points until it changes (HistoryChartConfig::dataGeneration, #1139). 0: none.
+    std::uint64_t chartDataGeneration = 0;
     bool hasNetworkCounters = false;
 
     // History configuration
