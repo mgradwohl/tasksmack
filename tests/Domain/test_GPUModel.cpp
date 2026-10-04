@@ -1238,54 +1238,90 @@ TEST(GPUModelTest, PerGpuHistoryTimestampsIndependentPerGpu)
     EXPECT_EQ(ts1.size(), model.utilizationHistory("GPU1").size());
 }
 
-TEST(GPUModelTest, PerGpuTimestampsStayAlignedWhenGpuAbsent)
+TEST(GPUModelTest, PerGpuHistoryHasAGapWhileGpuAbsent)
 {
-    // Regression test: when a GPU is intermittently absent (readGPUCounters does not
-    // return it for some refreshes), historyTimestamps(gpuId) must only contain
-    // timestamps from refreshes where the GPU was present, staying aligned with
-    // utilizationHistory(gpuId). Using the global historyTimestamps() instead would
-    // produce an off-by-sample hover mismatch in GpuSection charts.
+    // A GPU missing from a refresh gets a placeholder in its own history, published as NaN, so the
+    // chart shows a gap across the absence instead of a line joining the samples either side of it
+    // (#1146). Its timestamps stay aligned with its history vectors and with the global timestamps.
     auto probe = std::make_unique<MockGPUProbe>();
     auto* rawProbe = probe.get();
     rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 10.0);
 
     Domain::GPUModel model(std::move(probe));
 
-    // Refresh 1: GPU0 present
     rawProbe->withUtilization("GPU0", 20.0);
     model.refresh();
-
-    // Refresh 2: GPU0 present
     rawProbe->withUtilization("GPU0", 30.0);
     model.refresh();
 
-    // Refresh 3: GPU0 absent (simulate intermittent disappearance)
-    rawProbe->clearGPUs();
+    rawProbe->clearGPUs(); // GPU0 missing from this read
     model.refresh();
 
-    // Refresh 4: GPU0 present again
     rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 50.0);
     model.refresh();
 
-    // Global timestamps capture every refresh (4 entries)
     const auto globalTs = model.historyTimestamps();
-    EXPECT_EQ(globalTs.size(), 4u);
-
-    // Per-GPU timestamps skip the refresh where GPU0 was absent (3 entries)
     const auto perGpuTs = model.historyTimestamps("GPU0");
-    EXPECT_EQ(perGpuTs.size(), 3u);
+    ASSERT_EQ(globalTs.size(), 4U);
+    ASSERT_EQ(perGpuTs.size(), 4U);
+    for (std::size_t i = 0; i < globalTs.size(); ++i)
+    {
+        EXPECT_DOUBLE_EQ(perGpuTs[i], globalTs[i]);
+    }
 
-    // Per-GPU timestamps must stay aligned with the per-GPU history vectors
     const auto utilHist = model.utilizationHistory("GPU0");
-    EXPECT_EQ(perGpuTs.size(), utilHist.size());
+    ASSERT_EQ(utilHist.size(), 4U);
+    EXPECT_FLOAT_EQ(utilHist[1], 30.0F);
+    EXPECT_TRUE(std::isnan(utilHist[2]));
+    EXPECT_FLOAT_EQ(utilHist[3], 50.0F);
+    EXPECT_TRUE(std::isnan(model.temperatureHistory("GPU0")[2]));
 
-    // The absent refresh's global timestamp (globalTs[2]) must not appear in per-GPU timestamps.
-    // perGpuTs should correspond to globalTs[0], globalTs[1], and globalTs[3].
-    ASSERT_GE(globalTs.size(), 4u);
-    ASSERT_EQ(perGpuTs.size(), 3u);
-    EXPECT_DOUBLE_EQ(perGpuTs[0], globalTs[0]);
-    EXPECT_DOUBLE_EQ(perGpuTs[1], globalTs[1]);
-    EXPECT_DOUBLE_EQ(perGpuTs[2], globalTs[3]);
+    const auto publication = model.publication();
+    const auto historyIt = publication->histories.find("GPU0");
+    ASSERT_NE(historyIt, publication->histories.end());
+    const auto& published = historyIt->second;
+    ASSERT_EQ(published.timestamps.size(), 4U);
+    for (const auto* series : {&published.utilization,
+                               &published.memoryPercent,
+                               &published.gpuClock,
+                               &published.encoder,
+                               &published.decoder,
+                               &published.temperature,
+                               &published.power,
+                               &published.fanSpeed})
+    {
+        ASSERT_EQ(series->size(), 4U);
+        EXPECT_TRUE(std::isnan((*series)[2]));
+    }
+    EXPECT_FALSE(std::isnan(published.temperature[3]));
+}
+
+TEST(GPUModelTest, GpuMissingForTheWholeWindowIsForgotten)
+{
+    // Placeholders are recorded only while some real sample is still in the window; after that the
+    // GPU's history is dropped rather than padded with NaN forever (#1146).
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 10.0);
+
+    Domain::GPUModel model(std::move(probe));
+    model.setMaxHistorySeconds(10.0);
+
+    const auto start = std::chrono::ceil<std::chrono::seconds>(std::chrono::steady_clock::now());
+    model.refreshAt(start);
+    rawProbe->clearGPUs();
+    for (int i = 1; i <= 5; ++i)
+    {
+        model.refreshAt(start + std::chrono::seconds(i));
+    }
+    EXPECT_EQ(model.historyTimestamps("GPU0").size(), 6U); // Still in the window: one sample, five gaps
+
+    for (int i = 6; i <= 30; ++i)
+    {
+        model.refreshAt(start + std::chrono::seconds(i));
+    }
+    EXPECT_TRUE(model.historyTimestamps("GPU0").empty());
+    EXPECT_FALSE(model.publication()->histories.contains("GPU0"));
 }
 
 // =============================================================================

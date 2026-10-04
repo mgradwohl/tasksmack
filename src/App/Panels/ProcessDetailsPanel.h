@@ -208,6 +208,9 @@ class ProcessDetailsPanel : public Panel
         double gpuUtilPercent = 0.0;
         double gpuMemoryBytes = 0.0;
         double gdiObjectCount = 0.0;
+        // Whether the latest sample had a GDI reading. A missing one leaves gdiObjectCount where it
+        // was (not eased toward 0) and the NowBar shows N/A, as the line shows a gap (#1148).
+        bool gdiInitialized = false;
         // Memory bars, as percents of system RAM like the Memory chart
         double memoryUsedPercent = 0.0;
         double memorySharedPercent = 0.0;
