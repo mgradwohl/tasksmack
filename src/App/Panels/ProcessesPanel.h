@@ -2,6 +2,7 @@
 
 #include "App/Panel.h"
 #include "App/Panels/ProcessRowFormat.h"
+#include "App/Panels/ProcessTreeFlatten.h"
 #include "App/ProcessColumnConfig.h"
 #include "Domain/BackgroundSampler.h"
 #include "Domain/PriorityConfig.h"
@@ -182,6 +183,7 @@ class ProcessesPanel : public Panel
     float m_OtherColumnsWidth = 0.0F;                  // Everything but the Command column's own content
     float m_TableVisibleWidth = 0.0F;                  // Visible width of the table's scrolling area
     std::unordered_set<std::uint64_t> m_CollapsedKeys; // uniqueKeys that are collapsed in tree view
+    std::uint64_t m_CollapseGeneration = 0;            // Advanced whenever m_CollapsedKeys changes (#1138)
 
     // Snapshot cache: only re-fetch from ProcessModel when version changes (data updates at 1Hz,
     // but render runs at 60fps). A shared_ptr to ProcessModel's immutable published vector, not
@@ -203,6 +205,11 @@ class ProcessesPanel : public Panel
     std::uint64_t m_CachedFilterVersion = std::numeric_limits<std::uint64_t>::max();
     std::string m_CachedSearchTerm;
     std::string m_CachedSummaryStr;
+    std::uint64_t m_FilterGeneration = 0; // Advanced whenever m_CachedFilteredIndices is rebuilt (#1138)
+
+    // The tree view's flattened rows, rebuilt only when the snapshot version, m_FilterGeneration or
+    // m_CollapseGeneration changes rather than every frame (#1138).
+    ProcessTreeFlatten::ProcessTreeRowsCache m_TreeRowsCache;
 
     /// Cache for text size measurements to avoid repeated ImGui::CalcTextSize calls.
     /// Invalidated when the font changes: a different ImFont pointer, or a rebuilt font atlas
@@ -276,11 +283,11 @@ class ProcessesPanel : public Panel
     /// Get the number of visible columns
     [[nodiscard]] int visibleColumnCount() const;
 
-    /// Render process rows in tree view mode. Flattens the filtered/expanded tree into render
-    /// order via ProcessTreeFlatten::collectProcessTreeRows() (a pure, separately-tested
-    /// traversal -- see ProcessTreeFlatten.h), then applies ImGuiListClipper to that flat list
-    /// so only visible rows reach the expensive part, renderProcessRow() -- see perf-plan #843's
-    /// tree-view virtualization item.
+    /// Render process rows in tree view mode. Takes the filtered/expanded tree in render order
+    /// from m_TreeRowsCache, which flattens it (ProcessTreeFlatten::buildProcessTreeRows(), a pure,
+    /// separately-tested traversal) only when its inputs change (#1138), then applies
+    /// ImGuiListClipper to that flat list so only visible rows reach the expensive part,
+    /// renderProcessRow() -- see perf-plan #843's tree-view virtualization item.
     /// @param snapshots The full list of process snapshots.
     /// @param filteredIndices Indices into snapshots for processes matching the current filter.
     void renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots, const std::vector<std::size_t>& filteredIndices);

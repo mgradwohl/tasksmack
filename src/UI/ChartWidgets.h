@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -30,6 +31,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -264,13 +266,25 @@ inline void forEachFiniteRun(const T* values, int count, OnRun&& onRun) // NOLIN
     }
 }
 
-/// Stride-reduce `count` samples to `outCount` (> 1, < count) points in `outX`/`outY`, keeping gaps.
-///
-/// Output point k takes source sample s_k = k * (count - 1) / (outCount - 1). A plain stride would
-/// skip any NaN that falls between two picked samples and draw straight across a missing reading,
-/// so if any sample in (s_{k-1}, s_k] is non-finite, point k's value is NaN instead.
-template<typename TX, typename TY>
-inline void reduceSeriesKeepingGaps(const TX* xData, const TY* yData, int count, int outCount, TX* outX, TY* outY)
+/// One point a history-chart reduction keeps: the index of the source sample it is drawn from, and
+/// whether it is drawn as a gap (NaN: no reading) instead of that sample's value. The reductions
+/// below emit these rather than copying values, so the choice of points can be cached and replayed
+/// every frame (ReducedPointsCache, #1139): buckets are anchored in absolute time, so the choice
+/// depends only on the samples, not on "now", and holds until the data changes.
+struct ReducedPoint
+{
+    int index = 0;
+    bool gap = false;
+
+    [[nodiscard]] bool operator==(const ReducedPoint&) const = default;
+};
+
+/// The stride reduction behind reduceSeriesKeepingGaps(): calls `emit(sourceIndex, isGap)` once for
+/// each of the `outCount` (> 1, < count) points it keeps, in order.
+// emit is called once per point, so it is used as an lvalue rather than forwarded.
+template<typename TY, typename Emit>
+inline void
+forEachStrideReducedPoint(const TY* yData, int count, int outCount, Emit&& emit) // NOLINT(cppcoreguidelines-missing-std-forward)
 {
     int previousSource = -1;
     for (int resultIdx = 0; resultIdx < outCount; ++resultIdx)
@@ -279,22 +293,56 @@ inline void reduceSeriesKeepingGaps(const TX* xData, const TY* yData, int count,
         const auto denominator = static_cast<std::size_t>(outCount - 1);
         const int sourceIdx = static_cast<int>(numerator / denominator);
 
-        TY value = yData[sourceIdx];
+        bool gap = false;
         if constexpr (std::is_floating_point_v<TY>)
         {
             for (int skipped = previousSource + 1; skipped <= sourceIdx; ++skipped)
             {
                 if (!std::isfinite(yData[skipped]))
                 {
-                    value = std::numeric_limits<TY>::quiet_NaN();
+                    gap = true;
                     break;
                 }
             }
         }
-        outX[resultIdx] = xData[sourceIdx];
-        outY[resultIdx] = value;
+        emit(sourceIdx, gap);
         previousSource = sourceIdx;
     }
+}
+
+/// Writes the point a reduction kept as output point `written` of `outX`/`outY`: the source sample,
+/// or NaN in y for a gap point.
+template<typename TX, typename TY>
+inline void writeReducedPoint(const TX* xData, const TY* yData, int sourceIdx, bool gap, int written, TX* outX, TY* outY)
+{
+    outX[written] = xData[sourceIdx];
+    if constexpr (std::is_floating_point_v<TY>)
+    {
+        outY[written] = gap ? std::numeric_limits<TY>::quiet_NaN() : yData[sourceIdx];
+    }
+    else
+    {
+        outY[written] = yData[sourceIdx];
+    }
+}
+
+/// Stride-reduce `count` samples to `outCount` (> 1, < count) points in `outX`/`outY`, keeping gaps.
+///
+/// Output point k takes source sample s_k = k * (count - 1) / (outCount - 1). A plain stride would
+/// skip any NaN that falls between two picked samples and draw straight across a missing reading,
+/// so if any sample in (s_{k-1}, s_k] is non-finite, point k's value is NaN instead.
+template<typename TX, typename TY>
+inline void reduceSeriesKeepingGaps(const TX* xData, const TY* yData, int count, int outCount, TX* outX, TY* outY)
+{
+    int written = 0;
+    forEachStrideReducedPoint(yData,
+                              count,
+                              outCount,
+                              [&](int sourceIdx, bool gap)
+                              {
+                                  writeReducedPoint(xData, yData, sourceIdx, gap, written, outX, outY);
+                                  ++written;
+                              });
 }
 
 /// Width, in x units, of the buckets reduceSeriesMinMax() groups a series spanning `span` into, for
@@ -330,10 +378,19 @@ inline void reduceSeriesKeepingGaps(const TX* xData, const TY* yData, int count,
 /// The first and last samples are always emitted, so the line still starts at the oldest sample and
 /// ends at the newest instead of at its bucket's extremes.
 ///
-/// @return Points written to outX/outY (each must hold `maxOut`). With an unusable span (fewer than
-///         two samples, or x not increasing) the series is stride-reduced to `maxOut` points instead.
-template<typename TX, typename TY>
-[[nodiscard]] inline int reduceSeriesMinMax(const TX* xData, const TY* yData, int count, int maxOut, double xOffset, TX* outX, TY* outY)
+/// The points are emitted as `emit(sourceIndex, isGap)`, in order: reduceSeriesMinMax() writes them
+/// out, and reduceSeriesMinMaxPoints() keeps them for a ReducedPointsCache.
+///
+/// @return Points emitted, at most `maxOut`. With an unusable span (fewer than two samples, or x not
+///         increasing) the series is stride-reduced to `maxOut` points instead.
+// emit is called once per point, so it is used as an lvalue rather than forwarded.
+template<typename TX, typename TY, typename Emit>
+inline int forEachMinMaxReducedPoint(const TX* xData,
+                                     const TY* yData,
+                                     int count,
+                                     int maxOut,
+                                     double xOffset,
+                                     Emit&& emit) // NOLINT(cppcoreguidelines-missing-std-forward)
 {
     // At most three points per bucket (min, max, gap marker) plus the two end samples, and a span
     // of n widths can touch n + 1 buckets once both ends fall mid-bucket: so (maxOut - 2) / 3 - 1
@@ -346,12 +403,14 @@ template<typename TX, typename TY>
         const int outCount = std::min(count, maxOut);
         if (outCount == count)
         {
-            std::copy_n(xData, count, outX);
-            std::copy_n(yData, count, outY);
+            for (int i = 0; i < count; ++i)
+            {
+                emit(i, false);
+            }
         }
         else
         {
-            reduceSeriesKeepingGaps(xData, yData, count, outCount, outX, outY);
+            forEachStrideReducedPoint(yData, count, outCount, emit);
         }
         return outCount;
     }
@@ -405,15 +464,7 @@ template<typename TX, typename TY>
             {
                 continue;
             }
-            outX[written] = xData[pick];
-            if constexpr (std::is_floating_point_v<TY>)
-            {
-                outY[written] = (pick == gapIdx) ? std::numeric_limits<TY>::quiet_NaN() : yData[pick];
-            }
-            else
-            {
-                outY[written] = yData[pick];
-            }
+            emit(pick, pick == gapIdx);
             ++written;
             previous = pick;
         }
@@ -422,8 +473,186 @@ template<typename TX, typename TY>
     return written;
 }
 
+/// Reduce `count` samples to at most `maxOut` points in `outX`/`outY` (each must hold `maxOut`),
+/// keeping peaks and gaps; see forEachMinMaxReducedPoint() for how the points are chosen.
+///
+/// @return Points written to outX/outY.
+template<typename TX, typename TY>
+[[nodiscard]] inline int reduceSeriesMinMax(const TX* xData, const TY* yData, int count, int maxOut, double xOffset, TX* outX, TY* outY)
+{
+    int written = 0;
+    return forEachMinMaxReducedPoint(xData,
+                                     yData,
+                                     count,
+                                     maxOut,
+                                     xOffset,
+                                     [&](int sourceIdx, bool gap)
+                                     {
+                                         writeReducedPoint(xData, yData, sourceIdx, gap, written, outX, outY);
+                                         ++written;
+                                     });
+}
+
+/// The points reduceSeriesMinMax() keeps, as source indices in `out` (cleared first) rather than
+/// values, for a ReducedPointsCache.
+template<typename TX, typename TY>
+inline void
+reduceSeriesMinMaxPoints(const TX* xData, const TY* yData, int count, int maxOut, double xOffset, std::vector<ReducedPoint>& out)
+{
+    out.clear();
+    if (count <= 0 || maxOut <= 0)
+    {
+        return;
+    }
+    out.reserve(static_cast<std::size_t>(std::min(count, maxOut)));
+    std::ignore =
+        forEachMinMaxReducedPoint(xData,
+                                  yData,
+                                  count,
+                                  maxOut,
+                                  xOffset,
+                                  [&out](int sourceIdx, bool gap) { out.push_back(ReducedPoint{.index = sourceIdx, .gap = gap}); });
+}
+
 /// Most series reduceAlignedSeries() can select points by (see there).
 inline constexpr std::size_t MAX_ALIGNED_KEY_SERIES = 4;
+
+/// The point selection behind reduceAlignedSeries() and reduceAlignedPoints(): series sharing the x
+/// axis `x`, reduced to at most `maxOut` common points, each emitted as `emit(sourceIndex, isGap)` in
+/// ascending source order. Requires alignedReductionApplies(), and every keyed series as long as
+/// `x`. See reduceAlignedSeries() for how the points are chosen.
+// emit is called once per point, so it is used as an lvalue rather than forwarded.
+template<typename T, typename Emit>
+inline void forEachAlignedReducedPoint(std::span<const double> x,
+                                       std::span<const std::span<const T>> keyed,
+                                       int maxOut,
+                                       double xOffset,
+                                       Emit&& emit) // NOLINT(cppcoreguidelines-missing-std-forward)
+{
+    const int count = UI::Format::checkedCount(x.size());
+    const auto keyCount = static_cast<int>(keyed.size());
+    const auto valueAt = [](std::span<const T> series, int index)
+    {
+        return static_cast<double>(series[static_cast<std::size_t>(index)]);
+    };
+
+    int written = 0;
+    const auto keep = [&](int pick, bool asGap)
+    {
+        emit(pick, asGap);
+        ++written;
+    };
+
+    // At most three points per keyed series per bucket plus the two end samples, over at most
+    // bucketCount + 1 buckets (see forEachMinMaxReducedPoint()).
+    const int bucketCount = ((maxOut - 2) / (3 * keyCount)) - 1;
+    const double width = (bucketCount > 0) ? minMaxBucketWidth(x.back() - x.front(), bucketCount) : 0.0;
+    if (width <= 0.0)
+    {
+        // As reduceSeriesKeepingGaps(): a point whose stride skipped a gap in any keyed series is a gap.
+        int previousSource = -1;
+        for (int k = 0; k < maxOut; ++k)
+        {
+            const auto source = static_cast<int>((static_cast<std::size_t>(k) * static_cast<std::size_t>(count - 1)) /
+                                                 static_cast<std::size_t>(maxOut - 1));
+            bool skippedGap = false;
+            for (const auto series : keyed)
+            {
+                for (int i = previousSource + 1; i <= source && !skippedGap; ++i)
+                {
+                    skippedGap = !std::isfinite(valueAt(series, i));
+                }
+            }
+            keep(source, skippedGap);
+            previousSource = source;
+        }
+        return;
+    }
+
+    const auto bucketOf = [&](int index)
+    {
+        return std::floor((x[static_cast<std::size_t>(index)] + xOffset) / width);
+    };
+    int bucketStart = 0;
+    while (bucketStart < count)
+    {
+        const double bucket = bucketOf(bucketStart);
+        int next = bucketStart;
+        while (next < count && bucketOf(next) == bucket)
+        {
+            ++next;
+        }
+
+        std::array<int, (3 * MAX_ALIGNED_KEY_SERIES) + 2> picks{};
+        picks.fill(-1);
+        std::size_t pickCount = 0;
+        std::array<int, MAX_ALIGNED_KEY_SERIES> gapPicks{};
+        std::size_t gapCount = 0;
+        bool collapseBucket = false;
+        picks[pickCount++] = (bucketStart == 0) ? 0 : -1;
+        picks[pickCount++] = (next == count) ? count - 1 : -1;
+        for (const auto series : keyed)
+        {
+            int minIdx = -1;
+            int maxIdx = -1;
+            int gapIdx = -1;
+            int gapRuns = 0;
+            bool inGap = false;
+            for (int i = bucketStart; i < next; ++i)
+            {
+                const double value = valueAt(series, i);
+                if (!std::isfinite(value))
+                {
+                    gapIdx = (gapIdx < 0) ? i : gapIdx;
+                    gapRuns += inGap ? 0 : 1;
+                    inGap = true;
+                    continue;
+                }
+                inGap = false;
+                if (minIdx < 0 || value < valueAt(series, minIdx))
+                {
+                    minIdx = i;
+                }
+                if (maxIdx < 0 || value > valueAt(series, maxIdx))
+                {
+                    maxIdx = i;
+                }
+            }
+            collapseBucket = collapseBucket || (gapRuns > 1);
+            picks[pickCount++] = minIdx;
+            picks[pickCount++] = maxIdx;
+            picks[pickCount++] = gapIdx;
+            gapPicks[gapCount++] = gapIdx;
+        }
+        if (collapseBucket)
+        {
+            // Only the gap points and the series' ends survive (see reduceAlignedSeries()).
+            picks.fill(-1);
+            picks[0] = (bucketStart == 0) ? 0 : -1;
+            picks[1] = (next == count) ? count - 1 : -1;
+            std::copy_n(gapPicks.begin(), gapCount, picks.begin() + 2);
+        }
+        std::ranges::sort(picks);
+        int previous = -1;
+        for (const int pick : picks)
+        {
+            if (pick < 0 || pick == previous || written >= maxOut)
+            {
+                continue;
+            }
+            keep(pick, collapseBucket && pick != 0 && pick != count - 1);
+            previous = pick;
+        }
+        bucketStart = next;
+    }
+}
+
+/// Whether an aligned reduction has anything to do: series longer than `maxOut`, and a usable number
+/// of keyed series. Otherwise the series are drawn as they are.
+[[nodiscard]] inline bool alignedReductionApplies(std::size_t count, int maxOut, std::size_t keyCount) noexcept
+{
+    return maxOut >= 2 && std::cmp_greater(count, maxOut) && keyCount > 0 && keyCount <= MAX_ALIGNED_KEY_SERIES;
+}
 
 /// Reduce series that share one x axis to at most `maxOut` common points, in place: the stacked
 /// bands and lines a chart draws with ImPlot directly, which plotLineWithFill() cannot reduce
@@ -439,17 +668,25 @@ inline constexpr std::size_t MAX_ALIGNED_KEY_SERIES = 4;
 /// it finite points on both sides of a later gap and draw it across that gap (#1061 review), and the
 /// carried series are built from the keyed ones. With an unusable span the series are stride-reduced.
 /// Series no longer than `maxOut` are left unchanged. Every series must be as long as `x`.
+///
+/// This reduces on every call. A chart that redraws the same data every frame should instead keep
+/// the choice of points in a ReducedPointsCache via reduceAlignedPoints() (#1139).
 inline void reduceAlignedSeries(std::vector<double>& x,
                                 std::initializer_list<std::vector<double>*> keyed,
                                 std::initializer_list<std::vector<double>*> carried,
                                 int maxOut,
                                 double xOffset)
 {
-    const int count = UI::Format::checkedCount(x.size());
-    const auto keyCount = static_cast<int>(keyed.size());
-    if (count <= maxOut || maxOut < 2 || keyCount == 0 || keyed.size() > MAX_ALIGNED_KEY_SERIES)
+    if (!alignedReductionApplies(x.size(), maxOut, keyed.size()))
     {
         return;
+    }
+
+    std::array<std::span<const double>, MAX_ALIGNED_KEY_SERIES> keyedSpans{};
+    std::size_t keyedCount = 0;
+    for (const auto* series : keyed)
+    {
+        keyedSpans[keyedCount++] = *series;
     }
 
     // Keeps source index `pick` as output point `written`. Picks ascend and each is at or after its
@@ -474,110 +711,7 @@ inline void reduceAlignedSeries(std::vector<double>& x,
         }
         ++written;
     };
-
-    // At most three points per keyed series per bucket plus the two end samples, over at most
-    // bucketCount + 1 buckets (see reduceSeriesMinMax()).
-    const int bucketCount = ((maxOut - 2) / (3 * keyCount)) - 1;
-    const double width = (bucketCount > 0) ? minMaxBucketWidth(x.back() - x.front(), bucketCount) : 0.0;
-    if (width <= 0.0)
-    {
-        // As reduceSeriesKeepingGaps(): a point whose stride skipped a gap in any keyed series is a gap.
-        int previousSource = -1;
-        for (int k = 0; k < maxOut; ++k)
-        {
-            const auto source = static_cast<int>((static_cast<std::size_t>(k) * static_cast<std::size_t>(count - 1)) /
-                                                 static_cast<std::size_t>(maxOut - 1));
-            bool skippedGap = false;
-            for (const auto* series : keyed)
-            {
-                for (int i = previousSource + 1; i <= source && !skippedGap; ++i)
-                {
-                    skippedGap = !std::isfinite((*series)[static_cast<std::size_t>(i)]);
-                }
-            }
-            keep(source, skippedGap);
-            previousSource = source;
-        }
-    }
-    else
-    {
-        const auto bucketOf = [&](int index)
-        {
-            return std::floor((x[static_cast<std::size_t>(index)] + xOffset) / width);
-        };
-        int bucketStart = 0;
-        while (bucketStart < count)
-        {
-            const double bucket = bucketOf(bucketStart);
-            int next = bucketStart;
-            while (next < count && bucketOf(next) == bucket)
-            {
-                ++next;
-            }
-
-            std::array<int, (3 * MAX_ALIGNED_KEY_SERIES) + 2> picks{};
-            picks.fill(-1);
-            std::size_t pickCount = 0;
-            std::array<int, MAX_ALIGNED_KEY_SERIES> gapPicks{};
-            std::size_t gapCount = 0;
-            bool collapseBucket = false;
-            picks[pickCount++] = (bucketStart == 0) ? 0 : -1;
-            picks[pickCount++] = (next == count) ? count - 1 : -1;
-            for (const auto* series : keyed)
-            {
-                int minIdx = -1;
-                int maxIdx = -1;
-                int gapIdx = -1;
-                int gapRuns = 0;
-                bool inGap = false;
-                for (int i = bucketStart; i < next; ++i)
-                {
-                    const double value = (*series)[static_cast<std::size_t>(i)];
-                    if (!std::isfinite(value))
-                    {
-                        gapIdx = (gapIdx < 0) ? i : gapIdx;
-                        gapRuns += inGap ? 0 : 1;
-                        inGap = true;
-                        continue;
-                    }
-                    inGap = false;
-                    if (minIdx < 0 || value < (*series)[static_cast<std::size_t>(minIdx)])
-                    {
-                        minIdx = i;
-                    }
-                    if (maxIdx < 0 || value > (*series)[static_cast<std::size_t>(maxIdx)])
-                    {
-                        maxIdx = i;
-                    }
-                }
-                collapseBucket = collapseBucket || (gapRuns > 1);
-                picks[pickCount++] = minIdx;
-                picks[pickCount++] = maxIdx;
-                picks[pickCount++] = gapIdx;
-                gapPicks[gapCount++] = gapIdx;
-            }
-            if (collapseBucket)
-            {
-                // Only the gap points and the series' ends survive (see above).
-                picks.fill(-1);
-                picks[0] = (bucketStart == 0) ? 0 : -1;
-                picks[1] = (next == count) ? count - 1 : -1;
-                std::copy_n(gapPicks.begin(), gapCount, picks.begin() + 2);
-            }
-            std::ranges::sort(picks);
-            int previous = -1;
-            for (const int pick : picks)
-            {
-                if (pick < 0 || pick == previous || written >= maxOut)
-                {
-                    continue;
-                }
-                keep(pick, collapseBucket && pick != 0 && pick != count - 1);
-                previous = pick;
-            }
-            bucketStart = next;
-        }
-    }
+    forEachAlignedReducedPoint<double>(x, std::span<const std::span<const double>>(keyedSpans.data(), keyedCount), maxOut, xOffset, keep);
 
     x.resize(static_cast<std::size_t>(written));
     for (auto* series : keyed)
@@ -589,6 +723,101 @@ inline void reduceAlignedSeries(std::vector<double>& x,
         series->resize(static_cast<std::size_t>(written));
     }
 }
+
+/// The points reduceAlignedSeries() keeps, as source indices in `out` (cleared first) rather than
+/// values, for a ReducedPointsCache. Series that need no reduction keep every sample. The keyed
+/// series may be float or double; each must be as long as `x`.
+template<typename T>
+inline void reduceAlignedPoints(
+    std::span<const double> x, std::initializer_list<std::span<const T>> keyed, int maxOut, double xOffset, std::vector<ReducedPoint>& out)
+{
+    out.clear();
+    if (!alignedReductionApplies(x.size(), maxOut, keyed.size()))
+    {
+        out.reserve(x.size());
+        for (int i = 0; i < UI::Format::checkedCount(x.size()); ++i)
+        {
+            out.push_back(ReducedPoint{.index = i, .gap = false});
+        }
+        return;
+    }
+    out.reserve(static_cast<std::size_t>(maxOut));
+    forEachAlignedReducedPoint<T>(x,
+                                  std::span<const std::span<const T>>(keyed.begin(), keyed.size()),
+                                  maxOut,
+                                  xOffset,
+                                  [&out](int sourceIdx, bool gap) { out.push_back(ReducedPoint{.index = sourceIdx, .gap = gap}); });
+}
+
+/// A data generation no earlier call has returned, for ReducedPointsCache keys (never 0, which means
+/// "not cacheable"). A panel takes a new one whenever the history it charts changes -- a publication
+/// adopted, a sample recorded, a selection reset -- and gives it to the chart drawing that history
+/// (HistoryChartConfig::dataGeneration). One counter for every source, rather than each model's own
+/// version number, so two sources' generations never collide. UI thread only.
+[[nodiscard]] inline std::uint64_t nextChartDataGeneration() noexcept
+{
+    static std::uint64_t generation = 0;
+    return ++generation;
+}
+
+/// Remembers the points a reduction kept for one series (or one set of aligned series), so a chart
+/// that redraws unchanged data every frame -- every history chart does, since its x is "seconds
+/// before now" -- replays them instead of reducing its whole history again (#1139). At the largest
+/// history setting that is about 18,000 samples per series per frame, against at most
+/// LINE_PLOT_MAX_POINTS_DENSE points to replay.
+///
+/// Sound because the reductions anchor their buckets in absolute time: the indices kept depend only
+/// on the samples, which a Key names -- the data generation they were read under, how many there
+/// are, and the point budget -- with `dataId` telling apart series that share a generation and a
+/// length (two lines in one chart). A generation of 0 is never cached: points() then rebuilds on
+/// every call, which is the uncached behaviour.
+class ReducedPointsCache
+{
+  public:
+    struct Key
+    {
+        std::uint64_t generation = 0;
+        std::uintptr_t dataId = 0;
+        std::size_t count = 0;
+        int maxOut = 0;
+
+        [[nodiscard]] bool operator==(const Key&) const = default;
+    };
+
+    /// The points for `key`: the remembered ones if they were built for exactly this key, otherwise
+    /// rebuilt by `rebuild(std::vector<ReducedPoint>& out)`, which fills `out`, and remembered.
+    // rebuild is called at most once, so it is used as an lvalue rather than forwarded.
+    template<typename Rebuild>
+    [[nodiscard]] std::span<const ReducedPoint> points(const Key& key, Rebuild&& rebuild) // NOLINT(cppcoreguidelines-missing-std-forward)
+    {
+        if (!m_Valid || key.generation == 0 || key != m_Key)
+        {
+            rebuild(m_Points);
+            m_Key = key;
+            m_Valid = key.generation != 0;
+            ++m_RebuildCount;
+        }
+        return m_Points;
+    }
+
+    /// Forget the remembered points, so the next points() call rebuilds whatever its key.
+    void invalidate() noexcept
+    {
+        m_Valid = false;
+    }
+
+    /// How many times points() has rebuilt.
+    [[nodiscard]] std::uint64_t rebuildCount() const noexcept
+    {
+        return m_RebuildCount;
+    }
+
+  private:
+    std::vector<ReducedPoint> m_Points;
+    Key m_Key;
+    std::uint64_t m_RebuildCount = 0;
+    bool m_Valid = false;
+};
 
 /// "Now" for history charts, in seconds since the steady_clock epoch, read once per ImGui frame.
 ///
@@ -640,7 +869,63 @@ template<typename T> inline void holdLastValueToNow(std::vector<T>& x, std::vect
     y.push_back(y.back());
 }
 
+/// The data generation of the HistoryChart being drawn (HistoryChartConfig::dataGeneration) and the
+/// ID of its plot. HistoryChart sets it for its lifetime, so plotLineWithFill() can cache its series'
+/// reductions (#1139) without every call site passing a key of its own.
+struct ChartDataScope
+{
+    std::uint64_t generation = 0; // 0: the chart did not name one, so nothing is cached
+    ImGuiID plotId = 0;
+};
+
+namespace Detail
+{
+// UI thread only, like everything else in ImGui. Named-namespace inline: one instance program-wide
+// (see g_ChartAntiAliasingEnabled above).
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+inline ChartDataScope g_ActiveChartDataScope;
+} // namespace Detail
+
+[[nodiscard]] inline ChartDataScope activeChartDataScope() noexcept
+{
+    return Detail::g_ActiveChartDataScope;
+}
+
+/// The reduction cache for one plotLineWithFill() series: its plot and its label. A collision
+/// between two series' hashes costs only caching, never correctness, since a cached entry is also
+/// keyed on the series' data (ReducedPointsCache::Key). Bounded like easedChartUpperBound()'s
+/// state: entries not drawn for a while are dropped once there are many (per-disk and per-interface
+/// charts come and go).
+[[nodiscard]] inline ReducedPointsCache& seriesReductionCache(ImGuiID plotId, std::string_view label)
+{
+    struct Entry
+    {
+        ReducedPointsCache cache;
+        int lastFrame = 0;
+    };
+    static std::unordered_map<std::uint64_t, Entry> entries;
+    static int lastPruneFrame = -1;
+    constexpr std::size_t PRUNE_ABOVE = 256;
+    constexpr int STALE_FRAMES = 600;
+
+    const int frame = ImGui::GetFrameCount();
+    if (entries.size() > PRUNE_ABOVE && frame != lastPruneFrame)
+    {
+        lastPruneFrame = frame;
+        std::erase_if(entries, [frame](const auto& entry) { return (frame - entry.second.lastFrame) > STALE_FRAMES; });
+    }
+    const std::uint64_t key =
+        (static_cast<std::uint64_t>(plotId) << 32U) ^ static_cast<std::uint64_t>(std::hash<std::string_view>{}(label));
+    Entry& entry = entries[key];
+    entry.lastFrame = frame;
+    return entry.cache;
+}
+
 /// @p lineThickness is authored at the reference configuration; it is scaled by lineWeight().
+///
+/// Inside a HistoryChart with a data generation (HistoryChartConfig::dataGeneration), a long series'
+/// reduction is cached per plot and label and replayed until the generation, the series' buffer or
+/// its length changes (#1139). The generation must then cover everything `yData` is computed from.
 template<typename TX, typename TY>
 inline void plotLineWithFill(const char* label,
                              const TX* xData,
@@ -695,14 +980,38 @@ inline void plotLineWithFill(const char* label,
     static std::vector<TX> drawY;
     if ((effectiveMax > 1) && (count > effectiveMax))
     {
-        std::array<TX, LINE_PLOT_MAX_POINTS_DENSE> reducedXData{};
-        std::array<TY, LINE_PLOT_MAX_POINTS_DENSE> reducedYData{};
         // x is "seconds before historyFrameNowSeconds()" on every history chart, so adding it back
-        // anchors the reduction's buckets in absolute time (see reduceSeriesMinMax).
-        const int reducedCount =
-            reduceSeriesMinMax(xData, yData, count, effectiveMax, historyFrameNowSeconds(), reducedXData.data(), reducedYData.data());
-        drawX.assign(reducedXData.begin(), reducedXData.begin() + reducedCount);
-        drawY.assign(reducedYData.begin(), reducedYData.begin() + reducedCount);
+        // anchors the reduction's buckets in absolute time (see forEachMinMaxReducedPoint).
+        const auto reduce = [&](std::vector<ReducedPoint>& out)
+        {
+            reduceSeriesMinMaxPoints(xData, yData, count, effectiveMax, historyFrameNowSeconds(), out);
+        };
+
+        // Inside a HistoryChart that names its data generation, the points chosen are kept and
+        // replayed until the data changes, instead of reducing the whole history every frame (#1139).
+        // Otherwise -- generation 0 -- they are chosen afresh on every call, as before.
+        static ReducedPointsCache uncached; // Scratch only: a generation-0 key is never kept
+        const ChartDataScope scope = activeChartDataScope();
+        const ReducedPointsCache::Key key{.generation = scope.generation,
+                                          .dataId = std::bit_cast<std::uintptr_t>(yData),
+                                          .count = static_cast<std::size_t>(count),
+                                          .maxOut = effectiveMax};
+        ReducedPointsCache& cache = (scope.generation != 0) ? seriesReductionCache(scope.plotId, label) : uncached;
+        const std::span<const ReducedPoint> points = cache.points(key, reduce);
+
+        drawX.resize(points.size());
+        drawY.resize(points.size());
+        for (std::size_t k = 0; k < points.size(); ++k)
+        {
+            const auto source = static_cast<std::size_t>(points[k].index);
+            TY value = yData[source];
+            if constexpr (std::is_floating_point_v<TY>)
+            {
+                value = points[k].gap ? std::numeric_limits<TY>::quiet_NaN() : value;
+            }
+            drawX[k] = xData[source];
+            drawY[k] = static_cast<TX>(value);
+        }
     }
     else
     {
@@ -1221,7 +1530,19 @@ struct HistoryChartConfig
     /// (see easeAxisUpperBound). Set by rateHistoryConfig(); a fixed range such as 0-100 % has
     /// nothing to ease.
     bool easeYUpper = false;
+    /// The generation of the data this chart draws (nextChartDataGeneration()), or 0 if the caller
+    /// does not track one. When set, plotLineWithFill() series drawn in the chart keep their reduced
+    /// points until it changes instead of reducing their whole history every frame (#1139), so it
+    /// must change whenever anything the series are computed from does. See withDataGeneration().
+    std::uint64_t dataGeneration = 0;
 };
+
+/// Returns `config` with its data generation set (see HistoryChartConfig::dataGeneration).
+[[nodiscard]] inline HistoryChartConfig withDataGeneration(HistoryChartConfig config, std::uint64_t generation)
+{
+    config.dataGeneration = generation;
+    return config;
+}
 
 /// Returns `config` with its plot height replaced, for callers that size a chart to the space
 /// available (see UI/HistoryPlotHeight.h) rather than taking the default.
@@ -1400,6 +1721,11 @@ class HistoryChart
         // BeginPlot is false for a clipped plot, so an off-screen chart asks for nothing.
         Core::AnimationRequest::request();
 
+        // Lets plotLineWithFill() cache this chart's reductions (#1139); restored in the destructor.
+        m_PreviousDataScope = Detail::g_ActiveChartDataScope;
+        Detail::g_ActiveChartDataScope = ChartDataScope{.generation = config.dataGeneration, .plotId = plotId};
+        m_DataScopeSet = true;
+
         if (!chartAntiAliasingEnabled())
         {
             // ImPlot 1.0 has no per-plot AA flag of its own; it renders through the current
@@ -1429,6 +1755,10 @@ class HistoryChart
 
     ~HistoryChart()
     {
+        if (m_DataScopeSet)
+        {
+            Detail::g_ActiveChartDataScope = m_PreviousDataScope;
+        }
         if (m_Active)
         {
             ImPlot::EndPlot();
@@ -1468,6 +1798,8 @@ class HistoryChart
     const char* m_Id = "";
     int m_VtxBefore = 0;
     ImDrawListFlags m_SavedDrawListFlags = 0;
+    ChartDataScope m_PreviousDataScope;
+    bool m_DataScopeSet = false;
     bool m_Measure = false;
     bool m_Active = false;
     bool m_AntiAliasingOverridden = false;

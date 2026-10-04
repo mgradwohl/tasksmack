@@ -7,6 +7,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/ProcessTypes.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
+#include "UI/ChartWidgets.h"
 #include "UI/FillPlotLayout.h"
 
 #include <chrono>
@@ -148,6 +149,10 @@ class ProcessDetailsPanel : public Panel
     std::vector<double> m_GpuMemHistory;    // GPU memory bytes history
     std::vector<double> m_GdiHistory;       // GDI object count history (Windows-only)
     std::vector<double> m_Timestamps;
+    // Taken (UI::Widgets::nextChartDataGeneration()) whenever the histories above change -- a sample
+    // recorded or trimmed, or the selection reset -- so the charts keep their reduced points until
+    // then instead of reducing every history every frame (HistoryChartConfig::dataGeneration, #1139).
+    std::uint64_t m_HistoryGeneration = 0;
     // Refresh interval and history window start at the SamplingConfig defaults; ShellLayer raises the
     // configured values as events on its first update (#1079).
     double m_MaxHistorySeconds = Domain::Numeric::toDouble(Domain::Sampling::HISTORY_SECONDS_DEFAULT);
@@ -155,7 +160,8 @@ class ProcessDetailsPanel : public Panel
     std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
     double m_PeakMemoryPercent = 0.0; // Peak working set (never decreases)
 
-    // Render scratch buffers for stacked CPU chart (reused across frames to avoid per-frame heap allocation)
+    // Render scratch buffers for stacked CPU chart (reused across frames to avoid per-frame heap allocation):
+    // only the reduced points, at most LINE_PLOT_MAX_POINTS_DENSE, are built into them each frame.
     std::vector<double> m_CpuPlotX; // CPU chart points as drawn, held to now (#1016)
     std::vector<double> m_CpuPlotTotal;
     std::vector<double> m_CpuPlotUser;
@@ -163,6 +169,7 @@ class ProcessDetailsPanel : public Panel
     std::vector<double> m_CpuStackY0;
     std::vector<double> m_CpuStackYUser;
     std::vector<double> m_CpuStackYSystem;
+    UI::Widgets::ReducedPointsCache m_CpuPlotReduction; // The CPU chart's reduced points (#1022), kept per m_HistoryGeneration (#1139)
 
     // Cached snapshot for rendering
     Domain::ProcessSnapshot m_CachedSnapshot;

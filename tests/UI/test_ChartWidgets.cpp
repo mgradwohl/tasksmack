@@ -7,11 +7,13 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <format>
 #include <limits>
 #include <ranges>
 #include <span>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -675,6 +677,201 @@ TEST(ChartWidgetsReduceTest, MinMaxReductionFallsBackForAnUnusableSpan)
     std::vector<float> outX(4);
     std::vector<float> outY(4);
     EXPECT_EQ(reduceSeriesMinMax(x.data(), y.data(), 10, 4, 0.0, outX.data(), outY.data()), 4);
+}
+
+// ========== Cached reductions (#1139) ==========
+
+TEST(ChartWidgetsReduceTest, MinMaxPointsReplayToTheSameSeriesAsTheReduction)
+{
+    // History charts now keep the chosen points (index + gap) and replay them each frame instead of
+    // reducing the whole history again: the replay must draw exactly what the reduction would.
+    ReduceFixture f;
+    f.y[1234] = 99.0;
+    f.y[1500] = std::numeric_limits<double>::quiet_NaN();
+    f.y[2001] = -5.0;
+    std::vector<double> outX(LINE_PLOT_MAX_POINTS_DENSE);
+    std::vector<double> outY(LINE_PLOT_MAX_POINTS_DENSE);
+    const int written =
+        reduceSeriesMinMax(f.x.data(), f.y.data(), ReduceFixture::COUNT, LINE_PLOT_MAX_POINTS_DENSE, 1000.0, outX.data(), outY.data());
+
+    std::vector<ReducedPoint> points;
+    reduceSeriesMinMaxPoints(f.x.data(), f.y.data(), ReduceFixture::COUNT, LINE_PLOT_MAX_POINTS_DENSE, 1000.0, points);
+
+    ASSERT_EQ(points.size(), static_cast<std::size_t>(written));
+    for (std::size_t k = 0; k < points.size(); ++k)
+    {
+        const auto source = static_cast<std::size_t>(points[k].index);
+        EXPECT_DOUBLE_EQ(outX[k], f.x[source]) << "point " << k;
+        if (points[k].gap)
+        {
+            EXPECT_TRUE(std::isnan(outY[k])) << "point " << k;
+        }
+        else
+        {
+            EXPECT_DOUBLE_EQ(outY[k], f.y[source]) << "point " << k;
+        }
+    }
+    EXPECT_TRUE(std::ranges::any_of(points, [](const ReducedPoint& p) { return p.gap; }));
+}
+
+TEST(ChartWidgetsReduceTest, MinMaxPointsOfAShortSeriesAreEverySample)
+{
+    const std::vector<double> x = {-3.0, -2.0, -1.0, 0.0};
+    const std::vector<double> y = {1.0, 2.0, 3.0, 4.0};
+    std::vector<ReducedPoint> points;
+    reduceSeriesMinMaxPoints(x.data(), y.data(), 4, LINE_PLOT_MAX_POINTS_DENSE, 0.0, points);
+    ASSERT_EQ(points.size(), 4U);
+    for (std::size_t k = 0; k < points.size(); ++k)
+    {
+        EXPECT_EQ(points[k], (ReducedPoint{.index = static_cast<int>(k), .gap = false}));
+    }
+}
+
+TEST(ChartWidgetsReduceTest, MinMaxPointsDoNotDependOnNow)
+{
+    // What makes caching them sound: x is "seconds before now" and the buckets are anchored at now,
+    // so the same samples seen a few frames later -- every x shifted, the anchor shifted with it --
+    // choose the same points. Only new data can change them.
+    ReduceFixture f;
+    f.y[777] = 42.0;
+    f.y[1501] = std::numeric_limits<double>::quiet_NaN();
+    constexpr double now = 5000.0;
+    std::vector<ReducedPoint> first;
+    reduceSeriesMinMaxPoints(f.x.data(), f.y.data(), ReduceFixture::COUNT, LINE_PLOT_MAX_POINTS_DENSE, now, first);
+
+    for (const double later : {0.016, 0.5, 0.9})
+    {
+        std::vector<double> shifted = f.x;
+        for (double& v : shifted)
+        {
+            v -= later;
+        }
+        std::vector<ReducedPoint> again;
+        reduceSeriesMinMaxPoints(shifted.data(), f.y.data(), ReduceFixture::COUNT, LINE_PLOT_MAX_POINTS_DENSE, now + later, again);
+        EXPECT_EQ(again, first) << "now advanced by " << later;
+    }
+}
+
+TEST(ChartWidgetsReduceTest, AlignedPointsReplayToTheSameSeriesAsTheInPlaceReduction)
+{
+    ReduceFixture f;
+    std::vector<double> user(ReduceFixture::COUNT, 5.0);
+    std::vector<double> system(ReduceFixture::COUNT, 20.0);
+    user[1234] = 60.0;
+    system[2345] = 95.0;
+    // Two gap runs of one series in one bucket collapse it (see AlignedReductionNeverDrawsASeriesAcrossItsGap).
+    user[1485] = std::numeric_limits<double>::quiet_NaN();
+    user[1505] = std::numeric_limits<double>::quiet_NaN();
+
+    std::vector<ReducedPoint> points;
+    reduceAlignedPoints<double>(
+        f.x, {std::span<const double>(user), std::span<const double>(system)}, LINE_PLOT_MAX_POINTS_DENSE, 1000.0, points);
+
+    auto x = f.x;
+    auto reducedUser = user;
+    auto reducedSystem = system;
+    reduceAlignedSeries(x, {&reducedUser, &reducedSystem}, {}, LINE_PLOT_MAX_POINTS_DENSE, 1000.0);
+
+    ASSERT_EQ(points.size(), x.size());
+    for (std::size_t k = 0; k < points.size(); ++k)
+    {
+        const auto source = static_cast<std::size_t>(points[k].index);
+        EXPECT_DOUBLE_EQ(x[k], f.x[source]) << "point " << k;
+        if (points[k].gap)
+        {
+            EXPECT_TRUE(std::isnan(reducedUser[k]) && std::isnan(reducedSystem[k])) << "point " << k;
+        }
+        else
+        {
+            EXPECT_DOUBLE_EQ(reducedUser[k], user[source]) << "point " << k;
+            EXPECT_DOUBLE_EQ(reducedSystem[k], system[source]) << "point " << k;
+        }
+    }
+    EXPECT_TRUE(std::ranges::any_of(points, [](const ReducedPoint& p) { return p.gap; }));
+}
+
+TEST(ChartWidgetsReduceTest, AlignedPointsAcceptFloatSeriesAndKeepEverySampleOfAShortOne)
+{
+    // The system histories are float; the cached path chooses points from them without a copy.
+    const std::vector<double> x = {-3.0, -2.0, -1.0, 0.0};
+    const std::vector<float> y = {1.0F, 2.0F, 3.0F, 4.0F};
+    std::vector<ReducedPoint> points;
+    reduceAlignedPoints<float>(x, {std::span<const float>(y)}, LINE_PLOT_MAX_POINTS_DENSE, 0.0, points);
+    ASSERT_EQ(points.size(), 4U);
+    EXPECT_EQ(points.back(), (ReducedPoint{.index = 3, .gap = false}));
+
+    ReduceFixture f;
+    std::vector<float> longY(ReduceFixture::COUNT, 10.0F);
+    longY[1234] = 70.0F;
+    reduceAlignedPoints<float>(f.x, {std::span<const float>(longY)}, LINE_PLOT_MAX_POINTS_DENSE, 1000.0, points);
+    ASSERT_LE(points.size(), static_cast<std::size_t>(LINE_PLOT_MAX_POINTS_DENSE));
+    EXPECT_TRUE(std::ranges::any_of(points, [](const ReducedPoint& p) { return p.index == 1234; }));
+}
+
+TEST(ReducedPointsCacheTest, RebuildsOnlyWhenTheKeyChanges)
+{
+    ReducedPointsCache cache;
+    int rebuilds = 0;
+    const auto rebuild = [&rebuilds](std::vector<ReducedPoint>& out)
+    {
+        ++rebuilds;
+        out.assign({ReducedPoint{.index = 0, .gap = false}, ReducedPoint{.index = rebuilds, .gap = false}});
+    };
+    const ReducedPointsCache::Key key{.generation = 7, .dataId = 1, .count = 100, .maxOut = 720};
+
+    EXPECT_EQ(cache.points(key, rebuild)[1].index, 1);
+    EXPECT_EQ(cache.points(key, rebuild)[1].index, 1); // same data: replayed, not rebuilt
+    EXPECT_EQ(rebuilds, 1);
+
+    // Each part of the key names the data: a change to any one rebuilds.
+    auto newGeneration = key;
+    newGeneration.generation = 8;
+    EXPECT_EQ(cache.points(newGeneration, rebuild)[1].index, 2);
+    auto otherSeries = newGeneration;
+    otherSeries.dataId = 2;
+    EXPECT_EQ(cache.points(otherSeries, rebuild)[1].index, 3);
+    auto longer = otherSeries;
+    longer.count = 101;
+    EXPECT_EQ(cache.points(longer, rebuild)[1].index, 4);
+    auto smallerBudget = longer;
+    smallerBudget.maxOut = 360;
+    EXPECT_EQ(cache.points(smallerBudget, rebuild)[1].index, 5);
+    EXPECT_EQ(cache.points(smallerBudget, rebuild)[1].index, 5);
+    EXPECT_EQ(cache.rebuildCount(), 5U);
+
+    cache.invalidate();
+    EXPECT_EQ(cache.points(smallerBudget, rebuild)[1].index, 6);
+}
+
+TEST(ReducedPointsCacheTest, GenerationZeroIsNeverCached)
+{
+    // A chart that names no data generation keeps the old behaviour: reduced on every call.
+    ReducedPointsCache cache;
+    int rebuilds = 0;
+    const auto rebuild = [&rebuilds](std::vector<ReducedPoint>& out)
+    {
+        ++rebuilds;
+        out.clear();
+    };
+    const ReducedPointsCache::Key uncached{.generation = 0, .dataId = 1, .count = 100, .maxOut = 720};
+    std::ignore = cache.points(uncached, rebuild);
+    std::ignore = cache.points(uncached, rebuild);
+    EXPECT_EQ(rebuilds, 2);
+}
+
+TEST(ReducedPointsCacheTest, NewDataGenerationsAreNonZeroAndNeverRepeat)
+{
+    const std::uint64_t first = nextChartDataGeneration();
+    const std::uint64_t second = nextChartDataGeneration();
+    EXPECT_NE(first, 0U);
+    EXPECT_GT(second, first);
+}
+
+TEST(HistoryChartConfigTest, DataGenerationDefaultsToUncachedAndCanBeSet)
+{
+    const HistoryChartConfig plain = percentHistoryConfig("##Test", -60.0, 0.0);
+    EXPECT_EQ(plain.dataGeneration, 0U);
+    EXPECT_EQ(withDataGeneration(plain, 42).dataGeneration, 42U);
 }
 
 // ========== Axis formatters ==========

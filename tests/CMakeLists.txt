@@ -122,6 +122,7 @@ set(COMMON_TEST_SOURCES
     App/test_UserConfigHelpers.cpp
     App/test_UserConfigPersistence.cpp
     App/test_PanelTabs.cpp
+    App/test_TabLabel.cpp
     App/test_PriorityHelpers.cpp
     App/test_ProcessGpuHelpers.cpp
     App/test_ProcessResourceHelpers.cpp

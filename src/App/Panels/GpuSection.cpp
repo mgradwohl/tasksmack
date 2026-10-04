@@ -282,8 +282,10 @@ void renderGpuSection(RenderContext& ctx)
 
         auto gpuCorePlot = [&]()
         {
-            const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
-                UI::Widgets::percentHistoryConfig("##GPUCoreHistory", axisConfig.xMin, axisConfig.xMax), plotHeight));
+            const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
+                UI::Widgets::withHeight(UI::Widgets::percentHistoryConfig("##GPUCoreHistory", axisConfig.xMin, axisConfig.xMax),
+                                        plotHeight),
+                ctx.chartDataGeneration));
             if (chart.active())
             {
                 UI::Widgets::drawCollectingHint(alignedCount); // The same "no data yet" state on every chart (#1013)
@@ -588,8 +590,10 @@ void renderGpuSection(RenderContext& ctx)
 
             auto gpuThermalPlot = [&]()
             {
-                const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
-                    UI::Widgets::percentHistoryConfig("##GPUThermalHistory", axisConfig.xMin, axisConfig.xMax), plotHeight));
+                const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
+                    UI::Widgets::withHeight(UI::Widgets::percentHistoryConfig("##GPUThermalHistory", axisConfig.xMin, axisConfig.xMax),
+                                            plotHeight),
+                    ctx.chartDataGeneration));
                 if (chart.active())
                 {
                     UI::Widgets::drawCollectingHint(alignedCount); // The same "no data yet" state on every chart (#1013)

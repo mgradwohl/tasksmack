@@ -38,6 +38,32 @@ struct AlignedCellText
     mutable float width = UNMEASURED_WIDTH;
 };
 
+/// The CalcTextSize width of a free-text cell whose text lives in the ProcessSnapshot rather than in
+/// RowFormatCache -- a name, a user, a command line -- measured the first time the cell is drawn and
+/// reused until the entry is rebuilt (#1141). That rebuild happens on a new snapshot generation, which
+/// is the only way the text can change, and on a font/size/DPI change (RowFormatCache::fontId), which
+/// is the only other way the width can, so no further invalidation is needed. Measuring these every
+/// frame cost a glyph lookup per character per visible cell, and command lines run to thousands of
+/// characters. `mutable` for the same reason as AlignedCellText::width.
+struct LazyTextWidth
+{
+    /// Sentinel meaning "not measured yet". Real widths are never negative.
+    static constexpr float UNMEASURED_WIDTH = -1.0F;
+
+    mutable float width = UNMEASURED_WIDTH;
+
+    /// The cached width, or `measure()`'s result -- remembered -- the first time.
+    // measure is called at most once, so it is used as an lvalue rather than forwarded.
+    template<typename Measure> [[nodiscard]] float get(Measure&& measure) const // NOLINT(cppcoreguidelines-missing-std-forward)
+    {
+        if (width < 0.0F)
+        {
+            width = measure();
+        }
+        return width;
+    }
+};
+
 /// Wraps `text` for a RowFormatCache population site, deferring width measurement to the first
 /// time ProcessesPanel's renderRightAlignedText() actually draws this cell (see AlignedCellText's
 /// doc comment).
@@ -137,6 +163,17 @@ struct RowFormatCache
     AlignedCellText pageFaults; // formatOrDash/formatIntLocalized(pageFaults)
     AlignedCellText affinity;   // formatCpuAffinityMask         — rarely changes
     AlignedCellText gdiObjects; // formatIntLocalized(*gdiObjectCount) or "-"
+
+    // Widths of the cells drawn straight from the snapshot's own text (#1141); see LazyTextWidth.
+    LazyTextWidth pidWidth;
+    LazyTextWidth userWidth;
+    LazyTextWidth statusWidth;
+    LazyTextWidth nameWidth;
+    LazyTextWidth commandWidth;
+    LazyTextWidth gpuEnginesWidth; // of gpuEngines above
+    LazyTextWidth gpuDevicesWidth;
+    LazyTextWidth publisherWidth;
+    LazyTextWidth processTypeWidth;
 };
 
 /// Formats every RowFormatCache field for one process snapshot. Pure (no ImGui calls, no shared
