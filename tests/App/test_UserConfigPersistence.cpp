@@ -1,11 +1,15 @@
 // NOLINTBEGIN(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
 #include "App/ProcessColumnConfig.h"
 #include "App/UserConfig.h"
+#include "App/UserConfigHelpers.h"
 #include "UI/ChartWidgets.h"
 
 #include <gtest/gtest.h>
+#include <toml++/toml.hpp>
 
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -14,6 +18,15 @@
 #include <system_error>
 #include <utility>
 #include <vector>
+
+#ifndef _WIN32
+#include <csignal>
+
+#include <sys/resource.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace App
 {
@@ -1084,6 +1097,361 @@ TEST_F(UserConfigSaveLoadFixture, MetricsMaxSaneRateRoundTrip)
     config.load();
     EXPECT_DOUBLE_EQ(config.settings().maxSaneRateBps, testRate);
 }
+
+// ========== Robust config writes (#1122, #1124) ==========
+
+[[nodiscard]] std::string readFile(const std::filesystem::path& path)
+{
+    std::ifstream in(path);
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+void writeFile(const std::filesystem::path& path, const std::string& content)
+{
+    std::ofstream out(path, std::ios::trunc);
+    out << content;
+}
+
+[[nodiscard]] toml::table parsed(const std::filesystem::path& path)
+{
+    return toml::parse_file(path.string());
+}
+
+TEST(UserConfigMergeTest, OnlyKeysTaskSmackChangedAreWritten)
+{
+    const toml::table base{{"sampling", toml::table{{"interval_ms", 1000}}}, {"theme", toml::table{{"id", "arctic-fire"}}}};
+    const toml::table mine{{"sampling", toml::table{{"interval_ms", 1000}}}, {"theme", toml::table{{"id", "mocha"}}}};
+    toml::table document{{"sampling", toml::table{{"interval_ms", 750}, {"future", 1}}}, {"theme", toml::table{{"id", "dracula"}}}};
+
+    UserConfigHelpers::mergeOwnedKeys(document, base, mine);
+
+    EXPECT_EQ(document["sampling"]["interval_ms"].value<int>(), 750); // edited outside: kept
+    EXPECT_EQ(document["sampling"]["future"].value<int>(), 1);        // not TaskSmack's: kept
+    EXPECT_EQ(document["theme"]["id"].value<std::string>(), "mocha"); // changed by TaskSmack: written
+}
+
+TEST(UserConfigMergeTest, KeysDeletedOrClearedStayDeleted)
+{
+    // Deleted outside TaskSmack (unchanged in-app): stays deleted. No longer written by TaskSmack
+    // (a cleared window position): removed.
+    const toml::table base{{"window", toml::table{{"x", 10}, {"y", 20}}}, {"process_table", toml::table{{"layout", "abc"}}}};
+    const toml::table mine{{"window", toml::table{{"y", 20}}}, {"process_table", toml::table{{"layout", "abc"}}}};
+    toml::table document{{"window", toml::table{{"x", 10}, {"y", 20}, {"mine", true}}}, {"process_table", toml::table{}}};
+
+    UserConfigHelpers::mergeOwnedKeys(document, base, mine);
+
+    EXPECT_FALSE(document["window"]["x"]);
+    EXPECT_EQ(document["window"]["y"].value<int>(), 20);
+    EXPECT_EQ(document["window"]["mine"].value<bool>(), true);
+    EXPECT_FALSE(document["process_table"]["layout"]);
+}
+
+TEST_F(UserConfigSaveLoadFixture, SaveKeepsKeysTaskSmackDoesNotOwn)
+{
+    const auto path = UserConfig::get().configPath();
+    writeFile(path, "[sampling]\ninterval_ms = 500\nfuture_option = 7\n\n[plugin]\nenabled = true\n");
+    auto& config = UserConfig::get();
+    config.load();
+    config.save();
+
+    const auto document = parsed(path);
+    EXPECT_EQ(document["sampling"]["future_option"].value<int>(), 7);
+    EXPECT_EQ(document["plugin"]["enabled"].value<bool>(), true);
+    EXPECT_EQ(document["sampling"]["interval_ms"].value<int>(), 500);
+}
+
+TEST_F(UserConfigSaveLoadFixture, EditsMadeWhileRunningSurviveSavesAndShutdown)
+{
+    const auto path = UserConfig::get().configPath();
+    auto& config = UserConfig::get();
+    config.settings().refreshIntervalMs = 1000;
+    config.settings().themeId = "arctic-fire";
+    config.save();
+    config.load();
+
+    // Edited in a text editor while TaskSmack runs, keeping the same modification time.
+    const auto before = std::filesystem::last_write_time(path);
+    writeFile(path, "[sampling]\ninterval_ms = 750\n\n[theme]\nid = \"dracula\"\n");
+    std::filesystem::last_write_time(path, before);
+
+    // Apply changes a different setting, then shutdown saves again with the theme still running.
+    config.settings().maxHistorySeconds = 600;
+    config.save();
+    config.save();
+
+    const auto document = parsed(path);
+    EXPECT_EQ(document["sampling"]["interval_ms"].value<int>(), 750);
+    EXPECT_EQ(document["theme"]["id"].value<std::string>(), "dracula");
+    EXPECT_EQ(document["sampling"]["history_max_seconds"].value<int>(), 600);
+}
+
+TEST_F(UserConfigSaveLoadFixture, ToggledColumnDoesNotOverwriteOtherColumnsEditedOutside)
+{
+    const auto path = UserConfig::get().configPath();
+    auto& config = UserConfig::get();
+    config.save();
+    config.load();
+    const auto columns = allProcessColumns();
+    ASSERT_GE(columns.size(), 2U);
+    const auto first = getColumnInfo(columns[0]).configKey;
+    const auto second = getColumnInfo(columns[1]).configKey;
+
+    auto document = parsed(path);
+    const bool secondWas = document["process_columns"][second].value_or(true);
+    document["process_columns"].as_table()->insert_or_assign(second, !secondWas);
+    {
+        std::ofstream out(path, std::ios::trunc);
+        out << document;
+    }
+
+    config.settings().processColumns.toggleVisible(columns[0]);
+    config.save();
+
+    const auto saved = parsed(path);
+    EXPECT_EQ(saved["process_columns"][second].value<bool>(), !secondWas);
+    EXPECT_EQ(saved["process_columns"][first].value<bool>(), config.settings().processColumns.isVisible(columns[0]));
+}
+
+TEST_F(UserConfigSaveLoadFixture, MalformedConfigIsNotReplaced)
+{
+    const auto path = UserConfig::get().configPath();
+    const std::string malformed = "[sampling\ninterval_ms = = 5\n";
+    writeFile(path, malformed);
+    auto& config = UserConfig::get();
+    config.load();
+    config.settings().themeId = "dracula";
+    config.save();
+    EXPECT_EQ(readFile(path), malformed);
+}
+
+TEST_F(UserConfigSaveLoadFixture, SaveLeavesNoTemporaryFileBehind)
+{
+    auto& config = UserConfig::get();
+    config.save();
+    EXPECT_TRUE(std::filesystem::exists(config.configPath()));
+    for (const auto& entry : std::filesystem::directory_iterator(m_TempDir))
+    {
+        EXPECT_NE(entry.path().extension(), ".tmp") << entry.path();
+    }
+}
+
+#ifndef _WIN32
+TEST_F(UserConfigSaveLoadFixture, FailedWriteLeavesTheOriginalIntactAndALaterSaveSucceeds)
+{
+    // The data-loss path the atomic replace exists for: writing the new file fails partway. The
+    // original must stay byte-for-byte, the temporary file must go, and the change must still be
+    // saved by the next successful save (#1222 review).
+    const auto path = UserConfig::get().configPath();
+    const std::string original = "[theme]\nid = \"arctic-fire\"\n";
+    writeFile(path, original);
+    auto& config = UserConfig::get();
+    config.load();
+    config.settings().themeId = "mocha";
+
+    // Save in a child whose file-size limit is far below the new file's size, so the write fails
+    // with EFBIG once the buffer is flushed (SIGXFSZ ignored so it is an error, not a kill).
+    const pid_t child = fork();
+    ASSERT_GE(child, 0);
+    if (child == 0)
+    {
+        std::signal(SIGXFSZ, SIG_IGN);
+        constexpr rlim_t TOO_SMALL = 64;
+        const rlimit limit{.rlim_cur = TOO_SMALL, .rlim_max = TOO_SMALL};
+        setrlimit(RLIMIT_FSIZE, &limit);
+        UserConfig::get().save();
+        _exit(0);
+    }
+    int status = 0;
+    ASSERT_EQ(waitpid(child, &status, 0), child);
+    ASSERT_TRUE(WIFEXITED(status));
+
+    std::ifstream in(path, std::ios::binary);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(in), {}), original);
+    for (const auto& entry : std::filesystem::directory_iterator(m_TempDir))
+    {
+        EXPECT_NE(entry.path().extension(), ".tmp") << entry.path();
+    }
+
+    config.save();
+    EXPECT_EQ(parsed(path)["theme"]["id"].value<std::string>(), "mocha");
+}
+
+TEST_F(UserConfigSaveLoadFixture, SymlinkedConfigKeepsItsLinkAndUpdatesItsTarget)
+{
+    // A dotfiles-managed config is often a symlink: saving must write through it (#1222 review).
+    const auto link = UserConfig::get().configPath();
+    const auto target = m_TempDir / "dotfiles-config.toml";
+    writeFile(target, "[theme]\nid = \"arctic-fire\"\n");
+    std::filesystem::create_symlink(target, link);
+
+    auto& config = UserConfig::get();
+    config.load();
+    config.settings().themeId = "mocha";
+    config.save();
+
+    EXPECT_TRUE(std::filesystem::is_symlink(link));
+    EXPECT_EQ(parsed(target)["theme"]["id"].value<std::string>(), "mocha");
+}
+
+TEST_F(UserConfigSaveLoadFixture, SymlinkTargetWithALongNameStillSaves)
+{
+    // A 250-byte target name is valid under a 255-byte limit; a temporary named after it with a
+    // suffix would not be, and every save would fail (#1222 review).
+    const auto link = UserConfig::get().configPath();
+    const auto target = m_TempDir / (std::string(245, 'c') + ".toml");
+    writeFile(target, "[theme]\nid = \"arctic-fire\"\n");
+    std::filesystem::create_symlink(target, link);
+
+    auto& config = UserConfig::get();
+    config.load();
+    config.settings().themeId = "mocha";
+    config.save();
+
+    EXPECT_TRUE(std::filesystem::is_symlink(link));
+    EXPECT_EQ(parsed(target)["theme"]["id"].value<std::string>(), "mocha");
+}
+
+TEST_F(UserConfigSaveLoadFixture, SymlinkToAMissingFileCreatesTheTarget)
+{
+    // canonical() needs the target to exist; a link to a file not created yet must still be
+    // written through, not refused (#1222 review).
+    const auto link = UserConfig::get().configPath();
+    const auto target = m_TempDir / "not-yet-created.toml";
+    std::filesystem::create_symlink(target, link);
+
+    auto& config = UserConfig::get();
+    config.load();
+    config.settings().themeId = "mocha";
+    config.save();
+
+    EXPECT_TRUE(std::filesystem::is_symlink(link));
+    ASSERT_TRUE(std::filesystem::exists(target));
+    EXPECT_EQ(parsed(target)["theme"]["id"].value<std::string>(), "mocha");
+}
+
+TEST_F(UserConfigSaveLoadFixture, LinkLoopIsNotSaved)
+{
+    const auto link = UserConfig::get().configPath();
+    const auto other = m_TempDir / "other.toml";
+    std::filesystem::create_symlink(other, link);
+    std::filesystem::create_symlink(link, other);
+
+    auto& config = UserConfig::get();
+    config.load();
+    config.settings().themeId = "mocha";
+    config.save();
+
+    EXPECT_TRUE(std::filesystem::is_symlink(link));
+    EXPECT_TRUE(std::filesystem::is_symlink(other));
+}
+#endif
+
+TEST_F(UserConfigSaveLoadFixture, ConfigCreatedBeforeTheFirstSaveKeepsItsOtherSettings)
+{
+    // No file at startup, then one is created (or repaired) before TaskSmack's first save: only
+    // the setting changed in-app is written over it, not every runtime default (#1222 review).
+    auto& config = UserConfig::get();
+    config.load();
+    writeFile(UserConfig::get().configPath(), "[sampling]\ninterval_ms = 750\n");
+
+    config.settings().themeId = "mocha";
+    config.save();
+
+    const auto saved = parsed(UserConfig::get().configPath());
+    EXPECT_EQ(saved["sampling"]["interval_ms"].value<std::int64_t>(), 750);
+    EXPECT_EQ(saved["theme"]["id"].value<std::string>(), "mocha");
+}
+
+#ifndef _WIN32
+TEST_F(UserConfigSaveLoadFixture, UnreadableConfigFileIsNotReplaced)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root can read a mode-000 file";
+    }
+    const auto path = UserConfig::get().configPath();
+    writeFile(path, "[theme]\nid = \"dracula\"\n");
+    std::filesystem::permissions(path, std::filesystem::perms::none);
+
+    auto& config = UserConfig::get();
+    config.settings().themeId = "mocha";
+    EXPECT_NO_THROW(config.save());
+
+    std::filesystem::permissions(path, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
+    EXPECT_EQ(parsed(path)["theme"]["id"].value<std::string>(), "dracula");
+}
+
+TEST_F(UserConfigSaveLoadFixture, SaveKeepsTheConfigFilesPermissions)
+{
+    auto& config = UserConfig::get();
+    config.save();
+    const auto path = config.configPath();
+    const auto restricted = std::filesystem::perms::owner_read | std::filesystem::perms::owner_write;
+    std::filesystem::permissions(path, restricted);
+
+    config.settings().themeId = "mocha";
+    config.save();
+    EXPECT_EQ(std::filesystem::status(path).permissions() & std::filesystem::perms::all, restricted);
+}
+
+TEST_F(UserConfigSaveLoadFixture, StagingFileIsNeverReadableByOthers)
+{
+    // The staging file is created owner-only (#1222 review), so a brand-new config is 0600 rather
+    // than umask-readable, while an existing config's own, wider mode is still restored.
+    auto& config = UserConfig::get();
+    config.save();
+    const auto path = config.configPath();
+    const auto ownerOnly = std::filesystem::perms::owner_read | std::filesystem::perms::owner_write;
+    EXPECT_EQ(std::filesystem::status(path).permissions() & std::filesystem::perms::all, ownerOnly);
+
+    const auto shared = ownerOnly | std::filesystem::perms::group_read | std::filesystem::perms::others_read;
+    std::filesystem::permissions(path, shared);
+    config.settings().themeId = "mocha";
+    config.save();
+    EXPECT_EQ(std::filesystem::status(path).permissions() & std::filesystem::perms::all, shared);
+}
+
+TEST_F(UserConfigSaveLoadFixture, SavesUnderAUmaskThatMasksOwnerWrite)
+{
+    // The staging file is written through the descriptor that created it: reopening its path
+    // failed with EACCES under a umask without owner-write, so nothing was ever saved (#1222 review).
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root can write a mode-0400 file anyway";
+    }
+    auto& config = UserConfig::get();
+    config.settings().themeId = "mocha";
+    const mode_t previous = ::umask(0277);
+    config.save();
+    config.settings().themeId = "latte";
+    config.save(); // replacing a 0400 config works too
+    ::umask(previous);
+
+    EXPECT_EQ(parsed(config.configPath())["theme"]["id"].value<std::string>(), "latte");
+    for (const auto& entry : std::filesystem::directory_iterator(m_TempDir))
+    {
+        EXPECT_NE(entry.path().extension(), ".tmp") << entry.path();
+    }
+}
+
+TEST_F(UserConfigSaveLoadFixture, UnreadableConfigDirectoryFallsBackToDefaults)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root can read a mode-000 directory";
+    }
+    const auto dir = m_TempDir / "locked";
+    std::filesystem::create_directory(dir);
+    UserConfig::get().resetConfigPathForTesting(dir / "inner" / "config.toml");
+    std::filesystem::permissions(dir, std::filesystem::perms::none);
+
+    EXPECT_NO_THROW(UserConfig::get().load());
+    EXPECT_EQ(UserConfig::get().settings().refreshIntervalMs, UserSettings{}.refreshIntervalMs);
+    EXPECT_NO_THROW(UserConfig::get().save());
+
+    std::filesystem::permissions(dir, std::filesystem::perms::owner_all); // let TearDown remove it
+}
+#endif
 
 } // namespace
 } // namespace App

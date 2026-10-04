@@ -135,9 +135,11 @@ void ShellLayer::onDetach()
         settings.processTableLayout = std::move(layout);
     }
 
-    config.save();
-
+    // Stop the panels first: their samplers are torn down in order before the save, and anything
+    // a panel writes back into the settings on detach is included in it (#1124, #1177).
     m_Tabs.onDetach();
+
+    config.save();
     spdlog::info("ShellLayer detached");
 }
 
