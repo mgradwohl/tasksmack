@@ -117,6 +117,35 @@ TEST(ColorDifferenceTest, RedAndGreenCollapseUnderSimulationButBlueAndYellowDoNo
     EXPECT_GT(deltaE2000As(blue, yellow, Deficiency::Deuteranopia), 50.0);
 }
 
+// #1252 review: the palette gate's protan/deutan floors are only as good as these coefficients, so
+// pin the simulation to exact outputs of Machado 2009's severity-1.0 matrices. The expected sRGB
+// values were computed independently: sRGB -> linear (IEC 61966-2-1), the published matrix, back
+// to sRGB clamped to the gamut. A wrong coefficient moves at least one of these.
+TEST(ColorDifferenceTest, SimulationMatchesMachadoReferenceOutputs)
+{
+    struct Case
+    {
+        ImVec4 input;
+        Deficiency deficiency;
+        std::array<float, 3> expected;
+    };
+    const std::array cases{
+        Case{.input = {1.0F, 0.0F, 0.0F, 1.0F}, .deficiency = Deficiency::Protanopia, .expected = {0.426608F, 0.372654F, 0.0F}},
+        Case{.input = {0.0F, 1.0F, 0.0F, 1.0F}, .deficiency = Deficiency::Protanopia, .expected = {1.0F, 0.899428F, 0.0F}},
+        Case{.input = {0.8F, 0.4F, 0.2F, 1.0F}, .deficiency = Deficiency::Protanopia, .expected = {0.511696F, 0.457628F, 0.175910F}},
+        Case{.input = {1.0F, 0.0F, 0.0F, 1.0F}, .deficiency = Deficiency::Deuteranopia, .expected = {0.640060F, 0.565807F, 0.0F}},
+        Case{.input = {0.0F, 1.0F, 0.0F, 1.0F}, .deficiency = Deficiency::Deuteranopia, .expected = {0.936051F, 0.839248F, 0.229192F}},
+        Case{.input = {0.8F, 0.4F, 0.2F, 1.0F}, .deficiency = Deficiency::Deuteranopia, .expected = {0.608539F, 0.546899F, 0.191920F}},
+    };
+    for (const Case& c : cases)
+    {
+        const ImVec4 seen = simulate(c.input, c.deficiency);
+        EXPECT_NEAR(seen.x, c.expected[0], 1e-5F);
+        EXPECT_NEAR(seen.y, c.expected[1], 1e-5F);
+        EXPECT_NEAR(seen.z, c.expected[2], 1e-5F);
+    }
+}
+
 TEST(ColorDifferenceTest, OutOfRangeInputIsClamped)
 {
     const ImVec4 overWhite{2.0F, 2.0F, 2.0F, 1.0F};

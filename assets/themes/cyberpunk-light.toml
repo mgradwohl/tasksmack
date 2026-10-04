@@ -112,7 +112,7 @@ iowait_fill = "#DA660059"    # Orange with 35% alpha - iowait fill
 idle_fill = "#B0B0B033"      # Light gray with 20% alpha - idle fill
 
 [priority]
-high   = "#FF315A"     # Crimson Neon (accents[7])
+high   = "#FF315A"     # Crimson Neon (accents[4])
 normal = "#7DFF5A"     # Neon Lime (accents[3])
 low    = "#815CFF"     # Vivid Violet (accents[2])
 badge_text_color = "#1A1A1A"  # Preferred badge text; a fill it is too faint on gets the other text colour (#1130)
