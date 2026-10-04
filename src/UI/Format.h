@@ -102,6 +102,18 @@ template<std::integral T> [[nodiscard]] inline auto percentCompact(T percent) ->
     return std::format("{:L}%", percent);
 }
 
+/// "0.6%", one decimal, as the Processes table shows a process's CPU and memory percents, or "N/A"
+/// for NaN. A process's share of the machine is usually under a few percent, where percentCompact()
+/// rounded it to "0%" or "1%" (#1195).
+[[nodiscard]] inline auto percentOneDecimal(double percent) -> std::string
+{
+    if (std::isnan(percent))
+    {
+        return "N/A";
+    }
+    return std::format("{:.1Lf}%", percent);
+}
+
 [[nodiscard]] inline auto formatId(std::int64_t value) -> std::string
 {
     return std::format("{}", value);
