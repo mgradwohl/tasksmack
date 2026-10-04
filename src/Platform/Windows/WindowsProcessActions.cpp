@@ -154,7 +154,13 @@ ProcessActionResult WindowsProcessActions::terminate(const ProcessTarget& target
     }
 
     CloseRequest request{.pid = static_cast<DWORD>(target.pid)};
-    EnumWindows(postCloseToProcessWindow, reinterpret_cast<LPARAM>(&request));
+    // The callback never stops the enumeration, so a zero return is a failure: some windows may not
+    // have been examined, and the counts below would describe only part of the process.
+    if (EnumWindows(postCloseToProcessWindow, reinterpret_cast<LPARAM>(&request)) == 0)
+    {
+        return ProcessActionResult::error(
+            std::format("Could not list the windows of process {} to ask it to close: error {}", target.pid, GetLastError()));
+    }
     if (std::string failure = closeRequestFailure(target.pid, request.eligible, request.failed, request.firstError); !failure.empty())
     {
         spdlog::info("{}", failure);
