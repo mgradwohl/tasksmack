@@ -8,6 +8,7 @@
 #include "FontSizeChange.h"
 #include "Panels/ProcessesPanel.h"
 #include "ShellMetrics.h"
+#include "TabLabel.h"
 #include "TitleBarGeometry.h"
 #include "TitleBarLayer.h"
 #include "UI/DpiScale.h"
@@ -30,10 +31,18 @@
 namespace App
 {
 
+namespace
+{
+// A literal, so the tab's label provider can hand it out with no storage of its own. Identified by its
+// "###" suffix like the other main tabs (see TabLabel.h, #1140).
+constexpr const char* PROCESSES_TAB_LABEL = ICON_FA_LIST "  Processes###ProcessesTab";
+static_assert(TabLabel::idPart(PROCESSES_TAB_LABEL) == TabLabel::PROCESSES_TAB_ID);
+} // namespace
+
 ShellLayer::ShellLayer()
     : Layer("ShellLayer"),
       m_Tabs({{.panel = m_SystemMetricsPanel, .eventName = "SystemOverview", .label = [this] { return m_CachedSystemTabLabel.c_str(); }},
-              {.panel = m_ProcessesPanel, .eventName = "Processes", .label = [] { return ICON_FA_LIST "  Processes"; }},
+              {.panel = m_ProcessesPanel, .eventName = "Processes", .label = [] { return PROCESSES_TAB_LABEL; }},
               {.panel = m_ProcessDetailsPanel, .eventName = "ProcessDetails", .label = [this] { return m_CachedDetailsTabLabel.c_str(); }}})
 {}
 
@@ -75,8 +84,8 @@ void ShellLayer::onAttach()
 
     // Build stable tab labels. Hostname doesn't change for the process lifetime,
     // so the system tab label is built once here.
-    m_CachedSystemTabLabel = std::string(ICON_FA_COMPUTER) + "  " + m_SystemMetricsPanel.hostname();
-    m_CachedDetailsTabLabel = std::string(ICON_FA_CIRCLE_INFO) + "  Select a process";
+    m_CachedSystemTabLabel = TabLabel::make(ICON_FA_COMPUTER, m_SystemMetricsPanel.hostname(), TabLabel::SYSTEM_TAB_ID);
+    m_CachedDetailsTabLabel = TabLabel::make(ICON_FA_CIRCLE_INFO, "Select a process", TabLabel::PROCESS_DETAILS_TAB_ID);
     m_CachedLabelText.clear();
 
     // Cache privilege status and trigger the startup notice if needed.
@@ -249,7 +258,11 @@ void ShellLayer::onUpdate(float deltaTime)
     if (const std::string& labelText = m_ProcessDetailsPanel.tabLabel(); labelText != m_CachedLabelText)
     {
         m_CachedLabelText = labelText;
-        m_CachedDetailsTabLabel = std::string(ICON_FA_CIRCLE_INFO) + "  " + labelText;
+        // The visible text follows the process's name, but the tab's ImGui ID does not: it comes from
+        // the fixed "###" suffix (see TabLabel.h). Hashed from the visible text, the ID changed
+        // whenever the name did -- an exec keeps the PID, so the selection survives it -- and ImGui,
+        // no longer finding the selected tab, switched to another one (#1140).
+        m_CachedDetailsTabLabel = TabLabel::make(ICON_FA_CIRCLE_INFO, labelText, TabLabel::PROCESS_DETAILS_TAB_ID);
     }
 
     // Handle keyboard shortcuts for font size

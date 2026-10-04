@@ -121,8 +121,10 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
 
     auto memoryPlot = [&]()
     {
-        const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
-            UI::Widgets::percentHistoryConfig("##MemorySwapHistory", axisConfig.xMin, axisConfig.xMax), ctx.plotHeight));
+        const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
+            UI::Widgets::withHeight(UI::Widgets::percentHistoryConfig("##MemorySwapHistory", axisConfig.xMin, axisConfig.xMax),
+                                    ctx.plotHeight),
+            ctx.chartDataGeneration));
         if (chart.active())
         {
             UI::Widgets::drawCollectingHint(alignedCount); // The same "no data yet" state on every chart (#1013)

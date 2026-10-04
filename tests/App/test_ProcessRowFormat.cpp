@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 
 namespace App
@@ -280,6 +281,63 @@ TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheRebuildsWhenFontChangesWithou
 
     EXPECT_FLOAT_EQ(fmt.cpuPercent.width, AlignedCellText::UNMEASURED_WIDTH); // Rebuilt, not reusing the stale width.
     EXPECT_EQ(fmt.fontId, newFontToken);
+}
+
+// =============================================================================
+// Free-text cell widths (#1141)
+// =============================================================================
+
+TEST(ProcessRowFormatTest, LazyTextWidthMeasuresOnceThenReusesTheWidth)
+{
+    const ProcessRowFormat::LazyTextWidth width;
+    int measurements = 0;
+    const auto measure = [&measurements]
+    {
+        ++measurements;
+        return 123.5F;
+    };
+    EXPECT_FLOAT_EQ(width.get(measure), 123.5F);
+    EXPECT_FLOAT_EQ(width.get(measure), 123.5F); // a later frame: no glyph lookups
+    EXPECT_EQ(measurements, 1);
+}
+
+TEST(ProcessRowFormatTest, FreeTextWidthsAreMeasuredAgainForANewGenerationOrFont)
+{
+    // The cached widths of the name/user/command cells live in the row's entry, so they are dropped
+    // exactly when the text can change (a new snapshot generation) or its width can (a new font).
+    std::unordered_map<std::uint64_t, RowFormatCache> cache;
+    const ProcessSnapshot proc = makeSnapshot();
+    int measurements = 0;
+    const auto measure = [&measurements]
+    {
+        ++measurements;
+        return 10.0F;
+    };
+
+    std::ignore = getOrBuildRowFormatCache(cache, proc, 1, 1).commandWidth.get(measure);
+    std::ignore = getOrBuildRowFormatCache(cache, proc, 1, 1).commandWidth.get(measure);
+    EXPECT_EQ(measurements, 1);
+
+    std::ignore = getOrBuildRowFormatCache(cache, proc, 2, 1).commandWidth.get(measure); // new snapshot
+    EXPECT_EQ(measurements, 2);
+
+    std::ignore = getOrBuildRowFormatCache(cache, proc, 2, 7).commandWidth.get(measure); // new font
+    EXPECT_EQ(measurements, 3);
+
+    // Every free-text width starts unmeasured in a fresh entry.
+    const RowFormatCache fresh = buildRowFormatCache(proc);
+    for (const auto* width : {&fresh.pidWidth,
+                              &fresh.userWidth,
+                              &fresh.statusWidth,
+                              &fresh.nameWidth,
+                              &fresh.commandWidth,
+                              &fresh.gpuEnginesWidth,
+                              &fresh.gpuDevicesWidth,
+                              &fresh.publisherWidth,
+                              &fresh.processTypeWidth})
+    {
+        EXPECT_FLOAT_EQ(width->width, ProcessRowFormat::LazyTextWidth::UNMEASURED_WIDTH);
+    }
 }
 
 } // namespace

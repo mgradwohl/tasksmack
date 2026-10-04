@@ -5,6 +5,7 @@
 #include "Domain/SystemSnapshot.h"
 
 #include <chrono>
+#include <cstdint>
 #include <vector>
 
 namespace App::CpuCoresSection
@@ -17,6 +18,9 @@ struct RenderContext
 {
     // Model (non-owning pointer)
     const Domain::SystemPublication* publication = nullptr;
+    // Generation of `publication` (UI::Widgets::nextChartDataGeneration()), so the per-core charts
+    // keep their reduced points until it changes (HistoryChartConfig::dataGeneration, #1139). 0: none.
+    std::uint64_t chartDataGeneration = 0;
 
     // Cached timestamps from model (for efficiency)
     // History configuration
