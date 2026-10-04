@@ -381,6 +381,9 @@ struct PDHGPUProbe::Impl
     PDH_HQUERY query = nullptr;
     bool initialized = false;
 
+    /// Which counters this query adds and reads (#1175). Set before initialize()/ensureCounters().
+    PDHGPUProbe::Role role = PDHGPUProbe::Role::Process;
+
     // Warm-up tracking - the first PdhCollectQueryData sample cannot produce utilization
     // values because PDH needs two samples to compute deltas.
     bool warmedUp = false;
@@ -566,6 +569,8 @@ struct PDHGPUProbe::Impl
     /// @return true if at least one wildcard counter is active
     bool ensureCounters()
     {
+        // "GPU Engine(*)" is in both roles' queries: its rates are per query, between that query's
+        // own collects, and the process and system samplers collect at different intervals (#1034).
         if (utilizationCounter == nullptr)
         {
             addWildcardCounter(UTILIZATION_COUNTER_PATH, utilizationCounter);
@@ -576,21 +581,29 @@ struct PDHGPUProbe::Impl
                 warmedUp = false;
             }
         }
-        if (dedicatedMemoryCounter == nullptr)
+        // Each role adds only the memory counters it reads, so neither query collects the other's
+        // (#1175).
+        if (role == PDHGPUProbe::Role::Process)
         {
-            addWildcardCounter(DEDICATED_MEMORY_COUNTER_PATH, dedicatedMemoryCounter);
+            if (dedicatedMemoryCounter == nullptr)
+            {
+                addWildcardCounter(DEDICATED_MEMORY_COUNTER_PATH, dedicatedMemoryCounter);
+            }
+            if (sharedMemoryCounter == nullptr)
+            {
+                addWildcardCounter(SHARED_MEMORY_COUNTER_PATH, sharedMemoryCounter);
+            }
         }
-        if (sharedMemoryCounter == nullptr)
+        else
         {
-            addWildcardCounter(SHARED_MEMORY_COUNTER_PATH, sharedMemoryCounter);
-        }
-        if (adapterDedicatedCounter == nullptr)
-        {
-            addWildcardCounter(ADAPTER_DEDICATED_COUNTER_PATH, adapterDedicatedCounter);
-        }
-        if (adapterSharedCounter == nullptr)
-        {
-            addWildcardCounter(ADAPTER_SHARED_COUNTER_PATH, adapterSharedCounter);
+            if (adapterDedicatedCounter == nullptr)
+            {
+                addWildcardCounter(ADAPTER_DEDICATED_COUNTER_PATH, adapterDedicatedCounter);
+            }
+            if (adapterSharedCounter == nullptr)
+            {
+                addWildcardCounter(ADAPTER_SHARED_COUNTER_PATH, adapterSharedCounter);
+            }
         }
         // Any one active counter is worth a collect: the adapter-memory counters alone still give
         // the GPU tab its Memory line (#1029).
@@ -713,6 +726,8 @@ struct PDHGPUProbe::Impl
         utilizationCounter = nullptr;
         dedicatedMemoryCounter = nullptr;
         sharedMemoryCounter = nullptr;
+        adapterDedicatedCounter = nullptr;
+        adapterSharedCounter = nullptr;
 
         if (query != nullptr && pdhCloseQuery != nullptr)
         {

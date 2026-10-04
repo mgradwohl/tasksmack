@@ -23,8 +23,8 @@ namespace Platform
 WindowsGPUProbe::WindowsGPUProbe()
     : m_DXGIProbe(std::make_unique<DXGIGPUProbe>()),
       m_NVMLProbe(std::make_unique<NVMLGPUProbe>()),
-      m_PDHProbe(std::make_unique<PDHGPUProbe>()),
-      m_PDHAdapterProbe(std::make_unique<PDHGPUProbe>())
+      m_PDHProbe(std::make_unique<PDHGPUProbe>(PDHGPUProbe::Role::Process)),
+      m_PDHAdapterProbe(std::make_unique<PDHGPUProbe>(PDHGPUProbe::Role::Adapter))
 {
     std::string probeSummary = "DXGI";
     if (m_NVMLProbe->isAvailable())

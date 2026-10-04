@@ -57,7 +57,8 @@ class WindowsGPUProbe : public IGPUProbe
     // consecutive collects on a query, so with one shared query each sampler's reading covered
     // only the slice since the *other* sampler's collect (#1034). Each query now spans its own
     // sampler's whole interval. (Access was already serialized by GPUModel's m_ProbeMutex; this
-    // is about the measurement window, not thread safety.)
+    // is about the measurement window, not thread safety.) Each adds only its role's counters, so
+    // neither collects the other's memory counters or builds aggregates it discards (#1175).
     std::unique_ptr<PDHGPUProbe> m_PDHProbe;
     std::unique_ptr<PDHGPUProbe> m_PDHAdapterProbe;
 

@@ -133,6 +133,7 @@ struct FakeScenario
 {
     std::unordered_map<std::wstring, bool> failToAdd;
     int addCounterCallCount = 0;
+    std::vector<std::wstring> addedPaths; // Every counter path the query was asked to add (#1175)
     PDH_STATUS collectStatus = ERROR_SUCCESS;
     int collectCallCount = 0;
     std::unordered_map<PDH_HCOUNTER, std::vector<FakeItem>> items;
@@ -171,6 +172,7 @@ PDH_STATUS WINAPI fakeCloseQuery(PDH_HQUERY)
 PDH_STATUS WINAPI fakeAddEnglishCounter(PDH_HQUERY, LPCWSTR path, DWORD_PTR, PDH_HCOUNTER* counter)
 {
     ++g_scenario->addCounterCallCount;
+    g_scenario->addedPaths.emplace_back(path);
     if (const auto it = g_scenario->failToAdd.find(path); it != g_scenario->failToAdd.end() && it->second)
     {
         *counter = nullptr;
@@ -248,9 +250,10 @@ fakeGetFormattedCounterArray(PDH_HCOUNTER counter, DWORD format, LPDWORD bufferS
     return ERROR_SUCCESS;
 }
 
-std::unique_ptr<Impl> makeInjectedImpl()
+std::unique_ptr<Impl> makeInjectedImpl(PDHGPUProbe::Role role = PDHGPUProbe::Role::Process)
 {
     auto impl = std::make_unique<Impl>();
+    impl->role = role;
     impl->pdhOpenQuery = fakeOpenQuery;
     impl->pdhCloseQuery = fakeCloseQuery;
     impl->pdhAddEnglishCounter = fakeAddEnglishCounter;
@@ -351,6 +354,86 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, AllCountersFailingToAddReturnsStaleCacheW
     EXPECT_EQ(results[0].pid, 900);
 }
 
+// =============================================================================
+// Roles: each query adds and reads only the counters it uses (#1175)
+// =============================================================================
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, ProcessRoleAddsEngineAndProcessMemoryCountersOnly)
+{
+    const auto impl = makeInjectedImpl(PDHGPUProbe::Role::Process);
+
+    const std::vector<std::wstring> expected = {
+        Impl::UTILIZATION_COUNTER_PATH,
+        Impl::DEDICATED_MEMORY_COUNTER_PATH,
+        Impl::SHARED_MEMORY_COUNTER_PATH,
+    };
+    EXPECT_EQ(m_scenario->addedPaths, expected);
+    EXPECT_EQ(impl->adapterDedicatedCounter, nullptr);
+    EXPECT_EQ(impl->adapterSharedCounter, nullptr);
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, AdapterRoleAddsEngineAndAdapterMemoryCountersOnly)
+{
+    // GPU Engine stays in both queries: its rates are per query, and the two samplers collect at
+    // different intervals.
+    const auto impl = makeInjectedImpl(PDHGPUProbe::Role::Adapter);
+
+    const std::vector<std::wstring> expected = {
+        Impl::UTILIZATION_COUNTER_PATH,
+        Impl::ADAPTER_DEDICATED_COUNTER_PATH,
+        Impl::ADAPTER_SHARED_COUNTER_PATH,
+    };
+    EXPECT_EQ(m_scenario->addedPaths, expected);
+    EXPECT_EQ(impl->dedicatedMemoryCounter, nullptr);
+    EXPECT_EQ(impl->sharedMemoryCounter, nullptr);
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, AFailedCounterIsRetriedOnlyForItsOwnRole)
+{
+    // A counter that failed to add is retried by its own query, and the retry adds nothing of the
+    // other role's.
+    m_scenario->failToAdd[Impl::ADAPTER_SHARED_COUNTER_PATH] = true;
+    const auto impl = makeInjectedImpl(PDHGPUProbe::Role::Adapter);
+    ASSERT_EQ(impl->adapterSharedCounter, nullptr);
+    m_scenario->addedPaths.clear();
+    m_scenario->failToAdd[Impl::ADAPTER_SHARED_COUNTER_PATH] = false;
+
+    ASSERT_TRUE(impl->ensureCounters());
+
+    EXPECT_EQ(m_scenario->addedPaths, (std::vector<std::wstring>{Impl::ADAPTER_SHARED_COUNTER_PATH}));
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, AdapterRoleReadsAdapterFiguresWithoutPerProcessResults)
+{
+    auto impl = makeInjectedImpl(PDHGPUProbe::Role::Adapter);
+    const PDH_HCOUNTER utilization = impl->utilizationCounter;
+    m_scenario->items[utilization] = {
+        {.name = L"pid_1400_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .doubleValue = 25.0},
+    };
+    m_scenario->items[impl->adapterDedicatedCounter] = {{.name = L"luid_0x0_0x1_phys_0", .largeValue = 4096}};
+    PDHGPUProbe probe(std::move(impl));
+
+    EXPECT_TRUE(probe.readProcessGPUCounters().empty()) << "the adapter query builds no per-process results";
+    EXPECT_DOUBLE_EQ(probe.adapterUtilization().at("GPU_0x0_0x1"), 25.0);
+    EXPECT_EQ(probe.adapterMemory().at("GPU_0x0_0x1").dedicatedBytes, 4096ULL);
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, ProcessRoleReadsNoAdapterFigures)
+{
+    auto impl = makeInjectedImpl(PDHGPUProbe::Role::Process);
+    m_scenario->items[impl->utilizationCounter] = {
+        {.name = L"pid_1410_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .doubleValue = 25.0},
+    };
+    PDHGPUProbe probe(std::move(impl));
+
+    const auto results = probe.readProcessGPUCounters();
+
+    ASSERT_EQ(results.size(), 1U);
+    EXPECT_DOUBLE_EQ(results[0].gpuUtilPercent, 25.0);
+    EXPECT_TRUE(probe.adapterUtilization().empty());
+    EXPECT_TRUE(probe.adapterMemory().empty());
+}
+
 TEST_F(WindowsPDHGPUProbeInjectedTest, CollectQueryDataFailureReturnsCachedResults)
 {
     auto impl = makeInjectedImpl();
@@ -407,7 +490,7 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, AdapterUtilizationSumsProcessesPerEngineT
 {
     // Two processes share the 3D engine (30 + 30 = 60 %); a third decodes at 50 %. The adapter is
     // 60 % busy, not 110 % clamped to 100.
-    auto impl = makeInjectedImpl();
+    auto impl = makeInjectedImpl(PDHGPUProbe::Role::Adapter);
     m_scenario->items[impl->utilizationCounter] = {
         {.name = L"pid_1100_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .doubleValue = 30.0},
         {.name = L"pid_1101_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .doubleValue = 30.0},
@@ -426,7 +509,7 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, AdapterUtilizationSumsProcessesPerEngineT
 TEST_F(WindowsPDHGPUProbeInjectedTest, AdapterUtilizationIsCappedAtOneHundred)
 {
     // Per-process readings of one engine are sampled independently and can add up past 100.
-    auto impl = makeInjectedImpl();
+    auto impl = makeInjectedImpl(PDHGPUProbe::Role::Adapter);
     m_scenario->items[impl->utilizationCounter] = {
         {.name = L"pid_1200_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .doubleValue = 70.0},
         {.name = L"pid_1201_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .doubleValue = 45.0},
@@ -459,7 +542,7 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, WarmUpCollectLeavesAdapterUtilizationUnre
 {
     // The warm-up collect has no rates: its adapter utilization is unread, not 0% and not a
     // reading left over from before a counter re-add (#1166).
-    auto impl = makeInjectedImpl();
+    auto impl = makeInjectedImpl(PDHGPUProbe::Role::Adapter);
     impl->warmedUp = false;
     impl->lastAdapterUtilization = {{"GPU_0x0_0x1", 80.0}};
     m_scenario->items[impl->utilizationCounter] = {
@@ -479,13 +562,18 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, AFailedCollectClearsTheAdapterReadingsEve
 {
     // A failed collect may hand back the recent per-process results (#1034), but the adapter's
     // utilization and memory were not read: reusing them made a stale value look fresh (#1166).
-    auto impl = makeInjectedImpl();
+    auto impl = makeInjectedImpl(PDHGPUProbe::Role::Adapter);
     m_scenario->items[impl->utilizationCounter] = {
         {.name = L"pid_1320_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .doubleValue = 30.0},
     };
     m_scenario->items[impl->adapterSharedCounter] = {{.name = L"luid_0x0_0x1_phys_0", .largeValue = 1234}};
+    // A per-process cache recent enough to stand in for the failed collect below.
+    ProcessGPUCounters recent;
+    recent.pid = 1320;
+    impl->lastValidResults = {recent};
+    impl->lastValidTimestamp = std::chrono::steady_clock::now();
     PDHGPUProbe probe(std::move(impl));
-    ASSERT_EQ(probe.readProcessGPUCounters().size(), 1U);
+    static_cast<void>(probe.readProcessGPUCounters());
     ASSERT_FALSE(probe.adapterUtilization().empty());
     ASSERT_FALSE(probe.adapterMemory().empty());
 
@@ -505,6 +593,7 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, NoActiveCountersClearsTheAdapterReadings)
     impl->pdhAddEnglishCounter = fakeAddEnglishCounter;
     impl->pdhCollectQueryData = fakeCollectQueryData;
     impl->pdhGetFormattedCounterArray = fakeGetFormattedCounterArray;
+    // NOLINTNEXTLINE(performance-no-int-to-ptr) - a fake query handle the fakes never dereference
     impl->query = reinterpret_cast<PDH_HQUERY>(static_cast<std::uintptr_t>(1));
     impl->initialized = true;
     impl->lastAdapterUtilization = {{"GPU_0x0_0x1", 80.0}};
@@ -537,7 +626,7 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, AdapterMemoryIsReadFromTheAdapterCounters
 {
     // The GPU tab's Memory line used to be TaskSmack's own usage (DXGI QueryVideoMemoryInfo);
     // it now comes from the adapter-wide counters, summed over physical nodes (#1029).
-    auto impl = makeInjectedImpl();
+    auto impl = makeInjectedImpl(PDHGPUProbe::Role::Adapter);
     ASSERT_NE(impl->adapterDedicatedCounter, nullptr);
     ASSERT_NE(impl->adapterSharedCounter, nullptr);
     m_scenario->items[impl->adapterDedicatedCounter] = {
@@ -567,7 +656,7 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, AZeroByteAdapterItemIsAReadingAndAFailedS
 {
     // #1246: an idle adapter's 0 B is a reading, so its entry exists with that segment read. A
     // segment whose array failed is unread for every adapter, even where the other one was read.
-    auto impl = makeInjectedImpl();
+    auto impl = makeInjectedImpl(PDHGPUProbe::Role::Adapter);
     m_scenario->items[impl->adapterDedicatedCounter] = {
         {.name = L"luid_0x0_0x1_phys_0", .largeValue = 0},
         {.name = L"luid_0x0_0x2_phys_0", .cstatus = PDH_CSTATUS_INVALID_DATA, .largeValue = 77},
@@ -592,7 +681,7 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, AdapterMemoryIsCollectedWhenOnlyTheAdapte
     m_scenario->failToAdd[Impl::UTILIZATION_COUNTER_PATH] = true;
     m_scenario->failToAdd[Impl::DEDICATED_MEMORY_COUNTER_PATH] = true;
     m_scenario->failToAdd[Impl::SHARED_MEMORY_COUNTER_PATH] = true;
-    auto impl = makeInjectedImpl();
+    auto impl = makeInjectedImpl(PDHGPUProbe::Role::Adapter);
     ASSERT_EQ(impl->utilizationCounter, nullptr);
     ASSERT_NE(impl->adapterSharedCounter, nullptr);
     m_scenario->items[impl->adapterSharedCounter] = {{.name = L"luid_0x0_0x1_phys_0", .largeValue = 1234}};
@@ -609,7 +698,7 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, AdapterMemoryIsReadOnTheWarmUpCollect)
 {
     // The adapter memory counters are gauges, so the first collect already has them; skipping
     // them during warm-up published the first GPU refresh with 0 bytes in use (#1029).
-    auto impl = makeInjectedImpl();
+    auto impl = makeInjectedImpl(PDHGPUProbe::Role::Adapter);
     impl->warmedUp = false;
     m_scenario->items[impl->adapterSharedCounter] = {{.name = L"luid_0x0_0x1_phys_0", .largeValue = 1234}};
     m_scenario->items[impl->utilizationCounter] = {
