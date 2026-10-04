@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace UI::DialogMetrics
 {
@@ -75,6 +76,26 @@ inline constexpr float BUTTON_LABEL_PADDING_EM = 1.0F;
 
     const float forLabel = safeLabel + (BUTTON_LABEL_PADDING_EM * 2.0F * safeEm);
     return std::max(forLabel, safeMinEm * safeEm);
+}
+
+/// Width of each of a dialog's two side-by-side action buttons (Cancel / Apply) on a row
+/// @p availWidthPx wide: their preferred width, shrunk equally when the pair doesn't fit, so neither
+/// button is pushed off the row. A capped dialog (#1129) can be narrower than the pair at large font
+/// presets; right-aligned at their preferred width, Cancel would start left of the row's edge.
+///
+/// @param preferredWidthPx  From computeActionButtonWidth().
+/// @param spacingPx         Gap between the two buttons (ItemSpacing.x).
+/// @param availWidthPx      Width of the row.
+[[nodiscard]] inline float fitActionButtonPairWidth(float preferredWidthPx, float spacingPx, float availWidthPx) noexcept
+{
+    const float preferred = (std::isfinite(preferredWidthPx) && preferredWidthPx > 0.0F) ? preferredWidthPx : 0.0F;
+    const float spacing = (std::isfinite(spacingPx) && spacingPx > 0.0F) ? spacingPx : 0.0F;
+    if (!std::isfinite(availWidthPx) || availWidthPx <= 0.0F)
+    {
+        return preferred;
+    }
+    const float fitting = std::max(0.0F, (availWidthPx - spacing) / 2.0F);
+    return std::min(preferred, fitting);
 }
 
 /// Left edge of the value column in a dialog laid out as label / control rows.
@@ -167,6 +188,49 @@ computeCappedControlWidth(float desiredWidthPx, float rowStartPx, float surround
     const float budget = (viewportWidthPx * MAX_VIEWPORT_FRACTION) - safeStart - safeSurrounding;
 
     return std::max(safeMin, std::min(safeDesired, budget));
+}
+
+/// Largest extent, on one axis, a dialog may take in a viewport of @p viewportExtentPx (#1129).
+///
+/// Passed every frame as the maximum of ImGui::SetNextWindowSizeConstraints, so a dialog that grows
+/// with the font, or a viewport that shrinks while it is open, can never push the dialog's edges --
+/// and the buttons along them -- out of the window. MAX_VIEWPORT_FRACTION leaves a margin so the
+/// dialog still reads as a dialog rather than a second window.
+///
+/// @return The cap in pixels, or a value no real size reaches when the viewport is unknown.
+[[nodiscard]] inline float computeDialogMaxExtent(float viewportExtentPx) noexcept
+{
+    if (!std::isfinite(viewportExtentPx) || viewportExtentPx <= 0.0F)
+    {
+        return std::numeric_limits<float>::max();
+    }
+    return viewportExtentPx * MAX_VIEWPORT_FRACTION;
+}
+
+/// Tallest a dialog's scrolling body may be so that the rows pinned below it -- the action buttons
+/// -- always stay inside the dialog, and so inside the viewport (#1129).
+///
+/// A dialog's height grows with the font preset and the display scale. Capped as a whole, an
+/// auto-fitting dialog keeps its buttons at the bottom of its content, where at a large font in a
+/// short window they could only be reached by scrolling, if at all. Capping just the body instead
+/// keeps the buttons in view and lets the body scroll.
+///
+/// The floor wins over the budget: when even the pinned rows do not fit, a body still a couple of
+/// rows tall stays usable, and the dialog's own size cap clips the rest.
+///
+/// @param dialogMaxHeightPx  The dialog's height cap, from computeDialogMaxExtent().
+/// @param reservedPx         Everything in the dialog that is not the body: title bar, padding, the
+///                           pinned rows and the spacing between them.
+/// @param minBodyPx          Smallest height that leaves the body usable.
+[[nodiscard]] inline float computeScrollableBodyMaxHeight(float dialogMaxHeightPx, float reservedPx, float minBodyPx) noexcept
+{
+    const float safeMin = (std::isfinite(minBodyPx) && minBodyPx > 0.0F) ? minBodyPx : 0.0F;
+    if (!std::isfinite(dialogMaxHeightPx) || dialogMaxHeightPx <= 0.0F || dialogMaxHeightPx >= std::numeric_limits<float>::max())
+    {
+        return std::numeric_limits<float>::max();
+    }
+    const float safeReserved = (std::isfinite(reservedPx) && reservedPx > 0.0F) ? reservedPx : 0.0F;
+    return std::max(safeMin, dialogMaxHeightPx - safeReserved);
 }
 
 } // namespace UI::DialogMetrics

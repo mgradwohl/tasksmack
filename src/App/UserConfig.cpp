@@ -734,6 +734,9 @@ void UserConfig::save()
     text << "#   [ui] show_privilege_notice: show startup dialog when running without elevated privileges (true/false)\n";
     text << "#   [ui] chart_anti_aliasing: smooth chart line/fill edges (true/false); disable for lower CPU/GPU cost "
             "on integrated GPUs\n";
+    text << "#   [window] width/height/x/y: the window's normal (restored) size and position, kept while it is maximized; "
+            "a position off every connected display is ignored at startup\n";
+    text << "#   [window] maximized: reopen maximized; Restore returns to width/height/x/y\n";
     text << "#   [process_columns]: toggle columns on/off; true shows the column\n";
     text << "#   [process_table] layout: saved column widths, order and sort (written by TaskSmack; delete it to reset)\n";
     text << "#   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.\n\n";

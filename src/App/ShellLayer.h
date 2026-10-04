@@ -69,6 +69,8 @@ class ShellLayer : public Core::Layer
 
     // Cached tab labels — rebuilt only when the underlying data changes, not every frame.
     // Avoids per-frame heap allocations from string concatenation in renderTabBar().
+    // Both carry a fixed "###" ID suffix (TabLabel.h), so a new name never changes which tab ImGui
+    // thinks is selected (#1140).
     std::string m_CachedSystemTabLabel;  // ICON + hostname: rebuilt in onAttach()
     std::string m_CachedDetailsTabLabel; // ICON + process name: rebuilt when the name changes
     std::string m_CachedLabelText;       // The panel's label text m_CachedDetailsTabLabel was built from

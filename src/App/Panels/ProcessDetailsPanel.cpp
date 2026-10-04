@@ -227,6 +227,7 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
             m_PeakMemoryBytes = std::max(m_PeakMemoryBytes, Domain::Numeric::toDouble(snapshot->peakMemoryBytes));
 
             trimHistory(nowSeconds);
+            m_HistoryGeneration = UI::Widgets::nextChartDataGeneration();
         }
     }
     else
@@ -484,6 +485,7 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t uniqueK
     m_GpuMemHistory.clear();
     m_GdiHistory.clear();
     m_Timestamps.clear();
+    m_HistoryGeneration = UI::Widgets::nextChartDataGeneration();
     m_LastHistorySnapshotVersion = 0;
     m_HasSnapshot = false;
     m_ProcessExited = false;
@@ -833,50 +835,72 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
 
         auto cpuPlot = [&]()
         {
-            const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
-                UI::Widgets::rateHistoryConfigWithUpper(
-                    "##ProcOverviewCPU", axisConfig.xMin, axisConfig.xMax, UI::Widgets::formatAxisPercent, cpuAxisUpper),
-                fill.plotHeight()));
+            const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
+                UI::Widgets::withHeight(
+                    UI::Widgets::rateHistoryConfigWithUpper(
+                        "##ProcOverviewCPU", axisConfig.xMin, axisConfig.xMax, UI::Widgets::formatAxisPercent, cpuAxisUpper),
+                    fill.plotHeight()),
+                m_HistoryGeneration));
             if (chart.active())
             {
                 UI::Widgets::drawCollectingHint(alignedCount);
                 // alignedCount > 0 here: the section only renders with history (see above).
 
-                // Reuse member scratch buffers across frames instead of local vectors, so the
-                // per-frame history redraw doesn't reallocate once buffers reach steady-state size.
-                m_CpuStackY0.assign(alignedCount, 0.0);
-                m_CpuStackYUser.resize(alignedCount);
-                m_CpuStackYSystem.resize(alignedCount);
-                auto& y0 = m_CpuStackY0;
-                auto& yUserTop = m_CpuStackYUser;
-                auto& ySystemTop = m_CpuStackYSystem;
-
-                // PlotShaded fills the area *between* two Y series, so a stacked user/system
-                // area chart needs cumulative tops: user alone, then user+system on top of it.
-                for (size_t i = 0; i < alignedCount; ++i)
-                {
-                    yUserTop[i] = cpuUserData[i];
-                    ySystemTop[i] = cpuUserData[i] + cpuSystemData[i];
-                }
-
-                // Bands and lines reach "now" like every plotLineWithFill series: the last sample
-                // held to x = 0 (UI::Widgets::holdLastValueToNow, #1016). Copies, so the tooltip's
-                // lookup over cpuTimeData still finds real samples only.
-                m_CpuPlotX.assign(cpuTimeData.begin(), cpuTimeData.end());
-                m_CpuPlotTotal.assign(cpuData.begin(), cpuData.end());
-                m_CpuPlotUser.assign(cpuUserData.begin(), cpuUserData.end());
-                m_CpuPlotSystem.assign(cpuSystemData.begin(), cpuSystemData.end());
                 // These bands and lines are drawn with ImPlot directly, so they are capped here like
                 // every plotLineWithFill series (#1022). Reduced together, so the bands still line
                 // up with each other and with the lines. Points are chosen by each drawn value --
                 // User (also the user band's top), System and Total -- not by the cumulative system
                 // top, which stays flat when System rises as User falls and would drop that spike.
-                UI::Widgets::reduceAlignedSeries(m_CpuPlotX,
-                                                 {&m_CpuPlotUser, &m_CpuPlotSystem, &m_CpuPlotTotal},
-                                                 {&yUserTop, &ySystemTop},
-                                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE,
-                                                 nowSeconds);
-                y0.assign(m_CpuPlotX.size(), 0.0);
+                //
+                // The choice of points is kept until the history changes (m_HistoryGeneration,
+                // #1139): reducing and copying the whole history every frame was most of this chart's
+                // cost at the largest history settings. Each frame only builds the kept points, at
+                // most LINE_PLOT_MAX_POINTS_DENSE of them, into reused member buffers.
+                const std::span<const UI::Widgets::ReducedPoint> points = m_CpuPlotReduction.points(
+                    {.generation = m_HistoryGeneration,
+                     .dataId = 0,
+                     .count = alignedCount,
+                     .maxOut = UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE},
+                    [&](std::vector<UI::Widgets::ReducedPoint>& out)
+                    {
+                        UI::Widgets::reduceAlignedPoints<double>(
+                            cpuTimeData, {cpuUserData, cpuSystemData, cpuData}, UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE, nowSeconds, out);
+                    });
+
+                auto& y0 = m_CpuStackY0;
+                auto& yUserTop = m_CpuStackYUser;
+                auto& ySystemTop = m_CpuStackYSystem;
+                const std::size_t pointCount = points.size();
+                m_CpuPlotX.resize(pointCount);
+                m_CpuPlotTotal.resize(pointCount);
+                m_CpuPlotUser.resize(pointCount);
+                m_CpuPlotSystem.resize(pointCount);
+                y0.assign(pointCount, 0.0);
+                yUserTop.resize(pointCount);
+                ySystemTop.resize(pointCount);
+                for (std::size_t k = 0; k < pointCount; ++k)
+                {
+                    // A gap point is NaN in every series (see UI::Widgets::reduceAlignedSeries).
+                    const auto i = static_cast<std::size_t>(points[k].index);
+                    m_CpuPlotX[k] = cpuTimeData[i];
+                    if (points[k].gap)
+                    {
+                        constexpr double gap = std::numeric_limits<double>::quiet_NaN();
+                        m_CpuPlotTotal[k] = m_CpuPlotUser[k] = m_CpuPlotSystem[k] = yUserTop[k] = ySystemTop[k] = gap;
+                        continue;
+                    }
+                    m_CpuPlotTotal[k] = cpuData[i];
+                    m_CpuPlotUser[k] = cpuUserData[i];
+                    m_CpuPlotSystem[k] = cpuSystemData[i];
+                    // PlotShaded fills the area *between* two Y series, so a stacked user/system
+                    // area chart needs cumulative tops: user alone, then user+system on top of it.
+                    yUserTop[k] = cpuUserData[i];
+                    ySystemTop[k] = cpuUserData[i] + cpuSystemData[i];
+                }
+
+                // Bands and lines reach "now" like every plotLineWithFill series: the last sample
+                // held to x = 0 (UI::Widgets::holdLastValueToNow, #1016). Built in their own buffers,
+                // so the tooltip's lookup over cpuTimeData still finds real samples only.
                 if (!m_CpuPlotX.empty() && m_CpuPlotX.back() < 0.0)
                 {
                     m_CpuPlotX.push_back(0.0);
@@ -1037,10 +1061,12 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
             auto memoryPlot = [&]()
             {
                 // Four legend entries (Used, Shared, Virtual, Peak Used): one row (see legendHorizontal).
-                const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
-                    UI::Widgets::withHorizontalLegend(UI::Widgets::rateHistoryConfigWithUpper(
-                        "##ProcOverviewMemory", axisConfig.xMin, axisConfig.xMax, UI::Widgets::formatAxisBytes, memAxisUpper)),
-                    fill.plotHeight()));
+                const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
+                    UI::Widgets::withHeight(
+                        UI::Widgets::withHorizontalLegend(UI::Widgets::rateHistoryConfigWithUpper(
+                            "##ProcOverviewMemory", axisConfig.xMin, axisConfig.xMax, UI::Widgets::formatAxisBytes, memAxisUpper)),
+                        fill.plotHeight()),
+                    m_HistoryGeneration));
                 if (chart.active())
                 {
                     UI::Widgets::setupSecondaryRateAxis(virtAxisUpper, UI::Widgets::formatAxisBytes);
@@ -1258,10 +1284,11 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
     {
         // One legend row: up to four short entries (with GDI on Windows) on a chart that shares the
         // pane's height (see HistoryChartConfig::legendHorizontal).
-        const UI::Widgets::HistoryChart chart(
+        const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
             UI::Widgets::withHeight(UI::Widgets::withHorizontalLegend(UI::Widgets::rateHistoryConfigWithUpper(
                                         "##ProcThreadsFaults", axisConfig.xMin, axisConfig.xMax, formatAxisLocalized, countAxisUpper)),
-                                    fill.plotHeight()));
+                                    fill.plotHeight()),
+            m_HistoryGeneration));
         if (chart.active())
         {
             UI::Widgets::setupSecondaryRateAxis(faultAxisUpper, formatAxisLocalized);
@@ -1405,10 +1432,11 @@ void ProcessDetailsPanel::renderIoStats(UI::Widgets::FillPlotLayout& fill)
     // vectors, and the lambda is rendered alongside the matching NowBars below.
     auto plot = [&]()
     {
-        const UI::Widgets::HistoryChart chart(
+        const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
             UI::Widgets::withHeight(UI::Widgets::rateHistoryConfigWithUpper(
                                         "##ProcIoHistory", axisConfig.xMin, axisConfig.xMax, formatAxisBytesPerSec, ioAxisUpper),
-                                    fill.plotHeight()));
+                                    fill.plotHeight()),
+            m_HistoryGeneration));
         if (chart.active())
         {
             UI::Widgets::drawCollectingHint(alignedCount);
@@ -1503,10 +1531,11 @@ void ProcessDetailsPanel::renderNetworkStats(UI::Widgets::FillPlotLayout& fill)
     // buffers; renderHistoryWithNowBars composes it with the summary bars.
     auto plot = [&]()
     {
-        const UI::Widgets::HistoryChart chart(
+        const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
             UI::Widgets::withHeight(UI::Widgets::rateHistoryConfigWithUpper(
                                         "##ProcNetworkHistory", axisConfig.xMin, axisConfig.xMax, formatAxisBytesPerSec, netAxisUpper),
-                                    fill.plotHeight()));
+                                    fill.plotHeight()),
+            m_HistoryGeneration));
         if (chart.active())
         {
             UI::Widgets::drawCollectingHint(alignedCount);
@@ -1599,10 +1628,11 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc, 
 
     auto plot = [&]()
     {
-        const UI::Widgets::HistoryChart chart(
+        const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
             UI::Widgets::withHeight(UI::Widgets::rateHistoryConfigWithUpper(
                                         "##ProcPowerHistory", axisConfig.xMin, axisConfig.xMax, formatAxisWatts, powerAxisUpper),
-                                    fill.plotHeight()));
+                                    fill.plotHeight()),
+            m_HistoryGeneration));
         if (chart.active())
         {
             UI::Widgets::drawCollectingHint(powerData.size());
@@ -1875,8 +1905,10 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
         // GPU Utilization graph (percent metric: locked 0-100 axis with percent formatter)
         auto plotGpuUtil = [&]()
         {
-            const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
-                UI::Widgets::percentHistoryConfig("##GPUUtilPlot", axisConfig.xMin, axisConfig.xMax), fill.plotHeight()));
+            const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
+                UI::Widgets::withHeight(UI::Widgets::percentHistoryConfig("##GPUUtilPlot", axisConfig.xMin, axisConfig.xMax),
+                                        fill.plotHeight()),
+                m_HistoryGeneration));
             if (chart.active())
             {
                 UI::Widgets::drawCollectingHint(alignedCount);
@@ -1921,10 +1953,12 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
             "##GPUMemPlot", UI::Widgets::maxOfSeries(gpuMemVec), UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES);
         auto plotGpuMem = [&]()
         {
-            const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
-                UI::Widgets::rateHistoryConfigWithUpper(
-                    "##GPUMemPlot", axisConfig.xMin, axisConfig.xMax, UI::Widgets::formatAxisBytes, gpuMemAxisUpper),
-                fill.plotHeight()));
+            const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
+                UI::Widgets::withHeight(
+                    UI::Widgets::rateHistoryConfigWithUpper(
+                        "##GPUMemPlot", axisConfig.xMin, axisConfig.xMax, UI::Widgets::formatAxisBytes, gpuMemAxisUpper),
+                    fill.plotHeight()),
+                m_HistoryGeneration));
             if (chart.active())
             {
                 UI::Widgets::drawCollectingHint(alignedCount);
@@ -2520,10 +2554,14 @@ void ProcessDetailsPanel::drawPriorityBadge(ImDrawList* drawList, const Priority
     const ImVec2 arrowRight(badgeX + ctx.metrics.badgeArrowSize, badgeMax.y);
     drawList->AddTriangleFilled(arrowLeft, arrowRight, arrowTip, badgeColorU32);
 
-    // Cache the badge text color as U32 once per call (avoids repeated theme lookup and conversion)
-    const ImU32 badgeTextColorU32 = ImGui::ColorConvertFloat4ToU32(UI::Theme::get().scheme().priorityBadgeTextColor);
+    // The theme's badge text colour when it reaches 4.5:1 on this badge's fill, else its window
+    // background when that does, else black or white (badgeTextFor): a fixed colour was unreadable on
+    // the nice-0 badge in most dark themes (#1130).
+    const UI::ColorScheme& scheme = UI::Theme::get().scheme();
+    const ImU32 badgeTextColorU32 = ImGui::ColorConvertFloat4ToU32(
+        Detail::badgeTextFor(Detail::unpackColor(badgeColorU32), scheme.priorityBadgeTextColor, scheme.windowBg));
 
-    // Draw badge text using the theme-specified badge text color (white on dark themes, near-black on light)
+    // Draw badge text
     const ImVec2 textPos(clampedBadgeX - (textSize.x * 0.5F), badgeY + ((ctx.metrics.badgeHeight - textSize.y) * 0.5F));
     drawList->AddText(textPos, badgeTextColorU32, valueText.c_str());
 }
@@ -2555,12 +2593,17 @@ void ProcessDetailsPanel::drawPriorityThumb(ImDrawList* drawList, const Priority
     const float thumbRadius = ctx.metrics.thumbRadius;
     const ImVec2 thumbCenter(thumbX, ctx.sliderMin.y + (ctx.metrics.sliderHeight * 0.5F));
 
-    // Cache the badge text color as U32 once per call (avoids repeated theme lookup and conversion)
-    const ImU32 thumbFillColorU32 = ImGui::ColorConvertFloat4ToU32(UI::Theme::get().scheme().priorityBadgeTextColor);
+    // The thumb sits on the track at the current nice value, which is the badge's fill, so it takes the
+    // badge text's colour: readable there by construction rather than a fixed colour that vanished into
+    // the light green middle of the track on dark themes (#1130).
+    const UI::ColorScheme& scheme = UI::Theme::get().scheme();
+    const ImU32 trackColorU32 = getNiceColor(ctx.niceValue, ctx.priorityHighColor, ctx.priorityNormalColor, ctx.priorityLowColor);
+    const ImU32 thumbFillColorU32 = ImGui::ColorConvertFloat4ToU32(
+        Detail::badgeTextFor(Detail::unpackColor(trackColorU32), scheme.priorityBadgeTextColor, scheme.windowBg));
 
     // Thumb outline
     drawList->AddCircleFilled(thumbCenter, thumbRadius + ctx.metrics.thumbOutlineThickness, ImGui::GetColorU32(ImGuiCol_Border));
-    // Thumb fill: uses the badge text color (white on dark, near-black on light) for matching contrast
+    // Thumb fill
     drawList->AddCircleFilled(thumbCenter, thumbRadius, thumbFillColorU32);
 }
 
