@@ -118,7 +118,8 @@ inline void drawVerticalBarWithValue(const char* id,
                                      const char* labelText = nullptr,
                                      const char* tooltipText = nullptr)
 {
-    value01 = std::clamp(value01, 0.0F, 1.0F);
+    // NaN (no reading) would pass straight through std::clamp into the rectangle coordinates (#1148).
+    value01 = (value01 > 0.0F) ? std::min(value01, 1.0F) : 0.0F;
 
     const ImGuiStyle& style = ImGui::GetStyle();
     const float valueTextH = (valueText != nullptr && valueText[0] != '\0') ? ImGui::GetTextLineHeight() : 0.0F;
@@ -183,7 +184,7 @@ inline void drawVerticalBarWithValue(const char* id,
                                      const char* labelText = nullptr,
                                      const char* tooltipText = nullptr)
 {
-    const double clamped = std::clamp(value01, 0.0, 1.0);
+    const double clamped = (value01 > 0.0) ? std::min(value01, 1.0) : 0.0; // NaN -> 0, as above
     drawVerticalBarWithValue(id,
                              static_cast<float>(clamped), // Narrowing: UI geometry uses float; value is clamped to [0,1]
                              color,
