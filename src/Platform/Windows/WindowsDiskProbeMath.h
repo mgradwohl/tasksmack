@@ -51,4 +51,25 @@ namespace Platform
     return index;
 }
 
+/// Cumulative busy time of a disk, in 100 ns units, from DISK_PERFORMANCE's QueryTime and
+/// IdleTime (#1108).
+///
+/// QueryTime is the system time of the query and IdleTime the cumulative time the disk had
+/// nothing outstanding, both in 100 ns units, so QueryTime - IdleTime grows by exactly the time
+/// the disk was busy between two queries. Its absolute value is meaningless, but it is monotonic
+/// and only its delta is used. Summing ReadTime and WriteTime instead counts every queued request
+/// separately, so overlapping I/O (queue depth > 1) outran wall time and pinned utilisation at
+/// 100 %.
+///
+/// @return nullopt when IdleTime is not usable: zero or negative (the driver does not track it)
+///         or larger than QueryTime (inconsistent); the caller falls back to ReadTime + WriteTime.
+[[nodiscard]] constexpr std::optional<std::uint64_t> diskBusyTime100ns(std::int64_t queryTime, std::int64_t idleTime) noexcept
+{
+    if (idleTime <= 0 || queryTime <= 0 || idleTime > queryTime)
+    {
+        return std::nullopt;
+    }
+    return static_cast<std::uint64_t>(queryTime - idleTime);
+}
+
 } // namespace Platform

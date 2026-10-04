@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <thread>
 
 namespace Platform
@@ -108,6 +109,88 @@ TEST(ParsePhysicalDriveIndexTest, MaxIntIndexIsAccepted)
     const auto result = parsePhysicalDriveIndex(L"2147483647 C:");
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(*result, std::numeric_limits<int>::max());
+}
+
+// =============================================================================
+// diskBusyTime100ns: pure math, no hardware required. Utilisation is Δbusy / Δwall, so
+// busy time must not grow faster than wall time even when reads and writes overlap (#1108).
+// =============================================================================
+
+// One second in DISK_PERFORMANCE's 100 ns units, and a plausible QueryTime (FILETIME-scale).
+constexpr std::int64_t ONE_SECOND_100NS = 10'000'000;
+constexpr std::int64_t QUERY_TIME_BASE = 134'000'000'000'000'000;
+
+/// Utilisation percent over a window, computed the way StorageModel does: Δms / window ms.
+[[nodiscard]] double utilisationPercent(std::uint64_t ioTimeMsBefore, std::uint64_t ioTimeMsAfter, double windowMs)
+{
+    return (static_cast<double>(ioTimeMsAfter - ioTimeMsBefore) / windowMs) * 100.0;
+}
+
+// Over a 1 s window the disk is idle for 0.4 s, while 0.7 s of read service and 0.5 s of
+// write service overlap in the remaining 0.6 s (queue depth > 1).
+struct OverlappingIoWindow
+{
+    std::int64_t queryBefore = QUERY_TIME_BASE;
+    std::int64_t queryAfter = QUERY_TIME_BASE + ONE_SECOND_100NS;
+    std::int64_t idleBefore = 50 * ONE_SECOND_100NS;
+    std::int64_t idleAfter = (50 * ONE_SECOND_100NS) + (4 * ONE_SECOND_100NS / 10);
+    std::int64_t readBefore = 20 * ONE_SECOND_100NS;
+    std::int64_t readAfter = (20 * ONE_SECOND_100NS) + (7 * ONE_SECOND_100NS / 10);
+    std::int64_t writeBefore = 30 * ONE_SECOND_100NS;
+    std::int64_t writeAfter = (30 * ONE_SECOND_100NS) + (5 * ONE_SECOND_100NS / 10);
+};
+
+TEST(DiskBusyTime100nsTest, OverlappingReadWriteStaysBelowWindow)
+{
+    const OverlappingIoWindow w;
+    const auto before = diskBusyTime100ns(w.queryBefore, w.idleBefore);
+    const auto after = diskBusyTime100ns(w.queryAfter, w.idleAfter);
+    ASSERT_TRUE(before.has_value());
+    ASSERT_TRUE(after.has_value());
+
+    const double percent = utilisationPercent(before.value_or(0) / 10000ULL, after.value_or(0) / 10000ULL, 1000.0);
+    EXPECT_LT(percent, 100.0);
+    EXPECT_DOUBLE_EQ(percent, 60.0);
+}
+
+TEST(DiskBusyTime100nsTest, OldReadPlusWriteFormulaExceedsWindowOnSameValues)
+{
+    // The pre-#1108 formula: ioTime = ReadTime + WriteTime. The same window reads 120 %, which
+    // StorageModel clamped to a constant 100 % whenever I/O overlapped.
+    const OverlappingIoWindow w;
+    const std::uint64_t oldBefore =
+        (clampNonNegativeQuadPart(w.readBefore) / 10000ULL) + (clampNonNegativeQuadPart(w.writeBefore) / 10000ULL);
+    const std::uint64_t oldAfter = (clampNonNegativeQuadPart(w.readAfter) / 10000ULL) + (clampNonNegativeQuadPart(w.writeAfter) / 10000ULL);
+
+    EXPECT_GT(utilisationPercent(oldBefore, oldAfter, 1000.0), 100.0);
+}
+
+TEST(DiskBusyTime100nsTest, BusyTimeIsQueryMinusIdle)
+{
+    EXPECT_EQ(diskBusyTime100ns(1000, 400), std::optional<std::uint64_t>{600});
+}
+
+TEST(DiskBusyTime100nsTest, ZeroIdleTimeFallsBack)
+{
+    // A driver that does not track IdleTime reports 0; QueryTime - 0 would read 100 % busy.
+    EXPECT_FALSE(diskBusyTime100ns(QUERY_TIME_BASE, 0).has_value());
+}
+
+TEST(DiskBusyTime100nsTest, NegativeInputsFallBack)
+{
+    EXPECT_FALSE(diskBusyTime100ns(QUERY_TIME_BASE, -1).has_value());
+    EXPECT_FALSE(diskBusyTime100ns(-1, 5).has_value());
+    EXPECT_FALSE(diskBusyTime100ns(std::numeric_limits<std::int64_t>::min(), std::numeric_limits<std::int64_t>::min()).has_value());
+}
+
+TEST(DiskBusyTime100nsTest, IdleGreaterThanQueryFallsBack)
+{
+    EXPECT_FALSE(diskBusyTime100ns(400, 1000).has_value());
+}
+
+TEST(DiskBusyTime100nsTest, IdleEqualToQueryIsZeroBusy)
+{
+    EXPECT_EQ(diskBusyTime100ns(1000, 1000), std::optional<std::uint64_t>{0});
 }
 
 // =============================================================================

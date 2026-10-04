@@ -285,12 +285,18 @@ SystemDiskCounters WindowsDiskProbe::read()
         disk.readTimeMs = clampNonNegativeQuadPart(perf.ReadTime.QuadPart) / 10000ULL;
         disk.writeTimeMs = clampNonNegativeQuadPart(perf.WriteTime.QuadPart) / 10000ULL;
 
-        // DISK_PERFORMANCE has no direct cumulative "device busy" counter, so approximate
-        // it as the sum of cumulative read+write service time. Under concurrent I/O (queue
-        // depth > 1) this can overestimate wall-clock busy time, but
-        // StorageModel::computeDiskSnapshot already clamps the resulting utilization to
-        // [0, 100], so it saturates rather than misreporting.
-        disk.ioTimeMs = disk.readTimeMs + disk.writeTimeMs;
+        // Busy time is QueryTime - IdleTime, whose delta is the wall time the disk had I/O
+        // outstanding. ReadTime + WriteTime counts each queued request separately, so
+        // overlapping I/O outran wall time and utilisation read 100 % (#1108); it remains only
+        // the fallback for drivers that do not report IdleTime.
+        if (const auto busy100ns = diskBusyTime100ns(perf.QueryTime.QuadPart, perf.IdleTime.QuadPart))
+        {
+            disk.ioTimeMs = *busy100ns / 10000ULL;
+        }
+        else
+        {
+            disk.ioTimeMs = disk.readTimeMs + disk.writeTimeMs;
+        }
 
         result.disks.push_back(disk);
     }
