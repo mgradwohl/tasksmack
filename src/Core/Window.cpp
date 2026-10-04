@@ -3,6 +3,7 @@
 #include "Core/ResizePerfOperation.h"
 #include "Core/VideoBackend.h"
 #include "Core/WindowConstants.h"
+#include "Core/WindowGeometry.h"
 
 #include <SDL3/SDL.h>
 #include <glad/gl.h>
@@ -10,9 +11,13 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstddef>
+#include <optional>
+#include <span>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -300,6 +305,8 @@ void Window::setPosition(int x, int y) const
     {
         return;
     }
+    // Asynchronous: the custom title bar calls this on every drag and left/top-resize step, so it
+    // must not wait for the window manager. applySavedGeometry() syncs once where it needs to.
     SDL_SetWindowPosition(m_Handle, x, y);
 }
 
@@ -389,6 +396,104 @@ auto Window::getSizeInPixels() const noexcept -> std::pair<int, int>
     return {pixelW, pixelH};
 }
 
+auto Window::getNormalGeometry() const -> std::optional<WindowGeometry::Rect>
+{
+    const auto [x, y] = getPosition();
+    const auto [width, height] = getSize();
+    const WindowGeometry::Rect current{.x = x, .y = y, .width = width, .height = height};
+    std::optional<WindowGeometry::Rect> restoreRect;
+    if (m_HasRestoreRect)
+    {
+        restoreRect = WindowGeometry::Rect{.x = m_RestoreX, .y = m_RestoreY, .width = m_RestoreWidth, .height = m_RestoreHeight};
+    }
+    return WindowGeometry::selectNormalGeometry(isMaximized(), current, restoreRect);
+}
+
+void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, bool maximized)
+{
+    if (m_Handle == nullptr)
+    {
+        return;
+    }
+
+    // Usable bounds of every connected display, and which of them is primary.
+    std::vector<WindowGeometry::Rect> displays;
+    std::size_t primaryIndex = 0;
+    int displayCount = 0;
+    SDL_DisplayID* displayIds = SDL_GetDisplays(&displayCount);
+    if (displayIds != nullptr)
+    {
+        const SDL_DisplayID primary = SDL_GetPrimaryDisplay();
+        const std::span<const SDL_DisplayID> ids(displayIds, static_cast<std::size_t>(std::max(displayCount, 0)));
+        for (const SDL_DisplayID id : ids)
+        {
+            SDL_Rect bounds{};
+            if (!SDL_GetDisplayUsableBounds(id, &bounds) || bounds.w <= 0 || bounds.h <= 0)
+            {
+                continue;
+            }
+            if (id == primary)
+            {
+                primaryIndex = displays.size();
+            }
+            displays.push_back(WindowGeometry::Rect{.x = bounds.x, .y = bounds.y, .width = bounds.w, .height = bounds.h});
+        }
+        SDL_free(displayIds);
+    }
+    if (displays.empty())
+    {
+        spdlog::warn("Window::applySavedGeometry: no display bounds available ({}); applying saved geometry unchecked", SDL_GetError());
+    }
+
+    const auto [width, height] = getSize();
+    const bool canPosition = supportsPositioning() && position.has_value();
+    WindowGeometry::Rect saved{.x = 0, .y = 0, .width = width, .height = height};
+    if (canPosition)
+    {
+        saved.x = position->first;
+        saved.y = position->second;
+    }
+    else
+    {
+        // No position to restore (or none can be applied, as on native Wayland): only the size is
+        // checked, against the display the window was created on.
+        const auto [currentX, currentY] = getPosition();
+        saved.x = currentX;
+        saved.y = currentY;
+    }
+
+    const WindowGeometry::Rect fitted =
+        WindowGeometry::fitRectToDisplays(saved, displays, primaryIndex, WindowGeometry::MIN_VISIBLE_EXTENT);
+    if (fitted.width != width || fitted.height != height)
+    {
+        spdlog::info(
+            "Window::applySavedGeometry: saved size {}x{} shrunk to {}x{} to fit the display", width, height, fitted.width, fitted.height);
+        setSize(fitted.width, fitted.height);
+    }
+    if (canPosition)
+    {
+        if (fitted.x != saved.x || fitted.y != saved.y)
+        {
+            spdlog::info("Window::applySavedGeometry: saved position ({}, {}) is not on a connected display; moved to ({}, {})",
+                         saved.x,
+                         saved.y,
+                         fitted.x,
+                         fitted.y);
+        }
+        setPosition(fitted.x, fitted.y);
+    }
+
+    if (maximized)
+    {
+        // On asynchronous windowing systems (X11) a move or resize is only a request until the
+        // window manager answers, and SDL_GetWindowPosition keeps returning the old position until
+        // then. maximize() records the current rectangle as the restore target, so wait for the
+        // normal rectangle to land first (#1121). Once, at startup -- never on a hot path.
+        SDL_SyncWindow(m_Handle);
+        maximize();
+    }
+}
+
 bool Window::isMaximized() const
 {
     if (m_Handle == nullptr)
@@ -432,6 +537,7 @@ void Window::maximize()
             // Native Wayland: use compositor-managed maximize via SDL_MaximizeWindow
             // This avoids the unreliability of client-side usable-bounds queries on Wayland.
             spdlog::debug("Window::maximize: Native Wayland detected; using compositor-managed maximize");
+            rememberRestoreRect();
             SDL_MaximizeWindow(m_Handle);
             m_IsMaximizedBorderless = true;
             return;
@@ -440,11 +546,7 @@ void Window::maximize()
         // X11, XWayland, Windows: use client-side maximize with manual positioning
         // Only save restore dimensions if not already maximized
         // This prevents saving maximized dimensions as the restore target
-        if (!m_IsMaximizedBorderless)
-        {
-            SDL_GetWindowPosition(m_Handle, &m_RestoreX, &m_RestoreY);
-            SDL_GetWindowSize(m_Handle, &m_RestoreWidth, &m_RestoreHeight);
-        }
+        rememberRestoreRect();
 
         const SDL_DisplayID displayID = SDL_GetDisplayForWindow(m_Handle);
         if (displayID != 0)
@@ -465,7 +567,27 @@ void Window::maximize()
     }
 
     // Fall back to SDL's built-in maximize for non-borderless windows or on error
-    SDL_MaximizeWindow(m_Handle);
+    rememberRestoreRect();
+    if (SDL_MaximizeWindow(m_Handle) && (SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_BORDERLESS) != 0)
+    {
+        // A borderless window on a client-side-maximize backend that got here (the display bounds
+        // were unavailable): isMaximized() reads only the tracked flag there, so set it, or
+        // getNormalGeometry() would save this maximized rectangle as the normal one (#1121).
+        m_IsMaximizedBorderless = true;
+    }
+}
+
+void Window::rememberRestoreRect()
+{
+    // Only record the rectangle when not already maximized: a second maximize() must not replace
+    // the normal rectangle with the maximized one.
+    if (isMaximized())
+    {
+        return;
+    }
+    SDL_GetWindowPosition(m_Handle, &m_RestoreX, &m_RestoreY);
+    SDL_GetWindowSize(m_Handle, &m_RestoreWidth, &m_RestoreHeight);
+    m_HasRestoreRect = m_RestoreWidth > 0 && m_RestoreHeight > 0;
 }
 
 void Window::restore()
@@ -474,6 +596,16 @@ void Window::restore()
     {
         return;
     }
+
+    // On asynchronous windowing systems (X11) the restore is only a request until the window manager
+    // answers. Wait for it before forgetting the normal rectangle: closed in between,
+    // getNormalGeometry() would read the still-maximized live geometry and save it (#1121). Once per
+    // user action (button, double-click, the start of a drag from maximized), never per frame; the
+    // drag caller reads the restored size right after, which this also makes reliable.
+    const auto syncRestore = [this]
+    {
+        SDL_SyncWindow(m_Handle);
+    };
 
     // For borderless windows, use backend-gated behavior.
     // On native Wayland, rely on compositor-managed restore.
@@ -485,21 +617,31 @@ void Window::restore()
             // Native Wayland: use compositor-managed restore via SDL_RestoreWindow
             spdlog::debug("Window::restore: Native Wayland detected; using compositor-managed restore");
             SDL_RestoreWindow(m_Handle);
+            syncRestore();
             m_IsMaximizedBorderless = false;
+            m_HasRestoreRect = false;
             return;
         }
 
         // X11, XWayland, Windows: restore to manually-saved position and size
         if (m_IsMaximizedBorderless && m_RestoreWidth > 0 && m_RestoreHeight > 0)
         {
+            if ((SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_MAXIMIZED) != 0)
+            {
+                SDL_RestoreWindow(m_Handle); // Maximized through the SDL fallback in maximize()
+            }
             SDL_SetWindowPosition(m_Handle, m_RestoreX, m_RestoreY);
             SDL_SetWindowSize(m_Handle, m_RestoreWidth, m_RestoreHeight);
+            syncRestore();
             m_IsMaximizedBorderless = false;
+            m_HasRestoreRect = false;
             return;
         }
     }
 
     SDL_RestoreWindow(m_Handle);
+    syncRestore();
+    m_HasRestoreRect = false;
 }
 
 void Window::minimize() const
