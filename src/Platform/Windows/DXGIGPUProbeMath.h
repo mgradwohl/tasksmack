@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <format>
+#include <optional>
 #include <string>
 
 namespace Platform
@@ -67,6 +68,30 @@ namespace Platform
     // NVIDIA doesn't make consumer integrated GPUs (Tegra is different architecture).
     // Assume discrete for NVIDIA.
     return false;
+}
+
+/// The D3DKMT_ADAPTERTYPE bits shouldListAdapter() decides on, as plain bools so this header stays
+/// free of the Windows kernel-mode headers.
+struct AdapterTypeBits
+{
+    bool softwareDevice = false;
+    bool indirectDisplayDevice = false;
+};
+
+/// Whether DXGIGPUProbe lists a DXGI adapter as a GPU. A software adapter (WARP, the Basic Render
+/// Driver) is not one; nor is an indirect-display adapter (a DisplayLink dock, Miracast), which DXGI
+/// reports under the name, vendor and device id of the GPU it renders on, so it showed as a
+/// duplicate of that GPU and doubled the VRAM total (#1251). A failed adapter-type query keeps the
+/// adapter: dropping a real GPU is worse than a possible duplicate.
+/// @param softwareFlag DXGI_ADAPTER_DESC1::Flags has DXGI_ADAPTER_FLAG_SOFTWARE
+/// @param adapterType The adapter's D3DKMT adapter type, or nullopt when it could not be read
+[[nodiscard]] constexpr bool shouldListAdapter(bool softwareFlag, std::optional<AdapterTypeBits> adapterType)
+{
+    if (softwareFlag)
+    {
+        return false;
+    }
+    return !adapterType.has_value() || (!adapterType->softwareDevice && !adapterType->indirectDisplayDevice);
 }
 
 /// An adapter's memory size, from DXGI_ADAPTER_DESC1: the shared system memory an integrated GPU

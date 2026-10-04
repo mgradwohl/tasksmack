@@ -74,6 +74,36 @@ bool DXGIGPUProbe::isIntegratedGPU(IDXGIAdapter1* adapter)
     return isIntegratedGPUFromDesc(desc.VendorId, desc.Flags, desc.DedicatedVideoMemory);
 }
 
+bool DXGIGPUProbe::isListedAdapter(std::uint32_t flags, std::int32_t luidHighPart, std::uint32_t luidLowPart)
+{
+    const std::uint64_t luidKey = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(luidHighPart)) << 32U) | luidLowPart;
+    if (const auto it = m_ListedByLuid.find(luidKey); it != m_ListedByLuid.end())
+    {
+        return it->second;
+    }
+
+    const bool softwareFlag = (flags & static_cast<std::uint32_t>(DXGI_ADAPTER_FLAG_SOFTWARE)) != 0U;
+    std::optional<AdapterTypeBits> typeBits;
+    if (!softwareFlag)
+    {
+        const LUID luid{.LowPart = luidLowPart, .HighPart = luidHighPart};
+        if (const auto kind = adapterKind(luid))
+        {
+            typeBits = adapterTypeBits(*kind);
+        }
+    }
+    const bool listed = shouldListAdapter(softwareFlag, typeBits);
+    if (!listed)
+    {
+        spdlog::debug("DXGIGPUProbe: Skipping adapter LUID {} (software: {}, indirect display: {})",
+                      luidToPdhFormat(static_cast<std::uint32_t>(luidHighPart), luidLowPart),
+                      softwareFlag || (typeBits.has_value() && typeBits->softwareDevice),
+                      typeBits.has_value() && typeBits->indirectDisplayDevice);
+    }
+    m_ListedByLuid.emplace(luidKey, listed);
+    return listed;
+}
+
 std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
 {
     std::vector<GPUInfo> gpus;
@@ -99,9 +129,9 @@ std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
 
         if (SUCCEEDED(hr))
         {
-            // Skip software adapters (WARP, etc.)
-            constexpr UINT SOFTWARE_FLAG = 2;
-            if ((desc.Flags & SOFTWARE_FLAG) == 0)
+            // Skip software adapters (WARP, etc.) and indirect-display adapters (#1251)
+            if (isListedAdapter(
+                    desc.Flags, static_cast<std::int32_t>(desc.AdapterLuid.HighPart), static_cast<std::uint32_t>(desc.AdapterLuid.LowPart)))
             {
                 GPUInfo info{};
 
@@ -177,9 +207,9 @@ std::vector<GPUCounters> DXGIGPUProbe::readGPUCounters()
 
         if (SUCCEEDED(hrDesc))
         {
-            // Skip software adapters
-            constexpr UINT SOFTWARE_FLAG = 2;
-            if ((desc.Flags & SOFTWARE_FLAG) == 0)
+            // Skip the same adapters enumerateGPUs() does, so the "GPU{index}" ids match (#1251)
+            if (isListedAdapter(
+                    desc.Flags, static_cast<std::int32_t>(desc.AdapterLuid.HighPart), static_cast<std::uint32_t>(desc.AdapterLuid.LowPart)))
             {
                 GPUCounters counter{};
                 counter.gpuId = std::format("GPU{}", adapterIndex);

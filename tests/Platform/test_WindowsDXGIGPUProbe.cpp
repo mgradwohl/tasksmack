@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <unordered_set>
 
@@ -40,6 +41,7 @@ struct FakeD3DKMT
     NTSTATUS queryStatus = 0;
     UINT bus = 0;
     UINT device = 0;
+    UINT adapterTypeValue = 0; // D3DKMT_ADAPTERTYPE::Value answered to KMTQAITYPE_ADAPTERTYPE (#1251)
     D3DKMT_HANDLE handle = 0x40;
     LUID openedLuid{};
     KMTQUERYADAPTERINFOTYPE queriedType{};
@@ -79,6 +81,11 @@ NTSTATUS APIENTRY fakeQueryAdapterInfo(const D3DKMT_QUERYADAPTERINFO* query)
         address->BusNumber = fake.bus;
         address->DeviceNumber = fake.device;
         address->FunctionNumber = 0;
+    }
+    if (fake.queryStatus == 0 && query->Type == KMTQAITYPE_ADAPTERTYPE && query->PrivateDriverDataSize == sizeof(D3DKMT_ADAPTERTYPE))
+    {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access) - D3DKMT_ADAPTERTYPE is a union of its bitfields and Value
+        static_cast<D3DKMT_ADAPTERTYPE*>(query->pPrivateDriverData)->Value = fake.adapterTypeValue;
     }
     return fake.queryStatus;
 }
@@ -157,6 +164,99 @@ TEST_F(AdapterPciLocationTest, NoLocationWhenTheAddressQueryFailsAndTheAdapterIs
     EXPECT_FALSE(adapterPciLocation(LUID{}, FAKE_D3DKMT).has_value());
     EXPECT_EQ(fakeD3DKMT().closeCount, 1);
     EXPECT_EQ(fakeD3DKMT().closedHandle, fakeD3DKMT().handle);
+}
+
+// =============================================================================
+// adapterKind / shouldListAdapter: indirect-display adapters are not GPUs (#1251)
+// =============================================================================
+
+// D3DKMT_ADAPTERTYPE::Value for an adapter with these type bits.
+UINT adapterType(bool render, bool software, bool indirectDisplay)
+{
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access) - D3DKMT_ADAPTERTYPE is a union of its bitfields and Value
+    D3DKMT_ADAPTERTYPE type{};
+    type.RenderSupported = render ? 1U : 0U;
+    type.SoftwareDevice = software ? 1U : 0U;
+    type.IndirectDisplayDevice = indirectDisplay ? 1U : 0U;
+    return type.Value;
+    // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+}
+
+// Whether the adapter the fake D3DKMT calls describe is listed, decided as DXGIGPUProbe does.
+bool listedByFake(const LUID& luid)
+{
+    const auto kind = adapterKind(luid, FAKE_D3DKMT);
+    return shouldListAdapter(false, kind.has_value() ? std::optional{adapterTypeBits(*kind)} : std::nullopt);
+}
+
+TEST_F(AdapterPciLocationTest, AdapterKindQueriesTheAdapterTypeAndClosesTheAdapter)
+{
+    fakeD3DKMT().adapterTypeValue = adapterType(true, false, true);
+    const LUID luid{.LowPart = 0x5AB51A6F, .HighPart = 0};
+
+    const auto kind = adapterKind(luid, FAKE_D3DKMT);
+
+    ASSERT_TRUE(kind.has_value());
+    EXPECT_TRUE(adapterTypeBits(kind.value_or(D3DKMT_ADAPTERTYPE{})).indirectDisplayDevice);
+    EXPECT_FALSE(adapterTypeBits(kind.value_or(D3DKMT_ADAPTERTYPE{})).softwareDevice);
+    EXPECT_EQ(fakeD3DKMT().openedLuid.LowPart, 0x5AB51A6FU);
+    EXPECT_EQ(fakeD3DKMT().queriedType, KMTQAITYPE_ADAPTERTYPE);
+    EXPECT_EQ(fakeD3DKMT().queriedSize, sizeof(D3DKMT_ADAPTERTYPE));
+    EXPECT_EQ(fakeD3DKMT().queriedHandle, fakeD3DKMT().handle);
+    EXPECT_EQ(fakeD3DKMT().closedHandle, fakeD3DKMT().handle);
+    EXPECT_EQ(fakeD3DKMT().closeCount, 1);
+}
+
+TEST_F(AdapterPciLocationTest, AnIndirectDisplayAdapterIsSkipped)
+{
+    // A DisplayLink dock's adapter: DXGI lists it under the name of the iGPU it renders on (#1251).
+    fakeD3DKMT().adapterTypeValue = adapterType(false, false, true);
+    EXPECT_FALSE(listedByFake(LUID{}));
+    EXPECT_EQ(fakeD3DKMT().closeCount, 1);
+}
+
+TEST_F(AdapterPciLocationTest, ARenderAdapterIsKept)
+{
+    fakeD3DKMT().adapterTypeValue = adapterType(true, false, false);
+    EXPECT_TRUE(listedByFake(LUID{}));
+    EXPECT_EQ(fakeD3DKMT().closeCount, 1);
+}
+
+TEST_F(AdapterPciLocationTest, AFailedTypeQueryKeepsTheAdapterAndStillClosesIt)
+{
+    fakeD3DKMT().queryStatus = static_cast<NTSTATUS>(0xC00000BBL); // STATUS_NOT_SUPPORTED
+    fakeD3DKMT().adapterTypeValue = adapterType(false, false, true);
+
+    EXPECT_FALSE(adapterKind(LUID{}, FAKE_D3DKMT).has_value());
+    EXPECT_EQ(fakeD3DKMT().closeCount, 1);
+    EXPECT_EQ(fakeD3DKMT().closedHandle, fakeD3DKMT().handle);
+    EXPECT_TRUE(listedByFake(LUID{})) << "dropping a real GPU is worse than a possible duplicate";
+}
+
+TEST_F(AdapterPciLocationTest, AnAdapterThatCannotBeOpenedHasNoKindAndIsKept)
+{
+    fakeD3DKMT().openStatus = static_cast<NTSTATUS>(0xC0000225L); // STATUS_NOT_FOUND
+    EXPECT_FALSE(adapterKind(LUID{}, FAKE_D3DKMT).has_value());
+    EXPECT_EQ(fakeD3DKMT().closeCount, 0); // Nothing was opened, so nothing to close
+    EXPECT_TRUE(listedByFake(LUID{}));
+}
+
+TEST(ShouldListAdapterTest, SoftwareFlagIsNeverListed)
+{
+    EXPECT_FALSE(shouldListAdapter(true, std::nullopt));
+    EXPECT_FALSE(shouldListAdapter(true, AdapterTypeBits{}));
+}
+
+TEST(ShouldListAdapterTest, IndirectDisplayAndSoftwareDevicesAreNotListed)
+{
+    EXPECT_FALSE(shouldListAdapter(false, AdapterTypeBits{.softwareDevice = false, .indirectDisplayDevice = true}));
+    EXPECT_FALSE(shouldListAdapter(false, AdapterTypeBits{.softwareDevice = true, .indirectDisplayDevice = false}));
+}
+
+TEST(ShouldListAdapterTest, AHardwareAdapterOrAnUnknownTypeIsListed)
+{
+    EXPECT_TRUE(shouldListAdapter(false, AdapterTypeBits{}));
+    EXPECT_TRUE(shouldListAdapter(false, std::nullopt));
 }
 
 TEST(AdapterMemoryTotalBytesTest, IntegratedUsesSharedSystemMemoryDiscreteUsesDedicated)
