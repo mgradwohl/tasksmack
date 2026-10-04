@@ -180,6 +180,7 @@ void SystemMetricsPanel::onAttach()
 
     Domain::SamplerConfig samplerCfg;
     samplerCfg.interval = m_RefreshInterval;
+    samplerCfg.firstSampleAfterInterval = true; // seeded synchronously above (#1102)
     m_Sampler = std::make_unique<Domain::BackgroundSampler>(samplerCfg);
     m_Sampler->addSamplable(m_Model);
     m_Sampler->addSamplable(m_StorageModel);
@@ -220,15 +221,22 @@ void SystemMetricsPanel::onDetach()
     m_Model.reset();
 }
 
-void SystemMetricsPanel::setSamplingInterval(std::chrono::milliseconds interval)
+void SystemMetricsPanel::setSamplingInterval(std::chrono::milliseconds interval, bool forceSample)
 {
+    if (interval == m_RefreshInterval)
+    {
+        return;
+    }
     m_RefreshInterval = interval;
     if (m_Sampler)
     {
         m_Sampler->setInterval(interval);
     }
-    m_ForceRefresh = true;
-    requestRefresh(); // Consume flag semantics for older calls
+    if (forceSample)
+    {
+        m_ForceRefresh = true;
+        requestRefresh(); // Consume flag semantics for older calls
+    }
 }
 
 void SystemMetricsPanel::requestRefresh()
@@ -252,13 +260,21 @@ void SystemMetricsPanel::onEvent(Core::Event& event)
     dispatcher.dispatch<Core::RefreshRateChangedEvent>(
         [this](Core::RefreshRateChangedEvent& e)
         {
-            setSamplingInterval(std::chrono::milliseconds(e.getIntervalMs()));
+            // The startup value (#1079) is applied without forcing a sample: the models were just
+            // seeded, so one now would cover only a few ms (#1102).
+            setSamplingInterval(std::chrono::milliseconds(e.getIntervalMs()), !e.isInitial());
             return false;
         });
     dispatcher.dispatch<Core::HistoryDurationChangedEvent>(
         [this](Core::HistoryDurationChangedEvent& e)
         {
-            m_MaxHistorySeconds = Domain::Numeric::toDouble(e.getSeconds());
+            const double seconds = Domain::Numeric::toDouble(e.getSeconds());
+            // Whole seconds, so anything under half a second apart is the same setting.
+            if (std::abs(seconds - m_MaxHistorySeconds) < 0.5)
+            {
+                return false; // unchanged: nothing to trim or refresh
+            }
+            m_MaxHistorySeconds = seconds;
             if (m_Model)
             {
                 m_Model->setMaxHistorySeconds(m_MaxHistorySeconds);
@@ -271,7 +287,8 @@ void SystemMetricsPanel::onEvent(Core::Event& event)
             {
                 m_GPUModel->setMaxHistorySeconds(m_MaxHistorySeconds);
             }
-            m_ForceRefresh = true;
+            // Republish promptly for a user's change; not for the startup value, just after the seed (#1102).
+            m_ForceRefresh = m_ForceRefresh || !e.isInitial();
             return false; // Allow others to react
         });
 }
