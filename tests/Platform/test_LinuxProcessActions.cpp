@@ -387,7 +387,10 @@ TEST(LinuxProcessActionsTest, SetPriorityReachesTheProcessOnlyWhenTheStartTimeMa
     const int before = getpriority(PRIO_PROCESS, static_cast<id_t>(target.pid));
     ASSERT_EQ(errno, 0);
     const int raised = std::min(before + 5, 19);
-    ASSERT_NE(raised, before) << "child already at the lowest priority";
+    if (raised == before)
+    {
+        GTEST_SKIP() << "child already at the lowest priority (the test runner is at nice 19)";
+    }
 
     LinuxProcessActions actions;
     ProcessTarget reused = target;
@@ -435,7 +438,10 @@ TEST(LinuxProcessActionsTest, SetPriorityChangesEveryThread)
     const int before = getpriority(PRIO_PROCESS, static_cast<id_t>(target.pid));
     ASSERT_EQ(errno, 0);
     const int raised = std::min(before + 5, 19);
-    ASSERT_NE(raised, before) << "child already at the lowest priority";
+    if (raised == before)
+    {
+        GTEST_SKIP() << "child already at the lowest priority (the test runner is at nice 19)";
+    }
 
     LinuxProcessActions actions;
     const auto result = actions.setPriority(target, raised);
