@@ -477,6 +477,12 @@ pwsh tools/clang-tidy.ps1 debug    # Windows
 
 Note: the build uses precompiled headers (PCH). The clang-tidy helper strips PCH flags from the compile commands to avoid version mismatch issues.
 
+`.clang-tidy` sets `WarningsAsErrors: '*'`, so any clang-tidy finding fails the run, locally and in CI's
+blocking Linux job. Fix the finding, or suppress it with a `NOLINT(check-name)` comment that says why. Before
+this, clang-tidy exited 0 on warnings, so the CI job could never fail on one (#1089). The blocking job
+covers what `tools/clang-tidy.sh` analyses, which excludes `src/Platform/Windows/**`; Windows-only code is
+checked only by the advisory Windows job on pushes to `main` until #1233 adds a blocking gate.
+
 ### Include-What-You-Use (IWYU)
 
 IWYU analyzes `#include` directives and suggests additions/removals for cleaner dependencies:
