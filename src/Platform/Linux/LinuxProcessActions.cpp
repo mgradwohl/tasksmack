@@ -218,7 +218,18 @@ struct PriorityChange
     int firstError = 0;
     bool threadsKeptStarting = false; // new threads were still appearing after the last pass
     std::error_code relistError;      // a later listing failed for a reason other than the process exiting
+    std::size_t unconfirmed = 0;      // worker threads that left the process around the call (TID maybe reused)
 };
+
+/// Whether thread `tid` is still in `pid`'s thread group. A TID belongs to one task at a time, so if
+/// it is still listed under /proc/<pid>/task after setpriority(2), the call reached a thread of the
+/// target: had the worker exited and its TID been reused by another process, it would be listed
+/// under that process instead (#1228 review).
+[[nodiscard]] bool isThreadOf(int32_t pid, id_t tid)
+{
+    std::error_code ec;
+    return std::filesystem::exists(std::filesystem::path("/proc") / std::to_string(pid) / "task" / std::to_string(tid), ec);
+}
 
 /// The thread IDs in /proc/<pid>/task, or why they couldn't be listed. There is no fallback to
 /// the PID alone: renicing just the main thread and reporting success is the bug this replaces.
@@ -288,6 +299,12 @@ struct PriorityChange
             // setpriority() returns 0 on success and -1 on error (per POSIX).
             if (setpriority(PRIO_PROCESS, tid, nice) == 0)
             {
+                // The leader is covered by the caller's pidfd check; a worker is checked here.
+                if (std::cmp_not_equal(tid, pid) && !isThreadOf(pid, tid))
+                {
+                    ++change.unconfirmed;
+                    continue;
+                }
                 ++change.changed;
                 continue;
             }
@@ -364,7 +381,7 @@ ProcessActionResult LinuxProcessActions::setPriority(const ProcessTarget& target
     // Once any thread was changed, confirm the target survived before reporting anything else: if
     // it exited meanwhile, the change may have reached another process, which matters more than
     // which threads failed (#1228 review).
-    if (change.changed > 0)
+    if (change.changed > 0 || change.unconfirmed > 0)
     {
         // Signal 0 checks for existence without delivering anything. Any failure of that probe
         // leaves the call unconfirmed, not only ESRCH: a sandbox that blocks pidfd_send_signal
@@ -379,6 +396,17 @@ ProcessActionResult LinuxProcessActions::setPriority(const ProcessTarget& target
                     : std::format("Priority was set, but it could not be confirmed that process {} still held its PID: {}",
                                   target.pid,
                                   std::system_category().message(probeErr));
+            spdlog::warn("{}", errorMsg);
+            return ProcessActionResult::error(std::move(errorMsg));
+        }
+        if (change.unconfirmed > 0)
+        {
+            std::string errorMsg =
+                std::format("Priority changed for {} threads, but {} thread(s) of process {} exited during the change; it may have reached "
+                            "another process",
+                            change.changed,
+                            change.unconfirmed,
+                            target.pid);
             spdlog::warn("{}", errorMsg);
             return ProcessActionResult::error(std::move(errorMsg));
         }
@@ -410,7 +438,7 @@ ProcessActionResult LinuxProcessActions::setPriority(const ProcessTarget& target
     }
 
     std::string errorMsg = priorityErrorMessage(change.firstError, clampedNice, target.pid);
-    if (change.changed > 0)
+    if (change.changed > 0 || change.unconfirmed > 0)
     {
         errorMsg = std::format("Priority changed for only {} of {} threads. {}", change.changed, change.changed + change.failed, errorMsg);
     }
