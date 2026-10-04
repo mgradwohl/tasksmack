@@ -198,7 +198,7 @@ The following table summarises capabilities that differ between Windows and Linu
 | Process priority (nice) | ✅ | ✅ (mapped −20 … +19) |
 | Process terminate / kill | ✅ | ✅ |
 | Process stop / resume (SIGSTOP/SIGCONT) | ✅ | ❌ |
-| I/O wait time (`iowait`) | ✅ | ❌ (Windows concept does not exist) |
+| I/O wait time (`iowait`) | ✅ (shown as its own band; counted as idle, not busy, so CPU % matches Windows) | ❌ (Windows concept does not exist) |
 | Steal time (`steal`) | ✅ | ❌ |
 | Load average (1/5/15 min) | ✅ | ❌ |
 | Shared memory per process | ✅ (`/proc/[pid]/statm`) | ❌ |

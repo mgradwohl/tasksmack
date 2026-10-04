@@ -142,7 +142,11 @@ std::size_t appendProcessorGroup(std::vector<CpuCounters>& cores, std::span<cons
     cores.reserve(cores.size() + returned);
     for (const Entry& entry : buffer.first(returned))
     {
-        cores.push_back(convert(entry));
+        CpuCounters core = convert(entry);
+        // The core's identity is its logical-processor index across every group, in group order:
+        // what SystemModel matches per-core history by (#1229), unique across groups (#1107).
+        core.coreId = cores.size();
+        cores.push_back(core);
     }
     return returned;
 }

@@ -23,7 +23,8 @@ namespace
 {
 [[nodiscard]] uint64_t cpuComponentSum(const CpuCounters& c)
 {
-    return c.user + c.nice + c.system + c.idle + c.iowait + c.irq + c.softirq + c.steal + c.guest + c.guestNice;
+    // guest/guestNice are inside user/nice, so total() leaves them out (#1157).
+    return c.user + c.nice + c.system + c.idle + c.iowait + c.irq + c.softirq + c.steal;
 }
 
 } // namespace
@@ -250,6 +251,9 @@ TEST(WindowsSystemProbeMathTest, ProcessorGroupsAreAppendedInOrderAndCountIsTheS
     for (std::size_t i = 0; i < expectedOrder.size(); ++i)
     {
         EXPECT_EQ(cores[i].user, expectedOrder[i]) << "core " << i;
+        // Identity runs 0..N-1 across groups, so group 1's cores don't repeat group 0's ids and
+        // SystemModel's match by coreId (#1229) keeps them apart.
+        EXPECT_EQ(cores[i].coreId, i) << "core " << i;
     }
 }
 
