@@ -337,7 +337,7 @@ TEST(NVMLGPUProbeMathTest, InstanceIdsAreReadFromV2Entries)
 
 TEST(LinuxNVMLGPUProbeTest, BasicOperationsDoNotThrow)
 {
-    NVMLGPUProbe probe;
+    NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
     EXPECT_NO_THROW([[maybe_unused]] auto available = probe.isAvailable());
     EXPECT_NO_THROW([[maybe_unused]] auto gpus = probe.enumerateGPUs());
     EXPECT_NO_THROW([[maybe_unused]] auto counters = probe.readGPUCounters());
@@ -347,7 +347,7 @@ TEST(LinuxNVMLGPUProbeTest, BasicOperationsDoNotThrow)
 
 TEST(LinuxNVMLGPUProbeTest, UnavailableProbeReportsNoCapabilities)
 {
-    NVMLGPUProbe probe;
+    NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
     if (probe.isAvailable())
     {
         // Under CTest (ENVIRONMENT_MODIFICATION), LD_LIBRARY_PATH is prepended with the
@@ -369,7 +369,7 @@ TEST(LinuxNVMLGPUProbeTest, UnavailableProbeReportsNoCapabilities)
 
 TEST(LinuxNVMLGPUProbeTest, AvailableProbeReturnsConsistentIds)
 {
-    NVMLGPUProbe probe;
+    NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
     if (probe.isAvailable())
     {
         const auto gpus = probe.enumerateGPUs();
@@ -392,7 +392,7 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryEnablesAvailableCapabilities)
     {
         GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
     }
-    NVMLGPUProbe probe;
+    NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
 
     ASSERT_TRUE(probe.isAvailable());
 
@@ -418,7 +418,7 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryEnumeratesDevicesAndUsesUuidFallback)
     {
         GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
     }
-    NVMLGPUProbe probe;
+    NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
 
     ASSERT_TRUE(probe.isAvailable());
 
@@ -538,7 +538,7 @@ TEST(LinuxNVMLGPUProbeTest, FailedSensorReadsAreMarkedUnavailable)
     const NvmlMockControls controls;
     ASSERT_TRUE(controls.available());
 
-    NVMLGPUProbe probe;
+    NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
     ASSERT_TRUE(probe.isAvailable());
 
     const auto healthy = probe.readGPUCounters();
@@ -570,7 +570,7 @@ TEST(LinuxNVMLGPUProbeTest, DeviceWithoutAHandleIsSkipped)
     ASSERT_TRUE(controls.available());
     controls.configure(0, -1);
 
-    NVMLGPUProbe probe;
+    NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
     ASSERT_TRUE(probe.isAvailable());
 
     const auto gpus = probe.enumerateGPUs();
@@ -596,7 +596,7 @@ TEST(LinuxNVMLGPUProbeTest, DeviceIdsAreResolvedOnceAtLoad)
     ASSERT_TRUE(controls.available());
     controls.configure(NvmlMockControls::NO_FAILING_HANDLE, 2); // every UUID call after load fails
 
-    NVMLGPUProbe probe;
+    NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
     ASSERT_TRUE(probe.isAvailable());
     const unsigned int callsAtLoad = controls.uuidCalls();
 
@@ -620,7 +620,7 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryReturnsExpectedCountersAndMergesProcessEn
     {
         GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
     }
-    NVMLGPUProbe probe;
+    NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
 
     ASSERT_TRUE(probe.isAvailable());
 
@@ -728,7 +728,7 @@ TEST(LinuxNVMLGPUProbeTest, ATransientFailureAtEnumerationKeepsTheSensors)
         GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
     }
     const NvmlMockControls controls;
-    NVMLGPUProbe probe("/nonexistent/tasksmack/pci");
+    NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
     ASSERT_TRUE(probe.isAvailable());
 
     controls.failSensorReads(true);
@@ -756,7 +756,7 @@ TEST(LinuxNVMLGPUProbeTest, SensorCapabilitiesArePerDevice)
     {
         GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
     }
-    NVMLGPUProbe probe("/nonexistent/tasksmack/pci");
+    NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
     ASSERT_TRUE(probe.isAvailable());
 
     const auto gpus = probe.enumerateGPUs();

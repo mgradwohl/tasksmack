@@ -18,7 +18,7 @@ namespace
 
 TEST(LinuxGPUProbeTest, EnumerateReadAndCapabilitiesDoNotThrow)
 {
-    LinuxGPUProbe probe;
+    LinuxGPUProbe probe("/sys/class/drm", TestSupport::ISOLATED_PCI_ROOT);
 
     EXPECT_NO_THROW([[maybe_unused]] auto gpus = probe.enumerateGPUs());
     EXPECT_NO_THROW([[maybe_unused]] auto counters = probe.readGPUCounters());
@@ -28,7 +28,7 @@ TEST(LinuxGPUProbeTest, EnumerateReadAndCapabilitiesDoNotThrow)
 
 TEST(LinuxGPUProbeTest, CounterGpuIdsAreNotEmptyWhenPresent)
 {
-    LinuxGPUProbe probe;
+    LinuxGPUProbe probe("/sys/class/drm", TestSupport::ISOLATED_PCI_ROOT);
     const auto counters = probe.readGPUCounters();
 
     for (const auto& c : counters)
@@ -39,7 +39,7 @@ TEST(LinuxGPUProbeTest, CounterGpuIdsAreNotEmptyWhenPresent)
 
 TEST(LinuxGPUProbeTest, ProcessGpuCountersAreStructurallyValid)
 {
-    LinuxGPUProbe probe;
+    LinuxGPUProbe probe("/sys/class/drm", TestSupport::ISOLATED_PCI_ROOT);
     const auto processCounters = probe.readProcessGPUCounters();
 
     for (const auto& c : processCounters)
@@ -57,7 +57,7 @@ TEST(LinuxGPUProbeTest, MockLibrariesExposeCompositeCapabilities)
     {
         GTEST_SKIP() << "Mock GPU libraries not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
     }
-    LinuxGPUProbe probe;
+    LinuxGPUProbe probe("/sys/class/drm", TestSupport::ISOLATED_PCI_ROOT);
 
     const auto caps = probe.capabilities();
     EXPECT_TRUE(caps.hasTemperature);
@@ -81,7 +81,7 @@ TEST(LinuxGPUProbeTest, MockLibrariesContributeEnumeratedGpusAndCounters)
     {
         GTEST_SKIP() << "Mock GPU libraries not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
     }
-    LinuxGPUProbe probe;
+    LinuxGPUProbe probe("/sys/class/drm", TestSupport::ISOLATED_PCI_ROOT);
 
     const auto gpus = probe.enumerateGPUs();
     EXPECT_NE(std::ranges::find_if(gpus, [](const GPUInfo& gpu) { return gpu.vendor == "NVIDIA" && gpu.id == "mock-nvml-uuid-0"; }),
@@ -104,7 +104,7 @@ TEST(LinuxGPUProbeTest, MockLibrariesProvidePerProcessCountersFromNvmlProbe)
     {
         GTEST_SKIP() << "Mock GPU libraries not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
     }
-    LinuxGPUProbe probe;
+    LinuxGPUProbe probe("/sys/class/drm", TestSupport::ISOLATED_PCI_ROOT);
 
     const auto processCounters = probe.readProcessGPUCounters();
     const auto merged = std::ranges::find_if(processCounters, [](const ProcessGPUCounters& counter) { return counter.pid == 123; });
