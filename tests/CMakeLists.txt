@@ -71,6 +71,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_SingleLineText.cpp
     Domain/test_ProcessEnergyAttribution.cpp
     Domain/test_ProcessModel.cpp
+    Domain/test_SocketTrafficAccumulator.cpp
     Domain/test_GPUModel.cpp
     Domain/test_ProcessStatus.cpp
     Domain/test_SystemModel.cpp
@@ -115,7 +116,6 @@ set(COMMON_TEST_SOURCES
     Platform/test_CgroupFreezerPath.cpp
     Platform/test_ProcessIdentity.cpp
     Platform/test_ProcessName.cpp
-    Platform/test_SocketTrafficAccumulator.cpp
     App/test_FpsCounter.cpp
     App/test_Panel.cpp
     App/test_ProcessesPanel.cpp

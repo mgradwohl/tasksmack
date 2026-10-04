@@ -15,7 +15,6 @@
 #endif
 
 #include "Platform/ProcessTypes.h"
-#include "Platform/SocketTrafficAccumulator.h"
 #include "ProcParsing.h"
 #include "ProcessName.h"
 
@@ -280,21 +279,14 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
     }
 
     // The system total that the processes' CPU deltas are divided by, taken now -- right after
-    // their stat reads, before the variable-latency network attribution below (#1119).
+    // their stat reads, so nothing that runs before totalCpuTime() is called can skew its interval
+    // from theirs (#1119).
     m_TotalCpuTimeAtEnumerate.store(readTotalCpuTime(), std::memory_order_relaxed);
 
     if (m_EnumerateTailHook)
     {
-        m_EnumerateTailHook(); // Tests: time passes during the tail
+        m_EnumerateTailHook(); // Tests: time passes between the capture and totalCpuTime()
     }
-
-#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
-    // Attribute network bytes to processes if socket stats are available
-    if (m_HasNetworkCounters && socketStats())
-    {
-        attributeNetworkToProcesses(processes);
-    }
-#endif
 
     return processes;
 }
@@ -1070,89 +1062,60 @@ std::optional<PackageEnergyReading> LinuxProcessProbe::readPackageEnergy() const
 }
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
-void LinuxProcessProbe::attributeNetworkToProcesses(std::vector<ProcessCounters>& processes) const
+SocketTrafficReading LinuxProcessProbe::readSocketTraffic() const
 {
+    if (!m_HasNetworkCounters)
+    {
+        return {};
+    }
     // Copy out a stable local reference: if setSocketStatsCacheTtl() swaps m_SocketStats
     // concurrently, this call keeps using the instance it started with (kept alive by
     // this shared_ptr) rather than racing the reassignment.
     const auto stats = socketStats();
     if (!stats)
     {
-        return;
+        return {};
     }
 
     // Query all TCP sockets with their byte counters. A failed or partial dump comes back empty
-    // with sampledAt unset (#1160) and is not folded in: a socket missing from it would look closed
-    // and then, back in the next reading, new -- crediting its lifetime bytes at once.
+    // with sampledAt unset (#1160) and is reported as no reading (sampleTimeNs 0), not as an empty
+    // one: a socket missing from it would look closed and then, back in the next reading, new.
+    // The query is cached (DEFAULT_SOCKET_STATS_CACHE_TTL), so the same reading -- with the same
+    // sampledAt -- can come back for several calls; Domain folds it once.
     std::chrono::steady_clock::time_point sampledAt;
     const std::vector<SocketStats> sockets = stats->queryAllSockets(&sampledAt);
-    const bool isNewReading = sampledAt != std::chrono::steady_clock::time_point{};
-
-    // Only a reading with sockets needs the inode map. Fetched before m_NetTrafficMutex is taken,
-    // so a /proc scan never blocks another enumerate() (see currentInodeToPidMap()).
-    std::shared_ptr<const std::unordered_map<std::uint64_t, std::int32_t>> inodeToPid;
-    if (isNewReading && !sockets.empty())
+    if (sampledAt == std::chrono::steady_clock::time_point{})
     {
-        inodeToPid = currentInodeToPidMap();
+        return {};
     }
 
-    const std::scoped_lock lock{m_NetTrafficMutex};
-    // The socket query is cached (DEFAULT_SOCKET_STATS_CACHE_TTL), so the same reading can come
-    // back for several refreshes; it is folded in once. Only a strictly newer one: concurrent
-    // enumerate() calls query and scan /proc before this lock, so an older reading can arrive after
-    // a newer one was folded, and folding it would rewind the socket baselines and count the
-    // traffic in between twice.
-    bool folded = false;
-    if (isNewReading && sampledAt > m_LastNetReadingTime)
+    SocketTrafficReading reading;
+    reading.sampleTimeNs =
+        static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(sampledAt.time_since_epoch()).count());
+    if (sockets.empty())
     {
-        std::vector<SocketTrafficSample> samples;
-        samples.reserve(sockets.size());
-        for (const auto& socket : sockets)
+        return reading; // a complete reading with no sockets: every connection closed
+    }
+
+    // Attribute each socket to the process holding it (socket inode -> PID, from /proc/[pid]/fd).
+    // A socket not in the map (opened since its last rebuild, or held by a process we can't read)
+    // is still reported, unattributed, so Domain tracks its counters from now on.
+    const auto inodeToPid = currentInodeToPidMap();
+    reading.sockets.reserve(sockets.size());
+    for (const auto& socket : sockets)
+    {
+        std::int32_t pid = 0;
+        if (inodeToPid)
         {
-            std::int32_t pid = 0;
-            if (inodeToPid)
+            if (const auto it = inodeToPid->find(socket.inode); it != inodeToPid->end())
             {
-                if (const auto it = inodeToPid->find(socket.inode); it != inodeToPid->end())
-                {
-                    pid = it->second;
-                }
+                pid = it->second;
             }
-            samples.push_back(
-                SocketTrafficSample{.key = socket.inode, .pid = pid, .bytesReceived = socket.bytesReceived, .bytesSent = socket.bytesSent});
         }
-        m_NetTraffic.addReading(samples);
-        m_LastNetReadingTime = sampledAt;
-        folded = true;
+        reading.sockets.push_back(
+            SocketTrafficSample{.key = socket.inode, .pid = pid, .bytesReceived = socket.bytesReceived, .bytesSent = socket.bytesSent});
     }
-
-    if (m_LastNetReadingTime == std::chrono::steady_clock::time_point{})
-    {
-        return; // no reading yet: processes stay unstamped with no network bytes
-    }
-
-    // Every process gets its cumulative bytes (monotonic, see SocketTrafficAccumulator) and the time
-    // of the reading they come from -- processes with sockets or not, so ProcessModel takes rates
-    // over the time between real readings rather than between refreshes (#1063 review). A refresh
-    // whose query failed republishes the last reading's totals and time, so the model holds the
-    // last rate instead of measuring a 0 and then two intervals' bytes over one.
-    const auto sampleTimeNs =
-        static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(m_LastNetReadingTime.time_since_epoch()).count());
-    for (auto& proc : processes)
-    {
-        proc.netSampleTimeNs = sampleTimeNs;
-    }
-    // Only the call that folded a new reading credits it and prunes exited processes. Any other call
-    // (cached or failed query, or an older concurrent reading) only reads the totals: its process
-    // list may predate the newest one, and pruning with it could drop a process a newer call just
-    // credited.
-    if (folded)
-    {
-        m_NetTraffic.publish(processes);
-    }
-    else
-    {
-        m_NetTraffic.publishTotals(processes);
-    }
+    return reading;
 }
 
 std::shared_ptr<const std::unordered_map<std::uint64_t, std::int32_t>> LinuxProcessProbe::currentInodeToPidMap() const

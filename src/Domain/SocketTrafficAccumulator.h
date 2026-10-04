@@ -11,17 +11,8 @@
 #include <utility>
 #include <vector>
 
-namespace Platform
+namespace Domain
 {
-
-/// One connection's cumulative byte counters as the OS reports them, and the process it belongs to.
-struct SocketTrafficSample
-{
-    std::uint64_t key = 0; // Stable identity of the connection for its lifetime: the socket inode on Linux
-    std::int32_t pid = 0;  // Owning process; 0 = not attributed (yet)
-    std::uint64_t bytesReceived = 0;
-    std::uint64_t bytesSent = 0;
-};
 
 /// Turns readings of per-connection byte counters into a monotonic byte counter per process (#1099).
 ///
@@ -44,13 +35,56 @@ struct SocketTrafficSample
 /// not counted. Feed only complete readings: a connection missing from a partial one would come back
 /// as "new" and credit its lifetime bytes.
 ///
-/// Platform-neutral so every process probe can use it; not thread-safe (callers serialize access).
+/// Probes report the raw per-connection counters (Platform::IProcessProbe::readSocketTraffic());
+/// ProcessModel owns one of these and applies each refresh's reading with apply(). Not thread-safe:
+/// ProcessModel calls it under its sampling lock.
 class SocketTrafficAccumulator
 {
   public:
+    /// Fold `reading` in if it was taken strictly after the last one folded, then write every
+    /// process's cumulative totals into its netReceivedBytes/netSentBytes and the time of the reading
+    /// they come from into its netSampleTimeNs -- processes with connections or not, so ProcessModel
+    /// takes rates over the time between real readings rather than between refreshes (#1063 review).
+    ///  - A probe caches its query, so the same reading can come back for several refreshes; it is
+    ///    folded once. An older one is never folded: it would rewind the connection baselines and
+    ///    count the traffic in between twice.
+    ///  - A failed reading (sampleTimeNs 0) is not folded either -- a connection missing from it would
+    ///    look closed and then, back in the next reading, new. Like a repeated one, it republishes the
+    ///    last reading's totals and time, so the model holds the last rate instead of measuring a 0
+    ///    and then two intervals' bytes over one.
+    ///  - Only a refresh that folds a new reading prunes the totals of exited processes; the others
+    ///    only read them (publishTotals()).
+    /// Until a reading has been folded `processes` is left untouched, so a probe that never returns
+    /// readings keeps reporting its own counters.
+    void apply(const Platform::SocketTrafficReading& reading, std::vector<Platform::ProcessCounters>& processes)
+    {
+        const bool folded = reading.sampleTimeNs != 0 && reading.sampleTimeNs > m_LastReadingTimeNs;
+        if (folded)
+        {
+            addReading(reading.sockets);
+            m_LastReadingTimeNs = reading.sampleTimeNs;
+        }
+        if (m_LastReadingTimeNs == 0)
+        {
+            return;
+        }
+        for (auto& proc : processes)
+        {
+            proc.netSampleTimeNs = m_LastReadingTimeNs;
+        }
+        if (folded)
+        {
+            publish(processes);
+        }
+        else
+        {
+            publishTotals(processes);
+        }
+    }
+
     /// Fold one complete reading of every connection into the per-process totals. The credited bytes
     /// are held until the next publish().
-    void addReading(std::span<const SocketTrafficSample> sockets)
+    void addReading(std::span<const Platform::SocketTrafficSample> sockets)
     {
         std::unordered_map<std::uint64_t, SocketState> next;
         next.reserve(sockets.size());
@@ -89,16 +123,12 @@ class SocketTrafficAccumulator
         m_HasReading = true;
     }
 
-    /// Credit the bytes held since the last publish() to the processes they belong to, write every
-    /// process's cumulative totals into its netReceivedBytes/netSentBytes, and forget the totals of
-    /// processes that are gone. A process is identified by PID and start time, so a reused PID starts
-    /// again from 0; bytes held for a PID that isn't in `processes` are dropped.
     /// Write every process's current cumulative totals into its netReceivedBytes/netSentBytes without
     /// changing any state: no pending bytes are credited and no process is forgotten. For a caller
-    /// that didn't fold a new reading (a cached or failed query, or an older concurrent reading that
-    /// was skipped), whose process list may be older than the one the totals were last pruned
-    /// against -- pruning with it could delete a newer process's totals and break monotonicity.
-    void publishTotals(std::vector<ProcessCounters>& processes) const
+    /// that didn't fold a new reading (a cached, failed, or older one that was skipped): processes are
+    /// forgotten only in step with the reading that credits them, so a process list that doesn't
+    /// match the newest reading can never delete a process's totals and break monotonicity.
+    void publishTotals(std::vector<Platform::ProcessCounters>& processes) const
     {
         for (auto& proc : processes)
         {
@@ -109,7 +139,11 @@ class SocketTrafficAccumulator
         }
     }
 
-    void publish(std::vector<ProcessCounters>& processes)
+    /// Credit the bytes held since the last publish() to the processes they belong to, write every
+    /// process's cumulative totals into its netReceivedBytes/netSentBytes, and forget the totals of
+    /// processes that are gone. A process is identified by PID and start time, so a reused PID starts
+    /// again from 0; bytes held for a PID that isn't in `processes` are dropped.
+    void publish(std::vector<Platform::ProcessCounters>& processes)
     {
         std::unordered_map<ProcessKey, Totals, ProcessKeyHash> live;
         live.reserve(processes.size());
@@ -143,6 +177,7 @@ class SocketTrafficAccumulator
         m_PendingByPid.clear();
         m_Totals.clear();
         m_HasReading = false;
+        m_LastReadingTimeNs = 0;
     }
 
   private:
@@ -191,6 +226,7 @@ class SocketTrafficAccumulator
     std::unordered_map<std::int32_t, Totals> m_PendingByPid;         // credited since the last publish()
     std::unordered_map<ProcessKey, Totals, ProcessKeyHash> m_Totals; // cumulative bytes per live process
     bool m_HasReading = false;
+    std::uint64_t m_LastReadingTimeNs = 0; // sampleTimeNs of the last reading apply() folded; 0 = none
 };
 
-} // namespace Platform
+} // namespace Domain

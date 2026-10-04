@@ -5,6 +5,7 @@
 #include "Platform/IProcessProbe.h"
 #include "ProcessEnergyAttribution.h"
 #include "ProcessSnapshot.h"
+#include "SocketTrafficAccumulator.h"
 
 #include <atomic>
 #include <chrono>
@@ -207,6 +208,7 @@ class ProcessModel : public ISamplable
     mutable std::shared_mutex m_Mutex;
     std::mutex m_SamplingMutex;
     ProcessEnergy::Attributor m_EnergyAttributor; // guarded by m_SamplingMutex
+    SocketTrafficAccumulator m_NetTraffic;        // guarded by m_SamplingMutex; per-process network bytes (#1099)
 
     // Helpers
     /// Requires m_SamplingMutex held.

@@ -6,8 +6,8 @@
 
 #if defined(__linux__) && __has_include(<linux/inet_diag.h>) && __has_include(<linux/sock_diag.h>)
 
+#include "Domain/SocketTrafficAccumulator.h"
 #include "Platform/Linux/NetlinkSocketStats.h"
-#include "Platform/SocketTrafficAccumulator.h"
 
 #include <benchmark/benchmark.h>
 
@@ -98,7 +98,7 @@ static void BM_NetlinkSocketStats_FullPipeline(benchmark::State& state)
         return;
     }
 
-    Platform::SocketTrafficAccumulator accumulator;
+    Domain::SocketTrafficAccumulator accumulator;
     std::vector<Platform::SocketTrafficSample> samples;
     for (auto _ : state)
     {

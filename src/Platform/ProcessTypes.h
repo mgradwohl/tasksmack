@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace Platform
 {
@@ -41,7 +42,8 @@ struct ProcessCounters
     std::uint64_t pageFaultCount = 0;  // Total page faults (minor + major on Linux)
     std::uint64_t cpuAffinityMask = 0; // Bitmask of allowed CPU cores (0 = not available)
 
-    // Network counters (cumulative bytes)
+    // Network counters (cumulative bytes). A probe that reports per-connection readings instead
+    // (IProcessProbe::readSocketTraffic()) leaves these 0; Domain fills them from the readings.
     std::uint64_t netSentBytes = 0;
     std::uint64_t netReceivedBytes = 0;
     // When the network counters were read from the OS, as std::chrono::steady_clock nanoseconds since
@@ -65,6 +67,27 @@ struct ProcessCounters
     // std::nullopt means the probe could not open the process with the required rights.
     // A stored value of 0 means the process is accessible but owns no GDI objects.
     std::optional<std::int32_t> gdiObjectCount;
+};
+
+/// One connection's cumulative byte counters as the OS reports them, and the process it belongs to.
+struct SocketTrafficSample
+{
+    std::uint64_t key = 0; // Stable identity of the connection for its lifetime: the socket inode on Linux
+    std::int32_t pid = 0;  // Owning process; 0 = not attributed (yet)
+    std::uint64_t bytesReceived = 0;
+    std::uint64_t bytesSent = 0;
+};
+
+/// One complete reading of every connection's raw byte counters (IProcessProbe::readSocketTraffic()).
+/// Domain turns successive readings into monotonic per-process counters (#1099).
+struct SocketTrafficReading
+{
+    std::vector<SocketTrafficSample> sockets;
+    /// When the connections were read from the OS, as std::chrono::steady_clock nanoseconds since its
+    /// epoch. A probe that caches its query returns the same time for the same reading. 0 = no
+    /// complete reading this time (unsupported, failed, or interrupted): `sockets` is then empty and
+    /// must not be treated as "every connection closed".
+    std::uint64_t sampleTimeNs = 0;
 };
 
 /// Reports what this platform's probe supports.

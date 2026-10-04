@@ -1,7 +1,7 @@
 // Tests for SocketTrafficAccumulator: per-process network counters built from per-socket deltas (#1099).
 
+#include "Domain/SocketTrafficAccumulator.h"
 #include "Platform/ProcessTypes.h"
-#include "Platform/SocketTrafficAccumulator.h"
 
 #include <gtest/gtest.h>
 
@@ -9,10 +9,14 @@
 #include <limits>
 #include <vector>
 
-namespace Platform
+namespace Domain
 {
 namespace
 {
+
+using Platform::ProcessCounters;
+using Platform::SocketTrafficReading;
+using Platform::SocketTrafficSample;
 
 [[nodiscard]] ProcessCounters process(std::int32_t pid, std::uint64_t startTimeTicks = 1000)
 {
@@ -209,5 +213,95 @@ TEST(SocketTrafficAccumulatorTest, ResetForgetsEverything)
     EXPECT_EQ(processes[0].netReceivedBytes, 0U) << "after reset the next reading is a baseline again";
 }
 
+// apply(): how ProcessModel feeds each refresh's reading (#1261 review: the accounting is Domain's).
+
+TEST(SocketTrafficAccumulatorTest, ApplyStampsEveryProcessWithTheReadingTime)
+{
+    SocketTrafficAccumulator accumulator;
+    std::vector processes{process(10), process(20)};
+    accumulator.apply({.sockets = {{.key = 1, .pid = 10}}, .sampleTimeNs = 5'000}, processes);
+    EXPECT_EQ(processes[0].netSampleTimeNs, 5'000U);
+    EXPECT_EQ(processes[1].netSampleTimeNs, 5'000U) << "processes without sockets too";
+}
+
+TEST(SocketTrafficAccumulatorTest, ApplyLeavesProcessesUntouchedUntilAReading)
+{
+    // A probe that never returns readings (Windows today, mocks) keeps its own counters.
+    SocketTrafficAccumulator accumulator;
+    std::vector processes{process(10)};
+    processes[0].netReceivedBytes = 1'234;
+    processes[0].netSampleTimeNs = 77;
+    accumulator.apply({}, processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 1'234U);
+    EXPECT_EQ(processes[0].netSampleTimeNs, 77U);
+}
+
+TEST(SocketTrafficAccumulatorTest, ApplyFoldsARepeatedReadingOnce)
+{
+    // The probe caches its query: the same reading (same time) comes back for several refreshes.
+    SocketTrafficAccumulator accumulator;
+    std::vector processes{process(10)};
+    accumulator.apply({.sockets = {{.key = 1, .pid = 10, .bytesReceived = 0}}, .sampleTimeNs = 1'000}, processes);
+    const SocketTrafficReading second{.sockets = {{.key = 1, .pid = 10, .bytesReceived = 500}}, .sampleTimeNs = 2'000};
+    accumulator.apply(second, processes);
+    accumulator.apply(second, processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 500U);
+    EXPECT_EQ(processes[0].netSampleTimeNs, 2'000U);
+}
+
+TEST(SocketTrafficAccumulatorTest, ApplyDoesNotFoldAnOlderReading)
+{
+    // Folding a reading older than the last one would rewind the baselines: socket 1 back at 100
+    // and then at 1100 again would count those 1000 bytes twice.
+    SocketTrafficAccumulator accumulator;
+    std::vector processes{process(10)};
+    accumulator.apply({.sockets = {{.key = 1, .pid = 10, .bytesReceived = 100}}, .sampleTimeNs = 1'000}, processes);
+    accumulator.apply({.sockets = {{.key = 1, .pid = 10, .bytesReceived = 1'100}}, .sampleTimeNs = 3'000}, processes);
+    ASSERT_EQ(processes[0].netReceivedBytes, 1'000U);
+
+    accumulator.apply({.sockets = {{.key = 1, .pid = 10, .bytesReceived = 100}}, .sampleTimeNs = 2'000}, processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 1'000U);
+    EXPECT_EQ(processes[0].netSampleTimeNs, 3'000U) << "the time of the reading the totals come from";
+
+    accumulator.apply({.sockets = {{.key = 1, .pid = 10, .bytesReceived = 1'200}}, .sampleTimeNs = 4'000}, processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 1'100U);
+}
+
+TEST(SocketTrafficAccumulatorTest, ApplyRepublishesTheLastTotalsForAFailedReading)
+{
+    // A failed reading (time 0) is neither folded -- its missing sockets would come back as new and
+    // credit their lifetime bytes -- nor a reason to drop the totals: the last ones and their time
+    // are republished, so ProcessModel holds the last rate.
+    SocketTrafficAccumulator accumulator;
+    std::vector processes{process(10)};
+    accumulator.apply({.sockets = {{.key = 1, .pid = 10, .bytesReceived = 0}}, .sampleTimeNs = 1'000}, processes);
+    accumulator.apply({.sockets = {{.key = 1, .pid = 10, .bytesReceived = 400}}, .sampleTimeNs = 2'000}, processes);
+
+    std::vector again{process(10)};
+    accumulator.apply({}, again);
+    EXPECT_EQ(again[0].netReceivedBytes, 400U);
+    EXPECT_EQ(again[0].netSampleTimeNs, 2'000U);
+
+    accumulator.apply({.sockets = {{.key = 1, .pid = 10, .bytesReceived = 450}}, .sampleTimeNs = 3'000}, again);
+    EXPECT_EQ(again[0].netReceivedBytes, 450U) << "only socket 1's growth, not its lifetime bytes";
+}
+
+TEST(SocketTrafficAccumulatorTest, OnlyAFoldingApplyPrunesExitedProcesses)
+{
+    // A refresh that doesn't fold a reading only reads the totals; a process missing from its list
+    // keeps its totals for the next refresh that does.
+    SocketTrafficAccumulator accumulator;
+    std::vector both{process(10), process(20)};
+    accumulator.apply({.sockets = {{.key = 1, .pid = 20, .bytesReceived = 0}}, .sampleTimeNs = 1'000}, both);
+    accumulator.apply({.sockets = {{.key = 1, .pid = 20, .bytesReceived = 100}}, .sampleTimeNs = 2'000}, both);
+    ASSERT_EQ(both[1].netReceivedBytes, 100U);
+
+    std::vector withoutTwenty{process(10)};
+    accumulator.apply({.sockets = {{.key = 1, .pid = 20, .bytesReceived = 100}}, .sampleTimeNs = 2'000}, withoutTwenty);
+
+    accumulator.apply({.sockets = {{.key = 1, .pid = 20, .bytesReceived = 110}}, .sampleTimeNs = 3'000}, both);
+    EXPECT_EQ(both[1].netReceivedBytes, 110U);
+}
+
 } // namespace
-} // namespace Platform
+} // namespace Domain
