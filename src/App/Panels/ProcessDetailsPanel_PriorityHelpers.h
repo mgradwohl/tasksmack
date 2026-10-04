@@ -5,6 +5,7 @@
 // to improve testability and code organization.
 
 #include "Domain/PriorityConfig.h"
+#include "UI/ColorContrast.h"
 
 #include <imgui.h>
 
@@ -213,6 +214,54 @@ struct PrioritySliderMetrics
 {
     position = std::clamp(position, 0.0F, 1.0F);
     return NICE_MIN + static_cast<int32_t>(std::round(position * static_cast<float>(NICE_RANGE)));
+}
+
+/// WCAG 2 floor for the nice value drawn on the badge: small text (#1130).
+inline constexpr float PRIORITY_BADGE_TEXT_MIN_CONTRAST = 4.5F;
+
+/**
+ * @brief Unpack a colour packed by getNiceColor() into floats
+ *
+ * Header-only (no ImGui runtime), so the pure contrast helpers below can be fed what the panel draws.
+ */
+[[nodiscard]] constexpr auto unpackColor(ImU32 packed) noexcept -> ImVec4
+{
+    constexpr float SCALE = 1.0F / 255.0F;
+    return {static_cast<float>((packed >> IM_COL32_R_SHIFT) & 0xFFU) * SCALE,
+            static_cast<float>((packed >> IM_COL32_G_SHIFT) & 0xFFU) * SCALE,
+            static_cast<float>((packed >> IM_COL32_B_SHIFT) & 0xFFU) * SCALE,
+            static_cast<float>((packed >> IM_COL32_A_SHIFT) & 0xFFU) * SCALE};
+}
+
+/**
+ * @brief The colour to draw on a priority badge (and the slider thumb) of colour `fill` (#1130)
+ *
+ * The nice value was drawn in the theme's fixed priority.badge_text over whatever getNiceColor()
+ * produced, so on most dark themes white text sat on a light green badge at nice 0 (Arctic Fire 1.67:1).
+ * The theme's two poles, checked against the WCAG small-text floor in order: its badge text colour
+ * when that is readable on this fill, otherwise its window background when that is. If neither
+ * reaches the floor, pure black or white -- whichever contrasts more -- always does (at least
+ * 4.58:1). Unlike readableTextOn()'s "clearly better" margin, a readable preferred colour is kept
+ * however much better the alternate would be.
+ *
+ * @param fill The badge's fill, i.e. getNiceColor() at the nice value shown
+ * @param badgeText The theme's priority.badge_text, kept when it is readable
+ * @param windowBg The theme's window background, the other pole of its palette
+ * @return ImVec4 An opaque text colour with at least PRIORITY_BADGE_TEXT_MIN_CONTRAST on `fill`
+ */
+[[nodiscard]] inline auto badgeTextFor(const ImVec4& fill, const ImVec4& badgeText, const ImVec4& windowBg) noexcept -> ImVec4
+{
+    for (ImVec4 pole : {badgeText, windowBg})
+    {
+        pole.w = 1.0F;
+        if (UI::ColorContrast::contrastRatio(pole, fill) >= PRIORITY_BADGE_TEXT_MIN_CONTRAST)
+        {
+            return pole;
+        }
+    }
+    const ImVec4 black{0.0F, 0.0F, 0.0F, 1.0F};
+    const ImVec4 white{1.0F, 1.0F, 1.0F, 1.0F};
+    return (UI::ColorContrast::contrastRatio(black, fill) >= UI::ColorContrast::contrastRatio(white, fill)) ? black : white;
 }
 
 // Note: For priority labels, use Domain::Priority::getPriorityLabel() from PriorityConfig.h

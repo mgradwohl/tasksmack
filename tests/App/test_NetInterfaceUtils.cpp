@@ -455,6 +455,29 @@ TEST(NetInterfaceUtilsTest, GetSortedFilteredInterfacesPreservesAllFields)
     EXPECT_EQ(result[0].linkSpeedMbps, 1000U);
 }
 
+// ========== interfaceSelectorLabels (#1106) ==========
+
+TEST(NetInterfaceUtilsTest, SelectorMarksVirtualInterfacesLeftOutOfTheTotal)
+{
+    auto wg0 = makeInterface("wg0");
+    wg0.isVirtual = true;
+    const std::vector interfaces{makeInterface("eth0", "Ethernet"), wg0};
+    EXPECT_EQ(interfaceSelectorLabels(interfaces),
+              (std::vector<std::string>{"Total (Hardware Interfaces)", "Ethernet", "wg0 (virtual, not in Total)"}));
+}
+
+TEST(NetInterfaceUtilsTest, SelectorTotalIsAllInterfacesWhenNoneIsLeftOut)
+{
+    // No virtual interface (or a platform that doesn't classify them): nothing is left out.
+    EXPECT_EQ(interfaceSelectorLabels({makeInterface("eth0"), makeInterface("wlan0")}),
+              (std::vector<std::string>{"Total (All Interfaces)", "eth0", "wlan0"}));
+
+    // Every interface virtual (inside a container): the Total counts them all, so none is marked.
+    auto veth = makeInterface("eth0");
+    veth.isVirtual = true;
+    EXPECT_EQ(interfaceSelectorLabels({veth}), (std::vector<std::string>{"Total (All Interfaces)", "eth0"}));
+}
+
 // ========== resolveInterfaceSelection (#996) ==========
 
 TEST(NetInterfaceUtilsTest, EmptySelectionIsTotal)

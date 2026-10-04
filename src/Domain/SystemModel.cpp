@@ -483,6 +483,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         ifaceSnap.displayName = iface.displayName;
         ifaceSnap.isUp = iface.isUp;
         ifaceSnap.linkSpeedMbps = iface.linkSpeedMbps;
+        ifaceSnap.isVirtual = iface.isVirtual;
 
         // Compute rates only if we have previous data and positive time delta
         if (m_HasPrevious && timeDelta > 0.0)
@@ -567,10 +568,19 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         // the axis for the history window -- and one disappearing read as a counter rollback, 0
         // (#1030). Per interface, a new one has no rate until its second sample. The aggregate
         // counters remain the fallback for a probe that reports no per-interface data.
+        // Virtual interfaces (bridges, veth, VPN tunnels) are left out: their traffic also crosses a
+        // hardware interface, and counting both doubled the Total on machines running Docker, WSL or
+        // a VPN (#1106). If every interface is virtual (inside a container) they all count.
         if (timeDelta > 0.0 && !snap.networkInterfaces.empty())
         {
+            const bool anyHardware =
+                std::ranges::any_of(snap.networkInterfaces, [](const auto& ifaceSnap) { return !ifaceSnap.isVirtual; });
             for (const auto& ifaceSnap : snap.networkInterfaces)
             {
+                if (anyHardware && ifaceSnap.isVirtual)
+                {
+                    continue;
+                }
                 snap.netRxBytesPerSec += ifaceSnap.rxBytesPerSec;
                 snap.netTxBytesPerSec += ifaceSnap.txBytesPerSec;
             }

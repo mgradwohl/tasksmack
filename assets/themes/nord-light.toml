@@ -17,15 +17,15 @@ colors = [
     "#B05E28",  # Muted orange
     "#4F8A3C",  # Muted green
     "#7D4A8A",  # Muted purple
-    "#C17104",  # Amber
+    "#BB6102",  # Amber
     "#A63B41",  # Muted red
     "#6586B0",  # Slate blue
     "#8B7200",  # Dark gold
 ]
 
 [progress]
-low = "#4F8A3C"       # 0-50%   - Muted green (healthy)
-medium = "#B9725C"    # 50-80%  - Aurora Orange (caution)
+low = "#458731"       # 0-50%   - Muted green (healthy)
+medium = "#C06F51"    # 50-80%  - Aurora Orange (caution)
 high = "#BF616A"      # 80-100% - Aurora Red (critical)
 
 [semantic]
@@ -33,7 +33,7 @@ text_primary = "#2E3440"
 text_disabled = "#4C566A"
 text_muted = "#4C566A"
 text_error = "#A14651"
-text_warning = "#93513D"
+text_warning = "#6F4234"
 text_success = "#357024"
 text_info = "#40658E"
 
@@ -48,15 +48,15 @@ idle = "#4B535F"
 [charts]
 cpu = "#5E81AC"
 memory = "#4F8A3C"
-io = "#A63B41"
+io = "#A14651"
 io_write = "#00838F"
-net_tx = "#6586B0"
+net_tx = "#5E86B7"
 net_rx = "#C17104"
 cpu_fill = "#5E81AC4D"
 memory_fill = "#4F8A3C4D"
-io_fill = "#A63B414D"
+io_fill = "#A146514D"
 io_write_fill = "#00838F4D"
-net_tx_fill = "#6586B04D"
+net_tx_fill = "#5E86B74D"
 net_rx_fill = "#C171044D"
 peak_line = "#2E3440B3"
 
@@ -66,8 +66,8 @@ utilization_fill = "#7D4A8A4D"
 memory = "#C17104"
 memory_fill = "#C171044D"
 temperature = "#B36B00"
-power = "#4F8A3C"
-encoder = "#00838F"
+power = "#548F41"
+encoder = "#418088"
 decoder = "#A63B41"
 clock = "#5E81AC"
 clock_fill = "#5E81ACCC"
