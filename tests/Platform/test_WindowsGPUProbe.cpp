@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -284,46 +285,114 @@ GPUInfo makeInfo(const std::string& name, const std::string& vendor)
 }
 } // namespace
 
-TEST(MapDXGIToNVMLTest, IdenticalCardsMapToDistinctNVMLDevices)
+GPUInfo makeLocatedInfo(const std::string& name, std::uint32_t bus, std::uint32_t pciDeviceId = 0)
 {
-    // Two identical cards used to both map to NVML device 0, so the second showed the first's data.
-    const std::vector<GPUInfo> dxgi = {makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA"), makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA")};
-    const std::vector<GPUInfo> nvml = {makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA"), makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA")};
+    GPUInfo info = makeInfo(name, "NVIDIA");
+    info.pciLocation = PciLocation{.bus = bus, .device = 0};
+    info.pciDeviceId = pciDeviceId;
+    return info;
+}
+
+// #1091: two identical cards, with the monitor on the one at bus 0x02, so DXGI lists it first while
+// NVML orders by bus. The PCI location pairs each adapter with its own device.
+TEST(MapDXGIToNVMLTest, IdenticalCardsMapByPciLocationWhateverTheOrder)
+{
+    const std::vector<GPUInfo> dxgi = {makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x02), makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x01)};
+    const std::vector<GPUInfo> nvml = {makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x01), makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x02)};
 
     const auto mapping = mapDXGIToNVML(dxgi, nvml);
     ASSERT_EQ(mapping.size(), 2U);
-    EXPECT_EQ(mapping.at(0), 0U);
-    EXPECT_EQ(mapping.at(1), 1U);
+    EXPECT_EQ(mapping.at(0), 1U);
+    EXPECT_EQ(mapping.at(1), 0U);
+}
+
+// #1091: without a location, identical cards cannot be told apart. They stay unmapped rather than
+// being paired by enumeration order, which showed one card's sensors as the other's.
+TEST(MapDXGIToNVMLTest, IdenticalCardsWithoutLocationStayUnmapped)
+{
+    const std::vector<GPUInfo> dxgi = {makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA"), makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA")};
+    const std::vector<GPUInfo> nvml = {makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA"), makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA")};
+
+    EXPECT_TRUE(mapDXGIToNVML(dxgi, nvml).empty());
+}
+
+// #1091: "RTX 4060" is a substring of "RTX 4060 Ti". Enumerated in opposite orders, the 4060 used to
+// claim the Ti's NVML device and the two cards' sensors were swapped. Exact names win now.
+TEST(MapDXGIToNVMLTest, ExactNameWinsOverASubstringClaim)
+{
+    const std::vector<GPUInfo> dxgi = {makeInfo("GeForce RTX 4060", "NVIDIA"), makeInfo("GeForce RTX 4060 Ti", "NVIDIA")};
+    const std::vector<GPUInfo> nvml = {makeInfo("GeForce RTX 4060 Ti", "NVIDIA"), makeInfo("GeForce RTX 4060", "NVIDIA")};
+
+    const auto mapping = mapDXGIToNVML(dxgi, nvml);
+    ASSERT_EQ(mapping.size(), 2U);
+    EXPECT_EQ(mapping.at(0), 1U);
+    EXPECT_EQ(mapping.at(1), 0U);
+}
+
+// DXGI names carry "NVIDIA " and NVML's usually do not; that difference alone still counts as exact.
+TEST(MapDXGIToNVMLTest, VendorPrefixDoesNotStopAnExactMatch)
+{
+    const std::vector<GPUInfo> dxgi = {makeInfo("NVIDIA GeForce RTX 4060 Ti", "NVIDIA"), makeInfo("NVIDIA GeForce RTX 4060", "NVIDIA")};
+    const std::vector<GPUInfo> nvml = {makeInfo("GeForce RTX 4060", "NVIDIA"), makeInfo("GeForce RTX 4060 Ti", "NVIDIA")};
+
+    const auto mapping = mapDXGIToNVML(dxgi, nvml);
+    ASSERT_EQ(mapping.size(), 2U);
+    EXPECT_EQ(mapping.at(0), 1U);
+    EXPECT_EQ(mapping.at(1), 0U);
+}
+
+// Different PCI device ids are different cards, even when the names would match.
+TEST(MapDXGIToNVMLTest, DifferentPciDeviceIdsNeverMatch)
+{
+    GPUInfo adapter = makeInfo("NVIDIA GeForce RTX 4060", "NVIDIA");
+    adapter.pciDeviceId = 0x288210DEU;
+    GPUInfo device = makeInfo("GeForce RTX 4060", "NVIDIA");
+    device.pciDeviceId = 0x280310DEU;
+
+    EXPECT_TRUE(mapDXGIToNVML({adapter}, {device}).empty());
+}
+
+// Different PCI locations are different cards, even when the names match exactly.
+TEST(MapDXGIToNVMLTest, DifferentPciLocationsNeverMatchByName)
+{
+    EXPECT_TRUE(
+        mapDXGIToNVML({makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x01)}, {makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x02)}).empty());
 }
 
 TEST(MapDXGIToNVMLTest, NonNVIDIAAdaptersAndSurplusCardsStayUnmapped)
 {
-    // A hybrid laptop's Intel iGPU is never mapped; a third identical card with only two NVML
-    // devices is left unmapped rather than sharing one.
+    // A hybrid laptop's Intel iGPU is never mapped. Two identical NVIDIA adapters and one NVML device
+    // without locations are ambiguous -- either could be it -- so neither is mapped.
     const std::vector<GPUInfo> dxgi = {
         makeInfo("Intel(R) Arc(TM) 140T GPU", "Intel"),
         makeInfo("NVIDIA GeForce RTX 4060 Laptop GPU", "NVIDIA"),
         makeInfo("NVIDIA GeForce RTX 4060 Laptop GPU", "NVIDIA"),
     };
     const std::vector<GPUInfo> nvml = {makeInfo("NVIDIA GeForce RTX 4060 Laptop GPU", "NVIDIA")};
+    EXPECT_TRUE(mapDXGIToNVML(dxgi, nvml).empty());
 
-    const auto mapping = mapDXGIToNVML(dxgi, nvml);
+    // With locations, the adapter at the device's location takes it and the other stays unmapped.
+    const std::vector<GPUInfo> locatedDxgi = {
+        makeInfo("Intel(R) Arc(TM) 140T GPU", "Intel"),
+        makeLocatedInfo("NVIDIA GeForce RTX 4060 Laptop GPU", 0x02),
+        makeLocatedInfo("NVIDIA GeForce RTX 4060 Laptop GPU", 0x01),
+    };
+    const std::vector<GPUInfo> locatedNvml = {makeLocatedInfo("NVIDIA GeForce RTX 4060 Laptop GPU", 0x01)};
+    const auto mapping = mapDXGIToNVML(locatedDxgi, locatedNvml);
     ASSERT_EQ(mapping.size(), 1U);
-    EXPECT_EQ(mapping.at(1), 0U);
-    EXPECT_FALSE(mapping.contains(0));
-    EXPECT_FALSE(mapping.contains(2));
+    EXPECT_EQ(mapping.at(2), 0U);
 }
 
 TEST(AssignSensorCapabilitiesTest, EachAdapterTakesItsOwnNVMLDevicesSensors)
 {
     // Sensors are per adapter (#1040): the iGPU has none, and of two identical NVIDIA cards the
-    // passively cooled one reports no fan.
+    // passively cooled one reports no fan. The identical cards are told apart by PCI location (#1091).
     std::vector<GPUInfo> dxgi = {
         makeInfo("Intel(R) Arc(TM) 140T GPU", "Intel"),
-        makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA"),
-        makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA"),
+        makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x01),
+        makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x02),
     };
-    std::vector<GPUInfo> nvml = {makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA"), makeInfo("NVIDIA GeForce RTX 4090", "NVIDIA")};
+    std::vector<GPUInfo> nvml = {makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x01), makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x02)};
     GPUCapabilities cooled;
     cooled.hasTemperature = true;
     cooled.hasFanSpeed = true;

@@ -25,13 +25,50 @@
 #pragma clang diagnostic ignored "-Wlanguage-extension-token"
 #include <dxgi1_4.h>
 #pragma clang diagnostic pop
+#include <winternl.h> // NTSTATUS, for d3dkmthk.h
+#include <d3dkmthk.h>
 // clang-format on
 
 #include <cstring>
 #include <format>
+#include <optional>
 
 namespace Platform
 {
+
+namespace
+{
+
+/// The adapter's PCI bus location, read from the kernel graphics adapter its LUID names, so the
+/// Windows probe can match it to its NVML device exactly (#1091): DXGI_ADAPTER_DESC1 has no PCI
+/// location, and DXGI and NVML enumerate in different orders. nullopt when the adapter cannot be
+/// opened or reports no address (e.g. a software or remote adapter).
+[[nodiscard]] std::optional<PciLocation> adapterPciLocation(const LUID& luid)
+{
+    D3DKMT_OPENADAPTERFROMLUID open{};
+    open.AdapterLuid = luid;
+    if (D3DKMTOpenAdapterFromLuid(&open) != 0) // STATUS_SUCCESS
+    {
+        return std::nullopt;
+    }
+    D3DKMT_ADAPTERADDRESS address{};
+    D3DKMT_QUERYADAPTERINFO query{};
+    query.hAdapter = open.hAdapter;
+    query.Type = KMTQAITYPE_ADAPTERADDRESS;
+    query.pPrivateDriverData = &address;
+    query.PrivateDriverDataSize = sizeof(address);
+    const NTSTATUS status = D3DKMTQueryAdapterInfo(&query);
+    D3DKMT_CLOSEADAPTER close{};
+    close.hAdapter = open.hAdapter;
+    D3DKMTCloseAdapter(&close);
+    if (status != 0)
+    {
+        return std::nullopt;
+    }
+    return PciLocation{.bus = address.BusNumber, .device = address.DeviceNumber};
+}
+
+} // namespace
 
 DXGIGPUProbe::DXGIGPUProbe() : m_Initialized(initialize())
 {}
@@ -126,11 +163,17 @@ std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
                 // Device index
                 info.deviceIndex = adapterIndex;
 
-                spdlog::debug("DXGIGPUProbe: Enumerated GPU {}: {} ({}) - LUID: {}, Integrated: {}",
+                // PCI identity, in NVML's pciDeviceId encoding, for matching to NVML (#1091)
+                info.pciDeviceId = (static_cast<std::uint32_t>(desc.DeviceId) << 16U) | (desc.VendorId & 0xFFFFU);
+                info.pciLocation = adapterPciLocation(desc.AdapterLuid);
+
+                spdlog::debug("DXGIGPUProbe: Enumerated GPU {}: {} ({}) - LUID: {}, PCI: {}, Integrated: {}",
                               adapterIndex,
                               info.name,
                               info.vendor,
                               info.luidId,
+                              info.pciLocation ? std::format("{:02x}:{:02x}", info.pciLocation->bus, info.pciLocation->device)
+                                               : std::string("unknown"),
                               info.isIntegrated);
 
                 gpus.push_back(std::move(info));

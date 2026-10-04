@@ -24,6 +24,16 @@ struct GPUCapabilities
 };
 
 // Identifies a physical GPU
+/// Where an adapter sits on the PCI bus. DXGI and NVML enumerate adapters in different orders and
+/// name them differently, so on Windows this is what says which NVML device is which DXGI adapter
+/// (#1091). DXGI reports no PCI domain, so the domain is not part of the match.
+struct PciLocation
+{
+    std::uint32_t bus = 0;
+    std::uint32_t device = 0;
+    bool operator==(const PciLocation&) const = default;
+};
+
 struct GPUInfo
 {
     std::string id;     // Unique identifier (e.g., "GPU0", "GPU1")
@@ -39,6 +49,10 @@ struct GPUInfo
     /// the Intel iGPU too, and two NVIDIA cards with different sensors both drew every series
     /// (#1040). nullopt means the probe's capabilities apply to this adapter unchanged.
     std::optional<GPUCapabilities> sensorCapabilities;
+    /// PCI bus location, where the probe can read it (Windows: DXGI via D3DKMT, and NVML) (#1091).
+    std::optional<PciLocation> pciLocation;
+    /// PCI (device ID << 16) | vendor ID -- NVML's pciDeviceId encoding -- or 0 when unknown (#1091).
+    std::uint32_t pciDeviceId = 0;
 };
 
 // Raw GPU counters (Platform layer provides raw values only)
