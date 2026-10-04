@@ -24,6 +24,16 @@
 #include "Platform/ProcessTypes.h"
 #include "Platform/ScopedTempDir.h"
 
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+#include "Platform/Linux/NetlinkSocketStats.h"
+#include "Platform/NetlinkTestUtils.h"
+
+#include <memory>
+#include <vector>
+
+#include <sys/socket.h>
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
@@ -36,6 +46,7 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <utility>
 
 #include <sys/wait.h>
 #include <unistd.h>
@@ -496,37 +507,26 @@ TEST(LinuxProcessProbeTest, IoCountersForSelfProcess)
     EXPECT_GE(selfProc->writeBytes, 0ULL);
 }
 
-TEST(LinuxProcessProbeTest, NetworkReadTimeIsStampedOnEveryProcess)
+TEST(LinuxProcessProbeTest, ACachedSocketReadingKeepsItsReadTime)
 {
-    // #1063 review: ProcessModel takes network rates over the time between the probe's socket reads,
-    // so every process must carry the read's time -- processes without sockets too, or the next
-    // read with sockets would fall back to the refresh interval and overstate its rate.
+    // #1063 review: ProcessModel takes network rates over the time between the probe's socket reads
+    // (and stamps that time on every process, see SocketTrafficAccumulator::apply()). Within the
+    // socket cache's TTL the same read must come back with its original time, not a new one: a fresh
+    // time on a cache hit would make ProcessModel treat it as a new reading (rates of 0 between real
+    // reads, then inflated ones when fresh counters arrive).
     LinuxProcessProbe probe;
     if (!probe.capabilities().hasNetworkCounters)
     {
         GTEST_SKIP() << "Per-process network counters not available (Netlink INET_DIAG)";
     }
-    // Long enough that both enumerations below hit the same cached socket read.
+    // Long enough that both reads below hit the same cached socket query.
     probe.setSocketStatsCacheTtl(std::chrono::minutes{10});
 
-    const auto first = probe.enumerate();
-    ASSERT_FALSE(first.empty());
-    const std::uint64_t stamp = first.front().netSampleTimeNs;
-    EXPECT_NE(stamp, 0U);
-    for (const auto& proc : first)
-    {
-        EXPECT_EQ(proc.netSampleTimeNs, stamp) << "pid " << proc.pid;
-    }
-
-    // Within the socket cache's TTL the same read is returned with its original time, not a new one:
-    // a fresh stamp on a cache hit would make ProcessModel treat it as a new reading (rates of 0
-    // between real reads, then inflated ones when fresh counters arrive).
-    const auto second = probe.enumerate();
-    ASSERT_FALSE(second.empty());
-    for (const auto& proc : second)
-    {
-        EXPECT_EQ(proc.netSampleTimeNs, stamp) << "pid " << proc.pid;
-    }
+    const auto first = probe.readSocketTraffic();
+    EXPECT_NE(first.sampleTimeNs, 0U);
+    const auto second = probe.readSocketTraffic();
+    EXPECT_EQ(second.sampleTimeNs, first.sampleTimeNs);
+    EXPECT_EQ(second.sockets.size(), first.sockets.size());
 }
 
 TEST(LinuxProcessProbeTest, IoCountersIncreaseWithActivity)
@@ -833,8 +833,8 @@ TEST(LinuxProcessProbeTest, TotalCpuTimeIsTheOneTakenAfterTheStatPass)
     writeFile(proc.path / "stat", "cpu  100 0 100 800 0 0 0 0 0 0\n");
 
     LinuxProcessProbe probe(proc.path);
-    // Time passes during enumerate()'s variable-latency tail (network attribution): the total must
-    // already have been taken, so moving the capture after the tail fails this test.
+    // Time passes between enumerate()'s stat pass and the totalCpuTime() call: the total must
+    // already have been taken, so moving the capture after the stat pass fails this test.
     probe.setEnumerateTailHookForTesting([&proc] { writeFile(proc.path / "stat", "cpu  200 0 200 1600 0 0 0 0 0 0\n"); });
     const auto processes = probe.enumerate();
     ASSERT_EQ(processes.size(), 1U);
@@ -861,6 +861,87 @@ TEST(LinuxProcessProbeTest, AFailedPreTailTotalReadIsReturnedNotRetriedAfterTheT
     EXPECT_EQ(probe.totalCpuTime(), 0U);    // the failed pre-tail read, not a post-tail retry
     EXPECT_EQ(probe.totalCpuTime(), 2000U); // taken once; then a fresh read
 }
+
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+TEST(LinuxProcessProbeTest, ReadSocketTrafficReportsRawAttributedSocketCounters)
+{
+    // #1099: the probe reports each socket's own cumulative counters, attributed through the
+    // inode-to-PID map, and leaves the per-process accounting to Domain (SocketTrafficAccumulator):
+    // no per-socket deltas, no per-process sums, and enumerate() carries no network bytes.
+    ScopedTempDir proc("ts_test_proc_net_raw");
+    writeFile(proc.path / "4242" / "stat",
+              "4242 (app) S 1 4242 4242 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+    writeFile(proc.path / "stat", "cpu  100 0 100 800 0 0 0 0 0 0\n");
+    std::filesystem::create_directories(proc.path / "4242" / "fd");
+    std::filesystem::create_symlink("socket:[11]", proc.path / "4242" / "fd" / "3");
+    std::filesystem::create_symlink("socket:[12]", proc.path / "4242" / "fd" / "4");
+
+    using Platform::TestSupport::FakeSocket;
+    using Platform::TestSupport::ScriptedNetlinkTransport;
+    const std::vector<std::vector<FakeSocket>> readings{
+        {{.inode = 11, .bytesReceived = 1'000, .bytesSent = 10}, {.inode = 12, .bytesReceived = 5'000}, {.inode = 99, .bytesReceived = 7}},
+        {},                                                       // failed dump (scripted below)
+        {{.inode = 11, .bytesReceived = 3'000, .bytesSent = 20}}, // 12 closed
+    };
+    std::size_t reading = 0;
+    auto transport = std::make_unique<ScriptedNetlinkTransport>();
+    auto* script = transport.get();
+    auto stats = std::make_shared<Platform::NetlinkSocketStats>(std::move(transport), std::chrono::milliseconds{0});
+    script->onRequest = [&](const ScriptedNetlinkTransport::Request& request) -> ScriptedNetlinkTransport::Reply
+    {
+        if (request.family != AF_INET)
+        {
+            return Platform::TestSupport::completeDump(request, {});
+        }
+        const std::size_t index = reading++;
+        if (index == 1)
+        {
+            return {Platform::TestSupport::errorDatagram(request.sequence, ScriptedNetlinkTransport::PORT_ID, -ENOBUFS)};
+        }
+        return Platform::TestSupport::completeDump(request, readings.at(index));
+    };
+
+    LinuxProcessProbe probe(proc.path);
+    probe.setSocketStatsForTesting(stats);
+    ASSERT_TRUE(probe.capabilities().hasNetworkCounters);
+
+    const auto processes = probe.enumerate();
+    ASSERT_EQ(processes.size(), 1U);
+    EXPECT_EQ(processes[0].netReceivedBytes, 0U);
+    EXPECT_EQ(processes[0].netSampleTimeNs, 0U);
+
+    const auto first = probe.readSocketTraffic();
+    EXPECT_NE(first.sampleTimeNs, 0U);
+    ASSERT_EQ(first.sockets.size(), 3U);
+    const auto find = [](const Platform::SocketTrafficReading& traffic, std::uint64_t inode)
+    {
+        return std::ranges::find(traffic.sockets, inode, &Platform::SocketTrafficSample::key);
+    };
+    const auto socket11 = find(first, 11);
+    const auto socket12 = find(first, 12);
+    const auto socket99 = find(first, 99);
+    ASSERT_NE(socket11, first.sockets.end());
+    ASSERT_NE(socket12, first.sockets.end());
+    ASSERT_NE(socket99, first.sockets.end());
+    EXPECT_EQ(socket11->pid, 4242);
+    EXPECT_EQ(socket11->bytesReceived, 1'000U);
+    EXPECT_EQ(socket11->bytesSent, 10U);
+    EXPECT_EQ(socket12->pid, 4242);
+    EXPECT_EQ(socket12->bytesReceived, 5'000U);
+    EXPECT_EQ(socket99->pid, 0) << "a socket no process in /proc holds is reported unattributed";
+
+    const auto failed = probe.readSocketTraffic();
+    EXPECT_EQ(failed.sampleTimeNs, 0U) << "a failed dump is no reading, not an empty one";
+    EXPECT_TRUE(failed.sockets.empty());
+
+    const auto third = probe.readSocketTraffic();
+    EXPECT_GT(third.sampleTimeNs, first.sampleTimeNs);
+    ASSERT_EQ(third.sockets.size(), 1U);
+    EXPECT_EQ(third.sockets[0].bytesReceived, 3'000U) << "the raw cumulative counter, not a delta";
+    EXPECT_EQ(third.sockets[0].pid, 4242);
+}
+#endif
 
 TEST(LinuxProcessProbeTest, EmptyProcDirReturnsNoProcesses)
 {

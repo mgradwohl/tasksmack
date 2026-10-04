@@ -288,6 +288,18 @@ class MockProcessProbe : public Platform::IProcessProbe
         return m_PackageEnergy;
     }
 
+    /// Per-connection network reading for ProcessModel to accumulate (#1099); the default (empty,
+    /// sampleTimeNs 0) means the probe reports per-process network counters itself.
+    void setSocketTraffic(Platform::SocketTrafficReading reading)
+    {
+        m_SocketTraffic = std::move(reading);
+    }
+
+    [[nodiscard]] Platform::SocketTrafficReading readSocketTraffic() const override
+    {
+        return m_SocketTraffic;
+    }
+
     void setSystemTotalMemory(uint64_t bytes)
     {
         m_SystemTotalMemory = bytes;
@@ -331,6 +343,7 @@ class MockProcessProbe : public Platform::IProcessProbe
     long m_TicksPerSecond = 100; // Standard HZ value
     std::atomic<int> m_EnumerateCount{0};
     std::optional<Platform::PackageEnergyReading> m_PackageEnergy;
+    Platform::SocketTrafficReading m_SocketTraffic;
 };
 
 // =============================================================================
