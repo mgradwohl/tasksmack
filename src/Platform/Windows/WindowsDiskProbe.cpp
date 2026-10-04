@@ -4,6 +4,8 @@
 
 #include <spdlog/spdlog.h>
 
+#include <atomic>
+#include <chrono>
 #include <memory>
 
 // clang-format off
@@ -82,6 +84,19 @@ struct WindowsDiskProbe::Impl
     };
 
     std::vector<DiskHandle> disks;
+
+    // read() runs on the sampler thread and swaps `disks` when it re-enumerates (#1159), while
+    // capabilities() can be called from any thread, so it reads this flag rather than `disks`.
+    std::atomic<bool> hasDisks{false};
+
+    // Sampler-thread state for re-enumeration and rate-limited logging (#1159).
+    std::chrono::steady_clock::time_point lastEnumeration;
+    bool lastReadHadFailure = false;
+    FailureLogLimiter openFailures;  // keyed by device path, e.g. "\\.\PhysicalDrive1"
+    FailureLogLimiter readFailures;  // keyed by PDH instance name, e.g. "1 D:"
+    FailureLogLimiter parseFailures; // keyed by PDH instance name
+
+    void enumerate();
 };
 
 namespace
@@ -90,7 +105,9 @@ namespace
 /// Opens \\.\PhysicalDriveN with query-only access (no admin rights required) and
 /// verifies IOCTL_DISK_PERFORMANCE is usable on it. Returns INVALID_HANDLE_VALUE on
 /// any failure, closing the handle first if it was opened but the probe query failed.
-[[nodiscard]] HANDLE openPhysicalDriveForPerfQuery(int driveIndex)
+/// Disks are re-enumerated periodically, so a drive that cannot be opened warns on its
+/// first failure and logs at debug level until it next succeeds (#1159).
+[[nodiscard]] HANDLE openPhysicalDriveForPerfQuery(int driveIndex, FailureLogLimiter& failures)
 {
     const std::wstring devicePath = L"\\\\.\\PhysicalDrive" + std::to_wstring(driveIndex);
     HANDLE handle = CreateFileW(devicePath.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
@@ -100,7 +117,9 @@ namespace
         // WideCharToMultiByte) can overwrite it - argument evaluation order is unspecified,
         // so inlining GetLastError() as a call argument risks logging the wrong error.
         const DWORD lastError = GetLastError();
-        spdlog::warn("WindowsDiskProbe: CreateFileW failed for {}, GetLastError={}", WinString::wideToUtf8(devicePath), lastError);
+        const std::string path = WinString::wideToUtf8(devicePath);
+        const auto level = failures.recordFailure(path) ? spdlog::level::warn : spdlog::level::debug;
+        spdlog::log(level, "WindowsDiskProbe: CreateFileW failed for {}, GetLastError={}", path, lastError);
         return INVALID_HANDLE_VALUE;
     }
 
@@ -112,19 +131,26 @@ namespace
         // calls below, so an allocation failure there can't skip CloseHandle and leak the handle.
         const DWORD lastError = GetLastError();
         CloseHandle(handle);
-        spdlog::warn(
-            "WindowsDiskProbe: IOCTL_DISK_PERFORMANCE probe failed for {}, GetLastError={}", WinString::wideToUtf8(devicePath), lastError);
+        const std::string path = WinString::wideToUtf8(devicePath);
+        const auto level = failures.recordFailure(path) ? spdlog::level::warn : spdlog::level::debug;
+        spdlog::log(level, "WindowsDiskProbe: IOCTL_DISK_PERFORMANCE probe failed for {}, GetLastError={}", path, lastError);
         return INVALID_HANDLE_VALUE;
     }
 
+    failures.recordSuccess(WinString::wideToUtf8(devicePath));
     return handle;
 }
 
 } // namespace
 
-WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())
+/// (Re)build the disk list (#1159). It used to be built once, at construction, so a removed
+/// disk failed every refresh forever and a disk attached later never appeared. The new list is
+/// built aside and swapped in; if PDH itself fails, the current list is kept.
+void WindowsDiskProbe::Impl::enumerate()
 {
-    spdlog::debug("WindowsDiskProbe: initialized");
+    lastEnumeration = std::chrono::steady_clock::now();
+    std::vector<DiskHandle> found;
+    bool enumerated = false;
 
     // PDH is used only to enumerate PhysicalDisk instance names (which encode the
     // drive-letter-to-index mapping, e.g. "0 C:") - not to read counter values. PDH's
@@ -155,6 +181,7 @@ WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())
 
         if (status == ERROR_SUCCESS)
         {
+            enumerated = true;
             // Parse instance names (null-separated list)
             const wchar_t* instance = instanceBuffer.data();
             while (*instance != L'\0')
@@ -170,21 +197,22 @@ WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())
 
                 if (const auto driveIndex = parsePhysicalDriveIndex(instanceName))
                 {
-                    HANDLE handle = openPhysicalDriveForPerfQuery(*driveIndex);
+                    HANDLE handle = openPhysicalDriveForPerfQuery(*driveIndex, openFailures);
                     if (handle != INVALID_HANDLE_VALUE)
                     {
                         // DiskHandle takes RAII ownership of the handle immediately, before
                         // the name conversion or push_back below run, so either one throwing
                         // closes the handle automatically on unwind instead of leaking it.
-                        Impl::DiskHandle diskHandle(handle);
+                        DiskHandle diskHandle(handle);
                         diskHandle.instanceName = WinString::wideToUtf8(instanceName);
-                        m_Impl->disks.push_back(std::move(diskHandle));
+                        found.push_back(std::move(diskHandle));
                     }
                 }
                 else
                 {
-                    spdlog::warn("WindowsDiskProbe: could not parse a drive index from PDH instance name '{}'",
-                                 WinString::wideToUtf8(instanceName));
+                    const std::string name = WinString::wideToUtf8(instanceName);
+                    const auto level = parseFailures.recordFailure(name) ? spdlog::level::warn : spdlog::level::debug;
+                    spdlog::log(level, "WindowsDiskProbe: could not parse a drive index from PDH instance name '{}'", name);
                 }
 
                 instance += instanceName.length() + 1;
@@ -192,6 +220,23 @@ WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())
         }
     }
 
+    if (!enumerated)
+    {
+        spdlog::debug("WindowsDiskProbe: PhysicalDisk enumeration failed, keeping {} disks", disks.size());
+        return;
+    }
+
+    if (found.size() != disks.size())
+    {
+        spdlog::debug("WindowsDiskProbe: now tracking {} physical disks (was {})", found.size(), disks.size());
+    }
+    disks = std::move(found);
+    hasDisks.store(!disks.empty(), std::memory_order_release);
+}
+
+WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())
+{
+    m_Impl->enumerate();
     spdlog::debug("WindowsDiskProbe: initialized with {} disks", m_Impl->disks.size());
 }
 
@@ -203,6 +248,12 @@ WindowsDiskProbe::~WindowsDiskProbe() = default;
 SystemDiskCounters WindowsDiskProbe::read()
 {
     SystemDiskCounters result;
+
+    if (m_Impl &&
+        shouldReenumerate(std::chrono::steady_clock::now(), m_Impl->lastEnumeration, m_Impl->lastReadHadFailure, DISK_REENUMERATE_INTERVAL))
+    {
+        m_Impl->enumerate();
+    }
 
     if (!m_Impl || m_Impl->disks.empty())
     {
@@ -252,6 +303,7 @@ SystemDiskCounters WindowsDiskProbe::read()
         return result;
     }
 
+    bool anyFailure = false;
     for (const auto& diskHandle : m_Impl->disks)
     {
         DISK_PERFORMANCE perf{};
@@ -260,11 +312,16 @@ SystemDiskCounters WindowsDiskProbe::read()
         {
             // Skip this disk for this cycle rather than pushing fabricated zero counters,
             // which would otherwise look like a real (and wildly out-of-range) delta on
-            // the next sample.
-            spdlog::warn(
-                "WindowsDiskProbe: IOCTL_DISK_PERFORMANCE failed for {}, GetLastError={}", diskHandle.instanceName, GetLastError());
+            // the next sample. The next read() re-enumerates, dropping a removed disk, and
+            // only the first failure in a row warns (#1159).
+            const DWORD lastError = GetLastError();
+            anyFailure = true;
+            const auto level = m_Impl->readFailures.recordFailure(diskHandle.instanceName) ? spdlog::level::warn : spdlog::level::debug;
+            spdlog::log(
+                level, "WindowsDiskProbe: IOCTL_DISK_PERFORMANCE failed for {}, GetLastError={}", diskHandle.instanceName, lastError);
             continue;
         }
+        m_Impl->readFailures.recordSuccess(diskHandle.instanceName);
 
         DiskCounters disk;
         disk.deviceName = diskHandle.instanceName;
@@ -300,6 +357,7 @@ SystemDiskCounters WindowsDiskProbe::read()
 
         result.disks.push_back(disk);
     }
+    m_Impl->lastReadHadFailure = anyFailure;
 
     spdlog::debug("WindowsDiskProbe: read {} disks", result.disks.size());
     return result;
@@ -309,8 +367,9 @@ DiskCapabilities WindowsDiskProbe::capabilities() const
 {
     DiskCapabilities caps;
     caps.hasDiskStats = true;
-    caps.hasReadWriteBytes = (m_Impl && !m_Impl->disks.empty());
-    caps.hasIoTime = (m_Impl && !m_Impl->disks.empty());
+    const bool hasDisks = m_Impl && m_Impl->hasDisks.load(std::memory_order_acquire);
+    caps.hasReadWriteBytes = hasDisks;
+    caps.hasIoTime = hasDisks;
     caps.hasDeviceInfo = true;
     caps.canFilterPhysical = true;
     return caps;

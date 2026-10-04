@@ -1,9 +1,12 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <string>
 #include <string_view>
+#include <unordered_set>
 
 namespace Platform
 {
@@ -71,5 +74,55 @@ namespace Platform
     }
     return static_cast<std::uint64_t>(queryTime - idleTime);
 }
+
+/// How often WindowsDiskProbe re-enumerates physical disks when nothing has failed, so a disk
+/// added after start-up appears and one removed cleanly disappears (#1159).
+inline constexpr std::chrono::seconds DISK_REENUMERATE_INTERVAL{30};
+
+/// Whether WindowsDiskProbe should rebuild its disk list before this read (#1159).
+///
+/// The list used to be fixed at construction, so a removed disk failed IOCTL_DISK_PERFORMANCE on
+/// every refresh forever and a newly attached one never appeared. Re-enumerate right after any
+/// disk failed, and otherwise once the interval has elapsed since the last enumeration.
+[[nodiscard]] inline bool shouldReenumerate(std::chrono::steady_clock::time_point now,
+                                            std::chrono::steady_clock::time_point lastEnumeration,
+                                            bool anyFailure,
+                                            std::chrono::steady_clock::duration interval) noexcept
+{
+    if (anyFailure)
+    {
+        return true;
+    }
+    // A clock that went backwards (it cannot, for steady_clock, but a caller's fake clock can)
+    // re-enumerates rather than waiting out an interval that never elapses.
+    return now < lastEnumeration || (now - lastEnumeration) >= interval;
+}
+
+/// Tracks which keys (disk names, device paths) are currently failing, so a failure is logged as a
+/// warning once and at debug level while it persists, instead of a warning every refresh (#1159).
+class FailureLogLimiter
+{
+  public:
+    /// Record a failure for `key`. @return true if this is its first failure since it last
+    /// succeeded (log a warning), false if it was already failing (log at debug level).
+    [[nodiscard]] bool recordFailure(const std::string& key)
+    {
+        return m_Failing.insert(key).second;
+    }
+
+    /// Record a success for `key`, so its next failure warns again.
+    void recordSuccess(const std::string& key)
+    {
+        m_Failing.erase(key);
+    }
+
+    [[nodiscard]] bool isFailing(const std::string& key) const
+    {
+        return m_Failing.contains(key);
+    }
+
+  private:
+    std::unordered_set<std::string> m_Failing;
+};
 
 } // namespace Platform

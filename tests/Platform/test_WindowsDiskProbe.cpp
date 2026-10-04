@@ -194,6 +194,95 @@ TEST(DiskBusyTime100nsTest, IdleEqualToQueryIsZeroBusy)
 }
 
 // =============================================================================
+// shouldReenumerate / FailureLogLimiter: pure policy, driven by a fake clock. The disk list
+// must be rebuilt after a failure or periodically, and a persistent failure must warn only
+// once rather than on every refresh (#1159).
+// =============================================================================
+
+using FakeTime = std::chrono::steady_clock::time_point;
+constexpr std::chrono::seconds REENUMERATE_INTERVAL{30};
+const FakeTime FAKE_START{std::chrono::hours{1}};
+
+TEST(ShouldReenumerateTest, NoFailureBeforeIntervalDoesNotReenumerate)
+{
+    EXPECT_FALSE(shouldReenumerate(FAKE_START, FAKE_START, false, REENUMERATE_INTERVAL));
+    EXPECT_FALSE(shouldReenumerate(FAKE_START + std::chrono::seconds{29}, FAKE_START, false, REENUMERATE_INTERVAL));
+}
+
+TEST(ShouldReenumerateTest, IntervalElapsedReenumerates)
+{
+    EXPECT_TRUE(shouldReenumerate(FAKE_START + std::chrono::seconds{30}, FAKE_START, false, REENUMERATE_INTERVAL));
+    EXPECT_TRUE(shouldReenumerate(FAKE_START + std::chrono::minutes{5}, FAKE_START, false, REENUMERATE_INTERVAL));
+}
+
+TEST(ShouldReenumerateTest, AnyFailureReenumeratesImmediately)
+{
+    EXPECT_TRUE(shouldReenumerate(FAKE_START, FAKE_START, true, REENUMERATE_INTERVAL));
+    EXPECT_TRUE(shouldReenumerate(FAKE_START + std::chrono::milliseconds{1}, FAKE_START, true, REENUMERATE_INTERVAL));
+}
+
+TEST(ShouldReenumerateTest, ClockBeforeLastEnumerationReenumerates)
+{
+    EXPECT_TRUE(shouldReenumerate(FAKE_START - std::chrono::seconds{1}, FAKE_START, false, REENUMERATE_INTERVAL));
+}
+
+TEST(ShouldReenumerateTest, DefaultIntervalIsAboutThirtySeconds)
+{
+    EXPECT_EQ(DISK_REENUMERATE_INTERVAL, std::chrono::seconds{30});
+}
+
+TEST(FailureLogLimiterTest, FirstFailureWarnsLaterFailuresDoNot)
+{
+    FailureLogLimiter limiter;
+    EXPECT_TRUE(limiter.recordFailure("1 D:"));
+    EXPECT_FALSE(limiter.recordFailure("1 D:"));
+    EXPECT_FALSE(limiter.recordFailure("1 D:"));
+    EXPECT_TRUE(limiter.isFailing("1 D:"));
+}
+
+TEST(FailureLogLimiterTest, SuccessResetsSoNextFailureWarnsAgain)
+{
+    FailureLogLimiter limiter;
+    EXPECT_TRUE(limiter.recordFailure("1 D:"));
+    limiter.recordSuccess("1 D:");
+    EXPECT_FALSE(limiter.isFailing("1 D:"));
+    EXPECT_TRUE(limiter.recordFailure("1 D:"));
+}
+
+TEST(FailureLogLimiterTest, KeysAreIndependent)
+{
+    FailureLogLimiter limiter;
+    EXPECT_TRUE(limiter.recordFailure("1 D:"));
+    EXPECT_TRUE(limiter.recordFailure("2 E:"));
+    limiter.recordSuccess("1 D:");
+    EXPECT_FALSE(limiter.recordFailure("2 E:"));
+    EXPECT_TRUE(limiter.recordFailure("1 D:"));
+}
+
+TEST(FailureLogLimiterTest, SuccessForUnknownKeyIsHarmless)
+{
+    FailureLogLimiter limiter;
+    limiter.recordSuccess("0 C:");
+    EXPECT_FALSE(limiter.isFailing("0 C:"));
+}
+
+TEST(FailureLogLimiterTest, RemovedDiskPolledEveryRefreshWarnsOnce)
+{
+    // The #1159 scenario: a disk that keeps failing on every 1 s refresh for 10 minutes used
+    // to log 600 warnings.
+    FailureLogLimiter limiter;
+    int warnings = 0;
+    for (int second = 1; second <= 600; ++second)
+    {
+        if (limiter.recordFailure("1 D:"))
+        {
+            ++warnings;
+        }
+    }
+    EXPECT_EQ(warnings, 1);
+}
+
+// =============================================================================
 // Construction and Basic Operations
 // =============================================================================
 
