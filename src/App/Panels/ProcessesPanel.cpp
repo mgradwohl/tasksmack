@@ -361,7 +361,8 @@ void ProcessesPanel::onAttach()
     m_ProcessModel->refresh();
 
     // Wire sampler: polls the ProcessModel on each interval tick.
-    Domain::SamplerConfig const samplerCfg{m_AppliedSamplerInterval};
+    // Seeded synchronously above, so the first background sample waits a full interval (#1102).
+    Domain::SamplerConfig const samplerCfg{.interval = m_AppliedSamplerInterval, .firstSampleAfterInterval = true};
     m_Sampler = std::make_unique<Domain::BackgroundSampler>(samplerCfg);
     m_Sampler->addSamplable(m_ProcessModel);
     m_Sampler->start();
@@ -377,15 +378,19 @@ void ProcessesPanel::onAttach()
     spdlog::info("ProcessesPanel: initialized with background sampler ({}ms interval)", m_AppliedSamplerInterval.count());
 }
 
-void ProcessesPanel::setSamplingInterval(std::chrono::milliseconds interval)
+void ProcessesPanel::setSamplingInterval(std::chrono::milliseconds interval, bool forceSample)
 {
+    if (interval == m_RefreshInterval)
+    {
+        return;
+    }
     m_RefreshInterval = interval;
     m_AppliedSamplerInterval = interval;
     if (m_Sampler)
     {
         m_Sampler->setInterval(m_AppliedSamplerInterval);
     }
-    m_ForceRefresh = true;
+    m_ForceRefresh = m_ForceRefresh || forceSample;
 }
 
 void ProcessesPanel::requestRefresh()
@@ -416,11 +421,14 @@ void ProcessesPanel::onEvent(Core::Event& event)
     dispatcher.dispatch<Core::ActiveTabChangedEvent>(
         [this](Core::ActiveTabChangedEvent& e)
         {
-            const bool wasActive = m_IsActiveTab;
+            const bool wasShown = m_ProcessDataShown;
             m_IsActiveTab = (e.tabName() == "Processes");
-            if (!wasActive && m_IsActiveTab)
+            m_ProcessDataShown = AdaptiveIntervalUtils::showsProcessData(e.tabName());
+            if (!wasShown && m_ProcessDataShown)
             {
-                // Catch up quickly when tab becomes visible again.
+                // Catch up straight away when coming back from a tab that showed no process data,
+                // where the sampler was relaxed. Between tabs that all show it the sampler ran at
+                // the full rate, and an extra sample would land just after the last one (#1102).
                 m_ForceRefresh = true;
             }
             return false;
@@ -428,7 +436,8 @@ void ProcessesPanel::onEvent(Core::Event& event)
     dispatcher.dispatch<Core::RefreshRateChangedEvent>(
         [this](Core::RefreshRateChangedEvent& e)
         {
-            setSamplingInterval(std::chrono::milliseconds(e.getIntervalMs()));
+            // The startup value (#1079) is applied without forcing a sample right after the seed (#1102).
+            setSamplingInterval(std::chrono::milliseconds(e.getIntervalMs()), !e.isInitial());
             return false;
         });
     // This panel owns the process model, so it sets the model's history length (#1078).
@@ -479,7 +488,7 @@ void ProcessesPanel::onUpdate(float deltaTime)
     const bool throttleForInteraction = interactionRedrawActive || (this->m_InteractionHoldSeconds > 0.0F);
     m_ProcessModel->setInteractionActive(throttleForInteraction);
     const auto desiredInterval =
-        AdaptiveIntervalUtils::chooseAdaptiveProcessInterval(m_RefreshInterval, m_IsActiveTab, throttleForInteraction);
+        AdaptiveIntervalUtils::chooseAdaptiveProcessInterval(m_RefreshInterval, m_ProcessDataShown, throttleForInteraction);
     if (desiredInterval != m_AppliedSamplerInterval)
     {
         m_AppliedSamplerInterval = desiredInterval;
