@@ -301,6 +301,7 @@ void WindowsSystemProbe::readMemoryCounters(SystemCounters& counters)
     counters.memory.totalBytes = memStatus.ullTotalPhys;
     counters.memory.freeBytes = memStatus.ullAvailPhys;
     counters.memory.availableBytes = memStatus.ullAvailPhys;
+    counters.memory.hasAvailableBytes = true;
 
     // Cached: the system cache, i.e. the standby list plus the system working set (#1027). That is
     // the memory Windows holds as file cache and gives back on demand, the closest analogue of
