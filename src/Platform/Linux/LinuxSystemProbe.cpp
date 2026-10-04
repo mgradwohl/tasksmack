@@ -11,6 +11,7 @@
 #include <spdlog/spdlog.h>
 
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <concepts>
 #include <cstddef>
@@ -21,6 +22,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
@@ -188,13 +190,26 @@ void LinuxSystemProbe::readCpuCounters(SystemCounters& counters, const std::file
         // Aggregate line: "cpu " (or "cpu\t") — per-core line: "cpu0", "cpu1", …
         const bool isTotal = (q >= lineEnd || *q == ' ' || *q == '\t');
 
+        CpuCounters cpu{};
+        if (!isTotal)
+        {
+            // Keep the N of "cpuN" as the core's identity. The kernel lists online CPUs only, so
+            // with cpu2 offline the lines run cpu0, cpu1, cpu3: position is not identity (#1229).
+            const auto [idEnd, ec] = std::from_chars(q, lineEnd, cpu.coreId);
+            if (ec != std::errc{} || (idEnd < lineEnd && *idEnd != ' ' && *idEnd != '\t'))
+            {
+                spdlog::debug("Skipping unparseable per-core line in {}", pathStr);
+                p = (lineEnd < end) ? lineEnd + 1 : end;
+                continue;
+            }
+        }
+
         // Skip past the label token to reach the first numeric field
         while (q < lineEnd && *q != ' ' && *q != '\t')
         {
             ++q;
         }
 
-        CpuCounters cpu{};
         // Older kernels may lack trailing guest/guestNice fields;
         // partial reads are fine — unparsed fields stay zero-initialised.
         parseNum(q, lineEnd, cpu.user);

@@ -114,16 +114,6 @@ constexpr const char* GPU_MEMORY_LABEL = "Memory";
     return usedPercent / Domain::Numeric::toDouble(snapshot.memoryBytes);
 }
 
-/// `bytes` as a percent of system RAM, using memoryPercentPerByte().
-[[nodiscard]] double memoryBytesToPercent(std::uint64_t bytes, double percentPerByte)
-{
-    if (percentPerByte <= 0.0)
-    {
-        return 0.0;
-    }
-    return std::clamp(Domain::Numeric::toDouble(bytes) * percentPerByte, 0.0, 100.0);
-}
-
 } // namespace
 
 namespace App
@@ -210,16 +200,10 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
             m_CpuUserHistory.push_back(snapshot->cpuUserPercent);
             m_CpuSystemHistory.push_back(snapshot->cpuSystemPercent);
 
-            // Use the process RSS percent as a scale factor to express other metrics as percents for consistent charting.
-            const double usedPercent = std::clamp(snapshot->memoryPercent, 0.0, 100.0);
-            const double percentPerByte = memoryPercentPerByte(*snapshot);
-            auto toPercent = [percentPerByte](std::uint64_t bytes) -> double
-            {
-                return memoryBytesToPercent(bytes, percentPerByte);
-            };
-
-            m_MemoryHistory.push_back(usedPercent);
-            m_SharedHistory.push_back(toPercent(snapshot->sharedBytes));
+            // Bytes, not a percent of RAM: a typical process is under 1 % of RAM, which drew a flat line
+            // on a 0-100 % axis (#1195). The share of RAM is shown in the tooltip and bar text instead.
+            m_MemoryHistory.push_back(Domain::Numeric::toDouble(snapshot->memoryBytes));
+            m_SharedHistory.push_back(Domain::Numeric::toDouble(snapshot->sharedBytes));
             // Bytes, not a percent of RAM: a process's virtual size is usually larger than physical RAM,
             // so as a percent it was clamped to 100 and carried no information (#992).
             m_VirtualHistory.push_back(Domain::Numeric::toDouble(snapshot->virtualBytes));
@@ -239,9 +223,8 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
                                        : std::numeric_limits<double>::quiet_NaN());
             m_Timestamps.push_back(nowSeconds);
 
-            // Update peak memory percent (from snapshot's peak value)
-            const double peakPercent = toPercent(snapshot->peakMemoryBytes);
-            m_PeakMemoryPercent = std::max(m_PeakMemoryPercent, peakPercent);
+            // Peak working set in bytes, like the Used line it caps (never decreases)
+            m_PeakMemoryBytes = std::max(m_PeakMemoryBytes, Domain::Numeric::toDouble(snapshot->peakMemoryBytes));
 
             trimHistory(nowSeconds);
             m_HistoryGeneration = UI::Widgets::nextChartDataGeneration();
@@ -509,7 +492,7 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t uniqueK
     m_ShowConfirmDialog = false;
     m_LastActionResult.clear();
     m_SmoothedUsage = {};
-    m_PeakMemoryPercent = 0.0;
+    m_PeakMemoryBytes = 0.0;
     m_PriorityChanged = false;
     m_PriorityNiceValue = 0;
     m_PriorityError.clear(); // Clear priority error when switching processes
@@ -539,10 +522,7 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
     const double targetPower = std::max(0.0, snapshot.powerWatts);
     const double targetGpuUtil = UI::Format::clampPercent(snapshot.gpuUtilPercent);
     const double targetGpuMem = Domain::Numeric::toDouble(snapshot.gpuMemoryBytes);
-    // The Memory bars' percents, on the same RAM scale as the Memory chart's history.
-    const double percentPerByte = memoryPercentPerByte(snapshot);
-    const double targetMemUsedPercent = std::clamp(snapshot.memoryPercent, 0.0, 100.0);
-    const double targetMemSharedPercent = memoryBytesToPercent(snapshot.sharedBytes, percentPerByte);
+    const double targetMemShared = Domain::Numeric::toDouble(snapshot.sharedBytes);
 
     const bool initialized = m_SmoothedUsage.initialized && (deltaTimeSeconds > 0.0F);
 
@@ -579,9 +559,9 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
         initialized);
     m_SmoothedUsage.gdiObjectCount = gdi.value;
     m_SmoothedUsage.gdiInitialized = gdi.available;
-    m_SmoothedUsage.memoryUsedPercent = initializeOrSmooth(m_SmoothedUsage.memoryUsedPercent, targetMemUsedPercent, alpha, initialized);
-    m_SmoothedUsage.memorySharedPercent =
-        initializeOrSmooth(m_SmoothedUsage.memorySharedPercent, targetMemSharedPercent, alpha, initialized);
+    m_SmoothedUsage.memorySharedBytes =
+        std::max(0.0, initializeOrSmooth(m_SmoothedUsage.memorySharedBytes, targetMemShared, alpha, initialized));
+    m_SmoothedUsage.memoryPercentPerByte = memoryPercentPerByte(snapshot);
     m_SmoothedUsage.initialized = true;
 }
 
@@ -825,28 +805,41 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
         const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
         const auto cpuTimeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
 
+        // The process's CPU is a percent of the whole machine, so a fixed 0-100 axis drew a flat line
+        // for any typical process: one busy thread on 16 logical CPUs is 6.25 %. The axis scales to the
+        // data instead, from a 5 % floor up to 100, eased like a rate axis, and the bars share its bound
+        // so each bar meets its line (#1195, #1003). Values show one decimal, as the table does.
+        const double cpuAxisUpper =
+            UI::Widgets::easedPercentAxisUpperBound("##ProcOverviewCPU",
+                                                    std::max({UI::Widgets::maxOfSeries(cpuData, cpuUserData, cpuSystemData),
+                                                              m_SmoothedUsage.cpuPercent,
+                                                              m_SmoothedUsage.cpuUserPercent,
+                                                              m_SmoothedUsage.cpuSystemPercent}));
+
         // Use smoothed values for NowBars for consistent animation
-        const NowBar cpuTotalNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuPercent),
+        const NowBar cpuTotalNow{.valueText = UI::Format::percentOneDecimal(m_SmoothedUsage.cpuPercent),
                                  .label = CPU_TOTAL_LABEL,
                                  .tooltipText = {},
-                                 .value01 = UI::Format::percent01(m_SmoothedUsage.cpuPercent),
+                                 .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.cpuPercent, cpuAxisUpper),
                                  .color = theme.scheme().chartCpu}; // The Total line's colour (#1192)
-        const NowBar cpuUserNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuUserPercent),
+        const NowBar cpuUserNow{.valueText = UI::Format::percentOneDecimal(m_SmoothedUsage.cpuUserPercent),
                                 .label = CPU_USER_LABEL,
                                 .tooltipText = {},
-                                .value01 = UI::Format::percent01(m_SmoothedUsage.cpuUserPercent),
+                                .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.cpuUserPercent, cpuAxisUpper),
                                 .color = theme.scheme().cpuUser};
-        const NowBar cpuSystemNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuSystemPercent),
+        const NowBar cpuSystemNow{.valueText = UI::Format::percentOneDecimal(m_SmoothedUsage.cpuSystemPercent),
                                   .label = CPU_SYSTEM_LABEL,
                                   .tooltipText = {},
-                                  .value01 = UI::Format::percent01(m_SmoothedUsage.cpuSystemPercent),
+                                  .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.cpuSystemPercent, cpuAxisUpper),
                                   .color = theme.scheme().cpuSystem};
 
         auto cpuPlot = [&]()
         {
             const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
-                UI::Widgets::withHeight(UI::Widgets::percentHistoryConfig("##ProcOverviewCPU", axisConfig.xMin, axisConfig.xMax),
-                                        fill.plotHeight()),
+                UI::Widgets::withHeight(
+                    UI::Widgets::rateHistoryConfigWithUpper(
+                        "##ProcOverviewCPU", axisConfig.xMin, axisConfig.xMax, UI::Widgets::formatAxisPercent, cpuAxisUpper),
+                    fill.plotHeight()),
                 m_HistoryGeneration));
             if (chart.active())
             {
@@ -964,13 +957,13 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
                             const std::array rows{
                                 UI::Widgets::TooltipRow{.label = CPU_TOTAL_LABEL,
                                                         .color = theme.scheme().chartCpu,
-                                                        .value = UI::Format::percentCompact(cpuData[*idxVal])},
+                                                        .value = UI::Format::percentOneDecimal(cpuData[*idxVal])},
                                 UI::Widgets::TooltipRow{.label = CPU_USER_LABEL,
                                                         .color = theme.scheme().cpuUser,
-                                                        .value = UI::Format::percentCompact(cpuUserData[*idxVal])},
+                                                        .value = UI::Format::percentOneDecimal(cpuUserData[*idxVal])},
                                 UI::Widgets::TooltipRow{.label = CPU_SYSTEM_LABEL,
                                                         .color = theme.scheme().cpuSystem,
-                                                        .value = UI::Format::percentCompact(cpuSystemData[*idxVal])},
+                                                        .value = UI::Format::percentOneDecimal(cpuSystemData[*idxVal])},
                             };
                             UI::Widgets::renderHistoryTooltip(cpuTimeData[*idxVal], rows);
                         }
@@ -1019,28 +1012,43 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
 
             // Smoothed like every other NowBar (#1012); these were the raw latest history sample, so
             // they stepped while the bars around them glided.
-            const double usedNow = m_SmoothedUsage.memoryUsedPercent;
-            const double sharedNow = m_SmoothedUsage.memorySharedPercent;
+            const double usedNow = m_SmoothedUsage.residentBytes;
+            const double sharedNow = m_SmoothedUsage.memorySharedBytes;
+            // Used and Shared in bytes on an axis that scales to them (#1195), eased like a rate axis and
+            // shared with their bars. The lifetime peak is left out of the scale: one far above today's
+            // usage would flatten the line again; its value is in the strip and the tooltip.
+            const double memAxisUpper =
+                UI::Widgets::easedRateAxisUpperBound("##ProcOverviewMemory",
+                                                     std::max({UI::Widgets::maxOfSeries(usedData, sharedData), usedNow, sharedNow}),
+                                                     UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES);
+            // "412.0 MB (1.3% of RAM)": the bytes the chart plots and the share of RAM the table shows.
+            const double percentPerByte = m_SmoothedUsage.memoryPercentPerByte;
+            const auto withRamShare = [percentPerByte](double bytes)
+            {
+                return std::format("{} ({} of RAM)",
+                                   UI::Format::formatBytes(bytes),
+                                   UI::Format::percentOneDecimal(std::clamp(bytes * percentPerByte, 0.0, 100.0)));
+            };
             // Virtual size in bytes on its own right-hand axis (#992), eased like a rate axis and shared
             // with its bar.
             const double virtAxisUpper = UI::Widgets::easedRateAxisUpperBound(
                 "##ProcOverviewMemory/Y2", UI::Widgets::maxOfSeries(virtData), UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES);
 
             NowBarList memoryBars;
-            // No tooltipText: the hover tooltip is "label: value" (selectNowBarTooltip), in the
-            // chart's own units -- percents of RAM, and bytes for Virtual.
-            memoryBars.push_back({.valueText = UI::Format::percentCompact(usedNow),
+            // Used and Shared carry their share of RAM in tooltipText (shown on hover and in the value
+            // strip); Virtual has none, being mostly reserved address space.
+            memoryBars.push_back({.valueText = UI::Format::formatBytes(usedNow),
                                   .label = MEM_USED_LABEL,
-                                  .tooltipText = {},
-                                  .value01 = UI::Format::percent01(usedNow),
+                                  .tooltipText = std::format("{}: {}", MEM_USED_LABEL, withRamShare(usedNow)),
+                                  .value01 = UI::Widgets::normalizeToUnitInterval(usedNow, memAxisUpper),
                                   .color = theme.scheme().chartMemory});
             if (showShared)
             {
                 memoryBars.push_back({
-                    .valueText = UI::Format::percentCompact(sharedNow),
+                    .valueText = UI::Format::formatBytes(sharedNow),
                     .label = MEM_SHARED_LABEL,
-                    .tooltipText = {},
-                    .value01 = UI::Format::percent01(sharedNow),
+                    .tooltipText = std::format("{}: {}", MEM_SHARED_LABEL, withRamShare(sharedNow)),
+                    .value01 = UI::Widgets::normalizeToUnitInterval(sharedNow, memAxisUpper),
                     .color = theme.scheme().chartCpu,
                 });
             }
@@ -1054,19 +1062,20 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
             {
                 // Four legend entries (Used, Shared, Virtual, Peak Used): one row (see legendHorizontal).
                 const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
-                    UI::Widgets::withHeight(UI::Widgets::withHorizontalLegend(UI::Widgets::percentHistoryConfig(
-                                                "##ProcOverviewMemory", axisConfig.xMin, axisConfig.xMax)),
-                                            fill.plotHeight()),
+                    UI::Widgets::withHeight(
+                        UI::Widgets::withHorizontalLegend(UI::Widgets::rateHistoryConfigWithUpper(
+                            "##ProcOverviewMemory", axisConfig.xMin, axisConfig.xMax, UI::Widgets::formatAxisBytes, memAxisUpper)),
+                        fill.plotHeight()),
                     m_HistoryGeneration));
                 if (chart.active())
                 {
                     UI::Widgets::setupSecondaryRateAxis(virtAxisUpper, UI::Widgets::formatAxisBytes);
                     UI::Widgets::drawCollectingHint(alignedCount);
                     // Draw peak working set as a horizontal reference line (never decreases)
-                    if (m_PeakMemoryPercent > 0.0)
+                    if (m_PeakMemoryBytes > 0.0)
                     {
                         // Draw horizontal line at peak value across the entire X range
-                        const double peakY = m_PeakMemoryPercent;
+                        const double peakY = m_PeakMemoryBytes;
                         std::array<double, 2> peakX = {axisConfig.xMin, axisConfig.xMax};
                         std::array<double, 2> peakYVals = {peakY, peakY};
                         ImPlot::PlotLine(
@@ -1122,13 +1131,13 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
                             {
                                 rows.push_back({.label = MEM_USED_LABEL,
                                                 .color = theme.scheme().chartMemory,
-                                                .value = UI::Format::percentCompact(usedData[*idxVal])});
+                                                .value = withRamShare(usedData[*idxVal])});
                             }
                             if (*idxVal < sharedData.size())
                             {
                                 rows.push_back({.label = MEM_SHARED_LABEL,
                                                 .color = theme.scheme().chartCpu,
-                                                .value = UI::Format::percentCompact(sharedData[*idxVal])});
+                                                .value = withRamShare(sharedData[*idxVal])});
                             }
                             if (*idxVal < virtData.size())
                             {
@@ -1136,12 +1145,12 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
                                                 .color = theme.scheme().chartIo,
                                                 .value = UI::Format::formatBytes(virtData[*idxVal])});
                             }
-                            if (m_PeakMemoryPercent > 0.0)
+                            if (m_PeakMemoryBytes > 0.0)
                             {
                                 // The line's colour: this row was textWarning, which matched nothing (#1005).
                                 rows.push_back({.label = MEM_PEAK_LABEL,
                                                 .color = theme.scheme().chartPeakLine,
-                                                .value = UI::Format::percentCompact(m_PeakMemoryPercent)});
+                                                .value = UI::Format::formatBytes(m_PeakMemoryBytes)});
                             }
                             UI::Widgets::renderHistoryTooltip(timeData[*idxVal], rows);
                         }
@@ -1154,10 +1163,10 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
             // Peak Used is a line with a tooltip row but no bar; list it in the value strip too (#1193).
             const std::array peakEntry{UI::Widgets::ValueStripEntry{
                 .label = MEM_PEAK_LABEL,
-                .value = UI::Format::percentCompact(m_PeakMemoryPercent),
+                .value = UI::Format::formatBytes(m_PeakMemoryBytes),
                 .color = theme.scheme().chartPeakLine,
             }};
-            const std::span<const UI::Widgets::ValueStripEntry> stripExtras = (m_PeakMemoryPercent > 0.0)
+            const std::span<const UI::Widgets::ValueStripEntry> stripExtras = (m_PeakMemoryBytes > 0.0)
                                                                                 ? std::span<const UI::Widgets::ValueStripEntry>(peakEntry)
                                                                                 : std::span<const UI::Widgets::ValueStripEntry>{};
             renderHistoryWithNowBars("ProcessMemoryOverviewLayout",

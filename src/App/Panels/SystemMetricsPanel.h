@@ -123,6 +123,7 @@ class SystemMetricsPanel : public Panel
     std::vector<double> m_CpuStackYIowait;
     // The stacked bands' reduced points (#1022), kept until the next publication (#1139)
     UI::Widgets::ReducedPointsCache m_CpuStackReduction;
+    std::vector<double> m_CpuStackYBusy; // Bottom of the I/O Wait band: the busy total, 100 - idle - iowait
 
     std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
     bool m_ForceRefresh = false;

@@ -134,8 +134,8 @@ class ProcessDetailsPanel : public Panel
     std::vector<double> m_CpuHistory;       // CPU% total history (avoid narrowing)
     std::vector<double> m_CpuUserHistory;   // CPU% user history (avoid narrowing)
     std::vector<double> m_CpuSystemHistory; // CPU% system history (avoid narrowing)
-    std::vector<double> m_MemoryHistory;    // Used memory percent (RSS)
-    std::vector<double> m_SharedHistory;    // Shared memory percent (best effort)
+    std::vector<double> m_MemoryHistory;    // Used memory (RSS) bytes (#1195)
+    std::vector<double> m_SharedHistory;    // Shared memory bytes, best effort (#1195)
     std::vector<double> m_VirtualHistory;   // Virtual memory bytes (#992)
     std::vector<double> m_ThreadHistory;    // Thread count history
     std::vector<double> m_HandleHistory;    // Handle/FD count history
@@ -158,7 +158,7 @@ class ProcessDetailsPanel : public Panel
     double m_MaxHistorySeconds = Domain::Numeric::toDouble(Domain::Sampling::HISTORY_SECONDS_DEFAULT);
     // Sampling interval the NowBar smoothing is tuned to (#1072)
     std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
-    double m_PeakMemoryPercent = 0.0; // Peak working set (never decreases)
+    double m_PeakMemoryBytes = 0.0; // Peak working set (never decreases)
 
     // Render scratch buffers for stacked CPU chart (reused across frames to avoid per-frame heap allocation):
     // only the reduced points, at most LINE_PLOT_MAX_POINTS_DENSE, are built into them each frame.
@@ -218,9 +218,10 @@ class ProcessDetailsPanel : public Panel
         // Whether the latest sample had a GDI reading. A missing one leaves gdiObjectCount where it
         // was (not eased toward 0) and the NowBar shows N/A, as the line shows a gap (#1148).
         bool gdiInitialized = false;
-        // Memory bars, as percents of system RAM like the Memory chart
-        double memoryUsedPercent = 0.0;
-        double memorySharedPercent = 0.0;
+        // Memory bars, in bytes like the Memory chart (#1195); Used is residentBytes above. Their share
+        // of system RAM is shown only in the hover text, via memoryPercentPerByte.
+        double memorySharedBytes = 0.0;
+        double memoryPercentPerByte = 0.0; ///< Latest, not smoothed: converts bytes to a share of RAM
         bool initialized = false;
     } m_SmoothedUsage;
 

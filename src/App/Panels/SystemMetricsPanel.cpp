@@ -75,8 +75,9 @@ using UI::Widgets::renderHistoryWithNowBars;
 /// Hover tooltip for the system CPU chart: the age of the hovered sample to a tenth of a second, as
 /// every other chart shows it, then Total and each band of the stack.
 ///
-/// Total is 100 - idle, so it includes irq, softirq and steal time that the User/System/I/O Wait
-/// bands do not; showing it is what makes the tooltip agree with the Total line and the Total bar.
+/// Total is busy time, 100 - (idle + iowait), so it includes irq, softirq and steal time that the
+/// User/System bands do not; showing it is what makes the tooltip agree with the Total line and the
+/// Total bar. I/O Wait is idle time, not busy (#1157), and is listed after it.
 // One label per series, shared by its legend entry, tooltip row and NowBar (#1008).
 constexpr const char* CPU_TOTAL_LABEL = "Total";
 constexpr const char* CPU_USER_LABEL = "User";
@@ -681,11 +682,13 @@ void SystemMetricsPanel::renderOverview()
                 auto& yUserTop = m_CpuStackYUser;
                 auto& ySystemTop = m_CpuStackYSystem;
                 auto& yIowaitTop = m_CpuStackYIowait;
+                auto& yBusyTop = m_CpuStackYBusy;
                 m_CpuStackX.resize(points.size());
                 y0.assign(points.size(), 0.0);
                 yUserTop.resize(points.size());
                 ySystemTop.resize(points.size());
                 yIowaitTop.resize(points.size());
+                yBusyTop.resize(points.size());
                 for (std::size_t k = 0; k < points.size(); ++k)
                 {
                     // A gap point is NaN in every band (see UI::Widgets::reduceAlignedSeries).
@@ -693,13 +696,17 @@ void SystemMetricsPanel::renderOverview()
                     m_CpuStackX[k] = breakdownTimeData[i];
                     if (points[k].gap)
                     {
-                        yUserTop[k] = ySystemTop[k] = yIowaitTop[k] = std::numeric_limits<double>::quiet_NaN();
+                        yUserTop[k] = ySystemTop[k] = yIowaitTop[k] = yBusyTop[k] = std::numeric_limits<double>::quiet_NaN();
                         continue;
                     }
                     // PlotShaded fills between two Y series, so the stack needs cumulative tops.
                     yUserTop[k] = static_cast<double>(cpuUserData[i]);
                     ySystemTop[k] = yUserTop[k] + static_cast<double>(cpuSystemData[i]);
-                    yIowaitTop[k] = ySystemTop[k] + static_cast<double>(cpuIowaitData[i]);
+                    // I/O Wait is idle time, not busy (#1157): its band sits on the busy total
+                    // (100 - idle - iowait, which the Total line follows) rather than on System, so
+                    // the Total line runs along its bottom edge instead of through it.
+                    yIowaitTop[k] = 100.0 - static_cast<double>(cpuIdleData[i]);
+                    yBusyTop[k] = yIowaitTop[k] - static_cast<double>(cpuIowaitData[i]);
                 }
 
                 // The bands reach "now" like every plotLineWithFill series: the last sample held to
@@ -707,7 +714,7 @@ void SystemMetricsPanel::renderOverview()
                 if (!m_CpuStackX.empty() && m_CpuStackX.back() < 0.0)
                 {
                     m_CpuStackX.push_back(0.0);
-                    for (auto* band : {&y0, &yUserTop, &ySystemTop, &yIowaitTop})
+                    for (auto* band : {&y0, &yUserTop, &ySystemTop, &yIowaitTop, &yBusyTop})
                     {
                         band->push_back(band->back());
                     }
@@ -732,7 +739,7 @@ void SystemMetricsPanel::renderOverview()
                 {
                     ImPlot::PlotShaded(CPU_IOWAIT_LABEL,
                                        m_CpuStackX.data(),
-                                       ySystemTop.data(),
+                                       yBusyTop.data(),
                                        yIowaitTop.data(),
                                        stackCount,
                                        {ImPlotProp_FillColor, theme.scheme().cpuIowaitFill});
@@ -758,9 +765,10 @@ void SystemMetricsPanel::renderOverview()
                     bandEdge(CPU_IOWAIT_LABEL, yIowaitTop, theme.scheme().cpuIowait);
                 }
 
-                // Total over the stack. It is 100 - idle, so it includes irq, softirq and steal time
-                // the three bands do not: without it the "CPU Total" bar had no series, and the top
-                // of the stack understated the load whenever that other time was significant.
+                // Total over the busy bands. It is 100 - (idle + iowait), so it includes irq, softirq
+                // and steal time the User/System bands do not: without it the "CPU Total" bar had no
+                // series, and the top of the stack understated the load whenever that other time was
+                // significant. The I/O Wait band sits on top of it.
                 if (!cpuData.empty())
                 {
                     plotLineWithFill(CPU_TOTAL_LABEL,
@@ -782,7 +790,8 @@ void SystemMetricsPanel::renderOverview()
                         const auto totalIdx = hoveredIndexFromPlotX(cpuTimeData, mouse.x);
                         showCpuBreakdownTooltip(theme.scheme(),
                                                 static_cast<double>(breakdownTimeData[*si]),
-                                                totalIdx ? cpuData[*totalIdx] : (100.0F - cpuIdleData[*si]),
+                                                totalIdx ? cpuData[*totalIdx]
+                                                         : (100.0F - cpuIdleData[*si] - (showIowait ? cpuIowaitData[*si] : 0.0F)),
                                                 cpuUserData[*si],
                                                 cpuSystemData[*si],
                                                 showIowait ? std::optional<float>(cpuIowaitData[*si]) : std::nullopt,
