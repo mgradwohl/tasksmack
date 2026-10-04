@@ -313,6 +313,10 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
             counter.memoryTotalBytes = memInfo.total;
             // Note: memoryUtilPercent is computed in Domain layer from raw bytes
         }
+        else
+        {
+            counter.memoryAvailable = false; // Unread this sample: not a real 0% (#1111)
+        }
 
         // Utilization
         nvmlUtilization_t util{};

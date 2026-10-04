@@ -35,6 +35,7 @@ struct SmoothedGPU
     // reading, rather than easing toward 0 (#1111). Clock and fan were drawn raw before, so they
     // stepped while the bars beside them glided (#1012).
     bool utilizationInitialized = false;
+    bool memoryInitialized = false;
     bool temperatureInitialized = false;
     bool powerInitialized = false;
     bool clockInitialized = false;

@@ -344,6 +344,10 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
             counter.memoryUsedBytes = memInfo.used;
             counter.memoryTotalBytes = memInfo.total;
         }
+        else
+        {
+            counter.memoryAvailable = false; // Unread this sample: not a real 0% (#1111)
+        }
 
         // Temperature (GPU die)
         unsigned int temp = 0;

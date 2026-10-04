@@ -105,7 +105,7 @@ void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap
         valueInitialized = available;
     };
     smoothReading(smoothed.utilizationPercent, smoothed.utilizationInitialized, snap.utilizationAvailable, snap.utilizationPercent);
-    smoothed.memoryPercent = initializeOrSmooth(smoothed.memoryPercent, snap.memoryUsedPercent, alpha, initialized);
+    smoothReading(smoothed.memoryPercent, smoothed.memoryInitialized, snap.memoryAvailable, snap.memoryUsedPercent);
     smoothReading(
         smoothed.temperatureC, smoothed.temperatureInitialized, snap.temperatureAvailable, static_cast<double>(snap.temperatureC));
     smoothReading(smoothed.powerWatts, smoothed.powerInitialized, snap.powerAvailable, snap.powerDrawWatts);
@@ -469,7 +469,11 @@ void renderGpuSection(RenderContext& ctx)
                                                                        .value01 = UI::Format::percent01(smoothed.utilizationPercent),
                                                                        .color = theme.scheme().gpuUtilization}
                                                               : unavailableBar(UTIL_LABEL));
-        if (snap.memoryTotalBytes > 0)
+        if (!smoothed.memoryInitialized)
+        {
+            gpuCoreBars.push_back(unavailableBar(MEMORY_LABEL));
+        }
+        else if (snap.memoryTotalBytes > 0)
         {
             // Use the snapshot's own computed percent and raw byte values so the percent
             // and byte figures always come from the same sample and cannot show an

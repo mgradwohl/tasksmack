@@ -314,7 +314,7 @@ void GPUModel::publish()
             publishedHistory.memoryUsedBytes.push_back(sample.memoryUsedBytes);
             publishedHistory.memoryTotalBytes.push_back(sample.memoryTotalBytes);
             publishedHistory.utilization.push_back(readingOrNaN(sample, sample.utilizationPercent, sample.utilizationAvailable));
-            publishedHistory.memoryPercent.push_back(sampleOrNaN(sample, sample.memoryUsedPercent));
+            publishedHistory.memoryPercent.push_back(readingOrNaN(sample, sample.memoryUsedPercent, sample.memoryAvailable));
             publishedHistory.gpuClock.push_back(readingOrNaN(sample, sample.gpuClockMHz, sample.gpuClockAvailable));
             publishedHistory.encoder.push_back(sampleOrNaN(sample, sample.encoderUtilPercent));
             publishedHistory.decoder.push_back(sampleOrNaN(sample, sample.decoderUtilPercent));
@@ -427,6 +427,7 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
     snapshot.temperatureAvailable = current.temperatureAvailable;
     snapshot.powerAvailable = current.powerAvailable;
     snapshot.gpuClockAvailable = current.gpuClockAvailable;
+    snapshot.memoryAvailable = current.memoryAvailable;
     snapshot.utilizationPercent = current.utilizationPercent;
     snapshot.memoryUsedBytes = current.memoryUsedBytes;
     snapshot.memoryTotalBytes = current.memoryTotalBytes;
@@ -524,7 +525,8 @@ std::vector<float> GPUModel::utilizationHistory(std::string_view gpuId) const
 
 std::vector<float> GPUModel::memoryPercentHistory(std::string_view gpuId) const
 {
-    return getHistoryField(gpuId, &GPUSnapshot::memoryUsedPercent);
+    return getHistoryFieldByProjection(
+        gpuId, [](const GPUSnapshot& sample) { return readingOrNaN(sample, sample.memoryUsedPercent, sample.memoryAvailable); });
 }
 
 std::vector<float> GPUModel::gpuClockHistory(std::string_view gpuId) const

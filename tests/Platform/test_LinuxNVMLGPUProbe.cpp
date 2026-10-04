@@ -536,6 +536,7 @@ TEST(LinuxNVMLGPUProbeTest, FailedSensorReadsAreMarkedUnavailable)
     EXPECT_FALSE(failed[0].temperatureAvailable);
     EXPECT_FALSE(failed[0].powerAvailable);
     EXPECT_FALSE(failed[0].gpuClockAvailable);
+    EXPECT_FALSE(failed[0].memoryAvailable);
     EXPECT_EQ(failed[0].memoryClockMHz, 9000U); // reads that still succeed are unaffected
 }
 

@@ -38,6 +38,7 @@ struct GPUSnapshot
     bool temperatureAvailable = true;
     bool powerAvailable = true;
     bool gpuClockAvailable = true;
+    bool memoryAvailable = true; // used/total bytes, and so the memory percent
 
     // Utilization (0-100)
     double utilizationPercent = 0.0;

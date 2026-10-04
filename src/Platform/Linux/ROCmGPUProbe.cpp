@@ -418,12 +418,20 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
         {
             counter.memoryUsedBytes = memUsed;
         }
+        else
+        {
+            counter.memoryAvailable = false; // Unread this sample: not a real 0% (#1111)
+        }
 
         std::uint64_t memTotal = 0;
         result = m_Impl->rsmi_dev_memory_total_get(deviceIdx, RSMI_MEM_TYPE_VRAM, &memTotal);
         if (result == RSMI_STATUS_SUCCESS)
         {
             counter.memoryTotalBytes = memTotal;
+        }
+        else
+        {
+            counter.memoryAvailable = false;
         }
 
         // Memory utilization percentage is computed by Domain layer from memoryUsedBytes/memoryTotalBytes

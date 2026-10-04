@@ -55,6 +55,7 @@ struct GPUCounters
     bool temperatureAvailable = true;
     bool powerAvailable = true;
     bool gpuClockAvailable = true;
+    bool memoryAvailable = true; // used/total bytes, and so the memory percent
 
     // Utilization (instantaneous snapshot, 0-100, provided by hardware/driver)
     double utilizationPercent = 0.0; // GPU usage reported by hardware

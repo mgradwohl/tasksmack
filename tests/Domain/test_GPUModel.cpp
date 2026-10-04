@@ -1251,6 +1251,8 @@ TEST(GPUModelTest, FailedSensorReadsPublishGapsNotZeros)
     good.temperatureC = 60;
     good.powerDrawWatts = 90.0;
     good.gpuClockMHz = 1500;
+    good.memoryUsedBytes = 2ULL * 1024 * 1024 * 1024;
+    good.memoryTotalBytes = 8ULL * 1024 * 1024 * 1024;
     rawProbe->withGPUCounters("GPU0", good);
 
     Domain::GPUModel model(std::move(probe));
@@ -1261,6 +1263,9 @@ TEST(GPUModelTest, FailedSensorReadsPublishGapsNotZeros)
     failed.temperatureAvailable = false;
     failed.powerAvailable = false;
     failed.gpuClockAvailable = false;
+    failed.memoryAvailable = false;
+    failed.memoryUsedBytes = 0;
+    failed.memoryTotalBytes = 0;
     failed.utilizationPercent = 0.0;
     failed.temperatureC = 0;
     failed.powerDrawWatts = 0.0;
@@ -1268,8 +1273,11 @@ TEST(GPUModelTest, FailedSensorReadsPublishGapsNotZeros)
     rawProbe->withGPUCounters("GPU0", failed);
     model.refresh();
 
-    for (const auto& series :
-         {model.utilizationHistory("GPU0"), model.temperatureHistory("GPU0"), model.powerHistory("GPU0"), model.gpuClockHistory("GPU0")})
+    for (const auto& series : {model.utilizationHistory("GPU0"),
+                               model.temperatureHistory("GPU0"),
+                               model.powerHistory("GPU0"),
+                               model.gpuClockHistory("GPU0"),
+                               model.memoryPercentHistory("GPU0")})
     {
         ASSERT_EQ(series.size(), 2U);
         EXPECT_FALSE(std::isnan(series[0]));
@@ -1282,12 +1290,15 @@ TEST(GPUModelTest, FailedSensorReadsPublishGapsNotZeros)
     EXPECT_TRUE(std::isnan(published.temperature.back()));
     EXPECT_TRUE(std::isnan(published.power.back()));
     EXPECT_TRUE(std::isnan(published.gpuClock.back()));
+    EXPECT_TRUE(std::isnan(published.memoryPercent.back()));
+    EXPECT_FLOAT_EQ(published.memoryPercent.front(), 25.0F);
     EXPECT_FLOAT_EQ(published.utilization.front(), 40.0F);
 
     const auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 1U);
     EXPECT_FALSE(snaps[0].utilizationAvailable);
     EXPECT_FALSE(snaps[0].temperatureAvailable);
+    EXPECT_FALSE(snaps[0].memoryAvailable);
 }
 
 TEST(GPUModelTest, PerGpuHistoryHasAGapWhileGpuAbsent)

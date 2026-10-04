@@ -231,11 +231,17 @@ mergeNVMLIntoDXGICounters(std::vector<GPUCounters>& dxgiCounters,
 
         // Use NVML GPU utilization (NVML provides the actual GPU utilization, DXGI doesn't) when this
         // sample's read succeeded, even if it's 0 (valid at idle). When it failed, leave the GPU
-        // un-NVML-sourced, so PDH's utilization -- a real reading -- is used instead (#1111).
+        // un-NVML-sourced and mark its utilization unread: PDH's utilization -- a real reading --
+        // replaces it and restores availability, and with no PDH sample it publishes as a gap rather
+        // than DXGI's placeholder 0 (#1111).
         if (nvmlCounter.utilizationAvailable)
         {
             dxgiCounter.utilizationPercent = nvmlCounter.utilizationPercent;
             nvmlSourcedIds.insert(dxgiCounter.gpuId); // Track so PDH merge doesn't overwrite a valid 0%
+        }
+        else
+        {
+            dxgiCounter.utilizationAvailable = false;
         }
 
         // Prefer NVML memory metrics (more accurate)
@@ -312,8 +318,9 @@ inline void assignPDHUtilizationToDXGICounters(std::vector<GPUCounters>& dxgiCou
         if (utilIt != utilizationByGpuId.end())
         {
             dxgiCounter.utilizationPercent = std::clamp(utilIt->second, 0.0, 100.0);
+            dxgiCounter.utilizationAvailable = true; // A real reading, even after a failed NVML read (#1111)
         }
-        // If no PDH data found for this GPU's LUID, utilization stays untouched
+        // If no PDH data found for this GPU's LUID, utilization (and its availability) stays untouched
     }
 }
 

@@ -124,6 +124,8 @@ TEST(MergeNVMLIntoDXGICountersTest, FailedNVMLUtilizationReadLeavesThePDHFallbac
 
     EXPECT_FALSE(sourced.contains("GPU0"));
     EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 37.0);
+    // Unread until PDH supplies a reading, so no PDH sample means a gap, not DXGI's placeholder.
+    EXPECT_FALSE(dxgi[0].utilizationAvailable);
     EXPECT_FALSE(dxgi[0].temperatureAvailable);
     EXPECT_TRUE(dxgi[0].powerAvailable);
     EXPECT_DOUBLE_EQ(dxgi[0].powerDrawWatts, 80.0);
@@ -235,6 +237,26 @@ TEST(AllGPUsHaveNVMLUtilizationTest, FalseWhenAnyGPUIsMissing)
     dxgi[1].gpuId = "GPU1";
 
     EXPECT_FALSE(allGPUsHaveNVMLUtilization(dxgi, {"GPU0"}));
+}
+
+TEST(AssignPDHUtilizationToDXGICountersTest, PDHReadingRestoresAvailabilityAfterAFailedNVMLRead)
+{
+    // #1111: a GPU whose NVML utilization read failed is marked unread by the merge; PDH's reading
+    // is real, so it makes the field available again. Without PDH data it stays unread (a gap).
+    std::vector<GPUCounters> dxgi(2);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[0].utilizationAvailable = false;
+    dxgi[1].gpuId = "GPU1";
+    dxgi[1].utilizationAvailable = false;
+
+    const std::unordered_map<std::string, double> byLuid = {{"GPU_0xLUID0", 42.0}};
+    const std::unordered_map<std::string, std::string> idToLuid = {{"GPU0", "GPU_0xLUID0"}, {"GPU1", "GPU_0xLUID1"}};
+
+    assignPDHUtilizationToDXGICounters(dxgi, byLuid, idToLuid, {});
+
+    EXPECT_TRUE(dxgi[0].utilizationAvailable);
+    EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 42.0);
+    EXPECT_FALSE(dxgi[1].utilizationAvailable);
 }
 
 TEST(AssignPDHUtilizationToDXGICountersTest, AssignsClampedUtilizationForMatchedLuid)
