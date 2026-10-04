@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -274,6 +275,18 @@ class MockProcessProbe : public Platform::IProcessProbe
         return m_SystemTotalMemory;
     }
 
+    /// Package energy for ProcessModel to share out per interval (#1093); nullopt (the default)
+    /// means the probe reports per-process energy itself.
+    void setPackageEnergy(std::optional<Platform::PackageEnergyReading> reading)
+    {
+        m_PackageEnergy = reading;
+    }
+
+    [[nodiscard]] std::optional<Platform::PackageEnergyReading> readPackageEnergy() const override
+    {
+        return m_PackageEnergy;
+    }
+
     void setSystemTotalMemory(uint64_t bytes)
     {
         m_SystemTotalMemory = bytes;
@@ -316,6 +329,7 @@ class MockProcessProbe : public Platform::IProcessProbe
     Platform::ProcessCapabilities m_Capabilities;
     long m_TicksPerSecond = 100; // Standard HZ value
     std::atomic<int> m_EnumerateCount{0};
+    std::optional<Platform::PackageEnergyReading> m_PackageEnergy;
 };
 
 // =============================================================================
