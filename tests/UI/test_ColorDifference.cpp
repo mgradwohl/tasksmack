@@ -18,7 +18,7 @@ struct ReferencePair
 {
     Lab first;
     Lab second;
-    double expected;
+    double expected = 0.0;
 };
 
 // Pairs from Sharma, Wu and Dalal (2005), Table 1, chosen to exercise the formula's awkward branches:
@@ -34,9 +34,15 @@ constexpr std::array SHARMA_PAIRS{
     ReferencePair{.first = {.l = 50.0, .a = 2.5, .b = 0.0}, .second = {.l = 56.0, .a = -27.0, .b = -3.0}, .expected = 31.9030},
     ReferencePair{.first = {.l = 50.0, .a = 2.5, .b = 0.0}, .second = {.l = 58.0, .a = 24.0, .b = 15.0}, .expected = 19.4535},
     ReferencePair{
-        .first = {.l = 60.2574, .a = -34.0099, .b = 36.2677}, .second = {.l = 60.4626, .a = -34.1751, .b = 39.4387}, .expected = 1.2644},
+        .first = {.l = 60.2574, .a = -34.0099, .b = 36.2677},
+        .second = {.l = 60.4626, .a = -34.1751, .b = 39.4387},
+        .expected = 1.2644,
+    },
     ReferencePair{
-        .first = {.l = 22.7233, .a = 20.0904, .b = -46.6940}, .second = {.l = 23.0331, .a = 14.9730, .b = -42.5619}, .expected = 2.0373},
+        .first = {.l = 22.7233, .a = 20.0904, .b = -46.6940},
+        .second = {.l = 23.0331, .a = 14.9730, .b = -42.5619},
+        .expected = 2.0373,
+    },
 };
 
 auto rgb(unsigned hex) -> ImVec4

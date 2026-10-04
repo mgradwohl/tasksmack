@@ -385,9 +385,9 @@ TEST(PriorityHelpersTest, UnpackColorInvertsGetNiceColor)
 // The regression the issue reported: Arctic Fire's fixed white badge text on its #00E676 nice-0 badge.
 TEST(PriorityHelpersTest, FixedBadgeTextWasUnreadableOnArcticFireNormal)
 {
-    const ImVec4 emerald = unpackColor(IM_COL32(0x00, 0xE6, 0x76, 0xFF));
+    const ImVec4 emerald{0.0F, 230.0F / 255.0F, 118.0F / 255.0F, 1.0F};
     const ImVec4 white{1.0F, 1.0F, 1.0F, 1.0F};
-    const ImVec4 windowBg = unpackColor(IM_COL32(0x14, 0x1A, 0x24, 0xFF));
+    const ImVec4 windowBg{20.0F / 255.0F, 26.0F / 255.0F, 36.0F / 255.0F, 1.0F};
 
     EXPECT_LT(UI::ColorContrast::contrastRatio(white, emerald), PRIORITY_BADGE_TEXT_MIN_CONTRAST);
     EXPECT_GE(UI::ColorContrast::contrastRatio(badgeTextFor(emerald, white, windowBg), emerald), PRIORITY_BADGE_TEXT_MIN_CONTRAST);

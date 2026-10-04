@@ -387,31 +387,54 @@ TEST(BundledThemesTest, SeriesOnTheSameChartAreSeparable)
         using Series = std::pair<const char*, ImVec4>;
         const std::vector<std::pair<const char*, std::vector<Series>>> groups{
             // System CPU chart: Total line over the User/System/I/O Wait bands.
-            {"CPU",
-             {{"charts.cpu", scheme->chartCpu},
-              {"cpu_breakdown.user", scheme->cpuUser},
-              {"cpu_breakdown.system", scheme->cpuSystem},
-              {"cpu_breakdown.iowait", scheme->cpuIowait}}},
+            {
+                "CPU",
+                {
+                    {"charts.cpu", scheme->chartCpu},
+                    {"cpu_breakdown.user", scheme->cpuUser},
+                    {"cpu_breakdown.system", scheme->cpuSystem},
+                    {"cpu_breakdown.iowait", scheme->cpuIowait},
+                },
+            },
             // Memory & Swap chart (MemorySection.cpp): Used, Cached and Swap.
-            {"Memory", {{"charts.memory", scheme->chartMemory}, {"charts.cpu", scheme->chartCpu}, {"charts.io", scheme->chartIo}}},
+            {
+                "Memory",
+                {
+                    {"charts.memory", scheme->chartMemory},
+                    {"charts.cpu", scheme->chartCpu},
+                    {"charts.io", scheme->chartIo},
+                },
+            },
             // Read/Write and Sent/Received charts sit side by side on Process Details' Network and I/O tab.
-            {"Network and I/O",
-             {{"charts.io", scheme->chartIo},
-              {"charts.io_write", scheme->chartIoWrite},
-              {"charts.net_tx", scheme->chartNetTx},
-              {"charts.net_rx", scheme->chartNetRx}}},
+            {
+                "Network and I/O",
+                {
+                    {"charts.io", scheme->chartIo},
+                    {"charts.io_write", scheme->chartIoWrite},
+                    {"charts.net_tx", scheme->chartNetTx},
+                    {"charts.net_rx", scheme->chartNetRx},
+                },
+            },
             // GPU Core & Video chart (GpuSection.cpp).
-            {"GPU core",
-             {{"charts.gpu.utilization", scheme->gpuUtilization},
-              {"charts.gpu.memory", scheme->gpuMemory},
-              {"charts.gpu.encoder", scheme->gpuEncoder},
-              {"charts.gpu.decoder", scheme->gpuDecoder},
-              {"charts.gpu.clock", scheme->gpuClock}}},
+            {
+                "GPU core",
+                {
+                    {"charts.gpu.utilization", scheme->gpuUtilization},
+                    {"charts.gpu.memory", scheme->gpuMemory},
+                    {"charts.gpu.encoder", scheme->gpuEncoder},
+                    {"charts.gpu.decoder", scheme->gpuDecoder},
+                    {"charts.gpu.clock", scheme->gpuClock},
+                },
+            },
             // GPU thermal chart.
-            {"GPU thermal",
-             {{"charts.gpu.temperature", scheme->gpuTemperature},
-              {"charts.gpu.power", scheme->gpuPower},
-              {"charts.gpu.fan", scheme->gpuFan}}},
+            {
+                "GPU thermal",
+                {
+                    {"charts.gpu.temperature", scheme->gpuTemperature},
+                    {"charts.gpu.power", scheme->gpuPower},
+                    {"charts.gpu.fan", scheme->gpuFan},
+                },
+            },
         };
 
         for (const auto& [group, series] : groups)
