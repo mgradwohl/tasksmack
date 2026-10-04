@@ -64,6 +64,11 @@ class LinuxProcessProbe : public IProcessProbe
     uint64_t m_BootTimeEpoch = 0;                            // System boot time (Unix epoch seconds)
     mutable std::once_flag m_IoCountersCheckFlag;            // Thread-safe one-time initialization
     mutable std::atomic<bool> m_IoCountersAvailable = false; // Cached capability check (atomic for thread-safe read)
+    // Total CPU time read straight after enumerate()'s per-process stat pass, for the totalCpuTime()
+    // call that follows it (0 once taken). Read later -- after network attribution, whose periodic
+    // inode->PID rebuild scans every /proc/*/fd -- the total's interval drifted from the processes'
+    // and every CPU% showed a sawtooth (#1119).
+    mutable std::atomic<std::uint64_t> m_TotalCpuTimeAtEnumerate = 0;
     bool m_HasPowerCap = false;
     std::string m_PowerCapPath;
     std::uint64_t m_PowerCapMaxRangeUj = 0; // max_energy_range_uj, where the counter wraps (0: unknown)

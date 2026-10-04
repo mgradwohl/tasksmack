@@ -821,6 +821,26 @@ TEST(LinuxProcessProbeTest, NoRaplCounterDisablesPowerUsage)
     EXPECT_FALSE(probe.capabilities().hasPowerUsage);
 }
 
+TEST(LinuxProcessProbeTest, TotalCpuTimeIsTheOneTakenAfterTheStatPass)
+{
+    // #1119: the total that per-process CPU deltas are divided by is read right after enumerate()'s
+    // per-process stat reads -- not later, after network attribution's variable-latency work -- and
+    // handed to the totalCpuTime() call that follows. Any other call reads it fresh.
+    ScopedTempDir proc("ts_test_proc_total_cpu");
+    writeFile(proc.path / "4242" / "stat",
+              "4242 (app) S 1 4242 4242 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+    writeFile(proc.path / "stat", "cpu  100 0 100 800 0 0 0 0 0 0\n");
+
+    LinuxProcessProbe probe(proc.path);
+    const auto processes = probe.enumerate();
+    ASSERT_EQ(processes.size(), 1U);
+
+    writeFile(proc.path / "stat", "cpu  200 0 200 1600 0 0 0 0 0 0\n"); // time passes after the stat pass
+    EXPECT_EQ(probe.totalCpuTime(), 1000U);                             // the enumerate-time total
+    EXPECT_EQ(probe.totalCpuTime(), 2000U);                             // taken once; then a fresh read
+}
+
 TEST(LinuxProcessProbeTest, EmptyProcDirReturnsNoProcesses)
 {
     ScopedTempDir scoped("ts_test_proc_empty");
