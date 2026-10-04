@@ -201,21 +201,35 @@ auto ThemeLoader::discoverThemes(const std::filesystem::path& themesDir) -> std:
 {
     std::vector<ThemeInfo> themes;
 
-    if (!std::filesystem::exists(themesDir))
+    // error_code overloads throughout: a theme directory that can't be read (EACCES, a symlink
+    // loop) is skipped with a warning instead of throwing out of UILayer::onAttach (#1127).
+    std::error_code ec;
+    if (!std::filesystem::is_directory(themesDir, ec))
     {
-        spdlog::warn("Themes directory does not exist: {}", themesDir.string());
+        spdlog::warn("Themes directory does not exist or can't be read: {}", themesDir.string());
         return themes;
     }
 
-    for (const auto& entry : std::filesystem::directory_iterator(themesDir))
+    std::filesystem::directory_iterator it(themesDir, ec);
+    if (ec)
     {
-        if (entry.is_regular_file() && entry.path().extension() == ".toml")
+        spdlog::warn("Can't list themes directory {}: {}", themesDir.string(), ec.message());
+        return themes;
+    }
+    for (const std::filesystem::directory_iterator end; !ec && it != end; it.increment(ec))
+    {
+        std::error_code fileEc;
+        if (it->is_regular_file(fileEc) && it->path().extension() == ".toml")
         {
-            if (auto info = loadThemeInfo(entry.path()))
+            if (auto info = loadThemeInfo(it->path()))
             {
                 themes.push_back(std::move(*info));
             }
         }
+    }
+    if (ec)
+    {
+        spdlog::warn("Stopped listing themes directory {}: {}", themesDir.string(), ec.message());
     }
 
     // Sort by name for consistent UI ordering
@@ -234,11 +248,12 @@ auto ThemeLoader::loadThemeInfo(const std::filesystem::path& path) -> std::optio
         info.path = path;
         info.id = path.stem().string(); // filename without extension
 
-        // Read meta section
-        if (auto* meta = tbl["meta"].as_table())
+        // Read meta section. Index through node_view, which is null-safe: table::get() returns
+        // nullptr for a missing key, and calling value_or() on that crashed at startup (#1095).
+        if (const auto* meta = tbl["meta"].as_table())
         {
-            info.name = meta->get("name")->value_or(info.id);
-            info.description = meta->get("description")->value_or("");
+            info.name = (*meta)["name"].value_or(info.id);
+            info.description = (*meta)["description"].value_or(std::string{});
         }
         else
         {
@@ -262,9 +277,9 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
         ColorScheme scheme{};
 
         // Meta
-        if (auto* meta = tbl["meta"].as_table())
+        if (const auto* meta = tbl["meta"].as_table())
         {
-            scheme.name = meta->get("name")->value_or("Unknown");
+            scheme.name = (*meta)["name"].value_or(std::string{"Unknown"});
         }
 
         // Accents
