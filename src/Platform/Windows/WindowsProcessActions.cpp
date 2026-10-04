@@ -117,12 +117,10 @@ BOOL CALLBACK postCloseToProcessWindow(HWND window, LPARAM param)
         return TRUE;
     }
     ++request->eligible;
-    if (PostMessageW(window, WM_CLOSE, 0, 0) == 0)
+    // GetLastError() straight after the refused PostMessage, before any other call can reset it.
+    if (PostMessageW(window, WM_CLOSE, 0, 0) == 0 && request->failed++ == 0)
     {
-        if (request->failed++ == 0)
-        {
-            request->firstError = GetLastError();
-        }
+        request->firstError = GetLastError();
     }
     return TRUE;
 }

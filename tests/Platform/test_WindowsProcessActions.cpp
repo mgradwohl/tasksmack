@@ -287,7 +287,7 @@ class CloseRecordingWindow
         : m_Thread(
               [this]
               {
-                  const HINSTANCE instance = GetModuleHandleW(nullptr);
+                  auto* const instance = GetModuleHandleW(nullptr);
                   WNDCLASSW windowClass{};
                   windowClass.lpfnWndProc = &CloseRecordingWindow::windowProc;
                   windowClass.hInstance = instance;
