@@ -53,6 +53,22 @@ namespace Detail
     return state.starts_with("FROZEN") || state.starts_with("FREEZING");
 }
 
+/// Whether the comma-separated `controllers` of a v1 line name `controller` exactly. A substring
+/// test would also match a named hierarchy such as "name=myfreezer" (#1228 review).
+[[nodiscard]] inline bool hasController(std::string_view controllers, std::string_view controller)
+{
+    while (!controllers.empty())
+    {
+        const std::size_t comma = controllers.find(',');
+        if (controllers.substr(0, comma) == controller)
+        {
+            return true;
+        }
+        controllers = (comma == std::string_view::npos) ? std::string_view{} : controllers.substr(comma + 1);
+    }
+    return false;
+}
+
 } // namespace Detail
 
 /// Whether the process whose /proc/<pid>/cgroup reads `procCgroupContents` is in a frozen cgroup,
@@ -93,7 +109,7 @@ namespace Detail
                 return true;
             }
         }
-        else if (controllers.contains("freezer"))
+        else if (Detail::hasController(controllers, "freezer"))
         {
             if (Detail::isV1CgroupFrozen(cgroupRoot, relativePath))
             {

@@ -72,6 +72,17 @@ TEST(CgroupFreezeStatusTest, V1FreezerStatesAreDetected)
     EXPECT_FALSE(isCgroupFrozen("7:freezer:/thawed\n", root.path));
 }
 
+TEST(CgroupFreezeStatusTest, FreezerMustBeAWholeControllerName)
+{
+    // A named hierarchy "name=myfreezer" isn't the freezer controller; its path must not be looked
+    // up in the freezer hierarchy, where an unrelated frozen cgroup could sit (#1228 review).
+    const ScopedTempDir root("cgroup_named_hierarchy");
+    writeControlFile(root.path / "freezer" / "app" / "freezer.state", "FROZEN\n");
+
+    EXPECT_FALSE(isCgroupFrozen("5:name=myfreezer:/app\n", root.path));
+    EXPECT_TRUE(isCgroupFrozen("5:cpuset,freezer:/app\n", root.path)); // co-mounted controllers
+}
+
 TEST(CgroupFreezeStatusTest, HybridHierarchyChecksEveryRelevantLine)
 {
     // A hybrid system lists v1 controllers and the v2 line; only the v2 cgroup is frozen here.
