@@ -135,6 +135,25 @@ TEST(SocketTrafficAccumulatorTest, ARollbackInOneDirectionRebaselinesBoth)
     EXPECT_EQ(processes[0].netSentBytes, 400U);
 }
 
+TEST(SocketTrafficAccumulatorTest, PublishTotalsFromAnOlderProcessListForgetsNothing)
+{
+    // #1261 review: a newer enumerate() credits a newly seen process; an older concurrent one then
+    // publishes a process list without it. publishTotals() must not drop that process's totals, or
+    // its next increment would publish 10 instead of 110.
+    SocketTrafficAccumulator accumulator;
+    std::vector newer{process(10), process(20)};
+    read(accumulator, {{.key = 1, .pid = 20, .bytesReceived = 0}}, newer);
+    read(accumulator, {{.key = 1, .pid = 20, .bytesReceived = 100}}, newer);
+    ASSERT_EQ(newer[1].netReceivedBytes, 100U);
+
+    std::vector older{process(10)}; // scanned before process 20 existed
+    accumulator.publishTotals(older);
+    EXPECT_EQ(older[0].netReceivedBytes, 0U);
+
+    read(accumulator, {{.key = 1, .pid = 20, .bytesReceived = 110}}, newer);
+    EXPECT_EQ(newer[1].netReceivedBytes, 110U) << "the older list must not have pruned process 20";
+}
+
 TEST(SocketTrafficAccumulatorTest, PublishWithoutANewReadingRepeatsTheTotals)
 {
     SocketTrafficAccumulator accumulator;

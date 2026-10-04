@@ -93,6 +93,22 @@ class SocketTrafficAccumulator
     /// process's cumulative totals into its netReceivedBytes/netSentBytes, and forget the totals of
     /// processes that are gone. A process is identified by PID and start time, so a reused PID starts
     /// again from 0; bytes held for a PID that isn't in `processes` are dropped.
+    /// Write every process's current cumulative totals into its netReceivedBytes/netSentBytes without
+    /// changing any state: no pending bytes are credited and no process is forgotten. For a caller
+    /// that didn't fold a new reading (a cached or failed query, or an older concurrent reading that
+    /// was skipped), whose process list may be older than the one the totals were last pruned
+    /// against -- pruning with it could delete a newer process's totals and break monotonicity.
+    void publishTotals(std::vector<ProcessCounters>& processes) const
+    {
+        for (auto& proc : processes)
+        {
+            const ProcessKey key{.pid = proc.pid, .startTimeTicks = proc.startTimeTicks};
+            const auto existing = m_Totals.find(key);
+            proc.netReceivedBytes = (existing != m_Totals.end()) ? existing->second.received : 0;
+            proc.netSentBytes = (existing != m_Totals.end()) ? existing->second.sent : 0;
+        }
+    }
+
     void publish(std::vector<ProcessCounters>& processes)
     {
         std::unordered_map<ProcessKey, Totals, ProcessKeyHash> live;

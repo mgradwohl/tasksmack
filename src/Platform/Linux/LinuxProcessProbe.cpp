@@ -1102,6 +1102,7 @@ void LinuxProcessProbe::attributeNetworkToProcesses(std::vector<ProcessCounters>
     // enumerate() calls query and scan /proc before this lock, so an older reading can arrive after
     // a newer one was folded, and folding it would rewind the socket baselines and count the
     // traffic in between twice.
+    bool folded = false;
     if (isNewReading && sampledAt > m_LastNetReadingTime)
     {
         std::vector<SocketTrafficSample> samples;
@@ -1121,6 +1122,7 @@ void LinuxProcessProbe::attributeNetworkToProcesses(std::vector<ProcessCounters>
         }
         m_NetTraffic.addReading(samples);
         m_LastNetReadingTime = sampledAt;
+        folded = true;
     }
 
     if (m_LastNetReadingTime == std::chrono::steady_clock::time_point{})
@@ -1139,7 +1141,18 @@ void LinuxProcessProbe::attributeNetworkToProcesses(std::vector<ProcessCounters>
     {
         proc.netSampleTimeNs = sampleTimeNs;
     }
-    m_NetTraffic.publish(processes);
+    // Only the call that folded a new reading credits it and prunes exited processes. Any other call
+    // (cached or failed query, or an older concurrent reading) only reads the totals: its process
+    // list may predate the newest one, and pruning with it could drop a process a newer call just
+    // credited.
+    if (folded)
+    {
+        m_NetTraffic.publish(processes);
+    }
+    else
+    {
+        m_NetTraffic.publishTotals(processes);
+    }
 }
 
 std::shared_ptr<const std::unordered_map<std::uint64_t, std::int32_t>> LinuxProcessProbe::currentInodeToPidMap() const
