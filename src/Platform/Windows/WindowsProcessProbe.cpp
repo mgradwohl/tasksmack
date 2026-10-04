@@ -664,14 +664,37 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
     return (hQuery != nullptr) ? "Background Process" : "";
 }
 
+/// Whether the current process token is elevated, via GetTokenInformation(TokenElevation).
+/// The elevation state is constant for the lifetime of the process, so callers query it once.
+/// Conservative: any failure reports "not elevated".
+[[nodiscard]] bool isCurrentProcessElevated()
+{
+    // ScopedHandle ensures CloseHandle is called on all paths.
+    ScopedHandle token;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()) == FALSE)
+    {
+        spdlog::debug("WindowsProcessProbe: OpenProcessToken failed (error code: {})", GetLastError());
+        return false;
+    }
+
+    TOKEN_ELEVATION elevation{};
+    DWORD dwSize = sizeof(elevation);
+    if (GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &dwSize) == FALSE)
+    {
+        spdlog::debug("WindowsProcessProbe: GetTokenInformation failed (error code: {})", GetLastError());
+        return false;
+    }
+    return elevation.TokenIsElevated != 0;
+}
+
 } // namespace
 
-WindowsProcessProbe::WindowsProcessProbe()
+WindowsProcessProbe::WindowsProcessProbe() : m_IsElevated(isCurrentProcessElevated())
 {
     m_HasNetworkCounters = detectNetworkCounters();
     if (m_HasNetworkCounters)
     {
-        spdlog::info("Per-process network counters available via TCP EStats");
+        spdlog::info("Per-process network counters available via TCP EStats (to be confirmed by the first sample with connections)");
     }
     else
     {
@@ -1027,31 +1050,14 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
 
 ProcessCapabilities WindowsProcessProbe::capabilities() const
 {
-    // Reduced privileges: EStats-based network counters require Administrator.
-    // Use GetTokenInformation(TokenElevation) to check if the current process token is elevated.
-    // This is safe to call repeatedly; the elevation state is constant for the lifetime of the process.
-    // NOLINTNEXTLINE(misc-include-cleaner) - TOKEN_ELEVATION is defined in windows.h via winnt.h
-    bool reducedPrivileges = true; // Conservative default: assume non-elevated
+    // Reduced privileges: EStats-based network counters require Administrator. The token's
+    // elevation is queried once at construction (it is constant for the process lifetime).
+    const bool reducedPrivileges = !m_IsElevated;
 
-    // ScopedHandle ensures CloseHandle is called on all paths.
-    ScopedHandle token;
-    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()) != FALSE)
-    {
-        TOKEN_ELEVATION elevation{};
-        DWORD dwSize = sizeof(elevation);
-        if (GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &dwSize) != FALSE)
-        {
-            reducedPrivileges = (elevation.TokenIsElevated == 0);
-        }
-        else
-        {
-            spdlog::debug("WindowsProcessProbe: GetTokenInformation failed (error code: {})", GetLastError());
-        }
-    }
-    else
-    {
-        spdlog::debug("WindowsProcessProbe: OpenProcessToken failed (error code: {})", GetLastError());
-    }
+    // The network flags can flip after construction (#1161: the first real sample may prove
+    // EStats unusable), so they are atomics read here, possibly from another thread.
+    const bool hasNetworkCounters = m_HasNetworkCounters.load(std::memory_order_relaxed);
+    const bool networkAccessDenied = m_NetworkCountersAccessDenied.load(std::memory_order_relaxed);
 
     return ProcessCapabilities{
         .hasIoCounters = true,
@@ -1067,7 +1073,7 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasCpuAffinity = true, // From GetProcessAffinityMask
         // Network counters: Requires ETW (Event Tracing for Windows) or GetPerTcpConnectionEStats
         // See GitHub issue for implementation tracking
-        .hasNetworkCounters = m_HasNetworkCounters,
+        .hasNetworkCounters = hasNetworkCounters,
         // Not measured on Windows. A fabricated figure (a fixed 1 J per sample shared out by CPU
         // time) used to stand in for it, which read ~2 W regardless of load and depended only on
         // the refresh rate (#1028). Real per-process energy needs the EMI energy meters or ETW.
@@ -1076,9 +1082,9 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasPublisher = true,   // From GetFileVersionInfo on process image path
         .hasProcessType = true, // Classified from path + GetGuiResources
         .hasGdiObjects = true,  // From GetGuiResources(GR_GDIOBJECTS)
-        .hasReducedPrivileges =
-            reducedPrivileges &&
-            m_NetworkCountersAccessDenied, // Non-admin + EStats access-denied: network data unavailable due to privilege
+        // Non-admin + EStats access-denied: network data unavailable due to privilege. Never true
+        // together with hasNetworkCounters: a non-elevated process never uses EStats.
+        .hasReducedPrivileges = reducedPrivileges && networkAccessDenied,
     };
 }
 
@@ -1146,6 +1152,17 @@ void WindowsProcessProbe::calculateDetailTTLsFromTotalRAM(std::chrono::milliseco
 
 bool WindowsProcessProbe::detectNetworkCounters()
 {
+    // TCP EStats requires an elevated token (SetPerTcpConnectionEStats is Administrators-only).
+    // Non-elevated, the dummy-row probe below can answer ERROR_NOT_FOUND before the access check,
+    // which used to report the counters as available and then show 0 B for every process with
+    // no lock icon (#1161). Don't use EStats at all then: report it unavailable for privilege.
+    if (!m_IsElevated)
+    {
+        spdlog::debug("Per-process network counters not available (EStats requires an elevated process)");
+        m_NetworkCountersAccessDenied = true;
+        return false;
+    }
+
     HMODULE iphlp = GetModuleHandleW(L"iphlpapi.dll");
     if (iphlp == nullptr)
     {
@@ -1198,8 +1215,9 @@ bool WindowsProcessProbe::detectNetworkCounters()
     rw.EnableCollection = TRUE;
     const DWORD status = m_SetPerTcpConnectionEStats(&dummy, TcpConnectionEstatsData, reinterpret_cast<PUCHAR>(&rw), 0, sizeof(rw), 0);
 
-    // Access denied or not supported means we can't use EStats
-    // ERROR_NOT_FOUND is expected for the dummy row and is OK
+    // Access denied or not supported means we can't use EStats.
+    // ERROR_NOT_FOUND is expected for the dummy row, but it proves nothing about real rows: the
+    // first sample with established connections confirms or revokes this (#1161).
     if (status == ERROR_ACCESS_DENIED)
     {
         spdlog::debug("Per-process network counters not available (EStats requires administrator privileges)");
@@ -1323,6 +1341,38 @@ PerPidNetworkBytes WindowsProcessProbe::collectNetworkByteCounts() const
                       counts.hasData,
                       counts.garbage,
                       counts.accessDenied);
+    }
+
+    // Safety net (#1161): the constructor's dummy-row probe cannot prove EStats works. Until a
+    // sample with established connections has, classify each one; if it proves the counters
+    // unusable, stop claiming them instead of reporting 0 B for every process.
+    if (!m_EStatsVerified.load(std::memory_order_relaxed))
+    {
+        switch (classifyEStatsProbe(counts))
+        {
+        case EStatsProbeResult::Available:
+            m_EStatsVerified.store(true, std::memory_order_relaxed);
+            spdlog::debug(
+                "TCP EStats verified on a real sample ({} of {} established connections read)", counts.readOk, counts.established);
+            break;
+        case EStatsProbeResult::Unavailable:
+            spdlog::warn("Per-process network counters disabled: TCP EStats failed on real connections "
+                         "({} established, {} read OK, {} access denied)",
+                         counts.established,
+                         counts.readOk,
+                         counts.accessDenied);
+            // Only reached when elevated (non-elevated never uses EStats), so capabilities() keeps
+            // hasReducedPrivileges false here: the two flags still never hold together.
+            if (counts.accessDenied > 0)
+            {
+                m_NetworkCountersAccessDenied.store(true, std::memory_order_relaxed);
+            }
+            m_HasNetworkCounters.store(false, std::memory_order_relaxed);
+            m_EStatsVerified.store(true, std::memory_order_relaxed);
+            return {};
+        case EStatsProbeResult::Undetermined:
+            break; // No established connections yet: try again next sample
+        }
     }
 
     return perPid;

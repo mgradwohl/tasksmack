@@ -101,6 +101,64 @@ TEST(WindowsProcessProbeTest, ReducedPrivilegesIsConsistent)
     }
 }
 
+namespace
+{
+bool isTestProcessElevated()
+{
+    HANDLE token = nullptr;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token) == FALSE)
+    {
+        return false;
+    }
+    TOKEN_ELEVATION elevation{};
+    DWORD size = sizeof(elevation);
+    const bool ok = GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size) != FALSE;
+    CloseHandle(token);
+    return ok && elevation.TokenIsElevated != 0;
+}
+} // namespace
+
+TEST(WindowsProcessProbeTest, NonElevatedNeverClaimsNetworkCounters)
+{
+    // #1161: non-elevated, the old dummy-row probe could get ERROR_NOT_FOUND and claim per-process
+    // network counters, then report 0 B for every process with no lock icon. EStats now requires
+    // an elevated token: non-elevated reports the counters unavailable for privilege.
+    if (isTestProcessElevated())
+    {
+        GTEST_SKIP() << "Test process is elevated; the non-elevated path cannot run here";
+    }
+
+    WindowsProcessProbe probe;
+    for (int sample = 0; sample < 2; ++sample)
+    {
+        for (const auto& proc : probe.enumerate())
+        {
+            EXPECT_EQ(proc.netSentBytes, 0ULL) << proc.name;
+            EXPECT_EQ(proc.netReceivedBytes, 0ULL) << proc.name;
+        }
+    }
+    const auto caps = probe.capabilities();
+    EXPECT_FALSE(caps.hasNetworkCounters);
+    EXPECT_TRUE(caps.hasReducedPrivileges);
+}
+
+TEST(WindowsProcessProbeTest, NetworkFlagsStayConsistentAfterSampling)
+{
+    // The first real samples may revoke EStats availability (#1161); whichever way they go, the
+    // capability invariant must still hold afterwards, and elevated never shows the lock icon.
+    WindowsProcessProbe probe;
+    for (int sample = 0; sample < 3; ++sample)
+    {
+        (void) probe.enumerate();
+    }
+    const auto caps = probe.capabilities();
+    EXPECT_FALSE(caps.hasNetworkCounters && caps.hasReducedPrivileges);
+    if (isTestProcessElevated())
+    {
+        EXPECT_FALSE(caps.hasReducedPrivileges);
+    }
+}
+
 TEST(WindowsProcessProbeTest, TicksPerSecondMatchesFileTime)
 {
     WindowsProcessProbe probe;
@@ -855,6 +913,96 @@ TEST(EStatsSampleCountsTest, Ipv4AndIpv6TalliesAdd)
     EXPECT_EQ(v4.accessDenied, 1U);
     EXPECT_EQ(v4.hasData, 3U);
     EXPECT_EQ(v4.garbage, 1U);
+}
+
+// ---------------------------------------------------------------------------
+// classifyEStatsProbe (#1161): does a real sample prove EStats works?
+// ---------------------------------------------------------------------------
+
+/// Replays a per-row (enableStatus, readStatus) error sequence for ESTABLISHED rows into the
+/// tallies the probe's table walks produce, so each test reads as "the OS returned X, Y, Z".
+struct EStatsRowResult
+{
+    DWORD enableStatus = NO_ERROR;
+    DWORD readStatus = NO_ERROR;
+};
+
+EStatsSampleCounts tallyEstablishedRows(const std::vector<EStatsRowResult>& rows)
+{
+    EStatsSampleCounts counts;
+    counts.total = rows.size();
+    counts.established = rows.size();
+    for (const auto& row : rows)
+    {
+        counts.enabled += (row.enableStatus == NO_ERROR) ? 1U : 0U;
+        counts.readOk += (row.readStatus == NO_ERROR) ? 1U : 0U;
+        counts.accessDenied += (row.enableStatus == ERROR_ACCESS_DENIED || row.readStatus == ERROR_ACCESS_DENIED) ? 1U : 0U;
+    }
+    return counts;
+}
+
+TEST(ClassifyEStatsProbeTest, AllAccessDeniedIsUnavailable)
+{
+    const auto counts = tallyEstablishedRows({
+        {.enableStatus = ERROR_ACCESS_DENIED, .readStatus = ERROR_ACCESS_DENIED},
+        {.enableStatus = ERROR_ACCESS_DENIED, .readStatus = ERROR_ACCESS_DENIED},
+    });
+    EXPECT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Unavailable);
+}
+
+TEST(ClassifyEStatsProbeTest, AnyAccessDeniedIsUnavailableEvenIfSomeReadsWork)
+{
+    const auto counts = tallyEstablishedRows({
+        {.enableStatus = NO_ERROR, .readStatus = NO_ERROR},
+        {.enableStatus = ERROR_ACCESS_DENIED, .readStatus = ERROR_NOT_FOUND},
+    });
+    EXPECT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Unavailable);
+}
+
+TEST(ClassifyEStatsProbeTest, DummyRowNotFoundThenEveryRealReadFailingIsUnavailable)
+{
+    // The #1161 case: the constructor's dummy-row probe returned ERROR_NOT_FOUND (which the old
+    // detection treated as "available"), then every real established connection's Set/Get
+    // fails without ever saying ACCESS_DENIED. The old code kept hasNetworkCounters = true and
+    // showed 0 B for every process with no lock icon; a real sample now proves it unavailable.
+    const auto counts = tallyEstablishedRows({
+        {.enableStatus = ERROR_NOT_FOUND, .readStatus = ERROR_NOT_FOUND},
+        {.enableStatus = ERROR_INVALID_PARAMETER, .readStatus = ERROR_NOT_FOUND},
+        {.enableStatus = ERROR_NOT_FOUND, .readStatus = ERROR_INVALID_PARAMETER},
+    });
+    ASSERT_EQ(counts.accessDenied, 0U);
+    EXPECT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Unavailable);
+}
+
+TEST(ClassifyEStatsProbeTest, ZeroEstablishedConnectionsIsUndetermined)
+{
+    // Nothing to read proves nothing either way: keep trying on the next sample rather than
+    // declaring the feature dead on an idle machine.
+    EXPECT_EQ(classifyEStatsProbe(EStatsSampleCounts{}), EStatsProbeResult::Undetermined);
+
+    EStatsSampleCounts onlyListeners;
+    onlyListeners.total = 40; // e.g. all LISTEN / TIME_WAIT rows
+    EXPECT_EQ(classifyEStatsProbe(onlyListeners), EStatsProbeResult::Undetermined);
+}
+
+TEST(ClassifyEStatsProbeTest, SuccessfulReadsAreAvailable)
+{
+    const auto counts = tallyEstablishedRows({
+        {.enableStatus = NO_ERROR, .readStatus = NO_ERROR},
+        {.enableStatus = NO_ERROR, .readStatus = NO_ERROR},
+    });
+    EXPECT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Available);
+}
+
+TEST(ClassifyEStatsProbeTest, ReadsWorkingWithoutEnableAreAvailable)
+{
+    // Collection may already have been enabled by another (elevated) process, so a failed
+    // enable with a successful read still proves the counters are real.
+    const auto counts = tallyEstablishedRows({
+        {.enableStatus = ERROR_NOT_FOUND, .readStatus = NO_ERROR},
+        {.enableStatus = ERROR_NOT_FOUND, .readStatus = ERROR_NOT_FOUND}, // connection closed mid-walk
+    });
+    EXPECT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Available);
 }
 
 } // namespace

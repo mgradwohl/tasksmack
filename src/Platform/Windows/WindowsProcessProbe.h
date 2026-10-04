@@ -64,11 +64,17 @@ class WindowsProcessProbe : public IProcessProbe
     [[nodiscard]] uint64_t systemTotalMemory() const override;
 
   private:
-    bool m_HasNetworkCounters = false;
-    bool m_NetworkCountersAccessDenied = false;       // True when EStats failed specifically due to access denied (privilege issue)
-    std::chrono::milliseconds m_LightDetailTTL{1000}; // Default; tuned by total physical RAM in constructor
-    std::chrono::milliseconds m_HeavyDetailTTL{5000}; // Default; tuned by total physical RAM in constructor
-    HMODULE m_IphlpModule = nullptr;                  // Non-null only when loaded by this class (must be freed in destructor)
+    bool m_IsElevated = false; // Process token elevation, queried once at construction (constant for the process lifetime)
+    // The network flags can flip after construction when the first real sample proves EStats
+    // unusable (#1161). enumerate()'s const apply path writes them and capabilities() may read
+    // them from another thread, hence mutable atomics.
+    mutable std::atomic<bool> m_HasNetworkCounters{false};
+    mutable std::atomic<bool> m_NetworkCountersAccessDenied{
+        false};                                        // True when EStats failed specifically due to access denied (privilege issue)
+    mutable std::atomic<bool> m_EStatsVerified{false}; // A real sample has classified EStats (no more checks)
+    std::chrono::milliseconds m_LightDetailTTL{1000};  // Default; tuned by total physical RAM in constructor
+    std::chrono::milliseconds m_HeavyDetailTTL{5000};  // Default; tuned by total physical RAM in constructor
+    HMODULE m_IphlpModule = nullptr;                   // Non-null only when loaded by this class (must be freed in destructor)
 
     // EStats function signatures
     using GetPerTcpConnectionEStatsFn =

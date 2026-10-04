@@ -133,4 +133,34 @@ struct EStatsSampleCounts
     }
 };
 
+/// Verdict of classifyEStatsProbe() on whether EStats per-process network counters really work.
+enum class EStatsProbeResult : std::uint8_t
+{
+    Available,    // At least one established connection was read, and nothing was denied
+    Unavailable,  // Access was denied, or every established connection's read failed
+    Undetermined, // No established connections this sample: keep trying on the next one
+};
+
+/// Decide from a real sample whether EStats is usable (#1161). The constructor's probe on a
+/// zeroed dummy row can return ERROR_NOT_FOUND before (or instead of) the OS access check, so it
+/// cannot prove availability; only real ESTABLISHED rows can. Any ERROR_ACCESS_DENIED, or
+/// established connections none of which could be read, means the per-process network column
+/// would be fabricated zeros.
+[[nodiscard]] inline EStatsProbeResult classifyEStatsProbe(const EStatsSampleCounts& counts) noexcept
+{
+    if (counts.accessDenied > 0)
+    {
+        return EStatsProbeResult::Unavailable;
+    }
+    if (counts.established == 0)
+    {
+        return EStatsProbeResult::Undetermined;
+    }
+    if (counts.readOk == 0)
+    {
+        return EStatsProbeResult::Unavailable;
+    }
+    return EStatsProbeResult::Available;
+}
+
 } // namespace Platform
