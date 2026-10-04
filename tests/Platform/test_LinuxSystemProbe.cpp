@@ -640,6 +640,35 @@ TEST(LinuxSystemProbeTest, NetDevWithMalformedLinesSkips)
     EXPECT_GE(counters.netRxBytes, 12345ULL);
 }
 
+TEST(LinuxSystemProbeTest, PerCoreCountersCarryTheirCpuNumber)
+{
+    // /proc/stat lists online CPUs only. With cpu2 offline, cpu3 is the third per-core line, and
+    // it must still be identified as core 3, not core 2 (#1229). An unparseable label is skipped.
+    ScopedTempDir scoped("ts_test_sys_coreid");
+    {
+        std::ofstream f(scoped.path / "stat");
+        f << "cpu  40 0 40 400 0 0 0 0 0 0\n";
+        f << "cpu0 10 0 10 100 0 0 0 0 0 0\n";
+        f << "cpu1 11 0 10 100 0 0 0 0 0 0\n";
+        f << "cpu3 13 0 10 100 0 0 0 0 7 0\n";
+        f << "cpuX 99 0 99 999 0 0 0 0 0 0\n";
+        f << "cpu12 22 0 10 100 0 0 0 0 0 0\n";
+        f << "intr 0\n";
+    }
+    LinuxSystemProbe probe(scoped.path);
+    const auto counters = probe.read();
+
+    ASSERT_EQ(counters.cpuPerCore.size(), 4U);
+    EXPECT_EQ(counters.cpuPerCore[0].coreId, 0U);
+    EXPECT_EQ(counters.cpuPerCore[1].coreId, 1U);
+    EXPECT_EQ(counters.cpuPerCore[2].coreId, 3U);
+    EXPECT_EQ(counters.cpuPerCore[2].user, 13U);
+    EXPECT_EQ(counters.cpuPerCore[2].guest, 7U);
+    EXPECT_EQ(counters.cpuPerCore[3].coreId, 12U);
+    EXPECT_EQ(counters.cpuPerCore[3].user, 22U);
+    EXPECT_EQ(counters.cpuTotal.user, 40U);
+}
+
 TEST(LinuxSystemProbeTest, StatWithNoCpuLineReturnsZero)
 {
     ScopedTempDir scoped("ts_test_sys_badstat");

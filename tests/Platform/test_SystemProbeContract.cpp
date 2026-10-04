@@ -13,9 +13,11 @@ namespace Platform
 {
 namespace
 {
+// guest/guestNice are already inside user/nice (the kernel counts guest time in both), so total()
+// leaves them out and so does this sum (#1157).
 [[nodiscard]] uint64_t cpuComponentSum(const CpuCounters& c)
 {
-    return c.user + c.nice + c.system + c.idle + c.iowait + c.irq + c.softirq + c.steal + c.guest + c.guestNice;
+    return c.user + c.nice + c.system + c.idle + c.iowait + c.irq + c.softirq + c.steal;
 }
 
 } // namespace
