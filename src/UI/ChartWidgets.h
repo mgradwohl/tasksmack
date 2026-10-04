@@ -736,9 +736,8 @@ inline constexpr int AXIS_LABEL_MIN_WIDTH = 8;
 /// Use with ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisLocalized)
 inline int formatAxisLocalized(double value, char* buff, int size, void* /*userData*/)
 {
-    // Clamp values that print as zero to zero, to avoid "-0.0%". Only those: a percent axis can now
-    // scale down to 5 % (#1195), where ticks such as 0.2 % must not read 0.0 %.
-    if (std::abs(value) < 0.05)
+    // Clamp tiny values to zero to avoid "-0" display
+    if (std::abs(value) < 0.5)
     {
         value = 0.0;
     }
