@@ -243,8 +243,8 @@ TEST(WindowsSystemProbeMathTest, ProcessorGroupsAreAppendedInOrderAndCountIsTheS
     const std::array<FakeProcessorEntry, 3> group1{{{.id = 100}, {.id = 101}, {.id = 102}}};
 
     std::vector<CpuCounters> cores;
-    EXPECT_EQ(appendProcessorGroup(cores, std::span<const FakeProcessorEntry>(group0), sizeof(group0), fakeEntryToCounters), 4U);
-    EXPECT_EQ(appendProcessorGroup(cores, std::span<const FakeProcessorEntry>(group1), sizeof(group1), fakeEntryToCounters), 3U);
+    EXPECT_EQ(appendProcessorGroup(cores, std::span<const FakeProcessorEntry>(group0), sizeof(group0), 0, fakeEntryToCounters), 4U);
+    EXPECT_EQ(appendProcessorGroup(cores, std::span<const FakeProcessorEntry>(group1), sizeof(group1), 4, fakeEntryToCounters), 3U);
 
     ASSERT_EQ(cores.size(), group0.size() + group1.size());
     const std::array<std::uint64_t, 7> expectedOrder{0, 1, 2, 3, 100, 101, 102};
@@ -257,14 +257,57 @@ TEST(WindowsSystemProbeMathTest, ProcessorGroupsAreAppendedInOrderAndCountIsTheS
     }
 }
 
+// #1248 review: ids come from each group's maximum size, fixed for the boot session, so a group
+// whose active count changes (a hot-added processor) does not renumber the groups after it.
+TEST(WindowsSystemProbeMathTest, ProcessorGroupFirstCoreIdsAreRunningSumsOfMaximums)
+{
+    const std::array<std::uint32_t, 3> maximums{48, 48, 32};
+    EXPECT_EQ(processorGroupFirstCoreIds(maximums), (std::vector<std::size_t>{0, 48, 96}));
+    EXPECT_TRUE(processorGroupFirstCoreIds({}).empty());
+}
+
+TEST(WindowsSystemProbeMathTest, AnEarlierGroupGrowingDoesNotRenumberLaterGroups)
+{
+    // Group 0 has room for 6 processors; 4 are active, then a fifth is hot-added. Group 1's ids
+    // must not move, or SystemModel would compare one CPU's counters with another's.
+    const auto firstIds = processorGroupFirstCoreIds(std::array<std::uint32_t, 2>{6, 3});
+    const std::array<FakeProcessorEntry, 6> group0{{{.id = 0}, {.id = 1}, {.id = 2}, {.id = 3}, {.id = 4}, {.id = 5}}};
+    const std::array<FakeProcessorEntry, 3> group1{{{.id = 100}, {.id = 101}, {.id = 102}}};
+
+    const auto sample = [&](std::size_t group0Active)
+    {
+        std::vector<CpuCounters> cores;
+        (void) appendProcessorGroup(cores,
+                                    std::span<const FakeProcessorEntry>(group0),
+                                    group0Active * sizeof(FakeProcessorEntry),
+                                    firstIds[0],
+                                    fakeEntryToCounters);
+        (void) appendProcessorGroup(cores, std::span<const FakeProcessorEntry>(group1), sizeof(group1), firstIds[1], fakeEntryToCounters);
+        return cores;
+    };
+
+    const auto before = sample(4);
+    const auto after = sample(5);
+    ASSERT_EQ(before.size(), 7U);
+    ASSERT_EQ(after.size(), 8U);
+    // Group 1's first CPU (fake id 100) keeps coreId 6 in both samples.
+    EXPECT_EQ(before[4].user, 100U);
+    EXPECT_EQ(before[4].coreId, 6U);
+    EXPECT_EQ(after[5].user, 100U);
+    EXPECT_EQ(after[5].coreId, 6U);
+    // The hot-added processor takes its own id, 4, not one of group 1's.
+    EXPECT_EQ(after[4].coreId, 4U);
+}
+
 TEST(WindowsSystemProbeMathTest, ShortProcessorGroupAppendsOnlyTheReturnedEntries)
 {
     // The buffer had room for 4 entries but the group reported 2 (fewer processors than sized for).
     const std::array<FakeProcessorEntry, 4> group{{{.id = 7}, {.id = 8}, {.id = 9}, {.id = 10}}};
     std::vector<CpuCounters> cores{CpuCounters{}};
 
-    EXPECT_EQ(appendProcessorGroup(cores, std::span<const FakeProcessorEntry>(group), 2 * sizeof(FakeProcessorEntry), fakeEntryToCounters),
-              2U);
+    EXPECT_EQ(
+        appendProcessorGroup(cores, std::span<const FakeProcessorEntry>(group), 2 * sizeof(FakeProcessorEntry), 0, fakeEntryToCounters),
+        2U);
     ASSERT_EQ(cores.size(), 3U);
     EXPECT_EQ(cores[1].user, 7U);
     EXPECT_EQ(cores[2].user, 8U);
@@ -276,11 +319,13 @@ TEST(WindowsSystemProbeMathTest, ProcessorGroupReturnLengthIsClampedToTheBuffer)
     const std::array<FakeProcessorEntry, 2> group{{{.id = 1}, {.id = 2}}};
     std::vector<CpuCounters> cores;
 
-    EXPECT_EQ(appendProcessorGroup(cores, std::span<const FakeProcessorEntry>(group), sizeof(FakeProcessorEntry) + 1, fakeEntryToCounters),
-              1U);
-    EXPECT_EQ(appendProcessorGroup(cores, std::span<const FakeProcessorEntry>(group), 64 * sizeof(FakeProcessorEntry), fakeEntryToCounters),
-              2U);
-    EXPECT_EQ(appendProcessorGroup(cores, std::span<const FakeProcessorEntry>(group), 0, fakeEntryToCounters), 0U);
+    EXPECT_EQ(
+        appendProcessorGroup(cores, std::span<const FakeProcessorEntry>(group), sizeof(FakeProcessorEntry) + 1, 0, fakeEntryToCounters),
+        1U);
+    EXPECT_EQ(
+        appendProcessorGroup(cores, std::span<const FakeProcessorEntry>(group), 64 * sizeof(FakeProcessorEntry), 0, fakeEntryToCounters),
+        2U);
+    EXPECT_EQ(appendProcessorGroup(cores, std::span<const FakeProcessorEntry>(group), 0, 0, fakeEntryToCounters), 0U);
     EXPECT_EQ(cores.size(), 3U);
 }
 

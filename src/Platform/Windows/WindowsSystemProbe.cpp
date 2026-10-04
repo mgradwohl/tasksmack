@@ -178,9 +178,23 @@ template<typename Query>
     return sysInfo.dwNumberOfProcessors;
 }
 
+/// Each processor group's first coreId, from the groups' maximum sizes (#1107; see
+/// processorGroupFirstCoreIds()). Read once: the maximums are fixed for the boot session.
+[[nodiscard]] std::vector<std::size_t> groupFirstCoreIds()
+{
+    const WORD groups = GetMaximumProcessorGroupCount();
+    std::vector<std::uint32_t> maximums;
+    maximums.reserve(groups);
+    for (WORD group = 0; group < groups; ++group)
+    {
+        maximums.push_back(GetMaximumProcessorCount(group));
+    }
+    return processorGroupFirstCoreIds(maximums);
+}
+
 } // namespace
 
-WindowsSystemProbe::WindowsSystemProbe() : m_NumCores(logicalProcessorCount())
+WindowsSystemProbe::WindowsSystemProbe() : m_NumCores(logicalProcessorCount()), m_GroupFirstCoreIds(groupFirstCoreIds())
 {
     // Get hostname (UTF-8 via wide API)
     std::array<wchar_t, MAX_COMPUTERNAME_LENGTH + 1> hostBuffer{};
@@ -308,6 +322,13 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
 
         for (WORD group = 0; group < groupCount; ++group)
         {
+            if (group >= m_GroupFirstCoreIds.size())
+            {
+                // A group the boot-time table does not cover has no stable ids; treat the sample
+                // as a failed group read rather than number its processors ad hoc.
+                allGroupsRead = false;
+                break;
+            }
             USHORT groupNumber = group;
             std::vector<ProcessorPerformanceInfo> perfInfo(std::max<DWORD>(GetActiveProcessorCount(group), 1));
             ULONG returnLength = 0;
@@ -322,7 +343,8 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
                 allGroupsRead = false;
                 break;
             }
-            appendProcessorGroup(cores, std::span<const ProcessorPerformanceInfo>(perfInfo), returnLength, toCounters);
+            appendProcessorGroup(
+                cores, std::span<const ProcessorPerformanceInfo>(perfInfo), returnLength, m_GroupFirstCoreIds[group], toCounters);
         }
 
         if (allGroupsRead)
@@ -373,7 +395,7 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
     }
 
     const std::size_t coresReturned =
-        appendProcessorGroup(counters.cpuPerCore, std::span<const ProcessorPerformanceInfo>(perfInfo), returnLength, toCounters);
+        appendProcessorGroup(counters.cpuPerCore, std::span<const ProcessorPerformanceInfo>(perfInfo), returnLength, 0, toCounters);
     spdlog::trace("Read per-core CPU for {} cores", coresReturned);
 }
 
