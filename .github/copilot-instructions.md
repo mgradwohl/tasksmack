@@ -143,7 +143,7 @@ void render(bool* open) override { /* ImGui::Begin/End, render version-cached sn
 - **Static Analysis:** `.clang-tidy` - run regularly
 
 ### Naming
-- Classes: `PascalCase` | Functions: `camelCase` | Members: `m_camelCase` | Constants: `UPPER_SNAKE_CASE`
+- Classes: `PascalCase` | Functions: `camelCase` | Members: `m_PascalCase` | Constants: `UPPER_SNAKE_CASE`
 
 ### Includes (order matters)
 1. Matching header (`.cpp` files only)
@@ -355,7 +355,7 @@ When performing a code review on this project:
    - `Platform::makePathProvider()` is called only inside `Core::PathService`; all other path access goes through `Core::Application::get().paths()`
    - All OpenGL calls should be in UI/Core layers only
 
-7. **Naming Conventions**: Enforce project standards (PascalCase classes, camelCase functions, m_camelCase members)
+7. **Naming Conventions**: Enforce project standards (PascalCase classes, camelCase functions, m_PascalCase members)
 
 8. **Include Order**: Verify includes follow project standard (matching header → project → third-party → stdlib)
 
