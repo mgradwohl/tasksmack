@@ -617,6 +617,11 @@ void Application::run()
                 ++resizeEventCount;
                 m_InteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
                 break;
+            case WindowEventRouting::Action::SystemMaximized:
+                // Win+Up, snap to the top edge or ShowWindow(SW_MAXIMIZE) on the borderless window:
+                // replaced by the title-bar button's maximize, whose resize events follow (#1208).
+                m_Window->adoptSystemMaximize();
+                break;
             case WindowEventRouting::Action::None:
                 break;
             }

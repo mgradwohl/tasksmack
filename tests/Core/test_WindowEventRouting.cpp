@@ -1,7 +1,8 @@
 /// @file test_WindowEventRouting.cpp
 /// @brief Tests for how Application::run() routes SDL window events (Core/WindowEventRouting.h):
 /// SDL_EVENT_QUIT is a non-vetoable termination rather than a second close request (#1150), and
-/// SDL_EVENT_WINDOW_EXPOSED is a redraw rather than a resize interaction (#1154).
+/// SDL_EVENT_WINDOW_EXPOSED is a redraw rather than a resize interaction (#1154), and an OS maximize is routed to the client-side
+/// maximize (#1208).
 
 #include "Core/WindowEventRouting.h"
 
@@ -39,12 +40,19 @@ TEST(WindowEventRoutingTest, ExposedIsARedrawNotAResize)
     EXPECT_NE(classify(SDL_EVENT_WINDOW_EXPOSED), Action::Resized);
 }
 
+TEST(WindowEventRoutingTest, OsMaximizeIsRouted)
+{
+    // Win+Up, snap to the top edge or ShowWindow(SW_MAXIMIZE) on the borderless window must reach
+    // Window::adoptSystemMaximize(); unrouted, it left the window a quarter of the screen (#1208).
+    EXPECT_EQ(classify(SDL_EVENT_WINDOW_MAXIMIZED), Action::SystemMaximized);
+}
+
 TEST(WindowEventRoutingTest, OtherEventsNeedNoRouting)
 {
     EXPECT_EQ(classify(SDL_EVENT_KEY_DOWN), Action::None);
     EXPECT_EQ(classify(SDL_EVENT_MOUSE_MOTION), Action::None);
     EXPECT_EQ(classify(SDL_EVENT_WINDOW_FOCUS_GAINED), Action::None);
-    EXPECT_EQ(classify(SDL_EVENT_WINDOW_MAXIMIZED), Action::None);
+    EXPECT_EQ(classify(SDL_EVENT_WINDOW_RESTORED), Action::None);
 }
 
 TEST(WindowEventRoutingTest, ExposeAtTheSameSizeIsNotAResize)

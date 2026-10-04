@@ -101,6 +101,11 @@ class Window
     [[nodiscard]] bool isMaximized() const;
     [[nodiscard]] bool isMinimized() const noexcept;
     void maximize();
+    /// Replace an OS-initiated maximize (SDL_EVENT_WINDOW_MAXIMIZED: Win+Up, snap to the top edge,
+    /// ShowWindow(SW_MAXIMIZE)) with maximize()'s client-side one, which fills the current display's
+    /// usable bounds and records the real normal rectangle as the restore target (#1208). Does
+    /// nothing where WindowGeometry::shouldAdoptSystemMaximize() says the OS maximize is right.
+    void adoptSystemMaximize();
     void restore();
     void minimize() const;
 

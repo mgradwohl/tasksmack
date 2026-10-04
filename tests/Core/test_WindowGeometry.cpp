@@ -1,7 +1,7 @@
 /// @file test_WindowGeometry.cpp
 /// @brief Tests for the pure window-geometry decisions in Core/WindowGeometry.h: which rectangle is
 /// persisted as the window's normal geometry (#1121), and how a restored rectangle is fitted to the
-/// connected displays (#1128).
+/// connected displays (#1128), and when an OS maximize is replaced by the client-side one (#1208).
 
 #include "Core/WindowGeometry.h"
 
@@ -45,6 +45,29 @@ TEST(WindowGeometryTest, MaximizedWithNoKnownRestoreRectangleKeepsTheSavedGeomet
     EXPECT_EQ(selectNormalGeometry(true, maximized, std::nullopt), std::nullopt);
     EXPECT_EQ(selectNormalGeometry(true, maximized, Rect{.x = 5, .y = 5, .width = 0, .height = 600}), std::nullopt);
     EXPECT_EQ(selectNormalGeometry(true, maximized, Rect{.x = 5, .y = 5, .width = 800, .height = -1}), std::nullopt);
+}
+
+// ---- shouldAdoptSystemMaximize (#1208) ----
+
+TEST(WindowGeometryTest, AnOsMaximizeOfTheBorderlessWindowIsAdoptedOnClientSideBackends)
+{
+    // Win+Up / ShowWindow(SW_MAXIMIZE) on Windows: the OS sized the window from the primary screen,
+    // a quarter of a 175 % display, so it is replaced by the client-side maximize.
+    EXPECT_TRUE(shouldAdoptSystemMaximize(true, true, true));
+}
+
+TEST(WindowGeometryTest, AnOsMaximizeIsLeftAloneWhereTheOsGetsItRight)
+{
+    EXPECT_FALSE(shouldAdoptSystemMaximize(true, false, true)); // native Wayland compositor maximize
+    EXPECT_FALSE(shouldAdoptSystemMaximize(false, true, true)); // a window with an OS frame
+    EXPECT_FALSE(shouldAdoptSystemMaximize(false, false, true));
+}
+
+TEST(WindowGeometryTest, TheSdlMaximizeFallbackIsNotAdoptedAgain)
+{
+    // Without the display's usable bounds maximize() itself falls back to SDL_MaximizeWindow();
+    // adopting that MAXIMIZED event would restore and re-maximize on every event.
+    EXPECT_FALSE(shouldAdoptSystemMaximize(true, true, false));
 }
 
 // ---- spanOverlap / isReachableOn ----
