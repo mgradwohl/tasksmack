@@ -1695,10 +1695,14 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc, UI
     renderGpuCurrentMetricsTable(proc);
 
     ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
+    // With one GPU the breakdown repeats the table above (#1207).
+    if (Detail::shouldShowPerGpuBreakdown(proc.perGpuUsage.size()))
+    {
+        ImGui::Separator();
+        ImGui::Spacing();
 
-    renderPerGpuBreakdown(proc);
+        renderPerGpuBreakdown(proc);
+    }
 
     ImGui::Separator();
     ImGui::Spacing();
@@ -1802,7 +1806,8 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
 }
 
 // Renders a collapsible per-GPU breakdown (utilization, memory, engines) for each entry in
-// proc.perGpuUsage. No-op if that list is empty, regardless of how many GPUs the system has.
+// proc.perGpuUsage. No-op if that list is empty, regardless of how many GPUs the system has; the caller
+// skips it for a single GPU (#1207).
 void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& proc)
 {
     const auto& theme = UI::Theme::get();
@@ -2360,11 +2365,6 @@ void ProcessDetailsPanel::renderPrioritySection()
         m_PriorityNiceValue = m_CachedSnapshot.nice;
     }
 
-    auto* drawList = ImGui::GetWindowDrawList();
-    const ImGuiStyle& style = ImGui::GetStyle();
-
-    // ========================================
-    // Custom gradient priority slider (refactored into helper methods)
     const float emPx = ImGui::GetFontSize();
     // Where the priority control ends, for right-aligning the Apply button under it.
     float controlRightEdge = 0.0F;
@@ -2417,6 +2417,11 @@ void ProcessDetailsPanel::renderPrioritySection()
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GAUGE_HIGH "  Priority (current nice: %d)", currentNice);
     ImGui::Spacing();
 
+    auto* drawList = ImGui::GetWindowDrawList();
+    const ImGuiStyle& style = ImGui::GetStyle();
+
+    // ========================================
+    // Custom gradient priority slider (refactored into helper methods)
     // Layout: High [====gradient====] Low
     //                   Default
     // ========================================
@@ -2500,15 +2505,15 @@ void ProcessDetailsPanel::renderPrioritySection()
                           "  0: Reset to default\n\n"
                           "Note: Setting values below 0 typically requires root/admin privileges");
     }
+    // The track starts after the "High" label, so the label offset belongs in the sum: without it the
+    // Apply button stopped that far short of the track's right edge.
+    controlRightEdge = highLabelOffset + metrics.sliderWidth;
+#endif
 
     ImGui::Spacing();
 
     // ========================================
     // Action button (right-aligned)
-    // The track starts after the "High" label, so the label offset belongs in the sum: without it the
-    // Apply button stopped that far short of the track's right edge.
-    controlRightEdge = highLabelOffset + metrics.sliderWidth;
-#endif
     // ========================================
     const bool canApply = m_PriorityChanged && m_HasSnapshot;
 

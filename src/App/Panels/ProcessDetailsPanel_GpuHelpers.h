@@ -4,6 +4,7 @@
 // ProcessDetailsPanel::renderContent() so it is unit-testable without a live ImGui context.
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <ranges>
 
@@ -33,6 +34,14 @@ template<std::ranges::input_range UtilHistory, std::ranges::input_range MemoryHi
         return value > 0.0;
     };
     return std::ranges::any_of(utilHistory, isUsed) || std::ranges::any_of(memoryHistory, isUsed);
+}
+
+/// Whether the GPU tab shows its "Per-GPU Breakdown" under the usage table. With a single GPU its
+/// utilization, memory and engines are the "GPU Usage" table's, so it only repeated them (#1207);
+/// it earns its place once the process uses more than one GPU.
+[[nodiscard]] constexpr bool shouldShowPerGpuBreakdown(std::size_t gpuCount) noexcept
+{
+    return gpuCount > 1;
 }
 
 } // namespace App::Detail
