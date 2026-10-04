@@ -597,6 +597,16 @@ void Window::restore()
         return;
     }
 
+    // On asynchronous windowing systems (X11) the restore is only a request until the window manager
+    // answers. Wait for it before forgetting the normal rectangle: closed in between,
+    // getNormalGeometry() would read the still-maximized live geometry and save it (#1121). Once per
+    // user action (button, double-click, the start of a drag from maximized), never per frame; the
+    // drag caller reads the restored size right after, which this also makes reliable.
+    const auto syncRestore = [this]
+    {
+        SDL_SyncWindow(m_Handle);
+    };
+
     // For borderless windows, use backend-gated behavior.
     // On native Wayland, rely on compositor-managed restore.
     // On X11, XWayland, and Windows, restore to manually-saved position/size.
@@ -607,6 +617,7 @@ void Window::restore()
             // Native Wayland: use compositor-managed restore via SDL_RestoreWindow
             spdlog::debug("Window::restore: Native Wayland detected; using compositor-managed restore");
             SDL_RestoreWindow(m_Handle);
+            syncRestore();
             m_IsMaximizedBorderless = false;
             m_HasRestoreRect = false;
             return;
@@ -621,6 +632,7 @@ void Window::restore()
             }
             SDL_SetWindowPosition(m_Handle, m_RestoreX, m_RestoreY);
             SDL_SetWindowSize(m_Handle, m_RestoreWidth, m_RestoreHeight);
+            syncRestore();
             m_IsMaximizedBorderless = false;
             m_HasRestoreRect = false;
             return;
@@ -628,6 +640,7 @@ void Window::restore()
     }
 
     SDL_RestoreWindow(m_Handle);
+    syncRestore();
     m_HasRestoreRect = false;
 }
 
