@@ -271,6 +271,15 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         spdlog::warn("Error iterating {}: {}", procPath.string(), errorCode.message());
     }
 
+    // The system total that the processes' CPU deltas are divided by, taken now -- right after
+    // their stat reads, before the variable-latency network attribution below (#1119).
+    m_TotalCpuTimeAtEnumerate.store(readTotalCpuTime(), std::memory_order_relaxed);
+
+    if (m_EnumerateTailHook)
+    {
+        m_EnumerateTailHook(); // Tests: time passes during the tail
+    }
+
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     // Attribute network bytes to processes if socket stats are available
     if (m_HasNetworkCounters && socketStats())
@@ -318,6 +327,13 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
 
 uint64_t LinuxProcessProbe::totalCpuTime() const
 {
+    // The value enumerate() captured after its stat pass, once -- even a failed read's 0; otherwise a
+    // fresh read.
+    if (const uint64_t captured = m_TotalCpuTimeAtEnumerate.exchange(NO_CAPTURED_TOTAL, std::memory_order_relaxed);
+        captured != NO_CAPTURED_TOTAL)
+    {
+        return captured;
+    }
     return readTotalCpuTime();
 }
 

@@ -11,6 +11,7 @@ using rsmi_status_t = std::uint32_t;
 constexpr rsmi_status_t RSMI_STATUS_SUCCESS = 0;
 constexpr rsmi_status_t RSMI_STATUS_NOT_FOUND = 10;
 constexpr rsmi_status_t RSMI_STATUS_INVALID_ARGS = 1;
+constexpr rsmi_status_t RSMI_STATUS_BUSY = 16;
 
 // NOLINTBEGIN(cppcoreguidelines-use-enum-class, performance-enum-size, readability-identifier-naming) - must match AMD ROCm SMI API
 enum rsmi_temperature_type_t : std::uint32_t
@@ -176,6 +177,9 @@ const std::array<MockRocmDevice, 3> MOCK_DEVICES{{
 // PCI id) fail once they have been called more than g_IdCallsBeforeFailure times (-1: never).
 int g_IdCallsBeforeFailure = -1;
 unsigned int g_IdCalls = 0;
+// Utilization, memory, edge temperature, average power and GPU clock reads fail with
+// RSMI_STATUS_BUSY, as a busy or resetting GPU does (#1111). Set through tasksmackRocmMockFailSensorReads().
+bool g_FailSensorReads = false;
 
 [[nodiscard]] bool idLookupFails()
 {
@@ -278,6 +282,10 @@ extern "C"
         {
             return RSMI_STATUS_INVALID_ARGS;
         }
+        if (g_FailSensorReads)
+        {
+            return RSMI_STATUS_BUSY;
+        }
         *busyPercent = device->busyPercent;
         return RSMI_STATUS_SUCCESS;
     }
@@ -289,6 +297,10 @@ extern "C"
         {
             return RSMI_STATUS_INVALID_ARGS;
         }
+        if (g_FailSensorReads)
+        {
+            return RSMI_STATUS_BUSY;
+        }
         *usedBytes = device->memoryUsedBytes;
         return RSMI_STATUS_SUCCESS;
     }
@@ -299,6 +311,10 @@ extern "C"
         if (device == nullptr)
         {
             return RSMI_STATUS_INVALID_ARGS;
+        }
+        if (g_FailSensorReads)
+        {
+            return RSMI_STATUS_BUSY;
         }
         *totalBytes = device->memoryTotalBytes;
         return RSMI_STATUS_SUCCESS;
@@ -313,6 +329,10 @@ extern "C"
         if (device == nullptr)
         {
             return RSMI_STATUS_INVALID_ARGS;
+        }
+        if (g_FailSensorReads && type == RSMI_TEMP_TYPE_EDGE)
+        {
+            return RSMI_STATUS_BUSY;
         }
         if (type == RSMI_TEMP_TYPE_JUNCTION && !device->hasHotspot)
         {
@@ -329,6 +349,10 @@ extern "C"
         if (device == nullptr)
         {
             return RSMI_STATUS_INVALID_ARGS;
+        }
+        if (g_FailSensorReads)
+        {
+            return RSMI_STATUS_BUSY;
         }
         *power = device->powerMicroWatts;
         return RSMI_STATUS_SUCCESS;
@@ -351,6 +375,10 @@ extern "C"
         if (device == nullptr)
         {
             return RSMI_STATUS_INVALID_ARGS;
+        }
+        if (g_FailSensorReads && type != RSMI_CLK_TYPE_MEM)
+        {
+            return RSMI_STATUS_BUSY;
         }
         const bool isMemory = (type == RSMI_CLK_TYPE_MEM);
         const auto& source = isMemory ? device->memoryFrequency : device->gpuFrequency;
@@ -406,6 +434,12 @@ extern "C"
     unsigned int tasksmackRocmMockIdCalls()
     {
         return g_IdCalls;
+    }
+
+    // Test control: see g_FailSensorReads.
+    void tasksmackRocmMockFailSensorReads(int fail)
+    {
+        g_FailSensorReads = (fail != 0);
     }
 
     rsmi_status_t rsmi_version_get(rsmi_version_t* version)

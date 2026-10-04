@@ -380,8 +380,13 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
         GPUCounters counter{};
         counter.gpuId = card.gpuId;
 
-        // Read temperature from hwmon (if available)
-        if (!card.hwmonPath.empty())
+        // Read temperature from hwmon (if available). capabilities() advertises temperature for
+        // every card, so a card without hwmon has an unread temperature, not 0 °C (#1111).
+        if (card.hwmonPath.empty())
+        {
+            counter.temperatureAvailable = false;
+        }
+        else
         {
             // Intel GPUs typically expose temp1_input (in millidegrees Celsius)
             const std::string tempPath = card.hwmonPath + "/temp1_input";
@@ -389,6 +394,10 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
             if (tempMilliC > 0)
             {
                 counter.temperatureC = static_cast<std::int32_t>(tempMilliC / 1000);
+            }
+            else
+            {
+                counter.temperatureAvailable = false; // Unread (0 means the read failed), not 0 °C (#1111)
             }
         }
 
@@ -400,6 +409,10 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
         if (freqMhz > 0)
         {
             counter.gpuClockMHz = static_cast<uint32_t>(freqMhz);
+        }
+        else
+        {
+            counter.gpuClockAvailable = false;
         }
 
         // Read memory info (used/total) if available
@@ -419,8 +432,9 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
         }
 
         // GPU utilization: Not directly available via sysfs for Intel
-        // Would require reading i915_gem_objects debugfs or using IGT tools
-        // Leave at 0 for now (future enhancement)
+        // Would require reading i915_gem_objects debugfs or using IGT tools (future enhancement, #1115).
+        // Never read, so it publishes as a gap / N/A rather than a real-looking 0% (#1111).
+        counter.utilizationAvailable = false;
 
         counters.push_back(counter);
     }

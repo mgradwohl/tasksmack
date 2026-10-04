@@ -1238,6 +1238,99 @@ TEST(GPUModelTest, PerGpuHistoryTimestampsIndependentPerGpu)
     EXPECT_EQ(ts1.size(), model.utilizationHistory("GPU1").size());
 }
 
+TEST(GPUModelTest, FailedSensorReadsPublishGapsNotZeros)
+{
+    // #1111: a sample whose utilization, temperature, power or clock read failed publishes NaN for
+    // that field -- a gap -- not the counter's 0, while fields that were read stay real.
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor");
+    Platform::GPUCounters good;
+    good.gpuId = "GPU0";
+    good.utilizationPercent = 40.0;
+    good.temperatureC = 60;
+    good.powerDrawWatts = 90.0;
+    good.gpuClockMHz = 1500;
+    good.memoryUsedBytes = 2ULL * 1024 * 1024 * 1024;
+    good.memoryTotalBytes = 8ULL * 1024 * 1024 * 1024;
+    rawProbe->withGPUCounters("GPU0", good);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    Platform::GPUCounters failed = good;
+    failed.utilizationAvailable = false;
+    failed.temperatureAvailable = false;
+    failed.powerAvailable = false;
+    failed.gpuClockAvailable = false;
+    failed.memoryAvailable = false;
+    failed.memoryUsedBytes = 0; // Windows keeps DXGI's total when NVML's memory read fails
+
+    failed.utilizationPercent = 0.0;
+    failed.temperatureC = 0;
+    failed.powerDrawWatts = 0.0;
+    failed.gpuClockMHz = 0;
+    rawProbe->withGPUCounters("GPU0", failed);
+    model.refresh();
+
+    for (const auto& series : {model.utilizationHistory("GPU0"),
+                               model.temperatureHistory("GPU0"),
+                               model.powerHistory("GPU0"),
+                               model.gpuClockHistory("GPU0"),
+                               model.memoryPercentHistory("GPU0")})
+    {
+        ASSERT_EQ(series.size(), 2U);
+        EXPECT_FALSE(std::isnan(series[0]));
+        EXPECT_TRUE(std::isnan(series[1]));
+    }
+
+    const auto publication = model.publication();
+    const auto& published = publication->histories.at("GPU0");
+    EXPECT_TRUE(std::isnan(published.utilization.back()));
+    EXPECT_TRUE(std::isnan(published.temperature.back()));
+    EXPECT_TRUE(std::isnan(published.power.back()));
+    EXPECT_TRUE(std::isnan(published.gpuClock.back()));
+    EXPECT_TRUE(std::isnan(published.memoryPercent.back()));
+    EXPECT_FLOAT_EQ(published.memoryPercent.front(), 25.0F);
+    // No placeholder byte figures for the unread sample: a 0 total means the tooltip shows N/A.
+    EXPECT_EQ(published.memoryUsedBytes.back(), 0U);
+    EXPECT_EQ(published.memoryTotalBytes.back(), 0U);
+    EXPECT_EQ(published.memoryTotalBytes.front(), 8ULL * 1024 * 1024 * 1024);
+    EXPECT_FLOAT_EQ(published.utilization.front(), 40.0F);
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1U);
+    EXPECT_FALSE(snaps[0].utilizationAvailable);
+    EXPECT_FALSE(snaps[0].temperatureAvailable);
+    EXPECT_FALSE(snaps[0].memoryAvailable);
+}
+
+TEST(GPUModelTest, ZeroGpuClockIsAGapLikeItsNowBar)
+{
+    // A 0 MHz clock is the probes' "couldn't read it" and the Clock NowBar shows N/A for it (#995);
+    // the history has a gap there too, so the line and the bar agree (#1111).
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor");
+    Platform::GPUCounters counters;
+    counters.gpuId = "GPU0";
+    counters.gpuClockMHz = 1500;
+    rawProbe->withGPUCounters("GPU0", counters);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+    counters.gpuClockMHz = 0;
+    rawProbe->withGPUCounters("GPU0", counters);
+    model.refresh();
+
+    const auto hist = model.gpuClockHistory("GPU0");
+    ASSERT_EQ(hist.size(), 2U);
+    EXPECT_FLOAT_EQ(hist[0], 1500.0F);
+    EXPECT_TRUE(std::isnan(hist[1]));
+    const auto publication = model.publication();
+    EXPECT_TRUE(std::isnan(publication->histories.at("GPU0").gpuClock.back()));
+}
+
 TEST(GPUModelTest, PerGpuHistoryHasAGapWhileGpuAbsent)
 {
     // A GPU missing from a refresh gets a placeholder in its own history, published as NaN, so the
