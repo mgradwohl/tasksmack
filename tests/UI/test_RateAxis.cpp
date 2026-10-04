@@ -47,6 +47,26 @@ TEST(RateAxisTest, NegativeAndNonFiniteMaxAreTreatedAsZero)
     EXPECT_DOUBLE_EQ(rateAxisUpperBound(std::numeric_limits<double>::infinity(), BYTES), BYTES);
 }
 
+// #1195: a process's CPU is a percent of the whole machine, so on a fixed 0-100 axis a typical
+// process drew a flat line at zero. The percent axis scales to the data, between a floor and 100.
+TEST(RateAxisTest, PercentAxisScalesDownToItsMinimumSpanForSmallValues)
+{
+    EXPECT_DOUBLE_EQ(percentAxisUpperBound(0.0), PERCENT_AXIS_MIN_SPAN);
+    EXPECT_DOUBLE_EQ(percentAxisUpperBound(0.5), PERCENT_AXIS_MIN_SPAN);
+}
+
+TEST(RateAxisTest, PercentAxisGetsHeadroomAboveMidRangeValues)
+{
+    EXPECT_DOUBLE_EQ(percentAxisUpperBound(20.0), 20.0 * RATE_AXIS_HEADROOM);
+}
+
+TEST(RateAxisTest, PercentAxisNeverExceedsOneHundred)
+{
+    EXPECT_DOUBLE_EQ(percentAxisUpperBound(95.0), 100.0);
+    EXPECT_DOUBLE_EQ(percentAxisUpperBound(100.0), 100.0);
+    EXPECT_DOUBLE_EQ(percentAxisUpperBound(std::numeric_limits<double>::infinity()), PERCENT_AXIS_MIN_SPAN);
+}
+
 TEST(RateAxisTest, NonFiniteMinSpanFallsBackToOne)
 {
     EXPECT_DOUBLE_EQ(rateAxisUpperBound(0.0, std::numeric_limits<double>::quiet_NaN()), 1.0);

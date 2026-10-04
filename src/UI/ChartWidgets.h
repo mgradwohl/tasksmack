@@ -864,8 +864,9 @@ inline int formatAxisWatts(double value, char* buff, int size, void* /*userData*
 /// Use with ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisPercent)
 inline int formatAxisPercent(double value, char* buff, int size, void* /*userData*/)
 {
-    // Clamp tiny values to zero to avoid "-0" display
-    if (std::abs(value) < 0.5)
+    // Clamp values that print as zero to zero, to avoid "-0.0%". Only those: a percent axis can now
+    // scale down to 5 % (#1195), where ticks such as 0.2 % must not read 0.0 %.
+    if (std::abs(value) < 0.05)
     {
         value = 0.0;
     }
@@ -1330,6 +1331,14 @@ rateHistoryConfig(const char* id, double xMin, double xMax, ImPlotFormatter yFor
 [[nodiscard]] inline double easedRateAxisUpperBound(const char* key, double dataMax, double minSpan)
 {
     return easedChartUpperBound(ImGui::GetID(key), rateAxisUpperBound(dataMax, minSpan));
+}
+
+/// The Y upper bound a scaling percent chart draws this frame (percentAxisUpperBound(), eased like a
+/// rate axis), for its axis and its NowBars alike (#1195, #1003). Pair it with
+/// rateHistoryConfigWithUpper(..., formatAxisPercent, bound).
+[[nodiscard]] inline double easedPercentAxisUpperBound(const char* key, double dataMax)
+{
+    return easedChartUpperBound(ImGui::GetID(key), percentAxisUpperBound(dataMax));
 }
 
 /// Maps the config's Y policy to ImPlot axis flags: locked range vs auto-fit.
