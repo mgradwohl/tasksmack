@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <span>
 #include <thread>
 #include <vector>
 
@@ -213,6 +214,78 @@ TEST(WindowsSystemProbeMathTest, ProcessorTimesClampComponentsThatOvershoot)
     EXPECT_EQ(dpcAboveBusy.irq, 60ULL);
     EXPECT_EQ(dpcAboveBusy.softirq, 40ULL);
     EXPECT_EQ(dpcAboveBusy.system, 0ULL);
+}
+
+namespace
+{
+// Stand-in for SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION: the core's identity is its user time.
+struct FakeProcessorEntry
+{
+    std::uint64_t id = 0;
+    std::uint64_t padding = 0;
+};
+
+[[nodiscard]] CpuCounters fakeEntryToCounters(const FakeProcessorEntry& entry)
+{
+    CpuCounters core{};
+    core.user = entry.id;
+    return core;
+}
+} // namespace
+
+TEST(WindowsSystemProbeMathTest, ProcessorGroupsAreAppendedInOrderAndCountIsTheSum)
+{
+    // Two processor groups, as on a >64-logical-processor machine (#1107): group 0 has 4 cores,
+    // group 1 has 3. Every core of both appears, group 0's first.
+    const std::array<FakeProcessorEntry, 4> group0{{{.id = 0}, {.id = 1}, {.id = 2}, {.id = 3}}};
+    const std::array<FakeProcessorEntry, 3> group1{{{.id = 100}, {.id = 101}, {.id = 102}}};
+
+    std::vector<CpuCounters> cores;
+    EXPECT_EQ(appendProcessorGroup(cores, std::span<const FakeProcessorEntry>(group0), sizeof(group0), fakeEntryToCounters), 4U);
+    EXPECT_EQ(appendProcessorGroup(cores, std::span<const FakeProcessorEntry>(group1), sizeof(group1), fakeEntryToCounters), 3U);
+
+    ASSERT_EQ(cores.size(), group0.size() + group1.size());
+    const std::array<std::uint64_t, 7> expectedOrder{0, 1, 2, 3, 100, 101, 102};
+    for (std::size_t i = 0; i < expectedOrder.size(); ++i)
+    {
+        EXPECT_EQ(cores[i].user, expectedOrder[i]) << "core " << i;
+    }
+}
+
+TEST(WindowsSystemProbeMathTest, ShortProcessorGroupAppendsOnlyTheReturnedEntries)
+{
+    // The buffer had room for 4 entries but the group reported 2 (fewer processors than sized for).
+    const std::array<FakeProcessorEntry, 4> group{{{.id = 7}, {.id = 8}, {.id = 9}, {.id = 10}}};
+    std::vector<CpuCounters> cores{CpuCounters{}};
+
+    EXPECT_EQ(appendProcessorGroup(cores, std::span<const FakeProcessorEntry>(group), 2 * sizeof(FakeProcessorEntry), fakeEntryToCounters),
+              2U);
+    ASSERT_EQ(cores.size(), 3U);
+    EXPECT_EQ(cores[1].user, 7U);
+    EXPECT_EQ(cores[2].user, 8U);
+}
+
+TEST(WindowsSystemProbeMathTest, ProcessorGroupReturnLengthIsClampedToTheBuffer)
+{
+    // A partial trailing entry is dropped, and a length past the buffer cannot read beyond it.
+    const std::array<FakeProcessorEntry, 2> group{{{.id = 1}, {.id = 2}}};
+    std::vector<CpuCounters> cores;
+
+    EXPECT_EQ(appendProcessorGroup(cores, std::span<const FakeProcessorEntry>(group), sizeof(FakeProcessorEntry) + 1, fakeEntryToCounters),
+              1U);
+    EXPECT_EQ(appendProcessorGroup(cores, std::span<const FakeProcessorEntry>(group), 64 * sizeof(FakeProcessorEntry), fakeEntryToCounters),
+              2U);
+    EXPECT_EQ(appendProcessorGroup(cores, std::span<const FakeProcessorEntry>(group), 0, fakeEntryToCounters), 0U);
+    EXPECT_EQ(cores.size(), 3U);
+}
+
+TEST(WindowsSystemProbeTest, PerCoreCountMatchesCoreCount)
+{
+    // Per-core entries and the reported core count must both cover every processor group (#1107).
+    WindowsSystemProbe probe;
+    const auto counters = probe.read();
+
+    EXPECT_EQ(counters.cpuPerCore.size(), counters.cpuCoreCount);
 }
 
 TEST(WindowsSystemProbeMathTest, FilterRowsAreNotCountedWhateverTheirType)

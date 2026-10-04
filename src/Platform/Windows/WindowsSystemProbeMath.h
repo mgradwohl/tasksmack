@@ -5,11 +5,13 @@
 
 #include "Platform/SystemTypes.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <optional>
 #include <span>
+#include <vector>
 
 namespace Platform
 {
@@ -117,6 +119,32 @@ processorTimes(std::uint64_t kernel, std::uint64_t idle, std::uint64_t user, std
     core.softirq = softirq;
     core.system = kernelBusy - irq - softirq;
     return core;
+}
+
+/// Append one processor group's SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION entries to `cores`.
+///
+/// Without NtQuerySystemInformationEx, SystemProcessorPerformanceInformation reports only the
+/// calling thread's processor group, so a machine with more than 64 logical processors showed
+/// one group's cores and core count (#1107). The probe now queries each group in turn and
+/// appends its entries here, keeping group order so core indices match the OS's numbering.
+///
+/// @param cores        Per-core counters gathered so far; this group's are appended.
+/// @param buffer       The entries the query was given room for.
+/// @param returnBytes  The ReturnLength the query reported. Fewer bytes than the buffer (a group
+///                     with fewer processors, or one that shrank) appends only that many entries;
+///                     more is clamped to the buffer so a bad length cannot read past it.
+/// @param convert      Turns one entry into CpuCounters (processorTimes() in the probe).
+/// @return How many entries were appended.
+template<typename Entry, typename Convert>
+std::size_t appendProcessorGroup(std::vector<CpuCounters>& cores, std::span<const Entry> buffer, std::size_t returnBytes, Convert convert)
+{
+    const std::size_t returned = std::min(returnBytes / sizeof(Entry), buffer.size());
+    cores.reserve(cores.size() + returned);
+    for (const Entry& entry : buffer.first(returned))
+    {
+        cores.push_back(convert(entry));
+    }
+    return returned;
 }
 
 /// IANA ifType values GetIfTable2 reports (ipifcons.h), spelled out so this header stays free of
