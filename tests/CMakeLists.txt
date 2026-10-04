@@ -46,6 +46,8 @@ if(WIN32)
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-profile-etw-resize.ps1)
         add_test(NAME EtwCaptureScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-profile-etw.ps1)
+        add_test(NAME EtwAnalysisScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-analyze-etw.ps1)
     endif()
 endif()
 
