@@ -110,5 +110,14 @@ TEST(AdaptiveIntervalUtilsTest, SystemInteractionTakesPrecedenceOverInactiveTab)
     EXPECT_EQ(result, milliseconds(1500));
 }
 
+// #1097: every main tab shows process data, so none of them relaxes the process sampler.
+TEST(AdaptiveIntervalUtilsTest, EveryMainTabShowsProcessData)
+{
+    EXPECT_TRUE(AdaptiveIntervalUtils::showsProcessData("Processes"));
+    EXPECT_TRUE(AdaptiveIntervalUtils::showsProcessData("ProcessDetails"));
+    EXPECT_TRUE(AdaptiveIntervalUtils::showsProcessData("SystemOverview"));
+    EXPECT_FALSE(AdaptiveIntervalUtils::showsProcessData("SomeFutureTab"));
+}
+
 } // namespace
 } // namespace App

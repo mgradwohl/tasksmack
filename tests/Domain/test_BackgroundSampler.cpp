@@ -237,6 +237,58 @@ TEST(BackgroundSamplerTest, SetIntervalWhileRunning)
     sampler.stop();
 }
 
+// #1118: interval changes rebase on the last sample, so changing it repeatedly can't postpone
+// sampling indefinitely (the interaction throttle toggles it on every short drag).
+TEST(BackgroundSamplerTest, RepeatedIntervalChangesDoNotStarveSampling)
+{
+    auto samplable = std::make_shared<MockSamplable>();
+    Domain::SamplerConfig config;
+    config.interval = 200ms;
+    Domain::BackgroundSampler sampler(config);
+    sampler.addSamplable(samplable);
+    sampler.start();
+    samplable->waitForSamples(1);
+    const int afterFirst = samplable->getSampleCount();
+
+    // Change the interval every 40 ms for 900 ms, never further than 300 ms out.
+    const auto until = std::chrono::steady_clock::now() + 900ms;
+    bool longer = false;
+    while (std::chrono::steady_clock::now() < until)
+    {
+        sampler.setInterval(longer ? 300ms : 250ms);
+        longer = !longer;
+        std::this_thread::sleep_for(40ms);
+    }
+    const int sampled = samplable->getSampleCount() - afterFirst;
+    sampler.stop();
+
+    // At most ~300 ms apart, so about three samples; resetting the wait each time gave none.
+    EXPECT_GE(sampled, 2);
+}
+
+// #1102: a sampler whose owner already took the seed sample waits an interval before sampling.
+TEST(BackgroundSamplerTest, SeededSamplerWaitsAnIntervalBeforeItsFirstSample)
+{
+    auto samplable = std::make_shared<MockSamplable>();
+    Domain::SamplerConfig config;
+    config.interval = 300ms;
+    config.firstSampleAfterInterval = true;
+    Domain::BackgroundSampler sampler(config);
+    sampler.addSamplable(samplable);
+
+    const auto started = std::chrono::steady_clock::now();
+    sampler.start();
+    samplable->waitForSamples(1);
+    const auto firstSampleAfter = std::chrono::steady_clock::now() - started;
+    sampler.stop();
+
+    // Not straight after the seed, but one interval later. A wait can only overrun, so the lower
+    // bound is exact (less a little clock slack); the upper bound leaves room for a loaded runner
+    // while still catching a sampler that waits several intervals.
+    EXPECT_GE(firstSampleAfter, 290ms);
+    EXPECT_LT(firstSampleAfter, 1000ms);
+}
+
 TEST(BackgroundSamplerTest, SetIntervalWhileStopped)
 {
     Domain::BackgroundSampler sampler;

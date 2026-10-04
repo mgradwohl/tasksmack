@@ -4,9 +4,20 @@
 
 #include <algorithm>
 #include <chrono>
+#include <string_view>
 
 namespace App::AdaptiveIntervalUtils
 {
+
+/// Whether process data (ProcessModel) is on screen while `activeTab` is the main tab. Every main
+/// tab shows some: the Processes table, the Process Details charts, and the System tab's
+/// process-derived charts (threads, handles, faults, process power). So the process sampler must not
+/// relax just because the Processes tab itself is hidden, which halved its rate exactly where users
+/// were looking (#1097). Names are PanelTabs' eventName values.
+[[nodiscard]] constexpr bool showsProcessData(std::string_view activeTab) noexcept
+{
+    return activeTab == "Processes" || activeTab == "ProcessDetails" || activeTab == "SystemOverview";
+}
 
 namespace Detail
 {
