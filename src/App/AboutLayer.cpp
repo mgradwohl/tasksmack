@@ -9,6 +9,7 @@
 #include "UI/DialogMetrics.h"
 #include "UI/IconLoader.h"
 #include "UI/Theme.h"
+#include "UI/Widgets.h"
 #include "version.h"
 
 #include <imgui.h>
@@ -89,9 +90,17 @@ void AboutLayer::renderAboutDialog()
     const float marginPx = ABOUT_MARGIN_EM * emPx;
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(marginPx, marginPx));
 
+    // Never larger than the viewport, re-evaluated every frame so a font change or a shrinking main
+    // window cannot push the OK button out of it; content that no longer fits scrolls (#1129).
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowSizeConstraints(ImVec2(0.0F, 0.0F),
+                                        ImVec2(UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.x),
+                                               UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.y)));
+
     const ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking;
     if (ImGui::BeginPopupModal("About TaskSmack", nullptr, flags))
     {
+        UI::Widgets::keepCurrentWindowInViewport();
 
         const auto& theme = UI::Theme::get();
         ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
