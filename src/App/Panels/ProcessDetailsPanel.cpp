@@ -1181,7 +1181,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
     const double faultAxisUpper = UI::Widgets::easedRateAxisUpperBound(
         "##ProcThreadsFaults/Y2", UI::Widgets::maxOfSeries(faultData), UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
 
-    const NowBar threadsBar{.valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedUsage.threadCount), "threads"),
+    const NowBar threadsBar{.valueText = UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.threadCount)),
                             .label = THREADS_LABEL,
                             .tooltipText = UI::Widgets::formatTooltipRow(
                                 THREADS_LABEL, UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.threadCount))),
@@ -1195,7 +1195,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
 #endif
 
     const NowBar handlesBar{
-        .valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedUsage.handleCount), handleLabel),
+        .valueText = UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.handleCount)),
         .label = handleLabel,
         .tooltipText = std::format("{}: {}", handleLabel, UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.handleCount))),
         .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.handleCount, countAxisUpper),
@@ -1213,8 +1213,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
     // and shown as N/A, and a series with no reading at all -- a process TaskSmack cannot open -- is
     // not drawn (#1000).
     const NowBar gdiBar{
-        .valueText =
-            hasGdiSamples ? UI::Format::formatCountWithLabel(std::llround(m_SmoothedUsage.gdiObjectCount), "GDI") : std::string("N/A"),
+        .valueText = hasGdiSamples ? UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.gdiObjectCount)) : std::string("N/A"),
         .label = GDI_LABEL,
         .tooltipText = hasGdiSamples ? UI::Widgets::formatTooltipRow(
                                            GDI_LABEL, UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.gdiObjectCount)))

@@ -1525,10 +1525,12 @@ enum class NowBarValues : std::uint8_t
     None,  ///< No strip: grid cells, which show the value in their own label and have a fixed height
 };
 
-/// Each bar's current value, readable without hovering (#1193): a swatch in the bar's colour, its
-/// label in muted text and its value in primary text, wrapping to another line when the row is full.
-/// The value is the bar's valueText, the same string its tooltip shows, already built for the frame,
-/// so this adds no allocation.
+/// Each bar's current value, readable without hovering (#1193): a swatch in the bar's colour, then
+/// the same text its tooltip shows -- its tooltipText when it has one (richer, e.g. bytes beside a
+/// percent), otherwise "label: valueText", the tooltip's own fallback -- with the leading "label:" in
+/// muted text, wrapping to another line when the row is full. Both strings are already built for the
+/// frame, so this adds no allocation. The swatch keeps the colour's alpha, so a muted series (drawn
+/// translucent) reads as muted here too.
 inline void renderNowBarValueStrip(std::span<const NowBar> bars)
 {
     const ImGuiStyle& style = ImGui::GetStyle();
@@ -1540,8 +1542,31 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars)
     for (size_t i = 0; i < bars.size(); ++i)
     {
         const NowBar& bar = bars[i];
-        const float labelWidth = bar.label.empty() ? 0.0F : ImGui::CalcTextSize(bar.label.c_str()).x + style.ItemInnerSpacing.x;
-        const float entryWidth = side + style.ItemInnerSpacing.x + labelWidth + ImGui::CalcTextSize(bar.valueText.c_str()).x;
+        // Split the entry into a muted "label:" and the rest. A tooltipText that starts with the
+        // bar's label and a colon ("Handles: 266,257") splits the same way as the fallback.
+        std::string_view head;
+        std::string_view tail;
+        if (!bar.tooltipText.empty())
+        {
+            const std::string_view tip = bar.tooltipText;
+            const bool labelled = !bar.label.empty() && tip.starts_with(bar.label) && tip.substr(bar.label.size()).starts_with(':');
+            head = labelled ? tip.substr(0, bar.label.size() + 1) : std::string_view{};
+            tail = labelled ? tip.substr(bar.label.size() + 1) : tip;
+            if (tail.starts_with(' '))
+            {
+                tail.remove_prefix(1);
+            }
+        }
+        else
+        {
+            head = bar.label;
+            tail = bar.valueText;
+        }
+        const float colonWidth = (bar.tooltipText.empty() && !head.empty()) ? ImGui::CalcTextSize(":").x : 0.0F;
+        const float headWidth =
+            head.empty() ? 0.0F : ImGui::CalcTextSize(head.data(), head.data() + head.size()).x + colonWidth + style.ItemInnerSpacing.x;
+        const float entryWidth =
+            side + style.ItemInnerSpacing.x + headWidth + ImGui::CalcTextSize(tail.data(), tail.data() + tail.size()).x;
         if (i > 0)
         {
             ImGui::SameLine(0.0F, style.ItemSpacing.x * 2.0F);
@@ -1551,19 +1576,23 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars)
             }
         }
         const ImVec2 at = ImGui::GetCursorScreenPos();
-        ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(at.x, at.y + inset),
-                                                  ImVec2(at.x + side, at.y + inset + side),
-                                                  ImGui::ColorConvertFloat4ToU32(withAlpha(bar.color, 1.0F)));
+        ImGui::GetWindowDrawList()->AddRectFilled(
+            ImVec2(at.x, at.y + inset), ImVec2(at.x + side, at.y + inset + side), ImGui::ColorConvertFloat4ToU32(bar.color));
         ImGui::Dummy(ImVec2(side, lineHeight));
-        if (!bar.label.empty())
+        if (!head.empty())
         {
             ImGui::SameLine(0.0F, style.ItemInnerSpacing.x);
             ImGui::PushStyleColor(ImGuiCol_Text, muted);
-            ImGui::TextUnformatted(bar.label.c_str());
+            ImGui::TextUnformatted(head.data(), head.data() + head.size());
+            if (bar.tooltipText.empty())
+            {
+                ImGui::SameLine(0.0F, 0.0F);
+                ImGui::TextUnformatted(":");
+            }
             ImGui::PopStyleColor();
         }
         ImGui::SameLine(0.0F, style.ItemInnerSpacing.x);
-        ImGui::TextUnformatted(bar.valueText.c_str());
+        ImGui::TextUnformatted(tail.data(), tail.data() + tail.size());
     }
 }
 

@@ -1169,7 +1169,7 @@ void SystemMetricsPanel::renderOverview()
         constexpr const char* handleLabel = "FDs";
 #endif
 
-        const NowBar threadsBar{.valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedResources.threads), "threads"),
+        const NowBar threadsBar{.valueText = UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.threads)),
                                 .label = THREADS_LABEL,
                                 .tooltipText = UI::Widgets::formatTooltipRow(
                                     THREADS_LABEL, UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.threads))),
@@ -1181,7 +1181,7 @@ void SystemMetricsPanel::renderOverview()
                                .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.pageFaults, faultAxisUpper),
                                .color = theme.accentColor(3)};
         const NowBar handlesBar{
-            .valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedResources.handles), handleLabel),
+            .valueText = UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.handles)),
             .label = handleLabel,
             .tooltipText = std::format("{}: {}", handleLabel, UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.handles))),
             .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.handles, countAxisUpper),
