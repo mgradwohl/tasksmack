@@ -647,6 +647,7 @@ inline Platform::MemoryCounters makeMemoryCounters(uint64_t total,
     Platform::MemoryCounters m;
     m.totalBytes = total;
     m.availableBytes = available;
+    m.hasAvailableBytes = true;
     m.freeBytes = free;
     m.cachedBytes = cached;
     m.buffersBytes = buffers;
