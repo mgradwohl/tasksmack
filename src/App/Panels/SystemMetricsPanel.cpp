@@ -171,6 +171,7 @@ void SystemMetricsPanel::onAttach()
     m_Sampler->start();
 
     m_SystemPublication = m_Model->publication();
+    m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
     m_StoragePublication = m_StorageModel->publication();
     m_GPUPublication = m_GPUModel ? m_GPUModel->publication() : nullptr;
     m_TimestampsCache = m_SystemPublication->timestamps;
@@ -301,6 +302,7 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
     if (!m_SystemPublication || m_Model->publicationVersion() != m_SystemPublication->version)
     {
         m_SystemPublication = m_Model->publication();
+        m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
         m_TimestampsCache = m_SystemPublication->timestamps;
         if (!m_TimestampsCache.empty())
         {
@@ -320,10 +322,12 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
     if (m_StorageModel && (!m_StoragePublication || m_StorageModel->publicationVersion() != m_StoragePublication->version))
     {
         m_StoragePublication = m_StorageModel->publication();
+        m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
     }
     if (m_GPUModel && (!m_GPUPublication || m_GPUModel->publicationVersion() != m_GPUPublication->version))
     {
         m_GPUPublication = m_GPUModel->publication();
+        m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
     }
     if (m_ProcessModel != nullptr)
     {
@@ -336,6 +340,7 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
             m_ProcessPageFaultsHistory = std::move(histories.pageFaults);
             m_ProcessThreadCountHistory = std::move(histories.threadCount);
             m_ProcessHandleCountHistory = std::move(histories.handleCount);
+            m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
         }
     }
 }
@@ -416,6 +421,7 @@ void SystemMetricsPanel::renderContent()
                 // Build context for CpuCoresSection render function
                 CpuCoresSection::RenderContext cpuCtx{
                     .publication = m_SystemPublication.get(),
+                    .chartDataGeneration = m_ChartDataGeneration,
                     .maxHistorySeconds = m_MaxHistorySeconds,
                     .historyScrollSeconds = m_HistoryScrollSeconds,
                     .lastDeltaSeconds = m_LastDeltaSeconds,
@@ -438,6 +444,7 @@ void SystemMetricsPanel::renderContent()
                 // Build context for GpuSection render function
                 GpuSection::RenderContext gpuCtx{
                     .publication = m_GPUPublication.get(),
+                    .chartDataGeneration = m_ChartDataGeneration,
                     .maxHistorySeconds = m_MaxHistorySeconds,
                     .historyScrollSeconds = m_HistoryScrollSeconds,
                     .lastDeltaSeconds = m_LastDeltaSeconds,
@@ -463,6 +470,7 @@ void SystemMetricsPanel::renderContent()
                 NetworkSection::RenderContext netCtx{
                     .systemPublication = m_SystemPublication.get(),
                     .storagePublication = m_StoragePublication.get(),
+                    .chartDataGeneration = m_ChartDataGeneration,
                     .hasNetworkCounters = m_Model != nullptr && m_Model->capabilities().hasNetworkCounters,
                     .maxHistorySeconds = m_MaxHistorySeconds,
                     .historyScrollSeconds = m_HistoryScrollSeconds,
@@ -634,54 +642,75 @@ void SystemMetricsPanel::renderOverview()
     {
         // Four short legend entries (User, System, I/O Wait, Total) on a chart that is short at large
         // fonts: one row, so none is clipped (see HistoryChartConfig::legendHorizontal).
-        const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
-            UI::Widgets::withHorizontalLegend(UI::Widgets::percentHistoryConfig("##OverviewCPUHistory", axisConfig.xMin, axisConfig.xMax)),
-            plotHeight));
+        // The Total line is drawn from the adopted publication, so its reduction is kept until
+        // m_ChartDataGeneration next changes (HistoryChartConfig::dataGeneration, #1139).
+        const UI::Widgets::HistoryChart chart(
+            UI::Widgets::withDataGeneration(UI::Widgets::withHeight(UI::Widgets::withHorizontalLegend(UI::Widgets::percentHistoryConfig(
+                                                                        "##OverviewCPUHistory", axisConfig.xMin, axisConfig.xMax)),
+                                                                    plotHeight),
+                                            m_ChartDataGeneration));
         if (chart.active())
         {
             UI::Widgets::drawCollectingHint(cpuData.size()); // The same "no data yet" state on every chart (#1013)
             if (breakdownCount > 0)
             {
-                m_CpuStackY0.assign(breakdownCount, 0.0);
-                m_CpuStackYUser.resize(breakdownCount);
-                m_CpuStackYSystem.resize(breakdownCount);
-                m_CpuStackYIowait.resize(breakdownCount);
-                m_CpuStackYBusy.resize(breakdownCount);
-                auto& y0 = m_CpuStackY0;
-                auto& yUserTop = m_CpuStackYUser;
-                auto& ySystemTop = m_CpuStackYSystem;
-                auto& yIowaitTop = m_CpuStackYIowait;
-                auto& yBusyTop = m_CpuStackYBusy;
-
-                m_CpuStackSystem.resize(breakdownCount);
-                m_CpuStackIowait.resize(breakdownCount);
-                for (size_t i = 0; i < breakdownCount; ++i)
-                {
-                    yUserTop[i] = static_cast<double>(cpuUserData[i]);
-                    m_CpuStackSystem[i] = static_cast<double>(cpuSystemData[i]);
-                    m_CpuStackIowait[i] = static_cast<double>(cpuIowaitData[i]);
-                    ySystemTop[i] = yUserTop[i] + m_CpuStackSystem[i];
-                    // I/O Wait is idle time, not busy (#1157): its band sits on the busy total
-                    // (100 - idle - iowait, which the Total line follows) rather than on System, so
-                    // the Total line runs along its bottom edge instead of through it.
-                    yIowaitTop[i] = 100.0 - static_cast<double>(cpuIdleData[i]);
-                    yBusyTop[i] = yIowaitTop[i] - m_CpuStackIowait[i];
-                }
-
-                // The bands reach "now" like every plotLineWithFill series: the last sample held to
-                // x = 0 (UI::Widgets::holdLastValueToNow, #1016).
-                m_CpuStackX.assign(breakdownTimeData.begin(), breakdownTimeData.end());
                 // The bands are drawn with ImPlot directly, so they are capped here like every
                 // plotLineWithFill series (#1022), reduced together so they still line up. Points are
                 // chosen by each band's own value (User is its own top), not by the cumulative tops:
                 // a System spike while User falls by as much leaves System's top flat, and would be
                 // dropped if the tops chose the points.
-                UI::Widgets::reduceAlignedSeries(m_CpuStackX,
-                                                 {&yUserTop, &m_CpuStackSystem, &m_CpuStackIowait},
-                                                 {&ySystemTop, &yIowaitTop, &yBusyTop},
-                                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE,
-                                                 nowSeconds);
-                y0.assign(m_CpuStackX.size(), 0.0);
+                //
+                // The choice of points is kept until m_ChartDataGeneration changes (#1139): reducing
+                // the whole history and copying every band out of it each frame was most of this
+                // chart's cost at the largest history settings. Each frame only builds the kept
+                // points, at most LINE_PLOT_MAX_POINTS_DENSE of them.
+                const std::span<const UI::Widgets::ReducedPoint> points =
+                    m_CpuStackReduction.points({.generation = m_ChartDataGeneration,
+                                                .dataId = 0,
+                                                .count = breakdownCount,
+                                                .maxOut = UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE},
+                                               [&](std::vector<UI::Widgets::ReducedPoint>& out)
+                                               {
+                                                   UI::Widgets::reduceAlignedPoints<float>(breakdownTimeData,
+                                                                                           {cpuUserData, cpuSystemData, cpuIowaitData},
+                                                                                           UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE,
+                                                                                           nowSeconds,
+                                                                                           out);
+                                               });
+
+                auto& y0 = m_CpuStackY0;
+                auto& yUserTop = m_CpuStackYUser;
+                auto& ySystemTop = m_CpuStackYSystem;
+                auto& yIowaitTop = m_CpuStackYIowait;
+                auto& yBusyTop = m_CpuStackYBusy;
+                m_CpuStackX.resize(points.size());
+                y0.assign(points.size(), 0.0);
+                yUserTop.resize(points.size());
+                ySystemTop.resize(points.size());
+                yIowaitTop.resize(points.size());
+                yBusyTop.resize(points.size());
+                for (std::size_t k = 0; k < points.size(); ++k)
+                {
+                    // A gap point is NaN in every band (see UI::Widgets::reduceAlignedSeries).
+                    const auto i = static_cast<std::size_t>(points[k].index);
+                    m_CpuStackX[k] = breakdownTimeData[i];
+                    if (points[k].gap)
+                    {
+                        yUserTop[k] = ySystemTop[k] = yIowaitTop[k] = yBusyTop[k] = std::numeric_limits<double>::quiet_NaN();
+                        continue;
+                    }
+                    // PlotShaded fills between two Y series, so the stack needs cumulative tops.
+                    yUserTop[k] = static_cast<double>(cpuUserData[i]);
+                    ySystemTop[k] = yUserTop[k] + static_cast<double>(cpuSystemData[i]);
+                    // I/O Wait is idle time, not busy (#1157): its band sits on the busy total
+                    // (100 - idle - iowait, which the Total line follows) rather than on System, so
+                    // the Total line runs along its bottom edge instead of through it.
+                    yIowaitTop[k] = 100.0 - static_cast<double>(cpuIdleData[i]);
+                    yBusyTop[k] = yIowaitTop[k] - static_cast<double>(cpuIowaitData[i]);
+                }
+
+                // The bands reach "now" like every plotLineWithFill series: the last sample held to
+                // x = 0 (UI::Widgets::holdLastValueToNow, #1016).
                 if (!m_CpuStackX.empty() && m_CpuStackX.back() < 0.0)
                 {
                     m_CpuStackX.push_back(0.0);
@@ -812,6 +841,7 @@ void SystemMetricsPanel::renderOverview()
     {
         MemorySection::RenderContext memCtx{
             .publication = m_SystemPublication.get(),
+            .chartDataGeneration = m_ChartDataGeneration,
             .maxHistorySeconds = m_MaxHistorySeconds,
             .historyScrollSeconds = m_HistoryScrollSeconds,
             .lastDeltaSeconds = m_LastDeltaSeconds,
@@ -907,11 +937,13 @@ void SystemMetricsPanel::renderOverview()
                 // Primary Y-axis: Power (Watts), pinned to 0 at the bottom, with Battery on Y2. Without
                 // power, Battery is the only series and takes the primary axis as a percentage, so no
                 // Watts axis is left labelling nothing.
-                const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
-                    hasProcessPower ? UI::Widgets::rateHistoryConfigWithUpper(
-                                          "##PowerBatteryHistory", axis.xMin, axis.xMax, formatAxisWatts, powerAxisUpper)
-                                    : UI::Widgets::percentHistoryConfig("##PowerBatteryHistory", axis.xMin, axis.xMax),
-                    plotHeight));
+                const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
+                    UI::Widgets::withHeight(hasProcessPower
+                                                ? UI::Widgets::rateHistoryConfigWithUpper(
+                                                      "##PowerBatteryHistory", axis.xMin, axis.xMax, formatAxisWatts, powerAxisUpper)
+                                                : UI::Widgets::percentHistoryConfig("##PowerBatteryHistory", axis.xMin, axis.xMax),
+                                            plotHeight),
+                    m_ChartDataGeneration));
                 if (chart.active())
                 {
                     // Secondary Y-axis: Battery % (0-100) - hidden ticks to keep X-axis alignment
@@ -1140,9 +1172,11 @@ void SystemMetricsPanel::renderOverview()
 
         auto plot = [&]()
         {
-            const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
-                UI::Widgets::rateHistoryConfigWithUpper("##ResourcesHistory", axis.xMin, axis.xMax, formatAxisLocalized, countAxisUpper),
-                plotHeight));
+            const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
+                UI::Widgets::withHeight(UI::Widgets::rateHistoryConfigWithUpper(
+                                            "##ResourcesHistory", axis.xMin, axis.xMax, formatAxisLocalized, countAxisUpper),
+                                        plotHeight),
+                m_ChartDataGeneration));
             if (chart.active())
             {
                 UI::Widgets::setupSecondaryRateAxis(faultAxisUpper, formatAxisLocalized);
