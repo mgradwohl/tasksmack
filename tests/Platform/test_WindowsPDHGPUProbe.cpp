@@ -574,6 +574,40 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, ASuccessfulCollectWithNoEngineActivityIsC
     EXPECT_TRUE(probe.adapterUtilizationCurrent());
 }
 
+// #1277 review: a failed GPU Engine array read says nothing about any adapter, so it must not count as
+// "current" -- otherwise every mapped adapter would publish as idle 0% instead of a gap.
+TEST_F(WindowsPDHGPUProbeInjectedTest, AFailedUtilizationArrayReadIsNotCurrent)
+{
+    auto impl = makeInjectedImpl(PDHGPUProbe::Role::Adapter);
+    impl->warmedUp = true;
+    m_scenario->hardFailureStatus[impl->utilizationCounter] = static_cast<PDH_STATUS>(PDH_INVALID_HANDLE);
+    PDHGPUProbe probe(std::move(impl));
+
+    static_cast<void>(probe.readProcessGPUCounters());
+    EXPECT_TRUE(probe.adapterUtilization().empty());
+    EXPECT_FALSE(probe.adapterUtilizationCurrent());
+}
+
+// #1277 review: an adapter whose engine items all came back with a bad status was not idle; it was
+// unread. Another adapter with a readable item keeps its reading.
+TEST_F(WindowsPDHGPUProbeInjectedTest, AnAdapterWithOnlyUnreadableEngineItemsIsUnreadNotIdle)
+{
+    auto impl = makeInjectedImpl(PDHGPUProbe::Role::Adapter);
+    impl->warmedUp = true;
+    m_scenario->items[impl->utilizationCounter] = {
+        {.name = L"pid_610_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .cstatus = PDH_CSTATUS_INVALID_DATA, .doubleValue = 50.0},
+        {.name = L"pid_611_luid_0x0_0x2_phys_0_eng_0_engtype_3D", .doubleValue = 7.0},
+    };
+    PDHGPUProbe probe(std::move(impl));
+
+    static_cast<void>(probe.readProcessGPUCounters());
+    EXPECT_TRUE(probe.adapterUtilizationCurrent());
+    EXPECT_FALSE(probe.adapterUtilization().contains("GPU_0x0_0x1"));
+    EXPECT_TRUE(probe.adapterUtilizationUnread().contains("GPU_0x0_0x1"));
+    EXPECT_DOUBLE_EQ(probe.adapterUtilization().at("GPU_0x0_0x2"), 7.0);
+    EXPECT_FALSE(probe.adapterUtilizationUnread().contains("GPU_0x0_0x2"));
+}
+
 TEST_F(WindowsPDHGPUProbeInjectedTest, WarmUpDoesNotMakeAnOldProcessCacheLookFresh)
 {
     // The warm-up after a counter re-add used to return the cached per-process results and stamp

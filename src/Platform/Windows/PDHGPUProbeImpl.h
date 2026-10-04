@@ -36,6 +36,7 @@
 #include <string_view>
 #include <system_error>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -419,6 +420,11 @@ struct PDHGPUProbe::Impl
     // Whether lastAdapterUtilization comes from a successful, warmed-up collect. An adapter missing
     // from it then had no engine activity -- idle, 0% -- rather than unread (#1166).
     bool adapterUtilizationCurrent = false;
+    // Adapters (keyed "GPU_<luid>") that had GPU Engine items this collect but none readable: unread,
+    // not idle, even when adapterUtilizationCurrent is set (#1166).
+    std::unordered_set<std::string> adapterUtilizationUnread;
+    // Whether the last readCounterArray() call succeeded (an empty array included).
+    bool lastArrayReadOk = false;
 
     /// Adapter-wide memory in use from the most recent collect, keyed by "GPU_<luid>".
     std::unordered_map<std::string, AdapterMemoryUsage> lastAdapterMemory;
@@ -429,6 +435,7 @@ struct PDHGPUProbe::Impl
     {
         lastAdapterUtilization.clear();
         adapterUtilizationCurrent = false;
+        adapterUtilizationUnread.clear();
         lastAdapterMemory.clear();
     }
 
@@ -697,6 +704,8 @@ struct PDHGPUProbe::Impl
     PPDH_FMT_COUNTERVALUE_ITEM_W readCounterArray(PDH_HCOUNTER counter, DWORD format, DWORD& itemCount)
     {
         itemCount = 0;
+        // A null return is both "no items" and "the read failed"; this says which (#1166).
+        lastArrayReadOk = false;
         if (counter == nullptr)
         {
             return nullptr;
@@ -710,7 +719,16 @@ struct PDHGPUProbe::Impl
             const PDH_STATUS status = pdhGetFormattedCounterArray(counter, format, &bufferSize, &itemCount, items);
             if (status == ERROR_SUCCESS)
             {
+                lastArrayReadOk = true;
                 return items;
+            }
+            if (static_cast<unsigned long>(status) == PDH_MORE_DATA && bufferSize == 0)
+            {
+                // No instances at all (no process is using any GPU): a successful, empty read --
+                // PDH asks for "more" room of zero bytes rather than returning ERROR_SUCCESS (#1166).
+                itemCount = 0;
+                lastArrayReadOk = true;
+                return nullptr;
             }
             if (static_cast<unsigned long>(status) != PDH_MORE_DATA)
             {

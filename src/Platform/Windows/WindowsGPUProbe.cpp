@@ -201,7 +201,12 @@ void WindowsGPUProbe::mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiC
     // Assign per-GPU utilization by matching each DXGI counter's LUID-based id
     // to the corresponding PDH bucket. m_DXGIIdToLuidId is populated in
     // enumerateGPUs() and maps "GPU0" → "GPU_0x00000000_0x0000D3A0".
-    assignPDHUtilizationToDXGICounters(dxgiCounters, utilizationByLuid, m_DXGIIdToLuidId, nvmlSourcedIds, /*absentMeansIdle=*/true);
+    assignPDHUtilizationToDXGICounters(dxgiCounters,
+                                       utilizationByLuid,
+                                       m_DXGIIdToLuidId,
+                                       nvmlSourcedIds,
+                                       /*absentMeansIdle=*/true,
+                                       m_PDHAdapterProbe->adapterUtilizationUnread());
 }
 
 std::vector<ProcessGPUCounters> WindowsGPUProbe::readProcessGPUCounters()

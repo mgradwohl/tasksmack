@@ -414,12 +414,14 @@ mergeNVMLIntoDXGICounters(std::vector<GPUCounters>& dxgiCounters,
 /// [0, 100]) and marks it available. Counters with no LUID mapping are marked unread, a gap
 /// (#1111). A mapped counter with no PDH entry is idle (0%, read) when @p absentMeansIdle -- the
 /// map is from a successful collect, and PDH has GPU Engine instances only for processes using the
-/// adapter -- and unread otherwise (#1166).
+/// adapter -- and unread otherwise, or when its LUID is in @p unreadLuids: it had engine items this
+/// collect but none was readable, which is not idleness (#1166).
 inline void assignPDHUtilizationToDXGICounters(std::vector<GPUCounters>& dxgiCounters,
                                                const std::unordered_map<std::string, double>& utilizationByGpuId,
                                                const std::unordered_map<std::string, std::string>& dxgiIdToLuidId,
                                                const std::unordered_set<std::string>& nvmlSourcedIds,
-                                               bool absentMeansIdle = false)
+                                               bool absentMeansIdle = false,
+                                               const std::unordered_set<std::string>& unreadLuids = {})
 {
     for (auto& dxgiCounter : dxgiCounters)
     {
@@ -443,7 +445,7 @@ inline void assignPDHUtilizationToDXGICounters(std::vector<GPUCounters>& dxgiCou
             dxgiCounter.utilizationPercent = std::clamp(utilIt->second, 0.0, 100.0);
             dxgiCounter.utilizationAvailable = true; // A real reading, even after a failed NVML read (#1111)
         }
-        else if (absentMeansIdle)
+        else if (absentMeansIdle && !unreadLuids.contains(mapIt->second))
         {
             dxgiCounter.utilizationPercent = 0.0; // Nothing ran on it this interval (#1166)
             dxgiCounter.utilizationAvailable = true;

@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Platform
@@ -87,6 +88,9 @@ class PDHGPUProbe
     /// adapter absent from it had no GPU Engine instances -- nothing ran on it -- so it is idle (0%),
     /// not unread; when it does not (warm-up, failed collect), every adapter is unread (#1166).
     [[nodiscard]] bool adapterUtilizationCurrent() const;
+    /// Adapters ("GPU_<luid>") that had GPU Engine items in the last collect but none with a
+    /// readable value: unread (a gap), never idle, even when adapterUtilizationCurrent() (#1166).
+    [[nodiscard]] std::unordered_set<std::string> adapterUtilizationUnread() const;
 
     /// Adapter-wide GPU memory in use (Role::Adapter only) from the most recent readProcessGPUCounters() call, keyed by
     /// "GPU_<luid>". Unlike DXGI's QueryVideoMemoryInfo, which reports only the calling process,

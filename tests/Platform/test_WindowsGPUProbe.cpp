@@ -296,6 +296,10 @@ TEST(AssignPDHUtilizationToDXGICountersTest, AnAdapterWithNoEngineActivityIsIdle
 
     assignPDHUtilizationToDXGICounters(dxgi, {}, idToLuid, {}, /*absentMeansIdle=*/false);
     EXPECT_FALSE(dxgi[0].utilizationAvailable);
+
+    // #1277 review: an adapter whose engine items were all unreadable is unread, not idle.
+    assignPDHUtilizationToDXGICounters(dxgi, {}, idToLuid, {}, /*absentMeansIdle=*/true, {"GPU_0xLUID"});
+    EXPECT_FALSE(dxgi[0].utilizationAvailable);
 }
 
 TEST(AssignPDHUtilizationToDXGICountersTest, AssignsClampedUtilizationForMatchedLuid)

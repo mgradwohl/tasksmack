@@ -309,20 +309,32 @@ void PDHGPUProbe::readAdapterUtilization()
     // For each engine of each adapter the sum over processes, then the busiest engine
     // (gpuLuid -> engineKey -> percent) -- Task Manager's definition (#1033).
     std::unordered_map<std::string, std::unordered_map<std::string, double>> adapterEngines;
+    std::unordered_set<std::string> unreadLuids; // Adapters with engine items, none of them readable
     DWORD itemCount = 0;
-    if (auto* items = m_Impl->readCounterArray(m_Impl->utilizationCounter, PDH_FMT_DOUBLE | PDH_FMT_NOCAP100, itemCount))
+    auto* items = m_Impl->readCounterArray(m_Impl->utilizationCounter, PDH_FMT_DOUBLE | PDH_FMT_NOCAP100, itemCount);
+    if (!m_Impl->lastArrayReadOk)
+    {
+        // The array itself was not read: nothing is known about any adapter -- unread, a gap, not an
+        // idle 0% (#1166).
+        m_Impl->lastAdapterUtilization.clear();
+        m_Impl->adapterUtilizationUnread.clear();
+        m_Impl->adapterUtilizationCurrent = false;
+        return;
+    }
+    if (items != nullptr)
     {
         const std::span itemSpan{items, itemCount};
         for (std::size_t idx = 0; idx < itemSpan.size(); ++idx)
         {
             const auto& item = itemSpan[idx];
-            if (item.FmtValue.CStatus != ERROR_SUCCESS && item.FmtValue.CStatus != PDH_CSTATUS_NEW_DATA)
-            {
-                continue;
-            }
             const auto& inst = m_Impl->instanceForAt(item.szName, idx, m_Impl->utilizationPositional);
             if (!inst.valid || inst.pid <= 0)
             {
+                continue;
+            }
+            if (item.FmtValue.CStatus != ERROR_SUCCESS && item.FmtValue.CStatus != PDH_CSTATUS_NEW_DATA)
+            {
+                unreadLuids.insert("GPU_" + inst.gpuLuid);
                 continue;
             }
             // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access) - PDH_FMT_DOUBLE selects doubleValue
@@ -334,13 +346,20 @@ void PDHGPUProbe::readAdapterUtilization()
     for (const auto& [gpuLuid, engines] : adapterEngines)
     {
         m_Impl->lastAdapterUtilization["GPU_" + gpuLuid] = adapterUtilizationFromEngines(engines);
+        unreadLuids.erase("GPU_" + gpuLuid); // Some of its engines were read: it has a reading
     }
+    m_Impl->adapterUtilizationUnread = std::move(unreadLuids);
     m_Impl->adapterUtilizationCurrent = true;
 }
 
 std::unordered_map<std::string, double> PDHGPUProbe::adapterUtilization() const
 {
     return m_Impl ? m_Impl->lastAdapterUtilization : std::unordered_map<std::string, double>{};
+}
+
+std::unordered_set<std::string> PDHGPUProbe::adapterUtilizationUnread() const
+{
+    return m_Impl ? m_Impl->adapterUtilizationUnread : std::unordered_set<std::string>{};
 }
 
 bool PDHGPUProbe::adapterUtilizationCurrent() const
