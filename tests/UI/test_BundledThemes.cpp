@@ -435,9 +435,42 @@ TEST(BundledThemesTest, SeriesOnTheSameChartAreSeparable)
                     {"charts.gpu.fan", scheme->gpuFan},
                 },
             },
+            // Resources chart (SystemMetricsPanel.cpp and ProcessDetailsPanel.cpp): Threads, Handles (FDs),
+            // Page Faults and, on Windows, GDI objects.
+            {
+                "Resources",
+                {
+                    {"charts.cpu", scheme->chartCpu},
+                    {"charts.memory", scheme->chartMemory},
+                    {"accents[3]", scheme->accents[3]},
+                    {"accents[4]", scheme->accents[4]},
+                },
+            },
         };
 
-        for (const auto& [group, series] : groups)
+        // Status messages and usage bars are not drawn as series on one chart, so #1197 asks only that
+        // they survive red/green colour vision deficiency: warning and success must not read as one colour.
+        const std::vector<std::pair<const char*, std::vector<Series>>> cvdOnlySets{
+            {
+                "status",
+                {
+                    {"semantic.text_error", scheme->textError},
+                    {"semantic.text_warning", scheme->textWarning},
+                    {"semantic.text_success", scheme->textSuccess},
+                    {"semantic.text_info", scheme->textInfo},
+                },
+            },
+            {
+                "progress",
+                {
+                    {"progress.low", scheme->progressLow},
+                    {"progress.medium", scheme->progressMedium},
+                    {"progress.high", scheme->progressHigh},
+                },
+            },
+        };
+
+        const auto checkPairs = [&](const char* group, const std::vector<Series>& series, bool normalVision)
         {
             for (std::size_t i = 0; i < series.size(); ++i)
             {
@@ -446,11 +479,22 @@ TEST(BundledThemesTest, SeriesOnTheSameChartAreSeparable)
                     const auto& [keyA, colorA] = series[i];
                     const auto& [keyB, colorB] = series[j];
                     const std::string pair = name + " [" + group + "] " + keyA + " vs " + keyB;
-                    EXPECT_GE(deltaE2000(colorA, colorB), SAME_CHART_MIN_DE) << pair;
+                    if (normalVision)
+                    {
+                        EXPECT_GE(deltaE2000(colorA, colorB), SAME_CHART_MIN_DE) << pair;
+                    }
                     EXPECT_GE(deltaE2000As(colorA, colorB, Deficiency::Protanopia), SAME_CHART_MIN_DE_CVD) << pair << " (protanopia)";
                     EXPECT_GE(deltaE2000As(colorA, colorB, Deficiency::Deuteranopia), SAME_CHART_MIN_DE_CVD) << pair << " (deuteranopia)";
                 }
             }
+        };
+        for (const auto& [group, series] : groups)
+        {
+            checkPairs(group, series, true);
+        }
+        for (const auto& [group, series] : cvdOnlySets)
+        {
+            checkPairs(group, series, false);
         }
     }
 }
