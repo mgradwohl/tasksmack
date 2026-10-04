@@ -331,21 +331,26 @@ SystemDiskCounters WindowsDiskProbe::read()
     }
 
     bool anyFailure = false;
-    // The busy-time clock (#1108): monotonic, in DISK_PERFORMANCE's 100 ns units.
-    const std::int64_t now100ns = std::chrono::duration_cast<std::chrono::duration<std::int64_t, std::ratio<1, 10'000'000>>>(
-                                      std::chrono::steady_clock::now().time_since_epoch())
-                                      .count();
     for (const auto& diskHandle : m_Impl->disks)
     {
         DISK_PERFORMANCE perf{};
         DWORD bytesReturned = 0;
-        if (DeviceIoControl(diskHandle.handle, IOCTL_DISK_PERFORMANCE, nullptr, 0, &perf, sizeof(perf), &bytesReturned, nullptr) == 0)
+        const BOOL queried =
+            DeviceIoControl(diskHandle.handle, IOCTL_DISK_PERFORMANCE, nullptr, 0, &perf, sizeof(perf), &bytesReturned, nullptr);
+        const DWORD queryError = (queried == 0) ? GetLastError() : ERROR_SUCCESS; // Before any other call
+        // This disk's busy-time clock (#1108), taken next to its own IdleTime sample: monotonic, in
+        // DISK_PERFORMANCE's 100 ns units. One timestamp for the whole loop let an earlier disk's
+        // slow query become a later, idle disk's "busy" time.
+        const std::int64_t now100ns = std::chrono::duration_cast<std::chrono::duration<std::int64_t, std::ratio<1, 10'000'000>>>(
+                                          std::chrono::steady_clock::now().time_since_epoch())
+                                          .count();
+        if (queried == 0)
         {
             // Skip this disk for this cycle rather than pushing fabricated zero counters,
             // which would otherwise look like a real (and wildly out-of-range) delta on
             // the next sample. The next read() re-enumerates, dropping a removed disk, and
             // only the first failure in a row warns (#1159).
-            const DWORD lastError = GetLastError();
+            const DWORD lastError = queryError;
             anyFailure = true;
             const auto level = m_Impl->readFailures.recordFailure(diskHandle.instanceName) ? spdlog::level::warn : spdlog::level::debug;
             spdlog::log(
