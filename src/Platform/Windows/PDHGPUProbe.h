@@ -17,6 +17,11 @@ struct AdapterMemoryUsage
 {
     std::uint64_t dedicatedBytes = 0;
     std::uint64_t sharedBytes = 0;
+    /// Whether this collect read each segment for the adapter: its counter array was read and had a
+    /// good item for the adapter, even one of 0 bytes. A 0 in a segment not read is not a reading,
+    /// and a 0 in one that was read is a real 0 B (#1246).
+    bool dedicatedRead = false;
+    bool sharedRead = false;
 };
 
 /// @brief PDH-based GPU probe for per-process GPU engine utilization

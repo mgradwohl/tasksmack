@@ -99,12 +99,16 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
     // rather than through the per-process instance caches.
     DWORD itemCount = 0;
     std::unordered_map<std::string, AdapterMemoryUsage> adapterMemory;
-    const auto accumulateAdapterMemory = [&](PDH_HCOUNTER counter, std::uint64_t AdapterMemoryUsage::* member)
+    // Every good item counts, 0 bytes included, and marks its segment read for the adapter: an
+    // idle adapter's real 0 B used to be dropped and so showed as N/A, indistinguishable from a
+    // segment whose counter array failed (#1246).
+    const auto accumulateAdapterMemory =
+        [&](PDH_HCOUNTER counter, std::uint64_t AdapterMemoryUsage::* bytesMember, bool AdapterMemoryUsage::* readMember)
     {
         auto* items = m_Impl->readCounterArray(counter, PDH_FMT_LARGE, itemCount);
         if (items == nullptr)
         {
-            return;
+            return; // This segment is unread for every adapter
         }
         for (const auto& item : std::span{items, itemCount})
         {
@@ -115,15 +119,18 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
             const std::string luid =
                 PDHGPUProbeImplDetail::parseAdapterInstanceLuid(PDHGPUProbeImplDetail::wideToUtf8Fallback(std::wstring(item.szName)));
             // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access) - PDH_FMT_LARGE selects largeValue
-            if (!luid.empty() && item.FmtValue.largeValue > 0)
+            const LONGLONG bytes = item.FmtValue.largeValue;
+            if (luid.empty() || bytes < 0)
             {
-                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access) - PDH_FMT_LARGE selects largeValue
-                adapterMemory["GPU_" + luid].*member += static_cast<std::uint64_t>(item.FmtValue.largeValue);
+                continue;
             }
+            auto& usage = adapterMemory["GPU_" + luid];
+            usage.*bytesMember += static_cast<std::uint64_t>(bytes);
+            usage.*readMember = true;
         }
     };
-    accumulateAdapterMemory(m_Impl->adapterDedicatedCounter, &AdapterMemoryUsage::dedicatedBytes);
-    accumulateAdapterMemory(m_Impl->adapterSharedCounter, &AdapterMemoryUsage::sharedBytes);
+    accumulateAdapterMemory(m_Impl->adapterDedicatedCounter, &AdapterMemoryUsage::dedicatedBytes, &AdapterMemoryUsage::dedicatedRead);
+    accumulateAdapterMemory(m_Impl->adapterSharedCounter, &AdapterMemoryUsage::sharedBytes, &AdapterMemoryUsage::sharedRead);
     m_Impl->lastAdapterMemory = std::move(adapterMemory);
 
     // Handle warm-up: the first collected sample cannot produce utilization values

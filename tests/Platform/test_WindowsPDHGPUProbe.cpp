@@ -556,7 +556,33 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, AdapterMemoryIsReadFromTheAdapterCounters
     ASSERT_EQ(memory.size(), 2U);
     EXPECT_EQ(memory.at("GPU_0x0_0x1").dedicatedBytes, 300ULL);
     EXPECT_EQ(memory.at("GPU_0x0_0x1").sharedBytes, 1500ULL);
+    EXPECT_TRUE(memory.at("GPU_0x0_0x1").dedicatedRead);
+    EXPECT_TRUE(memory.at("GPU_0x0_0x1").sharedRead);
     EXPECT_EQ(memory.at("GPU_0x0_0x2").dedicatedBytes, 5000ULL);
+    EXPECT_TRUE(memory.at("GPU_0x0_0x2").dedicatedRead);
+    EXPECT_FALSE(memory.at("GPU_0x0_0x2").sharedRead) << "no shared item for this adapter";
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, AZeroByteAdapterItemIsAReadingAndAFailedSegmentIsUnread)
+{
+    // #1246: an idle adapter's 0 B is a reading, so its entry exists with that segment read. A
+    // segment whose array failed is unread for every adapter, even where the other one was read.
+    auto impl = makeInjectedImpl();
+    m_scenario->items[impl->adapterDedicatedCounter] = {
+        {.name = L"luid_0x0_0x1_phys_0", .largeValue = 0},
+        {.name = L"luid_0x0_0x2_phys_0", .cstatus = PDH_CSTATUS_INVALID_DATA, .largeValue = 77},
+    };
+    m_scenario->hardFailureStatus[impl->adapterSharedCounter] = static_cast<PDH_STATUS>(PDH_CSTATUS_NO_OBJECT);
+    PDHGPUProbe probe(std::move(impl));
+
+    static_cast<void>(probe.readProcessGPUCounters());
+
+    const auto memory = probe.adapterMemory();
+    ASSERT_EQ(memory.size(), 1U) << "a bad-status item is not a reading";
+    const auto& usage = memory.at("GPU_0x0_0x1");
+    EXPECT_TRUE(usage.dedicatedRead);
+    EXPECT_EQ(usage.dedicatedBytes, 0ULL);
+    EXPECT_FALSE(usage.sharedRead);
 }
 
 TEST_F(WindowsPDHGPUProbeInjectedTest, AdapterMemoryIsCollectedWhenOnlyTheAdapterCountersAreAvailable)

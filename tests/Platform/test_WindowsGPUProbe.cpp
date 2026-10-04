@@ -583,7 +583,7 @@ TEST(AssignPDHMemoryToDXGICountersTest, AnUnreadSegmentLeavesTheCounterUnavailab
     dxgi[0].gpuId = "GPU0";
     dxgi[0].memoryAvailable = false;
     const std::unordered_map<std::string, AdapterMemoryUsage> memory = {
-        {"GPU_0x0_0x1", {.dedicatedBytes = 0, .sharedBytes = 200}},
+        {"GPU_0x0_0x1", {.dedicatedBytes = 0, .sharedBytes = 200, .dedicatedRead = false, .sharedRead = true}},
     };
     const std::unordered_map<std::string, std::string> idToLuid = {{"GPU0", "GPU_0x0_0x1"}};
     const std::unordered_map<std::string, bool> integrated = {{"GPU0", false}};
@@ -592,6 +592,30 @@ TEST(AssignPDHMemoryToDXGICountersTest, AnUnreadSegmentLeavesTheCounterUnavailab
 
     EXPECT_FALSE(dxgi[0].memoryAvailable);
     EXPECT_EQ(dxgi[0].memoryUsedBytes, 0U);
+}
+
+TEST(AssignPDHMemoryToDXGICountersTest, ASelectedSegmentReadAsZeroBytesIsAReading)
+{
+    // #1246: an idle discrete GPU with nothing in dedicated memory reads a real 0 B, not N/A.
+    std::vector<GPUCounters> dxgi(2);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[0].memoryAvailable = false;
+    dxgi[0].memoryUsedBytes = 7;
+    dxgi[1].gpuId = "GPU1";
+    dxgi[1].memoryAvailable = false;
+    const std::unordered_map<std::string, AdapterMemoryUsage> memory = {
+        {"GPU_0x0_0x1", {.dedicatedBytes = 0, .sharedBytes = 200, .dedicatedRead = true, .sharedRead = true}},
+        {"GPU_0x0_0x2", {.dedicatedBytes = 0, .sharedBytes = 0, .dedicatedRead = false, .sharedRead = true}},
+    };
+    const std::unordered_map<std::string, std::string> idToLuid = {{"GPU0", "GPU_0x0_0x1"}, {"GPU1", "GPU_0x0_0x2"}};
+    const std::unordered_map<std::string, bool> integrated = {{"GPU0", false}, {"GPU1", true}};
+
+    assignPDHMemoryToDXGICounters(dxgi, memory, idToLuid, integrated, {});
+
+    EXPECT_TRUE(dxgi[0].memoryAvailable);
+    EXPECT_EQ(dxgi[0].memoryUsedBytes, 0U);
+    EXPECT_TRUE(dxgi[1].memoryAvailable) << "an integrated GPU's shared segment read as 0 B";
+    EXPECT_EQ(dxgi[1].memoryUsedBytes, 0U);
 }
 
 TEST(AssignPDHMemoryToDXGICountersTest, PDHReadingRestoresAvailabilityAfterAFailedNVMLRead)
@@ -604,7 +628,7 @@ TEST(AssignPDHMemoryToDXGICountersTest, PDHReadingRestoresAvailabilityAfterAFail
     dxgi[1].gpuId = "GPU1";
     dxgi[1].memoryAvailable = false;
     const std::unordered_map<std::string, AdapterMemoryUsage> memory = {
-        {"GPU_0x0_0x1", {.dedicatedBytes = 3'000'000'000, .sharedBytes = 200}},
+        {"GPU_0x0_0x1", {.dedicatedBytes = 3'000'000'000, .sharedBytes = 200, .dedicatedRead = true, .sharedRead = true}},
     };
     const std::unordered_map<std::string, std::string> idToLuid = {{"GPU0", "GPU_0x0_0x1"}, {"GPU1", "GPU_0x0_0x2"}};
 
@@ -621,8 +645,8 @@ TEST(AssignPDHMemoryToDXGICountersTest, IntegratedUsesSharedDiscreteUsesDedicate
     dxgi[0].gpuId = "GPU0";
     dxgi[1].gpuId = "GPU1";
     const std::unordered_map<std::string, AdapterMemoryUsage> memory = {
-        {"GPU_0x0_0x1", {.dedicatedBytes = 128, .sharedBytes = 1'500'000'000}},
-        {"GPU_0x0_0x2", {.dedicatedBytes = 3'000'000'000, .sharedBytes = 200}},
+        {"GPU_0x0_0x1", {.dedicatedBytes = 128, .sharedBytes = 1'500'000'000, .dedicatedRead = true, .sharedRead = true}},
+        {"GPU_0x0_0x2", {.dedicatedBytes = 3'000'000'000, .sharedBytes = 200, .dedicatedRead = true, .sharedRead = true}},
     };
     const std::unordered_map<std::string, std::string> idToLuid = {{"GPU0", "GPU_0x0_0x1"}, {"GPU1", "GPU_0x0_0x2"}};
     const std::unordered_map<std::string, bool> integrated = {{"GPU0", true}, {"GPU1", false}};
@@ -639,7 +663,9 @@ TEST(AssignPDHMemoryToDXGICountersTest, LeavesNVMLSourcedAndUnmappedGPUsAlone)
     dxgi[0].gpuId = "GPU0";
     dxgi[0].memoryUsedBytes = 42; // From NVML
     dxgi[1].gpuId = "GPU1";       // No LUID mapping
-    const std::unordered_map<std::string, AdapterMemoryUsage> memory = {{"GPU_0x0_0x1", {.dedicatedBytes = 999, .sharedBytes = 0}}};
+    const std::unordered_map<std::string, AdapterMemoryUsage> memory = {
+        {"GPU_0x0_0x1", {.dedicatedBytes = 999, .sharedBytes = 0, .dedicatedRead = true, .sharedRead = true}},
+    };
 
     assignPDHMemoryToDXGICounters(dxgi, memory, {{"GPU0", "GPU_0x0_0x1"}}, {{"GPU0", false}}, {"GPU0"});
 

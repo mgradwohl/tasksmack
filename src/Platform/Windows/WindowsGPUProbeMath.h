@@ -270,15 +270,14 @@ inline void assignPDHMemoryToDXGICounters(std::vector<GPUCounters>& dxgiCounters
         }
         const auto integratedIt = dxgiIdIsIntegrated.find(counter.gpuId);
         const bool integrated = (integratedIt != dxgiIdIsIntegrated.end()) && integratedIt->second;
-        const std::uint64_t usedBytes = integrated ? memIt->second.sharedBytes : memIt->second.dedicatedBytes;
-        // PDHGPUProbe adds an adapter's entry for whichever segment it read with a non-zero value, so
-        // a 0 in the segment used here means that segment wasn't read: leave the counter as it is
-        // rather than publishing a real-looking 0 (#1111).
-        if (usedBytes == 0)
+        const AdapterMemoryUsage& usage = memIt->second;
+        // The entry may exist because only the other segment was read: then this one is unread, a
+        // gap (#1111). A segment that was read is a reading, 0 bytes included (#1246).
+        if (!(integrated ? usage.sharedRead : usage.dedicatedRead))
         {
             continue;
         }
-        counter.memoryUsedBytes = usedBytes;
+        counter.memoryUsedBytes = integrated ? usage.sharedBytes : usage.dedicatedBytes;
         counter.memoryAvailable = true; // A real reading, even after a failed NVML read (#1111)
     }
 }
