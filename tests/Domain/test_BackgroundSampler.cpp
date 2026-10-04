@@ -318,6 +318,51 @@ TEST(BackgroundSamplerTest, SetIntervalBeforeStartDoesNotScheduleDuplicateSample
 // Refresh Request Tests
 // =============================================================================
 
+TEST(BackgroundSamplerTest, RefreshRightAfterASampleWaitsForAUsableInterval)
+{
+    // #1102: a refresh forced milliseconds after a sample must not sample again at once -- the
+    // models would get no usable deltas (0% CPU, false 0 B/s). It waits until at least the fastest
+    // supported interval has passed since the previous sample.
+    class TimedSamplable : public Domain::ISamplable
+    {
+      public:
+        void sample() override
+        {
+            const std::scoped_lock lock(m_Mutex);
+            m_Times.push_back(std::chrono::steady_clock::now());
+            m_Cv.notify_all();
+        }
+        [[nodiscard]] std::vector<std::chrono::steady_clock::time_point> waitForSamples(std::size_t count)
+        {
+            std::unique_lock lock(m_Mutex);
+            m_Cv.wait_for(lock, 2000ms, [&] { return m_Times.size() >= count; });
+            return m_Times;
+        }
+
+      private:
+        std::mutex m_Mutex;
+        std::condition_variable m_Cv;
+        std::vector<std::chrono::steady_clock::time_point> m_Times;
+    };
+
+    auto samplable = std::make_shared<TimedSamplable>();
+    Domain::SamplerConfig config;
+    config.interval = 1000ms;
+    Domain::BackgroundSampler sampler(config);
+    sampler.addSamplable(samplable);
+    sampler.start();
+    ASSERT_EQ(samplable->waitForSamples(1).size(), 1U);
+
+    sampler.requestRefresh(); // immediately after the first sample
+    const auto times = samplable->waitForSamples(2);
+    sampler.stop();
+
+    ASSERT_GE(times.size(), 2U);
+    const auto gap = times[1] - times[0];
+    EXPECT_GE(gap, std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MIN_MS) - 5ms); // waited
+    EXPECT_LT(gap, 900ms); // but still early: the refresh wasn't dropped
+}
+
 TEST(BackgroundSamplerTest, RequestRefreshTriggersEarlySample)
 {
     auto samplable = std::make_shared<MockSamplable>();
