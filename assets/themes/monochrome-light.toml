@@ -69,13 +69,13 @@ idle = "#36633B"       # I - Very light green - idle kernel thread
 [charts]
 cpu = "#2E7D32"       # Dark green - CPU usage line
 memory = "#3B9F42"    # Medium green - memory usage line
-io = "#1B5E20"        # Darkest green - I/O read usage line (maximum contrast)
+io = "#003703"        # Darkest green - I/O read usage line (maximum contrast)
 io_write = "#009AAE"        # Cyan - I/O write usage line (maximum contrast)
 net_tx = "#68976A"          # Light glow - Network transmit (sent) line
 net_rx = "#205E24"          # Dark moss - Network receive line
 cpu_fill = "#2E7D324D"       # Dark green with 30% alpha - CPU fill
 memory_fill = "#3B9F424D"    # Medium green with 30% alpha - memory fill
-io_fill = "#1B5E204D"        # Darkest green with 30% alpha - I/O read fill
+io_fill = "#0037034D"        # Darkest green with 30% alpha - I/O read fill
 io_write_fill = "#009AAE4D"   # Cyan with 30% alpha - I/O write fill
 net_tx_fill = "#68976A4D"    # Light glow with 30% alpha - Network TX fill
 net_rx_fill = "#205E244D"    # Dark moss with 30% alpha - Network RX fill
@@ -86,17 +86,17 @@ peak_line = "#00771FB3"      # Medium green with 70% alpha - peak reference line
 # Colors for GPU monitoring graphs, bars, and badges
 # =============================================================================
 [charts.gpu]
-utilization = "#489D4F"           # Light green - GPU utilization line
-utilization_fill = "#489D4F4D"    # Light green with 30% alpha - GPU fill
-memory = "#388E3C"                # Medium-dark green - GPU memory line
-memory_fill = "#388E3C4D"         # Medium-dark green with 30% alpha - GPU memory fill
+utilization = "#003A0B"           # Deepest green - GPU utilization line (#1197)
+utilization_fill = "#003A0B4D"    # Deepest green with 30% alpha - GPU fill
+memory = "#1B8B2B"                # Medium-dark green - GPU memory line
+memory_fill = "#1B8B2B4D"         # Medium-dark green with 30% alpha - GPU memory fill
 temperature = "#3B9F42"           # Medium green - GPU temperature line
 power = "#2E7D32"                 # Dark green - GPU power draw line
 encoder = "#68976A"               # Light glow - GPU encoder utilization (distinct from utilization)
-decoder = "#205E24"               # Dark moss - GPU decoder utilization (distinct from memory)
-clock = "#509C54"             # Light green - GPU clock speed line (theme-native)
-clock_fill = "#509C54CC"      # Light green with 80% alpha - GPU clock fill
-fan = "#3D8F3F"               # Medium green - GPU fan speed line (theme-native)
+decoder = "#20672C"               # Dark moss - GPU decoder utilization (distinct from memory)
+clock = "#009AAE"             # Teal - GPU clock speed line (#1197)
+clock_fill = "#009AAECC"      # Teal with 80% alpha - GPU clock fill
+fan = "#00560C"               # Dark green - GPU fan speed line (theme-native)
 
 # =============================================================================
 # CPU BREAKDOWN COLORS
@@ -105,11 +105,11 @@ fan = "#3D8F3F"               # Medium green - GPU fan speed line (theme-native)
 [cpu_breakdown]
 user = "#00560C"      # Dark green - user CPU time
 system = "#3B9F42"    # Medium green - system/kernel time
-iowait = "#1B5E20"    # Darkest green - I/O wait time
+iowait = "#053108"    # Darkest green - I/O wait time
 idle = "#C8E6C9"      # Very light green - idle time
 user_fill = "#00560C59"      # Dark green with 35% alpha - user fill
 system_fill = "#3B9F4259"    # Medium green with 35% alpha - system fill
-iowait_fill = "#1B5E2059"    # Darkest green with 35% alpha - iowait fill
+iowait_fill = "#05310859"    # Darkest green with 35% alpha - iowait fill
 idle_fill = "#C8E6C933"      # Very light green with 20% alpha - idle fill
 
 [priority]

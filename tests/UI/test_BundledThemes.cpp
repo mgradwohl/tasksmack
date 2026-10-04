@@ -5,6 +5,7 @@
 /// neighbours, and WCAG floors for text (4.5:1) and the overline, a non-text indicator (3:1).
 
 #include "UI/ColorContrast.h"
+#include "UI/ColorDifference.h"
 #include "UI/Theme.h"
 #include "UI/ThemeLoader.h"
 
@@ -38,6 +39,8 @@ constexpr float PRIMARY_TEXT_MIN = 7.0F;          // primary text on the window 
 constexpr float GRID_MIN = 1.3F;                  // grid lines on the plot: visible...
 constexpr float GRID_MAX = 1.8F;                  // ...but quieter than any series (#1191)
 constexpr float SERIES_MIN = 3.0F;                // a series colour (line, NowBar, legend swatch) on its background
+constexpr double SAME_CHART_MIN_DE = 12.0;        // CIEDE2000 between series drawn together (#1197)...
+constexpr double SAME_CHART_MIN_DE_CVD = 8.0;     // ...and as a protanope or deuteranope sees them
 
 /// CIELAB L* (0..100) of an opaque colour. L* depends only on relative luminance.
 auto lightness(const ImVec4& color) -> float
@@ -362,5 +365,71 @@ TEST(BundledThemesTest, StatusColoursAreReadableOnEveryRow)
     }
 }
 
+// #1197: series drawn together can be told apart, including by viewers with red/green colour vision
+// deficiency. Two series sharing a colour (GPU Memory and Decoder were both #EC407A in Arctic Fire)
+// read as one line; pairs that differ only along the red-green axis collapse for about 8% of men.
+TEST(BundledThemesTest, SeriesOnTheSameChartAreSeparable)
+{
+    using ColorDifference::Deficiency;
+    using ColorDifference::deltaE2000;
+    using ColorDifference::deltaE2000As;
+
+    for (const auto& path : bundledThemes())
+    {
+        const auto scheme = ThemeLoader::loadTheme(path);
+        if (!scheme.has_value())
+        {
+            ADD_FAILURE() << "failed to load " << path;
+            continue;
+        }
+        const auto name = path.stem().string();
+
+        using Series = std::pair<const char*, ImVec4>;
+        const std::vector<std::pair<const char*, std::vector<Series>>> groups{
+            // System CPU chart: Total line over the User/System/I/O Wait bands.
+            {"CPU",
+             {{"charts.cpu", scheme->chartCpu},
+              {"cpu_breakdown.user", scheme->cpuUser},
+              {"cpu_breakdown.system", scheme->cpuSystem},
+              {"cpu_breakdown.iowait", scheme->cpuIowait}}},
+            // Memory & Swap chart (MemorySection.cpp): Used, Cached and Swap.
+            {"Memory", {{"charts.memory", scheme->chartMemory}, {"charts.cpu", scheme->chartCpu}, {"charts.io", scheme->chartIo}}},
+            // Read/Write and Sent/Received charts sit side by side on Process Details' Network and I/O tab.
+            {"Network and I/O",
+             {{"charts.io", scheme->chartIo},
+              {"charts.io_write", scheme->chartIoWrite},
+              {"charts.net_tx", scheme->chartNetTx},
+              {"charts.net_rx", scheme->chartNetRx}}},
+            // GPU Core & Video chart (GpuSection.cpp).
+            {"GPU core",
+             {{"charts.gpu.utilization", scheme->gpuUtilization},
+              {"charts.gpu.memory", scheme->gpuMemory},
+              {"charts.gpu.encoder", scheme->gpuEncoder},
+              {"charts.gpu.decoder", scheme->gpuDecoder},
+              {"charts.gpu.clock", scheme->gpuClock}}},
+            // GPU thermal chart.
+            {"GPU thermal",
+             {{"charts.gpu.temperature", scheme->gpuTemperature},
+              {"charts.gpu.power", scheme->gpuPower},
+              {"charts.gpu.fan", scheme->gpuFan}}},
+        };
+
+        for (const auto& [group, series] : groups)
+        {
+            for (std::size_t i = 0; i < series.size(); ++i)
+            {
+                for (std::size_t j = i + 1; j < series.size(); ++j)
+                {
+                    const auto& [keyA, colorA] = series[i];
+                    const auto& [keyB, colorB] = series[j];
+                    const std::string pair = name + " [" + group + "] " + keyA + " vs " + keyB;
+                    EXPECT_GE(deltaE2000(colorA, colorB), SAME_CHART_MIN_DE) << pair;
+                    EXPECT_GE(deltaE2000As(colorA, colorB, Deficiency::Protanopia), SAME_CHART_MIN_DE_CVD) << pair << " (protanopia)";
+                    EXPECT_GE(deltaE2000As(colorA, colorB, Deficiency::Deuteranopia), SAME_CHART_MIN_DE_CVD) << pair << " (deuteranopia)";
+                }
+            }
+        }
+    }
+}
 } // namespace
 } // namespace UI

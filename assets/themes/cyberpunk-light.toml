@@ -67,13 +67,13 @@ idle = "#565656"       # Light gray - idle kernel thread (I)
 # =============================================================================
 [charts]
 cpu = "#1976D2"       # Blue - CPU usage line
-memory = "#388E3C"    # Green - memory usage line
+memory = "#1C7727"    # Green - memory usage line
 io = "#D32F2F"        # Red - I/O read usage line
 io_write = "#DD6300"        # Hot Orange - I/O write usage line (distinct from Red)
 net_tx = "#815CFF"          # Vivid Violet - Network transmit (sent) line
 net_rx = "#0094B1"          # Electric Cyan - Network receive line
 cpu_fill = "#1976D24D"       # Blue with 30% alpha - CPU fill
-memory_fill = "#388E3C4D"    # Green with 30% alpha - memory fill
+memory_fill = "#1C77274D"    # Green with 30% alpha - memory fill
 io_fill = "#D32F2F4D"        # Red with 30% alpha - I/O read fill
 io_write_fill = "#DD63004D"   # Hot Orange with 30% alpha - I/O write fill
 net_tx_fill = "#815CFF4D"    # Vivid Violet with 30% alpha - Network TX fill
@@ -90,7 +90,7 @@ utilization_fill = "#7B1FA24D"    # Purple with 30% alpha - GPU fill
 memory = "#998800"                # Laser Yellow - GPU memory line (distinct from io Red)
 memory_fill = "#9988004D"         # Laser Yellow with 30% alpha - GPU memory fill
 temperature = "#D46B00"           # Gold - GPU temperature line
-power = "#388E3C"                 # Green - GPU power draw line
+power = "#4C914B"                 # Green - GPU power draw line
 encoder = "#0097A7"               # Teal - GPU encoder utilization
 decoder = "#C2185B"               # Magenta - GPU decoder utilization
 clock = "#815CFF"             # Vivid Violet - GPU clock speed line (theme-native)

@@ -94,8 +94,8 @@ temperature = "#BA8500"           # Gold - GPU temperature line
 power = "#26A269"                 # Green - GPU power draw line
 encoder = "#1C71D8"               # Ubuntu Blue - GPU encoder utilization
 decoder = "#A51D2D"               # Dark Red - GPU decoder utilization
-clock = "#1C71D8"             # Ubuntu Blue - GPU clock speed line (theme-native)
-clock_fill = "#1C71D8CC"      # Ubuntu Blue with 80% alpha - GPU clock fill
+clock = "#0098D3"             # Ubuntu Blue - GPU clock speed line (theme-native)
+clock_fill = "#0098D3CC"      # Ubuntu Blue with 80% alpha - GPU clock fill
 fan = "#8C8C8C"               # Neutral Gray - GPU fan speed line
 
 # =============================================================================
