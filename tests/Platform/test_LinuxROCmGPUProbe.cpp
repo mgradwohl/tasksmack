@@ -414,6 +414,43 @@ TEST(ROCmGPUProbeMathTest, SysfsPciAddressUnpacksTheBdfId)
     EXPECT_EQ(ROCmGPUProbeMath::sysfsPciAddress((1ULL << 32U) | 0xC100ULL), "0001:c1:00.0");
 }
 
+// #1272 review: a transient failure (RSMI_STATUS_BUSY) while sensors are probed at enumeration doesn't
+// hide them for the session; only not-supported / not-found / not-implemented does.
+TEST(LinuxROCmGPUProbeTest, ATransientFailureAtEnumerationKeepsTheSensors)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    void* library = dlopen("librocm_smi64.so.6", RTLD_NOW);
+    ASSERT_NE(library, nullptr);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) -- dlsym returns void* by POSIX definition
+    const auto failSensorReads = reinterpret_cast<void (*)(int)>(dlsym(library, "tasksmackRocmMockFailSensorReads"));
+    ASSERT_NE(failSensorReads, nullptr);
+
+    ROCmGPUProbe probe("/nonexistent/tasksmack/pci");
+    ASSERT_TRUE(probe.isAvailable());
+    failSensorReads(1);
+    const auto gpus = probe.enumerateGPUs();
+    failSensorReads(0);
+    const auto counters = probe.readGPUCounters();
+    dlclose(library);
+
+    ASSERT_EQ(gpus.size(), 3U);
+    const auto full = gpus[0].sensorCapabilities.value_or(GPUCapabilities{});
+    EXPECT_TRUE(full.hasTemperature);
+    EXPECT_TRUE(full.hasPowerMetrics);
+    EXPECT_TRUE(full.hasClockSpeeds);
+    const auto partial = gpus[1].sensorCapabilities.value_or(GPUCapabilities{});
+    // The junction read isn't failed by the mock, so its definitive NOT_FOUND still means unsupported.
+    // (Device 1's clock is masked by the busy reply here; kept as supported, it shows a gap until read.)
+    EXPECT_FALSE(partial.hasHotspotTemp);
+
+    ASSERT_FALSE(counters.empty());
+    EXPECT_TRUE(counters[0].temperatureAvailable);
+}
+
 // #1112: each device's sensors, from which reads succeed at enumeration. Mock device 1 has no
 // junction sensor, no fan and an unreadable GPU clock; device 0 has all of them.
 TEST(LinuxROCmGPUProbeTest, SensorCapabilitiesArePerDevice)

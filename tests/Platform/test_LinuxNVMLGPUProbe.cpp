@@ -717,6 +717,36 @@ TEST(NVMLGPUProbeMathTest, SysfsPciAddressUsesTheKernelsFourDigitDomain)
 // Per-device sensor capabilities (#1112) and runtime PM (#1117)
 // =============================================================================
 
+// #1272 review: a transient failure (NVML_ERROR_TIMEOUT) while sensors are probed at enumeration
+// doesn't hide them for the session; only NVML_ERROR_NOT_SUPPORTED does. Once reads recover the
+// sensors report values.
+TEST(LinuxNVMLGPUProbeTest, ATransientFailureAtEnumerationKeepsTheSensors)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const NvmlMockControls controls;
+    NVMLGPUProbe probe("/nonexistent/tasksmack/pci");
+    ASSERT_TRUE(probe.isAvailable());
+
+    controls.failSensorReads(true);
+    const auto gpus = probe.enumerateGPUs();
+    controls.failSensorReads(false);
+    ASSERT_EQ(gpus.size(), 2U);
+    const auto desktop = gpus[0].sensorCapabilities.value_or(GPUCapabilities{});
+    EXPECT_TRUE(desktop.hasTemperature);
+    EXPECT_TRUE(desktop.hasPowerMetrics);
+    EXPECT_TRUE(desktop.hasClockSpeeds);
+    const auto laptop = gpus[1].sensorCapabilities.value_or(GPUCapabilities{});
+    EXPECT_FALSE(laptop.hasPowerMetrics); // NOT_SUPPORTED still means unsupported
+
+    const auto counters = probe.readGPUCounters();
+    ASSERT_FALSE(counters.empty());
+    EXPECT_TRUE(counters[0].temperatureAvailable);
+}
+
 // Like the Windows probe since #1040: device 1 (a laptop GPU in the mock) reports no power or fan,
 // so its GPUInfo says so instead of inheriting NVML's probe-wide capabilities.
 TEST(LinuxNVMLGPUProbeTest, SensorCapabilitiesArePerDevice)

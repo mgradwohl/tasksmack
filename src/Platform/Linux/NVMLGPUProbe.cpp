@@ -326,16 +326,22 @@ std::vector<GPUInfo> NVMLGPUProbe::enumerateGPUs()
 
         // Which sensors this device actually reports: capabilities() covers NVML as a whole, but a
         // passively cooled card has no fan reading and a laptop GPU may not report power, as on
-        // Windows (#1040, #1112). A read that fails now is treated as unsupported for this device.
+        // Windows (#1040, #1112). Only NVML_ERROR_NOT_SUPPORTED means the device lacks a sensor: a
+        // transient failure now (a timeout, a busy GPU) must not hide it for the whole session, since
+        // GPUModel enumerates once; its readings are just unavailable until a read succeeds (#1111).
         // A sleeping GPU isn't woken to find out (#1117): the probe's capabilities apply to it.
         if (!Impl::asleep(dev))
         {
+            const auto supported = [](nvmlReturn_t result)
+            {
+                return result != NVML_ERROR_NOT_SUPPORTED;
+            };
             unsigned int probeValue = 0;
             GPUCapabilities sensors = capabilities();
-            sensors.hasTemperature = m_Impl->nvmlDeviceGetTemperature(device, NVML_TEMPERATURE_GPU, &probeValue) == NVML_SUCCESS;
-            sensors.hasPowerMetrics = m_Impl->nvmlDeviceGetPowerUsage(device, &probeValue) == NVML_SUCCESS;
-            sensors.hasClockSpeeds = m_Impl->nvmlDeviceGetClockInfo(device, NVML_CLOCK_GRAPHICS, &probeValue) == NVML_SUCCESS;
-            sensors.hasFanSpeed = m_Impl->nvmlDeviceGetFanSpeed(device, &probeValue) == NVML_SUCCESS;
+            sensors.hasTemperature = supported(m_Impl->nvmlDeviceGetTemperature(device, NVML_TEMPERATURE_GPU, &probeValue));
+            sensors.hasPowerMetrics = supported(m_Impl->nvmlDeviceGetPowerUsage(device, &probeValue));
+            sensors.hasClockSpeeds = supported(m_Impl->nvmlDeviceGetClockInfo(device, NVML_CLOCK_GRAPHICS, &probeValue));
+            sensors.hasFanSpeed = supported(m_Impl->nvmlDeviceGetFanSpeed(device, &probeValue));
             info.sensorCapabilities = sensors;
         }
 

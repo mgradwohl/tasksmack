@@ -292,14 +292,10 @@ std::optional<uint32_t> DRMGPUProbe::pciBusFromAddress(std::string_view address)
 
 uint64_t DRMGPUProbe::readVramTotal(const DRMCard& card)
 {
-    // amdgpu-style mem_info_vram_total, then xe's per-tile VRAM size (xe dGPUs, kernel 6.8+). i915
-    // exposes neither, so an i915 dGPU is told apart by its PCI bus instead (detectIsIntegrated).
-    const uint64_t vramTotal = readSysfsUint64(card.devicePath + "/mem_info_vram_total");
-    if (vramTotal > 0)
-    {
-        return vramTotal;
-    }
-    return readSysfsUint64(card.devicePath + "/tile0/physical_vram_size_bytes");
+    // amdgpu-style mem_info_vram_total. Neither i915 nor xe exposes VRAM size in sysfs (xe reports it
+    // only through the DRM_XE_DEVICE_QUERY_MEM_REGIONS ioctl, #1283), so an Intel dGPU is told apart
+    // by its PCI bus instead (detectIsIntegrated) and its VRAM total is unknown.
+    return readSysfsUint64(card.devicePath + "/mem_info_vram_total");
 }
 
 bool DRMGPUProbe::detectIsIntegrated(const std::string& vendorId, uint32_t pciClass, uint64_t vramTotal, std::optional<uint32_t> pciBus)

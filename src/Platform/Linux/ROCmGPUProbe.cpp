@@ -29,15 +29,15 @@ using rsmi_status_t = std::uint32_t;
 // ROCm SMI return codes
 constexpr rsmi_status_t RSMI_STATUS_SUCCESS = 0;
 [[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_INVALID_ARGS = 1;
-[[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_NOT_SUPPORTED = 2;
+constexpr rsmi_status_t RSMI_STATUS_NOT_SUPPORTED = 2;
 [[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_FILE_ERROR = 3;
 [[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_PERMISSION = 4;
 [[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_OUT_OF_RESOURCES = 5;
 [[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_INTERNAL_EXCEPTION = 6;
 [[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_INPUT_OUT_OF_BOUNDS = 7;
 [[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_INIT_ERROR = 8;
-[[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_NOT_YET_IMPLEMENTED = 9;
-[[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_NOT_FOUND = 10;
+constexpr rsmi_status_t RSMI_STATUS_NOT_YET_IMPLEMENTED = 9;
+constexpr rsmi_status_t RSMI_STATUS_NOT_FOUND = 10;
 [[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_INSUFFICIENT_SIZE = 11;
 [[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_INTERRUPT = 12;
 [[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_UNEXPECTED_SIZE = 13;
@@ -402,24 +402,32 @@ std::vector<GPUInfo> ROCmGPUProbe::enumerateGPUs()
 
         // Which sensors this device actually reports (#1112): capabilities() covers ROCm SMI as a
         // whole, but e.g. an APU or a passively cooled card has no fan, and older parts have no
-        // junction sensor. A read that fails now is treated as unsupported for this device. A
-        // sleeping GPU isn't woken to find out (#1117): the probe's capabilities apply to it.
+        // junction sensor. Only a definitive answer (not supported, not found, not implemented) means
+        // the device lacks a sensor: a transient failure now (busy, a reset) must not hide it for the
+        // whole session, since GPUModel enumerates once (#1111). A sleeping GPU isn't woken to find out
+        // (#1117): the probe's capabilities apply to it.
         if (!m_Impl->asleep(deviceIdx))
         {
+            const auto supported = [](rsmi_status_t result)
+            {
+                return result != RSMI_STATUS_NOT_SUPPORTED && result != RSMI_STATUS_NOT_FOUND && result != RSMI_STATUS_NOT_YET_IMPLEMENTED;
+            };
             GPUCapabilities sensors = capabilities();
             std::int64_t probeTemp = 0;
             sensors.hasTemperature =
-                m_Impl->rsmi_dev_temp_metric_get(deviceIdx, RSMI_TEMP_TYPE_EDGE, RSMI_TEMP_CURRENT, &probeTemp) == RSMI_STATUS_SUCCESS;
+                supported(m_Impl->rsmi_dev_temp_metric_get(deviceIdx, RSMI_TEMP_TYPE_EDGE, RSMI_TEMP_CURRENT, &probeTemp));
             sensors.hasHotspotTemp =
-                m_Impl->rsmi_dev_temp_metric_get(deviceIdx, RSMI_TEMP_TYPE_JUNCTION, RSMI_TEMP_CURRENT, &probeTemp) == RSMI_STATUS_SUCCESS;
+                supported(m_Impl->rsmi_dev_temp_metric_get(deviceIdx, RSMI_TEMP_TYPE_JUNCTION, RSMI_TEMP_CURRENT, &probeTemp));
             std::uint64_t probePower = 0;
-            sensors.hasPowerMetrics = m_Impl->rsmi_dev_power_ave_get(deviceIdx, 0, &probePower) == RSMI_STATUS_SUCCESS;
+            sensors.hasPowerMetrics = supported(m_Impl->rsmi_dev_power_ave_get(deviceIdx, 0, &probePower));
             ROCmGPUProbeMath::RsmiFrequenciesBuffer probeFreq;
             const rsmi_status_t freqResult = m_Impl->rsmi_dev_gpu_clk_freq_get(deviceIdx, RSMI_CLK_TYPE_SYS, asFrequencies(probeFreq));
-            sensors.hasClockSpeeds =
-                freqResult == RSMI_STATUS_SUCCESS && ROCmGPUProbeMath::currentFrequencyHz(probeFreq, m_Impl->frequenciesLayout).has_value();
+            // A successful read must also parse; a transient failure keeps the clock.
+            sensors.hasClockSpeeds = (freqResult == RSMI_STATUS_SUCCESS)
+                                       ? ROCmGPUProbeMath::currentFrequencyHz(probeFreq, m_Impl->frequenciesLayout).has_value()
+                                       : supported(freqResult);
             std::int64_t probeFan = 0;
-            sensors.hasFanSpeed = sensors.hasFanSpeed && m_Impl->rsmi_dev_fan_speed_get(deviceIdx, 0, &probeFan) == RSMI_STATUS_SUCCESS;
+            sensors.hasFanSpeed = sensors.hasFanSpeed && supported(m_Impl->rsmi_dev_fan_speed_get(deviceIdx, 0, &probeFan));
             info.sensorCapabilities = sensors;
         }
 

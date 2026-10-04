@@ -860,27 +860,6 @@ TEST_F(DRMGPUProbeUnitTest, IntelDisplayController_OnBusZero_IsIntegrated)
     EXPECT_TRUE(gpus[0].isIntegrated);
 }
 
-// xe reports a discrete card's VRAM size per tile; it is dedicated memory whatever the bus says.
-TEST_F(DRMGPUProbeUnitTest, XeTileVram_IsDiscreteAndReportsTotal)
-{
-    const auto deviceDir = makeCard("card0", "xe");
-    writeFile(deviceDir / "vendor", "0x8086");
-    writeFile(deviceDir / "class", "0x030000");
-    std::filesystem::create_directories(deviceDir / "tile0");
-    writeFile(deviceDir / "tile0" / "physical_vram_size_bytes", "12884901888"); // 12 GiB
-
-    DRMGPUProbe probe(m_SysRoot.string());
-    const auto gpus = probe.enumerateGPUs();
-    ASSERT_EQ(gpus.size(), 1U);
-    EXPECT_FALSE(gpus[0].isIntegrated);
-
-    // The size is passed on, but with no "used" figure the memory reading itself is unavailable.
-    const auto counters = probe.readGPUCounters();
-    ASSERT_EQ(counters.size(), 1U);
-    EXPECT_EQ(counters[0].memoryTotalBytes, 12884901888ULL);
-    EXPECT_FALSE(counters[0].memoryAvailable);
-}
-
 // =============================================================================
 // Per-adapter sensor capabilities (#1112) and memory availability (#1115)
 // =============================================================================
@@ -966,13 +945,13 @@ TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_RuntimeSuspendedCard_IsNotRead)
     EXPECT_EQ(counters[0].gpuClockMHz, 300U);
 }
 
-TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_SuspendedXeCardKeepsItsVramCapacity)
+TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_SuspendedCardKeepsItsVramCapacity)
 {
-    // #1272 review: a sleeping xe dGPU isn't read, but its VRAM capacity is still known; reporting 0
+    // #1272 review: a sleeping dGPU isn't read, but its VRAM capacity is still known; reporting 0
     // would drop the header's capacity label and the Overview VRAM total.
+    // The DRM probe's only VRAM source is mem_info_vram_total (xe reports VRAM via an ioctl, #1283).
     const auto pciDir = makeCardAt("card1", "0000:03:00.0", "xe");
-    std::filesystem::create_directories(pciDir / "tile0");
-    writeFile(pciDir / "tile0" / "physical_vram_size_bytes", "17179869184"); // 16 GiB
+    writeFile(pciDir / "mem_info_vram_total", "17179869184"); // 16 GiB
     std::filesystem::create_directories(pciDir / "power");
     writeFile(pciDir / "power" / "runtime_status", "active");
 
