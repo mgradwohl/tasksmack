@@ -91,10 +91,10 @@ utilization = "#BA68C8"           # Purple - GPU utilization line
 utilization_fill = "#BA68C84D"    # Purple with 30% alpha - GPU fill
 memory = "#EC407A"                # Pink - GPU memory line (distinct from io Orange)
 memory_fill = "#EC407A4D"         # Pink with 30% alpha - GPU memory fill
-temperature = "#FFD54F"           # Gold - GPU temperature line
+temperature = "#FFC107"           # Gold - GPU temperature line
 power = "#00E676"                 # Green - GPU power draw line
-encoder = "#26C6DA"               # Teal - GPU encoder utilization
-decoder = "#EC407A"               # Magenta - GPU decoder utilization
+encoder = "#52C4D4"               # Teal - GPU encoder utilization
+decoder = "#26A69A"               # Teal - GPU decoder utilization (was Memory's Pink, #1197)
 clock = "#64B5F6"             # Light Blue - GPU clock speed line
 clock_fill = "#64B5F6CC"      # Light Blue with 80% alpha - GPU clock fill
 fan = "#5D7783"               # Dark Blue Gray - GPU fan speed line
@@ -117,7 +117,7 @@ idle_fill = "#80808033"      # Gray with 20% alpha - idle fill
 high   = "#E53935"     # Crimson (matches progress.high)
 normal = "#00E676"     # Emerald (matches progress.low)
 low    = "#42A5F5"     # Blue (matches charts.cpu)
-badge_text_color = "#FFFFFF"  # White - readable on all priority badge colors
+badge_text_color = "#FFFFFF"  # Preferred badge text; a fill it is too faint on gets the other text colour (#1130)
 
 [buttons.close]
 hovered = "#CC1A1A"     # Dark red hover

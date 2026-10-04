@@ -63,7 +63,9 @@ set(COMMON_TEST_SOURCES
     Core/test_PathService.cpp
     Core/test_VideoBackend.cpp
     Core/test_Window.cpp
+    Core/test_WindowEventRouting.cpp
     Core/test_WindowEvents.cpp
+    Core/test_WindowGeometry.cpp
     Domain/test_History.cpp
     Domain/test_Numeric.cpp
     Domain/test_SingleLineText.cpp
@@ -85,6 +87,7 @@ set(COMMON_TEST_SOURCES
     UI/test_RateAxis.cpp
     UI/test_BundledThemes.cpp
     UI/test_ColorContrast.cpp
+    UI/test_ColorDifference.cpp
     UI/test_StyleScale.cpp
     UI/test_DialogMetrics.cpp
     UI/test_LineLayout.cpp

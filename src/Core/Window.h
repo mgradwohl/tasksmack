@@ -1,9 +1,11 @@
 #pragma once
 
 #include "Core/WindowConstants.h"
+#include "Core/WindowGeometry.h"
 
 #include <SDL3/SDL_video.h>
 
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -68,6 +70,9 @@ class Window
         return m_GLContext;
     }
 
+    /// Move the window. Asynchronous (no SDL_SyncWindow): the custom title bar calls it on every
+    /// drag and left/top-resize step. On X11 getPosition() may report the old position until the
+    /// window manager applies the move.
     void setPosition(int x, int y) const;
     [[nodiscard]] auto getPosition() const -> std::pair<int, int>;
     [[nodiscard]] static bool supportsPositioning() noexcept;
@@ -78,6 +83,20 @@ class Window
     /// been created. Callers that need both dimensions should prefer this over
     /// separate getWidth()/getHeight() calls to avoid issuing two SDL queries.
     [[nodiscard]] auto getSize() const noexcept -> std::pair<int, int>;
+
+    /// The window's normal (restored) rectangle: its live geometry when not maximized, or the
+    /// rectangle it will restore to when maximized (#1121). std::nullopt when it is maximized and
+    /// that rectangle is unknown -- maximized by the compositor or OS rather than by maximize() --
+    /// in which case the caller should keep whatever normal geometry it saved before.
+    [[nodiscard]] auto getNormalGeometry() const -> std::optional<WindowGeometry::Rect>;
+
+    /// Apply saved geometry at startup: clamp the size to the display, move the window to
+    /// @p position when positioning is supported and the position is reachable on a connected
+    /// display (otherwise centre it on the primary display, #1128), then maximize if @p maximized.
+    /// The normal rectangle is applied before maximizing so it becomes the restore target (#1121).
+    /// Startup-only: before maximizing it waits for the window manager (SDL_SyncWindow), like
+    /// setSize(), so never call it from the render loop.
+    void applySavedGeometry(std::optional<std::pair<int, int>> position, bool maximized);
 
     [[nodiscard]] bool isMaximized() const;
     [[nodiscard]] bool isMinimized() const noexcept;
@@ -94,6 +113,9 @@ class Window
     void setHitTestCallback(SDL_HitTest callback, void* callbackData) const;
 
   private:
+    // Record the current rectangle as the restore target, unless the window is already maximized.
+    void rememberRestoreRect();
+
     WindowSpecification m_Spec;
     SDL_Window* m_Handle = nullptr;
     SDL_GLContext m_GLContext = nullptr;
@@ -101,6 +123,9 @@ class Window
 
     // For borderless window maximize/restore tracking
     bool m_IsMaximizedBorderless = false;
+    // Whether m_Restore* hold the rectangle the window had when maximize() last maximized it, on
+    // any path (client-side, compositor or SDL_MaximizeWindow). Cleared by restore().
+    bool m_HasRestoreRect = false;
     int m_RestoreX = 0;
     int m_RestoreY = 0;
     int m_RestoreWidth = 0;

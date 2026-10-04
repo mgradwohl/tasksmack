@@ -115,14 +115,87 @@ struct ProcessorPerformanceInfo
     return fn;
 }
 
-} // namespace
+// NtQuerySystemInformationEx function pointer type. For SystemProcessorPerformanceInformation the
+// input buffer is the USHORT processor group to report (#1107).
+using NtQuerySystemInformationExFn = NTSTATUS(WINAPI*)(ULONG systemInformationClass,
+                                                       PVOID inputBuffer,
+                                                       ULONG inputBufferLength,
+                                                       PVOID systemInformation,
+                                                       ULONG systemInformationLength,
+                                                       PULONG returnLength);
 
-WindowsSystemProbe::WindowsSystemProbe()
+/// Get NtQuerySystemInformationEx function from ntdll.dll (lazy init)
+[[nodiscard]] NtQuerySystemInformationExFn getNtQuerySystemInformationEx()
 {
+    static NtQuerySystemInformationExFn fn = nullptr;
+    static bool initialized = false;
+
+    if (!initialized)
+    {
+        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        if (ntdll != nullptr)
+        {
+            fn = Windows::getProcAddress<NtQuerySystemInformationExFn>(ntdll, "NtQuerySystemInformationEx");
+        }
+        initialized = true;
+    }
+    return fn;
+}
+
+/// Run one SystemProcessorPerformanceInformation query into `buffer`, growing it and retrying on
+/// a length mismatch (the processor count can change between sizing and querying).
+/// @param query  Calls NtQuerySystemInformation(Ex) with (buffer, byteLength, &returnLength).
+template<typename Query>
+[[nodiscard]] NTSTATUS queryProcessorPerformance(std::vector<ProcessorPerformanceInfo>& buffer, ULONG& returnLength, Query query)
+{
+    NTSTATUS status = 0;
+    for (int attempt = 0; attempt < 3; ++attempt)
+    {
+        returnLength = 0;
+        status = query(buffer.data(), static_cast<ULONG>(buffer.size() * sizeof(ProcessorPerformanceInfo)), &returnLength);
+        if (status != STATUS_INFO_LENGTH_MISMATCH_VALUE)
+        {
+            break;
+        }
+        // Grow with headroom: the processor count can change between calls.
+        const std::size_t neededEntries = (static_cast<std::size_t>(returnLength) / sizeof(ProcessorPerformanceInfo)) + 8;
+        buffer.assign(neededEntries, ProcessorPerformanceInfo{});
+    }
+    return status;
+}
+
+/// Logical processors across every processor group. dwNumberOfProcessors counts only the calling
+/// thread's group (at most 64), so a machine with more under-reported its core count (#1107).
+[[nodiscard]] std::size_t logicalProcessorCount()
+{
+    const DWORD allGroups = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    if (allGroups != 0)
+    {
+        return allGroups;
+    }
     SYSTEM_INFO sysInfo{};
     GetSystemInfo(&sysInfo);
-    m_NumCores = sysInfo.dwNumberOfProcessors;
+    return sysInfo.dwNumberOfProcessors;
+}
 
+/// Each processor group's first coreId, from the groups' maximum sizes (#1107; see
+/// processorGroupFirstCoreIds()). Read once: the maximums are fixed for the boot session.
+[[nodiscard]] std::vector<std::size_t> groupFirstCoreIds()
+{
+    const WORD groups = GetMaximumProcessorGroupCount();
+    std::vector<std::uint32_t> maximums;
+    maximums.reserve(groups);
+    for (WORD group = 0; group < groups; ++group)
+    {
+        maximums.push_back(GetMaximumProcessorCount(group));
+    }
+    return processorGroupFirstCoreIds(maximums);
+}
+
+} // namespace
+
+WindowsSystemProbe::WindowsSystemProbe() : m_NumCores(logicalProcessorCount()), m_GroupFirstCoreIds(groupFirstCoreIds())
+{
     // Get hostname (UTF-8 via wide API)
     std::array<wchar_t, MAX_COMPUTERNAME_LENGTH + 1> hostBuffer{};
     // Note: Windows APIs require DWORD for buffer sizes; explicit usage is intentional.
@@ -223,6 +296,83 @@ void WindowsSystemProbe::readCpuCounters(SystemCounters& counters) const
 
 void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
 {
+    // KernelTime includes idle, and DPC/interrupt time are inside kernel time; processorTimes()
+    // splits them so CpuCounters::active() counts each tick once (#1032). DpcTime is the
+    // closest Windows analogue of Linux softirq.
+    const auto toCounters = [](const ProcessorPerformanceInfo& info)
+    {
+        return processorTimes(largeIntegerToTicks(info.KernelTime),
+                              largeIntegerToTicks(info.IdleTime),
+                              largeIntegerToTicks(info.UserTime),
+                              largeIntegerToTicks(info.DpcTime),
+                              largeIntegerToTicks(info.InterruptTime));
+    };
+
+    // SystemProcessorPerformanceInformation reports only the calling thread's processor group,
+    // so a machine with more than 64 logical processors (several groups) showed one group's
+    // cores (#1107). NtQuerySystemInformationEx takes the group as input: query each in turn and
+    // append them in group order.
+    const WORD groupCount = GetActiveProcessorGroupCount();
+    const bool multiGroup = groupCount > 1;
+    if (const auto ntQueryEx = getNtQuerySystemInformationEx(); ntQueryEx != nullptr)
+    {
+        std::vector<CpuCounters> cores;
+        cores.reserve(m_NumCores);
+        bool allGroupsRead = groupCount > 0;
+
+        for (WORD group = 0; group < groupCount; ++group)
+        {
+            if (group >= m_GroupFirstCoreIds.size())
+            {
+                // A group the boot-time table does not cover has no stable ids; treat the sample
+                // as a failed group read rather than number its processors ad hoc.
+                allGroupsRead = false;
+                break;
+            }
+            USHORT groupNumber = group;
+            std::vector<ProcessorPerformanceInfo> perfInfo(std::max<DWORD>(GetActiveProcessorCount(group), 1));
+            ULONG returnLength = 0;
+            const NTSTATUS status = queryProcessorPerformance(
+                perfInfo,
+                returnLength,
+                [&](PVOID data, ULONG length, PULONG returned)
+                { return ntQueryEx(SystemProcessorPerformanceInformation, &groupNumber, sizeof(groupNumber), data, length, returned); });
+            if (status != 0) // STATUS_SUCCESS = 0
+            {
+                spdlog::debug("NtQuerySystemInformationEx failed for processor group {}: 0x{:08X}", group, status);
+                allGroupsRead = false;
+                break;
+            }
+            appendProcessorGroup(
+                cores, std::span<const ProcessorPerformanceInfo>(perfInfo), returnLength, m_GroupFirstCoreIds[group], toCounters);
+        }
+
+        if (allGroupsRead)
+        {
+            counters.cpuPerCore = std::move(cores);
+            if (multiGroup)
+            {
+                // Total from the same all-group counters as the per-core grid (#1107).
+                counters.cpuTotal = multiGroupTotal(sumCpuCounters(counters.cpuPerCore), m_LastAllGroupTotal);
+            }
+            spdlog::trace("Read per-core CPU for {} cores in {} processor groups", counters.cpuPerCore.size(), groupCount);
+            return;
+        }
+    }
+
+    if (multiGroup)
+    {
+        // A group query failed. The one-group fallback below would put the calling thread's group
+        // into the slots of group 0 (and whichever came before it), and SystemModel matches cores
+        // by position, so failure and recovery samples would compare different CPUs. Report no
+        // per-core data this sample, and never a one-group Total: the last all-group one, or a
+        // zeroed one before the first complete read (see multiGroupTotal) (#1107).
+        counters.cpuTotal = multiGroupTotal(std::nullopt, m_LastAllGroupTotal);
+        spdlog::debug("Per-core CPU unavailable this sample: a processor group query failed");
+        return;
+    }
+
+    // Fallback without NtQuerySystemInformationEx on a single-group machine.
     auto ntQuery = getNtQuerySystemInformation();
     if (ntQuery == nullptr)
     {
@@ -230,33 +380,12 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
         return;
     }
 
-    // winternl.h does not declare a named STATUS_INFO_LENGTH_MISMATCH constant.
-    constexpr NTSTATUS STATUS_INFO_LENGTH_MISMATCH_NT = static_cast<NTSTATUS>(0xC0000004L);
-
-    // Allocate buffer for all processors. m_NumCores (GetSystemInfo().dwNumberOfProcessors)
-    // is capped at 64 on systems with multiple processor groups (>64 logical processors,
-    // e.g. Threadripper/EPYC-class machines); grow and retry on a length mismatch instead
-    // of silently reporting no per-core data on those machines, mirroring the retry loop
-    // already used for the SystemProcessInformation query in WindowsProcessProbe.
-    std::vector<ProcessorPerformanceInfo> perfInfo(m_NumCores);
+    std::vector<ProcessorPerformanceInfo> perfInfo(std::max<std::size_t>(m_NumCores, 1));
     ULONG returnLength = 0;
-    NTSTATUS status = 0;
-
-    for (int attempt = 0; attempt < 3; ++attempt)
-    {
-        returnLength = 0;
-        status = ntQuery(SystemProcessorPerformanceInformation,
-                         perfInfo.data(),
-                         static_cast<ULONG>(perfInfo.size() * sizeof(ProcessorPerformanceInfo)),
-                         &returnLength);
-        if (status != STATUS_INFO_LENGTH_MISMATCH_NT)
-        {
-            break;
-        }
-        // Grow with headroom: the processor count can change between calls.
-        const std::size_t neededEntries = (static_cast<std::size_t>(returnLength) / sizeof(ProcessorPerformanceInfo)) + 8;
-        perfInfo.assign(neededEntries, ProcessorPerformanceInfo{});
-    }
+    const NTSTATUS status = queryProcessorPerformance(perfInfo,
+                                                      returnLength,
+                                                      [&](PVOID data, ULONG length, PULONG returned)
+                                                      { return ntQuery(SystemProcessorPerformanceInformation, data, length, returned); });
 
     if (status != 0) // STATUS_SUCCESS = 0
     {
@@ -265,28 +394,8 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
         return;
     }
 
-    // Calculate actual number of cores returned; clamp to the buffer size in case the
-    // kernel ever reports a length longer than what was actually allocated.
-    size_t coresReturned = std::min(returnLength / sizeof(ProcessorPerformanceInfo), perfInfo.size());
-    counters.cpuPerCore.reserve(coresReturned);
-
-    for (size_t i = 0; i < coresReturned; ++i)
-    {
-        const auto& info = perfInfo[i];
-
-        // KernelTime includes idle, and DPC/interrupt time are inside kernel time; processorTimes()
-        // splits them so CpuCounters::active() counts each tick once (#1032). DpcTime is the
-        // closest Windows analogue of Linux softirq.
-        CpuCounters core = processorTimes(largeIntegerToTicks(info.KernelTime),
-                                          largeIntegerToTicks(info.IdleTime),
-                                          largeIntegerToTicks(info.UserTime),
-                                          largeIntegerToTicks(info.DpcTime),
-                                          largeIntegerToTicks(info.InterruptTime));
-        // Windows enumerates processors contiguously, so the index is the core's identity (#1229).
-        core.coreId = i;
-        counters.cpuPerCore.push_back(core);
-    }
-
+    const std::size_t coresReturned =
+        appendProcessorGroup(counters.cpuPerCore, std::span<const ProcessorPerformanceInfo>(perfInfo), returnLength, 0, toCounters);
     spdlog::trace("Read per-core CPU for {} cores", coresReturned);
 }
 
