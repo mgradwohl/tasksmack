@@ -1,11 +1,17 @@
 #include "App/DialogGeometry.h"
 #include "App/Panels/ProcessDetailsPanel_PriorityHelpers.h"
 #include "Domain/PriorityConfig.h"
+#include "UI/ColorContrast.h"
+#include "UI/ThemeLoader.h"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <limits>
+#include <string>
+#include <vector>
 
 namespace App::Detail
 {
@@ -344,5 +350,95 @@ TEST(PriorityHelpersTest, GetPriorityLabelCategories)
     EXPECT_EQ(getPriorityLabel(19), "Idle");
 }
 
+// =============================================================================
+// Badge Text Contrast Tests (#1130)
+// =============================================================================
+
+auto bundledThemes() -> std::vector<std::filesystem::path>
+{
+    std::vector<std::filesystem::path> paths;
+    for (const auto& entry : std::filesystem::directory_iterator(TASKSMACK_SOURCE_THEMES_DIR))
+    {
+        if (entry.path().extension() == ".toml")
+        {
+            paths.push_back(entry.path());
+        }
+    }
+    std::ranges::sort(paths);
+    return paths;
+}
+
+constexpr float THUMB_MIN_CONTRAST = 3.0F; // WCAG 1.4.11, a non-text control on what surrounds it
+
+TEST(PriorityHelpersTest, UnpackColorInvertsGetNiceColor)
+{
+    const ImVec4 high{1.0F, 0.0F, 0.0F, 1.0F};
+    const ImVec4 normal{0.0F, 1.0F, 0.0F, 1.0F};
+    const ImVec4 low{0.0F, 0.0F, 1.0F, 1.0F};
+    const ImVec4 atNormal = unpackColor(getNiceColor(0, high, normal, low));
+    EXPECT_FLOAT_EQ(atNormal.x, 0.0F);
+    EXPECT_FLOAT_EQ(atNormal.y, 1.0F);
+    EXPECT_FLOAT_EQ(atNormal.z, 0.0F);
+    EXPECT_FLOAT_EQ(atNormal.w, 1.0F);
+}
+
+// The regression the issue reported: Arctic Fire's fixed white badge text on its #00E676 nice-0 badge.
+TEST(PriorityHelpersTest, FixedBadgeTextWasUnreadableOnArcticFireNormal)
+{
+    const ImVec4 emerald = unpackColor(IM_COL32(0x00, 0xE6, 0x76, 0xFF));
+    const ImVec4 white{1.0F, 1.0F, 1.0F, 1.0F};
+    const ImVec4 windowBg = unpackColor(IM_COL32(0x14, 0x1A, 0x24, 0xFF));
+
+    EXPECT_LT(UI::ColorContrast::contrastRatio(white, emerald), PRIORITY_BADGE_TEXT_MIN_CONTRAST);
+    EXPECT_GE(UI::ColorContrast::contrastRatio(badgeTextFor(emerald, white, windowBg), emerald), PRIORITY_BADGE_TEXT_MIN_CONTRAST);
+}
+
+// Neither pole readable (two mid greys on a mid grey): black or white, whichever is better, wins.
+TEST(PriorityHelpersTest, BadgeTextFallsBackToBlackOrWhite)
+{
+    const ImVec4 grey{0.5F, 0.5F, 0.5F, 1.0F};
+    const ImVec4 lighter{0.6F, 0.6F, 0.6F, 1.0F};
+    const ImVec4 darker{0.4F, 0.4F, 0.4F, 1.0F};
+    const ImVec4 chosen = badgeTextFor(grey, lighter, darker);
+    EXPECT_FLOAT_EQ(chosen.x, 0.0F); // black: 5.3:1 on mid grey against white's 3.9:1
+    EXPECT_GE(UI::ColorContrast::contrastRatio(chosen, grey), PRIORITY_BADGE_TEXT_MIN_CONTRAST);
+}
+
+// Every bundled theme, every nice value: the badge text is readable on the badge, and the thumb stands
+// out from the track around it.
+TEST(PriorityHelpersTest, BadgeTextAndThumbAreReadableInEveryBundledTheme)
+{
+    const auto themes = bundledThemes();
+    ASSERT_FALSE(themes.empty());
+    for (const auto& path : themes)
+    {
+        const auto scheme = UI::ThemeLoader::loadTheme(path);
+        if (!scheme.has_value())
+        {
+            ADD_FAILURE() << "failed to load " << path;
+            continue;
+        }
+        const auto name = path.stem().string();
+        const auto trackAt = [&scheme](int32_t nice)
+        {
+            return unpackColor(getNiceColor(nice, scheme->priorityHighColor, scheme->priorityNormalColor, scheme->priorityLowColor));
+        };
+
+        for (int32_t nice = NICE_MIN; nice <= NICE_MAX; ++nice)
+        {
+            const ImVec4 fill = trackAt(nice);
+            const ImVec4 text = badgeTextFor(fill, scheme->priorityBadgeTextColor, scheme->windowBg);
+            EXPECT_GE(UI::ColorContrast::contrastRatio(text, fill), PRIORITY_BADGE_TEXT_MIN_CONTRAST)
+                << name << " badge text at nice " << nice;
+
+            // The thumb is ~1.5 nice steps wide, so it also overlaps the track either side of the value.
+            for (const int32_t neighbour : {std::max(nice - 1, NICE_MIN), nice, std::min(nice + 1, NICE_MAX)})
+            {
+                EXPECT_GE(UI::ColorContrast::contrastRatio(text, trackAt(neighbour)), THUMB_MIN_CONTRAST)
+                    << name << " thumb at nice " << nice << " on the track at " << neighbour;
+            }
+        }
+    }
+}
 } // namespace
 } // namespace App::Detail
