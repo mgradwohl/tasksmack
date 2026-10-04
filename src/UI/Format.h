@@ -293,22 +293,35 @@ struct ByteUnit
     int decimals = 0;
 };
 
-[[nodiscard]] inline auto chooseByteUnit(double bytes) -> ByteUnit
+/// The four byte units, binary multiples. Named constants so a chart can hand ImPlot a stable
+/// pointer to the one unit its whole axis is labelled in (see byteUnitFor()).
+inline constexpr ByteUnit BYTE_UNIT_GB{.suffix = "GB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 1};
+inline constexpr ByteUnit BYTE_UNIT_MB{.suffix = "MB", .scale = 1024.0 * 1024.0, .decimals = 1};
+inline constexpr ByteUnit BYTE_UNIT_KB{.suffix = "KB", .scale = 1024.0, .decimals = 1};
+inline constexpr ByteUnit BYTE_UNIT_B{.suffix = "B", .scale = 1.0, .decimals = 1};
+
+/// The largest unit `bytes` is at least one of, as a reference to one of the BYTE_UNIT_* constants.
+[[nodiscard]] inline auto byteUnitFor(double bytes) -> const ByteUnit&
 {
     const double absBytes = std::abs(bytes);
-    if (absBytes >= 1024.0 * 1024.0 * 1024.0)
+    if (absBytes >= BYTE_UNIT_GB.scale)
     {
-        return {.suffix = "GB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 1};
+        return BYTE_UNIT_GB;
     }
-    if (absBytes >= 1024.0 * 1024.0)
+    if (absBytes >= BYTE_UNIT_MB.scale)
     {
-        return {.suffix = "MB", .scale = 1024.0 * 1024.0, .decimals = 1};
+        return BYTE_UNIT_MB;
     }
-    if (absBytes >= 1024.0)
+    if (absBytes >= BYTE_UNIT_KB.scale)
     {
-        return {.suffix = "KB", .scale = 1024.0, .decimals = 1};
+        return BYTE_UNIT_KB;
     }
-    return {.suffix = "B", .scale = 1.0, .decimals = 1};
+    return BYTE_UNIT_B;
+}
+
+[[nodiscard]] inline auto chooseByteUnit(double bytes) -> ByteUnit
+{
+    return byteUnitFor(bytes);
 }
 
 [[nodiscard]] inline auto unitForTotalBytes(std::uint64_t bytes) -> ByteUnit
@@ -321,9 +334,19 @@ struct ByteUnit
     return chooseByteUnit(bytesPerSec);
 }
 
+/// alue rounded to decimals places, halves away from zero, as the table's aligned cells round
+/// (splitBytesForAlignment() and friends). std::format alone rounds an exact half to even, so a
+/// binary-exact 3.25 MB read "3.2 MB" in a tooltip beside "3.3 MB" in the table (#1202).
+[[nodiscard]] inline auto roundHalfAwayFromZero(double value, int decimals) -> double
+{
+    const double factor = std::pow(10.0, decimals);
+    const double rounded = std::round(value * factor) / factor;
+    return std::isfinite(rounded) ? rounded : value;
+}
+
 [[nodiscard]] inline auto formatBytesWithUnit(double bytes, ByteUnit unit) -> std::string
 {
-    const double value = bytes / unit.scale;
+    const double value = roundHalfAwayFromZero(bytes / unit.scale, unit.decimals);
     return std::format("{:.{}Lf} {}", value, unit.decimals, unit.suffix);
 }
 
@@ -829,29 +852,66 @@ struct AlignedBytesParts
     return result;
 }
 
-/// Format power value with appropriate unit (W/mW/µW) based on magnitude
+// ============================================================================
+// One number-and-unit grammar for values and chart axes (#1202)
+//
+// A space before every unit except %, one decimal for bytes and watts, localized. The chart axis
+// formatters in ChartWidgets.h are thin adapters over these, so an axis tick, a tooltip and a
+// table cell show the same quantity the same way.
+// ============================================================================
+
+/// "45.0 W", "15.0 mW", "500.0 µW", one decimal in the unit its magnitude calls for; "0.0 W" for
+/// zero. Signed: a negative value keeps its sign. The same rounding and units as the Processes
+/// table's Power column (splitPowerForAlignment()).
+[[nodiscard]] inline auto formatWatts(double watts) -> std::string
+{
+    if (watts == 0.0)
+    {
+        return std::format("{:.1Lf} W", 0.0); // Also -0.0, which would print as "-0.0 W"
+    }
+    const double absWatts = std::abs(watts);
+    if (absWatts >= 1.0)
+    {
+        return std::format("{:.1Lf} W", roundHalfAwayFromZero(watts, 1));
+    }
+    if (absWatts >= 0.001)
+    {
+        return std::format("{:.1Lf} mW", roundHalfAwayFromZero(watts * 1000.0, 1));
+    }
+    return std::format("{:.1Lf} µW", roundHalfAwayFromZero(watts * 1'000'000.0, 1));
+}
+
+/// "42%" from 10 % up, "4.2%" below it (where a whole number would read 0 % or 1 % for most
+/// processes), "0%" for zero, "N/A" for NaN (no reading). Localized.
+[[nodiscard]] inline auto formatPercent(double percent) -> std::string
+{
+    if (std::isnan(percent))
+    {
+        return "N/A";
+    }
+    if (percent == 0.0)
+    {
+        return "0%";
+    }
+    // Decide on the rounded value, so 9.96 becomes "10%" rather than "10.0%".
+    const bool wholeNumber = std::abs(percent) >= 9.95;
+    return wholeNumber ? std::format("{:.0Lf}%", roundHalfAwayFromZero(percent, 0))
+                       : std::format("{:.1Lf}%", roundHalfAwayFromZero(percent, 1));
+}
+
+/// Format power value with appropriate unit (W/mW/µW) based on magnitude, one decimal (#1202),
+/// or "-" for zero or below.
 [[nodiscard]] inline auto formatPowerCompact(double watts) -> std::string
 {
     if (watts <= 0.0)
     {
         return "-";
     }
-
-    const double absWatts = std::abs(watts);
-    if (absWatts >= 1.0)
-    {
-        return std::format("{:.2Lf} W", watts);
-    }
-    if (absWatts >= 0.001)
-    {
-        return std::format("{:.2Lf} mW", watts * 1000.0);
-    }
-
-    return std::format("{:.2Lf} µW", watts * 1'000'000.0);
+    return formatWatts(watts);
 }
 
 /// Format power value for per-process consumption contexts.
-/// Returns "0.00 W" for zero; also clamps negative values to "0.00 W" because
+/// Returns "0.0 W" for zero; also clamps negative values to "0.0 W" because
 /// per-process energy counters use 0.0 as the sentinel for "not yet measured"
 /// and per-process power is never negative. Do NOT use this formatter for
 /// system/battery power (Domain::PowerStatus::powerWatts), which is signed and
@@ -862,7 +922,7 @@ struct AlignedBytesParts
 {
     if (watts <= 0.0)
     {
-        return "0.00 W";
+        return formatWatts(0.0);
     }
     return formatPowerCompact(watts);
 }

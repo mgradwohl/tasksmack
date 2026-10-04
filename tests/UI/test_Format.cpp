@@ -1159,13 +1159,13 @@ TEST(FormatTest, SplitPowerForAlignmentRoundingOverflow)
 TEST(FormatTest, FormatPowerOrZeroHandlesZero)
 {
     const auto result = UI::Format::formatPowerOrZero(0.0);
-    EXPECT_EQ(result, "0.00 W");
+    EXPECT_EQ(result, "0.0 W");
 }
 
 TEST(FormatTest, FormatPowerOrZeroHandlesNegative)
 {
     const auto result = UI::Format::formatPowerOrZero(-5.0);
-    EXPECT_EQ(result, "0.00 W");
+    EXPECT_EQ(result, "0.0 W");
 }
 
 TEST(FormatTest, FormatPowerOrZeroHandlesPositiveWatts)
@@ -1173,7 +1173,7 @@ TEST(FormatTest, FormatPowerOrZeroHandlesPositiveWatts)
     const auto result = UI::Format::formatPowerOrZero(15.5);
     EXPECT_FALSE(result.empty());
     EXPECT_TRUE(result.contains('W'));
-    EXPECT_NE(result, "0.00 W");
+    EXPECT_NE(result, "0.0 W");
 }
 
 TEST(FormatTest, FormatPowerOrZeroHandlesMilliwatts)
@@ -1188,7 +1188,7 @@ TEST(FormatTest, FormatPowerOrZeroHandlesMicrowatts)
     const auto result = UI::Format::formatPowerOrZero(0.0005);
     EXPECT_FALSE(result.empty());
     EXPECT_TRUE(result.contains('W'));
-    EXPECT_NE(result, "0.00 W");
+    EXPECT_NE(result, "0.0 W");
 }
 
 // =============================================================================
@@ -1447,4 +1447,78 @@ TEST(FormatTest, LogicalProcessorSummaryCountsLogicalProcessorsNotCores)
     EXPECT_EQ(UI::Format::formatLogicalProcessorSummary(16, 0.0), " (16 logical processors)");
     EXPECT_EQ(UI::Format::formatLogicalProcessorSummary(1, 0.0), " (1 logical processor)");
     EXPECT_FALSE(UI::Format::formatLogicalProcessorSummary(8, 2400.0).contains("cores"));
+}
+
+// =============================================================================
+// One grammar for values and axes (#1202)
+// =============================================================================
+
+TEST(FormatTest, FormatPowerCompactUsesOneDecimal)
+{
+    EXPECT_EQ(UI::Format::formatPowerCompact(15.5), "15.5 W");
+    EXPECT_EQ(UI::Format::formatPowerCompact(45.0), "45.0 W");
+    EXPECT_EQ(UI::Format::formatPowerCompact(0.015), "15.0 mW");
+}
+
+TEST(FormatTest, FormatWattsScalesUnitsAndKeepsSign)
+{
+    EXPECT_EQ(UI::Format::formatWatts(0.0), "0.0 W");
+    EXPECT_EQ(UI::Format::formatWatts(-0.0), "0.0 W");
+    EXPECT_EQ(UI::Format::formatWatts(45.0), "45.0 W");
+    EXPECT_EQ(UI::Format::formatWatts(0.5), "500.0 mW");
+    EXPECT_EQ(UI::Format::formatWatts(-12.25), "-12.3 W"); // An exact half rounds away from zero, like the table
+}
+
+// The Processes table's Power cell (splitPowerForAlignment) and the value/axis formatter agree.
+TEST(FormatTest, FormatWattsMatchesThePowerColumn)
+{
+    // 12.25 and 0.0125 are exact halves: std::format alone would round them to even.
+    for (const double watts : {0.0005, 0.0125, 0.5, 1.0, 4.96875, 12.25, 45.0, 123.45})
+    {
+        const auto parts = UI::Format::splitPowerForAlignment(watts);
+        EXPECT_EQ(UI::Format::formatWatts(watts), parts.wholePart + parts.decimalPart + parts.unitPart) << watts;
+    }
+}
+
+// The table's byte cells (splitBytesForAlignment) and formatBytes/the byte axes agree.
+TEST(FormatTest, FormatBytesMatchesTheByteColumns)
+{
+    // 3.25 MB is an exact half: std::format alone printed "3.2 MB" beside the table's "3.3 MB".
+    for (const double bytes : {512.0, 1536.0, 3.25 * 1024.0 * 1024.0, 1.5 * 1024.0 * 1024.0 * 1024.0})
+    {
+        const auto unit = UI::Format::chooseByteUnit(bytes);
+        const auto parts = UI::Format::splitBytesForAlignment(bytes, unit);
+        EXPECT_EQ(UI::Format::formatBytes(bytes), parts.wholePart + parts.decimalPart + parts.unitPart) << bytes;
+        const auto rate = UI::Format::splitBytesPerSecForAlignment(bytes, unit);
+        EXPECT_EQ(UI::Format::formatBytesPerSec(bytes), rate.wholePart + rate.decimalPart + rate.unitPart) << bytes;
+    }
+}
+
+TEST(FormatTest, ByteUnitForReturnsTheNamedUnits)
+{
+    EXPECT_EQ(&UI::Format::byteUnitFor(10.0), &UI::Format::BYTE_UNIT_B);
+    EXPECT_EQ(&UI::Format::byteUnitFor(2048.0), &UI::Format::BYTE_UNIT_KB);
+    EXPECT_EQ(&UI::Format::byteUnitFor(3.0 * 1024.0 * 1024.0), &UI::Format::BYTE_UNIT_MB);
+    EXPECT_EQ(&UI::Format::byteUnitFor(5.0 * 1024.0 * 1024.0 * 1024.0), &UI::Format::BYTE_UNIT_GB);
+    EXPECT_EQ(UI::Format::chooseByteUnit(2048.0).suffix, "KB");
+}
+
+TEST(FormatTest, FormatPercentIsWholeFromTenAndOneDecimalBelow)
+{
+    EXPECT_EQ(UI::Format::formatPercent(0.0), "0%");
+    EXPECT_EQ(UI::Format::formatPercent(0.2), "0.2%");
+    EXPECT_EQ(UI::Format::formatPercent(4.25), "4.3%"); // Exact half: away from zero, like percentOneDecimal()
+    EXPECT_EQ(UI::Format::formatPercent(9.96), "10%");
+    EXPECT_EQ(UI::Format::formatPercent(42.3), "42%");
+    EXPECT_EQ(UI::Format::formatPercent(100.0), "100%");
+    EXPECT_EQ(UI::Format::formatPercent(std::numeric_limits<double>::quiet_NaN()), "N/A");
+}
+
+// Whole percents read the same as percentCompact(), the existing whole-percent value formatter.
+TEST(FormatTest, FormatPercentMatchesPercentCompactFromTen)
+{
+    for (const double percent : {10.0, 12.0, 42.0, 99.0, 100.0})
+    {
+        EXPECT_EQ(UI::Format::formatPercent(percent), UI::Format::percentCompact(percent)) << percent;
+    }
 }
