@@ -7,10 +7,13 @@
 #if defined(__linux__) && __has_include(<linux/inet_diag.h>) && __has_include(<linux/sock_diag.h>)
 
 #include "Platform/Linux/NetlinkSocketStats.h"
+#include "Platform/SocketTrafficAccumulator.h"
 
 #include <benchmark/benchmark.h>
 
 #include <chrono>
+#include <cstdint>
+#include <vector>
 
 namespace
 {
@@ -82,7 +85,7 @@ static void BM_NetlinkSocketStats_BuildInodeToPidMap(benchmark::State& state)
 }
 BENCHMARK(BM_NetlinkSocketStats_BuildInodeToPidMap)->Unit(benchmark::kMillisecond);
 
-// Benchmark the full network attribution pipeline (query + map + aggregate)
+// Benchmark the full network attribution pipeline (query + map + per-socket accumulation)
 // This represents the full cost of per-process network stats
 static void BM_NetlinkSocketStats_FullPipeline(benchmark::State& state)
 {
@@ -95,12 +98,22 @@ static void BM_NetlinkSocketStats_FullPipeline(benchmark::State& state)
         return;
     }
 
+    Platform::SocketTrafficAccumulator accumulator;
+    std::vector<Platform::SocketTrafficSample> samples;
     for (auto _ : state)
     {
         auto sockets = stats.queryAllSockets();
         auto inodeToPid = Platform::buildInodeToPidMap();
-        auto pidStats = Platform::aggregateByPid(sockets, inodeToPid);
-        benchmark::DoNotOptimize(pidStats.size());
+        samples.clear();
+        samples.reserve(sockets.size());
+        for (const auto& socket : sockets)
+        {
+            const auto it = inodeToPid.find(socket.inode);
+            const std::int32_t pid = it != inodeToPid.end() ? it->second : 0;
+            samples.push_back({.key = socket.inode, .pid = pid, .bytesReceived = socket.bytesReceived, .bytesSent = socket.bytesSent});
+        }
+        accumulator.addReading(samples);
+        benchmark::DoNotOptimize(samples.size());
     }
 }
 BENCHMARK(BM_NetlinkSocketStats_FullPipeline)->Unit(benchmark::kMillisecond);

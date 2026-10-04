@@ -5,6 +5,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <charconv>
@@ -15,8 +16,9 @@
 #include <exception>
 #include <filesystem>
 #include <format>
-#include <limits>
+#include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -172,74 +174,125 @@ void parseSocketMessageImpl(const void* msg, std::size_t len, std::vector<Socket
     }
 }
 
-/// Query sockets for a specific address family (AF_INET or AF_INET6)
-/// Helper to reduce code duplication between IPv4 and IPv6 queries
-void querySocketsForFamily(int socket, int family, InetDiagRequest& req, std::vector<SocketStats>& results)
+/// The real NETLINK_SOCK_DIAG socket. Owns the fd; isOpen() is false if it couldn't be created or bound.
+class SockDiagTransport final : public INetlinkTransport
 {
-    req.req.sdiag_family = static_cast<std::uint8_t>(family);
-
-    // Send request
-    if (send(socket, &req, sizeof(req), 0) < 0)
+  public:
+    SockDiagTransport() : m_Socket(socket(AF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC, NETLINK_SOCK_DIAG))
     {
-        spdlog::debug("Failed to send inet_diag request for family {}: {}", family, safeStrerror(errno));
-        return;
+        if (m_Socket < 0)
+        {
+            spdlog::debug("Failed to create NETLINK_SOCK_DIAG socket: {}", safeStrerror(errno));
+            return;
+        }
+
+        // Bound recv() so a stalled kernel dump can't hang the background sampler thread
+        // forever (see NetlinkSocketStats::queryDump()). Best-effort: if this fails, recv() simply
+        // keeps its default blocking behavior.
+        timeval recvTimeout{}; // NOLINT(misc-include-cleaner) - provided by <sys/time.h> (already included)
+        recvTimeout.tv_sec = NETLINK_RECV_TIMEOUT_MS / 1000;
+        recvTimeout.tv_usec = (NETLINK_RECV_TIMEOUT_MS % 1000) * 1000;
+        // NOLINTNEXTLINE(misc-include-cleaner) - SOL_SOCKET/SO_RCVTIMEO are provided by <sys/socket.h> (already included)
+        if (setsockopt(m_Socket, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, sizeof(recvTimeout)) < 0)
+        {
+            spdlog::debug("Failed to set SO_RCVTIMEO on netlink socket: {}", safeStrerror(errno));
+        }
+
+        // Bind the socket
+        sockaddr_nl addr{};
+        addr.nl_family = AF_NETLINK;
+        addr.nl_pid = 0;    // Let kernel assign PID
+        addr.nl_groups = 0; // No multicast groups
+
+        if (bind(m_Socket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0)
+        {
+            spdlog::debug("Failed to bind netlink socket: {}", safeStrerror(errno));
+            closeSocket();
+            return;
+        }
+
+        // The kernel addresses dump replies to the port ID it assigned at bind(); read it back so
+        // the reader can ignore anything not meant for this socket. Unknown (0) disables that check.
+        sockaddr_nl bound{};
+        socklen_t boundLen = sizeof(bound); // NOLINT(misc-include-cleaner) - socklen_t from <sys/socket.h>
+        if (getsockname(m_Socket, reinterpret_cast<sockaddr*>(&bound), &boundLen) == 0)
+        {
+            m_PortId = bound.nl_pid;
+        }
     }
 
-    // Receive response - use aligned buffer for netlink messages
-    // Netlink messages require 4-byte alignment (nlmsghdr has __u32 fields)
-    alignas(alignof(nlmsghdr)) std::array<char, NETLINK_BUFFER_SIZE> buffer{};
-    bool done = false;
-
-    while (!done)
+    ~SockDiagTransport() noexcept override
     {
-        // NOLINTNEXTLINE(clang-analyzer-unix.BlockInCriticalSection,misc-include-cleaner) - not called from within critical sections, ssize_t POSIX false positive
-        const ssize_t len = recv(socket, buffer.data(), buffer.size(), 0);
-        if (len < 0)
-        {
-            if (errno == EINTR)
-            {
-                continue;
-            }
-            spdlog::debug("Failed to receive inet_diag response for family {}: {}", family, safeStrerror(errno));
-            break;
-        }
-        if (len == 0)
-        {
-            // Peer performed an orderly shutdown; no more data to read
-            break;
-        }
+        closeSocket();
+    }
 
-        // Parse netlink messages
-        // Suppress alignment warning - buffer is properly aligned above and kernel
-        // netlink protocol guarantees proper alignment of messages
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wcast-align"
-        auto remainingLen = static_cast<std::size_t>(len);
-        for (auto* nlh = reinterpret_cast<nlmsghdr*>(buffer.data()); NLMSG_OK(nlh, remainingLen); nlh = NLMSG_NEXT(nlh, remainingLen))
+    SockDiagTransport(const SockDiagTransport&) = delete;
+    SockDiagTransport& operator=(const SockDiagTransport&) = delete;
+    SockDiagTransport(SockDiagTransport&&) = delete;
+    SockDiagTransport& operator=(SockDiagTransport&&) = delete;
+
+    [[nodiscard]] bool isOpen() const noexcept
+    {
+        return m_Socket >= 0;
+    }
+
+    [[nodiscard]] NetlinkIoResult send(std::span<const std::byte> request) override
+    {
+        // NOLINTNEXTLINE(misc-include-cleaner) - ssize_t is POSIX (<sys/types.h> via <sys/socket.h>)
+        const ssize_t sent = ::send(m_Socket, request.data(), request.size(), 0);
+        return {.bytes = sent, .error = sent < 0 ? errno : 0};
+    }
+
+    [[nodiscard]] NetlinkIoResult receive(std::span<std::byte> buffer, bool nonBlocking) override
+    {
+        // NOLINTNEXTLINE(clang-analyzer-unix.BlockInCriticalSection,misc-include-cleaner) - bounded by SO_RCVTIMEO; ssize_t POSIX
+        const ssize_t len = ::recv(m_Socket, buffer.data(), buffer.size(), nonBlocking ? MSG_DONTWAIT : 0);
+        return {.bytes = len, .error = len < 0 ? errno : 0};
+    }
+
+    [[nodiscard]] std::uint32_t portId() const noexcept override
+    {
+        return m_PortId;
+    }
+
+  private:
+    void closeSocket() noexcept
+    {
+        if (m_Socket >= 0)
         {
-            if (nlh->nlmsg_type == NLMSG_DONE)
-            {
-                done = true;
-                break;
-            }
-
-            if (nlh->nlmsg_type == NLMSG_ERROR)
-            {
-                const auto* err = static_cast<nlmsgerr*>(NLMSG_DATA(nlh));
-                if (err->error != 0)
-                {
-                    spdlog::debug("Netlink error for family {}: {}", family, safeStrerror(-err->error));
-                }
-                done = true;
-                break;
-            }
-
-            if (nlh->nlmsg_type == SOCK_DIAG_BY_FAMILY)
-            {
-                parseSocketMessageImpl(NLMSG_DATA(nlh), NLMSG_PAYLOAD(nlh, 0), results);
-            }
+            // Invalidate m_Socket before close(); close() errors are ignored (common POSIX pattern).
+            const int oldSocket = m_Socket;
+            m_Socket = -1;
+            close(oldSocket);
         }
-#pragma clang diagnostic pop
+    }
+
+    int m_Socket = -1;
+    std::uint32_t m_PortId = 0;
+};
+
+[[nodiscard]] bool isWouldBlock(int error) noexcept
+{
+    return error == EAGAIN || error == EWOULDBLOCK;
+}
+
+/// Discard whatever is still queued on the socket -- the tail of an earlier dump that timed out or
+/// was abandoned -- so the next dump's reader doesn't start on it (#1160). Bounded so a socket that
+/// keeps delivering can't hold the sampler thread.
+void drainQueuedReplies(INetlinkTransport& transport, std::span<std::byte> buffer)
+{
+    constexpr int MAX_DRAINED_DATAGRAMS = 1024;
+    for (int drained = 0; drained < MAX_DRAINED_DATAGRAMS; ++drained)
+    {
+        const NetlinkIoResult result = transport.receive(buffer, true);
+        if (result.bytes < 0 && result.error == EINTR)
+        {
+            continue;
+        }
+        if (result.bytes <= 0)
+        {
+            return; // EAGAIN: nothing left; anything else: the next blocking read reports it
+        }
     }
 }
 
@@ -279,63 +332,43 @@ class DirGuard
 NetlinkSocketStats::NetlinkSocketStats() : NetlinkSocketStats(DEFAULT_SOCKET_STATS_CACHE_TTL)
 {}
 
-NetlinkSocketStats::NetlinkSocketStats(std::chrono::milliseconds cacheTtl) : m_CacheTtl(cacheTtl)
+NetlinkSocketStats::NetlinkSocketStats(std::chrono::milliseconds cacheTtl)
+    : NetlinkSocketStats(
+          []() -> std::unique_ptr<INetlinkTransport>
+          {
+              auto transport = std::make_unique<SockDiagTransport>();
+              if (!transport->isOpen())
+              {
+                  return nullptr;
+              }
+              return transport;
+          }(),
+          cacheTtl)
+{}
+
+NetlinkSocketStats::NetlinkSocketStats(std::unique_ptr<INetlinkTransport> transport, std::chrono::milliseconds cacheTtl)
+    : m_Transport(std::move(transport)), m_CacheTtl(cacheTtl)
 {
-    // Create netlink socket for SOCK_DIAG
-    // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer) - conditional initialization
-    m_Socket = socket(AF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC, NETLINK_SOCK_DIAG);
-    if (m_Socket < 0)
+    if (!m_Transport)
     {
-        spdlog::debug("Failed to create NETLINK_SOCK_DIAG socket: {}", safeStrerror(errno));
-        return;
-    }
-
-    // Bound recv() so a stalled kernel dump can't hang the background sampler thread
-    // forever (see querySocketsForFamily()). Best-effort: if this fails, recv() simply
-    // keeps its default blocking behavior.
-    timeval recvTimeout{}; // NOLINT(misc-include-cleaner) - provided by <sys/time.h> (already included)
-    recvTimeout.tv_sec = NETLINK_RECV_TIMEOUT_MS / 1000;
-    recvTimeout.tv_usec = (NETLINK_RECV_TIMEOUT_MS % 1000) * 1000;
-    // NOLINTNEXTLINE(misc-include-cleaner) - SOL_SOCKET/SO_RCVTIMEO are provided by <sys/socket.h> (already included)
-    if (setsockopt(m_Socket, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, sizeof(recvTimeout)) < 0)
-    {
-        spdlog::debug("Failed to set SO_RCVTIMEO on netlink socket: {}", safeStrerror(errno));
-    }
-
-    // Bind the socket
-    sockaddr_nl addr{};
-    addr.nl_family = AF_NETLINK;
-    addr.nl_pid = 0;    // Let kernel assign PID
-    addr.nl_groups = 0; // No multicast groups
-
-    if (bind(m_Socket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0)
-    {
-        spdlog::debug("Failed to bind netlink socket: {}", safeStrerror(errno));
-        // Invalidate m_Socket before close() to prevent leaks if close() fails
-        const int oldSocket = m_Socket;
-        m_Socket = -1;
-        close(oldSocket);
         return;
     }
 
     // Issue a best-effort INET_DIAG query as a warm-up / sanity check.
     // Note: availability is currently based solely on successful socket creation/bind;
     // a failure in this initial query does NOT change m_Available. Caught rather than
-    // propagated: an exception here (e.g. std::bad_alloc while collecting results) would
-    // otherwise abort construction after m_Socket is already open, leaking the fd since
-    // ~NetlinkSocketStats() never runs for an object that didn't finish constructing (#773).
+    // propagated: an exception here (e.g. std::bad_alloc while collecting results) must not
+    // escape the constructor (#773).
     try
     {
         std::vector<SocketStats> testResults;
-        querySockets(IPPROTO_TCP, testResults);
+        [[maybe_unused]] const bool complete = queryTcpSockets(testResults);
     }
     catch (const std::exception& e)
     {
         // The logging call itself can allocate (message formatting) and thus throw under the
         // same OOM condition this guard exists for; catching it here too, instead of just the
-        // query above, keeps this whole catch path non-throwing so it can never re-escape and
-        // leak m_Socket (the concern this outer try/catch was added for -- see the comment on
-        // the enclosing try block).
+        // query above, keeps this whole catch path non-throwing.
         try
         {
             spdlog::debug("Netlink warm-up query threw: {}", e.what());
@@ -347,7 +380,7 @@ NetlinkSocketStats::NetlinkSocketStats(std::chrono::milliseconds cacheTtl) : m_C
     catch (...)
     {
         // Non-std::exception throw (unlikely, but the surrounding try/catch's entire purpose
-        // is to guarantee this constructor can't leak m_Socket on any exception).
+        // is to guarantee this constructor can't throw).
         try
         {
             spdlog::debug("Netlink warm-up query threw a non-standard exception");
@@ -359,29 +392,15 @@ NetlinkSocketStats::NetlinkSocketStats(std::chrono::milliseconds cacheTtl) : m_C
 
     // Set available - the socket is considered functional if it was created and bound,
     // even if there are no TCP sockets yet or the warm-up query fails.
-    m_Available = (m_Socket >= 0);
-
-    if (m_Available)
-    {
-        spdlog::info("Netlink INET_DIAG available for per-process network monitoring (cache TTL: {}ms)", m_CacheTtl.count());
-    }
+    m_Available = true;
+    spdlog::info("Netlink INET_DIAG available for per-process network monitoring (cache TTL: {}ms)", m_CacheTtl.count());
 }
 
-NetlinkSocketStats::~NetlinkSocketStats() noexcept
-{
-    if (m_Socket >= 0)
-    {
-        // Invalidate m_Socket before close() for consistency with constructor cleanup.
-        // Destructor cannot throw, so close() errors are ignored (common POSIX pattern).
-        const int oldSocket = m_Socket;
-        m_Socket = -1;
-        close(oldSocket);
-    }
-}
+NetlinkSocketStats::~NetlinkSocketStats() noexcept = default;
 
 std::vector<SocketStats> NetlinkSocketStats::queryAllSockets(std::chrono::steady_clock::time_point* sampledAt)
 {
-    if (!m_Available || m_Socket < 0)
+    if (!m_Available || !m_Transport)
     {
         return {};
     }
@@ -406,16 +425,18 @@ std::vector<SocketStats> NetlinkSocketStats::queryAllSockets(std::chrono::steady
         return m_CachedResults;
     }
 
-    // Cache miss or expired - query the kernel
-    m_CachedResults.clear();
-    m_CachedResults.reserve(256); // Reasonable initial capacity
-
-    // Query TCP sockets (IPv4 and IPv6)
-    querySockets(IPPROTO_TCP, m_CachedResults);
-
-    // Query UDP sockets (IPv4 and IPv6)
-    // Note: UDP may have limited byte counter support
-    querySockets(IPPROTO_UDP, m_CachedResults);
+    // Cache miss or expired - query the kernel (TCP over IPv4 and IPv6; see the class comment for
+    // why UDP isn't queried).
+    std::vector<SocketStats> results;
+    results.reserve(std::max<std::size_t>(m_CachedResults.size(), 256));
+    if (!queryTcpSockets(results))
+    {
+        // A partial dump isn't a reading: returning it would make every socket it missed look
+        // closed, and caching it would serve that for a whole TTL (#1160). The previous complete
+        // reading stays cached but expired, so the next call queries again.
+        return {};
+    }
+    m_CachedResults = std::move(results);
 
     // Update timestamp immediately after kernel query to minimize race window.
     // Only update cache state if caching is enabled (TTL > 0).
@@ -438,7 +459,7 @@ std::vector<SocketStats> NetlinkSocketStats::queryAllSockets(std::chrono::steady
 
 std::vector<SocketStats> NetlinkSocketStats::queryAllSocketsUncached()
 {
-    if (!m_Available || m_Socket < 0)
+    if (!m_Available || !m_Transport)
     {
         return {};
     }
@@ -449,9 +470,10 @@ std::vector<SocketStats> NetlinkSocketStats::queryAllSocketsUncached()
 
     std::vector<SocketStats> results;
     results.reserve(256);
-
-    querySockets(IPPROTO_TCP, results);
-    querySockets(IPPROTO_UDP, results);
+    if (!queryTcpSockets(results))
+    {
+        return {};
+    }
 
     // Intentionally NOT updating cache - this is a true bypass for benchmarks/testing
     return results;
@@ -464,27 +486,114 @@ void NetlinkSocketStats::invalidateCache() noexcept
     m_LastQueryTime = {};
 }
 
-// NOLINTNEXTLINE(readability-make-member-function-const) - modifies socket state via send/recv
-void NetlinkSocketStats::querySockets(int protocol, std::vector<SocketStats>& results)
+bool NetlinkSocketStats::queryTcpSockets(std::vector<SocketStats>& results)
 {
-    // Build the request
+    // Both families are always dumped; the reading is complete only if both dumps were.
+    const bool ipv4Complete = queryDump(IPPROTO_TCP, AF_INET, results);
+    const bool ipv6Complete = queryDump(IPPROTO_TCP, AF_INET6, results);
+    return ipv4Complete && ipv6Complete;
+}
+
+bool NetlinkSocketStats::queryDump(int protocol, int family, std::vector<SocketStats>& results)
+{
+    // Receive buffer - aligned for netlink messages (nlmsghdr has __u32 fields).
+    alignas(alignof(nlmsghdr)) std::array<std::byte, NETLINK_BUFFER_SIZE> buffer{};
+
+    // Anything still queued belongs to an earlier dump (one that timed out, or whose reader gave up
+    // on an error): drop it before asking for a new one (#1160).
+    drainQueuedReplies(*m_Transport, buffer);
+
+    // A fresh sequence number per request, so a straggling reply from an earlier dump can never be
+    // mistaken for this one's -- including its NLMSG_DONE, which used to end this dump early.
+    const std::uint32_t sequence = m_NextSequence++;
+    if (m_NextSequence == 0)
+    {
+        m_NextSequence = 1;
+    }
+
     InetDiagRequest req{};
     req.nlh.nlmsg_len = sizeof(req);
     req.nlh.nlmsg_type = SOCK_DIAG_BY_FAMILY;
     req.nlh.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
-    req.nlh.nlmsg_seq = 1;
-
+    req.nlh.nlmsg_seq = sequence;
+    req.req.sdiag_family = static_cast<std::uint8_t>(family);
     req.req.sdiag_protocol = static_cast<std::uint8_t>(protocol);
     req.req.idiag_states = static_cast<std::uint32_t>(-1); // All states
-
     // Request INET_DIAG_INFO extension to get tcp_info with byte counters
     // This is a bitmask: (1 << (INET_DIAG_INFO - 1))
     req.req.idiag_ext = 1U << (INET_DIAG_INFO - 1);
 
-    // Query both IPv4 and IPv6 sockets using the extracted helper
-    querySocketsForFamily(m_Socket, AF_INET, req, results);
-    req.nlh.nlmsg_seq = 2;
-    querySocketsForFamily(m_Socket, AF_INET6, req, results);
+    const NetlinkIoResult sent = m_Transport->send(std::as_bytes(std::span{&req, 1}));
+    if (sent.bytes < 0)
+    {
+        spdlog::debug("Failed to send inet_diag request for family {}: {}", family, safeStrerror(sent.error));
+        return false;
+    }
+
+    const std::uint32_t portId = m_Transport->portId();
+    while (true)
+    {
+        const NetlinkIoResult received = m_Transport->receive(buffer, false);
+        if (received.bytes < 0)
+        {
+            if (received.error == EINTR)
+            {
+                continue;
+            }
+            // A timeout (EAGAIN) leaves the rest of the dump queued; the next query drains it.
+            spdlog::debug("{} inet_diag response for family {}: {}",
+                          isWouldBlock(received.error) ? "Timed out waiting for" : "Failed to receive",
+                          family,
+                          safeStrerror(received.error));
+            return false;
+        }
+        if (received.bytes == 0)
+        {
+            // Orderly shutdown before NLMSG_DONE: the dump is incomplete.
+            return false;
+        }
+
+        // Parse netlink messages
+        // Suppress alignment warning - buffer is properly aligned above and kernel
+        // netlink protocol guarantees proper alignment of messages
+        // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wcast-align"
+        auto remainingLen = static_cast<std::size_t>(received.bytes);
+        for (auto* nlh = reinterpret_cast<nlmsghdr*>(buffer.data()); NLMSG_OK(nlh, remainingLen); nlh = NLMSG_NEXT(nlh, remainingLen))
+        {
+            // Not a reply to this request: a stale message from an earlier dump, or not addressed
+            // to this socket.
+            if (nlh->nlmsg_seq != sequence || (portId != 0 && nlh->nlmsg_pid != portId))
+            {
+                continue;
+            }
+
+            if (nlh->nlmsg_type == NLMSG_DONE)
+            {
+                return true;
+            }
+
+            if (nlh->nlmsg_type == NLMSG_ERROR)
+            {
+                // The kernel's answer to this request -- e.g. ENOENT when the family's diag module
+                // is absent (IPv6 disabled). The dump is over and has no sockets; that's complete.
+                const auto* err = static_cast<const nlmsgerr*>(NLMSG_DATA(nlh));
+                if (err->error != 0)
+                {
+                    spdlog::debug("Netlink error for family {}: {}", family, safeStrerror(-err->error));
+                }
+                return true;
+            }
+
+            if (nlh->nlmsg_type == SOCK_DIAG_BY_FAMILY)
+            {
+                parseSocketMessageImpl(NLMSG_DATA(nlh), NLMSG_PAYLOAD(nlh, 0), results);
+            }
+        }
+#pragma clang diagnostic pop
+        // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
+    }
 }
 
 void NetlinkSocketStats::parseSocketMessage(const void* msg, std::size_t len, std::vector<SocketStats>& results)
@@ -493,12 +602,12 @@ void NetlinkSocketStats::parseSocketMessage(const void* msg, std::size_t len, st
     parseSocketMessageImpl(msg, len, results);
 }
 
-std::unordered_map<std::uint64_t, std::int32_t> buildInodeToPidMap()
+std::unordered_map<std::uint64_t, std::int32_t> buildInodeToPidMap(const std::filesystem::path& procRoot)
 {
     std::unordered_map<std::uint64_t, std::int32_t> inodeToPid;
     inodeToPid.reserve(1024); // Pre-allocate for typical system
 
-    const std::filesystem::path procPath("/proc");
+    const std::filesystem::path& procPath = procRoot;
     std::error_code errorCode;
 
     for (const auto& procEntry : std::filesystem::directory_iterator(procPath, errorCode))
@@ -570,53 +679,18 @@ std::unordered_map<std::uint64_t, std::int32_t> buildInodeToPidMap()
             auto parseResult = std::from_chars((target.data() + start), (target.data() + end), inode);
             if (parseResult.ec == std::errc{} && inode != 0)
             {
-                inodeToPid[inode] = pid;
+                // Shared socket: the lowest PID keeps it, whatever order readdir() lists /proc in,
+                // so the owner is the same on every rebuild (#1099).
+                const auto [it, inserted] = inodeToPid.try_emplace(inode, pid);
+                if (!inserted)
+                {
+                    it->second = std::min(it->second, pid);
+                }
             }
         }
     }
 
     return inodeToPid;
-}
-
-std::unordered_map<std::int32_t, std::pair<std::uint64_t, std::uint64_t>>
-aggregateByPid(const std::vector<SocketStats>& sockets, const std::unordered_map<std::uint64_t, std::int32_t>& inodeToPid)
-{
-    std::unordered_map<std::int32_t, std::pair<std::uint64_t, std::uint64_t>> pidStats;
-
-    for (const auto& socket : sockets)
-    {
-        auto it = inodeToPid.find(socket.inode);
-        if (it == inodeToPid.end())
-        {
-            continue; // Socket not mapped to any process (might be kernel)
-        }
-
-        const std::int32_t pid = it->second;
-        auto& [received, sent] = pidStats[pid];
-
-        // Use saturating addition to prevent overflow on very high traffic sockets
-        // Note: UINT64_MAX is a reasonable sentinel for "counter saturated"
-        // Check: if received > (MAX - bytesReceived) then adding would overflow
-        constexpr auto kMaxBytes = std::numeric_limits<std::uint64_t>::max();
-        if (received > kMaxBytes - socket.bytesReceived)
-        {
-            received = kMaxBytes; // Saturate on overflow
-        }
-        else
-        {
-            received += socket.bytesReceived;
-        }
-        if (sent > kMaxBytes - socket.bytesSent)
-        {
-            sent = kMaxBytes; // Saturate on overflow
-        }
-        else
-        {
-            sent += socket.bytesSent;
-        }
-    }
-
-    return pidStats;
 }
 
 } // namespace Platform

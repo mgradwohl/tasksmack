@@ -15,6 +15,7 @@
 #endif
 
 #include "Platform/ProcessTypes.h"
+#include "Platform/SocketTrafficAccumulator.h"
 #include "ProcParsing.h"
 #include "ProcessName.h"
 
@@ -204,6 +205,13 @@ void LinuxProcessProbe::setSocketStatsCacheTtl(std::chrono::milliseconds ttlMs)
     }
 }
 
+void LinuxProcessProbe::setSocketStatsForTesting(std::shared_ptr<NetlinkSocketStats> socketStats)
+{
+    m_HasNetworkCounters = socketStats != nullptr && socketStats->isAvailable();
+    const std::scoped_lock lock(m_SocketStatsMutex);
+    m_SocketStats = std::move(socketStats);
+}
+
 std::shared_ptr<NetlinkSocketStats> LinuxProcessProbe::socketStats() const
 {
     const std::scoped_lock lock(m_SocketStatsMutex);
@@ -319,6 +327,7 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasPeakRss = false,
                                .hasCpuAffinity = true,                    // From sched_getaffinity
                                .hasNetworkCounters = hasNetworkCounters,  // From Netlink INET_DIAG (if available)
+                               .hasUdpNetworkCounters = false,            // sock_diag has no UDP byte counters (#1101)
                                .hasPowerUsage = m_HasPowerCap,            // Available if RAPL is detected
                                .hasStatus = true,                         // From cgroup freezer state
                                .hasReducedPrivileges = reducedPrivileges, // Non-root: incomplete FD/IO data
@@ -1072,30 +1081,66 @@ void LinuxProcessProbe::attributeNetworkToProcesses(std::vector<ProcessCounters>
         return;
     }
 
-    // Query all TCP/UDP sockets with their byte counters
+    // Query all TCP sockets with their byte counters. A failed or partial dump comes back empty
+    // with sampledAt unset (#1160) and is not folded in: a socket missing from it would look closed
+    // and then, back in the next reading, new -- crediting its lifetime bytes at once.
     std::chrono::steady_clock::time_point sampledAt;
     const std::vector<SocketStats> sockets = stats->queryAllSockets(&sampledAt);
+    const bool isNewReading = sampledAt != std::chrono::steady_clock::time_point{};
 
-    // The socket query is cached (DEFAULT_SOCKET_STATS_CACHE_TTL), so it can be older than this
-    // refresh. Stamp it on every process -- with sockets or not, and before the early returns below
-    // for an empty result -- so ProcessModel takes network rates over the time between real queries
-    // rather than between refreshes. An unstamped read in between would make the next real one fall
-    // back to the refresh interval and overstate its rate (#1063 review). A failed query
-    // (unavailable) leaves sampledAt unset and the processes unstamped.
-    if (sampledAt != std::chrono::steady_clock::time_point{})
+    // Only a reading with sockets needs the inode map. Fetched before m_NetTrafficMutex is taken,
+    // so a /proc scan never blocks another enumerate() (see currentInodeToPidMap()).
+    std::shared_ptr<const std::unordered_map<std::uint64_t, std::int32_t>> inodeToPid;
+    if (isNewReading && !sockets.empty())
     {
-        const auto sampleTimeNs =
-            static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(sampledAt.time_since_epoch()).count());
-        for (auto& proc : processes)
+        inodeToPid = currentInodeToPidMap();
+    }
+
+    const std::scoped_lock lock{m_NetTrafficMutex};
+    // The socket query is cached (DEFAULT_SOCKET_STATS_CACHE_TTL), so the same reading can come
+    // back for several refreshes; it is folded in once.
+    if (isNewReading && sampledAt != m_LastNetReadingTime)
+    {
+        std::vector<SocketTrafficSample> samples;
+        samples.reserve(sockets.size());
+        for (const auto& socket : sockets)
         {
-            proc.netSampleTimeNs = sampleTimeNs;
+            std::int32_t pid = 0;
+            if (inodeToPid)
+            {
+                if (const auto it = inodeToPid->find(socket.inode); it != inodeToPid->end())
+                {
+                    pid = it->second;
+                }
+            }
+            samples.push_back(
+                SocketTrafficSample{.key = socket.inode, .pid = pid, .bytesReceived = socket.bytesReceived, .bytesSent = socket.bytesSent});
         }
-    }
-    if (sockets.empty())
-    {
-        return;
+        m_NetTraffic.addReading(samples);
+        m_LastNetReadingTime = sampledAt;
     }
 
+    if (m_LastNetReadingTime == std::chrono::steady_clock::time_point{})
+    {
+        return; // no reading yet: processes stay unstamped with no network bytes
+    }
+
+    // Every process gets its cumulative bytes (monotonic, see SocketTrafficAccumulator) and the time
+    // of the reading they come from -- processes with sockets or not, so ProcessModel takes rates
+    // over the time between real readings rather than between refreshes (#1063 review). A refresh
+    // whose query failed republishes the last reading's totals and time, so the model holds the
+    // last rate instead of measuring a 0 and then two intervals' bytes over one.
+    const auto sampleTimeNs =
+        static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(m_LastNetReadingTime.time_since_epoch()).count());
+    for (auto& proc : processes)
+    {
+        proc.netSampleTimeNs = sampleTimeNs;
+    }
+    m_NetTraffic.publish(processes);
+}
+
+std::shared_ptr<const std::unordered_map<std::uint64_t, std::int32_t>> LinuxProcessProbe::currentInodeToPidMap() const
+{
     // Refresh inode-to-PID map on a TTL basis to avoid scanning /proc/[pid]/fd/* every
     // enumerate(). The rebuild slot is claimed by advancing m_InodeToPidCacheTime under
     // the initial lock, so only one thread rebuilds per TTL window while all others
@@ -1118,7 +1163,7 @@ void LinuxProcessProbe::attributeNetworkToProcesses(std::vector<ProcessCounters>
     if (needsRebuild)
     {
         // Build the map outside the lock; concurrent threads keep using the old snapshot.
-        auto rebuilt = std::make_shared<const std::unordered_map<std::uint64_t, std::int32_t>>(buildInodeToPidMap());
+        auto rebuilt = std::make_shared<const std::unordered_map<std::uint64_t, std::int32_t>>(buildInodeToPidMap(m_ProcRoot));
         {
             const std::scoped_lock lock{m_InodePidCacheMutex};
             if (!rebuilt->empty())
@@ -1139,26 +1184,7 @@ void LinuxProcessProbe::attributeNetworkToProcesses(std::vector<ProcessCounters>
             }
         }
     }
-    if (!inodeToPidPtr || inodeToPidPtr->empty())
-    {
-        return;
-    }
-
-    // Aggregate socket bytes by PID
-    const auto& inodeToPid = *inodeToPidPtr;
-    const auto pidStats = aggregateByPid(sockets, inodeToPid);
-
-    // Apply network stats to processes
-    for (auto& proc : processes)
-    {
-        auto it = pidStats.find(proc.pid);
-        if (it != pidStats.end())
-        {
-            const auto& [received, sent] = it->second;
-            proc.netReceivedBytes = received;
-            proc.netSentBytes = sent;
-        }
-    }
+    return inodeToPidPtr;
 }
 #endif // TASKSMACK_HAS_NETLINK_SOCKET_STATS
 

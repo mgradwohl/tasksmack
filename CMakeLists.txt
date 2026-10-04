@@ -190,6 +190,7 @@ set(TASKSMACK_HEADERS
     src/Platform/GPUTypes.h
     src/Platform/PowerTypes.h
     src/Platform/ProcessTypes.h
+    src/Platform/SocketTrafficAccumulator.h
     src/Domain/ProcessSnapshot.h
     src/Domain/ProcessModel.h
     src/Domain/ISamplable.h

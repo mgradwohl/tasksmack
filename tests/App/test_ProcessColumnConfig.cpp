@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <limits>
+#include <string_view>
 #include <vector>
 
 namespace App
@@ -68,6 +69,31 @@ TEST(ProcessColumnConfigTest, EveryColumnHasAPositiveDefaultWidth)
     {
         const auto info = getColumnInfo(col);
         EXPECT_GT(info.defaultWidth, 0.0F) << info.configKey;
+    }
+}
+
+// #1101: per-process network counts TCP only on both platforms; the column tooltips must say so
+// rather than let a browser streaming over QUIC read as idle.
+TEST(ProcessColumnConfigTest, NetworkColumnsNoteTheyAreTcpOnlyWithoutUdpCounters)
+{
+    for (const auto col : {ProcessColumn::NetSent, ProcessColumn::NetReceived})
+    {
+        const std::string_view note = columnCapabilityNote(col, false);
+        EXPECT_TRUE(note.contains("TCP only")) << getColumnInfo(col).configKey;
+        EXPECT_TRUE(note.contains("UDP")) << getColumnInfo(col).configKey;
+        EXPECT_TRUE(columnCapabilityNote(col, true).empty()) << getColumnInfo(col).configKey;
+    }
+}
+
+TEST(ProcessColumnConfigTest, OtherColumnsHaveNoCapabilityNote)
+{
+    for (const auto col : allProcessColumns())
+    {
+        if (col == ProcessColumn::NetSent || col == ProcessColumn::NetReceived)
+        {
+            continue;
+        }
+        EXPECT_TRUE(columnCapabilityNote(col, false).empty()) << getColumnInfo(col).configKey;
     }
 }
 

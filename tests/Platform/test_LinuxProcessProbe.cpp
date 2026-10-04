@@ -24,6 +24,16 @@
 #include "Platform/ProcessTypes.h"
 #include "Platform/ScopedTempDir.h"
 
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+#include "Platform/Linux/NetlinkSocketStats.h"
+#include "Platform/NetlinkTestUtils.h"
+
+#include <memory>
+#include <vector>
+
+#include <sys/socket.h>
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
@@ -36,6 +46,7 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <utility>
 
 #include <sys/wait.h>
 #include <unistd.h>
@@ -861,6 +872,57 @@ TEST(LinuxProcessProbeTest, AFailedPreTailTotalReadIsReturnedNotRetriedAfterTheT
     EXPECT_EQ(probe.totalCpuTime(), 0U);    // the failed pre-tail read, not a post-tail retry
     EXPECT_EQ(probe.totalCpuTime(), 2000U); // taken once; then a fresh read
 }
+
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+TEST(LinuxProcessProbeTest, AClosingSocketDoesNotZeroTheProcessNetworkCounter)
+{
+    // #1099: the per-process counter was the sum over the process's live sockets, so when socket 12
+    // closed it dropped from 6000 to 3000 -- ProcessModel read that as 0 B/s for the interval in which
+    // socket 11 moved 2000 bytes. Built from per-socket deltas it only ever grows.
+    ScopedTempDir proc("ts_test_proc_net_close");
+    writeFile(proc.path / "4242" / "stat",
+              "4242 (app) S 1 4242 4242 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+    writeFile(proc.path / "stat", "cpu  100 0 100 800 0 0 0 0 0 0\n");
+    std::filesystem::create_directories(proc.path / "4242" / "fd");
+    std::filesystem::create_symlink("socket:[11]", proc.path / "4242" / "fd" / "3");
+    std::filesystem::create_symlink("socket:[12]", proc.path / "4242" / "fd" / "4");
+
+    using Platform::TestSupport::FakeSocket;
+    using Platform::TestSupport::ScriptedNetlinkTransport;
+    const std::vector<std::vector<FakeSocket>> readings{
+        {{.inode = 11, .bytesReceived = 1'000}, {.inode = 12, .bytesReceived = 5'000}},
+        {{.inode = 11, .bytesReceived = 3'000}}, // 12 closed
+        {{.inode = 11, .bytesReceived = 6'000}},
+    };
+    std::size_t reading = 0;
+    auto transport = std::make_unique<ScriptedNetlinkTransport>();
+    auto* script = transport.get();
+    auto stats = std::make_shared<Platform::NetlinkSocketStats>(std::move(transport), std::chrono::milliseconds{0});
+    script->onRequest = [&](const ScriptedNetlinkTransport::Request& request)
+    {
+        if (request.family != AF_INET)
+        {
+            return Platform::TestSupport::completeDump(request, {});
+        }
+        return Platform::TestSupport::completeDump(request, readings.at(reading++));
+    };
+
+    LinuxProcessProbe probe(proc.path);
+    probe.setSocketStatsForTesting(stats);
+    ASSERT_TRUE(probe.capabilities().hasNetworkCounters);
+
+    std::vector<std::uint64_t> received;
+    for (std::size_t i = 0; i < readings.size(); ++i)
+    {
+        const auto processes = probe.enumerate();
+        ASSERT_EQ(processes.size(), 1U);
+        EXPECT_NE(processes[0].netSampleTimeNs, 0U);
+        received.push_back(processes[0].netReceivedBytes);
+    }
+    EXPECT_EQ(received, (std::vector<std::uint64_t>{0, 2'000, 5'000}));
+}
+#endif
 
 TEST(LinuxProcessProbeTest, EmptyProcDirReturnsNoProcesses)
 {

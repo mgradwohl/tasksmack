@@ -294,11 +294,13 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         //    probe may cache its query across refreshes, and a delta over the refresh interval
         //    would then read 0 for the cached refreshes and several intervals' bytes for the next.
         //  - While the probe returns the same cached read, the last rate is held, not zeroed.
-        //  - The counters are sums over the process's *live* connections, so a connection closing
-        //    makes the sum drop: counterRate reports 0 for that interval rather than a wrapped or
-        //    negative rate (bytes on the surviving connections in it go uncounted).
-        //  - A rate above the 100 Gbps sanity ceiling -- a connection appearing with traffic from
-        //    before it was first attributed -- is dropped to 0 too.
+        //  - On Linux the counters are monotonic: the probe accumulates each connection's own growth
+        //    (Platform::SocketTrafficAccumulator), so a connection closing or being attributed late
+        //    no longer makes them drop or jump (#1099). Windows still reports the sum over the
+        //    process's *live* connections, which drops when one closes: counterRate reports 0 for
+        //    that interval rather than a wrapped or negative rate.
+        //  - A rate above the 100 Gbps sanity ceiling -- e.g. a connection appearing with traffic
+        //    from before it was first attributed, on Windows -- is dropped to 0 too.
         const NetworkInterval netInterval = previous != nullptr ? networkInterval(current, *previous, elapsedSeconds) : NetworkInterval{};
         if (netInterval.kind == NetworkInterval::Kind::Measure)
         {

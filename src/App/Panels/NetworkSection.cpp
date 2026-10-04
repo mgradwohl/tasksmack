@@ -97,13 +97,8 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     const auto& interfaces = netSnap.networkInterfaces;
 
     // Build interface selector dropdown
-    std::vector<std::string> interfaceNames;
-    interfaceNames.emplace_back("Total (All Interfaces)");
-    for (const auto& iface : interfaces)
-    {
-        // Use display name if available, otherwise interface name
-        interfaceNames.push_back(iface.displayName.empty() ? iface.name : iface.displayName);
-    }
+    // "Total" then each interface; virtual interfaces are marked as left out of the Total (#1106)
+    const std::vector<std::string> interfaceNames = NetInterfaceUtils::interfaceSelectorLabels(interfaces);
 
     const auto interfaceCount = interfaces.size();
 

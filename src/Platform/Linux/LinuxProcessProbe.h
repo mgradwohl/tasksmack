@@ -5,6 +5,7 @@
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 #include "Platform/Linux/NetlinkSocketStats.h"
+#include "Platform/SocketTrafficAccumulator.h"
 
 #include <chrono>
 #include <unordered_map>
@@ -57,6 +58,10 @@ class LinuxProcessProbe : public IProcessProbe
     /// @param ttlMs Time-to-live in milliseconds for cached socket stats
     /// Use this to override the default cache TTL at runtime (e.g., from user config)
     void setSocketStatsCacheTtl(std::chrono::milliseconds ttlMs) override;
+
+    /// Test seam: attribute network traffic from `socketStats` (e.g. one over a scripted netlink
+    /// transport) instead of the real socket. Not thread-safe; call before sampling starts.
+    void setSocketStatsForTesting(std::shared_ptr<NetlinkSocketStats> socketStats);
 #endif
 
     /// Test seam: called by enumerate() where its variable-latency tail (network attribution) runs,
@@ -109,6 +114,13 @@ class LinuxProcessProbe : public IProcessProbe
     mutable std::mutex m_InodePidCacheMutex;
     mutable std::shared_ptr<const std::unordered_map<std::uint64_t, std::int32_t>> m_InodeToPidCache;
     mutable std::chrono::steady_clock::time_point m_InodeToPidCacheTime;
+
+    // Per-process cumulative network bytes, built from per-socket deltas so a closing or
+    // late-attributed socket doesn't make the counter drop or jump (#1099; see
+    // SocketTrafficAccumulator). m_NetTrafficMutex guards both members.
+    mutable std::mutex m_NetTrafficMutex;
+    mutable SocketTrafficAccumulator m_NetTraffic;
+    mutable std::chrono::steady_clock::time_point m_LastNetReadingTime; // last reading folded in; {} = none
 #endif
 
     /// Parse /proc/[pid]/stat for a single process
@@ -162,6 +174,9 @@ class LinuxProcessProbe : public IProcessProbe
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     /// Attribute network bytes to processes using Netlink socket stats
     void attributeNetworkToProcesses(std::vector<ProcessCounters>& processes) const;
+
+    /// The inode-to-PID map, rebuilt from /proc/[pid]/fd when its TTL has expired (see m_InodeToPidCache).
+    [[nodiscard]] std::shared_ptr<const std::unordered_map<std::uint64_t, std::int32_t>> currentInodeToPidMap() const;
 
     /// Thread-safe copy of the current NetlinkSocketStats instance (see m_SocketStats).
     [[nodiscard]] std::shared_ptr<NetlinkSocketStats> socketStats() const;
