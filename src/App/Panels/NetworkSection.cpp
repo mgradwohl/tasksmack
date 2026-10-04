@@ -72,6 +72,7 @@ void renderDiskIOSection(RenderContext& ctx)
     // Delegate to StorageSection - this wrapper maintains API compatibility
     StorageSection::RenderContext storageCtx{
         .publication = ctx.storagePublication,
+        .chartDataGeneration = ctx.chartDataGeneration,
         .maxHistorySeconds = ctx.maxHistorySeconds,
         .historyScrollSeconds = ctx.historyScrollSeconds,
         .lastDeltaSeconds = ctx.lastDeltaSeconds,
@@ -347,9 +348,11 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     const float plotHeight = (ctx.fill != nullptr) ? ctx.fill->plotHeight() : HISTORY_PLOT_HEIGHT_DEFAULT;
     auto plot = [&]()
     {
-        const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
-            UI::Widgets::rateHistoryConfigWithUpper("##SystemNetHistory", axis.xMin, axis.xMax, formatAxisBytesPerSec, netAxisUpper),
-            plotHeight));
+        const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
+            UI::Widgets::withHeight(
+                UI::Widgets::rateHistoryConfigWithUpper("##SystemNetHistory", axis.xMin, axis.xMax, formatAxisBytesPerSec, netAxisUpper),
+                plotHeight),
+            ctx.chartDataGeneration));
         if (chart.active())
         {
             UI::Widgets::drawCollectingHint(aligned); // The same "no data yet" state on every chart (#1013)

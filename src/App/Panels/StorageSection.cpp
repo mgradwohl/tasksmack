@@ -19,6 +19,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <format>
 #include <limits>
 #include <optional>
@@ -90,7 +91,8 @@ void renderDiskCell(const std::string& deviceName,
                     const UI::Widgets::TimeAxisConfig& axisConfig,
                     const UI::Theme& theme,
                     float cellHeight,
-                    std::optional<float>& cachedOverhead)
+                    std::optional<float>& cachedOverhead,
+                    std::uint64_t dataGeneration)
 {
     // One upper bound for the chart's Y axis and its bars, so a bar and its line show a value at the
     // same height (#1003). A per-disk series holds NaN for samples where the disk was absent, and
@@ -151,7 +153,7 @@ void renderDiskCell(const std::string& deviceName,
             deviceName.c_str(), axisConfig.xMin, axisConfig.xMax, formatAxisBytesPerSec, diskAxisUpper);
         diskCfg.flags |= ImPlotFlags_NoTitle;
         diskCfg.height = plotHeight;
-        const UI::Widgets::HistoryChart chart(diskCfg);
+        const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(diskCfg, dataGeneration));
         if (chart.active())
         {
             UI::Widgets::drawCollectingHint(timeData.size()); // The same "no data yet" state on every chart (#1013)
@@ -384,8 +386,17 @@ void renderStorageSection(RenderContext& ctx)
 
                 // The pooled axis, viewed in place: no per-disk copy (#1066 review).
                 const auto cellTimes = UI::Widgets::tailAlignedSpan(diskTimes, alignedCount).values;
-                renderDiskCell(
-                    disk.deviceName, cellTimes, readData, writeData, diskRead, diskWrite, diskAxis, theme, cellHeight, cachedOverhead);
+                renderDiskCell(disk.deviceName,
+                               cellTimes,
+                               readData,
+                               writeData,
+                               diskRead,
+                               diskWrite,
+                               diskAxis,
+                               theme,
+                               cellHeight,
+                               cachedOverhead,
+                               ctx.chartDataGeneration);
             },
             // Disks can be unplugged mid-session, shifting later indices in perDisk -- key each
             // cell's ImGui/ImPlot state by the stable device name instead of position (#823 review).
@@ -423,10 +434,11 @@ void renderStorageSection(RenderContext& ctx)
         const float plotHeight = (ctx.fill != nullptr) ? ctx.fill->plotHeight() : HISTORY_PLOT_HEIGHT_DEFAULT;
         auto diskPlot = [&]()
         {
-            const UI::Widgets::HistoryChart chart(
+            const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
                 UI::Widgets::withHeight(UI::Widgets::rateHistoryConfigWithUpper(
                                             "##SystemDiskHistory", diskAxis.xMin, diskAxis.xMax, formatAxisBytesPerSec, diskAxisUpper),
-                                        plotHeight));
+                                        plotHeight),
+                ctx.chartDataGeneration));
             if (chart.active())
             {
                 UI::Widgets::drawCollectingHint(alignedDisk); // The same "no data yet" state on every chart (#1013)

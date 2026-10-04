@@ -189,13 +189,20 @@ void renderRightAlignedText(const AlignedCellText& cell)
     renderRightAlignedText(cell.text, cell.width);
 }
 
-/// Renders free text (a name, a user, a command line) left-aligned in the current cell. These
-/// cells have no cached width, so the text is measured here -- once, which is what
-/// ImGui::TextUnformatted() did for them before.
-void renderLeftAlignedText(std::string_view text)
+/// The width of `text` as drawn in the current font, from `width` once it has been measured: measured
+/// here the first time the cell is drawn, then reused until its RowFormatCache entry is rebuilt for a
+/// new snapshot or font (#1141).
+[[nodiscard]] float cachedTextWidth(std::string_view text, const ProcessRowFormat::LazyTextWidth& width)
 {
-    const float textWidth = ImGui::CalcTextSize(text.data(), text.data() + text.size()).x;
-    renderCellText(text, textWidth, /*rightAligned=*/false);
+    return width.get([text] { return ImGui::CalcTextSize(text.data(), text.data() + text.size()).x; });
+}
+
+/// Renders free text (a name, a user, a command line) left-aligned in the current cell. `width` is
+/// the cell's slot in its row's RowFormatCache entry, so the text is measured once per entry rather
+/// than every frame (#1141): command lines run to thousands of characters, each a glyph lookup.
+void renderLeftAlignedText(std::string_view text, const ProcessRowFormat::LazyTextWidth& width)
+{
+    renderCellText(text, cachedTextWidth(text, width), /*rightAligned=*/false);
 }
 
 } // namespace
@@ -681,6 +688,7 @@ void ProcessesPanel::renderContent()
 
         m_CachedFilterVersion = currentVersion;
         m_CachedSearchTerm = std::string(searchTerm);
+        ++m_FilterGeneration; // The tree's rows are rebuilt from the new indices (#1138)
 
         // Reset sorted indices to natural order so the next list-view sort starts from scratch.
         // This keeps m_CachedFilteredIndices always in natural order for tree view.
@@ -1089,7 +1097,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             }
             ImGui::SameLine(0.0F, 0.0F);
             // Keep PID text right-aligned in its column in both list and tree modes.
-            renderRightAlignedText(label, ImGui::CalcTextSize(label.data(), label.data() + label.size()).x);
+            renderRightAlignedText(label, cachedTextWidth(label, fmt.pidWidth));
             continue;
         }
 
@@ -1097,7 +1105,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         switch (col)
         {
         case ProcessColumn::User:
-            renderLeftAlignedText(proc.user);
+            renderLeftAlignedText(proc.user, fmt.userWidth);
             break;
 
         case ProcessColumn::CpuPercent:
@@ -1181,7 +1189,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         case ProcessColumn::Status:
             if (!proc.status.empty())
             {
-                renderLeftAlignedText(proc.status);
+                renderLeftAlignedText(proc.status, fmt.statusWidth);
             }
             else
             {
@@ -1241,6 +1249,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
                     {
                         m_CollapsedKeys.erase(proc.uniqueKey);
                     }
+                    ++m_CollapseGeneration; // The tree's rows are rebuilt next frame (#1138)
                 }
                 ImGui::SameLine();
             }
@@ -1251,7 +1260,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
                 ImGui::SameLine();
             }
 
-            renderLeftAlignedText(proc.name);
+            renderLeftAlignedText(proc.name, fmt.nameWidth);
 
             if (indented)
             {
@@ -1294,7 +1303,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         case ProcessColumn::Command:
             if (!proc.command.empty())
             {
-                renderLeftAlignedText(proc.command);
+                renderLeftAlignedText(proc.command, fmt.commandWidth);
             }
             else
             {
@@ -1332,14 +1341,14 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             break;
 
         case ProcessColumn::GpuEngine:
-            renderLeftAlignedText(fmt.gpuEngines);
+            renderLeftAlignedText(fmt.gpuEngines, fmt.gpuEnginesWidth);
             break;
 
         case ProcessColumn::GpuDevice:
         {
             if (!proc.gpuDevices.empty())
             {
-                renderLeftAlignedText(proc.gpuDevices);
+                renderLeftAlignedText(proc.gpuDevices, fmt.gpuDevicesWidth);
             }
             else
             {
@@ -1352,7 +1361,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         {
             if (!proc.publisher.empty())
             {
-                renderLeftAlignedText(proc.publisher);
+                renderLeftAlignedText(proc.publisher, fmt.publisherWidth);
             }
             else
             {
@@ -1380,7 +1389,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
                     typeColor = scheme.textMuted;
                 }
                 ImGui::PushStyleColor(ImGuiCol_Text, typeColor);
-                renderLeftAlignedText(proc.processType);
+                renderLeftAlignedText(proc.processType, fmt.processTypeWidth);
                 ImGui::PopStyleColor();
             }
             else
@@ -1404,42 +1413,22 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
 
 void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots, const std::vector<std::size_t>& filteredIndices)
 {
-    // Convert filtered indices to a set for O(1) lookups
-    const std::unordered_set<std::size_t> filteredSet(filteredIndices.begin(), filteredIndices.end());
-
-    // Check if each process is a top-level root (either has no parent, or its parent isn't in the filtered set).
-    // Because snapshots[idx].childrenIndices already forms the hierarchy edges, we just need to avoid double-rendering
-    // children by only initiating a tree descent from the roots.
-
-    // First, find all processes that appear as a child in the filtered set.
-    std::unordered_set<std::size_t> isChildInFilteredSet;
-    for (const std::size_t idx : filteredIndices)
-    {
-        for (const std::size_t childIdx : snapshots[idx].childrenIndices)
+    // The expanded, filtered tree flattened into render order (roots in the order of filteredIndices,
+    // to respect PID/natural order), so ImGuiListClipper below can bound the expensive part --
+    // renderProcessRow(), which measures/renders every column -- to visible rows only. The rows are
+    // rebuilt only when a new snapshot is adopted, the filter result is rebuilt, or a node is
+    // collapsed or expanded, not every frame (#1138); see ProcessTreeFlatten::ProcessTreeRowsCache.
+    // Held by reference while rendering: an expander toggled below only advances
+    // m_CollapseGeneration, so the rows are rebuilt next frame, never during this loop.
+    const std::vector<ProcessTreeFlatten::ProcessTreeRow>& rows = m_TreeRowsCache.rows(
         {
-            if (filteredSet.contains(childIdx))
-            {
-                isChildInFilteredSet.insert(childIdx);
-            }
-        }
-    }
-
-    // Flatten the expanded, filtered tree into render order (in the order of filteredIndices to
-    // respect PID/natural order) BEFORE rendering anything, so ImGuiListClipper below can bound
-    // the expensive part -- renderProcessRow(), which measures/renders every column -- to
-    // visible rows only. This walk itself does no ImGui work and is cheap even for thousands of
-    // expanded rows; see ProcessTreeFlatten.h for why it's rebuilt every frame rather than
-    // cached (perf-plan #843 tree-view virtualization item).
-    std::vector<ProcessTreeFlatten::ProcessTreeRow> rows;
-    rows.reserve(filteredIndices.size());
-    for (const std::size_t idx : filteredIndices)
-    {
-        // Only start a descent from root processes (not listed as a child of any other filtered process)
-        if (!isChildInFilteredSet.contains(idx))
-        {
-            ProcessTreeFlatten::collectProcessTreeRows(snapshots, filteredSet, m_CollapsedKeys, idx, 0, rows);
-        }
-    }
+            .snapshotVersion = m_CachedSnapshotVersion,
+            .filterGeneration = m_FilterGeneration,
+            .collapseGeneration = m_CollapseGeneration,
+        },
+        snapshots,
+        filteredIndices,
+        m_CollapsedKeys);
 
     ImGuiListClipper clipper;
     clipper.Begin(static_cast<int>(rows.size()));
