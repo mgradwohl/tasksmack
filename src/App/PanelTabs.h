@@ -2,7 +2,10 @@
 
 #include "Panel.h"
 
+#include <spdlog/spdlog.h>
+
 #include <cstddef>
+#include <exception>
 #include <functional>
 #include <initializer_list>
 #include <ranges>
@@ -66,9 +69,22 @@ class PanelTabs
 
     void onDetach()
     {
+        // Each panel separately: one that throws must not stop the others stopping their samplers,
+        // nor ShellLayer reaching its config save after this (#1124).
         for (const auto& tab : m_Tabs | std::views::reverse)
         {
-            tab.panel.get().onDetach();
+            try
+            {
+                tab.panel.get().onDetach();
+            }
+            catch (const std::exception& e)
+            {
+                logDetachFailure(tab.eventName, e.what());
+            }
+            catch (...)
+            {
+                logDetachFailure(tab.eventName, "unknown exception");
+            }
         }
     }
 
@@ -94,6 +110,18 @@ class PanelTabs
     }
 
   private:
+    /// Best-effort report of a panel throwing while detaching. Formatting can itself throw (e.g.
+    /// out of memory), and that must not interrupt the teardown either (as guardLayerCall does).
+    static void logDetachFailure(const std::string& panel, const char* what) noexcept
+    {
+        try
+        {
+            spdlog::error("Panel '{}' threw while detaching: {}", panel, what);
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) - logging is best effort and must not throw
+        {}
+    }
+
     std::vector<Tab> m_Tabs;
     std::size_t m_ActiveIndex = 0;
 };

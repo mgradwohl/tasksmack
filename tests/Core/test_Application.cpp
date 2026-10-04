@@ -274,6 +274,17 @@ class CloseRequestingLayer : public Core::Layer
     int m_UpdateCount = 0;
 };
 
+/// Layer whose onDetach() logs to g_DetachOrder, then throws, to verify detachAllLayers() still
+/// detaches the layers below it (#1124).
+class ThrowingOnDetachLayer : public Core::Layer
+{
+  public:
+    explicit ThrowingOnDetachLayer(const std::string& name) : Layer(name)
+    {}
+
+    void onDetach() override;
+};
+
 /// Static vector to track layer detach order across Application destruction
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 std::vector<std::string> g_DetachOrder;
@@ -290,6 +301,12 @@ class TrackedLayer : public Core::Layer
         g_DetachOrder.push_back(getName());
     }
 };
+
+void ThrowingOnDetachLayer::onDetach()
+{
+    g_DetachOrder.push_back(getName());
+    throw std::runtime_error("ThrowingOnDetachLayer::onDetach always throws");
+}
 
 void ThrowingOnAttachLayer::onDetach()
 {
@@ -1268,6 +1285,37 @@ TEST(ApplicationTest, PushLayerPopsHalfInitializedLayerWhenOnAttachThrows)
         // onDetach() on it here, since it unconditionally iterates the whole layer stack.
         ASSERT_EQ(g_DetachOrder.size(), 1U);
         EXPECT_EQ(g_DetachOrder[0], "Good");
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
+// #1124: a layer that throws while detaching must not stop the layers below it being detached.
+TEST(ApplicationTest, DetachAllLayersContinuesPastAThrowingLayer)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    g_DetachOrder.clear();
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "DetachThrowTest";
+
+    try
+    {
+        Core::Application app(spec);
+        app.pushLayer<TrackedLayer>("Bottom");
+        app.pushLayer<ThrowingOnDetachLayer>("Thrower");
+        app.pushLayer<TrackedLayer>("Top");
+
+        EXPECT_NO_THROW(app.detachAllLayers());
+
+        // Topmost first; the throw in "Thrower" doesn't skip "Bottom".
+        EXPECT_EQ(g_DetachOrder, (std::vector<std::string>{"Top", "Thrower", "Bottom"}));
     }
     catch (const std::exception& e)
     {
