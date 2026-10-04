@@ -115,6 +115,14 @@ bool NVMLGPUProbe::loadNVML()
     LOAD_NVML_FUNC_OPTIONAL(DeviceGetPcieThroughput)
     LOAD_NVML_FUNC_OPTIONAL(DeviceGetComputeRunningProcesses)
     LOAD_NVML_FUNC_OPTIONAL(DeviceGetGraphicsRunningProcesses)
+    // nvml.h maps nvmlDeviceGetPciInfo to the _v3 export; older drivers have only _v2 (same struct).
+    m_NVML.DeviceGetPciInfo =
+        reinterpret_cast<decltype(m_NVML.DeviceGetPciInfo)>(GetProcAddress(static_cast<HMODULE>(m_NVMLHandle), "nvmlDeviceGetPciInfo_v3"));
+    if (m_NVML.DeviceGetPciInfo == nullptr)
+    {
+        m_NVML.DeviceGetPciInfo = reinterpret_cast<decltype(m_NVML.DeviceGetPciInfo)>(
+            GetProcAddress(static_cast<HMODULE>(m_NVMLHandle), "nvmlDeviceGetPciInfo_v2"));
+    }
 
 #undef LOAD_NVML_FUNC_OPTIONAL
 #undef LOAD_NVML_FUNC
@@ -288,6 +296,18 @@ std::vector<GPUInfo> NVMLGPUProbe::enumerateGPUs()
         info.isIntegrated = false;
 
         info.deviceIndex = i;
+
+        // PCI identity, so the Windows probe can match this device to its DXGI adapter by hardware
+        // rather than by name or enumeration order (#1091).
+        if (m_NVML.DeviceGetPciInfo != nullptr)
+        {
+            NVML::nvmlPciInfo_t pci{};
+            if (m_NVML.DeviceGetPciInfo(device, &pci) == NVML_SUCCESS)
+            {
+                info.pciLocation = PciLocation{.bus = pci.bus, .device = pci.device};
+                info.pciDeviceId = pci.pciDeviceId;
+            }
+        }
 
         // Which sensors this device actually reports: capabilities() covers NVML as a whole, but
         // e.g. a passively cooled card has no fan reading, and a laptop GPU may not report power
