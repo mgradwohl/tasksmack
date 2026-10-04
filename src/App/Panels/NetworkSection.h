@@ -1,5 +1,6 @@
 #pragma once
 
+#include "App/Panels/NetInterfaceUtils.h"
 #include "App/Panels/StorageSection.h"
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
@@ -47,6 +48,11 @@ struct RenderContext
 
     // Name of the selected network interface (empty = "Total" / all interfaces combined)
     std::string* selectedNetworkInterface = nullptr;
+
+    // Interface Status table: "Show all" toggle (per session, not saved) and the interfaces seen moving
+    // traffic this session, which stay listed while down (#1211). Null: defaults, nothing remembered.
+    bool* showAllInterfaces = nullptr;
+    NetInterfaceUtils::InterfaceNameSet* interfacesWithTraffic = nullptr;
 
     // The tab's chart-height measurements from the previous frame (#959). Null keeps the fixed
     // default height for every chart.

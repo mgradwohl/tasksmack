@@ -5,8 +5,10 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <functional>
 #include <iterator>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -192,6 +194,66 @@ getSortedFilteredInterfaces(const std::vector<Domain::SystemSnapshot::InterfaceS
                       });
 
     return result;
+}
+
+/// Names of the interfaces seen sending or receiving this session (heterogeneous lookup by string_view).
+using InterfaceNameSet = std::set<std::string, std::less<>>;
+
+/// Whether the interface is moving any traffic in this snapshot.
+[[nodiscard]] inline bool hasTraffic(const Domain::SystemSnapshot::InterfaceSnapshot& iface)
+{
+    return iface.rxBytesPerSec > 0.0 || iface.txBytesPerSec > 0.0;
+}
+
+/// Add every interface moving traffic in this snapshot to `seen`, so a down interface that carried
+/// traffic earlier in the session (an unplugged USB adapter, a dropped VPN) stays listed (#1211).
+inline void recordInterfaceTraffic(const std::vector<Domain::SystemSnapshot::InterfaceSnapshot>& interfaces, InterfaceNameSet& seen)
+{
+    for (const auto& iface : interfaces)
+    {
+        if (hasTraffic(iface) && !seen.contains(iface.name))
+        {
+            seen.insert(iface.name);
+        }
+    }
+}
+
+/// Whether the Interface Status table leaves the interface out unless "Show all" is on (#1211).
+///
+/// Virtual and Bluetooth interfaces are hidden (the platform's isVirtual flag where it is set, the
+/// name heuristic otherwise), as are down interfaces -- WAN Miniports, spare Wi-Fi instances,
+/// disconnected adapters -- unless they have carried traffic this session.
+[[nodiscard]] inline bool isHiddenByDefault(const Domain::SystemSnapshot::InterfaceSnapshot& iface, const InterfaceNameSet& seenTraffic)
+{
+    if (iface.isVirtual || isVirtualInterface(iface) || isBluetoothInterface(iface))
+    {
+        return true;
+    }
+    return !iface.isUp && !hasTraffic(iface) && !seenTraffic.contains(iface.name);
+}
+
+/// How many interfaces the Interface Status table hides by default; the "Show all (N)" count (#1211).
+[[nodiscard]] inline std::size_t countHiddenInterfaces(const std::vector<Domain::SystemSnapshot::InterfaceSnapshot>& interfaces,
+                                                       const InterfaceNameSet& seenTraffic)
+{
+    return static_cast<std::size_t>(
+        std::ranges::count_if(interfaces, [&seenTraffic](const auto& iface) { return isHiddenByDefault(iface, seenTraffic); }));
+}
+
+/// The Interface Status table's rows: every interface when `showAll`, otherwise those not hidden by
+/// default (see isHiddenByDefault), sorted as getSortedFilteredInterfaces sorts them (#1211).
+[[nodiscard]] inline std::vector<Domain::SystemSnapshot::InterfaceSnapshot> getInterfaceStatusRows(
+    const std::vector<Domain::SystemSnapshot::InterfaceSnapshot>& interfaces, bool showAll, const InterfaceNameSet& seenTraffic)
+{
+    if (showAll)
+    {
+        return getSortedFilteredInterfaces(interfaces, /*showVirtualInterfaces=*/true, /*showDownInterfaces=*/true);
+    }
+    std::vector<Domain::SystemSnapshot::InterfaceSnapshot> shown;
+    shown.reserve(interfaces.size());
+    std::ranges::copy_if(
+        interfaces, std::back_inserter(shown), [&seenTraffic](const auto& iface) { return !isHiddenByDefault(iface, seenTraffic); });
+    return getSortedFilteredInterfaces(shown, /*showVirtualInterfaces=*/true, /*showDownInterfaces=*/true);
 }
 
 /// The network chart's interface selector entries: the Total first, then each interface's display

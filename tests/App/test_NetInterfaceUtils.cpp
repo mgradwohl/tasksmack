@@ -455,6 +455,89 @@ TEST(NetInterfaceUtilsTest, GetSortedFilteredInterfacesPreservesAllFields)
     EXPECT_EQ(result[0].linkSpeedMbps, 1000U);
 }
 
+// ========== Interface Status default view (#1211) ==========
+
+[[nodiscard]] std::vector<std::string> rowNames(const std::vector<Domain::SystemSnapshot::InterfaceSnapshot>& rows)
+{
+    std::vector<std::string> names;
+    names.reserve(rows.size());
+    for (const auto& row : rows)
+    {
+        names.push_back(row.name);
+    }
+    return names;
+}
+
+/// The review machine's table in miniature: one active adapter among down and virtual ones.
+[[nodiscard]] std::vector<Domain::SystemSnapshot::InterfaceSnapshot> reviewMachineInterfaces()
+{
+    auto bridge = makeInterface("br0", "", true, 10.0, 10.0); // Up, but the platform marks it virtual
+    bridge.isVirtual = true;
+    return {
+        makeInterface("Wi-Fi", "", true, 2000.0, 300.0, 866),
+        makeInterface("WAN Miniport (IP)", "", true),
+        makeInterface("Wi-Fi 2", "", false),
+        makeInterface("Ethernet 3", "USB Ethernet", false),
+        makeInterface("Bluetooth Network Connection", "", false),
+        bridge,
+    };
+}
+
+TEST(NetInterfaceUtilsTest, StatusRowsHideDownInterfacesByDefault)
+{
+    const InterfaceNameSet noTraffic;
+    const auto rows = getInterfaceStatusRows({makeInterface("eth0", "", true), makeInterface("eth1", "", false)}, false, noTraffic);
+    EXPECT_EQ(rowNames(rows), std::vector<std::string>{"eth0"});
+}
+
+TEST(NetInterfaceUtilsTest, StatusRowsHideVirtualInterfacesByDefault)
+{
+    const InterfaceNameSet noTraffic;
+    auto flagged = makeInterface("wg0", "", true, 100.0, 100.0); // Name heuristic doesn't know it; the flag does
+    flagged.isVirtual = true;
+    const auto rows =
+        getInterfaceStatusRows({makeInterface("eth0", "", true), flagged, makeInterface("WAN Miniport (IP)", "", true)}, false, noTraffic);
+    EXPECT_EQ(rowNames(rows), std::vector<std::string>{"eth0"});
+}
+
+TEST(NetInterfaceUtilsTest, StatusRowsKeepADownInterfaceWithTrafficNow)
+{
+    const InterfaceNameSet noTraffic;
+    const auto rows = getInterfaceStatusRows({makeInterface("eth1", "", false, 0.0, 50.0)}, false, noTraffic);
+    EXPECT_EQ(rowNames(rows), std::vector<std::string>{"eth1"});
+}
+
+TEST(NetInterfaceUtilsTest, StatusRowsKeepADownInterfaceThatHadTrafficThisSession)
+{
+    InterfaceNameSet seen;
+    recordInterfaceTraffic({makeInterface("eth1", "", true, 500.0, 0.0), makeInterface("eth2", "", true)}, seen);
+    EXPECT_TRUE(seen.contains("eth1"));
+    EXPECT_FALSE(seen.contains("eth2"));
+
+    // Unplugged later: down, no traffic now, but still listed.
+    const std::vector interfaces = {makeInterface("eth1", "", false), makeInterface("eth2", "", false)};
+    EXPECT_EQ(rowNames(getInterfaceStatusRows(interfaces, false, seen)), std::vector<std::string>{"eth1"});
+    EXPECT_EQ(countHiddenInterfaces(interfaces, seen), 1U);
+}
+
+TEST(NetInterfaceUtilsTest, HiddenCountIsTheInterfacesLeftOutByDefault)
+{
+    const InterfaceNameSet noTraffic;
+    const auto interfaces = reviewMachineInterfaces();
+    EXPECT_EQ(countHiddenInterfaces(interfaces, noTraffic), 5U);
+    EXPECT_EQ(rowNames(getInterfaceStatusRows(interfaces, false, noTraffic)), std::vector<std::string>{"Wi-Fi"});
+    EXPECT_EQ(countHiddenInterfaces({}, noTraffic), 0U);
+}
+
+TEST(NetInterfaceUtilsTest, ShowAllListsEveryInterface)
+{
+    const InterfaceNameSet noTraffic;
+    const auto interfaces = reviewMachineInterfaces();
+    const auto rows = getInterfaceStatusRows(interfaces, true, noTraffic);
+    EXPECT_EQ(rows.size(), interfaces.size());
+    EXPECT_EQ(rows.front().name, "Wi-Fi"); // Still sorted: up and active first
+}
+
 // ========== interfaceSelectorLabels (#1106) ==========
 
 TEST(NetInterfaceUtilsTest, SelectorMarksVirtualInterfacesLeftOutOfTheTotal)

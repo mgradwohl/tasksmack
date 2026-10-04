@@ -476,18 +476,39 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     }
     ImGui::Spacing();
 
-    // Interface status table - filtered and sorted (virtual/bluetooth hidden by default)
-    const auto sortedInterfaces = NetInterfaceUtils::getSortedFilteredInterfaces(interfaces);
-    if (!sortedInterfaces.empty())
+    // Interface status table: down, virtual and Bluetooth interfaces are hidden unless "Show all" is
+    // on, but a down interface that moved traffic this session stays listed (#1211).
+    static const NetInterfaceUtils::InterfaceNameSet NO_TRAFFIC_SEEN;
+    if (ctx.interfacesWithTraffic != nullptr)
+    {
+        NetInterfaceUtils::recordInterfaceTraffic(interfaces, *ctx.interfacesWithTraffic);
+    }
+    const auto& seenTraffic = (ctx.interfacesWithTraffic != nullptr) ? *ctx.interfacesWithTraffic : NO_TRAFFIC_SEEN;
+    const bool showAllInterfaces = (ctx.showAllInterfaces != nullptr) && *ctx.showAllInterfaces;
+    const auto sortedInterfaces = NetInterfaceUtils::getInterfaceStatusRows(interfaces, showAllInterfaces, seenTraffic);
+    if (!interfaces.empty())
     {
         ImGui::Separator();
         ImGui::Spacing();
+        ImGui::AlignTextToFramePadding();
         ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_LIST "  Interface Status");
+        const std::size_t hiddenCount = NetInterfaceUtils::countHiddenInterfaces(interfaces, seenTraffic);
+        if (ctx.showAllInterfaces != nullptr && (hiddenCount > 0 || *ctx.showAllInterfaces))
+        {
+            ImGui::SameLine();
+            std::array<char, 64> showAllLabel{};
+            std::format_to_n(showAllLabel.data(), showAllLabel.size() - 1, "Show all ({})##ShowAllInterfaces", hiddenCount);
+            ImGui::Checkbox(showAllLabel.data(), ctx.showAllInterfaces);
+            if (ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip("Also list the %zu down, virtual and Bluetooth interfaces hidden by default", hiddenCount);
+            }
+        }
         ImGui::Spacing();
 
         constexpr ImGuiTableFlags tableFlags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp;
 
-        if (ImGui::BeginTable("##InterfaceTable", 6, tableFlags))
+        if (!sortedInterfaces.empty() && ImGui::BeginTable("##InterfaceTable", 6, tableFlags))
         {
             // Wide enough for its header and for any of the icons it can hold, at the current font.
             // It was a fixed 30px on a non-resizable table: the header was cut to "T..." from Extra

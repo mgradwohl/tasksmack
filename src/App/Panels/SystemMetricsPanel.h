@@ -3,6 +3,7 @@
 #include "App/Panel.h"
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/MemorySection.h"
+#include "App/Panels/NetInterfaceUtils.h"
 #include "App/Panels/StorageSection.h"
 #include "Core/Event.h"
 #include "Domain/BackgroundSampler.h"
@@ -184,6 +185,11 @@ class SystemMetricsPanel : public Panel
 
     // Name of the selected network interface; empty means "Total" / all interfaces combined
     std::string m_SelectedNetworkInterface;
+
+    // Interface Status table (#1211): "Show all" for this session only, and the interfaces seen moving
+    // traffic, which stay listed while down.
+    bool m_ShowAllInterfaces = false;
+    NetInterfaceUtils::InterfaceNameSet m_InterfacesWithTraffic;
 
     // GPU smoothed values (uses type from GpuSection)
     std::unordered_map<std::string, GpuSection::SmoothedGPU> m_SmoothedGPUs;
