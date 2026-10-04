@@ -23,7 +23,6 @@ struct GPUCapabilities
     bool supportsMultiGPU = false;
 };
 
-// Identifies a physical GPU
 /// Where an adapter sits on the PCI bus. DXGI and NVML enumerate adapters in different orders and
 /// name them differently, so on Windows this is what says which NVML device is which DXGI adapter
 /// (#1091). DXGI reports no PCI domain, so the domain is not part of the match.
@@ -34,6 +33,7 @@ struct PciLocation
     bool operator==(const PciLocation&) const = default;
 };
 
+// Identifies a physical GPU
 struct GPUInfo
 {
     std::string id;     // Unique identifier (e.g., "GPU0", "GPU1")
