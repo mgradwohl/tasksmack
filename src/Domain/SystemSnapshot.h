@@ -10,7 +10,7 @@ namespace Domain
 /// CPU usage percentages (computed from counter deltas).
 struct CpuUsage
 {
-    double totalPercent = 0.0;  // Overall CPU busy %
+    double totalPercent = 0.0;  // Overall CPU busy % (iowait counts as idle, not busy; #1157)
     double userPercent = 0.0;   // User mode %
     double systemPercent = 0.0; // Kernel mode %
     double idlePercent = 0.0;   // Idle %
@@ -52,6 +52,10 @@ struct SystemSnapshot
 {
     // CPU usage
     CpuUsage cpuTotal;
+    // Per-core usage, indexed by core id (Platform::CpuCounters::coreId, the Linux cpuN), not by
+    // the probe's list position. A core id with no reading this sample -- offline now, or just
+    // come online with no previous sample to diff against -- holds NaN in every field, a gap
+    // rather than a fake 0% or another core's load (#1229).
     std::vector<CpuUsage> cpuPerCore;
 
     // Memory (bytes)

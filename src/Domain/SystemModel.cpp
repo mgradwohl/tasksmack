@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -27,6 +28,42 @@
 
 namespace Domain
 {
+
+namespace
+{
+
+/// Per-core slots are indexed by core id, so an id bounds the vectors' size. Linux's largest
+/// NR_CPUS (MAXSMP) is 8192 and Windows tops out at 2048 logical processors: a larger id is
+/// malformed input, not a core, and is dropped rather than sizing every per-core vector to it.
+constexpr std::size_t MAX_CORE_SLOTS = 8192;
+
+/// Slots needed to index these cores by id: the highest plausible core id plus one.
+[[nodiscard]] std::size_t coreSlotCount(const std::vector<Platform::CpuCounters>& cores) noexcept
+{
+    std::size_t slots = 0;
+    for (const auto& core : cores)
+    {
+        if (core.coreId < MAX_CORE_SLOTS)
+        {
+            slots = std::max(slots, core.coreId + 1);
+        }
+    }
+    return slots;
+}
+
+/// A per-core slot with no reading this sample: NaN, drawn as a gap and shown as N/A (#1146).
+[[nodiscard]] CpuUsage noCpuReading() noexcept
+{
+    constexpr double NO_READING = std::numeric_limits<double>::quiet_NaN();
+    return CpuUsage{.totalPercent = NO_READING,
+                    .userPercent = NO_READING,
+                    .systemPercent = NO_READING,
+                    .idlePercent = NO_READING,
+                    .iowaitPercent = NO_READING,
+                    .stealPercent = NO_READING};
+}
+
+} // namespace
 
 SystemModel::SystemModel(std::unique_ptr<Platform::ISystemProbe> probe, std::unique_ptr<Platform::IPowerProbe> powerProbe)
     : m_Probe(std::move(probe)), m_PowerProbe(std::move(powerProbe))
@@ -471,19 +508,47 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         // Total CPU
         snap.cpuTotal = computeCpuUsage(counters.cpuTotal, m_PrevCounters.cpuTotal);
 
-        // Per-core CPU
-        const std::size_t numCores = std::min(counters.cpuPerCore.size(), m_PrevCounters.cpuPerCore.size());
-        snap.cpuPerCore.reserve(numCores);
+        // Per-core CPU, matched by core id (the Linux cpuN), never by list position. The kernel
+        // lists online CPUs only, so with cpu2 offline cpu3 is third in the list: matching by
+        // position diffed cpu3 against the previous sample's cpu2 and charted every later core
+        // under the wrong label (#1229). Slots are indexed by core id; a core missing from either
+        // sample has no delta and keeps the NaN "no reading" slot.
+        const std::size_t slotCount = std::max(coreSlotCount(counters.cpuPerCore), coreSlotCount(m_PrevCounters.cpuPerCore));
 
-        // Resize per-core history if needed. A new core's ring is backfilled with NaN -- no reading,
-        // drawn as a gap (#1146) -- so all rings stay in lockstep with m_Timestamps.
-        if (m_PerCoreHistory.size() < numCores)
+        std::vector<const Platform::CpuCounters*> previousById(slotCount, nullptr);
+        for (const auto& core : m_PrevCounters.cpuPerCore)
+        {
+            if (core.coreId < slotCount && previousById[core.coreId] == nullptr)
+            {
+                previousById[core.coreId] = &core;
+            }
+        }
+
+        snap.cpuPerCore.assign(slotCount, noCpuReading());
+        for (const auto& core : counters.cpuPerCore)
+        {
+            if (core.coreId >= slotCount)
+            {
+                continue;
+            }
+            const Platform::CpuCounters* previous = previousById[core.coreId];
+            // Skip a core with no previous sample, and a repeated id (the first entry wins).
+            if (previous == nullptr || !std::isnan(snap.cpuPerCore[core.coreId].totalPercent))
+            {
+                continue;
+            }
+            snap.cpuPerCore[core.coreId] = computeCpuUsage(core, *previous);
+        }
+
+        // Grow per-core history to cover every core id seen. A new core's ring is backfilled with
+        // NaN -- no reading, drawn as a gap (#1146) -- so all rings stay in lockstep with m_Timestamps.
+        if (m_PerCoreHistory.size() < slotCount)
         {
             const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
             const std::size_t backfillCount = std::min(m_Timestamps.size(), capacity - 1);
             const std::size_t oldSize = m_PerCoreHistory.size();
-            m_PerCoreHistory.resize(numCores);
-            for (std::size_t i = oldSize; i < numCores; ++i)
+            m_PerCoreHistory.resize(slotCount);
+            for (std::size_t i = oldSize; i < slotCount; ++i)
             {
                 m_PerCoreHistory[i].setCapacity(capacity);
                 for (std::size_t j = 0; j < backfillCount; ++j)
@@ -491,12 +556,6 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
                     m_PerCoreHistory[i].push(std::numeric_limits<float>::quiet_NaN());
                 }
             }
-        }
-
-        for (std::size_t i = 0; i < numCores; ++i)
-        {
-            auto coreUsage = computeCpuUsage(counters.cpuPerCore[i], m_PrevCounters.cpuPerCore[i]);
-            snap.cpuPerCore.push_back(coreUsage);
         }
 
         // Total network rate is the sum of the per-interface rates computed above, not the change in
@@ -624,12 +683,12 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
 
         m_Timestamps.push(nowSeconds);
 
-        // Advance rings for present cores; push NaN (a gap, not a fake 0%) for any retained rings
-        // beyond the reported core count, such as an offlined core, so every core series stays
-        // aligned with m_Timestamps (#1146).
+        // Advance each core id's ring with its own reading; push NaN (a gap, not a fake 0%) for a
+        // core id with no reading this sample, such as an offlined core -- interior or trailing --
+        // so every core series stays aligned with m_Timestamps (#1146, #1229).
         for (std::size_t i = 0; i < m_PerCoreHistory.size(); ++i)
         {
-            if (i < snap.cpuPerCore.size())
+            if (i < snap.cpuPerCore.size() && !std::isnan(snap.cpuPerCore[i].totalPercent))
             {
                 m_PerCoreHistory[i].push(Numeric::clampPercentToFloat(snap.cpuPerCore[i].totalPercent));
             }
@@ -650,9 +709,9 @@ CpuUsage SystemModel::computeCpuUsage(const Platform::CpuCounters& current, cons
 {
     CpuUsage usage;
 
-    // counterDelta() clamps to 0 instead of wrapping if a field regresses (per-core CPU
-    // hotplug/offline-online reindexing, a transiently stale counter, etc.) - without it, an
-    // unsigned underflow here would silently pin the reported percentage at 100%.
+    // counterDelta() clamps to 0 instead of wrapping if a field regresses (a transiently stale
+    // counter, a probe restarting its counts, etc.) - without it, an unsigned underflow here would
+    // silently pin the reported percentage at 100%.
     const std::uint64_t totalDelta = Numeric::counterDelta(current.total(), previous.total());
     if (totalDelta == 0)
     {
@@ -673,8 +732,10 @@ CpuUsage SystemModel::computeCpuUsage(const Platform::CpuCounters& current, cons
     usage.iowaitPercent = percent(current.iowait, previous.iowait);
     usage.stealPercent = percent(current.steal, previous.steal);
 
-    // Total = 100% - idle
-    usage.totalPercent = 100.0 - usage.idlePercent;
+    // Total = 100% - (idle + iowait). iowait is idle time spent waiting on I/O: shown as its own
+    // breakdown band, but not busy, which also matches Windows, where that time is plain idle
+    // (#1157).
+    usage.totalPercent = 100.0 - percent(current.idleTotal(), previous.idleTotal());
 
     // Clamp to valid range
     usage.totalPercent = std::clamp(usage.totalPercent, 0.0, 100.0);
