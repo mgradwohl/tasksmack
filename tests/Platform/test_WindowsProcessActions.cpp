@@ -77,10 +77,11 @@ TEST(NiceToPriorityClassTest, AtIdleThresholdAndAboveMapsToIdle)
 
 TEST(CloseRequestWindowTest, OnlyTheTargetsVisibleUnownedWindowsAreAsked)
 {
-    EXPECT_TRUE(isCloseRequestWindow(42, 42, true, false));
-    EXPECT_FALSE(isCloseRequestWindow(41, 42, true, false)) << "another process's window";
-    EXPECT_FALSE(isCloseRequestWindow(42, 42, false, false)) << "an invisible helper window";
-    EXPECT_FALSE(isCloseRequestWindow(42, 42, true, true)) << "an owned window: a dialog or tool window";
+    EXPECT_TRUE(isCloseRequestWindow(42, 42, true, false, false));
+    EXPECT_FALSE(isCloseRequestWindow(41, 42, true, false, false)) << "another process's window";
+    EXPECT_FALSE(isCloseRequestWindow(42, 42, false, false, false)) << "an invisible helper window";
+    EXPECT_FALSE(isCloseRequestWindow(42, 42, true, true, false)) << "an owned window: a dialog";
+    EXPECT_FALSE(isCloseRequestWindow(42, 42, true, false, true)) << "an unowned tool window: a palette or helper";
 }
 
 TEST(CloseRequestWindowTest, EveryEligibleWindowAskedIsSuccess)
@@ -277,9 +278,9 @@ TEST(WindowsProcessActionsTest, KillWithADifferentStartTimeLeavesTheProcessRunni
 namespace
 {
 
-/// A visible, unowned top-level window owned by this test process, pumped on its own thread, that
-/// records WM_CLOSE and ignores it -- as an application that asks "save changes?" first would. It sits
-/// off-screen and never activates.
+/// A visible, unowned top-level application window (not a tool window) owned by this test process,
+/// pumped on its own thread, that records WM_CLOSE and ignores it -- as an application that asks
+/// "save changes?" first would. It sits off-screen and never activates.
 class CloseRecordingWindow
 {
   public:
@@ -293,7 +294,7 @@ class CloseRecordingWindow
                   windowClass.hInstance = instance;
                   windowClass.lpszClassName = L"TaskSmackTerminateTestWindow";
                   RegisterClassW(&windowClass);
-                  m_Window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                  m_Window = CreateWindowExW(WS_EX_NOACTIVATE,
                                              windowClass.lpszClassName,
                                              L"Terminate test",
                                              WS_POPUP,

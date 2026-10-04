@@ -48,12 +48,14 @@ namespace Platform
 }
 
 /// Whether Terminate's close request goes to this top-level window (#1094): one the target process
-/// owns, that is visible, and that has no owner window. Those are the windows a user would close:
-/// closing an owned window (a dialog, a tool window) or an invisible helper window does not ask the
+/// owns, that is visible, has no owner window, and is not a tool window. Those are the application
+/// windows a user would close. Closing an owned window (a dialog), a tool window (a palette or helper,
+/// owned or not: WS_EX_TOOLWINDOW is independent of ownership) or an invisible window does not ask the
 /// application to exit, and can confuse it.
-[[nodiscard]] constexpr bool isCloseRequestWindow(uint32_t windowPid, uint32_t targetPid, bool visible, bool hasOwner) noexcept
+[[nodiscard]] constexpr bool
+isCloseRequestWindow(uint32_t windowPid, uint32_t targetPid, bool visible, bool hasOwner, bool isToolWindow) noexcept
 {
-    return windowPid == targetPid && visible && !hasOwner;
+    return windowPid == targetPid && visible && !hasOwner && !isToolWindow;
 }
 
 /// Terminate's result once its close requests have been posted (#1094). Windows has no SIGTERM:
