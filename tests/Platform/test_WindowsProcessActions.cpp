@@ -21,9 +21,12 @@
 #include <windows.h>
 // clang-format on
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <thread>
 
 namespace Platform
 {
@@ -66,6 +69,48 @@ TEST(NiceToPriorityClassTest, AtIdleThresholdAndAboveMapsToIdle)
     // IDLE_THRESHOLD = 15.
     EXPECT_EQ(niceToPriorityClass(15), static_cast<uint32_t>(IDLE_PRIORITY_CLASS));
     EXPECT_EQ(niceToPriorityClass(19), static_cast<uint32_t>(IDLE_PRIORITY_CLASS));
+}
+
+// =============================================================================
+// Terminate's close request (#1094)
+// =============================================================================
+
+TEST(CloseRequestWindowTest, OnlyTheTargetsVisibleUnownedWindowsAreAsked)
+{
+    EXPECT_TRUE(isCloseRequestWindow(42, 42, true, false, false));
+    EXPECT_FALSE(isCloseRequestWindow(41, 42, true, false, false)) << "another process's window";
+    EXPECT_FALSE(isCloseRequestWindow(42, 42, false, false, false)) << "an invisible helper window";
+    EXPECT_FALSE(isCloseRequestWindow(42, 42, true, true, false)) << "an owned window: a dialog";
+    EXPECT_FALSE(isCloseRequestWindow(42, 42, true, false, true)) << "an unowned tool window: a palette or helper";
+}
+
+TEST(CloseRequestWindowTest, EveryEligibleWindowAskedIsSuccess)
+{
+    EXPECT_TRUE(closeRequestFailure(42, 1, 0, 0).empty());
+    EXPECT_TRUE(closeRequestFailure(42, 3, 0, 0).empty());
+}
+
+TEST(CloseRequestWindowTest, NoEligibleWindowIsAFailureThatPointsToKill)
+{
+    const std::string failure = closeRequestFailure(42, 0, 0, 0);
+    EXPECT_NE(failure.find("42"), std::string::npos) << failure;
+    EXPECT_NE(failure.find("no window"), std::string::npos) << failure;
+    EXPECT_NE(failure.find("Kill"), std::string::npos) << failure;
+}
+
+// A window that exists but refused the request (UIPI, say) is not reported as "no window", and a
+// partial refusal is not reported as success (#1237 review).
+TEST(CloseRequestWindowTest, RefusedRequestsAreReportedAsRefusalsWithTheError)
+{
+    const std::string all = closeRequestFailure(42, 2, 2, 5);
+    EXPECT_EQ(all.find("no window"), std::string::npos) << all;
+    EXPECT_NE(all.find("error 5"), std::string::npos) << all;
+    EXPECT_NE(all.find("Kill"), std::string::npos) << all;
+
+    const std::string some = closeRequestFailure(42, 3, 1, 5);
+    EXPECT_FALSE(some.empty());
+    EXPECT_NE(some.find("2 of 3"), std::string::npos) << some;
+    EXPECT_NE(some.find("error 5"), std::string::npos) << some;
 }
 
 TEST(WindowsProcessActionsTest, ConstructsSuccessfully)
@@ -224,6 +269,170 @@ TEST(WindowsProcessActionsTest, KillWithADifferentStartTimeLeavesTheProcessRunni
 
     WindowsProcessActions actions;
     const auto result = actions.kill(reused);
+
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.errorMessage.find("different process"), std::string::npos) << result.errorMessage;
+    EXPECT_TRUE(child.alive());
+}
+
+namespace
+{
+
+/// A visible, unowned top-level application window (not a tool window) owned by this test process,
+/// pumped on its own thread, that records WM_CLOSE and ignores it -- as an application that asks
+/// "save changes?" first would. It sits off-screen and never activates.
+class CloseRecordingWindow
+{
+  public:
+    CloseRecordingWindow()
+        : m_Thread(
+              [this]
+              {
+                  auto* const instance = GetModuleHandleW(nullptr);
+                  WNDCLASSW windowClass{};
+                  windowClass.lpfnWndProc = &CloseRecordingWindow::windowProc;
+                  windowClass.hInstance = instance;
+                  windowClass.lpszClassName = L"TaskSmackTerminateTestWindow";
+                  RegisterClassW(&windowClass);
+                  m_Window = CreateWindowExW(WS_EX_NOACTIVATE,
+                                             windowClass.lpszClassName,
+                                             L"Terminate test",
+                                             WS_POPUP,
+                                             -32000,
+                                             -32000,
+                                             1,
+                                             1,
+                                             nullptr,
+                                             nullptr,
+                                             instance,
+                                             nullptr);
+                  if (m_Window != nullptr)
+                  {
+                      SetWindowLongPtrW(m_Window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&m_ClosesReceived));
+                      ShowWindow(m_Window, SW_SHOWNOACTIVATE);
+                  }
+                  m_Ready.store(true);
+                  MSG message{};
+                  while (GetMessageW(&message, nullptr, 0, 0) > 0)
+                  {
+                      DispatchMessageW(&message);
+                  }
+                  if (m_Window != nullptr)
+                  {
+                      DestroyWindow(m_Window);
+                  }
+                  UnregisterClassW(windowClass.lpszClassName, instance);
+              })
+    {
+        while (!m_Ready.load())
+        {
+            std::this_thread::yield();
+        }
+    }
+    CloseRecordingWindow(const CloseRecordingWindow&) = delete;
+    CloseRecordingWindow& operator=(const CloseRecordingWindow&) = delete;
+    CloseRecordingWindow(CloseRecordingWindow&&) = delete;
+    CloseRecordingWindow& operator=(CloseRecordingWindow&&) = delete;
+    ~CloseRecordingWindow()
+    {
+        PostThreadMessageW(GetThreadId(m_Thread.native_handle()), WM_QUIT, 0, 0);
+        m_Thread.join();
+    }
+
+    [[nodiscard]] bool created() const
+    {
+        return m_Window != nullptr;
+    }
+    /// Waits up to two seconds for a WM_CLOSE to arrive.
+    [[nodiscard]] bool receivesClose() const
+    {
+        for (int i = 0; i < 200 && m_ClosesReceived.load() == 0; ++i)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        return m_ClosesReceived.load() > 0;
+    }
+
+  private:
+    static LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+    {
+        if (message == WM_CLOSE)
+        {
+            auto* closes =
+                reinterpret_cast<std::atomic<int>*>(GetWindowLongPtrW(window, GWLP_USERDATA)); // NOLINT(performance-no-int-to-ptr)
+            if (closes != nullptr)
+            {
+                closes->fetch_add(1);
+            }
+            return 0; // Ignore it: the application decides whether to exit.
+        }
+        return DefWindowProcW(window, message, wParam, lParam);
+    }
+
+    std::atomic<int> m_ClosesReceived{0};
+    std::atomic<bool> m_Ready{false};
+    HWND m_Window = nullptr;
+    std::thread m_Thread;
+};
+
+[[nodiscard]] ProcessTarget thisProcess()
+{
+    FILETIME creation{};
+    FILETIME exitTime{};
+    FILETIME kernelTime{};
+    FILETIME userTime{};
+    GetProcessTimes(GetCurrentProcess(), &creation, &exitTime, &kernelTime, &userTime);
+    return {
+        .pid = static_cast<int32_t>(GetCurrentProcessId()),
+        .startTimeTicks = (static_cast<uint64_t>(creation.dwHighDateTime) << 32U) | creation.dwLowDateTime,
+    };
+}
+
+} // namespace
+
+// #1094 / #1237 review: the success path. Terminate finds this process's top-level window, the close
+// request reaches it, and the process is asked, not ended: the test is still running to check.
+TEST(WindowsProcessActionsTest, TerminatePostsWmCloseToTheProcessWindowAndDoesNotEndIt)
+{
+    const CloseRecordingWindow window;
+    ASSERT_TRUE(window.created());
+
+    WindowsProcessActions actions;
+    const auto result = actions.terminate(thisProcess());
+
+    EXPECT_TRUE(result.success) << result.errorMessage;
+    EXPECT_TRUE(window.receivesClose());
+}
+
+// #1094: Terminate is a request, not Kill. A process with no window to close (this child is started
+// with CREATE_NO_WINDOW) cannot be asked, so Terminate reports that and leaves it running, where it
+// used to TerminateProcess it exactly as Kill does.
+TEST(WindowsProcessActionsTest, TerminateAsksRatherThanKillsAWindowlessProcess)
+{
+    const SuspendedChild child;
+    ASSERT_TRUE(child.started());
+
+    WindowsProcessActions actions;
+    const auto result = actions.terminate(child.target());
+
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.errorMessage.find("no window"), std::string::npos) << result.errorMessage;
+    EXPECT_TRUE(child.alive());
+
+    const auto killed = actions.kill(child.target());
+    EXPECT_TRUE(killed.success) << killed.errorMessage;
+    EXPECT_TRUE(child.exitsSoon());
+}
+
+TEST(WindowsProcessActionsTest, TerminateWithADifferentStartTimeLeavesTheProcessRunning)
+{
+    const SuspendedChild child;
+    ASSERT_TRUE(child.started());
+    ProcessTarget reused = child.target();
+    reused.startTimeTicks += 1;
+
+    WindowsProcessActions actions;
+    const auto result = actions.terminate(reused);
 
     EXPECT_FALSE(result.success);
     EXPECT_NE(result.errorMessage.find("different process"), std::string::npos) << result.errorMessage;
