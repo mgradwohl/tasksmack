@@ -17,8 +17,10 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -212,10 +214,11 @@ TEST(SystemModelTest, MemoryFallbackWhenNoAvailable)
     auto probe = std::make_unique<MockSystemProbe>();
     auto* rawProbe = probe.get();
 
-    // Old kernel without MemAvailable (available = 0)
+    // Old kernel without MemAvailable
     // total=100, free=20, cached=30, buffers=10
     // used = 100 - 20 - 30 - 10 = 40
     auto mem = makeMemoryCounters(100, 0, 20, 30, 10);
+    mem.hasAvailableBytes = false;
     rawProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), mem));
 
     Domain::SystemModel model(std::move(probe));
@@ -224,6 +227,91 @@ TEST(SystemModelTest, MemoryFallbackWhenNoAvailable)
     auto snap = model.snapshot();
     EXPECT_EQ(snap.memoryUsedBytes, 40);
     EXPECT_DOUBLE_EQ(snap.memoryUsedPercent, 40.0);
+}
+
+TEST(SystemModelTest, MemAvailableZeroIsMemoryExhaustedNotMissing)
+{
+    // Under severe pressure the kernel reports MemAvailable: 0. That used to switch to the legacy
+    // formula exactly when memory ran out, understating use (#1143).
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(100, 0, 20, 30, 10)));
+
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+
+    EXPECT_EQ(model.snapshot().memoryUsedBytes, 100U);
+}
+
+TEST(SystemModelTest, MemoryUsedNeverWrapsBelowZero)
+{
+    // A container (LXCFS) can report available above total; the unsigned subtraction wrapped to
+    // about 16 EiB used (#1143). The legacy formula saturates too.
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(100, 150)));
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+    EXPECT_EQ(model.snapshot().memoryUsedBytes, 0U);
+
+    auto legacyProbe = std::make_unique<MockSystemProbe>();
+    auto* rawLegacy = legacyProbe.get();
+    auto legacy = makeMemoryCounters(100, 0, 60, 50, 10);
+    legacy.hasAvailableBytes = false;
+    rawLegacy->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), legacy));
+    Domain::SystemModel legacyModel(std::move(legacyProbe));
+    legacyModel.refresh();
+    EXPECT_EQ(legacyModel.snapshot().memoryUsedBytes, 0U);
+
+    // Parts whose sum wraps (UINT64_MAX + 1 == 0) must not read as all memory used.
+    auto wrappingProbe = std::make_unique<MockSystemProbe>();
+    auto* rawWrapping = wrappingProbe.get();
+    auto wrapping = makeMemoryCounters(100, 0, std::numeric_limits<std::uint64_t>::max(), 1, 0);
+    wrapping.hasAvailableBytes = false;
+    rawWrapping->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), wrapping));
+    Domain::SystemModel wrappingModel(std::move(wrappingProbe));
+    wrappingModel.refresh();
+    EXPECT_EQ(wrappingModel.snapshot().memoryUsedBytes, 0U);
+}
+
+namespace SystemModelTestSupport
+{
+/// A power probe that records when it was read. In a named namespace, not an anonymous one: mocks
+/// built with std::make_unique follow the repository's test convention of external linkage.
+class TimedPowerProbe : public Platform::IPowerProbe
+{
+  public:
+    explicit TimedPowerProbe(std::chrono::steady_clock::time_point* readAt) : m_ReadAt(readAt)
+    {}
+    [[nodiscard]] Platform::PowerCounters read() override
+    {
+        *m_ReadAt = std::chrono::steady_clock::now();
+        return {};
+    }
+    [[nodiscard]] Platform::PowerCapabilities capabilities() const override
+    {
+        return {};
+    }
+
+  private:
+    std::chrono::steady_clock::time_point* m_ReadAt;
+};
+} // namespace SystemModelTestSupport
+
+TEST(SystemModelTest, SampleIsStampedBeforeThePowerRead)
+{
+    // The power read has its own variable latency; stamped after it, the rate interval jittered
+    // with it (#1144). The timestamp must come from before the power probe is read.
+    auto probe = std::make_unique<MockSystemProbe>();
+    probe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(100, 50)));
+    std::chrono::steady_clock::time_point powerReadAt;
+    Domain::SystemModel model(std::move(probe), std::make_unique<SystemModelTestSupport::TimedPowerProbe>(&powerReadAt));
+    model.refresh();
+    model.refresh();
+
+    const auto timestamps = model.timestamps();
+    ASSERT_FALSE(timestamps.empty());
+    EXPECT_LE(timestamps.back(), std::chrono::duration<double>(powerReadAt.time_since_epoch()).count());
 }
 
 // =============================================================================

@@ -580,6 +580,18 @@ TEST(LinuxSystemProbeTest, MissingStatFileReturnsZeroCpu)
     EXPECT_EQ(counters.cpuTotal.system, 0ULL);
 }
 
+TEST(LinuxSystemProbeTest, MemAvailableIsReportedOnlyWhenTheKernelHasIt)
+{
+    // A kernel without MemAvailable (before 3.14) must not look like one reporting 0 (#1143).
+    ScopedTempDir withIt("ts_test_sys_memavail");
+    std::ofstream(withIt.path / "meminfo") << "MemTotal: 1000 kB\nMemFree: 100 kB\nMemAvailable: 0 kB\n";
+    EXPECT_TRUE(LinuxSystemProbe(withIt.path).read().memory.hasAvailableBytes);
+
+    ScopedTempDir without("ts_test_sys_nomemavail");
+    std::ofstream(without.path / "meminfo") << "MemTotal: 1000 kB\nMemFree: 100 kB\nCached: 200 kB\n";
+    EXPECT_FALSE(LinuxSystemProbe(without.path).read().memory.hasAvailableBytes);
+}
+
 TEST(LinuxSystemProbeTest, MissingMeminfoReturnsZeroMemory)
 {
     ScopedTempDir scoped("ts_test_sys_nomem");
@@ -587,6 +599,7 @@ TEST(LinuxSystemProbeTest, MissingMeminfoReturnsZeroMemory)
     auto counters = probe.read();
     EXPECT_EQ(counters.memory.totalBytes, 0ULL);
     EXPECT_EQ(counters.memory.availableBytes, 0ULL);
+    EXPECT_FALSE(counters.memory.hasAvailableBytes); // a failed read isn't a reading of 0 (#1232 review)
 }
 
 TEST(LinuxSystemProbeTest, MissingNetDevReturnsZeroNetwork)
