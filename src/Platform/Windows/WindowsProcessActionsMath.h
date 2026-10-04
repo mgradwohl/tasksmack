@@ -15,6 +15,8 @@
 // clang-format on
 
 #include <cstdint>
+#include <format>
+#include <string>
 
 namespace Platform
 {
@@ -43,6 +45,27 @@ namespace Platform
         return BELOW_NORMAL_PRIORITY_CLASS;
     }
     return IDLE_PRIORITY_CLASS;
+}
+
+/// Whether Terminate's close request goes to this top-level window (#1094): one the target process
+/// owns, that is visible, and that has no owner window. Those are the windows a user would close:
+/// closing an owned window (a dialog, a tool window) or an invisible helper window does not ask the
+/// application to exit, and can confuse it.
+[[nodiscard]] constexpr bool isCloseRequestWindow(uint32_t windowPid, uint32_t targetPid, bool visible, bool hasOwner) noexcept
+{
+    return windowPid == targetPid && visible && !hasOwner;
+}
+
+/// Terminate's result once its close requests have been posted (#1094). Windows has no SIGTERM:
+/// a graceful exit is asked for by closing the process's windows, and a process with none -- a
+/// service, a console or background process -- cannot be asked, only ended with Kill.
+[[nodiscard]] inline std::string closeRequestFailure(int32_t pid, int windowsAsked)
+{
+    if (windowsAsked > 0)
+    {
+        return {};
+    }
+    return std::format("Process {} has no window to close, so it cannot be asked to exit; use Kill to end it", pid);
 }
 
 } // namespace Platform

@@ -68,6 +68,28 @@ TEST(NiceToPriorityClassTest, AtIdleThresholdAndAboveMapsToIdle)
     EXPECT_EQ(niceToPriorityClass(19), static_cast<uint32_t>(IDLE_PRIORITY_CLASS));
 }
 
+// =============================================================================
+// Terminate's close request (#1094)
+// =============================================================================
+
+TEST(CloseRequestWindowTest, OnlyTheTargetsVisibleUnownedWindowsAreAsked)
+{
+    EXPECT_TRUE(isCloseRequestWindow(42, 42, true, false));
+    EXPECT_FALSE(isCloseRequestWindow(41, 42, true, false)) << "another process's window";
+    EXPECT_FALSE(isCloseRequestWindow(42, 42, false, false)) << "an invisible helper window";
+    EXPECT_FALSE(isCloseRequestWindow(42, 42, true, true)) << "an owned window: a dialog or tool window";
+}
+
+TEST(CloseRequestWindowTest, NoWindowAskedIsAFailureThatPointsToKill)
+{
+    EXPECT_TRUE(closeRequestFailure(42, 1).empty());
+    EXPECT_TRUE(closeRequestFailure(42, 3).empty());
+    const std::string failure = closeRequestFailure(42, 0);
+    EXPECT_NE(failure.find("42"), std::string::npos) << failure;
+    EXPECT_NE(failure.find("no window"), std::string::npos) << failure;
+    EXPECT_NE(failure.find("Kill"), std::string::npos) << failure;
+}
+
 TEST(WindowsProcessActionsTest, ConstructsSuccessfully)
 {
     EXPECT_NO_THROW({ WindowsProcessActions actions; });
@@ -224,6 +246,41 @@ TEST(WindowsProcessActionsTest, KillWithADifferentStartTimeLeavesTheProcessRunni
 
     WindowsProcessActions actions;
     const auto result = actions.kill(reused);
+
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.errorMessage.find("different process"), std::string::npos) << result.errorMessage;
+    EXPECT_TRUE(child.alive());
+}
+
+// #1094: Terminate is a request, not Kill. A process with no window to close (this child is started
+// with CREATE_NO_WINDOW) cannot be asked, so Terminate reports that and leaves it running, where it
+// used to TerminateProcess it exactly as Kill does.
+TEST(WindowsProcessActionsTest, TerminateAsksRatherThanKillsAWindowlessProcess)
+{
+    const SuspendedChild child;
+    ASSERT_TRUE(child.started());
+
+    WindowsProcessActions actions;
+    const auto result = actions.terminate(child.target());
+
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.errorMessage.find("no window"), std::string::npos) << result.errorMessage;
+    EXPECT_TRUE(child.alive());
+
+    const auto killed = actions.kill(child.target());
+    EXPECT_TRUE(killed.success) << killed.errorMessage;
+    EXPECT_TRUE(child.exitsSoon());
+}
+
+TEST(WindowsProcessActionsTest, TerminateWithADifferentStartTimeLeavesTheProcessRunning)
+{
+    const SuspendedChild child;
+    ASSERT_TRUE(child.started());
+    ProcessTarget reused = child.target();
+    reused.startTimeTicks += 1;
+
+    WindowsProcessActions actions;
+    const auto result = actions.terminate(reused);
 
     EXPECT_FALSE(result.success);
     EXPECT_NE(result.errorMessage.find("different process"), std::string::npos) << result.errorMessage;
