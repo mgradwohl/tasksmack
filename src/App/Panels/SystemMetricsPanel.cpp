@@ -540,15 +540,8 @@ void SystemMetricsPanel::renderOverview()
     const float spacer = (!processStr.empty() && !uptimeStr.empty()) ? style.ItemSpacing.x : 0.0F;
     const float rightBlockWidth = uptimeWidth + processWidth + spacer;
 
-    // Calculate total GPU VRAM across all GPUs (for discrete GPUs with dedicated memory)
-    std::uint64_t totalVramBytes = 0;
-    if (m_GPUPublication)
-    {
-        for (const auto& gpuSnap : m_GPUPublication->snapshots)
-        {
-            totalVramBytes += gpuSnap.memoryTotalBytes;
-        }
-    }
+    // Total dedicated VRAM: discrete GPUs only, an integrated GPU's "memory" being system RAM (#1114).
+    const std::uint64_t totalVramBytes = m_GPUPublication ? GpuSection::totalDedicatedVramBytes(m_GPUPublication->snapshots) : 0;
 
     // Format RAM and VRAM info to append to CPU line
     std::string memoryStr;

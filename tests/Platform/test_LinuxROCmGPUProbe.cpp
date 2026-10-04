@@ -3,12 +3,15 @@
 #include "Platform/GpuMockLibraryTestUtils.h"
 #include "Platform/Linux/ROCmGPUProbe.h"
 #include "Platform/Linux/ROCmGPUProbeMath.h"
+#include "Platform/ScopedTempDir.h"
 
 #include <gtest/gtest.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <optional>
 
 #include <dlfcn.h>
@@ -201,7 +204,7 @@ TEST(LinuxROCmGPUProbeTest, DeviceIdsAreResolvedOnceAtLoad)
     ASSERT_NE(idCalls, nullptr);
 
     configure(-1);
-    ROCmGPUProbe probe;
+    ROCmGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
     ASSERT_TRUE(probe.isAvailable());
     const auto expectedIds = probe.enumerateGPUs();
     const unsigned int callsAtLoad = idCalls();
@@ -240,7 +243,7 @@ TEST(LinuxROCmGPUProbeTest, FailedSensorReadsAreMarkedUnavailable)
     const auto failSensorReads = reinterpret_cast<void (*)(int)>(dlsym(library, "tasksmackRocmMockFailSensorReads"));
     ASSERT_NE(failSensorReads, nullptr);
 
-    ROCmGPUProbe probe;
+    ROCmGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
     ASSERT_TRUE(probe.isAvailable());
     const auto good = probe.readGPUCounters();
     failSensorReads(1);
@@ -266,7 +269,7 @@ TEST(LinuxROCmGPUProbeTest, FailedSensorReadsAreMarkedUnavailable)
 
 TEST(LinuxROCmGPUProbeTest, BasicOperationsDoNotThrow)
 {
-    ROCmGPUProbe probe;
+    ROCmGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
     EXPECT_NO_THROW([[maybe_unused]] auto available = probe.isAvailable());
     EXPECT_NO_THROW([[maybe_unused]] auto gpus = probe.enumerateGPUs());
     EXPECT_NO_THROW([[maybe_unused]] auto counters = probe.readGPUCounters());
@@ -276,7 +279,7 @@ TEST(LinuxROCmGPUProbeTest, BasicOperationsDoNotThrow)
 
 TEST(LinuxROCmGPUProbeTest, UnavailableProbeReportsNoCapabilities)
 {
-    ROCmGPUProbe probe;
+    ROCmGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
     if (probe.isAvailable())
     {
         // Under CTest (ENVIRONMENT_MODIFICATION), LD_LIBRARY_PATH is prepended with the
@@ -296,7 +299,7 @@ TEST(LinuxROCmGPUProbeTest, UnavailableProbeReportsNoCapabilities)
 
 TEST(LinuxROCmGPUProbeTest, ProcessCountersAreEmptyWhenAvailableOrUnavailable)
 {
-    ROCmGPUProbe probe;
+    ROCmGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
     const auto processCounters = probe.readProcessGPUCounters();
     EXPECT_TRUE(processCounters.empty());
 }
@@ -308,7 +311,7 @@ TEST(LinuxROCmGPUProbeTest, MockLibraryEnablesAvailableCapabilities)
     {
         GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
     }
-    ROCmGPUProbe probe;
+    ROCmGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
 
     ASSERT_TRUE(probe.isAvailable());
 
@@ -332,7 +335,7 @@ TEST(LinuxROCmGPUProbeTest, MockLibraryEnumeratesDevicesWithFallbackIdentifiers)
     {
         GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
     }
-    ROCmGPUProbe probe;
+    ROCmGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
 
     ASSERT_TRUE(probe.isAvailable());
 
@@ -358,7 +361,7 @@ TEST(LinuxROCmGPUProbeTest, MockLibraryReturnsExpectedCountersAndFallbacks)
     {
         GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
     }
-    ROCmGPUProbe probe;
+    ROCmGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
 
     ASSERT_TRUE(probe.isAvailable());
 
@@ -401,6 +404,140 @@ TEST(LinuxROCmGPUProbeTest, MockLibraryReturnsExpectedCountersAndFallbacks)
     EXPECT_DOUBLE_EQ(counters[2].computeUtilPercent, 0.0);
     EXPECT_DOUBLE_EQ(counters[2].encoderUtilPercent, 0.0);
     EXPECT_DOUBLE_EQ(counters[2].decoderUtilPercent, 0.0);
+}
+
+// ROCm SMI's BDF id packs (domain << 32) | (bus << 8) | (device << 3) | function (#1117).
+TEST(ROCmGPUProbeMathTest, SysfsPciAddressUnpacksTheBdfId)
+{
+    EXPECT_EQ(ROCmGPUProbeMath::sysfsPciAddress(0x0300ULL), "0000:03:00.0");
+    EXPECT_EQ(ROCmGPUProbeMath::sysfsPciAddress(9001ULL), "0000:23:05.1"); // 0x2329
+    EXPECT_EQ(ROCmGPUProbeMath::sysfsPciAddress((1ULL << 32U) | 0xC100ULL), "0001:c1:00.0");
+}
+
+// #1272 review: a transient failure (RSMI_STATUS_BUSY) while sensors are probed at enumeration doesn't
+// hide them for the session; only not-supported / not-found / not-implemented does.
+TEST(LinuxROCmGPUProbeTest, ATransientFailureAtEnumerationKeepsTheSensors)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    void* library = dlopen("librocm_smi64.so.6", RTLD_NOW);
+    ASSERT_NE(library, nullptr);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) -- dlsym returns void* by POSIX definition
+    const auto failSensorReads = reinterpret_cast<void (*)(int)>(dlsym(library, "tasksmackRocmMockFailSensorReads"));
+    ASSERT_NE(failSensorReads, nullptr);
+
+    ROCmGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
+    ASSERT_TRUE(probe.isAvailable());
+    failSensorReads(1);
+    const auto gpus = probe.enumerateGPUs();
+    failSensorReads(0);
+    const auto counters = probe.readGPUCounters();
+    dlclose(library);
+
+    ASSERT_EQ(gpus.size(), 3U);
+    const auto full = gpus[0].sensorCapabilities.value_or(GPUCapabilities{});
+    EXPECT_TRUE(full.hasTemperature);
+    EXPECT_TRUE(full.hasPowerMetrics);
+    EXPECT_TRUE(full.hasClockSpeeds);
+    const auto partial = gpus[1].sensorCapabilities.value_or(GPUCapabilities{});
+    // The junction read isn't failed by the mock, so its definitive NOT_FOUND still means unsupported.
+    EXPECT_FALSE(partial.hasHotspotTemp);
+
+    ASSERT_FALSE(counters.empty());
+    EXPECT_TRUE(counters[0].temperatureAvailable);
+}
+
+// #1272 review: a clock sample that can't be decoded at enumeration keeps the clock capability (the
+// chart and bar stay), and each undecodable reading is reported unavailable -- a gap -- not hidden.
+TEST(LinuxROCmGPUProbeTest, AnUndecodableClockAtEnumerationKeepsTheClock)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    ROCmGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
+    ASSERT_TRUE(probe.isAvailable());
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_GE(gpus.size(), 2U);
+    EXPECT_TRUE(gpus[1].sensorCapabilities.value_or(GPUCapabilities{}).hasClockSpeeds); // mock device 1: index out of range
+
+    const auto counters = probe.readGPUCounters();
+    ASSERT_GE(counters.size(), 2U);
+    EXPECT_FALSE(counters[1].gpuClockAvailable);
+    EXPECT_TRUE(counters[0].gpuClockAvailable);
+}
+
+// #1112: each device's sensors, from which reads succeed at enumeration. Mock device 1 has no
+// junction sensor, no fan and an undecodable GPU clock sample; device 0 has all of them.
+TEST(LinuxROCmGPUProbeTest, SensorCapabilitiesArePerDevice)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    ROCmGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
+    ASSERT_TRUE(probe.isAvailable());
+
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 3U);
+
+    ASSERT_TRUE(gpus[0].sensorCapabilities.has_value());
+    const auto full = gpus[0].sensorCapabilities.value_or(GPUCapabilities{});
+    EXPECT_TRUE(full.hasTemperature);
+    EXPECT_TRUE(full.hasHotspotTemp);
+    EXPECT_TRUE(full.hasPowerMetrics);
+    EXPECT_TRUE(full.hasClockSpeeds);
+    EXPECT_TRUE(full.hasFanSpeed);
+
+    ASSERT_TRUE(gpus[1].sensorCapabilities.has_value());
+    const auto partial = gpus[1].sensorCapabilities.value_or(GPUCapabilities{});
+    EXPECT_TRUE(partial.hasTemperature);
+    EXPECT_FALSE(partial.hasHotspotTemp);
+    EXPECT_TRUE(partial.hasPowerMetrics);
+    // Its clock query succeeds but the sample can't be decoded (current index out of range). That
+    // isn't "unsupported": the clock is kept and its readings are unavailable until one decodes.
+    EXPECT_TRUE(partial.hasClockSpeeds);
+    EXPECT_FALSE(partial.hasFanSpeed);
+}
+
+// #1117: a runtime-suspended AMD GPU (mock device 1, PCI id 9001 = 0000:23:05.1) is left alone:
+// its readings are unavailable and it is marked asleep, while the others are read as usual.
+TEST(LinuxROCmGPUProbeTest, RuntimeSuspendedGpuIsNotRead)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const TestSupport::ScopedTempDir pciRoot("tasksmack_rocm_runtime_pm");
+    const auto statusPath = pciRoot.path / "0000:23:05.1" / "power" / "runtime_status";
+    std::filesystem::create_directories(statusPath.parent_path());
+    std::ofstream(statusPath) << "active\n";
+
+    ROCmGPUProbe probe(pciRoot.path.string());
+    ASSERT_TRUE(probe.isAvailable());
+    ASSERT_EQ(probe.readGPUCounters().size(), 3U); // awake: records the VRAM total
+
+    std::ofstream(statusPath) << "suspended\n";
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 3U);
+    EXPECT_EQ(counters[1].gpuId, "9001");
+    EXPECT_TRUE(counters[1].suspended);
+    EXPECT_FALSE(counters[1].utilizationAvailable);
+    EXPECT_FALSE(counters[1].temperatureAvailable);
+    EXPECT_FALSE(counters[1].powerAvailable);
+    EXPECT_FALSE(counters[1].memoryAvailable);
+    EXPECT_EQ(counters[1].temperatureC, 0);
+    EXPECT_EQ(counters[1].memoryTotalBytes, 8ULL * 1024ULL * 1024ULL * 1024ULL);
+    EXPECT_FALSE(counters[0].suspended);
+    EXPECT_EQ(counters[0].temperatureC, 65);
+
+    EXPECT_FALSE(probe.enumerateGPUs()[1].sensorCapabilities.has_value()); // not woken to probe
 }
 
 } // namespace

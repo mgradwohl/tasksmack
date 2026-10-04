@@ -6,6 +6,11 @@
 namespace Platform::TestSupport
 {
 
+/// A PCI devices root that doesn't exist, for mock-backed GPU probes: their runtime-PM check
+/// (#1117) then never reads the host's /sys/bus/pci, so a real device that happens to sit at a mock
+/// device's PCI address, and is suspended, can't change what the test sees.
+inline constexpr const char* ISOLATED_PCI_ROOT = "/nonexistent/tasksmack/pci";
+
 // MockGpuLibraryStatus detects at construction whether the mock library directory was
 // already added to LD_LIBRARY_PATH by CTest (ENVIRONMENT_MODIFICATION) or coverage.sh
 // before process start. Call mocksPreloaded() and GTEST_SKIP() when false: the mocks
