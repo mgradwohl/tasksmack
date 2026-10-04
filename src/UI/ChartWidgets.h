@@ -1539,7 +1539,7 @@ struct ValueStripEntry
     ImVec4 color;
 };
 
-namespace detail
+namespace Detail
 {
 /// Lays out one value strip entry: a swatch in `color` (alpha kept, so a translucent series reads as
 /// muted), then `head` in muted text -- with `colon` appended when `head` does not already end in one
@@ -1584,7 +1584,7 @@ inline void drawValueStripEntry(
     ImGui::SameLine(0.0F, style.ItemInnerSpacing.x);
     ImGui::TextUnformatted(tail.data(), tail.data() + tail.size());
 }
-} // namespace detail
+} // namespace Detail
 
 /// How renderNowBarValueStrip() lays out its entries.
 enum class ValueStripLayout : std::uint8_t
@@ -1623,12 +1623,12 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
                 tail.remove_prefix(1);
             }
         }
-        detail::drawValueStripEntry(head, tail, bar.color, first, wrap, rowRight, muted);
+        Detail::drawValueStripEntry(head, tail, bar.color, first, wrap, rowRight, muted);
         first = false;
     }
     for (const ValueStripEntry& entry : extras)
     {
-        detail::drawValueStripEntry(entry.label, entry.value, entry.color, first, wrap, rowRight, muted);
+        Detail::drawValueStripEntry(entry.label, entry.value, entry.color, first, wrap, rowRight, muted);
         first = false;
     }
 }
