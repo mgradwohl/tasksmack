@@ -2554,10 +2554,14 @@ void ProcessDetailsPanel::drawPriorityBadge(ImDrawList* drawList, const Priority
     const ImVec2 arrowRight(badgeX + ctx.metrics.badgeArrowSize, badgeMax.y);
     drawList->AddTriangleFilled(arrowLeft, arrowRight, arrowTip, badgeColorU32);
 
-    // Cache the badge text color as U32 once per call (avoids repeated theme lookup and conversion)
-    const ImU32 badgeTextColorU32 = ImGui::ColorConvertFloat4ToU32(UI::Theme::get().scheme().priorityBadgeTextColor);
+    // The theme's badge text colour when it reaches 4.5:1 on this badge's fill, else its window
+    // background when that does, else black or white (badgeTextFor): a fixed colour was unreadable on
+    // the nice-0 badge in most dark themes (#1130).
+    const UI::ColorScheme& scheme = UI::Theme::get().scheme();
+    const ImU32 badgeTextColorU32 = ImGui::ColorConvertFloat4ToU32(
+        Detail::badgeTextFor(Detail::unpackColor(badgeColorU32), scheme.priorityBadgeTextColor, scheme.windowBg));
 
-    // Draw badge text using the theme-specified badge text color (white on dark themes, near-black on light)
+    // Draw badge text
     const ImVec2 textPos(clampedBadgeX - (textSize.x * 0.5F), badgeY + ((ctx.metrics.badgeHeight - textSize.y) * 0.5F));
     drawList->AddText(textPos, badgeTextColorU32, valueText.c_str());
 }
@@ -2589,12 +2593,17 @@ void ProcessDetailsPanel::drawPriorityThumb(ImDrawList* drawList, const Priority
     const float thumbRadius = ctx.metrics.thumbRadius;
     const ImVec2 thumbCenter(thumbX, ctx.sliderMin.y + (ctx.metrics.sliderHeight * 0.5F));
 
-    // Cache the badge text color as U32 once per call (avoids repeated theme lookup and conversion)
-    const ImU32 thumbFillColorU32 = ImGui::ColorConvertFloat4ToU32(UI::Theme::get().scheme().priorityBadgeTextColor);
+    // The thumb sits on the track at the current nice value, which is the badge's fill, so it takes the
+    // badge text's colour: readable there by construction rather than a fixed colour that vanished into
+    // the light green middle of the track on dark themes (#1130).
+    const UI::ColorScheme& scheme = UI::Theme::get().scheme();
+    const ImU32 trackColorU32 = getNiceColor(ctx.niceValue, ctx.priorityHighColor, ctx.priorityNormalColor, ctx.priorityLowColor);
+    const ImU32 thumbFillColorU32 = ImGui::ColorConvertFloat4ToU32(
+        Detail::badgeTextFor(Detail::unpackColor(trackColorU32), scheme.priorityBadgeTextColor, scheme.windowBg));
 
     // Thumb outline
     drawList->AddCircleFilled(thumbCenter, thumbRadius + ctx.metrics.thumbOutlineThickness, ImGui::GetColorU32(ImGuiCol_Border));
-    // Thumb fill: uses the badge text color (white on dark, near-black on light) for matching contrast
+    // Thumb fill
     drawList->AddCircleFilled(thumbCenter, thumbRadius, thumbFillColorU32);
 }
 
