@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <limits>
@@ -79,23 +80,31 @@ namespace Platform
 /// added after start-up appears and one removed cleanly disappears (#1159).
 inline constexpr std::chrono::seconds DISK_REENUMERATE_INTERVAL{30};
 
+/// The shortest gap between re-enumerations after a disk failed (#1159). A removed disk is
+/// dropped on the next read, but a disk that opens yet fails every IOCTL_DISK_PERFORMANCE read
+/// would otherwise re-run the PDH enumeration and reopen every drive on every refresh.
+inline constexpr std::chrono::seconds DISK_REENUMERATE_AFTER_FAILURE_INTERVAL{5};
+
 /// Whether WindowsDiskProbe should rebuild its disk list before this read (#1159).
 ///
 /// The list used to be fixed at construction, so a removed disk failed IOCTL_DISK_PERFORMANCE on
-/// every refresh forever and a newly attached one never appeared. Re-enumerate right after any
-/// disk failed, and otherwise once the interval has elapsed since the last enumeration.
+/// every refresh forever and a newly attached one never appeared. Re-enumerate after a disk
+/// failed, at most once per DISK_REENUMERATE_AFTER_FAILURE_INTERVAL, and otherwise once
+/// `interval` has elapsed since the last enumeration.
 [[nodiscard]] inline bool shouldReenumerate(std::chrono::steady_clock::time_point now,
                                             std::chrono::steady_clock::time_point lastEnumeration,
                                             bool anyFailure,
                                             std::chrono::steady_clock::duration interval) noexcept
 {
-    if (anyFailure)
+    // A clock that went backwards (it cannot, for steady_clock, but a caller's fake clock can)
+    // re-enumerates rather than waiting out an interval that never elapses.
+    if (now < lastEnumeration)
     {
         return true;
     }
-    // A clock that went backwards (it cannot, for steady_clock, but a caller's fake clock can)
-    // re-enumerates rather than waiting out an interval that never elapses.
-    return now < lastEnumeration || (now - lastEnumeration) >= interval;
+    const auto sinceLast = now - lastEnumeration;
+    return sinceLast >= interval ||
+           (anyFailure && sinceLast >= std::min<std::chrono::steady_clock::duration>(interval, DISK_REENUMERATE_AFTER_FAILURE_INTERVAL));
 }
 
 /// Tracks which keys (disk names, device paths) are currently failing, so a failure is logged as a

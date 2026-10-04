@@ -215,10 +215,21 @@ TEST(ShouldReenumerateTest, IntervalElapsedReenumerates)
     EXPECT_TRUE(shouldReenumerate(FAKE_START + std::chrono::minutes{5}, FAKE_START, false, REENUMERATE_INTERVAL));
 }
 
-TEST(ShouldReenumerateTest, AnyFailureReenumeratesImmediately)
+TEST(ShouldReenumerateTest, AFailureReenumeratesWithoutWaitingOutTheInterval)
 {
-    EXPECT_TRUE(shouldReenumerate(FAKE_START, FAKE_START, true, REENUMERATE_INTERVAL));
-    EXPECT_TRUE(shouldReenumerate(FAKE_START + std::chrono::milliseconds{1}, FAKE_START, true, REENUMERATE_INTERVAL));
+    // A disk removed long after the last enumeration is dropped on the next read.
+    EXPECT_TRUE(shouldReenumerate(FAKE_START + std::chrono::seconds{12}, FAKE_START, true, REENUMERATE_INTERVAL));
+    EXPECT_TRUE(shouldReenumerate(FAKE_START + DISK_REENUMERATE_AFTER_FAILURE_INTERVAL, FAKE_START, true, REENUMERATE_INTERVAL));
+}
+
+TEST(ShouldReenumerateTest, APersistentFailureDoesNotReenumerateEveryRefresh)
+{
+    // A disk that opens but fails every read must not re-run the PDH enumeration and reopen every
+    // drive on each refresh: at most once per DISK_REENUMERATE_AFTER_FAILURE_INTERVAL.
+    EXPECT_FALSE(shouldReenumerate(FAKE_START, FAKE_START, true, REENUMERATE_INTERVAL));
+    EXPECT_FALSE(shouldReenumerate(FAKE_START + std::chrono::seconds{1}, FAKE_START, true, REENUMERATE_INTERVAL));
+    EXPECT_FALSE(shouldReenumerate(
+        FAKE_START + DISK_REENUMERATE_AFTER_FAILURE_INTERVAL - std::chrono::milliseconds{1}, FAKE_START, true, REENUMERATE_INTERVAL));
 }
 
 TEST(ShouldReenumerateTest, ClockBeforeLastEnumerationReenumerates)
