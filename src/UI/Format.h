@@ -635,6 +635,23 @@ struct AlignedBytesParts
     return parts;
 }
 
+/// "0.6%", one decimal, exactly as the Processes table shows a process's CPU and memory percents
+/// (the same splitPercentForAlignment() rounding and "." separator), or "N/A" for NaN. A process's
+/// share of the machine is usually under a few percent, where percentCompact() rounded it to "0%"
+/// or "1%" (#1195).
+[[nodiscard]] inline auto percentOneDecimal(double percent) -> std::string
+{
+    if (std::isnan(percent))
+    {
+        return "N/A";
+    }
+    const auto parts = splitPercentForAlignment(percent);
+    std::string out(parts.wholePart);
+    out.push_back(parts.decimalDigit);
+    out.append(AlignedPercentParts::unitPart);
+    return out;
+}
+
 /// Split a power value (watts) into parts for decimal-aligned rendering
 [[nodiscard]] inline auto splitPowerForAlignment(double watts) -> AlignedNumericParts
 {
