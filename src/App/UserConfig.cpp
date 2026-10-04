@@ -22,11 +22,13 @@
 #include <limits>
 #include <optional>
 #include <random>
+#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #ifdef _WIN32
 // clang-format off
@@ -50,6 +52,9 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#if defined(__linux__) && __has_include(<sys/xattr.h>)
+#include <sys/xattr.h>
+#endif
 #endif
 
 namespace App
@@ -475,12 +480,46 @@ auto UserConfig::getConfigDirectory() -> std::filesystem::path
 namespace
 {
 
+#if defined(__linux__) && __has_include(<sys/xattr.h>)
+constexpr const char* POSIX_ACL_ACCESS_XATTR = "system.posix_acl_access";
+
+/// The access ACL of @p path as its raw xattr, empty if it has none (or the filesystem has no ACLs),
+/// or nullopt if it couldn't be read.
+[[nodiscard]] std::optional<std::vector<char>> readAccessAcl(const std::filesystem::path& path)
+{
+    for (;;)
+    {
+        const auto size = ::getxattr(path.c_str(), POSIX_ACL_ACCESS_XATTR, nullptr, 0);
+        if (size < 0)
+        {
+            if (errno == ENODATA || errno == ENOTSUP)
+            {
+                return std::vector<char>{};
+            }
+            return std::nullopt;
+        }
+        std::vector<char> acl(static_cast<std::size_t>(size));
+        const auto read = ::getxattr(path.c_str(), POSIX_ACL_ACCESS_XATTR, acl.data(), acl.size());
+        if (read >= 0)
+        {
+            acl.resize(static_cast<std::size_t>(read));
+            return acl;
+        }
+        if (errno != ERANGE) // ERANGE: it grew in between; ask again
+        {
+            return std::nullopt;
+        }
+    }
+}
+#endif
+
 /// Writes all of `contents` to `fd`, retrying short writes and EINTR, then -- if @p mode is set --
-/// applies it with fchmod() on the same descriptor, then closes it. False if any write, the fchmod
+/// applies it with fchmod() on the same descriptor, and @p accessAcl (a raw POSIX access ACL, if
+/// any) with fsetxattr(), then closes it. False if any write, the fchmod
 /// or the close failed; the descriptor is closed either way. fchmod on the descriptor, not chmod on
 /// the path: the path could have been replaced by a symlink to another of the user's files, whose
 /// mode chmod would then change (#1222 review).
-[[nodiscard]] bool writeAllAndClose(int fd, std::string_view contents, std::optional<mode_t> mode)
+[[nodiscard]] bool writeAllAndClose(int fd, std::string_view contents, std::optional<mode_t> mode, std::span<const char> accessAcl)
 {
     bool ok = true;
     while (ok && !contents.empty())
@@ -497,6 +536,16 @@ namespace
     {
         ok = false;
     }
+#if defined(__linux__) && __has_include(<sys/xattr.h>)
+    // After the mode, which it would otherwise overwrite: the ACL's own mask and named entries
+    // are what keep a 0640-looking file from being readable by the whole group.
+    if (ok && !accessAcl.empty() && ::fsetxattr(fd, POSIX_ACL_ACCESS_XATTR, accessAcl.data(), accessAcl.size(), 0) != 0)
+    {
+        ok = false;
+    }
+#else
+    (void) accessAcl;
+#endif
     if (::close(fd) != 0)
     {
         ok = false;
@@ -708,7 +757,27 @@ void UserConfig::save()
     const std::optional<mode_t> mode = (originalPermissions != std::filesystem::perms::unknown)
                                          ? std::optional<mode_t>(static_cast<mode_t>(originalPermissions & std::filesystem::perms::mask))
                                          : std::nullopt;
-    const bool written = writeAllAndClose(fd, contents, mode);
+    std::vector<char> accessAcl;
+#if defined(__linux__) && __has_include(<sys/xattr.h>)
+    // Mode bits alone don't carry an extended ACL: a named-user grant with group::--- and
+    // mask::r-- reports 0640, and that mode on a fresh file would let the whole group read it.
+    // Copy the access ACL too, or don't replace the file (#1222 review).
+    if (fileExists)
+    {
+        auto acl = readAccessAcl(destination);
+        if (!acl.has_value())
+        {
+            spdlog::error("Not saving settings: can't read the access control list of {}: {}",
+                          m_ConfigPath.string(),
+                          std::system_category().message(errno));
+            ::close(fd);
+            std::filesystem::remove(tempPath, ec);
+            return;
+        }
+        accessAcl = std::move(*acl);
+    }
+#endif
+    const bool written = writeAllAndClose(fd, contents, mode, accessAcl);
 #else
     std::ofstream file;
     for (int attempt = 0; attempt < 8 && !file.is_open(); ++attempt)

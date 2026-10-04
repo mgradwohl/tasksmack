@@ -10,12 +10,14 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <random>
 #include <string>
 #include <system_error>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -25,6 +27,9 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#if defined(__linux__) && __has_include(<sys/xattr.h>)
+#include <sys/xattr.h>
+#endif
 #include <unistd.h>
 #endif
 
@@ -1433,6 +1438,51 @@ TEST_F(UserConfigSaveLoadFixture, SavesUnderAUmaskThatMasksOwnerWrite)
         EXPECT_NE(entry.path().extension(), ".tmp") << entry.path();
     }
 }
+
+#if defined(__linux__) && __has_include(<sys/xattr.h>)
+TEST_F(UserConfigSaveLoadFixture, SaveKeepsTheConfigsAccessControlList)
+{
+    // A named-user read grant with group::--- and mask::r-- reports mode 0640. Copying only that
+    // mode to the new file would let the whole group read it; the ACL must come along (#1222 review).
+    auto& config = UserConfig::get();
+    config.save();
+    const auto path = config.configPath();
+
+    // Raw system.posix_acl_access: version 2, then {tag, perm, id} entries.
+    std::vector<char> acl;
+    const auto put = [&acl](const auto value)
+    {
+        const auto* bytes = reinterpret_cast<const char*>(&value);
+        acl.insert(acl.end(), bytes, bytes + sizeof(value));
+    };
+    constexpr std::uint32_t UNDEFINED_ID = 0xFFFFFFFF;
+    put(std::uint32_t{2});
+    for (const auto& [tag, perm, id] : {std::tuple<std::uint16_t, std::uint16_t, std::uint32_t>{0x01, 6, UNDEFINED_ID}, // user::rw-
+                                        {0x02, 4, 65534},                                                               // user:nobody:r--
+                                        {0x04, 0, UNDEFINED_ID},                                                        // group::---
+                                        {0x10, 4, UNDEFINED_ID},                                                        // mask::r--
+                                        {0x20, 0, UNDEFINED_ID}})                                                       // other::---
+    {
+        put(tag);
+        put(perm);
+        put(id);
+    }
+    if (::setxattr(path.c_str(), "system.posix_acl_access", acl.data(), acl.size(), 0) != 0)
+    {
+        GTEST_SKIP() << "filesystem has no POSIX ACLs: " << std::strerror(errno);
+    }
+
+    config.settings().themeId = "mocha";
+    config.save();
+
+    std::vector<char> saved(acl.size() + 64);
+    const auto size = ::getxattr(path.c_str(), "system.posix_acl_access", saved.data(), saved.size());
+    ASSERT_GT(size, 0) << "the new config lost its ACL";
+    saved.resize(static_cast<std::size_t>(size));
+    EXPECT_EQ(saved, acl);
+    EXPECT_EQ(parsed(path)["theme"]["id"].value<std::string>(), "mocha");
+}
+#endif
 
 TEST_F(UserConfigSaveLoadFixture, UnreadableConfigDirectoryFallsBackToDefaults)
 {
