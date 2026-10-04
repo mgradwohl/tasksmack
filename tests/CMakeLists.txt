@@ -67,6 +67,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_History.cpp
     Domain/test_Numeric.cpp
     Domain/test_SingleLineText.cpp
+    Domain/test_ProcessEnergyAttribution.cpp
     Domain/test_ProcessModel.cpp
     Domain/test_GPUModel.cpp
     Domain/test_ProcessStatus.cpp
