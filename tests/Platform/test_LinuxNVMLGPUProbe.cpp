@@ -446,6 +446,7 @@ class NvmlMockControls
             // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast)
             m_Configure = reinterpret_cast<ConfigureFn>(dlsym(m_Library, "tasksmackNvmlMockConfigure"));
             m_UuidCalls = reinterpret_cast<UuidCallsFn>(dlsym(m_Library, "tasksmackNvmlMockUuidCalls"));
+            m_FailSensorReads = reinterpret_cast<FailSensorReadsFn>(dlsym(m_Library, "tasksmackNvmlMockFailSensorReads"));
             // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
         }
     }
@@ -455,6 +456,10 @@ class NvmlMockControls
         if (m_Configure != nullptr)
         {
             m_Configure(NO_FAILING_HANDLE, -1);
+        }
+        if (m_FailSensorReads != nullptr)
+        {
+            m_FailSensorReads(0);
         }
         if (m_Library != nullptr)
         {
@@ -469,7 +474,12 @@ class NvmlMockControls
 
     [[nodiscard]] bool available() const
     {
-        return m_Configure != nullptr && m_UuidCalls != nullptr;
+        return m_Configure != nullptr && m_UuidCalls != nullptr && m_FailSensorReads != nullptr;
+    }
+
+    void failSensorReads(bool fail) const
+    {
+        m_FailSensorReads(fail ? 1 : 0);
     }
 
     void configure(unsigned int failingHandleIndex, int uuidCallsBeforeFailure) const
@@ -487,14 +497,48 @@ class NvmlMockControls
   private:
     using ConfigureFn = void (*)(unsigned int, int);
     using UuidCallsFn = unsigned int (*)();
+    using FailSensorReadsFn = void (*)(int);
 
     void* m_Library;
     ConfigureFn m_Configure = nullptr;
     UuidCallsFn m_UuidCalls = nullptr;
+    FailSensorReadsFn m_FailSensorReads = nullptr;
 };
 
 // #1162: a device whose handle NVML won't return is skipped, not sampled through a null handle
 // as an all-zero phantom GPU.
+// #1111: a sensor read that fails (timeout, GPU lost, driver reset) is marked unread, not reported
+// as a real-looking 0.
+TEST(LinuxNVMLGPUProbeTest, FailedSensorReadsAreMarkedUnavailable)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const NvmlMockControls controls;
+    ASSERT_TRUE(controls.available());
+
+    NVMLGPUProbe probe;
+    ASSERT_TRUE(probe.isAvailable());
+
+    const auto healthy = probe.readGPUCounters();
+    ASSERT_FALSE(healthy.empty());
+    EXPECT_TRUE(healthy[0].utilizationAvailable);
+    EXPECT_TRUE(healthy[0].temperatureAvailable);
+    EXPECT_TRUE(healthy[0].powerAvailable);
+    EXPECT_TRUE(healthy[0].gpuClockAvailable);
+
+    controls.failSensorReads(true);
+    const auto failed = probe.readGPUCounters();
+    ASSERT_FALSE(failed.empty());
+    EXPECT_FALSE(failed[0].utilizationAvailable);
+    EXPECT_FALSE(failed[0].temperatureAvailable);
+    EXPECT_FALSE(failed[0].powerAvailable);
+    EXPECT_FALSE(failed[0].gpuClockAvailable);
+    EXPECT_EQ(failed[0].memoryClockMHz, 9000U); // reads that still succeed are unaffected
+}
+
 TEST(LinuxNVMLGPUProbeTest, DeviceWithoutAHandleIsSkipped)
 {
     const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();

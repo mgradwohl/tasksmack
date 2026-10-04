@@ -390,6 +390,10 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
             {
                 counter.temperatureC = static_cast<std::int32_t>(tempMilliC / 1000);
             }
+            else
+            {
+                counter.temperatureAvailable = false; // Unread (0 means the read failed), not 0 °C (#1111)
+            }
         }
 
         // Read GPU frequency from sysfs
@@ -400,6 +404,10 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
         if (freqMhz > 0)
         {
             counter.gpuClockMHz = static_cast<uint32_t>(freqMhz);
+        }
+        else
+        {
+            counter.gpuClockAvailable = false;
         }
 
         // Read memory info (used/total) if available

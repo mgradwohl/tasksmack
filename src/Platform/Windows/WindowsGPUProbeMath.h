@@ -216,19 +216,27 @@ mergeNVMLIntoDXGICounters(std::vector<GPUCounters>& dxgiCounters,
             continue; // Placeholder from orderNVMLCountersByIds(): this device was not read
         }
 
-        // Enhance with NVML data (NVML provides more accurate/detailed metrics)
+        // Enhance with NVML data (NVML provides more accurate/detailed metrics). Whether each read
+        // succeeded comes along, so an unread field publishes as a gap, not a real-looking 0 (#1111).
         dxgiCounter.temperatureC = nvmlCounter.temperatureC;
+        dxgiCounter.temperatureAvailable = nvmlCounter.temperatureAvailable;
         dxgiCounter.powerDrawWatts = nvmlCounter.powerDrawWatts;
+        dxgiCounter.powerAvailable = nvmlCounter.powerAvailable;
         dxgiCounter.powerLimitWatts = nvmlCounter.powerLimitWatts;
         dxgiCounter.gpuClockMHz = nvmlCounter.gpuClockMHz;
+        dxgiCounter.gpuClockAvailable = nvmlCounter.gpuClockAvailable;
         dxgiCounter.memoryClockMHz = nvmlCounter.memoryClockMHz;
         dxgiCounter.fanSpeedRaw = nvmlCounter.fanSpeedRaw;
         dxgiCounter.fanSpeedMaxRaw = nvmlCounter.fanSpeedMaxRaw;
 
-        // Use NVML GPU utilization (NVML provides the actual GPU utilization, DXGI doesn't).
-        // Always use NVML utilization when available, even if it's 0 (which is valid at idle).
-        dxgiCounter.utilizationPercent = nvmlCounter.utilizationPercent;
-        nvmlSourcedIds.insert(dxgiCounter.gpuId); // Track so PDH merge doesn't overwrite a valid 0%
+        // Use NVML GPU utilization (NVML provides the actual GPU utilization, DXGI doesn't) when this
+        // sample's read succeeded, even if it's 0 (valid at idle). When it failed, leave the GPU
+        // un-NVML-sourced, so PDH's utilization -- a real reading -- is used instead (#1111).
+        if (nvmlCounter.utilizationAvailable)
+        {
+            dxgiCounter.utilizationPercent = nvmlCounter.utilizationPercent;
+            nvmlSourcedIds.insert(dxgiCounter.gpuId); // Track so PDH merge doesn't overwrite a valid 0%
+        }
 
         // Prefer NVML memory metrics (more accurate)
         if (nvmlCounter.memoryTotalBytes > 0)

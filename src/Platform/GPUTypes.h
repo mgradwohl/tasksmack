@@ -47,6 +47,15 @@ struct GPUCounters
 {
     std::string gpuId; // Associates with GPUInfo
 
+    // Whether this sample's read of each field succeeded. False when a supported sensor couldn't be
+    // read this time (NVML_ERROR_TIMEOUT, GPU lost, a driver reset): its value is then meaningless,
+    // not a real 0 -- the history records a gap and the bar shows N/A (#1111). Default true, so a
+    // probe that never fails a read needn't set them.
+    bool utilizationAvailable = true;
+    bool temperatureAvailable = true;
+    bool powerAvailable = true;
+    bool gpuClockAvailable = true;
+
     // Utilization (instantaneous snapshot, 0-100, provided by hardware/driver)
     double utilizationPercent = 0.0; // GPU usage reported by hardware
     // Note: memoryUtilPercent computed by Domain layer from memoryUsedBytes/memoryTotalBytes

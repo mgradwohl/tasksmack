@@ -40,6 +40,12 @@ template<typename T> [[nodiscard]] float sampleOrNaN(const GPUSnapshot& sample, 
     return sample.sampled ? static_cast<float>(value) : std::numeric_limits<float>::quiet_NaN();
 }
 
+/// A field's history value: NaN for a placeholder or a sample whose read of that field failed (#1111).
+template<typename T> [[nodiscard]] float readingOrNaN(const GPUSnapshot& sample, T value, bool available)
+{
+    return available ? sampleOrNaN(sample, value) : std::numeric_limits<float>::quiet_NaN();
+}
+
 /// The fan speed as a float: NaN when it couldn't be read, not 0.0F, so the chart shows a gap
 /// rather than a flat "0%" indistinguishable from an idle fan.
 [[nodiscard]] float fanSpeedOrNaN(const GPUSnapshot& sample)
@@ -307,13 +313,13 @@ void GPUModel::publish()
             publishedHistory.timestamps.push_back(sample.captureTimeSec);
             publishedHistory.memoryUsedBytes.push_back(sample.memoryUsedBytes);
             publishedHistory.memoryTotalBytes.push_back(sample.memoryTotalBytes);
-            publishedHistory.utilization.push_back(sampleOrNaN(sample, sample.utilizationPercent));
+            publishedHistory.utilization.push_back(readingOrNaN(sample, sample.utilizationPercent, sample.utilizationAvailable));
             publishedHistory.memoryPercent.push_back(sampleOrNaN(sample, sample.memoryUsedPercent));
-            publishedHistory.gpuClock.push_back(sampleOrNaN(sample, sample.gpuClockMHz));
+            publishedHistory.gpuClock.push_back(readingOrNaN(sample, sample.gpuClockMHz, sample.gpuClockAvailable));
             publishedHistory.encoder.push_back(sampleOrNaN(sample, sample.encoderUtilPercent));
             publishedHistory.decoder.push_back(sampleOrNaN(sample, sample.decoderUtilPercent));
-            publishedHistory.temperature.push_back(sampleOrNaN(sample, sample.temperatureC));
-            publishedHistory.power.push_back(sampleOrNaN(sample, sample.powerDrawWatts));
+            publishedHistory.temperature.push_back(readingOrNaN(sample, sample.temperatureC, sample.temperatureAvailable));
+            publishedHistory.power.push_back(readingOrNaN(sample, sample.powerDrawWatts, sample.powerAvailable));
             publishedHistory.fanSpeed.push_back(fanSpeedOrNaN(sample));
         }
     }
@@ -417,6 +423,10 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
     }
 
     // Copy instantaneous values
+    snapshot.utilizationAvailable = current.utilizationAvailable;
+    snapshot.temperatureAvailable = current.temperatureAvailable;
+    snapshot.powerAvailable = current.powerAvailable;
+    snapshot.gpuClockAvailable = current.gpuClockAvailable;
     snapshot.utilizationPercent = current.utilizationPercent;
     snapshot.memoryUsedBytes = current.memoryUsedBytes;
     snapshot.memoryTotalBytes = current.memoryTotalBytes;
@@ -508,7 +518,8 @@ template<typename Projection> std::vector<float> GPUModel::getHistoryFieldByProj
 
 std::vector<float> GPUModel::utilizationHistory(std::string_view gpuId) const
 {
-    return getHistoryField(gpuId, &GPUSnapshot::utilizationPercent);
+    return getHistoryFieldByProjection(
+        gpuId, [](const GPUSnapshot& sample) { return readingOrNaN(sample, sample.utilizationPercent, sample.utilizationAvailable); });
 }
 
 std::vector<float> GPUModel::memoryPercentHistory(std::string_view gpuId) const
@@ -518,7 +529,8 @@ std::vector<float> GPUModel::memoryPercentHistory(std::string_view gpuId) const
 
 std::vector<float> GPUModel::gpuClockHistory(std::string_view gpuId) const
 {
-    return getHistoryField(gpuId, &GPUSnapshot::gpuClockMHz);
+    return getHistoryFieldByProjection(
+        gpuId, [](const GPUSnapshot& sample) { return readingOrNaN(sample, sample.gpuClockMHz, sample.gpuClockAvailable); });
 }
 
 std::vector<float> GPUModel::encoderHistory(std::string_view gpuId) const
@@ -533,12 +545,14 @@ std::vector<float> GPUModel::decoderHistory(std::string_view gpuId) const
 
 std::vector<float> GPUModel::temperatureHistory(std::string_view gpuId) const
 {
-    return getHistoryField(gpuId, &GPUSnapshot::temperatureC);
+    return getHistoryFieldByProjection(
+        gpuId, [](const GPUSnapshot& sample) { return readingOrNaN(sample, sample.temperatureC, sample.temperatureAvailable); });
 }
 
 std::vector<float> GPUModel::powerHistory(std::string_view gpuId) const
 {
-    return getHistoryField(gpuId, &GPUSnapshot::powerDrawWatts);
+    return getHistoryFieldByProjection(
+        gpuId, [](const GPUSnapshot& sample) { return readingOrNaN(sample, sample.powerDrawWatts, sample.powerAvailable); });
 }
 
 std::vector<float> GPUModel::fanSpeedHistory(std::string_view gpuId) const

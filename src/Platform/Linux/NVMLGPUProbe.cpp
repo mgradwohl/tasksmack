@@ -321,6 +321,10 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
         {
             counter.utilizationPercent = static_cast<double>(util.gpu);
         }
+        else
+        {
+            counter.utilizationAvailable = false; // Unread this sample: not a real 0% (#1111)
+        }
 
         // Temperature
         unsigned int temp = 0;
@@ -329,6 +333,10 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
         {
             counter.temperatureC = static_cast<std::int32_t>(temp);
         }
+        else
+        {
+            counter.temperatureAvailable = false;
+        }
 
         // Power
         unsigned int powerMilliwatts = 0;
@@ -336,6 +344,10 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
         if (result == NVML_SUCCESS)
         {
             counter.powerDrawWatts = static_cast<double>(powerMilliwatts) / 1000.0;
+        }
+        else
+        {
+            counter.powerAvailable = false;
         }
 
         unsigned int powerLimitMilliwatts = 0;
@@ -351,6 +363,10 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
         if (result == NVML_SUCCESS)
         {
             counter.gpuClockMHz = gpuClock;
+        }
+        else
+        {
+            counter.gpuClockAvailable = false;
         }
 
         unsigned int memClock = 0;

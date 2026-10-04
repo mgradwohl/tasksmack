@@ -1238,6 +1238,58 @@ TEST(GPUModelTest, PerGpuHistoryTimestampsIndependentPerGpu)
     EXPECT_EQ(ts1.size(), model.utilizationHistory("GPU1").size());
 }
 
+TEST(GPUModelTest, FailedSensorReadsPublishGapsNotZeros)
+{
+    // #1111: a sample whose utilization, temperature, power or clock read failed publishes NaN for
+    // that field -- a gap -- not the counter's 0, while fields that were read stay real.
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor");
+    Platform::GPUCounters good;
+    good.gpuId = "GPU0";
+    good.utilizationPercent = 40.0;
+    good.temperatureC = 60;
+    good.powerDrawWatts = 90.0;
+    good.gpuClockMHz = 1500;
+    rawProbe->withGPUCounters("GPU0", good);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    Platform::GPUCounters failed = good;
+    failed.utilizationAvailable = false;
+    failed.temperatureAvailable = false;
+    failed.powerAvailable = false;
+    failed.gpuClockAvailable = false;
+    failed.utilizationPercent = 0.0;
+    failed.temperatureC = 0;
+    failed.powerDrawWatts = 0.0;
+    failed.gpuClockMHz = 0;
+    rawProbe->withGPUCounters("GPU0", failed);
+    model.refresh();
+
+    for (const auto& series :
+         {model.utilizationHistory("GPU0"), model.temperatureHistory("GPU0"), model.powerHistory("GPU0"), model.gpuClockHistory("GPU0")})
+    {
+        ASSERT_EQ(series.size(), 2U);
+        EXPECT_FALSE(std::isnan(series[0]));
+        EXPECT_TRUE(std::isnan(series[1]));
+    }
+
+    const auto publication = model.publication();
+    const auto& published = publication->histories.at("GPU0");
+    EXPECT_TRUE(std::isnan(published.utilization.back()));
+    EXPECT_TRUE(std::isnan(published.temperature.back()));
+    EXPECT_TRUE(std::isnan(published.power.back()));
+    EXPECT_TRUE(std::isnan(published.gpuClock.back()));
+    EXPECT_FLOAT_EQ(published.utilization.front(), 40.0F);
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1U);
+    EXPECT_FALSE(snaps[0].utilizationAvailable);
+    EXPECT_FALSE(snaps[0].temperatureAvailable);
+}
+
 TEST(GPUModelTest, PerGpuHistoryHasAGapWhileGpuAbsent)
 {
     // A GPU missing from a refresh gets a placeholder in its own history, published as NaN, so the

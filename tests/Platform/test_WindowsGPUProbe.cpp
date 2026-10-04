@@ -103,6 +103,32 @@ TEST(MergeNVMLIntoDXGICountersTest, EmptyNVMLCountersLeavesDXGICountersUntouched
     EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 42.0);
 }
 
+TEST(MergeNVMLIntoDXGICountersTest, FailedNVMLUtilizationReadLeavesThePDHFallbackAvailable)
+{
+    // #1111: NVML's utilization read failed (timeout, TDR). The GPU must not be marked NVML-sourced
+    // with a real-looking 0%, which suppressed the valid PDH utilization; the read validity of the
+    // other fields comes along so they publish as gaps.
+    std::vector<GPUCounters> dxgi(1);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[0].utilizationPercent = 37.0; // a later PDH merge fills this in
+
+    std::vector<GPUCounters> nvml(1);
+    nvml[0].gpuId = "uuid-0";
+    nvml[0].utilizationAvailable = false;
+    nvml[0].utilizationPercent = 0.0;
+    nvml[0].temperatureAvailable = false;
+    nvml[0].powerAvailable = true;
+    nvml[0].powerDrawWatts = 80.0;
+
+    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0, 0}});
+
+    EXPECT_FALSE(sourced.contains("GPU0"));
+    EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 37.0);
+    EXPECT_FALSE(dxgi[0].temperatureAvailable);
+    EXPECT_TRUE(dxgi[0].powerAvailable);
+    EXPECT_DOUBLE_EQ(dxgi[0].powerDrawWatts, 80.0);
+}
+
 TEST(MergeNVMLIntoDXGICountersTest, UnmappedDXGIIndexIsSkipped)
 {
     std::vector<GPUCounters> dxgi(1);
