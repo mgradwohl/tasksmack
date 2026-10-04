@@ -625,8 +625,8 @@ void Application::run()
                 // X11/XWayland window managers size a maximized borderless window themselves, and
                 // their asynchronous restore/maximize round trip is untested, so Linux is unchanged.
                 m_Window->adoptSystemMaximize();
-#endif
                 break;
+#endif
             case WindowEventRouting::Action::None:
                 break;
             }
