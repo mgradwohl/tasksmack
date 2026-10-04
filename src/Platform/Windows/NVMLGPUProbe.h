@@ -76,6 +76,8 @@ class NVMLGPUProbe : public IGPUProbe
         NVML::nvmlReturn_t (*SystemGetDriverVersion)(char*, unsigned int);
         NVML::nvmlReturn_t (*DeviceGetVbiosVersion)(NVML::nvmlDevice_t, char*, unsigned int);
         NVML::nvmlReturn_t (*DeviceGetFanSpeed)(NVML::nvmlDevice_t, unsigned int*);
+        // PCI identity, to match NVML devices to DXGI adapters (#1091); optional
+        NVML::nvmlReturn_t (*DeviceGetPciInfo)(NVML::nvmlDevice_t, NVML::nvmlPciInfo_t*);
         // Per-process GPU functions
         NVML::nvmlReturn_t (*DeviceGetComputeRunningProcesses)(NVML::nvmlDevice_t, unsigned int*, void*);
         NVML::nvmlReturn_t (*DeviceGetGraphicsRunningProcesses)(NVML::nvmlDevice_t, unsigned int*, void*);
