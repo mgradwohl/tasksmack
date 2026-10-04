@@ -18,6 +18,23 @@ namespace UI
     return points * (BASE_DPI * scale) / 72.0F;
 }
 
+/// The UI scale in window units: SDL's display scale divided by the window's pixel density.
+///
+/// The window is created with SDL_WINDOW_HIGH_PIXEL_DENSITY, so on native Wayland (and macOS) window
+/// coordinates are logical and the pixel density equals the compositor scale -- and imgui_impl_sdl3
+/// already renders at that density (DisplayFramebufferScale), with ImGui rasterising fonts to match.
+/// Scaling fonts, style metrics and chrome by the full display scale *as well* applied it twice:
+/// 4x text at 200% instead of 2x (#1096). On Windows and X11 the density is 1, so nothing changes.
+/// A density that is not a usable number (0 on failure, NaN) falls back to the display scale alone.
+[[nodiscard]] inline float windowUnitScale(float displayScale, float pixelDensity) noexcept
+{
+    if (!std::isfinite(pixelDensity) || pixelDensity <= 0.0F)
+    {
+        return displayScale;
+    }
+    return displayScale / pixelDensity;
+}
+
 /// Smallest difference between two display scales treated as a change. SDL computes the scale in
 /// floating point, so an exact comparison is meaningless at that precision (and flagged by CodeQL).
 inline constexpr float DISPLAY_SCALE_EPSILON = 1e-4F;

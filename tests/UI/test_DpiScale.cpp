@@ -72,5 +72,23 @@ TEST(DpiScaleTest, AnUnusableMeasurementIsNotAChange)
     EXPECT_FALSE(displayScaleChanged(1.0F, std::numeric_limits<float>::infinity()));
 }
 
+// windowUnitScale (#1096): the UI scale in window units, so it isn't applied on top of the pixel
+// density ImGui already renders at.
+TEST(DpiScaleTest, WindowUnitScaleDividesOutThePixelDensity)
+{
+    EXPECT_FLOAT_EQ(windowUnitScale(2.0F, 2.0F), 1.0F);   // Wayland/macOS 200%: density does it all
+    EXPECT_FLOAT_EQ(windowUnitScale(1.5F, 1.0F), 1.5F);   // Windows/X11 150%: density is 1
+    EXPECT_FLOAT_EQ(windowUnitScale(2.5F, 2.0F), 1.25F);  // a mixed case
+    EXPECT_FLOAT_EQ(windowUnitScale(1.25F, 1.25F), 1.0F); // Wayland fractional 125%
+}
+
+TEST(DpiScaleTest, WindowUnitScaleFallsBackOnAnUnusableDensity)
+{
+    EXPECT_FLOAT_EQ(windowUnitScale(1.5F, 0.0F), 1.5F);
+    EXPECT_FLOAT_EQ(windowUnitScale(1.5F, -1.0F), 1.5F);
+    EXPECT_FLOAT_EQ(windowUnitScale(1.5F, std::numeric_limits<float>::quiet_NaN()), 1.5F);
+    EXPECT_FLOAT_EQ(windowUnitScale(1.5F, std::numeric_limits<float>::infinity()), 1.5F);
+}
+
 } // namespace
 } // namespace UI

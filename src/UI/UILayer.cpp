@@ -28,12 +28,21 @@
 
 namespace
 {
-// The main window's display scale from SDL, 1.0 at 96 DPI; 1.0 without a window, and 0.0 if SDL
-// fails (callers reject that through UI::displayScaleChanged()).
+// The main window's UI scale in window units (1.0 at 96 DPI): SDL's display scale over the window's
+// pixel density, which ImGui already renders at (#1096). 1.0 without a window, and 0.0 if SDL fails
+// to report the display scale (callers reject that through UI::displayScaleChanged()).
 float measureDisplayScale()
 {
     SDL_Window* window = Core::Application::get().getWindow().getHandle();
-    return (window != nullptr) ? SDL_GetWindowDisplayScale(window) : 1.0F;
+    if (window == nullptr)
+    {
+        return 1.0F;
+    }
+    const float displayScale = SDL_GetWindowDisplayScale(window);
+    const float pixelDensity = SDL_GetWindowPixelDensity(window);
+    const float scale = UI::windowUnitScale(displayScale, pixelDensity);
+    spdlog::debug("UI scale {:.3f} (SDL display scale {:.3f}, pixel density {:.3f})", scale, displayScale, pixelDensity);
+    return scale;
 }
 
 } // namespace
