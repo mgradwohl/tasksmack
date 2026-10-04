@@ -23,6 +23,16 @@ struct GPUCapabilities
     bool supportsMultiGPU = false;
 };
 
+/// Where an adapter sits on the PCI bus. DXGI and NVML enumerate adapters in different orders and
+/// name them differently, so on Windows this is what says which NVML device is which DXGI adapter
+/// (#1091). DXGI reports no PCI domain, so the domain is not part of the match.
+struct PciLocation
+{
+    std::uint32_t bus = 0;
+    std::uint32_t device = 0;
+    bool operator==(const PciLocation&) const = default;
+};
+
 // Identifies a physical GPU
 struct GPUInfo
 {
@@ -39,6 +49,10 @@ struct GPUInfo
     /// the Intel iGPU too, and two NVIDIA cards with different sensors both drew every series
     /// (#1040). nullopt means the probe's capabilities apply to this adapter unchanged.
     std::optional<GPUCapabilities> sensorCapabilities;
+    /// PCI bus location, where the probe can read it (Windows: DXGI via D3DKMT, and NVML) (#1091).
+    std::optional<PciLocation> pciLocation;
+    /// PCI (device ID << 16) | vendor ID -- NVML's pciDeviceId encoding -- or 0 when unknown (#1091).
+    std::uint32_t pciDeviceId = 0;
 };
 
 // Raw GPU counters (Platform layer provides raw values only)
@@ -46,6 +60,16 @@ struct GPUInfo
 struct GPUCounters
 {
     std::string gpuId; // Associates with GPUInfo
+
+    // Whether this sample's read of each field succeeded. False when a supported sensor couldn't be
+    // read this time (NVML_ERROR_TIMEOUT, GPU lost, a driver reset): its value is then meaningless,
+    // not a real 0 -- the history records a gap and the bar shows N/A (#1111). Default true, so a
+    // probe that never fails a read needn't set them.
+    bool utilizationAvailable = true;
+    bool temperatureAvailable = true;
+    bool powerAvailable = true;
+    bool gpuClockAvailable = true;
+    bool memoryAvailable = true; // used/total bytes, and so the memory percent
 
     // Utilization (instantaneous snapshot, 0-100, provided by hardware/driver)
     double utilizationPercent = 0.0; // GPU usage reported by hardware

@@ -8,6 +8,8 @@
 
 #ifdef _WIN32
 
+#include "Platform/GPUTypes.h"
+#include "Platform/Windows/DXGIAdapterLocation.h"
 #include "Platform/Windows/DXGIGPUProbe.h"
 #include "Platform/Windows/DXGIGPUProbeMath.h"
 
@@ -25,6 +27,137 @@ namespace
 // =============================================================================
 // vendorIdToName: pure lookup, no hardware required.
 // =============================================================================
+
+// =============================================================================
+// adapterPciLocation: the D3DKMT address query, against fake kernel-mode calls (#1091)
+// =============================================================================
+
+// What the fakes saw and should answer. A plain global: the D3DKMT function pointers take no
+// user data.
+struct FakeD3DKMT
+{
+    NTSTATUS openStatus = 0;
+    NTSTATUS queryStatus = 0;
+    UINT bus = 0;
+    UINT device = 0;
+    D3DKMT_HANDLE handle = 0x40;
+    LUID openedLuid{};
+    KMTQUERYADAPTERINFOTYPE queriedType{};
+    UINT queriedSize = 0;
+    D3DKMT_HANDLE queriedHandle = 0;
+    D3DKMT_HANDLE closedHandle = 0;
+    int closeCount = 0;
+};
+
+FakeD3DKMT& fakeD3DKMT()
+{
+    static FakeD3DKMT state;
+    return state;
+}
+
+NTSTATUS APIENTRY fakeOpenAdapterFromLuid(const D3DKMT_OPENADAPTERFROMLUID* open)
+{
+    auto& fake = fakeD3DKMT();
+    fake.openedLuid = open->AdapterLuid;
+    if (fake.openStatus == 0)
+    {
+        // The real call fills hAdapter through its nominally const argument.
+        const_cast<D3DKMT_OPENADAPTERFROMLUID*>(open)->hAdapter = fake.handle; // NOLINT(cppcoreguidelines-pro-type-const-cast)
+    }
+    return fake.openStatus;
+}
+
+NTSTATUS APIENTRY fakeQueryAdapterInfo(const D3DKMT_QUERYADAPTERINFO* query)
+{
+    auto& fake = fakeD3DKMT();
+    fake.queriedType = query->Type;
+    fake.queriedSize = query->PrivateDriverDataSize;
+    fake.queriedHandle = query->hAdapter;
+    if (fake.queryStatus == 0 && query->Type == KMTQAITYPE_ADAPTERADDRESS && query->PrivateDriverDataSize == sizeof(D3DKMT_ADAPTERADDRESS))
+    {
+        auto* address = static_cast<D3DKMT_ADAPTERADDRESS*>(query->pPrivateDriverData);
+        address->BusNumber = fake.bus;
+        address->DeviceNumber = fake.device;
+        address->FunctionNumber = 0;
+    }
+    return fake.queryStatus;
+}
+
+NTSTATUS APIENTRY fakeCloseAdapter(const D3DKMT_CLOSEADAPTER* close)
+{
+    auto& fake = fakeD3DKMT();
+    fake.closedHandle = close->hAdapter;
+    ++fake.closeCount;
+    return 0;
+}
+
+constexpr D3DKMTAdapterFunctions FAKE_D3DKMT{
+    .openAdapterFromLuid = fakeOpenAdapterFromLuid,
+    .queryAdapterInfo = fakeQueryAdapterInfo,
+    .closeAdapter = fakeCloseAdapter,
+};
+
+class AdapterPciLocationTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        fakeD3DKMT() = FakeD3DKMT{};
+    }
+};
+
+TEST_F(AdapterPciLocationTest, ReturnsTheBusAndDeviceTheAdapterReports)
+{
+    fakeD3DKMT().bus = 0x41;
+    fakeD3DKMT().device = 0x03;
+    const LUID luid{.LowPart = 0x1234, .HighPart = 0x5};
+
+    const auto location = adapterPciLocation(luid, FAKE_D3DKMT);
+
+    ASSERT_TRUE(location.has_value());
+    EXPECT_EQ(location.value_or(PciLocation{}), (PciLocation{.bus = 0x41, .device = 0x03}));
+    // It opened the adapter the LUID names, asked that adapter for its address, and closed it.
+    EXPECT_EQ(fakeD3DKMT().openedLuid.LowPart, 0x1234U);
+    EXPECT_EQ(fakeD3DKMT().openedLuid.HighPart, 0x5);
+    EXPECT_EQ(fakeD3DKMT().queriedType, KMTQAITYPE_ADAPTERADDRESS);
+    EXPECT_EQ(fakeD3DKMT().queriedSize, sizeof(D3DKMT_ADAPTERADDRESS));
+    EXPECT_EQ(fakeD3DKMT().queriedHandle, fakeD3DKMT().handle);
+    EXPECT_EQ(fakeD3DKMT().closedHandle, fakeD3DKMT().handle);
+    EXPECT_EQ(fakeD3DKMT().closeCount, 1);
+}
+
+TEST_F(AdapterPciLocationTest, DistinctAdaptersGetDistinctLocations)
+{
+    fakeD3DKMT().bus = 0x01;
+    const auto first = adapterPciLocation(LUID{}, FAKE_D3DKMT);
+    fakeD3DKMT().bus = 0x02;
+    fakeD3DKMT().device = 0x01;
+    const auto second = adapterPciLocation(LUID{}, FAKE_D3DKMT);
+
+    ASSERT_TRUE(first.has_value());
+    ASSERT_TRUE(second.has_value());
+    EXPECT_NE(first.value_or(PciLocation{}), second.value_or(PciLocation{}));
+    EXPECT_EQ(second.value_or(PciLocation{}), (PciLocation{.bus = 0x02, .device = 0x01}));
+}
+
+TEST_F(AdapterPciLocationTest, NoLocationWhenTheAdapterCannotBeOpened)
+{
+    fakeD3DKMT().openStatus = static_cast<NTSTATUS>(0xC0000225L); // STATUS_NOT_FOUND
+    fakeD3DKMT().bus = 0x41;
+
+    EXPECT_FALSE(adapterPciLocation(LUID{}, FAKE_D3DKMT).has_value());
+    EXPECT_EQ(fakeD3DKMT().closeCount, 0); // Nothing was opened, so nothing to close
+}
+
+TEST_F(AdapterPciLocationTest, NoLocationWhenTheAddressQueryFailsAndTheAdapterIsStillClosed)
+{
+    fakeD3DKMT().queryStatus = static_cast<NTSTATUS>(0xC00000BBL); // STATUS_NOT_SUPPORTED
+    fakeD3DKMT().bus = 0x41;
+
+    EXPECT_FALSE(adapterPciLocation(LUID{}, FAKE_D3DKMT).has_value());
+    EXPECT_EQ(fakeD3DKMT().closeCount, 1);
+    EXPECT_EQ(fakeD3DKMT().closedHandle, fakeD3DKMT().handle);
+}
 
 TEST(AdapterMemoryTotalBytesTest, IntegratedUsesSharedSystemMemoryDiscreteUsesDedicated)
 {
