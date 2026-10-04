@@ -833,12 +833,14 @@ TEST(LinuxProcessProbeTest, TotalCpuTimeIsTheOneTakenAfterTheStatPass)
     writeFile(proc.path / "stat", "cpu  100 0 100 800 0 0 0 0 0 0\n");
 
     LinuxProcessProbe probe(proc.path);
+    // Time passes during enumerate()'s variable-latency tail (network attribution): the total must
+    // already have been taken, so moving the capture after the tail fails this test.
+    probe.setEnumerateTailHookForTesting([&proc] { writeFile(proc.path / "stat", "cpu  200 0 200 1600 0 0 0 0 0 0\n"); });
     const auto processes = probe.enumerate();
     ASSERT_EQ(processes.size(), 1U);
 
-    writeFile(proc.path / "stat", "cpu  200 0 200 1600 0 0 0 0 0 0\n"); // time passes after the stat pass
-    EXPECT_EQ(probe.totalCpuTime(), 1000U);                             // the enumerate-time total
-    EXPECT_EQ(probe.totalCpuTime(), 2000U);                             // taken once; then a fresh read
+    EXPECT_EQ(probe.totalCpuTime(), 1000U); // the pre-tail total
+    EXPECT_EQ(probe.totalCpuTime(), 2000U); // taken once; then a fresh read
 }
 
 TEST(LinuxProcessProbeTest, EmptyProcDirReturnsNoProcesses)

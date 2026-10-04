@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -56,6 +57,14 @@ class LinuxProcessProbe : public IProcessProbe
     void setSocketStatsCacheTtl(std::chrono::milliseconds ttlMs) override;
 #endif
 
+    /// Test seam: called by enumerate() where its variable-latency tail (network attribution) runs,
+    /// so a test can change /proc/stat during that tail and check the CPU total was taken before it
+    /// (#1119). Not thread-safe against a concurrent enumerate(); set it before sampling starts.
+    void setEnumerateTailHookForTesting(std::function<void()> hook)
+    {
+        m_EnumerateTailHook = std::move(hook);
+    }
+
   private:
     std::filesystem::path m_ProcRoot;
     std::filesystem::path m_PowercapRoot;
@@ -69,6 +78,7 @@ class LinuxProcessProbe : public IProcessProbe
     // inode->PID rebuild scans every /proc/*/fd -- the total's interval drifted from the processes'
     // and every CPU% showed a sawtooth (#1119).
     mutable std::atomic<std::uint64_t> m_TotalCpuTimeAtEnumerate = 0;
+    std::function<void()> m_EnumerateTailHook; // See setEnumerateTailHookForTesting()
     bool m_HasPowerCap = false;
     std::string m_PowerCapPath;
     std::uint64_t m_PowerCapMaxRangeUj = 0; // max_energy_range_uj, where the counter wraps (0: unknown)

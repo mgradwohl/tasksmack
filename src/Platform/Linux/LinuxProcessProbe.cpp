@@ -275,6 +275,11 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
     // their stat reads, before the variable-latency network attribution below (#1119).
     m_TotalCpuTimeAtEnumerate.store(readTotalCpuTime(), std::memory_order_relaxed);
 
+    if (m_EnumerateTailHook)
+    {
+        m_EnumerateTailHook(); // Tests: time passes during the tail
+    }
+
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     // Attribute network bytes to processes if socket stats are available
     if (m_HasNetworkCounters && socketStats())
