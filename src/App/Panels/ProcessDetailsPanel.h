@@ -211,7 +211,8 @@ class ProcessDetailsPanel : public Panel
         // Whether the latest sample had a GDI reading. A missing one leaves gdiObjectCount where it
         // was (not eased toward 0) and the NowBar shows N/A, as the line shows a gap (#1148).
         bool gdiInitialized = false;
-        // Memory bars, as percents of system RAM like the Memory chart
+        // Memory bars, in bytes like the Memory chart (#1195); Used is residentBytes above. Their share
+        // of system RAM is shown only in the hover text, via memoryPercentPerByte.
         double memorySharedBytes = 0.0;
         double memoryPercentPerByte = 0.0; ///< Latest, not smoothed: converts bytes to a share of RAM
         bool initialized = false;
