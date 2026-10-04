@@ -123,9 +123,10 @@ void renderDiskCell(const std::string& deviceName,
     const float cellContentTop = ImGui::GetCursorPosY();
     ImGui::TextColored(theme.scheme().textPrimary, "%.*s", static_cast<int>(deviceName.size()), deviceName.data());
     // The disk's current rates, readable without hovering (#1193), on their own line under its name.
-    // Exactly one line, never wrapped: the overhead below is measured once and the grid budgets one
-    // strip line per cell, so a wrapped row would push the chart past the cell's bottom.
-    UI::Widgets::renderNowBarValueStrip(diskBars, {}, false);
+    // Compact: exactly one line of "Read: 1.2 MB/s" / "Read: N/A", never wrapped -- the overhead below
+    // is measured once and the grid budgets one strip line per cell, and the longer "not reported
+    // this sample" tooltip text would not fit a minimum-width cell. Hovering a bar still shows it.
+    UI::Widgets::renderNowBarValueStrip(diskBars, {}, UI::Widgets::ValueStripLayout::Compact);
     if (!cachedOverhead.has_value())
     {
         // renderHistoryWithNowBars wraps the chart+bars in its own table, whose CellPadding.y

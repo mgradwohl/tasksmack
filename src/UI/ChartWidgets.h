@@ -1582,14 +1582,24 @@ inline void drawValueStripEntry(
 }
 } // namespace detail
 
+/// How renderNowBarValueStrip() lays out its entries.
+enum class ValueStripLayout : std::uint8_t
+{
+    Wrap,    ///< Each bar's tooltip text; entries that do not fit start a new line
+    Compact, ///< One line of "label: valueText": for containers that budget exactly one line (grid
+             ///< cells), where a longer tooltip text could run past the edge. The hover keeps it.
+};
+
 /// Each series' current value, readable without hovering (#1193): per bar, a swatch in the bar's
 /// colour and the same text its tooltip shows -- its tooltipText when it has one (richer, e.g. bytes
 /// beside a percent), otherwise the tooltip's own fallback "label: valueText" -- with the leading
 /// "label:" muted; then any `extras`, series the chart draws without a bar. Bar strings are already
-/// built for the frame, so the bars add no allocation. `wrap` = false keeps the strip on one line,
-/// for containers whose height budgets exactly one (grid cells).
-inline void renderNowBarValueStrip(std::span<const NowBar> bars, std::span<const ValueStripEntry> extras = {}, bool wrap = true)
+/// built for the frame, so the bars add no allocation.
+inline void renderNowBarValueStrip(std::span<const NowBar> bars,
+                                   std::span<const ValueStripEntry> extras = {},
+                                   ValueStripLayout layout = ValueStripLayout::Wrap)
 {
+    const bool wrap = layout == ValueStripLayout::Wrap;
     const float rowRight = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
     const ImVec4 muted = UI::Theme::get().scheme().textMuted;
     bool first = true;
@@ -1597,7 +1607,7 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars, std::span<const
     {
         std::string_view head = bar.label;
         std::string_view tail = bar.valueText;
-        if (!bar.tooltipText.empty())
+        if (wrap && !bar.tooltipText.empty())
         {
             // A tooltipText that starts with "label:" ("Handles: 266,257") splits like the fallback.
             const std::string_view tip = bar.tooltipText;
