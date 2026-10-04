@@ -32,6 +32,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <bit>
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
@@ -1180,6 +1182,15 @@ bool WindowsProcessProbe::detectNetworkCounters()
         return false;
     }
 
+    // IPv6 EStats (#1100): exported alongside the IPv4 pair since Vista. Optional: if either is
+    // missing the IPv6 walk is skipped and only IPv4 connections are counted.
+    m_GetPerTcp6ConnectionEStats = Windows::getProcAddress<GetPerTcp6ConnectionEStatsFn>(iphlp, "GetPerTcp6ConnectionEStats");
+    m_SetPerTcp6ConnectionEStats = Windows::getProcAddress<SetPerTcp6ConnectionEStatsFn>(iphlp, "SetPerTcp6ConnectionEStats");
+    if (m_GetPerTcp6ConnectionEStats == nullptr || m_SetPerTcp6ConnectionEStats == nullptr)
+    {
+        spdlog::debug("Per-process network counters: IPv6 TCP EStats unavailable; counting IPv4 connections only");
+    }
+
     // TCP EStats requires elevated privileges to enable data collection.
     // Test with a dummy row to detect if we have sufficient privileges.
     MIB_TCPROW dummy{};
@@ -1204,125 +1215,205 @@ bool WindowsProcessProbe::detectNetworkCounters()
     return true;
 }
 
-std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>> WindowsProcessProbe::collectNetworkByteCounts() const
+namespace
 {
-    std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>> perPid;
+
+static_assert(TCP_STATE_ESTABLISHED == static_cast<std::uint32_t>(MIB_TCP_STATE_ESTAB),
+              "TCP_STATE_ESTABLISHED must match MIB_TCP_STATE_ESTAB");
+
+/// Fetch one address family's GetExtendedTcpTable(TCP_TABLE_OWNER_PID_ALL) snapshot.
+/// Returns an empty buffer on any failure (the sample then has no rows for that family).
+[[nodiscard]] std::vector<unsigned char> readOwnerPidTcpTable(ULONG addressFamily)
+{
+    DWORD tableSize = 0;
+    DWORD status = GetExtendedTcpTable(nullptr, &tableSize, FALSE, addressFamily, TCP_TABLE_OWNER_PID_ALL, 0);
+    if (status != ERROR_INSUFFICIENT_BUFFER || tableSize == 0)
+    {
+        return {};
+    }
+
+    std::vector<unsigned char> buffer(tableSize);
+    status = GetExtendedTcpTable(buffer.data(), &tableSize, FALSE, addressFamily, TCP_TABLE_OWNER_PID_ALL, 0);
+    if (status != NO_ERROR)
+    {
+        return {};
+    }
+    return buffer;
+}
+
+/// Enable and read EStats for one ESTABLISHED connection, then hand the result to the shared
+/// accumulateEStatsRow() decision. RowT is MIB_TCPROW or MIB_TCP6ROW (#1100); the Set/Get
+/// function pointers are the matching IPv4 or IPv6 pair.
+template<typename RowT, typename SetFn, typename GetFn>
+void readEStatsRow(
+    RowT& row, std::uint32_t pid, std::uint32_t state, SetFn setFn, GetFn getFn, PerPidNetworkBytes& perPid, EStatsSampleCounts& counts)
+{
+    ++counts.established;
+    bool accessDenied = false;
+
+    // Try to enable EStats collection (requires admin, may fail)
+    if (setFn != nullptr)
+    {
+        TCP_ESTATS_DATA_RW_v0 rw{};
+        rw.EnableCollection = TRUE;
+        const DWORD enableStatus = setFn(&row, TcpConnectionEstatsData, reinterpret_cast<PUCHAR>(&rw), 0, sizeof(rw), 0);
+        if (enableStatus == NO_ERROR)
+        {
+            ++counts.enabled;
+        }
+        accessDenied = (enableStatus == ERROR_ACCESS_DENIED);
+    }
+
+    // Read the stats (may work even if enable failed, if another process enabled it)
+    TCP_ESTATS_DATA_ROD_v0 rod{};
+    const DWORD readStatus =
+        getFn(&row, TcpConnectionEstatsData, nullptr, 0, 0, nullptr, 0, 0, reinterpret_cast<PUCHAR>(&rod), 0, sizeof(rod));
+    accessDenied = accessDenied || (readStatus == ERROR_ACCESS_DENIED);
+    if (accessDenied)
+    {
+        ++counts.accessDenied;
+    }
+
+    switch (accumulateEStatsRow(perPid, pid, state, readStatus, rod.DataBytesOut, rod.DataBytesIn))
+    {
+    case EStatsRowOutcome::Accumulated:
+        ++counts.readOk;
+        if (rod.DataBytesOut > 0 || rod.DataBytesIn > 0)
+        {
+            ++counts.hasData;
+        }
+        break;
+    case EStatsRowOutcome::Garbage:
+        ++counts.readOk;
+        ++counts.garbage; // > 1 TB: garbage/uninitialized data, connection skipped
+        break;
+    case EStatsRowOutcome::ReadFailed:
+    case EStatsRowOutcome::SkippedState:
+        break;
+    }
+}
+
+} // namespace
+
+PerPidNetworkBytes WindowsProcessProbe::collectNetworkByteCounts() const
+{
+    PerPidNetworkBytes perPid;
 
     if (!m_HasNetworkCounters)
     {
         return perPid;
     }
 
-    collectTcp4ByteCounts(perPid);
+    // IPv4 and IPv6 connections of the same process sum into one entry (#1100): on a dual-stack
+    // network most browser/CDN traffic is IPv6, which an IPv4-only walk reported as ~0.
+    EStatsSampleCounts counts = collectTcp4ByteCounts(perPid);
+    counts += collectTcp6ByteCounts(perPid);
+
+    // Log diagnostics periodically (once per ~60 samples). Atomic: enumerate() may run on
+    // several threads, and this is a const member.
+    static std::atomic<std::size_t> sampleCount{0};
+    if (sampleCount.fetch_add(1, std::memory_order_relaxed) % 60 == 0)
+    {
+        spdlog::debug("TCP EStats (IPv4+IPv6): {} total, {} established, {} enabled, {} read OK, {} have data, {} garbage, "
+                      "{} access denied",
+                      counts.total,
+                      counts.established,
+                      counts.enabled,
+                      counts.readOk,
+                      counts.hasData,
+                      counts.garbage,
+                      counts.accessDenied);
+    }
 
     return perPid;
 }
 
-void WindowsProcessProbe::collectTcp4ByteCounts(std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>>& perPid) const
+EStatsSampleCounts WindowsProcessProbe::collectTcp4ByteCounts(PerPidNetworkBytes& perPid) const
 {
+    EStatsSampleCounts counts;
     if (m_GetPerTcpConnectionEStats == nullptr)
     {
-        return;
+        return counts;
     }
 
-    DWORD tableSize = 0;
-    DWORD status = GetExtendedTcpTable(nullptr, &tableSize, FALSE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
-    if (status != ERROR_INSUFFICIENT_BUFFER || tableSize == 0)
+    const std::vector<unsigned char> buffer = readOwnerPidTcpTable(AF_INET);
+    if (buffer.empty())
     {
-        return;
+        return counts;
     }
 
-    std::vector<unsigned char> buffer(tableSize);
-    status = GetExtendedTcpTable(buffer.data(), &tableSize, FALSE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
-    if (status != NO_ERROR)
-    {
-        return;
-    }
-
-    const auto* table = reinterpret_cast<PMIB_TCPTABLE_OWNER_PID>(buffer.data());
-
-    std::size_t enabledCount = 0;
-    std::size_t readSuccessCount = 0;
-    std::size_t hasDataCount = 0;
-    std::size_t garbageCount = 0;
-    std::size_t skippedStateCount = 0;
+    const auto* table = reinterpret_cast<const MIB_TCPTABLE_OWNER_PID*>(buffer.data());
+    counts.total = table->dwNumEntries;
 
     for (DWORD i = 0; i < table->dwNumEntries; ++i)
     {
         const MIB_TCPROW_OWNER_PID& ownerRow = table->table[i];
 
-        // Only process ESTABLISHED connections (state 5) - these are actively transferring data
-        // Skip LISTEN, TIME_WAIT, CLOSE_WAIT, etc. as they don't have meaningful byte counters
-        constexpr DWORD MIB_TCP_STATE_ESTAB = 5;
-        if (ownerRow.dwState != MIB_TCP_STATE_ESTAB)
+        // Only ESTABLISHED connections are actively transferring data; LISTEN, TIME_WAIT,
+        // CLOSE_WAIT, etc. have no meaningful byte counters, so skip the EStats calls entirely.
+        if (ownerRow.dwState != TCP_STATE_ESTABLISHED)
         {
-            ++skippedStateCount;
             continue;
         }
 
-        MIB_TCPROW ownerRowBase{};
+        MIB_TCPROW row{};
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access) - Windows API requires union access
-        ownerRowBase.dwState = ownerRow.dwState;
-        ownerRowBase.dwLocalAddr = ownerRow.dwLocalAddr;
-        ownerRowBase.dwLocalPort = ownerRow.dwLocalPort;
-        ownerRowBase.dwRemoteAddr = ownerRow.dwRemoteAddr;
-        ownerRowBase.dwRemotePort = ownerRow.dwRemotePort;
+        row.dwState = ownerRow.dwState;
+        row.dwLocalAddr = ownerRow.dwLocalAddr;
+        row.dwLocalPort = ownerRow.dwLocalPort;
+        row.dwRemoteAddr = ownerRow.dwRemoteAddr;
+        row.dwRemotePort = ownerRow.dwRemotePort;
 
-        // Try to enable EStats collection (requires admin, may fail)
-        if (m_SetPerTcpConnectionEStats != nullptr)
-        {
-            TCP_ESTATS_DATA_RW_v0 rw{};
-            rw.EnableCollection = TRUE;
-            const DWORD enableStatus =
-                m_SetPerTcpConnectionEStats(&ownerRowBase, TcpConnectionEstatsData, reinterpret_cast<PUCHAR>(&rw), 0, sizeof(rw), 0);
-            if (enableStatus == NO_ERROR)
-            {
-                ++enabledCount;
-            }
-        }
+        readEStatsRow(
+            row, ownerRow.dwOwningPid, ownerRow.dwState, m_SetPerTcpConnectionEStats, m_GetPerTcpConnectionEStats, perPid, counts);
+    }
 
-        // Read the stats (may work even if enable failed, if another process enabled it)
-        TCP_ESTATS_DATA_ROD_v0 rod{};
-        const DWORD estats = m_GetPerTcpConnectionEStats(
-            &ownerRowBase, TcpConnectionEstatsData, nullptr, 0, 0, nullptr, 0, 0, reinterpret_cast<PUCHAR>(&rod), 0, sizeof(rod));
+    return counts;
+}
 
-        if (estats != NO_ERROR)
+EStatsSampleCounts WindowsProcessProbe::collectTcp6ByteCounts(PerPidNetworkBytes& perPid) const
+{
+    EStatsSampleCounts counts;
+    if (m_GetPerTcp6ConnectionEStats == nullptr || m_SetPerTcp6ConnectionEStats == nullptr)
+    {
+        return counts;
+    }
+
+    const std::vector<unsigned char> buffer = readOwnerPidTcpTable(AF_INET6);
+    if (buffer.empty())
+    {
+        return counts;
+    }
+
+    const auto* table = reinterpret_cast<const MIB_TCP6TABLE_OWNER_PID*>(buffer.data());
+    counts.total = table->dwNumEntries;
+
+    for (DWORD i = 0; i < table->dwNumEntries; ++i)
+    {
+        const MIB_TCP6ROW_OWNER_PID& ownerRow = table->table[i];
+
+        if (ownerRow.dwState != TCP_STATE_ESTABLISHED)
         {
             continue;
         }
 
-        ++readSuccessCount;
+        // MIB_TCP6ROW identifies the connection by address + scope id + port on both ends; the
+        // owner-PID row stores the addresses as raw 16-byte arrays.
+        MIB_TCP6ROW row{
+            .State = MIB_TCP_STATE_ESTAB, // Filtered to ESTABLISHED above
+            .LocalAddr = std::bit_cast<IN6_ADDR>(ownerRow.ucLocalAddr),
+            .dwLocalScopeId = ownerRow.dwLocalScopeId,
+            .dwLocalPort = ownerRow.dwLocalPort,
+            .RemoteAddr = std::bit_cast<IN6_ADDR>(ownerRow.ucRemoteAddr),
+            .dwRemoteScopeId = ownerRow.dwRemoteScopeId,
+            .dwRemotePort = ownerRow.dwRemotePort,
+        };
 
-        // Sanity check: reject garbage values (> 1 TB is clearly wrong for a single connection)
-        constexpr std::uint64_t MAX_SANE_BYTES = 1'000'000'000'000ULL; // 1 TB
-        if (rod.DataBytesOut > MAX_SANE_BYTES || rod.DataBytesIn > MAX_SANE_BYTES)
-        {
-            ++garbageCount;
-            continue; // Skip this connection - data is garbage/uninitialized
-        }
-
-        if (rod.DataBytesOut > 0 || rod.DataBytesIn > 0)
-        {
-            ++hasDataCount;
-        }
-
-        auto& agg = perPid[ownerRow.dwOwningPid];
-        agg.first += rod.DataBytesOut;
-        agg.second += rod.DataBytesIn;
+        readEStatsRow(
+            row, ownerRow.dwOwningPid, ownerRow.dwState, m_SetPerTcp6ConnectionEStats, m_GetPerTcp6ConnectionEStats, perPid, counts);
     }
 
-    // Log diagnostics periodically (once per ~60 samples)
-    static std::size_t sampleCount = 0;
-    if (++sampleCount % 60 == 1)
-    {
-        spdlog::debug("TCP EStats: {} total, {} established, {} enabled, {} read OK, {} have data, {} garbage",
-                      table->dwNumEntries,
-                      table->dwNumEntries - skippedStateCount,
-                      enabledCount,
-                      readSuccessCount,
-                      hasDataCount,
-                      garbageCount);
-    }
+    return counts;
 }
 
 void WindowsProcessProbe::applyNetworkCounters(std::vector<ProcessCounters>& processes) const

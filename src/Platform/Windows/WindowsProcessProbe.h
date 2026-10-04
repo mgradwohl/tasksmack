@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/IProcessProbe.h"
+#include "WindowsProcessProbeMath.h"
 
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0A00 // NOLINT(cppcoreguidelines-macro-usage) - Windows platform requirement
@@ -73,9 +74,15 @@ class WindowsProcessProbe : public IProcessProbe
     using GetPerTcpConnectionEStatsFn =
         DWORD(WINAPI*)(PMIB_TCPROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG);
     using SetPerTcpConnectionEStatsFn = DWORD(WINAPI*)(PMIB_TCPROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, ULONG);
+    // IPv6 twins (#1100): same shape, MIB_TCP6ROW instead of MIB_TCPROW
+    using GetPerTcp6ConnectionEStatsFn =
+        DWORD(WINAPI*)(PMIB_TCP6ROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG);
+    using SetPerTcp6ConnectionEStatsFn = DWORD(WINAPI*)(PMIB_TCP6ROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, ULONG);
 
     GetPerTcpConnectionEStatsFn m_GetPerTcpConnectionEStats = nullptr;
     SetPerTcpConnectionEStatsFn m_SetPerTcpConnectionEStats = nullptr;
+    GetPerTcp6ConnectionEStatsFn m_GetPerTcp6ConnectionEStats = nullptr; // Null if unresolved: IPv6 is then skipped
+    SetPerTcp6ConnectionEStatsFn m_SetPerTcp6ConnectionEStats = nullptr;
 
     struct DetailCacheKey
     {
@@ -127,9 +134,13 @@ class WindowsProcessProbe : public IProcessProbe
     [[nodiscard]] bool detectNetworkCounters();
 
     /// Collect cumulative network byte counts per PID (best-effort)
-    [[nodiscard]] std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>> collectNetworkByteCounts() const;
+    /// IPv4 and IPv6 TCP walks (#1100) are summed into one map
+    [[nodiscard]] PerPidNetworkBytes collectNetworkByteCounts() const;
 
-    void collectTcp4ByteCounts(std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>>& perPid) const;
+    /// Walk one address family's TCP table, adding ESTABLISHED connections' EStats byte counts
+    /// into perPid. Returns the per-row tallies for the debug line (and #1161 detection).
+    [[nodiscard]] EStatsSampleCounts collectTcp4ByteCounts(PerPidNetworkBytes& perPid) const;
+    [[nodiscard]] EStatsSampleCounts collectTcp6ByteCounts(PerPidNetworkBytes& perPid) const;
 
     void applyNetworkCounters(std::vector<ProcessCounters>& processes) const;
     std::unordered_map<DetailCacheKey, DetailCacheEntry, DetailCacheKeyHash> m_DetailCache;

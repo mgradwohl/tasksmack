@@ -767,5 +767,95 @@ TEST(CalculateDetailTTLsFromTotalRAMBytesTest, ZeroBytesFallsIntoLowestTier)
     EXPECT_EQ(ttls.heavy, std::chrono::milliseconds(15000));
 }
 
+// ---------------------------------------------------------------------------
+// accumulateEStatsRow (#1100): the per-row decision shared by the IPv4 and IPv6 EStats walks
+// ---------------------------------------------------------------------------
+
+TEST(AccumulateEStatsRowTest, Ipv4AndIpv6RowsForTheSamePidSum)
+{
+    // Before #1100 only the AF_INET table was walked, so a process whose traffic was all IPv6
+    // (most browser/CDN traffic on a dual-stack network) read ~0. Both walks now feed the same
+    // per-PID map through this helper, so a v4 row and a v6 row for one PID must add up.
+    PerPidNetworkBytes perPid;
+    constexpr std::uint32_t PID = 4242;
+
+    // IPv4 row
+    EXPECT_EQ(accumulateEStatsRow(perPid, PID, TCP_STATE_ESTABLISHED, 0, 1'000, 2'000), EStatsRowOutcome::Accumulated);
+    // IPv6 row (same helper, same map)
+    EXPECT_EQ(accumulateEStatsRow(perPid, PID, TCP_STATE_ESTABLISHED, 0, 30'000, 40'000), EStatsRowOutcome::Accumulated);
+    // Another process
+    EXPECT_EQ(accumulateEStatsRow(perPid, 7, TCP_STATE_ESTABLISHED, 0, 5, 6), EStatsRowOutcome::Accumulated);
+
+    ASSERT_EQ(perPid.size(), 2U);
+    EXPECT_EQ(perPid.at(PID).first, 31'000ULL);
+    EXPECT_EQ(perPid.at(PID).second, 42'000ULL);
+    EXPECT_EQ(perPid.at(7).first, 5ULL);
+    EXPECT_EQ(perPid.at(7).second, 6ULL);
+}
+
+TEST(AccumulateEStatsRowTest, NonEstablishedRowsAreSkipped)
+{
+    PerPidNetworkBytes perPid;
+    constexpr std::uint32_t LISTEN = 2;
+    constexpr std::uint32_t TIME_WAIT = 11;
+
+    EXPECT_EQ(accumulateEStatsRow(perPid, 1, LISTEN, 0, 100, 100), EStatsRowOutcome::SkippedState);
+    EXPECT_EQ(accumulateEStatsRow(perPid, 1, TIME_WAIT, 0, 100, 100), EStatsRowOutcome::SkippedState);
+    EXPECT_TRUE(perPid.empty());
+}
+
+TEST(AccumulateEStatsRowTest, FailedReadsAreSkipped)
+{
+    PerPidNetworkBytes perPid;
+    constexpr std::uint32_t ERROR_NOT_FOUND_CODE = 1168;
+    constexpr std::uint32_t ERROR_ACCESS_DENIED_CODE = 5;
+
+    EXPECT_EQ(accumulateEStatsRow(perPid, 1, TCP_STATE_ESTABLISHED, ERROR_NOT_FOUND_CODE, 100, 100), EStatsRowOutcome::ReadFailed);
+    EXPECT_EQ(accumulateEStatsRow(perPid, 1, TCP_STATE_ESTABLISHED, ERROR_ACCESS_DENIED_CODE, 100, 100), EStatsRowOutcome::ReadFailed);
+    // A failed read must not even create a zero entry for the PID.
+    EXPECT_TRUE(perPid.empty());
+}
+
+TEST(AccumulateEStatsRowTest, CountersAboveOneTerabyteAreRejected)
+{
+    PerPidNetworkBytes perPid;
+    constexpr std::uint32_t PID = 9;
+
+    EXPECT_EQ(accumulateEStatsRow(perPid, PID, TCP_STATE_ESTABLISHED, 0, MAX_SANE_ESTATS_CONNECTION_BYTES + 1, 0),
+              EStatsRowOutcome::Garbage);
+    EXPECT_EQ(accumulateEStatsRow(perPid, PID, TCP_STATE_ESTABLISHED, 0, 0, MAX_SANE_ESTATS_CONNECTION_BYTES + 1),
+              EStatsRowOutcome::Garbage);
+    EXPECT_TRUE(perPid.empty());
+
+    // Exactly 1 TB is still accepted (the cap is exclusive).
+    EXPECT_EQ(accumulateEStatsRow(perPid, PID, TCP_STATE_ESTABLISHED, 0, MAX_SANE_ESTATS_CONNECTION_BYTES, 0),
+              EStatsRowOutcome::Accumulated);
+    EXPECT_EQ(perPid.at(PID).first, MAX_SANE_ESTATS_CONNECTION_BYTES);
+}
+
+TEST(AccumulateEStatsRowTest, ZeroByteEstablishedRowStillRegistersThePid)
+{
+    // A just-opened connection reads OK with zero bytes; it is accumulated (the PID has a
+    // network presence at 0 B), matching the pre-#1100 IPv4 loop.
+    PerPidNetworkBytes perPid;
+    EXPECT_EQ(accumulateEStatsRow(perPid, 3, TCP_STATE_ESTABLISHED, 0, 0, 0), EStatsRowOutcome::Accumulated);
+    ASSERT_EQ(perPid.count(3), 1U);
+    EXPECT_EQ(perPid.at(3).first, 0ULL);
+}
+
+TEST(EStatsSampleCountsTest, Ipv4AndIpv6TalliesAdd)
+{
+    EStatsSampleCounts v4{.total = 10, .established = 4, .enabled = 4, .readOk = 3, .accessDenied = 0, .hasData = 2, .garbage = 1};
+    const EStatsSampleCounts v6{.total = 5, .established = 2, .enabled = 1, .readOk = 2, .accessDenied = 1, .hasData = 1, .garbage = 0};
+    v4 += v6;
+    EXPECT_EQ(v4.total, 15U);
+    EXPECT_EQ(v4.established, 6U);
+    EXPECT_EQ(v4.enabled, 5U);
+    EXPECT_EQ(v4.readOk, 5U);
+    EXPECT_EQ(v4.accessDenied, 1U);
+    EXPECT_EQ(v4.hasData, 3U);
+    EXPECT_EQ(v4.garbage, 1U);
+}
+
 } // namespace
 } // namespace Platform

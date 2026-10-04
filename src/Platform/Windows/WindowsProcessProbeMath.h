@@ -1,7 +1,10 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <unordered_map>
+#include <utility>
 
 namespace Platform
 {
@@ -52,5 +55,82 @@ struct DetailCacheTTLs
     // >= 16 GB: Responsive, but avoid 1Hz+ heavy metadata refresh churn
     return {.light = std::chrono::milliseconds(1000), .heavy = std::chrono::milliseconds(4000)};
 }
+
+/// MIB_TCP_STATE_ESTAB: the only TCP state whose EStats byte counters are worth reading. LISTEN,
+/// TIME_WAIT, CLOSE_WAIT, etc. carry no meaningful per-connection byte counts.
+inline constexpr std::uint32_t TCP_STATE_ESTABLISHED = 5;
+
+/// Per-connection sanity cap: an EStats byte counter above 1 TB for a single connection is
+/// garbage/uninitialized data, not real traffic.
+inline constexpr std::uint64_t MAX_SANE_ESTATS_CONNECTION_BYTES = 1'000'000'000'000ULL; // 1 TB
+
+/// Cumulative (sent, received) EStats byte counts keyed by owning PID.
+using PerPidNetworkBytes = std::unordered_map<std::uint32_t, std::pair<std::uint64_t, std::uint64_t>>;
+
+/// What accumulateEStatsRow() did with one TCP table row.
+enum class EStatsRowOutcome : std::uint8_t
+{
+    SkippedState, // Not ESTABLISHED: no EStats calls are made for it
+    ReadFailed,   // GetPerTcp[6]ConnectionEStats returned an error
+    Garbage,      // A counter exceeded MAX_SANE_ESTATS_CONNECTION_BYTES
+    Accumulated,  // Byte counts were added to the owning PID
+};
+
+/// Per-row decision shared by the IPv4 and IPv6 EStats loops (#1100), extracted so both address
+/// families aggregate identically and the decision is unit-testable without a live TCP table.
+/// The caller still checks the state first so it can skip the Set/Get EStats calls for
+/// non-ESTABLISHED rows; the check is repeated here so the function is self-contained.
+/// @param readStatus Return value of GetPerTcp[6]ConnectionEStats (0 == NO_ERROR); ignored for
+///                   non-ESTABLISHED rows.
+inline EStatsRowOutcome accumulateEStatsRow(PerPidNetworkBytes& perPid,
+                                            std::uint32_t pid,
+                                            std::uint32_t state,
+                                            std::uint32_t readStatus,
+                                            std::uint64_t bytesOut,
+                                            std::uint64_t bytesIn)
+{
+    if (state != TCP_STATE_ESTABLISHED)
+    {
+        return EStatsRowOutcome::SkippedState;
+    }
+    if (readStatus != 0)
+    {
+        return EStatsRowOutcome::ReadFailed;
+    }
+    if (bytesOut > MAX_SANE_ESTATS_CONNECTION_BYTES || bytesIn > MAX_SANE_ESTATS_CONNECTION_BYTES)
+    {
+        return EStatsRowOutcome::Garbage;
+    }
+
+    auto& agg = perPid[pid];
+    agg.first += bytesOut;
+    agg.second += bytesIn;
+    return EStatsRowOutcome::Accumulated;
+}
+
+/// Per-sample tallies from one or more EStats table walks (IPv4 + IPv6), used for the periodic
+/// debug line and for classifyEStatsProbe() (#1161).
+struct EStatsSampleCounts
+{
+    std::size_t total = 0;        // Rows in the TCP table(s)
+    std::size_t established = 0;  // ESTABLISHED rows (the only ones EStats is attempted on)
+    std::size_t enabled = 0;      // SetPerTcp[6]ConnectionEStats succeeded
+    std::size_t readOk = 0;       // GetPerTcp[6]ConnectionEStats succeeded
+    std::size_t accessDenied = 0; // Either call returned ERROR_ACCESS_DENIED
+    std::size_t hasData = 0;      // Read OK, sane, and at least one non-zero counter
+    std::size_t garbage = 0;      // Read OK but rejected by the 1 TB sanity cap
+
+    EStatsSampleCounts& operator+=(const EStatsSampleCounts& other) noexcept
+    {
+        total += other.total;
+        established += other.established;
+        enabled += other.enabled;
+        readOk += other.readOk;
+        accessDenied += other.accessDenied;
+        hasData += other.hasData;
+        garbage += other.garbage;
+        return *this;
+    }
+};
 
 } // namespace Platform
