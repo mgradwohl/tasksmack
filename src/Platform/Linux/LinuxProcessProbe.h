@@ -12,9 +12,12 @@
 
 #include <atomic>
 #include <filesystem>
+#include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <utility>
 
 namespace Platform
 {
@@ -56,6 +59,14 @@ class LinuxProcessProbe : public IProcessProbe
     void setSocketStatsCacheTtl(std::chrono::milliseconds ttlMs) override;
 #endif
 
+    /// Test seam: called by enumerate() where its variable-latency tail (network attribution) runs,
+    /// so a test can change /proc/stat during that tail and check the CPU total was taken before it
+    /// (#1119). Not thread-safe against a concurrent enumerate(); set it before sampling starts.
+    void setEnumerateTailHookForTesting(std::function<void()> hook)
+    {
+        m_EnumerateTailHook = std::move(hook);
+    }
+
   private:
     std::filesystem::path m_ProcRoot;
     std::filesystem::path m_PowercapRoot;
@@ -64,6 +75,14 @@ class LinuxProcessProbe : public IProcessProbe
     uint64_t m_BootTimeEpoch = 0;                            // System boot time (Unix epoch seconds)
     mutable std::once_flag m_IoCountersCheckFlag;            // Thread-safe one-time initialization
     mutable std::atomic<bool> m_IoCountersAvailable = false; // Cached capability check (atomic for thread-safe read)
+    // Total CPU time read straight after enumerate()'s per-process stat pass, for the totalCpuTime()
+    // call that follows it (NO_CAPTURED_TOTAL once taken, or before the first enumerate()). Read later -- after network attribution, whose
+    // periodic inode->PID rebuild scans every /proc/*/fd -- the total's interval drifted from the processes' and every CPU% showed a
+    // sawtooth (#1119). A failed read is captured as 0, not left as "none", so totalCpuTime() hands ProcessModel that 0 (it skips the
+    // interval) instead of re-reading after the tail and reintroducing the skew.
+    static constexpr std::uint64_t NO_CAPTURED_TOTAL = std::numeric_limits<std::uint64_t>::max();
+    mutable std::atomic<std::uint64_t> m_TotalCpuTimeAtEnumerate = NO_CAPTURED_TOTAL;
+    std::function<void()> m_EnumerateTailHook; // See setEnumerateTailHookForTesting()
     bool m_HasPowerCap = false;
     std::string m_PowerCapPath;
     std::uint64_t m_PowerCapMaxRangeUj = 0; // max_energy_range_uj, where the counter wraps (0: unknown)

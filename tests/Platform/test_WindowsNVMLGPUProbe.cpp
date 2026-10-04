@@ -799,6 +799,11 @@ TEST_F(NVMLGPUProbeFakeTest, ReadGPUCountersPopulatesAllFieldsOnSuccess)
     EXPECT_DOUBLE_EQ(c.utilizationPercent, 55.0);
     EXPECT_EQ(c.fanSpeedRaw, 60U);
     EXPECT_EQ(c.fanSpeedMaxRaw, 100U);
+    EXPECT_TRUE(c.temperatureAvailable);
+    EXPECT_TRUE(c.powerAvailable);
+    EXPECT_TRUE(c.utilizationAvailable);
+    EXPECT_TRUE(c.memoryAvailable);
+    EXPECT_TRUE(c.gpuClockAvailable);
 }
 
 TEST_F(NVMLGPUProbeFakeTest, ReadGPUCountersLeavesFieldsAtDefaultOnPerMetricFailure)
@@ -808,6 +813,8 @@ TEST_F(NVMLGPUProbeFakeTest, ReadGPUCountersLeavesFieldsAtDefaultOnPerMetricFail
     d.powerOk = false;
     d.utilizationOk = false;
     d.fanOk = false;
+    d.memoryOk = false;
+    d.gpuClockOk = false;
 
     NVMLGPUProbe probe;
     NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
@@ -820,6 +827,12 @@ TEST_F(NVMLGPUProbeFakeTest, ReadGPUCountersLeavesFieldsAtDefaultOnPerMetricFail
     EXPECT_DOUBLE_EQ(c.powerDrawWatts, 0.0);
     EXPECT_DOUBLE_EQ(c.utilizationPercent, 0.0);
     EXPECT_EQ(c.fanSpeedRaw, 0U);
+    // Each failed read is marked unread, so it publishes as a gap rather than a real 0 (#1111).
+    EXPECT_FALSE(c.temperatureAvailable);
+    EXPECT_FALSE(c.powerAvailable);
+    EXPECT_FALSE(c.utilizationAvailable);
+    EXPECT_FALSE(c.memoryAvailable);
+    EXPECT_FALSE(c.gpuClockAvailable);
 }
 
 TEST_F(NVMLGPUProbeFakeTest, ReadGPUCountersFallsBackToIndexIdWhenUuidFails)
