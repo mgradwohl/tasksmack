@@ -253,6 +253,10 @@ void WindowsDiskProbe::Impl::enumerate()
     }
     disks = std::move(found);
     hasDisks.store(!disks.empty(), std::memory_order_release);
+    // The failures that prompted this rescan were in the old list; the next read of the new one
+    // sets the flag again if any disk still fails. Left set, a rescan that removed the last failing
+    // disk (falling back to logical drives, which never clears it) kept rescanning every 5 s (#1159).
+    lastReadHadFailure = false;
 
     // Forget the busy-time baseline of every disk that is gone, so one re-attached under the same
     // instance name starts afresh instead of counting the time it was away as busy (#1108).
@@ -274,13 +278,24 @@ WindowsDiskProbe::~WindowsDiskProbe() = default;
 
 SystemDiskCounters WindowsDiskProbe::read()
 {
-    SystemDiskCounters result;
+    SystemDiskCounters result = readCounters();
 
+    // Rescan after the disks are read, never before: StorageModel times each sample from before
+    // read(), so a rescan's latency ahead of the queries (PDH enumeration and reopening every
+    // drive) would land between that timestamp and the disks' busy-time readings and swing
+    // utilisation up on that sample and down on the next (#1108, #1159). Done here, it delays only
+    // the end of this read; a removed disk is also dropped before the next read rather than during it.
     if (m_Impl &&
         shouldReenumerate(std::chrono::steady_clock::now(), m_Impl->lastEnumeration, m_Impl->lastReadHadFailure, DISK_REENUMERATE_INTERVAL))
     {
         m_Impl->enumerate();
     }
+    return result;
+}
+
+SystemDiskCounters WindowsDiskProbe::readCounters()
+{
+    SystemDiskCounters result;
 
     if (!m_Impl || m_Impl->disks.empty())
     {

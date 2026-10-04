@@ -27,6 +27,9 @@ class WindowsDiskProbe : public IDiskProbe
     [[nodiscard]] DiskCapabilities capabilities() const override;
 
   private:
+    /// The disks' counters, without rescanning; read() rescans afterwards when it is due (#1159).
+    [[nodiscard]] SystemDiskCounters readCounters();
+
     // Opaque implementation to avoid including Windows headers in public header
     struct Impl;
     std::unique_ptr<Impl> m_Impl;
