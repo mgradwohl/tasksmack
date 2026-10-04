@@ -167,7 +167,7 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
         m_ActionResultTimer -= deltaTime;
         if (m_ActionResultTimer <= 0.0F)
         {
-            m_LastActionResult.clear();
+            m_LastActionResult = {};
         }
     }
 
@@ -490,7 +490,7 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t uniqueK
     m_HasSnapshot = false;
     m_ProcessExited = false;
     m_ShowConfirmDialog = false;
-    m_LastActionResult.clear();
+    m_LastActionResult = {};
     m_SmoothedUsage = {};
     m_PeakMemoryBytes = 0.0;
     m_PriorityChanged = false;
@@ -583,7 +583,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             "Parent PID",
             "User",
             "Started",
-            "Status",
+            "State",
             "Threads",
             "Handles",
             "CPU Time",
@@ -709,7 +709,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     // Build runtime rows (conditionally include Type if available)
     const std::string priorityText = std::format("{} (nice: {})", Domain::Priority::getPriorityLabel(proc.nice), proc.nice);
     std::vector<std::pair<std::string, std::pair<std::string, ImVec4>>> runtimeRows = {
-        {"Status", {statusText, statusColor}},
+        {"State", {statusText, statusColor}}, // Same name as the table's State column (#1203)
         {"Threads", {proc.threadCount > 0 ? formatCountLocale(proc.threadCount) : std::string("-"), theme.scheme().textPrimary}},
         {handleLabel, {proc.handleCount > 0 ? formatCountLocale(proc.handleCount) : std::string("-"), theme.scheme().textPrimary}},
         {"CPU Time", {UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds), theme.scheme().textPrimary}},
@@ -2148,20 +2148,28 @@ void ProcessDetailsPanel::renderActionResultFeedback()
     }
 
     const auto& theme = UI::Theme::get();
-    const bool isError = m_LastActionResult.contains("Error") || m_LastActionResult.contains("Failed");
-    const ImVec4 color = isError ? theme.scheme().textError : theme.scheme().textSuccess;
-    ImGui::TextColored(color, "%s", m_LastActionResult.c_str());
+    // The colour comes from the result's flag, not from searching its text for "Error" (#1203).
+    const ImVec4 color = m_LastActionResult.ok ? theme.scheme().textSuccess : theme.scheme().textError;
+    ImGui::TextColored(color, "%s", m_LastActionResult.text.c_str());
     ImGui::Spacing();
 }
 
 void ProcessDetailsPanel::renderConfirmDialog()
 {
+    // The title names the action and the process, "Kill firefox (PID 1234)?"; "###" keeps the
+    // popup's ID fixed while the visible title changes with them (#1203).
+    constexpr const char* CONFIRM_POPUP_ID = "###ConfirmAction";
     if (m_ShowConfirmDialog)
     {
-        ImGui::OpenPopup("Confirm Action");
+        ImGui::OpenPopup(CONFIRM_POPUP_ID);
+    }
+    if (!ImGui::IsPopupOpen(CONFIRM_POPUP_ID))
+    {
+        return; // Nothing to draw; skip building the title every frame
     }
 
-    if (ImGui::BeginPopupModal("Confirm Action", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    const std::string popupTitle = Detail::confirmTitle(m_ConfirmAction, m_CachedSnapshot.name, m_SelectedPid) + CONFIRM_POPUP_ID;
+    if (ImGui::BeginPopupModal(popupTitle.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
         // The dialog auto-fits, so it is bounded here: neither the question (which carries the
         // process name) nor the button row may be wider than the main window can show. See
@@ -2170,10 +2178,9 @@ void ProcessDetailsPanel::renderConfirmDialog()
         const float contentBudget = ProcessDetailsLayout::computeConfirmContentBudget(
             ImGui::GetMainViewport()->WorkSize.x, UI::DialogMetrics::MAX_VIEWPORT_FRACTION, confirmStyle.WindowPadding.x);
 
-        const std::string question = std::format("Are you sure you want to {} process '{}' (PID {})?",
-                                                 Detail::actionVerb(m_ConfirmAction),
-                                                 m_CachedSnapshot.name,
-                                                 m_SelectedPid);
+        // States what the action does; the title can be cut short by a long name, so the body
+        // names the process too (#1203).
+        const std::string question = Detail::confirmBody(m_ConfirmAction, m_CachedSnapshot.name, m_SelectedPid);
         // Wrapped at the budget, or at the text's own width when that is narrower -- a wrap
         // position wider than the text would make the auto-fitting dialog as wide as the budget.
         const float questionWidth = ImGui::CalcTextSize(question.c_str()).x;
@@ -2191,13 +2198,18 @@ void ProcessDetailsPanel::renderConfirmDialog()
         //
         // Held to half the dialog's budget: at Even Huger on a 175% display each button wants
         // 420px, and the pair would be wider than a minimum-width window.
+        //
+        // The confirm button is named for the action ([Kill][Cancel], not [Yes][No]) so a
+        // destructive confirmation says what it does on the button itself (#1203).
+        const char* confirmLabel = Detail::actionLabel(m_ConfirmAction);
         const float confirmButtonWidth = ProcessDetailsLayout::computeConfirmButtonWidth(
-            UI::DialogMetrics::computeActionButtonWidth(
-                std::max(ImGui::CalcTextSize("Yes").x, ImGui::CalcTextSize("No").x), ImGui::GetFontSize(), CONFIRM_BUTTON_MIN_EM),
+            UI::DialogMetrics::computeActionButtonWidth(std::max(ImGui::CalcTextSize(confirmLabel).x, ImGui::CalcTextSize("Cancel").x),
+                                                        ImGui::GetFontSize(),
+                                                        CONFIRM_BUTTON_MIN_EM),
             contentBudget,
             confirmStyle.ItemSpacing.x);
 
-        if (ImGui::Button("Yes", ImVec2(confirmButtonWidth, 0.0F)))
+        if (ImGui::Button(confirmLabel, ImVec2(confirmButtonWidth, 0.0F)))
         {
             dispatchConfirmedAction();
             m_ShowConfirmDialog = false;
@@ -2206,7 +2218,7 @@ void ProcessDetailsPanel::renderConfirmDialog()
 
         ImGui::SameLine();
 
-        if (ImGui::Button("No", ImVec2(confirmButtonWidth, 0.0F)))
+        if (ImGui::Button("Cancel", ImVec2(confirmButtonWidth, 0.0F)))
         {
             m_ShowConfirmDialog = false;
             ImGui::CloseCurrentPopup();
@@ -2238,7 +2250,8 @@ void ProcessDetailsPanel::renderActionButtons()
     // Action buttons - use consistent sizing and 2x2 grid layout
     constexpr const char* TERMINATE_LABEL = ICON_FA_XMARK " Terminate";
     constexpr const char* KILL_LABEL = ICON_FA_SKULL " Kill";
-    constexpr const char* PAUSE_LABEL = ICON_FA_PAUSE " Pause";
+    // "Suspend", not "Pause": the same word as the confirm dialog and the result line (#1203).
+    constexpr const char* SUSPEND_LABEL = ICON_FA_PAUSE " Suspend";
     constexpr const char* RESUME_LABEL = ICON_FA_PLAY " Resume";
 
     // One width for all four, from the widest label and the font, capped to the pane (#949). See
@@ -2247,7 +2260,7 @@ void ProcessDetailsPanel::renderActionButtons()
     const float gutter = ProcessDetailsLayout::ACTION_BUTTON_GUTTER_EM * emPx;
     const float widestLabel = std::max({ImGui::CalcTextSize(TERMINATE_LABEL).x,
                                         ImGui::CalcTextSize(KILL_LABEL).x,
-                                        ImGui::CalcTextSize(PAUSE_LABEL).x,
+                                        ImGui::CalcTextSize(SUSPEND_LABEL).x,
                                         ImGui::CalcTextSize(RESUME_LABEL).x});
     // Per-column overhead is the gutter plus one CellPadding.x, not two. This table has no inner
     // border, so ImGui does not pad inside each cell: it puts CellPadding.x on each side of the gap
@@ -2300,22 +2313,22 @@ void ProcessDetailsPanel::renderActionButtons()
         // Row 2: Stop and Resume
         ImGui::TableNextRow();
 
-        // Pause - suspend the process
+        // Suspend - stop the process running until it is resumed
         ImGui::TableNextColumn();
         if (m_ActionCapabilities.canStop)
         {
-            if (ImGui::Button(PAUSE_LABEL, buttonSize))
+            if (ImGui::Button(SUSPEND_LABEL, buttonSize))
             {
                 m_ConfirmAction = ProcessAction::Stop;
                 m_ShowConfirmDialog = true;
             }
             if (ImGui::IsItemHovered())
             {
-                ImGui::SetTooltip("Pause the process");
+                ImGui::SetTooltip("Suspend the process until it is resumed");
             }
         }
 
-        // Resume - continue a paused process
+        // Resume - continue a suspended process
         ImGui::TableNextColumn();
         if (m_ActionCapabilities.canContinue)
         {
@@ -2326,7 +2339,7 @@ void ProcessDetailsPanel::renderActionButtons()
             }
             if (ImGui::IsItemHovered())
             {
-                ImGui::SetTooltip("Resume a paused process");
+                ImGui::SetTooltip("Resume a suspended process");
             }
         }
 

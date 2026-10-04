@@ -189,7 +189,7 @@ class ProcessDetailsPanel : public Panel
     // Confirmation dialog state
     bool m_ShowConfirmDialog = false;
     ProcessAction m_ConfirmAction = ProcessAction::None;
-    std::string m_LastActionResult;
+    Detail::ActionResultMessage m_LastActionResult;
     float m_ActionResultTimer = 0.0F;
 
     // Priority adjustment state

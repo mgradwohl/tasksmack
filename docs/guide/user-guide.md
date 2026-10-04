@@ -71,19 +71,21 @@ See [CONTRIBUTING.md](../../CONTRIBUTING.md#cpu-compatibility) for build instruc
 
 ### Process Table
 
-The process table is the primary view. It lists all running processes with htop-inspired columns:
+The process table is the primary view. It lists all running processes with these columns:
 
-- **CPU%** — percentage of total CPU time consumed since the last sample
-- **MEM%** — percentage of physical RAM used
-- **RES / VIRT / SHR** — resident, virtual, and shared memory sizes
-- **TIME+** — cumulative CPU time
+- **State** — what the process is doing (Running, Sleeping, and so on)
+- **CPU %** — percentage of total CPU time consumed since the last sample
+- **Mem %** — percentage of physical RAM used
+- **Memory / Virtual / Shared / Peak Mem** — resident, virtual, shared, and peak resident memory sizes
+- **CPU Time** — cumulative CPU time
 - **PPID** — parent process ID
-- **NI** — nice/priority value
+- **Priority** — scheduling priority (from the nice value)
 - **Threads** — thread count per process
+- **Page Faults** — cumulative page faults
 - **Command** — full command line
 - **I/O rates** — read and write bytes per second
 - **Network rates** — sent and received bytes per second when attribution is available
-- **GPU** — utilization and memory when the active backend supports per-process data
+- **GPU %, GPU Mem, GPU Engine, GPU** — utilization, memory, engines, and which GPU, when the active backend supports per-process data
 - **Affinity** — allowed CPU cores
 
 Column visibility is toggled via the column header context menu and persisted across sessions.

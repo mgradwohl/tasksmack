@@ -508,8 +508,9 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
             ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_None, 2.5F);
             ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_None, 0.8F);
             ImGui::TableSetupColumn("Speed", ImGuiTableColumnFlags_None, 1.0F);
-            ImGui::TableSetupColumn("TX Rate", ImGuiTableColumnFlags_None, 1.2F);
-            ImGui::TableSetupColumn("RX Rate", ImGuiTableColumnFlags_None, 1.2F);
+            // Sent/Received, the words the charts and the process table use (#1203)
+            ImGui::TableSetupColumn("Sent", ImGuiTableColumnFlags_None, 1.2F);
+            ImGui::TableSetupColumn("Received", ImGuiTableColumnFlags_None, 1.2F);
             ImGui::TableHeadersRow();
 
             for (const auto& iface : sortedInterfaces)
@@ -583,7 +584,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                     ImGui::TextColored(theme.scheme().textMuted, "-");
                 }
 
-                // TX Rate
+                // Sent
                 ImGui::TableNextColumn();
                 if (iface.txBytesPerSec > 0.0 || hasActivity)
                 {
@@ -594,7 +595,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                     ImGui::TextColored(theme.scheme().textMuted, "-");
                 }
 
-                // RX Rate
+                // Received
                 ImGui::TableNextColumn();
                 if (iface.rxBytesPerSec > 0.0 || hasActivity)
                 {

@@ -1436,3 +1436,15 @@ TEST(FormatTest, FormatCpuAffinityMaskTrailingLongRangeWithPrefix)
     const uint64_t mask = 0x3ULL | 0xE000000000000000ULL;
     EXPECT_EQ(UI::Format::formatCpuAffinityMask(mask), "0,1,61-63");
 }
+
+// =============================================================================
+// Logical processor summary (#1203)
+// =============================================================================
+
+TEST(FormatTest, LogicalProcessorSummaryCountsLogicalProcessorsNotCores)
+{
+    EXPECT_EQ(UI::Format::formatLogicalProcessorSummary(16, 3700.0), " (16 logical processors @ 3.70 GHz)");
+    EXPECT_EQ(UI::Format::formatLogicalProcessorSummary(16, 0.0), " (16 logical processors)");
+    EXPECT_EQ(UI::Format::formatLogicalProcessorSummary(1, 0.0), " (1 logical processor)");
+    EXPECT_FALSE(UI::Format::formatLogicalProcessorSummary(8, 2400.0).contains("cores"));
+}

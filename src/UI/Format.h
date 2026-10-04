@@ -737,6 +737,19 @@ struct AlignedBytesParts
     return std::format("{}:{:02}", minutes, secs);
 }
 
+/// " (16 logical processors @ 3.70 GHz)", or " (16 logical processors)" without a clock, for the
+/// suffix after the CPU model. The count is of logical processors (hardware threads), which is
+/// what the OS reports per CPU slot; "cores" overstated it on SMT machines (#1203).
+[[nodiscard]] inline auto formatLogicalProcessorSummary(int logicalProcessors, double freqMHz) -> std::string
+{
+    const char* noun = (logicalProcessors == 1) ? "logical processor" : "logical processors";
+    if (freqMHz > 0.0)
+    {
+        return std::format(" ({} {} @ {:.2f} GHz)", logicalProcessors, noun, freqMHz / 1000.0);
+    }
+    return std::format(" ({} {})", logicalProcessors, noun);
+}
+
 [[nodiscard]] inline auto formatCpuAffinityMask(std::uint64_t mask) -> std::string
 {
     if (mask == 0)
