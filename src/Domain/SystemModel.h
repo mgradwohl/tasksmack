@@ -39,7 +39,7 @@ struct SystemPublication
     std::vector<float> netTxHistory;
     std::unordered_map<std::string, std::vector<float>> perInterfaceRxHistory;
     std::unordered_map<std::string, std::vector<float>> perInterfaceTxHistory;
-    std::vector<std::vector<float>> perCoreHistory;
+    std::vector<std::vector<float>> perCoreHistory; // Indexed by core id (Linux cpuN); NaN where a core had no reading (#1229)
 };
 
 /// Owns a system probe, caches previous counters, and computes CPU% deltas.
@@ -148,7 +148,7 @@ class SystemModel : public ISamplable
     // (e.g. ~10x longer at the default 1s refresh / 5 minute window).
     std::unordered_map<std::string, double> m_InterfaceLastSeenSeconds;
     HistoryBuffer<double> m_Timestamps;
-    std::vector<HistoryBuffer<float>> m_PerCoreHistory;
+    std::vector<HistoryBuffer<float>> m_PerCoreHistory; // Indexed by core id, not probe list position (#1229)
 
     double m_MaxHistorySeconds = Domain::Sampling::HISTORY_SECONDS_DEFAULT; // Default 5 minutes
 

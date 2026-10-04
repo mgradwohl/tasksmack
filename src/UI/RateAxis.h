@@ -18,6 +18,9 @@ inline constexpr double RATE_AXIS_MIN_SPAN_BYTES_PER_SEC = 1024.0; // 1 KB/s
 inline constexpr double RATE_AXIS_MIN_SPAN_BYTES = 1024.0;         // 1 KiB (a size, not a rate)
 inline constexpr double RATE_AXIS_MIN_SPAN_WATTS = 1.0;            // 1 W
 inline constexpr double RATE_AXIS_MIN_SPAN_COUNT = 10.0;           // 10 items
+/// Smallest span of a percent axis that scales to its data (#1195): small enough that a process using
+/// half a percent of the machine draws a visible line, large enough that noise does not fill the chart.
+inline constexpr double PERCENT_AXIS_MIN_SPAN = 5.0; // 5 %
 
 /// Headroom above the observed maximum, so the peak of a series is not drawn flush against the top
 /// of the plot.
@@ -41,6 +44,15 @@ inline constexpr double RATE_AXIS_HEADROOM = 1.10;
     const double safeMax = (std::isfinite(dataMax) && dataMax > 0.0) ? dataMax : 0.0;
     const double safeSpan = (std::isfinite(minSpan) && minSpan > 0.0) ? minSpan : 1.0;
     return std::max(safeMax * RATE_AXIS_HEADROOM, safeSpan);
+}
+
+/// Upper bound for a percent axis that scales to its data instead of always spanning 0-100 (#1195):
+/// rateAxisUpperBound() with a PERCENT_AXIS_MIN_SPAN floor, never above 100. A process's CPU is a
+/// percent of the whole machine, so one busy thread on 16 logical CPUs is 6.25 % and a typical process
+/// well under 1 %: on a fixed 0-100 axis it was a flat line at zero.
+[[nodiscard]] inline double percentAxisUpperBound(double dataMax, double minSpan = PERCENT_AXIS_MIN_SPAN) noexcept
+{
+    return std::min(100.0, rateAxisUpperBound(dataMax, minSpan));
 }
 
 /// Largest finite, non-negative value across the given series. Empty input yields 0.
