@@ -352,6 +352,27 @@ TEST(MapDXGIToNVMLTest, DifferentPciDeviceIdsNeverMatch)
     EXPECT_TRUE(mapDXGIToNVML({adapter}, {device}).empty());
 }
 
+// #1091 review: each probe skips a device it fails to read, so a lone "RTX 4060" adapter and a lone
+// "RTX 4060 Ti" device can be all that is left. A name inside another, with NVML's PCI identity
+// unknown, does not make them the same card.
+TEST(MapDXGIToNVMLTest, SubstringMatchNeedsAKnownEqualPciDeviceId)
+{
+    GPUInfo adapter = makeInfo("NVIDIA GeForce RTX 4060", "NVIDIA");
+    adapter.pciDeviceId = 0x288210DEU;
+    const GPUInfo unknownDevice = makeInfo("NVIDIA GeForce RTX 4060 Ti", "NVIDIA");
+    EXPECT_TRUE(mapDXGIToNVML({adapter}, {unknownDevice}).empty());
+    EXPECT_TRUE(mapDXGIToNVML({makeInfo("NVIDIA GeForce RTX 4060", "NVIDIA")}, {unknownDevice}).empty());
+
+    // The same model on both sides, named differently, still maps by substring.
+    GPUInfo laptopAdapter = makeInfo("NVIDIA GeForce RTX 4060 Laptop GPU", "NVIDIA");
+    laptopAdapter.pciDeviceId = 0x28E010DEU;
+    GPUInfo knownDevice = makeInfo("GeForce RTX 4060 Laptop", "NVIDIA");
+    knownDevice.pciDeviceId = 0x28E010DEU;
+    const auto mapping = mapDXGIToNVML({laptopAdapter}, {knownDevice});
+    ASSERT_EQ(mapping.size(), 1U);
+    EXPECT_EQ(mapping.at(0), 0U);
+}
+
 // Different PCI locations are different cards, even when the names match exactly.
 TEST(MapDXGIToNVMLTest, DifferentPciLocationsNeverMatchByName)
 {

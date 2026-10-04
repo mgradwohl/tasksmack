@@ -114,7 +114,10 @@ namespace Platform
 ///   2. Exact name (see comparableGPUName), among devices with the same PCI device id where both
 ///      sides report one, and only when exactly one device fits: identical cards with no location
 ///      are left unmapped, since guessing would show one card's data as the other's.
-///   3. One name containing the other, again only when exactly one device fits.
+///   3. One name containing the other, only when both sides report the same, known PCI device id,
+///      and again only when exactly one device fits. A name inside another is weak evidence --
+///      "RTX 4060" is in "RTX 4060 Ti" -- and uniqueness proves nothing when either probe skipped a
+///      device it failed to read, so an unknown id is not enough here.
 ///
 /// Each NVML device is claimed at most once (#1040). An adapter left unmapped shows no NVML sensors,
 /// which is correct where the alternative is another card's.
@@ -199,12 +202,14 @@ namespace Platform
                         });
         }
     }
-    // 3. One name containing the other.
+    // 3. One name containing the other, between cards both sides report as the same model.
     for (std::size_t dxgiIdx = 0; dxgiIdx < dxgiGPUs.size(); ++dxgiIdx)
     {
         if (unmappedNVIDIA(dxgiIdx))
         {
-            claimUnique(dxgiIdx, [](const GPUInfo& dxgi, const GPUInfo& nvml) { return gpuNamesMatch(dxgi.name, nvml.name); });
+            claimUnique(dxgiIdx,
+                        [](const GPUInfo& dxgi, const GPUInfo& nvml)
+                        { return dxgi.pciDeviceId != 0 && dxgi.pciDeviceId == nvml.pciDeviceId && gpuNamesMatch(dxgi.name, nvml.name); });
         }
     }
     return mapping;
