@@ -957,6 +957,9 @@ struct ChartDataScope
 {
     std::uint64_t generation = 0; // 0: the chart did not name one, so nothing is cached
     ImGuiID plotId = 0;
+    /// Most Y-axis labels the chart has room for (axisMaxTicksForHeight()), so a second Y axis set up
+    /// inside it (setupSecondaryRateAxis()) is no denser than the first (#1202).
+    int maxYTicks = AXIS_MAX_TICKS;
 };
 
 namespace Detail
@@ -1115,14 +1118,31 @@ inline void plotDenseLine(const char* label, const TX* xData, const TY* yData, i
 
 // ============================================================================
 // Axis formatters for ImPlot Y-axis tick labels
-// These use C callbacks required by ImPlot::SetupAxisFormat
-// All formatters produce fixed-width output to ensure chart alignment
+// These use C callbacks required by ImPlot::SetupAxisFormat. Each is a thin adapter over the
+// UI::Format function that formats the same quantity as a value, so a tick reads exactly like the
+// tooltip and table beside it: "1.5 GB", "45.0 W", "42%", localized (#1202).
 // ============================================================================
 
 /// Minimum character width for Y-axis labels to ensure all charts align
 inline constexpr int AXIS_LABEL_MIN_WIDTH = 8;
 
-/// Format large numbers with K/M/G suffixes (e.g., 400000 -> "400K")
+namespace Detail
+{
+/// Copy `str` into ImPlot's label buffer; 0 (no label) if it does not fit.
+inline int copyAxisLabel(const std::string& str, char* buff, int size)
+{
+    const int len = static_cast<int>(str.size());
+    if (len < size)
+    {
+        std::ranges::copy(str, buff);
+        buff[len] = '\0';
+        return len;
+    }
+    return 0;
+}
+} // namespace Detail
+
+/// Format large numbers with K/M/G suffixes (e.g., 400000 -> "400.0K")
 /// Use with ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisLocalized)
 inline int formatAxisLocalized(double value, char* buff, int size, void* /*userData*/)
 {
@@ -1137,140 +1157,122 @@ inline int formatAxisLocalized(double value, char* buff, int size, void* /*userD
 
     if (absValue >= 1'000'000'000.0)
     {
-        str = std::format("{:.1f}G", value / 1'000'000'000.0);
+        str = std::format("{:.1Lf}G", value / 1'000'000'000.0);
     }
     else if (absValue >= 1'000'000.0)
     {
-        str = std::format("{:.1f}M", value / 1'000'000.0);
+        str = std::format("{:.1Lf}M", value / 1'000'000.0);
     }
     else if (absValue >= 1'000.0)
     {
-        str = std::format("{:.1f}K", value / 1'000.0);
+        str = std::format("{:.1Lf}K", value / 1'000.0);
     }
     else
     {
-        str = std::format("{:.1f}", value);
+        str = std::format("{:.1Lf}", value);
     }
 
-    const int len = static_cast<int>(str.size());
-    if (len < size)
-    {
-        std::ranges::copy(str, buff);
-        buff[len] = '\0';
-        return len;
-    }
-    return 0;
+    return Detail::copyAxisLabel(str, buff, size);
 }
 
-/// Shared body of formatAxisBytes and formatAxisBytesPerSec: scale a byte count to B, KB, MB or GB
-/// (binary, matching UI::Format::formatBytes) and append `suffix` ("" or "/s").
-inline int formatAxisBinaryBytes(double value, char* buff, int size, std::string_view suffix)
+/// The unit a byte axis is labelled in, as ImPlot formatter user data: a pointer to one of the
+/// UI::Format::BYTE_UNIT_* constants, or nullptr to pick each tick's unit from its own value.
+/// ImPlot's user data is a non-const void*; the formatters only ever read through it.
+[[nodiscard]] inline void* byteAxisUserData(const Format::ByteUnit& unit) noexcept
 {
-    // Clamp tiny values to zero to avoid a "-0B" display
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast) -- ImPlot takes void*; only read back as const.
+    return const_cast<Format::ByteUnit*>(&unit);
+}
+
+/// Shared body of formatAxisBytes and formatAxisBytesPerSec: the value formatter's "1.5 GB" /
+/// "1.5 GB/s" (binary units, matching UI::Format::formatBytes). With a unit in `userData`
+/// (byteAxisUserData()) every tick uses that one unit, so a 0-2 GB axis reads 0.5 GB rather than
+/// 512.0 MB between 0.0 B and 1.0 GB.
+inline int formatAxisBinaryBytes(double value, char* buff, int size, void* userData, bool perSecond)
+{
+    // Clamp tiny values to zero to avoid a "-0.0 B" display
     if (std::abs(value) < 0.5)
     {
         value = 0.0;
     }
 
-    const double absValue = std::abs(value);
-    std::string str;
-
-    if (absValue >= 1024.0 * 1024.0 * 1024.0)
-    {
-        str = std::format("{:.1f}GB{}", value / (1024.0 * 1024.0 * 1024.0), suffix);
-    }
-    else if (absValue >= 1024.0 * 1024.0)
-    {
-        str = std::format("{:.1f}MB{}", value / (1024.0 * 1024.0), suffix);
-    }
-    else if (absValue >= 1024.0)
-    {
-        str = std::format("{:.1f}KB{}", value / 1024.0, suffix);
-    }
-    else
-    {
-        str = std::format("{:.1f}B{}", value, suffix);
-    }
-
-    const int len = static_cast<int>(str.size());
-    if (len < size)
-    {
-        std::ranges::copy(str, buff);
-        buff[len] = '\0';
-        return len;
-    }
-    return 0;
+    const Format::ByteUnit unit = (userData != nullptr) ? *static_cast<const Format::ByteUnit*>(userData) : Format::chooseByteUnit(value);
+    const std::string str = perSecond ? Format::formatBytesPerSecWithUnit(value, unit) : Format::formatBytesWithUnit(value, unit);
+    return Detail::copyAxisLabel(str, buff, size);
 }
 
 /// Format values as bytes with appropriate unit scaling (B, KB, MB, GB)
 /// Use with ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytes)
-inline int formatAxisBytes(double value, char* buff, int size, void* /*userData*/)
+inline int formatAxisBytes(double value, char* buff, int size, void* userData)
 {
-    return formatAxisBinaryBytes(value, buff, size, "");
+    return formatAxisBinaryBytes(value, buff, size, userData, false);
 }
 
 /// Format values as bytes/s with appropriate unit scaling (B/s, KB/s, MB/s, GB/s)
 /// Use with ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytesPerSec)
-inline int formatAxisBytesPerSec(double value, char* buff, int size, void* /*userData*/)
+inline int formatAxisBytesPerSec(double value, char* buff, int size, void* userData)
 {
-    return formatAxisBinaryBytes(value, buff, size, "/s");
+    return formatAxisBinaryBytes(value, buff, size, userData, true);
 }
 
-/// Format values as watts (always in W with decimal places for consistency)
+/// Format values as watts: UI::Format::formatWatts ("45.0 W", "500.0 mW")
 /// Use with ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisWatts)
 inline int formatAxisWatts(double value, char* buff, int size, void* /*userData*/)
 {
-    // Clamp tiny values to zero to avoid "-0W" display
+    // Clamp tiny values to zero to avoid "-0.0 W" display
     if (std::abs(value) < 0.0001)
     {
         value = 0.0;
     }
-
-    std::string str;
-    const double absValue = std::abs(value);
-
-    // Always use W with 1 decimal place for visual consistency
-    if (absValue >= 1.0)
-    {
-        str = std::format("{:.1f}W", value);
-    }
-    else
-    {
-        // Show small values in mW with 1 decimal place
-        str = std::format("{:.1f}mW", value * 1000.0);
-    }
-
-    const int len = static_cast<int>(str.size());
-    if (len < size)
-    {
-        std::ranges::copy(str, buff);
-        buff[len] = '\0';
-        return len;
-    }
-    return 0;
+    return Detail::copyAxisLabel(Format::formatWatts(value), buff, size);
 }
 
-/// Format values as percentages (0-100%)
+/// Format values as percentages: UI::Format::formatPercent ("40%", "0.2%")
 /// Use with ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisPercent)
 inline int formatAxisPercent(double value, char* buff, int size, void* /*userData*/)
 {
-    // Clamp values that print as zero to zero, to avoid "-0.0%". Only those: a percent axis can now
-    // scale down to 5 % (#1195), where ticks such as 0.2 % must not read 0.0 %.
-    if (std::abs(value) < 0.05)
+    // formatPercent() prints anything under 0.05 % as "0%" (no "-0.0%"), and nothing larger: a
+    // percent axis can scale down to 5 % (#1195), where ticks such as 0.2 % must not read 0 % (#1202).
+    return Detail::copyAxisLabel(Format::formatPercent(value), buff, size);
+}
+
+/// True for the two byte formatters, whose axes step in binary units (niceBinaryAxisStep()).
+[[nodiscard]] inline bool isByteAxisFormatter(ImPlotFormatter formatter) noexcept
+{
+    return formatter == &formatAxisBytes || formatter == &formatAxisBytesPerSec;
+}
+
+/// Put a non-negative Y axis's ticks on round 1-2-5 steps in the axis's own unit (#1202): from 0 to
+/// `upper` with at most `maxTicks` labels, the step chosen by niceAxisStep(), or for a byte axis by
+/// niceBinaryAxisStep() with every label in the one unit the step is in. Without this ImPlot steps
+/// in decimal units of the raw value, so a byte axis read 9.5, 7.6, 5.7 MB/s.
+inline void setupNiceAxisTicks(ImAxis axis, double upper, ImPlotFormatter formatter, int maxTicks)
+{
+    if (!std::isfinite(upper) || upper <= 0.0)
     {
-        value = 0.0;
+        ImPlot::SetupAxisFormat(axis, formatter);
+        return;
     }
 
-    // Use format with % suffix and 1 decimal place for visual consistency
-    const auto str = std::format("{:.1f}%", value);
-    const int len = static_cast<int>(str.size());
-    if (len < size)
+    double step = 0.0;
+    void* userData = nullptr;
+    if (isByteAxisFormatter(formatter))
     {
-        std::ranges::copy(str, buff);
-        buff[len] = '\0';
-        return len;
+        const Format::ByteUnit& unit = Format::byteUnitFor(upper);
+        step = niceBinaryAxisStep(upper, unit.scale, maxTicks);
+        userData = byteAxisUserData(unit);
     }
-    return 0;
+    else
+    {
+        step = niceAxisStep(upper, maxTicks);
+    }
+    ImPlot::SetupAxisFormat(axis, formatter, userData);
+
+    const AxisTickRange ticks = axisTickRange(upper, step);
+    if (ticks.count >= 2)
+    {
+        ImPlot::SetupAxisTicks(axis, 0.0, ticks.last, ticks.count);
+    }
 }
 
 struct NowBar
@@ -1780,8 +1782,9 @@ inline void setupSecondaryRateAxis(double upperBound, ImPlotFormatter formatter)
 {
     // AuxDefault: no grid lines of its own, and Opposite, which puts its labels on the right.
     ImPlot::SetupAxis(ImAxis_Y2, nullptr, ImPlotAxisFlags_AuxDefault | ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
-    ImPlot::SetupAxisFormat(ImAxis_Y2, formatter);
     ImPlot::SetupAxisLimits(ImAxis_Y2, 0.0, upperBound, ImPlotCond_Always);
+    // Round ticks like the primary axis, and no more of them (#1202).
+    setupNiceAxisTicks(ImAxis_Y2, upperBound, formatter, activeChartDataScope().maxYTicks);
 }
 
 /// How fast a history chart's data scrolls on screen, in pixels per second: its x axis spans
@@ -1848,7 +1851,8 @@ class HistoryChart
 
         // Lets plotLineWithFill() cache this chart's reductions (#1139); restored in the destructor.
         m_PreviousDataScope = Detail::g_ActiveChartDataScope;
-        Detail::g_ActiveChartDataScope = ChartDataScope{.generation = config.dataGeneration, .plotId = plotId};
+        const int maxYTicks = axisMaxTicksForHeight(config.height, ImGui::GetTextLineHeight());
+        Detail::g_ActiveChartDataScope = ChartDataScope{.generation = config.dataGeneration, .plotId = plotId, .maxYTicks = maxYTicks};
         m_DataScopeSet = true;
 
         if (!chartAntiAliasingEnabled())
@@ -1869,7 +1873,6 @@ class HistoryChart
             setupLegendDefault(config.legendHorizontal);
         }
         ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, historyChartYAxisFlags(config.yLimits.has_value()));
-        ImPlot::SetupAxisFormat(ImAxis_Y1, config.yFormatter);
         if (config.yLimits.has_value())
         {
             const double upper = config.easeYUpper ? easedChartUpperBound(plotId, config.yLimits->second) : config.yLimits->second;
@@ -1881,6 +1884,20 @@ class HistoryChart
             }
             Detail::g_PendingEaseRequestFrame = -1;
             ImPlot::SetupAxisLimits(ImAxis_Y1, config.yLimits->first, upper, ImPlotCond_Always);
+            // Round 1-2-5 ticks, at most maxYTicks of them (#1202). Every fixed-limit chart starts
+            // at 0 (percent and rate configs); any other lower bound keeps ImPlot's own ticks.
+            if (config.yLimits->first == 0.0)
+            {
+                setupNiceAxisTicks(ImAxis_Y1, upper, config.yFormatter, maxYTicks);
+            }
+            else
+            {
+                ImPlot::SetupAxisFormat(ImAxis_Y1, config.yFormatter);
+            }
+        }
+        else
+        {
+            ImPlot::SetupAxisFormat(ImAxis_Y1, config.yFormatter);
         }
         ImPlot::SetupAxisLimits(ImAxis_X1, config.xMin, config.xMax, ImPlotCond_Always);
     }
