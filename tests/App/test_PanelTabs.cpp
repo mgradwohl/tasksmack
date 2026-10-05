@@ -162,5 +162,42 @@ TEST(PanelTabsTest, RejectsEmptyRegistryAndInvalidSelection)
     EXPECT_EQ(&tabs.activeTab().panel.get(), &panel);
 }
 
+/// A panel whose onDetach() records and then throws.
+class ThrowingDetachPanel final : public Panel
+{
+  public:
+    ThrowingDetachPanel(const std::string& name, std::vector<std::string>& calls) : Panel(name), m_Calls(calls)
+    {}
+
+    void onDetach() override
+    {
+        m_Calls.get().push_back(name() + ":detach");
+        throw std::runtime_error("ThrowingDetachPanel::onDetach always throws");
+    }
+
+    void render(bool* /*open*/) override
+    {}
+    void renderContent() override
+    {}
+
+  private:
+    std::reference_wrapper<std::vector<std::string>> m_Calls;
+};
+
+// #1124: one panel throwing while detaching doesn't stop the others detaching.
+TEST(PanelTabsTest, DetachContinuesPastAPanelThatThrows)
+{
+    std::vector<std::string> calls;
+    RecordingPanel first("first", calls);
+    ThrowingDetachPanel middle("middle", calls);
+    RecordingPanel last("last", calls);
+    PanelTabs tabs{{.panel = first, .eventName = "First", .label = [] { return "First"; }},
+                   {.panel = middle, .eventName = "Middle", .label = [] { return "Middle"; }},
+                   {.panel = last, .eventName = "Last", .label = [] { return "Last"; }}};
+
+    EXPECT_NO_THROW(tabs.onDetach());
+    EXPECT_EQ(calls, (std::vector<std::string>{"last:detach", "middle:detach", "first:detach"}));
+}
+
 } // namespace
 } // namespace App

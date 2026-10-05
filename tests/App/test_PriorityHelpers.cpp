@@ -1,11 +1,17 @@
 #include "App/DialogGeometry.h"
 #include "App/Panels/ProcessDetailsPanel_PriorityHelpers.h"
 #include "Domain/PriorityConfig.h"
+#include "UI/ColorContrast.h"
+#include "UI/ThemeLoader.h"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <limits>
+#include <string>
+#include <vector>
 
 namespace App::Detail
 {
@@ -342,6 +348,192 @@ TEST(PriorityHelpersTest, GetPriorityLabelCategories)
     // Idle (nice >= 15)
     EXPECT_EQ(getPriorityLabel(15), "Idle");
     EXPECT_EQ(getPriorityLabel(19), "Idle");
+}
+
+// =============================================================================
+// Badge Text Contrast Tests (#1130)
+// =============================================================================
+
+auto bundledThemes() -> std::vector<std::filesystem::path>
+{
+    std::vector<std::filesystem::path> paths;
+    for (const auto& entry : std::filesystem::directory_iterator(TASKSMACK_SOURCE_THEMES_DIR))
+    {
+        if (entry.path().extension() == ".toml")
+        {
+            paths.push_back(entry.path());
+        }
+    }
+    std::ranges::sort(paths);
+    return paths;
+}
+
+constexpr float THUMB_MIN_CONTRAST = 3.0F; // WCAG 1.4.11, a non-text control on what surrounds it
+
+TEST(PriorityHelpersTest, UnpackColorInvertsGetNiceColor)
+{
+    const ImVec4 high{1.0F, 0.0F, 0.0F, 1.0F};
+    const ImVec4 normal{0.0F, 1.0F, 0.0F, 1.0F};
+    const ImVec4 low{0.0F, 0.0F, 1.0F, 1.0F};
+    const ImVec4 atNormal = unpackColor(getNiceColor(0, high, normal, low));
+    EXPECT_FLOAT_EQ(atNormal.x, 0.0F);
+    EXPECT_FLOAT_EQ(atNormal.y, 1.0F);
+    EXPECT_FLOAT_EQ(atNormal.z, 0.0F);
+    EXPECT_FLOAT_EQ(atNormal.w, 1.0F);
+}
+
+// The regression the issue reported: Arctic Fire's fixed white badge text on its #00E676 nice-0 badge.
+TEST(PriorityHelpersTest, FixedBadgeTextWasUnreadableOnArcticFireNormal)
+{
+    const ImVec4 emerald{0.0F, 230.0F / 255.0F, 118.0F / 255.0F, 1.0F};
+    const ImVec4 white{1.0F, 1.0F, 1.0F, 1.0F};
+    const ImVec4 windowBg{20.0F / 255.0F, 26.0F / 255.0F, 36.0F / 255.0F, 1.0F};
+
+    EXPECT_LT(UI::ColorContrast::contrastRatio(white, emerald), PRIORITY_BADGE_TEXT_MIN_CONTRAST);
+    EXPECT_GE(UI::ColorContrast::contrastRatio(badgeTextFor(emerald, white, windowBg), emerald), PRIORITY_BADGE_TEXT_MIN_CONTRAST);
+}
+
+// Neither pole readable (two mid greys on a mid grey): black or white, whichever is better, wins.
+// #1252 review: the theme's badge text is kept whenever it is readable, even if its window background
+// would contrast more; the background is used only when the badge text fails the floor.
+TEST(PriorityHelpersTest, BadgeTextKeepsAReadablePreferredColourInOrder)
+{
+    const ImVec4 white{1.0F, 1.0F, 1.0F, 1.0F};
+    const ImVec4 black{0.0F, 0.0F, 0.0F, 1.0F};
+    // On a dark #222222 fill, grey #8A8A8A is about 4.6:1 -- readable -- while white is about 15.9:1.
+    // readableTextOn()'s "clearly better" margin swapped to white; the documented order keeps grey.
+    const ImVec4 darkFill{34.0F / 255.0F, 34.0F / 255.0F, 34.0F / 255.0F, 1.0F};
+    const ImVec4 grey{138.0F / 255.0F, 138.0F / 255.0F, 138.0F / 255.0F, 1.0F};
+    ASSERT_GE(UI::ColorContrast::contrastRatio(grey, darkFill), PRIORITY_BADGE_TEXT_MIN_CONTRAST);
+    ASSERT_FLOAT_EQ(UI::ColorContrast::readableTextOn(darkFill, grey, white).x, 1.0F); // The old choice
+    EXPECT_FLOAT_EQ(badgeTextFor(darkFill, grey, white).x, grey.x);
+
+    // A light fill white fails on: the alternate (black) is used.
+    const ImVec4 lightGreen{0.0F, 0.9F, 0.46F, 1.0F};
+    ASSERT_LT(UI::ColorContrast::contrastRatio(white, lightGreen), PRIORITY_BADGE_TEXT_MIN_CONTRAST);
+    const ImVec4 switched = badgeTextFor(lightGreen, white, black);
+    EXPECT_FLOAT_EQ(switched.x, 0.0F);
+}
+
+TEST(PriorityHelpersTest, BadgeTextFallsBackToBlackOrWhite)
+{
+    const ImVec4 grey{0.5F, 0.5F, 0.5F, 1.0F};
+    const ImVec4 lighter{0.6F, 0.6F, 0.6F, 1.0F};
+    const ImVec4 darker{0.4F, 0.4F, 0.4F, 1.0F};
+    const ImVec4 chosen = badgeTextFor(grey, lighter, darker);
+    EXPECT_FLOAT_EQ(chosen.x, 0.0F); // black: 5.3:1 on mid grey against white's 3.9:1
+    EXPECT_GE(UI::ColorContrast::contrastRatio(chosen, grey), PRIORITY_BADGE_TEXT_MIN_CONTRAST);
+}
+
+// Every bundled theme, every nice value: the badge text is readable on the badge, and the thumb stands
+// out from the track around it.
+TEST(PriorityHelpersTest, BadgeTextAndThumbAreReadableInEveryBundledTheme)
+{
+    const auto themes = bundledThemes();
+    ASSERT_FALSE(themes.empty());
+    for (const auto& path : themes)
+    {
+        const auto scheme = UI::ThemeLoader::loadTheme(path);
+        if (!scheme.has_value())
+        {
+            ADD_FAILURE() << "failed to load " << path;
+            continue;
+        }
+        const auto name = path.stem().string();
+        const auto trackAt = [&scheme](int32_t nice)
+        {
+            return unpackColor(getNiceColor(nice, scheme->priorityHighColor, scheme->priorityNormalColor, scheme->priorityLowColor));
+        };
+
+        for (int32_t nice = NICE_MIN; nice <= NICE_MAX; ++nice)
+        {
+            const ImVec4 fill = trackAt(nice);
+            const ImVec4 text = badgeTextFor(fill, scheme->priorityBadgeTextColor, scheme->windowBg);
+            EXPECT_GE(UI::ColorContrast::contrastRatio(text, fill), PRIORITY_BADGE_TEXT_MIN_CONTRAST)
+                << name << " badge text at nice " << nice;
+
+            // The thumb is ~1.5 nice steps wide, so it also overlaps the track either side of the value.
+            for (const int32_t neighbour : {std::max(nice - 1, NICE_MIN), nice, std::min(nice + 1, NICE_MAX)})
+            {
+                EXPECT_GE(UI::ColorContrast::contrastRatio(text, trackAt(neighbour)), THUMB_MIN_CONTRAST)
+                    << name << " thumb at nice " << nice << " on the track at " << neighbour;
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Windows priority classes (#1204)
+// =============================================================================
+
+TEST(WindowsPriorityClassTest, TheControlOffersExactlyTheFiveSettableClasses)
+{
+    ASSERT_EQ(SETTABLE_WINDOWS_PRIORITY_CLASSES.size(), 5U);
+    EXPECT_EQ(SETTABLE_WINDOWS_PRIORITY_CLASSES.front(), WindowsPriorityClass::Idle);
+    EXPECT_EQ(SETTABLE_WINDOWS_PRIORITY_CLASSES.back(), WindowsPriorityClass::High);
+    EXPECT_EQ(std::ranges::count(SETTABLE_WINDOWS_PRIORITY_CLASSES, WindowsPriorityClass::Realtime), 0);
+}
+
+TEST(WindowsPriorityClassTest, EveryClassRoundTripsThroughItsNiceValue)
+{
+    for (const auto priorityClass : {
+             WindowsPriorityClass::Idle,
+             WindowsPriorityClass::BelowNormal,
+             WindowsPriorityClass::Normal,
+             WindowsPriorityClass::AboveNormal,
+             WindowsPriorityClass::High,
+             WindowsPriorityClass::Realtime,
+         })
+    {
+        EXPECT_EQ(windowsPriorityClassFromNice(windowsPriorityClassNice(priorityClass)), priorityClass)
+            << windowsPriorityClassName(priorityClass);
+    }
+}
+
+TEST(WindowsPriorityClassTest, RepresentativeNiceValuesAvoidTheLabelThresholds)
+{
+    // -5 and -10, the values the probe used to report, are where the next class down starts.
+    EXPECT_EQ(Domain::Priority::getPriorityLabel(windowsPriorityClassNice(WindowsPriorityClass::AboveNormal)), "Above Normal");
+    EXPECT_EQ(Domain::Priority::getPriorityLabel(windowsPriorityClassNice(WindowsPriorityClass::High)), "High");
+    for (const auto priorityClass : SETTABLE_WINDOWS_PRIORITY_CLASSES)
+    {
+        const int32_t nice = windowsPriorityClassNice(priorityClass);
+        EXPECT_NE(nice, Domain::Priority::HIGH_THRESHOLD);
+        EXPECT_NE(nice, Domain::Priority::ABOVE_NORMAL_THRESHOLD);
+        EXPECT_NE(nice, Domain::Priority::BELOW_NORMAL_THRESHOLD);
+        EXPECT_NE(nice, Domain::Priority::IDLE_THRESHOLD);
+    }
+}
+
+TEST(WindowsPriorityClassTest, NamesMatchTheProcessesTableAndRealtimeIsNamed)
+{
+    EXPECT_EQ(windowsPriorityClassName(WindowsPriorityClass::Idle), "Idle");
+    EXPECT_EQ(windowsPriorityClassName(WindowsPriorityClass::BelowNormal), "Below Normal");
+    EXPECT_EQ(windowsPriorityClassName(WindowsPriorityClass::Normal), "Normal");
+    EXPECT_EQ(windowsPriorityClassName(WindowsPriorityClass::AboveNormal), "Above Normal");
+    EXPECT_EQ(windowsPriorityClassName(WindowsPriorityClass::High), "High");
+    EXPECT_EQ(windowsPriorityClassName(WindowsPriorityClass::Realtime), "Realtime");
+}
+
+TEST(WindowsPriorityClassTest, AnyNiceValueFallsInOneClass)
+{
+    EXPECT_EQ(windowsPriorityClassFromNice(-19), WindowsPriorityClass::High);
+    EXPECT_EQ(windowsPriorityClassFromNice(-10), WindowsPriorityClass::AboveNormal);
+    EXPECT_EQ(windowsPriorityClassFromNice(-5), WindowsPriorityClass::Normal);
+    EXPECT_EQ(windowsPriorityClassFromNice(5), WindowsPriorityClass::BelowNormal);
+    EXPECT_EQ(windowsPriorityClassFromNice(15), WindowsPriorityClass::Idle);
+    EXPECT_EQ(windowsPriorityClassFromNice(-100), WindowsPriorityClass::Realtime);
+    EXPECT_EQ(windowsPriorityClassFromNice(100), WindowsPriorityClass::Idle);
+}
+
+TEST(WindowsPriorityClassTest, OverviewTextHasNoNiceWordingWithWindowsClasses)
+{
+    EXPECT_EQ(priorityDisplayText(-7, true), "Above Normal");
+    EXPECT_EQ(priorityDisplayText(-20, true), "Realtime");
+    EXPECT_EQ(priorityDisplayText(0, true).find("nice"), std::string::npos);
+    // Elsewhere the nice value stays.
+    EXPECT_EQ(priorityDisplayText(0, false), "Normal (nice: 0)");
+    EXPECT_EQ(priorityDisplayText(-20, false), "High (nice: -20)");
 }
 
 } // namespace

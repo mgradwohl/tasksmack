@@ -237,6 +237,58 @@ TEST(BackgroundSamplerTest, SetIntervalWhileRunning)
     sampler.stop();
 }
 
+// #1118: interval changes rebase on the last sample, so changing it repeatedly can't postpone
+// sampling indefinitely (the interaction throttle toggles it on every short drag).
+TEST(BackgroundSamplerTest, RepeatedIntervalChangesDoNotStarveSampling)
+{
+    auto samplable = std::make_shared<MockSamplable>();
+    Domain::SamplerConfig config;
+    config.interval = 200ms;
+    Domain::BackgroundSampler sampler(config);
+    sampler.addSamplable(samplable);
+    sampler.start();
+    samplable->waitForSamples(1);
+    const int afterFirst = samplable->getSampleCount();
+
+    // Change the interval every 40 ms for 900 ms, never further than 300 ms out.
+    const auto until = std::chrono::steady_clock::now() + 900ms;
+    bool longer = false;
+    while (std::chrono::steady_clock::now() < until)
+    {
+        sampler.setInterval(longer ? 300ms : 250ms);
+        longer = !longer;
+        std::this_thread::sleep_for(40ms);
+    }
+    const int sampled = samplable->getSampleCount() - afterFirst;
+    sampler.stop();
+
+    // At most ~300 ms apart, so about three samples; resetting the wait each time gave none.
+    EXPECT_GE(sampled, 2);
+}
+
+// #1102: a sampler whose owner already took the seed sample waits an interval before sampling.
+TEST(BackgroundSamplerTest, SeededSamplerWaitsAnIntervalBeforeItsFirstSample)
+{
+    auto samplable = std::make_shared<MockSamplable>();
+    Domain::SamplerConfig config;
+    config.interval = 300ms;
+    config.firstSampleAfterInterval = true;
+    Domain::BackgroundSampler sampler(config);
+    sampler.addSamplable(samplable);
+
+    const auto started = std::chrono::steady_clock::now();
+    sampler.start();
+    samplable->waitForSamples(1);
+    const auto firstSampleAfter = std::chrono::steady_clock::now() - started;
+    sampler.stop();
+
+    // Not straight after the seed, but one interval later. A wait can only overrun, so the lower
+    // bound is exact (less a little clock slack); the upper bound leaves room for a loaded runner
+    // while still catching a sampler that waits several intervals.
+    EXPECT_GE(firstSampleAfter, 290ms);
+    EXPECT_LT(firstSampleAfter, 1000ms);
+}
+
 TEST(BackgroundSamplerTest, SetIntervalWhileStopped)
 {
     Domain::BackgroundSampler sampler;
@@ -265,6 +317,51 @@ TEST(BackgroundSamplerTest, SetIntervalBeforeStartDoesNotScheduleDuplicateSample
 // =============================================================================
 // Refresh Request Tests
 // =============================================================================
+
+TEST(BackgroundSamplerTest, RefreshRightAfterASampleWaitsForAUsableInterval)
+{
+    // #1102: a refresh forced milliseconds after a sample must not sample again at once -- the
+    // models would get no usable deltas (0% CPU, false 0 B/s). It waits until at least the fastest
+    // supported interval has passed since the previous sample.
+    class TimedSamplable : public Domain::ISamplable
+    {
+      public:
+        void sample() override
+        {
+            const std::scoped_lock lock(m_Mutex);
+            m_Times.push_back(std::chrono::steady_clock::now());
+            m_Cv.notify_all();
+        }
+        [[nodiscard]] std::vector<std::chrono::steady_clock::time_point> waitForSamples(std::size_t count)
+        {
+            std::unique_lock lock(m_Mutex);
+            m_Cv.wait_for(lock, 2000ms, [&] { return m_Times.size() >= count; });
+            return m_Times;
+        }
+
+      private:
+        std::mutex m_Mutex;
+        std::condition_variable m_Cv;
+        std::vector<std::chrono::steady_clock::time_point> m_Times;
+    };
+
+    auto samplable = std::make_shared<TimedSamplable>();
+    Domain::SamplerConfig config;
+    config.interval = 1000ms;
+    Domain::BackgroundSampler sampler(config);
+    sampler.addSamplable(samplable);
+    sampler.start();
+    ASSERT_EQ(samplable->waitForSamples(1).size(), 1U);
+
+    sampler.requestRefresh(); // immediately after the first sample
+    const auto times = samplable->waitForSamples(2);
+    sampler.stop();
+
+    ASSERT_GE(times.size(), 2U);
+    const auto gap = times[1] - times[0];
+    EXPECT_GE(gap, std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MIN_MS) - 5ms); // waited
+    EXPECT_LT(gap, 900ms); // but still early: the refresh wasn't dropped
+}
 
 TEST(BackgroundSamplerTest, RequestRefreshTriggersEarlySample)
 {

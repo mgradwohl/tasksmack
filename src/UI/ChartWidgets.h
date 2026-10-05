@@ -2,6 +2,7 @@
 
 #include "Core/AnimationRequest.h"
 #include "Domain/Numeric.h"
+#include "Domain/SamplingConfig.h"
 #include "UI/Format.h"
 #include "UI/RateAxis.h"
 #include "UI/RenderMetrics.h"
@@ -14,10 +15,12 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cassert>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <format>
 #include <functional>
@@ -29,6 +32,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -47,7 +51,22 @@ namespace Detail
 // setChartAntiAliasingEnabled()/chartAntiAliasingEnabled() below are meant to provide.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 inline bool g_ChartAntiAliasingEnabled = true;
+
+// The frame on which an eased Y axis last asked for full-rate frames (easedChartUpperBound()), or -1.
+// The axis is eased before its chart is drawn, so the request is held here and made by the next
+// HistoryChart only if that chart is actually visible (#1125, #1281 review).
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+inline int g_PendingEaseRequestFrame = -1;
 } // namespace Detail
+
+/// Whether a HistoryChart should ask for full-rate frames for an axis that was eased just before it:
+/// only when an ease request is pending from this same frame and the chart is visible (BeginPlot
+/// returned true). A chart clipped below a scrolling child, whose axis is still easing, asks for
+/// nothing.
+[[nodiscard]] constexpr bool shouldRequestEaseFrames(int pendingFrame, int currentFrame, bool chartVisible) noexcept
+{
+    return chartVisible && pendingFrame >= 0 && pendingFrame == currentFrame;
+}
 
 /// Whether history chart plots render anti-aliased lines (see CHART_ANTI_ALIASING_FLAGS_MASK's
 /// doc comment for why "lines", not "lines/fills": ImPlot's shaded-fill path doesn't currently
@@ -108,9 +127,6 @@ inline constexpr float NOW_BAR_WIDTH_EM = 2.25F;
     const float em = (std::isfinite(emPx) && emPx > 0.0F) ? emPx : 1.0F;
     return std::max(1.0F, std::round(NOW_BAR_WIDTH_EM * em));
 }
-inline constexpr double SMOOTH_FACTOR = 0.5; // fraction of refresh interval used for tau
-inline constexpr double TAU_MS_MIN = 20.0;
-inline constexpr double TAU_MS_MAX = 400.0;
 inline constexpr int LINE_PLOT_MAX_POINTS_DENSE = 720;
 
 /// RAII guard that pushes the chart font (see UI::chartFontSize()) for axis labels, legends and hints.
@@ -144,10 +160,48 @@ class PlotFontGuard
     bool m_FontPushed = false;
 };
 
+/// How live values and "now" bars ease toward each new sample (computeAlpha): the time constant is
+/// `smoothFactor` times the refresh interval, kept within [tauMsMin, tauMsMax].
+struct ChartSmoothing
+{
+    double smoothFactor = Domain::Sampling::CHART_SMOOTH_FACTOR_DEFAULT;
+    double tauMsMin = static_cast<double>(Domain::Sampling::CHART_TAU_MS_MIN_DEFAULT);
+    double tauMsMax = static_cast<double>(Domain::Sampling::CHART_TAU_MS_MAX_DEFAULT);
+};
+
+static_assert(Domain::Sampling::CHART_TAU_MS_MIN_MAX <= Domain::Sampling::CHART_TAU_MS_MAX_BOUND,
+              "a clamped chart_tau_ms_min must never exceed a clamped chart_tau_ms_max (std::clamp needs lo <= hi)");
+
+namespace Detail
+{
+// One instance program-wide, like g_ChartAntiAliasingEnabled above. Read and written on the UI thread only.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+inline ChartSmoothing g_ChartSmoothing;
+} // namespace Detail
+
+/// Sets the smoothing computeAlpha() uses: the [ui] chart_smooth_factor / chart_tau_ms_min /
+/// chart_tau_ms_max settings, pushed in by the App composition root at startup (UI must not read
+/// UserConfig, #1123). Each value is clamped to its SamplingConfig range, so the minimum time
+/// constant can never exceed the maximum.
+inline void setChartSmoothing(double smoothFactor, int tauMsMin, int tauMsMax) noexcept
+{
+    Detail::g_ChartSmoothing = ChartSmoothing{
+        .smoothFactor = Domain::Sampling::clampChartSmoothFactor(smoothFactor),
+        .tauMsMin = static_cast<double>(Domain::Sampling::clampChartTauMsMin(tauMsMin)),
+        .tauMsMax = static_cast<double>(Domain::Sampling::clampChartTauMsMax(tauMsMax)),
+    };
+}
+
+[[nodiscard]] inline ChartSmoothing chartSmoothing() noexcept
+{
+    return Detail::g_ChartSmoothing;
+}
+
 inline double computeAlpha(double deltaTimeSeconds, std::chrono::milliseconds refreshInterval)
 {
+    const ChartSmoothing smoothing = chartSmoothing();
     const double baseIntervalMs = Domain::Numeric::toDouble(refreshInterval.count());
-    const double tauMs = std::clamp(baseIntervalMs * SMOOTH_FACTOR, TAU_MS_MIN, TAU_MS_MAX);
+    const double tauMs = std::clamp(baseIntervalMs * smoothing.smoothFactor, smoothing.tauMsMin, smoothing.tauMsMax);
     const double dtMs = (deltaTimeSeconds > 0.0) ? deltaTimeSeconds * 1000.0 : baseIntervalMs;
     return std::clamp(1.0 - std::exp(-dtMs / std::max(1.0, tauMs)), 0.0, 1.0);
 }
@@ -238,7 +292,10 @@ inline void renderHistoryTooltip(double relativeSeconds, std::span<const Tooltip
 ///
 /// NaN marks a sample with no reading. Splitting a series into its finite runs is how a gap is drawn
 /// as a gap by renderers that do not handle NaN themselves (ImPlot's shaded renderer, #989).
-template<typename T, typename OnRun> inline void forEachFiniteRun(const T* values, int count, OnRun&& onRun)
+// onRun is called once per run, so it is used as an lvalue rather than forwarded; a forwarding
+// reference keeps mutable lambdas and stateful functors working.
+template<typename T, typename OnRun>
+inline void forEachFiniteRun(const T* values, int count, OnRun&& onRun) // NOLINT(cppcoreguidelines-missing-std-forward)
 {
     int runStart = 0;
     while (runStart < count)
@@ -260,13 +317,25 @@ template<typename T, typename OnRun> inline void forEachFiniteRun(const T* value
     }
 }
 
-/// Stride-reduce `count` samples to `outCount` (> 1, < count) points in `outX`/`outY`, keeping gaps.
-///
-/// Output point k takes source sample s_k = k * (count - 1) / (outCount - 1). A plain stride would
-/// skip any NaN that falls between two picked samples and draw straight across a missing reading,
-/// so if any sample in (s_{k-1}, s_k] is non-finite, point k's value is NaN instead.
-template<typename TX, typename TY>
-inline void reduceSeriesKeepingGaps(const TX* xData, const TY* yData, int count, int outCount, TX* outX, TY* outY)
+/// One point a history-chart reduction keeps: the index of the source sample it is drawn from, and
+/// whether it is drawn as a gap (NaN: no reading) instead of that sample's value. The reductions
+/// below emit these rather than copying values, so the choice of points can be cached and replayed
+/// every frame (ReducedPointsCache, #1139): buckets are anchored in absolute time, so the choice
+/// depends only on the samples, not on "now", and holds until the data changes.
+struct ReducedPoint
+{
+    int index = 0;
+    bool gap = false;
+
+    [[nodiscard]] bool operator==(const ReducedPoint&) const = default;
+};
+
+/// The stride reduction behind reduceSeriesKeepingGaps(): calls `emit(sourceIndex, isGap)` once for
+/// each of the `outCount` (> 1, < count) points it keeps, in order.
+// emit is called once per point, so it is used as an lvalue rather than forwarded.
+template<typename TY, typename Emit>
+inline void
+forEachStrideReducedPoint(const TY* yData, int count, int outCount, Emit&& emit) // NOLINT(cppcoreguidelines-missing-std-forward)
 {
     int previousSource = -1;
     for (int resultIdx = 0; resultIdx < outCount; ++resultIdx)
@@ -275,22 +344,56 @@ inline void reduceSeriesKeepingGaps(const TX* xData, const TY* yData, int count,
         const auto denominator = static_cast<std::size_t>(outCount - 1);
         const int sourceIdx = static_cast<int>(numerator / denominator);
 
-        TY value = yData[sourceIdx];
+        bool gap = false;
         if constexpr (std::is_floating_point_v<TY>)
         {
             for (int skipped = previousSource + 1; skipped <= sourceIdx; ++skipped)
             {
                 if (!std::isfinite(yData[skipped]))
                 {
-                    value = std::numeric_limits<TY>::quiet_NaN();
+                    gap = true;
                     break;
                 }
             }
         }
-        outX[resultIdx] = xData[sourceIdx];
-        outY[resultIdx] = value;
+        emit(sourceIdx, gap);
         previousSource = sourceIdx;
     }
+}
+
+/// Writes the point a reduction kept as output point `written` of `outX`/`outY`: the source sample,
+/// or NaN in y for a gap point.
+template<typename TX, typename TY>
+inline void writeReducedPoint(const TX* xData, const TY* yData, int sourceIdx, bool gap, int written, TX* outX, TY* outY)
+{
+    outX[written] = xData[sourceIdx];
+    if constexpr (std::is_floating_point_v<TY>)
+    {
+        outY[written] = gap ? std::numeric_limits<TY>::quiet_NaN() : yData[sourceIdx];
+    }
+    else
+    {
+        outY[written] = yData[sourceIdx];
+    }
+}
+
+/// Stride-reduce `count` samples to `outCount` (> 1, < count) points in `outX`/`outY`, keeping gaps.
+///
+/// Output point k takes source sample s_k = k * (count - 1) / (outCount - 1). A plain stride would
+/// skip any NaN that falls between two picked samples and draw straight across a missing reading,
+/// so if any sample in (s_{k-1}, s_k] is non-finite, point k's value is NaN instead.
+template<typename TX, typename TY>
+inline void reduceSeriesKeepingGaps(const TX* xData, const TY* yData, int count, int outCount, TX* outX, TY* outY)
+{
+    int written = 0;
+    forEachStrideReducedPoint(yData,
+                              count,
+                              outCount,
+                              [&](int sourceIdx, bool gap)
+                              {
+                                  writeReducedPoint(xData, yData, sourceIdx, gap, written, outX, outY);
+                                  ++written;
+                              });
 }
 
 /// Width, in x units, of the buckets reduceSeriesMinMax() groups a series spanning `span` into, for
@@ -326,10 +429,19 @@ inline void reduceSeriesKeepingGaps(const TX* xData, const TY* yData, int count,
 /// The first and last samples are always emitted, so the line still starts at the oldest sample and
 /// ends at the newest instead of at its bucket's extremes.
 ///
-/// @return Points written to outX/outY (each must hold `maxOut`). With an unusable span (fewer than
-///         two samples, or x not increasing) the series is stride-reduced to `maxOut` points instead.
-template<typename TX, typename TY>
-[[nodiscard]] inline int reduceSeriesMinMax(const TX* xData, const TY* yData, int count, int maxOut, double xOffset, TX* outX, TY* outY)
+/// The points are emitted as `emit(sourceIndex, isGap)`, in order: reduceSeriesMinMax() writes them
+/// out, and reduceSeriesMinMaxPoints() keeps them for a ReducedPointsCache.
+///
+/// @return Points emitted, at most `maxOut`. With an unusable span (fewer than two samples, or x not
+///         increasing) the series is stride-reduced to `maxOut` points instead.
+// emit is called once per point, so it is used as an lvalue rather than forwarded.
+template<typename TX, typename TY, typename Emit>
+inline int forEachMinMaxReducedPoint(const TX* xData,
+                                     const TY* yData,
+                                     int count,
+                                     int maxOut,
+                                     double xOffset,
+                                     Emit&& emit) // NOLINT(cppcoreguidelines-missing-std-forward)
 {
     // At most three points per bucket (min, max, gap marker) plus the two end samples, and a span
     // of n widths can touch n + 1 buckets once both ends fall mid-bucket: so (maxOut - 2) / 3 - 1
@@ -342,12 +454,14 @@ template<typename TX, typename TY>
         const int outCount = std::min(count, maxOut);
         if (outCount == count)
         {
-            std::copy_n(xData, count, outX);
-            std::copy_n(yData, count, outY);
+            for (int i = 0; i < count; ++i)
+            {
+                emit(i, false);
+            }
         }
         else
         {
-            reduceSeriesKeepingGaps(xData, yData, count, outCount, outX, outY);
+            forEachStrideReducedPoint(yData, count, outCount, emit);
         }
         return outCount;
     }
@@ -401,15 +515,7 @@ template<typename TX, typename TY>
             {
                 continue;
             }
-            outX[written] = xData[pick];
-            if constexpr (std::is_floating_point_v<TY>)
-            {
-                outY[written] = (pick == gapIdx) ? std::numeric_limits<TY>::quiet_NaN() : yData[pick];
-            }
-            else
-            {
-                outY[written] = yData[pick];
-            }
+            emit(pick, pick == gapIdx);
             ++written;
             previous = pick;
         }
@@ -418,8 +524,186 @@ template<typename TX, typename TY>
     return written;
 }
 
+/// Reduce `count` samples to at most `maxOut` points in `outX`/`outY` (each must hold `maxOut`),
+/// keeping peaks and gaps; see forEachMinMaxReducedPoint() for how the points are chosen.
+///
+/// @return Points written to outX/outY.
+template<typename TX, typename TY>
+[[nodiscard]] inline int reduceSeriesMinMax(const TX* xData, const TY* yData, int count, int maxOut, double xOffset, TX* outX, TY* outY)
+{
+    int written = 0;
+    return forEachMinMaxReducedPoint(xData,
+                                     yData,
+                                     count,
+                                     maxOut,
+                                     xOffset,
+                                     [&](int sourceIdx, bool gap)
+                                     {
+                                         writeReducedPoint(xData, yData, sourceIdx, gap, written, outX, outY);
+                                         ++written;
+                                     });
+}
+
+/// The points reduceSeriesMinMax() keeps, as source indices in `out` (cleared first) rather than
+/// values, for a ReducedPointsCache.
+template<typename TX, typename TY>
+inline void
+reduceSeriesMinMaxPoints(const TX* xData, const TY* yData, int count, int maxOut, double xOffset, std::vector<ReducedPoint>& out)
+{
+    out.clear();
+    if (count <= 0 || maxOut <= 0)
+    {
+        return;
+    }
+    out.reserve(static_cast<std::size_t>(std::min(count, maxOut)));
+    std::ignore =
+        forEachMinMaxReducedPoint(xData,
+                                  yData,
+                                  count,
+                                  maxOut,
+                                  xOffset,
+                                  [&out](int sourceIdx, bool gap) { out.push_back(ReducedPoint{.index = sourceIdx, .gap = gap}); });
+}
+
 /// Most series reduceAlignedSeries() can select points by (see there).
 inline constexpr std::size_t MAX_ALIGNED_KEY_SERIES = 4;
+
+/// The point selection behind reduceAlignedSeries() and reduceAlignedPoints(): series sharing the x
+/// axis `x`, reduced to at most `maxOut` common points, each emitted as `emit(sourceIndex, isGap)` in
+/// ascending source order. Requires alignedReductionApplies(), and every keyed series as long as
+/// `x`. See reduceAlignedSeries() for how the points are chosen.
+// emit is called once per point, so it is used as an lvalue rather than forwarded.
+template<typename T, typename Emit>
+inline void forEachAlignedReducedPoint(std::span<const double> x,
+                                       std::span<const std::span<const T>> keyed,
+                                       int maxOut,
+                                       double xOffset,
+                                       Emit&& emit) // NOLINT(cppcoreguidelines-missing-std-forward)
+{
+    const int count = UI::Format::checkedCount(x.size());
+    const auto keyCount = static_cast<int>(keyed.size());
+    const auto valueAt = [](std::span<const T> series, int index)
+    {
+        return static_cast<double>(series[static_cast<std::size_t>(index)]);
+    };
+
+    int written = 0;
+    const auto keep = [&](int pick, bool asGap)
+    {
+        emit(pick, asGap);
+        ++written;
+    };
+
+    // At most three points per keyed series per bucket plus the two end samples, over at most
+    // bucketCount + 1 buckets (see forEachMinMaxReducedPoint()).
+    const int bucketCount = ((maxOut - 2) / (3 * keyCount)) - 1;
+    const double width = (bucketCount > 0) ? minMaxBucketWidth(x.back() - x.front(), bucketCount) : 0.0;
+    if (width <= 0.0)
+    {
+        // As reduceSeriesKeepingGaps(): a point whose stride skipped a gap in any keyed series is a gap.
+        int previousSource = -1;
+        for (int k = 0; k < maxOut; ++k)
+        {
+            const auto source = static_cast<int>((static_cast<std::size_t>(k) * static_cast<std::size_t>(count - 1)) /
+                                                 static_cast<std::size_t>(maxOut - 1));
+            bool skippedGap = false;
+            for (const auto series : keyed)
+            {
+                for (int i = previousSource + 1; i <= source && !skippedGap; ++i)
+                {
+                    skippedGap = !std::isfinite(valueAt(series, i));
+                }
+            }
+            keep(source, skippedGap);
+            previousSource = source;
+        }
+        return;
+    }
+
+    const auto bucketOf = [&](int index)
+    {
+        return std::floor((x[static_cast<std::size_t>(index)] + xOffset) / width);
+    };
+    int bucketStart = 0;
+    while (bucketStart < count)
+    {
+        const double bucket = bucketOf(bucketStart);
+        int next = bucketStart;
+        while (next < count && bucketOf(next) == bucket)
+        {
+            ++next;
+        }
+
+        std::array<int, (3 * MAX_ALIGNED_KEY_SERIES) + 2> picks{};
+        picks.fill(-1);
+        std::size_t pickCount = 0;
+        std::array<int, MAX_ALIGNED_KEY_SERIES> gapPicks{};
+        std::size_t gapCount = 0;
+        bool collapseBucket = false;
+        picks[pickCount++] = (bucketStart == 0) ? 0 : -1;
+        picks[pickCount++] = (next == count) ? count - 1 : -1;
+        for (const auto series : keyed)
+        {
+            int minIdx = -1;
+            int maxIdx = -1;
+            int gapIdx = -1;
+            int gapRuns = 0;
+            bool inGap = false;
+            for (int i = bucketStart; i < next; ++i)
+            {
+                const double value = valueAt(series, i);
+                if (!std::isfinite(value))
+                {
+                    gapIdx = (gapIdx < 0) ? i : gapIdx;
+                    gapRuns += inGap ? 0 : 1;
+                    inGap = true;
+                    continue;
+                }
+                inGap = false;
+                if (minIdx < 0 || value < valueAt(series, minIdx))
+                {
+                    minIdx = i;
+                }
+                if (maxIdx < 0 || value > valueAt(series, maxIdx))
+                {
+                    maxIdx = i;
+                }
+            }
+            collapseBucket = collapseBucket || (gapRuns > 1);
+            picks[pickCount++] = minIdx;
+            picks[pickCount++] = maxIdx;
+            picks[pickCount++] = gapIdx;
+            gapPicks[gapCount++] = gapIdx;
+        }
+        if (collapseBucket)
+        {
+            // Only the gap points and the series' ends survive (see reduceAlignedSeries()).
+            picks.fill(-1);
+            picks[0] = (bucketStart == 0) ? 0 : -1;
+            picks[1] = (next == count) ? count - 1 : -1;
+            std::copy_n(gapPicks.begin(), gapCount, picks.begin() + 2);
+        }
+        std::ranges::sort(picks);
+        int previous = -1;
+        for (const int pick : picks)
+        {
+            if (pick < 0 || pick == previous || written >= maxOut)
+            {
+                continue;
+            }
+            keep(pick, collapseBucket && pick != 0 && pick != count - 1);
+            previous = pick;
+        }
+        bucketStart = next;
+    }
+}
+
+/// Whether an aligned reduction has anything to do: series longer than `maxOut`, and a usable number
+/// of keyed series. Otherwise the series are drawn as they are.
+[[nodiscard]] inline bool alignedReductionApplies(std::size_t count, int maxOut, std::size_t keyCount) noexcept
+{
+    return maxOut >= 2 && std::cmp_greater(count, maxOut) && keyCount > 0 && keyCount <= MAX_ALIGNED_KEY_SERIES;
+}
 
 /// Reduce series that share one x axis to at most `maxOut` common points, in place: the stacked
 /// bands and lines a chart draws with ImPlot directly, which plotLineWithFill() cannot reduce
@@ -435,17 +719,25 @@ inline constexpr std::size_t MAX_ALIGNED_KEY_SERIES = 4;
 /// it finite points on both sides of a later gap and draw it across that gap (#1061 review), and the
 /// carried series are built from the keyed ones. With an unusable span the series are stride-reduced.
 /// Series no longer than `maxOut` are left unchanged. Every series must be as long as `x`.
+///
+/// This reduces on every call. A chart that redraws the same data every frame should instead keep
+/// the choice of points in a ReducedPointsCache via reduceAlignedPoints() (#1139).
 inline void reduceAlignedSeries(std::vector<double>& x,
                                 std::initializer_list<std::vector<double>*> keyed,
                                 std::initializer_list<std::vector<double>*> carried,
                                 int maxOut,
                                 double xOffset)
 {
-    const int count = UI::Format::checkedCount(x.size());
-    const auto keyCount = static_cast<int>(keyed.size());
-    if (count <= maxOut || maxOut < 2 || keyCount == 0 || keyed.size() > MAX_ALIGNED_KEY_SERIES)
+    if (!alignedReductionApplies(x.size(), maxOut, keyed.size()))
     {
         return;
+    }
+
+    std::array<std::span<const double>, MAX_ALIGNED_KEY_SERIES> keyedSpans{};
+    std::size_t keyedCount = 0;
+    for (const auto* series : keyed)
+    {
+        keyedSpans[keyedCount++] = *series;
     }
 
     // Keeps source index `pick` as output point `written`. Picks ascend and each is at or after its
@@ -470,110 +762,7 @@ inline void reduceAlignedSeries(std::vector<double>& x,
         }
         ++written;
     };
-
-    // At most three points per keyed series per bucket plus the two end samples, over at most
-    // bucketCount + 1 buckets (see reduceSeriesMinMax()).
-    const int bucketCount = ((maxOut - 2) / (3 * keyCount)) - 1;
-    const double width = (bucketCount > 0) ? minMaxBucketWidth(x.back() - x.front(), bucketCount) : 0.0;
-    if (width <= 0.0)
-    {
-        // As reduceSeriesKeepingGaps(): a point whose stride skipped a gap in any keyed series is a gap.
-        int previousSource = -1;
-        for (int k = 0; k < maxOut; ++k)
-        {
-            const auto source = static_cast<int>((static_cast<std::size_t>(k) * static_cast<std::size_t>(count - 1)) /
-                                                 static_cast<std::size_t>(maxOut - 1));
-            bool skippedGap = false;
-            for (const auto* series : keyed)
-            {
-                for (int i = previousSource + 1; i <= source && !skippedGap; ++i)
-                {
-                    skippedGap = !std::isfinite((*series)[static_cast<std::size_t>(i)]);
-                }
-            }
-            keep(source, skippedGap);
-            previousSource = source;
-        }
-    }
-    else
-    {
-        const auto bucketOf = [&](int index)
-        {
-            return std::floor((x[static_cast<std::size_t>(index)] + xOffset) / width);
-        };
-        int bucketStart = 0;
-        while (bucketStart < count)
-        {
-            const double bucket = bucketOf(bucketStart);
-            int next = bucketStart;
-            while (next < count && bucketOf(next) == bucket)
-            {
-                ++next;
-            }
-
-            std::array<int, (3 * MAX_ALIGNED_KEY_SERIES) + 2> picks{};
-            picks.fill(-1);
-            std::size_t pickCount = 0;
-            std::array<int, MAX_ALIGNED_KEY_SERIES> gapPicks{};
-            std::size_t gapCount = 0;
-            bool collapseBucket = false;
-            picks[pickCount++] = (bucketStart == 0) ? 0 : -1;
-            picks[pickCount++] = (next == count) ? count - 1 : -1;
-            for (const auto* series : keyed)
-            {
-                int minIdx = -1;
-                int maxIdx = -1;
-                int gapIdx = -1;
-                int gapRuns = 0;
-                bool inGap = false;
-                for (int i = bucketStart; i < next; ++i)
-                {
-                    const double value = (*series)[static_cast<std::size_t>(i)];
-                    if (!std::isfinite(value))
-                    {
-                        gapIdx = (gapIdx < 0) ? i : gapIdx;
-                        gapRuns += inGap ? 0 : 1;
-                        inGap = true;
-                        continue;
-                    }
-                    inGap = false;
-                    if (minIdx < 0 || value < (*series)[static_cast<std::size_t>(minIdx)])
-                    {
-                        minIdx = i;
-                    }
-                    if (maxIdx < 0 || value > (*series)[static_cast<std::size_t>(maxIdx)])
-                    {
-                        maxIdx = i;
-                    }
-                }
-                collapseBucket = collapseBucket || (gapRuns > 1);
-                picks[pickCount++] = minIdx;
-                picks[pickCount++] = maxIdx;
-                picks[pickCount++] = gapIdx;
-                gapPicks[gapCount++] = gapIdx;
-            }
-            if (collapseBucket)
-            {
-                // Only the gap points and the series' ends survive (see above).
-                picks.fill(-1);
-                picks[0] = (bucketStart == 0) ? 0 : -1;
-                picks[1] = (next == count) ? count - 1 : -1;
-                std::copy_n(gapPicks.begin(), gapCount, picks.begin() + 2);
-            }
-            std::ranges::sort(picks);
-            int previous = -1;
-            for (const int pick : picks)
-            {
-                if (pick < 0 || pick == previous || written >= maxOut)
-                {
-                    continue;
-                }
-                keep(pick, collapseBucket && pick != 0 && pick != count - 1);
-                previous = pick;
-            }
-            bucketStart = next;
-        }
-    }
+    forEachAlignedReducedPoint<double>(x, std::span<const std::span<const double>>(keyedSpans.data(), keyedCount), maxOut, xOffset, keep);
 
     x.resize(static_cast<std::size_t>(written));
     for (auto* series : keyed)
@@ -585,6 +774,131 @@ inline void reduceAlignedSeries(std::vector<double>& x,
         series->resize(static_cast<std::size_t>(written));
     }
 }
+
+/// The points reduceAlignedSeries() keeps, as source indices in `out` (cleared first) rather than
+/// values, for a ReducedPointsCache. Series that need no reduction keep every sample. The keyed
+/// series may be float or double; each must be as long as `x`.
+template<typename T>
+inline void reduceAlignedPoints(
+    std::span<const double> x, std::initializer_list<std::span<const T>> keyed, int maxOut, double xOffset, std::vector<ReducedPoint>& out)
+{
+    out.clear();
+    if (!alignedReductionApplies(x.size(), maxOut, keyed.size()))
+    {
+        out.reserve(x.size());
+        for (int i = 0; i < UI::Format::checkedCount(x.size()); ++i)
+        {
+            out.push_back(ReducedPoint{.index = i, .gap = false});
+        }
+        return;
+    }
+    out.reserve(static_cast<std::size_t>(maxOut));
+    forEachAlignedReducedPoint<T>(x,
+                                  std::span<const std::span<const T>>(keyed.begin(), keyed.size()),
+                                  maxOut,
+                                  xOffset,
+                                  [&out](int sourceIdx, bool gap) { out.push_back(ReducedPoint{.index = sourceIdx, .gap = gap}); });
+}
+
+/// A data generation no earlier call has returned, for ReducedPointsCache keys (never 0, which means
+/// "not cacheable"). A panel takes a new one whenever the history it charts changes -- a publication
+/// adopted, a sample recorded, a selection reset -- and gives it to the chart drawing that history
+/// (HistoryChartConfig::dataGeneration). One counter for every source, rather than each model's own
+/// version number, so two sources' generations never collide. UI thread only.
+[[nodiscard]] inline std::uint64_t nextChartDataGeneration() noexcept
+{
+    static std::uint64_t generation = 0;
+    return ++generation;
+}
+
+/// Remembers the points a reduction kept for one series (or one set of aligned series), so a chart
+/// that redraws unchanged data every frame -- every history chart does, since its x is "seconds
+/// before now" -- replays them instead of reducing its whole history again (#1139). At the largest
+/// history setting that is about 18,000 samples per series per frame, against at most
+/// LINE_PLOT_MAX_POINTS_DENSE points to replay.
+///
+/// Sound because the reductions anchor their buckets in absolute time: the indices kept depend only
+/// on the samples, which a Key names -- the data generation they were read under, how many there
+/// are, and the point budget -- with `dataId` telling apart series that share a generation and a
+/// length (two lines in one chart; see seriesFingerprint()). A generation of 0 is never cached: points() then rebuilds on
+/// every call, which is the uncached behaviour.
+/// A ReducedPointsCache::Key::dataId for a series, from its content rather than its address: the
+/// first and last samples' bit patterns. Some series are copied into a buffer rebuilt every frame (a
+/// local vector, a normalised copy), so an address would change each frame and the cache would
+/// never hit. Two series under the same (plot, label) cache entry, generation and length -- e.g.
+/// the network chart switched to another interface -- almost always differ in an end sample; if
+/// they don't, only the choice of points is stale until the next generation, never the values.
+template<typename TY> [[nodiscard]] std::uintptr_t seriesFingerprint(const TY* yData, int count) noexcept
+{
+    if (count <= 0)
+    {
+        return 0;
+    }
+    const auto bitsOf = [](TY value) -> std::uint64_t
+    {
+        if constexpr (std::is_floating_point_v<TY>)
+        {
+            return std::bit_cast<std::uint64_t>(static_cast<double>(value));
+        }
+        else
+        {
+            return static_cast<std::uint64_t>(value);
+        }
+    };
+    const std::uint64_t first = bitsOf(yData[0]);
+    const std::uint64_t last = bitsOf(yData[count - 1]);
+    // Mix so (a, b) and (b, a) differ (boost::hash_combine's constant).
+    const std::uint64_t mixed = first ^ (last + 0x9e3779b97f4a7c15ULL + (first << 6U) + (first >> 2U));
+    return static_cast<std::uintptr_t>(mixed);
+}
+
+class ReducedPointsCache
+{
+  public:
+    struct Key
+    {
+        std::uint64_t generation = 0;
+        std::uintptr_t dataId = 0;
+        std::size_t count = 0;
+        int maxOut = 0;
+
+        [[nodiscard]] bool operator==(const Key&) const = default;
+    };
+
+    /// The points for `key`: the remembered ones if they were built for exactly this key, otherwise
+    /// rebuilt by `rebuild(std::vector<ReducedPoint>& out)`, which fills `out`, and remembered.
+    // rebuild is called at most once, so it is used as an lvalue rather than forwarded.
+    template<typename Rebuild>
+    [[nodiscard]] std::span<const ReducedPoint> points(const Key& key, Rebuild&& rebuild) // NOLINT(cppcoreguidelines-missing-std-forward)
+    {
+        if (!m_Valid || key.generation == 0 || key != m_Key)
+        {
+            rebuild(m_Points);
+            m_Key = key;
+            m_Valid = key.generation != 0;
+            ++m_RebuildCount;
+        }
+        return m_Points;
+    }
+
+    /// Forget the remembered points, so the next points() call rebuilds whatever its key.
+    void invalidate() noexcept
+    {
+        m_Valid = false;
+    }
+
+    /// How many times points() has rebuilt.
+    [[nodiscard]] std::uint64_t rebuildCount() const noexcept
+    {
+        return m_RebuildCount;
+    }
+
+  private:
+    std::vector<ReducedPoint> m_Points;
+    Key m_Key;
+    std::uint64_t m_RebuildCount = 0;
+    bool m_Valid = false;
+};
 
 /// "Now" for history charts, in seconds since the steady_clock epoch, read once per ImGui frame.
 ///
@@ -636,7 +950,66 @@ template<typename T> inline void holdLastValueToNow(std::vector<T>& x, std::vect
     y.push_back(y.back());
 }
 
+/// The data generation of the HistoryChart being drawn (HistoryChartConfig::dataGeneration) and the
+/// ID of its plot. HistoryChart sets it for its lifetime, so plotLineWithFill() can cache its series'
+/// reductions (#1139) without every call site passing a key of its own.
+struct ChartDataScope
+{
+    std::uint64_t generation = 0; // 0: the chart did not name one, so nothing is cached
+    ImGuiID plotId = 0;
+    /// Most Y-axis labels the chart has room for (axisMaxTicksForHeight()), so a second Y axis set up
+    /// inside it (setupSecondaryRateAxis()) is no denser than the first (#1202).
+    int maxYTicks = AXIS_MAX_TICKS;
+};
+
+namespace Detail
+{
+// UI thread only, like everything else in ImGui. Named-namespace inline: one instance program-wide
+// (see g_ChartAntiAliasingEnabled above).
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+inline ChartDataScope g_ActiveChartDataScope;
+} // namespace Detail
+
+[[nodiscard]] inline ChartDataScope activeChartDataScope() noexcept
+{
+    return Detail::g_ActiveChartDataScope;
+}
+
+/// The reduction cache for one plotLineWithFill() series: its plot and its label. A collision
+/// between two series' hashes costs only caching, never correctness, since a cached entry is also
+/// keyed on the series' data (ReducedPointsCache::Key). Bounded like easedChartUpperBound()'s
+/// state: entries not drawn for a while are dropped once there are many (per-disk and per-interface
+/// charts come and go).
+[[nodiscard]] inline ReducedPointsCache& seriesReductionCache(ImGuiID plotId, std::string_view label)
+{
+    struct Entry
+    {
+        ReducedPointsCache cache;
+        int lastFrame = 0;
+    };
+    static std::unordered_map<std::uint64_t, Entry> entries;
+    static int lastPruneFrame = -1;
+    constexpr std::size_t PRUNE_ABOVE = 256;
+    constexpr int STALE_FRAMES = 600;
+
+    const int frame = ImGui::GetFrameCount();
+    if (entries.size() > PRUNE_ABOVE && frame != lastPruneFrame)
+    {
+        lastPruneFrame = frame;
+        std::erase_if(entries, [frame](const auto& entry) { return (frame - entry.second.lastFrame) > STALE_FRAMES; });
+    }
+    const std::uint64_t key =
+        (static_cast<std::uint64_t>(plotId) << 32U) ^ static_cast<std::uint64_t>(std::hash<std::string_view>{}(label));
+    Entry& entry = entries[key];
+    entry.lastFrame = frame;
+    return entry.cache;
+}
+
 /// @p lineThickness is authored at the reference configuration; it is scaled by lineWeight().
+///
+/// Inside a HistoryChart with a data generation (HistoryChartConfig::dataGeneration), a long series'
+/// reduction is cached per plot and label and replayed until the generation, the series' buffer or
+/// its length changes (#1139). The generation must then cover everything `yData` is computed from.
 template<typename TX, typename TY>
 inline void plotLineWithFill(const char* label,
                              const TX* xData,
@@ -691,14 +1064,38 @@ inline void plotLineWithFill(const char* label,
     static std::vector<TX> drawY;
     if ((effectiveMax > 1) && (count > effectiveMax))
     {
-        std::array<TX, LINE_PLOT_MAX_POINTS_DENSE> reducedXData{};
-        std::array<TY, LINE_PLOT_MAX_POINTS_DENSE> reducedYData{};
         // x is "seconds before historyFrameNowSeconds()" on every history chart, so adding it back
-        // anchors the reduction's buckets in absolute time (see reduceSeriesMinMax).
-        const int reducedCount =
-            reduceSeriesMinMax(xData, yData, count, effectiveMax, historyFrameNowSeconds(), reducedXData.data(), reducedYData.data());
-        drawX.assign(reducedXData.begin(), reducedXData.begin() + reducedCount);
-        drawY.assign(reducedYData.begin(), reducedYData.begin() + reducedCount);
+        // anchors the reduction's buckets in absolute time (see forEachMinMaxReducedPoint).
+        const auto reduce = [&](std::vector<ReducedPoint>& out)
+        {
+            reduceSeriesMinMaxPoints(xData, yData, count, effectiveMax, historyFrameNowSeconds(), out);
+        };
+
+        // Inside a HistoryChart that names its data generation, the points chosen are kept and
+        // replayed until the data changes, instead of reducing the whole history every frame (#1139).
+        // Otherwise -- generation 0 -- they are chosen afresh on every call, as before.
+        static ReducedPointsCache uncached; // Scratch only: a generation-0 key is never kept
+        const ChartDataScope scope = activeChartDataScope();
+        const ReducedPointsCache::Key key{.generation = scope.generation,
+                                          .dataId = seriesFingerprint(yData, count),
+                                          .count = static_cast<std::size_t>(count),
+                                          .maxOut = effectiveMax};
+        ReducedPointsCache& cache = (scope.generation != 0) ? seriesReductionCache(scope.plotId, label) : uncached;
+        const std::span<const ReducedPoint> points = cache.points(key, reduce);
+
+        drawX.resize(points.size());
+        drawY.resize(points.size());
+        for (std::size_t k = 0; k < points.size(); ++k)
+        {
+            const auto source = static_cast<std::size_t>(points[k].index);
+            TY value = yData[source];
+            if constexpr (std::is_floating_point_v<TY>)
+            {
+                value = points[k].gap ? std::numeric_limits<TY>::quiet_NaN() : value;
+            }
+            drawX[k] = xData[source];
+            drawY[k] = static_cast<TX>(value);
+        }
     }
     else
     {
@@ -721,14 +1118,31 @@ inline void plotDenseLine(const char* label, const TX* xData, const TY* yData, i
 
 // ============================================================================
 // Axis formatters for ImPlot Y-axis tick labels
-// These use C callbacks required by ImPlot::SetupAxisFormat
-// All formatters produce fixed-width output to ensure chart alignment
+// These use C callbacks required by ImPlot::SetupAxisFormat. Each is a thin adapter over the
+// UI::Format function that formats the same quantity as a value, so a tick reads exactly like the
+// tooltip and table beside it: "1.5 GB", "45.0 W", "42%", localized (#1202).
 // ============================================================================
 
 /// Minimum character width for Y-axis labels to ensure all charts align
 inline constexpr int AXIS_LABEL_MIN_WIDTH = 8;
 
-/// Format large numbers with K/M/G suffixes (e.g., 400000 -> "400K")
+namespace Detail
+{
+/// Copy `str` into ImPlot's label buffer; 0 (no label) if it does not fit.
+inline int copyAxisLabel(const std::string& str, char* buff, int size)
+{
+    const int len = static_cast<int>(str.size());
+    if (len < size)
+    {
+        std::ranges::copy(str, buff);
+        buff[len] = '\0';
+        return len;
+    }
+    return 0;
+}
+} // namespace Detail
+
+/// Format large numbers with K/M/G suffixes (e.g., 400000 -> "400.0K")
 /// Use with ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisLocalized)
 inline int formatAxisLocalized(double value, char* buff, int size, void* /*userData*/)
 {
@@ -743,139 +1157,122 @@ inline int formatAxisLocalized(double value, char* buff, int size, void* /*userD
 
     if (absValue >= 1'000'000'000.0)
     {
-        str = std::format("{:.1f}G", value / 1'000'000'000.0);
+        str = std::format("{:.1Lf}G", value / 1'000'000'000.0);
     }
     else if (absValue >= 1'000'000.0)
     {
-        str = std::format("{:.1f}M", value / 1'000'000.0);
+        str = std::format("{:.1Lf}M", value / 1'000'000.0);
     }
     else if (absValue >= 1'000.0)
     {
-        str = std::format("{:.1f}K", value / 1'000.0);
+        str = std::format("{:.1Lf}K", value / 1'000.0);
     }
     else
     {
-        str = std::format("{:.1f}", value);
+        str = std::format("{:.1Lf}", value);
     }
 
-    const int len = static_cast<int>(str.size());
-    if (len < size)
-    {
-        std::ranges::copy(str, buff);
-        buff[len] = '\0';
-        return len;
-    }
-    return 0;
+    return Detail::copyAxisLabel(str, buff, size);
 }
 
-/// Shared body of formatAxisBytes and formatAxisBytesPerSec: scale a byte count to B, KB, MB or GB
-/// (binary, matching UI::Format::formatBytes) and append `suffix` ("" or "/s").
-inline int formatAxisBinaryBytes(double value, char* buff, int size, std::string_view suffix)
+/// The unit a byte axis is labelled in, as ImPlot formatter user data: a pointer to one of the
+/// UI::Format::BYTE_UNIT_* constants, or nullptr to pick each tick's unit from its own value.
+/// ImPlot's user data is a non-const void*; the formatters only ever read through it.
+[[nodiscard]] inline void* byteAxisUserData(const Format::ByteUnit& unit) noexcept
 {
-    // Clamp tiny values to zero to avoid a "-0B" display
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast) -- ImPlot takes void*; only read back as const.
+    return const_cast<Format::ByteUnit*>(&unit);
+}
+
+/// Shared body of formatAxisBytes and formatAxisBytesPerSec: the value formatter's "1.5 GB" /
+/// "1.5 GB/s" (binary units, matching UI::Format::formatBytes). With a unit in `userData`
+/// (byteAxisUserData()) every tick uses that one unit, so a 0-2 GB axis reads 0.5 GB rather than
+/// 512.0 MB between 0.0 B and 1.0 GB.
+inline int formatAxisBinaryBytes(double value, char* buff, int size, void* userData, bool perSecond)
+{
+    // Clamp tiny values to zero to avoid a "-0.0 B" display
     if (std::abs(value) < 0.5)
     {
         value = 0.0;
     }
 
-    const double absValue = std::abs(value);
-    std::string str;
-
-    if (absValue >= 1024.0 * 1024.0 * 1024.0)
-    {
-        str = std::format("{:.1f}GB{}", value / (1024.0 * 1024.0 * 1024.0), suffix);
-    }
-    else if (absValue >= 1024.0 * 1024.0)
-    {
-        str = std::format("{:.1f}MB{}", value / (1024.0 * 1024.0), suffix);
-    }
-    else if (absValue >= 1024.0)
-    {
-        str = std::format("{:.1f}KB{}", value / 1024.0, suffix);
-    }
-    else
-    {
-        str = std::format("{:.1f}B{}", value, suffix);
-    }
-
-    const int len = static_cast<int>(str.size());
-    if (len < size)
-    {
-        std::ranges::copy(str, buff);
-        buff[len] = '\0';
-        return len;
-    }
-    return 0;
+    const Format::ByteUnit unit = (userData != nullptr) ? *static_cast<const Format::ByteUnit*>(userData) : Format::chooseByteUnit(value);
+    const std::string str = perSecond ? Format::formatBytesPerSecWithUnit(value, unit) : Format::formatBytesWithUnit(value, unit);
+    return Detail::copyAxisLabel(str, buff, size);
 }
 
 /// Format values as bytes with appropriate unit scaling (B, KB, MB, GB)
 /// Use with ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytes)
-inline int formatAxisBytes(double value, char* buff, int size, void* /*userData*/)
+inline int formatAxisBytes(double value, char* buff, int size, void* userData)
 {
-    return formatAxisBinaryBytes(value, buff, size, "");
+    return formatAxisBinaryBytes(value, buff, size, userData, false);
 }
 
 /// Format values as bytes/s with appropriate unit scaling (B/s, KB/s, MB/s, GB/s)
 /// Use with ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytesPerSec)
-inline int formatAxisBytesPerSec(double value, char* buff, int size, void* /*userData*/)
+inline int formatAxisBytesPerSec(double value, char* buff, int size, void* userData)
 {
-    return formatAxisBinaryBytes(value, buff, size, "/s");
+    return formatAxisBinaryBytes(value, buff, size, userData, true);
 }
 
-/// Format values as watts (always in W with decimal places for consistency)
+/// Format values as watts: UI::Format::formatWatts ("45.0 W", "500.0 mW")
 /// Use with ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisWatts)
 inline int formatAxisWatts(double value, char* buff, int size, void* /*userData*/)
 {
-    // Clamp tiny values to zero to avoid "-0W" display
+    // Clamp tiny values to zero to avoid "-0.0 W" display
     if (std::abs(value) < 0.0001)
     {
         value = 0.0;
     }
-
-    std::string str;
-    const double absValue = std::abs(value);
-
-    // Always use W with 1 decimal place for visual consistency
-    if (absValue >= 1.0)
-    {
-        str = std::format("{:.1f}W", value);
-    }
-    else
-    {
-        // Show small values in mW with 1 decimal place
-        str = std::format("{:.1f}mW", value * 1000.0);
-    }
-
-    const int len = static_cast<int>(str.size());
-    if (len < size)
-    {
-        std::ranges::copy(str, buff);
-        buff[len] = '\0';
-        return len;
-    }
-    return 0;
+    return Detail::copyAxisLabel(Format::formatWatts(value), buff, size);
 }
 
-/// Format values as percentages (0-100%)
+/// Format values as percentages: UI::Format::formatPercent ("40%", "0.2%")
 /// Use with ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisPercent)
 inline int formatAxisPercent(double value, char* buff, int size, void* /*userData*/)
 {
-    // Clamp tiny values to zero to avoid "-0" display
-    if (std::abs(value) < 0.5)
+    // formatPercent() prints anything under 0.05 % as "0%" (no "-0.0%"), and nothing larger: a
+    // percent axis can scale down to 5 % (#1195), where ticks such as 0.2 % must not read 0 % (#1202).
+    return Detail::copyAxisLabel(Format::formatPercent(value), buff, size);
+}
+
+/// True for the two byte formatters, whose axes step in binary units (niceBinaryAxisStep()).
+[[nodiscard]] inline bool isByteAxisFormatter(ImPlotFormatter formatter) noexcept
+{
+    return formatter == &formatAxisBytes || formatter == &formatAxisBytesPerSec;
+}
+
+/// Put a non-negative Y axis's ticks on round 1-2-5 steps in the axis's own unit (#1202): from 0 to
+/// `upper` with at most `maxTicks` labels, the step chosen by niceAxisStep(), or for a byte axis by
+/// niceBinaryAxisStep() with every label in the one unit the step is in. Without this ImPlot steps
+/// in decimal units of the raw value, so a byte axis read 9.5, 7.6, 5.7 MB/s.
+inline void setupNiceAxisTicks(ImAxis axis, double upper, ImPlotFormatter formatter, int maxTicks)
+{
+    if (!std::isfinite(upper) || upper <= 0.0)
     {
-        value = 0.0;
+        ImPlot::SetupAxisFormat(axis, formatter);
+        return;
     }
 
-    // Use format with % suffix and 1 decimal place for visual consistency
-    const auto str = std::format("{:.1f}%", value);
-    const int len = static_cast<int>(str.size());
-    if (len < size)
+    double step = 0.0;
+    void* userData = nullptr;
+    if (isByteAxisFormatter(formatter))
     {
-        std::ranges::copy(str, buff);
-        buff[len] = '\0';
-        return len;
+        const Format::ByteUnit& unit = Format::byteUnitFor(upper);
+        step = niceBinaryAxisStep(upper, unit.scale, maxTicks);
+        userData = byteAxisUserData(unit);
     }
-    return 0;
+    else
+    {
+        step = niceAxisStep(upper, maxTicks);
+    }
+    ImPlot::SetupAxisFormat(axis, formatter, userData);
+
+    const AxisTickRange ticks = axisTickRange(upper, step);
+    if (ticks.count >= 2)
+    {
+        ImPlot::SetupAxisTicks(axis, 0.0, ticks.last, ticks.count);
+    }
 }
 
 struct NowBar
@@ -897,7 +1294,8 @@ class NowBarList
   public:
     static constexpr std::size_t CAPACITY = 8;
 
-    void push_back(NowBar bar)
+    // Named like std::vector::push_back: NowBarList replaced a std::vector at every call site (#1067).
+    void push_back(NowBar bar) // NOLINT(readability-identifier-naming)
     {
         assert(m_Size < CAPACITY && "NowBarList is full: raise CAPACITY");
         if (m_Size < CAPACITY)
@@ -1216,7 +1614,19 @@ struct HistoryChartConfig
     /// (see easeAxisUpperBound). Set by rateHistoryConfig(); a fixed range such as 0-100 % has
     /// nothing to ease.
     bool easeYUpper = false;
+    /// The generation of the data this chart draws (nextChartDataGeneration()), or 0 if the caller
+    /// does not track one. When set, plotLineWithFill() series drawn in the chart keep their reduced
+    /// points until it changes instead of reducing their whole history every frame (#1139), so it
+    /// must change whenever anything the series are computed from does. See withDataGeneration().
+    std::uint64_t dataGeneration = 0;
 };
+
+/// Returns `config` with its data generation set (see HistoryChartConfig::dataGeneration).
+[[nodiscard]] inline HistoryChartConfig withDataGeneration(HistoryChartConfig config, std::uint64_t generation)
+{
+    config.dataGeneration = generation;
+    return config;
+}
 
 /// Returns `config` with its plot height replaced, for callers that size a chart to the space
 /// available (see UI/HistoryPlotHeight.h) rather than taking the default.
@@ -1311,7 +1721,18 @@ rateHistoryConfig(const char* id, double xMin, double xMax, ImPlotFormatter yFor
         lastPruneFrame = frame;
         std::erase_if(state, [frame](const auto& entry) { return (frame - entry.second.lastFrame) > STALE_FRAMES; });
     }
-    return stepEasedBound(state[chartId], target, frame, static_cast<double>(ImGui::GetIO().DeltaTime));
+    const double bound = stepEasedBound(state[chartId], target, frame, static_cast<double>(ImGui::GetIO().DeltaTime));
+    // A bound still easing rescales the whole chart every frame: keep the full animation rate until it
+    // settles (easeAxisUpperBound snaps to the target once close), then let the chart idle (#1125) --
+    // but only while the chart is visible.
+    // easeAxisUpperBound snaps to the target once close, so "settled" is exact; compared with a
+    // tolerance relative to the bound's size rather than with ==.
+    // The request is held until the chart is known to be visible: see Detail::g_PendingEaseRequestFrame.
+    if (std::abs(bound - target) > 1e-9 * std::max(1.0, std::abs(target)))
+    {
+        Detail::g_PendingEaseRequestFrame = frame;
+    }
+    return bound;
 }
 
 /// The Y upper bound a rate chart draws this frame, for its axis *and* its NowBars (#1003): the bound
@@ -1325,6 +1746,14 @@ rateHistoryConfig(const char* id, double xMin, double xMax, ImPlotFormatter yFor
 [[nodiscard]] inline double easedRateAxisUpperBound(const char* key, double dataMax, double minSpan)
 {
     return easedChartUpperBound(ImGui::GetID(key), rateAxisUpperBound(dataMax, minSpan));
+}
+
+/// The Y upper bound a scaling percent chart draws this frame (percentAxisUpperBound(), eased like a
+/// rate axis), for its axis and its NowBars alike (#1195, #1003). Pair it with
+/// rateHistoryConfigWithUpper(..., formatAxisPercent, bound).
+[[nodiscard]] inline double easedPercentAxisUpperBound(const char* key, double dataMax)
+{
+    return easedChartUpperBound(ImGui::GetID(key), percentAxisUpperBound(dataMax));
 }
 
 /// Maps the config's Y policy to ImPlot axis flags: locked range vs auto-fit.
@@ -1353,8 +1782,22 @@ inline void setupSecondaryRateAxis(double upperBound, ImPlotFormatter formatter)
 {
     // AuxDefault: no grid lines of its own, and Opposite, which puts its labels on the right.
     ImPlot::SetupAxis(ImAxis_Y2, nullptr, ImPlotAxisFlags_AuxDefault | ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
-    ImPlot::SetupAxisFormat(ImAxis_Y2, formatter);
     ImPlot::SetupAxisLimits(ImAxis_Y2, 0.0, upperBound, ImPlotCond_Always);
+    // Round ticks like the primary axis, and no more of them (#1202).
+    setupNiceAxisTicks(ImAxis_Y2, upperBound, formatter, activeChartDataScope().maxYTicks);
+}
+
+/// How fast a history chart's data scrolls on screen, in pixels per second: its x axis spans
+/// `xMax - xMin` seconds across `plotWidthPx`, and "now" moves one second per second. 0 for an empty
+/// span or width (#1125).
+[[nodiscard]] constexpr double historyChartScrollPixelsPerSecond(double plotWidthPx, double xMin, double xMax) noexcept
+{
+    const double spanSeconds = xMax - xMin;
+    if (!(spanSeconds > 0.0) || !(plotWidthPx > 0.0))
+    {
+        return 0.0;
+    }
+    return plotWidthPx / spanSeconds;
 }
 
 /// RAII frame for every history chart in the app: pushes the chart font, begins the plot,
@@ -1386,14 +1829,31 @@ class HistoryChart
         // here because ImPlot's public API has no accessor for it once the plot has begun. Scoped by
         // the caller's PushID, so same-label charts in different scopes ease separately.
         const ImGuiID plotId = ImGui::GetID(config.id);
+        // The plot fills the available width (size.x = -1); its data area is a little narrower (axis
+        // labels), so this slightly overstates the scroll speed -- the safe side for pacing.
+        const double plotWidthPx = static_cast<double>(ImGui::GetContentRegionAvail().x);
         m_Active = ImPlot::BeginPlot(config.id, ImVec2(-1, config.height), historyChartBeginPlotFlags(config.flags, config.showLegend));
+        // An axis eased just before this chart asks for full-rate frames only if the chart is visible;
+        // the pending request is consumed either way, so it can't carry to another chart.
+        if (shouldRequestEaseFrames(Detail::g_PendingEaseRequestFrame, ImGui::GetFrameCount(), m_Active))
+        {
+            Core::AnimationRequest::request();
+        }
+        Detail::g_PendingEaseRequestFrame = -1;
         if (!m_Active)
         {
             return;
         }
-        // A visible history chart scrolls every frame: keep the loop at the animation rate (#1037).
-        // BeginPlot is false for a clipped plot, so an off-screen chart asks for nothing.
-        Core::AnimationRequest::request();
+        // A visible history chart scrolls continuously (#1037), at plotWidth / windowSeconds pixels per
+        // second: ask for just the frames that motion needs (#1125). BeginPlot is false for a clipped
+        // plot, so an off-screen chart asks for nothing.
+        Core::AnimationRequest::requestForMotion(historyChartScrollPixelsPerSecond(plotWidthPx, config.xMin, config.xMax));
+
+        // Lets plotLineWithFill() cache this chart's reductions (#1139); restored in the destructor.
+        m_PreviousDataScope = Detail::g_ActiveChartDataScope;
+        const int maxYTicks = axisMaxTicksForHeight(config.height, ImGui::GetTextLineHeight());
+        Detail::g_ActiveChartDataScope = ChartDataScope{.generation = config.dataGeneration, .plotId = plotId, .maxYTicks = maxYTicks};
+        m_DataScopeSet = true;
 
         if (!chartAntiAliasingEnabled())
         {
@@ -1413,17 +1873,41 @@ class HistoryChart
             setupLegendDefault(config.legendHorizontal);
         }
         ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, historyChartYAxisFlags(config.yLimits.has_value()));
-        ImPlot::SetupAxisFormat(ImAxis_Y1, config.yFormatter);
         if (config.yLimits.has_value())
         {
             const double upper = config.easeYUpper ? easedChartUpperBound(plotId, config.yLimits->second) : config.yLimits->second;
+            // This chart's own axis was just eased, and the chart is visible (we're past BeginPlot): make
+            // its request here rather than leaving it pending for the next chart or frame.
+            if (shouldRequestEaseFrames(Detail::g_PendingEaseRequestFrame, ImGui::GetFrameCount(), true))
+            {
+                Core::AnimationRequest::request();
+            }
+            Detail::g_PendingEaseRequestFrame = -1;
             ImPlot::SetupAxisLimits(ImAxis_Y1, config.yLimits->first, upper, ImPlotCond_Always);
+            // Round 1-2-5 ticks, at most maxYTicks of them (#1202). Every fixed-limit chart starts
+            // at 0 (percent and rate configs); any other lower bound keeps ImPlot's own ticks.
+            if (config.yLimits->first == 0.0)
+            {
+                setupNiceAxisTicks(ImAxis_Y1, upper, config.yFormatter, maxYTicks);
+            }
+            else
+            {
+                ImPlot::SetupAxisFormat(ImAxis_Y1, config.yFormatter);
+            }
+        }
+        else
+        {
+            ImPlot::SetupAxisFormat(ImAxis_Y1, config.yFormatter);
         }
         ImPlot::SetupAxisLimits(ImAxis_X1, config.xMin, config.xMax, ImPlotCond_Always);
     }
 
     ~HistoryChart()
     {
+        if (m_DataScopeSet)
+        {
+            Detail::g_ActiveChartDataScope = m_PreviousDataScope;
+        }
         if (m_Active)
         {
             ImPlot::EndPlot();
@@ -1463,6 +1947,8 @@ class HistoryChart
     const char* m_Id = "";
     int m_VtxBefore = 0;
     ImDrawListFlags m_SavedDrawListFlags = 0;
+    ChartDataScope m_PreviousDataScope;
+    bool m_DataScopeSet = false;
     bool m_Measure = false;
     bool m_Active = false;
     bool m_AntiAliasingOverridden = false;
@@ -1517,13 +2003,183 @@ class RenderMetricsScope
     bool m_Measure = false;
 };
 
+/// Whether renderHistoryWithNowBars() prints each bar's current value above the chart (#1193).
+enum class NowBarValues : std::uint8_t
+{
+    Strip, ///< A line of "swatch label value" entries above the chart
+    None,  ///< No strip: grid cells, which show the value in their own label and have a fixed height
+};
+
+/// A value strip entry for a series with no NowBar, e.g. the network totals drawn behind a selected
+/// interface. The label is a view, typically of a constant; `value` holds a short formatted rate or
+/// percent, which fits std::string's small-buffer storage, so building one allocates nothing.
+struct ValueStripEntry
+{
+    std::string_view label;
+    std::string value;
+    ImVec4 color;
+};
+
+namespace Detail
+{
+/// Lays out one value strip entry: a swatch in `color` (alpha kept, so a translucent series reads as
+/// muted), then `head` in muted text -- with `colon` appended when `head` does not already end in one
+/// -- and `tail` in primary text. With `wrap`, an entry that does not fit the row starts a new line;
+/// without it the row runs on and the container clips it.
+inline void drawValueStripEntry(
+    std::string_view head, std::string_view tail, const ImVec4& color, bool first, bool wrap, float rowRight, const ImVec4& muted)
+{
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float lineHeight = ImGui::GetTextLineHeight();
+    const float side = std::floor(lineHeight * TOOLTIP_SWATCH_LINE_FRACTION);
+    const float inset = std::floor((lineHeight - side) * 0.5F);
+    const bool addColon = !head.empty() && !head.ends_with(':');
+    const float headWidth = head.empty() ? 0.0F
+                                         : ImGui::CalcTextSize(head.data(), head.data() + head.size()).x +
+                                               (addColon ? ImGui::CalcTextSize(":").x : 0.0F) + style.ItemInnerSpacing.x;
+    const float entryWidth = side + style.ItemInnerSpacing.x + headWidth + ImGui::CalcTextSize(tail.data(), tail.data() + tail.size()).x;
+    if (!first)
+    {
+        ImGui::SameLine(0.0F, style.ItemSpacing.x * 2.0F);
+        if (wrap && ImGui::GetCursorPosX() + entryWidth > rowRight)
+        {
+            ImGui::NewLine();
+        }
+    }
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    ImGui::GetWindowDrawList()->AddRectFilled(
+        ImVec2(at.x, at.y + inset), ImVec2(at.x + side, at.y + inset + side), ImGui::ColorConvertFloat4ToU32(color));
+    ImGui::Dummy(ImVec2(side, lineHeight));
+    if (!head.empty())
+    {
+        ImGui::SameLine(0.0F, style.ItemInnerSpacing.x);
+        ImGui::PushStyleColor(ImGuiCol_Text, muted);
+        ImGui::TextUnformatted(head.data(), head.data() + head.size());
+        if (addColon)
+        {
+            ImGui::SameLine(0.0F, 0.0F);
+            ImGui::TextUnformatted(":");
+        }
+        ImGui::PopStyleColor();
+    }
+    ImGui::SameLine(0.0F, style.ItemInnerSpacing.x);
+    ImGui::TextUnformatted(tail.data(), tail.data() + tail.size());
+}
+} // namespace Detail
+
+/// How renderNowBarValueStrip() lays out its entries.
+enum class ValueStripLayout : std::uint8_t
+{
+    Wrap,    ///< Each bar's tooltip text; entries that do not fit start a new line
+    Compact, ///< One line of "label: valueText": for containers that budget exactly one line (grid
+             ///< cells), where a longer tooltip text could run past the edge. The hover keeps it.
+};
+
+/// Each series' current value, readable without hovering (#1193): per bar, a swatch in the bar's
+/// colour and the same text its tooltip shows -- its tooltipText when it has one (richer, e.g. bytes
+/// beside a percent), otherwise the tooltip's own fallback "label: valueText" -- with the leading
+/// "label:" muted; then any `extras`, series the chart draws without a bar. Bar strings are already
+/// built for the frame, so the bars add no allocation.
+inline void renderNowBarValueStrip(std::span<const NowBar> bars,
+                                   std::span<const ValueStripEntry> extras = {},
+                                   ValueStripLayout layout = ValueStripLayout::Wrap)
+{
+    const bool wrap = layout == ValueStripLayout::Wrap;
+    const float rowRight = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+    const ImVec4 muted = UI::Theme::get().scheme().textMuted;
+    bool first = true;
+    for (const NowBar& bar : bars)
+    {
+        std::string_view head = bar.label;
+        std::string_view tail = bar.valueText;
+        if (wrap && !bar.tooltipText.empty())
+        {
+            // A tooltipText that starts with "label:" ("Handles: 266,257") splits like the fallback.
+            const std::string_view tip = bar.tooltipText;
+            const bool labelled = !bar.label.empty() && tip.starts_with(bar.label) && tip.substr(bar.label.size()).starts_with(':');
+            head = labelled ? tip.substr(0, bar.label.size() + 1) : std::string_view{};
+            tail = labelled ? tip.substr(bar.label.size() + 1) : tip;
+            if (tail.starts_with(' '))
+            {
+                tail.remove_prefix(1);
+            }
+        }
+        Detail::drawValueStripEntry(head, tail, bar.color, first, wrap, rowRight, muted);
+        first = false;
+    }
+    for (const ValueStripEntry& entry : extras)
+    {
+        Detail::drawValueStripEntry(entry.label, entry.value, entry.color, first, wrap, rowRight, muted);
+        first = false;
+    }
+}
+
+/// How fast a NowBar's fill moves on screen, in pixels per second, between two frames @p deltaSeconds
+/// apart: its 0..1 value went from @p previous01 to @p current01 on a bar @p heightPx tall. 0 when
+/// the frame time is unknown (#1125).
+[[nodiscard]] inline double nowBarMotionPixelsPerSecond(double previous01, double current01, double heightPx, double deltaSeconds) noexcept
+{
+    if (!(deltaSeconds > 0.0) || !(heightPx > 0.0))
+    {
+        return 0.0;
+    }
+    return std::abs(current01 - previous01) * heightPx / deltaSeconds;
+}
+
+namespace Detail
+{
+/// Ask the frame loop for the frames a NowBar's easing needs (#1125): the bar's on-screen speed since
+/// the previous frame, so a bar easing toward a new sample animates smoothly and a settled one stops
+/// asking. Before, any visible bar held the loop at the full animation rate forever (#1037). Keyed
+/// per bar by @p barId; a bar not drawn last frame (its tab was hidden) starts from rest.
+inline void requestNowBarMotion(ImGuiID barId, double value01, float heightPx)
+{
+    struct LastDrawn
+    {
+        double value01 = 0.0;
+        int frame = -1;
+    };
+    // UI thread only. Bounded like easedChartUpperBound(): stale bars are dropped once there are many.
+    static std::unordered_map<ImGuiID, LastDrawn> state;
+    static int lastPruneFrame = -1;
+    constexpr std::size_t PRUNE_ABOVE = 256;
+    constexpr int STALE_FRAMES = 600;
+
+    const int frame = ImGui::GetFrameCount();
+    if (state.size() > PRUNE_ABOVE && frame != lastPruneFrame)
+    {
+        lastPruneFrame = frame;
+        std::erase_if(state, [frame](const auto& entry) { return (frame - entry.second.frame) > STALE_FRAMES; });
+    }
+    LastDrawn& last = state[barId];
+    if (last.frame == frame - 1)
+    {
+        Core::AnimationRequest::requestForMotion(nowBarMotionPixelsPerSecond(
+            last.value01, value01, static_cast<double>(heightPx), static_cast<double>(ImGui::GetIO().DeltaTime)));
+    }
+    last = LastDrawn{.value01 = value01, .frame = frame};
+}
+
+/// The motion-tracking key of bar @p index in the chart named @p tableId, unique within the current
+/// ImGui ID scope like the chart itself.
+[[nodiscard]] inline ImGuiID nowBarMotionId(const char* tableId, std::size_t index)
+{
+    ImGui::PushID(tableId);
+    const ImGuiID id = ImGui::GetID(static_cast<int>(index));
+    ImGui::PopID();
+    return id;
+}
+} // namespace Detail
+
 inline void renderHistoryWithNowBars(const char* tableId,
                                      float plotHeight,
                                      const std::function<void()>& plotFn,
                                      std::span<const NowBar> bars,
                                      bool barsOnly = false,
                                      size_t minBarColumns = 0,
-                                     bool compactSpacing = false)
+                                     bool compactSpacing = false,
+                                     NowBarValues values = NowBarValues::Strip,
+                                     std::span<const ValueStripEntry> stripExtras = {})
 {
     // Renders a history plot side-by-side with a compact "now" bar column. When barsOnly is true we
     // skip the ImPlot area and show only the bars (used when history is unavailable). The table layout
@@ -1532,14 +2188,29 @@ inline void renderHistoryWithNowBars(const char* tableId,
     // custom label; spacing mirrors ImGui style spacing to stay consistent with surrounding widgets.
     if (bars.empty())
     {
+        // Scoped by tableId like the table path below (BeginTable pushes its ID), so a chart drawn
+        // per item -- one per GPU, per disk -- gets a distinct plot ID either way, and with it its own
+        // ImPlot state and point cache (seriesReductionCache keys on the plot ID, #1139).
+        ImGui::PushID(tableId);
         plotFn();
+        ImGui::PopID();
         return;
+    }
+
+    if (values == NowBarValues::Strip)
+    {
+        // stripExtras: series the chart draws without a bar (a peak line), so the strip lists every
+        // series its tooltip does.
+        renderNowBarValueStrip(bars, stripExtras);
     }
 
     if (barsOnly)
     {
-        // With no chart beside them, the bars' easing is what animates (#1037).
-        Core::AnimationRequest::request();
+        // No chart is drawn on this path, so an axis eased for it can't be visible: drop its pending
+        // full-rate request rather than leave it for the next chart (Detail::g_PendingEaseRequestFrame).
+        // The other paths all construct the chart through plotFn -- the table path inside the table,
+        // the clipped-table and bar-less paths directly -- and HistoryChart consumes it there.
+        Detail::g_PendingEaseRequestFrame = -1;
         const float widthPerBar = nowBarWidth(ImGui::GetFontSize());
         const ImGuiStyle& style = ImGui::GetStyle();
 
@@ -1554,6 +2225,7 @@ inline void renderHistoryWithNowBars(const char* tableId,
             }
 
             drawVerticalBarWithValue("##NowBar", bars[i].value01, bars[i].color, plotHeight, widthPerBar, "", "");
+            Detail::requestNowBarMotion(Detail::nowBarMotionId(tableId, i), bars[i].value01, plotHeight);
             if (ImGui::IsItemHovered())
             {
                 const std::string tooltip = selectNowBarTooltip(bars[i]);
@@ -1609,6 +2281,7 @@ inline void renderHistoryWithNowBars(const char* tableId,
 
             ImGui::BeginGroup();
             drawVerticalBarWithValue("##NowBar", bars[i].value01, bars[i].color, plotHeight, widthPerBar, "", "");
+            Detail::requestNowBarMotion(Detail::nowBarMotionId(tableId, i), bars[i].value01, plotHeight);
             if (ImGui::IsItemHovered())
             {
                 const std::string tooltip = selectNowBarTooltip(bars[i]);
@@ -1650,10 +2323,19 @@ inline void renderHistoryWithNowBars(const char* tableId,
                                      std::initializer_list<NowBar> bars,
                                      bool barsOnly = false,
                                      size_t minBarColumns = 0,
-                                     bool compactSpacing = false)
+                                     bool compactSpacing = false,
+                                     NowBarValues values = NowBarValues::Strip,
+                                     std::span<const ValueStripEntry> stripExtras = {})
 {
-    renderHistoryWithNowBars(
-        tableId, plotHeight, plotFn, std::span<const NowBar>(bars.begin(), bars.size()), barsOnly, minBarColumns, compactSpacing);
+    renderHistoryWithNowBars(tableId,
+                             plotHeight,
+                             plotFn,
+                             std::span<const NowBar>(bars.begin(), bars.size()),
+                             barsOnly,
+                             minBarColumns,
+                             compactSpacing,
+                             values,
+                             stripExtras);
 }
 
 } // namespace UI::Widgets

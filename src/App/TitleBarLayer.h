@@ -48,6 +48,13 @@ class TitleBarLayer : public Core::Layer
     /// height
     [[nodiscard]] static auto height() -> float;
 
+    /// Width the panels below need, from computeContentMinimumWidth() (#1207). The window's minimum
+    /// size covers it from the next frame the bar is drawn. Set by ShellLayer every frame.
+    void setContentMinimumWidth(float widthPx) noexcept
+    {
+        m_ContentMinimumWidthPx = widthPx;
+    }
+
     // Cached button bounds for hit testing - see App::ButtonBounds (TitleBarGeometry.h).
     using ButtonBounds = App::ButtonBounds;
 
@@ -124,8 +131,13 @@ class TitleBarLayer : public Core::Layer
     void renderSystemMenu();
     void setupHitTest();
 
-    // Icon texture
+    // Load the bundled application icon closest above @p pixelSize (selectIconPixelSize()).
+    void loadIconTexture(int pixelSize);
+
+    // Icon texture, and the bundled size it was loaded from: reloaded when the drawn size calls for
+    // another one, after a display-scale change (#1169). 0 before the first load.
     UI::Texture m_IconTexture;
+    int m_IconTexturePx = 0;
 
     // System menu state
     bool m_ShowSystemMenu = false;
@@ -146,6 +158,12 @@ class TitleBarLayer : public Core::Layer
     // scale (see computeMinimumWindowSize()). Recomputed each frame the bar is drawn; applied to
     // custom edge-drags here and handed to SDL for every other way a window gets resized (#970).
     WindowMinimumSize m_MinimumSize{};
+    // The minimum before capMinimumToUsable(), and the display it was capped for: the display's
+    // usable bounds are re-read only when one of them changes (#1207).
+    WindowMinimumSize m_DesiredMinimumSize{};
+    SDL_DisplayID m_MinimumSizeDisplayId = 0;
+    // The panels' share of that minimum (#1207), from setContentMinimumWidth().
+    float m_ContentMinimumWidthPx = 0.0F;
 
     ResizeEdge m_CachedHoverEdge = ResizeEdge::None;
     int m_LastCursorMouseLocalX = 0;

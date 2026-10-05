@@ -16,9 +16,9 @@ cmake --preset win-release-compatible  # Windows, x86-64-v2 (2009+ CPUs)
 
 ---
 
-## "Process I/O shows dashes" on Linux
+## "Process I/O, FDs or network show N/A" on Linux
 
-**Cause:** Per-process I/O counters come from `/proc/[pid]/io`, which is readable only by the process owner or root.
+**Cause:** Per-process I/O counters come from `/proc/[pid]/io`, and FD counts from `/proc/[pid]/fd`, which are readable only by the process owner or root. Network rates are attributed to a process through its `/proc/[pid]/fd` too. For other users' processes these values are shown as N/A (not 0), and the system FD and network totals leave them out.
 
 **Fix (option 1 — run as root):**
 
@@ -91,7 +91,20 @@ Per-process network rates (`sent bytes/s`, `received bytes/s`) are the bytes tra
 
 On Linux the counters come from a socket statistics cache that is refreshed every `socket_stats_cache_ttl_ms` (500 ms by default), which can span several refreshes. Refreshes that reuse a cached reading keep showing the last rate, so a rate can take up to one cache lifetime to change after a transfer starts or stops. On Windows the counters are read every refresh.
 
-The byte counts are summed over the process's open TCP connections. When a connection closes, its bytes leave the sum, so the rate for that one interval reads 0 instead of a negative value. System-wide and per-interface rates come from the interface counters and include all traffic.
+Only TCP traffic is counted. The kernel (Linux) and TCP EStats (Windows) report byte counts per TCP connection, but not for UDP sockets. QUIC/HTTP3, WebRTC video calls, games, and DNS are therefore not attributed to any process. System-wide and per-interface rates come from the interface counters and include all traffic.
+
+Each connection's own growth between two readings is credited to the process that owns it, so a connection closing doesn't erase the traffic on the others. A few bytes go uncounted:
+
+- On Linux, a connection that is first seen before TaskSmack knows which process owns it is counted from the reading in which it is attributed. The socket-to-process map is rebuilt every 3 seconds.
+- Bytes sent between a connection's last reading and its close are not counted.
+
+On Linux, a socket shared by several processes, for example one inherited across `fork()`, is counted for the lowest PID.
+
+---
+
+## Why doesn't the network Total match the sum of the interfaces?
+
+The Total counts hardware interfaces only. On Linux these are network cards, Wi-Fi, USB adapters, and Hyper-V or virtio NICs; bridges, `veth` pairs, VPN tunnels, VLANs, and bonds are left out. On Windows they are the adapters Windows reports as hardware; VPN adapters, Hyper-V and WSL `vEthernet` adapters, WAN Miniports, and tunnels such as Teredo are left out. Those interfaces carry traffic that also crosses a hardware interface, so counting them as well would double it. They are still listed and selectable on their own. When no hardware interface exists, as inside a container, every interface counts.
 
 ---
 
@@ -103,6 +116,19 @@ TaskSmack hides per-process network data when the platform cannot attribute traf
 - **Windows:** TCP EStats collection requires administrator privileges.
 
 System-wide and per-interface throughput should still appear.
+
+---
+
+## Why does the FPS in the status bar change?
+
+TaskSmack only draws as many frames as the screen needs. The FPS readout in the bottom-right corner shows the rate it is drawing at, averaged over half a second:
+
+- **Idle, about 20 FPS or less:** nothing on screen moves faster than half a pixel per frame at that rate. With the default 300-second history, the charts scroll only a few pixels a second.
+- **Brief bursts, up to about 60 FPS:** a new sample has arrived and the now-bars or a chart's scale are easing to it, or a chart with a short history window scrolls quickly.
+- **Moving the mouse or typing:** frames are capped at about 60 FPS. The cap is a whole number of display refreshes, never slower than 60 on a display refreshing at 60 Hz or faster, for example 60 at 60 or 120 Hz, 75 at 75 Hz, 72 at 144 Hz and 82.5 at 165 Hz, so motion stays even with vsync. A slower display caps at its own refresh rate (30 FPS on a 30 Hz display).
+- **Minimized:** about 5 FPS. A window fully covered by other windows drops to the same rate only where the desktop reports it: on Wayland. X11 and Windows don't report an ordinarily covered window, so there it keeps its normal rate.
+
+The readout shows the real frame time, so a stalled machine that draws 6 frames a second shows about 6 FPS.
 
 ---
 

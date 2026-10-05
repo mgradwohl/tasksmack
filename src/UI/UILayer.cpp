@@ -7,6 +7,7 @@
 #include "Core/WindowEvents.h"
 #include "UI/AssetPath.h"
 #include "UI/DpiScale.h"
+#include "UI/FontFileCache.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/MonospaceFontPath.h"
 #include "UI/RenderMetrics.h"
@@ -21,19 +22,67 @@
 #include <implot.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <exception>
 #include <filesystem>
+#include <limits>
+#include <ratio>
+#include <span>
+#include <string>
 #include <system_error>
 
 namespace
 {
-// The main window's display scale from SDL, 1.0 at 96 DPI; 1.0 without a window, and 0.0 if SDL
-// fails (callers reject that through UI::displayScaleChanged()).
+// The main window's UI scale in window units (1.0 at 96 DPI): SDL's display scale over the window's
+// pixel density, which ImGui already renders at (#1096). 1.0 without a window, and 0.0 if SDL fails
+// to report the display scale (callers reject that through UI::displayScaleChanged()).
+/// ImGui asserts on font data of this many bytes or fewer (AddFontFromMemoryTTF's sanity check).
+constexpr std::size_t MIN_FONT_DATA_BYTES = 100;
+
+/// AddFontFromFileTTF(), but from the bytes in @p fontFiles (#1170): each file is read once and every
+/// font made from it shares that buffer, which the cache keeps alive for the atlas
+/// (FontDataOwnedByAtlas = false). Like AddFontFromFileTTF() with ImFontFlags_NoLoadError, a file
+/// that cannot be read adds nothing and returns nullptr.
+ImFont* addFontFromFile(UI::FontFileCache& fontFiles,
+                        const std::filesystem::path& path,
+                        float sizePixels,
+                        const ImFontConfig* configTemplate,
+                        const ImWchar* glyphRanges = nullptr)
+{
+    const std::span<std::byte> data = fontFiles.get(path);
+    if (data.size() <= MIN_FONT_DATA_BYTES || data.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+    {
+        return nullptr;
+    }
+    ImFontConfig config = configTemplate != nullptr ? *configTemplate : ImFontConfig{};
+    config.FontDataOwnedByAtlas = false;
+    if (config.Name[0] == '\0')
+    {
+        // The file name, as AddFontFromFileTTF() names its fonts (shown in ImGui's Metrics window).
+        const std::string name = path.filename().string();
+        const std::span<char> dest(config.Name);
+        const std::size_t length = std::min(name.size(), dest.size() - 1);
+        std::copy_n(name.begin(), length, dest.begin());
+        dest[length] = '\0';
+    }
+    return ImGui::GetIO().Fonts->AddFontFromMemoryTTF(data.data(), static_cast<int>(data.size()), sizePixels, &config, glyphRanges);
+}
+
 float measureDisplayScale()
 {
     SDL_Window* window = Core::Application::get().getWindow().getHandle();
-    return (window != nullptr) ? SDL_GetWindowDisplayScale(window) : 1.0F;
+    if (window == nullptr)
+    {
+        return 1.0F;
+    }
+    const float displayScale = SDL_GetWindowDisplayScale(window);
+    const float pixelDensity = SDL_GetWindowPixelDensity(window);
+    const float scale = UI::windowUnitScale(displayScale, pixelDensity);
+    spdlog::debug("UI scale {:.3f} (SDL display scale {:.3f}, pixel density {:.3f})", scale, displayScale, pixelDensity);
+    return scale;
 }
 
 } // namespace
@@ -46,7 +95,7 @@ UILayer::UILayer() : Layer("UILayer")
 
 UILayer::~UILayer() = default;
 
-void UILayer::loadAllFonts(const std::filesystem::path& assetsDir, float displayScale)
+void UILayer::loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path& assetsDir, float displayScale)
 {
     // Every size below is converted at this one measured scale -- the same value Theme scales the
     // style by -- so the fonts and the chrome around them always agree (#943).
@@ -69,9 +118,10 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir, float display
 
     // Check if icon font exists. The error_code overloads here and below: this also runs when the
     // display scale changes (#943), after the old fonts are gone, and a filesystem error must
-    // degrade to "not found" rather than throw out of the rebuild. For the same reason every
-    // AddFontFromFileTTF() below passes ImFontFlags_NoLoadError: without it ImGui asserts on a file
-    // it cannot read, before the null-return fallbacks here get a chance to run.
+    // degrade to "not found" rather than throw out of the rebuild. Every font below is added from
+    // fontFiles, which reads each file once and keeps it for later rebuilds (#1170), so a file that
+    // cannot be read just returns nullptr to the fallbacks here. ImFontFlags_NoLoadError still
+    // covers data FreeType rejects: without it ImGui asserts instead of returning nullptr.
     std::error_code existsError;
     const bool hasIconFont = std::filesystem::exists(iconFontPath, existsError);
     if (!hasIconFont)
@@ -84,7 +134,7 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir, float display
     }
 
     // Icon font glyph range (Font Awesome 6)
-    // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - ImGui API requires null-terminated C array for AddFontFromFileTTF
+    // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - ImGui API requires null-terminated C array for the glyph ranges
     static constexpr ImWchar ICON_RANGES[] = {ICON_MIN_FA, ICON_MAX_FA, 0};
 
     spdlog::info("Pre-baking fonts for all {} size presets with FreeType renderer", FONT_SIZE_COUNT);
@@ -106,7 +156,7 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir, float display
 
         ImFontConfig regularConfig;
         regularConfig.Flags |= ImFontFlags_NoLoadError;
-        ImFont* fontRegular = imguiIO.Fonts->AddFontFromFileTTF(fontPath.c_str(), fontSizeRegular, &regularConfig);
+        ImFont* fontRegular = addFontFromFile(fontFiles, fontPath, fontSizeRegular, &regularConfig);
         if (fontRegular == nullptr)
         {
             spdlog::warn("Could not load Inter font from {}, using default", fontPath);
@@ -123,12 +173,12 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir, float display
             iconConfig.MergeMode = true;
             iconConfig.PixelSnapH = true;
             iconConfig.GlyphMinAdvanceX = fontSizeRegular; // Make icons monospaced
-            imguiIO.Fonts->AddFontFromFileTTF(iconFontPath.c_str(), fontSizeRegular, &iconConfig, ICON_RANGES);
+            addFontFromFile(fontFiles, iconFontPath, fontSizeRegular, &iconConfig, ICON_RANGES);
         }
 
         ImFontConfig largeConfig;
         largeConfig.Flags |= ImFontFlags_NoLoadError;
-        ImFont* fontLarge = imguiIO.Fonts->AddFontFromFileTTF(fontPath.c_str(), fontSizeLarge, &largeConfig);
+        ImFont* fontLarge = addFontFromFile(fontFiles, fontPath, fontSizeLarge, &largeConfig);
         if (fontLarge == nullptr)
         {
             ImFontConfig defaultFontConfig;
@@ -144,7 +194,7 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir, float display
             iconConfig.MergeMode = true;
             iconConfig.PixelSnapH = true;
             iconConfig.GlyphMinAdvanceX = fontSizeLarge;
-            imguiIO.Fonts->AddFontFromFileTTF(iconFontPath.c_str(), fontSizeLarge, &iconConfig, ICON_RANGES);
+            addFontFromFile(fontFiles, iconFontPath, fontSizeLarge, &iconConfig, ICON_RANGES);
         }
 
         ImFont* fontMonospace = nullptr;
@@ -154,7 +204,7 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir, float display
             monoConfig.Flags |= ImFontFlags_NoLoadError;
             monoConfig.FontLoaderFlags |= ImGuiFreeTypeBuilderFlags_MonoHinting;
             monoConfig.SizePixels = fontSizeRegular;
-            fontMonospace = imguiIO.Fonts->AddFontFromFileTTF(monospaceFontPath.string().c_str(), fontSizeRegular, &monoConfig);
+            fontMonospace = addFontFromFile(fontFiles, monospaceFontPath, fontSizeRegular, &monoConfig);
             if (fontMonospace == nullptr)
             {
                 spdlog::warn("Could not load monospace font from {}, falling back to default", monospaceFontPath.string());
@@ -189,8 +239,7 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir, float display
 
     // Everything drawn in the bar -- the application icon, the window and app buttons, and their
     // glyphs -- is derived from TITLE_BAR_PT, so they all scale together with it.
-    constexpr float TITLE_BAR_PT = 24.0F;
-    const float titleBarPx = std::round(pointsToPixels(TITLE_BAR_PT));
+    const float titleBarPx = computeTitleBarHeightPx(displayScale);
     theme.setTitleBarHeightPx(titleBarPx);
     spdlog::info("Title bar {}pt -> {}px (title font {}pt -> {}px)", TITLE_BAR_PT, titleBarPx, TITLE_FONT_PT, titleFontPx);
     auto titleFontPath = (assetsDir / "fonts" / "Sixtyfour.ttf").string();
@@ -199,7 +248,7 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir, float display
         ImFontConfig titleConfig;
         titleConfig.Flags |= ImFontFlags_NoLoadError;
         titleConfig.FontLoaderFlags |= ImGuiFreeTypeBuilderFlags_Bitmap;
-        ImFont* titleFont = imguiIO.Fonts->AddFontFromFileTTF(titleFontPath.c_str(), titleFontPx, &titleConfig);
+        ImFont* titleFont = addFontFromFile(fontFiles, titleFontPath, titleFontPx, &titleConfig);
         if (titleFont != nullptr)
         {
             theme.registerTitleFont(titleFont);
@@ -230,13 +279,12 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir, float display
     // below, and still well inside the TITLE_BAR_BUTTON_ASPECT-wide button box.
     if (hasIconFont)
     {
-        constexpr float CHROME_ICON_RATIO = 0.55F;
-        const float chromeIconPx = std::round(titleBarPx * CHROME_ICON_RATIO);
+        const float chromeIconPx = computeChromeIconPx(titleBarPx);
         ImFontConfig chromeConfig;
         chromeConfig.Flags |= ImFontFlags_NoLoadError;
         chromeConfig.PixelSnapH = true;
         chromeConfig.GlyphMinAdvanceX = chromeIconPx; // keep the controls monospaced
-        ImFont* chromeIconFont = imguiIO.Fonts->AddFontFromFileTTF(iconFontPath.c_str(), chromeIconPx, &chromeConfig, ICON_RANGES);
+        ImFont* chromeIconFont = addFontFromFile(fontFiles, iconFontPath, chromeIconPx, &chromeConfig, ICON_RANGES);
         if (chromeIconFont != nullptr)
         {
             theme.registerChromeIconFont(chromeIconFont, chromeIconPx);
@@ -244,26 +292,69 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir, float display
         }
     }
 
-    spdlog::info("Pre-baked {} fonts into atlas using FreeType", imguiIO.Fonts->Fonts.Size);
+    spdlog::info("Pre-baked {} fonts into atlas using FreeType, from {} font files", imguiIO.Fonts->Fonts.Size, fontFiles.fileCount());
 }
 
-void UILayer::loadFallbackFonts(float displayScale)
+void UILayer::loadFallbackFonts(FontFileCache& fontFiles, const std::filesystem::path& assetsDir, float displayScale)
 {
-    // ImGui's embedded font at each preset's sizes: no files involved, so it cannot fail the way
-    // loadAllFonts() can. Without icons, and the title-bar fonts stay unregistered, which the title
-    // bar already handles.
+    // ImGui's embedded font at each preset's sizes: no font files needed, so it cannot fail the way
+    // loadAllFonts() can. The Sixtyfour wordmark stays unregistered, which the title bar already
+    // handles.
+    //
+    // The title bar is still resized to the new scale, and Font Awesome is still merged in when it
+    // can be read: without them a failed rebuild kept the old scale's bar height, and every
+    // ICON_FA_* label (the tabs among them) drew as missing-glyph boxes (#1169). The icon font is
+    // optional here -- ImFontFlags_NoLoadError makes an unreadable file add nothing.
     auto& theme = Theme::get();
     const ImGuiIO& imguiIO = ImGui::GetIO();
+    const float titleBarPx = computeTitleBarHeightPx(displayScale);
+    theme.setTitleBarHeightPx(titleBarPx);
+
+    const auto iconFontPath = (assetsDir / "fonts" / FONT_ICON_FILE_NAME_FAS).string();
+    std::error_code existsError;
+    const bool hasIconFont = !assetsDir.empty() && std::filesystem::exists(iconFontPath, existsError);
+    // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - ImGui API requires a null-terminated C array
+    static constexpr ImWchar ICON_RANGES[] = {ICON_MIN_FA, ICON_MAX_FA, 0};
+    const auto mergeIcons = [&](float sizePx)
+    {
+        if (!hasIconFont)
+        {
+            return;
+        }
+        ImFontConfig iconConfig;
+        iconConfig.Flags = ImFontFlags_NoLoadError;
+        iconConfig.MergeMode = true;
+        iconConfig.PixelSnapH = true;
+        iconConfig.GlyphMinAdvanceX = sizePx;
+        addFontFromFile(fontFiles, iconFontPath, sizePx, &iconConfig, ICON_RANGES);
+    };
+
     for (const auto size : ALL_FONT_SIZES)
     {
         const auto& fontCfg = theme.fontConfig(size);
         ImFontConfig regularConfig;
         regularConfig.SizePixels = computePointsToPixels(fontCfg.regularPt, displayScale);
         ImFont* regular = imguiIO.Fonts->AddFontDefault(&regularConfig);
+        mergeIcons(regularConfig.SizePixels);
         ImFontConfig largeConfig;
         largeConfig.SizePixels = computePointsToPixels(fontCfg.largePt, displayScale);
         ImFont* large = imguiIO.Fonts->AddFontDefault(&largeConfig);
+        mergeIcons(largeConfig.SizePixels);
         theme.registerFonts(size, regular, large, regular);
+    }
+
+    if (hasIconFont)
+    {
+        const float chromeIconPx = computeChromeIconPx(titleBarPx);
+        ImFontConfig chromeConfig;
+        chromeConfig.Flags = ImFontFlags_NoLoadError;
+        chromeConfig.PixelSnapH = true;
+        chromeConfig.GlyphMinAdvanceX = chromeIconPx;
+        if (ImFont* chromeIconFont = addFontFromFile(fontFiles, iconFontPath, chromeIconPx, &chromeConfig, ICON_RANGES);
+            chromeIconFont != nullptr)
+        {
+            theme.registerChromeIconFont(chromeIconFont, chromeIconPx);
+        }
     }
 }
 
@@ -306,7 +397,7 @@ void UILayer::onAttach()
         // Locate assets directory once (searches build dir and FHS install paths)
         m_AssetsDir = findAssetsDir();
         const auto& assetsDir = m_AssetsDir;
-        loadAllFonts(assetsDir, displayScale);
+        loadAllFonts(m_FontFiles, assetsDir, displayScale);
 
         // Load themes from TOML files (built-ins)
         auto themesDir = assetsDir / "themes";
@@ -314,10 +405,20 @@ void UILayer::onAttach()
         spdlog::info("Loaded {} themes", Theme::get().discoveredThemes().size());
 
         // Optional: load user-provided themes from the same directory as config.toml (../themes)
+        // They are merged over the built-ins by id (the filename stem), so a user theme overrides a built-in
+        // with the same id instead of hiding all of them (#1127). The error_code overload keeps an unreadable
+        // directory from throwing out of onAttach.
         const auto userThemesDir = Core::Application::get().paths().userConfigDir() / "themes";
-        if (std::filesystem::exists(userThemesDir))
+        std::error_code ec;
+        if (std::filesystem::is_directory(userThemesDir, ec))
         {
             Theme::get().loadThemes(userThemesDir);
+        }
+        else if (ec && ec != std::errc::no_such_file_or_directory)
+        {
+            // An absent directory is normal and stays quiet; anything else (permissions, a
+            // symlink loop) would otherwise drop the user's themes without a word.
+            spdlog::warn("Skipping user themes in {}: {}", userThemesDir.string(), ec.message());
         }
 
         // Apply default/fallback theme colors (user config will override later)
@@ -425,11 +526,12 @@ void UILayer::rebuildForDisplayScaleChange()
     // reload is then null, not dangling -- and re-made by loadAllFonts(). Caches keyed on a font
     // also see Theme::fontGeneration() advance. With ImGuiBackendFlags_RendererHasTextures the
     // backend re-uploads the atlas texture on the next render.
+    const auto rebuildStart = std::chrono::steady_clock::now();
     Theme::get().clearFontRegistrations();
     ImGui::GetIO().Fonts->ClearFonts();
     try
     {
-        loadAllFonts(m_AssetsDir, measured);
+        loadAllFonts(m_FontFiles, m_AssetsDir, measured);
     }
     catch (const std::exception& e)
     {
@@ -438,8 +540,12 @@ void UILayer::rebuildForDisplayScaleChange()
         spdlog::error("Rebuilding fonts at display scale {:.2f} failed ({}); using the built-in font", measured, e.what());
         Theme::get().clearFontRegistrations();
         ImGui::GetIO().Fonts->ClearFonts();
-        loadFallbackFonts(measured);
+        loadFallbackFonts(m_FontFiles, m_AssetsDir, measured);
     }
+    // Timed so the cost of a scale change can be measured (#1170). Glyphs are rasterized lazily, so
+    // this covers loading the faces, not baking them.
+    spdlog::info("Fonts rebuilt in {:.1f} ms",
+                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rebuildStart).count());
     // Queues the style rebuild; applyPendingStyleChanges() flushes it straight after this.
     Theme::get().setDisplayScale(measured);
 }

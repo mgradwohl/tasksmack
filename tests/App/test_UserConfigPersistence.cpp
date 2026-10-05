@@ -1,19 +1,39 @@
 // NOLINTBEGIN(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
 #include "App/ProcessColumnConfig.h"
 #include "App/UserConfig.h"
+#include "App/UserConfigHelpers.h"
+#include "Domain/SamplingConfig.h"
 #include "UI/ChartWidgets.h"
 
 #include <gtest/gtest.h>
+#include <toml++/toml.hpp>
 
+#include <chrono>
+#include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <random>
 #include <string>
 #include <system_error>
+#include <tuple>
 #include <utility>
 #include <vector>
+
+#ifndef _WIN32
+#include <csignal>
+
+#include <sys/resource.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#if defined(__linux__) && __has_include(<sys/xattr.h>)
+#include <sys/xattr.h>
+#endif
+#include <unistd.h>
+#endif
 
 namespace App
 {
@@ -686,6 +706,72 @@ TEST(UserSettingsTest, ChartAntiAliasingDefaultsToTrue)
     EXPECT_TRUE(settings.chartAntiAliasing);
 }
 
+// ========== Window scale (#1168) ==========
+
+TEST(UserSettingsTest, DefaultWindowSizeIsAt100Percent)
+{
+    // The default size is for 100 %, so a first run on a 200 % display opens it at twice the pixels.
+    const UserSettings settings;
+    ASSERT_TRUE(settings.windowScale.has_value());
+    EXPECT_FLOAT_EQ(settings.windowScale.value_or(0.0F), 1.0F);
+}
+
+TEST_F(UserConfigSaveLoadFixture, WindowScaleIsSavedAndLoaded)
+{
+    auto& config = UserConfig::get();
+    config.settings().windowWidth = 2240;
+    config.settings().windowHeight = 1260;
+    config.settings().windowScale = 1.75F;
+    config.save();
+
+    UserConfig::get().resetConfigPathForTesting(m_TempDir / "config.toml");
+    config.load();
+    EXPECT_EQ(config.settings().windowWidth, 2240);
+    ASSERT_TRUE(config.settings().windowScale.has_value());
+    EXPECT_FLOAT_EQ(config.settings().windowScale.value_or(0.0F), 1.75F);
+}
+
+TEST_F(UserConfigSaveLoadFixture, SavedSizeWithoutAScaleIsRestoredUnconverted)
+{
+    // A config written before the scale was saved: its size is in unknown units, so it must not be
+    // treated as a 100 % size and converted on restore.
+    {
+        std::ofstream file(m_TempDir / "config.toml");
+        file << "[window]\nwidth = 1600\nheight = 900\n";
+    }
+    auto& config = UserConfig::get();
+    config.load();
+    EXPECT_EQ(config.settings().windowWidth, 1600);
+    EXPECT_FALSE(config.settings().windowScale.has_value());
+}
+
+TEST_F(UserConfigSaveLoadFixture, UnusableSavedWindowScaleIsIgnored)
+{
+    for (const char* scale : {"0.0", "-2.0", "nan", "1000.0"})
+    {
+        {
+            std::ofstream file(m_TempDir / "config.toml");
+            file << "[window]\nwidth = 1600\nheight = 900\nscale = " << scale << "\n";
+        }
+        UserConfig::get().resetConfigPathForTesting(m_TempDir / "config.toml");
+        auto& config = UserConfig::get();
+        config.load();
+        EXPECT_FALSE(config.settings().windowScale.has_value()) << scale;
+    }
+}
+
+TEST_F(UserConfigSaveLoadFixture, WholeNumberWindowScaleIsRead)
+{
+    {
+        std::ofstream file(m_TempDir / "config.toml");
+        file << "[window]\nwidth = 2560\nheight = 1440\nscale = 2\n";
+    }
+    auto& config = UserConfig::get();
+    config.load();
+    ASSERT_TRUE(config.settings().windowScale.has_value());
+    EXPECT_FLOAT_EQ(config.settings().windowScale.value_or(0.0F), 2.0F);
+}
+
 TEST_F(UserConfigSaveLoadFixture, ChartAntiAliasingFalseIsSavedAndLoaded)
 {
     auto& config = UserConfig::get();
@@ -993,34 +1079,94 @@ TEST_F(UserConfigSaveLoadFixture, ChartSmoothFactorRoundTrip)
     EXPECT_DOUBLE_EQ(config.settings().chartSmoothFactor, 0.5);
 }
 
-TEST_F(UserConfigSaveLoadFixture, ProgressColorThresholdsRoundTrip)
+TEST_F(UserConfigSaveLoadFixture, ChartTauRangeRoundTrip)
 {
     auto& config = UserConfig::get();
-    config.settings().progressColorLowThreshold = 30.0;
-    config.settings().progressColorHighThreshold = 80.0;
+    config.settings().chartTauMsMin = 50;
+    config.settings().chartTauMsMax = 1000;
     config.save();
-    config.settings().progressColorLowThreshold = Domain::Sampling::PROGRESS_COLOR_LOW_THRESHOLD_DEFAULT;
-    config.settings().progressColorHighThreshold = Domain::Sampling::PROGRESS_COLOR_HIGH_THRESHOLD_DEFAULT;
+    config.settings().chartTauMsMin = Domain::Sampling::CHART_TAU_MS_MIN_DEFAULT;
+    config.settings().chartTauMsMax = Domain::Sampling::CHART_TAU_MS_MAX_DEFAULT;
     config.load();
-    EXPECT_DOUBLE_EQ(config.settings().progressColorLowThreshold, 30.0);
-    EXPECT_DOUBLE_EQ(config.settings().progressColorHighThreshold, 80.0);
+    EXPECT_EQ(config.settings().chartTauMsMin, 50);
+    EXPECT_EQ(config.settings().chartTauMsMax, 1000);
 }
 
-TEST_F(UserConfigSaveLoadFixture, ProgressColorThresholdsSwappedWhenInverted)
+/// Restores UI's chart smoothing to its defaults however a test ends, so later tests in this
+/// binary see the built-in behaviour.
+class ChartSmoothingRestore
 {
-    // Write a TOML where low > high — load() should swap them.
-    std::ofstream file(m_TempDir / "config.toml");
-    ASSERT_TRUE(file.is_open());
-    file << "[ui]\nprogress_color_low_threshold = 80.0\nprogress_color_high_threshold = 20.0\n";
-    file.close();
+  public:
+    ChartSmoothingRestore() = default;
+    ChartSmoothingRestore(const ChartSmoothingRestore&) = delete;
+    ChartSmoothingRestore& operator=(const ChartSmoothingRestore&) = delete;
+    ChartSmoothingRestore(ChartSmoothingRestore&&) = delete;
+    ChartSmoothingRestore& operator=(ChartSmoothingRestore&&) = delete;
+    ~ChartSmoothingRestore()
+    {
+        UI::Widgets::setChartSmoothing(Domain::Sampling::CHART_SMOOTH_FACTOR_DEFAULT,
+                                       Domain::Sampling::CHART_TAU_MS_MIN_DEFAULT,
+                                       Domain::Sampling::CHART_TAU_MS_MAX_DEFAULT);
+    }
+};
 
+TEST_F(UserConfigSaveLoadFixture, ChartSmoothingKeysReachTheChartsAtStartup)
+{
+    // #1123: chart_smooth_factor and chart_tau_ms_min/max were loaded and saved but never applied;
+    // the easing always used the built-in 0.5 / 20 ms / 400 ms.
+    const ChartSmoothingRestore restore;
+    {
+        std::ofstream file(m_TempDir / "config.toml");
+        file << "[ui]\nchart_smooth_factor = 0.25\nchart_tau_ms_min = 50\nchart_tau_ms_max = 1500\n";
+    }
     auto& config = UserConfig::get();
     config.load();
+    config.applyToApplication();
 
-    // After the swap: low should be 20.0 and high should be 80.0.
-    EXPECT_LE(config.settings().progressColorLowThreshold, config.settings().progressColorHighThreshold);
-    EXPECT_DOUBLE_EQ(config.settings().progressColorLowThreshold, 20.0);
-    EXPECT_DOUBLE_EQ(config.settings().progressColorHighThreshold, 80.0);
+    const UI::Widgets::ChartSmoothing smoothing = UI::Widgets::chartSmoothing();
+    EXPECT_DOUBLE_EQ(smoothing.smoothFactor, 0.25);
+    EXPECT_DOUBLE_EQ(smoothing.tauMsMin, 50.0);
+    EXPECT_DOUBLE_EQ(smoothing.tauMsMax, 1500.0);
+
+    // At a 1 s refresh the time constant is 0.25 x 1000 = 250 ms (the defaults gave 400 ms).
+    EXPECT_NEAR(UI::Widgets::computeAlpha(0.1, std::chrono::milliseconds(1000)), 1.0 - std::exp(-100.0 / 250.0), 1e-9);
+    // At a 100 ms refresh, 25 ms is raised to the configured 50 ms floor (the default was 20 ms).
+    EXPECT_NEAR(UI::Widgets::computeAlpha(0.01, std::chrono::milliseconds(100)), 1.0 - std::exp(-10.0 / 50.0), 1e-9);
+    // At a 5 s refresh, 1250 ms stays under the configured 1500 ms ceiling (the default was 400 ms).
+    EXPECT_NEAR(UI::Widgets::computeAlpha(0.1, std::chrono::milliseconds(5000)), 1.0 - std::exp(-100.0 / 1250.0), 1e-9);
+}
+
+TEST_F(UserConfigSaveLoadFixture, SaveRemovesRetiredKeysAndKeepsTheRest)
+{
+    // #1123: keys older versions wrote but never applied are dropped on the next save, so the file
+    // stops advertising tuning that does nothing; unknown keys and the kept settings stay.
+    {
+        std::ofstream file(m_TempDir / "config.toml");
+        file << "[metrics]\nmin_time_for_rate_seconds = 1.5\nmax_sane_rate_bps = 50000000000.0\n"
+                "integrated_gpu_vram_threshold_mb = 256\n"
+                "[ui]\nprogress_color_low_threshold = 30.0\nprogress_color_high_threshold = 90.0\nchart_smooth_factor = 0.25\n"
+                "my_note = \"kept\"\n";
+    }
+    auto& config = UserConfig::get();
+    config.load();
+    EXPECT_DOUBLE_EQ(config.settings().maxSaneRateBps, 50'000'000'000.0);
+    config.save();
+
+    const toml::table saved = toml::parse_file((m_TempDir / "config.toml").string());
+    for (const auto& retired : UserConfigHelpers::RETIRED_KEYS)
+    {
+        EXPECT_FALSE(saved[retired.section][retired.key]) << retired.section << "." << retired.key;
+    }
+    EXPECT_DOUBLE_EQ(saved["metrics"]["max_sane_rate_bps"].value_or(0.0), 50'000'000'000.0);
+    EXPECT_DOUBLE_EQ(saved["ui"]["chart_smooth_factor"].value_or(0.0), 0.25);
+    EXPECT_EQ(saved["ui"]["my_note"].value_or(std::string{}), "kept");
+
+    std::ifstream in(m_TempDir / "config.toml");
+    const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    for (const auto& retired : UserConfigHelpers::RETIRED_KEYS)
+    {
+        EXPECT_EQ(text.find(retired.key), std::string::npos) << "the header must not document " << retired.key;
+    }
 }
 
 // ========== Load/Save: Process Columns Round-Trip ==========
@@ -1061,17 +1207,7 @@ TEST_F(UserConfigSaveLoadFixture, SaveCreatesParentDirectoriesIfAbsent)
     EXPECT_TRUE(std::filesystem::exists(nestedConfig));
 }
 
-// ========== Metrics: minTimeForRate and maxSaneRate Round-Trips ==========
-
-TEST_F(UserConfigSaveLoadFixture, MetricsMinTimeForRateRoundTrip)
-{
-    auto& config = UserConfig::get();
-    config.settings().minTimeForRateSeconds = 1.5;
-    config.save();
-    config.settings().minTimeForRateSeconds = Domain::Sampling::MIN_TIME_FOR_RATE_SECONDS_DEFAULT;
-    config.load();
-    EXPECT_DOUBLE_EQ(config.settings().minTimeForRateSeconds, 1.5);
-}
+// ========== Metrics: maxSaneRate Round-Trip ==========
 
 TEST_F(UserConfigSaveLoadFixture, MetricsMaxSaneRateRoundTrip)
 {
@@ -1084,6 +1220,488 @@ TEST_F(UserConfigSaveLoadFixture, MetricsMaxSaneRateRoundTrip)
     config.load();
     EXPECT_DOUBLE_EQ(config.settings().maxSaneRateBps, testRate);
 }
+
+// ========== Robust config writes (#1122, #1124) ==========
+
+[[nodiscard]] std::string readFile(const std::filesystem::path& path)
+{
+    std::ifstream in(path);
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+void writeFile(const std::filesystem::path& path, const std::string& content)
+{
+    std::ofstream out(path, std::ios::trunc);
+    out << content;
+}
+
+[[nodiscard]] toml::table parsed(const std::filesystem::path& path)
+{
+    return toml::parse_file(path.string());
+}
+
+TEST(UserConfigMergeTest, OnlyKeysTaskSmackChangedAreWritten)
+{
+    const toml::table base{{"sampling", toml::table{{"interval_ms", 1000}}}, {"theme", toml::table{{"id", "arctic-fire"}}}};
+    const toml::table mine{{"sampling", toml::table{{"interval_ms", 1000}}}, {"theme", toml::table{{"id", "mocha"}}}};
+    toml::table document{{"sampling", toml::table{{"interval_ms", 750}, {"future", 1}}}, {"theme", toml::table{{"id", "dracula"}}}};
+
+    UserConfigHelpers::mergeOwnedKeys(document, base, mine);
+
+    EXPECT_EQ(document["sampling"]["interval_ms"].value<int>(), 750); // edited outside: kept
+    EXPECT_EQ(document["sampling"]["future"].value<int>(), 1);        // not TaskSmack's: kept
+    EXPECT_EQ(document["theme"]["id"].value<std::string>(), "mocha"); // changed by TaskSmack: written
+}
+
+TEST(UserConfigMergeTest, KeysDeletedOrClearedStayDeleted)
+{
+    // Deleted outside TaskSmack (unchanged in-app): stays deleted. No longer written by TaskSmack
+    // (a cleared window position): removed.
+    const toml::table base{{"window", toml::table{{"x", 10}, {"y", 20}}}, {"process_table", toml::table{{"layout", "abc"}}}};
+    const toml::table mine{{"window", toml::table{{"y", 20}}}, {"process_table", toml::table{{"layout", "abc"}}}};
+    toml::table document{{"window", toml::table{{"x", 10}, {"y", 20}, {"mine", true}}}, {"process_table", toml::table{}}};
+
+    UserConfigHelpers::mergeOwnedKeys(document, base, mine);
+
+    EXPECT_FALSE(document["window"]["x"]);
+    EXPECT_EQ(document["window"]["y"].value<int>(), 20);
+    EXPECT_EQ(document["window"]["mine"].value<bool>(), true);
+    EXPECT_FALSE(document["process_table"]["layout"]);
+}
+
+TEST_F(UserConfigSaveLoadFixture, SaveKeepsKeysTaskSmackDoesNotOwn)
+{
+    const auto path = UserConfig::get().configPath();
+    writeFile(path, "[sampling]\ninterval_ms = 500\nfuture_option = 7\n\n[plugin]\nenabled = true\n");
+    auto& config = UserConfig::get();
+    config.load();
+    config.save();
+
+    const auto document = parsed(path);
+    EXPECT_EQ(document["sampling"]["future_option"].value<int>(), 7);
+    EXPECT_EQ(document["plugin"]["enabled"].value<bool>(), true);
+    EXPECT_EQ(document["sampling"]["interval_ms"].value<int>(), 500);
+}
+
+TEST_F(UserConfigSaveLoadFixture, EditsMadeWhileRunningSurviveSavesAndShutdown)
+{
+    const auto path = UserConfig::get().configPath();
+    auto& config = UserConfig::get();
+    config.settings().refreshIntervalMs = 1000;
+    config.settings().themeId = "arctic-fire";
+    config.save();
+    config.load();
+
+    // Edited in a text editor while TaskSmack runs, keeping the same modification time.
+    const auto before = std::filesystem::last_write_time(path);
+    writeFile(path, "[sampling]\ninterval_ms = 750\n\n[theme]\nid = \"dracula\"\n");
+    std::filesystem::last_write_time(path, before);
+
+    // Apply changes a different setting, then shutdown saves again with the theme still running.
+    config.settings().maxHistorySeconds = 600;
+    config.save();
+    config.save();
+
+    const auto document = parsed(path);
+    EXPECT_EQ(document["sampling"]["interval_ms"].value<int>(), 750);
+    EXPECT_EQ(document["theme"]["id"].value<std::string>(), "dracula");
+    EXPECT_EQ(document["sampling"]["history_max_seconds"].value<int>(), 600);
+}
+
+TEST_F(UserConfigSaveLoadFixture, ToggledColumnDoesNotOverwriteOtherColumnsEditedOutside)
+{
+    const auto path = UserConfig::get().configPath();
+    auto& config = UserConfig::get();
+    config.save();
+    config.load();
+    const auto columns = allProcessColumns();
+    ASSERT_GE(columns.size(), 2U);
+    const auto first = getColumnInfo(columns[0]).configKey;
+    const auto second = getColumnInfo(columns[1]).configKey;
+
+    auto document = parsed(path);
+    const bool secondWas = document["process_columns"][second].value_or(true);
+    document["process_columns"].as_table()->insert_or_assign(second, !secondWas);
+    {
+        std::ofstream out(path, std::ios::trunc);
+        out << document;
+    }
+
+    config.settings().processColumns.toggleVisible(columns[0]);
+    config.save();
+
+    const auto saved = parsed(path);
+    EXPECT_EQ(saved["process_columns"][second].value<bool>(), !secondWas);
+    EXPECT_EQ(saved["process_columns"][first].value<bool>(), config.settings().processColumns.isVisible(columns[0]));
+}
+
+TEST_F(UserConfigSaveLoadFixture, MalformedConfigIsNotReplaced)
+{
+    const auto path = UserConfig::get().configPath();
+    const std::string malformed = "[sampling\ninterval_ms = = 5\n";
+    writeFile(path, malformed);
+    auto& config = UserConfig::get();
+    config.load();
+    config.settings().themeId = "dracula";
+    config.save();
+    EXPECT_EQ(readFile(path), malformed);
+}
+
+TEST_F(UserConfigSaveLoadFixture, SaveLeavesNoTemporaryFileBehind)
+{
+    auto& config = UserConfig::get();
+    config.save();
+    EXPECT_TRUE(std::filesystem::exists(config.configPath()));
+    for (const auto& entry : std::filesystem::directory_iterator(m_TempDir))
+    {
+        EXPECT_NE(entry.path().extension(), ".tmp") << entry.path();
+    }
+}
+
+#ifndef _WIN32
+TEST_F(UserConfigSaveLoadFixture, FailedWriteLeavesTheOriginalIntactAndALaterSaveSucceeds)
+{
+    // The data-loss path the atomic replace exists for: writing the new file fails partway. The
+    // original must stay byte-for-byte, the temporary file must go, and the change must still be
+    // saved by the next successful save (#1222 review).
+    const auto path = UserConfig::get().configPath();
+    const std::string original = "[theme]\nid = \"arctic-fire\"\n";
+    writeFile(path, original);
+    auto& config = UserConfig::get();
+    config.load();
+    config.settings().themeId = "mocha";
+
+    // Save in a child whose file-size limit is far below the new file's size, so the write fails
+    // with EFBIG once the buffer is flushed (SIGXFSZ ignored so it is an error, not a kill).
+    const pid_t child = fork();
+    ASSERT_GE(child, 0);
+    if (child == 0)
+    {
+        std::signal(SIGXFSZ, SIG_IGN);
+        constexpr rlim_t TOO_SMALL = 64;
+        const rlimit limit{.rlim_cur = TOO_SMALL, .rlim_max = TOO_SMALL};
+        setrlimit(RLIMIT_FSIZE, &limit);
+        UserConfig::get().save();
+        _exit(0);
+    }
+    int status = 0;
+    ASSERT_EQ(waitpid(child, &status, 0), child);
+    ASSERT_TRUE(WIFEXITED(status));
+
+    std::ifstream in(path, std::ios::binary);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(in), {}), original);
+    for (const auto& entry : std::filesystem::directory_iterator(m_TempDir))
+    {
+        EXPECT_NE(entry.path().extension(), ".tmp") << entry.path();
+    }
+
+    config.save();
+    EXPECT_EQ(parsed(path)["theme"]["id"].value<std::string>(), "mocha");
+}
+
+TEST_F(UserConfigSaveLoadFixture, SymlinkedConfigKeepsItsLinkAndUpdatesItsTarget)
+{
+    // A dotfiles-managed config is often a symlink: saving must write through it (#1222 review).
+    const auto link = UserConfig::get().configPath();
+    const auto target = m_TempDir / "dotfiles-config.toml";
+    writeFile(target, "[theme]\nid = \"arctic-fire\"\n");
+    std::filesystem::create_symlink(target, link);
+
+    auto& config = UserConfig::get();
+    config.load();
+    config.settings().themeId = "mocha";
+    config.save();
+
+    EXPECT_TRUE(std::filesystem::is_symlink(link));
+    EXPECT_EQ(parsed(target)["theme"]["id"].value<std::string>(), "mocha");
+}
+
+TEST_F(UserConfigSaveLoadFixture, SymlinkTargetWithALongNameStillSaves)
+{
+    // A 250-byte target name is valid under a 255-byte limit; a temporary named after it with a
+    // suffix would not be, and every save would fail (#1222 review).
+    const auto link = UserConfig::get().configPath();
+    const auto target = m_TempDir / (std::string(245, 'c') + ".toml");
+    writeFile(target, "[theme]\nid = \"arctic-fire\"\n");
+    std::filesystem::create_symlink(target, link);
+
+    auto& config = UserConfig::get();
+    config.load();
+    config.settings().themeId = "mocha";
+    config.save();
+
+    EXPECT_TRUE(std::filesystem::is_symlink(link));
+    EXPECT_EQ(parsed(target)["theme"]["id"].value<std::string>(), "mocha");
+}
+
+TEST_F(UserConfigSaveLoadFixture, SymlinkToAMissingFileCreatesTheTarget)
+{
+    // canonical() needs the target to exist; a link to a file not created yet must still be
+    // written through, not refused (#1222 review).
+    const auto link = UserConfig::get().configPath();
+    const auto target = m_TempDir / "not-yet-created.toml";
+    std::filesystem::create_symlink(target, link);
+
+    auto& config = UserConfig::get();
+    config.load();
+    config.settings().themeId = "mocha";
+    config.save();
+
+    EXPECT_TRUE(std::filesystem::is_symlink(link));
+    ASSERT_TRUE(std::filesystem::exists(target));
+    EXPECT_EQ(parsed(target)["theme"]["id"].value<std::string>(), "mocha");
+}
+
+TEST_F(UserConfigSaveLoadFixture, LinkLoopIsNotSaved)
+{
+    const auto link = UserConfig::get().configPath();
+    const auto other = m_TempDir / "other.toml";
+    std::filesystem::create_symlink(other, link);
+    std::filesystem::create_symlink(link, other);
+
+    auto& config = UserConfig::get();
+    config.load();
+    config.settings().themeId = "mocha";
+    config.save();
+
+    EXPECT_TRUE(std::filesystem::is_symlink(link));
+    EXPECT_TRUE(std::filesystem::is_symlink(other));
+}
+#endif
+
+TEST_F(UserConfigSaveLoadFixture, ConfigCreatedBeforeTheFirstSaveKeepsItsOtherSettings)
+{
+    // No file at startup, then one is created (or repaired) before TaskSmack's first save: only
+    // the setting changed in-app is written over it, not every runtime default (#1222 review).
+    auto& config = UserConfig::get();
+    config.load();
+    writeFile(UserConfig::get().configPath(), "[sampling]\ninterval_ms = 750\n");
+
+    config.settings().themeId = "mocha";
+    config.save();
+
+    const auto saved = parsed(UserConfig::get().configPath());
+    EXPECT_EQ(saved["sampling"]["interval_ms"].value<std::int64_t>(), 750);
+    EXPECT_EQ(saved["theme"]["id"].value<std::string>(), "mocha");
+}
+
+#ifndef _WIN32
+TEST_F(UserConfigSaveLoadFixture, UnreadableConfigFileIsNotReplaced)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root can read a mode-000 file";
+    }
+    const auto path = UserConfig::get().configPath();
+    writeFile(path, "[theme]\nid = \"dracula\"\n");
+    std::filesystem::permissions(path, std::filesystem::perms::none);
+
+    auto& config = UserConfig::get();
+    config.settings().themeId = "mocha";
+    EXPECT_NO_THROW(config.save());
+
+    std::filesystem::permissions(path, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
+    EXPECT_EQ(parsed(path)["theme"]["id"].value<std::string>(), "dracula");
+}
+
+TEST_F(UserConfigSaveLoadFixture, SaveKeepsTheConfigFilesPermissions)
+{
+    auto& config = UserConfig::get();
+    config.save();
+    const auto path = config.configPath();
+    const auto restricted = std::filesystem::perms::owner_read | std::filesystem::perms::owner_write;
+    std::filesystem::permissions(path, restricted);
+
+    config.settings().themeId = "mocha";
+    config.save();
+    EXPECT_EQ(std::filesystem::status(path).permissions() & std::filesystem::perms::all, restricted);
+}
+
+TEST_F(UserConfigSaveLoadFixture, StagingFileIsNeverReadableByOthers)
+{
+    // The staging file is created owner-only (#1222 review), so a brand-new config is 0600 rather
+    // than umask-readable, while an existing config's own, wider mode is still restored.
+    auto& config = UserConfig::get();
+    config.save();
+    const auto path = config.configPath();
+    const auto ownerOnly = std::filesystem::perms::owner_read | std::filesystem::perms::owner_write;
+    EXPECT_EQ(std::filesystem::status(path).permissions() & std::filesystem::perms::all, ownerOnly);
+
+    const auto shared = ownerOnly | std::filesystem::perms::group_read | std::filesystem::perms::others_read;
+    std::filesystem::permissions(path, shared);
+    config.settings().themeId = "mocha";
+    config.save();
+    EXPECT_EQ(std::filesystem::status(path).permissions() & std::filesystem::perms::all, shared);
+}
+
+TEST_F(UserConfigSaveLoadFixture, SavesUnderAUmaskThatMasksOwnerWrite)
+{
+    // The staging file is written through the descriptor that created it: reopening its path
+    // failed with EACCES under a umask without owner-write, so nothing was ever saved (#1222 review).
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root can write a mode-0400 file anyway";
+    }
+    auto& config = UserConfig::get();
+    config.settings().themeId = "mocha";
+    const mode_t previous = ::umask(0277);
+    config.save();
+    config.settings().themeId = "latte";
+    config.save(); // replacing a 0400 config works too
+    ::umask(previous);
+
+    EXPECT_EQ(parsed(config.configPath())["theme"]["id"].value<std::string>(), "latte");
+    for (const auto& entry : std::filesystem::directory_iterator(m_TempDir))
+    {
+        EXPECT_NE(entry.path().extension(), ".tmp") << entry.path();
+    }
+}
+
+#if defined(__linux__) && __has_include(<sys/xattr.h>)
+/// A raw POSIX ACL xattr (version 2, then {tag, perm, id} entries) granting user `nobody` read:
+/// user::rw-, user:nobody:r--, group::---, mask::r--, other::---. Its mode bits read as 0640.
+[[nodiscard]] std::vector<char> nobodyCanReadAcl()
+{
+    std::vector<char> acl;
+    const auto put = [&acl](const auto value)
+    {
+        const auto* bytes = reinterpret_cast<const char*>(&value);
+        acl.insert(acl.end(), bytes, bytes + sizeof(value));
+    };
+    constexpr std::uint32_t UNDEFINED_ID = 0xFFFFFFFF;
+    put(std::uint32_t{2});
+    for (const auto& [tag, perm, id] : {std::tuple<std::uint16_t, std::uint16_t, std::uint32_t>{0x01, 6, UNDEFINED_ID},
+                                        {0x02, 4, 65534},
+                                        {0x04, 0, UNDEFINED_ID},
+                                        {0x10, 4, UNDEFINED_ID},
+                                        {0x20, 0, UNDEFINED_ID}})
+    {
+        put(tag);
+        put(perm);
+        put(id);
+    }
+    return acl;
+}
+
+TEST_F(UserConfigSaveLoadFixture, SaveDropsAnAclTheOriginalDidNotHave)
+{
+    // The staging file inherits the directory's default ACL; if the original config had none, the
+    // replacement must not either, or its named grants would expose it (#1222 review).
+    auto& config = UserConfig::get();
+    config.save(); // before the default ACL exists: no ACL of its own
+    const auto path = config.configPath();
+    std::vector<char> probe(256);
+    ASSERT_LT(::getxattr(path.c_str(), "system.posix_acl_access", probe.data(), probe.size()), 0);
+
+    const auto acl = nobodyCanReadAcl();
+    if (::setxattr(m_TempDir.c_str(), "system.posix_acl_default", acl.data(), acl.size(), 0) != 0)
+    {
+        GTEST_SKIP() << "filesystem has no POSIX ACLs: " << std::strerror(errno);
+    }
+
+    config.settings().themeId = "mocha";
+    config.save();
+
+    EXPECT_LT(::getxattr(path.c_str(), "system.posix_acl_access", probe.data(), probe.size()), 0)
+        << "the replacement kept an ACL inherited from the directory";
+    EXPECT_EQ(errno, ENODATA);
+    EXPECT_EQ(parsed(path)["theme"]["id"].value<std::string>(), "mocha");
+}
+
+TEST_F(UserConfigSaveLoadFixture, SaveKeepsTheConfigsAccessControlList)
+{
+    // A named-user read grant with group::--- and mask::r-- reports mode 0640. Copying only that
+    // mode to the new file would let the whole group read it; the ACL must come along (#1222 review).
+    auto& config = UserConfig::get();
+    config.save();
+    const auto path = config.configPath();
+
+    const auto acl = nobodyCanReadAcl();
+    if (::setxattr(path.c_str(), "system.posix_acl_access", acl.data(), acl.size(), 0) != 0)
+    {
+        GTEST_SKIP() << "filesystem has no POSIX ACLs: " << std::strerror(errno);
+    }
+
+    config.settings().themeId = "mocha";
+    config.save();
+
+    std::vector<char> saved(acl.size() + 64);
+    const auto size = ::getxattr(path.c_str(), "system.posix_acl_access", saved.data(), saved.size());
+    ASSERT_GT(size, 0) << "the new config lost its ACL";
+    saved.resize(static_cast<std::size_t>(size));
+    EXPECT_EQ(saved, acl);
+    EXPECT_EQ(parsed(path)["theme"]["id"].value<std::string>(), "mocha");
+}
+#endif
+
+TEST_F(UserConfigSaveLoadFixture, FailedStagingLeavesAnExistingFileAlone)
+{
+    // Every candidate staging name taken: the save fails, and the file that already had that name
+    // -- someone else's -- must not be deleted on the way out (#1222 review).
+    auto& config = UserConfig::get();
+    config.setTempNameSourceForTesting([] { return std::uint32_t{0xDEADBEEF}; });
+    const auto theirs = m_TempDir / ".tasksmack-config.deadbeef.tmp";
+    writeFile(theirs, "not TaskSmack's");
+
+    config.settings().themeId = "mocha";
+    config.save();
+
+    ASSERT_TRUE(std::filesystem::exists(theirs));
+    std::ifstream in(theirs);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(in), {}), "not TaskSmack's");
+    EXPECT_FALSE(std::filesystem::exists(config.configPath())); // nothing was saved
+}
+
+TEST_F(UserConfigSaveLoadFixture, SaveKeepsTheConfigsOwningGroup)
+{
+    // In a setgid directory a new file takes the directory's group. The replacement must keep the
+    // original config's group instead, or that group's members could read a 0640 config (#1222 review).
+    std::vector<gid_t> groups(static_cast<std::size_t>(::getgroups(0, nullptr)));
+    groups.resize(static_cast<std::size_t>(::getgroups(static_cast<int>(groups.size()), groups.data())));
+    std::erase(groups, ::getegid());
+    if (groups.size() < 2)
+    {
+        GTEST_SKIP() << "needs membership of two supplementary groups";
+    }
+    const gid_t directoryGroup = groups[0];
+    const gid_t configGroup = groups[1];
+    ASSERT_EQ(::chown(m_TempDir.c_str(), static_cast<uid_t>(-1), directoryGroup), 0);
+    ASSERT_EQ(::chmod(m_TempDir.c_str(), 02770), 0); // setgid: new files take directoryGroup
+
+    auto& config = UserConfig::get();
+    config.save();
+    const auto path = config.configPath();
+    ASSERT_EQ(::chown(path.c_str(), static_cast<uid_t>(-1), configGroup), 0);
+    ASSERT_EQ(::chmod(path.c_str(), 0640), 0);
+
+    config.settings().themeId = "mocha";
+    config.save();
+
+    struct stat saved = {};
+    ASSERT_EQ(::stat(path.c_str(), &saved), 0);
+    EXPECT_EQ(saved.st_gid, configGroup) << "the replacement took the directory's group";
+    EXPECT_EQ(saved.st_mode & 0777, 0640U);
+    EXPECT_EQ(parsed(path)["theme"]["id"].value<std::string>(), "mocha");
+}
+
+TEST_F(UserConfigSaveLoadFixture, UnreadableConfigDirectoryFallsBackToDefaults)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root can read a mode-000 directory";
+    }
+    const auto dir = m_TempDir / "locked";
+    std::filesystem::create_directory(dir);
+    UserConfig::get().resetConfigPathForTesting(dir / "inner" / "config.toml");
+    std::filesystem::permissions(dir, std::filesystem::perms::none);
+
+    EXPECT_NO_THROW(UserConfig::get().load());
+    EXPECT_EQ(UserConfig::get().settings().refreshIntervalMs, UserSettings{}.refreshIntervalMs);
+    EXPECT_NO_THROW(UserConfig::get().save());
+
+    std::filesystem::permissions(dir, std::filesystem::perms::owner_all); // let TearDown remove it
+}
+#endif
 
 } // namespace
 } // namespace App

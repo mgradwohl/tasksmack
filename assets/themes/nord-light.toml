@@ -17,57 +17,57 @@ colors = [
     "#B05E28",  # Muted orange
     "#4F8A3C",  # Muted green
     "#7D4A8A",  # Muted purple
-    "#C97710",  # Amber
+    "#BB6102",  # Amber
     "#A63B41",  # Muted red
-    "#6D8EB8",  # Slate blue
+    "#6586B0",  # Slate blue
     "#8B7200",  # Dark gold
 ]
 
 [progress]
-low = "#4F8A3C"       # 0-50%   - Muted green (healthy)
-medium = "#D08770"    # 50-80%  - Aurora Orange (caution)
+low = "#458731"       # 0-50%   - Muted green (healthy)
+medium = "#C06F51"    # 50-80%  - Aurora Orange (caution)
 high = "#BF616A"      # 80-100% - Aurora Red (critical)
 
 [semantic]
 text_primary = "#2E3440"
 text_disabled = "#4C566A"
 text_muted = "#4C566A"
-text_error = "#BF616A"
-text_warning = "#D08770"
-text_success = "#4F8A3C"
-text_info = "#5E81AC"
+text_error = "#A14651"
+text_warning = "#6F4234"
+text_success = "#357024"
+text_info = "#40658E"
 
 [status]
-running = "#4F8A3C"
-sleeping = "#5E81AC"
-disk_sleep = "#C97710"
-zombie = "#BF616A"
-stopped = "#B05E28"
-idle = "#9AA3B0"
+running = "#225F13"
+sleeping = "#2F557D"
+disk_sleep = "#7C4600"
+zombie = "#8E3541"
+stopped = "#883D05"
+idle = "#4B535F"
 
 [charts]
 cpu = "#5E81AC"
 memory = "#4F8A3C"
-io = "#A63B41"
+io = "#A14651"
 io_write = "#00838F"
-net_tx = "#6D8EB8"
-net_rx = "#C97710"
+net_tx = "#5E86B7"
+net_rx = "#C17104"
 cpu_fill = "#5E81AC4D"
 memory_fill = "#4F8A3C4D"
-io_fill = "#A63B414D"
+io_fill = "#A146514D"
 io_write_fill = "#00838F4D"
-net_tx_fill = "#6D8EB84D"
-net_rx_fill = "#C977104D"
+net_tx_fill = "#5E86B74D"
+net_rx_fill = "#C171044D"
 peak_line = "#2E3440B3"
 
 [charts.gpu]
 utilization = "#7D4A8A"
 utilization_fill = "#7D4A8A4D"
-memory = "#C97710"
-memory_fill = "#C977104D"
+memory = "#C17104"
+memory_fill = "#C171044D"
 temperature = "#B36B00"
-power = "#4F8A3C"
-encoder = "#00838F"
+power = "#548F41"
+encoder = "#418088"
 decoder = "#A63B41"
 clock = "#5E81AC"
 clock_fill = "#5E81ACCC"
@@ -164,6 +164,7 @@ preview = "#5E81ACB3"
 empty_background = "#ECEFF4"
 
 [ui.plot]
+grid = "#BAC4CF"
 lines = "#5E81AC"
 lines_hovered = "#BF616A"
 histogram = "#4F8A3C"

@@ -16,71 +16,71 @@ colors = [
     "#268BD2",  # Blue
     "#859900",  # Green
     "#2AA198",  # Cyan
-    "#B58900",  # Yellow
-    "#CB4B16",  # Orange
-    "#6C71C4",  # Violet
-    "#D33682",  # Magenta
-    "#DC322F",  # Red
+    "#BC9B59",  # Yellow
+    "#BA6948",  # Orange
+    "#6E73C6",  # Violet
+    "#D93D87",  # Magenta
+    "#E43A35",  # Red
 ]
 
 [progress]
 low = "#859900"       # 0-50%   - Green (healthy)
-medium = "#B58900"    # 50-80%  - Yellow (caution)
-high = "#DC322F"      # 80-100% - Red (critical)
+medium = "#BC9B59"    # 50-80%  - Yellow (caution)
+high = "#CA574A"      # 80-100% - Red (critical)
 
 [semantic]
-text_primary = "#A4B0B2"
+text_primary = "#CEDADC"
 text_disabled = "#586E75"
-text_muted = "#586E75"
-text_error = "#DC322F"
-text_warning = "#B58900"
-text_success = "#859900"
-text_info = "#268BD2"
+text_muted = "#869DA4"
+text_error = "#EE7666"
+text_warning = "#DFB458"
+text_success = "#8FA315"
+text_info = "#469FE7"
 
 [status]
-running = "#859900"
-sleeping = "#268BD2"
-disk_sleep = "#B58900"
-zombie = "#DC322F"
-stopped = "#D33682"
-idle = "#586E75"
+running = "#A5B82F"
+sleeping = "#61B4FE"
+disk_sleep = "#D7A72E"
+zombie = "#FF8F7E"
+stopped = "#FF88B8"
+idle = "#9BB2BA"
 
 [charts]
 cpu = "#268BD2"
 memory = "#859900"
-io = "#DC322F"
-io_write = "#CB4B16"
+io = "#FF6959"
+io_write = "#D2511C"
 net_tx = "#2AA198"
-net_rx = "#6C71C4"
+net_rx = "#6E73C6"
 cpu_fill = "#268BD24D"
 memory_fill = "#8599004D"
-io_fill = "#DC322F4D"
-io_write_fill = "#CB4B164D"
+io_fill = "#FF69594D"
+io_write_fill = "#D2511C4D"
 net_tx_fill = "#2AA1984D"
-net_rx_fill = "#6C71C44D"
+net_rx_fill = "#6E73C64D"
 peak_line = "#93A1A1B3"
 
 [charts.gpu]
-utilization = "#6C71C4"
-utilization_fill = "#6C71C44D"
-memory = "#D33682"
-memory_fill = "#D336824D"
+utilization = "#6E73C6"
+utilization_fill = "#6E73C64D"
+memory = "#D93D87"
+memory_fill = "#D93D874D"
 temperature = "#B58900"
-power = "#859900"
+power = "#A5B82F"
 encoder = "#2AA198"
-decoder = "#D33682"
-clock = "#268BD2"
-clock_fill = "#268BD2CC"
-fan = "#586E75"
+decoder = "#FF88B8"
+clock = "#469FE7"
+clock_fill = "#469FE7CC"
+fan = "#697F86"
 
 [cpu_breakdown]
 user = "#5FB3FD"
 system = "#E43A35"
-iowait = "#B58900"
+iowait = "#C09314"
 idle = "#586E75"
 user_fill = "#5FB3FD59"
 system_fill = "#E43A3559"
-iowait_fill = "#B5890059"
+iowait_fill = "#C0931459"
 idle_fill = "#586E7533"
 
 [priority]
@@ -164,6 +164,7 @@ preview = "#268BD2B3"
 empty_background = "#002B36"
 
 [ui.plot]
+grid = "#2B4F58"
 lines = "#268BD2"
 lines_hovered = "#DC322F"
 histogram = "#859900"

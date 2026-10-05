@@ -111,6 +111,28 @@ struct nvmlProcessInfo_t
     unsigned int computeInstanceId; // For MIG support
 };
 
+/// Opaque element type of the array nvmlDevice{Compute,Graphics}RunningProcesses{,_v2,_v3}
+/// write (#1306). Which struct each entry is depends on the symbol: the legacy unversioned export
+/// writes 16-byte nvmlProcessInfo_v1_t entries, _v2/_v3 write 24-byte nvmlProcessInfo_v2_t ones
+/// (#1092). The library declares the parameter as a pointer to that struct; any object pointer has
+/// the same ABI, so callers that size the entries at run time pass their byte buffer through this
+/// one incomplete type. Every definition of these entry points that the probe may call (the test
+/// mock included) must declare its third parameter as nvmlProcessInfoEntries*, so the call matches
+/// the callee's declared type (UBSan -fsanitize=function checks it).
+struct nvmlProcessInfoEntries;
+
+/// NVML PCI information (nvmlDeviceGetPciInfo_v3 / _v2): the device's PCI location and ids.
+struct nvmlPciInfo_t
+{
+    char busIdLegacy[16]; // NOLINT(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - mirrors the C struct
+    unsigned int domain;
+    unsigned int bus;
+    unsigned int device;
+    unsigned int pciDeviceId; // (device ID << 16) | vendor ID
+    unsigned int pciSubSystemId;
+    char busId[32]; // NOLINT(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - mirrors the C struct
+};
+
 // NOLINTEND(readability-identifier-naming)
 
 } // namespace Platform::NVML

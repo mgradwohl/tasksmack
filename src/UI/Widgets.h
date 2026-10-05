@@ -23,6 +23,28 @@ namespace UI::Widgets
     return UI::LineLayout::labelColumnWidth(widest, ImGui::GetFontSize());
 }
 
+/// Pull the current window back inside the main viewport's work area if it overhangs it. Call it
+/// right after Begin()/BeginPopupModal(), every frame the window is open.
+///
+/// A dialog positioned once, when it appears, stays there while its size changes (a font change)
+/// and while the main window shrinks underneath it, and can end up with its buttons beyond the
+/// window's edge (#1129). A dialog the user can drag keeps its position whenever it already fits;
+/// this only moves it when part of it would be out of reach. Pair it with a size constraint capped
+/// at the viewport (UI::DialogMetrics::computeDialogMaxExtent()) so the window is never larger than
+/// what it is being fitted into.
+inline void keepCurrentWindowInViewport()
+{
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const ImVec2 pos = ImGui::GetWindowPos();
+    const ImVec2 size = ImGui::GetWindowSize();
+    const ImVec2 clamped(UI::LineLayout::clampSpanStart(pos.x, size.x, viewport->WorkPos.x, viewport->WorkSize.x),
+                         UI::LineLayout::clampSpanStart(pos.y, size.y, viewport->WorkPos.y, viewport->WorkSize.y));
+    if (clamped.x != pos.x || clamped.y != pos.y)
+    {
+        ImGui::SetWindowPos(clamped);
+    }
+}
+
 /// Minimum height in pixels for bar fill rendering.
 /// Ensures at least a 1px marker remains visible even when the value is 0%,
 /// providing visual feedback that the bar exists and is capable of showing data.
@@ -77,7 +99,16 @@ filledButton(const char* label, const ImVec2& size, const ButtonFills& fills, co
     // colour that was actually drawn.
     const bool hovered = ImGui::IsItemHovered();
     const bool held = ImGui::IsItemActive();
-    const ImVec4& shown = (held && hovered) ? fills.pressed : (hovered ? fills.hovered : fills.resting);
+    const ImVec4* shownFill = &fills.resting;
+    if (held && hovered)
+    {
+        shownFill = &fills.pressed;
+    }
+    else if (hovered)
+    {
+        shownFill = &fills.hovered;
+    }
+    const ImVec4& shown = *shownFill;
 
     const ImVec2 rectMin = ImGui::GetItemRectMin();
     const ImVec2 rectMax = ImGui::GetItemRectMax();
@@ -109,7 +140,8 @@ inline void drawVerticalBarWithValue(const char* id,
                                      const char* labelText = nullptr,
                                      const char* tooltipText = nullptr)
 {
-    value01 = std::clamp(value01, 0.0F, 1.0F);
+    // NaN (no reading) would pass straight through std::clamp into the rectangle coordinates (#1148).
+    value01 = (value01 > 0.0F) ? std::min(value01, 1.0F) : 0.0F;
 
     const ImGuiStyle& style = ImGui::GetStyle();
     const float valueTextH = (valueText != nullptr && valueText[0] != '\0') ? ImGui::GetTextLineHeight() : 0.0F;
@@ -174,7 +206,7 @@ inline void drawVerticalBarWithValue(const char* id,
                                      const char* labelText = nullptr,
                                      const char* tooltipText = nullptr)
 {
-    const double clamped = std::clamp(value01, 0.0, 1.0);
+    const double clamped = (value01 > 0.0) ? std::min(value01, 1.0) : 0.0; // NaN -> 0, as above
     drawVerticalBarWithValue(id,
                              static_cast<float>(clamped), // Narrowing: UI geometry uses float; value is clamped to [0,1]
                              color,

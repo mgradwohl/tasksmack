@@ -12,8 +12,12 @@
 
 #include <atomic>
 #include <filesystem>
+#include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <utility>
 
 namespace Platform
 {
@@ -29,6 +33,10 @@ class LinuxProcessProbe : public IProcessProbe
     /// Useful for unit tests that supply synthetic /proc content.
     explicit LinuxProcessProbe(std::filesystem::path procRoot);
 
+    /// Testability constructor that also takes the powercap root (normally /sys/class/powercap),
+    /// so power detection can be exercised against fixture files.
+    LinuxProcessProbe(std::filesystem::path procRoot, std::filesystem::path powercapRoot);
+
     ~LinuxProcessProbe() override = default;
 
     LinuxProcessProbe(const LinuxProcessProbe&) = delete;
@@ -42,23 +50,52 @@ class LinuxProcessProbe : public IProcessProbe
     [[nodiscard]] uint64_t totalCpuTime() const override;
     [[nodiscard]] long ticksPerSecond() const override;
     [[nodiscard]] uint64_t systemTotalMemory() const override;
+    [[nodiscard]] std::optional<PackageEnergyReading> readPackageEnergy() const override;
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     /// Set the socket stats cache TTL (Linux only)
     /// @param ttlMs Time-to-live in milliseconds for cached socket stats
     /// Use this to override the default cache TTL at runtime (e.g., from user config)
     void setSocketStatsCacheTtl(std::chrono::milliseconds ttlMs) override;
+
+    /// Every TCP socket's cumulative byte counters from Netlink INET_DIAG, each attributed to the
+    /// process holding it via the inode-to-PID map. Raw readings only: Domain accumulates them into
+    /// per-process totals (#1099).
+    [[nodiscard]] SocketTrafficReading readSocketTraffic() const override;
+
+    /// Test seam: attribute network traffic from `socketStats` (e.g. one over a scripted netlink
+    /// transport) instead of the real socket. Not thread-safe; call before sampling starts.
+    void setSocketStatsForTesting(std::shared_ptr<NetlinkSocketStats> socketStats);
 #endif
+
+    /// Test seam: called at the end of enumerate(), after it captured the CPU total, so a test can
+    /// change /proc/stat before totalCpuTime() is called and check the total was taken with the
+    /// processes' stat reads (#1119). Not thread-safe against a concurrent enumerate(); set it before
+    /// sampling starts.
+    void setEnumerateTailHookForTesting(std::function<void()> hook)
+    {
+        m_EnumerateTailHook = std::move(hook);
+    }
 
   private:
     std::filesystem::path m_ProcRoot;
+    std::filesystem::path m_PowercapRoot;
     long m_TicksPerSecond;
     uint64_t m_PageSize;
     uint64_t m_BootTimeEpoch = 0;                            // System boot time (Unix epoch seconds)
     mutable std::once_flag m_IoCountersCheckFlag;            // Thread-safe one-time initialization
     mutable std::atomic<bool> m_IoCountersAvailable = false; // Cached capability check (atomic for thread-safe read)
+    // Total CPU time read straight after enumerate()'s per-process stat pass, for the totalCpuTime()
+    // call that follows it (NO_CAPTURED_TOTAL once taken, or before the first enumerate()). Read later -- after network attribution, whose
+    // periodic inode->PID rebuild scans every /proc/*/fd -- the total's interval drifted from the processes' and every CPU% showed a
+    // sawtooth (#1119). A failed read is captured as 0, not left as "none", so totalCpuTime() hands ProcessModel that 0 (it skips the
+    // interval) instead of re-reading after the tail and reintroducing the skew.
+    static constexpr std::uint64_t NO_CAPTURED_TOTAL = std::numeric_limits<std::uint64_t>::max();
+    mutable std::atomic<std::uint64_t> m_TotalCpuTimeAtEnumerate = NO_CAPTURED_TOTAL;
+    std::function<void()> m_EnumerateTailHook; // See setEnumerateTailHookForTesting()
     bool m_HasPowerCap = false;
     std::string m_PowerCapPath;
+    std::uint64_t m_PowerCapMaxRangeUj = 0; // max_energy_range_uj, where the counter wraps (0: unknown)
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     // Per-process network monitoring via Netlink INET_DIAG. m_SocketStatsMutex guards
@@ -99,10 +136,11 @@ class LinuxProcessProbe : public IProcessProbe
     /// Parse CPU affinity mask for a process using sched_getaffinity
     static void parseProcessAffinity(int32_t pid, ProcessCounters& counters);
 
-    /// Parse /proc/[pid]/io for I/O counters (requires permissions)
+    /// Parse /proc/[pid]/io for I/O counters (requires permissions); unreadable sets ioCountersAvailable = false
     static void parseProcessIo(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot);
 
-    /// Count file descriptors in /proc/[pid]/fd (may fail due to permissions)
+    /// Count file descriptors in /proc/[pid]/fd. Unreadable (permissions) sets handleCountAvailable and
+    /// networkCountersAvailable = false: neither the count nor the process's connections can be known.
     static void countProcessFds(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot);
 
     /// Check if we can read I/O counters using the injected proc root
@@ -114,21 +152,28 @@ class LinuxProcessProbe : public IProcessProbe
     /// Read total CPU time from /proc/stat
     [[nodiscard]] uint64_t readTotalCpuTime() const;
 
+    /// /proc/stat's first line: all CPU time, and the part processes' utime + stime account for.
+    struct CpuTimes
+    {
+        uint64_t total = 0;
+        uint64_t busy = 0;
+    };
+    [[nodiscard]] std::optional<CpuTimes> readCpuTimes() const;
+
     /// Read system boot time from /proc/stat (returns Unix epoch seconds, 0 if unavailable)
     [[nodiscard]] static uint64_t readBootTime(const std::filesystem::path& procRoot);
 
-    /// Check if RAPL powercap is available and find the path
+    /// Find a RAPL package energy file this process can actually read (not just one that exists:
+    /// energy_uj is root-only on current kernels, #1103), and its wrap point.
     [[nodiscard]] bool detectPowerCap();
 
-    /// Read system-wide energy from RAPL (returns microjoules, 0 if unavailable)
-    [[nodiscard]] uint64_t readSystemEnergy() const;
-
-    /// Attribute system energy to processes based on CPU usage
-    void attributeEnergyToProcesses(std::vector<ProcessCounters>& processes) const;
+    /// Read the package energy counter in microjoules, or nullopt if it can't be read.
+    [[nodiscard]] std::optional<uint64_t> readSystemEnergy() const;
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
-    /// Attribute network bytes to processes using Netlink socket stats
-    void attributeNetworkToProcesses(std::vector<ProcessCounters>& processes) const;
+
+    /// The inode-to-PID map, rebuilt from /proc/[pid]/fd when its TTL has expired (see m_InodeToPidCache).
+    [[nodiscard]] std::shared_ptr<const std::unordered_map<std::uint64_t, std::int32_t>> currentInodeToPidMap() const;
 
     /// Thread-safe copy of the current NetlinkSocketStats instance (see m_SocketStats).
     [[nodiscard]] std::shared_ptr<NetlinkSocketStats> socketStats() const;

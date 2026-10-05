@@ -1,13 +1,18 @@
 /// @file test_GpuSectionEmptyState.cpp
 /// @brief Tests for GpuSection::classifyEmptyState(), which decides what the GPU tab says when it
-/// has nothing to chart (#927).
+/// has nothing to chart (#927), and the GPU header helpers (VRAM total #1114, label #1117).
 
 #include "App/Panels/GpuSection.h"
+#include "Domain/GPUSnapshot.h"
 #include "Platform/GPUTypes.h"
+#include "UI/Format.h"
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <optional>
+#include <string>
+#include <vector>
 
 namespace App
 {
@@ -117,6 +122,46 @@ TEST(GpuSectionEmptyStateTest, ReadingsMeanTheTabRenders)
     // chart.
     EXPECT_EQ(classifyEmptyState(true, true, 0, 1), EmptyReason::None);
     EXPECT_EQ(classifyEmptyState(true, false, 0, 1), EmptyReason::None);
+}
+
+Domain::GPUSnapshot gpuSnapshot(bool isIntegrated, std::uint64_t memoryTotalBytes)
+{
+    Domain::GPUSnapshot snapshot;
+    snapshot.isIntegrated = isIntegrated;
+    snapshot.memoryTotalBytes = memoryTotalBytes;
+    return snapshot;
+}
+
+constexpr std::uint64_t GIB = 1024ULL * 1024ULL * 1024ULL;
+
+// #1114: an integrated GPU's memory total is borrowed system RAM, so the header's VRAM figure leaves
+// it out. An iGPU-only laptop shows no VRAM; an iGPU + 8 GiB dGPU laptop shows 8 GiB, not ~24.
+TEST(GpuSectionVramTest, IntegratedGpusAreNotCountedAsVram)
+{
+    const std::vector<Domain::GPUSnapshot> igpuOnly{gpuSnapshot(true, 16 * GIB)};
+    EXPECT_EQ(GpuSection::totalDedicatedVramBytes(igpuOnly), 0U);
+
+    const std::vector<Domain::GPUSnapshot> hybrid{gpuSnapshot(true, 16 * GIB), gpuSnapshot(false, 8 * GIB)};
+    EXPECT_EQ(GpuSection::totalDedicatedVramBytes(hybrid), 8 * GIB);
+
+    const std::vector<Domain::GPUSnapshot> twoDiscrete{gpuSnapshot(false, 8 * GIB), gpuSnapshot(false, 12 * GIB)};
+    EXPECT_EQ(GpuSection::totalDedicatedVramBytes(twoDiscrete), 20 * GIB);
+
+    EXPECT_EQ(GpuSection::totalDedicatedVramBytes({}), 0U);
+}
+
+// #1117: a sleeping GPU's header says so, and keeps one ImGui id however its label changes.
+TEST(GpuSectionHeaderTest, LabelShowsKindVramAndSleep)
+{
+    const std::string vram = UI::Format::formatBytes(static_cast<double>(8 * GIB));
+    const auto discrete = GpuSection::gpuHeaderLabel("*", "RTX", false, 8 * GIB, false);
+    EXPECT_EQ(discrete, "* RTX, " + vram + " VRAM [Discrete]###gpuHeader");
+
+    const auto sleeping = GpuSection::gpuHeaderLabel("*", "RTX", false, 8 * GIB, true);
+    EXPECT_EQ(sleeping, "* RTX, " + vram + " VRAM [Discrete] (Sleeping)###gpuHeader");
+
+    const auto integrated = GpuSection::gpuHeaderLabel("*", "Iris", true, 16 * GIB, false);
+    EXPECT_EQ(integrated, "* Iris [Shared Memory]###gpuHeader");
 }
 
 } // namespace

@@ -7,7 +7,14 @@
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 #include <thread>
+#include <vector>
+
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 namespace UI
 {
@@ -567,6 +574,66 @@ windowBg = "#1E1E1E"
     ASSERT_TRUE(info.has_value());
     EXPECT_EQ(info->id, "no-meta");
 }
+
+// A [meta] table missing a key used to dereference the nullptr table::get() returns, which
+// crashed TaskSmack at startup for a user theme (#1095).
+TEST_F(ThemeLoaderDiscoveryTest, LoadThemeInfo_MetaWithoutDescription)
+{
+    createThemeFile("no-description.toml", "[meta]\nname = \"Mine\"\n");
+
+    auto info = ThemeLoader::loadThemeInfo(m_TempDir / "no-description.toml");
+    ASSERT_TRUE(info.has_value());
+    EXPECT_EQ(info->name, "Mine");
+    EXPECT_TRUE(info->description.empty());
+}
+
+TEST_F(ThemeLoaderDiscoveryTest, LoadThemeInfo_MetaWithoutName)
+{
+    createThemeFile("no-name.toml", "[meta]\ndescription = \"Unnamed\"\n");
+
+    auto info = ThemeLoader::loadThemeInfo(m_TempDir / "no-name.toml");
+    ASSERT_TRUE(info.has_value());
+    EXPECT_EQ(info->name, "no-name"); // falls back to the file's id
+    EXPECT_EQ(info->description, "Unnamed");
+}
+
+TEST_F(ThemeLoaderDiscoveryTest, LoadThemeInfo_EmptyMeta)
+{
+    createThemeFile("empty-meta.toml", "[meta]\n");
+
+    auto info = ThemeLoader::loadThemeInfo(m_TempDir / "empty-meta.toml");
+    ASSERT_TRUE(info.has_value());
+    EXPECT_EQ(info->name, "empty-meta");
+    EXPECT_TRUE(info->description.empty());
+}
+
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_MetaWithoutName)
+{
+    createThemeFile("unnamed-theme.toml", std::string("[meta]\ndescription = \"No name\"\n") + k_FullThemeTomlBody);
+
+    auto theme = ThemeLoader::loadTheme(m_TempDir / "unnamed-theme.toml");
+    ASSERT_TRUE(theme.has_value());
+    EXPECT_EQ(theme->name, "Unknown");
+}
+
+#ifndef _WIN32
+// An unreadable themes directory is skipped, not thrown out of UILayer::onAttach (#1127).
+TEST_F(ThemeLoaderDiscoveryTest, DiscoverThemes_UnreadableDirectoryIsEmpty)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root can read a mode-000 directory";
+    }
+    createThemeFile("hidden.toml", "[meta]\nname = \"Hidden\"\n");
+    std::filesystem::permissions(m_TempDir, std::filesystem::perms::none);
+
+    std::vector<ThemeInfo> themes;
+    EXPECT_NO_THROW(themes = ThemeLoader::discoverThemes(m_TempDir));
+    EXPECT_TRUE(themes.empty());
+
+    std::filesystem::permissions(m_TempDir, std::filesystem::perms::owner_all); // let TearDown remove it
+}
+#endif
 
 TEST_F(ThemeLoaderDiscoveryTest, LoadThemeInfo_NonExistentFile)
 {
@@ -1409,6 +1476,31 @@ TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRx_FallsBackToCpuMemoryWhenAbsen
     expectColorNear(theme->chartNetTx, theme->chartCpu);
     // When absent, net_rx falls back to chartMemory (#10893E)
     expectColorNear(theme->chartNetRx, theme->chartMemory);
+}
+
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_PlotGrid_FallsBackToBorderWhenAbsent)
+{
+    // k_FullThemeTomlBody has no ui.plot.grid. A theme written before the key existed keeps the grid
+    // it had: the window border (#1191).
+    const std::string toml = std::string("[meta]\nname = \"Fallback Grid\"\n\n") + k_FullThemeTomlBody;
+    createThemeFile("fallback-grid.toml", toml);
+
+    auto theme = ThemeLoader::loadTheme(m_TempDir / "fallback-grid.toml");
+    ASSERT_TRUE(theme.has_value());
+    expectColorNear(theme->plotGrid, theme->border);
+}
+
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_PlotGrid_ReadsTheKeyWhenPresent)
+{
+    std::string body = k_FullThemeTomlBody;
+    const auto plotSection = body.find("[ui.plot]\n");
+    ASSERT_NE(plotSection, std::string::npos);
+    body.insert(plotSection + std::string_view("[ui.plot]\n").size(), "grid = \"#123456\"\n");
+    createThemeFile("explicit-grid.toml", std::string("[meta]\nname = \"Explicit Grid\"\n\n") + body);
+
+    auto theme = ThemeLoader::loadTheme(m_TempDir / "explicit-grid.toml");
+    ASSERT_TRUE(theme.has_value());
+    expectColorNear(theme->plotGrid, ThemeLoader::hexToImVec4("#123456"));
 }
 
 TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRxFill_FallsBackToAlphaScaledLineColorWhenAbsent)

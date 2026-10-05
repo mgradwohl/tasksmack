@@ -1,5 +1,6 @@
 #include "DXGIGPUProbe.h"
 
+#include "DXGIAdapterLocation.h"
 #include "DXGIGPUProbeMath.h"
 #include "Platform/GPUTypes.h"
 #include "WinString.h"
@@ -29,6 +30,7 @@
 
 #include <cstring>
 #include <format>
+#include <optional>
 
 namespace Platform
 {
@@ -72,6 +74,36 @@ bool DXGIGPUProbe::isIntegratedGPU(IDXGIAdapter1* adapter)
     return isIntegratedGPUFromDesc(desc.VendorId, desc.Flags, desc.DedicatedVideoMemory);
 }
 
+bool DXGIGPUProbe::isListedAdapter(std::uint32_t flags, std::int32_t luidHighPart, std::uint32_t luidLowPart)
+{
+    const std::uint64_t luidKey = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(luidHighPart)) << 32U) | luidLowPart;
+    if (const auto it = m_ListedByLuid.find(luidKey); it != m_ListedByLuid.end())
+    {
+        return it->second;
+    }
+
+    const bool softwareFlag = (flags & static_cast<std::uint32_t>(DXGI_ADAPTER_FLAG_SOFTWARE)) != 0U;
+    std::optional<AdapterTypeBits> typeBits;
+    if (!softwareFlag)
+    {
+        const LUID luid{.LowPart = luidLowPart, .HighPart = luidHighPart};
+        if (const auto kind = adapterKind(luid))
+        {
+            typeBits = adapterTypeBits(*kind);
+        }
+    }
+    const bool listed = shouldListAdapter(softwareFlag, typeBits);
+    if (!listed)
+    {
+        spdlog::debug("DXGIGPUProbe: Skipping adapter LUID {} (software: {}, indirect display: {})",
+                      luidToPdhFormat(static_cast<std::uint32_t>(luidHighPart), luidLowPart),
+                      softwareFlag || (typeBits.has_value() && typeBits->softwareDevice),
+                      typeBits.has_value() && typeBits->indirectDisplayDevice);
+    }
+    m_ListedByLuid.emplace(luidKey, listed);
+    return listed;
+}
+
 std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
 {
     std::vector<GPUInfo> gpus;
@@ -97,9 +129,9 @@ std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
 
         if (SUCCEEDED(hr))
         {
-            // Skip software adapters (WARP, etc.)
-            constexpr UINT SOFTWARE_FLAG = 2;
-            if ((desc.Flags & SOFTWARE_FLAG) == 0)
+            // Skip software adapters (WARP, etc.) and indirect-display adapters (#1251)
+            if (isListedAdapter(
+                    desc.Flags, static_cast<std::int32_t>(desc.AdapterLuid.HighPart), static_cast<std::uint32_t>(desc.AdapterLuid.LowPart)))
             {
                 GPUInfo info{};
 
@@ -126,11 +158,17 @@ std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
                 // Device index
                 info.deviceIndex = adapterIndex;
 
-                spdlog::debug("DXGIGPUProbe: Enumerated GPU {}: {} ({}) - LUID: {}, Integrated: {}",
+                // PCI identity, in NVML's pciDeviceId encoding, for matching to NVML (#1091)
+                info.pciDeviceId = (static_cast<std::uint32_t>(desc.DeviceId) << 16U) | (desc.VendorId & 0xFFFFU);
+                info.pciLocation = adapterPciLocation(desc.AdapterLuid);
+
+                spdlog::debug("DXGIGPUProbe: Enumerated GPU {}: {} ({}) - LUID: {}, PCI: {}, Integrated: {}",
                               adapterIndex,
                               info.name,
                               info.vendor,
                               info.luidId,
+                              info.pciLocation ? std::format("{:02x}:{:02x}", info.pciLocation->bus, info.pciLocation->device)
+                                               : std::string("unknown"),
                               info.isIntegrated);
 
                 gpus.push_back(std::move(info));
@@ -169,21 +207,19 @@ std::vector<GPUCounters> DXGIGPUProbe::readGPUCounters()
 
         if (SUCCEEDED(hrDesc))
         {
-            // Skip software adapters
-            constexpr UINT SOFTWARE_FLAG = 2;
-            if ((desc.Flags & SOFTWARE_FLAG) == 0)
+            // Skip the same adapters enumerateGPUs() does, so the "GPU{index}" ids match (#1251)
+            if (isListedAdapter(
+                    desc.Flags, static_cast<std::int32_t>(desc.AdapterLuid.HighPart), static_cast<std::uint32_t>(desc.AdapterLuid.LowPart)))
             {
-                GPUCounters counter{};
-                counter.gpuId = std::format("GPU{}", adapterIndex);
-
                 // The adapter's own memory size. Usage is not read here: QueryVideoMemoryInfo
                 // reports the calling process's usage and budget, not the adapter's, so the GPU tab
                 // used to chart TaskSmack's own few MB as the GPU's memory (#1029). WindowsGPUProbe
-                // fills memoryUsedBytes from PDH's adapter-wide counters (or NVML).
+                // fills memoryUsedBytes from PDH's adapter-wide counters (or NVML); until then
+                // utilization and memory are unread, not a real 0 (#1245).
                 const bool integrated = isIntegratedGPUFromDesc(desc.VendorId, desc.Flags, desc.DedicatedVideoMemory);
-                counter.memoryTotalBytes = adapterMemoryTotalBytes(integrated, desc.DedicatedVideoMemory, desc.SharedSystemMemory);
-                counter.memoryUsedBytes = 0;
-                counters.push_back(std::move(counter));
+                counters.push_back(
+                    makeDXGIAdapterCounters(std::format("GPU{}", adapterIndex),
+                                            adapterMemoryTotalBytes(integrated, desc.DedicatedVideoMemory, desc.SharedSystemMemory)));
             }
         }
 

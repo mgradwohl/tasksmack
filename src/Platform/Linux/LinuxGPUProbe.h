@@ -4,6 +4,7 @@
 #include "Platform/IGPUProbe.h"
 
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace Platform
@@ -20,7 +21,10 @@ class ROCmGPUProbe;
 class LinuxGPUProbe : public IGPUProbe
 {
   public:
-    LinuxGPUProbe();
+    /// `drmBasePath` and `pciDevicesRoot` are the sysfs roots the vendor probes read; tests pass a
+    /// fake tree. Each adapter's GPUInfo::sensorCapabilities says which of the OR'd capabilities()
+    /// it actually reports (#1112).
+    explicit LinuxGPUProbe(std::string drmBasePath = "/sys/class/drm", const std::string& pciDevicesRoot = "/sys/bus/pci/devices");
     ~LinuxGPUProbe() override;
 
     // Rule of 5
@@ -33,6 +37,9 @@ class LinuxGPUProbe : public IGPUProbe
     [[nodiscard]] std::vector<GPUCounters> readGPUCounters() override;
     [[nodiscard]] std::vector<ProcessGPUCounters> readProcessGPUCounters() override;
     [[nodiscard]] GPUCapabilities capabilities() const override;
+    /// Rescans every vendor probe, available or not -- a probe with no device at startup can gain
+    /// one (a hot-plugged eGPU) -- and reports whether any of them changed (#1116, #1289).
+    [[nodiscard]] bool rescanGPUs(GPURescan depth) override;
 
   private:
     std::unique_ptr<NVMLGPUProbe> m_NVMLProbe;

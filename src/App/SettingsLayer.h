@@ -35,6 +35,9 @@ class SettingsLayer : public Core::Layer
     void applySettings();
 
     bool m_OpenRequested = false;
+    // Whether one of the dialog's combos was open on the previous frame, so the Escape that closes
+    // a combo does not also cancel the dialog (#1129).
+    bool m_ComboOpenLastFrame = false;
 
     // The combos' state while the dialog is open. Apply writes only the ones the user picked (#1120).
     Detail::ComboState m_ThemeChoice;

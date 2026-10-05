@@ -46,6 +46,8 @@ if(WIN32)
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-profile-etw-resize.ps1)
         add_test(NAME EtwCaptureScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-profile-etw.ps1)
+        add_test(NAME EtwAnalysisScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-analyze-etw.ps1)
     endif()
 endif()
 
@@ -55,16 +57,21 @@ set(COMMON_TEST_SOURCES
     test_main.cpp
     Core/test_Application.cpp
     Core/test_EnvUtils.cpp
+    Core/test_ApplicationEvents.cpp
     Core/test_Event.cpp
     Core/test_Layer.cpp
     Core/test_PathService.cpp
     Core/test_VideoBackend.cpp
     Core/test_Window.cpp
+    Core/test_WindowEventRouting.cpp
     Core/test_WindowEvents.cpp
+    Core/test_WindowGeometry.cpp
     Domain/test_History.cpp
     Domain/test_Numeric.cpp
     Domain/test_SingleLineText.cpp
+    Domain/test_ProcessEnergyAttribution.cpp
     Domain/test_ProcessModel.cpp
+    Domain/test_SocketTrafficAccumulator.cpp
     Domain/test_GPUModel.cpp
     Domain/test_ProcessStatus.cpp
     Domain/test_SystemModel.cpp
@@ -81,11 +88,13 @@ set(COMMON_TEST_SOURCES
     UI/test_RateAxis.cpp
     UI/test_BundledThemes.cpp
     UI/test_ColorContrast.cpp
+    UI/test_ColorDifference.cpp
     UI/test_StyleScale.cpp
     UI/test_DialogMetrics.cpp
     UI/test_LineLayout.cpp
     UI/test_IconEncoding.cpp
     App/test_DialogGeometry.cpp
+    UI/test_ThemeCatalog.cpp
     UI/test_ThemeLoader.cpp
     UI/test_AssetPath.cpp
     UI/test_ThemeHeader.cpp
@@ -93,6 +102,7 @@ set(COMMON_TEST_SOURCES
     UI/test_IconLoader.cpp
     UI/test_MonospaceFontPath.cpp
     UI/test_DpiScale.cpp
+    UI/test_FontFileCache.cpp
     App/test_ProcessColumnConfig.cpp
     App/test_ProcessSortUtils.cpp
     App/test_AdaptiveIntervalUtils.cpp
@@ -104,6 +114,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessDetailsLayout.cpp
     App/test_GpuClockReference.cpp
     App/test_GpuSectionEmptyState.cpp
+    App/test_GpuSectionDrawList.cpp
     App/test_ProcessRowFormat.cpp
     Platform/test_CgroupFreezerPath.cpp
     Platform/test_ProcessIdentity.cpp
@@ -116,13 +127,17 @@ set(COMMON_TEST_SOURCES
     App/test_UserConfig.cpp
     App/test_UserConfigHelpers.cpp
     App/test_UserConfigPersistence.cpp
+    App/test_InstanceLock.cpp
     App/test_PanelTabs.cpp
+    App/test_TabLabel.cpp
     App/test_PriorityHelpers.cpp
     App/test_ProcessGpuHelpers.cpp
     App/test_ProcessResourceHelpers.cpp
+    App/test_ProcessHistoryHelpers.cpp
     App/test_ProcessActionHelpers.cpp
     App/test_SettingsLayerDetail.cpp
     App/test_NetInterfaceUtils.cpp
+    App/test_PowerStatusText.cpp
 )
 set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_ProcessProbeContract.cpp
@@ -156,6 +171,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxProcessProbe.cpp
     Platform/test_LinuxSystemProbe.cpp
     Platform/test_LinuxProcessActions.cpp
+    Platform/test_LinuxProcessStatus.cpp
     Platform/test_LinuxDiskProbe.cpp
     Platform/test_LinuxPathProvider.cpp
     Platform/test_LinuxPowerProbe.cpp
@@ -238,6 +254,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Core/Window.cpp
     # App layer
     ${CMAKE_SOURCE_DIR}/src/App/UserConfig.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/InstanceLock.cpp
     # Domain layer
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/GPUModel.cpp
@@ -256,6 +273,19 @@ add_executable(TaskSmackTests
     ${CMAKE_CURRENT_SOURCE_DIR}/Mocks/ThemeStub.cpp
     ${PLATFORM_SRC_UNDER_TEST}
 )
+
+# The Theme stub defines Theme::get() & co. with the same names (and bodies) as src/UI/Theme.cpp.
+# With honest coverage (#1131) the report merges the test binary with the app binary, and LLVM matches
+# profile counters by function name and hash, not by binary -- so stub executions were credited to the
+# production Theme.cpp, which no test runs. Leave the stub uninstrumented; Theme.cpp keeps its coverage.
+if(TASKSMACK_ENABLE_COVERAGE)
+    if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+        set(TASKSMACK_NO_COVERAGE_FLAGS "/clang:-fno-profile-instr-generate" "/clang:-fno-coverage-mapping")
+    else()
+        set(TASKSMACK_NO_COVERAGE_FLAGS -fno-profile-instr-generate -fno-coverage-mapping)
+    endif()
+    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/Mocks/ThemeStub.cpp PROPERTIES COMPILE_OPTIONS "${TASKSMACK_NO_COVERAGE_FLAGS}")
+endif()
 
 target_include_directories(TaskSmackTests PRIVATE
     ${CMAKE_SOURCE_DIR}/src

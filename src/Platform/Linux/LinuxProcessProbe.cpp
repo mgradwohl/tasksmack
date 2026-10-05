@@ -4,9 +4,11 @@
 
 #include "LinuxProcessProbe.h"
 
-#include "CgroupFreezerPath.h"
+#include "CgroupFreezeStatus.h"
 #include "Domain/SamplingConfig.h"
+#include "Platform/IProcessProbe.h"
 #include "Platform/PlatformConfig.h"
+#include "UserNameLookup.h"
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 #include "NetlinkSocketStats.h"
@@ -29,7 +31,6 @@
 #include <cstdio>
 #include <exception>
 #include <filesystem>
-#include <format>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -90,7 +91,6 @@ template<std::integral T> [[nodiscard]] constexpr auto toU64PositiveOr(T value, 
     return static_cast<uint64_t>(value);
 }
 
-using CgroupPath::buildContainedCgroupPath;
 using ProcParsing::FdGuard;
 using ProcParsing::parseNum;
 using ProcParsing::readProcFile;
@@ -122,20 +122,8 @@ std::mutex& getUsernameCacheMutex()
         return it->second;
     }
 
-    // Look up username from passwd database (thread-safe version)
-    struct passwd pwBuf = {};
-    struct passwd* pwResult = nullptr;
-    std::array<char, 1024> buffer{};
-    std::string username;
-    if (getpwuid_r(uid, &pwBuf, buffer.data(), buffer.size(), &pwResult) == 0 && pwResult != nullptr && pwResult->pw_name != nullptr)
-    {
-        username = pwResult->pw_name;
-    }
-    else
-    {
-        // Fall back to UID as string
-        username = std::to_string(uid);
-    }
+    // Look up username from passwd database (thread-safe version); fall back to the UID as a string.
+    std::string username = lookUpUserName(uid, ::getpwuid_r).value_or(std::to_string(uid));
 
     cache[uid] = username;
     return username;
@@ -147,7 +135,12 @@ LinuxProcessProbe::LinuxProcessProbe() : LinuxProcessProbe(std::filesystem::path
 {}
 
 LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot)
+    : LinuxProcessProbe(std::move(procRoot), std::filesystem::path("/sys/class/powercap"))
+{}
+
+LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot, std::filesystem::path powercapRoot)
     : m_ProcRoot(std::move(procRoot)),
+      m_PowercapRoot(std::move(powercapRoot)),
       m_TicksPerSecond(sysconf(_SC_CLK_TCK)),
       m_PageSize(toU64PositiveOr(sysconf(_SC_PAGESIZE), 4096ULL)),
       m_BootTimeEpoch(readBootTime(m_ProcRoot))
@@ -211,6 +204,13 @@ void LinuxProcessProbe::setSocketStatsCacheTtl(std::chrono::milliseconds ttlMs)
     }
 }
 
+void LinuxProcessProbe::setSocketStatsForTesting(std::shared_ptr<NetlinkSocketStats> socketStats)
+{
+    m_HasNetworkCounters = socketStats != nullptr && socketStats->isAvailable();
+    const std::scoped_lock lock(m_SocketStatsMutex);
+    m_SocketStats = std::move(socketStats);
+}
+
 std::shared_ptr<NetlinkSocketStats> LinuxProcessProbe::socketStats() const
 {
     const std::scoped_lock lock(m_SocketStatsMutex);
@@ -269,6 +269,10 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         {
             parseProcessIo(pid, counters, m_ProcRoot);
         }
+        else
+        {
+            counters.ioCountersAvailable = false; // not read at all (capabilities() reports hasIoCounters = false)
+        }
         counters.status = getProcessStatus(pid, m_ProcRoot); // Get cgroup freezer status
         processes.push_back(std::move(counters));
     }
@@ -278,19 +282,15 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         spdlog::warn("Error iterating {}: {}", procPath.string(), errorCode.message());
     }
 
-    // Attribute energy to processes if power monitoring is available
-    if (m_HasPowerCap)
-    {
-        attributeEnergyToProcesses(processes);
-    }
+    // The system total that the processes' CPU deltas are divided by, taken now -- right after
+    // their stat reads, so nothing that runs before totalCpuTime() is called can skew its interval
+    // from theirs (#1119).
+    m_TotalCpuTimeAtEnumerate.store(readTotalCpuTime(), std::memory_order_relaxed);
 
-#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
-    // Attribute network bytes to processes if socket stats are available
-    if (m_HasNetworkCounters && socketStats())
+    if (m_EnumerateTailHook)
     {
-        attributeNetworkToProcesses(processes);
+        m_EnumerateTailHook(); // Tests: time passes between the capture and totalCpuTime()
     }
-#endif
 
     return processes;
 }
@@ -323,6 +323,7 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasPeakRss = false,
                                .hasCpuAffinity = true,                    // From sched_getaffinity
                                .hasNetworkCounters = hasNetworkCounters,  // From Netlink INET_DIAG (if available)
+                               .hasUdpNetworkCounters = false,            // sock_diag has no UDP byte counters (#1101)
                                .hasPowerUsage = m_HasPowerCap,            // Available if RAPL is detected
                                .hasStatus = true,                         // From cgroup freezer state
                                .hasReducedPrivileges = reducedPrivileges, // Non-root: incomplete FD/IO data
@@ -331,6 +332,13 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
 
 uint64_t LinuxProcessProbe::totalCpuTime() const
 {
+    // The value enumerate() captured after its stat pass, once -- even a failed read's 0; otherwise a
+    // fresh read.
+    if (const uint64_t captured = m_TotalCpuTimeAtEnumerate.exchange(NO_CAPTURED_TOTAL, std::memory_order_relaxed);
+        captured != NO_CAPTURED_TOTAL)
+    {
+        return captured;
+    }
     return readTotalCpuTime();
 }
 
@@ -560,6 +568,15 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
     // Format: /proc/[pid]/cmdline
     // Arguments are separated by NUL bytes
 
+    // A zombie has no command line left, and /proc/<pid>/cmdline may also be unreadable for another
+    // user's process even though stat showed state Z. Either way it must not get the kernel-thread
+    // label: mark it <defunct>, as ps does (#1155).
+    if (counters.state == 'Z')
+    {
+        counters.command = counters.name + " <defunct>";
+        return;
+    }
+
     const std::string cmdlinePath = (procRoot / std::to_string(pid) / "cmdline").string();
 
     // Open once: distinguishes "unreadable" (permission denied, hidepid) from
@@ -609,7 +626,7 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
 
     if (buf.empty())
     {
-        // File opened and fully read but is empty: genuine kernel thread — use bracketed name.
+        // File opened and fully read but empty: a kernel thread (zombies were handled above).
         counters.command = "[" + counters.name + "]";
         return;
     }
@@ -685,8 +702,9 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters, c
     // cancelled_write_bytes: <bytes>
     //
     // Note: This file requires CAP_DAC_READ_SEARCH capability or running as root,
-    // or being the owner of the process. If we can't read it, we silently skip
-    // (capabilities() already reports hasIoCounters = false by default).
+    // or being the owner of the process. If we can't read it -- typically another user's
+    // process without root -- the counters are marked unavailable rather than left at a
+    // 0 that reads as "no I/O" (#1110).
 
     const std::string ioPath = (procRoot / std::to_string(pid) / "io").string();
     constexpr std::size_t BUF_SIZE = 512;
@@ -694,10 +712,13 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters, c
     const std::size_t len = readProcFile(ioPath.c_str(), buf.data(), BUF_SIZE);
     if (len == 0)
     {
-        // Common case: insufficient permissions, just return
+        // Common case: insufficient permissions
+        counters.ioCountersAvailable = false;
         return;
     }
 
+    bool hasRead = false;
+    bool hasWrite = false;
     const char* p = buf.data();
     const char* const end = buf.data() + len;
     while (p < end)
@@ -725,6 +746,7 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters, c
             if (std::from_chars(ptr, lineEnd, readBytes).ec == std::errc{})
             {
                 counters.readBytes = readBytes;
+                hasRead = true;
             }
         }
         else if (lineView.starts_with(writePrefix))
@@ -738,11 +760,14 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters, c
             if (std::from_chars(ptr, lineEnd, writeBytes).ec == std::errc{})
             {
                 counters.writeBytes = writeBytes;
+                hasWrite = true;
             }
         }
 
         p = (lineEnd < end) ? lineEnd + 1 : end;
     }
+
+    counters.ioCountersAvailable = hasRead && hasWrite;
 }
 
 void LinuxProcessProbe::countProcessFds(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot)
@@ -768,7 +793,13 @@ void LinuxProcessProbe::countProcessFds(int32_t pid, ProcessCounters& counters, 
     }
     catch (const std::exception& ex)
     {
-        // Permission errors and other exceptional situations - leave handleCount at 0
+        // Permission errors (another user's process without root) and other exceptional situations:
+        // the count is unknown, not 0 (#1110). The process's connections can't be attributed to it
+        // either -- the socket inode-to-PID map is built from these same fd directories -- so its
+        // network counters are unknown too, not "no traffic".
+        counters.handleCount = 0;
+        counters.handleCountAvailable = false;
+        counters.networkCountersAvailable = false;
         spdlog::debug("LinuxProcessProbe: failed to enumerate FDs for pid {} at {}: {}", pid, fdPath.string(), ex.what());
     }
 }
@@ -791,96 +822,28 @@ bool LinuxProcessProbe::checkIoCountersAvailability(const std::filesystem::path&
 
 std::string LinuxProcessProbe::getProcessStatus(int32_t pid, const std::filesystem::path& procRoot)
 {
-    // Try cgroup v2 first: freezer.state
-    const auto cgroupV2FreezerPath = std::format("/sys/fs/cgroup/{}/freezer.state", pid);
-    {
-        std::array<char, 16> stateBuf{};
-        const std::size_t stateLen = readProcFile(cgroupV2FreezerPath.c_str(), stateBuf.data(), stateBuf.size());
-        if (stateLen > 0)
-        {
-            const std::string_view state(stateBuf.data(), stateLen);
-            if (state.starts_with("FROZEN") || state.starts_with("FREEZING"))
-            {
-                return "Suspended";
-            }
-        }
-    }
-
-    // Fallback to cgroup v1 freezer hierarchy
-    // /proc/[pid]/cgroup lists all cgroups for the process
+    // /proc/<pid>/cgroup names the process's cgroups: the v2 "0::<path>" line and/or v1 lines,
+    // including the freezer controller's. isCgroupFrozen() checks the matching freeze state.
+    // Read to EOF: a cgroup path can approach PATH_MAX, and a truncated one would point the check
+    // at the wrong cgroup.events (#1228 review).
     const auto cgroupPath = (procRoot / std::to_string(pid) / "cgroup").string();
-    constexpr std::size_t CGROUP_BUF = 2048;
-    std::array<char, CGROUP_BUF> cgroupBuf{};
-    const std::size_t cgroupLen = readProcFile(cgroupPath.c_str(), cgroupBuf.data(), CGROUP_BUF);
-    if (cgroupLen > 0)
+    const std::vector<char> cgroupContents = ProcParsing::readProcFileFull(cgroupPath.c_str());
+    if (!cgroupContents.empty() &&
+        CgroupPath::isCgroupFrozen(std::string_view(cgroupContents.data(), cgroupContents.size()), std::filesystem::path("/sys/fs/cgroup")))
     {
-        const char* p = cgroupBuf.data();
-        const char* const end = cgroupBuf.data() + cgroupLen;
-        while (p < end)
-        {
-            const char* lineEnd = p;
-            while (lineEnd < end && *lineEnd != '\n')
-            {
-                ++lineEnd;
-            }
-
-            // Format: hierarchy-ID:controllers:cgroup-path
-            const char* firstColon = p;
-            while (firstColon < lineEnd && *firstColon != ':')
-            {
-                ++firstColon;
-            }
-            const char* secondColon = (firstColon < lineEnd) ? firstColon + 1 : lineEnd;
-            while (secondColon < lineEnd && *secondColon != ':')
-            {
-                ++secondColon;
-            }
-
-            if (firstColon < lineEnd && secondColon < lineEnd)
-            {
-                const std::string_view controllers(firstColon + 1, static_cast<std::size_t>(secondColon - firstColon - 1));
-                const std::string_view cgroupSubPath(secondColon + 1, static_cast<std::size_t>(lineEnd - secondColon - 1));
-
-                // Check if this line has the freezer controller
-                if (controllers.contains("freezer"))
-                {
-                    // Build path: /sys/fs/cgroup/freezer/<cgroup-path>/freezer.state
-                    // Skip if cgroupSubPath is empty or doesn't start with /
-                    if (!cgroupSubPath.empty() && cgroupSubPath[0] == '/')
-                    {
-                        // cgroupSubPath came out of /proc/<pid>/cgroup, so it is untrusted input to
-                        // a file-access function (CodeQL cpp/path-injection). Validate containment
-                        // before opening anything: a ".." component would escape the freezer
-                        // hierarchy and make the FROZEN/FREEZING prefix test below a content oracle
-                        // for arbitrary readable files.
-                        const std::optional<std::filesystem::path> freezePathV1 = buildContainedCgroupPath(
-                            std::filesystem::path("/sys/fs/cgroup/freezer"), cgroupSubPath.substr(1), "freezer.state");
-                        if (freezePathV1.has_value())
-                        {
-                            const std::string freezePathStr = freezePathV1->string();
-                            std::array<char, 16> freezeStateBuf{};
-                            const std::size_t freezeLen = readProcFile(freezePathStr.c_str(), freezeStateBuf.data(), freezeStateBuf.size());
-                            if (freezeLen > 0)
-                            {
-                                const std::string_view state(freezeStateBuf.data(), freezeLen);
-                                if (state.starts_with("FROZEN") || state.starts_with("FREEZING"))
-                                {
-                                    return "Suspended";
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            p = (lineEnd < end) ? lineEnd + 1 : end;
-        }
+        return "Suspended";
     }
 
     // No special status
     return {};
 }
 uint64_t LinuxProcessProbe::readTotalCpuTime() const
+{
+    const auto times = readCpuTimes();
+    return times.has_value() ? times->total : 0;
+}
+
+std::optional<LinuxProcessProbe::CpuTimes> LinuxProcessProbe::readCpuTimes() const
 {
     // Format: /proc/stat — first line: "cpu user nice system idle iowait irq softirq steal …"
     // We only need the first line, so 256 bytes is ample.
@@ -891,7 +854,7 @@ uint64_t LinuxProcessProbe::readTotalCpuTime() const
     if (len == 0)
     {
         spdlog::warn("Failed to open {}", statPath);
-        return 0;
+        return std::nullopt;
     }
 
     const char* p = buf.data();
@@ -901,7 +864,7 @@ uint64_t LinuxProcessProbe::readTotalCpuTime() const
     if (len < 4 || p[0] != 'c' || p[1] != 'p' || p[2] != 'u' || p[3] != ' ')
     {
         spdlog::warn("Failed to parse {}", statPath);
-        return 0;
+        return std::nullopt;
     }
     p += 4; // skip "cpu "
 
@@ -925,11 +888,12 @@ uint64_t LinuxProcessProbe::readTotalCpuTime() const
         !parseNum(p, lineEnd, iowait) || !parseNum(p, lineEnd, irq) || !parseNum(p, lineEnd, softirq) || !parseNum(p, lineEnd, steal))
     {
         spdlog::warn("Failed to parse {}", statPath);
-        return 0;
+        return std::nullopt;
     }
 
-    // Total CPU time = all fields combined
-    return user + nice + system + idle + iowait + irq + softirq + steal;
+    // Total CPU time = all fields combined. Busy = the time processes' own utime + stime account
+    // for (user, nice and system), the interval denominator for energy attribution (#1093).
+    return CpuTimes{.total = user + nice + system + idle + iowait + irq + softirq + steal, .busy = user + nice + system};
 }
 
 uint64_t LinuxProcessProbe::readBootTime(const std::filesystem::path& procRoot)
@@ -1024,148 +988,156 @@ uint64_t LinuxProcessProbe::systemTotalMemory() const
 
 bool LinuxProcessProbe::detectPowerCap()
 {
-    // Try to find Intel RAPL package energy file
-    // Common paths: /sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj
-    const std::vector<std::string> possiblePaths = {
-        "/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj",
-        "/sys/class/powercap/intel-rapl:0/energy_uj",
+    // energy_uj has been root-only (0400) since the Platypus fix (CVE-2020-8694), so a file that
+    // exists is not enough: detection used to accept one by existence and then report 0 W for
+    // every process for a normal user (#1103). Only a file we can open counts.
+    const auto isReadable = [](const std::filesystem::path& path)
+    {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+        const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        if (fd == -1)
+        {
+            return false;
+        }
+        ::close(fd);
+        return true;
     };
 
-    for (const auto& path : possiblePaths)
+    std::vector<std::filesystem::path> candidates = {
+        m_PowercapRoot / "intel-rapl" / "intel-rapl:0" / "energy_uj",
+        m_PowercapRoot / "intel-rapl:0" / "energy_uj",
+    };
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(m_PowercapRoot, ec), end; !ec && it != end; it.increment(ec))
     {
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — POSIX open() is variadic
-        const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
-        if (fd != -1)
+        if (it->path().filename().string().starts_with("intel-rapl"))
         {
-            ::close(fd);
-            m_PowerCapPath = path;
-            return true;
+            candidates.push_back(it->path() / "energy_uj");
+            candidates.push_back(it->path() / "intel-rapl:0" / "energy_uj");
         }
     }
 
-    // Try to enumerate powercap directory
-    std::error_code ec;
-    const std::filesystem::path powercapDir("/sys/class/powercap");
-    if (std::filesystem::exists(powercapDir, ec) && std::filesystem::is_directory(powercapDir, ec))
+    for (const auto& path : candidates)
     {
-        for (const auto& entry : std::filesystem::directory_iterator(powercapDir, ec))
+        if (!isReadable(path))
         {
-            if (entry.is_directory() && entry.path().filename().string().starts_with("intel-rapl"))
-            {
-                std::filesystem::path energyFile = entry.path() / "energy_uj";
-                if (std::filesystem::exists(energyFile, ec))
-                {
-                    m_PowerCapPath = energyFile.string();
-                    return true;
-                }
+            continue;
+        }
+        m_PowerCapPath = path.string();
 
-                // Try package:0 subdirectory
-                const std::filesystem::path packageDir = entry.path() / "intel-rapl:0";
-                energyFile = packageDir / "energy_uj";
-                if (std::filesystem::exists(energyFile, ec))
-                {
-                    m_PowerCapPath = energyFile.string();
-                    return true;
-                }
+        // Where the counter wraps back to 0, so a wrap reads as the energy used, not a drop.
+        std::array<char, 32> buf{};
+        const std::string rangePath = (path.parent_path() / "max_energy_range_uj").string();
+        if (const std::size_t len = readProcFile(rangePath.c_str(), buf.data(), buf.size()); len > 0)
+        {
+            const char* p = buf.data();
+            if (!parseNum(p, buf.data() + len, m_PowerCapMaxRangeUj))
+            {
+                m_PowerCapMaxRangeUj = 0;
             }
         }
+        return true;
     }
 
     return false;
 }
 
-uint64_t LinuxProcessProbe::readSystemEnergy() const
+std::optional<uint64_t> LinuxProcessProbe::readSystemEnergy() const
 {
     if (m_PowerCapPath.empty())
     {
-        return 0;
+        return std::nullopt;
     }
 
     std::array<char, 32> buf{};
     const std::size_t len = readProcFile(m_PowerCapPath.c_str(), buf.data(), buf.size());
     if (len == 0)
     {
-        return 0;
+        return std::nullopt;
     }
 
     const char* p = buf.data();
     uint64_t energyUj = 0;
     if (!parseNum(p, buf.data() + len, energyUj))
     {
-        return 0;
+        return std::nullopt;
     }
 
     return energyUj; // Already in microjoules
 }
 
-void LinuxProcessProbe::attributeEnergyToProcesses(std::vector<ProcessCounters>& processes) const
+std::optional<PackageEnergyReading> LinuxProcessProbe::readPackageEnergy() const
 {
-    // Read system-wide energy
-    const uint64_t systemEnergy = readSystemEnergy();
-    if (systemEnergy == 0)
+    if (!m_HasPowerCap)
     {
-        return;
+        return std::nullopt;
     }
-
-    // Calculate total CPU time across all processes
-    uint64_t totalProcessCpuTime = 0;
-    for (const auto& proc : processes)
-    {
-        totalProcessCpuTime += (proc.userTime + proc.systemTime);
-    }
-
-    // Avoid division by zero
-    if (totalProcessCpuTime == 0)
-    {
-        return;
-    }
-
-    // Attribute energy proportionally based on CPU usage
-    // This is an approximation: energy per process = systemEnergy * (processCpuTime / totalCpuTime)
-    for (auto& proc : processes)
-    {
-        const uint64_t processCpuTime = proc.userTime + proc.systemTime;
-        const double cpuProportion = static_cast<double>(processCpuTime) / static_cast<double>(totalProcessCpuTime);
-        proc.energyMicrojoules = static_cast<uint64_t>(static_cast<double>(systemEnergy) * cpuProportion);
-    }
+    // Raw read only: ProcessModel shares it out between processes per interval (#1093).
+    const auto cpuTimes = readCpuTimes();
+    return PackageEnergyReading{.energyUj = readSystemEnergy(),
+                                .maxRangeUj = m_PowerCapMaxRangeUj,
+                                .busyCpuTicks = cpuTimes.has_value() ? std::optional{cpuTimes->busy} : std::nullopt};
 }
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
-void LinuxProcessProbe::attributeNetworkToProcesses(std::vector<ProcessCounters>& processes) const
+SocketTrafficReading LinuxProcessProbe::readSocketTraffic() const
 {
+    if (!m_HasNetworkCounters)
+    {
+        return {};
+    }
     // Copy out a stable local reference: if setSocketStatsCacheTtl() swaps m_SocketStats
     // concurrently, this call keeps using the instance it started with (kept alive by
     // this shared_ptr) rather than racing the reassignment.
     const auto stats = socketStats();
     if (!stats)
     {
-        return;
+        return {};
     }
 
-    // Query all TCP/UDP sockets with their byte counters
+    // Query all TCP sockets with their byte counters. A failed or partial dump comes back empty
+    // with sampledAt unset (#1160) and is reported as no reading (sampleTimeNs 0), not as an empty
+    // one: a socket missing from it would look closed and then, back in the next reading, new.
+    // The query is cached (DEFAULT_SOCKET_STATS_CACHE_TTL), so the same reading -- with the same
+    // sampledAt -- can come back for several calls; Domain folds it once.
     std::chrono::steady_clock::time_point sampledAt;
     const std::vector<SocketStats> sockets = stats->queryAllSockets(&sampledAt);
-
-    // The socket query is cached (DEFAULT_SOCKET_STATS_CACHE_TTL), so it can be older than this
-    // refresh. Stamp it on every process -- with sockets or not, and before the early returns below
-    // for an empty result -- so ProcessModel takes network rates over the time between real queries
-    // rather than between refreshes. An unstamped read in between would make the next real one fall
-    // back to the refresh interval and overstate its rate (#1063 review). A failed query
-    // (unavailable) leaves sampledAt unset and the processes unstamped.
-    if (sampledAt != std::chrono::steady_clock::time_point{})
+    if (sampledAt == std::chrono::steady_clock::time_point{})
     {
-        const auto sampleTimeNs =
-            static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(sampledAt.time_since_epoch()).count());
-        for (auto& proc : processes)
-        {
-            proc.netSampleTimeNs = sampleTimeNs;
-        }
+        return {};
     }
+
+    SocketTrafficReading reading;
+    reading.sampleTimeNs =
+        static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(sampledAt.time_since_epoch()).count());
     if (sockets.empty())
     {
-        return;
+        return reading; // a complete reading with no sockets: every connection closed
     }
 
+    // Attribute each socket to the process holding it (socket inode -> PID, from /proc/[pid]/fd).
+    // A socket not in the map (opened since its last rebuild, or held by a process we can't read)
+    // is still reported, unattributed, so Domain tracks its counters from now on.
+    const auto inodeToPid = currentInodeToPidMap();
+    reading.sockets.reserve(sockets.size());
+    for (const auto& socket : sockets)
+    {
+        std::int32_t pid = 0;
+        if (inodeToPid)
+        {
+            if (const auto it = inodeToPid->find(socket.inode); it != inodeToPid->end())
+            {
+                pid = it->second;
+            }
+        }
+        reading.sockets.push_back(
+            SocketTrafficSample{.key = socket.inode, .pid = pid, .bytesReceived = socket.bytesReceived, .bytesSent = socket.bytesSent});
+    }
+    return reading;
+}
+
+std::shared_ptr<const std::unordered_map<std::uint64_t, std::int32_t>> LinuxProcessProbe::currentInodeToPidMap() const
+{
     // Refresh inode-to-PID map on a TTL basis to avoid scanning /proc/[pid]/fd/* every
     // enumerate(). The rebuild slot is claimed by advancing m_InodeToPidCacheTime under
     // the initial lock, so only one thread rebuilds per TTL window while all others
@@ -1188,7 +1160,7 @@ void LinuxProcessProbe::attributeNetworkToProcesses(std::vector<ProcessCounters>
     if (needsRebuild)
     {
         // Build the map outside the lock; concurrent threads keep using the old snapshot.
-        auto rebuilt = std::make_shared<const std::unordered_map<std::uint64_t, std::int32_t>>(buildInodeToPidMap());
+        auto rebuilt = std::make_shared<const std::unordered_map<std::uint64_t, std::int32_t>>(buildInodeToPidMap(m_ProcRoot));
         {
             const std::scoped_lock lock{m_InodePidCacheMutex};
             if (!rebuilt->empty())
@@ -1209,26 +1181,7 @@ void LinuxProcessProbe::attributeNetworkToProcesses(std::vector<ProcessCounters>
             }
         }
     }
-    if (!inodeToPidPtr || inodeToPidPtr->empty())
-    {
-        return;
-    }
-
-    // Aggregate socket bytes by PID
-    const auto& inodeToPid = *inodeToPidPtr;
-    const auto pidStats = aggregateByPid(sockets, inodeToPid);
-
-    // Apply network stats to processes
-    for (auto& proc : processes)
-    {
-        auto it = pidStats.find(proc.pid);
-        if (it != pidStats.end())
-        {
-            const auto& [received, sent] = it->second;
-            proc.netReceivedBytes = received;
-            proc.netSentBytes = sent;
-        }
-    }
+    return inodeToPidPtr;
 }
 #endif // TASKSMACK_HAS_NETLINK_SOCKET_STATS
 

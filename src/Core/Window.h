@@ -1,9 +1,11 @@
 #pragma once
 
 #include "Core/WindowConstants.h"
+#include "Core/WindowGeometry.h"
 
 #include <SDL3/SDL_video.h>
 
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -68,6 +70,9 @@ class Window
         return m_GLContext;
     }
 
+    /// Move the window. Asynchronous (no SDL_SyncWindow): the custom title bar calls it on every
+    /// drag and left/top-resize step. On X11 getPosition() may report the old position until the
+    /// window manager applies the move.
     void setPosition(int x, int y) const;
     [[nodiscard]] auto getPosition() const -> std::pair<int, int>;
     [[nodiscard]] static bool supportsPositioning() noexcept;
@@ -79,9 +84,56 @@ class Window
     /// separate getWidth()/getHeight() calls to avoid issuing two SDL queries.
     [[nodiscard]] auto getSize() const noexcept -> std::pair<int, int>;
 
+    /// The window's normal (restored) rectangle: its live geometry when not maximized, or the
+    /// rectangle it will restore to when maximized (#1121). std::nullopt when it is maximized and
+    /// that rectangle is unknown -- maximized by the compositor or OS rather than by maximize() --
+    /// in which case the caller should keep whatever normal geometry it saved before.
+    [[nodiscard]] auto getNormalGeometry() const -> std::optional<WindowGeometry::Rect>;
+    /// The window scale getNormalGeometry()'s rectangle was measured at (#1168): the live scale when
+    /// not maximized, the scale captured with the restore rectangle when maximized; 0 if unknown.
+    [[nodiscard]] auto getNormalGeometryScale() const -> float;
+
+    /// Apply saved geometry at startup: clamp the size to the display, move the window to
+    /// @p position when positioning is supported and the position is reachable on a connected
+    /// display (otherwise centre it on the primary display, #1128), then maximize if @p maximized.
+    /// The normal rectangle is applied before maximizing so it becomes the restore target (#1121).
+    /// Startup-only: before maximizing it waits for the window manager (SDL_SyncWindow), like
+    /// setSize(), so never call it from the render loop.
+    /// @p savedScale is the window scale the size was saved at (getUnitScale()), if known: the size
+    /// is converted to the scale of the display the window opens on, so it keeps its apparent size
+    /// across displays and scale changes (#1168). Without it the size is applied as saved.
+    void applySavedGeometry(std::optional<std::pair<int, int>> position, bool maximized, std::optional<float> savedScale);
+
+    /// The window's UI scale in window units (WindowGeometry::windowUnitScale(): display scale over
+    /// pixel density) on the display it is on now; 1.0 at 100 % on Windows. 0 when unknown.
+    [[nodiscard]] auto getUnitScale() const noexcept -> float;
+
+    /// The display the window is on, or 0 when unknown. Cheap enough to poll every frame, so a
+    /// caller can tell when to re-read getUsableDisplaySize().
+    [[nodiscard]] auto getDisplayId() const noexcept -> SDL_DisplayID;
+
+    /// Size of the usable bounds (work area) of the display the window is on, in window
+    /// coordinates like getSize(), or std::nullopt when unknown. Asks the windowing system (a
+    /// server round trip on X11), so read it when the display changes, not every frame (#1207).
+    [[nodiscard]] auto getUsableDisplaySize() const -> std::optional<std::pair<int, int>>;
+
     [[nodiscard]] bool isMaximized() const;
     [[nodiscard]] bool isMinimized() const noexcept;
+    /// Whether the window is fully covered or otherwise not visible (SDL_WINDOW_OCCLUDED): set when
+    /// SDL reports SDL_EVENT_WINDOW_OCCLUDED, cleared on the next SDL_EVENT_WINDOW_EXPOSED. The frame
+    /// loop treats it like minimized (#1125). Only Wayland reports an ordinarily covered window: the
+    /// pinned SDL's X11 backend sets it only together with minimized (_NET_WM_STATE_HIDDEN), and
+    /// Windows doesn't report it, so there it adds nothing beyond isMinimized().
+    [[nodiscard]] bool isOccluded() const noexcept;
+    /// The refresh rate of the display the window is on, in Hz, or 0 when SDL does not know it.
+    /// Queries SDL; Application caches it and re-reads it when the window changes display (#1126).
+    [[nodiscard]] double getDisplayRefreshRate() const noexcept;
     void maximize();
+    /// Replace an OS-initiated maximize (SDL_EVENT_WINDOW_MAXIMIZED: Win+Up, snap to the top edge,
+    /// ShowWindow(SW_MAXIMIZE)) with maximize()'s client-side one, which fills the current display's
+    /// usable bounds and records the real normal rectangle as the restore target (#1208). Does
+    /// nothing where WindowGeometry::shouldAdoptSystemMaximize() says the OS maximize is right.
+    void adoptSystemMaximize();
     void restore();
     void minimize() const;
 
@@ -94,6 +146,9 @@ class Window
     void setHitTestCallback(SDL_HitTest callback, void* callbackData) const;
 
   private:
+    // Record the current rectangle as the restore target, unless the window is already maximized.
+    void rememberRestoreRect();
+
     WindowSpecification m_Spec;
     SDL_Window* m_Handle = nullptr;
     SDL_GLContext m_GLContext = nullptr;
@@ -101,10 +156,14 @@ class Window
 
     // For borderless window maximize/restore tracking
     bool m_IsMaximizedBorderless = false;
+    // Whether m_Restore* hold the rectangle the window had when maximize() last maximized it, on
+    // any path (client-side, compositor or SDL_MaximizeWindow). Cleared by restore().
+    bool m_HasRestoreRect = false;
     int m_RestoreX = 0;
     int m_RestoreY = 0;
     int m_RestoreWidth = 0;
     int m_RestoreHeight = 0;
+    float m_RestoreScale = 0.0F; // getUnitScale() when the restore rectangle was captured (#1168)
 
 #ifdef _WIN32
     // Owned title-bar/taskbar icon handles (opaque void* here so <windows.h> stays out of

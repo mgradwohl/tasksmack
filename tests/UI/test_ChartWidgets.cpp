@@ -1,17 +1,21 @@
 #include "UI/ChartWidgets.h"
+#include "UI/Format.h"
 #include "UI/RateAxis.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <format>
 #include <limits>
 #include <ranges>
 #include <span>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -677,6 +681,220 @@ TEST(ChartWidgetsReduceTest, MinMaxReductionFallsBackForAnUnusableSpan)
     EXPECT_EQ(reduceSeriesMinMax(x.data(), y.data(), 10, 4, 0.0, outX.data(), outY.data()), 4);
 }
 
+// ========== Cached reductions (#1139) ==========
+
+TEST(ChartWidgetsReduceTest, MinMaxPointsReplayToTheSameSeriesAsTheReduction)
+{
+    // History charts now keep the chosen points (index + gap) and replay them each frame instead of
+    // reducing the whole history again: the replay must draw exactly what the reduction would.
+    ReduceFixture f;
+    f.y[1234] = 99.0;
+    f.y[1500] = std::numeric_limits<double>::quiet_NaN();
+    f.y[2001] = -5.0;
+    std::vector<double> outX(LINE_PLOT_MAX_POINTS_DENSE);
+    std::vector<double> outY(LINE_PLOT_MAX_POINTS_DENSE);
+    const int written =
+        reduceSeriesMinMax(f.x.data(), f.y.data(), ReduceFixture::COUNT, LINE_PLOT_MAX_POINTS_DENSE, 1000.0, outX.data(), outY.data());
+
+    std::vector<ReducedPoint> points;
+    reduceSeriesMinMaxPoints(f.x.data(), f.y.data(), ReduceFixture::COUNT, LINE_PLOT_MAX_POINTS_DENSE, 1000.0, points);
+
+    ASSERT_EQ(points.size(), static_cast<std::size_t>(written));
+    for (std::size_t k = 0; k < points.size(); ++k)
+    {
+        const auto source = static_cast<std::size_t>(points[k].index);
+        EXPECT_DOUBLE_EQ(outX[k], f.x[source]) << "point " << k;
+        if (points[k].gap)
+        {
+            EXPECT_TRUE(std::isnan(outY[k])) << "point " << k;
+        }
+        else
+        {
+            EXPECT_DOUBLE_EQ(outY[k], f.y[source]) << "point " << k;
+        }
+    }
+    EXPECT_TRUE(std::ranges::any_of(points, [](const ReducedPoint& p) { return p.gap; }));
+}
+
+TEST(ChartWidgetsReduceTest, MinMaxPointsOfAShortSeriesAreEverySample)
+{
+    const std::vector<double> x = {-3.0, -2.0, -1.0, 0.0};
+    const std::vector<double> y = {1.0, 2.0, 3.0, 4.0};
+    std::vector<ReducedPoint> points;
+    reduceSeriesMinMaxPoints(x.data(), y.data(), 4, LINE_PLOT_MAX_POINTS_DENSE, 0.0, points);
+    ASSERT_EQ(points.size(), 4U);
+    for (std::size_t k = 0; k < points.size(); ++k)
+    {
+        EXPECT_EQ(points[k], (ReducedPoint{.index = static_cast<int>(k), .gap = false}));
+    }
+}
+
+TEST(ChartWidgetsReduceTest, MinMaxPointsDoNotDependOnNow)
+{
+    // What makes caching them sound: x is "seconds before now" and the buckets are anchored at now,
+    // so the same samples seen a few frames later -- every x shifted, the anchor shifted with it --
+    // choose the same points. Only new data can change them.
+    ReduceFixture f;
+    f.y[777] = 42.0;
+    f.y[1501] = std::numeric_limits<double>::quiet_NaN();
+    constexpr double now = 5000.0;
+    std::vector<ReducedPoint> first;
+    reduceSeriesMinMaxPoints(f.x.data(), f.y.data(), ReduceFixture::COUNT, LINE_PLOT_MAX_POINTS_DENSE, now, first);
+
+    for (const double later : {0.016, 0.5, 0.9})
+    {
+        std::vector<double> shifted = f.x;
+        for (double& v : shifted)
+        {
+            v -= later;
+        }
+        std::vector<ReducedPoint> again;
+        reduceSeriesMinMaxPoints(shifted.data(), f.y.data(), ReduceFixture::COUNT, LINE_PLOT_MAX_POINTS_DENSE, now + later, again);
+        EXPECT_EQ(again, first) << "now advanced by " << later;
+    }
+}
+
+TEST(ChartWidgetsReduceTest, AlignedPointsReplayToTheSameSeriesAsTheInPlaceReduction)
+{
+    ReduceFixture f;
+    std::vector<double> user(ReduceFixture::COUNT, 5.0);
+    std::vector<double> system(ReduceFixture::COUNT, 20.0);
+    user[1234] = 60.0;
+    system[2345] = 95.0;
+    // Two gap runs of one series in one bucket collapse it (see AlignedReductionNeverDrawsASeriesAcrossItsGap).
+    user[1485] = std::numeric_limits<double>::quiet_NaN();
+    user[1505] = std::numeric_limits<double>::quiet_NaN();
+
+    std::vector<ReducedPoint> points;
+    reduceAlignedPoints<double>(
+        f.x, {std::span<const double>(user), std::span<const double>(system)}, LINE_PLOT_MAX_POINTS_DENSE, 1000.0, points);
+
+    auto x = f.x;
+    auto reducedUser = user;
+    auto reducedSystem = system;
+    reduceAlignedSeries(x, {&reducedUser, &reducedSystem}, {}, LINE_PLOT_MAX_POINTS_DENSE, 1000.0);
+
+    ASSERT_EQ(points.size(), x.size());
+    for (std::size_t k = 0; k < points.size(); ++k)
+    {
+        const auto source = static_cast<std::size_t>(points[k].index);
+        EXPECT_DOUBLE_EQ(x[k], f.x[source]) << "point " << k;
+        if (points[k].gap)
+        {
+            EXPECT_TRUE(std::isnan(reducedUser[k]) && std::isnan(reducedSystem[k])) << "point " << k;
+        }
+        else
+        {
+            EXPECT_DOUBLE_EQ(reducedUser[k], user[source]) << "point " << k;
+            EXPECT_DOUBLE_EQ(reducedSystem[k], system[source]) << "point " << k;
+        }
+    }
+    EXPECT_TRUE(std::ranges::any_of(points, [](const ReducedPoint& p) { return p.gap; }));
+}
+
+TEST(ChartWidgetsReduceTest, AlignedPointsAcceptFloatSeriesAndKeepEverySampleOfAShortOne)
+{
+    // The system histories are float; the cached path chooses points from them without a copy.
+    const std::vector<double> x = {-3.0, -2.0, -1.0, 0.0};
+    const std::vector<float> y = {1.0F, 2.0F, 3.0F, 4.0F};
+    std::vector<ReducedPoint> points;
+    reduceAlignedPoints<float>(x, {std::span<const float>(y)}, LINE_PLOT_MAX_POINTS_DENSE, 0.0, points);
+    ASSERT_EQ(points.size(), 4U);
+    EXPECT_EQ(points.back(), (ReducedPoint{.index = 3, .gap = false}));
+
+    ReduceFixture f;
+    std::vector<float> longY(ReduceFixture::COUNT, 10.0F);
+    longY[1234] = 70.0F;
+    reduceAlignedPoints<float>(f.x, {std::span<const float>(longY)}, LINE_PLOT_MAX_POINTS_DENSE, 1000.0, points);
+    ASSERT_LE(points.size(), static_cast<std::size_t>(LINE_PLOT_MAX_POINTS_DENSE));
+    EXPECT_TRUE(std::ranges::any_of(points, [](const ReducedPoint& p) { return p.index == 1234; }));
+}
+
+TEST(SeriesFingerprintTest, DependsOnContentNotAddress)
+{
+    // #1139 review: a series copied into a buffer rebuilt every frame has a new address each frame,
+    // so the cache key must come from the samples, or that chart never hits the cache.
+    const std::vector<float> a{1.0F, 2.0F, 3.0F};
+    const std::vector<float> copy = a; // same samples, different storage
+    EXPECT_NE(a.data(), copy.data());
+    EXPECT_EQ(UI::Widgets::seriesFingerprint(a.data(), 3), UI::Widgets::seriesFingerprint(copy.data(), 3));
+
+    const std::vector<float> otherEnd{1.0F, 2.0F, 4.0F};
+    const std::vector<float> swapped{3.0F, 2.0F, 1.0F};
+    EXPECT_NE(UI::Widgets::seriesFingerprint(a.data(), 3), UI::Widgets::seriesFingerprint(otherEnd.data(), 3));
+    EXPECT_NE(UI::Widgets::seriesFingerprint(a.data(), 3), UI::Widgets::seriesFingerprint(swapped.data(), 3));
+    EXPECT_EQ(UI::Widgets::seriesFingerprint(a.data(), 0), 0U);
+
+    const std::vector<double> d{1.0, 2.0, 3.0};
+    EXPECT_EQ(UI::Widgets::seriesFingerprint(d.data(), 3), UI::Widgets::seriesFingerprint(a.data(), 3)); // float widened
+}
+
+TEST(ReducedPointsCacheTest, RebuildsOnlyWhenTheKeyChanges)
+{
+    ReducedPointsCache cache;
+    int rebuilds = 0;
+    const auto rebuild = [&rebuilds](std::vector<ReducedPoint>& out)
+    {
+        ++rebuilds;
+        out.assign({ReducedPoint{.index = 0, .gap = false}, ReducedPoint{.index = rebuilds, .gap = false}});
+    };
+    const ReducedPointsCache::Key key{.generation = 7, .dataId = 1, .count = 100, .maxOut = 720};
+
+    EXPECT_EQ(cache.points(key, rebuild)[1].index, 1);
+    EXPECT_EQ(cache.points(key, rebuild)[1].index, 1); // same data: replayed, not rebuilt
+    EXPECT_EQ(rebuilds, 1);
+
+    // Each part of the key names the data: a change to any one rebuilds.
+    auto newGeneration = key;
+    newGeneration.generation = 8;
+    EXPECT_EQ(cache.points(newGeneration, rebuild)[1].index, 2);
+    auto otherSeries = newGeneration;
+    otherSeries.dataId = 2;
+    EXPECT_EQ(cache.points(otherSeries, rebuild)[1].index, 3);
+    auto longer = otherSeries;
+    longer.count = 101;
+    EXPECT_EQ(cache.points(longer, rebuild)[1].index, 4);
+    auto smallerBudget = longer;
+    smallerBudget.maxOut = 360;
+    EXPECT_EQ(cache.points(smallerBudget, rebuild)[1].index, 5);
+    EXPECT_EQ(cache.points(smallerBudget, rebuild)[1].index, 5);
+    EXPECT_EQ(cache.rebuildCount(), 5U);
+
+    cache.invalidate();
+    EXPECT_EQ(cache.points(smallerBudget, rebuild)[1].index, 6);
+}
+
+TEST(ReducedPointsCacheTest, GenerationZeroIsNeverCached)
+{
+    // A chart that names no data generation keeps the old behaviour: reduced on every call.
+    ReducedPointsCache cache;
+    int rebuilds = 0;
+    const auto rebuild = [&rebuilds](std::vector<ReducedPoint>& out)
+    {
+        ++rebuilds;
+        out.clear();
+    };
+    const ReducedPointsCache::Key uncached{.generation = 0, .dataId = 1, .count = 100, .maxOut = 720};
+    std::ignore = cache.points(uncached, rebuild);
+    std::ignore = cache.points(uncached, rebuild);
+    EXPECT_EQ(rebuilds, 2);
+}
+
+TEST(ReducedPointsCacheTest, NewDataGenerationsAreNonZeroAndNeverRepeat)
+{
+    const std::uint64_t first = nextChartDataGeneration();
+    const std::uint64_t second = nextChartDataGeneration();
+    EXPECT_NE(first, 0U);
+    EXPECT_GT(second, first);
+}
+
+TEST(HistoryChartConfigTest, DataGenerationDefaultsToUncachedAndCanBeSet)
+{
+    const HistoryChartConfig plain = percentHistoryConfig("##Test", -60.0, 0.0);
+    EXPECT_EQ(plain.dataGeneration, 0U);
+    EXPECT_EQ(withDataGeneration(plain, 42).dataGeneration, 42U);
+}
+
 // ========== Axis formatters ==========
 
 TEST(ChartWidgetsFormattersTest, FormatAxisLocalizedHandlesSuffixes)
@@ -711,11 +929,11 @@ TEST(ChartWidgetsFormattersTest, FormatAxisBytesPerSecScalesUnits)
     char buf[32]{};
     int len = formatAxisBytesPerSec(100.0, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "100.0B/s");
+    EXPECT_EQ(std::string(buf), "100.0 B/s");
 
     len = formatAxisBytesPerSec(2048.0, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "2.0KB/s");
+    EXPECT_EQ(std::string(buf), "2.0 KB/s");
 }
 
 TEST(ChartWidgetsFormattersTest, FormatAxisBytesUsesBinaryUnitsWithoutRateSuffix)
@@ -724,19 +942,19 @@ TEST(ChartWidgetsFormattersTest, FormatAxisBytesUsesBinaryUnitsWithoutRateSuffix
     char buf[32]{};
     int len = formatAxisBytes(512.0, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "512.0B");
+    EXPECT_EQ(std::string(buf), "512.0 B");
 
     len = formatAxisBytes(1536.0, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "1.5KB");
+    EXPECT_EQ(std::string(buf), "1.5 KB");
 
     len = formatAxisBytes(1.5 * 1024.0 * 1024.0 * 1024.0, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "1.5GB");
+    EXPECT_EQ(std::string(buf), "1.5 GB");
 
     len = formatAxisBytes(-0.1, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "0.0B");
+    EXPECT_EQ(std::string(buf), "0.0 B");
 }
 
 TEST(ChartWidgetsFormattersTest, FormatAxisBytesPerSecClampsTinyNegativeToZero)
@@ -744,7 +962,7 @@ TEST(ChartWidgetsFormattersTest, FormatAxisBytesPerSecClampsTinyNegativeToZero)
     char buf[32]{};
     const int len = formatAxisBytesPerSec(-0.1, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "0.0B/s");
+    EXPECT_EQ(std::string(buf), "0.0 B/s");
 }
 
 TEST(ChartWidgetsFormattersTest, FormatAxisWattsUsesWAndMilliwatts)
@@ -752,35 +970,44 @@ TEST(ChartWidgetsFormattersTest, FormatAxisWattsUsesWAndMilliwatts)
     char buf[32]{};
     int len = formatAxisWatts(10.0, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "10.0W");
+    EXPECT_EQ(std::string(buf), "10.0 W");
 
     len = formatAxisWatts(0.5, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "500.0mW");
+    EXPECT_EQ(std::string(buf), "500.0 mW");
 }
 
-TEST(ChartWidgetsFormattersTest, FormatAxisWattsClampsTinyNegativeToZeroMilliwatts)
+TEST(ChartWidgetsFormattersTest, FormatAxisWattsClampsTinyNegativeToZeroWatts)
 {
     char buf[32]{};
     const int len = formatAxisWatts(-0.00001, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "0.0mW");
+    EXPECT_EQ(std::string(buf), "0.0 W");
 }
 
-TEST(ChartWidgetsFormattersTest, FormatAxisPercentFormatsOneDecimal)
+TEST(ChartWidgetsFormattersTest, FormatAxisPercentIsWholeFromTenPercent)
 {
     char buf[32]{};
     const int len = formatAxisPercent(12.34, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "12.3%");
+    EXPECT_EQ(std::string(buf), "12%");
 }
 
 TEST(ChartWidgetsFormattersTest, FormatAxisPercentClampsTinyNegativeToZero)
 {
     char buf[32]{};
-    const int len = formatAxisPercent(-0.1, buf, static_cast<int>(sizeof(buf)), nullptr);
+    const int len = formatAxisPercent(-0.01, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "0.0%");
+    EXPECT_EQ(std::string(buf), "0%");
+}
+
+// #1195: a percent axis can scale down to 5 %, so a small tick must keep its value.
+TEST(ChartWidgetsFormattersTest, FormatAxisPercentKeepsSmallTicks)
+{
+    char buf[32]{};
+    const int len = formatAxisPercent(0.2, buf, static_cast<int>(sizeof(buf)), nullptr);
+    EXPECT_GT(len, 0);
+    EXPECT_EQ(std::string(buf), "0.2%");
 }
 
 TEST(ChartWidgetsFormattersTest, FormatAxisLocalizedHandlesGigaSuffix)
@@ -796,11 +1023,60 @@ TEST(ChartWidgetsFormattersTest, FormatAxisBytesPerSecHandlesMegaAndGigaSuffixes
     char buf[32]{};
     int len = formatAxisBytesPerSec(5.0 * 1024.0 * 1024.0, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "5.0MB/s");
+    EXPECT_EQ(std::string(buf), "5.0 MB/s");
 
     len = formatAxisBytesPerSec(2.0 * 1024.0 * 1024.0 * 1024.0, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "2.0GB/s");
+    EXPECT_EQ(std::string(buf), "2.0 GB/s");
+}
+
+// #1202: every axis formatter is the value formatter for its quantity, so an axis tick reads
+// exactly like the tooltip and table cell beside it.
+TEST(ChartWidgetsFormattersTest, AxisFormattersMatchValueFormatters)
+{
+    std::array<char, 32> buf{};
+    const auto axis = [&buf](ImPlotFormatter formatter, double value, void* userData = nullptr)
+    {
+        EXPECT_GT(formatter(value, buf.data(), static_cast<int>(buf.size()), userData), 0);
+        return std::string(buf.data());
+    };
+    for (const double bytes : {1.0, 512.0, 1536.0, 3.25 * 1024.0 * 1024.0, 1.5 * 1024.0 * 1024.0 * 1024.0})
+    {
+        EXPECT_EQ(axis(formatAxisBytes, bytes), Format::formatBytes(bytes));
+        EXPECT_EQ(axis(formatAxisBytesPerSec, bytes), Format::formatBytesPerSec(bytes));
+    }
+    for (const double watts : {0.0, 0.0125, 0.5, 1.0, 45.0, 123.45})
+    {
+        EXPECT_EQ(axis(formatAxisWatts, watts), Format::formatWatts(watts));
+    }
+    for (const double percent : {0.0, 0.04, -0.04, 0.2, 2.5, 9.9, 10.0, 42.0, 100.0})
+    {
+        EXPECT_EQ(axis(formatAxisPercent, percent), Format::formatPercent(percent));
+    }
+}
+
+// A byte axis is labelled in the one unit its step is in: 0.5 GB, not 512.0 MB, on a 0-2 GB axis.
+TEST(ChartWidgetsFormattersTest, ByteAxisUsesTheUnitItIsGiven)
+{
+    std::array<char, 32> buf{};
+    const int size = static_cast<int>(buf.size());
+    constexpr double GIB = 1024.0 * 1024.0 * 1024.0;
+    EXPECT_GT(formatAxisBytes(0.5 * GIB, buf.data(), size, byteAxisUserData(Format::BYTE_UNIT_GB)), 0);
+    EXPECT_EQ(std::string(buf.data()), "0.5 GB");
+    EXPECT_GT(formatAxisBytesPerSec(0.0, buf.data(), size, byteAxisUserData(Format::BYTE_UNIT_MB)), 0);
+    EXPECT_EQ(std::string(buf.data()), "0.0 MB/s");
+    // Without a unit each tick picks its own, as before.
+    EXPECT_GT(formatAxisBytes(0.5 * GIB, buf.data(), size, nullptr), 0);
+    EXPECT_EQ(std::string(buf.data()), "512.0 MB");
+}
+
+TEST(ChartWidgetsFormattersTest, OnlyTheByteFormattersStepInBinaryUnits)
+{
+    EXPECT_TRUE(isByteAxisFormatter(formatAxisBytes));
+    EXPECT_TRUE(isByteAxisFormatter(formatAxisBytesPerSec));
+    EXPECT_FALSE(isByteAxisFormatter(formatAxisWatts));
+    EXPECT_FALSE(isByteAxisFormatter(formatAxisPercent));
+    EXPECT_FALSE(isByteAxisFormatter(formatAxisLocalized));
 }
 
 // ========== Tooltip rows (#1008, #1020) ==========
@@ -897,6 +1173,17 @@ namespace
     return runs;
 }
 } // namespace
+
+TEST(ChartWidgetsTest, FiniteRunsAcceptAMutableCallback)
+{
+    // A stateful callback with a non-const operator() must still bind (#1224 review).
+    const std::vector<float> values{1.0F, std::numeric_limits<float>::quiet_NaN(), 2.0F};
+    int runCount = 0;
+    UI::Widgets::forEachFiniteRun(values.data(),
+                                  static_cast<int>(values.size()),
+                                  [count = 0, &runCount](int /*start*/, int /*length*/) mutable { runCount = ++count; });
+    EXPECT_EQ(runCount, 2);
+}
 
 TEST(ChartWidgetsTest, FiniteRunsOfAnUnbrokenSeriesIsOneRun)
 {
@@ -1131,6 +1418,46 @@ TEST(ChartWidgetsTest, DefaultPlotFlagsHideImPlotsMouseReadout)
     // Every history chart has its own tooltip; ImPlot's raw cursor coordinates were a second,
     // unlabelled readout of the same point (#1039).
     EXPECT_TRUE((PLOT_FLAGS_DEFAULT & ImPlotFlags_NoMouseText) != 0);
+}
+
+// ========== Motion-driven frame requests (#1125) ==========
+
+TEST(HistoryChartMotionTest, EaseFramesAreRequestedOnlyForAVisibleChartThisFrame)
+{
+    // #1281 review: an axis eased before its chart is drawn must not keep the app at full rate when the
+    // chart turns out to be clipped (BeginPlot false), nor carry a stale request to a later frame.
+    using UI::Widgets::shouldRequestEaseFrames;
+    EXPECT_TRUE(shouldRequestEaseFrames(42, 42, true));
+    EXPECT_FALSE(shouldRequestEaseFrames(42, 42, false)); // clipped chart
+    EXPECT_FALSE(shouldRequestEaseFrames(41, 42, true));  // from an earlier frame
+    EXPECT_FALSE(shouldRequestEaseFrames(-1, 42, true));  // nothing pending
+}
+
+TEST(HistoryChartMotionTest, ScrollSpeedIsPlotWidthOverWindowSeconds)
+{
+    // The default 300 s window across 1000 px scrolls ~3.3 px/s: far too slow to need 60 fps.
+    EXPECT_NEAR(historyChartScrollPixelsPerSecond(1000.0, -300.0, 0.0), 1000.0 / 300.0, 1e-12);
+    // A 10 s window over the same width scrolls 100 px/s.
+    EXPECT_DOUBLE_EQ(historyChartScrollPixelsPerSecond(1000.0, -10.0, 0.0), 100.0);
+    // A scrolled-back window moves at the same speed as one ending at "now".
+    EXPECT_DOUBLE_EQ(historyChartScrollPixelsPerSecond(1000.0, -70.0, -60.0), 100.0);
+    // An empty or inverted span, or no width, asks for nothing.
+    EXPECT_DOUBLE_EQ(historyChartScrollPixelsPerSecond(1000.0, 0.0, 0.0), 0.0);
+    EXPECT_DOUBLE_EQ(historyChartScrollPixelsPerSecond(1000.0, 0.0, -5.0), 0.0);
+    EXPECT_DOUBLE_EQ(historyChartScrollPixelsPerSecond(0.0, -300.0, 0.0), 0.0);
+}
+
+TEST(NowBarMotionTest, SettledBarsStopAskingForFrames)
+{
+    // A NowBar 100 px tall easing 0.30 -> 0.36 in a 16 ms frame moves 375 px/s.
+    EXPECT_NEAR(nowBarMotionPixelsPerSecond(0.30, 0.36, 100.0, 0.016), 375.0, 1e-9);
+    // Falling counts the same as rising.
+    EXPECT_NEAR(nowBarMotionPixelsPerSecond(0.36, 0.30, 100.0, 0.016), 375.0, 1e-9);
+    // Converged: no motion, no frames (it used to hold the loop at 60 fps forever).
+    EXPECT_DOUBLE_EQ(nowBarMotionPixelsPerSecond(0.5, 0.5, 100.0, 0.016), 0.0);
+    // Unknown frame time or height: nothing to go on, so nothing asked.
+    EXPECT_DOUBLE_EQ(nowBarMotionPixelsPerSecond(0.3, 0.6, 100.0, 0.0), 0.0);
+    EXPECT_DOUBLE_EQ(nowBarMotionPixelsPerSecond(0.3, 0.6, 0.0, 0.016), 0.0);
 }
 
 TEST(HistoryChartConfigTest, BeginPlotFlagsUnchangedWhenLegendShown)

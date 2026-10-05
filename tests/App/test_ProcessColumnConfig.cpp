@@ -4,8 +4,10 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <limits>
+#include <string_view>
 #include <vector>
 
 namespace App
@@ -68,6 +70,76 @@ TEST(ProcessColumnConfigTest, EveryColumnHasAPositiveDefaultWidth)
     {
         const auto info = getColumnInfo(col);
         EXPECT_GT(info.defaultWidth, 0.0F) << info.configKey;
+    }
+}
+
+// ========== Header Wording (#1203) ==========
+
+// Headers are plain words: no htop-style single letters ("S") or "+" suffixes ("TIME+").
+TEST(ProcessColumnConfigTest, NoHeaderIsASingleLetterOrContainsPlus)
+{
+    for (const auto col : allProcessColumns())
+    {
+        const auto info = getColumnInfo(col);
+        EXPECT_GT(info.name.size(), 1U) << info.configKey << " header '" << info.name << "'";
+        EXPECT_FALSE(info.name.contains('+')) << info.configKey << " header '" << info.name << "'";
+    }
+}
+
+// Header renames must not touch the config keys: saved column layouts are keyed by them, so a
+// changed key would silently drop the user's choice for that column.
+TEST(ProcessColumnConfigTest, ConfigKeysAreUnchanged)
+{
+    constexpr auto expected = std::to_array<std::string_view>({
+        "pid",         "name",        "user",        "ppid",        "publisher",  "state",         "status",     "type",
+        "cpu_percent", "mem_percent", "resident",    "virtual",     "shared",     "peak_resident", "nice",       "affinity",
+        "threads",     "handles",     "gdi_objects", "cpu_time",    "start_time", "io_read",       "io_write",   "page_faults",
+        "net_sent",    "net_recv",    "power",       "gpu_percent", "gpu_memory", "gpu_engine",    "gpu_device", "command",
+    });
+    ASSERT_EQ(expected.size(), processColumnCount());
+    for (const auto col : allProcessColumns())
+    {
+        EXPECT_EQ(getColumnInfo(col).configKey, expected.at(toIndex(col))) << "column index " << toIndex(col);
+    }
+}
+
+TEST(ProcessColumnConfigTest, HeadersUseThePlainLanguageNames)
+{
+    EXPECT_EQ(getColumnInfo(ProcessColumn::State).name, "State");
+    EXPECT_EQ(getColumnInfo(ProcessColumn::MemPercent).name, "Mem %");
+    EXPECT_EQ(getColumnInfo(ProcessColumn::Resident).name, "Memory");
+    EXPECT_EQ(getColumnInfo(ProcessColumn::Virtual).name, "Virtual");
+    EXPECT_EQ(getColumnInfo(ProcessColumn::Shared).name, "Shared");
+    EXPECT_EQ(getColumnInfo(ProcessColumn::PeakResident).name, "Peak Mem");
+    EXPECT_EQ(getColumnInfo(ProcessColumn::Threads).name, "Threads");
+    EXPECT_EQ(getColumnInfo(ProcessColumn::CpuTime).name, "CPU Time");
+    EXPECT_EQ(getColumnInfo(ProcessColumn::PageFaults).name, "Page Faults");
+    EXPECT_EQ(getColumnInfo(ProcessColumn::NetReceived).name, "Net Received");
+    EXPECT_EQ(getColumnInfo(ProcessColumn::GpuDevice).name, "GPU");
+}
+
+// #1101: per-process network counts TCP only on both platforms; the column tooltips must say so
+// rather than let a browser streaming over QUIC read as idle.
+TEST(ProcessColumnConfigTest, NetworkColumnsNoteTheyAreTcpOnlyWithoutUdpCounters)
+{
+    for (const auto col : {ProcessColumn::NetSent, ProcessColumn::NetReceived})
+    {
+        const std::string_view note = columnCapabilityNote(col, false);
+        EXPECT_TRUE(note.contains("TCP only")) << getColumnInfo(col).configKey;
+        EXPECT_TRUE(note.contains("UDP")) << getColumnInfo(col).configKey;
+        EXPECT_TRUE(columnCapabilityNote(col, true).empty()) << getColumnInfo(col).configKey;
+    }
+}
+
+TEST(ProcessColumnConfigTest, OtherColumnsHaveNoCapabilityNote)
+{
+    for (const auto col : allProcessColumns())
+    {
+        if (col == ProcessColumn::NetSent || col == ProcessColumn::NetReceived)
+        {
+            continue;
+        }
+        EXPECT_TRUE(columnCapabilityNote(col, false).empty()) << getColumnInfo(col).configKey;
     }
 }
 

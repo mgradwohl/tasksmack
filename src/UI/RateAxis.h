@@ -18,6 +18,9 @@ inline constexpr double RATE_AXIS_MIN_SPAN_BYTES_PER_SEC = 1024.0; // 1 KB/s
 inline constexpr double RATE_AXIS_MIN_SPAN_BYTES = 1024.0;         // 1 KiB (a size, not a rate)
 inline constexpr double RATE_AXIS_MIN_SPAN_WATTS = 1.0;            // 1 W
 inline constexpr double RATE_AXIS_MIN_SPAN_COUNT = 10.0;           // 10 items
+/// Smallest span of a percent axis that scales to its data (#1195): small enough that a process using
+/// half a percent of the machine draws a visible line, large enough that noise does not fill the chart.
+inline constexpr double PERCENT_AXIS_MIN_SPAN = 5.0; // 5 %
 
 /// Headroom above the observed maximum, so the peak of a series is not drawn flush against the top
 /// of the plot.
@@ -41,6 +44,90 @@ inline constexpr double RATE_AXIS_HEADROOM = 1.10;
     const double safeMax = (std::isfinite(dataMax) && dataMax > 0.0) ? dataMax : 0.0;
     const double safeSpan = (std::isfinite(minSpan) && minSpan > 0.0) ? minSpan : 1.0;
     return std::max(safeMax * RATE_AXIS_HEADROOM, safeSpan);
+}
+
+/// Upper bound for a percent axis that scales to its data instead of always spanning 0-100 (#1195):
+/// rateAxisUpperBound() with a PERCENT_AXIS_MIN_SPAN floor, never above 100. A process's CPU is a
+/// percent of the whole machine, so one busy thread on 16 logical CPUs is 6.25 % and a typical process
+/// well under 1 %: on a fixed 0-100 axis it was a flat line at zero.
+[[nodiscard]] inline double percentAxisUpperBound(double dataMax, double minSpan = PERCENT_AXIS_MIN_SPAN) noexcept
+{
+    return std::min(100.0, rateAxisUpperBound(dataMax, minSpan));
+}
+
+/// Most labels a history chart's Y axis shows, however tall it is (#1202): maximized, ImPlot's own
+/// tick density put 21 labels on a percent axis.
+inline constexpr int AXIS_MAX_TICKS = 8;
+
+/// Labels a Y axis of `plotHeightPx` can show without crowding: one per two text lines, at least
+/// 2 (0 and the top) and at most AXIS_MAX_TICKS. A non-positive or non-finite height gets the cap.
+[[nodiscard]] inline int axisMaxTicksForHeight(float plotHeightPx, float lineHeightPx) noexcept
+{
+    if (!std::isfinite(plotHeightPx) || plotHeightPx <= 0.0F || !std::isfinite(lineHeightPx) || lineHeightPx <= 0.0F)
+    {
+        return AXIS_MAX_TICKS;
+    }
+    const double fit = std::floor(static_cast<double>(plotHeightPx) / (2.0 * static_cast<double>(lineHeightPx)));
+    return static_cast<int>(std::clamp(fit, 2.0, static_cast<double>(AXIS_MAX_TICKS)));
+}
+
+/// The smallest "nice" tick step -- 1, 2 or 5 times a power of ten -- that spaces at most
+/// `maxTicks` labels (both ends included) across `span` (#1202). So 0-100 % steps by 20, 0-9.5 MB/s
+/// by 2 MB/s (with niceBinaryAxisStep()), and 0-5 % by 1.
+///
+/// @return The step, or 0 if `span` is not a positive finite number.
+[[nodiscard]] inline double niceAxisStep(double span, int maxTicks) noexcept
+{
+    if (!std::isfinite(span) || span <= 0.0)
+    {
+        return 0.0;
+    }
+    const int intervals = std::max(1, maxTicks - 1);
+    const double raw = span / static_cast<double>(intervals);
+    const double magnitude = std::pow(10.0, std::floor(std::log10(raw)));
+    // A relative tolerance, so a raw step that is a nice number up to rounding (2.0000000001) is
+    // not pushed up to the next one.
+    constexpr double TOLERANCE = 1e-9;
+    for (const double multiple : {1.0, 2.0, 5.0})
+    {
+        const double step = multiple * magnitude;
+        if (step >= raw * (1.0 - TOLERANCE))
+        {
+            return step;
+        }
+    }
+    return 10.0 * magnitude;
+}
+
+/// niceAxisStep() for a byte axis: the 1-2-5 step is chosen in the axis's binary unit (`unitScale`,
+/// e.g. 1024 * 1024 for MB) and returned in bytes, so ticks fall on 2 MB rather than on
+/// 2,000,000 bytes (1.9 MB).
+[[nodiscard]] inline double niceBinaryAxisStep(double spanBytes, double unitScale, int maxTicks) noexcept
+{
+    const double scale = (std::isfinite(unitScale) && unitScale > 0.0) ? unitScale : 1.0;
+    return niceAxisStep(spanBytes / scale, maxTicks) * scale;
+}
+
+/// Ticks from 0 at every multiple of a step up to an axis's upper bound.
+struct AxisTickRange
+{
+    double last = 0.0; ///< Largest multiple of the step not above the bound
+    int count = 0;     ///< Number of ticks, 0 included; 0 if there are none
+};
+
+/// The ticks from 0 to `upper` at multiples of `step` (niceAxisStep()), for ImPlot::SetupAxisTicks.
+[[nodiscard]] inline AxisTickRange axisTickRange(double upper, double step) noexcept
+{
+    if (!std::isfinite(upper) || upper <= 0.0 || !std::isfinite(step) || step <= 0.0)
+    {
+        return {};
+    }
+    // Tolerance, so an upper bound that is a multiple of the step up to rounding keeps its tick.
+    const double intervals = std::floor((upper / step) + 1e-9);
+    // Bounded by the caller's maxTicks in practice; the cap only guards a nonsensical step.
+    constexpr double MAX_INTERVALS = 1000.0;
+    const double clamped = std::min(intervals, MAX_INTERVALS);
+    return {.last = clamped * step, .count = static_cast<int>(clamped) + 1};
 }
 
 /// Largest finite, non-negative value across the given series. Empty input yields 0.

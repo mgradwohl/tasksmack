@@ -1,11 +1,13 @@
 #pragma once
 
+#include "App/Panels/NetInterfaceUtils.h"
 #include "App/Panels/StorageSection.h"
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
 #include "UI/FillPlotLayout.h"
 
 #include <chrono>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 
@@ -20,6 +22,9 @@ struct RenderContext
     // Models (non-owning pointers)
     const Domain::SystemPublication* systemPublication = nullptr;
     const Domain::StoragePublication* storagePublication = nullptr;
+    // Generation of the histories charted (UI::Widgets::nextChartDataGeneration()), so the charts keep
+    // their reduced points until it changes (HistoryChartConfig::dataGeneration, #1139). 0: none.
+    std::uint64_t chartDataGeneration = 0;
     bool hasNetworkCounters = false;
 
     // History configuration
@@ -43,6 +48,11 @@ struct RenderContext
 
     // Name of the selected network interface (empty = "Total" / all interfaces combined)
     std::string* selectedNetworkInterface = nullptr;
+
+    // Interface Status table: "Show all" toggle (per session, not saved) and the interfaces seen moving
+    // traffic this session, which stay listed while down (#1211). Null: defaults, nothing remembered.
+    bool* showAllInterfaces = nullptr;
+    NetInterfaceUtils::InterfaceNameSet* interfacesWithTraffic = nullptr;
 
     // The tab's chart-height measurements from the previous frame (#959). Null keeps the fixed
     // default height for every chart.

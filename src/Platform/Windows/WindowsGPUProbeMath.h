@@ -7,7 +7,9 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -87,31 +89,127 @@ namespace Platform
     return false;
 }
 
-/// Map each NVIDIA DXGI adapter (by index) to the NVML device (by index) with a matching name.
+/// A GPU name for exact comparison between DXGI and NVML: normalized, without the leading "nvidia "
+/// that DXGI includes and NVML usually omits ("NVIDIA GeForce RTX 4060" vs "GeForce RTX 4060").
+[[nodiscard]] inline std::string comparableGPUName(const std::string& name)
+{
+    std::string normalized = normalizeGPUName(name);
+    constexpr std::string_view VENDOR_PREFIX = "nvidia ";
+    if (normalized.starts_with(VENDOR_PREFIX))
+    {
+        normalized.erase(0, VENDOR_PREFIX.size());
+    }
+    return normalized;
+}
+
+/// Map each NVIDIA DXGI adapter (by index) to the NVML device (by index) that is the same card.
 ///
-/// Each NVML device is claimed at most once, in enumeration order: two identical cards both used
-/// to map to NVML device 0, so the second card's charts showed the first card's data (#1040).
-/// DXGI exposes no PCI location to match on exactly, so with identical names the order is the
-/// tie-break; both APIs enumerate by PCI order in practice.
+/// DXGI and NVML enumerate adapters in different orders -- DXGI puts the adapter driving the primary
+/// output first, NVML orders by PCI bus id -- and name them differently, so neither order nor a
+/// first-come name match identifies a card: both attached one card's sensors to another (#1091).
+/// Matching is by hardware identity first, then by name only where that is unambiguous, in three
+/// passes over every adapter so an earlier, weaker claim never takes a later adapter's exact match:
+///
+///   1. PCI bus location, where both sides report it: exact, whatever the names or order.
+///   2. Exact name (see comparableGPUName), among devices with the same PCI device id where both
+///      sides report one, and only when exactly one device fits: identical cards with no location
+///      are left unmapped, since guessing would show one card's data as the other's.
+///   3. One name containing the other, only when both sides report the same, known PCI device id,
+///      and again only when exactly one device fits. A name inside another is weak evidence --
+///      "RTX 4060" is in "RTX 4060 Ti" -- and uniqueness proves nothing when either probe skipped a
+///      device it failed to read, so an unknown id is not enough here.
+///
+/// Each NVML device is claimed at most once (#1040). An adapter left unmapped shows no NVML sensors,
+/// which is correct where the alternative is another card's.
 [[nodiscard]] inline std::unordered_map<std::uint32_t, std::uint32_t> mapDXGIToNVML(const std::vector<GPUInfo>& dxgiGPUs,
                                                                                     const std::vector<GPUInfo>& nvmlGPUs)
 {
     std::unordered_map<std::uint32_t, std::uint32_t> mapping;
     std::vector<bool> claimed(nvmlGPUs.size(), false);
-    for (std::size_t dxgiIdx = 0; dxgiIdx < dxgiGPUs.size(); ++dxgiIdx)
+
+    // Could this NVML device be this adapter, judged by what both report about their hardware?
+    const auto sameHardware = [](const GPUInfo& dxgi, const GPUInfo& nvml)
     {
-        if (dxgiGPUs[dxgiIdx].vendor != "NVIDIA")
+        if (dxgi.pciLocation.has_value() && nvml.pciLocation.has_value() && *dxgi.pciLocation != *nvml.pciLocation)
         {
-            continue;
+            return false;
         }
+        return dxgi.pciDeviceId == 0 || nvml.pciDeviceId == 0 || dxgi.pciDeviceId == nvml.pciDeviceId;
+    };
+
+    const auto unmappedNVIDIA = [&](std::size_t dxgiIdx)
+    {
+        return dxgiGPUs[dxgiIdx].vendor == "NVIDIA" && !mapping.contains(static_cast<std::uint32_t>(dxgiIdx));
+    };
+
+    // Map the adapter to the unclaimed device that `fits(adapter, device)` when the match is unique
+    // both ways: exactly one such device, and no other unmapped adapter that fits it as well. Two
+    // identical adapters and one device are as ambiguous as one adapter and two identical devices.
+    const auto claimUnique = [&](std::size_t dxgiIdx, const auto& fits)
+    {
+        const auto matches = [&](std::size_t adapterIdx, std::size_t nvmlIdx)
+        {
+            return sameHardware(dxgiGPUs[adapterIdx], nvmlGPUs[nvmlIdx]) && fits(dxgiGPUs[adapterIdx], nvmlGPUs[nvmlIdx]);
+        };
+        std::optional<std::size_t> found;
         for (std::size_t nvmlIdx = 0; nvmlIdx < nvmlGPUs.size(); ++nvmlIdx)
         {
-            if (!claimed[nvmlIdx] && gpuNamesMatch(dxgiGPUs[dxgiIdx].name, nvmlGPUs[nvmlIdx].name))
+            if (claimed[nvmlIdx] || !matches(dxgiIdx, nvmlIdx))
             {
-                mapping[static_cast<std::uint32_t>(dxgiIdx)] = static_cast<std::uint32_t>(nvmlIdx);
-                claimed[nvmlIdx] = true;
-                break;
+                continue;
             }
+            if (found.has_value())
+            {
+                return; // Several devices fit
+            }
+            found = nvmlIdx;
+        }
+        if (!found.has_value())
+        {
+            return;
+        }
+        for (std::size_t otherIdx = 0; otherIdx < dxgiGPUs.size(); ++otherIdx)
+        {
+            if (otherIdx != dxgiIdx && unmappedNVIDIA(otherIdx) && matches(otherIdx, *found))
+            {
+                return; // Several adapters fit the device
+            }
+        }
+        mapping[static_cast<std::uint32_t>(dxgiIdx)] = static_cast<std::uint32_t>(*found);
+        claimed[*found] = true;
+    };
+
+    // 1. PCI bus location.
+    for (std::size_t dxgiIdx = 0; dxgiIdx < dxgiGPUs.size(); ++dxgiIdx)
+    {
+        if (unmappedNVIDIA(dxgiIdx) && dxgiGPUs[dxgiIdx].pciLocation.has_value())
+        {
+            claimUnique(dxgiIdx,
+                        [](const GPUInfo& dxgi, const GPUInfo& nvml)
+                        { return dxgi.pciLocation.has_value() && nvml.pciLocation == dxgi.pciLocation; });
+        }
+    }
+    // 2. Exact name.
+    for (std::size_t dxgiIdx = 0; dxgiIdx < dxgiGPUs.size(); ++dxgiIdx)
+    {
+        if (unmappedNVIDIA(dxgiIdx))
+        {
+            claimUnique(dxgiIdx,
+                        [](const GPUInfo& dxgi, const GPUInfo& nvml)
+                        {
+                            const std::string name = comparableGPUName(dxgi.name);
+                            return !name.empty() && comparableGPUName(nvml.name) == name;
+                        });
+        }
+    }
+    // 3. One name containing the other, between cards both sides report as the same model.
+    for (std::size_t dxgiIdx = 0; dxgiIdx < dxgiGPUs.size(); ++dxgiIdx)
+    {
+        if (unmappedNVIDIA(dxgiIdx))
+        {
+            claimUnique(dxgiIdx,
+                        [](const GPUInfo& dxgi, const GPUInfo& nvml)
+                        { return dxgi.pciDeviceId != 0 && dxgi.pciDeviceId == nvml.pciDeviceId && gpuNamesMatch(dxgi.name, nvml.name); });
         }
     }
     return mapping;
@@ -143,7 +241,8 @@ inline void assignSensorCapabilities(std::vector<GPUInfo>& dxgiGPUs,
 ///
 /// DXGI's QueryVideoMemoryInfo reports the *calling process's* usage, so the GPU tab used to show
 /// TaskSmack's own few MB as the GPU's memory (#1029). An integrated GPU's memory is the shared
-/// segment; a discrete GPU's is its dedicated VRAM.
+/// segment; a discrete GPU's is its dedicated VRAM. A GPU this fills in is marked available; one
+/// it can't fill (no LUID mapping, no PDH entry, the segment unread) is marked unread (#1111).
 inline void assignPDHMemoryToDXGICounters(std::vector<GPUCounters>& dxgiCounters,
                                           const std::unordered_map<std::string, AdapterMemoryUsage>& memoryByLuidId,
                                           const std::unordered_map<std::string, std::string>& dxgiIdToLuidId,
@@ -156,6 +255,9 @@ inline void assignPDHMemoryToDXGICounters(std::vector<GPUCounters>& dxgiCounters
         {
             continue;
         }
+        // DXGI's used bytes are a placeholder 0: unread until a PDH reading is assigned below, so a
+        // PDH warm-up, failed collect or missing adapter entry is a gap, not 0 bytes (#1111).
+        counter.memoryAvailable = false;
         const auto luidIt = dxgiIdToLuidId.find(counter.gpuId);
         if (luidIt == dxgiIdToLuidId.end())
         {
@@ -168,7 +270,15 @@ inline void assignPDHMemoryToDXGICounters(std::vector<GPUCounters>& dxgiCounters
         }
         const auto integratedIt = dxgiIdIsIntegrated.find(counter.gpuId);
         const bool integrated = (integratedIt != dxgiIdIsIntegrated.end()) && integratedIt->second;
-        counter.memoryUsedBytes = integrated ? memIt->second.sharedBytes : memIt->second.dedicatedBytes;
+        const AdapterMemoryUsage& usage = memIt->second;
+        // The entry may exist because only the other segment was read: then this one is unread, a
+        // gap (#1111). A segment that was read is a reading, 0 bytes included (#1246).
+        if (!(integrated ? usage.sharedRead : usage.dedicatedRead))
+        {
+            continue;
+        }
+        counter.memoryUsedBytes = integrated ? usage.sharedBytes : usage.dedicatedBytes;
+        counter.memoryAvailable = true; // A real reading, even after a failed NVML read (#1111)
     }
 }
 
@@ -216,29 +326,51 @@ mergeNVMLIntoDXGICounters(std::vector<GPUCounters>& dxgiCounters,
             continue; // Placeholder from orderNVMLCountersByIds(): this device was not read
         }
 
-        // Enhance with NVML data (NVML provides more accurate/detailed metrics)
+        // Enhance with NVML data (NVML provides more accurate/detailed metrics). Whether each read
+        // succeeded comes along, so an unread field publishes as a gap, not a real-looking 0 (#1111).
         dxgiCounter.temperatureC = nvmlCounter.temperatureC;
+        dxgiCounter.temperatureAvailable = nvmlCounter.temperatureAvailable;
         dxgiCounter.powerDrawWatts = nvmlCounter.powerDrawWatts;
+        dxgiCounter.powerAvailable = nvmlCounter.powerAvailable;
         dxgiCounter.powerLimitWatts = nvmlCounter.powerLimitWatts;
         dxgiCounter.gpuClockMHz = nvmlCounter.gpuClockMHz;
+        dxgiCounter.gpuClockAvailable = nvmlCounter.gpuClockAvailable;
         dxgiCounter.memoryClockMHz = nvmlCounter.memoryClockMHz;
         dxgiCounter.fanSpeedRaw = nvmlCounter.fanSpeedRaw;
         dxgiCounter.fanSpeedMaxRaw = nvmlCounter.fanSpeedMaxRaw;
 
-        // Use NVML GPU utilization (NVML provides the actual GPU utilization, DXGI doesn't).
-        // Always use NVML utilization when available, even if it's 0 (which is valid at idle).
-        dxgiCounter.utilizationPercent = nvmlCounter.utilizationPercent;
-        nvmlSourcedIds.insert(dxgiCounter.gpuId); // Track so PDH merge doesn't overwrite a valid 0%
+        // Use NVML GPU utilization (NVML provides the actual GPU utilization, DXGI doesn't) when this
+        // sample's read succeeded, even if it's 0 (valid at idle). When it failed, leave the GPU
+        // un-NVML-sourced and mark its utilization unread: PDH's utilization -- a real reading --
+        // replaces it and restores availability, and with no PDH sample it publishes as a gap rather
+        // than DXGI's placeholder 0 (#1111).
+        if (nvmlCounter.utilizationAvailable)
+        {
+            dxgiCounter.utilizationPercent = nvmlCounter.utilizationPercent;
+            dxgiCounter.utilizationAvailable = true;  // DXGI's counter starts unread (#1245)
+            nvmlSourcedIds.insert(dxgiCounter.gpuId); // Track so PDH merge doesn't overwrite a valid 0%
+        }
+        else
+        {
+            dxgiCounter.utilizationAvailable = false;
+        }
 
         // Prefer NVML memory metrics (more accurate)
         if (nvmlCounter.memoryTotalBytes > 0)
         {
             dxgiCounter.memoryUsedBytes = nvmlCounter.memoryUsedBytes;
             dxgiCounter.memoryTotalBytes = nvmlCounter.memoryTotalBytes;
+            dxgiCounter.memoryAvailable = true; // DXGI's counter starts unread (#1245)
             if (nvmlMemoryIds != nullptr)
             {
                 nvmlMemoryIds->insert(dxgiCounter.gpuId);
             }
+        }
+        else if (!nvmlCounter.memoryAvailable)
+        {
+            // Unread until the PDH memory fallback supplies a reading; with none, this sample's
+            // memory is a gap rather than DXGI's placeholder 0 bytes (#1111).
+            dxgiCounter.memoryAvailable = false;
         }
     }
     return nvmlSourcedIds;
@@ -279,13 +411,17 @@ mergeNVMLIntoDXGICounters(std::vector<GPUCounters>& dxgiCounters,
 /// Pure assignment logic extracted from WindowsGPUProbe::mergePDHAdapterUtilization(): for each
 /// DXGI counter not already covered by NVML, looks up its LUID-based id in @p dxgiIdToLuidId and,
 /// if PDH reported a utilization for that LUID in @p utilizationByGpuId, assigns it (clamped to
-/// [0, 100]). Counters with no
-/// LUID mapping or no matching PDH data are left untouched (utilization stays whatever the
-/// caller initialized it to, typically 0).
+/// [0, 100]) and marks it available. Counters with no LUID mapping are marked unread, a gap
+/// (#1111). A mapped counter with no PDH entry is idle (0%, read) when @p absentMeansIdle -- the
+/// map is from a successful collect, and PDH has GPU Engine instances only for processes using the
+/// adapter -- and unread otherwise, or when its LUID is in @p unreadLuids: it had engine items this
+/// collect but none was readable, which is not idleness (#1166).
 inline void assignPDHUtilizationToDXGICounters(std::vector<GPUCounters>& dxgiCounters,
                                                const std::unordered_map<std::string, double>& utilizationByGpuId,
                                                const std::unordered_map<std::string, std::string>& dxgiIdToLuidId,
-                                               const std::unordered_set<std::string>& nvmlSourcedIds)
+                                               const std::unordered_set<std::string>& nvmlSourcedIds,
+                                               bool absentMeansIdle = false,
+                                               const std::unordered_set<std::string>& unreadLuids = {})
 {
     for (auto& dxgiCounter : dxgiCounters)
     {
@@ -293,6 +429,9 @@ inline void assignPDHUtilizationToDXGICounters(std::vector<GPUCounters>& dxgiCou
         {
             continue; // Already filled by NVML
         }
+        // DXGI has no utilization of its own: unread until a PDH reading is assigned below, so a PDH
+        // warm-up, failed collect or missing adapter entry is a gap, not 0% (#1111).
+        dxgiCounter.utilizationAvailable = false;
 
         const auto mapIt = dxgiIdToLuidId.find(dxgiCounter.gpuId);
         if (mapIt == dxgiIdToLuidId.end())
@@ -304,8 +443,14 @@ inline void assignPDHUtilizationToDXGICounters(std::vector<GPUCounters>& dxgiCou
         if (utilIt != utilizationByGpuId.end())
         {
             dxgiCounter.utilizationPercent = std::clamp(utilIt->second, 0.0, 100.0);
+            dxgiCounter.utilizationAvailable = true; // A real reading, even after a failed NVML read (#1111)
         }
-        // If no PDH data found for this GPU's LUID, utilization stays untouched
+        else if (absentMeansIdle && !unreadLuids.contains(mapIt->second))
+        {
+            dxgiCounter.utilizationPercent = 0.0; // Nothing ran on it this interval (#1166)
+            dxgiCounter.utilizationAvailable = true;
+        }
+        // Otherwise no PDH data for this GPU's LUID: utilization stays unread
     }
 }
 

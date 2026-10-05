@@ -3,15 +3,16 @@
 #include "ColorContrast.h"
 #include "DpiScale.h"
 #include "StyleScale.h"
+#include "ThemeCatalog.h"
 #include "ThemeLoader.h"
 
 #include <imgui.h>
 #include <implot.h>
 #include <spdlog/spdlog.h>
 
-#include <cmath>
 #include <cstddef>
 #include <filesystem>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -21,6 +22,9 @@ namespace UI
 
 namespace
 {
+
+/// Id of the built-in theme the constructor installs before any theme file is read.
+constexpr std::string_view FALLBACK_THEME_ID = "fallback";
 
 [[nodiscard]] constexpr auto fontSizeIndex(FontSize size) noexcept -> std::size_t
 {
@@ -141,6 +145,7 @@ void Theme::loadDefaultFallbackTheme()
     fallback.tabDimmedSelectedOverline = ImVec4(0.60F, 0.82F, 1.0F, 0.50F);
     fallback.dockingPreview = ImVec4(0.26F, 0.59F, 0.98F, 0.70F);
     fallback.dockingEmptyBg = ImVec4(0.20F, 0.20F, 0.20F, 1.0F);
+    fallback.plotGrid = ImVec4(0.27F, 0.31F, 0.38F, 1.0F); // About 1.5:1 on the fallback plot (#1191)
     fallback.plotLines = ImVec4(0.61F, 0.61F, 0.61F, 1.0F);
     fallback.plotLinesHovered = ImVec4(1.0F, 0.43F, 0.35F, 1.0F);
     fallback.plotHistogram = ImVec4(0.90F, 0.70F, 0.0F, 1.0F);
@@ -198,7 +203,7 @@ void Theme::loadDefaultFallbackTheme()
 
     // Add as the initial theme
     DiscoveredTheme fallbackInfo;
-    fallbackInfo.id = "fallback";
+    fallbackInfo.id = FALLBACK_THEME_ID;
     fallbackInfo.name = "Fallback";
     fallbackInfo.description = "Built-in fallback theme";
 
@@ -241,24 +246,30 @@ void Theme::loadThemes(const std::filesystem::path& themesDir)
 
     if (loadedSchemes.empty())
     {
-        spdlog::error("Failed to load any themes, reverting to fallback");
-        loadDefaultFallbackTheme();
+        // Keep whatever is already loaded: the built-in fallback from the constructor, or the
+        // built-in themes when this was the user directory. Appending another fallback here
+        // produced a duplicate "Fallback" entry (#1127).
+        spdlog::error("Failed to load any themes from {}", themesDir.string());
         return;
     }
 
-    m_DiscoveredThemes = std::move(discoveredThemes);
-    m_LoadedSchemes = std::move(loadedSchemes);
-    m_CurrentThemeIndex = 0;
-
-    // Set default theme (prefer arctic-fire if available)
-    for (std::size_t i = 0; i < m_DiscoveredThemes.size(); ++i)
+    const std::string currentId = m_DiscoveredThemes.empty() ? std::string{} : m_DiscoveredThemes[m_CurrentThemeIndex].id;
+    const bool onlyFallbackLoaded = (m_DiscoveredThemes.size() == 1) && (m_DiscoveredThemes.front().id == FALLBACK_THEME_ID);
+    if (onlyFallbackLoaded)
     {
-        if (m_DiscoveredThemes[i].id == "arctic-fire")
-        {
-            m_CurrentThemeIndex = i;
-            break;
-        }
+        m_DiscoveredThemes = std::move(discoveredThemes);
+        m_LoadedSchemes = std::move(loadedSchemes);
     }
+    else
+    {
+        // A later directory (the user's) is layered over what is loaded, overriding by id (#1127).
+        ThemeCatalog::mergeById(m_DiscoveredThemes, m_LoadedSchemes, std::move(discoveredThemes), std::move(loadedSchemes));
+    }
+
+    // Keep the current theme if it is still loaded; otherwise prefer arctic-fire, then the first.
+    m_CurrentThemeIndex = ThemeCatalog::indexOfId(m_DiscoveredThemes, currentId)
+                              .or_else([this] { return ThemeCatalog::indexOfId(m_DiscoveredThemes, "arctic-fire"); })
+                              .value_or(0);
 
     spdlog::info("Loaded {} themes, current: {}", m_LoadedSchemes.size(), m_DiscoveredThemes[m_CurrentThemeIndex].name);
 }
@@ -469,6 +480,20 @@ void Theme::applyImGuiStyle() const
     style.ScrollbarSize = 14.0F * scale;
     style.GrabMinSize = 10.0F * scale;
 
+    // ImGui's own defaults for the remaining sizes the app visibly uses, authored so they scale
+    // with the rest instead of staying at 1x beside it (#1169). The scrollbar grab's inset grows
+    // with the scrollbar. The selected-tab overline (every tab bar draws it) and the tab bar's
+    // underline are accent strokes, not edges, so they thicken with the tabs, in whole pixels; so
+    // does the text caret. The docking splitter and SeparatorText() rule are authored for the same
+    // reason, though nothing draws them today. WindowBorderHoverPadding stays at ImGui's default: it
+    // also widens which window counts as hovered, and no ImGui window here is resizable.
+    style.ScrollbarPadding = 2.0F * scale;
+    style.TabBarBorderSize = scaledStrokePx(1.0F, scale);
+    style.TabBarOverlineSize = scaledStrokePx(1.0F, scale);
+    style.InputTextCursorSize = scaledStrokePx(1.0F, scale);
+    style.SeparatorTextBorderSize = scaledStrokePx(3.0F, scale);
+    style.DockingSeparatorSize = scaledStrokePx(2.0F, scale);
+
     spdlog::info("ImGui style scaled by {:.2f} ({} preset at {:.2f} display scale)", scale, fontConfig().name, m_DisplayScale);
 
     // Apply ImPlot style colors from theme
@@ -481,7 +506,7 @@ void Theme::applyImGuiStyle() const
     plotStyle.Colors[ImPlotCol_InlayText] = s.textPrimary;
     plotStyle.Colors[ImPlotCol_AxisText] = s.textMuted;
     plotStyle.Colors[ImPlotCol_AxisTick] = s.textMuted;
-    plotStyle.Colors[ImPlotCol_AxisGrid] = s.border;
+    plotStyle.Colors[ImPlotCol_AxisGrid] = s.plotGrid;
     plotStyle.Colors[ImPlotCol_TitleText] = s.textPrimary;
     plotStyle.Colors[ImPlotCol_PlotBg] = s.childBg;
     plotStyle.Colors[ImPlotCol_FrameBg] = s.frameBg;

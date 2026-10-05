@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <format>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -71,6 +72,7 @@ void renderDiskIOSection(RenderContext& ctx)
     // Delegate to StorageSection - this wrapper maintains API compatibility
     StorageSection::RenderContext storageCtx{
         .publication = ctx.storagePublication,
+        .chartDataGeneration = ctx.chartDataGeneration,
         .maxHistorySeconds = ctx.maxHistorySeconds,
         .historyScrollSeconds = ctx.historyScrollSeconds,
         .lastDeltaSeconds = ctx.lastDeltaSeconds,
@@ -96,13 +98,8 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     const auto& interfaces = netSnap.networkInterfaces;
 
     // Build interface selector dropdown
-    std::vector<std::string> interfaceNames;
-    interfaceNames.emplace_back("Total (All Interfaces)");
-    for (const auto& iface : interfaces)
-    {
-        // Use display name if available, otherwise interface name
-        interfaceNames.push_back(iface.displayName.empty() ? iface.name : iface.displayName);
-    }
+    // "Total" then each interface; virtual interfaces are marked as left out of the Total (#1106)
+    const std::vector<std::string> interfaceNames = NetInterfaceUtils::interfaceSelectorLabels(interfaces);
 
     const auto interfaceCount = interfaces.size();
 
@@ -283,19 +280,58 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     const std::string sentBarLabel = showingInterface ? ifaceSentLabel : std::string(TOTAL_SENT_LABEL);
     const std::string recvBarLabel = showingInterface ? ifaceRecvLabel : std::string(TOTAL_RECV_LABEL);
 
-    const NowBar sentBar{.valueText = UI::Format::formatBytesPerSec(smoothedSent),
-                         .label = sentBarLabel,
-                         .tooltipText = {},
-                         .value01 = UI::Widgets::normalizeToUnitInterval(smoothedSent, netAxisUpper),
-                         .color = theme.scheme().chartNetTx};
-    const NowBar recvBar{.valueText = UI::Format::formatBytesPerSec(smoothedRecv),
-                         .label = recvBarLabel,
-                         .tooltipText = {},
-                         .value01 = UI::Widgets::normalizeToUnitInterval(smoothedRecv, netAxisUpper),
-                         .color = theme.scheme().chartNetRx};
-
     // Determine plot title based on selection
     const bool usingInterfaceHistory = showingInterface && !ifaceSentData.empty() && !ifaceRecvData.empty();
+
+    // Colors for interface-specific lines (lighter/dashed to distinguish from total)
+    const auto ifaceSentColor = UI::withAlpha(theme.scheme().chartNetTx, 0.7F);
+    const auto ifaceRecvColor = UI::withAlpha(theme.scheme().chartNetRx, 0.7F);
+
+    const std::array netBars{
+        NowBar{
+            .valueText = UI::Format::formatBytesPerSec(smoothedSent),
+            .label = sentBarLabel,
+            .tooltipText = {},
+            .value01 = UI::Widgets::normalizeToUnitInterval(smoothedSent, netAxisUpper),
+            .color = theme.scheme().chartNetTx,
+        },
+        NowBar{
+            .valueText = UI::Format::formatBytesPerSec(smoothedRecv),
+            .label = recvBarLabel,
+            .tooltipText = {},
+            .value01 = UI::Widgets::normalizeToUnitInterval(smoothedRecv, netAxisUpper),
+            .color = theme.scheme().chartNetRx,
+        },
+    };
+
+    // With an interface selected the chart also draws the machine totals -- muted behind the
+    // interface's lines, or alone when the interface has no history yet. They have no bar, but their
+    // current values belong in the value strip like every series the chart draws (#1193): the latest
+    // sample, as their tooltip rows show. The labels are views of constants and the values short
+    // rates, so building these allocates nothing.
+    std::array<UI::Widgets::ValueStripEntry, 2> totalEntries{};
+    std::span<const UI::Widgets::ValueStripEntry> stripExtras;
+    if (showingInterface)
+    {
+        const auto latestRate = [](std::span<const float> data)
+        {
+            return UI::Format::formatBytesPerSecOrNA(data.empty() ? std::numeric_limits<double>::quiet_NaN()
+                                                                  : static_cast<double>(data.back()));
+        };
+        totalEntries = {
+            UI::Widgets::ValueStripEntry{
+                .label = TOTAL_SENT_BEHIND_LABEL,
+                .value = latestRate(sentData),
+                .color = usingInterfaceHistory ? ifaceSentColor : theme.scheme().chartNetTx,
+            },
+            UI::Widgets::ValueStripEntry{
+                .label = TOTAL_RECV_BEHIND_LABEL,
+                .value = latestRate(recvData),
+                .color = usingInterfaceHistory ? ifaceRecvColor : theme.scheme().chartNetRx,
+            },
+        };
+        stripExtras = totalEntries;
+    }
     const bool interfaceHistoryUnavailable = showingInterface && !usingInterfaceHistory;
 
     std::string plotTitle = "Total";
@@ -308,17 +344,15 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         plotTitle = std::format("Total (selected: {}, history unavailable)", ifaceDisplayName);
     }
 
-    // Colors for interface-specific lines (lighter/dashed to distinguish from total)
-    const auto ifaceSentColor = UI::withAlpha(theme.scheme().chartNetTx, 0.7F);
-    const auto ifaceRecvColor = UI::withAlpha(theme.scheme().chartNetRx, 0.7F);
-
     // Shares the tab's height with the disk chart or grid below it (#959).
     const float plotHeight = (ctx.fill != nullptr) ? ctx.fill->plotHeight() : HISTORY_PLOT_HEIGHT_DEFAULT;
     auto plot = [&]()
     {
-        const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
-            UI::Widgets::rateHistoryConfigWithUpper("##SystemNetHistory", axis.xMin, axis.xMax, formatAxisBytesPerSec, netAxisUpper),
-            plotHeight));
+        const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
+            UI::Widgets::withHeight(
+                UI::Widgets::rateHistoryConfigWithUpper("##SystemNetHistory", axis.xMin, axis.xMax, formatAxisBytesPerSec, netAxisUpper),
+                plotHeight),
+            ctx.chartDataGeneration));
         if (chart.active())
         {
             UI::Widgets::drawCollectingHint(aligned); // The same "no data yet" state on every chart (#1013)
@@ -433,25 +467,48 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         ImGui::Spacing();
     }
     constexpr size_t NETWORK_NOW_BAR_COLUMNS = 2; // Sent, Recv
-    renderHistoryWithNowBars("SystemNetHistoryLayout", plotHeight, plot, {sentBar, recvBar}, false, NETWORK_NOW_BAR_COLUMNS);
+    UI::Widgets::renderNowBarValueStrip(netBars, stripExtras);
+    renderHistoryWithNowBars(
+        "SystemNetHistoryLayout", plotHeight, plot, netBars, false, NETWORK_NOW_BAR_COLUMNS, false, UI::Widgets::NowBarValues::None);
     if (ctx.fill != nullptr)
     {
         ctx.fill->addPlot();
     }
     ImGui::Spacing();
 
-    // Interface status table - filtered and sorted (virtual/bluetooth hidden by default)
-    const auto sortedInterfaces = NetInterfaceUtils::getSortedFilteredInterfaces(interfaces);
-    if (!sortedInterfaces.empty())
+    // Interface status table: down, virtual and Bluetooth interfaces are hidden unless "Show all" is
+    // on, but a down interface that moved traffic this session stays listed (#1211).
+    static const NetInterfaceUtils::InterfaceNameSet NO_TRAFFIC_SEEN;
+    if (ctx.interfacesWithTraffic != nullptr)
+    {
+        NetInterfaceUtils::recordInterfaceTraffic(interfaces, *ctx.interfacesWithTraffic);
+    }
+    const auto& seenTraffic = (ctx.interfacesWithTraffic != nullptr) ? *ctx.interfacesWithTraffic : NO_TRAFFIC_SEEN;
+    const bool showAllInterfaces = (ctx.showAllInterfaces != nullptr) && *ctx.showAllInterfaces;
+    const auto sortedInterfaces = NetInterfaceUtils::getInterfaceStatusRows(interfaces, showAllInterfaces, seenTraffic);
+    if (!interfaces.empty())
     {
         ImGui::Separator();
         ImGui::Spacing();
+        ImGui::AlignTextToFramePadding();
         ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_LIST "  Interface Status");
+        const std::size_t hiddenCount = NetInterfaceUtils::countHiddenInterfaces(interfaces, seenTraffic);
+        if (ctx.showAllInterfaces != nullptr && (hiddenCount > 0 || *ctx.showAllInterfaces))
+        {
+            ImGui::SameLine();
+            std::array<char, 64> showAllLabel{};
+            std::format_to_n(showAllLabel.data(), showAllLabel.size() - 1, "Show all ({})##ShowAllInterfaces", hiddenCount);
+            ImGui::Checkbox(showAllLabel.data(), ctx.showAllInterfaces);
+            if (ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip("Also list the %zu down, virtual and Bluetooth interfaces hidden by default", hiddenCount);
+            }
+        }
         ImGui::Spacing();
 
         constexpr ImGuiTableFlags tableFlags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp;
 
-        if (ImGui::BeginTable("##InterfaceTable", 6, tableFlags))
+        if (!sortedInterfaces.empty() && ImGui::BeginTable("##InterfaceTable", 6, tableFlags))
         {
             // Wide enough for its header and for any of the icons it can hold, at the current font.
             // It was a fixed 30px on a non-resizable table: the header was cut to "T..." from Extra
@@ -467,8 +524,9 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
             ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_None, 2.5F);
             ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_None, 0.8F);
             ImGui::TableSetupColumn("Speed", ImGuiTableColumnFlags_None, 1.0F);
-            ImGui::TableSetupColumn("TX Rate", ImGuiTableColumnFlags_None, 1.2F);
-            ImGui::TableSetupColumn("RX Rate", ImGuiTableColumnFlags_None, 1.2F);
+            // Sent/Received, the words the charts and the process table use (#1203)
+            ImGui::TableSetupColumn("Sent", ImGuiTableColumnFlags_None, 1.2F);
+            ImGui::TableSetupColumn("Received", ImGuiTableColumnFlags_None, 1.2F);
             ImGui::TableHeadersRow();
 
             for (const auto& iface : sortedInterfaces)
@@ -542,7 +600,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                     ImGui::TextColored(theme.scheme().textMuted, "-");
                 }
 
-                // TX Rate
+                // Sent
                 ImGui::TableNextColumn();
                 if (iface.txBytesPerSec > 0.0 || hasActivity)
                 {
@@ -553,7 +611,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                     ImGui::TextColored(theme.scheme().textMuted, "-");
                 }
 
-                // RX Rate
+                // Received
                 ImGui::TableNextColumn();
                 if (iface.rxBytesPerSec > 0.0 || hasActivity)
                 {

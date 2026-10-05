@@ -2,6 +2,7 @@
 
 #include "App/Panel.h"
 #include "App/Panels/ProcessRowFormat.h"
+#include "App/Panels/ProcessTreeFlatten.h"
 #include "App/ProcessColumnConfig.h"
 #include "Domain/BackgroundSampler.h"
 #include "Domain/PriorityConfig.h"
@@ -94,12 +95,14 @@ class ProcessesPanel : public Panel
     /// Always reflects the latest published data; returns std::nullopt if not found.
     [[nodiscard]] std::optional<Domain::ProcessSnapshot> findSnapshot(std::int32_t pid) const;
 
-    /// Same as findSnapshot(), but also returns the exact publication version the snapshot was
-    /// read under, atomically. Prefer this over pairing findSnapshot() with a separate
-    /// publication-version read (e.g. Domain::ProcessModel::snapshotVersion()) when the caller
-    /// needs to gate behavior on "is this new data" -- see
-    /// Domain::ProcessModel::findSnapshotWithVersion()'s doc comment.
-    [[nodiscard]] std::optional<Domain::ProcessModel::SnapshotLookupResult> findSnapshotWithVersion(std::int32_t pid) const;
+    /// Have the process model keep a sample of process @p pid from every generation it publishes
+    /// (Domain::ProcessModel::watchProcess()). pid <= 0 stops watching.
+    void watchProcess(std::int32_t pid);
+
+    /// The watched process's samples newer than @p lastSeenVersion, oldest first, appended to
+    /// @p outSamples; see Domain::ProcessModel::watchedSamplesSince(). Like findSnapshot(), this
+    /// bypasses the render cache, so it follows every publish whichever tab is showing.
+    [[nodiscard]] bool watchedSamplesSince(std::uint64_t lastSeenVersion, std::vector<Domain::ProcessSample>& outSamples) const;
 
     /// Get column settings (for persistence)
     [[nodiscard]] const ProcessColumnSettings& columnSettings() const
@@ -114,7 +117,7 @@ class ProcessesPanel : public Panel
     }
 
     /// Set the refresh interval (applied by onUpdate cadence checks).
-    void setSamplingInterval(std::chrono::milliseconds interval);
+    void setSamplingInterval(std::chrono::milliseconds interval, bool forceSample = true);
 
     /// Request an immediate refresh.
     void requestRefresh();
@@ -137,6 +140,12 @@ class ProcessesPanel : public Panel
     /// Returns true if the process probe reported reduced privileges at startup.
     /// Convenience accessor so ShellLayer does not need to include Domain/ProcessModel.h.
     [[nodiscard]] bool hasReducedPrivileges() const;
+
+    /// Narrowest the toolbar row (filter, clear button, process count, tree-view toggle) can be
+    /// without overlapping, at the current font and style, for the window's content minimum (#1207).
+    /// Measured with a worst-case process count so it does not change as processes come and go.
+    /// Needs a frame.
+    [[nodiscard]] static float measureToolbarMinimumWidth();
 
     /// What the process probe can report (all false without a model). Fixed for the probe's
     /// lifetime, so safe to read from the UI thread at any time.
@@ -164,6 +173,9 @@ class ProcessesPanel : public Panel
     std::chrono::milliseconds m_AppliedSamplerInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
     bool m_ForceRefresh = false;
     bool m_IsActiveTab = false;
+    // Whether the active main tab shows any process data, which sets the sampling rate (#1097). True
+    // at start: the default System tab shows process-derived charts.
+    bool m_ProcessDataShown = true;
     float m_InteractionHoldSeconds = 0.0F;
 
     // Column visibility
@@ -174,11 +186,15 @@ class ProcessesPanel : public Panel
 
     // Tree view state
     bool m_TreeViewEnabled = false;
+    // m_CachedSortedIndices is in natural order and the list view must re-sort it on its next frame,
+    // even though ImGui's SpecsDirty is not set (e.g. the rows were reset while in tree view) (#1174).
+    bool m_SortPending = true;
 
     // Previous frame's table layout, feeding ProcessTableLayout::computeInnerWidth() (#924)
     float m_OtherColumnsWidth = 0.0F;                  // Everything but the Command column's own content
     float m_TableVisibleWidth = 0.0F;                  // Visible width of the table's scrolling area
     std::unordered_set<std::uint64_t> m_CollapsedKeys; // uniqueKeys that are collapsed in tree view
+    std::uint64_t m_CollapseGeneration = 0;            // Advanced whenever m_CollapsedKeys changes (#1138)
 
     // Snapshot cache: only re-fetch from ProcessModel when version changes (data updates at 1Hz,
     // but render runs at 60fps). A shared_ptr to ProcessModel's immutable published vector, not
@@ -200,6 +216,11 @@ class ProcessesPanel : public Panel
     std::uint64_t m_CachedFilterVersion = std::numeric_limits<std::uint64_t>::max();
     std::string m_CachedSearchTerm;
     std::string m_CachedSummaryStr;
+    std::uint64_t m_FilterGeneration = 0; // Advanced whenever m_CachedFilteredIndices is rebuilt (#1138)
+
+    // The tree view's flattened rows, rebuilt only when the snapshot version, m_FilterGeneration or
+    // m_CollapseGeneration changes rather than every frame (#1138).
+    ProcessTreeFlatten::ProcessTreeRowsCache m_TreeRowsCache;
 
     /// Cache for text size measurements to avoid repeated ImGui::CalcTextSize calls.
     /// Invalidated when the font changes: a different ImFont pointer, or a rebuilt font atlas
@@ -273,11 +294,11 @@ class ProcessesPanel : public Panel
     /// Get the number of visible columns
     [[nodiscard]] int visibleColumnCount() const;
 
-    /// Render process rows in tree view mode. Flattens the filtered/expanded tree into render
-    /// order via ProcessTreeFlatten::collectProcessTreeRows() (a pure, separately-tested
-    /// traversal -- see ProcessTreeFlatten.h), then applies ImGuiListClipper to that flat list
-    /// so only visible rows reach the expensive part, renderProcessRow() -- see perf-plan #843's
-    /// tree-view virtualization item.
+    /// Render process rows in tree view mode. Takes the filtered/expanded tree in render order
+    /// from m_TreeRowsCache, which flattens it (ProcessTreeFlatten::buildProcessTreeRows(), a pure,
+    /// separately-tested traversal) only when its inputs change (#1138), then applies
+    /// ImGuiListClipper to that flat list so only visible rows reach the expensive part,
+    /// renderProcessRow() -- see perf-plan #843's tree-view virtualization item.
     /// @param snapshots The full list of process snapshots.
     /// @param filteredIndices Indices into snapshots for processes matching the current filter.
     void renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots, const std::vector<std::size_t>& filteredIndices);

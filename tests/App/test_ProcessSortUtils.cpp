@@ -4,6 +4,11 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cstdint>
+#include <string>
+#include <vector>
+
 namespace App
 {
 namespace
@@ -151,6 +156,122 @@ TEST(ProcessSortUtilsTest, GdiObjectsUnavailableSortsBeforeAvailable)
 
     EXPECT_TRUE(ProcessSortUtils::compareByColumn(unavailable, available, ProcessColumn::GdiObjects, true));
     EXPECT_FALSE(ProcessSortUtils::compareByColumn(available, unavailable, ProcessColumn::GdiObjects, true));
+}
+
+// =============================================================================
+// Tie-breaker: equal keys order by PID, then unique key (#1174)
+// =============================================================================
+
+TEST(ProcessSortUtilsTest, EqualKeysOrderByPidAscending)
+{
+    ProcessSnapshot lowPid = makeSnapshot(false);
+    ProcessSnapshot highPid = makeSnapshot(false); // Every key equal...
+    highPid.pid = 50;                              // ...but the PID
+    lowPid.pid = 7;
+
+    for (const ProcessColumn column : allProcessColumns())
+    {
+        if (column == ProcessColumn::PID)
+        {
+            continue;
+        }
+        SCOPED_TRACE(static_cast<int>(column));
+        EXPECT_TRUE(ProcessSortUtils::compareByColumn(lowPid, highPid, column, /*ascending=*/true));
+        EXPECT_FALSE(ProcessSortUtils::compareByColumn(highPid, lowPid, column, /*ascending=*/true));
+    }
+}
+
+TEST(ProcessSortUtilsTest, EqualKeysOrderByPidDescending)
+{
+    ProcessSnapshot lowPid = makeSnapshot(false);
+    ProcessSnapshot highPid = makeSnapshot(false);
+    highPid.pid = 50;
+    lowPid.pid = 7;
+
+    for (const ProcessColumn column : allProcessColumns())
+    {
+        if (column == ProcessColumn::PID)
+        {
+            continue;
+        }
+        SCOPED_TRACE(static_cast<int>(column));
+        EXPECT_TRUE(ProcessSortUtils::compareByColumn(highPid, lowPid, column, /*ascending=*/false));
+        EXPECT_FALSE(ProcessSortUtils::compareByColumn(lowPid, highPid, column, /*ascending=*/false));
+    }
+}
+
+TEST(ProcessSortUtilsTest, EqualKeysAndPidOrderByUniqueKey)
+{
+    ProcessSnapshot older = makeSnapshot(false);
+    ProcessSnapshot newer = makeSnapshot(false); // Same PID, reused by a later process
+    older.uniqueKey = 1;
+    newer.uniqueKey = 2;
+
+    EXPECT_TRUE(ProcessSortUtils::compareByColumn(older, newer, ProcessColumn::CpuPercent, true));
+    EXPECT_FALSE(ProcessSortUtils::compareByColumn(newer, older, ProcessColumn::CpuPercent, true));
+    EXPECT_TRUE(ProcessSortUtils::compareByColumn(newer, older, ProcessColumn::CpuPercent, false));
+    EXPECT_FALSE(ProcessSortUtils::compareByColumn(older, newer, ProcessColumn::CpuPercent, false));
+}
+
+TEST(ProcessSortUtilsTest, SortOfTiedRowsIsTheSameWhateverTheInputOrder)
+{
+    // Most processes tie at 0.0% CPU; the sort must give one order however the rows arrive, or
+    // they reshuffle on every refresh (#1174).
+    std::vector<ProcessSnapshot> rows;
+    for (const std::int32_t pid : {40, 3, 17, 8, 25, 1, 12})
+    {
+        ProcessSnapshot snap;
+        snap.pid = pid;
+        snap.cpuPercent = (pid == 17) ? 5.0 : 0.0;
+        rows.push_back(snap);
+    }
+
+    const auto sortedPids = [](std::vector<ProcessSnapshot> input, bool ascending)
+    {
+        std::ranges::sort(input,
+                          [ascending](const ProcessSnapshot& a, const ProcessSnapshot& b)
+                          { return ProcessSortUtils::compareByColumn(a, b, ProcessColumn::CpuPercent, ascending); });
+        std::vector<std::int32_t> pids;
+        pids.reserve(input.size());
+        for (const auto& snap : input)
+        {
+            pids.push_back(snap.pid);
+        }
+        return pids;
+    };
+
+    const std::vector<std::int32_t> expectedDescending = {17, 40, 25, 12, 8, 3, 1};
+    const std::vector<std::int32_t> expectedAscending = {1, 3, 8, 12, 25, 40, 17};
+
+    auto shuffled = rows;
+    for (int pass = 0; pass < 4; ++pass)
+    {
+        SCOPED_TRACE(pass);
+        EXPECT_EQ(sortedPids(shuffled, false), expectedDescending);
+        EXPECT_EQ(sortedPids(shuffled, true), expectedAscending);
+        std::ranges::rotate(shuffled, shuffled.begin() + 3);
+        std::ranges::reverse(shuffled);
+    }
+}
+
+TEST(ProcessSortUtilsTest, UnreadableValuesSortBelowEveryReadingIncludingZero)
+{
+    // #1110: without root, another user's FD count, I/O and network rates can't be read. They sort
+    // below every reading -- a real 0 included -- instead of mixing in with the processes that read 0.
+    ProcessSnapshot unreadable;
+    unreadable.handleCount = 0;
+    unreadable.handleCountAvailable = false;
+    unreadable.ioAvailable = false;
+    unreadable.networkAvailable = false;
+    const ProcessSnapshot zero; // every value read, and 0
+
+    for (const ProcessColumn column :
+         {ProcessColumn::Handles, ProcessColumn::IoRead, ProcessColumn::IoWrite, ProcessColumn::NetSent, ProcessColumn::NetReceived})
+    {
+        EXPECT_TRUE(ProcessSortUtils::compareByColumn(unreadable, zero, column, true)) << static_cast<int>(column);
+        EXPECT_FALSE(ProcessSortUtils::compareByColumn(zero, unreadable, column, true)) << static_cast<int>(column);
+        EXPECT_TRUE(ProcessSortUtils::compareByColumn(zero, unreadable, column, false)) << static_cast<int>(column);
+    }
 }
 
 TEST(ProcessSortUtilsTest, UnknownColumnReturnsFalse)

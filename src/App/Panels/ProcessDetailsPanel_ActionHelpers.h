@@ -10,7 +10,9 @@
 #include "Platform/IProcessActions.h"
 
 #include <cstdint>
+#include <format>
 #include <string>
+#include <string_view>
 
 namespace App::Detail
 {
@@ -30,6 +32,9 @@ enum class ProcessAction : std::uint8_t
 /// Human-readable verb for ProcessAction, used in confirmation/result messages.
 /// Returns a `const char*` (not std::string_view) since callers need a null-terminated
 /// string for both ImGui::Text()'s printf-style "%s" and std::string concatenation.
+///
+/// ProcessAction::Stop is "suspend": it is the Suspend button, so the dialog and the result say
+/// the same word instead of "stop" -- which reads as ending the process (#1203).
 [[nodiscard]] inline const char* actionVerb(ProcessAction action)
 {
     switch (action)
@@ -39,13 +44,59 @@ enum class ProcessAction : std::uint8_t
     case ProcessAction::Kill:
         return "kill";
     case ProcessAction::Stop:
-        return "stop";
+        return "suspend";
     case ProcessAction::Resume:
         return "resume";
     case ProcessAction::None:
         break;
     }
     return "";
+}
+
+/// The action's name as its button, the confirm dialog's title and its confirm button show it:
+/// actionVerb() capitalised ("Kill", "Suspend"), so all three use one word (#1203).
+[[nodiscard]] inline const char* actionLabel(ProcessAction action)
+{
+    switch (action)
+    {
+    case ProcessAction::Terminate:
+        return "Terminate";
+    case ProcessAction::Kill:
+        return "Kill";
+    case ProcessAction::Stop:
+        return "Suspend";
+    case ProcessAction::Resume:
+        return "Resume";
+    case ProcessAction::None:
+        break;
+    }
+    return "";
+}
+
+/// Confirm dialog title, "Kill firefox (PID 1234)?": the action, then the process it hits (#1203).
+[[nodiscard]] inline std::string confirmTitle(ProcessAction action, std::string_view processName, std::int32_t pid)
+{
+    return std::format("{} {} (PID {})?", actionLabel(action), processName, pid);
+}
+
+/// Confirm dialog body: what the action does to this process, so the outcome of a destructive
+/// action is stated rather than hidden behind "Are you sure?" (#1203).
+[[nodiscard]] inline std::string confirmBody(ProcessAction action, std::string_view processName, std::int32_t pid)
+{
+    switch (action)
+    {
+    case ProcessAction::Terminate:
+        return std::format("{} (PID {}) will be asked to exit. It can save its work first, or refuse.", processName, pid);
+    case ProcessAction::Kill:
+        return std::format("{} (PID {}) will end immediately, without saving its work.", processName, pid);
+    case ProcessAction::Stop:
+        return std::format("{} (PID {}) will stop running until it is resumed.", processName, pid);
+    case ProcessAction::Resume:
+        return std::format("{} (PID {}) will continue running.", processName, pid);
+    case ProcessAction::None:
+        break;
+    }
+    return {};
 }
 
 /// The process an action on the current selection is meant for.
@@ -86,17 +137,30 @@ dispatchProcessAction(Platform::IProcessActions& actions, ProcessAction action, 
     return Platform::ProcessActionResult::error("No action selected");
 }
 
-/// Format the same "Success: <verb> sent to PID <pid>" / "Error: <message>" text
-/// ProcessDetailsPanel shows after a dispatched action, as a pure function of the
-/// action, pid, and result.
-[[nodiscard]] inline std::string
+/// The feedback line ProcessDetailsPanel shows after a dispatched action. The outcome travels as
+/// `ok` rather than being recovered by searching the text for "Error"/"Failed", which a platform
+/// error message or a process name could make wrong either way (#1203).
+struct ActionResultMessage
+{
+    bool ok = false;
+    std::string text; ///< Empty when there is nothing to show.
+
+    [[nodiscard]] bool empty() const noexcept
+    {
+        return text.empty();
+    }
+};
+
+/// "Suspend sent to PID 321" / "Could not suspend PID 321: Operation not permitted", as a pure
+/// function of the action, pid, and result.
+[[nodiscard]] inline ActionResultMessage
 formatActionResultMessage(ProcessAction action, std::int32_t pid, const Platform::ProcessActionResult& result)
 {
     if (result.success)
     {
-        return std::string("Success: ") + actionVerb(action) + " sent to PID " + std::to_string(pid);
+        return {.ok = true, .text = std::format("{} sent to PID {}", actionLabel(action), pid)};
     }
-    return "Error: " + result.errorMessage;
+    return {.ok = false, .text = std::format("Could not {} PID {}: {}", actionVerb(action), pid, result.errorMessage)};
 }
 
 } // namespace App::Detail

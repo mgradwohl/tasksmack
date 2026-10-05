@@ -4,6 +4,7 @@
 // unit-tested directly, without going through dlopen()/the NVML mock library. See
 // CONTRIBUTING.md's "extract the pure decision logic into a small header" pattern.
 
+#include "Platform/Linux/PciRuntimePm.h"
 #include "Platform/NVMLTypes.h"
 
 #include <algorithm>
@@ -219,6 +220,25 @@ struct ProcessUsage
         usages[usageByPid.at(std::get<0>(key))].memoryBytes += memoryBytes;
     }
     return usages;
+}
+
+/// The sysfs name ("0000:01:00.0") of the PCI device NVML describes, for its power/runtime_status
+/// (#1117). NVML's domain is 32-bit and printed with eight digits in busId ("00000000:01:00.0"),
+/// while sysfs prints at least four, so the name is rebuilt from the fields; only the function
+/// number has no field of its own and comes from busId's ".F" suffix (0 if it can't be read).
+[[nodiscard]] inline std::string sysfsPciAddress(const NVML::nvmlPciInfo_t& pci)
+{
+    const std::string_view busId(std::data(pci.busId), ::strnlen(std::data(pci.busId), std::size(pci.busId)));
+    std::uint32_t function = 0;
+    if (const auto dot = busId.rfind('.'); dot != std::string_view::npos && dot + 1 < busId.size())
+    {
+        const char digit = busId[dot + 1];
+        if (digit >= '0' && digit <= '7')
+        {
+            function = static_cast<std::uint32_t>(digit - '0');
+        }
+    }
+    return PciRuntimePm::pciAddress(pci.domain, pci.bus, pci.device, function);
 }
 
 } // namespace Platform::NVMLGPUProbeMath

@@ -4,9 +4,12 @@
 #include "Domain/SamplingConfig.h"
 #include "UI/Theme.h"
 
+#include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace App
 {
@@ -41,23 +44,17 @@ struct UserSettings
     int socketStatsCacheTtlMs = Domain::Sampling::SOCKET_STATS_CACHE_TTL_MS_DEFAULT;
 
     // Metrics Calculation Parameters
-    // Minimum time elapsed before computing network rates (seconds)
-    // Prevents large rate spikes early in process lifetime when few deltas exist.
-    double minTimeForRateSeconds = Domain::Sampling::MIN_TIME_FOR_RATE_SECONDS_DEFAULT;
-
-    // Maximum sanity check for network/IO rates (bytes per second)
-    // Rates above this threshold are treated as errors and clamped to 0.
+    // Per-process network rate ceiling (bytes per second), [metrics] max_sane_rate_bps. A rate above
+    // it is taken for a bad reading and shown as 0. Config-file only; applied to the ProcessModel
+    // when the Processes panel attaches (#1123).
     double maxSaneRateBps = Domain::Sampling::MAX_SANE_RATE_BPS_DEFAULT;
 
-    // GPU integrated VRAM threshold (bytes) - Windows only
-    // Used to classify GPUs as integrated vs. discrete based on dedicated VRAM.
-    int64_t integratedGpuVramThresholdBytes = Domain::Sampling::INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_DEFAULT;
-
     // UI Behavior Parameters
-    // Exponential smoothing factor for charts (0.0 = no smoothing, 1.0 = full averaging)
+    // How live values and the "now" bars beside charts ease toward each new sample
+    // (UI::Widgets::computeAlpha): the time constant is chartSmoothFactor x the refresh interval,
+    // kept within [chartTauMsMin, chartTauMsMax] ms. Config-file only; pushed into UI by
+    // applyToApplication() at startup (#1123).
     double chartSmoothFactor = Domain::Sampling::CHART_SMOOTH_FACTOR_DEFAULT;
-
-    // Adaptive time constant range for chart smoothing (milliseconds)
     int chartTauMsMin = Domain::Sampling::CHART_TAU_MS_MIN_DEFAULT;
     int chartTauMsMax = Domain::Sampling::CHART_TAU_MS_MAX_DEFAULT;
 
@@ -69,13 +66,14 @@ struct UserSettings
     // should stay just as beautiful as today unless the user opts into the tradeoff.
     bool chartAntiAliasing = true;
 
-    // Progress bar color thresholds (percentage, 0-100)
-    double progressColorLowThreshold = Domain::Sampling::PROGRESS_COLOR_LOW_THRESHOLD_DEFAULT;
-    double progressColorHighThreshold = Domain::Sampling::PROGRESS_COLOR_HIGH_THRESHOLD_DEFAULT;
-
     // Window state
     int windowWidth = 1280;
     int windowHeight = 720;
+    // Window scale (Window::getUnitScale()) windowWidth/windowHeight are measured at: on Windows the
+    // size is in physical pixels, so it is converted to the scale of the display the window opens
+    // on (#1168). The default size is for 100 %; a config saved before the scale was recorded has
+    // none, and its size is restored unconverted, as it always was.
+    std::optional<float> windowScale = 1.0F;
     std::optional<int> windowPosX;
     std::optional<int> windowPosY;
     bool windowMaximized = false;
@@ -113,7 +111,12 @@ class UserConfig
     /// Load settings from config file (call on startup)
     void load();
 
-    /// Save settings to config file.
+    /// Save settings to the config file by replacing it with a new file, so a crash mid-write can't
+    /// leave it truncated. Only the settings TaskSmack changed since it last read or wrote the file
+    /// are written (UserConfigHelpers::mergeOwnedKeys): keys it doesn't own, and edits made to the
+    /// file while TaskSmack runs, are kept. A file that exists but can't be read or parsed is left
+    /// alone and nothing is saved. The read-merge-rename isn't locked against another TaskSmack:
+    /// main() lets only one run per config directory (InstanceLock, #1230).
     /// Resets the loaded flag so a subsequent load() call will re-read from disk.
     void save();
 
@@ -129,7 +132,7 @@ class UserConfig
         return m_Settings;
     }
 
-    /// Apply loaded settings to the application (theme, font size, etc.)
+    /// Apply loaded settings to the application: theme, font size, chart anti-aliasing and smoothing
     void applyToApplication() const;
 
     /// Capture current application state into settings
@@ -150,7 +153,16 @@ class UserConfig
     {
         m_ConfigPath = path;
         m_Settings = UserSettings{};
+        m_Synced = UserSettings{};
         m_IsLoaded = false;
+        m_TempNameSource = nullptr;
+    }
+
+    /// Replaces the random number that names save()'s staging file, so a test can make every
+    /// candidate name collide. Reset by resetConfigPathForTesting().
+    void setTempNameSourceForTesting(std::function<std::uint32_t()> source)
+    {
+        m_TempNameSource = std::move(source);
     }
 
   private:
@@ -160,6 +172,12 @@ class UserConfig
     std::filesystem::path m_ConfigPath;
     UserSettings m_Settings;
     bool m_IsLoaded = false;
+
+    // The settings as TaskSmack last read them from, or wrote them to, the file (the merge base for
+    // save(), #1122). With no readable file at startup it is the settings TaskSmack started with,
+    // so a file created or repaired before the first save only gets what TaskSmack changed.
+    UserSettings m_Synced;
+    std::function<std::uint32_t()> m_TempNameSource; // Testing only; empty means std::random_device
 
     static auto getConfigDirectory() -> std::filesystem::path;
 };

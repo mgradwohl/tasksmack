@@ -16,6 +16,7 @@
 #include <mutex>
 #include <optional>
 #include <shared_mutex>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -78,6 +79,16 @@ struct TransparentStringEqual
     }
 };
 
+/// Current snapshots keyed by GPU id. Unordered: anything shown to the user goes through
+/// orderSnapshotsByEnumeration() first (#1163).
+using GPUSnapshotMap = std::unordered_map<std::string, GPUSnapshot, TransparentStringHash, TransparentStringEqual>;
+
+/// The snapshots in a stable order: the enumeration order of gpuInfo first, then any GPU the read
+/// returned that enumeration did not list, sorted by id. Iterating the map directly gave a hash order,
+/// so a GPU dropping out of one read could reorder the rest and shift their UI state (#1163).
+[[nodiscard]] std::vector<GPUSnapshot> orderSnapshotsByEnumeration(std::span<const Platform::GPUInfo> gpuInfo,
+                                                                   const GPUSnapshotMap& snapshots);
+
 class GPUModel : public ISamplable
 {
   public:
@@ -132,14 +143,17 @@ class GPUModel : public ISamplable
     // Get global timestamps for all GPU history samples (one per refresh call)
     [[nodiscard]] std::vector<double> historyTimestamps() const;
 
-    // Get per-GPU timestamps (only samples where the GPU was present).
-    // Length matches the per-GPU history vectors (utilizationHistory, etc.).
+    // Get per-GPU timestamps: one per refresh since the GPU was first seen, including refreshes it
+    // was missing from, whose history entries are NaN gaps (#1146). Length matches the per-GPU
+    // history vectors (utilizationHistory, etc.).
     [[nodiscard]] std::vector<double> historyTimestamps(std::string_view gpuId) const;
 
-    // GPU info (static, rarely changes)
+    // GPU info: enumerated at construction, and again whenever the probe's rescanGPUs() reports a
+    // change (a GPU added, removed or lost, or a sleeping adapter's sensors now discoverable) (#1116,
+    // #1289). Each refresh's publication carries the current list.
     [[nodiscard]] std::vector<Platform::GPUInfo> gpuInfo() const;
 
-    // Capabilities
+    // Capabilities (re-read along with the GPU info)
     [[nodiscard]] Platform::GPUCapabilities capabilities() const;
     [[nodiscard]] std::shared_ptr<const GPUPublication> publication() const noexcept;
     [[nodiscard]] std::uint64_t publicationVersion() const noexcept;
@@ -150,18 +164,21 @@ class GPUModel : public ISamplable
   private:
     std::unique_ptr<Platform::IGPUProbe> m_Probe;
     mutable std::mutex m_ProbeMutex;
+    // The GPU info, its known flag and the capabilities are written only on the sampler thread
+    // (the constructor, then rescanGPUs() inside refreshAt()), always under a unique m_Mutex, so the
+    // sampler thread may read them without a lock; any other thread takes m_Mutex shared.
     std::vector<Platform::GPUInfo> m_GPUInfo;
-    // False if the constructor's enumerateGPUs() threw, leaving m_GPUInfo empty for a reason other
+    // False while no enumerateGPUs() has succeeded, leaving m_GPUInfo empty for a reason other
     // than there being no GPUs. Published as GPUPublication::gpuInfoKnown.
     bool m_GPUInfoKnown = false;
     Platform::GPUCapabilities m_Capabilities;
-    // False if the constructor's capabilities() query threw, leaving m_Capabilities at its
+    // False while no capabilities() query has succeeded, leaving m_Capabilities at its
     // default (all-false) values. readProcessGPUCounters() must not treat that as proof
     // per-process metrics are unsupported -- see its use of this flag for why.
     bool m_CapabilitiesKnown = false;
 
     // Current snapshots per GPU
-    using SnapshotMap = std::unordered_map<std::string, GPUSnapshot, TransparentStringHash, TransparentStringEqual>;
+    using SnapshotMap = GPUSnapshotMap;
     using HistoryMap = std::unordered_map<std::string, HistoryBuffer<GPUSnapshot>, TransparentStringHash, TransparentStringEqual>;
     using CounterMap = std::unordered_map<std::string, Platform::GPUCounters, TransparentStringHash, TransparentStringEqual>;
 
@@ -179,6 +196,8 @@ class GPUModel : public ISamplable
     // Previous counters for rate calculation
     CounterMap m_PrevCounters;
     std::chrono::steady_clock::time_point m_PrevSampleTime;
+    // When the probe last got a GPURescan::Full (construction counts as one).
+    std::chrono::steady_clock::time_point m_LastFullRescan;
 
     // Thread safety
     mutable std::shared_mutex m_Mutex;
@@ -197,6 +216,12 @@ class GPUModel : public ISamplable
     template<typename Projection>
     [[nodiscard]] std::vector<float> getHistoryFieldByProjection(std::string_view gpuId, Projection project) const;
     void publish();
+
+    // Ask the probe whether the GPU set or its GPUInfo changed (a full rescan every
+    // GPU_RESCAN_INTERVAL_SECONDS, a quick one otherwise) and, if so, re-enumerate and take the new
+    // GPU info and capabilities (#1116, #1289). Also retries a failed startup enumeration or
+    // capabilities query at the full-rescan rate. Caller holds m_ProbeMutex, not m_Mutex.
+    void rescanGPUs(std::chrono::steady_clock::time_point now);
 
     // Size every history ring for m_MaxHistorySeconds at the fastest refresh cadence (caller holds m_Mutex).
     void applyHistoryCapacity();

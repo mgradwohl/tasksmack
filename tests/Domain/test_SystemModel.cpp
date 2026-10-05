@@ -11,16 +11,22 @@
 
 #include "Domain/SamplingConfig.h"
 #include "Domain/SystemModel.h"
+#include "Domain/SystemSnapshot.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/PowerTypes.h"
 #include "Platform/SystemTypes.h"
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
+#include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 // Use shared mock from TestMocks namespace
@@ -35,7 +41,7 @@ using TestMocks::MockSystemProbe;
 // Platform::CpuCounters Tests (SystemTypes.h)
 // =============================================================================
 
-TEST(CpuCountersTest, TotalCalculatesAllComponents)
+TEST(CpuCountersTest, TotalCalculatesAllComponentsExceptGuest)
 {
     Platform::CpuCounters c;
     c.user = 100;
@@ -49,8 +55,9 @@ TEST(CpuCountersTest, TotalCalculatesAllComponents)
     c.guest = 4;
     c.guestNice = 1;
 
-    // total = 100 + 20 + 50 + 800 + 10 + 5 + 3 + 7 + 4 + 1 = 1000
-    EXPECT_EQ(c.total(), 1000);
+    // total = 100 + 20 + 50 + 800 + 10 + 5 + 3 + 7 = 995: guest and guestNice are already
+    // inside user and nice, so adding them again would count them twice (#1157)
+    EXPECT_EQ(c.total(), 995);
 }
 
 TEST(CpuCountersTest, ActiveExcludesIdleAndIowait)
@@ -67,9 +74,27 @@ TEST(CpuCountersTest, ActiveExcludesIdleAndIowait)
     c.guest = 4;
     c.guestNice = 1;
 
-    // active = 100 + 20 + 50 + 5 + 3 + 7 + 4 + 1 = 190
-    // (excludes idle=800 and iowait=10)
-    EXPECT_EQ(c.active(), 190);
+    // active = 100 + 20 + 50 + 5 + 3 + 7 = 185
+    // (excludes idle=800 and iowait=10, and guest/guestNice, which user/nice already hold)
+    EXPECT_EQ(c.active(), 185);
+    EXPECT_EQ(c.idleTotal(), 810);
+    EXPECT_EQ(c.active() + c.idleTotal(), c.total());
+}
+
+TEST(CpuCountersTest, GuestTimeIsCountedOnce)
+{
+    // Linux adds guest time to user (and guest_nice to nice) as well as reporting it on its own,
+    // so a core that spent its whole interval running a VM reports user == guest. Counting the
+    // guest field again made that core look like it ran for twice as long as it did (#1157).
+    Platform::CpuCounters c;
+    c.user = 400;
+    c.guest = 400; // all of user was guest time
+    c.nice = 50;
+    c.guestNice = 50; // all of nice was niced guest time
+    c.idle = 550;
+
+    EXPECT_EQ(c.total(), 1000);
+    EXPECT_EQ(c.active(), 450);
 }
 
 TEST(CpuCountersTest, ActiveWithZeroValues)
@@ -212,10 +237,11 @@ TEST(SystemModelTest, MemoryFallbackWhenNoAvailable)
     auto probe = std::make_unique<MockSystemProbe>();
     auto* rawProbe = probe.get();
 
-    // Old kernel without MemAvailable (available = 0)
+    // Old kernel without MemAvailable
     // total=100, free=20, cached=30, buffers=10
     // used = 100 - 20 - 30 - 10 = 40
     auto mem = makeMemoryCounters(100, 0, 20, 30, 10);
+    mem.hasAvailableBytes = false;
     rawProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), mem));
 
     Domain::SystemModel model(std::move(probe));
@@ -224,6 +250,91 @@ TEST(SystemModelTest, MemoryFallbackWhenNoAvailable)
     auto snap = model.snapshot();
     EXPECT_EQ(snap.memoryUsedBytes, 40);
     EXPECT_DOUBLE_EQ(snap.memoryUsedPercent, 40.0);
+}
+
+TEST(SystemModelTest, MemAvailableZeroIsMemoryExhaustedNotMissing)
+{
+    // Under severe pressure the kernel reports MemAvailable: 0. That used to switch to the legacy
+    // formula exactly when memory ran out, understating use (#1143).
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(100, 0, 20, 30, 10)));
+
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+
+    EXPECT_EQ(model.snapshot().memoryUsedBytes, 100U);
+}
+
+TEST(SystemModelTest, MemoryUsedNeverWrapsBelowZero)
+{
+    // A container (LXCFS) can report available above total; the unsigned subtraction wrapped to
+    // about 16 EiB used (#1143). The legacy formula saturates too.
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(100, 150)));
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+    EXPECT_EQ(model.snapshot().memoryUsedBytes, 0U);
+
+    auto legacyProbe = std::make_unique<MockSystemProbe>();
+    auto* rawLegacy = legacyProbe.get();
+    auto legacy = makeMemoryCounters(100, 0, 60, 50, 10);
+    legacy.hasAvailableBytes = false;
+    rawLegacy->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), legacy));
+    Domain::SystemModel legacyModel(std::move(legacyProbe));
+    legacyModel.refresh();
+    EXPECT_EQ(legacyModel.snapshot().memoryUsedBytes, 0U);
+
+    // Parts whose sum wraps (UINT64_MAX + 1 == 0) must not read as all memory used.
+    auto wrappingProbe = std::make_unique<MockSystemProbe>();
+    auto* rawWrapping = wrappingProbe.get();
+    auto wrapping = makeMemoryCounters(100, 0, std::numeric_limits<std::uint64_t>::max(), 1, 0);
+    wrapping.hasAvailableBytes = false;
+    rawWrapping->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), wrapping));
+    Domain::SystemModel wrappingModel(std::move(wrappingProbe));
+    wrappingModel.refresh();
+    EXPECT_EQ(wrappingModel.snapshot().memoryUsedBytes, 0U);
+}
+
+namespace SystemModelTestSupport
+{
+/// A power probe that records when it was read. In a named namespace, not an anonymous one: mocks
+/// built with std::make_unique follow the repository's test convention of external linkage.
+class TimedPowerProbe : public Platform::IPowerProbe
+{
+  public:
+    explicit TimedPowerProbe(std::chrono::steady_clock::time_point* readAt) : m_ReadAt(readAt)
+    {}
+    [[nodiscard]] Platform::PowerCounters read() override
+    {
+        *m_ReadAt = std::chrono::steady_clock::now();
+        return {};
+    }
+    [[nodiscard]] Platform::PowerCapabilities capabilities() const override
+    {
+        return {};
+    }
+
+  private:
+    std::chrono::steady_clock::time_point* m_ReadAt;
+};
+} // namespace SystemModelTestSupport
+
+TEST(SystemModelTest, SampleIsStampedBeforeThePowerRead)
+{
+    // The power read has its own variable latency; stamped after it, the rate interval jittered
+    // with it (#1144). The timestamp must come from before the power probe is read.
+    auto probe = std::make_unique<MockSystemProbe>();
+    probe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(100, 50)));
+    std::chrono::steady_clock::time_point powerReadAt;
+    Domain::SystemModel model(std::move(probe), std::make_unique<SystemModelTestSupport::TimedPowerProbe>(&powerReadAt));
+    model.refresh();
+    model.refresh();
+
+    const auto timestamps = model.timestamps();
+    ASSERT_FALSE(timestamps.empty());
+    EXPECT_LE(timestamps.back(), std::chrono::duration<double>(powerReadAt.time_since_epoch()).count());
 }
 
 // =============================================================================
@@ -381,6 +492,54 @@ TEST(SystemModelTest, CpuPercentWithIoWaitAndSteal)
     EXPECT_DOUBLE_EQ(snap.cpuTotal.stealPercent, 5.0);
 }
 
+TEST(SystemModelTest, CpuPercentCountsIowaitAsIdle)
+{
+    // iowait is a CPU with nothing to run while it waits for I/O: idle time, as on Windows, which
+    // has no iowait at all. It is still reported as its own breakdown (#1157).
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(1000, 0, 500, 8000, 300, 200), makeMemoryCounters(1024, 512)));
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+
+    // Delta: user=1000, system=500, idle=7000, iowait=1000, steal=500 (total=10000)
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(2000, 0, 1000, 15000, 1300, 700), makeMemoryCounters(1024, 512)));
+    model.refresh();
+
+    const auto snap = model.snapshot();
+    EXPECT_DOUBLE_EQ(snap.cpuTotal.totalPercent, 20.0); // user + system + steal; was 30 with iowait counted busy
+    EXPECT_DOUBLE_EQ(snap.cpuTotal.idlePercent, 70.0);
+    EXPECT_DOUBLE_EQ(snap.cpuTotal.iowaitPercent, 10.0);
+}
+
+TEST(SystemModelTest, CpuPercentCountsGuestTimeOnce)
+{
+    // The issue's VM host: a guest pins 4 of 8 cores, so half of all CPU time is guest time, which
+    // the kernel reports in user *and* in guest. The chart must read 50%, not 67% (#1157).
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    auto withGuest = [](std::uint64_t user, std::uint64_t idle, std::uint64_t guest)
+    {
+        auto c = makeCpuCounters(user, 0, 0, idle);
+        c.guest = guest;
+        return c;
+    };
+
+    rawProbe->setCounters(makeSystemCounters(withGuest(0, 0, 0), makeMemoryCounters(1024, 512)));
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+
+    rawProbe->setCounters(makeSystemCounters(withGuest(4000, 4000, 4000), makeMemoryCounters(1024, 512)));
+    model.refresh();
+
+    const auto snap = model.snapshot();
+    EXPECT_DOUBLE_EQ(snap.cpuTotal.totalPercent, 50.0);
+    EXPECT_DOUBLE_EQ(snap.cpuTotal.userPercent, 50.0);
+    EXPECT_DOUBLE_EQ(snap.cpuTotal.idlePercent, 50.0);
+}
+
 TEST(SystemModelTest, CpuPercentClampsToValidRange)
 {
     auto probe = std::make_unique<MockSystemProbe>();
@@ -509,7 +668,7 @@ TEST(SystemModelTest, PerCoreHistoryStaysAlignedOnCoreCountDecrease)
 {
     // Establish two cores over three samples, then simulate a transient probe
     // read that reports only one core.  The retained ring for core 1 must
-    // receive a 0.0F placeholder so every core series stays the same length
+    // receive a NaN placeholder (a gap, #1146) so every core series stays the same length
     // as the timestamp axis.  A subsequent sample with two cores again must
     // resume normal values.
     auto probe = std::make_unique<MockSystemProbe>();
@@ -547,13 +706,13 @@ TEST(SystemModelTest, PerCoreHistoryStaysAlignedOnCoreCountDecrease)
         // All series must be the same length as the timestamp axis
         EXPECT_EQ(cores[0].size(), ts.size());
         EXPECT_EQ(cores[1].size(), ts.size());
-        // Absent core 1 must have received a 0.0F placeholder for this sample
-        EXPECT_FLOAT_EQ(cores[1].back(), 0.0F);
+        // Absent core 1 must have received a NaN placeholder (a gap, not a fake 0%) for this sample
+        EXPECT_TRUE(std::isnan(cores[1].back()));
     }
 
-    // Sample 4: two cores return → core 1 still gets 0.0F this sample because
-    // m_PrevCounters only has 1 core from sample 3 (min-of-two logic), so no
-    // delta is computable for core 1 yet.  What matters is that the ring stays aligned.
+    // Sample 4: two cores return → core 1 still gets NaN this sample because
+    // m_PrevCounters has no core 1 from sample 3, so no delta is computable for
+    // core 1 yet.  What matters is that the ring stays aligned.
     std::vector<Platform::CpuCounters> cores4 = {makeCpuCounters(3000, 0, 3000, 24000), makeCpuCounters(4000, 0, 4000, 22000)};
     rawProbe->setCounters(makeSystemCounters(makeCpuCounters(7000, 0, 7000, 46000), makeMemoryCounters(1024, 512), 0, cores4));
     model.refresh();
@@ -564,9 +723,158 @@ TEST(SystemModelTest, PerCoreHistoryStaysAlignedOnCoreCountDecrease)
         ASSERT_EQ(cores.size(), 2);
         EXPECT_EQ(cores[0].size(), ts.size());
         EXPECT_EQ(cores[1].size(), ts.size());
-        // Core 1 still shows 0.0F (prev counters only had 1 core); alignment is the key invariant
-        EXPECT_FLOAT_EQ(cores[1].back(), 0.0F);
+        // Core 1 still has no reading (prev counters had no core 1); alignment is the key invariant
+        EXPECT_TRUE(std::isnan(cores[1].back()));
     }
+}
+
+TEST(SystemModelTest, OfflineInteriorCoreKeepsEveryOtherCoreOnItsOwnHistory)
+{
+    // /proc/stat lists online CPUs only: with cpu2 offline the per-core list is cpu0, cpu1, cpu3.
+    // Matching by list position diffed cpu3 against the previous sample's cpu2 and pushed it into
+    // core 2's history, shifting every later core onto the wrong label, with the gap landing on
+    // the last core. Matched by core id, cpu3 keeps its own series and cpu2 gets the gap (#1229).
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    // Core i runs at (i + 1) * 10% over every 1000-tick interval, so each core's line is distinct.
+    constexpr std::uint64_t TICKS_PER_SAMPLE = 1000;
+    const auto coreAt = [](std::size_t coreId, std::uint64_t sample)
+    {
+        const std::uint64_t busyPerSample = (coreId + 1) * 100;
+        auto core = makeCpuCounters(busyPerSample * sample, 0, 0, (TICKS_PER_SAMPLE - busyPerSample) * sample);
+        core.coreId = coreId;
+        return core;
+    };
+    const auto setSample = [&](std::uint64_t sample, const std::vector<std::size_t>& onlineIds)
+    {
+        auto counters = makeSystemCounters(makeCpuCounters(0, 0, 0, TICKS_PER_SAMPLE * 4 * sample), makeMemoryCounters(1024, 512));
+        for (const std::size_t id : onlineIds)
+        {
+            counters.cpuPerCore.push_back(coreAt(id, sample));
+        }
+        rawProbe->setCounters(counters);
+    };
+
+    setSample(0, {0, 1, 2, 3});
+    Domain::SystemModel model(std::move(probe));
+    model.refresh(); // baseline
+    setSample(1, {0, 1, 2, 3});
+    model.refresh();
+    setSample(2, {0, 1, 3}); // cpu2 offline
+    model.refresh();
+
+    {
+        const auto snap = model.snapshot();
+        EXPECT_EQ(snap.coreCount, 3); // online cores
+        ASSERT_EQ(snap.cpuPerCore.size(), 4U);
+        EXPECT_DOUBLE_EQ(snap.cpuPerCore[0].totalPercent, 10.0);
+        EXPECT_DOUBLE_EQ(snap.cpuPerCore[1].totalPercent, 20.0);
+        EXPECT_TRUE(std::isnan(snap.cpuPerCore[2].totalPercent));
+        EXPECT_DOUBLE_EQ(snap.cpuPerCore[3].totalPercent, 40.0);
+    }
+
+    setSample(3, {0, 1, 2, 3}); // cpu2 back online
+    model.refresh();
+    setSample(4, {0, 1, 2, 3});
+    model.refresh();
+
+    const auto ts = model.timestamps();
+    const auto cores = model.perCoreHistory();
+    ASSERT_EQ(ts.size(), 4U);
+    ASSERT_EQ(cores.size(), 4U);
+    for (const auto& core : cores)
+    {
+        ASSERT_EQ(core.size(), ts.size());
+    }
+
+    // cpu0, cpu1 and cpu3 keep their own load through the middle sample.
+    for (std::size_t i = 0; i < ts.size(); ++i)
+    {
+        EXPECT_FLOAT_EQ(cores[0][i], 10.0F) << "sample " << i;
+        EXPECT_FLOAT_EQ(cores[1][i], 20.0F) << "sample " << i;
+        EXPECT_FLOAT_EQ(cores[3][i], 40.0F) << "sample " << i;
+    }
+    // cpu2: its reading, then a gap while offline, a gap on the sample it returns (no previous
+    // counters to diff against), then its own reading again.
+    EXPECT_FLOAT_EQ(cores[2][0], 30.0F);
+    EXPECT_TRUE(std::isnan(cores[2][1]));
+    EXPECT_TRUE(std::isnan(cores[2][2]));
+    EXPECT_FLOAT_EQ(cores[2][3], 30.0F);
+}
+
+TEST(SystemModelTest, ImplausibleCoreIdIsDropped)
+{
+    // Per-core slots are indexed by core id; a malformed id must not size every per-core vector
+    // to billions of entries (#1229).
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+    const auto setSample = [&](std::uint64_t busy, std::uint64_t idle)
+    {
+        auto counters = makeSystemCounters(makeCpuCounters(busy, 0, 0, idle),
+                                           makeMemoryCounters(1024, 512),
+                                           0,
+                                           {makeCpuCounters(busy, 0, 0, idle), makeCpuCounters(busy, 0, 0, idle)});
+        counters.cpuPerCore[1].coreId = std::numeric_limits<std::size_t>::max();
+        rawProbe->setCounters(counters);
+    };
+
+    setSample(0, 0);
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+    setSample(500, 500);
+    model.refresh();
+
+    const auto snap = model.snapshot();
+    ASSERT_EQ(snap.cpuPerCore.size(), 1U);
+    EXPECT_DOUBLE_EQ(snap.cpuPerCore[0].totalPercent, 50.0);
+    EXPECT_EQ(model.perCoreHistory().size(), 1U);
+    EXPECT_EQ(snap.coreCount, 1); // the dropped id isn't counted as a core either
+}
+
+TEST(SystemModelTest, HotAddedCoreIsBackfilledWithGaps)
+{
+    // A core that appears mid-run gets NaN for the samples before it existed (a gap, not a fake
+    // 0%, #1146), so its ring stays aligned with the timestamp axis.
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+    const auto oneCore = [&](std::uint64_t busy, std::uint64_t idle)
+    {
+        rawProbe->setCounters(
+            makeSystemCounters(makeCpuCounters(busy, 0, 0, idle), makeMemoryCounters(1024, 512), 0, {makeCpuCounters(busy, 0, 0, idle)}));
+    };
+    const auto twoCores = [&](std::uint64_t busy, std::uint64_t idle)
+    {
+        rawProbe->setCounters(makeSystemCounters(makeCpuCounters(2 * busy, 0, 0, 2 * idle),
+                                                 makeMemoryCounters(1024, 512),
+                                                 0,
+                                                 {makeCpuCounters(busy, 0, 0, idle), makeCpuCounters(busy, 0, 0, idle)}));
+    };
+
+    oneCore(0, 0);
+    Domain::SystemModel model(std::move(probe));
+    model.refresh(); // baseline
+    oneCore(100, 100);
+    model.refresh();
+    oneCore(200, 200);
+    model.refresh();
+    twoCores(300, 300); // the previous sample had one core, so core 1 has no delta yet
+    model.refresh();
+    twoCores(400, 400);
+    model.refresh();
+
+    const auto ts = model.timestamps();
+    const auto cores = model.perCoreHistory();
+    ASSERT_EQ(cores.size(), 2U);
+    ASSERT_EQ(cores[0].size(), ts.size());
+    ASSERT_EQ(cores[1].size(), ts.size());
+    ASSERT_GE(ts.size(), 2U);
+    for (std::size_t i = 0; i + 1 < cores[1].size(); ++i)
+    {
+        EXPECT_TRUE(std::isnan(cores[1][i])) << "sample " << i;
+        EXPECT_FALSE(std::isnan(cores[0][i])) << "sample " << i;
+    }
+    EXPECT_FLOAT_EQ(cores[1].back(), 50.0F);
 }
 
 // =============================================================================
@@ -737,6 +1045,32 @@ TEST(SystemModelTest, RegressedCpuFieldDoesNotUnderflowIntoPinned100Percent)
 
     auto snap = model.snapshot();
     EXPECT_DOUBLE_EQ(snap.cpuTotal.iowaitPercent, 0.0);
+}
+
+TEST(SystemModelTest, RegressedIowaitDoesNotCancelIdleGrowth)
+{
+    // #1157: total = 100% - (idle + iowait). If iowait regresses by more than idle grew, one delta of
+    // (idle + iowait) clamps to 0 and reports the CPU 100% busy although idle grew. Each part is
+    // rollback-guarded on its own instead.
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+    // user=1000 system=500 idle=8500 iowait=1000 -> total 11000
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(1000, 0, 500, 8500, 1000, 0), makeMemoryCounters(1024, 512)));
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+
+    // user +1500, idle +500, iowait 1000 -> 400 (regressed, counted as 0). idle + iowait went
+    // 9500 -> 9400, which a combined delta would clamp to 0 (100% busy). The denominator is the sum
+    // of the guarded per-field deltas, 2000, not total()'s 1400 in which the rollback cancelled
+    // 600 ticks of real growth.
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(2500, 0, 500, 9000, 400, 0), makeMemoryCounters(1024, 512)));
+    model.refresh();
+
+    const auto snap = model.snapshot();
+    EXPECT_DOUBLE_EQ(snap.cpuTotal.iowaitPercent, 0.0);
+    EXPECT_DOUBLE_EQ(snap.cpuTotal.idlePercent, 25.0);
+    EXPECT_DOUBLE_EQ(snap.cpuTotal.userPercent, 75.0);
+    EXPECT_DOUBLE_EQ(snap.cpuTotal.totalPercent, 75.0);
 }
 
 TEST(SystemModelTest, UptimeTracked)
@@ -1125,6 +1459,56 @@ TEST(SystemModelTest, PerInterfaceNetworkRatesComputedFromDeltas)
     // wlan0: (2500-2000) / 1.0 = 500 rx/s, (1200-1000) / 1.0 = 200 tx/s
     EXPECT_DOUBLE_EQ(snap.networkInterfaces[1].rxBytesPerSec, 500.0);
     EXPECT_DOUBLE_EQ(snap.networkInterfaces[1].txBytesPerSec, 200.0);
+}
+
+namespace
+{
+/// Total rates after two samples one second apart, in which each interface moves `rxDelta` rx and
+/// `txDelta` tx bytes; each entry is an interface name and whether it is virtual.
+Domain::SystemSnapshot totalAfterOneSecond(const std::vector<std::pair<std::string, bool>>& interfaces, uint64_t rxDelta, uint64_t txDelta)
+{
+    std::vector<Platform::SystemCounters::InterfaceCounters> before;
+    std::vector<Platform::SystemCounters::InterfaceCounters> after;
+    for (const auto& [name, isVirtual] : interfaces)
+    {
+        auto first = makeInterfaceCounters(name, 1000, 1000);
+        first.isVirtual = isVirtual;
+        auto second = makeInterfaceCounters(name, 1000 + rxDelta, 1000 + txDelta);
+        second.isVirtual = isVirtual;
+        before.push_back(first);
+        after.push_back(second);
+    }
+    const auto cpu = makeCpuCounters(100, 0, 50, 850);
+    const auto memory = makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024);
+    auto probe = std::make_unique<MockSystemProbe>();
+    Domain::SystemModel model(std::move(probe));
+    model.updateFromCounters(makeSystemCounters(cpu, memory, 0, {}, 0, 0, before), 1.0);
+    model.updateFromCounters(makeSystemCounters(makeCpuCounters(200, 0, 100, 1700), memory, 0, {}, 0, 0, after), 2.0);
+    return model.snapshot();
+}
+} // namespace
+
+TEST(SystemModelTest, NetworkTotalLeavesOutVirtualInterfaces)
+{
+    // #1106: a VPN tunnel (or a docker bridge, a WSL vEthernet) carries traffic that also crosses the
+    // hardware NIC; summing both showed about twice the real throughput.
+    const auto snap = totalAfterOneSecond({{"eth0", false}, {"wg0", true}, {"docker0", true}}, 5000, 700);
+    EXPECT_DOUBLE_EQ(snap.netRxBytesPerSec, 5000.0);
+    EXPECT_DOUBLE_EQ(snap.netTxBytesPerSec, 700.0);
+
+    // ...while each virtual interface keeps its own rate and stays marked for the UI.
+    ASSERT_EQ(snap.networkInterfaces.size(), 3U);
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[1].rxBytesPerSec, 5000.0);
+    EXPECT_FALSE(snap.networkInterfaces[0].isVirtual);
+    EXPECT_TRUE(snap.networkInterfaces[1].isVirtual);
+}
+
+TEST(SystemModelTest, NetworkTotalCountsEveryInterfaceWhenAllAreVirtual)
+{
+    // Inside a container eth0 is a veth: with no hardware interface the Total must not read 0.
+    const auto snap = totalAfterOneSecond({{"eth0", true}, {"eth1", true}}, 300, 100);
+    EXPECT_DOUBLE_EQ(snap.netRxBytesPerSec, 600.0);
+    EXPECT_DOUBLE_EQ(snap.netTxBytesPerSec, 200.0);
 }
 
 TEST(SystemModelTest, PerInterfaceNetworkRatesHandleNewInterface)
@@ -1621,6 +2005,7 @@ TEST(SystemModelTest, PowerStatus_HasBattery_WhenPowerProbeReportsIt)
     EXPECT_FALSE(power.isCharging);
     EXPECT_TRUE(power.isDischarging);
     EXPECT_FALSE(power.isFull);
+    EXPECT_FALSE(power.isNotCharging);
     EXPECT_EQ(power.chargePercent, 75);
     EXPECT_DOUBLE_EQ(power.powerWatts, 12.5);
     EXPECT_EQ(power.healthPercent, 95);
@@ -1683,4 +2068,55 @@ TEST(SystemModelTest, PowerStatus_Full)
     EXPECT_FALSE(power.isCharging);
     EXPECT_FALSE(power.isDischarging);
     EXPECT_TRUE(power.isFull);
+}
+
+TEST(SystemModelTest, PowerStatus_NoBatteryKeepsTheAdapterReport)
+{
+    // With no battery, isOnAc is still the adapter's own report (#1109), online or not.
+    for (const bool online : {true, false})
+    {
+        auto sysProbe = std::make_unique<MockSystemProbe>();
+        sysProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(1024, 512)));
+        auto powerProbe = std::make_unique<MockPowerProbe>();
+        powerProbe->setCapabilities(Platform::PowerCapabilities{});
+        Platform::PowerCounters counters;
+        counters.state = Platform::BatteryState::NotPresent;
+        counters.isOnAc = online;
+        powerProbe->setCounters(counters);
+
+        Domain::SystemModel model(std::move(sysProbe), std::move(powerProbe));
+        model.refresh();
+
+        const auto& power = model.snapshot().power;
+        EXPECT_FALSE(power.hasBattery);
+        EXPECT_EQ(power.isOnAc, online);
+    }
+}
+
+TEST(SystemModelTest, PowerStatus_NotCharging)
+{
+    // Plugged in but held below full (#1158): its own state, not Full or Discharging.
+    auto sysProbe = std::make_unique<MockSystemProbe>();
+    sysProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(1024, 512)));
+
+    auto powerProbe = std::make_unique<MockPowerProbe>();
+    Platform::PowerCapabilities caps;
+    caps.hasBattery = true;
+    powerProbe->setCapabilities(caps);
+
+    Platform::PowerCounters counters;
+    counters.state = Platform::BatteryState::NotCharging;
+    counters.isOnAc = true;
+    counters.chargePercent = 80;
+    powerProbe->setCounters(counters);
+
+    Domain::SystemModel model(std::move(sysProbe), std::move(powerProbe));
+    model.refresh();
+
+    const auto& power = model.snapshot().power;
+    EXPECT_TRUE(power.isOnAc);
+    EXPECT_TRUE(power.isNotCharging);
+    EXPECT_FALSE(power.isFull);
+    EXPECT_FALSE(power.isDischarging);
+    EXPECT_EQ(power.chargePercent, 80);
 }

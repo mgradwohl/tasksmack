@@ -22,7 +22,7 @@ colors = [
     "#E74856",  # Red
     "#10893E",  # Green
     "#8E8CD8",  # Purple
-    "#F7630C",  # Orange
+    "#FB7F41",  # Orange
     "#00B7C3",  # Teal
     "#FFB900",  # Gold
     "#E3008C",  # Magenta
@@ -57,10 +57,10 @@ text_info = "#60CDFF"      # Light Blue - informational text
 [status]
 running = "#6CCB5F"    # Light Green - active/running (R)
 sleeping = "#60CDFF"   # Light Blue - sleeping (S)
-disk_sleep = "#F7630C" # Orange - uninterruptible I/O (D)
-zombie = "#F1707B"     # Light Red - defunct process (Z)
-stopped = "#8E8CD8"    # Purple - stopped/traced (T/t)
-idle = "#808080"       # Gray - idle kernel thread (I)
+disk_sleep = "#FF8547" # Orange - uninterruptible I/O (D)
+zombie = "#FF8089"     # Light Red - defunct process (Z)
+stopped = "#A29FED"    # Purple - stopped/traced (T/t)
+idle = "#A7A7A7"       # Gray - idle kernel thread (I)
 
 # =============================================================================
 # CHART LINE COLORS
@@ -70,13 +70,13 @@ idle = "#808080"       # Gray - idle kernel thread (I)
 cpu = "#0078D4"       # Windows Blue - CPU usage line
 memory = "#10893E"    # Green - memory usage line
 io = "#E74856"        # Red - I/O read usage line
-io_write = "#26C6DA"        # Cyan - I/O write usage line
+io_write = "#60CDFF"        # Cyan - I/O write usage line
 net_tx = "#FFB900"          # Gold - Network transmit (sent) line
 net_rx = "#00B7C3"          # Teal - Network receive line
 cpu_fill = "#0078D44D"       # Windows Blue with 30% alpha - CPU fill
 memory_fill = "#10893E4D"    # Green with 30% alpha - memory fill
 io_fill = "#E748564D"        # Red with 30% alpha - I/O read fill
-io_write_fill = "#26C6DA4D"   # Cyan with 30% alpha - I/O write fill
+io_write_fill = "#60CDFF4D"   # Cyan with 30% alpha - I/O write fill
 net_tx_fill = "#FFB9004D"    # Gold with 30% alpha - Network TX fill
 net_rx_fill = "#00B7C34D"    # Teal with 30% alpha - Network RX fill
 peak_line = "#FFB900B3"      # Gold with 70% alpha - peak reference line
@@ -93,10 +93,10 @@ memory_fill = "#E3008C4D"         # Magenta with 30% alpha - GPU memory fill
 temperature = "#FFB900"           # Gold - GPU temperature line
 power = "#10893E"                 # Green - GPU power draw line
 encoder = "#00B7C3"               # Teal - GPU encoder utilization
-decoder = "#E3008C"               # Magenta - GPU decoder utilization
+decoder = "#E74856"               # Red - GPU decoder utilization (was Memory's Magenta, #1197)
 clock = "#60CDFF"             # Windows Light Blue - GPU clock speed line (theme-native)
 clock_fill = "#60CDFFCC"      # Windows Light Blue with 80% alpha - GPU clock fill
-fan = "#5F5F5F"               # Windows Gray - GPU fan speed line
+fan = "#757575"               # Windows Gray - GPU fan speed line
 
 # =============================================================================
 # CPU BREAKDOWN COLORS
@@ -116,7 +116,7 @@ idle_fill = "#3F3F3F33"      # Dark gray with 20% alpha - idle fill
 high   = "#E74856"     # Red (matches progress.high)
 normal = "#10893E"     # Green (matches progress.low)
 low    = "#8E8CD8"     # Purple
-badge_text_color = "#FFFFFF"  # White - readable on all priority badge colors
+badge_text_color = "#FFFFFF"  # Preferred badge text; a fill it is too faint on gets the other text colour (#1130)
 
 [buttons.close]
 hovered = "#CC1A1A"     # Dark red hover
@@ -244,6 +244,7 @@ empty_background = "#202020"
 # ImGui plot widgets
 # =============================================================================
 [ui.plot]
+grid = "#444444"
 lines = "#60CDFF"
 lines_hovered = "#F1707B"
 histogram = "#6CCB5F"

@@ -9,6 +9,7 @@
 #include "UI/DialogMetrics.h"
 #include "UI/IconLoader.h"
 #include "UI/Theme.h"
+#include "UI/Widgets.h"
 #include "version.h"
 
 #include <imgui.h>
@@ -22,6 +23,27 @@
 
 namespace App
 {
+
+namespace
+{
+
+/// A URL drawn in the accent colour that opens in the system browser when clicked, with a hand
+/// cursor on hover. Shared by the project link and the font/icon licence credits (#1212).
+void renderLink(const char* url, const ImVec4& color)
+{
+    ImGui::PushStyleColor(ImGuiCol_Text, color);
+    if (ImGui::Selectable(url, false, ImGuiSelectableFlags_DontClosePopups))
+    {
+        (void) App::PlatformOpen::openWithSystemHandler(std::string_view{url});
+    }
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    }
+    ImGui::PopStyleColor();
+}
+
+} // namespace
 
 AboutLayer::AboutLayer() : Core::Layer("AboutLayer")
 {}
@@ -89,9 +111,17 @@ void AboutLayer::renderAboutDialog()
     const float marginPx = ABOUT_MARGIN_EM * emPx;
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(marginPx, marginPx));
 
+    // Never larger than the viewport, re-evaluated every frame so a font change or a shrinking main
+    // window cannot push the OK button out of it; content that no longer fits scrolls (#1129).
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowSizeConstraints(ImVec2(0.0F, 0.0F),
+                                        ImVec2(UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.x),
+                                               UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.y)));
+
     const ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking;
     if (ImGui::BeginPopupModal("About TaskSmack", nullptr, flags))
     {
+        UI::Widgets::keepCurrentWindowInViewport();
 
         const auto& theme = UI::Theme::get();
         ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
@@ -139,25 +169,26 @@ void AboutLayer::renderAboutDialog()
         ImGui::Dummy(ImVec2(0.0F, lineGap));
 
         ImGui::Text("%s (%s build)", tasksmack::Version::STRING, tasksmack::Version::BUILD_TYPE);
-        ImGui::TextUnformatted("TaskSmack: the cross-platform system monitor");
+        // The name is already the large title above, so the tagline does not repeat it (#1212).
+        ImGui::TextUnformatted("A cross-platform system monitor");
 
         ImGui::Spacing();
 
         constexpr const char* repoUrl = "https://github.com/mgradwohl/tasksmack";
-        ImGui::PushStyleColor(ImGuiCol_Text, theme.accentColor(0));
-        if (ImGui::Selectable(repoUrl, false, ImGuiSelectableFlags_DontClosePopups))
-        {
-            (void) App::PlatformOpen::openWithSystemHandler(std::string_view{repoUrl});
-        }
-        if (ImGui::IsItemHovered())
-        {
-            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-        }
-        ImGui::PopStyleColor();
+        renderLink(repoUrl, theme.accentColor(0));
 
         ImGui::Text("License: MIT");
         ImGui::Text("Commit: %s", tasksmack::Version::GIT_COMMIT);
-        ImGui::TextUnformatted("Font: Inter (SIL Open Font License 1.1)");
+
+        // Every bundled font and icon set with its licence (#1212). Font Awesome Free is licensed
+        // in two parts: the icon designs under CC BY 4.0 (which requires this attribution) and the
+        // distributed fa-solid-900.ttf under the SIL OFL 1.1. Full notices: assets/fonts/LICENSE.txt.
+        ImGui::Spacing();
+        ImGui::TextUnformatted("Fonts: Inter, Sixtyfour (SIL Open Font License 1.1)");
+        ImGui::TextUnformatted("Icons: Font Awesome Free by Fonticons, Inc.");
+        ImGui::TextUnformatted("  (icons CC BY 4.0, font SIL Open Font License 1.1)");
+        constexpr const char* fontAwesomeLicenseUrl = "https://fontawesome.com/license/free";
+        renderLink(fontAwesomeLicenseUrl, theme.accentColor(0));
 
         ImGui::EndGroup();
 

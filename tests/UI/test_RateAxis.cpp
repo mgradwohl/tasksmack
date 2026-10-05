@@ -47,6 +47,26 @@ TEST(RateAxisTest, NegativeAndNonFiniteMaxAreTreatedAsZero)
     EXPECT_DOUBLE_EQ(rateAxisUpperBound(std::numeric_limits<double>::infinity(), BYTES), BYTES);
 }
 
+// #1195: a process's CPU is a percent of the whole machine, so on a fixed 0-100 axis a typical
+// process drew a flat line at zero. The percent axis scales to the data, between a floor and 100.
+TEST(RateAxisTest, PercentAxisScalesDownToItsMinimumSpanForSmallValues)
+{
+    EXPECT_DOUBLE_EQ(percentAxisUpperBound(0.0), PERCENT_AXIS_MIN_SPAN);
+    EXPECT_DOUBLE_EQ(percentAxisUpperBound(0.5), PERCENT_AXIS_MIN_SPAN);
+}
+
+TEST(RateAxisTest, PercentAxisGetsHeadroomAboveMidRangeValues)
+{
+    EXPECT_DOUBLE_EQ(percentAxisUpperBound(20.0), 20.0 * RATE_AXIS_HEADROOM);
+}
+
+TEST(RateAxisTest, PercentAxisNeverExceedsOneHundred)
+{
+    EXPECT_DOUBLE_EQ(percentAxisUpperBound(95.0), 100.0);
+    EXPECT_DOUBLE_EQ(percentAxisUpperBound(100.0), 100.0);
+    EXPECT_DOUBLE_EQ(percentAxisUpperBound(std::numeric_limits<double>::infinity()), PERCENT_AXIS_MIN_SPAN);
+}
+
 TEST(RateAxisTest, NonFiniteMinSpanFallsBackToOne)
 {
     EXPECT_DOUBLE_EQ(rateAxisUpperBound(0.0, std::numeric_limits<double>::quiet_NaN()), 1.0);
@@ -146,6 +166,92 @@ TEST(RateAxisTest, EasedBoundRestartsAtTheTargetAfterAGap)
     EasedBound bound;
     (void) stepEasedBound(bound, 100.0, 1, 0.016);
     EXPECT_DOUBLE_EQ(stepEasedBound(bound, 900.0, 50, 0.016), 900.0);
+}
+
+// ========== Nice axis steps (#1202) ==========
+
+[[nodiscard]] bool isOneTwoFive(double step)
+{
+    const double mantissa = step / std::pow(10.0, std::floor(std::log10(step)));
+    return std::abs(mantissa - 1.0) < 1e-9 || std::abs(mantissa - 2.0) < 1e-9 || std::abs(mantissa - 5.0) < 1e-9;
+}
+
+TEST(NiceAxisStepTest, PercentAxisStepsByTwenty)
+{
+    // 0-100 % with at most 8 labels: 20 (6 labels), where ImPlot printed every 5 % maximized.
+    EXPECT_DOUBLE_EQ(niceAxisStep(100.0, AXIS_MAX_TICKS), 20.0);
+    EXPECT_DOUBLE_EQ(niceAxisStep(5.0, AXIS_MAX_TICKS), 1.0);
+    EXPECT_DOUBLE_EQ(niceAxisStep(1.0, AXIS_MAX_TICKS), 0.2);
+}
+
+TEST(NiceAxisStepTest, ExactNiceRawStepIsKept)
+{
+    // 0-14 over 7 intervals is exactly 2: not pushed up to 5.
+    EXPECT_DOUBLE_EQ(niceAxisStep(14.0, 8), 2.0);
+    EXPECT_DOUBLE_EQ(niceAxisStep(70.0, 8), 10.0);
+}
+
+TEST(NiceAxisStepTest, StepIsAlwaysOneTwoFiveAndRespectsTheCap)
+{
+    for (const double span : {0.003, 0.7, 1.3, 4.2, 9.5, 17.0, 33.3, 99.9, 762.9, 12'345.0, 3.7e9})
+    {
+        for (const int maxTicks : {2, 3, 5, 8})
+        {
+            const double step = niceAxisStep(span, maxTicks);
+            ASSERT_GT(step, 0.0) << span;
+            EXPECT_TRUE(isOneTwoFive(step)) << "span " << span << " step " << step;
+            const auto ticks = axisTickRange(span, step);
+            EXPECT_LE(ticks.count, maxTicks) << "span " << span << " maxTicks " << maxTicks;
+            // A nice step is at most 2.5x the raw one, so from 5 labels up there are always two or more.
+            // Below that a span can get only the 0 tick, and the chart keeps ImPlot's own ticks.
+            if (maxTicks >= 5)
+            {
+                EXPECT_GE(ticks.count, 2) << "span " << span << " maxTicks " << maxTicks;
+            }
+        }
+    }
+}
+
+TEST(NiceAxisStepTest, UnusableSpanHasNoStep)
+{
+    EXPECT_DOUBLE_EQ(niceAxisStep(0.0, 8), 0.0);
+    EXPECT_DOUBLE_EQ(niceAxisStep(-5.0, 8), 0.0);
+    EXPECT_DOUBLE_EQ(niceAxisStep(std::numeric_limits<double>::quiet_NaN(), 8), 0.0);
+    EXPECT_DOUBLE_EQ(niceAxisStep(std::numeric_limits<double>::infinity(), 8), 0.0);
+}
+
+TEST(NiceAxisStepTest, BinaryStepIsNiceInTheAxisUnit)
+{
+    // The reported Network axis: 0-9.5 MB/s stepped by 1.9 MB/s. In MB it is 2 MB/s.
+    constexpr double MIB = 1024.0 * 1024.0;
+    EXPECT_DOUBLE_EQ(niceBinaryAxisStep(9.5 * MIB, MIB, AXIS_MAX_TICKS), 2.0 * MIB);
+    // Disk: 0-762.9 MB/s stepped by 95.4 MB/s; now 200 MB/s.
+    EXPECT_DOUBLE_EQ(niceBinaryAxisStep(762.9 * MIB, MIB, AXIS_MAX_TICKS), 200.0 * MIB);
+    // A unit scale that is not usable falls back to bytes.
+    EXPECT_DOUBLE_EQ(niceBinaryAxisStep(100.0, 0.0, AXIS_MAX_TICKS), 20.0);
+}
+
+TEST(AxisTickRangeTest, TicksRunFromZeroToTheLastMultipleBelowTheBound)
+{
+    const auto ticks = axisTickRange(9.5, 2.0);
+    EXPECT_DOUBLE_EQ(ticks.last, 8.0);
+    EXPECT_EQ(ticks.count, 5); // 0, 2, 4, 6, 8
+
+    const auto exact = axisTickRange(100.0, 20.0);
+    EXPECT_DOUBLE_EQ(exact.last, 100.0);
+    EXPECT_EQ(exact.count, 6);
+
+    EXPECT_EQ(axisTickRange(0.0, 1.0).count, 0);
+    EXPECT_EQ(axisTickRange(10.0, 0.0).count, 0);
+}
+
+TEST(AxisMaxTicksForHeightTest, ShortChartsGetFewerLabels)
+{
+    EXPECT_EQ(axisMaxTicksForHeight(180.0F, 15.0F), 6);  // 180 / 30
+    EXPECT_EQ(axisMaxTicksForHeight(1000.0F, 15.0F), 8); // capped
+    EXPECT_EQ(axisMaxTicksForHeight(40.0F, 15.0F), 2);   // floor of 2
+    EXPECT_EQ(axisMaxTicksForHeight(-1.0F, 15.0F), AXIS_MAX_TICKS);
+    EXPECT_EQ(axisMaxTicksForHeight(180.0F, 0.0F), AXIS_MAX_TICKS);
 }
 
 } // namespace

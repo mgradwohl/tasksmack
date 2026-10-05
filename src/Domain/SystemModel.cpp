@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -27,6 +28,42 @@
 
 namespace Domain
 {
+
+namespace
+{
+
+/// Per-core slots are indexed by core id, so an id bounds the vectors' size. Linux's largest
+/// NR_CPUS (MAXSMP) is 8192 and Windows tops out at 2048 logical processors: a larger id is
+/// malformed input, not a core, and is dropped rather than sizing every per-core vector to it.
+constexpr std::size_t MAX_CORE_SLOTS = 8192;
+
+/// Slots needed to index these cores by id: the highest plausible core id plus one.
+[[nodiscard]] std::size_t coreSlotCount(const std::vector<Platform::CpuCounters>& cores) noexcept
+{
+    std::size_t slots = 0;
+    for (const auto& core : cores)
+    {
+        if (core.coreId < MAX_CORE_SLOTS)
+        {
+            slots = std::max(slots, core.coreId + 1);
+        }
+    }
+    return slots;
+}
+
+/// A per-core slot with no reading this sample: NaN, drawn as a gap and shown as N/A (#1146).
+[[nodiscard]] CpuUsage noCpuReading() noexcept
+{
+    constexpr double NO_READING = std::numeric_limits<double>::quiet_NaN();
+    return CpuUsage{.totalPercent = NO_READING,
+                    .userPercent = NO_READING,
+                    .systemPercent = NO_READING,
+                    .idlePercent = NO_READING,
+                    .iowaitPercent = NO_READING,
+                    .stealPercent = NO_READING};
+}
+
+} // namespace
 
 SystemModel::SystemModel(std::unique_ptr<Platform::ISystemProbe> probe, std::unique_ptr<Platform::IPowerProbe> powerProbe)
     : m_Probe(std::move(probe)), m_PowerProbe(std::move(powerProbe))
@@ -138,6 +175,9 @@ void SystemModel::refresh()
     }
 
     auto counters = m_Probe->read();
+    // Stamped as soon as the counters are read, as StorageModel does: the power read below has
+    // its own, variable latency (sysfs, WMI), which would otherwise jitter the rate interval (#1144).
+    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 
     // Also read power data if probe is available (outside mutex - it's I/O). Applied to
     // the snapshot inside updateFromCountersLocked() below, under the same lock as the
@@ -149,7 +189,6 @@ void SystemModel::refresh()
         powerStatus = computePowerStatus(m_PowerProbe->read());
     }
 
-    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     updateFromCountersLocked(counters, nowSeconds, powerStatus);
 }
 
@@ -360,8 +399,10 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
 {
     SystemSnapshot snap;
 
-    // Core count
-    snap.coreCount = static_cast<int>(counters.cpuPerCore.size());
+    // Core count: the cores reported this sample, not counting an implausible id coreSlotCount()
+    // drops, so the UI never shows a core that has no slot (#1229).
+    snap.coreCount = static_cast<int>(
+        std::ranges::count_if(counters.cpuPerCore, [](const Platform::CpuCounters& core) { return core.coreId < MAX_CORE_SLOTS; }));
 
     // Memory (always available)
     snap.memoryTotalBytes = counters.memory.totalBytes;
@@ -369,16 +410,24 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
     snap.memoryCachedBytes = counters.memory.cachedBytes;
     snap.memoryBuffersBytes = counters.memory.buffersBytes;
 
-    // Used = total - available (MemAvailable accounts for cache/buffers that can be freed)
-    if (counters.memory.availableBytes > 0)
+    // Used = total - available (MemAvailable accounts for cache/buffers that can be freed). A
+    // MemAvailable of 0 is memory exhausted, not missing, so only a kernel without it takes the
+    // legacy formula. Both subtractions saturate at 0: a container (LXCFS) can report available
+    // above total, which wrapped to about 16 EiB used (#1143).
+    const auto saturatingSub = [](std::uint64_t a, std::uint64_t b) -> std::uint64_t
     {
-        snap.memoryUsedBytes = counters.memory.totalBytes - counters.memory.availableBytes;
+        return (a > b) ? a - b : 0;
+    };
+    if (counters.memory.hasAvailableBytes)
+    {
+        snap.memoryUsedBytes = saturatingSub(counters.memory.totalBytes, counters.memory.availableBytes);
     }
     else
     {
-        // Fallback for older kernels without MemAvailable
+        // Subtract each part in turn: summing them first could wrap (#1232 review).
         snap.memoryUsedBytes =
-            counters.memory.totalBytes - counters.memory.freeBytes - counters.memory.cachedBytes - counters.memory.buffersBytes;
+            saturatingSub(saturatingSub(saturatingSub(counters.memory.totalBytes, counters.memory.freeBytes), counters.memory.cachedBytes),
+                          counters.memory.buffersBytes);
     }
 
     // Memory percentage
@@ -434,6 +483,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         ifaceSnap.displayName = iface.displayName;
         ifaceSnap.isUp = iface.isUp;
         ifaceSnap.linkSpeedMbps = iface.linkSpeedMbps;
+        ifaceSnap.isVirtual = iface.isVirtual;
 
         // Compute rates only if we have previous data and positive time delta
         if (m_HasPrevious && timeDelta > 0.0)
@@ -461,32 +511,54 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         // Total CPU
         snap.cpuTotal = computeCpuUsage(counters.cpuTotal, m_PrevCounters.cpuTotal);
 
-        // Per-core CPU
-        const std::size_t numCores = std::min(counters.cpuPerCore.size(), m_PrevCounters.cpuPerCore.size());
-        snap.cpuPerCore.reserve(numCores);
+        // Per-core CPU, matched by core id (the Linux cpuN), never by list position. The kernel
+        // lists online CPUs only, so with cpu2 offline cpu3 is third in the list: matching by
+        // position diffed cpu3 against the previous sample's cpu2 and charted every later core
+        // under the wrong label (#1229). Slots are indexed by core id; a core missing from either
+        // sample has no delta and keeps the NaN "no reading" slot.
+        const std::size_t slotCount = std::max(coreSlotCount(counters.cpuPerCore), coreSlotCount(m_PrevCounters.cpuPerCore));
 
-        // Resize per-core history if needed (new cores get zero backfill so all
-        // rings stay in lockstep with m_Timestamps)
-        if (m_PerCoreHistory.size() < numCores)
+        std::vector<const Platform::CpuCounters*> previousById(slotCount, nullptr);
+        for (const auto& core : m_PrevCounters.cpuPerCore)
+        {
+            if (core.coreId < slotCount && previousById[core.coreId] == nullptr)
+            {
+                previousById[core.coreId] = &core;
+            }
+        }
+
+        snap.cpuPerCore.assign(slotCount, noCpuReading());
+        for (const auto& core : counters.cpuPerCore)
+        {
+            if (core.coreId >= slotCount)
+            {
+                continue;
+            }
+            const Platform::CpuCounters* previous = previousById[core.coreId];
+            // Skip a core with no previous sample, and a repeated id (the first entry wins).
+            if (previous == nullptr || !std::isnan(snap.cpuPerCore[core.coreId].totalPercent))
+            {
+                continue;
+            }
+            snap.cpuPerCore[core.coreId] = computeCpuUsage(core, *previous);
+        }
+
+        // Grow per-core history to cover every core id seen. A new core's ring is backfilled with
+        // NaN -- no reading, drawn as a gap (#1146) -- so all rings stay in lockstep with m_Timestamps.
+        if (m_PerCoreHistory.size() < slotCount)
         {
             const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
             const std::size_t backfillCount = std::min(m_Timestamps.size(), capacity - 1);
             const std::size_t oldSize = m_PerCoreHistory.size();
-            m_PerCoreHistory.resize(numCores);
-            for (std::size_t i = oldSize; i < numCores; ++i)
+            m_PerCoreHistory.resize(slotCount);
+            for (std::size_t i = oldSize; i < slotCount; ++i)
             {
                 m_PerCoreHistory[i].setCapacity(capacity);
                 for (std::size_t j = 0; j < backfillCount; ++j)
                 {
-                    m_PerCoreHistory[i].push(0.0F);
+                    m_PerCoreHistory[i].push(std::numeric_limits<float>::quiet_NaN());
                 }
             }
-        }
-
-        for (std::size_t i = 0; i < numCores; ++i)
-        {
-            auto coreUsage = computeCpuUsage(counters.cpuPerCore[i], m_PrevCounters.cpuPerCore[i]);
-            snap.cpuPerCore.push_back(coreUsage);
         }
 
         // Total network rate is the sum of the per-interface rates computed above, not the change in
@@ -496,10 +568,19 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         // the axis for the history window -- and one disappearing read as a counter rollback, 0
         // (#1030). Per interface, a new one has no rate until its second sample. The aggregate
         // counters remain the fallback for a probe that reports no per-interface data.
+        // Virtual interfaces (bridges, veth, VPN tunnels) are left out: their traffic also crosses a
+        // hardware interface, and counting both doubled the Total on machines running Docker, WSL or
+        // a VPN (#1106). If every interface is virtual (inside a container) they all count.
         if (timeDelta > 0.0 && !snap.networkInterfaces.empty())
         {
+            const bool anyHardware =
+                std::ranges::any_of(snap.networkInterfaces, [](const auto& ifaceSnap) { return !ifaceSnap.isVirtual; });
             for (const auto& ifaceSnap : snap.networkInterfaces)
             {
+                if (anyHardware && ifaceSnap.isVirtual)
+                {
+                    continue;
+                }
                 snap.netRxBytesPerSec += ifaceSnap.rxBytesPerSec;
                 snap.netTxBytesPerSec += ifaceSnap.txBytesPerSec;
             }
@@ -614,17 +695,18 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
 
         m_Timestamps.push(nowSeconds);
 
-        // Advance rings for present cores; push 0.0F for any retained rings beyond
-        // the reported core count so every core series stays aligned with m_Timestamps.
+        // Advance each core id's ring with its own reading; push NaN (a gap, not a fake 0%) for a
+        // core id with no reading this sample, such as an offlined core -- interior or trailing --
+        // so every core series stays aligned with m_Timestamps (#1146, #1229).
         for (std::size_t i = 0; i < m_PerCoreHistory.size(); ++i)
         {
-            if (i < snap.cpuPerCore.size())
+            if (i < snap.cpuPerCore.size() && !std::isnan(snap.cpuPerCore[i].totalPercent))
             {
                 m_PerCoreHistory[i].push(Numeric::clampPercentToFloat(snap.cpuPerCore[i].totalPercent));
             }
             else
             {
-                m_PerCoreHistory[i].push(0.0F);
+                m_PerCoreHistory[i].push(std::numeric_limits<float>::quiet_NaN());
             }
         }
 
@@ -639,10 +721,19 @@ CpuUsage SystemModel::computeCpuUsage(const Platform::CpuCounters& current, cons
 {
     CpuUsage usage;
 
-    // counterDelta() clamps to 0 instead of wrapping if a field regresses (per-core CPU
-    // hotplug/offline-online reindexing, a transiently stale counter, etc.) - without it, an
-    // unsigned underflow here would silently pin the reported percentage at 100%.
-    const std::uint64_t totalDelta = Numeric::counterDelta(current.total(), previous.total());
+    // counterDelta() clamps to 0 instead of wrapping if a field regresses (a transiently stale
+    // counter, a probe restarting its counts, etc.) - without it, an unsigned underflow here would
+    // silently pin the reported percentage at 100%. The denominator is the sum of the same guarded
+    // per-field deltas (guest excluded, as in total()), so a regressed field counts as 0 in both the
+    // numerators and the denominator, rather than also cancelling other fields' growth (#1157).
+    const auto fieldDelta = [&current, &previous](std::uint64_t Platform::CpuCounters::* field)
+    {
+        return Numeric::counterDelta(current.*field, previous.*field);
+    };
+    const std::uint64_t totalDelta = fieldDelta(&Platform::CpuCounters::user) + fieldDelta(&Platform::CpuCounters::nice) +
+                                     fieldDelta(&Platform::CpuCounters::system) + fieldDelta(&Platform::CpuCounters::idle) +
+                                     fieldDelta(&Platform::CpuCounters::iowait) + fieldDelta(&Platform::CpuCounters::irq) +
+                                     fieldDelta(&Platform::CpuCounters::softirq) + fieldDelta(&Platform::CpuCounters::steal);
     if (totalDelta == 0)
     {
         return usage; // Avoid division by zero
@@ -656,14 +747,18 @@ CpuUsage SystemModel::computeCpuUsage(const Platform::CpuCounters& current, cons
         return 100.0 * (Numeric::toDouble(delta) / totalDeltaDouble);
     };
 
-    usage.userPercent = percent(current.user + current.nice, previous.user + previous.nice);
+    usage.userPercent =
+        100.0 * (Numeric::toDouble(fieldDelta(&Platform::CpuCounters::user) + fieldDelta(&Platform::CpuCounters::nice)) / totalDeltaDouble);
     usage.systemPercent = percent(current.system, previous.system);
     usage.idlePercent = percent(current.idle, previous.idle);
     usage.iowaitPercent = percent(current.iowait, previous.iowait);
     usage.stealPercent = percent(current.steal, previous.steal);
 
-    // Total = 100% - idle
-    usage.totalPercent = 100.0 - usage.idlePercent;
+    // Total = 100% - (idle + iowait). iowait is idle time spent waiting on I/O: shown as its own
+    // breakdown band, but not busy, which also matches Windows, where that time is plain idle
+    // (#1157). Built from the two rollback-guarded percentages, not from one delta of their sum: a
+    // regressing iowait would otherwise cancel real idle growth and report the core 100% busy.
+    usage.totalPercent = 100.0 - (usage.idlePercent + usage.iowaitPercent);
 
     // Clamp to valid range
     usage.totalPercent = std::clamp(usage.totalPercent, 0.0, 100.0);
@@ -681,6 +776,9 @@ PowerStatus SystemModel::computePowerStatus(const Platform::PowerCounters& count
     PowerStatus status;
 
     status.hasBattery = m_PowerCapabilities.hasBattery;
+    // Before the no-battery return: on a battery-less machine isOnAc is still the adapter's report
+    // (#1109), which consumers need.
+    status.isOnAc = counters.isOnAc;
 
     if (!status.hasBattery)
     {
@@ -688,10 +786,10 @@ PowerStatus SystemModel::computePowerStatus(const Platform::PowerCounters& count
     }
 
     // Basic state
-    status.isOnAc = counters.isOnAc;
     status.isCharging = (counters.state == Platform::BatteryState::Charging);
     status.isDischarging = (counters.state == Platform::BatteryState::Discharging);
     status.isFull = (counters.state == Platform::BatteryState::Full);
+    status.isNotCharging = (counters.state == Platform::BatteryState::NotCharging);
 
     // Charge percentage
     status.chargePercent = counters.chargePercent;

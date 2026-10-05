@@ -15,8 +15,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <format>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -32,7 +32,6 @@ using UI::Widgets::frameTimeAxis;
 using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
-using UI::Widgets::NowBar;
 using UI::Widgets::NowBarList;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
@@ -122,8 +121,10 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
 
     auto memoryPlot = [&]()
     {
-        const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
-            UI::Widgets::percentHistoryConfig("##MemorySwapHistory", axisConfig.xMin, axisConfig.xMax), ctx.plotHeight));
+        const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
+            UI::Widgets::withHeight(UI::Widgets::percentHistoryConfig("##MemorySwapHistory", axisConfig.xMin, axisConfig.xMax),
+                                    ctx.plotHeight),
+            ctx.chartDataGeneration));
         if (chart.active())
         {
             UI::Widgets::drawCollectingHint(alignedCount); // The same "no data yet" state on every chart (#1013)
@@ -256,7 +257,23 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
         }
     }
 
-    renderHistoryWithNowBars("MemorySwapHistoryLayout", ctx.plotHeight, memoryPlot, memoryBars, false, static_cast<size_t>(nowBarColumns));
+    // Peak Used is a line with a tooltip row but no bar; list it in the value strip too (#1193).
+    const std::array peakEntry{UI::Widgets::ValueStripEntry{
+        .label = PEAK_LABEL,
+        .value = UI::Format::percentCompact(peakMemPercent),
+        .color = theme.scheme().chartPeakLine,
+    }};
+    const std::span<const UI::Widgets::ValueStripEntry> stripExtras =
+        (peakMemPercent > 0.0) ? std::span<const UI::Widgets::ValueStripEntry>(peakEntry) : std::span<const UI::Widgets::ValueStripEntry>{};
+    renderHistoryWithNowBars("MemorySwapHistoryLayout",
+                             ctx.plotHeight,
+                             memoryPlot,
+                             memoryBars,
+                             false,
+                             static_cast<size_t>(nowBarColumns),
+                             false,
+                             UI::Widgets::NowBarValues::Strip,
+                             stripExtras);
 }
 
 } // namespace App::MemorySection

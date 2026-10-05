@@ -111,6 +111,7 @@ set(TASKSMACK_SOURCES
     src/UI/IconLoader.cpp
     src/App/AboutLayer.cpp
     src/App/ElevationNoticeLayer.cpp
+    src/App/InstanceLock.cpp
     src/App/PlatformOpen.cpp
     src/App/SettingsLayer.cpp
     src/App/ShellLayer.cpp
@@ -192,6 +193,7 @@ set(TASKSMACK_HEADERS
     src/Platform/ProcessTypes.h
     src/Domain/ProcessSnapshot.h
     src/Domain/ProcessModel.h
+    src/Domain/SocketTrafficAccumulator.h
     src/Domain/ISamplable.h
     src/Domain/GPUSnapshot.h
     src/Domain/GPUModel.h

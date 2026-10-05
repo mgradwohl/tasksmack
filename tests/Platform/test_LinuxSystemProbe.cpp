@@ -15,11 +15,15 @@
 #include "Platform/ScopedTempDir.h"
 #include "Platform/SystemTypes.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <format>
 #include <fstream>
+#include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -381,12 +385,16 @@ TEST(LinuxSystemProbeTest, PerInterfaceCountersSumApproximatesTotal)
 
     // Sum of per-interface counters should approximately equal total.
     // Note: The probe filters out loopback (lo) from networkInterfaces, and the totals
-    // (netRxBytes/netTxBytes) are computed from the filtered interfaces. If this
-    // implementation changes to include loopback in totals, this test may need updating.
+    // (netRxBytes/netTxBytes) count only hardware interfaces -- every interface if none is (#1106).
+    const bool anyHardware = std::ranges::any_of(counters.networkInterfaces, [](const auto& iface) { return !iface.isVirtual; });
     uint64_t sumRx = 0;
     uint64_t sumTx = 0;
     for (const auto& iface : counters.networkInterfaces)
     {
+        if (anyHardware && iface.isVirtual)
+        {
+            continue;
+        }
         sumRx += iface.rxBytes;
         sumTx += iface.txBytes;
     }
@@ -580,6 +588,90 @@ TEST(LinuxSystemProbeTest, MissingStatFileReturnsZeroCpu)
     EXPECT_EQ(counters.cpuTotal.system, 0ULL);
 }
 
+TEST(LinuxSystemProbeTest, MemAvailableIsReportedOnlyWhenTheKernelHasIt)
+{
+    // A kernel without MemAvailable (before 3.14) must not look like one reporting 0 (#1143).
+    ScopedTempDir withIt("ts_test_sys_memavail");
+    std::ofstream(withIt.path / "meminfo") << "MemTotal: 1000 kB\nMemFree: 100 kB\nMemAvailable: 0 kB\n";
+    EXPECT_TRUE(LinuxSystemProbe(withIt.path).read().memory.hasAvailableBytes);
+
+    ScopedTempDir without("ts_test_sys_nomemavail");
+    std::ofstream(without.path / "meminfo") << "MemTotal: 1000 kB\nMemFree: 100 kB\nCached: 200 kB\n";
+    EXPECT_FALSE(LinuxSystemProbe(without.path).read().memory.hasAvailableBytes);
+}
+
+namespace
+{
+constexpr std::string_view NET_DEV_HEADER = "Inter-|   Receive                                                |  Transmit\n"
+                                            " face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs "
+                                            "drop fifo colls carrier compressed\n";
+
+/// A /proc/net/dev line for `name` with the given rx and tx byte counts.
+std::string netDevLine(std::string_view name, uint64_t rxBytes, uint64_t txBytes)
+{
+    return std::format("{:>6}: {} 10 0 0 0 0 0 0 {} 10 0 0 0 0 0 0\n", name, rxBytes, txBytes);
+}
+
+/// A /sys/class/net/<name> entry; hardware interfaces get a `device` link, as a real NIC has.
+void addSysfsInterface(const std::filesystem::path& sysClassNet, std::string_view name, bool hardware)
+{
+    const auto dir = sysClassNet / name;
+    std::filesystem::create_directories(dir);
+    if (hardware)
+    {
+        std::filesystem::create_directories(sysClassNet / "devices" / name);
+        std::filesystem::create_directory_symlink(sysClassNet / "devices" / name, dir / "device");
+    }
+}
+} // namespace
+
+TEST(LinuxSystemProbeTest, NetworkTotalCountsHardwareInterfacesOnly)
+{
+    // #1106: traffic over a VPN tunnel, a docker bridge or a veth also crosses the physical NIC, so
+    // counting every interface but lo doubled the Total on Docker/WSL/VPN machines.
+    ScopedTempDir proc("ts_test_sys_net_hw");
+    ScopedTempDir sys("ts_test_sys_class_net_hw");
+    std::filesystem::create_directories(proc.path / "net");
+    std::ofstream(proc.path / "net" / "dev") << NET_DEV_HEADER << netDevLine("lo", 9, 9) << netDevLine("eth0", 5000, 700)
+                                             << netDevLine("wg0", 4000, 600) << netDevLine("docker0", 300, 30)
+                                             << netDevLine("veth1a2b", 300, 30) << netDevLine("wlan0", 100, 10);
+    addSysfsInterface(sys.path, "eth0", true);
+    addSysfsInterface(sys.path, "wlan0", true);
+    addSysfsInterface(sys.path, "wg0", false);
+    addSysfsInterface(sys.path, "docker0", false);
+    addSysfsInterface(sys.path, "veth1a2b", false);
+
+    LinuxSystemProbe probe(proc.path, sys.path);
+    const auto counters = probe.read();
+    EXPECT_EQ(counters.netRxBytes, 5100U);
+    EXPECT_EQ(counters.netTxBytes, 710U);
+
+    // Virtual interfaces are still listed individually, marked so the Total can leave them out.
+    ASSERT_EQ(counters.networkInterfaces.size(), 5U);
+    for (const auto& iface : counters.networkInterfaces)
+    {
+        const bool expectVirtual = iface.name == "wg0" || iface.name == "docker0" || iface.name == "veth1a2b";
+        EXPECT_EQ(iface.isVirtual, expectVirtual) << iface.name;
+    }
+}
+
+TEST(LinuxSystemProbeTest, NetworkTotalCountsEveryInterfaceWhenNoneIsHardware)
+{
+    // Inside a container eth0 is one end of a veth pair: the Total must not drop to 0.
+    ScopedTempDir proc("ts_test_sys_net_container");
+    ScopedTempDir sys("ts_test_sys_class_net_container");
+    std::filesystem::create_directories(proc.path / "net");
+    std::ofstream(proc.path / "net" / "dev") << NET_DEV_HEADER << netDevLine("lo", 9, 9) << netDevLine("eth0", 5000, 700);
+    addSysfsInterface(sys.path, "eth0", false);
+
+    LinuxSystemProbe probe(proc.path, sys.path);
+    const auto counters = probe.read();
+    EXPECT_EQ(counters.netRxBytes, 5000U);
+    EXPECT_EQ(counters.netTxBytes, 700U);
+    ASSERT_EQ(counters.networkInterfaces.size(), 1U);
+    EXPECT_TRUE(counters.networkInterfaces[0].isVirtual);
+}
+
 TEST(LinuxSystemProbeTest, MissingMeminfoReturnsZeroMemory)
 {
     ScopedTempDir scoped("ts_test_sys_nomem");
@@ -587,6 +679,7 @@ TEST(LinuxSystemProbeTest, MissingMeminfoReturnsZeroMemory)
     auto counters = probe.read();
     EXPECT_EQ(counters.memory.totalBytes, 0ULL);
     EXPECT_EQ(counters.memory.availableBytes, 0ULL);
+    EXPECT_FALSE(counters.memory.hasAvailableBytes); // a failed read isn't a reading of 0 (#1232 review)
 }
 
 TEST(LinuxSystemProbeTest, MissingNetDevReturnsZeroNetwork)
@@ -625,6 +718,35 @@ TEST(LinuxSystemProbeTest, NetDevWithMalformedLinesSkips)
     LinuxSystemProbe probe(scoped.path);
     auto counters = probe.read();
     EXPECT_GE(counters.netRxBytes, 12345ULL);
+}
+
+TEST(LinuxSystemProbeTest, PerCoreCountersCarryTheirCpuNumber)
+{
+    // /proc/stat lists online CPUs only. With cpu2 offline, cpu3 is the third per-core line, and
+    // it must still be identified as core 3, not core 2 (#1229). An unparseable label is skipped.
+    ScopedTempDir scoped("ts_test_sys_coreid");
+    {
+        std::ofstream f(scoped.path / "stat");
+        f << "cpu  40 0 40 400 0 0 0 0 0 0\n";
+        f << "cpu0 10 0 10 100 0 0 0 0 0 0\n";
+        f << "cpu1 11 0 10 100 0 0 0 0 0 0\n";
+        f << "cpu3 13 0 10 100 0 0 0 0 7 0\n";
+        f << "cpuX 99 0 99 999 0 0 0 0 0 0\n";
+        f << "cpu12 22 0 10 100 0 0 0 0 0 0\n";
+        f << "intr 0\n";
+    }
+    LinuxSystemProbe probe(scoped.path);
+    const auto counters = probe.read();
+
+    ASSERT_EQ(counters.cpuPerCore.size(), 4U);
+    EXPECT_EQ(counters.cpuPerCore[0].coreId, 0U);
+    EXPECT_EQ(counters.cpuPerCore[1].coreId, 1U);
+    EXPECT_EQ(counters.cpuPerCore[2].coreId, 3U);
+    EXPECT_EQ(counters.cpuPerCore[2].user, 13U);
+    EXPECT_EQ(counters.cpuPerCore[2].guest, 7U);
+    EXPECT_EQ(counters.cpuPerCore[3].coreId, 12U);
+    EXPECT_EQ(counters.cpuPerCore[3].user, 22U);
+    EXPECT_EQ(counters.cpuTotal.user, 40U);
 }
 
 TEST(LinuxSystemProbeTest, StatWithNoCpuLineReturnsZero)

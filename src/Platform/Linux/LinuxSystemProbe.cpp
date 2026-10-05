@@ -10,7 +10,9 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <concepts>
 #include <cstddef>
@@ -21,6 +23,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
@@ -65,7 +68,12 @@ LinuxSystemProbe::LinuxSystemProbe() : LinuxSystemProbe(std::filesystem::path("/
 {}
 
 LinuxSystemProbe::LinuxSystemProbe(std::filesystem::path procRoot)
+    : LinuxSystemProbe(std::move(procRoot), std::filesystem::path("/sys/class/net"))
+{}
+
+LinuxSystemProbe::LinuxSystemProbe(std::filesystem::path procRoot, std::filesystem::path sysClassNetRoot)
     : m_ProcRoot(std::move(procRoot)),
+      m_SysClassNetRoot(std::move(sysClassNetRoot)),
       m_TicksPerSecond(sysconf(_SC_CLK_TCK)),
       m_NumCores(checkedPositiveToSizeT(sysconf(_SC_NPROCESSORS_ONLN), 1U))
 {
@@ -188,13 +196,26 @@ void LinuxSystemProbe::readCpuCounters(SystemCounters& counters, const std::file
         // Aggregate line: "cpu " (or "cpu\t") — per-core line: "cpu0", "cpu1", …
         const bool isTotal = (q >= lineEnd || *q == ' ' || *q == '\t');
 
+        CpuCounters cpu{};
+        if (!isTotal)
+        {
+            // Keep the N of "cpuN" as the core's identity. The kernel lists online CPUs only, so
+            // with cpu2 offline the lines run cpu0, cpu1, cpu3: position is not identity (#1229).
+            const auto [idEnd, ec] = std::from_chars(q, lineEnd, cpu.coreId);
+            if (ec != std::errc{} || (idEnd < lineEnd && *idEnd != ' ' && *idEnd != '\t'))
+            {
+                spdlog::debug("Skipping unparseable per-core line in {}", pathStr);
+                p = (lineEnd < end) ? lineEnd + 1 : end;
+                continue;
+            }
+        }
+
         // Skip past the label token to reach the first numeric field
         while (q < lineEnd && *q != ' ' && *q != '\t')
         {
             ++q;
         }
 
-        CpuCounters cpu{};
         // Older kernels may lack trailing guest/guestNice fields;
         // partial reads are fine — unparsed fields stay zero-initialised.
         parseNum(q, lineEnd, cpu.user);
@@ -294,6 +315,7 @@ void LinuxSystemProbe::readMemoryCounters(SystemCounters& counters, const std::f
         else if (key == "MemAvailable")
         {
             counters.memory.availableBytes = value * KB;
+            counters.memory.hasAvailableBytes = true;
         }
         else if (key == "Buffers")
         {
@@ -410,9 +432,6 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
         return;
     }
 
-    uint64_t totalRxBytes = 0;
-    uint64_t totalTxBytes = 0;
-
     const char* p = buf.data();
     const char* const end = buf.data() + len;
 
@@ -488,9 +507,6 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
             parseNum(q, lineEnd, rxDrop) && parseNum(q, lineEnd, rxFifo) && parseNum(q, lineEnd, rxFrame) &&
             parseNum(q, lineEnd, rxCompressed) && parseNum(q, lineEnd, rxMulticast) && parseNum(q, lineEnd, txBytes))
         {
-            totalRxBytes += rxBytes;
-            totalTxBytes += txBytes;
-
             const std::string ifaceName(ifaceView);
             SystemCounters::InterfaceCounters ifaceCounters;
             ifaceCounters.name = ifaceName;
@@ -499,12 +515,28 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
             ifaceCounters.txBytes = txBytes;
             ifaceCounters.isUp = readInterfaceOperState(ifaceName);
             ifaceCounters.linkSpeedMbps = getInterfaceLinkSpeed(ifaceName, ifaceCounters.isUp);
+            ifaceCounters.isVirtual = isVirtualInterface(m_SysClassNetRoot, ifaceName);
             counters.networkInterfaces.push_back(std::move(ifaceCounters));
         }
 
         p = (lineEnd < end) ? lineEnd + 1 : end;
     }
 
+    // The totals count hardware interfaces only: traffic over a bridge, veth, VPN tunnel or VLAN
+    // also crosses a hardware interface, so counting both doubled it (#1106). With no hardware
+    // interface at all (inside a container, whose eth0 is a veth) every interface counts, so the
+    // Total isn't 0. Keep in step with SystemModel's Total, which applies the same rule to rates.
+    const bool anyHardware = std::ranges::any_of(counters.networkInterfaces, [](const auto& iface) { return !iface.isVirtual; });
+    uint64_t totalRxBytes = 0;
+    uint64_t totalTxBytes = 0;
+    for (const auto& iface : counters.networkInterfaces)
+    {
+        if (!anyHardware || !iface.isVirtual)
+        {
+            totalRxBytes += iface.rxBytes;
+            totalTxBytes += iface.txBytes;
+        }
+    }
     counters.netRxBytes = totalRxBytes;
     counters.netTxBytes = totalTxBytes;
 
@@ -608,6 +640,20 @@ uint64_t LinuxSystemProbe::readInterfaceLinkSpeedFromSysfs(const std::string& if
 
     // Explicit cast is safe: range check above ensures speedMbps >= 0.
     return static_cast<uint64_t>(speedMbps);
+}
+
+bool LinuxSystemProbe::isVirtualInterface(const std::filesystem::path& sysClassNetRoot, std::string_view ifaceName)
+{
+    // A hardware NIC (PCI, USB, SDIO, Hyper-V netvsc, virtio) has a `device` link to its bus device;
+    // a software interface doesn't. When the interface can't be found at all (sysfs not mounted, or
+    // it vanished) it counts as hardware, the pre-#1106 behavior.
+    std::error_code ec;
+    const auto ifaceDir = sysClassNetRoot / ifaceName;
+    if (!std::filesystem::exists(ifaceDir, ec))
+    {
+        return false;
+    }
+    return !std::filesystem::exists(ifaceDir / "device", ec);
 }
 
 bool LinuxSystemProbe::readInterfaceOperState(const std::string& ifaceName)

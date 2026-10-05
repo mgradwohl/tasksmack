@@ -1,12 +1,16 @@
 #include "Core/HeadlessVideoDriverTestUtils.h"
+#include "Core/VideoBackend.h"
 #include "Core/Window.h"
+#include "Core/WindowGeometry.h"
 
 #include <SDL3/SDL.h>
 #include <gtest/gtest.h>
 
 #include <cstdlib>
 #include <exception>
+#include <optional>
 #include <string_view>
+#include <utility>
 
 namespace
 {
@@ -23,7 +27,7 @@ bool isOffscreenVideoDriver()
 #endif
 }
 
-bool hasDisplay()
+bool detectDisplay()
 {
 #ifdef _WIN32
     // Check for CI environment - headless Windows CI runners cannot create windows.
@@ -60,6 +64,13 @@ bool hasDisplay()
 #endif
 }
 
+// Every display check goes through here so TASKSMACK_REQUIRE_DISPLAY=1 (set by Linux CI) turns a
+// missing display into a failure instead of a skip.
+bool hasDisplay()
+{
+    return TestSupport::enforceDisplayRequirement(detectDisplay());
+}
+
 } // namespace
 
 namespace Core
@@ -82,6 +93,10 @@ class WindowTest : public ::testing::Test
         }
         if (!SDL_Init(SDL_INIT_VIDEO))
         {
+            if (TestSupport::displayRequired())
+            {
+                FAIL() << "SDL_Init(SDL_INIT_VIDEO) failed with TASKSMACK_REQUIRE_DISPLAY=1: " << SDL_GetError();
+            }
             GTEST_SKIP() << "SDL_Init(SDL_INIT_VIDEO) failed: " << SDL_GetError();
         }
         m_SdlInitialized = true;
@@ -114,7 +129,7 @@ TEST_F(WindowTest, CloseRequestLifecycle)
     {
         // Offscreen SDL driver does not support OpenGL context creation; skip.
         // On a real display this is an unexpected failure — report it.
-        if (isOffscreenVideoDriver())
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
         {
             GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
         }
@@ -133,7 +148,7 @@ TEST_F(WindowTest, GetGLContextReturnsNonNullAfterConstruction)
     {
         // Offscreen SDL driver does not support OpenGL context creation; skip.
         // On a real display this is an unexpected failure — report it.
-        if (isOffscreenVideoDriver())
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
         {
             GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
         }
@@ -157,7 +172,7 @@ TEST_F(WindowTest, SetSizeClampsToExpectedBounds)
     }
     catch (const std::exception& e)
     {
-        if (isOffscreenVideoDriver())
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
         {
             GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
         }
@@ -191,7 +206,7 @@ TEST_F(WindowTest, GetWidthAndHeightReflectCurrentSDLSize)
     }
     catch (const std::exception& e)
     {
-        if (isOffscreenVideoDriver())
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
         {
             GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
         }
@@ -212,7 +227,7 @@ TEST_F(WindowTest, GetSizeInPixelsReturnsPositiveDimensions)
     }
     catch (const std::exception& e)
     {
-        if (isOffscreenVideoDriver())
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
         {
             GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
         }
@@ -242,7 +257,7 @@ TEST_F(WindowTest, SetAndGetPositionRoundTrip)
     }
     catch (const std::exception& e)
     {
-        if (isOffscreenVideoDriver())
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
         {
             GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
         }
@@ -264,7 +279,7 @@ TEST_F(WindowTest, WindowStateControlMethodsDoNotThrow)
     }
     catch (const std::exception& e)
     {
-        if (isOffscreenVideoDriver())
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
         {
             GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
         }
@@ -298,7 +313,122 @@ TEST_F(WindowTest, IsMaximizedTracksStateForBorderlessWindow)
     }
     catch (const std::exception& e)
     {
-        if (isOffscreenVideoDriver())
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
+
+TEST_F(WindowTest, NormalGeometryIsTheLiveGeometryWhenNotMaximized)
+{
+    try
+    {
+        const Window window(
+            WindowSpecification{.Title = "NormalGeometryTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        const auto normalGeometry = window.getNormalGeometry();
+        ASSERT_TRUE(normalGeometry.has_value());
+        const WindowGeometry::Rect normal = normalGeometry.value_or(WindowGeometry::Rect{});
+        const auto [width, height] = window.getSize();
+        EXPECT_EQ(normal.width, width);
+        EXPECT_EQ(normal.height, height);
+    }
+    catch (const std::exception& e)
+    {
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
+
+// #1121: the geometry saved on exit while maximized must be the size the window restores to, not
+// the maximized size.
+TEST_F(WindowTest, NormalGeometrySurvivesMaximize)
+{
+    try
+    {
+        Window window(
+            WindowSpecification{.Title = "NormalGeometryMaxTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        const auto beforeGeometry = window.getNormalGeometry();
+        ASSERT_TRUE(beforeGeometry.has_value());
+        const WindowGeometry::Rect before = beforeGeometry.value_or(WindowGeometry::Rect{});
+
+        window.maximize();
+        if (!window.isMaximized())
+        {
+            GTEST_SKIP() << "Maximize unavailable on this display (headless environment)";
+        }
+
+        const auto normalGeometry = window.getNormalGeometry();
+        if (!normalGeometry.has_value())
+        {
+            GTEST_SKIP() << "Compositor-managed maximize did not leave a known restore rectangle";
+        }
+        const WindowGeometry::Rect normal = normalGeometry.value_or(WindowGeometry::Rect{});
+        EXPECT_EQ(normal.width, before.width);
+        EXPECT_EQ(normal.height, before.height);
+
+        // A second maximize() must not replace the restore rectangle with the maximized one.
+        window.maximize();
+        const auto againGeometry = window.getNormalGeometry();
+        ASSERT_TRUE(againGeometry.has_value());
+        const WindowGeometry::Rect again = againGeometry.value_or(WindowGeometry::Rect{});
+        EXPECT_EQ(again.width, before.width);
+        EXPECT_EQ(again.height, before.height);
+    }
+    catch (const std::exception& e)
+    {
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
+
+// #1128: a saved position on no connected display must not be applied as-is.
+TEST_F(WindowTest, ApplySavedGeometryKeepsAnOffScreenPositionOnADisplay)
+{
+    // supportsPositioning() reads the cached backend, which Application normally detects after
+    // SDL_Init; this fixture has no Application, so detect it here.
+    VideoBackend::initialize();
+    if (isOffscreenVideoDriver() || !Window::supportsPositioning())
+    {
+        GTEST_SKIP() << "Window positioning is not supported by this video driver";
+    }
+    try
+    {
+        Window window(WindowSpecification{.Title = "SavedGeometryTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        window.applySavedGeometry(std::pair{-50'000, -50'000}, false, std::nullopt);
+
+        int displayCount = 0;
+        SDL_DisplayID* displays = SDL_GetDisplays(&displayCount);
+        if (displays == nullptr || displayCount <= 0)
+        {
+            SDL_free(displays);
+            GTEST_SKIP() << "No display bounds available";
+        }
+        const auto [x, y] = window.getPosition();
+        const SDL_Point topLeft{.x = x, .y = y};
+        bool onADisplay = false;
+        for (int i = 0; i < displayCount; ++i)
+        {
+            SDL_Rect bounds{};
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) - SDL returns a C array
+            if (SDL_GetDisplayBounds(displays[i], &bounds) && SDL_PointInRect(&topLeft, &bounds))
+            {
+                onADisplay = true;
+            }
+        }
+        SDL_free(displays);
+        EXPECT_TRUE(onADisplay) << "window top-left at (" << x << ", " << y << ")";
+    }
+    catch (const std::exception& e)
+    {
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
         {
             GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
         }
@@ -322,7 +452,7 @@ TEST_F(WindowTest, SetHitTestCallbackDoesNotThrow)
     }
     catch (const std::exception& e)
     {
-        if (isOffscreenVideoDriver())
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
         {
             GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
         }

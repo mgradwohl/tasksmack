@@ -11,6 +11,8 @@ using rsmi_status_t = std::uint32_t;
 constexpr rsmi_status_t RSMI_STATUS_SUCCESS = 0;
 constexpr rsmi_status_t RSMI_STATUS_NOT_FOUND = 10;
 constexpr rsmi_status_t RSMI_STATUS_INVALID_ARGS = 1;
+constexpr rsmi_status_t RSMI_STATUS_INIT_ERROR = 8;
+constexpr rsmi_status_t RSMI_STATUS_BUSY = 16;
 
 // NOLINTBEGIN(cppcoreguidelines-use-enum-class, performance-enum-size, readability-identifier-naming) - must match AMD ROCm SMI API
 enum rsmi_temperature_type_t : std::uint32_t
@@ -176,6 +178,17 @@ const std::array<MockRocmDevice, 3> MOCK_DEVICES{{
 // PCI id) fail once they have been called more than g_IdCallsBeforeFailure times (-1: never).
 int g_IdCallsBeforeFailure = -1;
 unsigned int g_IdCalls = 0;
+// Utilization, memory, edge temperature, average power and GPU clock reads fail with
+// RSMI_STATUS_BUSY, as a busy or resetting GPU does (#1111). Set through tasksmackRocmMockFailSensorReads().
+bool g_FailSensorReads = false;
+// #1116: how many devices ROCm SMI reports (the first N of MOCK_DEVICES), so a test can hot-plug or
+// remove one; whether utilization reads return RSMI_STATUS_INIT_ERROR; and how often rsmi_init ran.
+unsigned int g_DeviceCount = static_cast<unsigned int>(MOCK_DEVICES.size());
+bool g_InitErrorReads = false;
+unsigned int g_InitCalls = 0;
+// How many of the next rsmi_init calls fail with RSMI_STATUS_INIT_ERROR, as during a driver reload
+// (#1116). Set through tasksmackRocmMockFailInits().
+unsigned int g_FailingInits = 0;
 
 [[nodiscard]] bool idLookupFails()
 {
@@ -190,6 +203,12 @@ extern "C"
 
     rsmi_status_t rsmi_init(std::uint64_t /*flags*/)
     {
+        ++g_InitCalls;
+        if (g_FailingInits > 0)
+        {
+            --g_FailingInits;
+            return RSMI_STATUS_INIT_ERROR;
+        }
         return RSMI_STATUS_SUCCESS;
     }
 
@@ -200,7 +219,7 @@ extern "C"
 
     rsmi_status_t rsmi_num_monitor_devices(std::uint32_t* count)
     {
-        *count = static_cast<std::uint32_t>(MOCK_DEVICES.size());
+        *count = g_DeviceCount;
         return RSMI_STATUS_SUCCESS;
     }
 
@@ -278,6 +297,14 @@ extern "C"
         {
             return RSMI_STATUS_INVALID_ARGS;
         }
+        if (g_InitErrorReads)
+        {
+            return RSMI_STATUS_INIT_ERROR;
+        }
+        if (g_FailSensorReads)
+        {
+            return RSMI_STATUS_BUSY;
+        }
         *busyPercent = device->busyPercent;
         return RSMI_STATUS_SUCCESS;
     }
@@ -289,6 +316,10 @@ extern "C"
         {
             return RSMI_STATUS_INVALID_ARGS;
         }
+        if (g_FailSensorReads)
+        {
+            return RSMI_STATUS_BUSY;
+        }
         *usedBytes = device->memoryUsedBytes;
         return RSMI_STATUS_SUCCESS;
     }
@@ -299,6 +330,10 @@ extern "C"
         if (device == nullptr)
         {
             return RSMI_STATUS_INVALID_ARGS;
+        }
+        if (g_FailSensorReads)
+        {
+            return RSMI_STATUS_BUSY;
         }
         *totalBytes = device->memoryTotalBytes;
         return RSMI_STATUS_SUCCESS;
@@ -313,6 +348,10 @@ extern "C"
         if (device == nullptr)
         {
             return RSMI_STATUS_INVALID_ARGS;
+        }
+        if (g_FailSensorReads && type == RSMI_TEMP_TYPE_EDGE)
+        {
+            return RSMI_STATUS_BUSY;
         }
         if (type == RSMI_TEMP_TYPE_JUNCTION && !device->hasHotspot)
         {
@@ -329,6 +368,10 @@ extern "C"
         if (device == nullptr)
         {
             return RSMI_STATUS_INVALID_ARGS;
+        }
+        if (g_FailSensorReads)
+        {
+            return RSMI_STATUS_BUSY;
         }
         *power = device->powerMicroWatts;
         return RSMI_STATUS_SUCCESS;
@@ -351,6 +394,10 @@ extern "C"
         if (device == nullptr)
         {
             return RSMI_STATUS_INVALID_ARGS;
+        }
+        if (g_FailSensorReads && type != RSMI_CLK_TYPE_MEM)
+        {
+            return RSMI_STATUS_BUSY;
         }
         const bool isMemory = (type == RSMI_CLK_TYPE_MEM);
         const auto& source = isMemory ? device->memoryFrequency : device->gpuFrequency;
@@ -406,6 +453,35 @@ extern "C"
     unsigned int tasksmackRocmMockIdCalls()
     {
         return g_IdCalls;
+    }
+
+    // Test control: see g_FailSensorReads.
+    void tasksmackRocmMockFailSensorReads(int fail)
+    {
+        g_FailSensorReads = (fail != 0);
+    }
+
+    // Test controls (#1116): see g_DeviceCount (capped at the mock's three), g_InitErrorReads and
+    // g_InitCalls.
+    void tasksmackRocmMockSetDeviceCount(unsigned int count)
+    {
+        g_DeviceCount = count < MOCK_DEVICES.size() ? count : static_cast<unsigned int>(MOCK_DEVICES.size());
+    }
+
+    void tasksmackRocmMockInitErrorReads(int fail)
+    {
+        g_InitErrorReads = (fail != 0);
+    }
+
+    unsigned int tasksmackRocmMockInitCalls()
+    {
+        return g_InitCalls;
+    }
+
+    // Test control (#1116): the next `count` rsmi_init calls fail (see g_FailingInits).
+    void tasksmackRocmMockFailInits(unsigned int count)
+    {
+        g_FailingInits = count;
     }
 
     rsmi_status_t rsmi_version_get(rsmi_version_t* version)

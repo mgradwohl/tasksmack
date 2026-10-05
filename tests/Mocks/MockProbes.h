@@ -15,7 +15,9 @@
 #include "Platform/SystemTypes.h"
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -274,6 +276,30 @@ class MockProcessProbe : public Platform::IProcessProbe
         return m_SystemTotalMemory;
     }
 
+    /// Package energy for ProcessModel to share out per interval (#1093); nullopt (the default)
+    /// means the probe reports per-process energy itself.
+    void setPackageEnergy(std::optional<Platform::PackageEnergyReading> reading)
+    {
+        m_PackageEnergy = reading;
+    }
+
+    [[nodiscard]] std::optional<Platform::PackageEnergyReading> readPackageEnergy() const override
+    {
+        return m_PackageEnergy;
+    }
+
+    /// Per-connection network reading for ProcessModel to accumulate (#1099); the default (empty,
+    /// sampleTimeNs 0) means the probe reports per-process network counters itself.
+    void setSocketTraffic(Platform::SocketTrafficReading reading)
+    {
+        m_SocketTraffic = std::move(reading);
+    }
+
+    [[nodiscard]] Platform::SocketTrafficReading readSocketTraffic() const override
+    {
+        return m_SocketTraffic;
+    }
+
     void setSystemTotalMemory(uint64_t bytes)
     {
         m_SystemTotalMemory = bytes;
@@ -316,6 +342,8 @@ class MockProcessProbe : public Platform::IProcessProbe
     Platform::ProcessCapabilities m_Capabilities;
     long m_TicksPerSecond = 100; // Standard HZ value
     std::atomic<int> m_EnumerateCount{0};
+    std::optional<Platform::PackageEnergyReading> m_PackageEnergy;
+    Platform::SocketTrafficReading m_SocketTraffic;
 };
 
 // =============================================================================
@@ -633,6 +661,7 @@ inline Platform::MemoryCounters makeMemoryCounters(uint64_t total,
     Platform::MemoryCounters m;
     m.totalBytes = total;
     m.availableBytes = available;
+    m.hasAvailableBytes = true;
     m.freeBytes = free;
     m.cachedBytes = cached;
     m.buffersBytes = buffers;
@@ -669,6 +698,8 @@ makeInterfaceCounters(const std::string& name, uint64_t rxBytes = 0, uint64_t tx
 }
 
 /// Create a complete SystemCounters struct.
+/// Per-core entries are given contiguous core ids 0..N-1 by position, as a probe with every core
+/// online reports them; set cpuPerCore[i].coreId afterwards to model an offline core (#1229).
 inline Platform::SystemCounters makeSystemCounters(const Platform::CpuCounters& cpu,
                                                    const Platform::MemoryCounters& memory,
                                                    uint64_t uptime = 0,
@@ -682,6 +713,10 @@ inline Platform::SystemCounters makeSystemCounters(const Platform::CpuCounters& 
     s.memory = memory;
     s.uptimeSeconds = uptime;
     s.cpuPerCore = std::move(perCore);
+    for (std::size_t i = 0; i < s.cpuPerCore.size(); ++i)
+    {
+        s.cpuPerCore[i].coreId = i;
+    }
     s.netRxBytes = netRxBytes;
     s.netTxBytes = netTxBytes;
     s.networkInterfaces = std::move(networkInterfaces);

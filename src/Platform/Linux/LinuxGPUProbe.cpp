@@ -10,15 +10,16 @@
 #include <cstddef>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace Platform
 {
 
-LinuxGPUProbe::LinuxGPUProbe()
-    : m_NVMLProbe(std::make_unique<NVMLGPUProbe>()),
-      m_DRMProbe(std::make_unique<DRMGPUProbe>()),
-      m_ROCmProbe(std::make_unique<ROCmGPUProbe>())
+LinuxGPUProbe::LinuxGPUProbe(std::string drmBasePath, const std::string& pciDevicesRoot)
+    : m_NVMLProbe(std::make_unique<NVMLGPUProbe>(pciDevicesRoot)),
+      m_DRMProbe(std::make_unique<DRMGPUProbe>(std::move(drmBasePath))),
+      m_ROCmProbe(std::make_unique<ROCmGPUProbe>(pciDevicesRoot))
 {
     std::vector<std::string> probes;
     if (m_NVMLProbe->isAvailable())
@@ -130,6 +131,15 @@ std::vector<ProcessGPUCounters> LinuxGPUProbe::readProcessGPUCounters()
     }
 
     return counters;
+}
+
+bool LinuxGPUProbe::rescanGPUs(GPURescan depth)
+{
+    // Every probe is rescanned, so no short-circuit: one changing doesn't excuse the others.
+    const bool nvmlChanged = m_NVMLProbe && m_NVMLProbe->rescanGPUs(depth);
+    const bool drmChanged = m_DRMProbe && m_DRMProbe->rescanGPUs(depth);
+    const bool rocmChanged = m_ROCmProbe && m_ROCmProbe->rescanGPUs(depth);
+    return nvmlChanged || drmChanged || rocmChanged;
 }
 
 GPUCapabilities LinuxGPUProbe::capabilities() const

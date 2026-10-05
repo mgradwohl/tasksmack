@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 
@@ -38,6 +39,32 @@ struct AlignedCellText
     mutable float width = UNMEASURED_WIDTH;
 };
 
+/// The CalcTextSize width of a free-text cell whose text lives in the ProcessSnapshot rather than in
+/// RowFormatCache -- a name, a user, a command line -- measured the first time the cell is drawn and
+/// reused until the entry is rebuilt (#1141). That rebuild happens on a new snapshot generation, which
+/// is the only way the text can change, and on a font/size/DPI change (RowFormatCache::fontId), which
+/// is the only other way the width can, so no further invalidation is needed. Measuring these every
+/// frame cost a glyph lookup per character per visible cell, and command lines run to thousands of
+/// characters. `mutable` for the same reason as AlignedCellText::width.
+struct LazyTextWidth
+{
+    /// Sentinel meaning "not measured yet". Real widths are never negative.
+    static constexpr float UNMEASURED_WIDTH = -1.0F;
+
+    mutable float width = UNMEASURED_WIDTH;
+
+    /// The cached width, or `measure()`'s result -- remembered -- the first time.
+    // measure is called at most once, so it is used as an lvalue rather than forwarded.
+    template<typename Measure> [[nodiscard]] float get(Measure&& measure) const // NOLINT(cppcoreguidelines-missing-std-forward)
+    {
+        if (width < 0.0F)
+        {
+            width = measure();
+        }
+        return width;
+    }
+};
+
 /// Wraps `text` for a RowFormatCache population site, deferring width measurement to the first
 /// time ProcessesPanel's renderRightAlignedText() actually draws this cell (see AlignedCellText's
 /// doc comment).
@@ -45,6 +72,10 @@ struct AlignedCellText
 {
     return AlignedCellText{.text = std::move(text)};
 }
+
+/// A cell whose value the probe could not read for this process -- for lack of rights, e.g. another
+/// user's process without root (#1110) -- as distinct from "-", a value that is 0 or not applicable.
+inline constexpr std::string_view UNAVAILABLE_CELL_TEXT = "N/A";
 
 /// Which optional fields the process probe fills; a field it does not is shown as "-".
 struct RowFormatOptions
@@ -137,6 +168,17 @@ struct RowFormatCache
     AlignedCellText pageFaults; // formatOrDash/formatIntLocalized(pageFaults)
     AlignedCellText affinity;   // formatCpuAffinityMask         — rarely changes
     AlignedCellText gdiObjects; // formatIntLocalized(*gdiObjectCount) or "-"
+
+    // Widths of the cells drawn straight from the snapshot's own text (#1141); see LazyTextWidth.
+    LazyTextWidth pidWidth;
+    LazyTextWidth userWidth;
+    LazyTextWidth statusWidth;
+    LazyTextWidth nameWidth;
+    LazyTextWidth commandWidth;
+    LazyTextWidth gpuEnginesWidth; // of gpuEngines above
+    LazyTextWidth gpuDevicesWidth;
+    LazyTextWidth publisherWidth;
+    LazyTextWidth processTypeWidth;
 };
 
 /// Formats every RowFormatCache field for one process snapshot. Pure (no ImGui calls, no shared
@@ -165,22 +207,20 @@ struct RowFormatCache
     fmt.shared = makeAlignedCellText(options.hasSharedMemory ? formatAlignedBytesString(static_cast<double>(proc.sharedBytes),
                                                                                         UI::Format::unitForTotalBytes(proc.sharedBytes))
                                                              : "-");
-    fmt.ioRead = makeAlignedCellText(
-        (proc.ioReadBytesPerSec > 0.0)
-            ? formatAlignedBytesPerSecString(proc.ioReadBytesPerSec, UI::Format::unitForBytesPerSecond(proc.ioReadBytesPerSec))
-            : "-");
-    fmt.ioWrite = makeAlignedCellText(
-        (proc.ioWriteBytesPerSec > 0.0)
-            ? formatAlignedBytesPerSecString(proc.ioWriteBytesPerSec, UI::Format::unitForBytesPerSecond(proc.ioWriteBytesPerSec))
-            : "-");
-    fmt.netSent = makeAlignedCellText(
-        (proc.netSentBytesPerSec > 0.0)
-            ? formatAlignedBytesPerSecString(proc.netSentBytesPerSec, UI::Format::unitForBytesPerSecond(proc.netSentBytesPerSec))
-            : "-");
-    fmt.netRecv = makeAlignedCellText(
-        (proc.netReceivedBytesPerSec > 0.0)
-            ? formatAlignedBytesPerSecString(proc.netReceivedBytesPerSec, UI::Format::unitForBytesPerSecond(proc.netReceivedBytesPerSec))
-            : "-");
+    // A rate that is 0 reads "-"; one the probe could not read reads "N/A" (#1110) -- without root, every
+    // other user's process used to show the same "-" as an idle one.
+    const auto rateCell = [](bool available, double bytesPerSec) -> std::string
+    {
+        if (!available)
+        {
+            return std::string(UNAVAILABLE_CELL_TEXT);
+        }
+        return (bytesPerSec > 0.0) ? formatAlignedBytesPerSecString(bytesPerSec, UI::Format::unitForBytesPerSecond(bytesPerSec)) : "-";
+    };
+    fmt.ioRead = makeAlignedCellText(rateCell(proc.ioAvailable, proc.ioReadBytesPerSec));
+    fmt.ioWrite = makeAlignedCellText(rateCell(proc.ioAvailable, proc.ioWriteBytesPerSec));
+    fmt.netSent = makeAlignedCellText(rateCell(proc.networkAvailable, proc.netSentBytesPerSec));
+    fmt.netRecv = makeAlignedCellText(rateCell(proc.networkAvailable, proc.netReceivedBytesPerSec));
     fmt.power = makeAlignedCellText(options.hasPowerUsage ? formatAlignedPowerString(proc.powerWatts) : "-");
     fmt.gpuPercent = makeAlignedCellText((proc.gpuUtilPercent > 0.0) ? formatAlignedPercentString(proc.gpuUtilPercent) : "-");
     fmt.gpuMemory =
@@ -203,7 +243,9 @@ struct RowFormatCache
         }
     }
     fmt.threads = makeAlignedCellText(UI::Format::formatOrDash(proc.threadCount, [](auto v) { return UI::Format::formatIntLocalized(v); }));
-    fmt.handles = makeAlignedCellText(UI::Format::formatOrDash(proc.handleCount, [](auto v) { return UI::Format::formatIntLocalized(v); }));
+    fmt.handles = makeAlignedCellText(
+        proc.handleCountAvailable ? UI::Format::formatOrDash(proc.handleCount, [](auto v) { return UI::Format::formatIntLocalized(v); })
+                                  : std::string(UNAVAILABLE_CELL_TEXT));
     fmt.pageFaults =
         makeAlignedCellText(UI::Format::formatOrDash(proc.pageFaults, [](auto v) { return UI::Format::formatIntLocalized(v); }));
     fmt.affinity = makeAlignedCellText(UI::Format::formatCpuAffinityMask(proc.cpuAffinityMask));

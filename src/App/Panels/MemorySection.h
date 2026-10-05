@@ -5,6 +5,7 @@
 #include "UI/ChartWidgets.h"
 
 #include <chrono>
+#include <cstdint>
 #include <vector>
 
 namespace App::MemorySection
@@ -23,6 +24,9 @@ struct SmoothedMemory
 struct RenderContext
 {
     const Domain::SystemPublication* publication = nullptr;
+    // Generation of `publication` and the timestamps passed with it (UI::Widgets::nextChartDataGeneration()),
+    // so the chart keeps its reduced points until it changes (HistoryChartConfig::dataGeneration, #1139).
+    std::uint64_t chartDataGeneration = 0;
     double maxHistorySeconds = 60.0;
     double historyScrollSeconds = 0.0;
     float lastDeltaSeconds = 0.0F;

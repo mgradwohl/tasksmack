@@ -20,6 +20,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace App::GpuSection
@@ -53,6 +54,26 @@ constexpr const char* DECODER_LABEL = "Decoder";
 constexpr const char* TEMP_LABEL = "Temperature";
 constexpr const char* POWER_LABEL = "Power";
 constexpr const char* FAN_LABEL = "Fan";
+
+/// Pushes one GPU's ImGui ID for the scope, popping it on every path out, early continues
+/// included. Keyed by the GPU's id rather than its position, so a GPU missing from a read does not
+/// hand its header and chart state to the GPU after it (#1163).
+class ScopedGpuId
+{
+  public:
+    explicit ScopedGpuId(std::string_view gpuId)
+    {
+        ImGui::PushID(gpuId.data(), gpuId.data() + gpuId.size());
+    }
+    ~ScopedGpuId()
+    {
+        ImGui::PopID();
+    }
+    ScopedGpuId(const ScopedGpuId&) = delete;
+    ScopedGpuId& operator=(const ScopedGpuId&) = delete;
+    ScopedGpuId(ScopedGpuId&&) = delete;
+    ScopedGpuId& operator=(ScopedGpuId&&) = delete;
+};
 
 /// Scale each sample to a 0–100 percentage relative to maxVal, filling the output vector in-place.
 /// Accepts a reusable buffer to avoid per-call heap allocation.
@@ -94,13 +115,24 @@ void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap
 
     auto& smoothed = (*ctx.smoothedGPUs)[gpuId];
     const bool initialized = smoothed.initialized;
-    smoothed.utilizationPercent = initializeOrSmooth(smoothed.utilizationPercent, snap.utilizationPercent, alpha, initialized);
-    smoothed.memoryPercent = initializeOrSmooth(smoothed.memoryPercent, snap.memoryUsedPercent, alpha, initialized);
-    smoothed.temperatureC = initializeOrSmooth(smoothed.temperatureC, static_cast<double>(snap.temperatureC), alpha, initialized);
-    smoothed.powerWatts = initializeOrSmooth(smoothed.powerWatts, snap.powerDrawWatts, alpha, initialized);
+    // A field this sample couldn't read keeps its last value and is marked uninitialized (its bar
+    // shows N/A); the next reading starts afresh rather than easing from it (#1111).
+    const auto smoothReading = [alpha](double& value, bool& valueInitialized, bool available, double reading)
+    {
+        if (available)
+        {
+            value = initializeOrSmooth(value, reading, alpha, valueInitialized);
+        }
+        valueInitialized = available;
+    };
+    smoothReading(smoothed.utilizationPercent, smoothed.utilizationInitialized, snap.utilizationAvailable, snap.utilizationPercent);
+    smoothReading(smoothed.memoryPercent, smoothed.memoryInitialized, snap.memoryAvailable, snap.memoryUsedPercent);
+    smoothReading(
+        smoothed.temperatureC, smoothed.temperatureInitialized, snap.temperatureAvailable, static_cast<double>(snap.temperatureC));
+    smoothReading(smoothed.powerWatts, smoothed.powerInitialized, snap.powerAvailable, snap.powerDrawWatts);
     smoothed.encoderPercent = initializeOrSmooth(smoothed.encoderPercent, snap.encoderUtilPercent, alpha, initialized);
     smoothed.decoderPercent = initializeOrSmooth(smoothed.decoderPercent, snap.decoderUtilPercent, alpha, initialized);
-    if (snap.gpuClockMHz > 0)
+    if (snap.gpuClockAvailable && snap.gpuClockMHz > 0)
     {
         smoothed.clockMHz = initializeOrSmooth(smoothed.clockMHz, static_cast<double>(snap.gpuClockMHz), alpha, smoothed.clockInitialized);
         smoothed.clockInitialized = true;
@@ -143,24 +175,28 @@ void renderGpuSection(RenderContext& ctx)
         return;
     case EmptyReason::NoReadings:
     {
+        // Every known GPU missed this read. Say so, but keep drawing the list below: each GPU keeps
+        // its slot and collapse state with "No reading" rather than the whole tab collapsing into an
+        // empty state for one missed sample (#1163).
         const std::size_t deviceCount = ctx.publication->gpuInfo.size();
         const std::string detail =
             std::format("{} GPU{} detected, but the latest reading returned no data.", deviceCount, deviceCount == 1 ? " was" : "s were");
-        UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  GPU data unavailable", detail.c_str());
-        return;
+        ImGui::TextDisabled("%s", detail.c_str());
+        break;
     }
     case EmptyReason::None:
         break;
     }
 
     const auto& gpuSnapshots = ctx.publication->snapshots;
-    const auto& gpuInfos = ctx.publication->gpuInfo;
+    // Enumeration order, each GPU looked up by id, so a GPU missing from this read keeps its slot (#1163).
+    const std::vector<GpuDrawEntry> drawList = gpuDrawList(*ctx.publication);
     const auto& probeCaps = ctx.publication->capabilities;
     auto& theme = UI::Theme::get();
 
     const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
 
-    ImGui::Text("GPU Monitoring (%zu GPU%s)", gpuSnapshots.size(), gpuSnapshots.size() == 1 ? "" : "s");
+    ImGui::Text("GPU Monitoring (%zu GPU%s)", drawList.size(), drawList.size() == 1 ? "" : "s");
     ImGui::Spacing();
 
     // Update smoothed values for all GPUs
@@ -186,24 +222,37 @@ void renderGpuSection(RenderContext& ctx)
     std::vector<float> powerPercentBuf;
 
     // Render each GPU
-    for (size_t gpuIdx = 0; gpuIdx < gpuSnapshots.size(); ++gpuIdx)
+    for (const GpuDrawEntry& entry : drawList)
     {
-        const auto& snap = gpuSnapshots[gpuIdx];
+        // The GPU's whole body, header through charts, is under its own ID (#1163).
+        const ScopedGpuId gpuIdScope(entry.gpuId);
+
+        if (entry.snapshot == nullptr)
+        {
+            // Enumerated, but this read returned nothing for it: keep its slot rather than drop it.
+            // Same ###gpuHeader id as a GPU with a reading, so its collapse state survives the gap.
+            const std::string headerLabel = gpuHeaderLabel(ICON_FA_MICROCHIP, entry.info->name, entry.info->isIntegrated, 0, false);
+            if (ImGui::CollapsingHeader(headerLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen))
+            {
+                ImGui::Indent();
+                ImGui::TextColored(theme.scheme().textMuted, "No reading");
+                ImGui::Unindent();
+                ImGui::Spacing();
+            }
+            continue;
+        }
+
+        const auto& snap = *entry.snapshot;
         const auto& smoothed = (*ctx.smoothedGPUs)[snap.gpuId];
 
-        // Find GPU info for this GPU
         std::string gpuName = snap.name;
         bool isIntegrated = snap.isIntegrated;
         std::optional<Platform::GPUCapabilities> adapterSensors;
-        for (const auto& info : gpuInfos)
+        if (entry.info != nullptr)
         {
-            if (info.id == snap.gpuId)
-            {
-                gpuName = info.name;
-                isIntegrated = info.isIntegrated;
-                adapterSensors = info.sensorCapabilities;
-                break;
-            }
+            gpuName = entry.info->name;
+            isIntegrated = entry.info->isIntegrated;
+            adapterSensors = entry.info->sensorCapabilities;
         }
         // What this GPU reports, not what the probe can report for some GPU (#1040).
         const Platform::GPUCapabilities caps = capabilitiesForGpu(probeCaps, adapterSensors);
@@ -211,17 +260,12 @@ void renderGpuSection(RenderContext& ctx)
         // GPU header with collapsible section
         // Discrete: show VRAM amount after name, label as "Discrete"
         // Integrated: no VRAM amount (shares system RAM), label as "Shared Memory"
-        std::string vramInfo;
-        if (!isIntegrated && snap.memoryTotalBytes > 0)
-        {
-            vramInfo = std::format(", {} VRAM", UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes)));
-        }
-        const std::string headerLabel =
-            std::format("{} {}{} [{}]", ICON_FA_MICROCHIP, gpuName, vramInfo, isIntegrated ? "Shared Memory" : "Discrete");
+        // A GPU the probe is leaving asleep is labelled so (#1117).
+        const std::string headerLabel = gpuHeaderLabel(ICON_FA_MICROCHIP, gpuName, isIntegrated, snap.memoryTotalBytes, snap.suspended);
 
-        ImGui::PushID(static_cast<int>(gpuIdx)); // gpuIdx is a small index; explicit narrowing to match ImGui API
+        // Scoped by the adapter's stable id (gpuIdScope above), not its position. The label's
+        // ###gpuHeader suffix keeps the id fixed as the label changes ("(Sleeping)", VRAM).
         const bool expanded = ImGui::CollapsingHeader(headerLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
-        ImGui::PopID();
 
         if (!expanded)
         {
@@ -247,9 +291,9 @@ void renderGpuSection(RenderContext& ctx)
         const auto& powerHist = history.power;
         const auto& fanHist = history.fanSpeed;
 
-        // Per-GPU timestamps: only includes samples when this GPU was present,
-        // so they stay aligned with the per-GPU history vectors even when the GPU
-        // was intermittently absent (global timestamps include samples this GPU never recorded).
+        // Per-GPU timestamps: one per refresh since this GPU was first seen, aligned with the
+        // per-GPU history vectors. A refresh it was missing from has an entry too, whose values
+        // are NaN, so the absence is drawn as a gap (#1146).
         const auto& perGpuTimestamps = history.timestamps;
 
         const size_t alignedCount = std::min({utilHist.size(), memHist.size(), perGpuTimestamps.size()});
@@ -266,9 +310,10 @@ void renderGpuSection(RenderContext& ctx)
 
         const auto timeData = frameTimeAxis(perGpuTimestamps, alignedCount, nowSeconds);
 
-        // Compute per-GPU axis config from per-GPU timestamps so that X-axis scroll/limits
-        // stay consistent with the data being plotted even when a GPU is intermittently absent
-        // (global timestamps would include samples this GPU never recorded, causing a mismatch).
+        // Compute per-GPU axis config from per-GPU timestamps so that X-axis scroll/limits stay
+        // consistent with the data being plotted. A refresh the GPU was missing from has a (gap)
+        // entry of its own, but the GPU's history can still start later than the global one (a GPU
+        // first seen mid-run) or be pruned on its own, so the global timestamps could mismatch.
         const auto axisConfig = makeTimeAxisConfig(perGpuTimestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
 
         const float maxClockMHz = gpuClockReferenceMHz(clockData, snap.gpuClockMHz);
@@ -281,8 +326,10 @@ void renderGpuSection(RenderContext& ctx)
 
         auto gpuCorePlot = [&]()
         {
-            const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
-                UI::Widgets::percentHistoryConfig("##GPUCoreHistory", axisConfig.xMin, axisConfig.xMax), plotHeight));
+            const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
+                UI::Widgets::withHeight(UI::Widgets::percentHistoryConfig("##GPUCoreHistory", axisConfig.xMin, axisConfig.xMax),
+                                        plotHeight),
+                ctx.chartDataGeneration));
             if (chart.active())
             {
                 UI::Widgets::drawCollectingHint(alignedCount); // The same "no data yet" state on every chart (#1013)
@@ -403,11 +450,16 @@ void renderGpuSection(RenderContext& ctx)
                             {
                                 rows.push_back({.label = CLOCK_LABEL,
                                                 .color = theme.scheme().gpuClock,
-                                                .value = std::format(
-                                                    "{:.0f} MHz ({} of {:.0f} MHz)",
+                                                .value = UI::Widgets::formatSampleOrNA(
                                                     *clockMHz,
-                                                    UI::Format::percentCompact((*clockMHz / static_cast<double>(maxClockMHz)) * 100.0),
-                                                    static_cast<double>(maxClockMHz))});
+                                                    [maxClockMHz](double mhz)
+                                                    {
+                                                        return std::format(
+                                                            "{:.0f} MHz ({} of {:.0f} MHz)",
+                                                            mhz,
+                                                            UI::Format::percentCompact((mhz / static_cast<double>(maxClockMHz)) * 100.0),
+                                                            static_cast<double>(maxClockMHz));
+                                                    })});
                             }
                         }
                         if (caps.hasEncoderDecoder && !encoderData.empty())
@@ -435,13 +487,28 @@ void renderGpuSection(RenderContext& ctx)
         };
 
         // Build now bars for chart 1: utilization, memory, clock, encoder, decoder
+        // A bar for a reading this sample couldn't take: N/A in muted text, as the line has a gap,
+        // rather than a real-looking 0 (#1111).
+        const auto unavailableBar = [&theme](const char* label)
+        {
+            return NowBar{.valueText = "N/A",
+                          .label = label,
+                          .tooltipText = std::format("{}: unavailable this sample", label),
+                          .value01 = 0.0,
+                          .color = theme.scheme().textMuted};
+        };
         NowBarList gpuCoreBars;
-        gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.utilizationPercent),
-                               .label = UTIL_LABEL,
-                               .tooltipText = {},
-                               .value01 = UI::Format::percent01(smoothed.utilizationPercent),
-                               .color = theme.scheme().gpuUtilization});
-        if (snap.memoryTotalBytes > 0)
+        gpuCoreBars.push_back(smoothed.utilizationInitialized ? NowBar{.valueText = UI::Format::percentCompact(smoothed.utilizationPercent),
+                                                                       .label = UTIL_LABEL,
+                                                                       .tooltipText = {},
+                                                                       .value01 = UI::Format::percent01(smoothed.utilizationPercent),
+                                                                       .color = theme.scheme().gpuUtilization}
+                                                              : unavailableBar(UTIL_LABEL));
+        if (!smoothed.memoryInitialized)
+        {
+            gpuCoreBars.push_back(unavailableBar(MEMORY_LABEL));
+        }
+        else if (snap.memoryTotalBytes > 0)
         {
             // Use the snapshot's own computed percent and raw byte values so the percent
             // and byte figures always come from the same sample and cannot show an
@@ -470,20 +537,20 @@ void renderGpuSection(RenderContext& ctx)
         if (caps.hasClockSpeeds)
         {
             const double clockPercent = (smoothed.clockMHz / static_cast<double>(maxClockMHz)) * 100.0;
-            gpuCoreBars.push_back(snap.gpuClockMHz > 0 ? NowBar{.valueText = std::format("{:.0f} MHz", smoothed.clockMHz),
-                                                                .label = CLOCK_LABEL,
-                                                                .tooltipText = std::format("{}: {:.0f} MHz ({} of {:.0f} MHz)",
-                                                                                           CLOCK_LABEL,
-                                                                                           smoothed.clockMHz,
-                                                                                           UI::Format::percentCompact(clockPercent),
-                                                                                           static_cast<double>(maxClockMHz)),
-                                                                .value01 = UI::Format::percent01(clockPercent),
-                                                                .color = theme.scheme().gpuClock}
-                                                       : NowBar{.valueText = "N/A",
-                                                                .label = CLOCK_LABEL,
-                                                                .tooltipText = "Clock: unavailable this sample",
-                                                                .value01 = 0.0,
-                                                                .color = theme.scheme().textMuted});
+            gpuCoreBars.push_back(smoothed.clockInitialized ? NowBar{.valueText = std::format("{:.0f} MHz", smoothed.clockMHz),
+                                                                     .label = CLOCK_LABEL,
+                                                                     .tooltipText = std::format("{}: {:.0f} MHz ({} of {:.0f} MHz)",
+                                                                                                CLOCK_LABEL,
+                                                                                                smoothed.clockMHz,
+                                                                                                UI::Format::percentCompact(clockPercent),
+                                                                                                static_cast<double>(maxClockMHz)),
+                                                                     .value01 = UI::Format::percent01(clockPercent),
+                                                                     .color = theme.scheme().gpuClock}
+                                                            : NowBar{.valueText = "N/A",
+                                                                     .label = CLOCK_LABEL,
+                                                                     .tooltipText = "Clock: unavailable this sample",
+                                                                     .value01 = 0.0,
+                                                                     .color = theme.scheme().textMuted});
         }
         if (caps.hasEncoderDecoder)
         {
@@ -506,20 +573,24 @@ void renderGpuSection(RenderContext& ctx)
         if (caps.hasTemperature)
         {
             const double tempPercent = (smoothed.temperatureC / static_cast<double>(maxTempC)) * 100.0;
-            gpuThermalBars.push_back({.valueText = std::format("{}°C", static_cast<int>(smoothed.temperatureC)),
-                                      .label = TEMP_LABEL,
-                                      .tooltipText = {},
-                                      .value01 = UI::Format::percent01(tempPercent),
-                                      .color = theme.scheme().gpuTemperature});
+            gpuThermalBars.push_back(smoothed.temperatureInitialized
+                                         ? NowBar{.valueText = std::format("{}°C", static_cast<int>(smoothed.temperatureC)),
+                                                  .label = TEMP_LABEL,
+                                                  .tooltipText = {},
+                                                  .value01 = UI::Format::percent01(tempPercent),
+                                                  .color = theme.scheme().gpuTemperature}
+                                         : unavailableBar(TEMP_LABEL));
         }
         if (caps.hasPowerMetrics)
         {
             const double powerPercent = (smoothed.powerWatts / static_cast<double>(maxPowerW)) * 100.0;
-            gpuThermalBars.push_back({.valueText = std::format("{:.1f}W", smoothed.powerWatts),
-                                      .label = POWER_LABEL,
-                                      .tooltipText = std::format("{}: {:.2Lf} W", POWER_LABEL, smoothed.powerWatts),
-                                      .value01 = UI::Format::percent01(powerPercent),
-                                      .color = theme.scheme().gpuPower});
+            gpuThermalBars.push_back(smoothed.powerInitialized
+                                         ? NowBar{.valueText = std::format("{:.1f}W", smoothed.powerWatts),
+                                                  .label = POWER_LABEL,
+                                                  .tooltipText = std::format("{}: {:.2Lf} W", POWER_LABEL, smoothed.powerWatts),
+                                                  .value01 = UI::Format::percent01(powerPercent),
+                                                  .color = theme.scheme().gpuPower}
+                                         : unavailableBar(POWER_LABEL));
         }
         // Keep pushing a bar (stable column count) whenever the capability is present, so the
         // now-bar layout doesn't jitter frame-to-frame as fanSpeedAvailable flips on a transient
@@ -542,7 +613,7 @@ void renderGpuSection(RenderContext& ctx)
         // Use max bar count across both charts for x-axis alignment
         const size_t gpuNowBarColumns = std::max(gpuCoreBars.size(), gpuThermalBars.size());
 
-        const std::string coreLayoutId = std::format("GPUCoreLayout{}", gpuIdx);
+        const std::string coreLayoutId = std::format("GPUCoreLayout{}", entry.gpuId);
         renderHistoryWithNowBars(coreLayoutId.c_str(), plotHeight, gpuCorePlot, gpuCoreBars, false, gpuNowBarColumns);
         countPlot();
 
@@ -582,8 +653,10 @@ void renderGpuSection(RenderContext& ctx)
 
             auto gpuThermalPlot = [&]()
             {
-                const UI::Widgets::HistoryChart chart(UI::Widgets::withHeight(
-                    UI::Widgets::percentHistoryConfig("##GPUThermalHistory", axisConfig.xMin, axisConfig.xMax), plotHeight));
+                const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
+                    UI::Widgets::withHeight(UI::Widgets::percentHistoryConfig("##GPUThermalHistory", axisConfig.xMin, axisConfig.xMax),
+                                            plotHeight),
+                    ctx.chartDataGeneration));
                 if (chart.active())
                 {
                     UI::Widgets::drawCollectingHint(alignedCount); // The same "no data yet" state on every chart (#1013)
@@ -649,15 +722,21 @@ void renderGpuSection(RenderContext& ctx)
                                 }
                                 return static_cast<double>(series[*idxVal - aligned.offset]);
                             };
+                            // "N/A" for a sample with no reading, such as while the GPU was missing (#1146).
                             const auto ofReference = [](double value, double reference, std::string_view unit, std::string_view note)
                             {
-                                return std::format("{:.0f}{} ({} of {:.0f}{}{})",
-                                                   value,
-                                                   unit,
-                                                   UI::Format::percentCompact((value / reference) * 100.0),
-                                                   reference,
-                                                   unit,
-                                                   note);
+                                return UI::Widgets::formatSampleOrNA(value,
+                                                                     [&](double reading)
+                                                                     {
+                                                                         return std::format(
+                                                                             "{:.0f}{} ({} of {:.0f}{}{})",
+                                                                             reading,
+                                                                             unit,
+                                                                             UI::Format::percentCompact((reading / reference) * 100.0),
+                                                                             reference,
+                                                                             unit,
+                                                                             note);
+                                                                     });
                             };
                             std::vector<UI::Widgets::TooltipRow> rows;
                             if (caps.hasTemperature && !tempData.empty())
@@ -705,7 +784,7 @@ void renderGpuSection(RenderContext& ctx)
             // Thermal bars were already built above for alignment calculation, one for each capability
             // that brought this chart here, so there is always at least one. Rendered with the same
             // column count as the core chart for x-axis alignment.
-            const std::string thermalLayoutId = std::format("GPUThermalLayout{}", gpuIdx);
+            const std::string thermalLayoutId = std::format("GPUThermalLayout{}", entry.gpuId);
             renderHistoryWithNowBars(thermalLayoutId.c_str(), plotHeight, gpuThermalPlot, gpuThermalBars, false, gpuNowBarColumns);
             countPlot();
 

@@ -26,6 +26,12 @@ struct MockDevice
     unsigned int fanPercent;
     unsigned int pcieTxKilobytes;
     unsigned int pcieRxKilobytes;
+    // A laptop GPU may report no power and a passively cooled one no fan: those reads then return
+    // NVML_ERROR_NOT_SUPPORTED, so per-device sensor capabilities can be tested (#1112).
+    bool hasPower;
+    bool hasFan;
+    const char* busId; // nvmlPciInfo_t::busId, eight-digit domain as NVML prints it (#1117)
+    unsigned int pciBus;
 };
 
 constexpr std::array<MockDevice, 2> MOCK_DEVICES{{
@@ -43,7 +49,11 @@ constexpr std::array<MockDevice, 2> MOCK_DEVICES{{
      .memoryClockMHz = 9000,
      .fanPercent = 40,
      .pcieTxKilobytes = 32,
-     .pcieRxKilobytes = 64},
+     .pcieRxKilobytes = 64,
+     .hasPower = true,
+     .hasFan = true,
+     .busId = "00000000:01:00.0",
+     .pciBus = 0x01},
     {.name = "Mock NVIDIA GPU 1",
      .uuid = "",
      .hasUuid = false,
@@ -58,7 +68,11 @@ constexpr std::array<MockDevice, 2> MOCK_DEVICES{{
      .memoryClockMHz = 7000,
      .fanPercent = 25,
      .pcieTxKilobytes = 8,
-     .pcieRxKilobytes = 16},
+     .pcieRxKilobytes = 16,
+     .hasPower = false,
+     .hasFan = false,
+     .busId = "00000000:41:00.0",
+     .pciBus = 0x41},
 }};
 
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - mutable handles needed so functions can return stable pointers-to-element as nvmlDevice_t
@@ -67,8 +81,13 @@ std::array<int, MOCK_DEVICES.size()> MOCK_HANDLES{1, 2};
 // Sentinel returned by deviceIndex() when the handle is not found
 constexpr std::size_t INVALID_DEVICE_INDEX = std::numeric_limits<std::size_t>::max();
 
+// Every call that addresses a device (any per-device query, the process lists included), so a test
+// can prove a runtime-suspended GPU wasn't touched (#1117). Read via tasksmackNvmlMockDeviceQueries().
+unsigned int g_DeviceQueries = 0; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - mock call counter
+
 [[nodiscard]] auto deviceIndex(NVML::nvmlDevice_t device) -> std::size_t
 {
+    ++g_DeviceQueries;
     for (std::size_t i = 0; i < MOCK_HANDLES.size(); ++i)
     {
         if (device == &MOCK_HANDLES[i])
@@ -177,6 +196,21 @@ constexpr unsigned int NO_FAILING_HANDLE = std::numeric_limits<unsigned int>::ma
 unsigned int g_FailingHandleIndex = NO_FAILING_HANDLE;
 int g_UuidCallsBeforeFailure = -1; // -1: never fail
 unsigned int g_UuidCalls = 0;
+bool g_FailSensorReads = false; // utilization, memory, temperature, power and graphics clock time out (#1111)
+// #1116: how many devices NVML reports (the first N of MOCK_DEVICES), so a test can hot-plug or remove
+// one; which device's sensor reads return NVML_ERROR_GPU_IS_LOST; and how often NVML was initialised.
+unsigned int g_DeviceCount = static_cast<unsigned int>(MOCK_DEVICES.size());
+unsigned int g_LostDeviceIndex = NO_FAILING_HANDLE;
+unsigned int g_InitCalls = 0;
+// How many of the next nvmlInit_v2 calls fail with NVML_ERROR_DRIVER_NOT_LOADED, as during a driver
+// reload (#1116). Set through tasksmackNvmlMockFailInits().
+unsigned int g_FailingInits = 0;
+
+/// Whether `dev` is the device the test marked lost (#1116). Doesn't count as a device query.
+[[nodiscard]] bool isLost(const MockDevice* dev)
+{
+    return g_LostDeviceIndex < MOCK_DEVICES.size() && dev == &MOCK_DEVICES[g_LostDeviceIndex];
+}
 
 } // namespace
 
@@ -185,6 +219,12 @@ extern "C"
 
     NVML::nvmlReturn_t nvmlInit_v2()
     {
+        ++g_InitCalls;
+        if (g_FailingInits > 0)
+        {
+            --g_FailingInits;
+            return NVML::NVML_ERROR_DRIVER_NOT_LOADED;
+        }
         return NVML::NVML_SUCCESS;
     }
 
@@ -195,13 +235,13 @@ extern "C"
 
     NVML::nvmlReturn_t nvmlDeviceGetCount_v2(unsigned int* count)
     {
-        *count = static_cast<unsigned int>(MOCK_DEVICES.size());
+        *count = g_DeviceCount;
         return NVML::NVML_SUCCESS;
     }
 
     NVML::nvmlReturn_t nvmlDeviceGetHandleByIndex_v2(unsigned int index, NVML::nvmlDevice_t* device)
     {
-        if (index >= MOCK_HANDLES.size())
+        if (index >= MOCK_HANDLES.size() || index >= g_DeviceCount)
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
         }
@@ -252,6 +292,14 @@ extern "C"
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
         }
+        if (isLost(dev))
+        {
+            return NVML::NVML_ERROR_GPU_IS_LOST;
+        }
+        if (g_FailSensorReads)
+        {
+            return NVML::NVML_ERROR_TIMEOUT;
+        }
         *memory = dev->memory;
         return NVML::NVML_SUCCESS;
     }
@@ -262,6 +310,14 @@ extern "C"
         if (dev == nullptr)
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        if (isLost(dev))
+        {
+            return NVML::NVML_ERROR_GPU_IS_LOST;
+        }
+        if (g_FailSensorReads)
+        {
+            return NVML::NVML_ERROR_TIMEOUT;
         }
         utilization->gpu = dev->utilizationPercent;
         utilization->memory = 0;
@@ -276,6 +332,14 @@ extern "C"
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
         }
+        if (isLost(dev))
+        {
+            return NVML::NVML_ERROR_GPU_IS_LOST;
+        }
+        if (g_FailSensorReads)
+        {
+            return NVML::NVML_ERROR_TIMEOUT;
+        }
         *temperature = dev->temperatureC;
         return NVML::NVML_SUCCESS;
     }
@@ -286,6 +350,18 @@ extern "C"
         if (dev == nullptr)
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        if (isLost(dev))
+        {
+            return NVML::NVML_ERROR_GPU_IS_LOST;
+        }
+        if (!dev->hasPower)
+        {
+            return NVML::NVML_ERROR_NOT_SUPPORTED;
+        }
+        if (g_FailSensorReads)
+        {
+            return NVML::NVML_ERROR_TIMEOUT;
         }
         *power = dev->powerMilliwatts;
         return NVML::NVML_SUCCESS;
@@ -309,6 +385,14 @@ extern "C"
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
         }
+        if (isLost(dev))
+        {
+            return NVML::NVML_ERROR_GPU_IS_LOST;
+        }
+        if (g_FailSensorReads && type != NVML::NVML_CLOCK_MEM)
+        {
+            return NVML::NVML_ERROR_TIMEOUT;
+        }
         *clock = (type == NVML::NVML_CLOCK_MEM) ? dev->memoryClockMHz : dev->graphicsClockMHz;
         return NVML::NVML_SUCCESS;
     }
@@ -320,7 +404,29 @@ extern "C"
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
         }
+        if (!dev->hasFan)
+        {
+            return NVML::NVML_ERROR_NOT_SUPPORTED;
+        }
         *fanSpeed = dev->fanPercent;
+        return NVML::NVML_SUCCESS;
+    }
+
+    // NOLINTNEXTLINE(readability-identifier-naming) - the exported NVML symbol name
+    NVML::nvmlReturn_t nvmlDeviceGetPciInfo_v3(NVML::nvmlDevice_t device, NVML::nvmlPciInfo_t* pci)
+    {
+        const auto* dev = safeDevice(device);
+        if (dev == nullptr)
+        {
+            return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        *pci = NVML::nvmlPciInfo_t{};
+        pci->domain = 0;
+        pci->bus = dev->pciBus;
+        pci->device = 0;
+        pci->pciDeviceId = 0x2684'10DEU;
+        writeString(dev->busId, std::data(pci->busId), static_cast<unsigned int>(std::size(pci->busId)));
+        writeString(dev->busId, std::data(pci->busIdLegacy), static_cast<unsigned int>(std::size(pci->busIdLegacy)));
         return NVML::NVML_SUCCESS;
     }
 
@@ -335,22 +441,26 @@ extern "C"
         return NVML::NVML_SUCCESS;
     }
 
-    NVML::nvmlReturn_t nvmlDeviceGetComputeRunningProcesses(NVML::nvmlDevice_t device, unsigned int* count, void* infos)
+    NVML::nvmlReturn_t
+    nvmlDeviceGetComputeRunningProcesses(NVML::nvmlDevice_t device, unsigned int* count, NVML::nvmlProcessInfoEntries* infos)
     {
         return listProcesses<ProcessInfoV1>(device, count, infos, COMPUTE_PROCESSES);
     }
 
-    NVML::nvmlReturn_t nvmlDeviceGetGraphicsRunningProcesses(NVML::nvmlDevice_t device, unsigned int* count, void* infos)
+    NVML::nvmlReturn_t
+    nvmlDeviceGetGraphicsRunningProcesses(NVML::nvmlDevice_t device, unsigned int* count, NVML::nvmlProcessInfoEntries* infos)
     {
         return listProcesses<ProcessInfoV1>(device, count, infos, GRAPHICS_PROCESSES);
     }
 
-    NVML::nvmlReturn_t nvmlDeviceGetComputeRunningProcesses_v3(NVML::nvmlDevice_t device, unsigned int* count, void* infos)
+    NVML::nvmlReturn_t
+    nvmlDeviceGetComputeRunningProcesses_v3(NVML::nvmlDevice_t device, unsigned int* count, NVML::nvmlProcessInfoEntries* infos)
     {
         return listProcesses<ProcessInfoV2>(device, count, infos, COMPUTE_PROCESSES);
     }
 
-    NVML::nvmlReturn_t nvmlDeviceGetGraphicsRunningProcesses_v3(NVML::nvmlDevice_t device, unsigned int* count, void* infos)
+    NVML::nvmlReturn_t
+    nvmlDeviceGetGraphicsRunningProcesses_v3(NVML::nvmlDevice_t device, unsigned int* count, NVML::nvmlProcessInfoEntries* infos)
     {
         return listProcesses<ProcessInfoV2>(device, count, infos, GRAPHICS_PROCESSES);
     }
@@ -365,9 +475,46 @@ extern "C"
         g_UuidCalls = 0;
     }
 
+    // Test control: make the utilization, memory, temperature, power and graphics-clock reads fail with
+    // NVML_ERROR_TIMEOUT, as a busy or resetting GPU does (#1111).
+    void tasksmackNvmlMockFailSensorReads(int fail)
+    {
+        g_FailSensorReads = (fail != 0);
+    }
+
     unsigned int tasksmackNvmlMockUuidCalls()
     {
         return g_UuidCalls;
+    }
+
+    // Test controls (#1116): how many devices NVML reports from the next nvmlDeviceGetCount_v2 on
+    // (capped at the mock's two); which device's sensor reads return NVML_ERROR_GPU_IS_LOST
+    // (NO_FAILING_HANDLE for none); and how many times nvmlInit_v2 has been called.
+    void tasksmackNvmlMockSetDeviceCount(unsigned int count)
+    {
+        g_DeviceCount = count < MOCK_DEVICES.size() ? count : static_cast<unsigned int>(MOCK_DEVICES.size());
+    }
+
+    void tasksmackNvmlMockSetLostDevice(unsigned int index)
+    {
+        g_LostDeviceIndex = index;
+    }
+
+    unsigned int tasksmackNvmlMockInitCalls()
+    {
+        return g_InitCalls;
+    }
+
+    // Test control (#1116): the next `count` nvmlInit_v2 calls fail (see g_FailingInits).
+    void tasksmackNvmlMockFailInits(unsigned int count)
+    {
+        g_FailingInits = count;
+    }
+
+    // Test control: how many calls have addressed a device so far (see g_DeviceQueries).
+    unsigned int tasksmackNvmlMockDeviceQueries()
+    {
+        return g_DeviceQueries;
     }
 
     const char* nvmlErrorString(NVML::nvmlReturn_t /*result*/)

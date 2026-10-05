@@ -16,45 +16,45 @@ colors = [
     "#83A598",  # Bright Blue (aqua-blue)
     "#FB4934",  # Bright Red
     "#B8BB26",  # Bright Yellow-Green
-    "#D3869B",  # Bright Purple
-    "#FABD2F",  # Bright Yellow
+    "#EE97AF",  # Bright Purple
+    "#F9C86D",  # Bright Yellow
     "#8EC07C",  # Bright Aqua
     "#FE8019",  # Bright Orange
     "#928374",  # Neutral Gray
 ]
 
 [progress]
-low = "#B8BB26"       # 0-50%   - Bright green-yellow (healthy)
+low = "#BBB868"       # 0-50%   - Bright green-yellow (healthy)
 medium = "#FABD2F"    # 50-80%  - Bright yellow (caution)
 high = "#FB4934"      # 80-100% - Bright red (critical)
 
 [semantic]
 text_primary = "#EBDBB2"
 text_disabled = "#928374"
-text_muted = "#A89984"
-text_error = "#FB4934"
-text_warning = "#FABD2F"
+text_muted = "#B0A18C"
+text_error = "#F78068"
+text_warning = "#F9C86D"
 text_success = "#B8BB26"
-text_info = "#83A598"
+text_info = "#88AA9D"
 
 [status]
 running = "#B8BB26"
-sleeping = "#83A598"
+sleeping = "#94B7A9"
 disk_sleep = "#FABD2F"
-zombie = "#FB4934"
-stopped = "#D3869B"
-idle = "#928374"
+zombie = "#FF917A"
+stopped = "#E799AE"
+idle = "#BDAD9D"
 
 [charts]
 cpu = "#83A598"
 memory = "#B8BB26"
-io = "#FB4934"
+io = "#F4432F"
 io_write = "#FE8019"
 net_tx = "#FABD2F"
 net_rx = "#D3869B"
 cpu_fill = "#83A5984D"
 memory_fill = "#B8BB264D"
-io_fill = "#FB49344D"
+io_fill = "#F4432F4D"
 io_write_fill = "#FE80194D"
 net_tx_fill = "#FABD2F4D"
 net_rx_fill = "#D3869B4D"
@@ -66,19 +66,19 @@ utilization_fill = "#D3869B4D"
 memory = "#8EC07C"
 memory_fill = "#8EC07C4D"
 temperature = "#FABD2F"
-power = "#B8BB26"
-encoder = "#8EC07C"
-decoder = "#D3869B"
-clock = "#A89984"
-clock_fill = "#A89984CC"
+power = "#A8AA33"
+encoder = "#FE8019"
+decoder = "#FAB5C6"
+clock = "#928374"
+clock_fill = "#928374CC"
 fan = "#928374"
 
 [cpu_breakdown]
-user = "#ACCFC1"
+user = "#B1D5C7"
 system = "#FB4934"
 iowait = "#FABD2F"
 idle = "#504945"
-user_fill = "#ACCFC159"
+user_fill = "#B1D5C759"
 system_fill = "#FB493459"
 iowait_fill = "#FABD2F59"
 idle_fill = "#50494533"
@@ -164,6 +164,7 @@ preview = "#83A598B3"
 empty_background = "#282828"
 
 [ui.plot]
+grid = "#57504C"
 lines = "#83A598"
 lines_hovered = "#FB4934"
 histogram = "#B8BB26"

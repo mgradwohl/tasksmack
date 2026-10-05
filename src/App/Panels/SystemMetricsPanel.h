@@ -3,6 +3,7 @@
 #include "App/Panel.h"
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/MemorySection.h"
+#include "App/Panels/NetInterfaceUtils.h"
 #include "App/Panels/StorageSection.h"
 #include "Core/Event.h"
 #include "Domain/BackgroundSampler.h"
@@ -14,6 +15,7 @@
 #include "Domain/StorageSnapshot.h"
 #include "Domain/SystemModel.h"
 #include "Domain/SystemSnapshot.h"
+#include "UI/ChartWidgets.h"
 #include "UI/FillPlotLayout.h"
 #include "UI/Theme.h"
 
@@ -51,7 +53,7 @@ class SystemMetricsPanel : public Panel
     void onUpdate(float deltaTime) override;
 
     /// Set the refresh interval (applied by onUpdate cadence checks).
-    void setSamplingInterval(std::chrono::milliseconds interval);
+    void setSamplingInterval(std::chrono::milliseconds interval, bool forceSample = true);
 
     /// Request an immediate refresh.
     void requestRefresh();
@@ -70,6 +72,10 @@ class SystemMetricsPanel : public Panel
 
     /// Render content only (for embedding in tab, without window wrapper).
     void renderContent() override;
+
+    /// Width of the Overview's NowBar column, including the cell padding that separates it from the
+    /// plot, at the current font and style. For the window's content minimum (#1207); needs a frame.
+    [[nodiscard]] static float overviewNowBarColumnWidth();
 
     /// Get the hostname (for tab/window title).
     [[nodiscard]] const std::string& hostname() const
@@ -97,6 +103,10 @@ class SystemMetricsPanel : public Panel
     std::shared_ptr<const Domain::SystemPublication> m_SystemPublication;
     std::shared_ptr<const Domain::StoragePublication> m_StoragePublication;
     std::shared_ptr<const Domain::GPUPublication> m_GPUPublication;
+    // Taken (UI::Widgets::nextChartDataGeneration()) whenever any history this panel charts changes --
+    // a system, storage or GPU publication adopted, or the process histories copied -- so the charts
+    // keep their reduced points until then (HistoryChartConfig::dataGeneration, #1139).
+    std::uint64_t m_ChartDataGeneration = 0;
     std::uint64_t m_ProcessHistoryVersion = 0;
     std::vector<double> m_ProcessHistoryTimestamps;
     std::vector<double> m_ProcessPowerHistory;
@@ -116,8 +126,9 @@ class SystemMetricsPanel : public Panel
     std::vector<double> m_CpuStackYUser;
     std::vector<double> m_CpuStackYSystem;
     std::vector<double> m_CpuStackYIowait;
-    std::vector<double> m_CpuStackSystem; // raw System and I/O Wait, to choose reduced points by (#1022)
-    std::vector<double> m_CpuStackIowait;
+    // The stacked bands' reduced points (#1022), kept until the next publication (#1139)
+    UI::Widgets::ReducedPointsCache m_CpuStackReduction;
+    std::vector<double> m_CpuStackYBusy; // Bottom of the I/O Wait band: the busy total, 100 - idle - iowait
 
     std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
     bool m_ForceRefresh = false;
@@ -178,6 +189,11 @@ class SystemMetricsPanel : public Panel
 
     // Name of the selected network interface; empty means "Total" / all interfaces combined
     std::string m_SelectedNetworkInterface;
+
+    // Interface Status table (#1211): "Show all" for this session only, and the interfaces seen moving
+    // traffic, which stay listed while down.
+    bool m_ShowAllInterfaces = false;
+    NetInterfaceUtils::InterfaceNameSet m_InterfacesWithTraffic;
 
     // GPU smoothed values (uses type from GpuSection)
     std::unordered_map<std::string, GpuSection::SmoothedGPU> m_SmoothedGPUs;

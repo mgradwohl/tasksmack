@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <limits>
+
 namespace UI
 {
 namespace
@@ -75,5 +77,17 @@ TEST(StyleScaleTest, LineWeightIsNeverThinnerThanOnePixel)
     EXPECT_FLOAT_EQ(scaledLineWeight(2.0F, 0.0F), 2.0F); // a degenerate scale falls back to 1.0
 }
 
+TEST(StyleScaleTest, StrokesScaleInWholePixelsAndNeverVanish)
+{
+    // #1169: the tab overline and underline stayed 1px beside tabs twice the size.
+    EXPECT_FLOAT_EQ(scaledStrokePx(1.0F, 1.0F), 1.0F);
+    EXPECT_FLOAT_EQ(scaledStrokePx(1.0F, 1.75F), 2.0F);
+    EXPECT_FLOAT_EQ(scaledStrokePx(1.0F, 2.8F), 3.0F);
+    EXPECT_FLOAT_EQ(scaledStrokePx(3.0F, 1.5F), 5.0F); // 4.5 rounds away from zero
+    EXPECT_FLOAT_EQ(scaledStrokePx(1.0F, 0.875F), 1.0F);
+    EXPECT_FLOAT_EQ(scaledStrokePx(1.0F, 0.25F), 1.0F);
+    EXPECT_FLOAT_EQ(scaledStrokePx(2.0F, 0.0F), 2.0F);
+    EXPECT_FLOAT_EQ(scaledStrokePx(2.0F, std::numeric_limits<float>::quiet_NaN()), 2.0F);
+}
 } // namespace
 } // namespace UI

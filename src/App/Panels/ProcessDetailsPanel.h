@@ -7,11 +7,14 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/ProcessTypes.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
+#include "ProcessDetailsPanel_HistoryHelpers.h"
+#include "UI/ChartWidgets.h"
 #include "UI/FillPlotLayout.h"
 
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -41,9 +44,26 @@ class ProcessDetailsPanel : public Panel
     ProcessDetailsPanel(ProcessDetailsPanel&&) noexcept = default;
     ProcessDetailsPanel& operator=(ProcessDetailsPanel&&) noexcept = default;
 
-    /// Update with current process data.
-    /// Call each frame with the snapshot for the selected process (or nullptr if none).
-    void updateWithSnapshot(const Domain::ProcessSnapshot* snapshot, std::uint64_t snapshotVersion, float deltaTime);
+    /// Update with the selected process's new samples. Call each frame with what
+    /// Domain::ProcessModel::watchedSamplesSince(lastSampleVersion()) returned for the watched
+    /// selectedPid() -- oldest first, empty when nothing new was published. Each sample of the selected
+    /// process becomes one history point, stamped with when it was sampled (#1098); the newest is
+    /// shown, shared rather than copied (#1172).
+    void updateWithSamples(std::span<const Domain::ProcessSample> samples, float deltaTime);
+
+    /// The newest generation taken in since the selection (0 = none): what to pass to
+    /// Domain::ProcessModel::watchedSamplesSince(). Reset to 0 when the selection changes.
+    [[nodiscard]] std::uint64_t lastSampleVersion() const
+    {
+        return m_SampleIntake.lastVersion;
+    }
+
+    /// The selected process as last sampled, or nullptr when no sample of it has arrived since the
+    /// selection. Valid until the next updateWithSamples() or selection change.
+    [[nodiscard]] const Domain::ProcessSnapshot* displayedSnapshot() const
+    {
+        return m_HasSnapshot ? m_CachedSnapshot.get() : nullptr;
+    }
 
     /// Render the panel (with ImGui window wrapper).
     /// @param open Pointer to visibility flag (for window close button).
@@ -54,7 +74,7 @@ class ProcessDetailsPanel : public Panel
 
     /// Get a label for this panel (process name or "Select a process").
     /// Returned by reference so a caller can compare it against a cached copy every frame without
-    /// allocating. The reference is valid until the next updateWithSnapshot() or selection change.
+    /// allocating. The reference is valid until the next updateWithSamples() or selection change.
     [[nodiscard]] const std::string& tabLabel() const;
 
     /// Handle application events (process selection, active tab, refresh interval, history window)
@@ -120,10 +140,15 @@ class ProcessDetailsPanel : public Panel
     void handlePrioritySliderInput(const PrioritySliderContext& ctx);
     static void drawPriorityScaleLabels(const PrioritySliderContext& ctx);
     void updateSmoothedUsage(const Domain::ProcessSnapshot& snapshot, float deltaTimeSeconds);
+    /// Appends one history point for @p snapshot at @p sampleTimeSeconds, after a gap point when
+    /// @p gapBefore (see Detail::takeSamples()).
+    void recordHistoryPoint(const Domain::ProcessSnapshot& snapshot, double sampleTimeSeconds, bool gapBefore);
+    /// The displayed snapshot, or an empty one before the first: for code that draws it unconditionally.
+    [[nodiscard]] const Domain::ProcessSnapshot& cachedSnapshot() const;
 
     std::int32_t m_SelectedPid = -1;
     std::uint64_t m_SelectedUniqueKey = 0; // 0 = not known; adopted from the first snapshot
-    std::uint64_t m_LastHistorySnapshotVersion = 0;
+    Detail::SampleIntake m_SampleIntake;   // Where history recording is in the watched process's samples (#1098)
     float m_LastDeltaSeconds = 0.0F;
     bool m_IsActiveTab = false;
 
@@ -133,8 +158,8 @@ class ProcessDetailsPanel : public Panel
     std::vector<double> m_CpuHistory;       // CPU% total history (avoid narrowing)
     std::vector<double> m_CpuUserHistory;   // CPU% user history (avoid narrowing)
     std::vector<double> m_CpuSystemHistory; // CPU% system history (avoid narrowing)
-    std::vector<double> m_MemoryHistory;    // Used memory percent (RSS)
-    std::vector<double> m_SharedHistory;    // Shared memory percent (best effort)
+    std::vector<double> m_MemoryHistory;    // Used memory (RSS) bytes (#1195)
+    std::vector<double> m_SharedHistory;    // Shared memory bytes, best effort (#1195)
     std::vector<double> m_VirtualHistory;   // Virtual memory bytes (#992)
     std::vector<double> m_ThreadHistory;    // Thread count history
     std::vector<double> m_HandleHistory;    // Handle/FD count history
@@ -148,14 +173,19 @@ class ProcessDetailsPanel : public Panel
     std::vector<double> m_GpuMemHistory;    // GPU memory bytes history
     std::vector<double> m_GdiHistory;       // GDI object count history (Windows-only)
     std::vector<double> m_Timestamps;
+    // Taken (UI::Widgets::nextChartDataGeneration()) whenever the histories above change -- a sample
+    // recorded or trimmed, or the selection reset -- so the charts keep their reduced points until
+    // then instead of reducing every history every frame (HistoryChartConfig::dataGeneration, #1139).
+    std::uint64_t m_HistoryGeneration = 0;
     // Refresh interval and history window start at the SamplingConfig defaults; ShellLayer raises the
     // configured values as events on its first update (#1079).
     double m_MaxHistorySeconds = Domain::Numeric::toDouble(Domain::Sampling::HISTORY_SECONDS_DEFAULT);
     // Sampling interval the NowBar smoothing is tuned to (#1072)
     std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
-    double m_PeakMemoryPercent = 0.0; // Peak working set (never decreases)
+    double m_PeakMemoryBytes = 0.0; // Peak working set (never decreases)
 
-    // Render scratch buffers for stacked CPU chart (reused across frames to avoid per-frame heap allocation)
+    // Render scratch buffers for stacked CPU chart (reused across frames to avoid per-frame heap allocation):
+    // only the reduced points, at most LINE_PLOT_MAX_POINTS_DENSE, are built into them each frame.
     std::vector<double> m_CpuPlotX; // CPU chart points as drawn, held to now (#1016)
     std::vector<double> m_CpuPlotTotal;
     std::vector<double> m_CpuPlotUser;
@@ -163,9 +193,11 @@ class ProcessDetailsPanel : public Panel
     std::vector<double> m_CpuStackY0;
     std::vector<double> m_CpuStackYUser;
     std::vector<double> m_CpuStackYSystem;
+    UI::Widgets::ReducedPointsCache m_CpuPlotReduction; // The CPU chart's reduced points (#1022), kept per m_HistoryGeneration (#1139)
 
-    // Cached snapshot for rendering
-    Domain::ProcessSnapshot m_CachedSnapshot;
+    // The selected process as last sampled, shared with ProcessModel's sample rather than copied
+    // every frame (#1172); null before the first sample.
+    std::shared_ptr<const Domain::ProcessSnapshot> m_CachedSnapshot;
     // Per-tab state for the shared chart-height rule (#959)
     UI::Widgets::PlotFillState m_OverviewFill;
     UI::Widgets::PlotFillState m_NetworkFill;
@@ -182,7 +214,7 @@ class ProcessDetailsPanel : public Panel
     // Confirmation dialog state
     bool m_ShowConfirmDialog = false;
     ProcessAction m_ConfirmAction = ProcessAction::None;
-    std::string m_LastActionResult;
+    Detail::ActionResultMessage m_LastActionResult;
     float m_ActionResultTimer = 0.0F;
 
     // Priority adjustment state
@@ -207,10 +239,19 @@ class ProcessDetailsPanel : public Panel
         double powerWatts = 0.0;
         double gpuUtilPercent = 0.0;
         double gpuMemoryBytes = 0.0;
+        // Whether the latest sample had these readings (#1110): an unread one leaves its value where it
+        // was and shows N/A, as its line shows a gap, like the GDI count below.
+        bool handleCountAvailable = false;
+        bool ioAvailable = false;
+        bool networkAvailable = false;
         double gdiObjectCount = 0.0;
-        // Memory bars, as percents of system RAM like the Memory chart
-        double memoryUsedPercent = 0.0;
-        double memorySharedPercent = 0.0;
+        // Whether the latest sample had a GDI reading. A missing one leaves gdiObjectCount where it
+        // was (not eased toward 0) and the NowBar shows N/A, as the line shows a gap (#1148).
+        bool gdiInitialized = false;
+        // Memory bars, in bytes like the Memory chart (#1195); Used is residentBytes above. Their share
+        // of system RAM is shown only in the hover text, via memoryPercentPerByte.
+        double memorySharedBytes = 0.0;
+        double memoryPercentPerByte = 0.0; ///< Latest, not smoothed: converts bytes to a share of RAM
         bool initialized = false;
     } m_SmoothedUsage;
 

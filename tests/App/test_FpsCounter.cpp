@@ -118,5 +118,18 @@ TEST(FpsCounterTest, CustomAveragingWindowIsRespected)
     EXPECT_FLOAT_EQ(counter.displayedFps(), 2.0F);
 }
 
+TEST(FpsCounterTest, FramesSlowerThanATenthOfASecondReadTrue)
+{
+    // #1152: fed the real 150 ms frame time (not the 0.1 s-capped animation delta), a 6.7 FPS stall
+    // reads 6.7 FPS, not 10.
+    FpsCounter counter(0.5F);
+    for (int i = 0; i < 4; ++i)
+    {
+        counter.update(0.15F);
+    }
+    EXPECT_NEAR(counter.displayedFps(), 1.0F / 0.15F, 1e-3F);
+    EXPECT_NEAR(counter.displayedFrameTime(), 0.15F, 1e-6F);
+}
+
 } // namespace
 } // namespace App

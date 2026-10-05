@@ -8,8 +8,10 @@
 /// - Singleton instance access
 /// - Error handling (SDL initialization)
 ///
-/// Note: The ApplicationTest suite requires a display/windowing system and is skipped in headless
-/// environments. The FramePacingTest suite is pure logic extracted from Application::run() (see
+/// Note: The ApplicationTest suite requires a display/windowing system with a GL 3.3 core context and
+/// is skipped when the up-front display probe finds none. Once the probe passes, a construction
+/// exception is a test failure, not a skip; and with TASKSMACK_REQUIRE_DISPLAY=1 (Linux CI) a failed
+/// probe fails too (#1132). The FramePacingTest suite is pure logic extracted from Application::run() (see
 /// Core/FramePacing.h) and always runs, headless or not.
 
 #include "Core/AnimationRequest.h"
@@ -33,6 +35,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -46,7 +49,7 @@ namespace
 {
 
 // Check if we have a display available
-bool hasDisplay()
+bool detectDisplay()
 {
 #ifdef _WIN32
     // Check for CI environment - GitHub Actions sets CI=true
@@ -61,8 +64,9 @@ bool hasDisplay()
         // Windows CI runners are typically headless
         return false;
     }
-    // Local Windows development usually has a display
-    return true;
+    // Local Windows development usually has a display, but it must also offer a GL 3.3 core context:
+    // construction failures are fatal once a display is detected (#1132).
+    return TestSupport::probeGLCapability();
 #else
     // On Linux, check for DISPLAY environment variable (X11) or WAYLAND_DISPLAY
     // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay) - called during single-threaded test startup, read-only env check
@@ -81,8 +85,18 @@ bool hasDisplay()
         }
     }
 
-    return TestSupport::tryEnableOffscreenVideoDriver();
+    // The offscreen driver only counts if it can also create a GL 3.3 core context (it needs
+    // Mesa EGL for that), so a "yes" here means Application construction can succeed and a
+    // construction exception is a real failure, not an environment gap.
+    return TestSupport::tryEnableOffscreenVideoDriver() && TestSupport::probeGLCapability();
 #endif
+}
+
+// Every display check goes through here so TASKSMACK_REQUIRE_DISPLAY=1 (set by Linux CI) turns a
+// missing display into a failure instead of a skip.
+bool hasDisplay()
+{
+    return TestSupport::enforceDisplayRequirement(detectDisplay());
 }
 
 /// Test layer that tracks lifecycle callbacks
@@ -274,6 +288,62 @@ class CloseRequestingLayer : public Core::Layer
     int m_UpdateCount = 0;
 };
 
+/// Layer that pushes one SDL event of `eventType` (addressed to the app's window) on its first update,
+/// as the OS would deliver it, and stops the app itself after `stopAfter` updates so a run whose
+/// event does not stop it still ends.
+class SdlEventPushingLayer : public Core::Layer
+{
+  public:
+    SdlEventPushingLayer(std::uint32_t eventType, int stopAfter) : Layer("SdlEventPusher"), m_EventType(eventType), m_StopAfter(stopAfter)
+    {}
+
+    void onUpdate(float /*deltaTime*/) override
+    {
+        ++m_UpdateCount;
+        if (m_UpdateCount == 1)
+        {
+            SDL_Event event{};
+            event.type = m_EventType;
+            if (m_EventType >= SDL_EVENT_WINDOW_FIRST && m_EventType <= SDL_EVENT_WINDOW_LAST)
+            {
+                event.window.windowID = SDL_GetWindowID(Core::Application::get().getWindow().getHandle());
+            }
+            m_Pushed = SDL_PushEvent(&event);
+        }
+        if (m_UpdateCount >= m_StopAfter)
+        {
+            Core::Application::get().stop();
+        }
+    }
+
+    [[nodiscard]] int updateCount() const
+    {
+        return m_UpdateCount;
+    }
+
+    [[nodiscard]] bool pushed() const
+    {
+        return m_Pushed;
+    }
+
+  private:
+    std::uint32_t m_EventType;
+    int m_StopAfter;
+    int m_UpdateCount = 0;
+    bool m_Pushed = false;
+};
+
+/// Layer whose onDetach() logs to g_DetachOrder, then throws, to verify detachAllLayers() still
+/// detaches the layers below it (#1124).
+class ThrowingOnDetachLayer : public Core::Layer
+{
+  public:
+    explicit ThrowingOnDetachLayer(const std::string& name) : Layer(name)
+    {}
+
+    void onDetach() override;
+};
+
 /// Static vector to track layer detach order across Application destruction
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 std::vector<std::string> g_DetachOrder;
@@ -290,6 +360,12 @@ class TrackedLayer : public Core::Layer
         g_DetachOrder.push_back(getName());
     }
 };
+
+void ThrowingOnDetachLayer::onDetach()
+{
+    g_DetachOrder.push_back(getName());
+    throw std::runtime_error("ThrowingOnDetachLayer::onDetach always throws");
+}
 
 void ThrowingOnAttachLayer::onDetach()
 {
@@ -340,7 +416,7 @@ TEST(ApplicationTest, ConstructWithDefaultSpec)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -367,7 +443,7 @@ TEST(ApplicationTest, ConstructWithCustomSpec)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -388,7 +464,7 @@ TEST(ApplicationTest, SingletonInstanceIsAccessible)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -419,7 +495,7 @@ TEST(ApplicationTest, PushLayerCallsOnAttach)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -453,7 +529,7 @@ TEST(ApplicationTest, CloseRequestIsAcceptedUnlessALayerVetoesIt)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -484,7 +560,7 @@ TEST(ApplicationTest, RequestCloseRaisesWindowCloseEventAndStopsWhenAccepted)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -515,7 +591,93 @@ TEST(ApplicationTest, RequestCloseIsVetoedByAHandlingLayer)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
+    }
+}
+
+// #1150: SDL's default posts SDL_EVENT_QUIT after a close request on the last window, so one Alt+F4
+// raised two WindowCloseEvents and the QUIT would override a veto. Application turns that off.
+TEST(ApplicationTest, ClosingTheLastWindowDoesNotAlsoPostQuit)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "QuitOnLastWindowCloseTest";
+
+    try
+    {
+        const Core::Application app(spec);
+        EXPECT_FALSE(SDL_GetHintBoolean(SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE, true));
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
+    }
+}
+
+// #1150: a close request (Alt+F4, the OS close button) raises exactly one WindowCloseEvent, and a
+// veto keeps the app running.
+TEST(ApplicationTest, CloseRequestedRaisesOneVetoableWindowCloseEvent)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "CloseRequestedOnceTest";
+
+    try
+    {
+        Core::Application app(spec);
+        const auto& vetoer = app.pushLayer<CloseListenerLayer>("Vetoer", true);
+        constexpr int STOP_AFTER = 5;
+        const auto& pusher = app.pushLayer<SdlEventPushingLayer>(SDL_EVENT_WINDOW_CLOSE_REQUESTED, STOP_AFTER);
+
+        app.run();
+
+        ASSERT_TRUE(pusher.pushed()) << SDL_GetError();
+        EXPECT_EQ(vetoer.closeEventsSeen(), 1);
+        EXPECT_EQ(pusher.updateCount(), STOP_AFTER);
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
+    }
+}
+
+// #1150: SIGINT, SIGTERM and OS logout arrive as SDL_EVENT_QUIT. That is not a close request a
+// layer may veto: it raises no WindowCloseEvent and always stops the app.
+TEST(ApplicationTest, SdlQuitStopsTheAppAndCannotBeVetoed)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "QuitNotVetoableTest";
+
+    try
+    {
+        Core::Application app(spec);
+        const auto& vetoer = app.pushLayer<CloseListenerLayer>("Vetoer", true);
+        // The fallback stop is far off: the QUIT should end the loop long before it.
+        constexpr int STOP_AFTER = 100;
+        const auto& pusher = app.pushLayer<SdlEventPushingLayer>(SDL_EVENT_QUIT, STOP_AFTER);
+
+        app.run();
+
+        ASSERT_TRUE(pusher.pushed()) << SDL_GetError();
+        EXPECT_EQ(vetoer.closeEventsSeen(), 0);
+        EXPECT_LT(pusher.updateCount(), STOP_AFTER);
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -541,7 +703,7 @@ TEST(ApplicationTest, PushMultipleLayers)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -585,39 +747,211 @@ TEST(FramePacingTest, FrameDeltaStaysExactAtLargeUptime)
     EXPECT_FLOAT_EQ(Core::FramePacing::frameDeltaSeconds(previous, previous + 5.0, 0.1F), 0.1F);
 }
 
-TEST(FramePacingTest, AnimationPacingHoldsASteadyRateWhateverTheInput)
+TEST(FramePacingTest, FrameIntervalIsNotCappedLikeTheAnimationDelta)
 {
-    // #1037: while something animates, frames start once per period. The wait is the rest of the
-    // period since the last frame started, so a frame that took 5 ms waits about 11.7 ms at 60 FPS.
+    // #1152: a 150 ms frame is 150 ms for the FPS readout, though animation still sees at most 100 ms.
+    EXPECT_FLOAT_EQ(Core::FramePacing::frameDeltaSeconds(10.0, 10.15, 0.1F), 0.1F);
+    EXPECT_NEAR(Core::FramePacing::frameIntervalSeconds(10.0, 10.15), 0.15, 1e-9);
+    // A clock read out of order is a zero interval, not a negative one.
+    EXPECT_DOUBLE_EQ(Core::FramePacing::frameIntervalSeconds(10.0, 9.0), 0.0);
+}
+
+TEST(FramePacingTest, FrameWaitHoldsASteadyRateWhateverTheInput)
+{
+    // #1037: frames start once per period. The wait is the rest of the period since the last frame
+    // started, so a frame that took 5 ms waits about 11.7 ms at 60 FPS.
     constexpr double PERIOD = 1.0 / 60.0;
-    EXPECT_NEAR(Core::FramePacing::computeAnimationWaitSeconds(true, false, false, 0.005, PERIOD), PERIOD - 0.005, 1e-12);
+    EXPECT_NEAR(Core::FramePacing::computeFrameWaitSeconds(0.005, PERIOD), PERIOD - 0.005, 1e-12);
     // A frame that already took the whole period (a 60 Hz vsync swap, or a slow frame) waits nothing.
-    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationWaitSeconds(true, false, false, PERIOD, PERIOD), 0.0);
-    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationWaitSeconds(true, false, false, 0.040, PERIOD), 0.0);
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeFrameWaitSeconds(PERIOD, PERIOD), 0.0);
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeFrameWaitSeconds(0.040, PERIOD), 0.0);
 }
 
-TEST(FramePacingTest, AnimationPacingOnlyAppliesWhileAnimatingVisiblyOutsideAnInteraction)
+TEST(FramePacingTest, ALowerRequestedRateGivesALongerWait)
 {
-    constexpr double PERIOD = 1.0 / 60.0;
-    // Nothing animating: the idle path (~20 FPS, woken by input) applies instead.
-    EXPECT_FALSE(Core::FramePacing::isAnimationPaced(false, false, false));
-    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationWaitSeconds(false, false, false, 0.0, PERIOD), 0.0);
-    // A move/resize keeps its own redraw path; a minimized window keeps its own sleep.
-    EXPECT_FALSE(Core::FramePacing::isAnimationPaced(true, true, false));
-    EXPECT_FALSE(Core::FramePacing::isAnimationPaced(true, false, true));
-    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationWaitSeconds(true, true, false, 0.0, PERIOD), 0.0);
-    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationWaitSeconds(true, false, true, 0.0, PERIOD), 0.0);
-    EXPECT_TRUE(Core::FramePacing::isAnimationPaced(true, false, false));
+    // #1125: a slowly scrolling chart asks for fewer frames than a NowBar easing to a new sample.
+    constexpr double REFRESH = 60.0;
+    const double slowPeriod = Core::FramePacing::framePeriodSeconds(REFRESH, 30.0);
+    const double fastPeriod = Core::FramePacing::framePeriodSeconds(REFRESH, 60.0);
+    EXPECT_GT(slowPeriod, fastPeriod);
+    EXPECT_GT(Core::FramePacing::computeFrameWaitSeconds(0.005, slowPeriod), Core::FramePacing::computeFrameWaitSeconds(0.005, fastPeriod));
 }
 
-TEST(AnimationRequestTest, ConsumeReportsAndClearsARequest)
+TEST(FramePacingTest, AnimationRateIdlesWhenTheMotionNeedsNoMoreThanTheIdleRate)
+{
+    constexpr double IDLE = 20.0;
+    constexpr double MAX = 60.0;
+    // Nothing moved visibly: the idle path.
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationRate(0.0, IDLE, MAX), 0.0);
+    // #1125: a 300 s chart 1000 px wide scrolls ~3.3 px/s, needing ~6.7 fps at half a pixel per
+    // frame -- the idle rate already covers it, so it is not paced at 60 fps any more.
+    const double slowChartFps = Core::AnimationRequest::framesPerSecondForMotion(1000.0 / 300.0);
+    EXPECT_NEAR(slowChartFps, 6.667, 1e-3);
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationRate(slowChartFps, IDLE, MAX), 0.0);
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationRate(IDLE, IDLE, MAX), 0.0);
+    // Faster motion is paced at what it needs, up to the cap.
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationRate(33.0, IDLE, MAX), 33.0);
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationRate(500.0, IDLE, MAX), MAX);
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationRate(Core::AnimationRequest::FULL_RATE, IDLE, MAX), MAX);
+}
+
+TEST(FramePacingTest, HiddenWindowsGetNoPacedFrames)
+{
+    // #1125: an occluded (or minimized) window is not animated, whatever asked; it takes the hidden
+    // idle sleep instead.
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeFrameRateCap(60.0, false, true, 60.0), 0.0);
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeFrameRateCap(60.0, true, true, 60.0), 0.0);
+    EXPECT_EQ(Core::FramePacing::computeIdleSleepMs(true, 50, 200), 200);
+    // Visible, the animation rate applies.
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeFrameRateCap(33.0, false, false, 60.0), 33.0);
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeFrameRateCap(0.0, false, false, 60.0), 0.0);
+}
+
+TEST(FramePacingTest, InputDrivenFramesAreCapped)
+{
+    // #1153: input with nothing animating used to render with no wait at all -- the display rate
+    // with vsync, unbounded without. Now it is capped at the full frame rate.
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeFrameRateCap(0.0, true, false, 60.0), 60.0);
+    // Input never slows an animation down (#1037: a steady rate whatever the input).
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeFrameRateCap(33.0, true, false, 60.0), 60.0);
+    // With vsync off (an interaction, or vsync disabled) a 1 ms frame at 144 Hz waits out the period.
+    const double period = Core::FramePacing::framePeriodSeconds(144.0, 60.0);
+    EXPECT_GT(Core::FramePacing::computeFrameWaitSeconds(0.001, period), 0.0);
+}
+
+TEST(FramePacingTest, FramePeriodIsAWholeNumberOfRefreshes)
+{
+    // #1126: a fixed 1/60 s period gave one/two vblank gaps at 75 Hz and two/three at 144 Hz. The
+    // period is now a whole number of refreshes, n = max(1, floor(refresh / 60)) -- never slower than
+    // the target (#1281 review).
+    struct Case
+    {
+        double refreshHz;
+        int vblanks;
+    };
+    for (const Case c : {Case{.refreshHz = 60.0, .vblanks = 1},
+                         Case{.refreshHz = 75.0, .vblanks = 1},
+                         Case{.refreshHz = 120.0, .vblanks = 2},
+                         Case{.refreshHz = 144.0, .vblanks = 2},
+                         Case{.refreshHz = 165.0, .vblanks = 2},
+                         Case{.refreshHz = 240.0, .vblanks = 4},
+                         Case{.refreshHz = 30.0, .vblanks = 1}})
+    {
+        SCOPED_TRACE(c.refreshHz);
+        EXPECT_EQ(Core::FramePacing::vblanksPerFrame(c.refreshHz, 60.0), c.vblanks);
+        const double refreshPeriod = 1.0 / c.refreshHz;
+        const double period = Core::FramePacing::framePeriodSeconds(c.refreshHz, 60.0);
+        const double multiple = period / refreshPeriod;
+        EXPECT_NEAR(multiple, std::round(multiple), 1e-9);
+        EXPECT_NEAR(multiple, static_cast<double>(c.vblanks), 1e-9);
+    }
+    // The display rate itself (a move/resize cap) is one refresh.
+    EXPECT_EQ(Core::FramePacing::vblanksPerFrame(144.0, Core::AnimationRequest::FULL_RATE), 1);
+    EXPECT_NEAR(Core::FramePacing::framePeriodSeconds(144.0, Core::AnimationRequest::FULL_RATE), 1.0 / 144.0, 1e-12);
+}
+
+TEST(FramePacingTest, CadenceIsNeverSlowerThanTheTarget)
+{
+    // #1281 review: rounding picked 3 refreshes (20 FPS) for a 21 FPS motion request at 60 Hz, and
+    // 55 FPS for a 60 FPS target at 165 Hz, breaking the half-pixel-per-frame and request contracts.
+    for (const double refreshHz : {59.94, 60.0, 75.0, 120.0, 144.0, 165.0, 240.0})
+    {
+        for (const double target : {7.0, 20.0, 21.0, 30.0, 45.0, 60.0, 61.0})
+        {
+            SCOPED_TRACE(::testing::Message() << refreshHz << " Hz, target " << target);
+            const double period = Core::FramePacing::framePeriodSeconds(refreshHz, target);
+            if (target > refreshHz)
+            {
+                // Faster than the display: one refresh per frame is the most it can show.
+                EXPECT_NEAR(period, 1.0 / refreshHz, 1e-12);
+                continue;
+            }
+            EXPECT_LE(period, (1.0 / target) + 1e-9) << "paced slower than requested";
+        }
+    }
+    EXPECT_EQ(Core::FramePacing::vblanksPerFrame(60.0, 21.0), 2);  // 30 FPS, not 20
+    EXPECT_EQ(Core::FramePacing::vblanksPerFrame(165.0, 60.0), 2); // 82.5 FPS, not 55
+    EXPECT_EQ(Core::FramePacing::vblanksPerFrame(120.0, 60.0), 2); // exact ratios unaffected
+}
+
+TEST(FramePacingTest, VsyncPacedFramesPresentEveryNthRefresh)
+{
+    // #1281 review: simulate several consecutive frames with a vsync-blocking swap. Each frame starts
+    // no sooner than one period after the previous start (and not before its swap returned), renders
+    // for a fraction of a refresh, then presents at the next vblank. The gaps between presents must
+    // all be exactly n refreshes; a period of n - 0.5 refreshes gave alternating one/two-refresh gaps.
+    for (const double refreshHz : {120.0, 144.0, 165.0, 240.0})
+    {
+        SCOPED_TRACE(refreshHz);
+        const int vblanks = Core::FramePacing::vblanksPerFrame(refreshHz, 60.0);
+        const double refresh = 1.0 / refreshHz;
+        const double period = Core::FramePacing::framePeriodSeconds(refreshHz, 60.0);
+        const double phase = 0.37 * refresh; // vblanks at phase + k * refresh
+        const double renderTime = 0.25 * refresh;
+        const auto nextVblankIndex = [&](double t)
+        {
+            return static_cast<long long>(std::ceil((t - phase) / refresh));
+        };
+
+        double start = 0.0;
+        long long previousPresent = -1;
+        for (int frame = 0; frame < 24; ++frame)
+        {
+            const long long present = nextVblankIndex(start + renderTime);
+            const double swapReturn = phase + (static_cast<double>(present) * refresh);
+            if (frame > 2) // after the first frames settle onto the vblank phase
+            {
+                EXPECT_EQ(present - previousPresent, vblanks) << "frame " << frame;
+            }
+            previousPresent = present;
+            start = std::max(start + period, swapReturn);
+        }
+    }
+    // One refresh per frame: the swap itself takes the period, so the period is only a cap.
+    EXPECT_NEAR(Core::FramePacing::framePeriodSeconds(60.0, 60.0), 1.0 / 60.0, 1e-12);
+}
+
+TEST(FramePacingTest, UnknownRefreshRateFallsBack)
+{
+    EXPECT_DOUBLE_EQ(Core::FramePacing::effectiveRefreshHz(0.0, 60.0), 60.0); // SDL: unspecified
+    EXPECT_DOUBLE_EQ(Core::FramePacing::effectiveRefreshHz(-1.0, 60.0), 60.0);
+    EXPECT_DOUBLE_EQ(Core::FramePacing::effectiveRefreshHz(std::numeric_limits<double>::quiet_NaN(), 60.0), 60.0);
+    EXPECT_DOUBLE_EQ(Core::FramePacing::effectiveRefreshHz(std::numeric_limits<double>::infinity(), 60.0), 60.0);
+    EXPECT_DOUBLE_EQ(Core::FramePacing::effectiveRefreshHz(143.98, 60.0), 143.98);
+    // With no refresh rate at all the period is the plain target period.
+    EXPECT_NEAR(Core::FramePacing::framePeriodSeconds(0.0, 60.0), 1.0 / 60.0, 1e-12);
+}
+
+TEST(AnimationRequestTest, ConsumeReportsTheHighestRequestedRateAndClears)
 {
     static_cast<void>(Core::AnimationRequest::consume()); // start clear
-    EXPECT_FALSE(Core::AnimationRequest::consume());
+    EXPECT_DOUBLE_EQ(Core::AnimationRequest::consume(), 0.0);
+    Core::AnimationRequest::request(12.0);
+    Core::AnimationRequest::request(40.0);
+    Core::AnimationRequest::request(25.0); // several requests in one frame keep the highest
+    EXPECT_DOUBLE_EQ(Core::AnimationRequest::consume(), 40.0);
+    EXPECT_DOUBLE_EQ(Core::AnimationRequest::consume(), 0.0);
+    // Non-positive and NaN rates ask for nothing.
+    Core::AnimationRequest::request(0.0);
+    Core::AnimationRequest::request(-5.0);
+    Core::AnimationRequest::request(std::numeric_limits<double>::quiet_NaN());
+    EXPECT_DOUBLE_EQ(Core::AnimationRequest::consume(), 0.0);
+    // The unparameterised request asks for the full rate.
     Core::AnimationRequest::request();
-    Core::AnimationRequest::request(); // several requests in one frame are one request
-    EXPECT_TRUE(Core::AnimationRequest::consume());
-    EXPECT_FALSE(Core::AnimationRequest::consume());
+    EXPECT_DOUBLE_EQ(Core::AnimationRequest::consume(), Core::AnimationRequest::FULL_RATE);
+}
+
+TEST(AnimationRequestTest, MotionRateKeepsMovementUnderHalfAPixelPerFrame)
+{
+    // #1125: 30 px/s needs 60 frames a second to move at most half a pixel per frame.
+    EXPECT_DOUBLE_EQ(Core::AnimationRequest::framesPerSecondForMotion(30.0), 60.0);
+    EXPECT_DOUBLE_EQ(Core::AnimationRequest::framesPerSecondForMotion(30.0) * Core::AnimationRequest::MAX_MOTION_PIXELS_PER_FRAME, 30.0);
+    EXPECT_DOUBLE_EQ(Core::AnimationRequest::framesPerSecondForMotion(0.0), 0.0);
+    EXPECT_DOUBLE_EQ(Core::AnimationRequest::framesPerSecondForMotion(-3.0), 0.0);
+    EXPECT_DOUBLE_EQ(Core::AnimationRequest::framesPerSecondForMotion(std::numeric_limits<double>::quiet_NaN()), 0.0);
+    static_cast<void>(Core::AnimationRequest::consume());
+    Core::AnimationRequest::requestForMotion(5.0);
+    EXPECT_DOUBLE_EQ(Core::AnimationRequest::consume(), 10.0);
 }
 
 TEST(FramePacingTest, IsWithinInteractionGrace)
@@ -679,7 +1013,19 @@ TEST(FramePacingTest, ShouldNotSleepWhenIdleInsideGraceWithGeometryChanged)
     EXPECT_FALSE(Core::FramePacing::computeShouldSleepWhenIdle(true, true));
 }
 
-TEST(FramePacingTest, IdleSleepMsUsesMinimizedDurationWhenMinimized)
+TEST(FramePacingTest, IdleWaitIsMeasuredFromTheFrameStart)
+{
+    // #1276: the idle wait runs to 50 ms after the previous frame started, so an 8 ms frame waits 42
+    // ms and the idle rate really is 20 FPS (a fixed 50 ms after the frame gave about 17).
+    EXPECT_EQ(Core::FramePacing::computeIdleWaitMs(false, 50, 200, 0.008), 42);
+    EXPECT_EQ(Core::FramePacing::computeIdleWaitMs(false, 50, 200, 0.0), 50);
+    EXPECT_EQ(Core::FramePacing::computeIdleWaitMs(false, 50, 200, 0.0081), 42); // rounded up, never short
+    EXPECT_EQ(Core::FramePacing::computeIdleWaitMs(false, 50, 200, 0.075), 0);   // a slow frame: no wait
+    EXPECT_EQ(Core::FramePacing::computeIdleWaitMs(true, 50, 200, 0.008), 192);  // hidden: 5 FPS period
+    EXPECT_EQ(Core::FramePacing::computeIdleWaitMs(false, 50, 200, -1.0), 50);   // a clock step back
+}
+
+TEST(FramePacingTest, IdleSleepMsUsesMinimizedDurationWhenHidden)
 {
     EXPECT_EQ(Core::FramePacing::computeIdleSleepMs(true, 50, 200), 200);
     EXPECT_EQ(Core::FramePacing::computeIdleSleepMs(false, 50, 200), 50);
@@ -1061,7 +1407,7 @@ TEST(ApplicationTest, StopPreventsRunLoop)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1087,7 +1433,7 @@ TEST(ApplicationTest, GetTimeReturnsMonotonicValue)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1113,7 +1459,7 @@ TEST(ApplicationTest, GetTimeIsConsistent)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1143,7 +1489,7 @@ TEST(ApplicationTest, GetWindowReturnsValidWindow)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1164,7 +1510,7 @@ TEST(ApplicationTest, IsInteractionRedrawActiveIsFalseBeforeAnyInteraction)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1189,7 +1535,7 @@ TEST(ApplicationTest, SignalWindowGeometryChangedSetsFlag)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1223,7 +1569,7 @@ TEST(ApplicationTest, DestructorDetachesLayers)
         }
         catch (const std::exception& e)
         {
-            GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+            FAIL() << "Application creation failed after the display probe passed: " << e.what();
         }
     }
 
@@ -1271,7 +1617,38 @@ TEST(ApplicationTest, PushLayerPopsHalfInitializedLayerWhenOnAttachThrows)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
+    }
+}
+
+// #1124: a layer that throws while detaching must not stop the layers below it being detached.
+TEST(ApplicationTest, DetachAllLayersContinuesPastAThrowingLayer)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    g_DetachOrder.clear();
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "DetachThrowTest";
+
+    try
+    {
+        Core::Application app(spec);
+        app.pushLayer<TrackedLayer>("Bottom");
+        app.pushLayer<ThrowingOnDetachLayer>("Thrower");
+        app.pushLayer<TrackedLayer>("Top");
+
+        EXPECT_NO_THROW(app.detachAllLayers());
+
+        // Topmost first; the throw in "Thrower" doesn't skip "Bottom".
+        EXPECT_EQ(g_DetachOrder, (std::vector<std::string>{"Top", "Thrower", "Bottom"}));
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1320,7 +1697,7 @@ TEST(ApplicationTest, SetInstanceWithUniquePtr)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1353,7 +1730,7 @@ TEST(ApplicationTest, SetInstanceOverridesThreadLocalFallback)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1383,7 +1760,7 @@ TEST(ApplicationTest, GetReturnsCorrectInstanceAfterSetInstance)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1416,7 +1793,7 @@ TEST(ApplicationTest, SetInstancePreservesWindowState)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1454,7 +1831,7 @@ TEST(ApplicationTest, SetInstanceAllowsLayerOperations)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1488,7 +1865,7 @@ TEST(ApplicationTest, SetInstanceMaintainsSingletonSemantics)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1558,7 +1935,7 @@ TEST(ApplicationTest, FailedConstructionClearsSingletonAndAllowsRetry)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application re-construction after failure probe failed: " << e.what();
+        FAIL() << "Application re-construction after failure probe failed: " << e.what();
     }
 }
 
@@ -1612,7 +1989,7 @@ TEST(ApplicationTest, SetInstanceTransfersOwnershipCorrectly)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1644,7 +2021,7 @@ TEST(ApplicationTest, PathsReturnsValidPathService)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1683,7 +2060,7 @@ TEST(ApplicationTest, RaiseEventDispatchesToLayersInReverseOrder)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1715,7 +2092,7 @@ TEST(ApplicationTest, RaiseEventStopsAfterEventIsHandled)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1751,7 +2128,7 @@ TEST(ApplicationTest, RaiseEventDoesNotCrashWhenLayerThrows)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1784,6 +2161,6 @@ TEST(ApplicationTest, RaiseWindowResizedEventReachesLayers)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }

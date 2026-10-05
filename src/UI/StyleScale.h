@@ -46,7 +46,7 @@ inline constexpr float STYLE_SCALE_MIN = 0.25F;
 /// shrinking at all.
 ///
 /// @param regularPt     Body-text point size of the active font preset (Theme::fontConfig()).
-/// @param displayScale  Display scale from SDL_GetWindowDisplayScale(); 1.0 at 96 DPI.
+/// @param displayScale  UI scale in window units (UI::windowUnitScale); 1.0 at 96 DPI.
 [[nodiscard]] inline float computeStyleScale(float regularPt, float displayScale) noexcept
 {
     // Guard against a zero/garbage scale from a headless or not-yet-mapped window.
@@ -67,6 +67,16 @@ inline constexpr float LINE_WEIGHT_MIN_PX = 1.0F;
 {
     const float safeScale = (std::isfinite(styleScale) && styleScale > 0.0F) ? styleScale : 1.0F;
     return std::max(LINE_WEIGHT_MIN_PX, authoredPx * safeScale);
+}
+
+/// A stroke ImGui draws as a solid bar -- the selected-tab overline, the tab bar's underline, the
+/// text caret -- authored at the reference configuration and scaled like the rest of the style
+/// (#1169), rounded to whole pixels so it stays crisp, and never thinner than one pixel. Window,
+/// child and popup borders are hairline edges and deliberately stay unscaled instead.
+[[nodiscard]] inline float scaledStrokePx(float authoredPx, float styleScale) noexcept
+{
+    const float safeScale = (std::isfinite(styleScale) && styleScale > 0.0F) ? styleScale : 1.0F;
+    return std::max(LINE_WEIGHT_MIN_PX, std::round(authoredPx * safeScale));
 }
 
 } // namespace UI

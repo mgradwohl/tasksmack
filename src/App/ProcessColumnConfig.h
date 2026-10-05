@@ -123,8 +123,8 @@ enum class ProcessColumn : std::uint8_t
 /// Column metadata for display and configuration
 struct ProcessColumnInfo
 {
-    std::string_view name;        // Display name in header (can be short like "S")
-    std::string_view menuName;    // Display name in context menu (full name like "State")
+    std::string_view name;        // Display name in header: a plain word, never a single letter or htop jargon like "TIME+" (#1203)
+    std::string_view menuName;    // Display name in context menu (may be longer, like "Memory (Resident)")
     std::string_view configKey;   // Key used in config file
     float defaultWidth;           // Default column width in px at REFERENCE_EM_PX; see scaledDefaultWidth()
     bool defaultVisible;          // Visible by default
@@ -152,7 +152,7 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
 
         // === State ===
         // State
-        {.name="S", .menuName="State", .configKey="state", .defaultWidth=25.0F, .defaultVisible=true, .canHide=true, .description="Process state (R=Running, S=Sleeping, etc.)"},
+        {.name="State", .menuName="State", .configKey="state", .defaultWidth=55.0F, .defaultVisible=true, .canHide=true, .description="Process state (R=Running, S=Sleeping, etc.)"},
         // Status
         {.name="Status", .menuName="Status", .configKey="status", .defaultWidth=110.0F, .defaultVisible=false, .canHide=true, .description="Process status (Suspended, Efficiency Mode)"},
         // Type (Windows-only)
@@ -162,15 +162,15 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         // CPU%
         {.name="CPU %", .menuName="CPU %", .configKey="cpu_percent", .defaultWidth=55.0F, .defaultVisible=true, .canHide=true, .description="CPU usage percentage"},
         // MEM%
-        {.name="MEM %", .menuName="MEM %", .configKey="mem_percent", .defaultWidth=55.0F, .defaultVisible=true, .canHide=true, .description="Memory usage as percentage of total RAM"},
+        {.name="Mem %", .menuName="Mem %", .configKey="mem_percent", .defaultWidth=55.0F, .defaultVisible=true, .canHide=true, .description="Memory usage as percentage of total RAM"},
         // RES
-        {.name="RES", .menuName="Resident Memory", .configKey="resident", .defaultWidth=80.0F, .defaultVisible=true, .canHide=true, .description="Resident memory (physical RAM used)"},
+        {.name="Memory", .menuName="Memory (Resident)", .configKey="resident", .defaultWidth=80.0F, .defaultVisible=true, .canHide=true, .description="Resident memory (physical RAM used)"},
         // VIRT
-        {.name="VIRT", .menuName="Virtual Memory", .configKey="virtual", .defaultWidth=80.0F, .defaultVisible=false, .canHide=true, .description="Virtual memory size"},
+        {.name="Virtual", .menuName="Virtual Memory", .configKey="virtual", .defaultWidth=80.0F, .defaultVisible=false, .canHide=true, .description="Virtual memory size"},
         // SHR
-        {.name="SHR", .menuName="Shared Memory", .configKey="shared", .defaultWidth=70.0F, .defaultVisible=false, .canHide=true, .description="Shared memory size"},
+        {.name="Shared", .menuName="Shared Memory", .configKey="shared", .defaultWidth=70.0F, .defaultVisible=false, .canHide=true, .description="Shared memory size"},
         // PEAK RES
-        {.name="PEAK", .menuName="Peak Resident", .configKey="peak_resident", .defaultWidth=80.0F, .defaultVisible=false, .canHide=true, .description="Peak resident memory (historical maximum)"},
+        {.name="Peak Mem", .menuName="Peak Memory", .configKey="peak_resident", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="Peak resident memory (historical maximum)"},
 
         // === Scheduling ===
         // Priority (human-readable label derived from nice value)
@@ -179,7 +179,7 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         // Affinity
         {.name="Affinity", .menuName="CPU Affinity", .configKey="affinity", .defaultWidth=100.0F, .defaultVisible=false, .canHide=true, .description="CPU cores this process can run on"},
         // Threads
-        {.name="THR", .menuName="Threads", .configKey="threads", .defaultWidth=45.0F, .defaultVisible=false, .canHide=true, .description="Thread count"},
+        {.name="Threads", .menuName="Threads", .configKey="threads", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="Thread count"},
         // Handles (Windows) / File Descriptors (Linux)
         {.name="Handles", .menuName="Handles/FDs", .configKey="handles", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="Handle count (Windows) / File descriptor count (Linux)"},
         // GDI Objects (Windows-only)
@@ -187,7 +187,7 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
 
         // === Time ===
         // TIME+
-        {.name="TIME+", .menuName="CPU Time", .configKey="cpu_time", .defaultWidth=85.0F, .defaultVisible=true, .canHide=true, .description="Cumulative CPU time (H:MM:SS.cc)"},
+        {.name="CPU Time", .menuName="CPU Time", .configKey="cpu_time", .defaultWidth=85.0F, .defaultVisible=true, .canHide=true, .description="Cumulative CPU time (H:MM:SS, or M:SS under an hour)"},
         // Start Time
         {.name="Started", .menuName="Start Time", .configKey="start_time", .defaultWidth=140.0F, .defaultVisible=false, .canHide=true, .description="Process start time"},
 
@@ -197,13 +197,13 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         // I/O Write
         {.name="I/O Write", .menuName="I/O Write", .configKey="io_write", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="Disk write rate (bytes/sec)"},
         // Page Faults
-        {.name="PF", .menuName="Page Faults", .configKey="page_faults", .defaultWidth=75.0F, .defaultVisible=false, .canHide=true, .description="Total page faults (cumulative)"},
+        {.name="Page Faults", .menuName="Page Faults", .configKey="page_faults", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="Total page faults (cumulative)"},
 
         // === Network ===
         // Net Sent
         {.name="Net Sent", .menuName="Net Sent", .configKey="net_sent", .defaultWidth=90.0F, .defaultVisible=true, .canHide=true, .description="Network send rate (bytes/sec)"},
         // Net Received
-        {.name="Net Recv", .menuName="Net Received", .configKey="net_recv", .defaultWidth=90.0F, .defaultVisible=true, .canHide=true, .description="Network receive rate (bytes/sec)"},
+        {.name="Net Received", .menuName="Net Received", .configKey="net_recv", .defaultWidth=100.0F, .defaultVisible=true, .canHide=true, .description="Network receive rate (bytes/sec)"},
 
         // === Power ===
         // Power
@@ -217,7 +217,7 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         // GPU Engine
         {.name="GPU Engine", .menuName="GPU Engine", .configKey="gpu_engine", .defaultWidth=100.0F, .defaultVisible=false, .canHide=true, .description="Active GPU engines (3D, Compute, Video, etc.)"},
         // GPU Device
-        {.name="GPU Dev", .menuName="GPU Device", .configKey="gpu_device", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="Which GPU(s) the process is using"},
+        {.name="GPU", .menuName="GPU Device", .configKey="gpu_device", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="Which GPU(s) the process is using"},
 
         // === Command (last, fixed-width by default) ===
         // Command
@@ -226,6 +226,20 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
     // clang-format on
 
     return infos[toIndex(col)];
+}
+
+/// What a column's header tooltip adds to its description about what the platform leaves out, or
+/// empty. The network columns say when they count TCP only: UDP traffic -- QUIC/HTTP3, video calls,
+/// games, DNS -- isn't attributed per process, and a browser streaming over HTTP/3 reads about
+/// 0 B/s (#1101).
+/// @param hasUdpNetworkCounters  ProcessCapabilities::hasUdpNetworkCounters.
+[[nodiscard]] constexpr auto columnCapabilityNote(ProcessColumn col, bool hasUdpNetworkCounters) -> std::string_view
+{
+    if ((col == ProcessColumn::NetSent || col == ProcessColumn::NetReceived) && !hasUdpNetworkCounters)
+    {
+        return "TCP only: UDP traffic (QUIC/HTTP3, video calls, games, DNS) is not counted";
+    }
+    return {};
 }
 
 /// Default width of a column in pixels at the current font.

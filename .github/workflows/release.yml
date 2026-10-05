@@ -618,7 +618,7 @@ jobs:
         # what's inside the shipped archives. Named and documented as such
         # (see CONTRIBUTING.md's Release Artifacts section) so it isn't
         # mistaken for a package-level inventory.
-        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           path: .
           output-file: ${{ runner.temp }}/sbom.spdx.json

@@ -16,8 +16,8 @@ colors = [
     "#2075BA",  # Dark blue
     "#4A6600",  # Dark green
     "#1D8C82",  # Dark cyan
-    "#8B7200",  # Dark yellow
-    "#B03B0E",  # Dark orange
+    "#8F7606",  # Dark yellow
+    "#9F563A",  # Dark orange
     "#5A5AAA",  # Dark violet
     "#B02662",  # Dark magenta
     "#C0291F",  # Dark red
@@ -25,62 +25,62 @@ colors = [
 
 [progress]
 low = "#4A6600"       # 0-50%   - Dark green (healthy)
-medium = "#B58900"    # 50-80%  - Yellow (caution)
-high = "#DC322F"      # 80-100% - Red (critical)
+medium = "#A67D00"    # 50-80%  - Yellow (caution)
+high = "#C24036"      # 80-100% - Red (critical)
 
 [semantic]
-text_primary = "#4A5B60"
+text_primary = "#2E3E43"
 text_disabled = "#93A1A1"
-text_muted = "#93A1A1"
-text_error = "#DC322F"
-text_warning = "#B58900"
+text_muted = "#586566"
+text_error = "#9B4C41"
+text_warning = "#584416"
 text_success = "#4A6600"
-text_info = "#2075BA"
+text_info = "#0066A7"
 
 [status]
-running = "#4A6600"
-sleeping = "#2075BA"
-disk_sleep = "#B58900"
-zombie = "#DC322F"
-stopped = "#D33682"
-idle = "#93A1A1"
+running = "#466000"
+sleeping = "#005B96"
+disk_sleep = "#6F5300"
+zombie = "#B30017"
+stopped = "#AB0062"
+idle = "#4D5A5A"
 
 [charts]
 cpu = "#2075BA"
 memory = "#4A6600"
-io = "#C0291F"
+io = "#D45441"
 io_write = "#B03B0E"
 net_tx = "#1D8C82"
 net_rx = "#5A5AAA"
 cpu_fill = "#2075BA4D"
 memory_fill = "#4A66004D"
-io_fill = "#C0291F4D"
+io_fill = "#D454414D"
 io_write_fill = "#B03B0E4D"
 net_tx_fill = "#1D8C824D"
 net_rx_fill = "#5A5AAA4D"
-peak_line = "#657B83B3"
+peak_line = "#485D65B3"
 
 [charts.gpu]
-utilization = "#5A5AAA"
-utilization_fill = "#5A5AAA4D"
+utilization = "#004D8D"
+utilization_fill = "#004D8D4D"
 memory = "#B02662"
 memory_fill = "#B026624D"
 temperature = "#8B7200"
-power = "#4A6600"
+power = "#466000"
 encoder = "#1D8C82"
-decoder = "#B02662"
+decoder = "#B30017"
 clock = "#2075BA"
 clock_fill = "#2075BACC"
-fan = "#93A1A1"
+fan = "#798686"
 
 [cpu_breakdown]
 user = "#004D8D"
 system = "#C0291F"
-iowait = "#8B7200"
+iowait = "#A67D00"
 idle = "#C0BFB3"
 user_fill = "#004D8D59"
 system_fill = "#C0291F59"
-iowait_fill = "#8B720059"
+iowait_fill = "#A67D0059"
 idle_fill = "#C0BFB333"
 
 [priority]
@@ -164,6 +164,7 @@ preview = "#2075BAB3"
 empty_background = "#FDF6E3"
 
 [ui.plot]
+grid = "#C9C2AF"
 lines = "#2075BA"
 lines_hovered = "#DC322F"
 histogram = "#4A6600"
