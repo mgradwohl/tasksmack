@@ -147,8 +147,18 @@ template<typename T> [[nodiscard]] constexpr T clampRefreshInterval(T value) noe
     return std::clamp(value, static_cast<T>(REFRESH_INTERVAL_MIN_MS), static_cast<T>(REFRESH_INTERVAL_MAX_MS));
 }
 
+/// NaN maps to HISTORY_SECONDS_MIN, as in historyCapacityForSeconds(), so a model's window and its ring
+/// capacity agree; std::clamp would pass NaN through (#1325).
 template<typename T> [[nodiscard]] constexpr T clampHistorySeconds(T value) noexcept
 {
+    if constexpr (std::is_floating_point_v<T>)
+    {
+        // +inf → MAX; NaN and -inf → MIN.
+        if (!std::isfinite(value))
+        {
+            return (std::isinf(value) && (value > T{0})) ? static_cast<T>(HISTORY_SECONDS_MAX) : static_cast<T>(HISTORY_SECONDS_MIN);
+        }
+    }
     return std::clamp(value, static_cast<T>(HISTORY_SECONDS_MIN), static_cast<T>(HISTORY_SECONDS_MAX));
 }
 

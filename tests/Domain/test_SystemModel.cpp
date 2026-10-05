@@ -1117,6 +1117,10 @@ TEST(SystemModelTest, MaxHistorySecondsClamped)
     // Clamp above maximum (1800s)
     model.setMaxHistorySeconds(7200.0);
     EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), Domain::Sampling::HISTORY_SECONDS_MAX);
+
+    // NaN maps to the minimum instead of passing through the clamp (#1325)
+    model.setMaxHistorySeconds(std::numeric_limits<double>::quiet_NaN());
+    EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), Domain::Sampling::HISTORY_SECONDS_MIN);
 }
 
 // #1145: a window change republishes the trimmed history at once instead of leaving the old window's
