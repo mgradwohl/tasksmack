@@ -11,8 +11,10 @@
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace TestMocks
@@ -164,6 +166,41 @@ class MockGPUProbe : public Platform::IGPUProbe
         return *this;
     }
 
+    /// Undoes withEnumerationThrowing(): enumerateGPUs() succeeds again.
+    MockGPUProbe& withEnumerationSucceeding()
+    {
+        m_ThrowOnEnumerate = false;
+        return *this;
+    }
+
+    /// Removes `gpuId` entirely: no longer enumerated and no longer reporting counters.
+    MockGPUProbe& withoutGPU(const std::string& gpuId)
+    {
+        std::erase_if(m_GPUInfo, [&gpuId](const auto& info) { return info.id == gpuId; });
+        return withoutGPUCounters(gpuId);
+    }
+
+    /// Sets the per-adapter sensor set enumerateGPUs() reports for `gpuId` (#1112, #1289).
+    MockGPUProbe& withSensorCapabilities(const std::string& gpuId, std::optional<Platform::GPUCapabilities> sensors)
+    {
+        for (auto& info : m_GPUInfo)
+        {
+            if (info.id == gpuId)
+            {
+                info.sensorCapabilities = sensors;
+            }
+        }
+        return *this;
+    }
+
+    /// Makes the next rescanGPUs() report a change (once), as a probe does when its GPU set or an
+    /// adapter's GPUInfo may have changed (#1116).
+    MockGPUProbe& withRescanReportingChange()
+    {
+        m_RescanReportsChange = true;
+        return *this;
+    }
+
     /// Makes readProcessGPUCounters() throw on every call, simulating a per-process query that
     /// keeps failing (#1142).
     MockGPUProbe& withProcessCountersThrowing()
@@ -205,6 +242,19 @@ class MockGPUProbe : public Platform::IGPUProbe
         return m_ProcessCounters;
     }
 
+    [[nodiscard]] bool rescanGPUs(Platform::GPURescan depth) override
+    {
+        if (depth == Platform::GPURescan::Full)
+        {
+            ++m_FullRescanCount;
+        }
+        else
+        {
+            ++m_QuickRescanCount;
+        }
+        return std::exchange(m_RescanReportsChange, false);
+    }
+
     [[nodiscard]] Platform::GPUCapabilities capabilities() const override
     {
         if (m_ThrowOnNextCapabilitiesQuery)
@@ -234,6 +284,14 @@ class MockGPUProbe : public Platform::IGPUProbe
     [[nodiscard]] std::uint32_t readProcessCountersCallCount() const
     {
         return m_ReadProcessCountersCount.load();
+    }
+    [[nodiscard]] std::uint32_t quickRescanCount() const
+    {
+        return m_QuickRescanCount;
+    }
+    [[nodiscard]] std::uint32_t fullRescanCount() const
+    {
+        return m_FullRescanCount;
     }
 
     /// Makes the next (and all subsequent, until released) readGPUCounters() call block
@@ -279,6 +337,9 @@ class MockGPUProbe : public Platform::IGPUProbe
     Platform::GPUCapabilities m_Capabilities;
     mutable bool m_ThrowOnNextCapabilitiesQuery = false;
     bool m_ThrowOnEnumerate = false;
+    bool m_RescanReportsChange = false;
+    std::uint32_t m_QuickRescanCount = 0;
+    std::uint32_t m_FullRescanCount = 0;
     bool m_ThrowOnReadProcessCounters = false;
 
     std::atomic<std::uint32_t> m_EnumerateCount{0};
