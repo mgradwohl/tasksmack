@@ -33,8 +33,6 @@ Build (CMake Presets, `cmake --list-presets` for the full set):
 cmake --workflow --preset dev        # Linux: configure+build+test
 cmake --workflow --preset win-dev    # Windows equivalent
 ```
-Common presets have a `win-` twin: `debug`, `release`, `release-compatible`, `optimized`, `relwithdebinfo`,
-`coverage`, `unity`, `pgo-generate`/`pgo-use`, `profile`. Linux-only: `asan-ubsan`, `tsan`, `msan`.
 
 Format/lint (required before a PR is ready):
 ```bash
@@ -42,13 +40,10 @@ Format/lint (required before a PR is ready):
 ./tools/clang-tidy.sh debug
 ./tools/check-format.sh        # check without modifying
 ```
-A `PostToolUse` hook (`.claude/settings.json`) already runs `clang-format -i` on any `.cpp`/`.h`/`.hpp`/`.cc`/`.cxx`
-file I edit or write, so hand-running the formatter is a backstop, not a requirement, for files I touched.
 
 Test: `ctest --preset debug` / `ctest --preset win-debug` (Google Test; mocks in `tests/Mocks/MockProbes.h`;
 use `EXPECT_DOUBLE_EQ`, not `EXPECT_EQ`, on floats).
 
-Naming: `PascalCase` classes, `camelCase` functions, `m_PascalCase` members, `UPPER_SNAKE_CASE` constants.
 Sampling literals live in `src/Domain/SamplingConfig.h` — reuse them, don't re-declare.
 
 Python tooling (GLAD codegen, IWYU, pre-commit) expects the project venv: `source .venv/bin/activate` before
