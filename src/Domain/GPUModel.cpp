@@ -22,6 +22,7 @@
 // NOLINTNEXTLINE(misc-include-cleaner) - std::ranges::find_if and std::ranges::find are in <ranges>
 #include <ranges>
 #include <shared_mutex>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -62,6 +63,48 @@ template<typename T> [[nodiscard]] float readingOrNaN(const GPUSnapshot& sample,
 }
 
 } // namespace
+
+std::vector<GPUSnapshot> orderSnapshotsByEnumeration(std::span<const Platform::GPUInfo> gpuInfo, const GPUSnapshotMap& snapshots)
+{
+    const auto enumerated = [gpuInfo](std::string_view gpuId)
+    {
+        return std::ranges::any_of(gpuInfo, [gpuId](const Platform::GPUInfo& info) { return info.id == gpuId; });
+    };
+
+    std::vector<GPUSnapshot> ordered;
+    ordered.reserve(snapshots.size());
+    for (std::size_t index = 0; index < gpuInfo.size(); ++index)
+    {
+        const std::string& gpuId = gpuInfo[index].id;
+        // An id enumerated twice is emitted once, at its first position.
+        const auto earlier = gpuInfo.first(index);
+        if (std::ranges::any_of(earlier, [&gpuId](const Platform::GPUInfo& info) { return info.id == gpuId; }))
+        {
+            continue;
+        }
+        if (const auto it = snapshots.find(gpuId); it != snapshots.end())
+        {
+            ordered.push_back(it->second);
+        }
+    }
+
+    // GPUs the read returned but enumeration did not list (a hot-plugged device, or a failed
+    // enumeration): after the enumerated ones, by id, so their order is stable too.
+    std::vector<const GPUSnapshotMap::value_type*> unlisted;
+    for (const auto& entry : snapshots)
+    {
+        if (!enumerated(entry.first))
+        {
+            unlisted.push_back(&entry);
+        }
+    }
+    std::ranges::sort(unlisted, {}, [](const GPUSnapshotMap::value_type* entry) { return std::string_view{entry->first}; });
+    for (const auto* entry : unlisted)
+    {
+        ordered.push_back(entry->second);
+    }
+    return ordered;
+}
 
 GPUModel::GPUModel(std::unique_ptr<Platform::IGPUProbe> probe)
     : m_Probe(std::move(probe)), m_PrevSampleTime(std::chrono::steady_clock::now()), m_LastFullRescan(m_PrevSampleTime)
@@ -366,11 +409,7 @@ void GPUModel::publish()
     publication->gpuInfo = m_GPUInfo;
     publication->gpuInfoKnown = m_GPUInfoKnown;
     publication->capabilities = m_Capabilities;
-    publication->snapshots.reserve(m_Snapshots.size());
-    for (const auto& [gpuId, snapshot] : m_Snapshots)
-    {
-        publication->snapshots.push_back(snapshot);
-    }
+    publication->snapshots = orderSnapshotsByEnumeration(m_GPUInfo, m_Snapshots);
     for (const auto& [gpuId, history] : m_Histories)
     {
         auto& publishedHistory = publication->histories[gpuId];
@@ -412,13 +451,7 @@ void GPUModel::publish()
 std::vector<GPUSnapshot> GPUModel::snapshots() const
 {
     const std::shared_lock lock(m_Mutex);
-    std::vector<GPUSnapshot> result;
-    result.reserve(m_Snapshots.size());
-    for (const auto& [_, snapshot] : m_Snapshots)
-    {
-        result.push_back(snapshot);
-    }
-    return result;
+    return orderSnapshotsByEnumeration(m_GPUInfo, m_Snapshots);
 }
 
 std::vector<GPUSnapshot> GPUModel::history(std::string_view gpuId) const

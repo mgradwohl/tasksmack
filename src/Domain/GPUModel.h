@@ -16,6 +16,7 @@
 #include <mutex>
 #include <optional>
 #include <shared_mutex>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -77,6 +78,16 @@ struct TransparentStringEqual
         return lhs == rhs;
     }
 };
+
+/// Current snapshots keyed by GPU id. Unordered: anything shown to the user goes through
+/// orderSnapshotsByEnumeration() first (#1163).
+using GPUSnapshotMap = std::unordered_map<std::string, GPUSnapshot, TransparentStringHash, TransparentStringEqual>;
+
+/// The snapshots in a stable order: the enumeration order of gpuInfo first, then any GPU the read
+/// returned that enumeration did not list, sorted by id. Iterating the map directly gave a hash order,
+/// so a GPU dropping out of one read could reorder the rest and shift their UI state (#1163).
+[[nodiscard]] std::vector<GPUSnapshot> orderSnapshotsByEnumeration(std::span<const Platform::GPUInfo> gpuInfo,
+                                                                   const GPUSnapshotMap& snapshots);
 
 class GPUModel : public ISamplable
 {
@@ -167,7 +178,7 @@ class GPUModel : public ISamplable
     bool m_CapabilitiesKnown = false;
 
     // Current snapshots per GPU
-    using SnapshotMap = std::unordered_map<std::string, GPUSnapshot, TransparentStringHash, TransparentStringEqual>;
+    using SnapshotMap = GPUSnapshotMap;
     using HistoryMap = std::unordered_map<std::string, HistoryBuffer<GPUSnapshot>, TransparentStringHash, TransparentStringEqual>;
     using CounterMap = std::unordered_map<std::string, Platform::GPUCounters, TransparentStringHash, TransparentStringEqual>;
 

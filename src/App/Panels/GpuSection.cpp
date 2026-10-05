@@ -20,6 +20,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace App::GpuSection
@@ -53,6 +54,26 @@ constexpr const char* DECODER_LABEL = "Decoder";
 constexpr const char* TEMP_LABEL = "Temperature";
 constexpr const char* POWER_LABEL = "Power";
 constexpr const char* FAN_LABEL = "Fan";
+
+/// Pushes one GPU's ImGui ID for the scope, popping it on every path out, early continues
+/// included. Keyed by the GPU's id rather than its position, so a GPU missing from a read does not
+/// hand its header and chart state to the GPU after it (#1163).
+class ScopedGpuId
+{
+  public:
+    explicit ScopedGpuId(std::string_view gpuId)
+    {
+        ImGui::PushID(gpuId.data(), gpuId.data() + gpuId.size());
+    }
+    ~ScopedGpuId()
+    {
+        ImGui::PopID();
+    }
+    ScopedGpuId(const ScopedGpuId&) = delete;
+    ScopedGpuId& operator=(const ScopedGpuId&) = delete;
+    ScopedGpuId(ScopedGpuId&&) = delete;
+    ScopedGpuId& operator=(ScopedGpuId&&) = delete;
+};
 
 /// Scale each sample to a 0–100 percentage relative to maxVal, filling the output vector in-place.
 /// Accepts a reusable buffer to avoid per-call heap allocation.
@@ -154,24 +175,28 @@ void renderGpuSection(RenderContext& ctx)
         return;
     case EmptyReason::NoReadings:
     {
+        // Every known GPU missed this read. Say so, but keep drawing the list below: each GPU keeps
+        // its slot and collapse state with "No reading" rather than the whole tab collapsing into an
+        // empty state for one missed sample (#1163).
         const std::size_t deviceCount = ctx.publication->gpuInfo.size();
         const std::string detail =
             std::format("{} GPU{} detected, but the latest reading returned no data.", deviceCount, deviceCount == 1 ? " was" : "s were");
-        UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  GPU data unavailable", detail.c_str());
-        return;
+        ImGui::TextDisabled("%s", detail.c_str());
+        break;
     }
     case EmptyReason::None:
         break;
     }
 
     const auto& gpuSnapshots = ctx.publication->snapshots;
-    const auto& gpuInfos = ctx.publication->gpuInfo;
+    // Enumeration order, each GPU looked up by id, so a GPU missing from this read keeps its slot (#1163).
+    const std::vector<GpuDrawEntry> drawList = gpuDrawList(*ctx.publication);
     const auto& probeCaps = ctx.publication->capabilities;
     auto& theme = UI::Theme::get();
 
     const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
 
-    ImGui::Text("GPU Monitoring (%zu GPU%s)", gpuSnapshots.size(), gpuSnapshots.size() == 1 ? "" : "s");
+    ImGui::Text("GPU Monitoring (%zu GPU%s)", drawList.size(), drawList.size() == 1 ? "" : "s");
     ImGui::Spacing();
 
     // Update smoothed values for all GPUs
@@ -197,24 +222,37 @@ void renderGpuSection(RenderContext& ctx)
     std::vector<float> powerPercentBuf;
 
     // Render each GPU
-    for (size_t gpuIdx = 0; gpuIdx < gpuSnapshots.size(); ++gpuIdx)
+    for (const GpuDrawEntry& entry : drawList)
     {
-        const auto& snap = gpuSnapshots[gpuIdx];
+        // The GPU's whole body, header through charts, is under its own ID (#1163).
+        const ScopedGpuId gpuIdScope(entry.gpuId);
+
+        if (entry.snapshot == nullptr)
+        {
+            // Enumerated, but this read returned nothing for it: keep its slot rather than drop it.
+            // Same ###gpuHeader id as a GPU with a reading, so its collapse state survives the gap.
+            const std::string headerLabel = gpuHeaderLabel(ICON_FA_MICROCHIP, entry.info->name, entry.info->isIntegrated, 0, false);
+            if (ImGui::CollapsingHeader(headerLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen))
+            {
+                ImGui::Indent();
+                ImGui::TextColored(theme.scheme().textMuted, "No reading");
+                ImGui::Unindent();
+                ImGui::Spacing();
+            }
+            continue;
+        }
+
+        const auto& snap = *entry.snapshot;
         const auto& smoothed = (*ctx.smoothedGPUs)[snap.gpuId];
 
-        // Find GPU info for this GPU
         std::string gpuName = snap.name;
         bool isIntegrated = snap.isIntegrated;
         std::optional<Platform::GPUCapabilities> adapterSensors;
-        for (const auto& info : gpuInfos)
+        if (entry.info != nullptr)
         {
-            if (info.id == snap.gpuId)
-            {
-                gpuName = info.name;
-                isIntegrated = info.isIntegrated;
-                adapterSensors = info.sensorCapabilities;
-                break;
-            }
+            gpuName = entry.info->name;
+            isIntegrated = entry.info->isIntegrated;
+            adapterSensors = entry.info->sensorCapabilities;
         }
         // What this GPU reports, not what the probe can report for some GPU (#1040).
         const Platform::GPUCapabilities caps = capabilitiesForGpu(probeCaps, adapterSensors);
@@ -225,12 +263,9 @@ void renderGpuSection(RenderContext& ctx)
         // A GPU the probe is leaving asleep is labelled so (#1117).
         const std::string headerLabel = gpuHeaderLabel(ICON_FA_MICROCHIP, gpuName, isIntegrated, snap.memoryTotalBytes, snap.suspended);
 
-        // Scoped by the adapter's stable id, not its position: snapshots omit a GPU that couldn't be
-        // read, so another adapter can take its index and would inherit its collapsed state. The
-        // label's ###gpuHeader suffix keeps the id fixed as the label changes ("(Sleeping)", VRAM).
-        ImGui::PushID(snap.gpuId.c_str());
+        // Scoped by the adapter's stable id (gpuIdScope above), not its position. The label's
+        // ###gpuHeader suffix keeps the id fixed as the label changes ("(Sleeping)", VRAM).
         const bool expanded = ImGui::CollapsingHeader(headerLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
-        ImGui::PopID();
 
         if (!expanded)
         {
@@ -578,7 +613,7 @@ void renderGpuSection(RenderContext& ctx)
         // Use max bar count across both charts for x-axis alignment
         const size_t gpuNowBarColumns = std::max(gpuCoreBars.size(), gpuThermalBars.size());
 
-        const std::string coreLayoutId = std::format("GPUCoreLayout{}", gpuIdx);
+        const std::string coreLayoutId = std::format("GPUCoreLayout{}", entry.gpuId);
         renderHistoryWithNowBars(coreLayoutId.c_str(), plotHeight, gpuCorePlot, gpuCoreBars, false, gpuNowBarColumns);
         countPlot();
 
@@ -749,7 +784,7 @@ void renderGpuSection(RenderContext& ctx)
             // Thermal bars were already built above for alignment calculation, one for each capability
             // that brought this chart here, so there is always at least one. Rendered with the same
             // column count as the core chart for x-axis alignment.
-            const std::string thermalLayoutId = std::format("GPUThermalLayout{}", gpuIdx);
+            const std::string thermalLayoutId = std::format("GPUThermalLayout{}", entry.gpuId);
             renderHistoryWithNowBars(thermalLayoutId.c_str(), plotHeight, gpuThermalPlot, gpuThermalBars, false, gpuNowBarColumns);
             countPlot();
 

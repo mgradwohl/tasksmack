@@ -8,6 +8,7 @@
 
 #include <cstdlib>
 #include <exception>
+#include <optional>
 #include <string_view>
 #include <utility>
 
@@ -390,7 +391,7 @@ TEST_F(WindowTest, ApplySavedGeometryKeepsAnOffScreenPositionOnADisplay)
     try
     {
         Window window(WindowSpecification{.Title = "SavedGeometryTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
-        window.applySavedGeometry(std::pair{-50'000, -50'000}, false);
+        window.applySavedGeometry(std::pair{-50'000, -50'000}, false, std::nullopt);
 
         int displayCount = 0;
         SDL_DisplayID* displays = SDL_GetDisplays(&displayCount);

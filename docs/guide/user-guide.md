@@ -71,19 +71,21 @@ See [CONTRIBUTING.md](../../CONTRIBUTING.md#cpu-compatibility) for build instruc
 
 ### Process Table
 
-The process table is the primary view. It lists all running processes with htop-inspired columns:
+The process table is the primary view. It lists all running processes with these columns:
 
-- **CPU%** — percentage of total CPU time consumed since the last sample
-- **MEM%** — percentage of physical RAM used
-- **RES / VIRT / SHR** — resident, virtual, and shared memory sizes
-- **TIME+** — cumulative CPU time
+- **State** — what the process is doing (Running, Sleeping, and so on)
+- **CPU %** — percentage of total CPU time consumed since the last sample
+- **Mem %** — percentage of physical RAM used
+- **Memory / Virtual / Shared / Peak Mem** — resident, virtual, shared, and peak resident memory sizes
+- **CPU Time** — cumulative CPU time
 - **PPID** — parent process ID
-- **NI** — nice/priority value
+- **Priority** — scheduling priority (from the nice value)
 - **Threads** — thread count per process
+- **Page Faults** — cumulative page faults
 - **Command** — full command line
 - **I/O rates** — read and write bytes per second
 - **Network rates** — sent and received bytes per second when attribution is available
-- **GPU** — utilization and memory when the active backend supports per-process data
+- **GPU %, GPU Mem, GPU Engine, GPU** — utilization, memory, engines, and which GPU, when the active backend supports per-process data
 - **Affinity** — allowed CPU cores
 
 Column visibility is toggled via the column header context menu and persisted across sessions.
@@ -124,7 +126,7 @@ The System Overview and process views provide three levels of visibility:
 | Per-interface | Individual interface throughput with status and link speed |
 | Per-process | Bytes sent and received attributed to each process |
 
-An interface selector lets you focus on a specific adapter. On Linux the Total leaves out virtual interfaces (bridges such as `docker0`, `veth` pairs, VPN tunnels such as `wg0` or `tun0`, VLANs), because their traffic also crosses a hardware interface and counting both doubled it. They remain in the selector, marked "virtual, not in Total". If there is no hardware interface at all, as inside a container, every interface counts. Windows doesn't classify interfaces this way yet.
+An interface selector lets you focus on a specific adapter. The Total leaves out virtual interfaces (on Linux, bridges such as `docker0`, `veth` pairs, VPN tunnels such as `wg0` or `tun0`, VLANs; on Windows, adapters Windows doesn't report as hardware, such as VPN adapters, WSL `vEthernet`, and WAN Miniports), because their traffic also crosses a hardware interface and counting both doubled it. They remain in the selector, marked "virtual, not in Total". If there is no hardware interface at all, as inside a container, every interface counts.
 
 Per-process network rates are the bytes the process's TCP connections transferred between two readings, divided by the time between them. On Linux the readings are cached (`socket_stats_cache_ttl_ms`, 500 ms by default), and a refresh that reuses one shows the last rate (see the FAQ). UDP traffic, including QUIC/HTTP3, video calls, games, and DNS, is not attributed to processes on either platform. A browser streaming over HTTP/3 can show close to 0 B/s while the interface is busy.
 

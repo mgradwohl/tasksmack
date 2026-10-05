@@ -25,6 +25,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 using TestMocks::makeGPUCounters;
 using TestMocks::makeGPUInfo;
@@ -2074,6 +2075,110 @@ TEST(GPUModelTest, FailedReEnumerationKeepsThePreviousGpuInfo)
     ASSERT_EQ(publication->gpuInfo.size(), 1U);
     EXPECT_EQ(publication->gpuInfo[0].id, "GPU0");
     EXPECT_EQ(publication->snapshots.size(), 1U); // and keeps sampling
+}
+
+// =============================================================================
+// Ordering (#1163)
+// =============================================================================
+
+std::vector<std::string> idsOf(const std::vector<Domain::GPUSnapshot>& snapshots)
+{
+    std::vector<std::string> ids;
+    ids.reserve(snapshots.size());
+    for (const auto& snapshot : snapshots)
+    {
+        ids.push_back(snapshot.gpuId);
+    }
+    return ids;
+}
+
+// Enough GPUs, in an order that is neither sorted nor insertion-hashed, that a hash-ordered map
+// would not happen to preserve it.
+std::vector<std::string> scrambledGpuIds()
+{
+    return {
+        "GPU-7",
+        "GPU-2",
+        "GPU-11",
+        "GPU-0",
+        "GPU-9",
+        "GPU-4",
+        "GPU-13",
+        "GPU-1",
+        "GPU-8",
+        "GPU-5",
+        "GPU-12",
+        "GPU-3",
+    };
+}
+
+TEST(GPUModelTest, PublishedSnapshotsFollowEnumerationOrder)
+{
+    // The snapshots used to come out in the hash map's order, so the GPU tab's order (and the UI state
+    // keyed by position) could change whenever the set of GPUs read did (#1163).
+    const std::vector<std::string> enumerationOrder = scrambledGpuIds();
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    for (const auto& id : enumerationOrder)
+    {
+        rawProbe->withGPU(id, "GPU " + id);
+    }
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    EXPECT_EQ(idsOf(model.publication()->snapshots), enumerationOrder);
+    EXPECT_EQ(idsOf(model.snapshots()), enumerationOrder);
+
+    // A GPU missing from a read leaves the others in their order.
+    rawProbe->withoutGPUCounters("GPU-9").withoutGPUCounters("GPU-7");
+    model.refresh();
+
+    std::vector<std::string> expected = enumerationOrder;
+    std::erase(expected, "GPU-9");
+    std::erase(expected, "GPU-7");
+    EXPECT_EQ(idsOf(model.publication()->snapshots), expected);
+    EXPECT_EQ(idsOf(model.snapshots()), expected);
+}
+
+TEST(GPUModelTest, UnenumeratedGpusFollowTheEnumeratedOnesSortedById)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU-B", "Second").withGPU("GPU-A", "First");
+    for (const char* lateId : {"late-9", "late-3", "late-7", "late-1", "late-5", "late-2", "late-8", "late-4"})
+    {
+        probe->withGPUCounters(lateId, makeGPUCounters(lateId));
+    }
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    const std::vector<std::string> expected = {
+        "GPU-B",
+        "GPU-A",
+        "late-1",
+        "late-2",
+        "late-3",
+        "late-4",
+        "late-5",
+        "late-7",
+        "late-8",
+        "late-9",
+    };
+    EXPECT_EQ(idsOf(model.publication()->snapshots), expected);
+    EXPECT_EQ(idsOf(model.snapshots()), expected);
+}
+
+TEST(GPUModelTest, OrderSnapshotsByEnumerationEmitsADuplicatedIdOnce)
+{
+    Domain::GPUSnapshotMap snapshots;
+    snapshots["GPU1"].gpuId = "GPU1";
+    snapshots["GPU0"].gpuId = "GPU0";
+    const std::vector<Platform::GPUInfo> gpuInfo = {makeGPUInfo("GPU1", "a"), makeGPUInfo("GPU0", "b"), makeGPUInfo("GPU1", "c")};
+
+    EXPECT_EQ(idsOf(Domain::orderSnapshotsByEnumeration(gpuInfo, snapshots)), (std::vector<std::string>{"GPU1", "GPU0"}));
+    // Enumeration failed: no GPU is listed, so all of them are ordered by id.
+    EXPECT_EQ(idsOf(Domain::orderSnapshotsByEnumeration({}, snapshots)), (std::vector<std::string>{"GPU0", "GPU1"}));
 }
 
 } // namespace
