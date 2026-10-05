@@ -1435,39 +1435,86 @@ inline void fillTimeAxis(std::vector<double>& out, std::span<const double> times
 /// vector each time that was a heap allocation per chart per frame. acquire() hands out the pool's
 /// buffers in turn and starts over when the frame number changes, so once each buffer has grown to
 /// its chart's length, building the axes allocates nothing. A buffer, and any span of it, stays valid
-/// until the same buffer is handed out again in a later frame.
+/// until the same buffer is handed out again in a later frame -- never keep one across frames.
+///
+/// A burst of charts (a busy frame, a tab with many) does not pin its buffers for good (#1173):
+/// buffers no frame has asked for in RELEASE_AFTER_FRAMES frames are freed when a new frame starts.
+/// Buffers are handed out in order, so the unused ones are always the last ones.
 class TimeAxisPool
 {
   public:
+    /// Frames a buffer may go unasked-for before it is freed: about ten seconds at 60 fps, long enough
+    /// that switching tabs back and forth does not churn the allocator.
+    static constexpr int RELEASE_AFTER_FRAMES = 600;
+
     [[nodiscard]] std::vector<double>& acquire(int frame)
     {
         if (frame != m_Frame)
         {
             m_Frame = frame;
             m_Next = 0;
+            releaseUnused(frame);
         }
-        if (m_Next == m_Buffers.size())
+        if (m_Next == m_Slots.size())
         {
             // Growing the outer vector moves the inner ones, which keeps their heap buffers: spans
             // already handed out this frame stay valid.
-            m_Buffers.emplace_back();
+            m_Slots.emplace_back();
         }
-        return m_Buffers[m_Next++];
+        Slot& slot = m_Slots[m_Next++];
+        slot.lastFrame = frame;
+        return slot.buffer;
     }
 
     [[nodiscard]] std::size_t bufferCount() const noexcept
     {
-        return m_Buffers.size();
+        return m_Slots.size();
+    }
+
+    /// Doubles the pool's buffers can hold without allocating, summed over all of them.
+    [[nodiscard]] std::size_t retainedCapacity() const noexcept
+    {
+        std::size_t total = 0;
+        for (const Slot& slot : m_Slots)
+        {
+            total += slot.buffer.capacity();
+        }
+        return total;
     }
 
   private:
-    std::vector<std::vector<double>> m_Buffers;
+    struct Slot
+    {
+        std::vector<double> buffer;
+        int lastFrame = 0; ///< Frame the buffer was last handed out in
+    };
+
+    /// Frees the trailing buffers not asked for within RELEASE_AFTER_FRAMES of @p frame. Called at the
+    /// start of a frame, before anything is handed out in it, so no span of this frame is affected.
+    /// A frame count that went backwards (a new ImGui context) counts as unused, too.
+    void releaseUnused(int frame)
+    {
+        while (!m_Slots.empty())
+        {
+            const int lastFrame = m_Slots.back().lastFrame;
+            if (frame >= lastFrame && (frame - lastFrame) <= RELEASE_AFTER_FRAMES)
+            {
+                break;
+            }
+            m_Slots.pop_back();
+        }
+    }
+
+    std::vector<Slot> m_Slots;
     std::size_t m_Next = 0;
     int m_Frame = -1;
 };
 
 /// The time axis for a history chart (see fillTimeAxis()), in a buffer from this frame's
 /// TimeAxisPool rather than a new vector. Valid for the rest of the ImGui frame. UI thread only.
+///
+/// Charts that share timestamps should share one axis: build it once with every timestamp and give
+/// each chart tailAlignedSpan(axis, itsCount), rather than one call per chart (#1173).
 [[nodiscard]] inline std::span<const double> frameTimeAxis(std::span<const double> timestamps, size_t desiredCount, double nowSeconds)
 {
     static TimeAxisPool pool;

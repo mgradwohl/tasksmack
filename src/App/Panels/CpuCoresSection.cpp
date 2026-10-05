@@ -112,6 +112,11 @@ void renderCpuCoresSection(RenderContext& ctx)
     }
     static const std::vector<float> noSamples;
 
+    // Every core's samples share these timestamps, so one time axis serves them all: each core takes
+    // the tail of it its samples cover, rather than rebuilding an identical axis per core per frame --
+    // O(cores x history) work, and one pooled buffer per core held at its peak size (#1173).
+    const auto sharedTimeData = frameTimeAxis(timestamps, timestamps.size(), nowSeconds);
+
     // Each core's heading ("<icon> Core N") and series name ("Core N"), built once per core count
     // rather than with two std::format calls per core every frame (#1018). UI thread only.
     static std::vector<std::string> coreLabels;
@@ -258,7 +263,7 @@ void renderCpuCoresSection(RenderContext& ctx)
                             }
                             const float measuredOverhead = *cachedOverhead;
 
-                            const auto timeData = frameTimeAxis(timestamps, samples.size(), nowSeconds);
+                            const auto timeData = tailAlignedSpan(sharedTimeData, samples.size()).values;
                             const float plotHeight = std::max(minCorePlotHeight(), cellHeight - measuredOverhead);
 
                             // timeData holds the newest min(samples, timestamps) entries; take the same

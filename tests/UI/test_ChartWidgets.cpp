@@ -318,6 +318,59 @@ TEST(TimeAxisPoolTest, EarlierBuffersSurviveThePoolGrowingInTheSameFrame)
     EXPECT_DOUBLE_EQ(held[1], 0.0);
 }
 
+TEST(TimeAxisPoolTest, ReleasesTheBuffersOfABurstOnceTheyGoUnused)
+{
+    // #1173: one frame of 64 long axes (CPU Cores on a 64-core machine) used to pin 64 buffers at
+    // their peak size forever, long after the tab was left.
+    TimeAxisPool pool;
+    const std::vector<double> timestamps(18000, 1.0); // 30 min at 100 ms
+    for (int i = 0; i < 64; ++i)
+    {
+        fillTimeAxis(pool.acquire(1), timestamps, timestamps.size(), 2.0);
+    }
+    ASSERT_EQ(pool.bufferCount(), 64U);
+
+    // From then on, two short charts a frame.
+    int frame = 2;
+    for (; frame <= 1 + TimeAxisPool::RELEASE_AFTER_FRAMES; ++frame)
+    {
+        fillTimeAxis(pool.acquire(frame), timestamps, 10, 2.0);
+        fillTimeAxis(pool.acquire(frame), timestamps, 10, 2.0);
+    }
+    // Still within the grace period of the burst's last use: nothing is freed yet, so switching
+    // back to the tab does not reallocate.
+    EXPECT_EQ(pool.bufferCount(), 64U);
+
+    static_cast<void>(pool.acquire(frame));
+    EXPECT_EQ(pool.bufferCount(), 2U);
+    // The two buffers still in use keep their capacity; the 62 others' is gone.
+    EXPECT_LE(pool.retainedCapacity(), 2U * timestamps.size());
+}
+
+TEST(TimeAxisPoolTest, KeepsBuffersThatAreStillAskedFor)
+{
+    TimeAxisPool pool;
+    for (int frame = 1; frame <= 3 * TimeAxisPool::RELEASE_AFTER_FRAMES; ++frame)
+    {
+        static_cast<void>(pool.acquire(frame));
+        static_cast<void>(pool.acquire(frame));
+        static_cast<void>(pool.acquire(frame));
+    }
+    EXPECT_EQ(pool.bufferCount(), 3U);
+}
+
+TEST(TimeAxisPoolTest, AFrameCountThatGoesBackwardsReleasesTheOldBuffers)
+{
+    // A new ImGui context restarts the frame count; the old context's buffers are not kept forever.
+    TimeAxisPool pool;
+    for (int i = 0; i < 8; ++i)
+    {
+        static_cast<void>(pool.acquire(5000));
+    }
+    static_cast<void>(pool.acquire(1));
+    EXPECT_EQ(pool.bufferCount(), 1U);
+}
+
 TEST(ChartWidgetsReduceTest, BucketWidthIsAPowerOfTwoThatHoldsAsTheSpanDrifts)
 {
     // 300 s into 239 buckets: 1.255 s rounds up to 2 s, and stays 2 s as the span drifts.
