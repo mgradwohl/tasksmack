@@ -12,16 +12,31 @@
 
 #if defined(__linux__) && __has_include(<unistd.h>)
 
+#include "Domain/GPUModel.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/Linux/DRMGPUProbe.h"
 
 #include <atomic>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
+#include <optional>
+#include <span>
 #include <string>
+#include <system_error>
 #include <tuple>
+#include <vector>
 
 #include <unistd.h>
+
+#if __has_include(<drm/xe_drm.h>) && __has_include(<drm/i915_drm.h>)
+#include <drm/i915_drm.h>
+#include <drm/xe_drm.h>
+#endif
 
 namespace Platform
 {
@@ -724,7 +739,9 @@ TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_MultipleGPUs_EachGetsOwnCounters)
     writeFile(dev1 / "class", "0x030200");
     makeHwmon(dev1);
     writeHwmonFile(dev1, "hwmon0", "temp1_input", "72000");
-    writeFile(m_SysRoot / "card1" / "gt_cur_freq_mhz", "950");
+    // xe has no gt_cur_freq_mhz; its clock is under device/tile0/gt0/freq0 (#1268)
+    std::filesystem::create_directories(dev1 / "tile0" / "gt0" / "freq0");
+    writeFile(dev1 / "tile0" / "gt0" / "freq0" / "cur_freq", "950");
     writeFile(dev1 / "mem_info_vram_used", "1073741824");
     writeFile(dev1 / "mem_info_vram_total", "4294967296");
 
@@ -970,6 +987,479 @@ TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_SuspendedCardKeepsItsVramCapacity)
 }
 
 // =============================================================================
+// Restricted sysfs (#1165)
+// =============================================================================
+
+// A sandbox (Snap, Flatpak, AppArmor) can deny parts of /sys. The throwing std::filesystem
+// overloads turned that into a filesystem_error escaping the constructor, aborting startup.
+TEST_F(DRMGPUProbeUnitTest, UnreadableDeviceDirectory_ConstructorDoesNotThrow)
+{
+    if (getuid() == 0)
+    {
+        GTEST_SKIP() << "Cannot test EACCES as root";
+    }
+
+    const auto deviceDir = makeCard("card0", "i915");
+    makeHwmon(deviceDir);
+    std::filesystem::permissions(deviceDir, std::filesystem::perms::none);
+
+    EXPECT_NO_THROW({
+        const DRMGPUProbe probe(m_SysRoot.string());
+        // The driver symlink can't be read, so the card isn't recognised as Intel.
+        EXPECT_FALSE(probe.isAvailable());
+    });
+
+    std::filesystem::permissions(deviceDir, std::filesystem::perms::all);
+}
+
+TEST_F(DRMGPUProbeUnitTest, UnreadableHwmonDirectory_CardFoundWithoutHwmon)
+{
+    if (getuid() == 0)
+    {
+        GTEST_SKIP() << "Cannot test EACCES as root";
+    }
+
+    const auto deviceDir = makeCard("card0", "i915");
+    writeFile(deviceDir / "vendor", "0x8086");
+    makeHwmon(deviceDir);
+    writeHwmonFile(deviceDir, "hwmon0", "temp1_input", "50000");
+    std::filesystem::permissions(deviceDir / "hwmon", std::filesystem::perms::none);
+
+    EXPECT_NO_THROW({
+        DRMGPUProbe probe(m_SysRoot.string());
+        ASSERT_TRUE(probe.isAvailable());
+        const auto counters = probe.readGPUCounters();
+        ASSERT_EQ(counters.size(), 1U);
+        EXPECT_FALSE(counters[0].temperatureAvailable);
+    });
+
+    std::filesystem::permissions(deviceDir / "hwmon", std::filesystem::perms::all);
+}
+
+// =============================================================================
+// xe clock (#1268)
+// =============================================================================
+
+// xe has no gt_cur_freq_mhz; its frequency sysfs is <device>/tile#/gt#/freq0/ (xe_gt_freq.c).
+TEST_F(DRMGPUProbeUnitTest, XeCard_ClockReadFromTileGtFreq)
+{
+    const auto pciDir = makeCardAt("card1", "0000:03:00.0", "xe");
+    std::filesystem::create_directories(pciDir / "tile0" / "gt0" / "freq0");
+    writeFile(pciDir / "tile0" / "gt0" / "freq0" / "cur_freq", "1850");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    EXPECT_TRUE(gpus[0].sensorCapabilities.value_or(GPUCapabilities{}).hasClockSpeeds);
+
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_TRUE(counters[0].gpuClockAvailable);
+    EXPECT_EQ(counters[0].gpuClockMHz, 1850U);
+}
+
+TEST_F(DRMGPUProbeUnitTest, XeCard_NoFreqDirectory_ClockUnavailable)
+{
+    std::ignore = makeCardAt("card1", "0000:03:00.0", "xe");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    EXPECT_FALSE(gpus[0].sensorCapabilities.value_or(GPUCapabilities{}).hasClockSpeeds);
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_FALSE(counters[0].gpuClockAvailable);
+}
+
+// =============================================================================
+// Power from the hwmon energy counter (#1269)
+// =============================================================================
+
+// Neither i915 nor xe exposes power1_input; the probe passes the µJ energy counter on and Domain
+// derives watts from its change (GPUModel tests cover the derivation).
+TEST_F(DRMGPUProbeUnitTest, EnergyCounter_IsReportedWithThePowerCapability)
+{
+    const auto pciDir = makeCardAt("card1", "0000:03:00.0", "i915");
+    std::filesystem::create_directories(pciDir / "hwmon" / "hwmon4");
+    const auto energyFile = pciDir / "hwmon" / "hwmon4" / "energy1_input";
+    writeFile(energyFile, "1000000000"); // µJ
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    EXPECT_TRUE(gpus[0].sensorCapabilities.value_or(GPUCapabilities{}).hasPowerMetrics);
+    EXPECT_TRUE(probe.capabilities().hasPowerMetrics);
+
+    auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_TRUE(counters[0].energyAvailable);
+    EXPECT_EQ(counters[0].energyMicroJoules, 1000000000ULL);
+    EXPECT_FALSE(counters[0].powerAvailable); // No instantaneous power: Domain derives it
+
+    // A failed read is unavailable, not a counter of 0 (which would read as a reset).
+    writeFile(energyFile, "garbage");
+    counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_FALSE(counters[0].energyAvailable);
+}
+
+// xe on DG2/PVC registers only the package energy channel (energy2_input).
+TEST_F(DRMGPUProbeUnitTest, EnergyCounter_XePackageChannelIsUsedWhenCardChannelIsAbsent)
+{
+    const auto pciDir = makeCardAt("card1", "0000:03:00.0", "xe");
+    std::filesystem::create_directories(pciDir / "hwmon" / "hwmon5");
+    writeFile(pciDir / "hwmon" / "hwmon5" / "energy2_input", "500000");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_TRUE(counters[0].energyAvailable);
+    EXPECT_EQ(counters[0].energyMicroJoules, 500000ULL);
+}
+
+TEST_F(DRMGPUProbeUnitTest, EnergyCounter_NoHwmon_NoPowerCapability)
+{
+    const auto deviceDir = makeCard("card0", "i915");
+    writeFile(deviceDir / "vendor", "0x8086");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    EXPECT_FALSE(gpus[0].sensorCapabilities.value_or(GPUCapabilities{}).hasPowerMetrics);
+    EXPECT_FALSE(probe.capabilities().hasPowerMetrics);
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_FALSE(counters[0].energyAvailable);
+    EXPECT_FALSE(counters[0].powerAvailable);
+}
+
+// A suspended card's energy counter isn't read (an i915/xe hwmon read wakes it), so Domain's next
+// awake sample has no previous counter to take a delta against.
+TEST_F(DRMGPUProbeUnitTest, EnergyCounter_NotReadWhileSuspended)
+{
+    const auto pciDir = makeCardAt("card1", "0000:03:00.0", "i915");
+    std::filesystem::create_directories(pciDir / "hwmon" / "hwmon4");
+    writeFile(pciDir / "hwmon" / "hwmon4" / "energy1_input", "1000000");
+    std::filesystem::create_directories(pciDir / "power");
+    writeFile(pciDir / "power" / "runtime_status", "suspended");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_TRUE(counters[0].suspended);
+    EXPECT_FALSE(counters[0].energyAvailable);
+    EXPECT_FALSE(counters[0].powerAvailable);
+}
+
+// =============================================================================
+// VRAM from the DRM memory-region query (#1283)
+// =============================================================================
+
+constexpr uint64_t GIB = 1024ULL * 1024ULL * 1024ULL;
+
+/// A scripted VramQuery recording each call.
+struct ScriptedVramQuery
+{
+    struct State
+    {
+        std::optional<DRMGPUProbe::VramInfo> reply;
+        int calls = 0;
+        std::string renderNode;
+        std::string driver;
+    };
+    std::shared_ptr<State> state = std::make_shared<State>();
+
+    [[nodiscard]] DRMGPUProbe::VramQuery fn() const
+    {
+        return [state = state](const std::string& renderNode, const std::string& driver)
+        {
+            ++state->calls;
+            state->renderNode = renderNode;
+            state->driver = driver;
+            return state->reply;
+        };
+    }
+};
+
+TEST_F(DRMGPUProbeUnitTest, VramQuery_TotalIsReportedCachedAndKeptWhileSuspended)
+{
+    const auto pciDir = makeCardAt("card1", "0000:03:00.0", "xe");
+    std::filesystem::create_directories(pciDir / "drm" / "card1");
+    std::filesystem::create_directories(pciDir / "drm" / "renderD129");
+    std::filesystem::create_directories(pciDir / "power");
+    writeFile(pciDir / "power" / "runtime_status", "active");
+
+    const ScriptedVramQuery query;
+    query.state->reply = DRMGPUProbe::VramInfo{.totalBytes = 16 * GIB, .usedBytes = std::nullopt};
+    DRMGPUProbe probe(m_SysRoot.string(), query.fn());
+
+    auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_EQ(counters[0].memoryTotalBytes, 16 * GIB);
+    EXPECT_FALSE(counters[0].memoryAvailable); // No used figure: not a real-looking 0%
+    EXPECT_EQ(query.state->renderNode, "/dev/dri/renderD129");
+    EXPECT_EQ(query.state->driver, "xe");
+
+    // The total doesn't change, so the render node isn't reopened every sample.
+    counters = probe.readGPUCounters();
+    EXPECT_EQ(counters[0].memoryTotalBytes, 16 * GIB);
+    EXPECT_EQ(query.state->calls, 1);
+
+    writeFile(pciDir / "power" / "runtime_status", "suspended");
+    counters = probe.readGPUCounters();
+    EXPECT_TRUE(counters[0].suspended);
+    EXPECT_EQ(counters[0].memoryTotalBytes, 16 * GIB);
+    EXPECT_EQ(query.state->calls, 1);
+}
+
+// The ioctl takes a runtime-PM reference, so it would wake a sleeping card: it waits until it's awake.
+TEST_F(DRMGPUProbeUnitTest, VramQuery_NotIssuedWhileSuspended)
+{
+    const auto pciDir = makeCardAt("card1", "0000:03:00.0", "i915");
+    std::filesystem::create_directories(pciDir / "drm" / "renderD128");
+    std::filesystem::create_directories(pciDir / "power");
+    writeFile(pciDir / "power" / "runtime_status", "suspended");
+
+    const ScriptedVramQuery query;
+    query.state->reply = DRMGPUProbe::VramInfo{.totalBytes = 8 * GIB, .usedBytes = 2 * GIB};
+    DRMGPUProbe probe(m_SysRoot.string(), query.fn());
+
+    std::ignore = probe.readGPUCounters();
+    EXPECT_EQ(query.state->calls, 0);
+
+    writeFile(pciDir / "power" / "runtime_status", "active");
+    const auto counters = probe.readGPUCounters();
+    EXPECT_EQ(query.state->calls, 1);
+    EXPECT_EQ(query.state->driver, "i915");
+    EXPECT_TRUE(counters[0].memoryAvailable);
+    EXPECT_EQ(counters[0].memoryTotalBytes, 8 * GIB);
+    EXPECT_EQ(counters[0].memoryUsedBytes, 2 * GIB);
+}
+
+// Where the kernel reports used memory, it is refreshed every awake sample.
+TEST_F(DRMGPUProbeUnitTest, VramQuery_UsedIsRefreshedWhileReported)
+{
+    const auto pciDir = makeCardAt("card1", "0000:03:00.0", "xe");
+    std::filesystem::create_directories(pciDir / "drm" / "renderD128");
+
+    const ScriptedVramQuery query;
+    query.state->reply = DRMGPUProbe::VramInfo{.totalBytes = 12 * GIB, .usedBytes = 1 * GIB};
+    DRMGPUProbe probe(m_SysRoot.string(), query.fn());
+    EXPECT_EQ(probe.readGPUCounters()[0].memoryUsedBytes, 1 * GIB);
+
+    query.state->reply = DRMGPUProbe::VramInfo{.totalBytes = 12 * GIB, .usedBytes = 3 * GIB};
+    const auto counters = probe.readGPUCounters();
+    EXPECT_EQ(query.state->calls, 2);
+    EXPECT_TRUE(counters[0].memoryAvailable);
+    EXPECT_EQ(counters[0].memoryUsedBytes, 3 * GIB);
+}
+
+TEST_F(DRMGPUProbeUnitTest, VramQuery_FailureIsNotRetriedEverySample)
+{
+    const auto pciDir = makeCardAt("card1", "0000:03:00.0", "xe");
+    std::filesystem::create_directories(pciDir / "drm" / "renderD128");
+
+    const ScriptedVramQuery query; // reply = nullopt: the query fails
+    DRMGPUProbe probe(m_SysRoot.string(), query.fn());
+    auto counters = probe.readGPUCounters();
+    EXPECT_EQ(counters[0].memoryTotalBytes, 0ULL);
+    EXPECT_FALSE(counters[0].memoryAvailable);
+    counters = probe.readGPUCounters();
+    EXPECT_EQ(query.state->calls, 1);
+}
+
+TEST_F(DRMGPUProbeUnitTest, VramQuery_NoRenderNode_NotQueried)
+{
+    std::ignore = makeCardAt("card1", "0000:03:00.0", "xe");
+
+    const ScriptedVramQuery query;
+    query.state->reply = DRMGPUProbe::VramInfo{.totalBytes = 16 * GIB, .usedBytes = std::nullopt};
+    DRMGPUProbe probe(m_SysRoot.string(), query.fn());
+    EXPECT_EQ(probe.readGPUCounters()[0].memoryTotalBytes, 0ULL);
+    EXPECT_EQ(query.state->calls, 0);
+}
+
+// A queried VRAM total is evidence of a discrete GPU, as mem_info_vram_total is.
+TEST_F(DRMGPUProbeUnitTest, VramQuery_TotalClassifiesTheCardAsDiscrete)
+{
+    const auto deviceDir = makeCard("card0", "xe"); // No PCI address: no bus to classify by
+    writeFile(deviceDir / "vendor", "0x8086");
+    writeFile(deviceDir / "class", "0x030000");
+    std::filesystem::create_directories(deviceDir / "drm" / "renderD128");
+
+    const ScriptedVramQuery query;
+    query.state->reply = DRMGPUProbe::VramInfo{.totalBytes = 4 * GIB, .usedBytes = std::nullopt};
+    DRMGPUProbe probe(m_SysRoot.string(), query.fn());
+    EXPECT_TRUE(probe.enumerateGPUs()[0].isIntegrated); // Not queried yet
+    std::ignore = probe.readGPUCounters();
+    EXPECT_FALSE(probe.enumerateGPUs()[0].isIntegrated);
+}
+
+// GPUModel enumerates once and re-enumerates only when rescanGPUs() says to, so a total the query
+// learns after enumeration is reported by the next rescan -- a quick one, every sample -- and only once.
+TEST_F(DRMGPUProbeUnitTest, VramQuery_NewTotalAsksForReEnumerationOnce)
+{
+    const auto deviceDir = makeCard("card0", "xe"); // No PCI address: classified by VRAM
+    writeFile(deviceDir / "vendor", "0x8086");
+    writeFile(deviceDir / "class", "0x030000");
+    std::filesystem::create_directories(deviceDir / "drm" / "renderD128");
+
+    const ScriptedVramQuery query;
+    query.state->reply = DRMGPUProbe::VramInfo{.totalBytes = 4 * GIB, .usedBytes = 1 * GIB};
+    DRMGPUProbe probe(m_SysRoot.string(), query.fn());
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick));
+
+    std::ignore = probe.readGPUCounters();
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Quick));
+    EXPECT_FALSE(probe.enumerateGPUs()[0].isIntegrated);
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick)); // Reported once
+
+    // Used is re-queried each sample; the same total is no change.
+    query.state->reply = DRMGPUProbe::VramInfo{.totalBytes = 4 * GIB, .usedBytes = 2 * GIB};
+    std::ignore = probe.readGPUCounters();
+    EXPECT_EQ(query.state->calls, 2);
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick));
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full));
+
+    // A full rescan with no card change reports it too.
+    query.state->reply = DRMGPUProbe::VramInfo{.totalBytes = 8 * GIB, .usedBytes = 2 * GIB};
+    std::ignore = probe.readGPUCounters();
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick));
+}
+
+// #1321 review: through GPUModel, which enumerated before the first counter read, the queried total
+// reaches the published GPUInfo and snapshots: the card becomes discrete, with its VRAM capacity.
+TEST_F(DRMGPUProbeUnitTest, VramQuery_GPUModelPublishesTheCardAsDiscreteWithTheQueriedTotal)
+{
+    const auto deviceDir = makeCard("card0", "xe"); // No PCI address: classified by VRAM
+    writeFile(deviceDir / "vendor", "0x8086");
+    writeFile(deviceDir / "class", "0x030000");
+    std::filesystem::create_directories(deviceDir / "drm" / "renderD128");
+
+    const ScriptedVramQuery query;
+    query.state->reply = DRMGPUProbe::VramInfo{.totalBytes = 16 * GIB, .usedBytes = 3 * GIB};
+    Domain::GPUModel model(std::make_unique<DRMGPUProbe>(m_SysRoot.string(), query.fn()));
+    ASSERT_EQ(model.gpuInfo().size(), 1U);
+    EXPECT_TRUE(model.gpuInfo()[0].isIntegrated); // Enumerated before any query
+
+    const auto start = std::chrono::steady_clock::now();
+    model.refreshAt(start); // The first awake sample issues the query
+    model.refreshAt(start + std::chrono::seconds(1));
+
+    const auto info = model.gpuInfo();
+    ASSERT_EQ(info.size(), 1U);
+    EXPECT_FALSE(info[0].isIntegrated);
+    const auto snapshots = model.snapshots();
+    ASSERT_EQ(snapshots.size(), 1U);
+    EXPECT_FALSE(snapshots[0].isIntegrated);
+    EXPECT_EQ(snapshots[0].memoryTotalBytes, 16 * GIB);
+    EXPECT_EQ(snapshots[0].memoryUsedBytes, 3 * GIB);
+}
+
+#if __has_include(<drm/xe_drm.h>) && __has_include(<drm/i915_drm.h>)
+
+/// Lays out a DRM query reply: a header of `headerBytes` whose first __u32 is the region count,
+/// followed by the regions, in an 8-byte-aligned buffer as the kernel would fill it.
+template<typename Region> class QueryReply
+{
+  public:
+    QueryReply(std::size_t headerBytes, const std::vector<Region>& regions)
+        : m_Bytes(headerBytes + (regions.size() * sizeof(Region))), m_Storage((m_Bytes + 7) / 8, 0)
+    {
+        const auto count = static_cast<uint32_t>(regions.size());
+        auto bytes = std::as_writable_bytes(std::span(m_Storage));
+        std::memcpy(bytes.data(), &count, sizeof(count));
+        for (std::size_t i = 0; i < regions.size(); ++i)
+        {
+            std::memcpy(bytes.subspan(headerBytes + (i * sizeof(Region))).data(), &regions[i], sizeof(Region));
+        }
+    }
+
+    [[nodiscard]] std::span<const std::byte> bytes(std::size_t trim = 0) const
+    {
+        return std::as_bytes(std::span(m_Storage)).first(m_Bytes - trim);
+    }
+
+  private:
+    std::size_t m_Bytes;
+    std::vector<uint64_t> m_Storage;
+};
+
+TEST(DRMGPUProbeQueryReplyTest, XeMemRegions_SumsVramRegionsOnly)
+{
+    drm_xe_mem_region sysmem{};
+    sysmem.mem_class = DRM_XE_MEM_REGION_CLASS_SYSMEM;
+    sysmem.total_size = 32 * GIB;
+    sysmem.used = 5 * GIB;
+    drm_xe_mem_region vram0{};
+    vram0.mem_class = DRM_XE_MEM_REGION_CLASS_VRAM;
+    vram0.total_size = 8 * GIB;
+    vram0.used = 1 * GIB;
+    drm_xe_mem_region vram1 = vram0;
+    vram1.instance = 2;
+
+    const QueryReply reply(offsetof(drm_xe_query_mem_regions, mem_regions), std::vector{sysmem, vram0, vram1});
+    const auto info = DRMGPUProbe::summarizeXeMemRegions(reply.bytes());
+    ASSERT_TRUE(info.has_value());
+    EXPECT_EQ(info.value_or(DRMGPUProbe::VramInfo{}).totalBytes, 16 * GIB);
+    EXPECT_EQ(info.value_or(DRMGPUProbe::VramInfo{}).usedBytes, 2 * GIB);
+
+    // A reply too short for the regions it claims is rejected, not read past its end.
+    EXPECT_FALSE(DRMGPUProbe::summarizeXeMemRegions(reply.bytes(1)).has_value());
+}
+
+TEST(DRMGPUProbeQueryReplyTest, XeMemRegions_IntegratedHasNoVramAndZeroUsedIsUnreported)
+{
+    drm_xe_mem_region sysmem{};
+    sysmem.mem_class = DRM_XE_MEM_REGION_CLASS_SYSMEM;
+    sysmem.total_size = 16 * GIB;
+    const QueryReply igpu(offsetof(drm_xe_query_mem_regions, mem_regions), std::vector{sysmem});
+    const auto igpuInfo = DRMGPUProbe::summarizeXeMemRegions(igpu.bytes());
+    ASSERT_TRUE(igpuInfo.has_value());
+    EXPECT_EQ(igpuInfo.value_or(DRMGPUProbe::VramInfo{}).totalBytes, 0ULL);
+    EXPECT_FALSE(igpuInfo.value_or(DRMGPUProbe::VramInfo{}).usedBytes.has_value());
+
+    drm_xe_mem_region vram{};
+    vram.mem_class = DRM_XE_MEM_REGION_CLASS_VRAM;
+    vram.total_size = 12 * GIB; // used = 0: an older kernel without CAP_PERFMON
+    const QueryReply dgpu(offsetof(drm_xe_query_mem_regions, mem_regions), std::vector{vram});
+    const auto dgpuInfo = DRMGPUProbe::summarizeXeMemRegions(dgpu.bytes());
+    ASSERT_TRUE(dgpuInfo.has_value());
+    EXPECT_EQ(dgpuInfo.value_or(DRMGPUProbe::VramInfo{}).totalBytes, 12 * GIB);
+    EXPECT_FALSE(dgpuInfo.value_or(DRMGPUProbe::VramInfo{}).usedBytes.has_value());
+}
+
+TEST(DRMGPUProbeQueryReplyTest, I915MemRegions_UsedOnlyWhenTheKernelAccountsForIt)
+{
+    drm_i915_memory_region_info sysmem{};
+    sysmem.region.memory_class = I915_MEMORY_CLASS_SYSTEM;
+    sysmem.probed_size = 32 * GIB;
+    sysmem.unallocated_size = 30 * GIB;
+    drm_i915_memory_region_info lmem{};
+    lmem.region.memory_class = I915_MEMORY_CLASS_DEVICE;
+    lmem.probed_size = 8 * GIB;
+    lmem.unallocated_size = 8 * GIB; // Without CAP_PERFMON: unallocated == probed
+
+    const std::size_t header = offsetof(drm_i915_query_memory_regions, regions);
+    const QueryReply unprivileged(header, std::vector{sysmem, lmem});
+    const auto info = DRMGPUProbe::summarizeI915MemRegions(unprivileged.bytes());
+    ASSERT_TRUE(info.has_value());
+    EXPECT_EQ(info.value_or(DRMGPUProbe::VramInfo{}).totalBytes, 8 * GIB);
+    EXPECT_FALSE(info.value_or(DRMGPUProbe::VramInfo{}).usedBytes.has_value());
+
+    lmem.unallocated_size = 6 * GIB;
+    const QueryReply privileged(header, std::vector{sysmem, lmem});
+    const auto privilegedInfo = DRMGPUProbe::summarizeI915MemRegions(privileged.bytes());
+    ASSERT_TRUE(privilegedInfo.has_value());
+    EXPECT_EQ(privilegedInfo.value_or(DRMGPUProbe::VramInfo{}).usedBytes, 2 * GIB);
+
+    EXPECT_FALSE(DRMGPUProbe::summarizeI915MemRegions(privileged.bytes(8)).has_value());
+}
+
+#endif // __has_include(<drm/xe_drm.h>) && __has_include(<drm/i915_drm.h>)
+
+// =============================================================================
 // Re-enumeration (#1116)
 // =============================================================================
 
@@ -1055,6 +1545,106 @@ TEST_F(DRMGPUProbeUnitTest, RescanGPUs_LateHwmonIsPickedUp)
     const auto counters = probe.readGPUCounters();
     ASSERT_EQ(counters.size(), 1U);
     EXPECT_EQ(counters[0].temperatureC, 48);
+}
+
+// A rescan that rebuilds the card list (here for a hot-plugged iGPU) keeps an unchanged card's DRM
+// query results (#1283): its VRAM total isn't re-queried, and is still known while it sleeps.
+TEST_F(DRMGPUProbeUnitTest, RescanGPUs_UnchangedCardKeepsItsQueriedVramWithoutReQuerying)
+{
+    const auto pciDir = makeCardAt("card1", "0000:03:00.0", "xe");
+    std::filesystem::create_directories(pciDir / "drm" / "renderD129");
+    std::filesystem::create_directories(pciDir / "power");
+    writeFile(pciDir / "power" / "runtime_status", "active");
+
+    const ScriptedVramQuery query;
+    query.state->reply = DRMGPUProbe::VramInfo{.totalBytes = 16 * GIB, .usedBytes = std::nullopt};
+    DRMGPUProbe probe(m_SysRoot.string(), query.fn());
+    ASSERT_EQ(probe.readGPUCounters()[0].memoryTotalBytes, 16 * GIB);
+    ASSERT_EQ(query.state->calls, 1);
+
+    std::ignore = makeCardAt("card0", "0000:00:02.0"); // No render node: never queried
+    ASSERT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 2U);
+    EXPECT_EQ(gpus[1].id, "0000:03:00.0");
+    EXPECT_FALSE(gpus[1].isIntegrated); // Still classified by the cached queried total
+
+    auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 2U);
+    EXPECT_EQ(counters[1].memoryTotalBytes, 16 * GIB);
+    EXPECT_EQ(query.state->calls, 1);
+
+    writeFile(pciDir / "power" / "runtime_status", "suspended");
+    counters = probe.readGPUCounters();
+    EXPECT_TRUE(counters[1].suspended);
+    EXPECT_EQ(counters[1].memoryTotalBytes, 16 * GIB);
+    EXPECT_EQ(query.state->calls, 1);
+}
+
+// A render node that registers after the card is a change the next full rescan picks up, so the
+// card gets the VRAM query it couldn't have before (#1283).
+TEST_F(DRMGPUProbeUnitTest, RescanGPUs_LateRenderNodeIsPickedUpAndQueried)
+{
+    const auto pciDir = makeCardAt("card1", "0000:03:00.0", "xe");
+    const ScriptedVramQuery query;
+    query.state->reply = DRMGPUProbe::VramInfo{.totalBytes = 8 * GIB, .usedBytes = std::nullopt};
+    DRMGPUProbe probe(m_SysRoot.string(), query.fn());
+    EXPECT_EQ(probe.readGPUCounters()[0].memoryTotalBytes, 0ULL);
+    EXPECT_EQ(query.state->calls, 0);
+
+    std::filesystem::create_directories(pciDir / "drm" / "renderD128");
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    EXPECT_EQ(probe.readGPUCounters()[0].memoryTotalBytes, 8 * GIB);
+    EXPECT_EQ(query.state->calls, 1);
+    EXPECT_EQ(query.state->renderNode, "/dev/dri/renderD128");
+}
+
+// #1321 review: a VRAM total remembered from the query belongs to the query target. If the card's
+// render node or driver changes while it sleeps, the old target's capacity isn't reported for it;
+// a sysfs total (mem_info_vram_total) isn't tied to the render node and is kept.
+TEST_F(DRMGPUProbeUnitTest, RescanGPUs_QueriedTotalIsDroppedWhenTheQueryTargetChanges)
+{
+    const auto queried = makeCardAt("card1", "0000:03:00.0", "xe");
+    std::filesystem::create_directories(queried / "drm" / "renderD129");
+    std::filesystem::create_directories(queried / "power");
+    writeFile(queried / "power" / "runtime_status", "active");
+    const auto sysfs = makeCardAt("card2", "0000:04:00.0", "xe");
+    writeFile(sysfs / "mem_info_vram_total", "8589934592"); // 8 GiB
+    std::filesystem::create_directories(sysfs / "drm" / "renderD130");
+    std::filesystem::create_directories(sysfs / "power");
+    writeFile(sysfs / "power" / "runtime_status", "active");
+
+    const ScriptedVramQuery query;
+    query.state->reply = DRMGPUProbe::VramInfo{.totalBytes = 16 * GIB, .usedBytes = std::nullopt};
+    DRMGPUProbe probe(m_SysRoot.string(), query.fn());
+    auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 2U);
+    ASSERT_EQ(counters[0].memoryTotalBytes, 16 * GIB);
+    ASSERT_EQ(counters[1].memoryTotalBytes, 8 * GIB);
+
+    // Both cards sleep, and their render nodes are renumbered (a driver rebind).
+    writeFile(queried / "power" / "runtime_status", "suspended");
+    writeFile(sysfs / "power" / "runtime_status", "suspended");
+    std::filesystem::remove(queried / "drm" / "renderD129");
+    std::filesystem::create_directories(queried / "drm" / "renderD131");
+    std::filesystem::remove(sysfs / "drm" / "renderD130");
+    std::filesystem::create_directories(sysfs / "drm" / "renderD132");
+    ASSERT_TRUE(probe.rescanGPUs(GPURescan::Full));
+
+    counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 2U);
+    EXPECT_TRUE(counters[0].suspended);
+    EXPECT_EQ(counters[0].memoryTotalBytes, 0ULL); // Unknown until the new target is queried
+    EXPECT_TRUE(counters[1].suspended);
+    EXPECT_EQ(counters[1].memoryTotalBytes, 8 * GIB);
+    EXPECT_EQ(query.state->calls, 1);
+
+    // Awake again, the new target is queried.
+    query.state->reply = DRMGPUProbe::VramInfo{.totalBytes = 12 * GIB, .usedBytes = std::nullopt};
+    writeFile(queried / "power" / "runtime_status", "active");
+    counters = probe.readGPUCounters();
+    EXPECT_EQ(counters[0].memoryTotalBytes, 12 * GIB);
+    EXPECT_EQ(query.state->renderNode, "/dev/dri/renderD131");
 }
 
 } // namespace

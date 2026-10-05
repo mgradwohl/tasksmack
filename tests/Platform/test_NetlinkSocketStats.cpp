@@ -25,7 +25,14 @@
 #include <utility>
 #include <vector>
 
-#include <netinet/in.h> // NOLINT(misc-include-cleaner) - IPPROTO_TCP; include-cleaner lacks the mapping
+// NOLINTBEGIN(misc-include-cleaner) - Linux UAPI headers; include-cleaner lacks the mappings
+#include <linux/inet_diag.h>
+#include <linux/netlink.h>
+#include <linux/rtnetlink.h>
+#include <linux/sock_diag.h>
+#include <linux/tcp.h>
+#include <netinet/in.h> // IPPROTO_TCP
+// NOLINTEND(misc-include-cleaner)
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -604,6 +611,65 @@ TEST(NetlinkSocketStatsScriptedTest, AnAckIsNotTheEndOfTheDump)
     EXPECT_NE(sampledAt, std::chrono::steady_clock::time_point{});
     ASSERT_EQ(result.size(), 1U);
     EXPECT_EQ(result[0].inode, 31U);
+}
+
+TEST(NetlinkSocketStatsScriptedTest, TcpInfoIsReadFromA4ByteAlignedAttributeAndATruncatedOneOnlyForTheCountersItCovers)
+{
+    // #1305: netlink attributes are only RTA_ALIGNTO (4-byte) aligned, but tcp_info holds __u64
+    // members, so its payload sits at an offset tcp_info's own alignment doesn't allow. The parser
+    // must copy it out rather than read through a tcp_info* (UBSan: misaligned member access).
+    // A tcp_info from an older kernel is shorter: only the counters the payload covers are read.
+    static_assert((NLMSG_HDRLEN + sizeof(inet_diag_msg) + RTA_LENGTH(0)) % alignof(tcp_info) != 0,
+                  "the tcp_info payload is expected to be misaligned for tcp_info in a netlink reply");
+    static_assert(offsetof(tcp_info, tcpi_bytes_acked) < offsetof(tcp_info, tcpi_bytes_received));
+
+    // A tcp_info cut off right after tcpi_bytes_acked: bytes sent is covered, bytes received isn't.
+    const auto truncatedPayload = []
+    {
+        inet_diag_msg message{};
+        message.idiag_inode = 52;
+        tcp_info info{};
+        info.tcpi_bytes_acked = 1234;
+        info.tcpi_bytes_received = 5678;
+        constexpr std::size_t INFO_LEN = offsetof(tcp_info, tcpi_bytes_acked) + sizeof(info.tcpi_bytes_acked);
+        rtattr attribute{};
+        attribute.rta_type = INET_DIAG_INFO;
+        attribute.rta_len = static_cast<unsigned short>(RTA_LENGTH(INFO_LEN));
+        const std::size_t attributeOffset = sizeof(message);
+        const std::size_t infoOffset = attributeOffset + RTA_LENGTH(0);
+        TestSupport::Datagram payload(attributeOffset + RTA_SPACE(INFO_LEN));
+        std::memcpy(payload.data(), &message, sizeof(message));
+        std::memcpy(&payload[attributeOffset], &attribute, sizeof(attribute));
+        std::memcpy(&payload[infoOffset], &info, INFO_LEN);
+        return payload;
+    }();
+
+    using namespace std::chrono_literals;
+    ScriptedStats scripted(0ms);
+    const std::array sockets{FakeSocket{.inode = 51, .bytesReceived = 100, .bytesSent = 200}};
+    scripted.transport->onRequest = [&](const ScriptedNetlinkTransport::Request& request)
+    {
+        if (request.family != AF_INET)
+        {
+            return completeDump(request, {});
+        }
+        ScriptedNetlinkTransport::Reply reply{socketsDatagram(sockets, request.sequence, ScriptedNetlinkTransport::PORT_ID)};
+        TestSupport::Datagram truncated;
+        TestSupport::appendMessage(truncated, SOCK_DIAG_BY_FAMILY, request.sequence, ScriptedNetlinkTransport::PORT_ID, truncatedPayload);
+        reply.emplace_back(std::move(truncated));
+        reply.emplace_back(doneDatagram(request.sequence, ScriptedNetlinkTransport::PORT_ID));
+        return reply;
+    };
+
+    auto result = scripted.stats->queryAllSockets();
+    std::ranges::sort(result, {}, &SocketStats::inode);
+    ASSERT_EQ(result.size(), 2U);
+    EXPECT_EQ(result[0].inode, 51U);
+    EXPECT_EQ(result[0].bytesReceived, 100U);
+    EXPECT_EQ(result[0].bytesSent, 200U);
+    EXPECT_EQ(result[1].inode, 52U);
+    EXPECT_EQ(result[1].bytesReceived, 0U);
+    EXPECT_EQ(result[1].bytesSent, 1234U);
 }
 
 TEST(NetlinkSocketStatsScriptedTest, NullTransportIsUnavailable)
