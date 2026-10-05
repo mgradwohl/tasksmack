@@ -149,27 +149,6 @@ class ScopedHandle
     return windowsSeconds - WINDOWS_EPOCH_TO_UNIX_EPOCH;
 }
 
-/// Map Windows process state to single character
-[[nodiscard]] char getProcessState(HANDLE hProcess)
-{
-    if (hProcess == nullptr)
-    {
-        return '?';
-    }
-
-    // Note: Windows APIs require DWORD for exit codes; usage is localized here.
-    DWORD exitCode = 0;
-    if (GetExitCodeProcess(hProcess, &exitCode) != 0)
-    {
-        if (exitCode == STILL_ACTIVE)
-        {
-            return 'R'; // Running
-        }
-        return 'Z'; // Zombie/terminated
-    }
-    return '?';
-}
-
 /// Get the username (owner) of a process
 [[nodiscard]] std::string getProcessOwner(HANDLE hProcess)
 {
@@ -224,8 +203,8 @@ class ScopedHandle
     return WinString::wideToUtf8(userName.data());
 }
 
-/// Get the full command line (image path) of a process
-[[nodiscard]] std::string getProcessCommandLine(HANDLE hProcess)
+/// The full path of a process's executable (QueryFullProcessImageNameW). Empty when unreadable.
+[[nodiscard]] std::wstring getProcessImagePath(HANDLE hProcess)
 {
     if (hProcess == nullptr)
     {
@@ -245,7 +224,7 @@ class ScopedHandle
         if (QueryFullProcessImageNameW(hProcess, 0, path.data(), &size) != 0)
         {
             path.resize(size);
-            return WinString::wideToUtf8(path);
+            return path;
         }
         if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || path.size() >= kMaxLongPath)
         {
@@ -423,8 +402,65 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
     return {};
 }
 
+// ProcessCommandLineInformation (Windows 8.1+): the command line from the process's PEB, as a
+// UNICODE_STRING followed by its characters. Needs only PROCESS_QUERY_LIMITED_INFORMATION.
+const PROCESSINFOCLASS PROCESS_INFO_COMMAND_LINE = static_cast<PROCESSINFOCLASS>(60);
+
+/// The command line a process was started with (#1156), as Linux reads it from /proc/[pid]/cmdline.
+/// Empty when it can't be read: processes with no user-mode PEB (System, Registry, Memory
+/// Compression, vmmem) and isolated ones (LsaIso.exe and other VBS trustlets) don't have one to read.
+[[nodiscard]] std::string getProcessCommandLine(HANDLE hProcess)
+{
+    auto* fn = getNtQueryInformationProcessFn();
+    if (hProcess == nullptr || fn == nullptr)
+    {
+        return {};
+    }
+
+    // Most command lines fit the first buffer; a longer one reports the size it needs (a command
+    // line is at most 32767 characters, so this stays bounded) and is read once more.
+    constexpr std::size_t INITIAL_BYTES = 2048;
+    constexpr std::size_t MAX_BYTES = sizeof(UNICODE_STRING) + std::size_t{65536};
+    std::vector<std::byte> buffer(INITIAL_BYTES);
+    NTSTATUS status = 0;
+    for (int attempt = 0; attempt < 2; ++attempt)
+    {
+        ULONG needed = 0;
+        status = fn(hProcess, PROCESS_INFO_COMMAND_LINE, buffer.data(), Domain::Numeric::narrowOr<ULONG>(buffer.size(), ULONG{0}), &needed);
+        if (status >= 0 || needed <= buffer.size() || needed > MAX_BYTES)
+        {
+            break;
+        }
+        buffer.resize(needed);
+    }
+    if (status < 0 || buffer.size() < sizeof(UNICODE_STRING))
+    {
+        return {};
+    }
+
+    UNICODE_STRING commandLine{};
+    std::memcpy(&commandLine, buffer.data(), sizeof(commandLine));
+    if (commandLine.Buffer == nullptr || commandLine.Length == 0)
+    {
+        return {};
+    }
+    // The characters follow the header in the same buffer; reject a pointer that doesn't, as the
+    // snapshot parser does for image names.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - pointer-range check against the buffer
+    const auto textBegin = reinterpret_cast<std::uintptr_t>(commandLine.Buffer);
+    const auto textEnd = textBegin + commandLine.Length;
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - pointer-range check against the buffer
+    const auto bufferBegin = reinterpret_cast<std::uintptr_t>(buffer.data());
+    if (textBegin < bufferBegin || textEnd > bufferBegin + buffer.size())
+    {
+        return {};
+    }
+    return WinString::wideToUtf8(std::wstring_view(commandLine.Buffer, commandLine.Length / sizeof(wchar_t)));
+}
+
 /// Query GDI object count for a process via GetGuiResources.
-/// Requires a handle opened with at least PROCESS_QUERY_INFORMATION.
+/// A PROCESS_QUERY_LIMITED_INFORMATION handle is enough on current Windows; documentation for older
+/// releases asks for PROCESS_QUERY_INFORMATION, so a caller retries a refused read with one (#1156).
 /// Returns std::nullopt when hQuery is null (process not accessible with required rights).
 /// Returns 0 when the process is accessible but owns no GDI objects.
 /// Note: GetGuiResources returns 0 on error as well as on genuine zero; SetLastError(0) before
@@ -569,47 +605,14 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
     return result;
 }
 
-/// Read the publisher of a process from its PE file version information.
-/// Uses a growing buffer for QueryFullProcessImageNameW to support long-path executables.
-[[nodiscard]] std::string getProcessPublisher(HANDLE hProcess)
-{
-    if (hProcess == nullptr)
-    {
-        return {};
-    }
-
-    // Grow the buffer up to the Windows long-path limit (32767 wide chars) if needed,
-    // matching the pattern used in WindowsPathProvider for GetModuleFileNameW.
-    constexpr DWORD kInitialSize = MAX_PATH;
-    constexpr DWORD kMaxLongPath = 32767;
-
-    std::wstring imagePath(kInitialSize, L'\0');
-    for (;;)
-    {
-        DWORD size = static_cast<DWORD>(imagePath.size());
-        if (QueryFullProcessImageNameW(hProcess, 0, imagePath.data(), &size) != 0)
-        {
-            imagePath.resize(size);
-            break;
-        }
-        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || static_cast<DWORD>(imagePath.size()) >= kMaxLongPath)
-        {
-            return {};
-        }
-        const DWORD newSize = std::min(static_cast<DWORD>(imagePath.size()) * 2, kMaxLongPath);
-        imagePath.assign(static_cast<std::size_t>(newSize), L'\0');
-    }
-
-    return getFilePublisher(imagePath);
-}
-
 /// Classify a process as "App", "Background Process", or "Windows Process".
 /// - "App": has USER objects (owns an interactive UI window)
 /// - "Windows Process": core OS components in the Windows system directories
 /// - "Background Process": everything else (services, daemons, headless apps)
 ///
-/// hQuery must be opened with at least PROCESS_QUERY_INFORMATION (required by
-/// GetGuiResources); it may be null, in which case the USER-objects check is skipped.
+/// hQuery must be a handle GetGuiResources accepts (see getProcessGdiObjectCount); it may be
+/// null, in which case the USER-objects check is skipped. imagePath is the executable's path, not
+/// the command line (#1156): a quoted or argument-bearing command line would miss the heuristic.
 ///
 /// Limitations: console apps host their window in conhost.exe, so they return
 /// zero USER objects and are classified as "Background Process" even if
@@ -809,6 +812,24 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
         // Handles and I/O above are read for every process; network bytes only with EStats on (#1285).
         markWindowsReadAvailability(counters, perProcessNetworkCounters);
 
+        // State from the process's threads, which follow its entry in the snapshot (#1156): read
+        // every sample and for every process, with no handle. Left '?' if the array would run past
+        // the entry or the bytes the kernel wrote.
+        const std::size_t threadsBegin = offset + sizeof(SystemProcessInfo);
+        const std::size_t threadsEnd = threadsBegin + (std::size_t{info->numberOfThreads} * sizeof(SYSTEM_THREAD_INFORMATION));
+        const std::size_t entryEnd = (info->nextEntryOffset != 0) ? std::min(snapshotBytes, offset + info->nextEntryOffset) : snapshotBytes;
+        if (threadsEnd <= entryEnd)
+        {
+            ProcessThreadTally threads;
+            for (std::size_t threadOffset = threadsBegin; threadOffset < threadsEnd; threadOffset += sizeof(SYSTEM_THREAD_INFORMATION))
+            {
+                SYSTEM_THREAD_INFORMATION thread{};
+                std::memcpy(&thread, m_SnapshotBuffer.data() + threadOffset, sizeof(thread));
+                threads.add(static_cast<std::uint32_t>(thread.ThreadState), static_cast<std::uint32_t>(thread.WaitReason));
+            }
+            counters.state = deriveProcessState(threads, pid == 0);
+        }
+
         std::wstring_view imageName;
         if (info->imageName.Buffer != nullptr && info->imageName.Length != 0)
         {
@@ -841,7 +862,7 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
 
         // Refresh TTL-cached details (owner, command, publisher, ...) - may fail for protected processes
         // Ignore return value - we still want to include the process even if details fail
-        (void) getProcessDetails(pid, counters, imageName);
+        (void) getProcessDetails(pid, counters, imageName, static_cast<std::int32_t>(info->basePriority));
 
         results.push_back(std::move(counters));
 
@@ -866,7 +887,7 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
     return results;
 }
 
-bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& counters, std::wstring_view imageName)
+bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& counters, std::wstring_view imageName, std::int32_t basePriority)
 {
     const auto now = std::chrono::steady_clock::now();
 
@@ -900,33 +921,36 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
 
     if (!inserted)
     {
+        // Restore the TTL-cached fields. State is not among them: enumerate() derives it from the
+        // snapshot every sample (#1156).
         counters.user = cache.user;
         counters.command = cache.command;
         counters.status = cache.status;
         counters.publisher = cache.publisher;
         counters.processType = cache.processType;
         counters.gdiObjectCount = cache.gdiObjectCount;
-        // Restore slow-changing fields that are TTL-cached.
-        // Sentinel value '\0' indicates the cache entry was inserted but not yet populated;
-        // in that case the field remains at its default.
         counters.cpuAffinityMask = cache.cpuAffinityMask;
-        if (cache.state != '\0')
-        {
-            counters.state = cache.state;
-        }
         counters.nice = cache.nice;
     }
 
-    const bool refreshLightDetails = inserted || (now >= cache.nextLightRefresh);
-    const bool refreshHeavyDetails = inserted || (now >= cache.nextHeavyRefresh);
+    const DetailRefreshPlan plan =
+        planDetailRefresh(inserted, now >= cache.nextLightRefresh, now >= cache.nextHeavyRefresh, basePriority != cache.basePriority);
+    // Remembered whether or not the class can be read below, so a process that can't be opened isn't
+    // retried every sample for the same base priority.
+    cache.basePriority = basePriority;
 
-    if (!refreshLightDetails && !refreshHeavyDetails)
+    const auto fallBackToName = [&counters]
     {
-        // All remaining fields are TTL-cached; no process handle is needed this sample.
         if (counters.command.empty())
         {
             counters.command = "[" + counters.name + "]";
         }
+    };
+
+    if (!plan.any())
+    {
+        // All remaining fields are TTL-cached; no process handle is needed this sample.
+        fallBackToName();
         return true;
     }
 
@@ -936,32 +960,44 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
     const ScopedHandle hProcess(canCache ? OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) : nullptr);
     if (!hProcess.valid())
     {
-        // Can't access this process (protected/system). Push the TTLs forward so we don't retry
+        // Can't access this process (protected/system). Push the due TTLs forward so we don't retry
         // OpenProcess every sample; the bulk snapshot still provides fresh counters regardless.
-        if (canCache)
+        if (canCache && plan.light)
         {
             cache.nextLightRefresh = now + m_LightDetailTTL;
+        }
+        if (canCache && plan.heavy)
+        {
             cache.nextHeavyRefresh = now + m_HeavyDetailTTL;
         }
-        if (counters.command.empty())
-        {
-            counters.command = "[" + counters.name + "]";
-        }
+        fallBackToName();
         return false;
     }
 
-    if (refreshHeavyDetails)
+    if (plan.priority)
     {
-        // Expensive data: owner + image path + publisher are refreshed at a lower cadence.
+        // Mid-bucket nice values, so each class is labelled as itself (#1204).
+        counters.nice = priorityClassToNice(GetPriorityClass(hProcess));
+        cache.nice = counters.nice;
+    }
+
+    std::string imagePathUtf8; // Read with the heavy details, for classification
+    if (plan.heavy)
+    {
+        // Expensive data: owner, command line, image path and publisher at a lower cadence.
+        const std::wstring imagePath = getProcessImagePath(hProcess);
+        imagePathUtf8 = WinString::wideToUtf8(imagePath);
         counters.user = getProcessOwner(hProcess);
+
+        // The command line, as Linux shows it (#1156); the image path where it can't be read.
         counters.command = getProcessCommandLine(hProcess);
         if (counters.command.empty())
         {
-            counters.command = "[" + counters.name + "]";
+            counters.command = imagePathUtf8;
         }
 
         // getFilePublisher() has its own path cache; this outer TTL avoids repeated path lookups.
-        counters.publisher = getProcessPublisher(hProcess);
+        counters.publisher = getFilePublisher(imagePath);
 
         // CPU affinity rarely changes — refresh alongside heavy details.
         DWORD_PTR processAffinityMask = 0;
@@ -975,59 +1011,52 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         {
             counters.cpuAffinityMask = 0;
         }
-
-        // Priority class rarely changes — refresh alongside heavy details.
-        // Mid-bucket nice values, so each class is labelled as itself (#1204).
-        counters.nice = priorityClassToNice(GetPriorityClass(hProcess));
     }
-    else if (counters.command.empty())
-    {
-        counters.command = "[" + counters.name + "]";
-    }
+    fallBackToName();
 
-    if (refreshLightDetails || refreshHeavyDetails)
+    if (plan.light || plan.heavy)
     {
         // Medium-cost data refreshed more frequently than heavy details.
         counters.status = getProcessStatus(hProcess);
 
-        // Process state (R/Z/?) changes infrequently; refresh at light TTL cadence.
-        counters.state = getProcessState(hProcess);
+        // GDI objects change as the process draws, so on the light cadence (#1156), with the handle
+        // already open. A refused read is retried with PROCESS_QUERY_INFORMATION (see
+        // getProcessGdiObjectCount), and the handle that worked is shared with classifyProcessType.
+        ScopedHandle hQueryInfo;
+        HANDLE hGui = hProcess;
+        counters.gdiObjectCount = getProcessGdiObjectCount(hProcess);
+        if (!counters.gdiObjectCount.has_value())
+        {
+            hQueryInfo = ScopedHandle(OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, static_cast<DWORD>(pid)));
+            hGui = hQueryInfo;
+            counters.gdiObjectCount = getProcessGdiObjectCount(hQueryInfo);
+        }
+
+        if (plan.heavy)
+        {
+            // Classify process type (App / Background Process / Windows Process)
+            counters.processType =
+                classifyProcessType(counters.gdiObjectCount.has_value() ? hGui : nullptr, static_cast<DWORD>(pid), imagePathUtf8);
+        }
+
+        cache.status = counters.status;
+        cache.gdiObjectCount = counters.gdiObjectCount;
+        if (canCache)
+        {
+            cache.nextLightRefresh = now + m_LightDetailTTL;
+        }
     }
 
-    if (refreshHeavyDetails)
-    {
-        // Expensive classification metadata changes rarely; refresh only on heavy cadence.
-        // Open a PROCESS_QUERY_INFORMATION handle — required by GetGuiResources — and share
-        // it with classifyProcessType to avoid two consecutive OpenProcess calls for the same PID.
-        const ScopedHandle hQueryInfo(OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, static_cast<DWORD>(pid)));
-        counters.gdiObjectCount = getProcessGdiObjectCount(hQueryInfo);
-
-        // Classify process type (App / Background Process / Windows Process)
-        counters.processType = classifyProcessType(hQueryInfo, static_cast<DWORD>(pid), counters.command);
-    }
-
-    if (refreshHeavyDetails)
+    if (plan.heavy)
     {
         cache.user = counters.user;
         cache.command = counters.command;
         cache.publisher = counters.publisher;
         cache.processType = counters.processType;
-        cache.gdiObjectCount = counters.gdiObjectCount;
         cache.cpuAffinityMask = counters.cpuAffinityMask;
-        cache.nice = counters.nice;
         if (canCache)
         {
             cache.nextHeavyRefresh = now + m_HeavyDetailTTL;
-        }
-    }
-
-    if (refreshLightDetails || refreshHeavyDetails)
-    {
-        cache.status = counters.status;
-        cache.state = counters.state;
-        if (canCache)
-        {
-            cache.nextLightRefresh = now + m_LightDetailTTL;
         }
     }
 
@@ -1052,7 +1081,7 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasUserSystemTime = true,
         .hasStartTime = true,
         .hasUser = true,        // From OpenProcessToken + LookupAccountSid
-        .hasCommand = true,     // From QueryFullProcessImageName
+        .hasCommand = true,     // NtQueryInformationProcess(ProcessCommandLineInformation), else the image path (#1156)
         .hasNice = true,        // From GetPriorityClass
         .hasPageFaults = true,  // From the SystemProcessInformation snapshot
         .hasPeakRss = true,     // From the SystemProcessInformation snapshot (PeakWorkingSetSize)

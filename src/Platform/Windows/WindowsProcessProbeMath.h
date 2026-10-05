@@ -61,6 +61,111 @@ struct DetailCacheTTLs
     return {.light = std::chrono::milliseconds(1000), .heavy = std::chrono::milliseconds(4000)};
 }
 
+/// Scheduler states of a thread (KTHREAD_STATE, SYSTEM_THREAD_INFORMATION::ThreadState) that
+/// deriveProcessState() tells apart, spelled out so this header stays free of <windows.h>.
+inline constexpr std::uint32_t THREAD_STATE_READY = 1;
+inline constexpr std::uint32_t THREAD_STATE_RUNNING = 2;
+inline constexpr std::uint32_t THREAD_STATE_STANDBY = 3;
+inline constexpr std::uint32_t THREAD_STATE_WAITING = 5;
+inline constexpr std::uint32_t THREAD_STATE_TRANSITION = 6; // Ready, but its kernel stack is paged out
+inline constexpr std::uint32_t THREAD_STATE_DEFERRED_READY = 7;
+inline constexpr std::uint32_t THREAD_STATE_GATE_WAIT = 8;
+inline constexpr std::uint32_t THREAD_STATE_WAITING_FOR_PROCESS_IN_SWAP = 9;
+/// Wait reasons (KWAIT_REASON, SYSTEM_THREAD_INFORMATION::WaitReason) of a suspended thread.
+inline constexpr std::uint32_t WAIT_REASON_SUSPENDED = 5;
+inline constexpr std::uint32_t WAIT_REASON_WR_SUSPENDED = 12;
+
+/// Tally of one process's threads from the SystemProcessInformation snapshot, for a Linux-style
+/// state letter (#1156). Windows has no process state of its own; every live process used to read
+/// "R" (from GetExitCodeProcess), and one the probe couldn't open "?".
+struct ProcessThreadTally
+{
+    std::size_t runnable = 0;  // Running, or ready to run (Ready, Standby, DeferredReady, Transition)
+    std::size_t waiting = 0;   // Waiting for anything
+    std::size_t suspended = 0; // Of those, waiting because the thread is suspended
+
+    constexpr void add(std::uint32_t threadState, std::uint32_t waitReason) noexcept
+    {
+        switch (threadState)
+        {
+        case THREAD_STATE_READY:
+        case THREAD_STATE_RUNNING:
+        case THREAD_STATE_STANDBY:
+        case THREAD_STATE_TRANSITION:
+        case THREAD_STATE_DEFERRED_READY:
+            ++runnable;
+            break;
+        case THREAD_STATE_WAITING:
+            ++waiting;
+            if (waitReason == WAIT_REASON_SUSPENDED || waitReason == WAIT_REASON_WR_SUSPENDED)
+            {
+                ++suspended;
+            }
+            break;
+        case THREAD_STATE_GATE_WAIT:
+        case THREAD_STATE_WAITING_FOR_PROCESS_IN_SWAP:
+            ++waiting;
+            break;
+        default:
+            break; // Initialized or Terminated: neither runs nor waits
+        }
+    }
+};
+
+/// The state letter for a process, with the meanings Linux gives them (#1156):
+///  - 'I' Idle: the System Idle Process (PID 0), whose threads run whenever a CPU has nothing to do.
+///  - 'R' Running: at least one thread is running or ready to run.
+///  - 'T' Stopped: every thread is suspended -- a suspended or frozen (UWP) process, or one stopped
+///    in a debugger.
+///  - 'S' Sleeping: every thread is waiting, not all of them suspended.
+///  - '?' Unknown: no thread to judge by. Minimal processes (Secure System, Registry, Memory
+///    Compression) show no threads. So does a process that has exited but is kept by an open
+///    handle, if it is listed: Windows has no reaping, so 'Z' (zombie) is never reported.
+[[nodiscard]] constexpr char deriveProcessState(const ProcessThreadTally& threads, bool isIdleProcess) noexcept
+{
+    if (isIdleProcess)
+    {
+        return 'I';
+    }
+    if (threads.runnable > 0)
+    {
+        return 'R';
+    }
+    if (threads.waiting == 0)
+    {
+        return '?';
+    }
+    return threads.suspended == threads.waiting ? 'T' : 'S';
+}
+
+/// Which TTL-cached details getProcessDetails() refreshes for one process this sample (#1156).
+struct DetailRefreshPlan
+{
+    bool light = false;    // Status, GDI objects
+    bool heavy = false;    // Owner, command line, publisher, affinity, classification
+    bool priority = false; // Priority class (GetPriorityClass)
+
+    [[nodiscard]] constexpr bool any() const noexcept
+    {
+        return light || heavy || priority;
+    }
+};
+
+/// Decide what to refresh for one process (#1156).
+///  - Everything for a process seen for the first time.
+///  - Light and heavy details when their TTLs are due.
+///  - The priority class with the heavy details, and also as soon as the process's base priority in
+///    the snapshot changes. Setting a priority class sets the base priority, so a change (by our
+///    own Set Priority action or anyone else's) shows on the next sample rather than up to a heavy
+///    TTL (4-15 s) later, without reading every process's class every sample. The class stays the
+///    source of the value: a few system processes (csrss.exe, smss.exe) run at a base priority
+///    their Normal class doesn't give.
+[[nodiscard]] constexpr DetailRefreshPlan planDetailRefresh(bool firstSeen, bool lightDue, bool heavyDue, bool basePriorityChanged) noexcept
+{
+    const bool heavy = firstSeen || heavyDue;
+    return DetailRefreshPlan{.light = firstSeen || lightDue, .heavy = heavy, .priority = heavy || basePriorityChanged};
+}
+
 /// Mark which of one process's readings the Windows probe took (#1285, the Windows half of #1110).
 ///  - Handle count and I/O bytes come from the SystemProcessInformation snapshot, which the kernel
 ///    fills for every process without an access check -- protected and other users' processes
