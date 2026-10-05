@@ -37,6 +37,9 @@ class LinuxGPUProbe : public IGPUProbe
     [[nodiscard]] std::vector<GPUCounters> readGPUCounters() override;
     [[nodiscard]] std::vector<ProcessGPUCounters> readProcessGPUCounters() override;
     [[nodiscard]] GPUCapabilities capabilities() const override;
+    /// Rescans every vendor probe, available or not -- a probe with no device at startup can gain
+    /// one (a hot-plugged eGPU) -- and reports whether any of them changed (#1116, #1289).
+    [[nodiscard]] bool rescanGPUs(GPURescan depth) override;
 
   private:
     std::unique_ptr<NVMLGPUProbe> m_NVMLProbe;
