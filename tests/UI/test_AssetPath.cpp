@@ -18,7 +18,7 @@ namespace
 
 // Mirrors the hasDisplay() helper in test_Application.cpp/test_Window.cpp (each test file
 // keeps its own copy rather than sharing one, per this repo's existing convention).
-bool hasDisplay()
+bool detectDisplay()
 {
 #ifdef _WIN32
     char* ciEnv = nullptr;
@@ -31,7 +31,9 @@ bool hasDisplay()
     {
         return false;
     }
-    return true;
+    // A display must also offer a GL 3.3 core context: construction failures are fatal once a display
+    // is detected (#1132).
+    return TestSupport::probeGLCapability();
 #else
     // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
     const char* display = std::getenv("DISPLAY");
@@ -44,8 +46,18 @@ bool hasDisplay()
             return true;
         }
     }
-    return TestSupport::tryEnableOffscreenVideoDriver();
+    // The offscreen driver only counts if it can also create a GL 3.3 core context (it needs
+    // Mesa EGL for that), so a "yes" here means Application construction can succeed and a
+    // construction exception is a real failure, not an environment gap.
+    return TestSupport::tryEnableOffscreenVideoDriver() && TestSupport::probeGLCapability();
 #endif
+}
+
+// Every display check goes through here so TASKSMACK_REQUIRE_DISPLAY=1 (set by Linux CI) turns a
+// missing display into a failure instead of a skip.
+bool hasDisplay()
+{
+    return TestSupport::enforceDisplayRequirement(detectDisplay());
 }
 
 // ========== Candidate priority ==========
@@ -143,9 +155,9 @@ TEST(AssetPathTest, FindAssetsDirIsStableAcrossCalls)
     Core::ApplicationSpecification spec;
     spec.Name = "FindAssetsDirTest";
 
-    // Isolate construction in its own try/catch: only a construction failure (SDL/GL
-    // unavailable) should skip this test. An exception from findAssetsDir() itself is a
-    // real regression and must fail the test, not be silently swallowed as a skip.
+    // Isolate construction in its own try/catch so its failure is reported as such. hasDisplay()
+    // above already confirmed a GL-capable display, so a construction exception is a regression
+    // (#1132), just like an exception from findAssetsDir() itself.
     std::optional<Core::Application> app;
     try
     {
@@ -153,7 +165,7 @@ TEST(AssetPathTest, FindAssetsDirIsStableAcrossCalls)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 
     const auto first = findAssetsDir();

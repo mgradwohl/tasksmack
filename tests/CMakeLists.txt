@@ -274,6 +274,19 @@ add_executable(TaskSmackTests
     ${PLATFORM_SRC_UNDER_TEST}
 )
 
+# The Theme stub defines Theme::get() & co. with the same names (and bodies) as src/UI/Theme.cpp.
+# With honest coverage (#1131) the report merges the test binary with the app binary, and LLVM matches
+# profile counters by function name and hash, not by binary -- so stub executions were credited to the
+# production Theme.cpp, which no test runs. Leave the stub uninstrumented; Theme.cpp keeps its coverage.
+if(TASKSMACK_ENABLE_COVERAGE)
+    if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+        set(TASKSMACK_NO_COVERAGE_FLAGS "/clang:-fno-profile-instr-generate" "/clang:-fno-coverage-mapping")
+    else()
+        set(TASKSMACK_NO_COVERAGE_FLAGS -fno-profile-instr-generate -fno-coverage-mapping)
+    endif()
+    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/Mocks/ThemeStub.cpp PROPERTIES COMPILE_OPTIONS "${TASKSMACK_NO_COVERAGE_FLAGS}")
+endif()
+
 target_include_directories(TaskSmackTests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}  # For tests/Mocks includes
