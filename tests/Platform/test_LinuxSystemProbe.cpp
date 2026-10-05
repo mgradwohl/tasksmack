@@ -676,6 +676,45 @@ TEST(LinuxSystemProbeTest, AnInterfaceMissingFromSysfsIsUnclassified)
     EXPECT_TRUE(counters.networkInterfaces[0].isVirtualKnown);
 }
 
+TEST(LinuxSystemProbeTest, ADanglingDeviceLinkStillMeansHardware)
+{
+    // #1260: the `device` link itself decides, not whether its target resolves.
+    ScopedTempDir proc("ts_test_sys_net_dangling");
+    ScopedTempDir sys("ts_test_sys_class_net_dangling");
+    std::filesystem::create_directories(proc.path / "net");
+    std::ofstream(proc.path / "net" / "dev") << NET_DEV_HEADER << netDevLine("eth0", 5000, 700);
+    std::filesystem::create_directories(sys.path / "eth0");
+    std::filesystem::create_directory_symlink(sys.path / "devices" / "gone", sys.path / "eth0" / "device");
+
+    LinuxSystemProbe probe(proc.path, sys.path);
+    const auto counters = probe.read();
+    ASSERT_EQ(counters.networkInterfaces.size(), 1U);
+    EXPECT_FALSE(counters.networkInterfaces[0].isVirtual);
+    EXPECT_TRUE(counters.networkInterfaces[0].isVirtualKnown);
+}
+
+TEST(LinuxSystemProbeTest, AnUnreadableInterfaceDirectoryIsUnclassified)
+{
+    // #1260: a permission error looking up `device` is "can't tell", not "virtual".
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root bypasses directory permissions";
+    }
+    ScopedTempDir proc("ts_test_sys_net_unreadable");
+    ScopedTempDir sys("ts_test_sys_class_net_unreadable");
+    std::filesystem::create_directories(proc.path / "net");
+    std::ofstream(proc.path / "net" / "dev") << NET_DEV_HEADER << netDevLine("eth0", 5000, 700);
+    addSysfsInterface(sys.path, "eth0", true);
+    std::filesystem::permissions(sys.path / "eth0", std::filesystem::perms::none);
+
+    LinuxSystemProbe probe(proc.path, sys.path);
+    const auto counters = probe.read();
+    std::filesystem::permissions(sys.path / "eth0", std::filesystem::perms::owner_all); // let cleanup remove it
+    ASSERT_EQ(counters.networkInterfaces.size(), 1U);
+    EXPECT_FALSE(counters.networkInterfaces[0].isVirtual);
+    EXPECT_FALSE(counters.networkInterfaces[0].isVirtualKnown);
+}
+
 TEST(LinuxSystemProbeTest, NetworkTotalCountsEveryInterfaceWhenNoneIsHardware)
 {
     // Inside a container eth0 is one end of a veth pair: the Total must not drop to 0.

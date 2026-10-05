@@ -651,13 +651,26 @@ std::optional<bool> LinuxSystemProbe::isVirtualInterface(const std::filesystem::
     // a software interface doesn't. When the interface can't be found at all (sysfs not mounted, or
     // it vanished) it can't be classified: the caller counts it as hardware, the pre-#1106 behavior,
     // and the UI falls back to its name (#1260).
+    // Anything that stops the lookup short of an answer -- a permission or I/O error -- is "can't
+    // tell" too, never "virtual": exists() returns false for those as well, so ec is checked.
     std::error_code ec;
     const auto ifaceDir = sysClassNetRoot / ifaceName;
-    if (!std::filesystem::exists(ifaceDir, ec))
+    if (!std::filesystem::exists(ifaceDir, ec) || ec)
     {
         return std::nullopt;
     }
-    return !std::filesystem::exists(ifaceDir / "device", ec);
+    // The link itself, not its target: a hardware NIC's `device` link counts even if what it points
+    // at can't be resolved.
+    const auto deviceLink = std::filesystem::symlink_status(ifaceDir / "device", ec);
+    if (deviceLink.type() == std::filesystem::file_type::not_found)
+    {
+        return true;
+    }
+    if (ec)
+    {
+        return std::nullopt;
+    }
+    return false;
 }
 
 bool LinuxSystemProbe::readInterfaceOperState(const std::string& ifaceName)
