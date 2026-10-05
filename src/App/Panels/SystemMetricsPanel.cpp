@@ -502,6 +502,8 @@ void SystemMetricsPanel::renderContent()
                     .smoothedNetRecvBytesPerSec = &m_SmoothedNetwork.recvBytesPerSec,
                     .smoothedNetInitialized = &m_SmoothedNetwork.initialized,
                     .selectedNetworkInterface = &m_SelectedNetworkInterface,
+                    .showAllInterfaces = &m_ShowAllInterfaces,
+                    .interfacesWithTraffic = &m_InterfacesWithTraffic,
                     .fillState = &m_NetworkFill,
                 };
                 {
