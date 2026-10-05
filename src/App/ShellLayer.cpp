@@ -245,52 +245,45 @@ void ShellLayer::onUpdate(float deltaTime)
     // Update panels
     m_Tabs.onUpdate(deltaTime);
 
-    // Find the selected process snapshot for rendering
-    // Note: Selection is now coordinated via ProcessSelectedEvent, but we still need
-    // to look up the snapshot for ProcessDetailsPanel to render
-    const Domain::ProcessSnapshot* selectedSnapshot = nullptr;
-    Domain::ProcessSnapshot cachedSnapshot;
-    std::uint64_t selectedSnapshotVersion = 0;
-    const std::int32_t selectedPid = m_ProcessesPanel.selectedPid();
+    // Hand Process Details the selected process's new samples: one per generation the sampler
+    // published since its last frame, each with its own sample time (#1098). The model keeps them for
+    // the watched PID, so a frame with nothing new costs one atomic load and copies nothing -- this
+    // used to look the process up and deep-copy its snapshot twice every frame (#1172).
+    const std::int32_t selectedPid = m_ProcessDetailsPanel.selectedPid();
+    if (selectedPid != m_WatchedPid)
+    {
+        m_ProcessesPanel.watchProcess(selectedPid);
+        m_WatchedPid = selectedPid;
+    }
+    m_PendingSamples.clear();
     if (selectedPid != -1)
     {
-        // findSnapshotWithVersion() copies only the one matching entry out of ProcessModel (not
-        // the full 200+ entry vector) and returns it together with the exact publication
-        // version it was read under, atomically. The previous version of this code instead
-        // paired findSnapshot() with a *separately*-read version from ProcessesPanel's own
-        // render cache (which only refreshes while the Processes tab is active), which could
-        // race with an intervening ProcessModel publish: findSnapshot() always reflects the
-        // truly latest data, so while viewing Process Details on its own, the version passed
-        // to updateWithSnapshot() below could stay stuck even as the snapshot content kept
-        // changing, silently freezing history recording (ProcessDetailsPanel gates "is this
-        // new data" on that version) while the live displayed values kept updating from the
-        // snapshot itself.
-        if (auto found = m_ProcessesPanel.findSnapshotWithVersion(selectedPid))
+        static_cast<void>(m_ProcessesPanel.watchedSamplesSince(m_ProcessDetailsPanel.lastSampleVersion(), m_PendingSamples));
+    }
+    m_ProcessDetailsPanel.updateWithSamples(m_PendingSamples, deltaTime);
+
+    // Debug: Log when GPU data becomes available for the selected PID.
+    // This avoids spamming logs every frame while a GPU-using process is selected.
+    if (const Domain::ProcessSnapshot* selected = m_ProcessDetailsPanel.displayedSnapshot();
+        selected != nullptr && !m_PendingSamples.empty())
+    {
+        const bool hasGpuData = (!selected->gpuDevices.empty() || (selected->gpuMemoryBytes > 0));
+        if ((selectedPid != m_LastGpuLogPid) || !m_LastGpuLogHasData)
         {
-            cachedSnapshot = std::move(found->snapshot);
-            selectedSnapshotVersion = found->version;
-            selectedSnapshot = &cachedSnapshot;
-
-            // Debug: Log when GPU data becomes available for the selected PID.
-            // This avoids spamming logs every frame while a GPU-using process is selected.
-            const bool hasGpuData = (!cachedSnapshot.gpuDevices.empty() || (cachedSnapshot.gpuMemoryBytes > 0));
-
-            if ((selectedPid != m_LastGpuLogPid) || !m_LastGpuLogHasData)
+            if (hasGpuData)
             {
-                if (hasGpuData)
-                {
-                    spdlog::debug("ShellLayer: Selected PID {} has GPU data: devices='{}', mem={}",
-                                  selectedPid,
-                                  cachedSnapshot.gpuDevices,
-                                  cachedSnapshot.gpuMemoryBytes);
-                }
-
-                m_LastGpuLogPid = selectedPid;
-                m_LastGpuLogHasData = hasGpuData;
+                spdlog::debug("ShellLayer: Selected PID {} has GPU data: devices='{}', mem={}",
+                              selectedPid,
+                              selected->gpuDevices,
+                              selected->gpuMemoryBytes);
             }
+
+            m_LastGpuLogPid = selectedPid;
+            m_LastGpuLogHasData = hasGpuData;
         }
     }
-    m_ProcessDetailsPanel.updateWithSnapshot(selectedSnapshot, selectedSnapshotVersion, deltaTime);
+    // Drop this frame's references now: the panel keeps the one it shows.
+    m_PendingSamples.clear();
 
     // Rebuild the cached details tab label only when its text actually changes. Rebuilding on
     // every frame would allocate three std::string objects per frame at 60 fps; comparing the

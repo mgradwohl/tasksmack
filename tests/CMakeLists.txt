@@ -131,6 +131,7 @@ set(COMMON_TEST_SOURCES
     App/test_PriorityHelpers.cpp
     App/test_ProcessGpuHelpers.cpp
     App/test_ProcessResourceHelpers.cpp
+    App/test_ProcessHistoryHelpers.cpp
     App/test_ProcessActionHelpers.cpp
     App/test_SettingsLayerDetail.cpp
     App/test_NetInterfaceUtils.cpp
