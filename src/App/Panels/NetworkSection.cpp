@@ -276,9 +276,12 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     // Name the interface the way the picker above does (#1009).
     const std::string ifaceDisplayName = showingInterface ? interfaceNames[static_cast<size_t>(selectedInterface) + 1] : "Network";
     // One label per series, shared by its legend entry, tooltip row and NowBar (#1008). The bars show
-    // the selected interface when there is one, else the totals.
-    const std::string ifaceSentLabel = std::format("{} Sent", ifaceDisplayName);
-    const std::string ifaceRecvLabel = std::format("{} Received", ifaceDisplayName);
+    // the selected interface when there is one, else the totals. An adapter's name is the OS's
+    // description, of any length, so it is shortened for the labels (legendName()); the picker and
+    // the plot title keep it whole.
+    const std::string ifaceLabelName = UI::Widgets::legendName(ifaceDisplayName);
+    const std::string ifaceSentLabel = std::format("{} Sent", ifaceLabelName);
+    const std::string ifaceRecvLabel = std::format("{} Received", ifaceLabelName);
     const std::string sentBarLabel = showingInterface ? ifaceSentLabel : std::string(TOTAL_SENT_LABEL);
     const std::string recvBarLabel = showingInterface ? ifaceRecvLabel : std::string(TOTAL_RECV_LABEL);
 

@@ -1753,6 +1753,29 @@ TEST(ForEachMarkerSampleTest, MatchesAWalkOfEverySample)
 
 // ========== Legend layout (#1275) ==========
 
+// #1301 review: one entry built from an OS adapter description can be wider than the frame on its
+// own, so such names are shortened for series labels.
+TEST(LegendNameTest, ShortNamesAreKeptWhole)
+{
+    EXPECT_EQ(legendName("Wi-Fi"), "Wi-Fi");
+    EXPECT_EQ(legendName(""), "");
+    EXPECT_EQ(legendName("abcd", 4), "abcd");
+}
+
+TEST(LegendNameTest, LongNamesAreCutToTheLimitWithAnEllipsis)
+{
+    EXPECT_EQ(legendName("abcdef", 4), "abc\u2026");
+    const std::string cut = legendName("Intel(R) Wi-Fi 7 BE200 320MHz (virtual, not in Total)");
+    EXPECT_EQ(cut, "Intel(R) Wi-Fi 7 BE200 320MHz (\u2026");
+}
+
+TEST(LegendNameTest, CutsOnlyAtCodePointBoundaries)
+{
+    // Five two-byte code points; a cut at three keeps two whole ones and the ellipsis.
+    EXPECT_EQ(legendName("\u00e9\u00e9\u00e9\u00e9\u00e9", 3), "\u00e9\u00e9\u2026");
+    EXPECT_EQ(legendName("\u00e9\u00e9\u00e9", 3), "\u00e9\u00e9\u00e9");
+}
+
 TEST(LegendLayoutTest, HorizontalWidthMatchesImPlotsRowLayout)
 {
     // 2 * padding + per entry (icon + label) + spacing between entries.

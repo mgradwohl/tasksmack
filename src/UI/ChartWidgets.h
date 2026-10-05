@@ -1200,7 +1200,7 @@ inline constexpr float SERIES_MARKER_RADIUS = 3.0F;
 /// Returns the number of markers placed.
 template<typename TX, typename TY, typename Fn>
 inline int
-forEachMarkerSample(const TX* xData, const TY* yData, int count, double anchorSeconds, double intervalSeconds, double phase, Fn&& fn)
+forEachMarkerSample(const TX* xData, const TY* yData, int count, double anchorSeconds, double intervalSeconds, double phase, const Fn& fn)
 {
     if (count <= 0 || !(intervalSeconds > 0.0) || !std::isfinite(intervalSeconds))
     {
@@ -1803,6 +1803,43 @@ legendFitsOneRow(std::span<const float> labelWidths, float iconSize, float inner
 /// choice is made from those too -- through ImPlot's internal API, which is why this one is defined
 /// in ChartLegend.cpp rather than inline here.
 void setupLegendDefault();
+
+/// Longest name, in code points, that legendName() keeps before cutting it short.
+inline constexpr std::size_t LEGEND_NAME_MAX_CHARS = 32;
+
+/// @p name shortened for a series label: kept whole up to @p maxChars code points, else cut to
+/// maxChars - 1 of them and an ellipsis. setupLegendDefault()'s column fallback fits a legend no
+/// wider than its widest entry, so one entry built from an uncapped name -- an OS network adapter's
+/// description, say -- would still be clipped (#1275). Cuts only at UTF-8 code point boundaries.
+[[nodiscard]] inline std::string legendName(std::string_view name, std::size_t maxChars = LEGEND_NAME_MAX_CHARS)
+{
+    if (maxChars == 0)
+    {
+        return {};
+    }
+    const auto isContinuation = [](char c)
+    {
+        return (static_cast<unsigned char>(c) & 0xC0U) == 0x80U;
+    };
+    std::size_t codePoints = 0;
+    std::size_t cut = name.size();
+    for (std::size_t i = 0; i < name.size(); ++i)
+    {
+        if (isContinuation(name[i]))
+        {
+            continue;
+        }
+        if (codePoints == maxChars - 1 && cut == name.size())
+        {
+            cut = i;
+        }
+        if (++codePoints > maxChars)
+        {
+            return std::string(name.substr(0, cut)) + "\u2026";
+        }
+    }
+    return std::string(name);
+}
 
 /// Samples a history chart needs before its "collecting" hint is dropped.
 ///
