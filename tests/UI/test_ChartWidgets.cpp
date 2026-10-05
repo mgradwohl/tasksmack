@@ -1420,6 +1420,46 @@ TEST(ChartWidgetsTest, DefaultPlotFlagsHideImPlotsMouseReadout)
     EXPECT_TRUE((PLOT_FLAGS_DEFAULT & ImPlotFlags_NoMouseText) != 0);
 }
 
+// ========== Motion-driven frame requests (#1125) ==========
+
+TEST(HistoryChartMotionTest, EaseFramesAreRequestedOnlyForAVisibleChartThisFrame)
+{
+    // #1281 review: an axis eased before its chart is drawn must not keep the app at full rate when the
+    // chart turns out to be clipped (BeginPlot false), nor carry a stale request to a later frame.
+    using UI::Widgets::shouldRequestEaseFrames;
+    EXPECT_TRUE(shouldRequestEaseFrames(42, 42, true));
+    EXPECT_FALSE(shouldRequestEaseFrames(42, 42, false)); // clipped chart
+    EXPECT_FALSE(shouldRequestEaseFrames(41, 42, true));  // from an earlier frame
+    EXPECT_FALSE(shouldRequestEaseFrames(-1, 42, true));  // nothing pending
+}
+
+TEST(HistoryChartMotionTest, ScrollSpeedIsPlotWidthOverWindowSeconds)
+{
+    // The default 300 s window across 1000 px scrolls ~3.3 px/s: far too slow to need 60 fps.
+    EXPECT_NEAR(historyChartScrollPixelsPerSecond(1000.0, -300.0, 0.0), 1000.0 / 300.0, 1e-12);
+    // A 10 s window over the same width scrolls 100 px/s.
+    EXPECT_DOUBLE_EQ(historyChartScrollPixelsPerSecond(1000.0, -10.0, 0.0), 100.0);
+    // A scrolled-back window moves at the same speed as one ending at "now".
+    EXPECT_DOUBLE_EQ(historyChartScrollPixelsPerSecond(1000.0, -70.0, -60.0), 100.0);
+    // An empty or inverted span, or no width, asks for nothing.
+    EXPECT_DOUBLE_EQ(historyChartScrollPixelsPerSecond(1000.0, 0.0, 0.0), 0.0);
+    EXPECT_DOUBLE_EQ(historyChartScrollPixelsPerSecond(1000.0, 0.0, -5.0), 0.0);
+    EXPECT_DOUBLE_EQ(historyChartScrollPixelsPerSecond(0.0, -300.0, 0.0), 0.0);
+}
+
+TEST(NowBarMotionTest, SettledBarsStopAskingForFrames)
+{
+    // A NowBar 100 px tall easing 0.30 -> 0.36 in a 16 ms frame moves 375 px/s.
+    EXPECT_NEAR(nowBarMotionPixelsPerSecond(0.30, 0.36, 100.0, 0.016), 375.0, 1e-9);
+    // Falling counts the same as rising.
+    EXPECT_NEAR(nowBarMotionPixelsPerSecond(0.36, 0.30, 100.0, 0.016), 375.0, 1e-9);
+    // Converged: no motion, no frames (it used to hold the loop at 60 fps forever).
+    EXPECT_DOUBLE_EQ(nowBarMotionPixelsPerSecond(0.5, 0.5, 100.0, 0.016), 0.0);
+    // Unknown frame time or height: nothing to go on, so nothing asked.
+    EXPECT_DOUBLE_EQ(nowBarMotionPixelsPerSecond(0.3, 0.6, 100.0, 0.0), 0.0);
+    EXPECT_DOUBLE_EQ(nowBarMotionPixelsPerSecond(0.3, 0.6, 0.0, 0.016), 0.0);
+}
+
 TEST(HistoryChartConfigTest, BeginPlotFlagsUnchangedWhenLegendShown)
 {
     EXPECT_EQ(historyChartBeginPlotFlags(PLOT_FLAGS_DEFAULT, true), PLOT_FLAGS_DEFAULT);

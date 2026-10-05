@@ -2,6 +2,7 @@
 
 #include "Core/AnimationRequest.h"
 #include "Domain/Numeric.h"
+#include "Domain/SamplingConfig.h"
 #include "UI/Format.h"
 #include "UI/RateAxis.h"
 #include "UI/RenderMetrics.h"
@@ -50,7 +51,22 @@ namespace Detail
 // setChartAntiAliasingEnabled()/chartAntiAliasingEnabled() below are meant to provide.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 inline bool g_ChartAntiAliasingEnabled = true;
+
+// The frame on which an eased Y axis last asked for full-rate frames (easedChartUpperBound()), or -1.
+// The axis is eased before its chart is drawn, so the request is held here and made by the next
+// HistoryChart only if that chart is actually visible (#1125, #1281 review).
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+inline int g_PendingEaseRequestFrame = -1;
 } // namespace Detail
+
+/// Whether a HistoryChart should ask for full-rate frames for an axis that was eased just before it:
+/// only when an ease request is pending from this same frame and the chart is visible (BeginPlot
+/// returned true). A chart clipped below a scrolling child, whose axis is still easing, asks for
+/// nothing.
+[[nodiscard]] constexpr bool shouldRequestEaseFrames(int pendingFrame, int currentFrame, bool chartVisible) noexcept
+{
+    return chartVisible && pendingFrame >= 0 && pendingFrame == currentFrame;
+}
 
 /// Whether history chart plots render anti-aliased lines (see CHART_ANTI_ALIASING_FLAGS_MASK's
 /// doc comment for why "lines", not "lines/fills": ImPlot's shaded-fill path doesn't currently
@@ -111,9 +127,6 @@ inline constexpr float NOW_BAR_WIDTH_EM = 2.25F;
     const float em = (std::isfinite(emPx) && emPx > 0.0F) ? emPx : 1.0F;
     return std::max(1.0F, std::round(NOW_BAR_WIDTH_EM * em));
 }
-inline constexpr double SMOOTH_FACTOR = 0.5; // fraction of refresh interval used for tau
-inline constexpr double TAU_MS_MIN = 20.0;
-inline constexpr double TAU_MS_MAX = 400.0;
 inline constexpr int LINE_PLOT_MAX_POINTS_DENSE = 720;
 
 /// RAII guard that pushes the chart font (see UI::chartFontSize()) for axis labels, legends and hints.
@@ -147,10 +160,48 @@ class PlotFontGuard
     bool m_FontPushed = false;
 };
 
+/// How live values and "now" bars ease toward each new sample (computeAlpha): the time constant is
+/// `smoothFactor` times the refresh interval, kept within [tauMsMin, tauMsMax].
+struct ChartSmoothing
+{
+    double smoothFactor = Domain::Sampling::CHART_SMOOTH_FACTOR_DEFAULT;
+    double tauMsMin = static_cast<double>(Domain::Sampling::CHART_TAU_MS_MIN_DEFAULT);
+    double tauMsMax = static_cast<double>(Domain::Sampling::CHART_TAU_MS_MAX_DEFAULT);
+};
+
+static_assert(Domain::Sampling::CHART_TAU_MS_MIN_MAX <= Domain::Sampling::CHART_TAU_MS_MAX_BOUND,
+              "a clamped chart_tau_ms_min must never exceed a clamped chart_tau_ms_max (std::clamp needs lo <= hi)");
+
+namespace Detail
+{
+// One instance program-wide, like g_ChartAntiAliasingEnabled above. Read and written on the UI thread only.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+inline ChartSmoothing g_ChartSmoothing;
+} // namespace Detail
+
+/// Sets the smoothing computeAlpha() uses: the [ui] chart_smooth_factor / chart_tau_ms_min /
+/// chart_tau_ms_max settings, pushed in by the App composition root at startup (UI must not read
+/// UserConfig, #1123). Each value is clamped to its SamplingConfig range, so the minimum time
+/// constant can never exceed the maximum.
+inline void setChartSmoothing(double smoothFactor, int tauMsMin, int tauMsMax) noexcept
+{
+    Detail::g_ChartSmoothing = ChartSmoothing{
+        .smoothFactor = Domain::Sampling::clampChartSmoothFactor(smoothFactor),
+        .tauMsMin = static_cast<double>(Domain::Sampling::clampChartTauMsMin(tauMsMin)),
+        .tauMsMax = static_cast<double>(Domain::Sampling::clampChartTauMsMax(tauMsMax)),
+    };
+}
+
+[[nodiscard]] inline ChartSmoothing chartSmoothing() noexcept
+{
+    return Detail::g_ChartSmoothing;
+}
+
 inline double computeAlpha(double deltaTimeSeconds, std::chrono::milliseconds refreshInterval)
 {
+    const ChartSmoothing smoothing = chartSmoothing();
     const double baseIntervalMs = Domain::Numeric::toDouble(refreshInterval.count());
-    const double tauMs = std::clamp(baseIntervalMs * SMOOTH_FACTOR, TAU_MS_MIN, TAU_MS_MAX);
+    const double tauMs = std::clamp(baseIntervalMs * smoothing.smoothFactor, smoothing.tauMsMin, smoothing.tauMsMax);
     const double dtMs = (deltaTimeSeconds > 0.0) ? deltaTimeSeconds * 1000.0 : baseIntervalMs;
     return std::clamp(1.0 - std::exp(-dtMs / std::max(1.0, tauMs)), 0.0, 1.0);
 }
@@ -1674,7 +1725,18 @@ rateHistoryConfig(const char* id, double xMin, double xMax, ImPlotFormatter yFor
         lastPruneFrame = frame;
         std::erase_if(state, [frame](const auto& entry) { return (frame - entry.second.lastFrame) > STALE_FRAMES; });
     }
-    return stepEasedBound(state[chartId], target, frame, static_cast<double>(ImGui::GetIO().DeltaTime));
+    const double bound = stepEasedBound(state[chartId], target, frame, static_cast<double>(ImGui::GetIO().DeltaTime));
+    // A bound still easing rescales the whole chart every frame: keep the full animation rate until it
+    // settles (easeAxisUpperBound snaps to the target once close), then let the chart idle (#1125) --
+    // but only while the chart is visible.
+    // easeAxisUpperBound snaps to the target once close, so "settled" is exact; compared with a
+    // tolerance relative to the bound's size rather than with ==.
+    // The request is held until the chart is known to be visible: see Detail::g_PendingEaseRequestFrame.
+    if (std::abs(bound - target) > 1e-9 * std::max(1.0, std::abs(target)))
+    {
+        Detail::g_PendingEaseRequestFrame = frame;
+    }
+    return bound;
 }
 
 /// The Y upper bound a rate chart draws this frame, for its axis *and* its NowBars (#1003): the bound
@@ -1729,6 +1791,19 @@ inline void setupSecondaryRateAxis(double upperBound, ImPlotFormatter formatter)
     setupNiceAxisTicks(ImAxis_Y2, upperBound, formatter, activeChartDataScope().maxYTicks);
 }
 
+/// How fast a history chart's data scrolls on screen, in pixels per second: its x axis spans
+/// `xMax - xMin` seconds across `plotWidthPx`, and "now" moves one second per second. 0 for an empty
+/// span or width (#1125).
+[[nodiscard]] constexpr double historyChartScrollPixelsPerSecond(double plotWidthPx, double xMin, double xMax) noexcept
+{
+    const double spanSeconds = xMax - xMin;
+    if (!(spanSeconds > 0.0) || !(plotWidthPx > 0.0))
+    {
+        return 0.0;
+    }
+    return plotWidthPx / spanSeconds;
+}
+
 /// RAII frame for every history chart in the app: pushes the chart font, begins the plot,
 /// and applies the shared legend/axis/format/limit setup so all charts look and behave
 /// identically. When the Render Metrics overlay is active it also captures this chart's
@@ -1758,14 +1833,25 @@ class HistoryChart
         // here because ImPlot's public API has no accessor for it once the plot has begun. Scoped by
         // the caller's PushID, so same-label charts in different scopes ease separately.
         const ImGuiID plotId = ImGui::GetID(config.id);
+        // The plot fills the available width (size.x = -1); its data area is a little narrower (axis
+        // labels), so this slightly overstates the scroll speed -- the safe side for pacing.
+        const double plotWidthPx = static_cast<double>(ImGui::GetContentRegionAvail().x);
         m_Active = ImPlot::BeginPlot(config.id, ImVec2(-1, config.height), historyChartBeginPlotFlags(config.flags, config.showLegend));
+        // An axis eased just before this chart asks for full-rate frames only if the chart is visible;
+        // the pending request is consumed either way, so it can't carry to another chart.
+        if (shouldRequestEaseFrames(Detail::g_PendingEaseRequestFrame, ImGui::GetFrameCount(), m_Active))
+        {
+            Core::AnimationRequest::request();
+        }
+        Detail::g_PendingEaseRequestFrame = -1;
         if (!m_Active)
         {
             return;
         }
-        // A visible history chart scrolls every frame: keep the loop at the animation rate (#1037).
-        // BeginPlot is false for a clipped plot, so an off-screen chart asks for nothing.
-        Core::AnimationRequest::request();
+        // A visible history chart scrolls continuously (#1037), at plotWidth / windowSeconds pixels per
+        // second: ask for just the frames that motion needs (#1125). BeginPlot is false for a clipped
+        // plot, so an off-screen chart asks for nothing.
+        Core::AnimationRequest::requestForMotion(historyChartScrollPixelsPerSecond(plotWidthPx, config.xMin, config.xMax));
 
         // Lets plotLineWithFill() cache this chart's reductions (#1139); restored in the destructor.
         m_PreviousDataScope = Detail::g_ActiveChartDataScope;
@@ -1794,6 +1880,13 @@ class HistoryChart
         if (config.yLimits.has_value())
         {
             const double upper = config.easeYUpper ? easedChartUpperBound(plotId, config.yLimits->second) : config.yLimits->second;
+            // This chart's own axis was just eased, and the chart is visible (we're past BeginPlot): make
+            // its request here rather than leaving it pending for the next chart or frame.
+            if (shouldRequestEaseFrames(Detail::g_PendingEaseRequestFrame, ImGui::GetFrameCount(), true))
+            {
+                Core::AnimationRequest::request();
+            }
+            Detail::g_PendingEaseRequestFrame = -1;
             ImPlot::SetupAxisLimits(ImAxis_Y1, config.yLimits->first, upper, ImPlotCond_Always);
             // Round 1-2-5 ticks, at most maxYTicks of them (#1202). Every fixed-limit chart starts
             // at 0 (percent and rate configs); any other lower bound keeps ImPlot's own ticks.
@@ -2025,6 +2118,63 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
     }
 }
 
+/// How fast a NowBar's fill moves on screen, in pixels per second, between two frames @p deltaSeconds
+/// apart: its 0..1 value went from @p previous01 to @p current01 on a bar @p heightPx tall. 0 when
+/// the frame time is unknown (#1125).
+[[nodiscard]] inline double nowBarMotionPixelsPerSecond(double previous01, double current01, double heightPx, double deltaSeconds) noexcept
+{
+    if (!(deltaSeconds > 0.0) || !(heightPx > 0.0))
+    {
+        return 0.0;
+    }
+    return std::abs(current01 - previous01) * heightPx / deltaSeconds;
+}
+
+namespace Detail
+{
+/// Ask the frame loop for the frames a NowBar's easing needs (#1125): the bar's on-screen speed since
+/// the previous frame, so a bar easing toward a new sample animates smoothly and a settled one stops
+/// asking. Before, any visible bar held the loop at the full animation rate forever (#1037). Keyed
+/// per bar by @p barId; a bar not drawn last frame (its tab was hidden) starts from rest.
+inline void requestNowBarMotion(ImGuiID barId, double value01, float heightPx)
+{
+    struct LastDrawn
+    {
+        double value01 = 0.0;
+        int frame = -1;
+    };
+    // UI thread only. Bounded like easedChartUpperBound(): stale bars are dropped once there are many.
+    static std::unordered_map<ImGuiID, LastDrawn> state;
+    static int lastPruneFrame = -1;
+    constexpr std::size_t PRUNE_ABOVE = 256;
+    constexpr int STALE_FRAMES = 600;
+
+    const int frame = ImGui::GetFrameCount();
+    if (state.size() > PRUNE_ABOVE && frame != lastPruneFrame)
+    {
+        lastPruneFrame = frame;
+        std::erase_if(state, [frame](const auto& entry) { return (frame - entry.second.frame) > STALE_FRAMES; });
+    }
+    LastDrawn& last = state[barId];
+    if (last.frame == frame - 1)
+    {
+        Core::AnimationRequest::requestForMotion(nowBarMotionPixelsPerSecond(
+            last.value01, value01, static_cast<double>(heightPx), static_cast<double>(ImGui::GetIO().DeltaTime)));
+    }
+    last = LastDrawn{.value01 = value01, .frame = frame};
+}
+
+/// The motion-tracking key of bar @p index in the chart named @p tableId, unique within the current
+/// ImGui ID scope like the chart itself.
+[[nodiscard]] inline ImGuiID nowBarMotionId(const char* tableId, std::size_t index)
+{
+    ImGui::PushID(tableId);
+    const ImGuiID id = ImGui::GetID(static_cast<int>(index));
+    ImGui::PopID();
+    return id;
+}
+} // namespace Detail
+
 inline void renderHistoryWithNowBars(const char* tableId,
                                      float plotHeight,
                                      const std::function<void()>& plotFn,
@@ -2060,8 +2210,11 @@ inline void renderHistoryWithNowBars(const char* tableId,
 
     if (barsOnly)
     {
-        // With no chart beside them, the bars' easing is what animates (#1037).
-        Core::AnimationRequest::request();
+        // No chart is drawn on this path, so an axis eased for it can't be visible: drop its pending
+        // full-rate request rather than leave it for the next chart (Detail::g_PendingEaseRequestFrame).
+        // The other paths all construct the chart through plotFn -- the table path inside the table,
+        // the clipped-table and bar-less paths directly -- and HistoryChart consumes it there.
+        Detail::g_PendingEaseRequestFrame = -1;
         const float widthPerBar = nowBarWidth(ImGui::GetFontSize());
         const ImGuiStyle& style = ImGui::GetStyle();
 
@@ -2076,6 +2229,7 @@ inline void renderHistoryWithNowBars(const char* tableId,
             }
 
             drawVerticalBarWithValue("##NowBar", bars[i].value01, bars[i].color, plotHeight, widthPerBar, "", "");
+            Detail::requestNowBarMotion(Detail::nowBarMotionId(tableId, i), bars[i].value01, plotHeight);
             if (ImGui::IsItemHovered())
             {
                 const std::string tooltip = selectNowBarTooltip(bars[i]);
@@ -2131,6 +2285,7 @@ inline void renderHistoryWithNowBars(const char* tableId,
 
             ImGui::BeginGroup();
             drawVerticalBarWithValue("##NowBar", bars[i].value01, bars[i].color, plotHeight, widthPerBar, "", "");
+            Detail::requestNowBarMotion(Detail::nowBarMotionId(tableId, i), bars[i].value01, plotHeight);
             if (ImGui::IsItemHovered())
             {
                 const std::string tooltip = selectNowBarTooltip(bars[i]);

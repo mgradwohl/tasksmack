@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -73,19 +74,24 @@ TEST(WindowsSystemProbeTest, ReadReturnsValidCounters)
     EXPECT_GT(counters.cpuCoreCount, 0U);
 }
 
-TEST(WindowsSystemProbeTest, NetworkTotalIsTheSumOfTheReportedInterfaces)
+TEST(WindowsSystemProbeTest, NetworkTotalIsTheSumOfTheReportedHardwareInterfaces)
 {
-    // Total is exactly the interfaces the probe reports (#1030). Which rows are reported -- filter
-    // rows excluded -- is tested with controlled rows in isCountedNetworkRow's tests below.
+    // Total is the hardware interfaces the probe reports, or all of them if none is hardware
+    // (#1030, #1257). Which rows are reported -- filter rows excluded -- and which count are tested
+    // with controlled rows in isCountedNetworkRow's and sumCountedInterfaces' tests below.
     WindowsSystemProbe probe;
     const auto counters = probe.read();
 
+    const bool anyHardware = std::ranges::any_of(counters.networkInterfaces, [](const auto& iface) { return !iface.isVirtual; });
     std::uint64_t rx = 0;
     std::uint64_t tx = 0;
     for (const auto& iface : counters.networkInterfaces)
     {
-        rx += iface.rxBytes;
-        tx += iface.txBytes;
+        if (!anyHardware || !iface.isVirtual)
+        {
+            rx += iface.rxBytes;
+            tx += iface.txBytes;
+        }
     }
     EXPECT_EQ(counters.netRxBytes, rx);
     EXPECT_EQ(counters.netTxBytes, tx);
@@ -409,7 +415,8 @@ TEST(WindowsSystemProbeMathTest, RealInterfacesCountEvenWithIdenticalCounters)
 {
     // Two distinct non-filter adapters can legitimately report the same bytes (e.g. both received
     // the same broadcast and sent nothing); the decision depends only on type and the filter flag.
-    for (const std::uint32_t type : {IF_TYPE_ETHERNET, IF_TYPE_WIFI, IF_TYPE_TUNNEL_LINK, IF_TYPE_PPP_LINK, IF_TYPE_VIRTUAL})
+    for (const std::uint32_t type :
+         {IF_TYPE_ETHERNET, IF_TYPE_WIFI, IF_TYPE_TUNNEL_LINK, IF_TYPE_PPP_LINK, IF_TYPE_VIRTUAL, IF_TYPE_WWAN_GSM, IF_TYPE_WWAN_CDMA})
     {
         EXPECT_TRUE(isCountedNetworkRow(type, false)) << type;
     }
@@ -420,6 +427,73 @@ TEST(WindowsSystemProbeMathTest, LoopbackAndOtherTypesAreNotCounted)
     EXPECT_FALSE(isCountedNetworkRow(IF_TYPE_LOOPBACK, false));
     EXPECT_FALSE(isCountedNetworkRow(1, false)); // IF_TYPE_OTHER
     EXPECT_FALSE(isCountedNetworkRow(0, false));
+}
+
+TEST(WindowsSystemProbeMathTest, MobileBroadbandIsCounted)
+{
+    // A WWAN modem can be a laptop's only uplink; its rows used to be dropped, so the Total read 0 (#1257).
+    EXPECT_EQ(IF_TYPE_WWAN_GSM, 243U);
+    EXPECT_EQ(IF_TYPE_WWAN_CDMA, 244U);
+    EXPECT_TRUE(isCountedNetworkRow(IF_TYPE_WWAN_GSM, false));
+    EXPECT_TRUE(isCountedNetworkRow(IF_TYPE_WWAN_CDMA, false));
+    EXPECT_FALSE(isCountedNetworkRow(IF_TYPE_WWAN_GSM, true));
+}
+
+namespace
+{
+SystemCounters::InterfaceCounters makeInterface(std::uint64_t rx, std::uint64_t tx, bool isVirtual)
+{
+    SystemCounters::InterfaceCounters iface;
+    iface.rxBytes = rx;
+    iface.txBytes = tx;
+    iface.isVirtual = isVirtual;
+    return iface;
+}
+} // namespace
+
+TEST(WindowsSystemProbeMathTest, TotalLeavesVirtualInterfacesOutWhenHardwareIsListed)
+{
+    // Wi-Fi plus a VPN tunnel and the WSL vEthernet adapter: the tunnel's and vEthernet's traffic
+    // also crossed the Wi-Fi adapter, so only Wi-Fi counts (#1257).
+    const std::vector<SystemCounters::InterfaceCounters> interfaces{
+        makeInterface(1'000, 100, false),
+        makeInterface(400, 40, true),
+        makeInterface(300, 30, true),
+    };
+    const auto totals = sumCountedInterfaces(interfaces);
+    EXPECT_EQ(totals.rxBytes, 1'000U);
+    EXPECT_EQ(totals.txBytes, 100U);
+}
+
+TEST(WindowsSystemProbeMathTest, TotalSumsEveryHardwareInterface)
+{
+    const std::vector<SystemCounters::InterfaceCounters> interfaces{
+        makeInterface(1'000, 100, false),
+        makeInterface(2'000, 200, false),
+        makeInterface(5, 5, true),
+    };
+    const auto totals = sumCountedInterfaces(interfaces);
+    EXPECT_EQ(totals.rxBytes, 3'000U);
+    EXPECT_EQ(totals.txBytes, 300U);
+}
+
+TEST(WindowsSystemProbeMathTest, TotalCountsEveryInterfaceWhenAllAreVirtual)
+{
+    // A VM or sandbox whose only adapter is virtual: the Total must not read 0.
+    const std::vector<SystemCounters::InterfaceCounters> interfaces{
+        makeInterface(400, 40, true),
+        makeInterface(300, 30, true),
+    };
+    const auto totals = sumCountedInterfaces(interfaces);
+    EXPECT_EQ(totals.rxBytes, 700U);
+    EXPECT_EQ(totals.txBytes, 70U);
+}
+
+TEST(WindowsSystemProbeMathTest, TotalOfNoInterfacesIsZero)
+{
+    const auto totals = sumCountedInterfaces({});
+    EXPECT_EQ(totals.rxBytes, 0U);
+    EXPECT_EQ(totals.txBytes, 0U);
 }
 
 TEST(WindowsSystemProbeTest, UptimeIncreases)

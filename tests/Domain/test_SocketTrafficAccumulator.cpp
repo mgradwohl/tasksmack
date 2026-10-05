@@ -100,6 +100,54 @@ TEST(SocketTrafficAccumulatorTest, ASocketOpenedWithinTheIntervalCountsAllItsByt
     EXPECT_EQ(processes[0].netSentBytes, 512U);
 }
 
+TEST(SocketTrafficAccumulatorTest, AnUnreadableSocketKeepsItsBaseline)
+{
+    // A socket still open whose counters couldn't be read (a failed EStats read, #1256): its byte
+    // fields are ignored, it credits nothing and isn't taken as closed, and the next readable
+    // sample credits all the growth since the last readable one.
+    SocketTrafficAccumulator accumulator;
+    std::vector processes{process(10)};
+    read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 1'000, .bytesSent = 100}}, processes); // baseline
+    read(accumulator, {{.key = 1, .pid = 10, .readable = false}}, processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 0U);
+    EXPECT_EQ(processes[0].netSentBytes, 0U);
+    read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 9'999'999, .bytesSent = 9'999'999, .readable = false}}, processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 0U) << "an unreadable sample's byte fields are ignored";
+
+    read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 1'500, .bytesSent = 130}}, processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 500U) << "growth since the last readable sample, not lifetime bytes";
+    EXPECT_EQ(processes[0].netSentBytes, 30U);
+}
+
+TEST(SocketTrafficAccumulatorTest, ASocketFirstSeenUnreadableDoesNotCreditItsLifetimeBytes)
+{
+    // A socket first seen unreadable may have been open for hours: its first readable sample only
+    // sets the baseline rather than crediting its lifetime bytes as new (#1256).
+    SocketTrafficAccumulator accumulator;
+    std::vector processes{process(10)};
+    read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 100}}, processes); // baseline
+    read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 100}, {.key = 2, .pid = 10, .readable = false}}, processes);
+    read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 100}, {.key = 2, .pid = 10, .readable = false}}, processes);
+    read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 100}, {.key = 2, .pid = 10, .bytesReceived = 290'000'000}}, processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 0U);
+
+    read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 100}, {.key = 2, .pid = 10, .bytesReceived = 290'050'000}}, processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 50'000U);
+}
+
+TEST(SocketTrafficAccumulatorTest, AnUnreadableSocketThatClosesIsForgotten)
+{
+    // Unreadable keeps a socket open only while it's in the readings: once gone it's closed, and
+    // a socket back under the same key afterwards is new (#1256).
+    SocketTrafficAccumulator accumulator;
+    std::vector processes{process(10)};
+    read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 1'000}}, processes);
+    read(accumulator, {{.key = 1, .pid = 10, .readable = false}}, processes);
+    read(accumulator, {}, processes);
+    read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 40}}, processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 40U);
+}
+
 TEST(SocketTrafficAccumulatorTest, CountersNeverDecrease)
 {
     SocketTrafficAccumulator accumulator;

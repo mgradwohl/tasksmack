@@ -1,8 +1,8 @@
 /// @file test_WindowEventRouting.cpp
 /// @brief Tests for how Application::run() routes SDL window events (Core/WindowEventRouting.h):
 /// SDL_EVENT_QUIT is a non-vetoable termination rather than a second close request (#1150), and
-/// SDL_EVENT_WINDOW_EXPOSED is a redraw rather than a resize interaction (#1154), and an OS maximize is routed to the client-side
-/// maximize (#1208).
+/// SDL_EVENT_WINDOW_EXPOSED is a redraw rather than a resize interaction (#1154), display changes
+/// re-read the refresh rate (#1126), and an OS maximize is routed to the client-side maximize (#1208).
 
 #include "Core/WindowEventRouting.h"
 
@@ -38,6 +38,13 @@ TEST(WindowEventRoutingTest, ExposedIsARedrawNotAResize)
 {
     EXPECT_EQ(classify(SDL_EVENT_WINDOW_EXPOSED), Action::Exposed);
     EXPECT_NE(classify(SDL_EVENT_WINDOW_EXPOSED), Action::Resized);
+}
+
+TEST(WindowEventRoutingTest, DisplayChangesRereadTheRefreshRate)
+{
+    // Moving to a 144 Hz monitor, or a mode change on this one, changes the rate frames pace to (#1126).
+    EXPECT_EQ(classify(SDL_EVENT_WINDOW_DISPLAY_CHANGED), Action::DisplayChanged);
+    EXPECT_EQ(classify(SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED), Action::DisplayChanged);
 }
 
 TEST(WindowEventRoutingTest, OsMaximizeIsRouted)

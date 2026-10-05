@@ -95,12 +95,14 @@ class ProcessesPanel : public Panel
     /// Always reflects the latest published data; returns std::nullopt if not found.
     [[nodiscard]] std::optional<Domain::ProcessSnapshot> findSnapshot(std::int32_t pid) const;
 
-    /// Same as findSnapshot(), but also returns the exact publication version the snapshot was
-    /// read under, atomically. Prefer this over pairing findSnapshot() with a separate
-    /// publication-version read (e.g. Domain::ProcessModel::snapshotVersion()) when the caller
-    /// needs to gate behavior on "is this new data" -- see
-    /// Domain::ProcessModel::findSnapshotWithVersion()'s doc comment.
-    [[nodiscard]] std::optional<Domain::ProcessModel::SnapshotLookupResult> findSnapshotWithVersion(std::int32_t pid) const;
+    /// Have the process model keep a sample of process @p pid from every generation it publishes
+    /// (Domain::ProcessModel::watchProcess()). pid <= 0 stops watching.
+    void watchProcess(std::int32_t pid);
+
+    /// The watched process's samples newer than @p lastSeenVersion, oldest first, appended to
+    /// @p outSamples; see Domain::ProcessModel::watchedSamplesSince(). Like findSnapshot(), this
+    /// bypasses the render cache, so it follows every publish whichever tab is showing.
+    [[nodiscard]] bool watchedSamplesSince(std::uint64_t lastSeenVersion, std::vector<Domain::ProcessSample>& outSamples) const;
 
     /// Get column settings (for persistence)
     [[nodiscard]] const ProcessColumnSettings& columnSettings() const
