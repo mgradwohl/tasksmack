@@ -535,6 +535,11 @@ Coverage reports are written to `coverage/` (gitignored).
 
 CI heavy checks also publish a coverage summary and may emit a warning if coverage is below the configured threshold.
 
+The report counts all of `src/`, not just the files linked into `TaskSmackTests`: the coverage
+scripts pass the instrumented app binary (`build/<preset>/bin/TaskSmack`) to `llvm-cov` as an extra
+`-object`, so every file the tests never execute (the ImGui panels and layers, `Theme.cpp`,
+`main.cpp`, ...) shows up at 0% instead of silently dropping out of the denominator (#1131).
+
 ```bash
 # Linux
 ./tools/coverage.sh
@@ -553,6 +558,12 @@ pwsh tools/coverage.ps1 -Preset win-coverage   # optional; defaults to "win-cove
 > `tools/coverage.sh` exports it before the direct binary run.  If you run the test binary
 > directly (e.g. `./build/debug/tests/TaskSmackTests`) without setting `LD_LIBRARY_PATH`,
 > the GPU mock tests will be skipped automatically via `GTEST_SKIP()`.
+
+> **Note (display-dependent tests):** The `ApplicationTest`, `WindowTest`, `IconLoaderGLTest` and
+> `AssetPathTest.FindAssetsDirIsStableAcrossCalls` tests need a GL 3.3 core context. They skip only
+> when the up-front display probe finds none; once it passes, a construction exception fails the
+> test. Linux CI runs `ctest` under `xvfb-run` with Mesa and sets `TASKSMACK_REQUIRE_DISPLAY=1`,
+> which turns a failed probe into a failure too, so a broken CI display can't hide as skips (#1132).
 
 ## Sanitizers (Linux only)
 

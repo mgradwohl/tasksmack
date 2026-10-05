@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -27,6 +28,7 @@
 
 // NOLINTNEXTLINE(modernize-deprecated-headers) - POSIX signal.h provides kill(), csignal does not
 #include <signal.h>
+#include <sys/poll.h>
 #include <sys/resource.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -49,30 +51,48 @@ namespace
 class SleepingChild
 {
   public:
-    /// `extraThreads` threads besides the main one, all sleeping.
-    explicit SleepingChild(int extraThreads = 0) : m_Pid(fork())
+    /// `extraThreads` threads besides the main one, all sleeping. With extra threads, the
+    /// constructor returns once every one of them is running (threadsReady()), so a test sees a
+    /// fixed thread set rather than racing their start (#1307).
+    explicit SleepingChild(int extraThreads = 0)
     {
+        std::array<int, 2> ready{-1, -1};
+        if (extraThreads > 0 && pipe(ready.data()) != 0)
+        {
+            return; // started() is false
+        }
+        m_Pid = fork();
         if (m_Pid == 0)
         {
+            // The child's main thread never returns, so its locals outlive every worker.
+            int readyFd = ready[1];
             for (int i = 0; i < extraThreads; ++i)
             {
                 pthread_t thread{};
                 pthread_create(
                     &thread,
                     nullptr,
-                    [](void*) -> void*
+                    [](void* arg) -> void*
                     {
+                        const char started = 1;
+                        [[maybe_unused]] const auto written = write(*static_cast<const int*>(arg), &started, 1);
                         for (;;)
                         {
                             pause();
                         }
                     },
-                    nullptr);
+                    &readyFd);
             }
             for (;;)
             {
                 pause();
             }
+        }
+        if (extraThreads > 0)
+        {
+            close(ready[1]);
+            m_ThreadsReady = (m_Pid > 0) && readStartedThreads(ready[0], extraThreads);
+            close(ready[0]);
         }
     }
     SleepingChild(const SleepingChild&) = delete;
@@ -91,6 +111,11 @@ class SleepingChild
     [[nodiscard]] bool started() const
     {
         return m_Pid > 0;
+    }
+    /// Whether every extra thread asked for is running (always false without extra threads).
+    [[nodiscard]] bool threadsReady() const
+    {
+        return m_ThreadsReady;
     }
     [[nodiscard]] bool alive()
     {
@@ -118,6 +143,29 @@ class SleepingChild
     }
 
   private:
+    /// Reads one byte per started worker from `fd`, waiting at most a few seconds for each.
+    static bool readStartedThreads(int fd, int expected)
+    {
+        constexpr int TIMEOUT_MS = 10'000;
+        int received = 0;
+        while (received < expected)
+        {
+            pollfd waitFor{.fd = fd, .events = POLLIN, .revents = 0};
+            if (poll(&waitFor, 1, TIMEOUT_MS) <= 0)
+            {
+                return false;
+            }
+            std::array<char, 16> bytes{};
+            const auto got = read(fd, bytes.data(), bytes.size());
+            if (got <= 0)
+            {
+                return false; // EOF: the child died before all its workers started
+            }
+            received += static_cast<int>(got);
+        }
+        return true;
+    }
+
     bool reap(int options)
     {
         if (!m_Reaped && waitpid(m_Pid, nullptr, options) == m_Pid)
@@ -129,6 +177,7 @@ class SleepingChild
 
     pid_t m_Pid = -1;
     bool m_Reaped = false;
+    bool m_ThreadsReady = false;
 };
 
 // =============================================================================
@@ -404,35 +453,33 @@ TEST(LinuxProcessActionsTest, SetPriorityReachesTheProcessOnlyWhenTheStartTimeMa
     EXPECT_EQ(getpriority(PRIO_PROCESS, static_cast<id_t>(target.pid)), raised);
 }
 
-/// The thread IDs in /proc/<pid>/task, once there are `expected` of them (empty on timeout).
-std::vector<id_t> waitForThreads(pid_t pid, std::size_t expected)
+/// The thread IDs in /proc/<pid>/task.
+std::vector<id_t> listThreads(pid_t pid)
 {
-    for (int attempt = 0; attempt < 200; ++attempt)
+    std::vector<id_t> tids;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(std::format("/proc/{}/task", pid), ec))
     {
-        std::vector<id_t> tids;
-        std::error_code ec;
-        for (const auto& entry : std::filesystem::directory_iterator(std::format("/proc/{}/task", pid), ec))
-        {
-            tids.push_back(static_cast<id_t>(std::stoul(entry.path().filename().string())));
-        }
-        if (tids.size() >= expected)
-        {
-            return tids;
-        }
-        usleep(10'000);
+        tids.push_back(static_cast<id_t>(std::stoul(entry.path().filename().string())));
     }
-    return {};
+    return tids;
 }
 
 TEST(LinuxProcessActionsTest, SetPriorityChangesEveryThread)
 {
     // Nice is per thread on Linux: setpriority(PRIO_PROCESS, pid) alone changes only the main
     // thread, leaving a multithreaded process's workers at the old priority (#1104).
+    //
+    // The child's workers are all running before its threads are listed, so the set is fixed while
+    // it is measured (#1307). It can hold more than the main thread and the two workers: a
+    // sanitizer runtime may start a thread of its own in the child (TSan's background thread
+    // starts with the first pthread_create), and the renice must reach that one too.
     const SleepingChild child(2);
     ASSERT_TRUE(child.started());
+    ASSERT_TRUE(child.threadsReady());
     const ProcessTarget target = child.target();
-    const std::vector<id_t> tids = waitForThreads(target.pid, 3);
-    ASSERT_EQ(tids.size(), 3U);
+    const std::vector<id_t> tids = listThreads(target.pid);
+    ASSERT_GE(tids.size(), 3U);
 
     errno = 0;
     const int before = getpriority(PRIO_PROCESS, static_cast<id_t>(target.pid));
