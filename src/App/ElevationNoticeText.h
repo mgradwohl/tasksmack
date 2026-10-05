@@ -9,8 +9,10 @@
 namespace App::ElevationNoticeText
 {
 
-/// Linux, not root: another user's /proc/[pid]/fd and /proc/[pid]/io can't be read, so that
-/// process's FD count, I/O and network usage (attributed through its fd links) read N/A (#1287).
+/// Linux, neither root nor holding both CAP_DAC_READ_SEARCH and CAP_SYS_PTRACE: another user's
+/// /proc/[pid]/fd and /proc/[pid]/io can't be read, so that process's FD count, I/O and network usage
+/// (attributed through its fd links) read N/A (#1287). CAP_DAC_READ_SEARCH alone restores only FD
+/// counts; it still gets this notice (Platform::ProcPrivileges::hasReducedPrivileges).
 /// Keep in step with docs/guide/faq.md ("Process I/O, FDs or network show N/A").
 inline constexpr std::string_view LINUX = "TaskSmack is running without elevated privileges.\n\n"
                                           "File descriptor counts, I/O statistics and network\n"

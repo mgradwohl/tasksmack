@@ -129,8 +129,9 @@ struct ProcessCapabilities
     bool hasProcessType = false;        // Whether process type classification is available (Windows: App/Background/Windows)
     bool hasGdiObjects = false;         // Whether GDI object count is available (Windows-only via GetGuiResources)
     bool hasReducedPrivileges = false;  // True when elevation would restore currently unavailable data.
-                                        // Linux: non-root (geteuid() != 0); FD counts (/proc/[pid]/fd) and I/O
-                                        //        stats for processes owned by other users are unavailable.
+                                        // Linux: not root, and not both CAP_DAC_READ_SEARCH and CAP_SYS_PTRACE
+                                        //        effective; FD counts, I/O and network for processes owned by
+                                        //        other users are (partly) unavailable (ProcPrivileges.h).
                                         // Windows: non-admin AND EStats was specifically denied (ERROR_ACCESS_DENIED).
                                         //          Remains false when EStats is simply unsupported, because
                                         //          running as Administrator would not restore those counters.

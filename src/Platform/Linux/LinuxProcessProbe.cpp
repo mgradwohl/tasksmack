@@ -16,6 +16,7 @@
 
 #include "Platform/ProcessTypes.h"
 #include "ProcParsing.h"
+#include "ProcPrivileges.h"
 #include "ProcessName.h"
 
 #include <spdlog/spdlog.h>
@@ -307,9 +308,12 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
     const bool hasNetworkCounters = false;
 #endif
 
-    // Reduced privileges: FD counts (/proc/[pid]/fd) and I/O counters (/proc/[pid]/io)
-    // for processes owned by other users are unavailable unless running as root.
-    const bool reducedPrivileges = (geteuid() != 0);
+    // Reduced privileges: FD counts (/proc/[pid]/fd), I/O counters (/proc/[pid]/io) and network
+    // attribution for processes owned by other users need root, or CAP_DAC_READ_SEARCH and
+    // CAP_SYS_PTRACE in the effective set (docs/guide/faq.md's setcap line).
+    const std::vector<char> selfStatus = readProcFileFull((m_ProcRoot / "self" / "status").c_str());
+    const bool reducedPrivileges = ProcPrivileges::hasReducedPrivileges(
+        geteuid() == 0, ProcPrivileges::parseCapEff(std::string_view(selfStatus.data(), selfStatus.size())));
 
     return ProcessCapabilities{.hasIoCounters = m_IoCountersAvailable.load(std::memory_order_acquire),
                                .hasThreadCount = true,
@@ -326,7 +330,7 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasUdpNetworkCounters = false,            // sock_diag has no UDP byte counters (#1101)
                                .hasPowerUsage = m_HasPowerCap,            // Available if RAPL is detected
                                .hasStatus = true,                         // From cgroup freezer state
-                               .hasReducedPrivileges = reducedPrivileges, // Non-root: incomplete FD/IO data
+                               .hasReducedPrivileges = reducedPrivileges, // Incomplete FD/IO/network data
                                .hasSharedMemory = true};                  // From /proc/[pid]/statm
 }
 

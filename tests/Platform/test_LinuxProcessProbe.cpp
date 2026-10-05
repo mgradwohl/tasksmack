@@ -20,6 +20,7 @@
 #if TASKSMACK_HAS_UNISTD
 
 #include "Platform/Linux/LinuxProcessProbe.h"
+#include "Platform/Linux/ProcPrivileges.h"
 #include "Platform/PlatformConfig.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/ScopedTempDir.h"
@@ -43,6 +44,9 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <iterator>
+#include <optional>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <thread>
@@ -90,14 +94,55 @@ TEST(LinuxProcessProbeTest, CapabilitiesReportedCorrectly)
     EXPECT_TRUE(caps.hasSharedMemory);
 }
 
-TEST(LinuxProcessProbeTest, ReducedPrivilegesMatchesEuid)
+TEST(LinuxProcessProbeTest, ReducedPrivilegesMatchesEuidAndEffectiveCapabilities)
 {
-    LinuxProcessProbe probe;
+    const LinuxProcessProbe probe;
     const auto caps = probe.capabilities();
 
-    // hasReducedPrivileges should be true when running as non-root, false as root
-    const bool expectedReducedPrivileges = (geteuid() != 0);
+    // Not reduced as root, or with CAP_DAC_READ_SEARCH + CAP_SYS_PTRACE effective (setcap).
+    std::ifstream statusFile("/proc/self/status");
+    const std::string status{std::istreambuf_iterator<char>(statusFile), std::istreambuf_iterator<char>()};
+    const bool expectedReducedPrivileges = ProcPrivileges::hasReducedPrivileges(geteuid() == 0, ProcPrivileges::parseCapEff(status));
     EXPECT_EQ(caps.hasReducedPrivileges, expectedReducedPrivileges);
+}
+
+// #1327 review: the privilege notice fired for every non-root process, including one granted the
+// capabilities docs/guide/faq.md recommends. CapEff (hex) in /proc/self/status decides instead.
+TEST(ProcPrivilegesTest, ParsesCapEffFromStatus)
+{
+    constexpr std::string_view STATUS = "Name:\tTaskSmack\nCapInh:\t0000000000000000\nCapPrm:\t0000000000080004\n"
+                                        "CapEff:\t0000000000080004\nCapBnd:\t000001ffffffffff\n";
+    EXPECT_EQ(ProcPrivileges::parseCapEff(STATUS), std::optional<std::uint64_t>{0x80004});
+    EXPECT_EQ(ProcPrivileges::parseCapEff("CapEff:\t000001ffffffffff"), std::optional<std::uint64_t>{0x1ffffffffff});
+    EXPECT_EQ(ProcPrivileges::parseCapEff("CapEff:\t0000000000000000\n"), std::optional<std::uint64_t>{0});
+}
+
+TEST(ProcPrivilegesTest, MissingOrMalformedCapEffIsUnknown)
+{
+    EXPECT_EQ(ProcPrivileges::parseCapEff(""), std::nullopt);
+    EXPECT_EQ(ProcPrivileges::parseCapEff("Name:\tx\nCapPrm:\t0000000000080004\n"), std::nullopt);
+    EXPECT_EQ(ProcPrivileges::parseCapEff("CapEff:\n"), std::nullopt);
+    EXPECT_EQ(ProcPrivileges::parseCapEff("CapEff:\tzz00000000000000\n"), std::nullopt);
+    EXPECT_EQ(ProcPrivileges::parseCapEff("CapEff:\t00000000000800g4\n"), std::nullopt);
+    // Only a whole "CapEff:" key at a line start counts.
+    EXPECT_EQ(ProcPrivileges::parseCapEff("XCapEff:\t0000000000080004\n"), std::nullopt);
+}
+
+TEST(ProcPrivilegesTest, RootOrBothCapabilitiesAreNotReduced)
+{
+    constexpr std::uint64_t DAC_READ_SEARCH = std::uint64_t{1} << 2;
+    constexpr std::uint64_t SYS_PTRACE = std::uint64_t{1} << 19;
+
+    EXPECT_FALSE(ProcPrivileges::hasReducedPrivileges(true, std::nullopt));
+    EXPECT_FALSE(ProcPrivileges::hasReducedPrivileges(true, 0));
+    EXPECT_FALSE(ProcPrivileges::hasReducedPrivileges(false, DAC_READ_SEARCH | SYS_PTRACE));
+    EXPECT_FALSE(ProcPrivileges::hasReducedPrivileges(false, 0x1ffffffffffULL));
+
+    // Anything less than both is reduced: CAP_DAC_READ_SEARCH alone restores FD counts, not I/O or network.
+    EXPECT_TRUE(ProcPrivileges::hasReducedPrivileges(false, DAC_READ_SEARCH));
+    EXPECT_TRUE(ProcPrivileges::hasReducedPrivileges(false, SYS_PTRACE));
+    EXPECT_TRUE(ProcPrivileges::hasReducedPrivileges(false, 0));
+    EXPECT_TRUE(ProcPrivileges::hasReducedPrivileges(false, std::nullopt));
 }
 
 TEST(LinuxProcessProbeTest, TicksPerSecondIsPositive)
@@ -810,6 +855,24 @@ TEST(LinuxProcessProbeTest, UnreadableRaplCounterDisablesPowerUsage)
 
     const LinuxProcessProbe probe(proc.path, powercap.path);
     EXPECT_FALSE(probe.capabilities().hasPowerUsage);
+}
+
+TEST(LinuxProcessProbeTest, ReducedPrivilegesReadsCapEffUnderTheProcRoot)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root is never reduced, whatever self/status says";
+    }
+    ScopedTempDir withCaps("ts_test_proc_capeff_full");
+    writeFile(withCaps.path / "self" / "status", "Name:\tTaskSmack\nCapEff:\t0000000000080004\n");
+    EXPECT_FALSE(LinuxProcessProbe(withCaps.path).capabilities().hasReducedPrivileges);
+
+    ScopedTempDir dacOnly("ts_test_proc_capeff_dac");
+    writeFile(dacOnly.path / "self" / "status", "Name:\tTaskSmack\nCapEff:\t0000000000000004\n");
+    EXPECT_TRUE(LinuxProcessProbe(dacOnly.path).capabilities().hasReducedPrivileges);
+
+    ScopedTempDir noStatus("ts_test_proc_capeff_none");
+    EXPECT_TRUE(LinuxProcessProbe(noStatus.path).capabilities().hasReducedPrivileges);
 }
 
 TEST(LinuxProcessProbeTest, NoRaplCounterDisablesPowerUsage)
