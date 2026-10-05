@@ -918,11 +918,13 @@ void SystemMetricsPanel::renderOverview()
             }
 
             // One upper bound for the power axis and its bar, so the bar and line agree (#1003). Sized
-            // to the samples the window shows, not the one trimming keeps left of it (#1145).
-            const double powerAxisUpper =
-                UI::Widgets::easedRateAxisUpperBound("##PowerBatteryHistory",
-                                                     UI::Widgets::maxOfSeriesSince(powerTimeData, axis.xMin, powerHist),
-                                                     UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS);
+            // to the samples the window shows, not the one trimming keeps left of it (#1145), and to the
+            // bar's smoothed value, which can still be easing down from a peak that has just left it.
+            const double powerAxisUpper = UI::Widgets::easedRateAxisUpperBound(
+                "##PowerBatteryHistory",
+                UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(powerTimeData, axis.xMin, powerHist),
+                                               {UI::Widgets::currentIfAvailable(hasProcessPower, m_SmoothedPower.watts)}),
+                UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS);
 
             // Build NowBars
             NowBarList bars;
@@ -1156,13 +1158,17 @@ void SystemMetricsPanel::renderOverview()
         // Threads and handles are counts on the left axis; page faults are a rate, on their own
         // right-hand axis, so a fault spike no longer flattens the count lines (#1024). Each bar is
         // scaled to its series' axis, so a bar and its line show a value at the same height (#1003).
-        // Both are sized to the samples in the window, not ones left of it (#1145).
-        const double countAxisUpper =
-            UI::Widgets::easedRateAxisUpperBound("##ResourcesHistory",
-                                                 UI::Widgets::maxOfSeriesSince(timeData, axis.xMin, threadData, handleData),
-                                                 UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
+        // Both are sized to the samples in the window, not ones left of it (#1145), and to their bars'
+        // smoothed values, which can still be easing down from a peak that has just left it.
+        const double countAxisUpper = UI::Widgets::easedRateAxisUpperBound(
+            "##ResourcesHistory",
+            UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axis.xMin, threadData, handleData),
+                                           {m_SmoothedResources.threads, m_SmoothedResources.handles}),
+            UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
         const double faultAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-            "##ResourcesHistory/Y2", UI::Widgets::maxOfSeriesSince(timeData, axis.xMin, faultData), UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
+            "##ResourcesHistory/Y2",
+            UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axis.xMin, faultData), {m_SmoothedResources.pageFaults}),
+            UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
 
 #ifdef _WIN32
         constexpr const char* handleLabel = "Handles";

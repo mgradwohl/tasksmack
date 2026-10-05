@@ -1172,11 +1172,12 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
                                    UI::Format::percentOneDecimal(std::clamp(bytes * percentPerByte, 0.0, 100.0)));
             };
             // Virtual size in bytes on its own right-hand axis (#992), eased like a rate axis and shared
-            // with its bar.
-            const double virtAxisUpper =
-                UI::Widgets::easedRateAxisUpperBound("##ProcOverviewMemory/Y2",
-                                                     UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, virtData),
-                                                     UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES);
+            // with its bar, whose smoothed value it covers too.
+            const double virtAxisUpper = UI::Widgets::easedRateAxisUpperBound(
+                "##ProcOverviewMemory/Y2",
+                UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, virtData),
+                                               {m_SmoothedUsage.virtualBytes}),
+                UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES);
 
             NowBarList memoryBars;
             // Used and Shared carry their share of RAM in tooltipText (shown on hover and in the value
@@ -1370,18 +1371,27 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
     // Threads, handles (and GDI objects) are counts on the left axis; page faults are a rate, on
     // their own right-hand axis, so a fault spike no longer flattens the count lines (#1024). Each
     // bound covers every series drawn on its axis, and each bar is scaled to its series' axis, so a
-    // bar and its line show a value at the same height (#1003).
+    // bar and its line show a value at the same height (#1003). Each also covers its bars' smoothed
+    // values, which can still be easing down from a peak that has just left the window (#1145).
+    const double handlesNow = UI::Widgets::currentIfAvailable(m_SmoothedUsage.handleCountAvailable, m_SmoothedUsage.handleCount);
 #ifdef _WIN32
-    const double countSeriesMax = std::max(UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, threadData, handleData),
-                                           UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, gdiData));
+    const double countSeriesMax =
+        UI::Widgets::withCurrentValues(std::max(UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, threadData, handleData),
+                                                UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, gdiData)),
+                                       {m_SmoothedUsage.threadCount,
+                                        handlesNow,
+                                        UI::Widgets::currentIfAvailable(m_SmoothedUsage.gdiInitialized, m_SmoothedUsage.gdiObjectCount)});
 #else
-    const double countSeriesMax = UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, threadData, handleData);
+    const double countSeriesMax = UI::Widgets::withCurrentValues(
+        UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, threadData, handleData), {m_SmoothedUsage.threadCount, handlesNow});
 #endif
     const double countAxisUpper =
         UI::Widgets::easedRateAxisUpperBound("##ProcThreadsFaults", countSeriesMax, UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
-    const double faultAxisUpper = UI::Widgets::easedRateAxisUpperBound("##ProcThreadsFaults/Y2",
-                                                                       UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, faultData),
-                                                                       UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
+    const double faultAxisUpper = UI::Widgets::easedRateAxisUpperBound(
+        "##ProcThreadsFaults/Y2",
+        UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, faultData),
+                                       {m_SmoothedUsage.pageFaultsPerSec}),
+        UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
 
     const NowBar threadsBar{.valueText = UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.threadCount)),
                             .label = THREADS_LABEL,
@@ -1553,18 +1563,21 @@ void ProcessDetailsPanel::renderIoStats(UI::Widgets::FillPlotLayout& fill)
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
     const auto timeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
 
-    // Compare the smoothed current rates with history when scaling the NowBars,
-    // so either a historical or newly observed peak remains representable.
-    const double ioAxisUpper =
-        UI::Widgets::easedRateAxisUpperBound("##ProcIoHistory",
-                                             UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, readData, writeData),
-                                             UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
+    // Unreadable I/O counters (#1110) show N/A, as their lines show a gap.
+    const bool ioAvailable = m_SmoothedUsage.ioAvailable;
+
+    // Compare the smoothed current rates with the visible history when scaling the NowBars, so either
+    // a visible or newly observed peak remains representable, and a bar still easing down from a peak
+    // that has just left the window is not clamped to full height (#1145).
+    const double ioAxisUpper = UI::Widgets::easedRateAxisUpperBound(
+        "##ProcIoHistory",
+        UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, readData, writeData),
+                                       {UI::Widgets::currentIfAvailable(ioAvailable, m_SmoothedUsage.ioReadBytesPerSec),
+                                        UI::Widgets::currentIfAvailable(ioAvailable, m_SmoothedUsage.ioWriteBytesPerSec)}),
+        UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
 
     const auto readUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.ioReadBytesPerSec);
     const auto writeUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.ioWriteBytesPerSec);
-
-    // Unreadable I/O counters (#1110) show N/A, as their lines show a gap.
-    const bool ioAvailable = m_SmoothedUsage.ioAvailable;
     const NowBar readBar{
         .valueText = ioAvailable ? UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioReadBytesPerSec, readUnit) : std::string("N/A"),
         .label = IO_READ_LABEL,
@@ -1659,19 +1672,22 @@ void ProcessDetailsPanel::renderNetworkStats(UI::Widgets::FillPlotLayout& fill)
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
     const auto timeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
 
-    // Scale the NowBars against both the historical peak and smoothed current
-    // value so a new traffic burst cannot exceed the normalized range.
-    const double netAxisUpper =
-        UI::Widgets::easedRateAxisUpperBound("##ProcNetworkHistory",
-                                             UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, sentData, recvData),
-                                             UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
-
-    const auto sentUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.netSentBytesPerSec);
-    const auto recvUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.netRecvBytesPerSec);
-
     // Network counters that couldn't be attributed to the process (#1110) show N/A, as their lines
     // show a gap.
     const bool netAvailable = m_SmoothedUsage.networkAvailable;
+
+    // Scale the NowBars against both the visible peak and the smoothed current values, so a new
+    // traffic burst cannot exceed the normalized range, nor a bar still easing down from a peak that
+    // has just left the window (#1145).
+    const double netAxisUpper = UI::Widgets::easedRateAxisUpperBound(
+        "##ProcNetworkHistory",
+        UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, sentData, recvData),
+                                       {UI::Widgets::currentIfAvailable(netAvailable, m_SmoothedUsage.netSentBytesPerSec),
+                                        UI::Widgets::currentIfAvailable(netAvailable, m_SmoothedUsage.netRecvBytesPerSec)}),
+        UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
+
+    const auto sentUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.netSentBytesPerSec);
+    const auto recvUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.netRecvBytesPerSec);
     const NowBar sentBar{.valueText = netAvailable ? UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.netSentBytesPerSec, sentUnit)
                                                    : std::string("N/A"),
                          .label = NET_SENT_LABEL,
@@ -1777,9 +1793,12 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc, 
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
     const auto timeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
 
-    // Use smoothed value for NowBar
+    // Use smoothed value for NowBar; the axis covers it too, so the bar is not clamped while it eases
+    // down from a peak that has just left the window (#1145).
     const double powerAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-        "##ProcPowerHistory", UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, powerData), UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS);
+        "##ProcPowerHistory",
+        UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, powerData), {m_SmoothedUsage.powerWatts}),
+        UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS);
 
     const NowBar powerBar{.valueText = UI::Format::formatPowerOrZero(m_SmoothedUsage.powerWatts),
                           .label = POWER_LABEL,
@@ -2117,9 +2136,13 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
         };
 
         // GPU Memory graph. One upper bound for its axis and its bar, so they agree (#1003), from the
-        // samples in the window, not the one trimming keeps left of it (#1145).
+        // samples in the window, not the one trimming keeps left of it (#1145), and the bar's smoothed
+        // value, which can still be easing down from a peak that has just left it.
         const double gpuMemAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-            "##GPUMemPlot", UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, gpuMemVec), UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES);
+            "##GPUMemPlot",
+            UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, gpuMemVec),
+                                           {m_SmoothedUsage.gpuMemoryBytes}),
+            UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES);
         auto plotGpuMem = [&]()
         {
             const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(

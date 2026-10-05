@@ -154,6 +154,44 @@ TEST(RateAxisTest, FirstIndexAtOrAfterFindsTheWindowsFirstSample)
     EXPECT_EQ(firstIndexAtOrAfter(x, 1.0), 4U);
 }
 
+// ========== withCurrentValues (#1145 review) ==========
+
+TEST(RateAxisTest, ASmoothedValueAboveTheVisibleMaxRaisesTheTarget)
+{
+    // The peak (500) has just left the window, but the bar's smoothed value is still easing down
+    // from it: the axis must cover the bar, or normalizeToUnitInterval() clamps it to full height.
+    const std::array<double, 4> x{-61.0, -40.0, -20.0, 0.0};
+    const std::array<float, 4> s{500.0F, 1.0F, 3.0F, 2.0F};
+    const double target = withCurrentValues(maxOfSeriesSince(x, -60.0, s), {120.0, 2.0});
+    EXPECT_DOUBLE_EQ(target, 120.0);
+    EXPECT_GE(rateAxisUpperBound(target, 1.0), 120.0);
+}
+
+TEST(RateAxisTest, CurrentValuesBelowTheVisibleMaxLeaveItUnchanged)
+{
+    EXPECT_DOUBLE_EQ(withCurrentValues(9.0, {1.0, 8.5}), 9.0);
+    EXPECT_DOUBLE_EQ(withCurrentValues(9.0, {}), 9.0);
+}
+
+TEST(RateAxisTest, NonFiniteCurrentValuesAreIgnored)
+{
+    constexpr double NaN = std::numeric_limits<double>::quiet_NaN();
+    constexpr double INF = std::numeric_limits<double>::infinity();
+    EXPECT_DOUBLE_EQ(withCurrentValues(4.0, {NaN}), 4.0);
+    EXPECT_DOUBLE_EQ(withCurrentValues(4.0, {NaN, INF, -INF, 6.0}), 6.0);
+    // A non-finite or negative visible max counts as 0, as maxOfSeries() would give.
+    EXPECT_DOUBLE_EQ(withCurrentValues(NaN, {NaN}), 0.0);
+    EXPECT_DOUBLE_EQ(withCurrentValues(-3.0, {2.0}), 2.0);
+}
+
+TEST(RateAxisTest, CurrentIfAvailableIsNaNForAnUnavailableReading)
+{
+    EXPECT_DOUBLE_EQ(currentIfAvailable(true, 42.0), 42.0);
+    EXPECT_TRUE(std::isnan(currentIfAvailable(false, 42.0)));
+    // An unavailable bar's stale value does not move the axis.
+    EXPECT_DOUBLE_EQ(withCurrentValues(5.0, {currentIfAvailable(false, 1000.0)}), 5.0);
+}
+
 // ========== easeAxisUpperBound (#1011) ==========
 
 TEST(RateAxisTest, EasingMovesPartWayTowardTheTargetEachFrame)
