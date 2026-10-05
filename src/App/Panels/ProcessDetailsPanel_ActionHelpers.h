@@ -73,6 +73,14 @@ enum class ProcessAction : std::uint8_t
     return "";
 }
 
+/// True for the actions that end the process (Terminate, Kill), which can lose its unsaved work and
+/// cannot be undone. Their buttons are drawn in the theme's danger colour; Suspend and Resume, which
+/// undo each other, are not (#1273).
+[[nodiscard]] constexpr bool isDestructiveAction(ProcessAction action) noexcept
+{
+    return action == ProcessAction::Terminate || action == ProcessAction::Kill;
+}
+
 /// Confirm dialog title, "Kill firefox (PID 1234)?": the action, then the process it hits (#1203).
 [[nodiscard]] inline std::string confirmTitle(ProcessAction action, std::string_view processName, std::int32_t pid)
 {

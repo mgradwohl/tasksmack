@@ -169,7 +169,7 @@ Right-click any process row to access actions:
 | Resume (SIGCONT) | ✅ | ❌ |
 | Change priority (nice) | ✅ | ✅ (mapped) |
 
-Destructive actions require confirmation.
+Destructive actions require confirmation. In Process Details, Terminate and Kill, which end the process, are drawn in red, apart from Suspend and Resume.
 
 ### Themes and Configuration
 
@@ -232,7 +232,17 @@ TaskSmack reopens at the size and position it had when it was closed, and maximi
 
 If the saved position is no longer on any connected display (a monitor was unplugged, say), TaskSmack opens centered on the primary display instead, and a saved size larger than the display is shrunk to fit it.
 
-Dialogs (Settings, About and the privilege notice) are kept inside the main window. When the font size or display scaling makes the Settings dialog taller than the window, its options scroll and the Cancel and Apply buttons stay visible; Escape also cancels it.
+### Settings dialog
+
+The Settings dialog (the gear icon) has three sections:
+
+- **Appearance:** Theme and Font size (Small to Largest).
+- **Performance:** Update interval (how often values are sampled) and History length (how much the charts keep).
+- **Advanced:** buttons that open `config.toml` and the user themes folder, and **Show limited-data notice**, which turns the startup notice about missing administrator or root rights back on after its "Don't show again" was ticked.
+
+**Save** writes your changes to `config.toml` and closes the dialog; **Cancel** (or Escape) closes it without changing anything. **Reset to defaults** sets every control in the dialog back to its default, and Save keeps them.
+
+Dialogs (Settings, About and the limited-data notice) are kept inside the main window. When the font size or display scaling makes the Settings dialog taller than the window, its options scroll and the Cancel and Save buttons stay visible.
 
 To reset all layout and theme settings, delete the `config.toml` file in the user config directory. TaskSmack will recreate it with defaults on the next launch.
 

@@ -46,7 +46,18 @@ namespace
 constexpr const char* EDIT_CONFIG_LABEL = ICON_FA_FILE_PEN "  Edit Config File";
 constexpr const char* OPEN_THEMES_LABEL = ICON_FA_FOLDER "  Open Themes Folder";
 constexpr const char* CANCEL_LABEL = "Cancel";
-constexpr const char* APPLY_LABEL = "Apply";
+// "Save", not "Apply": the button writes config.toml and closes the dialog, which is what Save
+// means; "Apply" suggested the dialog would stay open (#1273).
+constexpr const char* SAVE_LABEL = "Save";
+// Fills the dialog's controls with the defaults; nothing is written until Save.
+constexpr const char* RESET_LABEL = "Reset to defaults";
+constexpr const char* PRIVILEGE_NOTICE_LABEL = "Show limited-data notice";
+
+// Row labels. Sentence case, like the rest of the dialog's text; the section headers are Title Case.
+constexpr const char* THEME_LABEL = "Theme";
+constexpr const char* FONT_SIZE_LABEL = "Font size";
+constexpr const char* REFRESH_LABEL = "Update interval";
+constexpr const char* HISTORY_LABEL = "History length";
 #ifndef _WIN32
 constexpr const char* NATIVE_DECORATIONS_LABEL = "Use native window decorations instead of the custom title bar";
 #endif
@@ -126,6 +137,22 @@ void SettingsLayer::loadCurrentSettings()
     m_CustomRefreshPreview = Detail::customRefreshLabel(settings.refreshIntervalMs);
     m_CustomHistoryPreview = Detail::customHistoryLabel(settings.maxHistorySeconds);
     m_ForceNativeDecorationsOnWayland = settings.forceNativeWindowDecorationsOnWayland;
+    m_ShowPrivilegeNotice = settings.showPrivilegeNotice;
+}
+
+void SettingsLayer::resetToDefaults()
+{
+    // Every control moves to its default and counts as picked, so Save writes it; Cancel still
+    // leaves the stored settings as they were (#1273).
+    const UserSettings defaults;
+    const auto themeIt = std::ranges::find(m_Themes, defaults.themeId, &UI::DiscoveredTheme::id);
+    m_ThemeChoice = (themeIt != m_Themes.end()) ? ComboState{.index = static_cast<std::size_t>(themeIt - m_Themes.begin()), .touched = true}
+                                                : m_ThemeChoice; // The default theme's file is missing: leave the choice as it is
+    m_FontSizeChoice = Detail::defaultChoice(FONT_SIZE_OPTIONS, defaults.fontSize, &Detail::FontSizeOption::value);
+    m_RefreshRateChoice = Detail::defaultChoice(REFRESH_RATE_OPTIONS, defaults.refreshIntervalMs, &Detail::RefreshRateOption::valueMs);
+    m_HistoryChoice = Detail::defaultChoice(HISTORY_OPTIONS, defaults.maxHistorySeconds, &Detail::HistoryOption::valueSeconds);
+    m_ForceNativeDecorationsOnWayland = defaults.forceNativeWindowDecorationsOnWayland;
+    m_ShowPrivilegeNotice = defaults.showPrivilegeNotice;
 }
 
 void SettingsLayer::applySettings()
@@ -197,6 +224,13 @@ void SettingsLayer::applySettings()
                      m_ForceNativeDecorationsOnWayland);
     }
 
+    // Limited-data notice preference (read at startup, like the dialog's own "Don't show again")
+    if (m_ShowPrivilegeNotice != settings.showPrivilegeNotice)
+    {
+        settings.showPrivilegeNotice = m_ShowPrivilegeNotice;
+        spdlog::info("Settings: Show limited-data notice changed to {}", m_ShowPrivilegeNotice);
+    }
+
     // Save to disk
     config.save();
 }
@@ -252,7 +286,7 @@ void SettingsLayer::renderSettingsDialog()
         }
         bool comboOpen = false;
 
-        // Everything above the Cancel/Apply row scrolls in a child sized to its content, but never
+        // Everything above the Cancel/Save row scrolls in a child sized to its content, but never
         // taller than leaves room for that row below it, so the buttons stay on screen at any font
         // size in any window height (#1129). Reserved: the title bar, the window padding, and the
         // footer (separator, spacing and the button row) with the item spacing between them.
@@ -264,26 +298,29 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::BeginChild("##SettingsBody", ImVec2(0.0F, 0.0F), ImGuiChildFlags_AutoResizeX | ImGuiChildFlags_AutoResizeY);
 
         // ========================================
-        // APPEARANCE Section
+        // Appearance Section
         // ========================================
-        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_PALETTE "  APPEARANCE");
+        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_PALETTE "  Appearance");
         ImGui::Separator();
         ImGui::Spacing();
 
         // Column geometry, measured from the text it has to hold rather than fixed at 150/250px.
         // Those constants only looked right at one font size: at Small the labels used a fraction of
         // the 150px column and the 250px combos dwarfed values like "Small" and "250 ms", while at
-        // Even Huger 150px was barely enough for "Metric Refresh Rate" (#921).
+        // Even Huger 150px was barely enough for "Metric Refresh Rate", as the update interval was
+        // labelled then (#921).
         //
         // Measuring is better than an em multiple here because these columns hold variable text: it
         // is self-documenting, it tracks the theme list and option arrays if either gains an entry,
         // and it absorbs the glyph-metric differences between platforms automatically.
         const float emPx = ImGui::GetFontSize();
         const float labelGap = style.ItemSpacing.x * 2.0F;
-        const float widestLabel = std::max({ImGui::CalcTextSize("Theme").x,
-                                            ImGui::CalcTextSize("Font Size").x,
-                                            ImGui::CalcTextSize("Metric Refresh Rate").x,
-                                            ImGui::CalcTextSize("Metric History").x});
+        const float widestLabel = std::max({
+            ImGui::CalcTextSize(THEME_LABEL).x,
+            ImGui::CalcTextSize(FONT_SIZE_LABEL).x,
+            ImGui::CalcTextSize(REFRESH_LABEL).x,
+            ImGui::CalcTextSize(HISTORY_LABEL).x,
+        });
         const float valueColumn = UI::DialogMetrics::computeValueColumnStart(widestLabel, labelGap);
 
         // What a combo needs beyond its text: ImGui's frame padding either side, plus the arrow
@@ -312,25 +349,29 @@ void SettingsLayer::renderSettingsDialog()
         const float comboMinWidth = (MIN_COMBO_EM * emPx) + comboDecoration;
 
         // The dialog auto-fits its widest row, and that is usually not a combo row: the two
-        // ADVANCED buttons and the Cancel/Apply pair are both wider. Sized only to their own text,
+        // Advanced buttons and the Reset/Cancel/Save row are both wider. Sized only to their own text,
         // the combos stopped short of the dialog's right edge, in line with neither the separators
-        // nor Apply (#972). Those rows are measured from text as well, so the width they will give
+        // nor Save (#972). Those rows are measured from text as well, so the width they will give
         // the dialog is known here, and the combos are widened to reach it.
         const float advancedRowWidth = ImGui::CalcTextSize(EDIT_CONFIG_LABEL).x + ImGui::CalcTextSize(OPEN_THEMES_LABEL).x +
                                        (style.FramePadding.x * 4.0F) + style.ItemSpacing.x;
         const float actionButtonWidth =
             std::max(UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize(CANCEL_LABEL).x, emPx, SETTINGS_BUTTON_MIN_EM),
-                     UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize(APPLY_LABEL).x, emPx, SETTINGS_BUTTON_MIN_EM));
-        const float actionRowWidth = (actionButtonWidth * 2.0F) + style.ItemSpacing.x;
-        // On native Wayland the ADVANCED section also has a checkbox, and its label makes that row
-        // the widest in the dialog. A checkbox is a square of the frame height, then its label.
+                     UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize(SAVE_LABEL).x, emPx, SETTINGS_BUTTON_MIN_EM));
+        // Reset to defaults sits at the left of the same row, at its own text's width.
+        const float resetButtonWidth = ImGui::CalcTextSize(RESET_LABEL).x + (style.FramePadding.x * 2.0F);
+        const float actionRowWidth = resetButtonWidth + (actionButtonWidth * 2.0F) + (style.ItemSpacing.x * 2.0F);
+        // The Advanced section's checkboxes: a square of the frame height, then the label. On
+        // native Wayland the window-decorations one is the widest row in the dialog.
+        const auto checkboxWidth = [&style](const char* label)
+        {
+            return ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + ImGui::CalcTextSize(label).x;
+        };
 #ifndef _WIN32
-        const float checkboxRowWidth =
-            Core::VideoBackend::isWayland()
-                ? (ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + ImGui::CalcTextSize(NATIVE_DECORATIONS_LABEL).x)
-                : 0.0F;
+        const float checkboxRowWidth = std::max(checkboxWidth(PRIVILEGE_NOTICE_LABEL),
+                                                Core::VideoBackend::isWayland() ? checkboxWidth(NATIVE_DECORATIONS_LABEL) : 0.0F);
 #else
-        const float checkboxRowWidth = 0.0F;
+        const float checkboxRowWidth = checkboxWidth(PRIVILEGE_NOTICE_LABEL);
 #endif
         const float widestOtherRow = std::max({advancedRowWidth, actionRowWidth, checkboxRowWidth});
 
@@ -347,7 +388,7 @@ void SettingsLayer::renderSettingsDialog()
 
         // Theme dropdown
         ImGui::AlignTextToFramePadding();
-        ImGui::Text("Theme");
+        ImGui::TextUnformatted(THEME_LABEL);
         ImGui::SameLine(valueColumn);
         ImGui::SetNextItemWidth(appearanceComboWidth);
 
@@ -381,9 +422,9 @@ void SettingsLayer::renderSettingsDialog()
 
         ImGui::Spacing();
 
-        // Font Size dropdown
+        // Font size dropdown
         ImGui::AlignTextToFramePadding();
-        ImGui::Text("Font Size");
+        ImGui::TextUnformatted(FONT_SIZE_LABEL);
         ImGui::SameLine(valueColumn);
         ImGui::SetNextItemWidth(appearanceComboWidth);
 
@@ -417,7 +458,7 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::Spacing();
 
         // ========================================
-        // PERFORMANCE Section
+        // Performance Section
         // ========================================
         // The performance combos hold much shorter values ("250 ms", "5 minutes") than the theme
         // names above, so they get their own measured width and keep the established look by sharing
@@ -446,13 +487,13 @@ void SettingsLayer::renderSettingsDialog()
             widestPerfValue + comboDecoration, valueColumn, rowSurrounding, viewport->WorkSize.x, comboMinWidth);
         const float perfLabelWidth = UI::DialogMetrics::computeRightAlignedStart(valueColumn, appearanceComboWidth, perfComboWidth);
 
-        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GAUGE_HIGH "  PERFORMANCE");
+        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GAUGE_HIGH "  Performance");
         ImGui::Separator();
         ImGui::Spacing();
 
-        // Metric Refresh Rate dropdown
+        // Update interval dropdown
         ImGui::AlignTextToFramePadding();
-        ImGui::Text("Metric Refresh Rate");
+        ImGui::TextUnformatted(REFRESH_LABEL);
         ImGui::SameLine(perfLabelWidth);
         ImGui::SetNextItemWidth(perfComboWidth);
 
@@ -481,9 +522,9 @@ void SettingsLayer::renderSettingsDialog()
 
         ImGui::Spacing();
 
-        // Metric History Duration dropdown
+        // History length dropdown
         ImGui::AlignTextToFramePadding();
-        ImGui::Text("Metric History");
+        ImGui::TextUnformatted(HISTORY_LABEL);
         ImGui::SameLine(perfLabelWidth);
         ImGui::SetNextItemWidth(perfComboWidth);
 
@@ -515,9 +556,9 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::Spacing();
 
         // ========================================
-        // ADVANCED Section
+        // Advanced Section
         // ========================================
-        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_FOLDER_OPEN "  ADVANCED");
+        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_FOLDER_OPEN "  Advanced");
         ImGui::Separator();
         ImGui::Spacing();
 
@@ -536,6 +577,12 @@ void SettingsLayer::renderSettingsDialog()
             (void) App::PlatformOpen::openWithSystemHandler(getUserThemesDir());
         }
         ImGui::PopStyleColor();
+
+        // The notice TaskSmack shows at startup when it runs without the rights to read every
+        // process. Its "Don't show again" clears this; here it can be turned back on (#1273).
+        ImGui::Spacing();
+        ImGui::Checkbox(PRIVILEGE_NOTICE_LABEL, &m_ShowPrivilegeNotice);
+        ImGui::SetItemTooltip("At startup, say when TaskSmack can't read every process's details without administrator or root rights");
 
 #ifndef _WIN32
         // Only meaningful on native Wayland -- the custom title bar's drag/resize
@@ -565,17 +612,26 @@ void SettingsLayer::renderSettingsDialog()
         // Floor of 9.375 em is exactly the former fixed 100px at the reference configuration; the
         // measured term takes over for whichever of the two labels is wider once the font grows.
         // (Computed above as actionButtonWidth, where the combos need it to find the dialog's width.)
-        // Shrunk to the row when the viewport-capped dialog is narrower than the pair (#1129), so
-        // Cancel can't be pushed off the left edge.
+        // Shrunk to the row when the viewport-capped dialog is narrower than the row (#1129), so
+        // Cancel can't be pushed off the left edge. Reset to defaults keeps its width at the left.
+        const float rowStartX = ImGui::GetCursorPosX();
         const float availWidth = ImGui::GetContentRegionAvail().x;
-        const float buttonWidth = UI::DialogMetrics::fitActionButtonPairWidth(actionButtonWidth, style.ItemSpacing.x, availWidth);
+        const float pairAvailWidth = std::max(0.0F, availWidth - resetButtonWidth - style.ItemSpacing.x);
+        const float buttonWidth = UI::DialogMetrics::fitActionButtonPairWidth(actionButtonWidth, style.ItemSpacing.x, pairAvailWidth);
         const float totalButtonWidth = (buttonWidth * 2.0F) + style.ItemSpacing.x;
-
-        // Right-align buttons
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0F, availWidth - totalButtonWidth));
 
         // Push text color to ensure visibility on button backgrounds
         ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
+        if (ImGui::Button(RESET_LABEL, ImVec2(resetButtonWidth, 0.0F)))
+        {
+            resetToDefaults();
+        }
+        ImGui::SetItemTooltip("Put every setting here back to its default; Save keeps them");
+        ImGui::SameLine();
+
+        // Right-align Cancel and Save
+        ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), rowStartX + availWidth - totalButtonWidth));
+
         if (ImGui::Button(CANCEL_LABEL, ImVec2(buttonWidth, 0.0F)))
         {
             ImGui::CloseCurrentPopup();
@@ -584,11 +640,11 @@ void SettingsLayer::renderSettingsDialog()
 
         ImGui::SameLine();
 
-        // Apply button with success color for positive action. Its label is drawn in whichever of
+        // Save button with success color for positive action. Its label is drawn in whichever of
         // the theme's two poles -- its text colour or its window background -- reads better on the
         // fill showing in the button's current state; the ordinary text colour was nearly invisible
         // on it in most of the bundled themes (#969).
-        if (UI::Widgets::filledButton(APPLY_LABEL,
+        if (UI::Widgets::filledButton(SAVE_LABEL,
                                       ImVec2(buttonWidth, 0.0F),
                                       {
                                           .resting = theme.scheme().successButton,

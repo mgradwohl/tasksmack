@@ -32,7 +32,7 @@ inline constexpr std::array<FontSizeOption, 6> FONT_SIZE_OPTIONS = {{
     {.label = "Large", .value = UI::FontSize::Large},
     {.label = "Extra Large", .value = UI::FontSize::ExtraLarge},
     {.label = "Huge", .value = UI::FontSize::Huge},
-    {.label = "Even Huger", .value = UI::FontSize::EvenHuger},
+    {.label = "Largest", .value = UI::FontSize::EvenHuger},
 }};
 
 // ========================================
@@ -102,7 +102,7 @@ inline constexpr std::array<HistoryOption, 4> HISTORY_OPTIONS = {{
 }
 
 // ========================================
-// Combo state and what Apply writes (#1120, #1151)
+// Combo state and what Save writes (#1120, #1151)
 // ========================================
 
 /// One Settings combo: the option matching the stored value when the dialog opened (nullopt when
@@ -114,7 +114,7 @@ struct ComboState
     bool touched = false;
 };
 
-/// What Apply should write for a combo: the option the user picked, or nothing for a control left
+/// What Save should write for a combo: the option the user picked, or nothing for a control left
 /// untouched. Writing every control back used to replace stored values the dialog can't show with
 /// a fallback option (#1120), and to undo a font size changed by Ctrl+= while the dialog was open
 /// (#1151).
@@ -139,6 +139,16 @@ template<typename Option, std::size_t N, typename Value, typename Projection>
         return std::nullopt;
     }
     return static_cast<std::size_t>(it - options.begin());
+}
+
+/// A combo set back to its default by Reset to defaults: on the option whose value is
+/// `defaultValue`, and picked, so Save writes it. A default that is none of the options (which no
+/// shipped default is) leaves the combo untouched rather than writing a fallback option.
+template<typename Option, std::size_t N, typename Value, typename Projection>
+[[nodiscard]] ComboState defaultChoice(const std::array<Option, N>& options, const Value& defaultValue, Projection projection)
+{
+    const std::optional<std::size_t> index = optionIndexOf(options, defaultValue, projection);
+    return ComboState{.index = index, .touched = index.has_value()};
 }
 
 /// Combo preview for a refresh interval that isn't one of the options.

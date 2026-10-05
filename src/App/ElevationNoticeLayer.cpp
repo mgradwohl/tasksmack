@@ -132,6 +132,7 @@ void ElevationNoticeLayer::renderDialog()
 
         // "Don't show again" checkbox
         ImGui::Checkbox("Don't show again", &m_DontShowAgain);
+        ImGui::SetItemTooltip("Settings > Advanced > Show limited-data notice turns it back on");
 
         ImGui::Spacing();
         ImGui::Separator();

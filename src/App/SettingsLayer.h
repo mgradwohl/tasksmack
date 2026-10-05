@@ -33,18 +33,20 @@ class SettingsLayer : public Core::Layer
     void renderSettingsDialog();
     void loadCurrentSettings();
     void applySettings();
+    void resetToDefaults();
 
     bool m_OpenRequested = false;
     // Whether one of the dialog's combos was open on the previous frame, so the Escape that closes
     // a combo does not also cancel the dialog (#1129).
     bool m_ComboOpenLastFrame = false;
 
-    // The combos' state while the dialog is open. Apply writes only the ones the user picked (#1120).
+    // The combos' state while the dialog is open. Save writes only the ones the user picked (#1120).
     Detail::ComboState m_ThemeChoice;
     Detail::ComboState m_FontSizeChoice;
     Detail::ComboState m_RefreshRateChoice;
     Detail::ComboState m_HistoryChoice;
     bool m_ForceNativeDecorationsOnWayland = false;
+    bool m_ShowPrivilegeNotice = true;
 
     // Previews for stored values that aren't among the options ("Custom (750 ms)"), built on open.
     std::string m_CustomThemePreview;

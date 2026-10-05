@@ -84,10 +84,12 @@ void dropOldest(std::vector<double>& data, std::size_t count)
 constexpr const char* CPU_TOTAL_LABEL = "Total";
 constexpr const char* CPU_USER_LABEL = "User";
 constexpr const char* CPU_SYSTEM_LABEL = "System";
-constexpr const char* MEM_USED_LABEL = "Used";
+// The resident and peak pair carry the Processes table's column names, so the chart and the table
+// call one quantity by one name (#1273).
+constexpr const char* MEM_USED_LABEL = "Memory";
 constexpr const char* MEM_SHARED_LABEL = "Shared";
 constexpr const char* MEM_VIRTUAL_LABEL = "Virtual";
-constexpr const char* MEM_PEAK_LABEL = "Peak Used";
+constexpr const char* MEM_PEAK_LABEL = "Peak Mem";
 constexpr const char* THREADS_LABEL = "Threads";
 constexpr const char* FAULTS_LABEL = "Page Faults/s";
 #ifdef _WIN32
@@ -112,6 +114,13 @@ constexpr const char* GPU_MEMORY_LABEL = "Memory";
         return 0.0;
     }
     return usedPercent / Domain::Numeric::toDouble(snapshot.memoryBytes);
+}
+
+/// The theme's danger fills, for the buttons that end a process (Detail::isDestructiveAction()).
+[[nodiscard]] UI::Widgets::ButtonFills dangerButtonFills()
+{
+    const auto& scheme = UI::Theme::get().scheme();
+    return {.resting = scheme.dangerButton, .hovered = scheme.dangerButtonHovered, .pressed = scheme.dangerButtonActive};
 }
 
 /// A count history sample as text, or N/A for NaN (an unread value or a gap, #1110 / #1098): std::llround
@@ -2327,7 +2336,16 @@ void ProcessDetailsPanel::renderConfirmDialog()
             contentBudget,
             confirmStyle.ItemSpacing.x);
 
-        if (ImGui::Button(confirmLabel, ImVec2(confirmButtonWidth, 0.0F)))
+        // Ending a process can lose its work, so Terminate and Kill confirm in the danger colour
+        // their buttons in the Actions tab use (#1273).
+        const auto& theme = UI::Theme::get();
+        const bool confirmed = Detail::isDestructiveAction(m_ConfirmAction) ? UI::Widgets::filledButton(confirmLabel,
+                                                                                                        ImVec2(confirmButtonWidth, 0.0F),
+                                                                                                        dangerButtonFills(),
+                                                                                                        theme.scheme().textPrimary,
+                                                                                                        theme.scheme().windowBg)
+                                                                            : ImGui::Button(confirmLabel, ImVec2(confirmButtonWidth, 0.0F));
+        if (confirmed)
         {
             dispatchConfirmedAction();
             m_ShowConfirmDialog = false;
@@ -2389,6 +2407,10 @@ void ProcessDetailsPanel::renderActionButtons()
     constexpr float BUTTON_HEIGHT = 0.0F; // Use default height
     const ImVec2 buttonSize(buttonWidth, BUTTON_HEIGHT);
 
+    // Terminate and Kill end the process, so they are drawn in the theme's danger colour, apart from
+    // Suspend and Resume, which can be undone (#1273).
+    const auto& theme = UI::Theme::get();
+
     // Use a table for consistent alignment
     if (ImGui::BeginTable("ActionButtons", 2, ImGuiTableFlags_SizingFixedFit))
     {
@@ -2402,7 +2424,8 @@ void ProcessDetailsPanel::renderActionButtons()
         ImGui::TableNextColumn();
         if (m_ActionCapabilities.canTerminate)
         {
-            if (ImGui::Button(TERMINATE_LABEL, buttonSize))
+            if (UI::Widgets::filledButton(
+                    TERMINATE_LABEL, buttonSize, dangerButtonFills(), theme.scheme().textPrimary, theme.scheme().windowBg))
             {
                 m_ConfirmAction = ProcessAction::Terminate;
                 m_ShowConfirmDialog = true;
@@ -2417,7 +2440,7 @@ void ProcessDetailsPanel::renderActionButtons()
         ImGui::TableNextColumn();
         if (m_ActionCapabilities.canKill)
         {
-            if (ImGui::Button(KILL_LABEL, buttonSize))
+            if (UI::Widgets::filledButton(KILL_LABEL, buttonSize, dangerButtonFills(), theme.scheme().textPrimary, theme.scheme().windowBg))
             {
                 m_ConfirmAction = ProcessAction::Kill;
                 m_ShowConfirmDialog = true;
