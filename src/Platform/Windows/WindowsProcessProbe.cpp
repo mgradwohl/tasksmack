@@ -212,8 +212,8 @@ class ScopedHandle
     std::array<WCHAR, 256> userName{};
     std::array<WCHAR, 256> domainName{};
     // Fallback to the actual array size constant (256) if conversion fails
-    DWORD userNameLen = Domain::Numeric::narrowOr<DWORD>(userName.size(), DWORD{256});
-    DWORD domainNameLen = Domain::Numeric::narrowOr<DWORD>(domainName.size(), DWORD{256});
+    auto userNameLen = Domain::Numeric::narrowOr<DWORD>(userName.size(), DWORD{256});
+    auto domainNameLen = Domain::Numeric::narrowOr<DWORD>(domainName.size(), DWORD{256});
     SID_NAME_USE sidType{SidTypeUnknown}; // LookupAccountSidW will overwrite this; SidTypeUnknown is the nearest valid zero-like sentinel
 
     if (LookupAccountSidW(nullptr, tokenUser.User.Sid, userName.data(), &userNameLen, domainName.data(), &domainNameLen, &sidType) == 0)
@@ -241,7 +241,7 @@ class ScopedHandle
     std::wstring path(kInitialSize, L'\0');
     for (;;)
     {
-        DWORD size = static_cast<DWORD>(path.size());
+        auto size = static_cast<DWORD>(path.size());
         if (QueryFullProcessImageNameW(hProcess, 0, path.data(), &size) != 0)
         {
             path.resize(size);
@@ -398,7 +398,7 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
     ULONG returnLen = 0;
 
     static_assert(sizeof(extInfo) <= std::numeric_limits<ULONG>::max(), "ProcessExtendedBasicInformation size exceeds ULONG range");
-    const ULONG extInfoSize = Domain::Numeric::narrowOr<ULONG>(sizeof(extInfo), ULONG{0});
+    const auto extInfoSize = Domain::Numeric::narrowOr<ULONG>(sizeof(extInfo), ULONG{0});
 
     const NTSTATUS status = fn(hProcess, PROCESS_INFO_EXTENDED_BASIC, &extInfo, extInfoSize, &returnLen);
     if (status < 0)
@@ -524,7 +524,7 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
         {
             // StringFileInfo queries return wchar_t strings per the Windows API contract.
             // LPVOID is void* so an explicit cast is required; this is safe here.
-            const wchar_t* companyName = static_cast<const wchar_t*>(companyNamePtr);
+            const auto* companyName = static_cast<const wchar_t*>(companyNamePtr);
             return WinString::wideToUtf8(companyName);
         }
         return {};
@@ -586,7 +586,7 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
     std::wstring imagePath(kInitialSize, L'\0');
     for (;;)
     {
-        DWORD size = static_cast<DWORD>(imagePath.size());
+        auto size = static_cast<DWORD>(imagePath.size());
         if (QueryFullProcessImageNameW(hProcess, 0, imagePath.data(), &size) != 0)
         {
             imagePath.resize(size);
@@ -693,7 +693,11 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
 
 WindowsProcessProbe::WindowsProcessProbe() : m_IsElevated(isCurrentProcessElevated())
 {
-    m_HasNetworkCounters = detectNetworkCounters();
+    // Stored here rather than in the member-initializer list on purpose: detectNetworkCounters()
+    // writes members declared after m_HasNetworkCounters (m_NetworkCountersAccessDenied,
+    // m_IphlpModule, the EStats function pointers), whose default initializers would run after it
+    // and overwrite those writes if it were called from the initializer list.
+    m_HasNetworkCounters.store(detectNetworkCounters());
     if (m_HasNetworkCounters)
     {
         spdlog::info("Per-process network counters available via TCP EStats (to be confirmed by the first sample with connections)");
@@ -744,7 +748,7 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
     {
         returnedBytes = 0;
         // Fallback saturates at ULONG max; the kernel simply reports the buffer as too small.
-        const ULONG bufferSize = Domain::Numeric::narrowOr<ULONG>(m_SnapshotBuffer.size(), std::numeric_limits<ULONG>::max());
+        const auto bufferSize = Domain::Numeric::narrowOr<ULONG>(m_SnapshotBuffer.size(), std::numeric_limits<ULONG>::max());
         status = queryFn(SystemProcessInformation, m_SnapshotBuffer.data(), bufferSize, &returnedBytes);
         if (status != STATUS_INFO_LENGTH_MISMATCH_NT)
         {
