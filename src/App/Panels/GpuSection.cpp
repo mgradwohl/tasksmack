@@ -175,11 +175,14 @@ void renderGpuSection(RenderContext& ctx)
         return;
     case EmptyReason::NoReadings:
     {
+        // Every known GPU missed this read. Say so, but keep drawing the list below: each GPU keeps
+        // its slot and collapse state with "No reading" rather than the whole tab collapsing into an
+        // empty state for one missed sample (#1163).
         const std::size_t deviceCount = ctx.publication->gpuInfo.size();
         const std::string detail =
             std::format("{} GPU{} detected, but the latest reading returned no data.", deviceCount, deviceCount == 1 ? " was" : "s were");
-        UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  GPU data unavailable", detail.c_str());
-        return;
+        ImGui::TextDisabled("%s", detail.c_str());
+        break;
     }
     case EmptyReason::None:
         break;

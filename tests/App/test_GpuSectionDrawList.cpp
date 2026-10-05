@@ -89,6 +89,26 @@ TEST(GpuSectionDrawListTest, AGpuMissingFromTheReadKeepsItsSlotAndTheOthersKeepT
     EXPECT_EQ(after[2].snapshot->gpuId, "GPU2");
 }
 
+// #1296 review: when every known GPU misses a read (one GPU, or all at once), the tab still draws
+// each GPU's slot -- with "No reading" -- rather than collapsing into an empty state.
+TEST(GpuSectionDrawListTest, WhenEveryGpuMissesTheReadEachKeepsItsSlot)
+{
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    publication.gpuInfo = {info("GPU0"), info("GPU1")};
+    publication.snapshots = {};
+
+    EXPECT_EQ(GpuSection::classifyEmptyState(true, true, publication.gpuInfo.size(), publication.snapshots.size()),
+              GpuSection::EmptyReason::NoReadings);
+    const auto entries = gpuDrawList(publication);
+    ASSERT_EQ(idsOf(entries), (std::vector<std::string>{"GPU0", "GPU1"}));
+    for (const auto& entry : entries)
+    {
+        ASSERT_NE(entry.info, nullptr);
+        EXPECT_EQ(entry.snapshot, nullptr);
+    }
+}
+
 TEST(GpuSectionDrawListTest, UnenumeratedSnapshotsFollowInPublishedOrder)
 {
     Domain::GPUPublication publication;
