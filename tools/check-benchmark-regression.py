@@ -8,7 +8,7 @@ Usage:
         [--min-abs-delta-ns 1.0]
 
 Exit codes:
-    0  All matched benchmarks are within threshold, and coverage meets --min-coverage
+    0  No matched benchmark exceeds both the threshold and the floor, and coverage meets --min-coverage
     1  One or more benchmarks regressed beyond the threshold, or coverage is too low
     2  Usage error, invalid input, or no comparable benchmarks at all
 
@@ -321,8 +321,9 @@ def main() -> int:
         )
         return 1
 
-    print(f"All {compared} matched benchmark(s) within {args.threshold:.1f}% threshold; "
-          f"coverage {coverage_pct:.1f}%.")
+    floor_note = f" ({len(below_floor)} over {args.threshold:.1f}% only within the noise floor)" if below_floor else ""
+    print(f"No benchmark exceeded both the {args.threshold:.1f}% threshold and the {args.min_abs_delta_ns:.2f}ns "
+          f"floor: {compared} compared{floor_note}; coverage {coverage_pct:.1f}%.")
     return 0
 
 

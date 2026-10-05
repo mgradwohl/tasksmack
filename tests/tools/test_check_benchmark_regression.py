@@ -56,6 +56,10 @@ class CheckBenchmarkRegressionTest(unittest.TestCase):
         code, output = self.run_gate({"BM_Tiny": 0.4, "BM_Big": 100.0}, {"BM_Tiny": 0.6, "BM_Big": 100.0})
         self.assertEqual(code, 0, output)
         self.assertIn("noise floor", output)
+        # The success line must not claim every benchmark was within the percentage threshold.
+        self.assertNotIn("within 40.0% threshold", output)
+        self.assertIn("No benchmark exceeded both the 40.0% threshold and the 1.00ns floor", output)
+        self.assertIn("1 over 40.0% only within the noise floor", output)
 
     def test_large_absolute_regression_still_fails(self):
         # BM_GPUModel_ProcessGpuCounters in #1322: 12.2ns -> 19.3ns is a real 7ns slowdown.
