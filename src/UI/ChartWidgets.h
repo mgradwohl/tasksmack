@@ -2153,6 +2153,11 @@ inline void renderHistoryWithNowBars(const char* tableId,
 
     if (barsOnly)
     {
+        // No chart is drawn on this path, so an axis eased for it can't be visible: drop its pending
+        // full-rate request rather than leave it for the next chart (Detail::g_PendingEaseRequestFrame).
+        // The other paths all construct the chart through plotFn -- the table path inside the table,
+        // the clipped-table and bar-less paths directly -- and HistoryChart consumes it there.
+        Detail::g_PendingEaseRequestFrame = -1;
         const float widthPerBar = nowBarWidth(ImGui::GetFontSize());
         const ImGuiStyle& style = ImGui::GetStyle();
 

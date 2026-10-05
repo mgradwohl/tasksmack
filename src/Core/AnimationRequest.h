@@ -31,7 +31,8 @@ inline constexpr double FULL_RATE = std::numeric_limits<double>::infinity();
 inline constexpr double MAX_MOTION_PIXELS_PER_FRAME = 0.5;
 
 /// The frame rate an element moving at @p pixelsPerSecond on screen needs so that it moves at most
-/// MAX_MOTION_PIXELS_PER_FRAME per frame. 0 for no motion (or a non-finite or negative speed).
+/// MAX_MOTION_PIXELS_PER_FRAME per frame. 0 for no motion, a negative speed or NaN; an infinite speed
+/// gives an infinite rate, which asks for the loop's full rate (like FULL_RATE).
 [[nodiscard]] constexpr auto framesPerSecondForMotion(double pixelsPerSecond) noexcept -> double
 {
     // A NaN fails the comparison, so it asks for nothing.
