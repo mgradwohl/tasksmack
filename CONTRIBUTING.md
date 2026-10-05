@@ -478,10 +478,13 @@ pwsh tools/clang-tidy.ps1 debug    # Windows
 Note: the build uses precompiled headers (PCH). The clang-tidy helper strips PCH flags from the compile commands to avoid version mismatch issues.
 
 `.clang-tidy` sets `WarningsAsErrors: '*'`, so any clang-tidy finding fails the run, locally and in CI's
-blocking Linux job. Fix the finding, or suppress it with a `NOLINT(check-name)` comment that says why. Before
-this, clang-tidy exited 0 on warnings, so the CI job could never fail on one (#1089). The blocking job
-covers what `tools/clang-tidy.sh` analyses, which excludes `src/Platform/Windows/**`; Windows-only code is
-checked only by the advisory Windows job on pushes to `main` until #1233 adds a blocking gate.
+blocking jobs. Fix the finding, or suppress it with a `NOLINT(check-name)` comment that says why. Before
+this, clang-tidy exited 0 on warnings, so the CI job could never fail on one (#1089). CI runs clang-tidy
+twice, both blocking: on Linux over what `tools/clang-tidy.sh` analyses (which excludes
+`src/Platform/Windows/**`), and on Windows over what `tools/clang-tidy.ps1` analyses (everything but
+`src/Platform/Linux/**`, so the Windows platform code and the `_WIN32` branches of shared files) (#1233).
+Run the Windows script before pushing a change to Windows-only code. The Windows script skips one check,
+`clang-analyzer-optin.core.EnumCastOutOfRange`, for an MSVC STL false positive it can't suppress in our code.
 
 ### Include-What-You-Use (IWYU)
 
@@ -1459,7 +1462,7 @@ Override the cache dir with `TASKSMACK_FETCHCONTENT_CACHE_DIR` or `FETCHCONTENT_
 We use GitHub Actions for our CI workflows. They are categorized as follows:
 
 ### Core Build & Test
-- **`ci.yml`**: The primary hub. Runs on pushes to `main`/`dev/**`, all PRs, merge-queue merge groups, weekly, and via manual dispatch. It detects docs-only changes (for both pull requests and merge groups -- `dorny/paths-filter` supports `merge_group` natively) to skip C++ builds and `clang-tidy`. It runs Linux and Windows Debug builds on push/PR/merge-group, Release builds on schedule/dispatch, checks markdown links, runs `clang-tidy` (blocking) on PRs/merge groups/schedule/dispatch (skipped on docs-only PRs and merge groups, and on plain pushes to `main`, which `static-analysis.yml` already covers), runs IWYU (include analysis) only via manual dispatch, and runs a non-blocking advisory Address/Undefined Behavior sanitizer on PRs. It outputs a `ci-success` gate job used for branch protection.
+- **`ci.yml`**: The primary hub. Runs on pushes to `main`/`dev/**`, all PRs, merge-queue merge groups, weekly, and via manual dispatch. It detects docs-only changes (for both pull requests and merge groups -- `dorny/paths-filter` supports `merge_group` natively) to skip C++ builds and `clang-tidy`. It runs Linux and Windows Debug builds on push/PR/merge-group, Release builds on schedule/dispatch, checks markdown links, runs `clang-tidy` (blocking) on Linux and on Windows on PRs/merge groups/schedule/dispatch (skipped on docs-only PRs and merge groups, and on plain pushes to `main`, which `static-analysis.yml` already covers; the Windows job is also skipped when every change is Linux-only), runs IWYU (include analysis) only via manual dispatch, and runs a non-blocking advisory Address/Undefined Behavior sanitizer on PRs. It outputs a `ci-success` gate job used for branch protection.
 - **`reusable-build-test.yml`**: Contains the actual matrix steps for setting up LLVM, Python, `ccache`, configuring CMake, building, and running CTest tests. Called by other workflows.
 - **`manual-build.yml`**: Manual dispatch entry point to trigger a specific OS and build type build from the GitHub UI without opening a PR.
 
@@ -1474,7 +1477,7 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
 
 ### Code Quality & Hygiene
 - **`pre-commit.yml`**: Runs the `pre-commit` framework (via Python) across all files to enforce syntax hygiene, formatting, and file-level rules configured in `.pre-commit-config.yaml` (pushes to main, PRs).
-- **`static-analysis.yml`**: Dedicated workflow for running `clang-tidy` against the codebase (pushes to main, manual dispatch).
+- **`static-analysis.yml`**: Dedicated workflow for running `clang-tidy` against the codebase on Linux and on Windows, both blocking (pushes to main, manual dispatch).
 - **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (pushes to main, schedule).
 
 ### Release & Operations
