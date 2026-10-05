@@ -765,6 +765,10 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
     const std::size_t snapshotBytes =
         std::min<std::size_t>(m_SnapshotBuffer.size(), returnedBytes != 0 ? returnedBytes : m_SnapshotBuffer.size());
 
+    // Per-process network counters are read for every process or for none (#1285); read the flag
+    // once so every process in this sample agrees with it.
+    const bool perProcessNetworkCounters = m_HasNetworkCounters.load(std::memory_order_relaxed);
+
     for (std::size_t offset = 0; (offset + sizeof(SystemProcessInfo)) <= snapshotBytes;)
     {
         // Safe and necessary: parsing the OS-defined SYSTEM_PROCESS_INFORMATION layout out of the
@@ -801,6 +805,9 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
         // Safe and necessary: cumulative transfer counts are non-negative; LARGE_INTEGER is signed.
         counters.readBytes = static_cast<std::uint64_t>(info->readTransferCount.QuadPart);
         counters.writeBytes = static_cast<std::uint64_t>(info->writeTransferCount.QuadPart);
+
+        // Handles and I/O above are read for every process; network bytes only with EStats on (#1285).
+        markWindowsReadAvailability(counters, perProcessNetworkCounters);
 
         std::wstring_view imageName;
         if (info->imageName.Buffer != nullptr && info->imageName.Length != 0)

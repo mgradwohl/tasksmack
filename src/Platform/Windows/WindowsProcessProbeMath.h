@@ -61,6 +61,25 @@ struct DetailCacheTTLs
     return {.light = std::chrono::milliseconds(1000), .heavy = std::chrono::milliseconds(4000)};
 }
 
+/// Mark which of one process's readings the Windows probe took (#1285, the Windows half of #1110).
+///  - Handle count and I/O bytes come from the SystemProcessInformation snapshot, which the kernel
+///    fills for every process without an access check -- protected and other users' processes
+///    included -- so they are always real readings, never a placeholder 0.
+///  - Network bytes come from TCP EStats, which needs an elevated process (#1161). Each connection
+///    is attributed to its process by the owner-PID TCP table, which needs no access to the process
+///    either, so per-process network counters are read for every process or for none. With them off
+///    (not elevated, EStats unsupported, or disabled after a real sample proved it unusable) no
+///    process's network bytes were read: they are unavailable, not 0 -- as Linux reports I/O when
+///    /proc/[pid]/io can't be read at all.
+/// @param perProcessNetworkCounters Whether TCP EStats per-process counters are on
+///                                  (ProcessCapabilities::hasNetworkCounters).
+inline void markWindowsReadAvailability(ProcessCounters& counters, bool perProcessNetworkCounters) noexcept
+{
+    counters.handleCountAvailable = true;
+    counters.ioCountersAvailable = true;
+    counters.networkCountersAvailable = perProcessNetworkCounters;
+}
+
 /// MIB_TCP_STATE_ESTAB: the only TCP state whose EStats byte counters are worth reading. LISTEN,
 /// TIME_WAIT, CLOSE_WAIT, etc. carry no meaningful per-connection byte counts.
 inline constexpr std::uint32_t TCP_STATE_ESTABLISHED = 5;

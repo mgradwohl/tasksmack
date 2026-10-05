@@ -34,7 +34,7 @@ sudo setcap cap_dac_read_search+ep /path/to/TaskSmack
 
 `CAP_DAC_READ_SEARCH` grants access to `/proc/[pid]/io` without requiring full root. Re-apply the capability after each update.
 
-> On Windows, I/O counters are always available — they come from the bulk `SystemProcessInformation` snapshot, so no elevated privileges are needed.
+> On Windows, I/O counters and handle counts are always available — they come from the bulk `SystemProcessInformation` snapshot, so no elevated privileges are needed. Network rates need administrator rights; without them every process's network rates read N/A (see *Why are per-process network rates missing?* below).
 
 ---
 
@@ -110,7 +110,7 @@ The Total counts hardware interfaces only. On Linux these are network cards, Wi-
 
 ## Why are per-process network rates missing?
 
-TaskSmack hides per-process network data when the platform cannot attribute traffic.
+Per-process network rates read N/A when the platform cannot attribute traffic.
 
 - **Linux:** requires Linux 4.2 or later with Netlink `INET_DIAG` support.
 - **Windows:** TCP EStats collection requires administrator privileges.

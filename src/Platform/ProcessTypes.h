@@ -72,11 +72,14 @@ struct ProcessCounters
     // read failed -- typically for lack of rights: without root, Linux cannot read another user's
     // /proc/[pid]/fd or /proc/[pid]/io -- and the value beside it is then a placeholder 0, not a
     // measurement. The defaults suit a probe that reads every process it lists; a field the probe
-    // never fills at all is reported by ProcessCapabilities instead.
+    // never fills at all is reported by ProcessCapabilities instead. Windows (#1285) reads handles and
+    // I/O for every process from its bulk snapshot, and network bytes for every process or, without
+    // per-process network counters (not elevated), for none.
     bool handleCountAvailable = true;     // handleCount
     bool ioCountersAvailable = true;      // readBytes / writeBytes
     bool networkCountersAvailable = true; // netSentBytes / netReceivedBytes: the process's connections
-                                          // could be attributed to it (Linux: from its /proc/[pid]/fd)
+                                          // could be attributed to it (Linux: from its /proc/[pid]/fd;
+                                          // Windows: per-process network counters are on)
 };
 
 /// One connection's cumulative byte counters as the OS reports them, and the process it belongs to.

@@ -227,7 +227,7 @@ Per-process I/O may require root or `CAP_DAC_READ_SEARCH`. Per-process network a
 | GPU | DXGI, NVML, and PDH |
 | Process actions | `TerminateProcess`, priority classes, affinity APIs |
 
-Per-process TCP byte counters use `GetPerTcpConnectionEStats` and require administrator privileges to enable collection. Windows does not expose Linux concepts such as load average, CPU steal time, or SIGSTOP/SIGCONT.
+Per-process TCP byte counters use `GetPerTcpConnectionEStats` and require administrator privileges to enable collection. Without them no process's network bytes are read, so each process reports them unavailable (N/A) rather than 0; handle counts and I/O bytes come from the bulk snapshot and are read for every process (#1285). Windows does not expose Linux concepts such as load average, CPU steal time, or SIGSTOP/SIGCONT.
 
 Process enumeration takes one bulk `NtQuerySystemInformation(SystemProcessInformation)` snapshot per sample, which supplies CPU times, memory, I/O, handle/thread counts, and image names for every process without opening per-process handles. Slow-changing details (owner, command line, publisher, classification) are refreshed through short-lived process handles on RAM-tuned light/heavy TTLs.
 

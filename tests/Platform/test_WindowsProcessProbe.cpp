@@ -148,6 +148,72 @@ TEST(WindowsProcessProbeTest, NonElevatedNeverClaimsNetworkCounters)
     const auto caps = probe.capabilities();
     EXPECT_FALSE(caps.hasNetworkCounters);
     EXPECT_TRUE(caps.hasReducedPrivileges);
+
+    // ...and those 0 B are not readings (#1285): every process's network bytes are unavailable.
+    for (const auto& proc : probe.enumerate())
+    {
+        EXPECT_FALSE(proc.networkCountersAvailable) << proc.name;
+    }
+}
+
+TEST(WindowsProcessProbeTest, NetworkCountersAreUnavailableForEveryProcessExactlyWhenTheyAreOff)
+{
+    // #1285: per-process network bytes are read for every process (EStats on, elevated) or for none;
+    // the per-process flag follows the capability, whichever way this machine and token go.
+    WindowsProcessProbe probe;
+    for (int sample = 0; sample < 3; ++sample)
+    {
+        (void) probe.enumerate();
+        (void) probe.readSocketTraffic(); // may revoke EStats (#1161); the next enumerate() follows
+    }
+    const auto processes = probe.enumerate();
+    const bool hasNetworkCounters = probe.capabilities().hasNetworkCounters;
+    ASSERT_FALSE(processes.empty());
+    for (const auto& proc : processes)
+    {
+        EXPECT_EQ(proc.networkCountersAvailable, hasNetworkCounters) << proc.name << " (PID " << proc.pid << ")";
+    }
+}
+
+TEST(WindowsProcessProbeTest, HandlesAndIoAreReadEvenForProcessesItCannotOpen)
+{
+    // #1285: handle counts and I/O bytes come from the SystemProcessInformation snapshot, which needs
+    // no access to the process, so a process the probe can't open (protected, or another user's
+    // without elevation) still has real readings -- the System process always owns handles.
+    WindowsProcessProbe probe;
+    const auto processes = probe.enumerate();
+
+    bool sawSystem = false;
+    int unopenableWithHandles = 0;
+    for (const auto& proc : processes)
+    {
+        EXPECT_TRUE(proc.handleCountAvailable) << proc.name;
+        EXPECT_TRUE(proc.ioCountersAvailable) << proc.name;
+        if (proc.pid == 4)
+        {
+            sawSystem = true;
+            EXPECT_GT(proc.handleCount, 0) << "System process";
+        }
+        if (proc.pid <= 4)
+        {
+            continue; // Idle has no handle table; System is checked above
+        }
+        HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, static_cast<DWORD>(proc.pid));
+        if (hProcess != nullptr)
+        {
+            CloseHandle(hProcess);
+            continue;
+        }
+        // Minimal processes (Secure System, Registry, Memory Compression) really own no handles.
+        if (proc.handleCount > 0)
+        {
+            ++unopenableWithHandles;
+        }
+    }
+    EXPECT_TRUE(sawSystem);
+    // Protected processes (csrss.exe, smss.exe, ...) refuse PROCESS_QUERY_INFORMATION even elevated,
+    // and still report their handles.
+    EXPECT_GT(unopenableWithHandles, 0) << "expected a protected process with a real handle count";
 }
 
 TEST(WindowsProcessProbeTest, NetworkFlagsStayConsistentAfterSampling)
@@ -837,6 +903,28 @@ TEST(CalculateDetailTTLsFromTotalRAMBytesTest, ZeroBytesFallsIntoLowestTier)
 // ---------------------------------------------------------------------------
 // classifyEStatsRow (#1100): the per-row decision shared by the IPv4 and IPv6 EStats walks
 // ---------------------------------------------------------------------------
+
+TEST(MarkWindowsReadAvailabilityTest, WithoutPerProcessNetworkCountersNetworkIsUnavailableNotZero)
+{
+    // #1285: non-elevated, no process's network bytes are read; they must not pass for a 0 B/s reading.
+    ProcessCounters counters{};
+    markWindowsReadAvailability(counters, false);
+    EXPECT_FALSE(counters.networkCountersAvailable);
+    EXPECT_TRUE(counters.handleCountAvailable); // From the bulk snapshot, for every process
+    EXPECT_TRUE(counters.ioCountersAvailable);
+}
+
+TEST(MarkWindowsReadAvailabilityTest, WithPerProcessNetworkCountersEveryReadingIsAvailable)
+{
+    ProcessCounters counters{};
+    counters.handleCountAvailable = false;
+    counters.ioCountersAvailable = false;
+    counters.networkCountersAvailable = false;
+    markWindowsReadAvailability(counters, true);
+    EXPECT_TRUE(counters.networkCountersAvailable);
+    EXPECT_TRUE(counters.handleCountAvailable);
+    EXPECT_TRUE(counters.ioCountersAvailable);
+}
 
 TEST(ClassifyEStatsRowTest, SaneEstablishedReadsAreReported)
 {
