@@ -211,7 +211,7 @@ computeVsyncTransition(bool wasInteracting, bool isInteracting, bool vsyncReques
 [[nodiscard]] inline auto computeIdleWaitMs(bool isHidden, int idleFrameSleepMs, int minimizedFrameSleepMs, double secondsSinceFrameStart)
     -> int
 {
-    const double periodMs = static_cast<double>(computeIdleSleepMs(isHidden, idleFrameSleepMs, minimizedFrameSleepMs));
+    const auto periodMs = static_cast<double>(computeIdleSleepMs(isHidden, idleFrameSleepMs, minimizedFrameSleepMs));
     const double elapsedMs = std::max(0.0, secondsSinceFrameStart) * 1000.0;
     return static_cast<int>(std::ceil(std::max(0.0, periodMs - elapsedMs)));
 }
