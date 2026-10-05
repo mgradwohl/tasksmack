@@ -78,6 +78,13 @@ inline constexpr int INODE_PID_CACHE_TTL_MS = 3000;
 // main refresh interval because discovery operations are often more expensive
 // than updating known entities.
 
+// GPU re-enumeration interval (seconds) - fixed, not configurable
+// How often GPUModel asks its probe for a full rescan of the GPU set (IGPUProbe::rescanGPUs with
+// GPURescan::Full): a hot-plugged eGPU, a GPU removed or lost after a driver reset (#1116). The
+// Linux probes check sysfs, which never wakes a sleeping GPU, and only re-initialise a vendor
+// library when something changed, so this costs a directory scan per interval.
+inline constexpr int GPU_RESCAN_INTERVAL_SECONDS = 10;
+
 // Socket stats cache TTL (milliseconds) - Linux only
 // Controls how long per-process network stats (via Netlink INET_DIAG) are cached.
 // This is an optimization cache: if multiple calls happen within the TTL, the

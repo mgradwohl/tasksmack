@@ -17,8 +17,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <future>
 #include <memory>
 #include <string>
@@ -1872,6 +1874,207 @@ TEST(GPUModelTest, AGpuAbsentForTheWholeWindowKeepsNoStaleSample)
 
     EXPECT_TRUE(model.historyTimestamps("GPU1").empty());
     EXPECT_FALSE(model.historyTimestamps("GPU0").empty());
+}
+
+// =============================================================================
+// Re-enumeration (#1116, #1289)
+// =============================================================================
+
+// Without a reported change the GPU list is not re-read: every refresh asks the
+// probe for a quick rescan, and nothing more.
+TEST(GPUModelTest, NoReenumerationWhileTheProbeReportsNoChange)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    for (int i = 0; i < 3; ++i)
+    {
+        model.refresh();
+    }
+
+    EXPECT_EQ(rawProbe->enumerateCallCount(), 1U); // the constructor's
+    EXPECT_EQ(rawProbe->quickRescanCount(), 3U);
+    EXPECT_EQ(rawProbe->fullRescanCount(), 0U);
+}
+
+// A full rescan, which may look for hot-plugged or lost devices, is asked for
+// once per GPU_RESCAN_INTERVAL_SECONDS; the refreshes in between get a quick
+// one.
+TEST(GPUModelTest, FullRescanIsAskedForOncePerInterval)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    const auto start = std::chrono::ceil<std::chrono::seconds>(std::chrono::steady_clock::now());
+    const int interval = Domain::Sampling::GPU_RESCAN_INTERVAL_SECONDS;
+    for (int second = 1; second <= interval * 2; ++second)
+    {
+        model.refreshAt(start + std::chrono::seconds(second));
+    }
+
+    // Construction counts as a full rescan, so the first comes one interval after
+    // it, the second one interval after that.
+    EXPECT_EQ(rawProbe->fullRescanCount(), 2U);
+    EXPECT_EQ(rawProbe->quickRescanCount(), static_cast<std::uint32_t>((interval * 2) - 2));
+    EXPECT_EQ(rawProbe->enumerateCallCount(), 1U);
+}
+
+// #1116: when the probe reports a change, the GPU list is re-read and
+// published. A GPU that persists keeps its history; a new one is added with a
+// history of its own.
+TEST(GPUModelTest, ReEnumeratesAndPublishesAGpuAddedAfterConstruction)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 10.0);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+    ASSERT_EQ(model.publication()->gpuInfo.size(), 1U);
+
+    rawProbe->withGPU("eGPU", "Hot-plugged GPU", "TestVendor").withUtilization("eGPU", 40.0);
+    rawProbe->withRescanReportingChange();
+    model.refresh();
+
+    EXPECT_EQ(rawProbe->enumerateCallCount(), 2U);
+    const auto publication = model.publication();
+    ASSERT_EQ(publication->gpuInfo.size(), 2U);
+    EXPECT_EQ(publication->gpuInfo[1].id, "eGPU");
+    EXPECT_EQ(publication->gpuInfo[1].name, "Hot-plugged GPU");
+    EXPECT_EQ(model.gpuInfo().size(), 2U);
+    EXPECT_EQ(model.utilizationHistory("GPU0").size(),
+              2U); // carried on across the re-enumeration
+    ASSERT_EQ(model.utilizationHistory("eGPU").size(), 1U);
+    EXPECT_FLOAT_EQ(model.utilizationHistory("eGPU")[0], 40.0F);
+
+    // The snapshot takes its identity from the new GPU info.
+    const auto snaps = model.snapshots();
+    const auto eGpu = std::ranges::find(snaps, std::string("eGPU"), &Domain::GPUSnapshot::gpuId);
+    ASSERT_NE(eGpu, snaps.end());
+    EXPECT_EQ(eGpu->name, "Hot-plugged GPU");
+}
+
+// #1116: a GPU gone from the re-enumerated list is dropped from the published
+// GPU info, and its history records a gap from then on (it is forgotten once it
+// leaves the window).
+TEST(GPUModelTest, ReEnumerationDropsARemovedGpuAndItsHistoryGaps)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withGPU("GPU1", "Removable GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    rawProbe->withoutGPU("GPU1").withRescanReportingChange();
+    model.refresh();
+
+    const auto publication = model.publication();
+    ASSERT_EQ(publication->gpuInfo.size(), 1U);
+    EXPECT_EQ(publication->gpuInfo[0].id, "GPU0");
+    const auto removed = model.utilizationHistory("GPU1");
+    ASSERT_EQ(removed.size(), 2U);
+    EXPECT_FALSE(std::isnan(removed[0]));
+    EXPECT_TRUE(std::isnan(removed[1]));
+    EXPECT_EQ(model.utilizationHistory("GPU0").size(), 2U);
+}
+
+// #1289: an adapter enumerated asleep has no sensor set of its own; once the
+// probe has found it (and reports the change), the publication carries it, so
+// the UI stops drawing the probe-wide charts.
+TEST(GPUModelTest, ReEnumerationPublishesAWokenAdaptersSensorSet)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("dGPU", "Sleepy GPU", "NVIDIA");
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+    ASSERT_EQ(model.publication()->gpuInfo.size(), 1U);
+    EXPECT_FALSE(model.publication()->gpuInfo[0].sensorCapabilities.has_value());
+
+    Platform::GPUCapabilities ownSensors;
+    ownSensors.hasTemperature = true;
+    ownSensors.hasClockSpeeds = true;
+    rawProbe->withSensorCapabilities("dGPU", ownSensors).withRescanReportingChange();
+    model.refresh();
+
+    const auto publication = model.publication();
+    ASSERT_EQ(publication->gpuInfo.size(), 1U);
+    ASSERT_TRUE(publication->gpuInfo[0].sensorCapabilities.has_value());
+    const auto published = publication->gpuInfo[0].sensorCapabilities.value_or(Platform::GPUCapabilities{});
+    EXPECT_TRUE(published.hasTemperature);
+    EXPECT_FALSE(published.hasPowerMetrics);
+    EXPECT_FALSE(published.hasFanSpeed);
+}
+
+// The capabilities are re-read with the GPU info: a probe that gains (or loses)
+// a vendor library on a re-init reports so.
+TEST(GPUModelTest, ReEnumerationRefreshesTheCapabilities)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    EXPECT_FALSE(model.capabilities().hasPerProcessMetrics);
+
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    rawProbe->withCapabilities(caps).withProcessGPU(42, "GPU0", 1024).withRescanReportingChange();
+    model.refresh();
+
+    EXPECT_TRUE(model.capabilities().hasPerProcessMetrics);
+    EXPECT_TRUE(model.publication()->capabilities.hasPerProcessMetrics);
+    EXPECT_EQ(model.readProcessGPUCounters().size(), 1U);
+}
+
+// A startup enumeration that failed is retried at the full-rescan rate, so one
+// failed query doesn't leave the tab saying "GPU monitoring is not available"
+// for the whole session.
+TEST(GPUModelTest, FailedStartupEnumerationIsRetriedOnTheNextFullRescan)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withEnumerationThrowing();
+
+    Domain::GPUModel model(std::move(probe));
+    const auto start = std::chrono::ceil<std::chrono::seconds>(std::chrono::steady_clock::now());
+    model.refreshAt(start + std::chrono::seconds(1));
+    EXPECT_FALSE(model.publication()->gpuInfoKnown);
+
+    rawProbe->withEnumerationSucceeding();
+    model.refreshAt(start + std::chrono::seconds(2)); // a quick rescan: no retry yet
+    EXPECT_FALSE(model.publication()->gpuInfoKnown);
+
+    model.refreshAt(start + std::chrono::seconds(Domain::Sampling::GPU_RESCAN_INTERVAL_SECONDS + 1));
+    const auto publication = model.publication();
+    EXPECT_TRUE(publication->gpuInfoKnown);
+    ASSERT_EQ(publication->gpuInfo.size(), 1U);
+    EXPECT_EQ(publication->gpuInfo[0].id, "GPU0");
+}
+
+// A re-enumeration that fails keeps the GPU info already known rather than
+// publishing an empty list.
+TEST(GPUModelTest, FailedReEnumerationKeepsThePreviousGpuInfo)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    rawProbe->withEnumerationThrowing().withRescanReportingChange();
+    model.refresh();
+
+    const auto publication = model.publication();
+    EXPECT_TRUE(publication->gpuInfoKnown);
+    ASSERT_EQ(publication->gpuInfo.size(), 1U);
+    EXPECT_EQ(publication->gpuInfo[0].id, "GPU0");
+    EXPECT_EQ(publication->snapshots.size(), 1U); // and keeps sampling
 }
 
 // =============================================================================
