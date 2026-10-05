@@ -1821,6 +1821,30 @@ legendFitsOneRow(std::span<const float> labelWidths, float iconSize, float inner
     return horizontalLegendWidth(labelWidths, iconSize, innerPaddingX, spacingX) <= availableWidth;
 }
 
+/// The most of a chart's frame height setupLegendDefault()'s column fallback may take from the plot.
+inline constexpr float LEGEND_COLUMN_MAX_FRAME_FRACTION = 1.0F / 3.0F;
+
+/// Height of a one-entry-per-line legend column: @p entryCount lines of @p lineHeight, with
+/// @p spacingY between them and @p innerPaddingY above and below (as ImPlot lays out a vertical legend).
+[[nodiscard]] constexpr float legendColumnHeight(std::size_t entryCount, float lineHeight, float innerPaddingY, float spacingY) noexcept
+{
+    if (entryCount == 0)
+    {
+        return 0.0F;
+    }
+    const auto entries = static_cast<float>(entryCount);
+    return (2.0F * innerPaddingY) + (entries * lineHeight) + ((entries - 1.0F) * spacingY);
+}
+
+/// Whether a legend column of @p entryCount entries leaves the plot enough of @p frameHeight: it may
+/// take at most LEGEND_COLUMN_MAX_FRAME_FRACTION. A taller column, at a narrow width or a large font,
+/// left a few pixels of data or none, so the chart drops its legend instead (setupLegendDefault()).
+[[nodiscard]] constexpr bool
+legendColumnFits(std::size_t entryCount, float lineHeight, float innerPaddingY, float spacingY, float frameHeight) noexcept
+{
+    return legendColumnHeight(entryCount, lineHeight, innerPaddingY, spacingY) <= frameHeight * LEGEND_COLUMN_MAX_FRAME_FRACTION;
+}
+
 /// The legend of every history chart: one row above the plot area, outside it (#1198). Inside, at the
 /// top left, it covered the oldest samples near the top of the axis, and a column of entries was clipped
 /// on a short chart. Above the plot it takes one text row of the chart's height and none of its
@@ -1834,9 +1858,18 @@ legendFitsOneRow(std::span<const float> labelWidths, float iconSize, float inner
 /// frame's entries (the current frame's are not plotted yet when it lays the plot out), so the
 /// choice is made from those too -- through ImPlot's internal API, which is why this one is defined
 /// in ChartLegend.cpp rather than inline here.
-/// Returns the signature (legendEntrySignature()) of the entries the layout was chosen for, for
-/// suppressLegendIfEntriesChanged().
-std::size_t setupLegendDefault();
+///
+/// A column too tall for the chart (legendColumnFits()) is not drawn: the legend is hidden for the
+/// frame, and the value strip above every chart with a legend names each series with its colour and
+/// marker, so the plot keeps its height for data.
+struct LegendSetup
+{
+    /// legendEntrySignature() of the entries the layout was chosen for, for suppressLegendIfEntriesChanged().
+    std::size_t signature = 0;
+    /// False when the legend was hidden for this frame; the caller passes that to restoreLegend() after EndPlot.
+    bool shown = true;
+};
+LegendSetup setupLegendDefault();
 
 /// Before EndPlot: hides this frame's legend if the current plot's entries differ from those its
 /// layout was chosen for (@p setupSignature, from setupLegendDefault()). The layout -- the row/column
@@ -2327,8 +2360,10 @@ class HistoryChart
 
         if (showLegend)
         {
-            m_LegendSignature = setupLegendDefault();
-            m_LegendShown = true;
+            const LegendSetup legend = setupLegendDefault();
+            m_LegendSignature = legend.signature;
+            m_LegendShown = legend.shown;
+            m_LegendHiddenForFrame = !legend.shown;
         }
         ImPlot::SetupAxes(config.timeAxisLabels ? "Time (s)" : nullptr,
                           nullptr,
@@ -2377,7 +2412,7 @@ class HistoryChart
             {
                 drawLegendMarkers(m_Id, Detail::legendMarkers()); // nothing while the legend is suppressed
             }
-            if (legendSuppressed)
+            if (legendSuppressed || m_LegendHiddenForFrame)
             {
                 restoreLegend(m_Id);
             }
@@ -2418,7 +2453,8 @@ class HistoryChart
     int m_VtxBefore = 0;
     ImDrawListFlags m_SavedDrawListFlags = 0;
     ChartDataScope m_PreviousDataScope;
-    std::size_t m_LegendSignature = 0; // the entries the legend's layout was chosen for (setupLegendDefault())
+    std::size_t m_LegendSignature = 0;   // the entries the legend's layout was chosen for (setupLegendDefault())
+    bool m_LegendHiddenForFrame = false; // setupLegendDefault() found no layout that fits; restored after EndPlot
     bool m_LegendShown = false;
     bool m_DataScopeSet = false;
     bool m_Measure = false;

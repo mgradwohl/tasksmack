@@ -1843,6 +1843,27 @@ TEST(LegendLayoutTest, ProcessMemoryLegendFallsBackWhenTheRowIsTooWide)
 TEST(LegendLayoutTest, AnEmptyLegendAlwaysFits)
 {
     EXPECT_TRUE(legendFitsOneRow({}, 16.0F, 5.0F, 5.0F, 0.0F));
+    EXPECT_TRUE(legendColumnFits(0, 16.0F, 5.0F, 2.0F, 0.0F));
+}
+
+TEST(LegendLayoutTest, ColumnHeightIsLinesSpacingAndPadding)
+{
+    EXPECT_FLOAT_EQ(legendColumnHeight(0, 16.0F, 5.0F, 2.0F), 0.0F);
+    EXPECT_FLOAT_EQ(legendColumnHeight(1, 16.0F, 5.0F, 2.0F), 10.0F + 16.0F);
+    // Process Memory's four entries: 4 lines, 3 gaps, padding above and below.
+    EXPECT_FLOAT_EQ(legendColumnHeight(4, 16.0F, 5.0F, 2.0F), 10.0F + 64.0F + 6.0F);
+}
+
+TEST(LegendLayoutTest, AColumnMayTakeAtMostAThirdOfTheFrame)
+{
+    // Four entries at ~16px text are 80px: a 240px chart keeps two thirds for data, a shorter one
+    // would be left a sliver (#1301 review: about 6px at the minimum chart height), so it drops the
+    // legend and the value strip names the series instead.
+    const float column = legendColumnHeight(4, 16.0F, 5.0F, 2.0F);
+    EXPECT_TRUE(legendColumnFits(4, 16.0F, 5.0F, 2.0F, column / LEGEND_COLUMN_MAX_FRAME_FRACTION));
+    EXPECT_TRUE(legendColumnFits(4, 16.0F, 5.0F, 2.0F, 600.0F));
+    EXPECT_FALSE(legendColumnFits(4, 16.0F, 5.0F, 2.0F, (column / LEGEND_COLUMN_MAX_FRAME_FRACTION) - 1.0F));
+    EXPECT_FALSE(legendColumnFits(4, 16.0F, 5.0F, 2.0F, 90.0F));
 }
 
 // ========== Grid cells' time axis (#1206) ==========

@@ -132,12 +132,14 @@ void restoreLegend(const char* plotLabel)
     }
 }
 
-std::size_t setupLegendDefault()
+LegendSetup setupLegendDefault()
 {
     constexpr ImPlotLegendFlags LEGEND_FLAGS = ImPlotLegendFlags_NoHighlightItem | ImPlotLegendFlags_Outside;
     bool oneRow = true;
+    bool columnFits = true;
     std::size_t signature = 0;
-    if (ImPlotPlot* plot = ImPlot::GetCurrentPlot(); plot != nullptr)
+    ImPlotPlot* plot = ImPlot::GetCurrentPlot();
+    if (plot != nullptr)
     {
         signature = legendEntrySignature(plot->Items);
         // Until the plot's first frame ends there are no entries, and an empty legend fits.
@@ -153,18 +155,31 @@ std::size_t setupLegendDefault()
         // and its icons are one text line square (CalcLegendSize).
         const float available = plot->FrameRect.GetWidth() - (2.0F * style.PlotPadding.x);
         oneRow = legendFitsOneRow(labelWidths, ImGui::GetTextLineHeight(), style.LegendInnerPadding.x, style.LegendSpacing.x, available);
+        columnFits = oneRow || legendColumnFits(labelWidths.size(),
+                                                ImGui::GetTextLineHeight(),
+                                                style.LegendInnerPadding.y,
+                                                style.LegendSpacing.y,
+                                                plot->FrameRect.GetHeight());
     }
     if (oneRow)
     {
         ImPlot::SetupLegend(ImPlotLocation_NorthWest, LEGEND_FLAGS | ImPlotLegendFlags_Horizontal);
     }
-    else
+    else if (columnFits)
     {
         // A column above the plot: ImPlot takes an outside column's size out of the canvas's height
         // only at North alone (not NorthEast or NorthWest), leaving the plot its full width.
         ImPlot::SetupLegend(ImPlotLocation_North, LEGEND_FLAGS);
     }
-    return signature;
+    else
+    {
+        // Neither fits: hidden before SetupFinish sizes the canvas, so no height is reserved for it.
+        // The flag outlives the frame (BeginPlot resets a plot's flags only when the caller's flags change),
+        // so HistoryChart clears it after EndPlot (restoreLegend()) and the next frame chooses again.
+        plot->Flags |= ImPlotFlags_NoLegend;
+        return {.signature = signature, .shown = false};
+    }
+    return {.signature = signature, .shown = true};
 }
 
 } // namespace UI::Widgets
