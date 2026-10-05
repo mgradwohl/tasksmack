@@ -11,6 +11,7 @@
 #include "UI/Widgets.h"
 
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <implot.h>
 
 #include <algorithm>
@@ -57,6 +58,47 @@ inline bool g_ChartAntiAliasingEnabled = true;
 // HistoryChart only if that chart is actually visible (#1125, #1281 review).
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 inline int g_PendingEaseRequestFrame = -1;
+
+// Frame-keyed caches (#1181)
+// --------------------------
+// historyFrameNowSeconds(), frameTimeAxis() (its TimeAxisPool), plotLineWithFill() (its drawX/drawY),
+// seriesReductionCache(), easedChartUpperBound() and Detail::requestNowBarMotion() keep function-local
+// statics keyed on ImGui::GetFrameCount(). Their contract:
+//
+//   - Call them only while an ImGui frame is being built (between ImGui::NewFrame() and
+//     ImGui::Render()), on the UI thread -- never from onUpdate(), which runs outside the frame, or
+//     from another thread. Outside a frame the frame count is the previous frame's: "now" would be
+//     stale and the time-axis buffers would carry on that frame's hand-out cycle.
+//   - They are process-wide, not per ImGui context: there is one context, and a second one would
+//     share (and confuse) their per-frame state.
+//   - Never store what they return across frames. A span from frameTimeAxis() is valid only until
+//     its buffer is handed out again in a later frame (TimeAxisPool); keep the timestamps and
+//     rebuild the axis each frame instead.
+//
+// Debug builds check the first rule (assertWithinImGuiFrame()); the others are by convention.
+
+/// Asserts, in debug builds, that @p withinFrame holds: a frame-keyed cache (see above) is being used
+/// while an ImGui frame is being built. Separate from the ImGui query so the check is testable
+/// without an ImGui context.
+inline void requireWithinImGuiFrame([[maybe_unused]] bool withinFrame) noexcept
+{
+    assert(withinFrame && "frame-keyed chart cache used outside an ImGui frame (see ChartWidgets.h, #1181)");
+}
+
+/// Whether an ImGui frame is being built right now: between ImGui::NewFrame() and ImGui::Render().
+[[nodiscard]] inline bool imguiWithinFrame() noexcept
+{
+    const ImGuiContext* context = ImGui::GetCurrentContext();
+    return (context != nullptr) && context->WithinFrameScope;
+}
+
+/// requireWithinImGuiFrame() for the current ImGui context. Compiles to nothing with NDEBUG.
+inline void assertWithinImGuiFrame() noexcept
+{
+#ifndef NDEBUG
+    requireWithinImGuiFrame(imguiWithinFrame());
+#endif
+}
 } // namespace Detail
 
 /// Whether a HistoryChart should ask for full-rate frames for an axis that was eased just before it:
@@ -908,8 +950,11 @@ class ReducedPointsCache
 /// the axis would differ by however long the frame took to reach the chart, and a sample near a
 /// bucket boundary could change bucket from one frame to the next -- the shimmer the anchoring exists
 /// to prevent.
+///
+/// Frame-keyed: call it only while a frame is being built (see "Frame-keyed caches" above, #1181).
 [[nodiscard]] inline double historyFrameNowSeconds()
 {
+    Detail::assertWithinImGuiFrame();
     static int cachedFrame = -1;
     static double cachedNow = 0.0;
     if (const int frame = ImGui::GetFrameCount(); frame != cachedFrame)
@@ -979,9 +1024,10 @@ inline ChartDataScope g_ActiveChartDataScope;
 /// between two series' hashes costs only caching, never correctness, since a cached entry is also
 /// keyed on the series' data (ReducedPointsCache::Key). Bounded like easedChartUpperBound()'s
 /// state: entries not drawn for a while are dropped once there are many (per-disk and per-interface
-/// charts come and go).
+/// charts come and go). Frame-keyed: see "Frame-keyed caches" above (#1181).
 [[nodiscard]] inline ReducedPointsCache& seriesReductionCache(ImGuiID plotId, std::string_view label)
 {
+    Detail::assertWithinImGuiFrame();
     struct Entry
     {
         ReducedPointsCache cache;
@@ -1010,6 +1056,9 @@ inline ChartDataScope g_ActiveChartDataScope;
 /// Inside a HistoryChart with a data generation (HistoryChartConfig::dataGeneration), a long series'
 /// reduction is cached per plot and label and replayed until the generation, the series' buffer or
 /// its length changes (#1139). The generation must then cover everything `yData` is computed from.
+///
+/// Draws from function-local scratch buffers: call it only while a frame is being built, on the UI
+/// thread (see "Frame-keyed caches" above, #1181).
 template<typename TX, typename TY>
 inline void plotLineWithFill(const char* label,
                              const TX* xData,
@@ -1021,6 +1070,7 @@ inline void plotLineWithFill(const char* label,
                              bool drawFill = true,
                              int maxPointCount = LINE_PLOT_MAX_POINTS_DENSE)
 {
+    Detail::assertWithinImGuiFrame();
     if (count <= 0)
     {
         return;
@@ -1511,12 +1561,16 @@ class TimeAxisPool
 };
 
 /// The time axis for a history chart (see fillTimeAxis()), in a buffer from this frame's
-/// TimeAxisPool rather than a new vector. Valid for the rest of the ImGui frame. UI thread only.
+/// TimeAxisPool rather than a new vector. Valid for the rest of the ImGui frame only: never store the
+/// span (e.g. in a member) and read it in a later frame, when its buffer may hold another chart's
+/// axis or have been freed. Frame-keyed: call it only while a frame is being built, on the UI thread
+/// (see "Frame-keyed caches" above, #1181).
 ///
 /// Charts that share timestamps should share one axis: build it once with every timestamp and give
 /// each chart tailAlignedSpan(axis, itsCount), rather than one call per chart (#1173).
 [[nodiscard]] inline std::span<const double> frameTimeAxis(std::span<const double> timestamps, size_t desiredCount, double nowSeconds)
 {
+    Detail::assertWithinImGuiFrame();
     static TimeAxisPool pool;
     auto& buffer = pool.acquire(ImGui::GetFrameCount());
     fillTimeAxis(buffer, timestamps, desiredCount, nowSeconds);
@@ -1750,9 +1804,10 @@ rateHistoryConfig(const char* id, double xMin, double xMax, ImPlotFormatter yFor
 /// The Y upper bound a HistoryChart with easeYUpper draws this frame: its previous frame's bound
 /// eased toward `target` (easeAxisUpperBound). Kept per chart, keyed by the chart's ImGui ID. A chart
 /// that was not drawn last frame -- just opened, or its tab just shown -- starts at its target rather
-/// than easing in from a stale value.
+/// than easing in from a stale value. Frame-keyed: see "Frame-keyed caches" above (#1181).
 [[nodiscard]] inline double easedChartUpperBound(ImGuiID chartId, double target)
 {
+    Detail::assertWithinImGuiFrame();
     // UI thread only, like everything else in ImGui. Bounded: one entry per chart ID ever drawn, and
     // entries not drawn for a while are dropped once there are many (per-disk charts come and go).
     static std::unordered_map<ImGuiID, EasedBound> state;
@@ -2179,8 +2234,10 @@ namespace Detail
 /// the previous frame, so a bar easing toward a new sample animates smoothly and a settled one stops
 /// asking. Before, any visible bar held the loop at the full animation rate forever (#1037). Keyed
 /// per bar by @p barId; a bar not drawn last frame (its tab was hidden) starts from rest.
+/// Frame-keyed: see "Frame-keyed caches" above (#1181).
 inline void requestNowBarMotion(ImGuiID barId, double value01, float heightPx)
 {
+    assertWithinImGuiFrame();
     struct LastDrawn
     {
         double value01 = 0.0;

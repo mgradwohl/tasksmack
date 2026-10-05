@@ -371,6 +371,21 @@ TEST(TimeAxisPoolTest, AFrameCountThatGoesBackwardsReleasesTheOldBuffers)
     EXPECT_EQ(pool.bufferCount(), 1U);
 }
 
+// ========== Frame-keyed caches (#1181) ==========
+
+TEST(FrameScopeDeathTest, AFrameKeyedCacheUsedOutsideAFrameAssertsInDebugBuilds)
+{
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    // Release builds compile the check out, so the statement then simply runs.
+    EXPECT_DEBUG_DEATH(Detail::requireWithinImGuiFrame(false), "outside an ImGui frame");
+}
+
+TEST(FrameScopeTest, AFrameKeyedCacheUsedInsideAFrameDoesNotAssert)
+{
+    Detail::requireWithinImGuiFrame(true);
+    SUCCEED();
+}
+
 TEST(ChartWidgetsReduceTest, BucketWidthIsAPowerOfTwoThatHoldsAsTheSpanDrifts)
 {
     // 300 s into 239 buckets: 1.255 s rounds up to 2 s, and stays 2 s as the span drifts.
