@@ -113,6 +113,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessDetailsLayout.cpp
     App/test_GpuClockReference.cpp
     App/test_GpuSectionEmptyState.cpp
+    App/test_GpuSectionDrawList.cpp
     App/test_ProcessRowFormat.cpp
     Platform/test_CgroupFreezerPath.cpp
     Platform/test_ProcessIdentity.cpp

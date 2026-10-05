@@ -16,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 namespace App::GpuSection
 {
@@ -111,6 +112,52 @@ capabilitiesForGpu(Platform::GPUCapabilities caps, const std::optional<Platform:
         caps.hasEncoderDecoder = caps.hasEncoderDecoder && adapterSensors->hasEncoderDecoder;
     }
     return caps;
+}
+
+/// One GPU the tab draws: its enumeration entry and its latest snapshot, either of which may be
+/// missing. gpuId keys the GPU's ImGui IDs and points into the publication it was built from.
+struct GpuDrawEntry
+{
+    std::string_view gpuId;
+    const Platform::GPUInfo* info = nullptr;       ///< Null: the read returned a GPU enumeration did not list.
+    const Domain::GPUSnapshot* snapshot = nullptr; ///< Null: no reading for this GPU this sample.
+};
+
+/// The GPUs the tab draws, in order: every enumerated GPU in enumeration order, whether or not the
+/// latest read returned it, then any snapshot for a GPU enumeration did not list (all of them, if
+/// enumeration failed), in the published order. A GPU missing from one read keeps its slot and its
+/// UI state instead of vanishing and shifting the GPUs after it, whose state used to be keyed by
+/// position (#1163).
+[[nodiscard]] inline std::vector<GpuDrawEntry> gpuDrawList(const Domain::GPUPublication& publication)
+{
+    std::vector<GpuDrawEntry> entries;
+    entries.reserve(publication.gpuInfo.size() + publication.snapshots.size());
+    const auto listed = [&entries](std::string_view gpuId)
+    {
+        return std::ranges::any_of(entries, [gpuId](const GpuDrawEntry& entry) { return entry.gpuId == gpuId; });
+    };
+
+    for (const auto& info : publication.gpuInfo)
+    {
+        if (listed(info.id))
+        {
+            continue;
+        }
+        const auto snapshotIt = std::ranges::find(publication.snapshots, info.id, &Domain::GPUSnapshot::gpuId);
+        entries.push_back({
+            .gpuId = info.id,
+            .info = &info,
+            .snapshot = (snapshotIt != publication.snapshots.end()) ? &*snapshotIt : nullptr,
+        });
+    }
+    for (const auto& snapshot : publication.snapshots)
+    {
+        if (!listed(snapshot.gpuId))
+        {
+            entries.push_back({.gpuId = snapshot.gpuId, .info = nullptr, .snapshot = &snapshot});
+        }
+    }
+    return entries;
 }
 
 /// The Overview header's "VRAM" figure: memory totals summed over discrete GPUs only. An integrated
