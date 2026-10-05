@@ -4,7 +4,9 @@
 #include "Platform/GpuMockLibraryTestUtils.h"
 #include "Platform/Linux/NVMLGPUProbe.h"
 #include "Platform/Linux/NVMLGPUProbeMath.h"
+#include "Platform/Linux/PciRuntimePm.h"
 #include "Platform/NVMLTypes.h"
+#include "Platform/ScopedTempDir.h"
 
 #include <gtest/gtest.h>
 
@@ -12,6 +14,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <string>
 #include <utility>
@@ -332,7 +337,7 @@ TEST(NVMLGPUProbeMathTest, InstanceIdsAreReadFromV2Entries)
 
 TEST(LinuxNVMLGPUProbeTest, BasicOperationsDoNotThrow)
 {
-    NVMLGPUProbe probe;
+    NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
     EXPECT_NO_THROW([[maybe_unused]] auto available = probe.isAvailable());
     EXPECT_NO_THROW([[maybe_unused]] auto gpus = probe.enumerateGPUs());
     EXPECT_NO_THROW([[maybe_unused]] auto counters = probe.readGPUCounters());
@@ -342,7 +347,7 @@ TEST(LinuxNVMLGPUProbeTest, BasicOperationsDoNotThrow)
 
 TEST(LinuxNVMLGPUProbeTest, UnavailableProbeReportsNoCapabilities)
 {
-    NVMLGPUProbe probe;
+    NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
     if (probe.isAvailable())
     {
         // Under CTest (ENVIRONMENT_MODIFICATION), LD_LIBRARY_PATH is prepended with the
@@ -364,7 +369,7 @@ TEST(LinuxNVMLGPUProbeTest, UnavailableProbeReportsNoCapabilities)
 
 TEST(LinuxNVMLGPUProbeTest, AvailableProbeReturnsConsistentIds)
 {
-    NVMLGPUProbe probe;
+    NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
     if (probe.isAvailable())
     {
         const auto gpus = probe.enumerateGPUs();
@@ -387,7 +392,7 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryEnablesAvailableCapabilities)
     {
         GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
     }
-    NVMLGPUProbe probe;
+    NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
 
     ASSERT_TRUE(probe.isAvailable());
 
@@ -413,7 +418,7 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryEnumeratesDevicesAndUsesUuidFallback)
     {
         GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
     }
-    NVMLGPUProbe probe;
+    NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
 
     ASSERT_TRUE(probe.isAvailable());
 
@@ -447,6 +452,7 @@ class NvmlMockControls
             m_Configure = reinterpret_cast<ConfigureFn>(dlsym(m_Library, "tasksmackNvmlMockConfigure"));
             m_UuidCalls = reinterpret_cast<UuidCallsFn>(dlsym(m_Library, "tasksmackNvmlMockUuidCalls"));
             m_FailSensorReads = reinterpret_cast<FailSensorReadsFn>(dlsym(m_Library, "tasksmackNvmlMockFailSensorReads"));
+            m_DeviceQueries = reinterpret_cast<UuidCallsFn>(dlsym(m_Library, "tasksmackNvmlMockDeviceQueries"));
             // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
         }
     }
@@ -503,6 +509,19 @@ class NvmlMockControls
     ConfigureFn m_Configure = nullptr;
     UuidCallsFn m_UuidCalls = nullptr;
     FailSensorReadsFn m_FailSensorReads = nullptr;
+    UuidCallsFn m_DeviceQueries = nullptr;
+
+  public:
+    /// Calls that have addressed a device so far (NVML mock's tasksmackNvmlMockDeviceQueries).
+    [[nodiscard]] unsigned int deviceQueries() const
+    {
+        return m_DeviceQueries != nullptr ? m_DeviceQueries() : 0U;
+    }
+
+    [[nodiscard]] bool countsDeviceQueries() const
+    {
+        return m_DeviceQueries != nullptr;
+    }
 };
 
 // #1162: a device whose handle NVML won't return is skipped, not sampled through a null handle
@@ -519,7 +538,7 @@ TEST(LinuxNVMLGPUProbeTest, FailedSensorReadsAreMarkedUnavailable)
     const NvmlMockControls controls;
     ASSERT_TRUE(controls.available());
 
-    NVMLGPUProbe probe;
+    NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
     ASSERT_TRUE(probe.isAvailable());
 
     const auto healthy = probe.readGPUCounters();
@@ -551,7 +570,7 @@ TEST(LinuxNVMLGPUProbeTest, DeviceWithoutAHandleIsSkipped)
     ASSERT_TRUE(controls.available());
     controls.configure(0, -1);
 
-    NVMLGPUProbe probe;
+    NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
     ASSERT_TRUE(probe.isAvailable());
 
     const auto gpus = probe.enumerateGPUs();
@@ -577,7 +596,7 @@ TEST(LinuxNVMLGPUProbeTest, DeviceIdsAreResolvedOnceAtLoad)
     ASSERT_TRUE(controls.available());
     controls.configure(NvmlMockControls::NO_FAILING_HANDLE, 2); // every UUID call after load fails
 
-    NVMLGPUProbe probe;
+    NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
     ASSERT_TRUE(probe.isAvailable());
     const unsigned int callsAtLoad = controls.uuidCalls();
 
@@ -601,7 +620,7 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryReturnsExpectedCountersAndMergesProcessEn
     {
         GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
     }
-    NVMLGPUProbe probe;
+    NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
 
     ASSERT_TRUE(probe.isAvailable());
 
@@ -652,6 +671,175 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryReturnsExpectedCountersAndMergesProcessEn
     const auto noMemory = std::ranges::find_if(processCounters, [](const ProcessGPUCounters& counter) { return counter.pid == 789; });
     ASSERT_NE(noMemory, processCounters.end());
     EXPECT_EQ(noMemory->gpuMemoryBytes, 0U);
+}
+
+// =============================================================================
+// Runtime PM helpers (#1117)
+// =============================================================================
+
+TEST(PciRuntimePmTest, OnlySuspendedAndSuspendingCountAsAsleep)
+{
+    EXPECT_TRUE(PciRuntimePm::isSuspendedStatus("suspended"));
+    EXPECT_TRUE(PciRuntimePm::isSuspendedStatus("suspended\n"));
+    EXPECT_TRUE(PciRuntimePm::isSuspendedStatus("suspending"));
+    EXPECT_FALSE(PciRuntimePm::isSuspendedStatus("active"));
+    EXPECT_FALSE(PciRuntimePm::isSuspendedStatus("resuming"));
+    EXPECT_FALSE(PciRuntimePm::isSuspendedStatus("unsupported"));
+    EXPECT_FALSE(PciRuntimePm::isSuspendedStatus(""));
+}
+
+TEST(PciRuntimePmTest, UnreadableStatusIsAwake)
+{
+    EXPECT_FALSE(PciRuntimePm::isRuntimeSuspended(""));
+    EXPECT_FALSE(PciRuntimePm::isRuntimeSuspended("/nonexistent/tasksmack/pci/0000:01:00.0"));
+}
+
+TEST(NVMLGPUProbeMathTest, SysfsPciAddressUsesTheKernelsFourDigitDomain)
+{
+    NVML::nvmlPciInfo_t pci{};
+    pci.domain = 0;
+    pci.bus = 0x01;
+    pci.device = 0;
+    std::strncpy(std::data(pci.busId), "00000000:01:00.0", std::size(pci.busId) - 1);
+    EXPECT_EQ(NVMLGPUProbeMath::sysfsPciAddress(pci), "0000:01:00.0");
+
+    pci.domain = 0x10000; // wider domains keep every digit, as sysfs prints them
+    pci.bus = 0xc1;
+    pci.device = 0x1f;
+    std::strncpy(std::data(pci.busId), "00010000:C1:1F.3", std::size(pci.busId) - 1);
+    EXPECT_EQ(NVMLGPUProbeMath::sysfsPciAddress(pci), "10000:c1:1f.3");
+
+    pci.busId[0] = '\0'; // no busId: function 0
+    EXPECT_EQ(NVMLGPUProbeMath::sysfsPciAddress(pci), "10000:c1:1f.0");
+}
+
+// =============================================================================
+// Per-device sensor capabilities (#1112) and runtime PM (#1117)
+// =============================================================================
+
+// #1272 review: a transient failure (NVML_ERROR_TIMEOUT) while sensors are probed at enumeration
+// doesn't hide them for the session; only NVML_ERROR_NOT_SUPPORTED does. Once reads recover the
+// sensors report values.
+TEST(LinuxNVMLGPUProbeTest, ATransientFailureAtEnumerationKeepsTheSensors)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const NvmlMockControls controls;
+    NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
+    ASSERT_TRUE(probe.isAvailable());
+
+    controls.failSensorReads(true);
+    const auto gpus = probe.enumerateGPUs();
+    controls.failSensorReads(false);
+    ASSERT_EQ(gpus.size(), 2U);
+    const auto desktop = gpus[0].sensorCapabilities.value_or(GPUCapabilities{});
+    EXPECT_TRUE(desktop.hasTemperature);
+    EXPECT_TRUE(desktop.hasPowerMetrics);
+    EXPECT_TRUE(desktop.hasClockSpeeds);
+    const auto laptop = gpus[1].sensorCapabilities.value_or(GPUCapabilities{});
+    EXPECT_FALSE(laptop.hasPowerMetrics); // NOT_SUPPORTED still means unsupported
+
+    const auto counters = probe.readGPUCounters();
+    ASSERT_FALSE(counters.empty());
+    EXPECT_TRUE(counters[0].temperatureAvailable);
+}
+
+// Like the Windows probe since #1040: device 1 (a laptop GPU in the mock) reports no power or fan,
+// so its GPUInfo says so instead of inheriting NVML's probe-wide capabilities.
+TEST(LinuxNVMLGPUProbeTest, SensorCapabilitiesArePerDevice)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
+    ASSERT_TRUE(probe.isAvailable());
+
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 2U);
+
+    ASSERT_TRUE(gpus[0].sensorCapabilities.has_value());
+    const auto desktop = gpus[0].sensorCapabilities.value_or(GPUCapabilities{});
+    EXPECT_TRUE(desktop.hasTemperature);
+    EXPECT_TRUE(desktop.hasPowerMetrics);
+    EXPECT_TRUE(desktop.hasClockSpeeds);
+    EXPECT_TRUE(desktop.hasFanSpeed);
+
+    ASSERT_TRUE(gpus[1].sensorCapabilities.has_value());
+    const auto laptop = gpus[1].sensorCapabilities.value_or(GPUCapabilities{});
+    EXPECT_TRUE(laptop.hasTemperature);
+    EXPECT_FALSE(laptop.hasPowerMetrics);
+    EXPECT_TRUE(laptop.hasClockSpeeds);
+    EXPECT_FALSE(laptop.hasFanSpeed);
+
+    // The PCI identity is reported too.
+    ASSERT_TRUE(gpus[1].pciLocation.has_value());
+    EXPECT_EQ(gpus[1].pciLocation.value_or(PciLocation{}).bus, 0x41U);
+}
+
+// A runtime-suspended GPU is not queried at all (no sensor read, no process list), so the probe
+// doesn't keep a hybrid laptop's dGPU awake; its readings are unavailable and it is marked asleep.
+TEST(LinuxNVMLGPUProbeTest, RuntimeSuspendedGpuIsNotQueried)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const NvmlMockControls controls;
+    ASSERT_TRUE(controls.countsDeviceQueries());
+
+    const TestSupport::ScopedTempDir pciRoot("tasksmack_nvml_runtime_pm");
+    const auto setStatus = [&pciRoot](const std::string& address, const std::string& status)
+    {
+        std::filesystem::create_directories(pciRoot.path / address / "power");
+        std::ofstream(pciRoot.path / address / "power" / "runtime_status") << status << "\n";
+    };
+    setStatus("0000:01:00.0", "active");
+    setStatus("0000:41:00.0", "active");
+
+    NVMLGPUProbe probe(pciRoot.path.string());
+    ASSERT_TRUE(probe.isAvailable());
+    const auto awake = probe.readGPUCounters(); // reads the memory totals while awake
+    ASSERT_EQ(awake.size(), 2U);
+    EXPECT_FALSE(awake[0].suspended);
+    EXPECT_TRUE(awake[0].utilizationAvailable);
+
+    setStatus("0000:01:00.0", "suspended");
+    setStatus("0000:41:00.0", "suspended");
+    const unsigned int queriesBefore = controls.deviceQueries();
+    const auto asleep = probe.readGPUCounters();
+    const auto processes = probe.readProcessGPUCounters();
+    EXPECT_EQ(controls.deviceQueries(), queriesBefore); // nothing addressed a sleeping device
+
+    ASSERT_EQ(asleep.size(), 2U);
+    EXPECT_EQ(asleep[0].gpuId, "mock-nvml-uuid-0");
+    EXPECT_TRUE(asleep[0].suspended);
+    EXPECT_FALSE(asleep[0].utilizationAvailable);
+    EXPECT_FALSE(asleep[0].temperatureAvailable);
+    EXPECT_FALSE(asleep[0].powerAvailable);
+    EXPECT_FALSE(asleep[0].gpuClockAvailable);
+    EXPECT_FALSE(asleep[0].memoryAvailable);
+    EXPECT_EQ(asleep[0].fanSpeedMaxRaw, 0U);
+    EXPECT_EQ(asleep[0].memoryTotalBytes, 8ULL * 1024ULL * 1024ULL * 1024ULL); // last total read awake
+    EXPECT_TRUE(processes.empty());
+
+    // Enumerating doesn't wake it to probe sensors either: the probe's capabilities apply.
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 2U);
+    EXPECT_FALSE(gpus[0].sensorCapabilities.has_value());
+
+    // Awake again: read as normal.
+    setStatus("0000:01:00.0", "active");
+    const auto woken = probe.readGPUCounters();
+    ASSERT_EQ(woken.size(), 2U);
+    EXPECT_FALSE(woken[0].suspended);
+    EXPECT_DOUBLE_EQ(woken[0].utilizationPercent, 75.0);
+    EXPECT_TRUE(woken[1].suspended);
 }
 
 } // namespace

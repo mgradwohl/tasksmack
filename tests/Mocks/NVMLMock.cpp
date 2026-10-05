@@ -26,6 +26,12 @@ struct MockDevice
     unsigned int fanPercent;
     unsigned int pcieTxKilobytes;
     unsigned int pcieRxKilobytes;
+    // A laptop GPU may report no power and a passively cooled one no fan: those reads then return
+    // NVML_ERROR_NOT_SUPPORTED, so per-device sensor capabilities can be tested (#1112).
+    bool hasPower;
+    bool hasFan;
+    const char* busId; // nvmlPciInfo_t::busId, eight-digit domain as NVML prints it (#1117)
+    unsigned int pciBus;
 };
 
 constexpr std::array<MockDevice, 2> MOCK_DEVICES{{
@@ -43,7 +49,11 @@ constexpr std::array<MockDevice, 2> MOCK_DEVICES{{
      .memoryClockMHz = 9000,
      .fanPercent = 40,
      .pcieTxKilobytes = 32,
-     .pcieRxKilobytes = 64},
+     .pcieRxKilobytes = 64,
+     .hasPower = true,
+     .hasFan = true,
+     .busId = "00000000:01:00.0",
+     .pciBus = 0x01},
     {.name = "Mock NVIDIA GPU 1",
      .uuid = "",
      .hasUuid = false,
@@ -58,7 +68,11 @@ constexpr std::array<MockDevice, 2> MOCK_DEVICES{{
      .memoryClockMHz = 7000,
      .fanPercent = 25,
      .pcieTxKilobytes = 8,
-     .pcieRxKilobytes = 16},
+     .pcieRxKilobytes = 16,
+     .hasPower = false,
+     .hasFan = false,
+     .busId = "00000000:41:00.0",
+     .pciBus = 0x41},
 }};
 
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - mutable handles needed so functions can return stable pointers-to-element as nvmlDevice_t
@@ -67,8 +81,13 @@ std::array<int, MOCK_DEVICES.size()> MOCK_HANDLES{1, 2};
 // Sentinel returned by deviceIndex() when the handle is not found
 constexpr std::size_t INVALID_DEVICE_INDEX = std::numeric_limits<std::size_t>::max();
 
+// Every call that addresses a device (any per-device query, the process lists included), so a test
+// can prove a runtime-suspended GPU wasn't touched (#1117). Read via tasksmackNvmlMockDeviceQueries().
+unsigned int g_DeviceQueries = 0; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - mock call counter
+
 [[nodiscard]] auto deviceIndex(NVML::nvmlDevice_t device) -> std::size_t
 {
+    ++g_DeviceQueries;
     for (std::size_t i = 0; i < MOCK_HANDLES.size(); ++i)
     {
         if (device == &MOCK_HANDLES[i])
@@ -300,6 +319,10 @@ extern "C"
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
         }
+        if (!dev->hasPower)
+        {
+            return NVML::NVML_ERROR_NOT_SUPPORTED;
+        }
         if (g_FailSensorReads)
         {
             return NVML::NVML_ERROR_TIMEOUT;
@@ -341,7 +364,29 @@ extern "C"
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
         }
+        if (!dev->hasFan)
+        {
+            return NVML::NVML_ERROR_NOT_SUPPORTED;
+        }
         *fanSpeed = dev->fanPercent;
+        return NVML::NVML_SUCCESS;
+    }
+
+    // NOLINTNEXTLINE(readability-identifier-naming) - the exported NVML symbol name
+    NVML::nvmlReturn_t nvmlDeviceGetPciInfo_v3(NVML::nvmlDevice_t device, NVML::nvmlPciInfo_t* pci)
+    {
+        const auto* dev = safeDevice(device);
+        if (dev == nullptr)
+        {
+            return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        *pci = NVML::nvmlPciInfo_t{};
+        pci->domain = 0;
+        pci->bus = dev->pciBus;
+        pci->device = 0;
+        pci->pciDeviceId = 0x2684'10DEU;
+        writeString(dev->busId, std::data(pci->busId), static_cast<unsigned int>(std::size(pci->busId)));
+        writeString(dev->busId, std::data(pci->busIdLegacy), static_cast<unsigned int>(std::size(pci->busIdLegacy)));
         return NVML::NVML_SUCCESS;
     }
 
@@ -396,6 +441,12 @@ extern "C"
     unsigned int tasksmackNvmlMockUuidCalls()
     {
         return g_UuidCalls;
+    }
+
+    // Test control: how many calls have addressed a device so far (see g_DeviceQueries).
+    unsigned int tasksmackNvmlMockDeviceQueries()
+    {
+        return g_DeviceQueries;
     }
 
     const char* nvmlErrorString(NVML::nvmlReturn_t /*result*/)
