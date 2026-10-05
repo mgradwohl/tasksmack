@@ -6,7 +6,6 @@
 #include "Core/Event.h"
 #include "Domain/History.h"
 #include "Domain/Numeric.h"
-#include "Domain/PriorityConfig.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/Factory.h"
 #include "Platform/IProcessActions.h"
@@ -786,7 +785,8 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     {
         handleText = proc.handleCount > 0 ? formatCountLocale(proc.handleCount) : std::string("-");
     }
-    const std::string priorityText = std::format("{} (nice: {})", Domain::Priority::getPriorityLabel(proc.nice), proc.nice);
+    const std::string priorityText =
+        Detail::priorityDisplayText(proc.nice, Detail::PRIORITY_USES_WINDOWS_CLASSES); // No nice on Windows (#1204)
     std::vector<std::pair<std::string, std::pair<std::string, ImVec4>>> runtimeRows = {
         {"Status", {statusText, statusColor}},
         {"Threads", {proc.threadCount > 0 ? formatCountLocale(proc.threadCount) : std::string("-"), theme.scheme().textPrimary}},
@@ -1795,10 +1795,14 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc, UI
     renderGpuCurrentMetricsTable(proc);
 
     ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
+    // With one GPU the breakdown repeats the table above (#1207).
+    if (Detail::shouldShowPerGpuBreakdown(proc.perGpuUsage.size()))
+    {
+        ImGui::Separator();
+        ImGui::Spacing();
 
-    renderPerGpuBreakdown(proc);
+        renderPerGpuBreakdown(proc);
+    }
 
     ImGui::Separator();
     ImGui::Spacing();
@@ -1902,7 +1906,8 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
 }
 
 // Renders a collapsible per-GPU breakdown (utilization, memory, engines) for each entry in
-// proc.perGpuUsage. No-op if that list is empty, regardless of how many GPUs the system has.
+// proc.perGpuUsage. No-op if that list is empty, regardless of how many GPUs the system has; the caller
+// skips it for a single GPU (#1207).
 void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& proc)
 {
     const auto& theme = UI::Theme::get();
@@ -2454,16 +2459,65 @@ void ProcessDetailsPanel::renderPrioritySection()
     ImGui::Spacing();
     ImGui::Spacing();
 
-    // Show current nice value in the header
     const int currentNice = m_HasSnapshot ? cachedSnapshot().nice : 0;
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GAUGE_HIGH "  Priority (current nice: %d)", currentNice);
-    ImGui::Spacing();
 
-    // Initialize slider from current process nice value if not changed
+    // Initialize the control from the current process nice value if not changed
     if (!m_PriorityChanged && m_HasSnapshot)
     {
         m_PriorityNiceValue = cachedSnapshot().nice;
     }
+
+    const float emPx = ImGui::GetFontSize();
+    // Where the priority control ends, for right-aligning the Apply button under it.
+    float controlRightEdge = 0.0F;
+
+#ifdef _WIN32
+    // Windows has priority classes, not nice values (#1204): name the current class and offer the five
+    // settable ones in a combo. Each writes its representative nice value through setPriority(), which
+    // maps it back to that class; Realtime can only be shown.
+    const std::string currentClassName{Detail::windowsPriorityClassName(Detail::windowsPriorityClassFromNice(currentNice))};
+    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GAUGE_HIGH "  Priority (current: %s)", currentClassName.c_str());
+    ImGui::Spacing();
+
+    const Detail::WindowsPriorityClass selectedClass = Detail::windowsPriorityClassFromNice(m_PriorityNiceValue);
+    const std::string selectedClassName{Detail::windowsPriorityClassName(selectedClass)};
+    const float comboWidth = std::min(Detail::PRIORITY_CLASS_COMBO_WIDTH_EM * emPx, std::max(ImGui::GetContentRegionAvail().x, 1.0F));
+    ImGui::SetNextItemWidth(comboWidth);
+    if (ImGui::BeginCombo("##priority_class", selectedClassName.c_str()))
+    {
+        for (const Detail::WindowsPriorityClass priorityClass : Detail::SETTABLE_WINDOWS_PRIORITY_CLASSES)
+        {
+            const std::string optionName{Detail::windowsPriorityClassName(priorityClass)};
+            const bool isSelected = priorityClass == selectedClass;
+            if (ImGui::Selectable(optionName.c_str(), isSelected) && !isSelected)
+            {
+                m_PriorityNiceValue = Detail::windowsPriorityClassNice(priorityClass);
+                m_PriorityChanged = true;
+                m_PriorityError.clear();
+            }
+            if (isSelected)
+            {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetTooltip("Windows priority class: higher classes get CPU time first.\n"
+                          "Realtime cannot be set here.\n\n"
+                          "Note: Changing another user's or an elevated process typically requires administrator privileges");
+    }
+    controlRightEdge = comboWidth;
+    if (selectedClass == Detail::WindowsPriorityClass::Realtime)
+    {
+        ImGui::TextColored(theme.scheme().textWarning,
+                           ICON_FA_TRIANGLE_EXCLAMATION "  Realtime was set outside TaskSmack; it can be lowered here, not set");
+    }
+#else
+    // Show current nice value in the header
+    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GAUGE_HIGH "  Priority (current nice: %d)", currentNice);
+    ImGui::Spacing();
 
     auto* drawList = ImGui::GetWindowDrawList();
     const ImGuiStyle& style = ImGui::GetStyle();
@@ -2475,7 +2529,6 @@ void ProcessDetailsPanel::renderPrioritySection()
     // ========================================
 
     // Calculate "High" label width for offsetting the slider
-    const float emPx = ImGui::GetFontSize();
     const float labelPadding = PRIORITY_LABEL_PADDING_EM * emPx;
     const ImVec2 highLabelSize = ImGui::CalcTextSize("High");
     const float highLabelOffset = highLabelSize.x + labelPadding;
@@ -2554,6 +2607,10 @@ void ProcessDetailsPanel::renderPrioritySection()
                           "  0: Reset to default\n\n"
                           "Note: Setting values below 0 typically requires root/admin privileges");
     }
+    // The track starts after the "High" label, so the label offset belongs in the sum: without it the
+    // Apply button stopped that far short of the track's right edge.
+    controlRightEdge = highLabelOffset + metrics.sliderWidth;
+#endif
 
     ImGui::Spacing();
 
@@ -2568,9 +2625,7 @@ void ProcessDetailsPanel::renderPrioritySection()
     const float applyButtonWidth =
         std::min(UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize("Apply").x, emPx, PRIORITY_APPLY_BUTTON_MIN_EM),
                  std::max(ImGui::GetContentRegionAvail().x, 1.0F));
-    // The track starts after the "High" label, so the label offset belongs in the sum: without it the
-    // button stopped that far short of the track's right edge.
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0F, highLabelOffset + metrics.sliderWidth - applyButtonWidth));
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0F, controlRightEdge - applyButtonWidth));
 
     // Apply button with success (green) styling
     {

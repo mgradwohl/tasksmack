@@ -60,6 +60,38 @@ inline constexpr int MIN_VISIBLE_EXTENT = 64;
     return std::nullopt;
 }
 
+/// Whether an OS-initiated maximize (SDL_EVENT_WINDOW_MAXIMIZED) should be replaced by the window's
+/// own client-side maximize, the one the title-bar button uses (#1208).
+///
+/// A borderless window has no OS frame, so on the backends that maximize it client-side (Windows,
+/// X11, XWayland) the OS's own maximize is wrong: on Windows, SDL answers WM_GETMINMAXINFO for a
+/// borderless resizable window from the primary screen's metrics, which left the window a quarter
+/// of a 175 % display with its title-bar buttons clipped. Window::isMaximized() also reads only the
+/// tracked flag there, so the OS maximize went unnoticed: the title bar still offered Maximize,
+/// which would then have recorded the OS-maximized rectangle as the restore target. Undoing it and
+/// filling the current display's usable bounds instead fixes both. A native Wayland compositor
+/// maximizes the borderless window correctly and Window tracks it through SDL_WINDOW_MAXIMIZED, and
+/// a window with an OS frame is the OS's to maximize, so neither is adopted.
+///
+/// @param borderless         Whether the window is borderless (custom title bar).
+/// @param clientSideBackend  Whether the backend maximizes borderless windows client-side
+///                           (VideoBackend::supportsClientSideMaximize()).
+/// @param usableBoundsKnown  Whether the current display's usable bounds can be read. Without them
+///                           the client-side maximize itself falls back to SDL_MaximizeWindow(),
+///                           whose own MAXIMIZED event must not be adopted again, or the two would
+///                           undo each other on every event.
+/// @param stillMaximized     Whether SDL_WINDOW_MAXIMIZED is still set when the event is handled.
+/// @param minimized          Whether SDL_WINDOW_MINIMIZED is set when the event is handled. SDL
+///                           events are queued, so the MAXIMIZED notification can be drained after
+///                           a later OS restore or minimize already changed the window; adopting it
+///                           then would undo that newer action, so only a window that is still
+///                           maximized and not minimized is adopted (#1208).
+[[nodiscard]] constexpr bool
+shouldAdoptSystemMaximize(bool borderless, bool clientSideBackend, bool usableBoundsKnown, bool stillMaximized, bool minimized) noexcept
+{
+    return borderless && clientSideBackend && usableBoundsKnown && stillMaximized && !minimized;
+}
+
 /// Length of the overlap of the half-open spans [aStart, aStart + aLength) and
 /// [bStart, bStart + bLength), or 0 when they do not overlap. Computed in 64 bits so extreme saved
 /// coordinates cannot overflow.

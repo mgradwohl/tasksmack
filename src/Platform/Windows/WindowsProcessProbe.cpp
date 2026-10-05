@@ -1,6 +1,7 @@
 #include "WindowsProcessProbe.h"
 
 #include "Domain/Numeric.h"
+#include "WindowsProcessActionsMath.h"
 #include "WindowsProcessProbeMath.h"
 
 #include <spdlog/spdlog.h>
@@ -968,31 +969,8 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         }
 
         // Priority class rarely changes — refresh alongside heavy details.
-        const DWORD priorityClass = GetPriorityClass(hProcess);
-        switch (priorityClass)
-        {
-        case IDLE_PRIORITY_CLASS:
-            counters.nice = 19;
-            break;
-        case BELOW_NORMAL_PRIORITY_CLASS:
-            counters.nice = 10;
-            break;
-        case NORMAL_PRIORITY_CLASS:
-            counters.nice = 0;
-            break;
-        case ABOVE_NORMAL_PRIORITY_CLASS:
-            counters.nice = -5;
-            break;
-        case HIGH_PRIORITY_CLASS:
-            counters.nice = -10;
-            break;
-        case REALTIME_PRIORITY_CLASS:
-            counters.nice = -20;
-            break;
-        default:
-            counters.nice = 0;
-            break;
-        }
+        // Mid-bucket nice values, so each class is labelled as itself (#1204).
+        counters.nice = priorityClassToNice(GetPriorityClass(hProcess));
     }
     else if (counters.command.empty())
     {

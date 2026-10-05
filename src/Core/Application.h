@@ -100,6 +100,13 @@ class Application
         m_WindowGeometryChangedThisFrame = true;
     }
 
+    /// The real time between the starts of the last two frames, in seconds: unlike the deltaTime
+    /// layers get in onUpdate(), not capped at 0.1 s, so an FPS readout below 10 FPS is true (#1152).
+    [[nodiscard]] double lastFrameIntervalSeconds() const noexcept
+    {
+        return m_LastFrameIntervalSeconds;
+    }
+
     [[nodiscard]] static Application& get();
     /// Seconds since SDL started, as a double (nanosecond source; see #1038).
     [[nodiscard]] static double getTime();
@@ -123,6 +130,11 @@ class Application
     std::vector<std::unique_ptr<Layer>> m_LayerStack;
     bool m_Running = false;
     double m_InteractionRedrawUntil = 0.0;
+    /// See lastFrameIntervalSeconds(). Set by run() each frame.
+    double m_LastFrameIntervalSeconds = 0.0;
+    /// The display refresh rate frames are paced against, in Hz (#1126). Read when run() starts and
+    /// again on a display change; FALLBACK_REFRESH_HZ when SDL does not report one.
+    double m_DisplayRefreshHz = 0.0;
     bool m_ResizePerfTraceEnabled = false;
     /// True while vsync has been temporarily disabled for an active resize/move interaction.
     /// Restored to the original setting (adaptive vsync) when the interaction ends.

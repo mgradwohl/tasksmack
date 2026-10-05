@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <exception>
@@ -63,18 +64,26 @@ namespace
 thread_local std::optional<std::reference_wrapper<Application>> g_StackApplicationInstance;
 
 // Maximum delta time clamped in the render loop to avoid large jumps after stalls or resize pauses.
+// Animation only: the FPS readout gets the unclamped interval (lastFrameIntervalSeconds(), #1152).
 constexpr float MAX_DELTA_TIME = 0.1F;
 
-// When no SDL events arrive, sleep this long before rendering the next frame.
-// This limits the idle render rate to ~20 fps, reducing CPU usage when the display
+// When no SDL events arrive, render the next frame this long after the previous one started
+// (FramePacing::computeIdleWaitMs, #1276). This holds the idle render rate at 20 fps, reducing CPU usage when the display
 // hasn't changed. Mouse movement and keyboard events wake the sleep immediately,
 // so interactive frame rate is unaffected.
 constexpr int IDLE_FRAME_SLEEP_MS = 50;
+// The frame rate that idle sleep gives without input. Motion that needs no more than this is left
+// to the idle path rather than paced (FramePacing::computeAnimationRate, #1125).
+constexpr double IDLE_FRAME_RATE = 1000.0 / IDLE_FRAME_SLEEP_MS;
 
-// While something on screen is animating (a visible history chart or NowBar; see
-// Core::AnimationRequest), frames start at most this often, whatever the input (#1037). The
-// display's own rate applies instead when it is lower: vsync then paces the swap.
-constexpr double ANIMATION_FRAME_PERIOD_SECONDS = 1.0 / 60.0;
+// The fastest the loop paces frames, whatever asks: a visible chart or NowBar moving fast enough
+// (Core::AnimationRequest, #1037/#1125) or input (#1153). A whole number of display refreshes never
+// slower than this (FramePacing::vblanksPerFrame, #1126): 60 fps at 60/120 Hz, 75 at 75 Hz, 72 at
+// 144 Hz, 82.5 at 165 Hz. A move/resize interaction is capped at the display rate instead.
+constexpr double MAX_FRAME_RATE = 60.0;
+
+// The refresh rate assumed when SDL does not report the display's (#1126).
+constexpr double FALLBACK_REFRESH_HZ = 60.0;
 
 // When the window is minimized there is nothing visible to render, so the sleep
 // is extended to ~5 fps. Any event (e.g. SDL_EVENT_WINDOW_RESTORED) wakes
@@ -471,13 +480,31 @@ void Application::run()
 
     double lastTime = getTime();
 
-    const auto computeDeltaTime = [&lastTime]() -> float
+    const auto computeDeltaTime = [this, &lastTime]() -> float
     {
         const double currentTime = getTime();
         const float deltaTime = FramePacing::frameDeltaSeconds(lastTime, currentTime, MAX_DELTA_TIME);
+        m_LastFrameIntervalSeconds = FramePacing::frameIntervalSeconds(lastTime, currentTime);
         lastTime = currentTime;
         return deltaTime;
     };
+
+    // The display's refresh rate, which frame pacing rounds to (#1126); re-read on a display change.
+    const auto refreshDisplayRate = [this]()
+    {
+        const double queried = m_Window->getDisplayRefreshRate();
+        const double effective = FramePacing::effectiveRefreshHz(queried, FALLBACK_REFRESH_HZ);
+        // Logged only for a real change: SDL can report the same mode again with a slightly
+        // different rational rate (59.97 then 59.98 Hz) when the window first lands on a display.
+        constexpr double LOG_CHANGE_HZ = 0.5;
+        if (std::abs(effective - m_DisplayRefreshHz) >= LOG_CHANGE_HZ)
+        {
+            spdlog::info(
+                "Frame pacing: display refresh {:.2f} Hz{}", effective, FramePacing::isUsableRefreshHz(queried) ? "" : " (assumed)");
+        }
+        m_DisplayRefreshHz = effective;
+    };
+    refreshDisplayRate();
 
     m_InteractionRedrawUntil = 0.0;
 
@@ -490,9 +517,10 @@ void Application::run()
     // changed last frame, we allow the idle sleep even inside the interaction grace window,
     // preventing wasted renders when the window is stationary post-interaction.
     bool geometryChangedLastFrame = false;
-    // Whether the previous frame drew something animating (Core::AnimationRequest), and when the
-    // last regular frame started: together they pace the next frame (#1037).
-    bool animatingLastFrame = false;
+    // The highest frame rate the previous frame's moving content asked for (Core::AnimationRequest,
+    // 0 = nothing moved visibly), and when the last frame started: together they pace the next
+    // frame (#1037, #1125).
+    double requestedAnimationFps = 0.0;
     double lastFrameStart = getTime();
     std::uint64_t loopStart = 0;
     ResizePerfLoopTiming loopTiming;
@@ -617,6 +645,19 @@ void Application::run()
                 ++resizeEventCount;
                 m_InteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
                 break;
+            case WindowEventRouting::Action::DisplayChanged:
+                refreshDisplayRate();
+                break;
+            case WindowEventRouting::Action::SystemMaximized:
+#ifdef _WIN32
+                // Win+Up, snap to the top edge or ShowWindow(SW_MAXIMIZE) on the borderless window:
+                // replaced by the title-bar button's maximize, whose resize events follow (#1208).
+                // Windows only: the quarter-screen maximize is SDL's Win32 WM_GETMINMAXINFO sizing.
+                // X11/XWayland window managers size a maximized borderless window themselves, and
+                // their asynchronous restore/maximize round trip is untested, so Linux is unchanged.
+                m_Window->adoptSystemMaximize();
+                break;
+#endif
             case WindowEventRouting::Action::None:
                 break;
             }
@@ -743,8 +784,28 @@ void Application::run()
             ++resizeTraceStats.skippedRenderFrames;
         }
 
-        if ((needsResizeRedraw || forceInteractionRedraw) && !m_Window->isMinimized() && !skipRenderThisFrame)
+        // Minimized or covered (#1125): nothing on screen to animate, so no paced frames and the
+        // longer hidden idle sleep.
+        const bool isHidden = m_Window->isMinimized() || m_Window->isOccluded();
+
+        // isHidden, not only minimized: an occluded window that gets a move/resize event must not render
+        // at the display rate through the interaction grace period either (#1125).
+        if ((needsResizeRedraw || forceInteractionRedraw) && !isHidden && !skipRenderThisFrame)
         {
+            // Vsync is off during an interaction, so a stream of mouse events would otherwise render
+            // unbounded (#1153): cap it at the display rate, which vsync would have given.
+            const double interactionWaitSeconds = FramePacing::computeFrameWaitSeconds(
+                getTime() - lastFrameStart, FramePacing::framePeriodSeconds(m_DisplayRefreshHz, AnimationRequest::FULL_RATE));
+            if (interactionWaitSeconds > 0.0)
+            {
+                const auto waitStart = traceResizePerfThisFrame ? SDL_GetPerformanceCounter() : 0;
+                SDL_DelayPrecise(static_cast<Uint64>(interactionWaitSeconds * 1.0e9));
+                if (traceResizePerfThisFrame)
+                {
+                    loopTiming.waitMs = resizePerfElapsedMs(waitStart, SDL_GetPerformanceCounter());
+                }
+            }
+            lastFrameStart = getTime();
             double updateMs = 0.0;
             double renderMs = 0.0;
             double postRenderMs = 0.0;
@@ -763,19 +824,24 @@ void Application::run()
             didImmediateResizeRedraw = true;
         }
 
-        // When the event queue is empty, decide whether to sleep or render immediately:
-        // - Inside the grace period: skip the sleep and fall through to renderFrame so the
-        //   display stays current during burst gaps between resize/move events.
-        // - Outside the grace period: sleep briefly (~20 fps idle, 5 fps minimized) to
-        //   reduce CPU/GPU usage when the display hasn't changed. Any SDL event wakes the
-        //   sleep immediately, keeping interactive frame rate unaffected.
-        const bool animationPaced = FramePacing::isAnimationPaced(animatingLastFrame, isInteracting, m_Window->isMinimized());
-        if (animationPaced)
+        // Pace the regular frame:
+        // - Something moving visibly asked for more frames than idling gives, or input arrived:
+        //   cap the frame rate (FramePacing::computeFrameRateCap) at a whole number of display
+        //   refreshes. Charts keep a steady rate whatever the input (#1037), only as fast as their
+        //   motion needs (#1125); input frames are capped too (#1153). Events that arrive during
+        //   the wait are handled by the next drain, at most one period later.
+        // - Otherwise, with the event queue empty, decide whether to sleep or render immediately:
+        //   - Inside the grace period: skip the sleep and fall through to renderFrame so the
+        //     display stays current during burst gaps between resize/move events.
+        //   - Outside the grace period: sleep briefly (~20 fps idle, 5 fps minimized or covered)
+        //     to reduce CPU/GPU usage when the display hasn't changed. Any SDL event wakes the
+        //     sleep immediately, keeping interactive frame rate unaffected.
+        const double animationFps = FramePacing::computeAnimationRate(requestedAnimationFps, IDLE_FRAME_RATE, MAX_FRAME_RATE);
+        const double frameRateCap = FramePacing::computeFrameRateCap(animationFps, hadEvents, isHidden, MAX_FRAME_RATE);
+        if (frameRateCap > 0.0 && !isInteracting)
         {
-            // A steady animation rate, input or not (#1037): events that arrive meanwhile wait at
-            // most one period, and the drain at the top of the next iteration handles them.
-            const double waitSeconds = FramePacing::computeAnimationWaitSeconds(
-                animatingLastFrame, isInteracting, m_Window->isMinimized(), getTime() - lastFrameStart, ANIMATION_FRAME_PERIOD_SECONDS);
+            const double waitSeconds = FramePacing::computeFrameWaitSeconds(
+                getTime() - lastFrameStart, FramePacing::framePeriodSeconds(m_DisplayRefreshHz, frameRateCap));
             if (waitSeconds > 0.0)
             {
                 const auto waitStart = traceResizePerfThisFrame ? SDL_GetPerformanceCounter() : 0;
@@ -796,7 +862,8 @@ void Application::run()
             // frame's onUpdate result (1-frame lag is intentional and benign).
             if (FramePacing::computeShouldSleepWhenIdle(keepInteractionRedrawActive, geometryChangedLastFrame))
             {
-                const int sleepMs = FramePacing::computeIdleSleepMs(m_Window->isMinimized(), IDLE_FRAME_SLEEP_MS, MINIMIZED_FRAME_SLEEP_MS);
+                const int sleepMs =
+                    FramePacing::computeIdleWaitMs(isHidden, IDLE_FRAME_SLEEP_MS, MINIMIZED_FRAME_SLEEP_MS, getTime() - lastFrameStart);
                 const auto waitStart = traceResizePerfThisFrame ? SDL_GetPerformanceCounter() : 0;
                 SDL_WaitEventTimeout(nullptr, sleepMs);
                 if (traceResizePerfThisFrame)
@@ -849,7 +916,7 @@ void Application::run()
         // A skipped render leaves the previous answer standing.
         if (didImmediateResizeRedraw || !skipRenderThisFrame)
         {
-            animatingLastFrame = AnimationRequest::consume();
+            requestedAnimationFps = AnimationRequest::consume();
         }
 
         wasTracingInteraction = tracingInteraction;
