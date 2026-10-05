@@ -85,7 +85,7 @@ jobs:
       - name: Generate coverage report
         run: |
           set -o pipefail
-          xvfb-run -s "-screen 0 1920x1080x24" ./tools/coverage.sh -v 2>&1 | tee coverage-output.txt
+          xvfb-run -s "-screen 0 1920x1080x24 -noreset" ./tools/coverage.sh -v 2>&1 | tee coverage-output.txt
 
       - name: Add coverage summary to workflow summary
         if: always()
