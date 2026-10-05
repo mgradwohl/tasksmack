@@ -313,7 +313,8 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
     // CAP_SYS_PTRACE in the effective set (docs/guide/faq.md's setcap line).
     const std::vector<char> selfStatus = readProcFileFull((m_ProcRoot / "self" / "status").c_str());
     const bool reducedPrivileges = ProcPrivileges::hasReducedPrivileges(
-        geteuid() == 0, ProcPrivileges::parseCapEff(std::string_view(selfStatus.data(), selfStatus.size())));
+        geteuid() == 0,
+        ProcPrivileges::parseCapEff(selfStatus.empty() ? std::string_view{} : std::string_view(selfStatus.data(), selfStatus.size())));
 
     return ProcessCapabilities{.hasIoCounters = m_IoCountersAvailable.load(std::memory_order_acquire),
                                .hasThreadCount = true,
@@ -1135,6 +1136,7 @@ SocketTrafficReading LinuxProcessProbe::readSocketTraffic() const
     };
     auto snapshot = currentInodeToPidMap(std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_TTL_MS});
 
+    bool unownedSinceBuild = false;
     {
         const std::scoped_lock lock{m_UnownedSocketsMutex};
         // A socket with no owner that wasn't already unowned in a reading taken before the map was
@@ -1142,23 +1144,27 @@ SocketTrafficReading LinuxProcessProbe::readSocketTraffic() const
         // connection is attributed in the reading it first appears in, rather than up to a TTL later
         // with its first bytes, or all of a short one's, never credited (#1259). Sockets held by
         // processes we can't read stay unowned through the rebuild and so don't trigger another.
-        const bool unownedSinceBuild = std::ranges::any_of(sockets,
-                                                           [&](const SocketStats& socket)
-                                                           {
-                                                               if (ownerOf(snapshot.map.get(), socket.inode) != 0)
-                                                               {
-                                                                   return false;
-                                                               }
-                                                               const auto seen = m_UnownedSocketsFirstSeen.find(socket.inode);
-                                                               const auto firstSeen =
-                                                                   (seen != m_UnownedSocketsFirstSeen.end()) ? seen->second : sampledAt;
-                                                               return firstSeen > snapshot.builtAt;
-                                                           });
-        if (unownedSinceBuild)
-        {
-            snapshot = currentInodeToPidMap(m_InodeMapEarlyRebuildInterval);
-        }
+        unownedSinceBuild = std::ranges::any_of(sockets,
+                                                [&](const SocketStats& socket)
+                                                {
+                                                    if (ownerOf(snapshot.map.get(), socket.inode) != 0)
+                                                    {
+                                                        return false;
+                                                    }
+                                                    const auto seen = m_UnownedSocketsFirstSeen.find(socket.inode);
+                                                    const auto firstSeen =
+                                                        (seen != m_UnownedSocketsFirstSeen.end()) ? seen->second : sampledAt;
+                                                    return firstSeen > snapshot.builtAt;
+                                                });
+    }
+    // The early rebuild may scan every /proc/[pid]/fd: do it without holding m_UnownedSocketsMutex.
+    if (unownedSinceBuild)
+    {
+        snapshot = currentInodeToPidMap(m_InodeMapEarlyRebuildInterval);
+    }
 
+    {
+        const std::scoped_lock lock{m_UnownedSocketsMutex};
         std::unordered_map<std::uint64_t, std::chrono::steady_clock::time_point> unowned;
         reading.sockets.reserve(sockets.size());
         for (const auto& socket : sockets)
@@ -1229,7 +1235,11 @@ LinuxProcessProbe::InodeToPidSnapshot LinuxProcessProbe::currentInodeToPidMap(st
                 const auto ttl = std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_TTL_MS};
                 const auto retryDelay = std::min(EMPTY_REBUILD_RETRY_MS, ttl);
                 m_InodeToPidCacheTime = std::chrono::steady_clock::now() - (ttl - retryDelay);
-                // snapshot already holds the previous (possibly non-empty) map
+                // The scan still tried to resolve every socket unowned before it: advance builtAt so
+                // those sockets don't count as opened since the build and trigger an early rebuild
+                // every interval (#1259).
+                m_InodeToPidBuiltAt = scanStart;
+                snapshot = {.map = m_InodeToPidCache, .builtAt = m_InodeToPidBuiltAt};
             }
         }
     }

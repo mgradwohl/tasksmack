@@ -135,8 +135,9 @@ class LinuxProcessProbe : public IProcessProbe
     mutable std::mutex m_InodePidCacheMutex;
     mutable std::shared_ptr<const std::unordered_map<std::uint64_t, std::int32_t>> m_InodeToPidCache;
     mutable std::chrono::steady_clock::time_point m_InodeToPidCacheTime;
-    // When the scan behind m_InodeToPidCache started: a socket first seen unowned after this may have
-    // been opened since, so readSocketTraffic() rebuilds the map early to attribute it (#1259).
+    // When the last completed scan started, whether it replaced m_InodeToPidCache or came back empty:
+    // a socket first seen unowned after this may have been opened since, so readSocketTraffic()
+    // rebuilds the map early to attribute it (#1259).
     mutable std::chrono::steady_clock::time_point m_InodeToPidBuiltAt;
     // When the last rebuild was claimed, successful or not. No rebuild -- TTL, early, or the quick
     // retry after an empty scan -- starts within m_InodeMapEarlyRebuildInterval of it, so a /proc
@@ -205,7 +206,7 @@ class LinuxProcessProbe : public IProcessProbe
 
     using InodeToPidMap = std::unordered_map<std::uint64_t, std::int32_t>;
 
-    /// The inode-to-PID map and when the scan that built it started.
+    /// The inode-to-PID map, and when the last completed scan started (m_InodeToPidBuiltAt).
     struct InodeToPidSnapshot
     {
         std::shared_ptr<const InodeToPidMap> map;
