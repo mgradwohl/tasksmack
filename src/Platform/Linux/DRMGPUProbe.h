@@ -21,6 +21,7 @@ namespace Platform
 /// An optional custom DRM base path can be provided for unit-testing with
 /// a synthetic sysfs directory tree instead of the real /sys filesystem.
 /// Filesystem errors (a sandbox's unreadable /sys) leave a card or a sensor out; they never throw (#1165).
+/// The card list is rebuilt by a full rescanGPUs() when cards appear, disappear or change (#1116).
 class DRMGPUProbe : public IGPUProbe
 {
   public:
@@ -48,6 +49,7 @@ class DRMGPUProbe : public IGPUProbe
     [[nodiscard]] std::vector<GPUCounters> readGPUCounters() override;
     [[nodiscard]] std::vector<ProcessGPUCounters> readProcessGPUCounters() override;
     [[nodiscard]] GPUCapabilities capabilities() const override;
+    [[nodiscard]] bool rescanGPUs(GPURescan depth) override;
 
     [[nodiscard]] bool isAvailable() const
     {
@@ -92,6 +94,8 @@ class DRMGPUProbe : public IGPUProbe
 
     bool initialize();
     [[nodiscard]] std::vector<DRMCard> discoverDRMCards() const;
+    /// discoverDRMCards() filtered to Intel (i915/xe) cards, sorted by card path.
+    [[nodiscard]] std::vector<DRMCard> discoverIntelCards() const;
     [[nodiscard]] static bool isIntelGPU(const DRMCard& card);
     [[nodiscard]] static std::string readSysfsString(const std::string& path);
     [[nodiscard]] static uint64_t readSysfsUint64(const std::string& path);

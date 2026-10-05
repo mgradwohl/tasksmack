@@ -184,20 +184,71 @@ DRMGPUProbe::DRMGPUProbe(std::string drmBasePath, VramQuery vramQuery)
 
 bool DRMGPUProbe::initialize()
 {
-    // Discover all DRM cards
-    auto cards = discoverDRMCards();
-
-    // Filter to only Intel GPUs (i915, xe drivers)
-    for (const auto& card : cards)
+    m_Cards = discoverIntelCards();
+    for (const auto& card : m_Cards)
     {
-        if (isIntelGPU(card))
-        {
-            m_Cards.push_back(card);
-            spdlog::debug("DRMGPUProbe: Found Intel GPU at {}", card.cardPath);
-        }
+        spdlog::debug("DRMGPUProbe: Found Intel GPU at {}", card.cardPath);
+    }
+    return !m_Cards.empty();
+}
+
+std::vector<DRMGPUProbe::DRMCard> DRMGPUProbe::discoverIntelCards() const
+{
+    // Filter to only Intel GPUs (i915, xe drivers)
+    auto cards = discoverDRMCards();
+    std::erase_if(cards, [](const DRMCard& card) { return !isIntelGPU(card); });
+    // directory_iterator order is unspecified; sorted, two scans of the same cards compare equal.
+    std::ranges::sort(cards, {}, &DRMCard::cardPath);
+    return cards;
+}
+
+bool DRMGPUProbe::rescanGPUs(GPURescan depth)
+{
+    // A card's sensors come from which sysfs files it has, not from querying it, so a card asleep at
+    // enumeration needs no quick re-check (#1289): only a full rescan looks for changes.
+    if (depth != GPURescan::Full)
+    {
+        return false;
     }
 
-    return !m_Cards.empty();
+    // Hot-plugged, removed or rebound cards, or a card whose hwmon appeared after the driver bound
+    // (#1116). Directory listings and symlinks only: nothing here wakes a sleeping card.
+    auto cards = discoverIntelCards();
+    const auto sameCard = [](const DRMCard& lhs, const DRMCard& rhs)
+    {
+        // The energy counter and render node are found at discovery too: one that appears late (a
+        // render node registered after the card) is a change, or the card would never get it (#1269, #1283).
+        return lhs.gpuId == rhs.gpuId && lhs.cardPath == rhs.cardPath && lhs.hwmonPath == rhs.hwmonPath && lhs.driver == rhs.driver &&
+               lhs.energyPath == rhs.energyPath && lhs.renderNodePath == rhs.renderNodePath;
+    };
+    if (std::ranges::equal(cards, m_Cards, sameCard))
+    {
+        return false;
+    }
+
+    // A card that persists keeps its last-known VRAM total for while it sleeps, and its DRM query
+    // results (#1283), so a rescan neither reopens its render node for a total that can't change nor
+    // forgets a total it can't re-query while asleep. The query results carry over only while the
+    // query would go to the same render node through the same driver; otherwise it's re-issued.
+    for (auto& card : cards)
+    {
+        const auto previous = std::ranges::find(m_Cards, card.gpuId, &DRMCard::gpuId);
+        if (previous == m_Cards.end())
+        {
+            continue;
+        }
+        card.lastMemoryTotalBytes = previous->lastMemoryTotalBytes;
+        if (previous->driver == card.driver && previous->renderNodePath == card.renderNodePath)
+        {
+            card.vramQueried = previous->vramQueried;
+            card.queriedVramTotalBytes = previous->queriedVramTotalBytes;
+            card.queriedVramUsedBytes = previous->queriedVramUsedBytes;
+        }
+    }
+    spdlog::info("DRMGPUProbe: Intel DRM cards changed, now {}", cards.size());
+    m_Cards = std::move(cards);
+    m_Available = !m_Cards.empty();
+    return true;
 }
 
 std::vector<DRMGPUProbe::DRMCard> DRMGPUProbe::discoverDRMCards() const

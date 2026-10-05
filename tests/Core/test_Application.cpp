@@ -8,8 +8,10 @@
 /// - Singleton instance access
 /// - Error handling (SDL initialization)
 ///
-/// Note: The ApplicationTest suite requires a display/windowing system and is skipped in headless
-/// environments. The FramePacingTest suite is pure logic extracted from Application::run() (see
+/// Note: The ApplicationTest suite requires a display/windowing system with a GL 3.3 core context and
+/// is skipped when the up-front display probe finds none. Once the probe passes, a construction
+/// exception is a test failure, not a skip; and with TASKSMACK_REQUIRE_DISPLAY=1 (Linux CI) a failed
+/// probe fails too (#1132). The FramePacingTest suite is pure logic extracted from Application::run() (see
 /// Core/FramePacing.h) and always runs, headless or not.
 
 #include "Core/AnimationRequest.h"
@@ -47,7 +49,7 @@ namespace
 {
 
 // Check if we have a display available
-bool hasDisplay()
+bool detectDisplay()
 {
 #ifdef _WIN32
     // Check for CI environment - GitHub Actions sets CI=true
@@ -62,8 +64,9 @@ bool hasDisplay()
         // Windows CI runners are typically headless
         return false;
     }
-    // Local Windows development usually has a display
-    return true;
+    // Local Windows development usually has a display, but it must also offer a GL 3.3 core context:
+    // construction failures are fatal once a display is detected (#1132).
+    return TestSupport::probeGLCapability();
 #else
     // On Linux, check for DISPLAY environment variable (X11) or WAYLAND_DISPLAY
     // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay) - called during single-threaded test startup, read-only env check
@@ -82,8 +85,18 @@ bool hasDisplay()
         }
     }
 
-    return TestSupport::tryEnableOffscreenVideoDriver();
+    // The offscreen driver only counts if it can also create a GL 3.3 core context (it needs
+    // Mesa EGL for that), so a "yes" here means Application construction can succeed and a
+    // construction exception is a real failure, not an environment gap.
+    return TestSupport::tryEnableOffscreenVideoDriver() && TestSupport::probeGLCapability();
 #endif
+}
+
+// Every display check goes through here so TASKSMACK_REQUIRE_DISPLAY=1 (set by Linux CI) turns a
+// missing display into a failure instead of a skip.
+bool hasDisplay()
+{
+    return TestSupport::enforceDisplayRequirement(detectDisplay());
 }
 
 /// Test layer that tracks lifecycle callbacks
@@ -403,7 +416,7 @@ TEST(ApplicationTest, ConstructWithDefaultSpec)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -430,7 +443,7 @@ TEST(ApplicationTest, ConstructWithCustomSpec)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -451,7 +464,7 @@ TEST(ApplicationTest, SingletonInstanceIsAccessible)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -482,7 +495,7 @@ TEST(ApplicationTest, PushLayerCallsOnAttach)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -516,7 +529,7 @@ TEST(ApplicationTest, CloseRequestIsAcceptedUnlessALayerVetoesIt)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -547,7 +560,7 @@ TEST(ApplicationTest, RequestCloseRaisesWindowCloseEventAndStopsWhenAccepted)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -578,7 +591,7 @@ TEST(ApplicationTest, RequestCloseIsVetoedByAHandlingLayer)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -601,7 +614,7 @@ TEST(ApplicationTest, ClosingTheLastWindowDoesNotAlsoPostQuit)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -632,7 +645,7 @@ TEST(ApplicationTest, CloseRequestedRaisesOneVetoableWindowCloseEvent)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -664,7 +677,7 @@ TEST(ApplicationTest, SdlQuitStopsTheAppAndCannotBeVetoed)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -690,7 +703,7 @@ TEST(ApplicationTest, PushMultipleLayers)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1394,7 +1407,7 @@ TEST(ApplicationTest, StopPreventsRunLoop)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1420,7 +1433,7 @@ TEST(ApplicationTest, GetTimeReturnsMonotonicValue)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1446,7 +1459,7 @@ TEST(ApplicationTest, GetTimeIsConsistent)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1476,7 +1489,7 @@ TEST(ApplicationTest, GetWindowReturnsValidWindow)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1497,7 +1510,7 @@ TEST(ApplicationTest, IsInteractionRedrawActiveIsFalseBeforeAnyInteraction)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1522,7 +1535,7 @@ TEST(ApplicationTest, SignalWindowGeometryChangedSetsFlag)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1556,7 +1569,7 @@ TEST(ApplicationTest, DestructorDetachesLayers)
         }
         catch (const std::exception& e)
         {
-            GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+            FAIL() << "Application creation failed after the display probe passed: " << e.what();
         }
     }
 
@@ -1604,7 +1617,7 @@ TEST(ApplicationTest, PushLayerPopsHalfInitializedLayerWhenOnAttachThrows)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1635,7 +1648,7 @@ TEST(ApplicationTest, DetachAllLayersContinuesPastAThrowingLayer)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1684,7 +1697,7 @@ TEST(ApplicationTest, SetInstanceWithUniquePtr)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1717,7 +1730,7 @@ TEST(ApplicationTest, SetInstanceOverridesThreadLocalFallback)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1747,7 +1760,7 @@ TEST(ApplicationTest, GetReturnsCorrectInstanceAfterSetInstance)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1780,7 +1793,7 @@ TEST(ApplicationTest, SetInstancePreservesWindowState)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1818,7 +1831,7 @@ TEST(ApplicationTest, SetInstanceAllowsLayerOperations)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1852,7 +1865,7 @@ TEST(ApplicationTest, SetInstanceMaintainsSingletonSemantics)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -1922,7 +1935,7 @@ TEST(ApplicationTest, FailedConstructionClearsSingletonAndAllowsRetry)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application re-construction after failure probe failed: " << e.what();
+        FAIL() << "Application re-construction after failure probe failed: " << e.what();
     }
 }
 
@@ -1976,7 +1989,7 @@ TEST(ApplicationTest, SetInstanceTransfersOwnershipCorrectly)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -2008,7 +2021,7 @@ TEST(ApplicationTest, PathsReturnsValidPathService)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -2047,7 +2060,7 @@ TEST(ApplicationTest, RaiseEventDispatchesToLayersInReverseOrder)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -2079,7 +2092,7 @@ TEST(ApplicationTest, RaiseEventStopsAfterEventIsHandled)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -2115,7 +2128,7 @@ TEST(ApplicationTest, RaiseEventDoesNotCrashWhenLayerThrows)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }
 
@@ -2148,6 +2161,6 @@ TEST(ApplicationTest, RaiseWindowResizedEventReachesLayers)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 }

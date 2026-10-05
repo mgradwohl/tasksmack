@@ -133,6 +133,15 @@ std::vector<ProcessGPUCounters> LinuxGPUProbe::readProcessGPUCounters()
     return counters;
 }
 
+bool LinuxGPUProbe::rescanGPUs(GPURescan depth)
+{
+    // Every probe is rescanned, so no short-circuit: one changing doesn't excuse the others.
+    const bool nvmlChanged = m_NVMLProbe && m_NVMLProbe->rescanGPUs(depth);
+    const bool drmChanged = m_DRMProbe && m_DRMProbe->rescanGPUs(depth);
+    const bool rocmChanged = m_ROCmProbe && m_ROCmProbe->rescanGPUs(depth);
+    return nvmlChanged || drmChanged || rocmChanged;
+}
+
 GPUCapabilities LinuxGPUProbe::capabilities() const
 {
     GPUCapabilities caps{};
