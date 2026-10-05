@@ -12,6 +12,7 @@
 #include "Platform/Windows/DXGIAdapterLocation.h"
 #include "Platform/Windows/DXGIGPUProbe.h"
 #include "Platform/Windows/DXGIGPUProbeMath.h"
+#include "Platform/Windows/DisplayDevicePower.h"
 
 #include <gtest/gtest.h>
 
@@ -392,6 +393,54 @@ TEST(ClassifyIntegratedTest, ASoftwareAdapterIsNeverIntegrated)
     constexpr uint32_t SOFTWARE_FLAG = 2;
     EXPECT_FALSE(classifyIntegrated(true, 0x1414, SOFTWARE_FLAG, 0));
     EXPECT_FALSE(classifyIntegrated(std::nullopt, 0x5143, SOFTWARE_FLAG, 0));
+}
+
+// =============================================================================
+// DisplayDevicePower: whether a GPU is asleep, from the PnP manager, never from the GPU (#1265).
+// =============================================================================
+
+TEST(DisplayDevicePowerTest, D1ToD3AreAsleepD0AndUnspecifiedAreAwake)
+{
+    EXPECT_FALSE(isAsleepDevicePowerState(PowerDeviceUnspecified));
+    EXPECT_FALSE(isAsleepDevicePowerState(PowerDeviceD0));
+    EXPECT_TRUE(isAsleepDevicePowerState(PowerDeviceD1));
+    EXPECT_TRUE(isAsleepDevicePowerState(PowerDeviceD2));
+    EXPECT_TRUE(isAsleepDevicePowerState(PowerDeviceD3));
+    EXPECT_FALSE(isAsleepDevicePowerState(PowerDeviceMaximum));
+}
+
+TEST(DisplayDevicePowerTest, PciAddressCarriesTheDeviceInItsHighWord)
+{
+    // DEVPKEY_Device_Address for PCI is (device << 16) | function.
+    EXPECT_EQ(pciLocationFromDevNode(0x01, 0x00000000), (PciLocation{.bus = 0x01, .device = 0x00}));
+    EXPECT_EQ(pciLocationFromDevNode(0x00, 0x00020000), (PciLocation{.bus = 0x00, .device = 0x02}));
+    EXPECT_EQ(pciLocationFromDevNode(0x41, 0x001F0003), (PciLocation{.bus = 0x41, .device = 0x1F}));
+}
+
+TEST(DisplayDevicePowerTest, AnUnknownLocationIsAwake)
+{
+    // No display adapter sits at bus 255, device 31: unknown counts as awake, so a GPU is never
+    // left unmonitored by mistake.
+    DisplayDevicePower power;
+    EXPECT_FALSE(power.isAsleep(PciLocation{.bus = 0xFF, .device = 0x1F}));
+    EXPECT_FALSE(power.isAsleep(PciLocation{.bus = 0xFF, .device = 0x1F})); // Cached miss
+}
+
+TEST(DisplayDevicePowerTest, QueryingRealAdaptersDoesNotFail)
+{
+    // Smoke test on real hardware: an adapter that DXGI lists and that reports a PCI location
+    // answers without throwing. (Whether it is asleep depends on the machine, so only the call is
+    // checked.)
+    DXGIGPUProbe probe;
+    DisplayDevicePower power;
+    for (const auto& gpu : probe.enumerateGPUs())
+    {
+        if (gpu.pciLocation.has_value())
+        {
+            [[maybe_unused]] const bool asleep = power.isAsleep(*gpu.pciLocation);
+        }
+    }
+    SUCCEED();
 }
 
 // =============================================================================

@@ -363,8 +363,17 @@ mergeNVMLIntoDXGICounters(std::vector<GPUCounters>& dxgiCounters,
             }
         }
 
-        // Prefer NVML memory metrics (more accurate)
-        if (nvmlCounter.memoryTotalBytes > 0)
+        // A sleeping GPU NVML left alone (#1265): its sensors are gaps, but PDH's utilization and
+        // memory in use are the OS's own figures, read without touching the GPU, so they still
+        // fill in. Its VRAM size is the last one NVML read while it was awake.
+        dxgiCounter.suspended = nvmlCounter.suspended;
+        if (nvmlCounter.suspended && nvmlCounter.memoryTotalBytes > 0)
+        {
+            dxgiCounter.memoryTotalBytes = nvmlCounter.memoryTotalBytes;
+        }
+
+        // Prefer NVML memory metrics (more accurate) when this sample's read succeeded
+        if (nvmlCounter.memoryAvailable && nvmlCounter.memoryTotalBytes > 0)
         {
             dxgiCounter.memoryUsedBytes = nvmlCounter.memoryUsedBytes;
             dxgiCounter.memoryTotalBytes = nvmlCounter.memoryTotalBytes;

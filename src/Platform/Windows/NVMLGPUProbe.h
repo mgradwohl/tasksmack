@@ -5,6 +5,8 @@
 #include "Platform/NVMLTypes.h"
 
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -12,10 +14,16 @@
 namespace Platform
 {
 
+class DisplayDevicePower;
+
 /// NVIDIA GPU probe using NVML (NVIDIA Management Library).
 /// Provides enhanced metrics for NVIDIA GPUs: temperature, power, clock speeds, etc.
 /// Requires NVIDIA driver 450+ and NVML 11+.
 /// Uses dynamic loading with graceful fallback if NVML is unavailable.
+///
+/// A GPU that is asleep (a hybrid laptop's runtime-suspended dGPU; see DisplayDevicePower) is not
+/// queried, since NVML calls can wake it and keep it awake (#1265): its counters are marked
+/// GPUCounters::suspended with every reading unavailable, and enumeration skips its sensor probe.
 class NVMLGPUProbe : public IGPUProbe
 {
   public:
@@ -93,6 +101,21 @@ class NVMLGPUProbe : public IGPUProbe
     // failed). Counter reads reuse it rather than querying the UUID again: a second, independently
     // fallible query could give a device a different id and lose its NVML metrics (#1040).
     std::unordered_map<uint32_t, std::string> m_DeviceIds;
+
+    /// Whether device @p index is asleep now, so must not be queried (#1265). False for a device
+    /// whose PCI location NVML didn't report.
+    [[nodiscard]] bool isDeviceAsleep(uint32_t index) const;
+
+    // Map device index to its PCI location, from enumeration, to ask whether it is asleep (#1265).
+    std::unordered_map<uint32_t, PciLocation> m_DevicePciLocations;
+    // Map device index to the VRAM total last read while it was awake, still reported while it
+    // sleeps so the adapter's size doesn't vanish (#1265).
+    std::unordered_map<uint32_t, std::uint64_t> m_LastMemoryTotals;
+    // The non-waking PnP power query; its devnode cache is dropped at each enumeration (#1265).
+    std::shared_ptr<DisplayDevicePower> m_DevicePower;
+    // Whether the GPU at a PCI location is asleep; m_DevicePower's answer in production, a fake in
+    // tests (#1265).
+    std::function<bool(const PciLocation&)> m_IsAsleep;
 };
 
 } // namespace Platform

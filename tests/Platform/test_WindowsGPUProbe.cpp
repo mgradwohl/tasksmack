@@ -265,6 +265,41 @@ TEST(MergeNVMLIntoDXGICountersTest, PDHUtilizationWinsForAnNVMLCoveredAdapter)
     EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 41.5);
 }
 
+// #1265: NVML left a sleeping GPU alone. The merged counter says so ("(Sleeping)" in the header)
+// and keeps NVML's last VRAM total, but its memory in use isn't NVML's: PDH's adapter-wide figure,
+// read without touching the GPU, fills it in.
+TEST(MergeNVMLIntoDXGICountersTest, ASleepingGpuIsSuspendedAndTakesPDHMemory)
+{
+    std::vector<GPUCounters> dxgi(1);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[0].memoryTotalBytes = 7ULL << 30U; // DXGI's dedicated figure
+    dxgi[0].memoryAvailable = false;
+    std::vector<GPUCounters> nvml(1);
+    nvml[0].gpuId = "uuid-0";
+    nvml[0].suspended = true;
+    nvml[0].utilizationAvailable = false;
+    nvml[0].temperatureAvailable = false;
+    nvml[0].powerAvailable = false;
+    nvml[0].gpuClockAvailable = false;
+    nvml[0].memoryAvailable = false;
+    nvml[0].memoryTotalBytes = 8ULL << 30U; // Last read while awake
+
+    std::unordered_set<std::string> memoryIds;
+    [[maybe_unused]] const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0, 0}}, &memoryIds);
+
+    EXPECT_TRUE(dxgi[0].suspended);
+    EXPECT_FALSE(dxgi[0].temperatureAvailable);
+    EXPECT_EQ(dxgi[0].memoryTotalBytes, 8ULL << 30U);
+    EXPECT_TRUE(memoryIds.empty());
+
+    AdapterMemoryUsage usage{};
+    usage.dedicatedBytes = 300ULL << 20U;
+    usage.dedicatedRead = true;
+    assignPDHMemoryToDXGICounters(dxgi, {{"GPU_0xLUID0", usage}}, {{"GPU0", "GPU_0xLUID0"}}, {{"GPU0", false}}, memoryIds);
+    EXPECT_TRUE(dxgi[0].memoryAvailable);
+    EXPECT_EQ(dxgi[0].memoryUsedBytes, 300ULL << 20U);
+}
+
 TEST(AllGPUsHaveNVMLUtilizationTest, EmptyDXGICountersIsFalse)
 {
     EXPECT_FALSE(allGPUsHaveNVMLUtilization({}, {"GPU0"}));

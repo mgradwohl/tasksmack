@@ -1,5 +1,6 @@
 #include "NVMLGPUProbe.h"
 
+#include "DisplayDevicePower.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/NVMLTypes.h"
 
@@ -23,6 +24,7 @@
 #include <cstdint>
 #include <format>
 #include <limits>
+#include <memory>
 #include <utility>
 
 // Import NVML types from shared header
@@ -31,7 +33,10 @@ using namespace Platform::NVML;
 namespace Platform
 {
 
-NVMLGPUProbe::NVMLGPUProbe() : m_Initialized(loadNVML() && initializeNVML())
+NVMLGPUProbe::NVMLGPUProbe()
+    : m_Initialized(loadNVML() && initializeNVML()),
+      m_DevicePower(std::make_shared<DisplayDevicePower>()),
+      m_IsAsleep([power = m_DevicePower](const PciLocation& location) { return power->isAsleep(location); })
 {
     if (!m_Initialized)
     {
@@ -170,10 +175,18 @@ bool NVMLGPUProbe::initializeNVML()
     return true;
 }
 
+bool NVMLGPUProbe::isDeviceAsleep(uint32_t index) const
+{
+    const auto location = m_DevicePciLocations.find(index);
+    return location != m_DevicePciLocations.end() && m_IsAsleep && m_IsAsleep(location->second);
+}
+
 void NVMLGPUProbe::shutdownNVML()
 {
     m_DeviceHandles.clear();
     m_DeviceIds.clear();
+    m_DevicePciLocations.clear();
+    m_LastMemoryTotals.clear();
 
     if (m_Initialized && m_NVML.Shutdown != nullptr)
     {
@@ -242,6 +255,12 @@ std::vector<GPUInfo> NVMLGPUProbe::enumerateGPUs()
         return gpus;
     }
 
+    // Adapters may have come or gone since the last enumeration: look their devnodes up afresh.
+    if (m_DevicePower)
+    {
+        m_DevicePower->reset();
+    }
+
     // Enumerate devices
     for (unsigned int i = 0; i < deviceCount; ++i)
     {
@@ -284,21 +303,15 @@ std::vector<GPUInfo> NVMLGPUProbe::enumerateGPUs()
         // NVML only works with NVIDIA GPUs
         info.vendor = "NVIDIA";
 
-        // Get VBIOS version (driver version)
-        std::array<char, NVML_DEVICE_VBIOS_VERSION_BUFFER_SIZE> vbiosVersion{};
-        result = m_NVML.DeviceGetVbiosVersion(device, vbiosVersion.data(), NVML_DEVICE_VBIOS_VERSION_BUFFER_SIZE);
-        if (result == NVML_SUCCESS)
-        {
-            info.driverVersion = vbiosVersion.data();
-        }
-
         // NVIDIA discrete GPUs (NVML doesn't expose integrated GPUs typically)
         info.isIntegrated = false;
 
         info.deviceIndex = i;
 
         // PCI identity, so the Windows probe can match this device to its DXGI adapter by hardware
-        // rather than by name or enumeration order (#1091).
+        // rather than by name or enumeration order (#1091), and so a sleeping GPU can be left alone
+        // (#1265).
+        m_DevicePciLocations.erase(i);
         if (m_NVML.DeviceGetPciInfo != nullptr)
         {
             NVML::nvmlPciInfo_t pci{};
@@ -306,7 +319,25 @@ std::vector<GPUInfo> NVMLGPUProbe::enumerateGPUs()
             {
                 info.pciLocation = PciLocation{.bus = pci.bus, .device = pci.device};
                 info.pciDeviceId = pci.pciDeviceId;
+                m_DevicePciLocations[i] = *info.pciLocation;
             }
+        }
+
+        // A sleeping GPU gets no VBIOS read or sensor probe, which could wake it (#1265); its
+        // sensor set is then the probe's (sensorCapabilities unset), as on Linux (#1117).
+        if (isDeviceAsleep(i))
+        {
+            spdlog::debug("NVMLGPUProbe: NVIDIA GPU {} ({}) is asleep; not probing its sensors", i, info.name);
+            gpus.push_back(std::move(info));
+            continue;
+        }
+
+        // Get VBIOS version (driver version)
+        std::array<char, NVML_DEVICE_VBIOS_VERSION_BUFFER_SIZE> vbiosVersion{};
+        result = m_NVML.DeviceGetVbiosVersion(device, vbiosVersion.data(), NVML_DEVICE_VBIOS_VERSION_BUFFER_SIZE);
+        if (result == NVML_SUCCESS)
+        {
+            info.driverVersion = vbiosVersion.data();
         }
 
         // Which sensors this device actually reports: capabilities() covers NVML as a whole, but
@@ -356,6 +387,24 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
             counter.gpuId = result == NVML_SUCCESS ? std::string(uuid.data()) : std::format("NVML_GPU{}", index);
         }
 
+        // A sleeping GPU gets no NVML query at all, which could wake it (#1265): every reading is
+        // unavailable this sample, and the VRAM total is the last one read while it was awake.
+        if (isDeviceAsleep(index))
+        {
+            counter.suspended = true;
+            counter.utilizationAvailable = false;
+            counter.temperatureAvailable = false;
+            counter.powerAvailable = false;
+            counter.gpuClockAvailable = false;
+            counter.memoryAvailable = false;
+            if (const auto total = m_LastMemoryTotals.find(index); total != m_LastMemoryTotals.end())
+            {
+                counter.memoryTotalBytes = total->second;
+            }
+            counters.push_back(std::move(counter));
+            continue;
+        }
+
         // Memory info (raw counters only)
         nvmlMemory_t memInfo{};
         result = m_NVML.DeviceGetMemoryInfo(device, &memInfo);
@@ -363,6 +412,7 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
         {
             counter.memoryUsedBytes = memInfo.used;
             counter.memoryTotalBytes = memInfo.total;
+            m_LastMemoryTotals[index] = memInfo.total;
         }
         else
         {
@@ -480,6 +530,11 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
 
     for (const auto& [index, device] : m_DeviceHandles)
     {
+        if (isDeviceAsleep(index))
+        {
+            continue; // Not queried while asleep, which could wake it (#1265)
+        }
+
         // Use index-based GPU ID to match WindowsGPUProbe (DXGI) format
         // The NVML UUID is different from the DXGI LUID-based ID, so we use
         // a consistent index-based format that aligns with the merged snapshots

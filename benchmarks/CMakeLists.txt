@@ -126,6 +126,7 @@ if(WIN32)
         userenv
         dxgi
         gdi32
+        cfgmgr32 # DisplayDevicePower: a GPU's PnP power state (#1265)
         version
     )
 endif()

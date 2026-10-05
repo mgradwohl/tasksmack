@@ -77,6 +77,8 @@ struct GPUCounters
     // wake it with sensor queries (#1117): every *Available flag above is then false. Linux reads
     // this from /sys/bus/pci/devices/<address>/power/runtime_status. memoryTotalBytes may still hold
     // the last total read while awake, so the adapter's VRAM size doesn't vanish while it sleeps.
+    // Windows reads the device power state the PnP manager records (#1265); there PDH's utilization
+    // and memory in use, the OS's own figures that never touch the GPU, may still be available.
     bool suspended = false;
 
     // Utilization (instantaneous snapshot, 0-100, provided by hardware/driver)
