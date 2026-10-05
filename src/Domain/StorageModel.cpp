@@ -313,8 +313,8 @@ StorageModel::computeDiskSnapshot(const Platform::DiskCounters& current, DiskSta
     const std::uint64_t deltaIoTime = Numeric::counterDelta(current.ioTimeMs, state.prevCounters.ioTimeMs);
 
     // Compute rates
-    const double readBytesPerSec = static_cast<double>(deltaReadSectors * current.sectorSize) / deltaSeconds;
-    const double writeBytesPerSec = static_cast<double>(deltaWriteSectors * current.sectorSize) / deltaSeconds;
+    const double readBytesPerSec = (Numeric::toDouble(deltaReadSectors) * Numeric::toDouble(current.sectorSize)) / deltaSeconds;
+    const double writeBytesPerSec = (Numeric::toDouble(deltaWriteSectors) * Numeric::toDouble(current.sectorSize)) / deltaSeconds;
     if (readBytesPerSec > Sampling::MAX_SANE_DISK_RATE_BPS || writeBytesPerSec > Sampling::MAX_SANE_DISK_RATE_BPS)
     {
         // A counter glitch (a reinitialised or re-registered device counter), not I/O: the sample

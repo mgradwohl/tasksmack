@@ -891,6 +891,40 @@ TEST(StorageModelTest, ACounterJumpAboveTheCeilingIsAGapNotASpike)
     EXPECT_DOUBLE_EQ(totals[2], 400.0 * 512.0);
 }
 
+TEST(StorageModelTest, AJumpThatWouldWrapInBytesIsStillOverTheCeiling)
+{
+    // #1327 review: sectors x sector size used to be multiplied in uint64 before converting to
+    // double, so a jump of 2^55 + 1000 sectors wrapped to 1000 x 512 bytes -- a plausible rate that
+    // slipped under MAX_SANE_DISK_RATE_BPS. In double it is ~1.8e19 bytes: a glitch, not I/O.
+    auto probe = std::make_unique<Mocks::MockDiskProbe>();
+    auto* mockProbe = probe.get();
+    Platform::SystemDiskCounters counters;
+    Platform::DiskCounters sda;
+    sda.deviceName = "sda";
+    sda.sectorSize = 512;
+    sda.readSectors = 1000;
+    sda.writeSectors = 1000;
+    counters.disks.push_back(sda);
+    mockProbe->setNextCounters(counters);
+
+    Domain::StorageModel model(std::move(probe));
+    const auto start = std::chrono::steady_clock::now();
+    model.sampleAt(start);
+    constexpr std::uint64_t JUMP_SECTORS = (std::uint64_t{1} << 55U) + 1000U;
+    counters.disks[0].readSectors = 1000 + JUMP_SECTORS;
+    mockProbe->setNextCounters(counters);
+    model.sampleAt(start + std::chrono::seconds(1));
+
+    const auto glitched = model.latestSnapshot();
+    ASSERT_EQ(glitched.disks.size(), 1U);
+    EXPECT_FALSE(glitched.disks[0].hasRates);
+    EXPECT_DOUBLE_EQ(glitched.disks[0].readBytesPerSec, 0.0);
+    const auto history = model.perDiskHistory();
+    ASSERT_EQ(history.size(), 1U);
+    ASSERT_EQ(history[0].readBytesPerSec.size(), 2U);
+    EXPECT_TRUE(std::isnan(history[0].readBytesPerSec[1])) << "the glitch is a gap, not 512000 B/s";
+}
+
 // =============================================================================
 // Null Probe Tests
 // =============================================================================
