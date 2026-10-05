@@ -121,8 +121,10 @@ void parseTcpInfo(const inet_diag_msg* diagMsg, std::size_t msgLen, SocketStats&
     }
 
     // Walk through the attributes
-    // Note: Suppress alignment warning - kernel netlink macros use char* internally
-    // which is safe because the kernel guarantees proper alignment in netlink messages
+    // Note: Suppress the alignment warning for the rtattr casts only - the kernel netlink
+    // macros use char* internally and attributes are RTA_ALIGNTO (4-byte) aligned, which
+    // satisfies rtattr's 2-byte alignment. Payloads with stricter alignment (tcp_info) are
+    // copied out with memcpy rather than accessed in place.
     // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wcast-align"
@@ -130,20 +132,25 @@ void parseTcpInfo(const inet_diag_msg* diagMsg, std::size_t msgLen, SocketStats&
     {
         if (rta->rta_type == INET_DIAG_INFO)
         {
-            // This attribute contains tcp_info structure
-            const auto* tcpInfo = static_cast<const tcp_info*>(RTA_DATA(rta));
+            // This attribute contains a tcp_info structure. Netlink attributes are only
+            // RTA_ALIGNTO (4-byte) aligned, but tcp_info has __u64 members that need 8-byte
+            // alignment, so reading through a tcp_info* into the reply buffer is a misaligned
+            // access (UB). Copy the payload prefix the kernel sent (bounded by RTA_PAYLOAD and
+            // sizeof(tcp_info)) into an aligned, zeroed local and read the fields from that.
             const std::size_t infoLen = RTA_PAYLOAD(rta);
+            tcp_info tcpInfo{};
+            std::memcpy(&tcpInfo, RTA_DATA(rta), std::min(infoLen, sizeof(tcpInfo)));
 
             // Check we have enough data for the byte counter fields
             // bytes_acked and bytes_received were added in Linux 4.2
             // They're at offset ~144 bytes into tcp_info
-            if (infoLen >= (offsetof(tcp_info, tcpi_bytes_received) + sizeof(tcpInfo->tcpi_bytes_received)))
+            if (infoLen >= (offsetof(tcp_info, tcpi_bytes_received) + sizeof(tcpInfo.tcpi_bytes_received)))
             {
-                stats.bytesReceived = tcpInfo->tcpi_bytes_received;
+                stats.bytesReceived = tcpInfo.tcpi_bytes_received;
             }
-            if (infoLen >= (offsetof(tcp_info, tcpi_bytes_acked) + sizeof(tcpInfo->tcpi_bytes_acked)))
+            if (infoLen >= (offsetof(tcp_info, tcpi_bytes_acked) + sizeof(tcpInfo.tcpi_bytes_acked)))
             {
-                stats.bytesSent = tcpInfo->tcpi_bytes_acked;
+                stats.bytesSent = tcpInfo.tcpi_bytes_acked;
             }
             break;
         }
