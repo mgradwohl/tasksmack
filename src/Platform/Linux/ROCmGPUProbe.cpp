@@ -161,11 +161,23 @@ struct ROCmGPUProbe::Impl
     // AMD display devices in sysfs at the last full rescan (PciDisplayDevices::list): a change means
     // a GPU was hot-plugged, removed or rebound, which ROCm SMI only sees after a re-init (#1116).
     std::vector<std::string> pciDevicesSeen;
-    // A read returned RSMI_STATUS_INIT_ERROR since the last (re)init, or the last re-init failed:
-    // the next full rescan re-initialises ROCm SMI (#1116).
+    // A read returned RSMI_STATUS_INIT_ERROR since the last (re)init, or the last load or re-init
+    // failed while an amdgpu-bound GPU is present: the next full rescan re-initialises ROCm SMI (#1116).
     bool reinitNeeded = false;
     // dlopen() and dlsym() have succeeded (the library stays loaded across a re-init).
     bool symbolsLoaded = false;
+    // dlopen() and dlsym() have succeeded at least once: ROCm SMI is installed, so a failed start is
+    // the driver not being ready rather than ROCm SMI missing, and is worth retrying.
+    bool libraryFound = false;
+
+    /// Whether a failed load or re-init is retried at the next full rescan: ROCm SMI is installed and
+    /// a GPU bound to amdgpu is present, so it should come up once the driver is ready. Otherwise (no
+    /// AMD GPU, or one on radeon or vfio-pci, or ROCm SMI not installed) retrying could never succeed;
+    /// a driver binding later changes the PCI list, which restarts ROCm SMI anyway.
+    [[nodiscard]] bool loadFailureIsRetryable() const
+    {
+        return libraryFound && PciDisplayDevices::anyBoundTo(pciDevicesSeen, PciDisplayDevices::DRIVER_AMDGPU);
+    }
 
     /// Note a read's result: an initialisation error means ROCm SMI must be re-initialised (#1116).
     rsmi_status_t noteResult(rsmi_status_t result)
@@ -212,7 +224,9 @@ struct ROCmGPUProbe::Impl
     /// rsmi_init() and the device list; on failure the library is unloaded and false returned.
     bool startROCmSMI();
     /// Re-initialise ROCm SMI and rebuild the device list (#1116), keeping each surviving device's
-    /// last-known VRAM total. ROCm is left unavailable if the re-init fails or finds no device.
+    /// last-known VRAM total and the sensor set already found for it, so one asleep through the
+    /// restart doesn't lose it (it isn't woken to find it again, #1117). ROCm is left unavailable if
+    /// the re-init fails or finds no device.
     void restartROCmSMI();
     void unloadROCmSMI();
     [[nodiscard]] std::string getROCmError(rsmi_status_t result) const;
@@ -299,6 +313,7 @@ bool ROCmGPUProbe::Impl::loadSymbols()
     // NOLINTEND(concurrency-mt-unsafe,bugprone-macro-parentheses)
 
     symbolsLoaded = true;
+    libraryFound = true;
     return true;
 }
 
@@ -372,10 +387,16 @@ bool ROCmGPUProbe::Impl::startROCmSMI()
 
 void ROCmGPUProbe::Impl::restartROCmSMI()
 {
-    std::unordered_map<std::string, std::uint64_t> lastMemoryTotals;
-    for (std::size_t i = 0; i < deviceIds.size() && i < lastMemoryTotalBytes.size(); ++i)
+    // What each device learnt while it was known, by id: a GPU suspended now can't be asked again.
+    struct Remembered
     {
-        lastMemoryTotals.emplace(deviceIds[i], lastMemoryTotalBytes[i]);
+        std::uint64_t lastMemoryTotalBytes = 0;
+        std::optional<GPUCapabilities> sensors;
+    };
+    std::unordered_map<std::string, Remembered> remembered;
+    for (std::size_t i = 0; i < deviceIds.size() && i < lastMemoryTotalBytes.size() && i < sensors.size(); ++i)
+    {
+        remembered.emplace(deviceIds[i], Remembered{.lastMemoryTotalBytes = lastMemoryTotalBytes[i], .sensors = sensors[i]});
     }
 
     // rsmi_shut_down() then rsmi_init() starts over with the library still loaded; a failed start
@@ -392,13 +413,15 @@ void ROCmGPUProbe::Impl::restartROCmSMI()
     lastMemoryTotalBytes.clear();
     names.clear();
     sensors.clear();
-    // Retried at the next full rescan if it fails while AMD GPUs are present (a driver mid-reload).
-    reinitNeeded = !loadROCmSMI() && !pciDevicesSeen.empty();
+    // Retried at the next full rescan if it fails while an amdgpu-bound GPU is present (a driver
+    // mid-reload).
+    reinitNeeded = !loadROCmSMI() && loadFailureIsRetryable();
     for (std::size_t i = 0; i < deviceIds.size(); ++i)
     {
-        if (const auto it = lastMemoryTotals.find(deviceIds[i]); it != lastMemoryTotals.end())
+        if (const auto it = remembered.find(deviceIds[i]); it != remembered.end())
         {
-            lastMemoryTotalBytes[i] = it->second;
+            lastMemoryTotalBytes[i] = it->second.lastMemoryTotalBytes;
+            sensors[i] = it->second.sensors;
         }
     }
 }
@@ -437,7 +460,13 @@ ROCmGPUProbe::ROCmGPUProbe(std::string pciDevicesRoot) : m_Impl(std::make_unique
 {
     m_Impl->pciDevicesRoot = std::move(pciDevicesRoot);
     m_Impl->pciDevicesSeen = PciDisplayDevices::list(m_Impl->pciDevicesRoot, PciDisplayDevices::PCI_VENDOR_AMD);
-    m_Impl->loadROCmSMI();
+    // ROCm SMI installed but not starting while an amdgpu-bound GPU is present (TaskSmack started
+    // during a driver reload, say) is retried at the next full rescan, which reports the GPUs it finds.
+    if (!m_Impl->loadROCmSMI() && m_Impl->loadFailureIsRetryable())
+    {
+        m_Impl->reinitNeeded = true;
+        spdlog::info("ROCmGPUProbe: ROCm SMI did not start with an AMD GPU present; retrying at the next full rescan");
+    }
 }
 
 ROCmGPUProbe::~ROCmGPUProbe()

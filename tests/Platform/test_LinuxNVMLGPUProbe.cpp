@@ -457,6 +457,7 @@ class NvmlMockControls
             m_SetDeviceCount = reinterpret_cast<SetIndexFn>(dlsym(m_Library, "tasksmackNvmlMockSetDeviceCount"));
             m_SetLostDevice = reinterpret_cast<SetIndexFn>(dlsym(m_Library, "tasksmackNvmlMockSetLostDevice"));
             m_InitCalls = reinterpret_cast<UuidCallsFn>(dlsym(m_Library, "tasksmackNvmlMockInitCalls"));
+            m_FailInits = reinterpret_cast<SetIndexFn>(dlsym(m_Library, "tasksmackNvmlMockFailInits"));
             // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
         }
     }
@@ -478,6 +479,10 @@ class NvmlMockControls
         if (m_SetLostDevice != nullptr)
         {
             m_SetLostDevice(NO_FAILING_HANDLE);
+        }
+        if (m_FailInits != nullptr)
+        {
+            m_FailInits(0);
         }
         if (m_Library != nullptr)
         {
@@ -536,6 +541,18 @@ class NvmlMockControls
         return m_InitCalls();
     }
 
+    /// Whether the mock can fail nvmlInit_v2.
+    [[nodiscard]] bool controlsInit() const
+    {
+        return m_FailInits != nullptr && m_InitCalls != nullptr;
+    }
+
+    /// The next `count` nvmlInit_v2 calls fail with NVML_ERROR_DRIVER_NOT_LOADED.
+    void failInits(unsigned int count) const
+    {
+        m_FailInits(count);
+    }
+
   private:
     using ConfigureFn = void (*)(unsigned int, int);
     using UuidCallsFn = unsigned int (*)();
@@ -550,6 +567,7 @@ class NvmlMockControls
     SetIndexFn m_SetDeviceCount = nullptr;
     SetIndexFn m_SetLostDevice = nullptr;
     UuidCallsFn m_InitCalls = nullptr;
+    SetIndexFn m_FailInits = nullptr;
 
   public:
     /// Calls that have addressed a device so far (NVML mock's tasksmackNvmlMockDeviceQueries).
@@ -1080,6 +1098,118 @@ TEST(LinuxNVMLGPUProbeTest, RepeatEnumerationAddressesNoSleepingGpu)
     ASSERT_EQ(gpus.size(), 2U);
     EXPECT_EQ(gpus[0].name, "Mock NVIDIA GPU 0");
     EXPECT_EQ(gpus[0].id, "mock-nvml-uuid-0");
+}
+
+// #1295 review: a GPU asleep through an NVML restart -- here one triggered by another NVIDIA GPU
+// appearing on the bus (the mock NVML still lists two) -- keeps the sensor set found while it was
+// awake, and its memory total. It isn't woken to find them again, so forgetting them would republish
+// the probe-wide capabilities for it until it woke.
+TEST(LinuxNVMLGPUProbeTest, AGpuAsleepThroughARestartKeepsItsSensors)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const NvmlMockControls controls;
+    ASSERT_TRUE(controls.controlsDeviceSet());
+    const TestSupport::ScopedTempDir pciRoot("tasksmack_nvml_restart_asleep");
+    makePciDevice(pciRoot.path, "0000:01:00.0", "0x10de", "nvidia");
+    makePciDevice(pciRoot.path, "0000:41:00.0", "0x10de", "nvidia");
+
+    NVMLGPUProbe probe(pciRoot.path.string());
+    ASSERT_TRUE(probe.isAvailable());
+    ASSERT_EQ(probe.enumerateGPUs().size(), 2U);   // both sensor sets found while awake
+    ASSERT_EQ(probe.readGPUCounters().size(), 2U); // and both memory totals
+
+    setRuntimeStatus(pciRoot.path, "0000:41:00.0", "suspended");
+    const unsigned int initsBefore = controls.initCalls();
+    makePciDevice(pciRoot.path, "0000:42:00.0", "0x10de", "nvidia");
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    EXPECT_EQ(controls.initCalls(), initsBefore + 1);
+
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 2U);
+    EXPECT_EQ(gpus[1].id, "nvidia-1");
+    ASSERT_TRUE(gpus[1].sensorCapabilities.has_value());
+    const auto sensors = gpus[1].sensorCapabilities.value_or(GPUCapabilities{});
+    EXPECT_TRUE(sensors.hasTemperature);
+    EXPECT_TRUE(sensors.hasClockSpeeds);
+    EXPECT_FALSE(sensors.hasPowerMetrics);
+    EXPECT_FALSE(sensors.hasFanSpeed);
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 2U);
+    EXPECT_TRUE(counters[1].suspended);
+    EXPECT_EQ(counters[1].memoryTotalBytes, 16ULL * 1024ULL * 1024ULL * 1024ULL);
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick)); // nothing left to find
+}
+
+// #1295 review: NVML failing to start while an nvidia-bound GPU is present (TaskSmack started during
+// a driver reload) is retried at each full rescan -- not every sample -- until it starts; the rescan
+// that brings it up reports a change, so the GPUs are enumerated.
+TEST(LinuxNVMLGPUProbeTest, NvmlNotStartingWithAnNvidiaGpuPresentIsRetriedAtFullRescans)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const NvmlMockControls controls;
+    ASSERT_TRUE(controls.controlsInit());
+    const TestSupport::ScopedTempDir pciRoot("tasksmack_nvml_start_retry");
+    makePciDevice(pciRoot.path, "0000:01:00.0", "0x10de", "nvidia");
+    makePciDevice(pciRoot.path, "0000:41:00.0", "0x10de", "nvidia");
+    controls.failInits(2);
+    const unsigned int initsBefore = controls.initCalls();
+
+    NVMLGPUProbe probe(pciRoot.path.string());
+    EXPECT_FALSE(probe.isAvailable());
+    EXPECT_TRUE(probe.enumerateGPUs().empty());
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick)); // waits for the full rescan
+    EXPECT_EQ(controls.initCalls(), initsBefore + 1);
+
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Full)); // still not ready
+    EXPECT_EQ(controls.initCalls(), initsBefore + 2);
+    EXPECT_FALSE(probe.isAvailable());
+
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    EXPECT_EQ(controls.initCalls(), initsBefore + 3);
+    ASSERT_TRUE(probe.isAvailable());
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 2U);
+    EXPECT_EQ(gpus[0].id, "mock-nvml-uuid-0");
+
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full)); // started: no further retries
+    EXPECT_EQ(controls.initCalls(), initsBefore + 3);
+}
+
+// #1295 review: with no GPU bound to the nvidia driver (none at all, or one on nouveau) NVML failing
+// to start is not retried: it could never succeed, and a driver binding later changes the PCI list,
+// which restarts NVML anyway.
+TEST(LinuxNVMLGPUProbeTest, NvmlNotStartingWithoutAnNvidiaBoundGpuIsNotRetried)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const NvmlMockControls controls;
+    ASSERT_TRUE(controls.controlsInit());
+    const TestSupport::ScopedTempDir pciRoot("tasksmack_nvml_start_no_retry");
+    makePciDevice(pciRoot.path, "0000:01:00.0", "0x10de", "nouveau");
+    makePciDevice(pciRoot.path, "0000:00:02.0", "0x8086", "nvidia"); // not an NVIDIA device
+
+    for (const auto& root : {pciRoot.path.string(), std::string(TestSupport::ISOLATED_PCI_ROOT)})
+    {
+        controls.failInits(1);
+        const unsigned int initsBefore = controls.initCalls();
+        NVMLGPUProbe probe(root);
+        EXPECT_FALSE(probe.isAvailable()) << root;
+        EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full)) << root;
+        EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full)) << root;
+        EXPECT_EQ(controls.initCalls(), initsBefore + 1) << root;
+        EXPECT_FALSE(probe.isAvailable()) << root;
+    }
 }
 
 } // namespace

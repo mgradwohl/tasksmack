@@ -202,6 +202,9 @@ bool g_FailSensorReads = false; // utilization, memory, temperature, power and g
 unsigned int g_DeviceCount = static_cast<unsigned int>(MOCK_DEVICES.size());
 unsigned int g_LostDeviceIndex = NO_FAILING_HANDLE;
 unsigned int g_InitCalls = 0;
+// How many of the next nvmlInit_v2 calls fail with NVML_ERROR_DRIVER_NOT_LOADED, as during a driver
+// reload (#1116). Set through tasksmackNvmlMockFailInits().
+unsigned int g_FailingInits = 0;
 
 /// Whether `dev` is the device the test marked lost (#1116). Doesn't count as a device query.
 [[nodiscard]] bool isLost(const MockDevice* dev)
@@ -217,6 +220,11 @@ extern "C"
     NVML::nvmlReturn_t nvmlInit_v2()
     {
         ++g_InitCalls;
+        if (g_FailingInits > 0)
+        {
+            --g_FailingInits;
+            return NVML::NVML_ERROR_DRIVER_NOT_LOADED;
+        }
         return NVML::NVML_SUCCESS;
     }
 
@@ -491,6 +499,12 @@ extern "C"
     unsigned int tasksmackNvmlMockInitCalls()
     {
         return g_InitCalls;
+    }
+
+    // Test control (#1116): the next `count` nvmlInit_v2 calls fail (see g_FailingInits).
+    void tasksmackNvmlMockFailInits(unsigned int count)
+    {
+        g_FailingInits = count;
     }
 
     // Test control: how many calls have addressed a device so far (see g_DeviceQueries).

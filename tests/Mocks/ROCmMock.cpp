@@ -186,6 +186,9 @@ bool g_FailSensorReads = false;
 unsigned int g_DeviceCount = static_cast<unsigned int>(MOCK_DEVICES.size());
 bool g_InitErrorReads = false;
 unsigned int g_InitCalls = 0;
+// How many of the next rsmi_init calls fail with RSMI_STATUS_INIT_ERROR, as during a driver reload
+// (#1116). Set through tasksmackRocmMockFailInits().
+unsigned int g_FailingInits = 0;
 
 [[nodiscard]] bool idLookupFails()
 {
@@ -201,6 +204,11 @@ extern "C"
     rsmi_status_t rsmi_init(std::uint64_t /*flags*/)
     {
         ++g_InitCalls;
+        if (g_FailingInits > 0)
+        {
+            --g_FailingInits;
+            return RSMI_STATUS_INIT_ERROR;
+        }
         return RSMI_STATUS_SUCCESS;
     }
 
@@ -468,6 +476,12 @@ extern "C"
     unsigned int tasksmackRocmMockInitCalls()
     {
         return g_InitCalls;
+    }
+
+    // Test control (#1116): the next `count` rsmi_init calls fail (see g_FailingInits).
+    void tasksmackRocmMockFailInits(unsigned int count)
+    {
+        g_FailingInits = count;
     }
 
     rsmi_status_t rsmi_version_get(rsmi_version_t* version)

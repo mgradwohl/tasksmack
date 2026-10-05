@@ -16,7 +16,8 @@ namespace Platform
 /// A GPU that is runtime-suspended (its power/runtime_status under `pciDevicesRoot` says so) is not
 /// queried, so the probe doesn't keep a hybrid laptop's dGPU awake (#1117); tests pass a fake root.
 /// rescanGPUs() re-initialises NVML when the NVIDIA devices under that root change (hot-plug,
-/// removal, a driver rebind) or a query reported the GPU lost, and asks for a re-enumeration once a
+/// removal, a driver rebind), a query reported the GPU lost, or NVML failed to start while a GPU is
+/// bound to the nvidia driver (a driver mid-reload), and asks for a re-enumeration once a
 /// GPU that was asleep at enumeration wakes, so its own sensor set is found (#1116, #1289).
 class NVMLGPUProbe final : public IGPUProbe
 {

@@ -63,10 +63,14 @@ struct NVMLGPUProbe::Impl
     // A device query returned NVML_ERROR_GPU_IS_LOST or NVML_ERROR_UNINITIALIZED since the last
     // (re)init: NVML has to be re-initialised to talk to the GPUs again (#1116).
     bool gpuLost = false;
-    // The last re-init failed (a driver mid-reload, say), so the next full rescan tries again.
-    bool restartFailed = false;
+    // The last load or re-init failed while an nvidia-bound GPU is present (a driver mid-reload,
+    // say), so the next full rescan tries again (#1116).
+    bool loadRetryPending = false;
     // dlopen() and dlsym() have succeeded (the library stays loaded across a re-init).
     bool symbolsLoaded = false;
+    // dlopen() and dlsym() have succeeded at least once: NVML is installed, so a failed start is the
+    // driver not being ready rather than NVML missing, and is worth retrying.
+    bool libraryFound = false;
 
     // A running-process entry point and the size of the entries it writes (#1092). The entries are
     // nvmlProcessInfo_v1_t or _v2_t depending on the symbol, so the struct is opaque here: the
@@ -119,11 +123,21 @@ struct NVMLGPUProbe::Impl
     }
 
     bool loadNVML();
+    /// Whether a failed load or re-init is retried at the next full rescan: NVML is installed and a
+    /// GPU bound to the nvidia driver is present, so it should come up once the driver is ready.
+    /// Otherwise (no NVIDIA GPU, or one on nouveau or vfio-pci) retrying could never succeed; a
+    /// driver binding later changes the PCI list, which restarts NVML anyway.
+    [[nodiscard]] bool loadFailureIsRetryable() const
+    {
+        return libraryFound && PciDisplayDevices::anyBoundTo(pciDevicesSeen, PciDisplayDevices::DRIVER_NVIDIA);
+    }
     bool loadSymbols();
     /// nvmlInit_v2() and the device list. On failure NVML is shut down again and false returned.
     bool startNVML();
     /// Re-initialise NVML and rebuild the device list (#1116), keeping each surviving device's
-    /// last-known memory total. NVML is left unavailable if the re-init fails.
+    /// last-known memory total and the sensor set already found for it, so one asleep through the
+    /// restart doesn't lose it (it isn't woken to find it again, #1117). NVML is left unavailable if
+    /// the re-init fails.
     void restartNVML();
     [[nodiscard]] RunningProcessesQuery loadRunningProcessesQuery(const std::string& baseName) const;
     void unloadNVML();
@@ -226,6 +240,7 @@ bool NVMLGPUProbe::Impl::loadSymbols()
 #undef LOAD_NVML_FUNC
 
     symbolsLoaded = true;
+    libraryFound = true;
     return true;
 }
 
@@ -297,10 +312,16 @@ bool NVMLGPUProbe::Impl::startNVML()
 
 void NVMLGPUProbe::Impl::restartNVML()
 {
-    std::unordered_map<std::string, std::uint64_t> lastMemoryTotals;
+    // What each device learnt while it was known, by id: a GPU suspended now can't be asked again.
+    struct Remembered
+    {
+        std::uint64_t lastMemoryTotalBytes = 0;
+        std::optional<GPUCapabilities> sensors;
+    };
+    std::unordered_map<std::string, Remembered> remembered;
     for (const auto& device : devices)
     {
-        lastMemoryTotals.emplace(device.id, device.lastMemoryTotalBytes);
+        remembered.emplace(device.id, Remembered{.lastMemoryTotalBytes = device.lastMemoryTotalBytes, .sensors = device.sensors});
     }
 
     // nvmlShutdown() then nvmlInit_v2() is NVML's supported way to start over; the library stays
@@ -313,17 +334,19 @@ void NVMLGPUProbe::Impl::restartNVML()
     devices.clear();
     deviceCount = 0;
     gpuLost = false;
-    restartFailed = !loadNVML();
-    if (restartFailed)
+    if (!loadNVML())
     {
-        spdlog::warn("NVMLGPUProbe: NVML re-initialisation failed; retrying at the next full rescan");
+        loadRetryPending = loadFailureIsRetryable();
+        spdlog::warn("NVMLGPUProbe: NVML re-initialisation failed{}", loadRetryPending ? "; retrying at the next full rescan" : "");
         return;
     }
+    loadRetryPending = false;
     for (auto& device : devices)
     {
-        if (const auto it = lastMemoryTotals.find(device.id); it != lastMemoryTotals.end())
+        if (const auto it = remembered.find(device.id); it != remembered.end())
         {
-            device.lastMemoryTotalBytes = it->second;
+            device.lastMemoryTotalBytes = it->second.lastMemoryTotalBytes;
+            device.sensors = it->second.sensors;
         }
     }
 }
@@ -371,7 +394,13 @@ NVMLGPUProbe::NVMLGPUProbe(std::string pciDevicesRoot) : m_Impl(std::make_unique
 {
     m_Impl->pciDevicesRoot = std::move(pciDevicesRoot);
     m_Impl->pciDevicesSeen = PciDisplayDevices::list(m_Impl->pciDevicesRoot, PciDisplayDevices::PCI_VENDOR_NVIDIA);
-    m_Impl->loadNVML();
+    // NVML installed but not starting while an nvidia-bound GPU is present (TaskSmack started during
+    // a driver reload, say) is retried at the next full rescan, which reports the GPUs it then finds.
+    if (!m_Impl->loadNVML() && m_Impl->loadFailureIsRetryable())
+    {
+        m_Impl->loadRetryPending = true;
+        spdlog::info("NVMLGPUProbe: NVML did not start with an NVIDIA GPU present; retrying at the next full rescan");
+    }
 }
 
 // Destructor
@@ -630,9 +659,9 @@ bool NVMLGPUProbe::rescanGPUs(GPURescan depth)
         m_Impl->pciDevicesSeen = std::move(seen);
         // A lost GPU waits for a full rescan rather than re-initialising NVML on the next sample, so
         // a GPU that stays lost costs one re-init per interval, not one per sample.
-        if (pciChanged || m_Impl->gpuLost || m_Impl->restartFailed)
+        if (pciChanged || m_Impl->gpuLost || m_Impl->loadRetryPending)
         {
-            const char* reason = "retrying a failed re-init";
+            const char* reason = "retrying a failed start";
             if (pciChanged)
             {
                 reason = "NVIDIA PCI devices changed";

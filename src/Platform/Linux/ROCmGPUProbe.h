@@ -20,7 +20,8 @@ class ROCmGPUProbe final : public IGPUProbe
     /// A GPU that is runtime-suspended (its power/runtime_status under `pciDevicesRoot` says so) is
     /// not queried, so the probe doesn't keep an idle dGPU awake (#1117); tests pass a fake root.
     /// rescanGPUs() re-initialises ROCm SMI when the AMD devices under that root change (hot-plug,
-    /// removal, a driver rebind) or a read reported an initialisation error, and asks for a
+    /// removal, a driver rebind), a read reported an initialisation error, or ROCm SMI failed to start
+    /// while a GPU is bound to amdgpu (a driver mid-reload), and asks for a
     /// re-enumeration once a GPU asleep at enumeration wakes, so its own sensors are found (#1116, #1289).
     explicit ROCmGPUProbe(std::string pciDevicesRoot = "/sys/bus/pci/devices");
     ~ROCmGPUProbe() override;

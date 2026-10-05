@@ -23,6 +23,11 @@ namespace Platform::PciDisplayDevices
 inline constexpr std::uint32_t PCI_VENDOR_NVIDIA = 0x10DEU;
 inline constexpr std::uint32_t PCI_VENDOR_AMD = 0x1002U;
 
+/// The kernel drivers NVML and ROCm SMI talk through: a vendor GPU bound to another driver (nouveau,
+/// radeon, vfio-pci) is invisible to that library however often it is initialised.
+inline constexpr std::string_view DRIVER_NVIDIA = "nvidia";
+inline constexpr std::string_view DRIVER_AMDGPU = "amdgpu";
+
 /// PCI base class 0x03, display controller (VGA, 3D, other): the top byte of the 24-bit class code.
 inline constexpr std::uint32_t PCI_BASE_CLASS_DISPLAY = 0x03U;
 inline constexpr unsigned PCI_BASE_CLASS_SHIFT = 16U;
@@ -83,6 +88,17 @@ inline constexpr unsigned PCI_BASE_CLASS_SHIFT = 16U;
     }
     std::ranges::sort(devices);
     return devices;
+}
+
+/// Whether any of `devices` (entries from list()) is bound to `driver`.
+[[nodiscard]] inline bool anyBoundTo(const std::vector<std::string>& devices, std::string_view driver)
+{
+    return std::ranges::any_of(devices,
+                               [driver](const std::string& device)
+                               {
+                                   const auto separator = device.rfind('=');
+                                   return separator != std::string::npos && std::string_view(device).substr(separator + 1) == driver;
+                               });
 }
 
 } // namespace Platform::PciDisplayDevices
