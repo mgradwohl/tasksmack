@@ -1705,5 +1705,22 @@ TEST(LegendLayoutTest, AnEmptyLegendAlwaysFits)
 {
     EXPECT_TRUE(legendFitsOneRow({}, 16.0F, 5.0F, 5.0F, 0.0F));
 }
+
+// ========== Grid cells' time axis (#1206) ==========
+
+TEST(HistoryChartXAxisFlagsTest, GridCellsDropTheTimeTickLabelsOnly)
+{
+    EXPECT_EQ(historyChartXAxisFlags(true), X_AXIS_FLAGS_DEFAULT);
+    const ImPlotAxisFlags cell = historyChartXAxisFlags(false);
+    EXPECT_NE(cell & ImPlotAxisFlags_NoTickLabels, 0);
+    // Gridlines and tick marks stay, so a cell's samples can still be placed in time.
+    EXPECT_EQ(cell & (ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoTickMarks), 0);
+    EXPECT_EQ(cell & ~ImPlotAxisFlags_NoTickLabels, X_AXIS_FLAGS_DEFAULT);
+}
+
+TEST(HistoryChartConfigTest, ChartsLabelTheirTimeAxisByDefault)
+{
+    EXPECT_TRUE(HistoryChartConfig{}.timeAxisLabels);
+}
 } // namespace
 } // namespace UI::Widgets

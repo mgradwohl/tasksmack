@@ -7,7 +7,6 @@
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
 #include "UI/HistoryPlotHeight.h"
-#include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -112,17 +111,15 @@ void renderCpuCoresSection(RenderContext& ctx)
     }
     static const std::vector<float> noSamples;
 
-    // Each core's heading ("<icon> Core N") and series name ("Core N"), built once per core count
-    // rather than with two std::format calls per core every frame (#1018). UI thread only.
-    static std::vector<std::string> coreLabels;
+    // Each core's name ("Core N"), its cell heading and series name, built once per core count rather
+    // than with std::format per core every frame (#1018). UI thread only. The heading had the tab's
+    // microchip icon in front, repeated in every cell (#1206).
     static std::vector<std::string> coreNames;
     if (coreNames.size() != coreCount)
     {
-        coreLabels.clear();
         coreNames.clear();
         for (size_t i = 0; i < coreCount; ++i)
         {
-            coreLabels.push_back(std::format(ICON_FA_MICROCHIP " Core {}", i));
             coreNames.push_back(std::format("Core {}", i));
         }
     }
@@ -236,7 +233,7 @@ void renderCpuCoresSection(RenderContext& ctx)
                             // hovering (#1193). The value strip renderHistoryWithNowBars() draws above
                             // other charts would add a line the grid's fixed cell height has no room for.
                             const float cellContentTop = ImGui::GetCursorPosY();
-                            const std::string& coreLabel = coreLabels[coreIdx];
+                            const std::string& coreLabel = coreName;
                             const float availableWidth = ImGui::GetContentRegionAvail().x;
                             const float valueGap = ImGui::GetStyle().ItemSpacing.x;
                             const float labelWidth =
@@ -278,6 +275,8 @@ void renderCpuCoresSection(RenderContext& ctx)
                             auto coreCfg = UI::Widgets::percentHistoryConfig(coreLabel.c_str(), axisConfig.xMin, axisConfig.xMax);
                             coreCfg.flags |= ImPlotFlags_NoTitle;
                             coreCfg.showLegend = false;
+                            // No "Time (s)" or time tick labels in each of the cells (#1206).
+                            coreCfg.timeAxisLabels = false;
                             coreCfg.height = plotHeight;
                             // Every core's history comes from the one publication, so each chart keeps
                             // its reduced points until the next one (#1139).

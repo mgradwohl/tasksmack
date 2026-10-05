@@ -1787,6 +1787,10 @@ struct HistoryChartConfig
     ImPlotFormatter yFormatter = formatAxisLocalized;
     std::optional<std::pair<double, double>> yLimits;
     bool showLegend = true;
+    /// The time axis's "Time (s)" title and tick labels. Off in a grid of small charts (CPU Cores, the
+    /// per-disk grid), where every cell repeated them under the same axis (#1206); its gridlines and
+    /// hover tooltip still place a sample in time.
+    bool timeAxisLabels = true;
     float height = HISTORY_PLOT_HEIGHT_DEFAULT;
     ImPlotFlags flags = PLOT_FLAGS_DEFAULT;
     /// Ease the Y upper bound toward yLimits->second over a few frames instead of jumping to it
@@ -1934,6 +1938,13 @@ rateHistoryConfig(const char* id, double xMin, double xMax, ImPlotFormatter yFor
     return hasFixedLimits ? (ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT) : (ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
 }
 
+/// The time axis's flags: without its labels (HistoryChartConfig::timeAxisLabels) it keeps its ticks
+/// and gridlines but draws no tick labels (#1206).
+[[nodiscard]] constexpr ImPlotAxisFlags historyChartXAxisFlags(bool timeAxisLabels) noexcept
+{
+    return timeAxisLabels ? X_AXIS_FLAGS_DEFAULT : (X_AXIS_FLAGS_DEFAULT | ImPlotAxisFlags_NoTickLabels);
+}
+
 /// The `BeginPlot` flags HistoryChart actually uses, folding in showLegend. Previously
 /// `showLegend == false` only skipped setupLegendDefault() (which customizes the legend's
 /// position/style) without ever setting ImPlotFlags_NoLegend, so ImPlot still rendered a legend
@@ -1950,14 +1961,52 @@ rateHistoryConfig(const char* id, double xMin, double xMax, ImPlotFormatter yFor
 /// is scaled to as well. Call right after constructing the HistoryChart, while it is active() and
 /// before plotting; then plot that series between ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2) and
 /// ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1).
-inline void setupSecondaryRateAxis(double upperBound, ImPlotFormatter formatter)
+///
+/// The axis's tick labels are drawn in @p seriesColor, the colour of the series on it, and that
+/// series' label ends in " →" (pointing at this right-hand axis), so a reader can tell which scale a
+/// line is read against (#1206).
+inline void setupSecondaryRateAxis(double upperBound, ImPlotFormatter formatter, const ImVec4& seriesColor)
 {
+    // ImPlot reads an axis's colours from the style when the axis is set up (UpdateAxisColors).
+    ImPlot::PushStyleColor(ImPlotCol_AxisText, seriesColor);
     // AuxDefault: no grid lines of its own, and Opposite, which puts its labels on the right.
     ImPlot::SetupAxis(ImAxis_Y2, nullptr, ImPlotAxisFlags_AuxDefault | ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
+    ImPlot::PopStyleColor();
     ImPlot::SetupAxisLimits(ImAxis_Y2, 0.0, upperBound, ImPlotCond_Always);
     // Round ticks like the primary axis, and no more of them (#1202).
     setupNiceAxisTicks(ImAxis_Y2, upperBound, formatter, activeChartDataScope().maxYTicks);
 }
+
+/// RAII scope around a stack of history charts drawn one above another in a view (#1206): ImPlot
+/// gives every chart begun inside it the same axis padding on each side -- the widest Y tick labels
+/// on the left, and on the right the gutter of any chart's second Y axis (setupSecondaryRateAxis())
+/// -- so their plot areas share left and right edges and their time axes line up. A chart with a
+/// second axis no longer has a shorter time axis than the charts above it. The charts must also
+/// reserve the same NowBar column width (renderHistoryWithNowBars()'s minBarColumns).
+///
+/// Not nestable (ImPlot asserts), and nothing that is not part of the stack should be drawn inside.
+class AlignedChartStack
+{
+  public:
+    explicit AlignedChartStack(const char* id) : m_Active(ImPlot::BeginAlignedPlots(id))
+    {}
+
+    ~AlignedChartStack()
+    {
+        if (m_Active)
+        {
+            ImPlot::EndAlignedPlots();
+        }
+    }
+
+    AlignedChartStack(const AlignedChartStack&) = delete;
+    AlignedChartStack& operator=(const AlignedChartStack&) = delete;
+    AlignedChartStack(AlignedChartStack&&) = delete;
+    AlignedChartStack& operator=(AlignedChartStack&&) = delete;
+
+  private:
+    bool m_Active = false;
+};
 
 /// How fast a history chart's data scrolls on screen, in pixels per second: its x axis spans
 /// `xMax - xMin` seconds across `plotWidthPx`, and "now" moves one second per second. 0 for an empty
@@ -2044,7 +2093,10 @@ class HistoryChart
         {
             setupLegendDefault();
         }
-        ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, historyChartYAxisFlags(config.yLimits.has_value()));
+        ImPlot::SetupAxes(config.timeAxisLabels ? "Time (s)" : nullptr,
+                          nullptr,
+                          historyChartXAxisFlags(config.timeAxisLabels),
+                          historyChartYAxisFlags(config.yLimits.has_value()));
         if (config.yLimits.has_value())
         {
             const double upper = config.easeYUpper ? easedChartUpperBound(plotId, config.yLimits->second) : config.yLimits->second;

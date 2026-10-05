@@ -89,8 +89,10 @@ constexpr const char* CPU_IOWAIT_LABEL = "I/O Wait";
 constexpr const char* CPU_IDLE_LABEL = "Idle";
 constexpr const char* POWER_LABEL = "Power";
 constexpr const char* BATTERY_LABEL = "Battery";
+// A series on a chart's right-hand axis ends in " →", pointing at it (setupSecondaryRateAxis(), #1206).
+constexpr const char* BATTERY_Y2_LABEL = "Battery →"; // Beside Power, on its own 0-100 % axis
 constexpr const char* THREADS_LABEL = "Threads";
-constexpr const char* FAULTS_LABEL = "Page Faults/s";
+constexpr const char* FAULTS_LABEL = "Page Faults/s →"; // Always on the Resources chart's right-hand axis
 
 void showCpuBreakdownTooltip(const UI::ColorScheme& scheme,
                              double ageSeconds,
@@ -526,6 +528,9 @@ void SystemMetricsPanel::renderOverview()
     // and feeds it to the next frame.
     UI::Widgets::FillPlotLayout fill(m_OverviewFill);
     const float plotHeight = fill.plotHeight();
+    // The CPU, Memory, Power and Resources charts share their plot edges, though only Resources
+    // (and Power with a battery) has a right-hand axis (#1206). All reserve OVERVIEW_NOW_BAR_COLUMNS.
+    const UI::Widgets::AlignedChartStack alignedCharts("##OverviewCharts");
 
     updateSmoothedCpu(snap, m_LastDeltaSeconds);
     updateSmoothedMemory(snap, m_LastDeltaSeconds);
@@ -906,6 +911,9 @@ void SystemMetricsPanel::renderOverview()
             const double powerAxisUpper = UI::Widgets::easedRateAxisUpperBound(
                 "##PowerBatteryHistory", UI::Widgets::maxOfSeries(powerHist), UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS);
 
+            // Beside Power, Battery is drawn on the right-hand axis; alone it takes the primary one.
+            const char* const batteryLabel = hasProcessPower ? BATTERY_Y2_LABEL : BATTERY_LABEL;
+
             // Build NowBars
             NowBarList bars;
             if (hasProcessPower)
@@ -923,7 +931,7 @@ void SystemMetricsPanel::renderOverview()
             if (snap.power.hasBattery)
             {
                 bars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedPower.batteryChargePercent),
-                                .label = BATTERY_LABEL,
+                                .label = batteryLabel,
                                 .tooltipText = {},
                                 .value01 = UI::Format::percent01(m_SmoothedPower.batteryChargePercent),
                                 .color = theme.scheme().chartMemory});
@@ -943,14 +951,13 @@ void SystemMetricsPanel::renderOverview()
                     m_ChartDataGeneration));
                 if (chart.active())
                 {
-                    // Secondary Y-axis: Battery % (0-100) - hidden ticks to keep X-axis alignment
+                    // Secondary Y-axis: Battery % (0-100), labelled like any second axis (#1206). Its
+                    // ticks were hidden to keep the time axis aligned with the charts above, which left
+                    // the battery line reading against a Watts axis; the stack is aligned by
+                    // AlignedChartStack now instead.
                     if (hasProcessPower && snap.power.hasBattery && !batteryHist.empty())
                     {
-                        ImPlot::SetupAxis(ImAxis_Y2,
-                                          "",
-                                          ImPlotAxisFlags_AuxDefault | ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels |
-                                              ImPlotAxisFlags_NoTickMarks);
-                        ImPlot::SetupAxisLimits(ImAxis_Y2, 0, 100, ImPlotCond_Always);
+                        UI::Widgets::setupSecondaryRateAxis(100.0, UI::Widgets::formatAxisPercent, theme.scheme().chartMemory);
                     }
                     // After all axis setup: the hint reads the plot's geometry, which locks setup (#1013).
                     UI::Widgets::drawCollectingHint(alignedCount);
@@ -971,13 +978,14 @@ void SystemMetricsPanel::renderOverview()
                     if (snap.power.hasBattery && !batteryHist.empty())
                     {
                         ImPlot::SetAxes(ImAxis_X1, hasProcessPower ? ImAxis_Y2 : ImAxis_Y1);
-                        plotSeries(BATTERY_LABEL,
+                        plotSeries(batteryLabel,
                                    batteryTimeData.data(),
                                    batteryHist.data(),
                                    UI::Format::checkedCount(batteryHist.size()),
                                    theme.scheme().chartMemory,
                                    theme.scheme().chartMemoryFill,
-                                   seriesStyle(SeriesRole::Secondary, 0));
+                                   // Alone (no power) it is the chart's primary series, and filled.
+                                   hasProcessPower ? seriesStyle(SeriesRole::Secondary, 0) : seriesStyle(SeriesRole::Primary));
                         ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1); // Reset to primary
                     }
 
@@ -1002,7 +1010,7 @@ void SystemMetricsPanel::renderOverview()
                             if (batteryIdx)
                             {
                                 const double batteryVal = Domain::Numeric::toDouble(batteryHist[*batteryIdx]);
-                                rows.push_back({.label = BATTERY_LABEL,
+                                rows.push_back({.label = batteryLabel,
                                                 .color = theme.scheme().chartMemory,
                                                 .value = UI::Widgets::formatSampleOrNA(
                                                     batteryVal, [](double v) { return UI::Format::percentCompact(v); })});
@@ -1172,7 +1180,7 @@ void SystemMetricsPanel::renderOverview()
                 m_ChartDataGeneration));
             if (chart.active())
             {
-                UI::Widgets::setupSecondaryRateAxis(faultAxisUpper, formatAxisLocalized);
+                UI::Widgets::setupSecondaryRateAxis(faultAxisUpper, formatAxisLocalized, theme.accentColor(3));
                 // After all axis setup: the hint reads the plot's geometry, which locks setup (#1013).
                 UI::Widgets::drawCollectingHint(alignedCount);
                 const int count = UI::Format::checkedCount(alignedCount);

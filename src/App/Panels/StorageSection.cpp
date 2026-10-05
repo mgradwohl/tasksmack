@@ -154,6 +154,11 @@ void renderDiskCell(const std::string& deviceName,
         auto diskCfg = UI::Widgets::rateHistoryConfigWithUpper(
             deviceName.c_str(), axisConfig.xMin, axisConfig.xMax, formatAxisBytesPerSec, diskAxisUpper);
         diskCfg.flags |= ImPlotFlags_NoTitle;
+        // No "Time (s)" or time tick labels in each of the cells (#1206), and no legend: the cell's
+        // value strip above names Read and Write in their colours, and a legend row above each
+        // small plot (#1198) took the height the plot needs.
+        diskCfg.timeAxisLabels = false;
+        diskCfg.showLegend = false;
         diskCfg.height = plotHeight;
         const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(diskCfg, dataGeneration));
         if (chart.active())

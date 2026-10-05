@@ -64,7 +64,15 @@ using UI::Widgets::renderHistoryWithNowBars;
 using UI::Widgets::SeriesRole;
 using UI::Widgets::seriesStyle;
 
+// The NowBar column every Process Details chart reserves: the most bars any of them has, so charts
+// stacked on one tab are the same width and their time axes line up (#1206). Resources has four on
+// Windows (with GDI Objects): with a column of its own it was narrower than the CPU and Memory
+// charts above it, and its time axis shorter.
+#ifdef _WIN32
+constexpr size_t PROCESS_NOW_BAR_COLUMNS = 4;
+#else
 constexpr size_t PROCESS_NOW_BAR_COLUMNS = 3;
+#endif
 
 // Floor on the Confirm Action dialog's Yes/No buttons, in ems: 120px at the reference em.
 constexpr float CONFIRM_BUTTON_MIN_EM = 11.25F;
@@ -89,10 +97,11 @@ constexpr const char* CPU_USER_LABEL = "User";
 constexpr const char* CPU_SYSTEM_LABEL = "System";
 constexpr const char* MEM_USED_LABEL = "Used";
 constexpr const char* MEM_SHARED_LABEL = "Shared";
-constexpr const char* MEM_VIRTUAL_LABEL = "Virtual";
+// A series on a chart's right-hand axis ends in " →", pointing at it (setupSecondaryRateAxis(), #1206).
+constexpr const char* MEM_VIRTUAL_LABEL = "Virtual →";
 constexpr const char* MEM_PEAK_LABEL = "Peak Used";
 constexpr const char* THREADS_LABEL = "Threads";
-constexpr const char* FAULTS_LABEL = "Page Faults/s";
+constexpr const char* FAULTS_LABEL = "Page Faults/s →";
 #ifdef _WIN32
 constexpr const char* GDI_LABEL = "GDI Objects";
 #endif
@@ -402,6 +411,8 @@ void ProcessDetailsPanel::renderContent()
                 // The charts on this tab share its height (#959). The Identity/Runtime block above
                 // them is inside the scope, so it is counted as non-plot height.
                 UI::Widgets::FillPlotLayout fill(m_OverviewFill);
+                // Its charts share their plot edges, with or without a right-hand axis (#1206).
+                const UI::Widgets::AlignedChartStack alignedCharts("##ProcOverviewCharts");
                 renderBasicInfo(cachedSnapshot());
                 ImGui::Separator();
                 renderResourceUsage(cachedSnapshot(), fill);
@@ -434,6 +445,7 @@ void ProcessDetailsPanel::renderContent()
                     // The two history charts share the tab's height, like the other tabs' charts
                     // (#959). The metrics table and per-GPU breakdown above them count as non-plot.
                     UI::Widgets::FillPlotLayout fill(m_GpuFill);
+                    const UI::Widgets::AlignedChartStack alignedCharts("##ProcGpuCharts"); // #1206
                     renderGpuUsage(cachedSnapshot(), fill);
                 }
             }
@@ -453,6 +465,7 @@ void ProcessDetailsPanel::renderContent()
                     {
                         const UI::Widgets::TabContentScope content("##NetworkContent");
                         UI::Widgets::FillPlotLayout fill(m_NetworkFill);
+                        const UI::Widgets::AlignedChartStack alignedCharts("##ProcNetworkCharts"); // #1206
                         // Render I/O stats first (at the top)
                         renderIoStats(fill);
                         ImGui::Separator();
@@ -1165,7 +1178,7 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
                     m_HistoryGeneration));
                 if (chart.active())
                 {
-                    UI::Widgets::setupSecondaryRateAxis(virtAxisUpper, UI::Widgets::formatAxisBytes);
+                    UI::Widgets::setupSecondaryRateAxis(virtAxisUpper, UI::Widgets::formatAxisBytes, theme.scheme().chartIo);
                     UI::Widgets::drawCollectingHint(alignedCount);
                     // Draw peak working set as a horizontal reference line (never decreases)
                     if (m_PeakMemoryBytes > 0.0)
@@ -1392,7 +1405,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
             m_HistoryGeneration));
         if (chart.active())
         {
-            UI::Widgets::setupSecondaryRateAxis(faultAxisUpper, formatAxisLocalized);
+            UI::Widgets::setupSecondaryRateAxis(faultAxisUpper, formatAxisLocalized, theme.accentColor(3));
             UI::Widgets::drawCollectingHint(alignedCount);
             const int plotCount = UI::Format::checkedCount(alignedCount);
             plotSeries(THREADS_LABEL,
@@ -1467,10 +1480,9 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
 
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GEARS "  Resources (%zu samples)", alignedCount);
 #ifdef _WIN32
-    // 4 NowBars on Windows: Threads, Handles, Page Faults, GDI Objects
-    constexpr size_t RESOURCE_NOW_BAR_COLUMNS = 4;
+    // 4 NowBars on Windows: Threads, Handles, Page Faults, GDI Objects (PROCESS_NOW_BAR_COLUMNS)
     renderHistoryWithNowBars(
-        "ProcessResourceHistory", fill.plotHeight(), plot, {threadsBar, handlesBar, faultsBar, gdiBar}, false, RESOURCE_NOW_BAR_COLUMNS);
+        "ProcessResourceHistory", fill.plotHeight(), plot, {threadsBar, handlesBar, faultsBar, gdiBar}, false, PROCESS_NOW_BAR_COLUMNS);
     fill.addPlot();
 #else
     renderHistoryWithNowBars(
