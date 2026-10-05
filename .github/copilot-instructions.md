@@ -308,7 +308,7 @@ pwsh tools/coverage.ps1    # Generates coverage/index.html
 - ❌ Using `using namespace std` in headers
 - ❌ Ignoring clang-tidy warnings (the Static Analysis workflow on `main` will fail post-merge — run `tools/clang-tidy.sh` / `tools/clang-tidy.ps1` locally before pushing)
 - ❌ Committing without running clang-format
-- ❌ Adding dependencies without `SYSTEM` keyword in FetchContent
+- ❌ Adding dependencies without `SYSTEM` keyword, or without a per-preset `BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/<dep>-build"`, in FetchContent
 - ❌ Violating Rule of 5 (custom destructor without handling copy/move)
 - ❌ Using raw `new`/`delete` instead of smart pointers
 - ❌ Forgetting to initialize member variables (causes `cppcoreguidelines-pro-type-member-init` warnings)
@@ -321,7 +321,7 @@ pwsh tools/coverage.ps1    # Generates coverage/index.html
 
 - When modifying project structure, scripts, clang configs, or CMake files → update `CONTRIBUTING.md` and this file
 - New folders under project root → consider `.gitignore`, exclude from clang-format/tidy configs
-- New dependencies → use CMake FetchContent with `SYSTEM` keyword, document in `CONTRIBUTING.md`
+- New dependencies → use CMake FetchContent with `SYSTEM` keyword and a per-preset `BINARY_DIR` (#1308), document in `CONTRIBUTING.md`
 - When editing Markdown docs → run `pwsh -File tools/md-link-audit.ps1` and fix any broken internal links
 - **GLAD dependency:** Requires Python 3.14+ with jinja2 at build time for OpenGL loader generation
 - **GPU mock libraries:** Linux GPU probe tests (NVML/ROCm) depend on mock shared libraries built into `build/<preset>/tests/mocks/`. CTest sets `LD_LIBRARY_PATH` automatically; `tools/coverage.sh` exports it for direct binary runs. If you run the test binary directly without `LD_LIBRARY_PATH` set, GPU mock tests skip gracefully via `GTEST_SKIP()`.
