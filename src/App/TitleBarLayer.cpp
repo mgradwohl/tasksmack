@@ -19,6 +19,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <format>
 #include <ratio>
 #include <tuple>
 #include <utility>
@@ -272,8 +273,21 @@ void TitleBarLayer::onAttach()
     buttonX -= buttonWidth;
     m_HelpBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = titleBarHeight};
 
-    // Load icon texture
-    const auto iconPath = UI::findAssetsDir() / "icons" / "tasksmack-32.png";
+    // The icon texture is loaded by the first renderTitleBar(), at the size the bar draws it; ImGui
+    // only knows the framebuffer scale from the first frame on (#1169).
+
+    m_TraceEnabled = Core::isEnvFlagEnabled(SDL_getenv("TASKSMACK_TRACE_RESIZE_PERF"));
+
+    // Set up hit test for window dragging
+    setupHitTest();
+    createSystemCursors();
+}
+
+void TitleBarLayer::loadIconTexture(const int pixelSize)
+{
+    // Remembered even when loading fails, so a missing file is not retried every frame.
+    m_IconTexturePx = pixelSize;
+    const auto iconPath = UI::findAssetsDir() / "icons" / std::format("tasksmack-{}.png", pixelSize);
     m_IconTexture = UI::loadTexture(iconPath);
     if (m_IconTexture.valid())
     {
@@ -283,12 +297,6 @@ void TitleBarLayer::onAttach()
     {
         spdlog::warn("Failed to load title bar icon from {}", iconPath.string());
     }
-
-    m_TraceEnabled = Core::isEnvFlagEnabled(SDL_getenv("TASKSMACK_TRACE_RESIZE_PERF"));
-
-    // Set up hit test for window dragging
-    setupHitTest();
-    createSystemCursors();
 }
 
 void TitleBarLayer::onDetach()
@@ -320,6 +328,13 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
     if (event == nullptr)
     {
         return;
+    }
+
+    // A display was added, removed or changed mode, or its work area moved: re-read the usable
+    // bounds the minimum window size is capped to on the next frame the bar is drawn (#1207).
+    if (invalidatesUsableBounds(event->type))
+    {
+        m_MinimumSizeDisplayId = 0;
     }
 
     // Handle Alt+Space to open system menu
@@ -1050,6 +1065,15 @@ void TitleBarLayer::renderTitleBar()
     // Left margin and the gap after the icon, proportional to the bar so they hold at any density.
     const float iconX = titleBarHeight * TITLE_BAR_EDGE_MARGIN_RATIO;
 
+    // The bundled icon nearest above the drawn size in framebuffer pixels; after a display-scale
+    // change that is another file (#1169). Loading between NewFrame() and Render() is fine: the
+    // texture is only sampled when the frame is drawn.
+    if (const int wantedPx = selectIconPixelSize(ICON_SIZE * ImGui::GetIO().DisplayFramebufferScale.y, APP_ICON_PIXEL_SIZES);
+        wantedPx != m_IconTexturePx)
+    {
+        loadIconTexture(wantedPx);
+    }
+
     if (m_IconTexture.valid())
     {
         ImGui::SetCursorPos(ImVec2(iconX, iconY));
@@ -1128,24 +1152,36 @@ void TitleBarLayer::renderTitleBar()
     // Right side buttons
     const float BUTTON_WIDTH = computeTitleBarButtonWidth(titleBarHeight, TITLE_BAR_BUTTON_ASPECT);
 
-    // The window may not be made narrower than what this bar has to show, or shorter than the base
-    // minimum at this display scale. Derived from the sizes just used for drawing, so it cannot
+    // The window may not be made narrower than what this bar or the panels below it have to show
+    // (#1207), or shorter than the base minimum at this display scale. Derived from the sizes just used for drawing, so it cannot
     // drift from them, and handed to SDL only when it changes (#970). ShellLayer has already set
     // the scaled base minimum at attach; this widens it to cover the bar.
-    const WindowMinimumSize minimumSize =
+    const WindowMinimumSize desiredMinimumSize =
         computeMinimumWindowSize(UI::Theme::get().displayScale(),
                                  computeTitleBarContentWidth(iconX,
                                                              ICON_SIZE,
                                                              titleBarHeight * TITLE_BAR_TITLE_GAP_RATIO,
                                                              wordmarkWidth,
                                                              BUTTON_WIDTH,
-                                                             titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO));
-    if (minimumSize.width != m_MinimumSize.width || minimumSize.height != m_MinimumSize.height)
+                                                             titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO),
+                                 m_ContentMinimumWidthPx);
+    // Held inside the current display's usable bounds, or a large font on a small display would
+    // leave a window that cannot fit on-screen or be maximized (#1207). The bounds are read only
+    // when the wanted minimum or the display changes.
+    const SDL_DisplayID displayId = window.getDisplayId();
+    if (desiredMinimumSize != m_DesiredMinimumSize || displayId != m_MinimumSizeDisplayId)
     {
-        m_MinimumSize = minimumSize;
-        if (!SDL_SetWindowMinimumSize(window.getHandle(), minimumSize.width, minimumSize.height))
+        m_DesiredMinimumSize = desiredMinimumSize;
+        m_MinimumSizeDisplayId = displayId;
+        const auto [usableWidth, usableHeight] = window.getUsableDisplaySize().value_or(std::pair{0, 0});
+        const WindowMinimumSize minimumSize = capMinimumToUsable(desiredMinimumSize, usableWidth, usableHeight);
+        if (minimumSize != m_MinimumSize)
         {
-            spdlog::warn("SDL_SetWindowMinimumSize({}, {}) failed: {}", minimumSize.width, minimumSize.height, SDL_GetError());
+            m_MinimumSize = minimumSize;
+            if (!SDL_SetWindowMinimumSize(window.getHandle(), minimumSize.width, minimumSize.height))
+            {
+                spdlog::warn("SDL_SetWindowMinimumSize({}, {}) failed: {}", minimumSize.width, minimumSize.height, SDL_GetError());
+            }
         }
     }
     const float BUTTON_HEIGHT = titleBarHeight;

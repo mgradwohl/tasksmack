@@ -17,7 +17,9 @@ namespace Platform
 class ROCmGPUProbe final : public IGPUProbe
 {
   public:
-    ROCmGPUProbe();
+    /// A GPU that is runtime-suspended (its power/runtime_status under `pciDevicesRoot` says so) is
+    /// not queried, so the probe doesn't keep an idle dGPU awake (#1117); tests pass a fake root.
+    explicit ROCmGPUProbe(std::string pciDevicesRoot = "/sys/bus/pci/devices");
     ~ROCmGPUProbe() override;
 
     // Rule of 5: Delete copy/move operations

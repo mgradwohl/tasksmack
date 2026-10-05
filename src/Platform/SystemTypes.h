@@ -104,7 +104,7 @@ struct SystemCounters
         uint64_t linkSpeedMbps = 0; // Link speed in Mbps (0 if unknown)
         // Software interface (bridge, veth, tunnel/VPN, VLAN, loopback-like) whose traffic also crosses
         // a hardware interface, so the network Total leaves it out unless no hardware interface is
-        // listed (#1106). Linux: no /sys/class/net/<if>/device. Windows: not classified yet (false).
+        // listed (#1106). Linux: no /sys/class/net/<if>/device. Windows: HardwareInterface clear (#1257).
         bool isVirtual = false;
     };
     std::vector<InterfaceCounters> networkInterfaces;

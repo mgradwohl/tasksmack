@@ -2,11 +2,14 @@
 
 #include "Core/WindowConstants.h"
 
+#include <SDL3/SDL_events.h>
 #include <SDL3/SDL_video.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
+#include <span>
 
 namespace App
 {
@@ -48,6 +51,29 @@ enum class ResizeEdge : std::uint8_t
 [[nodiscard]] inline auto computeTitleBarIconSize(const float titleBarHeightPx, const float insetPx) -> float
 {
     return std::max(0.0F, titleBarHeightPx - insetPx);
+}
+
+/// Pixel sizes of the bundled application icon, assets/icons/tasksmack-<size>.png, ascending.
+inline constexpr std::array<int, 7> APP_ICON_PIXEL_SIZES{16, 24, 32, 48, 64, 128, 256};
+
+/// Which bundled icon to draw at @p drawnPx framebuffer pixels: the smallest at least that large,
+/// so it is only ever scaled down, or the largest when none is (#1169). The title bar always loaded
+/// the 32 px icon, which was upscaled -- and blurred -- to about 45 px at 150 % and 60 px at 200 %.
+///
+/// @param drawnPx    The icon's drawn size in framebuffer pixels (window units times the pixel
+///                   density). A non-finite or non-positive size selects the smallest icon.
+/// @param available  The sizes there are, ascending and not empty.
+[[nodiscard]] constexpr auto selectIconPixelSize(const float drawnPx, std::span<const int> available) -> int
+{
+    for (const int size : available)
+    {
+        // Not `size >= drawnPx` alone: a NaN would fail every comparison and fall through to the largest.
+        if (!(drawnPx > 0.0F) || static_cast<float>(size) >= drawnPx)
+        {
+            return size;
+        }
+    }
+    return available.back();
 }
 
 /// Width of one window control button (minimize / maximize / close).
@@ -140,27 +166,114 @@ struct WindowMinimumSize
 {
     int width = Core::WINDOW_MIN_DIMENSION;
     int height = Core::WINDOW_MIN_DIMENSION;
+
+    friend constexpr auto operator==(const WindowMinimumSize&, const WindowMinimumSize&) -> bool = default;
 };
 
+/// Narrowest a plot beside its NowBar column may get, in ems: below this the Overview's charts are
+/// a sliver next to their bars (#1207).
+inline constexpr float MIN_PLOT_WIDTH_EM = 15.0F;
+
+/// Widest content the window has to show without clipping or overlap, in pixels (#1207): the
+/// Processes toolbar row (filter, clear button, process count and the tree-view toggle on one
+/// line), or a NowBar column plus MIN_PLOT_WIDTH_EM of plot, whichever is wider, plus the
+/// horizontal chrome around the content (gutters and padding).
+///
+/// @param processesToolbarWidthPx  Width the Processes toolbar row needs; 0 if not known.
+/// @param nowBarColumnWidthPx      Width of the Overview's NowBar column with the cell padding that
+///                                 separates it from the plot; 0 if not known.
+/// @param emPx                     One em, i.e. ImGui::GetFontSize().
+/// @param horizontalChromePx       Gutters and padding left and right of the content.
+[[nodiscard]] inline auto computeContentMinimumWidth(const float processesToolbarWidthPx,
+                                                     const float nowBarColumnWidthPx,
+                                                     const float emPx,
+                                                     const float horizontalChromePx) -> float
+{
+    const auto atLeastZero = [](const float value)
+    {
+        return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
+    };
+    const float chartRow = atLeastZero(nowBarColumnWidthPx) + (MIN_PLOT_WIDTH_EM * atLeastZero(emPx));
+    return std::max(atLeastZero(processesToolbarWidthPx), chartRow) + atLeastZero(horizontalChromePx);
+}
+
 /// Smallest size the window may take: the base minimum at the display's scale, and never narrower
-/// than the title bar's own content.
+/// than the title bar's own content or the panels' content.
 ///
 /// The base minimum was 200 units at every scale, but the title bar is display-scaled: its five
 /// buttons alone need about 197px at 100% and about 393px at 200%. So the window could be dragged
-/// narrower than its own title bar, and the buttons were drawn over the wordmark (#970).
+/// narrower than its own title bar, and the buttons were drawn over the wordmark (#970). The panels
+/// are font-scaled too: at 200 units the Processes toolbar collided and the Overview's plots were
+/// about 50px wide (#1207).
 ///
 /// @param displayScale             UI scale in window units (UI::windowUnitScale); 1.0 at 96 DPI.
 /// @param titleBarContentWidthPx   From computeTitleBarContentWidth(); 0 if not yet known.
-[[nodiscard]] inline auto computeMinimumWindowSize(const float displayScale, const float titleBarContentWidthPx) -> WindowMinimumSize
+/// @param contentMinimumWidthPx    From computeContentMinimumWidth(); 0 if not yet known.
+[[nodiscard]] inline auto computeMinimumWindowSize(const float displayScale,
+                                                   const float titleBarContentWidthPx,
+                                                   const float contentMinimumWidthPx = 0.0F) -> WindowMinimumSize
 {
     const float scale = (std::isfinite(displayScale) && displayScale > 1.0F) ? displayScale : 1.0F;
-    const float content = (std::isfinite(titleBarContentWidthPx) && titleBarContentWidthPx > 0.0F) ? titleBarContentWidthPx : 0.0F;
+    const auto atLeastZero = [](const float value)
+    {
+        return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
+    };
+    const float content = std::max(atLeastZero(titleBarContentWidthPx), atLeastZero(contentMinimumWidthPx));
 
     const float base = std::round(static_cast<float>(Core::WINDOW_MIN_DIMENSION) * scale);
     const auto maxDimension = static_cast<float>(Core::WINDOW_MAX_DIMENSION);
     // Narrowing: both operands are clamped to [WINDOW_MIN_DIMENSION, WINDOW_MAX_DIMENSION] first.
     return {.width = static_cast<int>(std::min(std::max(base, std::ceil(content)), maxDimension)),
             .height = static_cast<int>(std::min(base, maxDimension))};
+}
+
+/// The minimum window size held inside the usable bounds of the display the window is on (#1207).
+///
+/// The content-derived minimum grows with the font size and the display scale, so on a small
+/// display at a large font it can be wider than the screen's work area. Uncapped, the window could
+/// not fit on-screen and maximize could not satisfy its own minimum. Capped, the panels lay out
+/// narrower than their content wants instead (see computeContentMinimumWidth()).
+///
+/// @param minimum       From computeMinimumWindowSize().
+/// @param usableWidth   Width of the display's usable bounds (SDL_GetDisplayUsableBounds), in the
+///                      same window coordinates as @p minimum; 0 or less when unknown, which leaves
+///                      the width uncapped.
+/// @param usableHeight  Likewise for the height.
+/// @return @p minimum, each dimension capped to the usable one but never below
+///         Core::WINDOW_MIN_DIMENSION, the floor computeResizeGeometry() holds a drag to.
+/// Whether an SDL event can change a display's usable bounds -- added, removed, moved, a mode or
+/// orientation change on the same display -- so a minimum window size capped to them must be
+/// re-derived (#1207). A same-display resolution change keeps the display id and the content's
+/// wanted width, so neither alone triggers a refresh.
+[[nodiscard]] constexpr bool invalidatesUsableBounds(const std::uint32_t eventType) noexcept
+{
+    return eventType >= SDL_EVENT_DISPLAY_FIRST && eventType <= SDL_EVENT_DISPLAY_LAST;
+}
+
+[[nodiscard]] constexpr auto capMinimumToUsable(const WindowMinimumSize minimum, const int usableWidth, const int usableHeight)
+    -> WindowMinimumSize
+{
+    const auto cap = [](const int wanted, const int usable)
+    {
+        if (usable <= 0 || wanted <= usable)
+        {
+            return wanted;
+        }
+        return std::max(usable, Core::WINDOW_MIN_DIMENSION);
+    };
+    return {.width = cap(minimum.width, usableWidth), .height = cap(minimum.height, usableHeight)};
+}
+
+/// Whether the status bar's right-aligned FPS readout fits beside what is on its left (#1207).
+/// At narrow widths it was drawn over "Ready" and the status-bar buttons; it is left out instead.
+///
+/// @param leftContentEndX  Where the status bar's left-hand content ends (window-local X).
+/// @param readoutStartX    Where the right-aligned readout would start (window-local X).
+/// @param spacingPx        Gap to keep between them (ImGuiStyle::ItemSpacing.x).
+[[nodiscard]] inline auto computeStatusBarReadoutFits(const float leftContentEndX, const float readoutStartX, const float spacingPx) -> bool
+{
+    const float spacing = (std::isfinite(spacingPx) && spacingPx > 0.0F) ? spacingPx : 0.0F;
+    return std::isfinite(leftContentEndX) && std::isfinite(readoutStartX) && readoutStartX >= leftContentEndX + spacing;
 }
 
 /// Screen-space rectangle for a title-bar button's hit area (icon, help, settings,

@@ -5,6 +5,7 @@
 /// of process actions. We avoid actually terminating processes to keep
 /// tests safe and non-destructive.
 
+#include "Domain/PriorityConfig.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/Windows/WindowsProcessActions.h"
 #include "Platform/Windows/WindowsProcessActionsMath.h"
@@ -24,6 +25,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <ios>
 #include <limits>
 #include <string>
 #include <thread>
@@ -70,6 +72,52 @@ TEST(NiceToPriorityClassTest, AtIdleThresholdAndAboveMapsToIdle)
     EXPECT_EQ(niceToPriorityClass(15), static_cast<uint32_t>(IDLE_PRIORITY_CLASS));
     EXPECT_EQ(niceToPriorityClass(19), static_cast<uint32_t>(IDLE_PRIORITY_CLASS));
 }
+
+// =============================================================================
+// priorityClassToNice: the nice value the probe reports for each class (#1204)
+// =============================================================================
+
+TEST(PriorityClassToNiceTest, EverySettableClassRoundTrips)
+{
+    // Reading a class and writing the reported value back must set the same class.
+    for (const uint32_t priorityClass : {
+             static_cast<uint32_t>(IDLE_PRIORITY_CLASS),
+             static_cast<uint32_t>(BELOW_NORMAL_PRIORITY_CLASS),
+             static_cast<uint32_t>(NORMAL_PRIORITY_CLASS),
+             static_cast<uint32_t>(ABOVE_NORMAL_PRIORITY_CLASS),
+             static_cast<uint32_t>(HIGH_PRIORITY_CLASS),
+         })
+    {
+        EXPECT_EQ(niceToPriorityClass(priorityClassToNice(priorityClass)), priorityClass) << "class 0x" << std::hex << priorityClass;
+    }
+}
+
+TEST(PriorityClassToNiceTest, EveryClassIsLabelledAsItself)
+{
+    // The regression: Above normal reported -5 and High -10, the thresholds where the next class
+    // down starts, so they were labelled "Normal" and "Above Normal".
+    EXPECT_EQ(Domain::Priority::getPriorityLabel(priorityClassToNice(IDLE_PRIORITY_CLASS)), "Idle");
+    EXPECT_EQ(Domain::Priority::getPriorityLabel(priorityClassToNice(BELOW_NORMAL_PRIORITY_CLASS)), "Below Normal");
+    EXPECT_EQ(Domain::Priority::getPriorityLabel(priorityClassToNice(NORMAL_PRIORITY_CLASS)), "Normal");
+    EXPECT_EQ(Domain::Priority::getPriorityLabel(priorityClassToNice(ABOVE_NORMAL_PRIORITY_CLASS)), "Above Normal");
+    EXPECT_EQ(Domain::Priority::getPriorityLabel(priorityClassToNice(HIGH_PRIORITY_CLASS)), "High");
+}
+
+TEST(PriorityClassToNiceTest, RealtimeIsDistinctFromHighButNeverSetAsRealtime)
+{
+    // Realtime keeps MIN_NICE so the UI can name it; writing that back sets High, never Realtime.
+    EXPECT_EQ(priorityClassToNice(REALTIME_PRIORITY_CLASS), Domain::Priority::MIN_NICE);
+    EXPECT_NE(priorityClassToNice(REALTIME_PRIORITY_CLASS), priorityClassToNice(HIGH_PRIORITY_CLASS));
+    EXPECT_EQ(niceToPriorityClass(priorityClassToNice(REALTIME_PRIORITY_CLASS)), static_cast<uint32_t>(HIGH_PRIORITY_CLASS));
+}
+
+TEST(PriorityClassToNiceTest, AnUnknownClassIsNormal)
+{
+    EXPECT_EQ(priorityClassToNice(0), Domain::Priority::NORMAL_NICE); // GetPriorityClass() failed
+    EXPECT_EQ(priorityClassToNice(0x12345U), Domain::Priority::NORMAL_NICE);
+}
+
+static_assert(priorityClassToNice(HIGH_PRIORITY_CLASS) < Domain::Priority::HIGH_THRESHOLD);
 
 // =============================================================================
 // Terminate's close request (#1094)

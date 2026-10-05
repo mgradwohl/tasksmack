@@ -19,6 +19,7 @@
 #include "Domain/Numeric.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessModel.h"
+#include "Domain/ProcessSnapshot.h"
 #include "Platform/Factory.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
@@ -74,6 +75,7 @@ constexpr std::string_view UNIT_POWER = " WW";           // Power (mW is wider t
 // Static UI labels (cached for text size measurements)
 constexpr std::string_view TREE_VIEW_LABEL = "Tree View";
 constexpr std::string_view LIST_VIEW_LABEL = "List View";
+constexpr const char* FILTER_HINT = "Filter by name...";
 
 [[nodiscard]] auto lowerAscii(char ch) -> int
 {
@@ -296,6 +298,27 @@ void ProcessesPanel::TextSizeCache::populate()
     }
 }
 
+float ProcessesPanel::measureToolbarMinimumWidth()
+{
+    // Mirrors render()'s toolbar row; see ProcessTableLayout::computeToolbarMinimumWidth().
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float emPx = ImGui::GetFontSize();
+    const float hintWidth = ImGui::CalcTextSize(FILTER_HINT).x;
+    const float filterForHint = hintWidth + (style.FramePadding.x * 2.0F);
+    const float filterWanted = ProcessTableLayout::computeFilterWidth(hintWidth, style.FramePadding.x, emPx, 0.0F);
+
+    // The clear button only shows while filtering, but the row must not overlap when it does. The
+    // count is the wider of its two forms at a large, fixed count, so the minimum stays put.
+    const float clearButton = ImGui::CalcTextSize(ICON_FA_XMARK).x + (style.FramePadding.x * 2.0F);
+    const float count =
+        std::max(ImGui::CalcTextSize("99,999 processes, 9,999 running").x, ImGui::CalcTextSize("99,999 / 99,999 processes").x);
+    const float toggleButton = std::max(ImGui::CalcTextSize(TREE_VIEW_LABEL.data(), TREE_VIEW_LABEL.data() + TREE_VIEW_LABEL.size()).x,
+                                        ImGui::CalcTextSize(LIST_VIEW_LABEL.data(), LIST_VIEW_LABEL.data() + LIST_VIEW_LABEL.size()).x) +
+                               (style.FramePadding.x * 2.0F);
+    const float rest = (style.ItemSpacing.x * 3.0F) + clearButton + count + toggleButton;
+    return ProcessTableLayout::computeToolbarMinimumWidth(filterWanted, filterForHint, rest);
+}
+
 float ProcessesPanel::TextSizeCache::getPriorityLabelWidth(std::string_view label) const noexcept
 {
     for (std::size_t i = 0; i < PRIORITY_LABELS.size(); ++i)
@@ -361,6 +384,8 @@ void ProcessesPanel::onAttach()
     processProbe->setSocketStatsCacheTtl(std::chrono::milliseconds(socketStatsCacheTtlMs));
 
     m_ProcessModel = std::make_shared<Domain::ProcessModel>(std::move(processProbe));
+    // Config-file only (not in Settings), so applied once here, before the first refresh (#1123).
+    m_ProcessModel->setMaxSaneNetworkRate(UserConfig::get().settings().maxSaneRateBps);
 
     // Seed with one synchronous read so the first background callback produces valid CPU
     // deltas instead of all-zero percentages (first call establishes the prev-sample
@@ -594,7 +619,6 @@ void ProcessesPanel::renderContent()
     // Search bar
     const auto& theme = UI::Theme::get();
     // Sized from the font and the hint it has to show, not a fixed 200px (#965).
-    constexpr const char* FILTER_HINT = "Filter by name...";
     ImGui::SetNextItemWidth(ProcessTableLayout::computeFilterWidth(
         ImGui::CalcTextSize(FILTER_HINT).x, ImGui::GetStyle().FramePadding.x, ImGui::GetFontSize(), ImGui::GetContentRegionAvail().x));
     ImGui::PushStyleColor(ImGuiCol_TextDisabled, theme.scheme().statusRunning);
@@ -989,19 +1013,17 @@ std::optional<Domain::ProcessSnapshot> ProcessesPanel::findSnapshot(std::int32_t
     return m_ProcessModel->findSnapshot(pid);
 }
 
-std::optional<Domain::ProcessModel::SnapshotLookupResult> ProcessesPanel::findSnapshotWithVersion(std::int32_t pid) const
+void ProcessesPanel::watchProcess(std::int32_t pid)
 {
-    if (!m_ProcessModel)
+    if (m_ProcessModel)
     {
-        return std::nullopt;
+        m_ProcessModel->watchProcess(pid);
     }
-    // See findSnapshot()'s doc comment for why this bypasses m_CachedRenderSnapshots. Unlike
-    // findSnapshot(), this also returns the exact publication version the snapshot was read
-    // under (atomically, under ProcessModel's own lock) -- callers that need to gate on "is
-    // this new data" (e.g. ProcessDetailsPanel's history recording) must use this instead of
-    // pairing findSnapshot() with a separately-read version, which can race with an
-    // intervening publish and pair a snapshot from one generation with another's version.
-    return m_ProcessModel->findSnapshotWithVersion(pid);
+}
+
+bool ProcessesPanel::watchedSamplesSince(std::uint64_t lastSeenVersion, std::vector<Domain::ProcessSample>& outSamples) const
+{
+    return m_ProcessModel && m_ProcessModel->watchedSamplesSince(lastSeenVersion, outSamples);
 }
 
 void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int depth, bool hasChildren, bool isExpanded)

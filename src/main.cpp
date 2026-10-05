@@ -4,6 +4,7 @@
 
 #include "App/AboutLayer.h"
 #include "App/ElevationNoticeLayer.h"
+#include "App/InstanceLock.h"
 #include "App/SettingsLayer.h"
 #include "App/ShellLayer.h"
 #include "App/TitleBarLayer.h"
@@ -99,6 +100,28 @@ auto runApp() -> int
     }
 #endif
 
+    // Load user configuration early so we can apply window geometry before creating the SDL window.
+    auto& userConfig = App::UserConfig::get();
+
+    // One TaskSmack per config directory (#1230): two instances saving the same config.toml could
+    // undo each other's settings change. Held until runApp() returns; the OS drops it on any exit.
+    // A lock that can't be taken at all (read-only directory, say) doesn't stop TaskSmack starting.
+    // Taken before the file logger below opens tasksmack-debug.log, which truncates it: a rejected
+    // second launch must not erase the running instance's log. Its warning goes to the default
+    // (console) logger.
+    const std::filesystem::path instanceLockPath = userConfig.configPath().parent_path() / "tasksmack.lock";
+    const App::InstanceLock instanceLock(instanceLockPath);
+    if (instanceLock.status() == App::InstanceLock::Status::HeldByAnotherInstance)
+    {
+        spdlog::warn("TaskSmack is already running with the settings in {}; exiting", instanceLockPath.parent_path().string());
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION,
+                                 "TaskSmack",
+                                 "TaskSmack is already running.\n\nOnly one TaskSmack can run at a time, so that two can't overwrite "
+                                 "each other's settings.",
+                                 nullptr);
+        return EXIT_SUCCESS;
+    }
+
     // Logger construction runs in EVERY configuration. It used to sit inside the console-attach
     // guard above, so every NDEBUG build (win-release/win-optimized/win-profile) and every Linux
     // build fell back to spdlog's implicit default logger: no log file, no MSVC sink, and none of
@@ -177,8 +200,11 @@ auto runApp() -> int
     spdlog::debug("Compiler: {} {}", tasksmack::Version::COMPILER_ID, tasksmack::Version::COMPILER_VERSION);
     spdlog::debug("Built: {} {}", tasksmack::Version::BUILD_DATE, tasksmack::Version::BUILD_TIME);
 
-    // Load user configuration early so we can apply window geometry before creating the SDL window.
-    auto& userConfig = App::UserConfig::get();
+    if (instanceLock.status() == App::InstanceLock::Status::Unavailable)
+    {
+        spdlog::warn("Can't take the single-instance lock {}: {}; starting anyway", instanceLockPath.string(), instanceLock.error());
+    }
+
     userConfig.load();
     const auto& settings = userConfig.settings();
 
@@ -216,13 +242,14 @@ auto runApp() -> int
         // Apply the saved normal geometry and maximized state now that the window exists. The size
         // and position are checked against the connected displays, so a position saved on a monitor
         // that is gone no longer opens the borderless window off-screen (#1128), and the normal
-        // rectangle is applied before maximizing so it is what Restore returns to (#1121).
+        // rectangle is applied before maximizing so it is what Restore returns to (#1121). The size is
+        // converted from the scale it was saved at to the scale of the display it opens on (#1168).
         std::optional<std::pair<int, int>> savedPosition;
         if (settings.windowPosX.has_value() && settings.windowPosY.has_value())
         {
             savedPosition = std::pair{*settings.windowPosX, *settings.windowPosY};
         }
-        appRef.getWindow().applySavedGeometry(savedPosition, settings.windowMaximized);
+        appRef.getWindow().applySavedGeometry(savedPosition, settings.windowMaximized, settings.windowScale);
 
         // Push UI layer (initializes ImGui/ImPlot backends). Must be pushed (and therefore
         // onRender()'d) before ShellLayer: UILayer::onRender() calls ImGui::NewFrame(), which is
@@ -234,13 +261,15 @@ auto runApp() -> int
         // Push title bar layer (custom window chrome) -- skipped when native OS decorations are in
         // use instead (opt-in, native Wayland only; see #745), since the OS/compositor already draws
         // a title bar in that case and ShellLayer reserves no space for a second one.
+        App::TitleBarLayer* titleBar = nullptr;
         if (appRef.getWindow().isBorderless())
         {
-            appRef.pushLayer<App::TitleBarLayer>();
+            titleBar = &appRef.pushLayer<App::TitleBarLayer>();
         }
 
-        // Push shell layer (docking workspace with panels)
-        appRef.pushLayer<App::ShellLayer>();
+        // Push shell layer (docking workspace with panels). It hands the title bar the width its
+        // panels need, which the title bar folds into the window's minimum size (#1207).
+        appRef.pushLayer<App::ShellLayer>().setTitleBar(titleBar);
 
         // Dialog layers (modal overlays), opened by OpenAboutEvent, OpenSettingsEvent and
         // OpenElevationNoticeEvent. The elevation notice is shown at startup when running without

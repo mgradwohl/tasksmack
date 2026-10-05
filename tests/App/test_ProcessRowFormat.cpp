@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <locale>
 #include <string>
 #include <tuple>
 #include <unordered_map>
@@ -24,6 +25,7 @@ using ProcessRowFormat::formatAlignedPowerString;
 using ProcessRowFormat::getOrBuildRowFormatCache;
 using ProcessRowFormat::makeAlignedCellText;
 using ProcessRowFormat::RowFormatCache;
+using ProcessRowFormat::UNAVAILABLE_CELL_TEXT;
 
 /// Builds a minimal-but-representative snapshot: every field buildRowFormatCache() reads is set
 /// to a distinguishable, non-default value so a wrong field mapping (e.g. resident vs. virtualMem
@@ -81,6 +83,71 @@ TEST(ProcessRowFormatTest, FormatAlignedPercentStringAppendsUnitSuffix)
 // never disagree -- not at a rounding boundary such as 6.25, and not in the decimal separator.
 TEST(ProcessRowFormatTest, ProcessDetailsPercentMatchesTheTableEverywhere)
 {
+    for (int hundredths = 0; hundredths <= 10'000; hundredths += 5)
+    {
+        const double percent = hundredths / 100.0;
+        EXPECT_EQ(UI::Format::percentOneDecimal(percent), formatAlignedPercentString(percent)) << "at " << percent;
+    }
+}
+
+/// A decimal comma and no digit grouping, as in de_DE, without depending on an OS locale name.
+class CommaDecimalNumpunct : public std::numpunct<char>
+{
+  protected:
+    [[nodiscard]] char do_decimal_point() const override
+    {
+        return ',';
+    }
+};
+
+/// Makes a comma-decimal locale global for one test and restores the previous one after it.
+class ScopedCommaDecimalLocale
+{
+  public:
+    // std::locale takes ownership of the facet and deletes it with its last copy, which the analyzer
+    // does not see.
+    // NOLINTBEGIN(clang-analyzer-cplusplus.NewDeleteLeaks,cppcoreguidelines-owning-memory)
+    ScopedCommaDecimalLocale() : m_Previous(std::locale::global(std::locale(std::locale::classic(), new CommaDecimalNumpunct)))
+    {}
+    // NOLINTEND(clang-analyzer-cplusplus.NewDeleteLeaks,cppcoreguidelines-owning-memory)
+    ~ScopedCommaDecimalLocale()
+    {
+        std::locale::global(m_Previous);
+    }
+    ScopedCommaDecimalLocale(const ScopedCommaDecimalLocale&) = delete;
+    ScopedCommaDecimalLocale& operator=(const ScopedCommaDecimalLocale&) = delete;
+    ScopedCommaDecimalLocale(ScopedCommaDecimalLocale&&) = delete;
+    ScopedCommaDecimalLocale& operator=(ScopedCommaDecimalLocale&&) = delete;
+
+  private:
+    std::locale m_Previous;
+};
+
+// #1202: the table's aligned cells and the shared value formatters (tooltips, Process Details, chart
+// axes) print the same decimal separator in a comma-decimal locale, not "1.5 MB" beside "1,5 MB".
+TEST(ProcessRowFormatTest, TableCellsUseTheLocaleDecimalPointLikeTheValueFormatters)
+{
+    const ScopedCommaDecimalLocale commaLocale;
+    const double bytes = 1.5 * 1024.0 * 1024.0;
+
+    EXPECT_EQ(formatAlignedBytesString(bytes, UI::Format::BYTE_UNIT_MB), "1,5 MB");
+    EXPECT_EQ(UI::Format::formatBytes(bytes), "1,5 MB");
+    EXPECT_EQ(formatAlignedBytesPerSecString(bytes, UI::Format::BYTE_UNIT_MB), "1,5 MB/s");
+    EXPECT_EQ(UI::Format::formatBytesPerSec(bytes), "1,5 MB/s");
+
+    EXPECT_EQ(formatAlignedPercentString(0.6), "0,6%");
+    EXPECT_EQ(UI::Format::formatPercent(0.6), "0,6%");
+    EXPECT_EQ(UI::Format::percentOneDecimal(0.6), "0,6%");
+
+    EXPECT_EQ(formatAlignedPowerString(45.0), "45,0 W");
+    EXPECT_EQ(UI::Format::formatWatts(45.0), "45,0 W");
+    EXPECT_EQ(formatAlignedPowerString(0.0), "0,0 W");
+    EXPECT_EQ(UI::Format::formatPowerOrZero(0.0), "0,0 W");
+
+    // The allocating slow path agrees with the per-cell fast path.
+    const auto slow = UI::Format::splitBytesForAlignment(bytes, UI::Format::BYTE_UNIT_MB);
+    EXPECT_EQ(slow.wholePart + slow.decimalPart + slow.unitPart, "1,5 MB");
+
     for (int hundredths = 0; hundredths <= 10'000; hundredths += 5)
     {
         const double percent = hundredths / 100.0;
@@ -175,6 +242,25 @@ TEST(ProcessRowFormatTest, BuildRowFormatCacheUsesDashForZeroRateAndOptionalFiel
     EXPECT_EQ(fmt.pageFaults.text, "-");
     EXPECT_EQ(fmt.gdiObjects.text, "-"); // gdiObjectCount is std::nullopt
     EXPECT_EQ(fmt.gpuEngines, "-");      // gpuEngines is empty
+}
+
+TEST(ProcessRowFormatTest, UnreadableValuesShowNotAvailableRatherThanADash)
+{
+    // #1110: without root, another user's FD count, I/O and network rates can't be read. They showed
+    // "-", the same as a process that really had none; now they read "N/A".
+    ProcessSnapshot snap = makeSnapshot();
+    snap.handleCountAvailable = false;
+    snap.ioAvailable = false;
+    snap.networkAvailable = false;
+
+    const RowFormatCache fmt = buildRowFormatCache(snap);
+
+    EXPECT_EQ(fmt.handles.text, UNAVAILABLE_CELL_TEXT);
+    EXPECT_EQ(fmt.ioRead.text, UNAVAILABLE_CELL_TEXT);
+    EXPECT_EQ(fmt.ioWrite.text, UNAVAILABLE_CELL_TEXT);
+    EXPECT_EQ(fmt.netSent.text, UNAVAILABLE_CELL_TEXT);
+    EXPECT_EQ(fmt.netRecv.text, UNAVAILABLE_CELL_TEXT);
+    EXPECT_NE(UNAVAILABLE_CELL_TEXT, "-");
 }
 
 TEST(ProcessRowFormatTest, BuildRowFormatCacheStampsFreshAlignedCellTextAsUnmeasured)

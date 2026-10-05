@@ -129,22 +129,67 @@ TEST(ProcessActionHelpersTest, ActionVerbsAreLowercase)
 {
     EXPECT_STREQ(actionVerb(ProcessAction::Terminate), "terminate");
     EXPECT_STREQ(actionVerb(ProcessAction::Kill), "kill");
-    EXPECT_STREQ(actionVerb(ProcessAction::Stop), "stop");
+    EXPECT_STREQ(actionVerb(ProcessAction::Stop), "suspend"); // The Suspend button's word, not "stop" (#1203)
     EXPECT_STREQ(actionVerb(ProcessAction::Resume), "resume");
     EXPECT_STREQ(actionVerb(ProcessAction::None), "");
 }
 
+TEST(ProcessActionHelpersTest, ActionLabelsMatchTheButtons)
+{
+    EXPECT_STREQ(actionLabel(ProcessAction::Terminate), "Terminate");
+    EXPECT_STREQ(actionLabel(ProcessAction::Kill), "Kill");
+    EXPECT_STREQ(actionLabel(ProcessAction::Stop), "Suspend");
+    EXPECT_STREQ(actionLabel(ProcessAction::Resume), "Resume");
+    EXPECT_STREQ(actionLabel(ProcessAction::None), "");
+}
+
+TEST(ProcessActionHelpersTest, ConfirmTitleNamesTheActionAndTheProcess)
+{
+    EXPECT_EQ(confirmTitle(ProcessAction::Kill, "firefox", 1234), "Kill firefox (PID 1234)?");
+    EXPECT_EQ(confirmTitle(ProcessAction::Stop, "make", 7), "Suspend make (PID 7)?");
+}
+
+TEST(ProcessActionHelpersTest, ConfirmBodyStatesTheOutcome)
+{
+    EXPECT_EQ(confirmBody(ProcessAction::Kill, "firefox", 1234), "firefox (PID 1234) will end immediately, without saving its work.");
+    for (const auto action : {ProcessAction::Terminate, ProcessAction::Kill, ProcessAction::Stop, ProcessAction::Resume})
+    {
+        const auto body = confirmBody(action, "proc", 42);
+        EXPECT_TRUE(body.contains("proc (PID 42)")) << body;
+        EXPECT_FALSE(body.contains("Are you sure")) << body;
+    }
+}
+
+// The outcome is a flag, not a word to search for: neither a success whose text happens to
+// contain "Error"/"Failed" nor a failure without those words may be coloured wrongly (#1203).
 TEST(ProcessActionHelpersTest, FormatSuccessMessage)
 {
     const auto result = Platform::ProcessActionResult::ok();
-    EXPECT_EQ(formatActionResultMessage(ProcessAction::Terminate, 123, result), "Success: terminate sent to PID 123");
-    EXPECT_EQ(formatActionResultMessage(ProcessAction::Kill, 456, result), "Success: kill sent to PID 456");
+    const auto terminate = formatActionResultMessage(ProcessAction::Terminate, 123, result);
+    EXPECT_TRUE(terminate.ok);
+    EXPECT_EQ(terminate.text, "Terminate sent to PID 123");
+    const auto suspend = formatActionResultMessage(ProcessAction::Stop, 456, result);
+    EXPECT_TRUE(suspend.ok);
+    EXPECT_EQ(suspend.text, "Suspend sent to PID 456");
 }
 
 TEST(ProcessActionHelpersTest, FormatErrorMessage)
 {
     const auto result = Platform::ProcessActionResult::error("Process not found");
-    EXPECT_EQ(formatActionResultMessage(ProcessAction::Kill, 789, result), "Error: Process not found");
+    const auto message = formatActionResultMessage(ProcessAction::Kill, 789, result);
+    EXPECT_FALSE(message.ok);
+    EXPECT_EQ(message.text, "Could not kill PID 789: Process not found");
+}
+
+TEST(ProcessActionHelpersTest, FailureIsFlaggedWhateverItsWording)
+{
+    const auto message = formatActionResultMessage(ProcessAction::Kill, 5, Platform::ProcessActionResult::error("Access is denied."));
+    EXPECT_FALSE(message.ok);
+    EXPECT_FALSE(message.text.contains("Error"));
+    EXPECT_FALSE(message.empty());
+
+    const ActionResultMessage none{};
+    EXPECT_TRUE(none.empty());
 }
 
 TEST(ProcessActionHelpersTest, DispatchThenFormatEndToEnd)
@@ -158,7 +203,8 @@ TEST(ProcessActionHelpersTest, DispatchThenFormatEndToEnd)
     const auto message = formatActionResultMessage(ProcessAction::Stop, 321, result);
 
     EXPECT_EQ(mock.lastStopPid(), 321);
-    EXPECT_EQ(message, "Error: Operation not permitted");
+    EXPECT_FALSE(message.ok);
+    EXPECT_EQ(message.text, "Could not suspend PID 321: Operation not permitted");
 }
 
 } // namespace

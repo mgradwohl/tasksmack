@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <optional>
 #include <span>
@@ -31,6 +32,9 @@ namespace Core
 
 namespace
 {
+/// How far from 1 a pixel density may be and still mean window units are physical pixels (#1168).
+constexpr float PIXEL_DENSITY_EPSILON = 1e-3F;
+
 [[nodiscard]] int clampWindowDimension(const int value) noexcept
 {
     return std::clamp(value, WINDOW_MIN_DIMENSION, WINDOW_MAX_DIMENSION);
@@ -409,7 +413,12 @@ auto Window::getNormalGeometry() const -> std::optional<WindowGeometry::Rect>
     return WindowGeometry::selectNormalGeometry(isMaximized(), current, restoreRect);
 }
 
-void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, bool maximized)
+auto Window::getNormalGeometryScale() const -> float
+{
+    return WindowGeometry::selectNormalGeometryScale(isMaximized(), m_HasRestoreRect, m_RestoreScale, getUnitScale());
+}
+
+void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, bool maximized, std::optional<float> savedScale)
 {
     if (m_Handle == nullptr)
     {
@@ -418,6 +427,7 @@ void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, boo
 
     // Usable bounds of every connected display, and which of them is primary.
     std::vector<WindowGeometry::Rect> displays;
+    std::vector<SDL_DisplayID> displayIdsByIndex;
     std::size_t primaryIndex = 0;
     int displayCount = 0;
     SDL_DisplayID* displayIds = SDL_GetDisplays(&displayCount);
@@ -437,6 +447,7 @@ void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, boo
                 primaryIndex = displays.size();
             }
             displays.push_back(WindowGeometry::Rect{.x = bounds.x, .y = bounds.y, .width = bounds.w, .height = bounds.h});
+            displayIdsByIndex.push_back(id);
         }
         SDL_free(displayIds);
     }
@@ -462,12 +473,51 @@ void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, boo
         saved.y = currentY;
     }
 
+    // Convert the saved size to the scale of the display the window opens on, so it keeps its
+    // apparent size when that display (or its scale) differs from the one it was saved on (#1168).
+    if (savedScale.has_value())
+    {
+        float targetScale = getUnitScale();
+        // Where window units are physical pixels (Windows, X11: pixel density 1), a display's unit
+        // scale is its content scale, which can be read before the window is moved there. Elsewhere
+        // window units are logical and the window's own scale is the one to keep.
+        const float pixelDensity = SDL_GetWindowPixelDensity(m_Handle);
+        const auto target = WindowGeometry::targetDisplayIndex(saved, displays, primaryIndex, WindowGeometry::MIN_VISIBLE_EXTENT);
+        if (canPosition && target.has_value() && std::abs(pixelDensity - 1.0F) < PIXEL_DENSITY_EPSILON)
+        {
+            const float contentScale = SDL_GetDisplayContentScale(displayIdsByIndex[*target]);
+            if (WindowGeometry::isUsableWindowScale(contentScale))
+            {
+                targetScale = contentScale;
+            }
+        }
+        const auto [scaledWidth, scaledHeight] = WindowGeometry::rescaleWindowSize(saved.width, saved.height, savedScale, targetScale);
+        if (scaledWidth != saved.width || scaledHeight != saved.height)
+        {
+            spdlog::info("Window::applySavedGeometry: saved size {}x{} at scale {:.2f} is {}x{} at scale {:.2f}",
+                         saved.width,
+                         saved.height,
+                         *savedScale,
+                         scaledWidth,
+                         scaledHeight,
+                         targetScale);
+        }
+        saved.width = scaledWidth;
+        saved.height = scaledHeight;
+    }
+
     const WindowGeometry::Rect fitted =
         WindowGeometry::fitRectToDisplays(saved, displays, primaryIndex, WindowGeometry::MIN_VISIBLE_EXTENT);
+    if (fitted.width != saved.width || fitted.height != saved.height)
+    {
+        spdlog::info("Window::applySavedGeometry: saved size {}x{} shrunk to {}x{} to fit the display",
+                     saved.width,
+                     saved.height,
+                     fitted.width,
+                     fitted.height);
+    }
     if (fitted.width != width || fitted.height != height)
     {
-        spdlog::info(
-            "Window::applySavedGeometry: saved size {}x{} shrunk to {}x{} to fit the display", width, height, fitted.width, fitted.height);
         setSize(fitted.width, fitted.height);
     }
     if (canPosition)
@@ -492,6 +542,32 @@ void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, boo
         SDL_SyncWindow(m_Handle);
         maximize();
     }
+}
+
+auto Window::getUnitScale() const noexcept -> float
+{
+    if (m_Handle == nullptr)
+    {
+        return 0.0F;
+    }
+    const float scale = WindowGeometry::windowUnitScale(SDL_GetWindowDisplayScale(m_Handle), SDL_GetWindowPixelDensity(m_Handle));
+    return WindowGeometry::isUsableWindowScale(scale) ? scale : 0.0F;
+}
+
+auto Window::getDisplayId() const noexcept -> SDL_DisplayID
+{
+    return m_Handle != nullptr ? SDL_GetDisplayForWindow(m_Handle) : 0;
+}
+
+auto Window::getUsableDisplaySize() const -> std::optional<std::pair<int, int>>
+{
+    const SDL_DisplayID displayID = getDisplayId();
+    SDL_Rect usableBounds{};
+    if (displayID == 0 || !SDL_GetDisplayUsableBounds(displayID, &usableBounds) || usableBounds.w <= 0 || usableBounds.h <= 0)
+    {
+        return std::nullopt;
+    }
+    return std::pair{usableBounds.w, usableBounds.h};
 }
 
 bool Window::isMaximized() const
@@ -577,6 +653,39 @@ void Window::maximize()
     }
 }
 
+void Window::adoptSystemMaximize()
+{
+    if (m_Handle == nullptr)
+    {
+        return;
+    }
+
+    // Read the live flags, not the event: a queued MAXIMIZED can be handled after a later OS restore
+    // or minimize, which adopting it would undo (#1208).
+    const SDL_WindowFlags flags = SDL_GetWindowFlags(m_Handle);
+    const bool borderless = (flags & SDL_WINDOW_BORDERLESS) != 0;
+    const bool stillMaximized = (flags & SDL_WINDOW_MAXIMIZED) != 0;
+    const bool minimized = (flags & SDL_WINDOW_MINIMIZED) != 0;
+    const bool clientSideBackend = VideoBackend::supportsClientSideMaximize();
+    SDL_Rect usableBounds{};
+    const SDL_DisplayID displayID = SDL_GetDisplayForWindow(m_Handle);
+    const bool usableBoundsKnown = displayID != 0 && SDL_GetDisplayUsableBounds(displayID, &usableBounds);
+    if (!WindowGeometry::shouldAdoptSystemMaximize(borderless, clientSideBackend, usableBoundsKnown, stillMaximized, minimized))
+    {
+        return;
+    }
+
+    // Undo the OS maximize first, so the window is back at its normal rectangle: that is what
+    // maximize() records as the restore target (when not already maximized client-side), and it
+    // clears the OS's maximized state so a later restore() or SDL_SetWindowSize() is not fighting
+    // it. Waiting for the restore keeps the recorded rectangle the real one on asynchronous
+    // windowing systems. Once per OS maximize, never per frame.
+    spdlog::debug("Window::adoptSystemMaximize: replacing an OS maximize with the client-side one (#1208)");
+    SDL_RestoreWindow(m_Handle);
+    SDL_SyncWindow(m_Handle);
+    maximize();
+}
+
 void Window::rememberRestoreRect()
 {
     // Only record the rectangle when not already maximized: a second maximize() must not replace
@@ -588,6 +697,9 @@ void Window::rememberRestoreRect()
     SDL_GetWindowPosition(m_Handle, &m_RestoreX, &m_RestoreY);
     SDL_GetWindowSize(m_Handle, &m_RestoreWidth, &m_RestoreHeight);
     m_HasRestoreRect = m_RestoreWidth > 0 && m_RestoreHeight > 0;
+    // The scale this rectangle is in, so a later save tags it correctly even if the maximized window
+    // has since moved to another display or the scale changed (#1168).
+    m_RestoreScale = getUnitScale();
 }
 
 void Window::restore()
@@ -661,6 +773,40 @@ bool Window::isMinimized() const noexcept
         return false;
     }
     return (SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_MINIMIZED) != 0;
+}
+
+bool Window::isOccluded() const noexcept
+{
+    if (m_Handle == nullptr)
+    {
+        return false;
+    }
+    // SDL sets the flag on SDL_EVENT_WINDOW_OCCLUDED and clears it on SDL_EVENT_WINDOW_EXPOSED.
+    return (SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_OCCLUDED) != 0;
+}
+
+double Window::getDisplayRefreshRate() const noexcept
+{
+    if (m_Handle == nullptr)
+    {
+        return 0.0;
+    }
+    const SDL_DisplayID display = SDL_GetDisplayForWindow(m_Handle);
+    if (display == 0)
+    {
+        return 0.0;
+    }
+    const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(display);
+    if (mode == nullptr)
+    {
+        return 0.0;
+    }
+    // The exact rational rate when SDL has it (59.94 Hz is 60000/1001), else the rounded float.
+    if (mode->refresh_rate_numerator > 0 && mode->refresh_rate_denominator > 0)
+    {
+        return static_cast<double>(mode->refresh_rate_numerator) / static_cast<double>(mode->refresh_rate_denominator);
+    }
+    return static_cast<double>(mode->refresh_rate);
 }
 
 void Window::setHitTestCallback(SDL_HitTest callback, void* callbackData) const

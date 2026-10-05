@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <tuple>
 
 #include <unistd.h>
 
@@ -115,6 +116,22 @@ class DRMGPUProbeUnitTest : public ::testing::Test
         std::filesystem::create_symlink("/nonexistent/drivers/" + driver, driverLink);
 
         return deviceDir;
+    }
+
+    /// Like makeCard(), but with cardName/device a symlink to a PCI device directory named by its
+    /// address, as in real sysfs (/sys/class/drm/card0/device -> .../0000:00:02.0).
+    /// @returns path to the PCI device directory
+    [[nodiscard]] std::filesystem::path
+    makeCardAt(const std::string& cardName, const std::string& pciAddress, const std::string& driver = "i915") const
+    {
+        const auto pciDir = m_SysRoot / "pci" / pciAddress;
+        std::filesystem::create_directories(pciDir);
+        std::filesystem::create_directories(m_SysRoot / cardName);
+        std::filesystem::create_directory_symlink(pciDir, m_SysRoot / cardName / "device");
+        std::filesystem::create_symlink("/nonexistent/drivers/" + driver, pciDir / "driver");
+        writeFile(pciDir / "vendor", "0x8086");
+        writeFile(pciDir / "class", "0x030000");
+        return pciDir;
     }
 
     static void writeFile(const std::filesystem::path& path, const std::string& content)
@@ -802,6 +819,153 @@ TEST_F(DRMGPUProbeUnitTest, MalformedFrequencyFile_TreatedAsZero)
     ASSERT_EQ(counters.size(), 1U);
     // Malformed value → treated as zero → field left at 0
     EXPECT_EQ(counters[0].gpuClockMHz, 0U);
+}
+
+// =============================================================================
+// Integrated/discrete by PCI bus (#1113)
+// =============================================================================
+
+// i915 exposes no dedicated-memory file, so an Arc on i915 (a VGA controller behind a PCIe switch)
+// used to classify as integrated. Its non-zero bus says it is discrete.
+TEST_F(DRMGPUProbeUnitTest, IntelVGA_OnNonZeroBus_NoVramFile_IsDiscrete)
+{
+    std::ignore = makeCardAt("card1", "0000:03:00.0", "i915");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    EXPECT_EQ(gpus[0].id, "0000:03:00.0");
+    EXPECT_FALSE(gpus[0].isIntegrated);
+}
+
+TEST_F(DRMGPUProbeUnitTest, IntelVGA_OnBusZero_IsIntegrated)
+{
+    std::ignore = makeCardAt("card0", "0000:00:02.0", "i915");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    EXPECT_TRUE(gpus[0].isIntegrated);
+}
+
+// An iGPU that isn't the boot VGA device reports the Display-controller class, still on bus 0.
+TEST_F(DRMGPUProbeUnitTest, IntelDisplayController_OnBusZero_IsIntegrated)
+{
+    const auto pciDir = makeCardAt("card0", "0000:00:02.0", "xe");
+    writeFile(pciDir / "class", "0x038000");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    EXPECT_TRUE(gpus[0].isIntegrated);
+}
+
+// =============================================================================
+// Per-adapter sensor capabilities (#1112) and memory availability (#1115)
+// =============================================================================
+
+// An i915 iGPU has no hwmon: no temperature, and nothing the DRM probe can't read (power, fan) is
+// claimed for it, so the OR'd Linux capabilities don't draw NVML's series for it.
+TEST_F(DRMGPUProbeUnitTest, SensorCapabilities_FollowTheCardsFiles)
+{
+    const auto deviceDir = makeCard("card0", "i915");
+    writeFile(deviceDir / "vendor", "0x8086");
+    writeFile(deviceDir / "class", "0x030000");
+    writeFile(m_SysRoot / "card0" / "gt_cur_freq_mhz", "1100");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    ASSERT_TRUE(gpus[0].sensorCapabilities.has_value());
+    const auto sensors = gpus[0].sensorCapabilities.value_or(GPUCapabilities{});
+    EXPECT_FALSE(sensors.hasTemperature);
+    EXPECT_TRUE(sensors.hasClockSpeeds);
+    EXPECT_FALSE(sensors.hasPowerMetrics);
+    EXPECT_FALSE(sensors.hasFanSpeed);
+    EXPECT_FALSE(sensors.hasHotspotTemp);
+}
+
+TEST_F(DRMGPUProbeUnitTest, SensorCapabilities_HwmonTemperatureIsReported)
+{
+    const auto deviceDir = makeCard("card0", "i915");
+    writeFile(deviceDir / "vendor", "0x8086");
+    writeFile(deviceDir / "class", "0x030000");
+    std::filesystem::create_directories(deviceDir / "hwmon" / "hwmon3");
+    writeFile(deviceDir / "hwmon" / "hwmon3" / "temp1_input", "45000");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    ASSERT_TRUE(gpus[0].sensorCapabilities.has_value());
+    EXPECT_TRUE(gpus[0].sensorCapabilities.value_or(GPUCapabilities{}).hasTemperature);
+    EXPECT_FALSE(gpus[0].sensorCapabilities.value_or(GPUCapabilities{}).hasClockSpeeds);
+}
+
+// An iGPU has no dedicated memory to read: its memory is unavailable, not a real-looking 0%.
+TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_NoVramFiles_MemoryUnavailable)
+{
+    const auto deviceDir = makeCard("card0", "i915");
+    writeFile(deviceDir / "vendor", "0x8086");
+    writeFile(deviceDir / "class", "0x030000");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_FALSE(counters[0].memoryAvailable);
+    EXPECT_FALSE(counters[0].suspended);
+}
+
+// =============================================================================
+// Runtime PM (#1117)
+// =============================================================================
+
+TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_RuntimeSuspendedCard_IsNotRead)
+{
+    const auto pciDir = makeCardAt("card1", "0000:03:00.0", "i915");
+    std::filesystem::create_directories(pciDir / "hwmon" / "hwmon2");
+    writeFile(pciDir / "hwmon" / "hwmon2" / "temp1_input", "50000");
+    writeFile(m_SysRoot / "card1" / "gt_cur_freq_mhz", "300");
+    std::filesystem::create_directories(pciDir / "power");
+    writeFile(pciDir / "power" / "runtime_status", "suspended");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_TRUE(counters[0].suspended);
+    EXPECT_FALSE(counters[0].temperatureAvailable);
+    EXPECT_FALSE(counters[0].gpuClockAvailable);
+    EXPECT_EQ(counters[0].temperatureC, 0);
+
+    writeFile(pciDir / "power" / "runtime_status", "active");
+    counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_FALSE(counters[0].suspended);
+    EXPECT_TRUE(counters[0].temperatureAvailable);
+    EXPECT_EQ(counters[0].temperatureC, 50);
+    EXPECT_EQ(counters[0].gpuClockMHz, 300U);
+}
+
+TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_SuspendedCardKeepsItsVramCapacity)
+{
+    // #1272 review: a sleeping dGPU isn't read, but its VRAM capacity is still known; reporting 0
+    // would drop the header's capacity label and the Overview VRAM total.
+    // The DRM probe's only VRAM source is mem_info_vram_total (xe reports VRAM via an ioctl, #1283).
+    const auto pciDir = makeCardAt("card1", "0000:03:00.0", "xe");
+    writeFile(pciDir / "mem_info_vram_total", "17179869184"); // 16 GiB
+    std::filesystem::create_directories(pciDir / "power");
+    writeFile(pciDir / "power" / "runtime_status", "active");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_EQ(counters[0].memoryTotalBytes, 17179869184ULL);
+
+    writeFile(pciDir / "power" / "runtime_status", "suspended");
+    counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_TRUE(counters[0].suspended);
+    EXPECT_EQ(counters[0].memoryTotalBytes, 17179869184ULL);
+    EXPECT_FALSE(counters[0].memoryAvailable); // used bytes aren't read while it sleeps
 }
 
 } // namespace

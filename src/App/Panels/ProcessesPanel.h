@@ -95,12 +95,14 @@ class ProcessesPanel : public Panel
     /// Always reflects the latest published data; returns std::nullopt if not found.
     [[nodiscard]] std::optional<Domain::ProcessSnapshot> findSnapshot(std::int32_t pid) const;
 
-    /// Same as findSnapshot(), but also returns the exact publication version the snapshot was
-    /// read under, atomically. Prefer this over pairing findSnapshot() with a separate
-    /// publication-version read (e.g. Domain::ProcessModel::snapshotVersion()) when the caller
-    /// needs to gate behavior on "is this new data" -- see
-    /// Domain::ProcessModel::findSnapshotWithVersion()'s doc comment.
-    [[nodiscard]] std::optional<Domain::ProcessModel::SnapshotLookupResult> findSnapshotWithVersion(std::int32_t pid) const;
+    /// Have the process model keep a sample of process @p pid from every generation it publishes
+    /// (Domain::ProcessModel::watchProcess()). pid <= 0 stops watching.
+    void watchProcess(std::int32_t pid);
+
+    /// The watched process's samples newer than @p lastSeenVersion, oldest first, appended to
+    /// @p outSamples; see Domain::ProcessModel::watchedSamplesSince(). Like findSnapshot(), this
+    /// bypasses the render cache, so it follows every publish whichever tab is showing.
+    [[nodiscard]] bool watchedSamplesSince(std::uint64_t lastSeenVersion, std::vector<Domain::ProcessSample>& outSamples) const;
 
     /// Get column settings (for persistence)
     [[nodiscard]] const ProcessColumnSettings& columnSettings() const
@@ -138,6 +140,12 @@ class ProcessesPanel : public Panel
     /// Returns true if the process probe reported reduced privileges at startup.
     /// Convenience accessor so ShellLayer does not need to include Domain/ProcessModel.h.
     [[nodiscard]] bool hasReducedPrivileges() const;
+
+    /// Narrowest the toolbar row (filter, clear button, process count, tree-view toggle) can be
+    /// without overlapping, at the current font and style, for the window's content minimum (#1207).
+    /// Measured with a worst-case process count so it does not change as processes come and go.
+    /// Needs a frame.
+    [[nodiscard]] static float measureToolbarMinimumWidth();
 
     /// What the process probe can report (all false without a model). Fixed for the probe's
     /// lifetime, so safe to read from the UI thread at any time.

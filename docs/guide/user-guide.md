@@ -71,22 +71,26 @@ See [CONTRIBUTING.md](../../CONTRIBUTING.md#cpu-compatibility) for build instruc
 
 ### Process Table
 
-The process table is the primary view. It lists all running processes with htop-inspired columns:
+The process table is the primary view. It lists all running processes with these columns:
 
-- **CPU%** — percentage of total CPU time consumed since the last sample
-- **MEM%** — percentage of physical RAM used
-- **RES / VIRT / SHR** — resident, virtual, and shared memory sizes
-- **TIME+** — cumulative CPU time
+- **State** — what the process is doing (Running, Sleeping, and so on)
+- **CPU %** — percentage of total CPU time consumed since the last sample
+- **Mem %** — percentage of physical RAM used
+- **Memory / Virtual / Shared / Peak Mem** — resident, virtual, shared, and peak resident memory sizes
+- **CPU Time** — cumulative CPU time
 - **PPID** — parent process ID
-- **NI** — nice/priority value
+- **Priority** — scheduling priority (from the nice value)
 - **Threads** — thread count per process
+- **Page Faults** — cumulative page faults
 - **Command** — full command line
 - **I/O rates** — read and write bytes per second
 - **Network rates** — sent and received bytes per second when attribution is available
-- **GPU** — utilization and memory when the active backend supports per-process data
+- **GPU %, GPU Mem, GPU Engine, GPU** — utilization, memory, engines, and which GPU, when the active backend supports per-process data
 - **Affinity** — allowed CPU cores
 
 Column visibility is toggled via the column header context menu and persisted across sessions.
+
+A cell reading **-** is a value of 0 (or one that doesn't apply). A cell reading **N/A** is a value TaskSmack could not read for that process: on Linux, without root, the FD count, I/O rates and network rates of other users' processes. Process Details shows the same values as N/A, with a gap in their charts, and the system totals leave them out. Sorting puts N/A below every reading.
 
 **Sorting** is available on any column with a single click. Click again to reverse order.
 
@@ -105,7 +109,7 @@ The System Metrics panel displays real-time and historical charts for:
 - **Swap** — swap usage percentage history
 - **Storage** — aggregate and per-device throughput
 - **Network** — aggregate and per-interface throughput, totals, status, and link speed
-- **GPU** — device utilization, memory, temperature, power, clocks, and engine data when available
+- **GPU** — device utilization, memory, temperature, power, clocks, and engine data when available. Each GPU shows only the sensors it reports, so an integrated GPU beside a discrete one doesn't get the discrete GPU's power or fan charts. On Linux, a GPU that has gone to sleep to save power (common for the discrete GPU on hybrid laptops) is labelled **(Sleeping)** and is not sampled until it wakes, so TaskSmack's periodic updates don't keep it awake; its readings show N/A meanwhile. Detecting GPUs at startup can still wake it once. A GPU that is asleep when TaskSmack starts shows the sensor charts its driver supports in general, rather than only its own, for the rest of the session. The Overview header's **VRAM** figure counts discrete GPUs only, since an integrated GPU's memory is system RAM
 - **Battery** — charge, power flow, remaining time, and health when present
 - **Load average** (Linux only) — 1, 5, and 15-minute load averages
 - **I/O wait** (Linux only) — percentage of CPU time spent waiting for I/O
@@ -122,7 +126,7 @@ The System Overview and process views provide three levels of visibility:
 | Per-interface | Individual interface throughput with status and link speed |
 | Per-process | Bytes sent and received attributed to each process |
 
-An interface selector lets you focus on a specific adapter. On Linux the Total leaves out virtual interfaces (bridges such as `docker0`, `veth` pairs, VPN tunnels such as `wg0` or `tun0`, VLANs), because their traffic also crosses a hardware interface and counting both doubled it. They remain in the selector, marked "virtual, not in Total". If there is no hardware interface at all, as inside a container, every interface counts. Windows doesn't classify interfaces this way yet.
+An interface selector lets you focus on a specific adapter. The Total leaves out virtual interfaces (on Linux, bridges such as `docker0`, `veth` pairs, VPN tunnels such as `wg0` or `tun0`, VLANs; on Windows, adapters Windows doesn't report as hardware, such as VPN adapters, WSL `vEthernet`, and WAN Miniports), because their traffic also crosses a hardware interface and counting both doubled it. They remain in the selector, marked "virtual, not in Total". If there is no hardware interface at all, as inside a container, every interface counts.
 
 Per-process network rates are the bytes the process's TCP connections transferred between two readings, divided by the time between them. On Linux the readings are cached (`socket_stats_cache_ttl_ms`, 500 ms by default), and a refresh that reuses one shows the last rate (see the FAQ). UDP traffic, including QUIC/HTTP3, video calls, games, and DNS, is not attributed to processes on either platform. A browser streaming over HTTP/3 can show close to 0 B/s while the interface is busy.
 
@@ -231,3 +235,22 @@ If the saved position is no longer on any connected display (a monitor was unplu
 Dialogs (Settings, About and the privilege notice) are kept inside the main window. When the font size or display scaling makes the Settings dialog taller than the window, its options scroll and the Cancel and Apply buttons stay visible; Escape also cancels it.
 
 To reset all layout and theme settings, delete the `config.toml` file in the user config directory. TaskSmack will recreate it with defaults on the next launch.
+
+### Advanced settings (config.toml only)
+
+These settings aren't in the Settings dialog. Edit them in `config.toml` while TaskSmack is closed; they are read at startup. Out-of-range values are clamped to the range shown.
+
+| Key | Default | Range | Effect |
+|-----|---------|-------|--------|
+| `[metrics] max_sane_rate_bps` | 12500000000 (100 Gbps) | 1e9–1e11 bytes/s | A per-process network rate above this is taken for a bad reading and shown as 0. Raise it for links faster than 100 Gbps. |
+| `[ui] chart_smooth_factor` | 0.5 | 0.0–0.95 | How slowly live values and the bars beside the charts follow each new sample, as a fraction of the refresh interval. Lower follows changes faster; 0 barely eases. |
+| `[ui] chart_tau_ms_min` | 20 | 5–100 ms | The shortest easing time, used at fast refresh intervals. |
+| `[ui] chart_tau_ms_max` | 400 | 100–2000 ms | The longest easing time, used at slow refresh intervals. |
+| `[ui] chart_anti_aliasing` | true | true/false | Smooth chart line edges. Turn it off to save CPU/GPU time on integrated graphics. |
+| `[sampling] socket_stats_cache_ttl_ms` | 500 | 0–5000 ms | Linux only. How long per-process network readings are cached. |
+
+Older versions also wrote `[metrics] min_time_for_rate_seconds`, `[metrics] integrated_gpu_vram_threshold_mb`, `[ui] progress_color_low_threshold` and `[ui] progress_color_high_threshold`. None of them ever had an effect, and TaskSmack now removes them from `config.toml` the next time it saves. Network rates are measured over each interval, so no start-up delay is needed. Integrated and discrete GPUs are told apart by vendor (Windows) or PCI bus (Linux), not by a VRAM threshold. TaskSmack has no threshold-coloured progress bars.
+
+### Running TaskSmack twice
+
+Only one TaskSmack runs at a time for each config directory. Starting a second one shows "TaskSmack is already running", and the second one exits. Otherwise two copies saving the same `config.toml` could overwrite each other's settings. The check uses a `tasksmack.lock` file next to `config.toml`. The operating system releases the lock however TaskSmack exits, so you never need to delete the file. A Windows build and a WSL build on the same machine use different config directories, so both can run at once.

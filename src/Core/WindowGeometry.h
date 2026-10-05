@@ -8,11 +8,15 @@
 // Every rectangle is in SDL's logical screen coordinates (the units of SDL_GetWindowPosition,
 // SDL_GetWindowSize and SDL_GetDisplayUsableBounds), never physical pixels.
 
+#include "Core/WindowConstants.h"
+
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <utility>
 
 namespace Core::WindowGeometry
 {
@@ -60,6 +64,53 @@ inline constexpr int MIN_VISIBLE_EXTENT = 64;
     return std::nullopt;
 }
 
+/// The window scale that goes with selectNormalGeometry()'s rectangle (#1168): the live scale when
+/// not maximized, and when maximized the scale captured with the restore rectangle -- not the live
+/// one, which measures the maximized window and may belong to another display or a later scale
+/// setting. 0 (unknown) when maximized with no restore rectangle or no scale captured with it, so
+/// the size is saved without a scale and restored as saved.
+[[nodiscard]] constexpr auto selectNormalGeometryScale(bool maximized, bool hasRestoreRect, float restoreScale, float liveScale) noexcept
+    -> float
+{
+    if (!maximized)
+    {
+        return liveScale;
+    }
+    return hasRestoreRect ? restoreScale : 0.0F;
+}
+
+/// Whether an OS-initiated maximize (SDL_EVENT_WINDOW_MAXIMIZED) should be replaced by the window's
+/// own client-side maximize, the one the title-bar button uses (#1208).
+///
+/// A borderless window has no OS frame, so on the backends that maximize it client-side (Windows,
+/// X11, XWayland) the OS's own maximize is wrong: on Windows, SDL answers WM_GETMINMAXINFO for a
+/// borderless resizable window from the primary screen's metrics, which left the window a quarter
+/// of a 175 % display with its title-bar buttons clipped. Window::isMaximized() also reads only the
+/// tracked flag there, so the OS maximize went unnoticed: the title bar still offered Maximize,
+/// which would then have recorded the OS-maximized rectangle as the restore target. Undoing it and
+/// filling the current display's usable bounds instead fixes both. A native Wayland compositor
+/// maximizes the borderless window correctly and Window tracks it through SDL_WINDOW_MAXIMIZED, and
+/// a window with an OS frame is the OS's to maximize, so neither is adopted.
+///
+/// @param borderless         Whether the window is borderless (custom title bar).
+/// @param clientSideBackend  Whether the backend maximizes borderless windows client-side
+///                           (VideoBackend::supportsClientSideMaximize()).
+/// @param usableBoundsKnown  Whether the current display's usable bounds can be read. Without them
+///                           the client-side maximize itself falls back to SDL_MaximizeWindow(),
+///                           whose own MAXIMIZED event must not be adopted again, or the two would
+///                           undo each other on every event.
+/// @param stillMaximized     Whether SDL_WINDOW_MAXIMIZED is still set when the event is handled.
+/// @param minimized          Whether SDL_WINDOW_MINIMIZED is set when the event is handled. SDL
+///                           events are queued, so the MAXIMIZED notification can be drained after
+///                           a later OS restore or minimize already changed the window; adopting it
+///                           then would undo that newer action, so only a window that is still
+///                           maximized and not minimized is adopted (#1208).
+[[nodiscard]] constexpr bool
+shouldAdoptSystemMaximize(bool borderless, bool clientSideBackend, bool usableBoundsKnown, bool stillMaximized, bool minimized) noexcept
+{
+    return borderless && clientSideBackend && usableBoundsKnown && stillMaximized && !minimized;
+}
+
 /// Length of the overlap of the half-open spans [aStart, aStart + aLength) and
 /// [bStart, bStart + bLength), or 0 when they do not overlap. Computed in 64 bits so extreme saved
 /// coordinates cannot overflow.
@@ -87,6 +138,105 @@ inline constexpr int MIN_VISIBLE_EXTENT = 64;
     return topEdgeOnDisplay && spanOverlap(rect.x, rect.width, display.x, display.width) >= neededWidth;
 }
 
+/// The display a window at @p rect is reachable on (isReachableOn); among several, the one holding
+/// most of it. std::nullopt when it is reachable on none.
+[[nodiscard]] constexpr auto reachableDisplayIndex(const Rect& rect, std::span<const Rect> displays, int minVisible)
+    -> std::optional<std::size_t>
+{
+    std::optional<std::size_t> best;
+    std::int64_t bestArea = -1;
+    for (std::size_t i = 0; i < displays.size(); ++i)
+    {
+        const Rect& display = displays[i];
+        if (!isReachableOn(rect, display, minVisible))
+        {
+            continue;
+        }
+        const std::int64_t area =
+            spanOverlap(rect.x, rect.width, display.x, display.width) * spanOverlap(rect.y, rect.height, display.y, display.height);
+        if (area > bestArea)
+        {
+            bestArea = area;
+            best = i;
+        }
+    }
+    return best;
+}
+
+/// The display fitRectToDisplays() puts a window at @p saved on: the one it is reachable on, or else
+/// the primary display (out of range means the first). std::nullopt only when no display is known.
+[[nodiscard]] constexpr auto targetDisplayIndex(const Rect& saved, std::span<const Rect> displays, std::size_t primaryIndex, int minVisible)
+    -> std::optional<std::size_t>
+{
+    if (displays.empty())
+    {
+        return std::nullopt;
+    }
+    if (const auto reachable = reachableDisplayIndex(saved, displays, minVisible); reachable.has_value())
+    {
+        return reachable;
+    }
+    return primaryIndex < displays.size() ? primaryIndex : 0;
+}
+
+/// Largest window scale (window units per 96-DPI point) accepted from a saved config. Windows tops
+/// out at 500 %; anything far beyond that is a corrupt value, not a display.
+inline constexpr float MAX_WINDOW_SCALE = 16.0F;
+
+/// Whether @p scale is a usable window scale: positive, finite and not absurd. False for NaN.
+[[nodiscard]] constexpr bool isUsableWindowScale(float scale) noexcept
+{
+    return scale > 0.0F && scale <= MAX_WINDOW_SCALE;
+}
+
+/// The UI scale in window units: SDL's display scale divided by the window's pixel density.
+///
+/// On Windows and X11 window coordinates are physical pixels (density 1), so this is the display's
+/// scale (1.75 at 175 %). On native Wayland and macOS the window is created with
+/// SDL_WINDOW_HIGH_PIXEL_DENSITY, window coordinates are already logical and the pixel density
+/// carries the scale, so this is 1 (#1096). A density that is not a usable number (0 on failure,
+/// NaN) falls back to the display scale alone. UI::windowUnitScale() forwards here.
+[[nodiscard]] inline float windowUnitScale(float displayScale, float pixelDensity) noexcept
+{
+    if (!std::isfinite(pixelDensity) || pixelDensity <= 0.0F)
+    {
+        return displayScale;
+    }
+    return displayScale / pixelDensity;
+}
+
+/// Convert a saved window size to window units on the display the window is restored to (#1168).
+///
+/// On Windows the window's size is in physical pixels, so a 1280 x 720 window saved on a 100 %
+/// display looked half as big when reopened on a 200 % one, and a size saved at 200 % reopened
+/// double-sized at 100 %. The size is therefore saved together with the window scale it was
+/// measured at, and scaled by @p targetScale / @p savedScale on restore so it keeps its apparent
+/// size. A config written before the scale was saved has no @p savedScale and is restored as it
+/// was, unchanged; so is any size when either scale is unusable. The result is kept within
+/// [WINDOW_MIN_DIMENSION, WINDOW_MAX_DIMENSION].
+///
+/// @param width        Saved width, in window units at @p savedScale.
+/// @param height       Saved height, in window units at @p savedScale.
+/// @param savedScale   Window scale the size was saved at (windowUnitScale()), if known.
+/// @param targetScale  Window scale of the display the window is restored to.
+/// @return {width, height} in window units at @p targetScale.
+[[nodiscard]] constexpr auto rescaleWindowSize(int width, int height, std::optional<float> savedScale, float targetScale)
+    -> std::pair<int, int>
+{
+    if (!savedScale.has_value() || !isUsableWindowScale(*savedScale) || !isUsableWindowScale(targetScale))
+    {
+        return {width, height};
+    }
+    const double ratio = static_cast<double>(targetScale) / static_cast<double>(*savedScale);
+    const auto convert = [ratio](int value)
+    {
+        const double scaled = (static_cast<double>(value) * ratio) + 0.5;
+        const double clamped = std::clamp(scaled, static_cast<double>(WINDOW_MIN_DIMENSION), static_cast<double>(WINDOW_MAX_DIMENSION));
+        return static_cast<int>(clamped);
+    };
+    return {convert(width), convert(height)};
+}
+
 /// Fit a restored window rectangle to the connected displays (#1128).
 ///
 /// A saved position can belong to a monitor that is no longer connected, and the borderless window
@@ -108,27 +258,7 @@ inline constexpr int MIN_VISIBLE_EXTENT = 64;
         return saved;
     }
 
-    // Prefer a display the saved rectangle is already reachable on; among several, the one holding
-    // most of it.
-    std::optional<std::size_t> best;
-    std::int64_t bestArea = -1;
-    for (std::size_t i = 0; i < displays.size(); ++i)
-    {
-        const Rect& display = displays[i];
-        if (!isReachableOn(saved, display, minVisible))
-        {
-            continue;
-        }
-        const std::int64_t area =
-            spanOverlap(saved.x, saved.width, display.x, display.width) * spanOverlap(saved.y, saved.height, display.y, display.height);
-        if (area > bestArea)
-        {
-            bestArea = area;
-            best = i;
-        }
-    }
-
-    if (best.has_value())
+    if (const std::optional<std::size_t> best = reachableDisplayIndex(saved, displays, minVisible); best.has_value())
     {
         const Rect& display = displays[*best];
         Rect fitted = saved;

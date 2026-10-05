@@ -4,6 +4,7 @@
 #include "Domain/GPUSnapshot.h"
 #include "Platform/GPUTypes.h"
 #include "UI/FillPlotLayout.h"
+#include "UI/Format.h"
 
 #include <algorithm>
 #include <chrono>
@@ -13,7 +14,9 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
+#include <vector>
 
 namespace App::GpuSection
 {
@@ -109,6 +112,88 @@ capabilitiesForGpu(Platform::GPUCapabilities caps, const std::optional<Platform:
         caps.hasEncoderDecoder = caps.hasEncoderDecoder && adapterSensors->hasEncoderDecoder;
     }
     return caps;
+}
+
+/// One GPU the tab draws: its enumeration entry and its latest snapshot, either of which may be
+/// missing. gpuId keys the GPU's ImGui IDs and points into the publication it was built from.
+struct GpuDrawEntry
+{
+    std::string_view gpuId;
+    const Platform::GPUInfo* info = nullptr;       ///< Null: the read returned a GPU enumeration did not list.
+    const Domain::GPUSnapshot* snapshot = nullptr; ///< Null: no reading for this GPU this sample.
+};
+
+/// The GPUs the tab draws, in order: every enumerated GPU in enumeration order, whether or not the
+/// latest read returned it, then any snapshot for a GPU enumeration did not list (all of them, if
+/// enumeration failed), in the published order. A GPU missing from one read keeps its slot and its
+/// UI state instead of vanishing and shifting the GPUs after it, whose state used to be keyed by
+/// position (#1163).
+[[nodiscard]] inline std::vector<GpuDrawEntry> gpuDrawList(const Domain::GPUPublication& publication)
+{
+    std::vector<GpuDrawEntry> entries;
+    entries.reserve(publication.gpuInfo.size() + publication.snapshots.size());
+    const auto listed = [&entries](std::string_view gpuId)
+    {
+        return std::ranges::any_of(entries, [gpuId](const GpuDrawEntry& entry) { return entry.gpuId == gpuId; });
+    };
+
+    for (const auto& info : publication.gpuInfo)
+    {
+        if (listed(info.id))
+        {
+            continue;
+        }
+        const auto snapshotIt = std::ranges::find(publication.snapshots, info.id, &Domain::GPUSnapshot::gpuId);
+        entries.push_back({
+            .gpuId = info.id,
+            .info = &info,
+            .snapshot = (snapshotIt != publication.snapshots.end()) ? &*snapshotIt : nullptr,
+        });
+    }
+    for (const auto& snapshot : publication.snapshots)
+    {
+        if (!listed(snapshot.gpuId))
+        {
+            entries.push_back({.gpuId = snapshot.gpuId, .info = nullptr, .snapshot = &snapshot});
+        }
+    }
+    return entries;
+}
+
+/// The Overview header's "VRAM" figure: memory totals summed over discrete GPUs only. An integrated
+/// GPU's total is the share of system RAM it may borrow (on Windows DXGI's SharedSystemMemory, about
+/// half of RAM), so adding it double-counted RAM as VRAM on almost every laptop (#1114).
+[[nodiscard]] inline std::uint64_t totalDedicatedVramBytes(std::span<const Domain::GPUSnapshot> snapshots) noexcept
+{
+    std::uint64_t total = 0;
+    for (const auto& snapshot : snapshots)
+    {
+        if (!snapshot.isIntegrated)
+        {
+            total += snapshot.memoryTotalBytes;
+        }
+    }
+    return total;
+}
+
+/// The GPU's collapsing-header label: name, a discrete GPU's VRAM size, its kind, and "Sleeping"
+/// while the probe is leaving a runtime-suspended GPU alone (#1117). The "###" suffix keeps the
+/// header's ImGui id stable while the label changes, so it doesn't re-expand as the GPU wakes.
+[[nodiscard]] inline std::string
+gpuHeaderLabel(std::string_view icon, std::string_view name, bool isIntegrated, std::uint64_t memoryTotalBytes, bool suspended)
+{
+    std::string label = std::string(icon) + " " + std::string(name);
+    if (!isIntegrated && memoryTotalBytes > 0)
+    {
+        label += ", " + UI::Format::formatBytes(static_cast<double>(memoryTotalBytes)) + " VRAM";
+    }
+    label += isIntegrated ? " [Shared Memory]" : " [Discrete]";
+    if (suspended)
+    {
+        label += " (Sleeping)";
+    }
+    label += "###gpuHeader";
+    return label;
 }
 
 /// Lowest reference the clock line and bar are scaled against, so an idle GPU's few hundred MHz

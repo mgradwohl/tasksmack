@@ -79,15 +79,9 @@ void renderCpuCoresSection(RenderContext& ctx)
     auto& theme = UI::Theme::get();
 
     // CPU model header
-    std::string coreInfo;
-    if (snap.cpuFreqMHz > 0)
-    {
-        coreInfo = std::format(" ({} cores @ {:.2f} GHz)", snap.coreCount, Domain::Numeric::toDouble(snap.cpuFreqMHz) / 1000.0);
-    }
-    else
-    {
-        coreInfo = std::format(" ({} cores)", snap.coreCount);
-    }
+    // The count is of logical processors, not cores (#1203).
+    const std::string coreInfo =
+        UI::Format::formatLogicalProcessorSummary(snap.coreCount, (snap.cpuFreqMHz > 0) ? Domain::Numeric::toDouble(snap.cpuFreqMHz) : 0.0);
     ImGui::TextUnformatted(snap.cpuModel.c_str());
     ImGui::SameLine(0, 0);
     ImGui::TextUnformatted(coreInfo.c_str());

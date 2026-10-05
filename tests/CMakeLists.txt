@@ -102,6 +102,7 @@ set(COMMON_TEST_SOURCES
     UI/test_IconLoader.cpp
     UI/test_MonospaceFontPath.cpp
     UI/test_DpiScale.cpp
+    UI/test_FontFileCache.cpp
     App/test_ProcessColumnConfig.cpp
     App/test_ProcessSortUtils.cpp
     App/test_AdaptiveIntervalUtils.cpp
@@ -113,6 +114,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessDetailsLayout.cpp
     App/test_GpuClockReference.cpp
     App/test_GpuSectionEmptyState.cpp
+    App/test_GpuSectionDrawList.cpp
     App/test_ProcessRowFormat.cpp
     Platform/test_CgroupFreezerPath.cpp
     Platform/test_ProcessIdentity.cpp
@@ -125,11 +127,13 @@ set(COMMON_TEST_SOURCES
     App/test_UserConfig.cpp
     App/test_UserConfigHelpers.cpp
     App/test_UserConfigPersistence.cpp
+    App/test_InstanceLock.cpp
     App/test_PanelTabs.cpp
     App/test_TabLabel.cpp
     App/test_PriorityHelpers.cpp
     App/test_ProcessGpuHelpers.cpp
     App/test_ProcessResourceHelpers.cpp
+    App/test_ProcessHistoryHelpers.cpp
     App/test_ProcessActionHelpers.cpp
     App/test_SettingsLayerDetail.cpp
     App/test_NetInterfaceUtils.cpp
@@ -250,6 +254,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Core/Window.cpp
     # App layer
     ${CMAKE_SOURCE_DIR}/src/App/UserConfig.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/InstanceLock.cpp
     # Domain layer
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/GPUModel.cpp

@@ -4,14 +4,17 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
+#include "Core/WindowConstants.h"
 #include "Domain/ProcessSnapshot.h"
 #include "FontSizeChange.h"
 #include "Panels/ProcessesPanel.h"
+#include "Panels/SystemMetricsPanel.h"
 #include "ShellMetrics.h"
 #include "TabLabel.h"
 #include "TitleBarGeometry.h"
 #include "TitleBarLayer.h"
 #include "UI/DpiScale.h"
+#include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/RenderMetrics.h"
 #include "UI/Theme.h"
@@ -21,10 +24,13 @@
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -106,13 +112,38 @@ void ShellLayer::onAttach()
 void ShellLayer::applyBaseMinimumWindowSize()
 {
     m_MinimumSizeDisplayScale = UI::Theme::get().displayScale();
-    if (SDL_Window* sdlWindow = Core::Application::get().getWindow().getHandle(); sdlWindow != nullptr)
+    const auto& window = Core::Application::get().getWindow();
+    m_MinimumSizeDisplayId = window.getDisplayId();
+    if (SDL_Window* sdlWindow = window.getHandle(); sdlWindow != nullptr)
     {
-        const WindowMinimumSize baseMinimum = computeMinimumWindowSize(m_MinimumSizeDisplayScale, 0.0F);
+        // Held inside the display's usable bounds, so a large font on a small display cannot leave
+        // a window that does not fit on-screen (#1207).
+        const auto [usableWidth, usableHeight] = window.getUsableDisplaySize().value_or(std::pair{0, 0});
+        const WindowMinimumSize baseMinimum =
+            capMinimumToUsable(computeMinimumWindowSize(m_MinimumSizeDisplayScale, 0.0F, static_cast<float>(m_ContentMinimumWidthPx)),
+                               usableWidth,
+                               usableHeight);
         if (!SDL_SetWindowMinimumSize(sdlWindow, baseMinimum.width, baseMinimum.height))
         {
             spdlog::warn("SDL_SetWindowMinimumSize({}, {}) failed: {}", baseMinimum.width, baseMinimum.height, SDL_GetError());
         }
+    }
+}
+
+void ShellLayer::applyContentMinimumWidth(float widthPx)
+{
+    // With the custom title bar, it owns the minimum: hand it over, it re-derives the minimum every
+    // frame and calls SDL only on a change. Otherwise apply it here when the whole-pixel width moves.
+    if (m_TitleBar != nullptr)
+    {
+        m_TitleBar->setContentMinimumWidth(widthPx);
+        return;
+    }
+    const auto wholePx = static_cast<int>(std::ceil(std::clamp(widthPx, 0.0F, static_cast<float>(Core::WINDOW_MAX_DIMENSION))));
+    if (wholePx != m_ContentMinimumWidthPx)
+    {
+        m_ContentMinimumWidthPx = wholePx;
+        applyBaseMinimumWindowSize();
     }
 }
 
@@ -133,6 +164,11 @@ void ShellLayer::onDetach()
     {
         settings.windowWidth = normal->width;
         settings.windowHeight = normal->height;
+        // With the scale it was measured at -- for a maximized window, the scale captured with its
+        // restore rectangle, not the live maximized one -- so the next launch can convert it to the
+        // display it opens on (#1168). An unknown scale saves none: the size is then restored as saved.
+        const float scale = window.getNormalGeometryScale();
+        settings.windowScale = scale > 0.0F ? std::optional<float>{scale} : std::nullopt;
         if (Core::Window::supportsPositioning())
         {
             settings.windowPosX = normal->x;
@@ -163,6 +199,17 @@ void ShellLayer::onEvent(Core::Event& event)
     m_Tabs.onEvent(event);
 }
 
+void ShellLayer::onSDLEvent(SDL_Event* event)
+{
+    // A display changed mode or its work area moved -- possibly the same display, at the same scale --
+    // so re-read the usable bounds the native-decorated minimum is capped to on the next update, as
+    // TitleBarLayer does for the borderless bar (#1207).
+    if (event != nullptr && invalidatesUsableBounds(event->type))
+    {
+        m_MinimumSizeDisplayId = 0;
+    }
+}
+
 void ShellLayer::onUpdate(float deltaTime)
 {
     // Publish the loaded settings on the first update, after all layers are stacked, through the
@@ -186,13 +233,17 @@ void ShellLayer::onUpdate(float deltaTime)
         Core::Application::get().raiseEvent(evt);
     }
 
-    m_FpsCounter.update(deltaTime);
+    // The frame's real duration, not deltaTime: deltaTime is capped at 0.1 s for animation, which made a
+    // 6.7 FPS stall read "10.0 FPS (100.00 ms)" (#1152).
+    m_FpsCounter.update(UI::Format::toFloatNarrow(Core::Application::get().lastFrameIntervalSeconds()));
 
-    // With native decorations, follow a display-scale change (#943). Not with the borderless title
-    // bar: TitleBarLayer re-derives a wider minimum from the scale every frame, and re-applying the
-    // base here would overwrite it.
-    if (!Core::Application::get().getWindow().isBorderless() &&
-        UI::displayScaleChanged(m_MinimumSizeDisplayScale, UI::Theme::get().displayScale()))
+    // With native decorations, follow a display-scale change (#943), or a move to another display,
+    // whose usable bounds the minimum is capped to (#1207). Not with the borderless title bar:
+    // TitleBarLayer re-derives a wider minimum from the scale every frame, and re-applying the base
+    // here would overwrite it.
+    if (const auto& window = Core::Application::get().getWindow();
+        !window.isBorderless() && (UI::displayScaleChanged(m_MinimumSizeDisplayScale, UI::Theme::get().displayScale()) ||
+                                   window.getDisplayId() != m_MinimumSizeDisplayId))
     {
         applyBaseMinimumWindowSize();
     }
@@ -200,52 +251,45 @@ void ShellLayer::onUpdate(float deltaTime)
     // Update panels
     m_Tabs.onUpdate(deltaTime);
 
-    // Find the selected process snapshot for rendering
-    // Note: Selection is now coordinated via ProcessSelectedEvent, but we still need
-    // to look up the snapshot for ProcessDetailsPanel to render
-    const Domain::ProcessSnapshot* selectedSnapshot = nullptr;
-    Domain::ProcessSnapshot cachedSnapshot;
-    std::uint64_t selectedSnapshotVersion = 0;
-    const std::int32_t selectedPid = m_ProcessesPanel.selectedPid();
+    // Hand Process Details the selected process's new samples: one per generation the sampler
+    // published since its last frame, each with its own sample time (#1098). The model keeps them for
+    // the watched PID, so a frame with nothing new costs one atomic load and copies nothing -- this
+    // used to look the process up and deep-copy its snapshot twice every frame (#1172).
+    const std::int32_t selectedPid = m_ProcessDetailsPanel.selectedPid();
+    if (selectedPid != m_WatchedPid)
+    {
+        m_ProcessesPanel.watchProcess(selectedPid);
+        m_WatchedPid = selectedPid;
+    }
+    m_PendingSamples.clear();
     if (selectedPid != -1)
     {
-        // findSnapshotWithVersion() copies only the one matching entry out of ProcessModel (not
-        // the full 200+ entry vector) and returns it together with the exact publication
-        // version it was read under, atomically. The previous version of this code instead
-        // paired findSnapshot() with a *separately*-read version from ProcessesPanel's own
-        // render cache (which only refreshes while the Processes tab is active), which could
-        // race with an intervening ProcessModel publish: findSnapshot() always reflects the
-        // truly latest data, so while viewing Process Details on its own, the version passed
-        // to updateWithSnapshot() below could stay stuck even as the snapshot content kept
-        // changing, silently freezing history recording (ProcessDetailsPanel gates "is this
-        // new data" on that version) while the live displayed values kept updating from the
-        // snapshot itself.
-        if (auto found = m_ProcessesPanel.findSnapshotWithVersion(selectedPid))
+        static_cast<void>(m_ProcessesPanel.watchedSamplesSince(m_ProcessDetailsPanel.lastSampleVersion(), m_PendingSamples));
+    }
+    m_ProcessDetailsPanel.updateWithSamples(m_PendingSamples, deltaTime);
+
+    // Debug: Log when GPU data becomes available for the selected PID.
+    // This avoids spamming logs every frame while a GPU-using process is selected.
+    if (const Domain::ProcessSnapshot* selected = m_ProcessDetailsPanel.displayedSnapshot();
+        selected != nullptr && !m_PendingSamples.empty())
+    {
+        const bool hasGpuData = (!selected->gpuDevices.empty() || (selected->gpuMemoryBytes > 0));
+        if ((selectedPid != m_LastGpuLogPid) || !m_LastGpuLogHasData)
         {
-            cachedSnapshot = std::move(found->snapshot);
-            selectedSnapshotVersion = found->version;
-            selectedSnapshot = &cachedSnapshot;
-
-            // Debug: Log when GPU data becomes available for the selected PID.
-            // This avoids spamming logs every frame while a GPU-using process is selected.
-            const bool hasGpuData = (!cachedSnapshot.gpuDevices.empty() || (cachedSnapshot.gpuMemoryBytes > 0));
-
-            if ((selectedPid != m_LastGpuLogPid) || !m_LastGpuLogHasData)
+            if (hasGpuData)
             {
-                if (hasGpuData)
-                {
-                    spdlog::debug("ShellLayer: Selected PID {} has GPU data: devices='{}', mem={}",
-                                  selectedPid,
-                                  cachedSnapshot.gpuDevices,
-                                  cachedSnapshot.gpuMemoryBytes);
-                }
-
-                m_LastGpuLogPid = selectedPid;
-                m_LastGpuLogHasData = hasGpuData;
+                spdlog::debug("ShellLayer: Selected PID {} has GPU data: devices='{}', mem={}",
+                              selectedPid,
+                              selected->gpuDevices,
+                              selected->gpuMemoryBytes);
             }
+
+            m_LastGpuLogPid = selectedPid;
+            m_LastGpuLogHasData = hasGpuData;
         }
     }
-    m_ProcessDetailsPanel.updateWithSnapshot(selectedSnapshot, selectedSnapshotVersion, deltaTime);
+    // Drop this frame's references now: the panel keeps the one it shows.
+    m_PendingSamples.clear();
 
     // Rebuild the cached details tab label only when its text actually changes. Rebuilding on
     // every frame would allocate three std::string objects per frame at 60 fps; comparing the
@@ -341,6 +385,14 @@ void ShellLayer::onRender()
         const float styleScale = UI::Theme::get().styleScale();
         const float contentPaddingH = ShellMetrics::CONTENT_PADDING_H * styleScale;
         const float contentPaddingV = ShellMetrics::CONTENT_PADDING_V * styleScale;
+
+        // The window may not be narrower than the panels' content: the Processes toolbar row, or the
+        // Overview's NowBar column beside MIN_PLOT_WIDTH_EM of plot (#1207). Measured with the body
+        // font, here, where the panels will draw with it; a few text measurements a frame.
+        applyContentMinimumWidth(computeContentMinimumWidth(ProcessesPanel::measureToolbarMinimumWidth(),
+                                                            SystemMetricsPanel::overviewNowBarColumnWidth(),
+                                                            ImGui::GetFontSize(),
+                                                            (contentPaddingH * 2.0F) + ImGui::GetStyle().ScrollbarSize));
 
         // Add padding by using a child window with border that provides internal padding
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(contentPaddingH, contentPaddingV));
@@ -488,6 +540,9 @@ void ShellLayer::renderStatusBar() const
             }
         }
 
+        // Where the left-hand content ends, window-local, for the FPS readout's fit check.
+        const float leftContentEndX = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x;
+
         // Right-align FPS display. The text is formatted first and then measured, so the readout
         // ends at the status bar's padding at any font and any value. It used to be positioned from
         // the width of the *format string* plus a fixed 50px, which is not the width of what is
@@ -499,8 +554,13 @@ void ShellLayer::renderStatusBar() const
                                              static_cast<double>(m_FpsCounter.displayedFps()),
                                              static_cast<double>(m_FpsCounter.displayedFrameTime() * 1000.0F));
         const float fpsWidth = ImGui::CalcTextSize(fpsText.data(), fpsEnd.out).x;
-        ImGui::SameLine(ImGui::GetWindowWidth() - statusBarPaddingX - fpsWidth);
-        ImGui::TextUnformatted(fpsText.data(), fpsEnd.out);
+        const float fpsX = ImGui::GetWindowWidth() - statusBarPaddingX - fpsWidth;
+        // Left out, not drawn over "Ready" and the buttons, when the window is too narrow (#1207).
+        if (computeStatusBarReadoutFits(leftContentEndX, fpsX, ImGui::GetStyle().ItemSpacing.x))
+        {
+            ImGui::SameLine(fpsX);
+            ImGui::TextUnformatted(fpsText.data(), fpsEnd.out);
+        }
     }
     ImGui::End();
     ImGui::PopStyleVar(3);

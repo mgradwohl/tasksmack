@@ -1,17 +1,23 @@
 #pragma once
 
 #include "Core/Layer.h"
+#include "Domain/ProcessSnapshot.h"
 #include "FpsCounter.h"
 #include "PanelTabs.h"
 #include "Panels/ProcessDetailsPanel.h"
 #include "Panels/ProcessesPanel.h"
 #include "Panels/SystemMetricsPanel.h"
 
+#include <SDL3/SDL_video.h>
+
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace App
 {
+
+class TitleBarLayer;
 
 class ShellLayer : public Core::Layer
 {
@@ -29,11 +35,21 @@ class ShellLayer : public Core::Layer
     void onUpdate(float deltaTime) override;
     void onRender() override;
     void onEvent(Core::Event& event) override;
+    void onSDLEvent(SDL_Event* event) override;
+
+    /// The custom title bar, when there is one (not with native decorations, #745). It owns the
+    /// window's minimum size then, and is handed the panels' share of it each frame (#1207).
+    /// Non-owning; the application's layer stack outlives both layers' use of it.
+    void setTitleBar(TitleBarLayer* titleBar) noexcept
+    {
+        m_TitleBar = titleBar;
+    }
 
   private:
     void renderTabBar();
     void renderStatusBar() const;
     void applyBaseMinimumWindowSize();
+    void applyContentMinimumWidth(float widthPx);
 
     // Panels
     ProcessesPanel m_ProcessesPanel;
@@ -46,6 +62,11 @@ class ShellLayer : public Core::Layer
     // GPU debug logging throttling
     std::int32_t m_LastGpuLogPid = -1;
     bool m_LastGpuLogHasData = false;
+
+    // The PID the process model is watching for Process Details (ProcessModel::watchProcess()), and
+    // the scratch buffer its new samples are collected into each frame, reused to avoid allocating.
+    std::int32_t m_WatchedPid = -1;
+    std::vector<Domain::ProcessSample> m_PendingSamples;
 
     // Cached privilege status: populated in onAttach() from ProcessModel capabilities.
     // Used by renderStatusBar() to show a persistent lock indicator.
@@ -63,6 +84,13 @@ class ShellLayer : public Core::Layer
     // Display scale the base minimum window size was last set for. With native decorations nothing
     // else sets the minimum, so it is re-applied when the scale changes (#943).
     float m_MinimumSizeDisplayScale = 0.0F;
+    // Display the minimum was last capped to the usable bounds of; re-applied on a move to another
+    // display (#1207).
+    SDL_DisplayID m_MinimumSizeDisplayId = 0;
+    // Width the panels need (#1207): handed to the title bar, or with native decorations part of the
+    // minimum applied here. Whole pixels, so it is re-applied only when it really changes.
+    int m_ContentMinimumWidthPx = 0;
+    TitleBarLayer* m_TitleBar = nullptr;
 
     // Render Metrics overlay (per-chart vertex count and CPU cost). Toggled with Ctrl+Shift+M.
     bool m_ShowRenderMetrics = false;

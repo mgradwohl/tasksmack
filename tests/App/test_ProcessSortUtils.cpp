@@ -254,6 +254,26 @@ TEST(ProcessSortUtilsTest, SortOfTiedRowsIsTheSameWhateverTheInputOrder)
     }
 }
 
+TEST(ProcessSortUtilsTest, UnreadableValuesSortBelowEveryReadingIncludingZero)
+{
+    // #1110: without root, another user's FD count, I/O and network rates can't be read. They sort
+    // below every reading -- a real 0 included -- instead of mixing in with the processes that read 0.
+    ProcessSnapshot unreadable;
+    unreadable.handleCount = 0;
+    unreadable.handleCountAvailable = false;
+    unreadable.ioAvailable = false;
+    unreadable.networkAvailable = false;
+    const ProcessSnapshot zero; // every value read, and 0
+
+    for (const ProcessColumn column :
+         {ProcessColumn::Handles, ProcessColumn::IoRead, ProcessColumn::IoWrite, ProcessColumn::NetSent, ProcessColumn::NetReceived})
+    {
+        EXPECT_TRUE(ProcessSortUtils::compareByColumn(unreadable, zero, column, true)) << static_cast<int>(column);
+        EXPECT_FALSE(ProcessSortUtils::compareByColumn(zero, unreadable, column, true)) << static_cast<int>(column);
+        EXPECT_TRUE(ProcessSortUtils::compareByColumn(zero, unreadable, column, false)) << static_cast<int>(column);
+    }
+}
+
 TEST(ProcessSortUtilsTest, UnknownColumnReturnsFalse)
 {
     const ProcessSnapshot low = makeSnapshot(false);
