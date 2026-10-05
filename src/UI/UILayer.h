@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Core/Layer.h"
+#include "UI/FontFileCache.h"
 
 #include <filesystem>
 
@@ -32,12 +33,17 @@ class UILayer : public Core::Layer
   private:
     void beginFrame();
     void endFrame();
-    static void loadAllFonts(const std::filesystem::path& assetsDir, float displayScale);
-    static void loadFallbackFonts(const std::filesystem::path& assetsDir, float displayScale);
+    static void loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path& assetsDir, float displayScale);
+    static void loadFallbackFonts(FontFileCache& fontFiles, const std::filesystem::path& assetsDir, float displayScale);
     void rebuildForDisplayScaleChange();
 
     // Where the fonts were loaded from, kept to rebuild them at a new display scale (#943).
     std::filesystem::path m_AssetsDir;
+    // Every font file's bytes, read once and shared by all the fonts made from it, at startup and
+    // on each rebuild (#1170). The atlas reads them for as long as it holds those fonts, so this
+    // must outlive it: ImGui's context, and with it the atlas, is destroyed in onDetach(), before
+    // this member.
+    FontFileCache m_FontFiles;
     // Set when SDL reports the window's display scale or display changed; checked and cleared at the
     // next frame boundary, where the fonts and style can be rebuilt between frames (#943).
     bool m_DisplayScaleCheckPending = false;

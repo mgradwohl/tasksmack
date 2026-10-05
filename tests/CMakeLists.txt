@@ -102,6 +102,7 @@ set(COMMON_TEST_SOURCES
     UI/test_IconLoader.cpp
     UI/test_MonospaceFontPath.cpp
     UI/test_DpiScale.cpp
+    UI/test_FontFileCache.cpp
     App/test_ProcessColumnConfig.cpp
     App/test_ProcessSortUtils.cpp
     App/test_AdaptiveIntervalUtils.cpp
