@@ -72,4 +72,12 @@ inline void takeSamples(std::span<const Domain::ProcessSample> samples,
     }
 }
 
+/// Whether the selected process has exited after a batch of samples whose newest generation doesn't
+/// contain it: only if it was seen before -- a snapshot already held, *or* a sample of it accepted
+/// earlier in this same batch. Otherwise it simply hasn't been seen yet (just selected).
+[[nodiscard]] constexpr bool exitedAfterBatch(bool presentInNewest, bool hadSnapshot, bool recordedThisBatch) noexcept
+{
+    return !presentInNewest && (hadSnapshot || recordedThisBatch);
+}
+
 } // namespace App::Detail

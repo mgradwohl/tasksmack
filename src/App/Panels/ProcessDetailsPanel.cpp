@@ -215,7 +215,9 @@ void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSampl
             m_HasSnapshot = true;
             m_ProcessExited = false;
         }
-        else if (ProcessDetailsLayout::selectedProcessHasExited(true, m_HasSnapshot, false))
+        // A sample recorded earlier in this same batch counts as having seen the process: a batch
+        // that accepted it and then ends with it absent means it exited, not "not seen yet".
+        else if (Detail::exitedAfterBatch(false, m_HasSnapshot, recorded))
         {
             // The cached snapshot is kept (the tab still names the process) but no longer drawn as
             // if it were live; renderContent() shows the exited state instead.
@@ -993,19 +995,28 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
                 // The bands share their labels with the User and System lines below, so ImPlot
                 // treats each band and its line as one legend item: hiding "User" hides both.
                 // With separate hidden labels the band stayed on screen after its line was hidden.
-                ImPlot::PlotShaded(CPU_USER_LABEL,
-                                   m_CpuPlotX.data(),
-                                   y0.data(),
-                                   yUserTop.data(),
-                                   drawCount,
-                                   {ImPlotProp_FillColor, theme.scheme().cpuUserFill});
-
-                ImPlot::PlotShaded(CPU_SYSTEM_LABEL,
-                                   m_CpuPlotX.data(),
-                                   yUserTop.data(),
-                                   ySystemTop.data(),
-                                   drawCount,
-                                   {ImPlotProp_FillColor, theme.scheme().cpuSystemFill});
+                // ImPlot's shaded renderer doesn't break at NaN, so the bands are filled run by run over
+                // the finite points: a gap (a missing sample, or a UI stall that overran the sample ring,
+                // #1098) is drawn as a gap rather than as fill triangles through NaN. A gap point is NaN
+                // in every band, so the system top's runs serve both.
+                UI::Widgets::forEachFiniteRun(ySystemTop.data(),
+                                              drawCount,
+                                              [&](int runStart, int runLength)
+                                              {
+                                                  const auto at = static_cast<std::size_t>(runStart);
+                                                  ImPlot::PlotShaded(CPU_USER_LABEL,
+                                                                     &m_CpuPlotX[at],
+                                                                     &y0[at],
+                                                                     &yUserTop[at],
+                                                                     runLength,
+                                                                     {ImPlotProp_FillColor, theme.scheme().cpuUserFill});
+                                                  ImPlot::PlotShaded(CPU_SYSTEM_LABEL,
+                                                                     &m_CpuPlotX[at],
+                                                                     &yUserTop[at],
+                                                                     &ySystemTop[at],
+                                                                     runLength,
+                                                                     {ImPlotProp_FillColor, theme.scheme().cpuSystemFill});
+                                              });
 
                 ImPlot::PlotLine(CPU_TOTAL_LABEL,
                                  m_CpuPlotX.data(),

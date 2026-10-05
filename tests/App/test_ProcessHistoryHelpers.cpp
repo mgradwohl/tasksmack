@@ -131,5 +131,15 @@ TEST(ProcessHistoryHelpersTest, AnUnreadValueIsAGapNotAZero)
     EXPECT_TRUE(std::isnan(readingOrGap(false, 0.0)));
 }
 
+TEST(ProcessHistoryHelpersTest, ASampleAcceptedEarlierInTheBatchCountsAsSeen)
+{
+    // #1290 review: right after selection (no snapshot yet), a batch that records the process and then
+    // ends with it absent (exited, or its PID reused) means it exited -- not "not seen yet".
+    EXPECT_TRUE(exitedAfterBatch(false, false, true));
+    EXPECT_TRUE(exitedAfterBatch(false, true, false));
+    EXPECT_FALSE(exitedAfterBatch(false, false, false)); // never seen: just selected
+    EXPECT_FALSE(exitedAfterBatch(true, true, true));    // still present
+}
+
 } // namespace
 } // namespace App::Detail
