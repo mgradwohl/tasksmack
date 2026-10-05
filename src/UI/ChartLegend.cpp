@@ -4,10 +4,28 @@
 #include <implot.h>
 #include <implot_internal.h> // ImPlotPlot: the legend entries ImPlot kept from the previous frame
 
+#include <string_view>
 #include <vector>
 
 namespace UI::Widgets
 {
+
+bool legendEntriesKnown(const char* plotLabel)
+{
+    // Looked up before BeginPlot: the entries are still the previous frame's (SetupFinish resets them).
+    const ImPlotPlot* plot = ImPlot::GetPlot(plotLabel);
+    return plot != nullptr && plot->Items.GetLegendCount() > 0;
+}
+
+float legendNameBudget(std::string_view suffix)
+{
+    const ImPlotStyle& style = ImPlot::GetStyle();
+    // ClampLegendRect keeps an outside legend within the frame less PlotPadding on each side; an
+    // entry is the legend's inner padding on each side, a one-line-square icon, then its label.
+    const float chrome = (2.0F * style.PlotPadding.x) + (2.0F * style.LegendInnerPadding.x) + ImGui::GetTextLineHeight();
+    const float suffixWidth = ImGui::CalcTextSize(suffix.data(), suffix.data() + suffix.size()).x;
+    return ImGui::GetContentRegionAvail().x - chrome - suffixWidth;
+}
 
 void setupLegendDefault()
 {

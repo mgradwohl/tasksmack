@@ -1804,41 +1804,60 @@ legendFitsOneRow(std::span<const float> labelWidths, float iconSize, float inner
 /// in ChartLegend.cpp rather than inline here.
 void setupLegendDefault();
 
-/// Longest name, in code points, that legendName() keeps before cutting it short.
-inline constexpr std::size_t LEGEND_NAME_MAX_CHARS = 32;
+/// Whether the plot @p plotId (ImGui::GetID of its label, in the current window) drew legend entries
+/// last frame. ImPlot reserves an outside legend's space from the previous frame's entries, before the
+/// current frame's are plotted, so on a plot's first frame it reserves none and the legend EndPlot()
+/// then draws covers the top of the data. HistoryChart hides the legend until this is true: ImPlot
+/// still records the entries of a plot whose legend is hidden, so the next frame lays it out right.
+/// Defined in ChartLegend.cpp (ImPlot internal API).
+[[nodiscard]] bool legendEntriesKnown(const char* plotLabel);
 
-/// @p name shortened for a series label: kept whole up to @p maxChars code points, else cut to
-/// maxChars - 1 of them and an ellipsis. setupLegendDefault()'s column fallback fits a legend no
-/// wider than its widest entry, so one entry built from an uncapped name -- an OS network adapter's
-/// description, say -- would still be clipped (#1275). Cuts only at UTF-8 code point boundaries.
-[[nodiscard]] inline std::string legendName(std::string_view name, std::size_t maxChars = LEGEND_NAME_MAX_CHARS)
+/// The pixel width left for the name in a legend entry "<name><suffix>" when the legend is a column
+/// in a chart filling the available width: the chart's width less ImPlot's plot and legend padding,
+/// the entry's icon and the suffix. Defined in ChartLegend.cpp.
+[[nodiscard]] float legendNameBudget(std::string_view suffix);
+
+/// @p name, cut short with an ellipsis at a UTF-8 code point boundary if @p measure (the pixel width
+/// of a string) says it is wider than @p budget: the longest prefix whose "<prefix>…" fits, or just
+/// "…" if none does. setupLegendDefault()'s column fallback is as wide as its widest entry, and ImPlot
+/// scrolls a column only vertically, so an entry built from an uncapped name -- an OS network
+/// adapter's description, say -- must be fitted to the chart's width itself (#1275).
+template<typename Measure> [[nodiscard]] std::string fitLegendName(std::string_view name, float budget, const Measure& measure)
 {
-    if (maxChars == 0)
+    if (measure(name) <= budget)
     {
-        return {};
+        return std::string(name);
     }
-    const auto isContinuation = [](char c)
+    // Byte offsets of each code point boundary after the first code point.
+    std::vector<std::size_t> cuts;
+    for (std::size_t i = 1; i <= name.size(); ++i)
     {
-        return (static_cast<unsigned char>(c) & 0xC0U) == 0x80U;
+        if (i == name.size() || (static_cast<unsigned char>(name[i]) & 0xC0U) != 0x80U)
+        {
+            cuts.push_back(i);
+        }
+    }
+    constexpr std::string_view ELLIPSIS = "\u2026";
+    const auto withEllipsis = [&](std::size_t cut)
+    {
+        return std::string(name.substr(0, cut)).append(ELLIPSIS);
     };
-    std::size_t codePoints = 0;
-    std::size_t cut = name.size();
-    for (std::size_t i = 0; i < name.size(); ++i)
+    // Widths grow with the prefix: the largest cut that fits, by binary search.
+    std::size_t lo = 0;
+    std::size_t hi = cuts.size();
+    while (lo < hi)
     {
-        if (isContinuation(name[i]))
+        const std::size_t mid = lo + ((hi - lo) / 2);
+        if (measure(withEllipsis(cuts[mid])) <= budget)
         {
-            continue;
+            lo = mid + 1;
         }
-        if (codePoints == maxChars - 1 && cut == name.size())
+        else
         {
-            cut = i;
-        }
-        if (++codePoints > maxChars)
-        {
-            return std::string(name.substr(0, cut)) + "\u2026";
+            hi = mid;
         }
     }
-    return std::string(name);
+    return lo == 0 ? std::string(ELLIPSIS) : withEllipsis(cuts[lo - 1]);
 }
 
 /// Samples a history chart needs before its "collecting" hint is dropped.
@@ -2160,7 +2179,10 @@ class HistoryChart
         // The plot fills the available width (size.x = -1); its data area is a little narrower (axis
         // labels), so this slightly overstates the scroll speed -- the safe side for pacing.
         const double plotWidthPx = static_cast<double>(ImGui::GetContentRegionAvail().x);
-        m_Active = ImPlot::BeginPlot(config.id, ImVec2(-1, config.height), historyChartBeginPlotFlags(config.flags, config.showLegend));
+        // No legend until the plot has drawn its entries once (legendEntriesKnown()), so it is never
+        // drawn over the data in space ImPlot didn't reserve for it.
+        const bool showLegend = config.showLegend && legendEntriesKnown(config.id);
+        m_Active = ImPlot::BeginPlot(config.id, ImVec2(-1, config.height), historyChartBeginPlotFlags(config.flags, showLegend));
         // An axis eased just before this chart asks for full-rate frames only if the chart is visible;
         // the pending request is consumed either way, so it can't carry to another chart.
         if (shouldRequestEaseFrames(Detail::g_PendingEaseRequestFrame, ImGui::GetFrameCount(), m_Active))
@@ -2196,7 +2218,7 @@ class HistoryChart
             m_AntiAliasingOverridden = true;
         }
 
-        if (config.showLegend)
+        if (showLegend)
         {
             setupLegendDefault();
         }

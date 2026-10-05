@@ -1754,26 +1754,43 @@ TEST(ForEachMarkerSampleTest, MatchesAWalkOfEverySample)
 // ========== Legend layout (#1275) ==========
 
 // #1301 review: one entry built from an OS adapter description can be wider than the frame on its
-// own, so such names are shortened for series labels.
-TEST(LegendNameTest, ShortNamesAreKeptWhole)
+// own, so such names are fitted to the chart width for series labels.
+namespace
 {
-    EXPECT_EQ(legendName("Wi-Fi"), "Wi-Fi");
-    EXPECT_EQ(legendName(""), "");
-    EXPECT_EQ(legendName("abcd", 4), "abcd");
+// 10 px per code point, like a monospace font.
+float tenPerCodePoint(std::string_view text)
+{
+    std::size_t codePoints = 0;
+    for (const char c : text)
+    {
+        codePoints += ((static_cast<unsigned char>(c) & 0xC0U) != 0x80U) ? 1U : 0U;
+    }
+    return 10.0F * static_cast<float>(codePoints);
+}
+} // namespace
+
+TEST(FitLegendNameTest, ANameThatFitsIsKeptWhole)
+{
+    EXPECT_EQ(fitLegendName("Wi-Fi", 50.0F, tenPerCodePoint), "Wi-Fi");
+    EXPECT_EQ(fitLegendName("", 0.0F, tenPerCodePoint), "");
 }
 
-TEST(LegendNameTest, LongNamesAreCutToTheLimitWithAnEllipsis)
+TEST(FitLegendNameTest, AWiderNameIsCutToTheWidestPrefixThatFitsWithItsEllipsis)
 {
-    EXPECT_EQ(legendName("abcdef", 4), "abc\u2026");
-    const std::string cut = legendName("Intel(R) Wi-Fi 7 BE200 320MHz (virtual, not in Total)");
-    EXPECT_EQ(cut, "Intel(R) Wi-Fi 7 BE200 320MHz (\u2026");
+    // 60 px for "abcdefgh" (80 px): "abcde…" is 60 px.
+    EXPECT_EQ(fitLegendName("abcdefgh", 60.0F, tenPerCodePoint), "abcde\u2026");
+    EXPECT_EQ(fitLegendName("abcdefgh", 65.0F, tenPerCodePoint), "abcde\u2026");
+    EXPECT_EQ(fitLegendName("abcdefgh", 79.0F, tenPerCodePoint), "abcdef\u2026");
+    EXPECT_EQ(fitLegendName("abcdefgh", 80.0F, tenPerCodePoint), "abcdefgh");
+    // Room for nothing but the ellipsis, or not even that.
+    EXPECT_EQ(fitLegendName("abcdefgh", 15.0F, tenPerCodePoint), "\u2026");
+    EXPECT_EQ(fitLegendName("abcdefgh", -5.0F, tenPerCodePoint), "\u2026");
 }
 
-TEST(LegendNameTest, CutsOnlyAtCodePointBoundaries)
+TEST(FitLegendNameTest, CutsOnlyAtCodePointBoundaries)
 {
-    // Five two-byte code points; a cut at three keeps two whole ones and the ellipsis.
-    EXPECT_EQ(legendName("\u00e9\u00e9\u00e9\u00e9\u00e9", 3), "\u00e9\u00e9\u2026");
-    EXPECT_EQ(legendName("\u00e9\u00e9\u00e9", 3), "\u00e9\u00e9\u00e9");
+    EXPECT_EQ(fitLegendName("\u00e9\u00e9\u00e9\u00e9\u00e9", 30.0F, tenPerCodePoint), "\u00e9\u00e9\u2026");
+    EXPECT_EQ(fitLegendName("\u00e9\u00e9\u00e9", 30.0F, tenPerCodePoint), "\u00e9\u00e9\u00e9");
 }
 
 TEST(LegendLayoutTest, HorizontalWidthMatchesImPlotsRowLayout)

@@ -277,9 +277,13 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     const std::string ifaceDisplayName = showingInterface ? interfaceNames[static_cast<size_t>(selectedInterface) + 1] : "Network";
     // One label per series, shared by its legend entry, tooltip row and NowBar (#1008). The bars show
     // the selected interface when there is one, else the totals. An adapter's name is the OS's
-    // description, of any length, so it is shortened for the labels (legendName()); the picker and
-    // the plot title keep it whole.
-    const std::string ifaceLabelName = UI::Widgets::legendName(ifaceDisplayName);
+    // description, of any length, so it is fitted to the chart's width for the labels
+    // (fitLegendName(); both labels cut at the longer suffix's budget, so they name it alike); the
+    // picker and the plot title keep it whole.
+    const std::string ifaceLabelName =
+        UI::Widgets::fitLegendName(ifaceDisplayName,
+                                   UI::Widgets::legendNameBudget(" Received"),
+                                   [](std::string_view text) { return ImGui::CalcTextSize(text.data(), text.data() + text.size()).x; });
     const std::string ifaceSentLabel = std::format("{} Sent", ifaceLabelName);
     const std::string ifaceRecvLabel = std::format("{} Received", ifaceLabelName);
     const std::string sentBarLabel = showingInterface ? ifaceSentLabel : std::string(TOTAL_SENT_LABEL);
