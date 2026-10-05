@@ -287,7 +287,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
 
     // Colours of the machine totals drawn behind an interface's lines: muted, and drawn as thin
     // reference lines (SeriesRole::Reference), so they differ from the interface's by weight and not
-    // by alpha alone (#1198).
+    // by alpha alone, and from each other by marker shape (#1198).
     const auto ifaceSentColor = UI::withAlpha(theme.scheme().chartNetTx, 0.7F);
     const auto ifaceRecvColor = UI::withAlpha(theme.scheme().chartNetRx, 0.7F);
 
@@ -379,7 +379,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                            count,
                            ifaceRecvColor,
                            std::nullopt,
-                           seriesStyle(SeriesRole::Reference));
+                           seriesStyle(SeriesRole::Reference, 1));
 
                 // Interface-specific lines (bright, in foreground)
                 plotSeries(ifaceSentLabel.c_str(),

@@ -1127,7 +1127,8 @@ enum class SeriesRole : std::uint8_t
     /// Another series of the chart's own: a lighter line with no fill, and a marker shape of its own
     /// every few seconds (SeriesStyle::marker), so two secondaries differ by more than colour.
     Secondary,
-    /// Context behind the series -- totals behind an interface's lines, say: a thin plain line.
+    /// Context behind the series -- totals behind an interface's lines, say: a thin line with a
+    /// line-only marker of its own (SeriesStyle::marker), so two references differ by more than colour.
     Reference,
 };
 
@@ -1149,14 +1150,16 @@ inline constexpr float REFERENCE_SERIES_WEIGHT = 1.0F;
 /// Marker shapes of a chart's secondary series, in the order they are drawn. Charts have at most four.
 inline constexpr std::array<ImPlotMarker, 4> SECONDARY_SERIES_MARKERS{
     ImPlotMarker_Circle, ImPlotMarker_Square, ImPlotMarker_Diamond, ImPlotMarker_Up};
+/// Marker shapes of a chart's reference series: line-only, unlike the secondaries' solid shapes.
+inline constexpr std::array<ImPlotMarker, 2> REFERENCE_SERIES_MARKERS{ImPlotMarker_Cross, ImPlotMarker_Plus};
 /// About this many markers per series across a chart's time axis.
 inline constexpr double SERIES_MARKERS_PER_AXIS = 10.0;
 /// Marker radius, authored at the reference configuration like a line weight.
 inline constexpr float SERIES_MARKER_RADIUS = 3.0F;
 
-/// The style of a series with role @p role; @p secondaryIndex numbers a chart's secondaries from 0 in
-/// the order they are drawn, and picks the marker shape (#1198).
-[[nodiscard]] constexpr SeriesStyle seriesStyle(SeriesRole role, std::size_t secondaryIndex = 0) noexcept
+/// The style of a series with role @p role; @p index numbers a chart's secondaries (or its references)
+/// from 0 in the order they are drawn, and picks the marker shape (#1198).
+[[nodiscard]] constexpr SeriesStyle seriesStyle(SeriesRole role, std::size_t index = 0) noexcept
 {
     switch (role)
     {
@@ -1164,14 +1167,21 @@ inline constexpr float SERIES_MARKER_RADIUS = 3.0F;
         return SeriesStyle{.fill = true, .lineWeightPx = PRIMARY_SERIES_WEIGHT};
     case SeriesRole::Secondary:
     {
-        const std::size_t slot = secondaryIndex % SECONDARY_SERIES_MARKERS.size();
+        const std::size_t slot = index % SECONDARY_SERIES_MARKERS.size();
         return SeriesStyle{.fill = false,
                            .lineWeightPx = SECONDARY_SERIES_WEIGHT,
                            .marker = SECONDARY_SERIES_MARKERS[slot],
                            .markerPhase = static_cast<double>(slot) / static_cast<double>(SECONDARY_SERIES_MARKERS.size())};
     }
     case SeriesRole::Reference:
-        return SeriesStyle{.fill = false, .lineWeightPx = REFERENCE_SERIES_WEIGHT};
+    {
+        // Phases offset from the secondaries' (multiples of a quarter) so their markers do not coincide.
+        const std::size_t slot = index % REFERENCE_SERIES_MARKERS.size();
+        return SeriesStyle{.fill = false,
+                           .lineWeightPx = REFERENCE_SERIES_WEIGHT,
+                           .marker = REFERENCE_SERIES_MARKERS[slot],
+                           .markerPhase = (static_cast<double>(slot) + 0.25) / static_cast<double>(REFERENCE_SERIES_MARKERS.size())};
+    }
     }
     return SeriesStyle{};
 }
@@ -1181,6 +1191,11 @@ inline constexpr float SERIES_MARKER_RADIUS = 3.0F;
 /// as plotLineWithFill() anchors its reduction), shifted by `phase` of an interval. Anchored in
 /// absolute time, a marker stays on its sample as the chart scrolls; the oldest bucket, which loses
 /// samples as history is pruned, gets none, so no marker hops along the left edge.
+///
+/// `xData` is a history's time axis: finite and ascending. Each boundary is found by binary search,
+/// so a frame costs O(markers * log count) rather than a walk of the whole history -- 18,000 samples
+/// per series at 30 minutes of 100 ms samples -- for each series, every frame. Only a run of gaps
+/// (non-finite values) right after a boundary is stepped through.
 template<typename TX, typename TY, typename Fn>
 inline void
 forEachMarkerSample(const TX* xData, const TY* yData, int count, double anchorSeconds, double intervalSeconds, double phase, Fn&& fn)
@@ -1189,22 +1204,51 @@ forEachMarkerSample(const TX* xData, const TY* yData, int count, double anchorSe
     {
         return;
     }
-    std::optional<std::int64_t> lastBucket;
-    for (int i = 0; i < count; ++i)
+    const auto bucketOf = [&](int i)
     {
-        const auto index = static_cast<std::size_t>(i);
-        const auto value = static_cast<double>(yData[index]);
-        const double x = static_cast<double>(xData[index]) + anchorSeconds;
-        if (!std::isfinite(value) || !std::isfinite(x))
+        const double x = static_cast<double>(xData[static_cast<std::size_t>(i)]) + anchorSeconds;
+        return static_cast<std::int64_t>(std::floor((x / intervalSeconds) + phase));
+    };
+    // The first sample from `from` on with a finite value, or count.
+    const auto nextFinite = [&](int from)
+    {
+        while (from < count && !std::isfinite(static_cast<double>(yData[static_cast<std::size_t>(from)])))
         {
-            continue;
+            ++from;
         }
-        const auto bucket = static_cast<std::int64_t>(std::floor((x / intervalSeconds) + phase));
-        if (lastBucket.has_value() && bucket != *lastBucket)
+        return from;
+    };
+
+    int i = nextFinite(0);
+    if (i >= count)
+    {
+        return;
+    }
+    std::int64_t lastBucket = bucketOf(i);
+    while (true)
+    {
+        // The first sample past the end of lastBucket: buckets ascend with x.
+        int lo = i + 1;
+        int hi = count;
+        while (lo < hi)
         {
-            fn(i);
+            const int mid = lo + ((hi - lo) / 2);
+            if (bucketOf(mid) <= lastBucket)
+            {
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid;
+            }
         }
-        lastBucket = bucket;
+        i = nextFinite(lo);
+        if (i >= count)
+        {
+            return;
+        }
+        std::forward<Fn>(fn)(i);
+        lastBucket = bucketOf(i);
     }
 }
 
@@ -1730,7 +1774,9 @@ legendFitsOneRow(std::span<const float> labelWidths, float iconSize, float inner
 ///
 /// A row too wide for the chart would be clipped at its right edge -- the Process Details Memory
 /// chart lost "Peak Used" (#1275) -- so a legend that does not fit (legendFitsOneRow()) becomes a
-/// column outside the plot's right edge instead. ImPlot sizes an outside legend from the previous
+/// column above the plot instead. Like the row, the column takes height and none of the chart's
+/// width, so the chart keeps the plot edges of the charts stacked with it (#1206); beside the plot
+/// it would narrow that one chart's time axis. ImPlot sizes an outside legend from the previous
 /// frame's entries (the current frame's are not plotted yet when it lays the plot out), so the
 /// choice is made from those too -- through ImPlot's internal API, which is why this one is defined
 /// in ChartLegend.cpp rather than inline here.
@@ -1962,16 +2008,18 @@ rateHistoryConfig(const char* id, double xMin, double xMax, ImPlotFormatter yFor
 /// before plotting; then plot that series between ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2) and
 /// ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1).
 ///
-/// The axis's tick labels are drawn in @p seriesColor, the colour of the series on it, and that
+/// The axis's tick labels and tick marks are drawn in @p seriesColor, the colour of the series on it, and that
 /// series' label ends in " →" (pointing at this right-hand axis), so a reader can tell which scale a
 /// line is read against (#1206).
 inline void setupSecondaryRateAxis(double upperBound, ImPlotFormatter formatter, const ImVec4& seriesColor)
 {
-    // ImPlot reads an axis's colours from the style when the axis is set up (UpdateAxisColors).
+    // ImPlot reads an axis's colours from the style when the axis is set up (UpdateAxisColors), the
+    // tick marks' apart from the labels', so both are pushed.
     ImPlot::PushStyleColor(ImPlotCol_AxisText, seriesColor);
+    ImPlot::PushStyleColor(ImPlotCol_AxisTick, seriesColor);
     // AuxDefault: no grid lines of its own, and Opposite, which puts its labels on the right.
     ImPlot::SetupAxis(ImAxis_Y2, nullptr, ImPlotAxisFlags_AuxDefault | ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
-    ImPlot::PopStyleColor();
+    ImPlot::PopStyleColor(2);
     ImPlot::SetupAxisLimits(ImAxis_Y2, 0.0, upperBound, ImPlotCond_Always);
     // Round ticks like the primary axis, and no more of them (#1202).
     setupNiceAxisTicks(ImAxis_Y2, upperBound, formatter, activeChartDataScope().maxYTicks);

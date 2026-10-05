@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <format>
 #include <limits>
+#include <optional>
 #include <ranges>
 #include <span>
 #include <string>
@@ -1599,7 +1600,25 @@ TEST(SeriesStyleTest, RolesDifferByWeightNotJustColour)
     EXPECT_GT(primary.lineWeightPx, secondary.lineWeightPx);
     EXPECT_GT(secondary.lineWeightPx, reference.lineWeightPx);
     EXPECT_EQ(primary.marker, ImPlotMarker_None);
-    EXPECT_EQ(reference.marker, ImPlotMarker_None);
+}
+
+// #1301 review: the two Network totals are both references; they must differ by more than colour.
+TEST(SeriesStyleTest, EachReferenceHasItsOwnMarkerUnlikeAnySecondarys)
+{
+    const SeriesStyle sent = seriesStyle(SeriesRole::Reference, 0);
+    const SeriesStyle received = seriesStyle(SeriesRole::Reference, 1);
+    EXPECT_NE(sent.marker, ImPlotMarker_None);
+    EXPECT_NE(received.marker, ImPlotMarker_None);
+    EXPECT_NE(sent.marker, received.marker);
+    EXPECT_NE(sent.markerPhase, received.markerPhase);
+    for (std::size_t i = 0; i < SECONDARY_SERIES_MARKERS.size(); ++i)
+    {
+        const SeriesStyle secondary = seriesStyle(SeriesRole::Secondary, i);
+        EXPECT_NE(sent.marker, secondary.marker) << i;
+        EXPECT_NE(received.marker, secondary.marker) << i;
+        EXPECT_NE(sent.markerPhase, secondary.markerPhase) << i;
+        EXPECT_NE(received.markerPhase, secondary.markerPhase) << i;
+    }
 }
 
 TEST(SeriesStyleTest, EachSecondaryOfAChartHasItsOwnMarkerAndPhase)
@@ -1675,6 +1694,47 @@ TEST(ForEachMarkerSampleTest, SkipsGapsAndDegenerateIntervals)
     EXPECT_TRUE(markerSamples(x, y, 0.0, 0.0, 0.0).empty());
     EXPECT_TRUE(markerSamples(x, y, 0.0, nan, 0.0).empty());
     EXPECT_TRUE(markerSamples({}, {}, 0.0, 2.0, 0.0).empty());
+    const std::vector<double> allGaps(x.size(), nan);
+    EXPECT_TRUE(markerSamples(x, allGaps, 0.0, 2.0, 0.0).empty());
+}
+
+// #1301 review: the boundaries are found by binary search instead of a walk of the whole history.
+// The marked samples are those of the walk: the first finite sample whose bucket differs from the
+// previous finite sample's.
+TEST(ForEachMarkerSampleTest, MatchesAWalkOfEverySample)
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    std::vector<double> x;
+    std::vector<double> y;
+    for (int i = 0; i < 2000; ++i)
+    {
+        x.push_back((static_cast<double>(i) * 0.1) - 200.0);
+        // Gaps of varying length, some spanning a boundary.
+        y.push_back(((i % 97) < 13 || (i % 211) < 40) ? nan : 1.0);
+    }
+    for (const double phase : {0.0, 0.25, 0.7})
+    {
+        for (const double interval : {0.05, 1.0, 7.3, 30.0, 500.0})
+        {
+            std::vector<int> walk;
+            std::optional<std::int64_t> last;
+            for (int i = 0; i < static_cast<int>(x.size()); ++i)
+            {
+                const auto index = static_cast<std::size_t>(i);
+                if (!std::isfinite(y[index]))
+                {
+                    continue;
+                }
+                const auto bucket = static_cast<std::int64_t>(std::floor(((x[index] + 1234.5) / interval) + phase));
+                if (last.has_value() && bucket != *last)
+                {
+                    walk.push_back(i);
+                }
+                last = bucket;
+            }
+            EXPECT_EQ(markerSamples(x, y, 1234.5, interval, phase), walk) << "interval " << interval << " phase " << phase;
+        }
+    }
 }
 
 // ========== Legend layout (#1275) ==========

@@ -35,7 +35,9 @@ void setupLegendDefault()
     }
     else
     {
-        ImPlot::SetupLegend(ImPlotLocation_NorthEast, LEGEND_FLAGS);
+        // A column above the plot: ImPlot takes an outside column's size out of the canvas's height
+        // only at North alone (not NorthEast or NorthWest), leaving the plot its full width.
+        ImPlot::SetupLegend(ImPlotLocation_North, LEGEND_FLAGS);
     }
 }
 
