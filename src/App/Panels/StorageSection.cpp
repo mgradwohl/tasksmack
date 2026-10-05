@@ -103,7 +103,9 @@ void renderDiskCell(const std::string& deviceName,
     const double diskAxisUpper = UI::Widgets::easedRateAxisUpperBound(
         "##DiskAxis", UI::Widgets::maxOfSeries(readData, writeData), UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
 
-    const auto makeBar = [&](const char* label, double current, const ImVec4& color)
+    // The cell has no legend, so its value strip is the chart's key: each bar carries its series'
+    // marker, so Read (the filled primary) and Write (a secondary's marker) differ by more than colour.
+    const auto makeBar = [&](const char* label, double current, const ImVec4& color, ImPlotMarker marker)
     {
         if (!std::isfinite(current))
         {
@@ -111,17 +113,19 @@ void renderDiskCell(const std::string& deviceName,
                           .label = label,
                           .tooltipText = std::format("{}: not reported this sample", label),
                           .value01 = 0.0,
-                          .color = theme.scheme().textMuted};
+                          .color = theme.scheme().textMuted,
+                          .marker = marker};
         }
         return NowBar{.valueText = UI::Format::formatBytesPerSec(current),
                       .label = label,
                       .tooltipText = {},
                       .value01 = normalizeToUnitInterval(current, diskAxisUpper),
-                      .color = color};
+                      .color = color,
+                      .marker = marker};
     };
     const std::array diskBars{
-        makeBar(READ_LABEL, currentRead, theme.scheme().chartIo),
-        makeBar(WRITE_LABEL, currentWrite, theme.scheme().chartIoWrite),
+        makeBar(READ_LABEL, currentRead, theme.scheme().chartIo, seriesStyle(SeriesRole::Primary).marker),
+        makeBar(WRITE_LABEL, currentWrite, theme.scheme().chartIoWrite, seriesStyle(SeriesRole::Secondary, 0).marker),
     };
 
     const float cellContentTop = ImGui::GetCursorPosY();

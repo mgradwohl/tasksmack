@@ -1603,7 +1603,7 @@ TEST(SeriesStyleTest, RolesDifferByWeightNotJustColour)
 }
 
 // #1301 review: the two Network totals are both references; they must differ by more than colour.
-TEST(SeriesStyleTest, EachReferenceHasItsOwnMarkerUnlikeAnySecondarys)
+TEST(SeriesStyleTest, EachReferenceHasItsOwnMarkerUnlikeAnySecondaries)
 {
     const SeriesStyle sent = seriesStyle(SeriesRole::Reference, 0);
     const SeriesStyle received = seriesStyle(SeriesRole::Reference, 1);

@@ -5,6 +5,8 @@
 #include <implot_internal.h> // ImPlotPlot: the legend entries ImPlot kept from the previous frame
 
 #include <algorithm>
+#include <cstddef>
+#include <functional>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -19,10 +21,7 @@ bool legendEntriesKnown(const char* plotLabel)
     return plot != nullptr && plot->Items.GetLegendCount() > 0;
 }
 
-namespace
-{
-/// One marker shape of @p radius at @p centre, filled (or stroked, for the line-only Cross and Plus).
-void drawMarkerShape(ImDrawList& drawList, ImPlotMarker marker, ImVec2 centre, float radius, ImU32 colour)
+void drawMarkerGlyph(ImDrawList& drawList, ImPlotMarker marker, ImVec2 centre, float radius, ImU32 colour)
 {
     const float r = radius;
     const float thickness = std::max(1.0F, r * 0.45F);
@@ -51,7 +50,6 @@ void drawMarkerShape(ImDrawList& drawList, ImPlotMarker marker, ImVec2 centre, f
         break;
     }
 }
-} // namespace
 
 void drawLegendMarkers(const char* plotLabel, std::span<const Detail::LegendMarker> markers)
 {
@@ -81,7 +79,7 @@ void drawLegendMarkers(const char* plotLabel, std::span<const Detail::LegendMark
             // legend.Rect is the scrolled rect EndPlot drew the entries in.
             const ImVec2 centre =
                 legendKeyCentre(legend.Rect.Min, style.LegendInnerPadding, style.LegendSpacing, lineHeight, i, labelWidthsBefore, vertical);
-            drawMarkerShape(drawList, it->marker, centre, radius, cutOut);
+            drawMarkerGlyph(drawList, it->marker, centre, radius, cutOut);
         }
         labelWidthsBefore += ImGui::CalcTextSize(label, nullptr, true).x;
     }
@@ -98,12 +96,50 @@ float legendNameBudget(std::string_view suffix, float reservedWidth)
     return ImGui::GetContentRegionAvail().x - reservedWidth - chrome - suffixWidth;
 }
 
-void setupLegendDefault()
+namespace
+{
+/// The plot's legend entries, as a hash of their labels in order (with their "##" IDs): what an
+/// outside legend's layout depends on.
+std::size_t legendEntrySignature(ImPlotItemGroup& items)
+{
+    std::size_t signature = static_cast<std::size_t>(items.GetLegendCount());
+    for (int i = 0; i < items.GetLegendCount(); ++i)
+    {
+        // boost::hash_combine's mix.
+        signature ^= std::hash<std::string_view>{}(items.GetLegendLabel(i)) + 0x9e3779b9U + (signature << 6U) + (signature >> 2U);
+    }
+    return signature;
+}
+} // namespace
+
+bool suppressLegendIfEntriesChanged(std::size_t setupSignature)
+{
+    ImPlotPlot* plot = ImPlot::GetCurrentPlot();
+    // The entries plotted this frame: SetupFinish cleared the previous frame's before any were plotted.
+    if (plot == nullptr || (plot->Flags & ImPlotFlags_NoLegend) != 0 || legendEntrySignature(plot->Items) == setupSignature)
+    {
+        return false;
+    }
+    plot->Flags |= ImPlotFlags_NoLegend;
+    return true;
+}
+
+void restoreLegend(const char* plotLabel)
+{
+    if (ImPlotPlot* plot = ImPlot::GetPlot(plotLabel); plot != nullptr)
+    {
+        plot->Flags &= ~ImPlotFlags_NoLegend;
+    }
+}
+
+std::size_t setupLegendDefault()
 {
     constexpr ImPlotLegendFlags LEGEND_FLAGS = ImPlotLegendFlags_NoHighlightItem | ImPlotLegendFlags_Outside;
     bool oneRow = true;
+    std::size_t signature = 0;
     if (ImPlotPlot* plot = ImPlot::GetCurrentPlot(); plot != nullptr)
     {
+        signature = legendEntrySignature(plot->Items);
         // Until the plot's first frame ends there are no entries, and an empty legend fits.
         ImPlotItemGroup& items = plot->Items;
         static std::vector<float> labelWidths; // UI thread only; reused
@@ -128,6 +164,7 @@ void setupLegendDefault()
         // only at North alone (not NorthEast or NorthWest), leaving the plot its full width.
         ImPlot::SetupLegend(ImPlotLocation_North, LEGEND_FLAGS);
     }
+    return signature;
 }
 
 } // namespace UI::Widgets

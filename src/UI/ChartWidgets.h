@@ -1533,6 +1533,10 @@ struct NowBar
                              // than that fallback: it is built every frame, the fallback only on hover (#1019).
     double value01 = 0.0;
     ImVec4 color;
+    /// The marker of the bar's series on the chart (its SeriesStyle::marker), drawn on the bar's value
+    /// strip swatch so the strip keys the series by shape as well as colour (#1198). None for a series
+    /// drawn without markers (a chart's filled primary).
+    ImPlotMarker marker = ImPlotMarker_None;
 };
 
 /// A chart's NowBars, held in place: built every frame without a heap allocation (#1018). A chart
@@ -1829,7 +1833,21 @@ legendFitsOneRow(std::span<const float> labelWidths, float iconSize, float inner
 /// frame's entries (the current frame's are not plotted yet when it lays the plot out), so the
 /// choice is made from those too -- through ImPlot's internal API, which is why this one is defined
 /// in ChartLegend.cpp rather than inline here.
-void setupLegendDefault();
+/// Returns the signature (legendEntrySignature()) of the entries the layout was chosen for, for
+/// suppressLegendIfEntriesChanged().
+std::size_t setupLegendDefault();
+
+/// Before EndPlot: hides this frame's legend if the current plot's entries differ from those its
+/// layout was chosen for (@p setupSignature, from setupLegendDefault()). The layout -- the row/column
+/// choice and the space ImPlot reserved -- came from the previous frame's entries, so a chart whose
+/// entry set changed (Network going from two totals to four lines as an interface's history arrives)
+/// would draw the new entries clipped for a frame. Returns whether it hid the legend; the caller
+/// passes that to restoreLegend() after EndPlot. Defined in ChartLegend.cpp.
+[[nodiscard]] bool suppressLegendIfEntriesChanged(std::size_t setupSignature);
+
+/// After EndPlot: undoes suppressLegendIfEntriesChanged() for the plot @p plotLabel. ImPlot keeps a
+/// plot's flags across frames unless BeginPlot's change, so the hidden legend would otherwise stick.
+void restoreLegend(const char* plotLabel);
 
 /// Whether the plot @p plotId (ImGui::GetID of its label, in the current window) drew legend entries
 /// last frame. ImPlot reserves an outside legend's space from the previous frame's entries, before the
@@ -1851,6 +1869,11 @@ void setupLegendDefault();
     const float y = vertical ? i * (lineHeight + spacing.y) : 0.0F;
     return {legendMin.x + innerPadding.x + x + (lineHeight * 0.5F), legendMin.y + innerPadding.y + y + (lineHeight * 0.5F)};
 }
+
+/// One marker shape of @p radius at @p centre in @p colour: filled, or stroked for the line-only Cross
+/// and Plus. Draws a key's shape -- on a legend key (drawLegendMarkers()) or a value-strip swatch --
+/// matching the series' markers on the data. Defined in ChartLegend.cpp.
+void drawMarkerGlyph(ImDrawList& drawList, ImPlotMarker marker, ImVec2 centre, float radius, ImU32 colour);
 
 /// Draws each recorded series' marker shape (Detail::legendMarkers()) on its legend key, cut out of
 /// the key's colour square in the legend's background colour. ImPlot draws every key as a plain colour
@@ -2269,7 +2292,8 @@ class HistoryChart
 
         if (showLegend)
         {
-            setupLegendDefault();
+            m_LegendSignature = setupLegendDefault();
+            m_LegendShown = true;
         }
         ImPlot::SetupAxes(config.timeAxisLabels ? "Time (s)" : nullptr,
                           nullptr,
@@ -2312,10 +2336,15 @@ class HistoryChart
         }
         if (m_Active)
         {
+            const bool legendSuppressed = m_LegendShown && suppressLegendIfEntriesChanged(m_LegendSignature);
             ImPlot::EndPlot();
             if (!Detail::legendMarkers().empty())
             {
-                drawLegendMarkers(m_Id, Detail::legendMarkers());
+                drawLegendMarkers(m_Id, Detail::legendMarkers()); // nothing while the legend is suppressed
+            }
+            if (legendSuppressed)
+            {
+                restoreLegend(m_Id);
             }
         }
 
@@ -2354,6 +2383,8 @@ class HistoryChart
     int m_VtxBefore = 0;
     ImDrawListFlags m_SavedDrawListFlags = 0;
     ChartDataScope m_PreviousDataScope;
+    std::size_t m_LegendSignature = 0; // the entries the legend's layout was chosen for (setupLegendDefault())
+    bool m_LegendShown = false;
     bool m_DataScopeSet = false;
     bool m_Measure = false;
     bool m_Active = false;
@@ -2432,8 +2463,14 @@ namespace Detail
 /// muted), then `head` in muted text -- with `colon` appended when `head` does not already end in one
 /// -- and `tail` in primary text. With `wrap`, an entry that does not fit the row starts a new line;
 /// without it the row runs on and the container clips it.
-inline void drawValueStripEntry(
-    std::string_view head, std::string_view tail, const ImVec4& color, bool first, bool wrap, float rowRight, const ImVec4& muted)
+inline void drawValueStripEntry(std::string_view head,
+                                std::string_view tail,
+                                const ImVec4& color,
+                                bool first,
+                                bool wrap,
+                                float rowRight,
+                                const ImVec4& muted,
+                                ImPlotMarker marker = ImPlotMarker_None)
 {
     const ImGuiStyle& style = ImGui::GetStyle();
     const float lineHeight = ImGui::GetTextLineHeight();
@@ -2455,6 +2492,16 @@ inline void drawValueStripEntry(
     const ImVec2 at = ImGui::GetCursorScreenPos();
     ImGui::GetWindowDrawList()->AddRectFilled(
         ImVec2(at.x, at.y + inset), ImVec2(at.x + side, at.y + inset + side), ImGui::ColorConvertFloat4ToU32(color));
+    if (marker != ImPlotMarker_None)
+    {
+        // The series' marker cut out of the swatch, as on its legend key (drawLegendMarkers()).
+        const float half = side * 0.5F;
+        drawMarkerGlyph(*ImGui::GetWindowDrawList(),
+                        marker,
+                        ImVec2(at.x + half, at.y + inset + half),
+                        std::max(1.0F, half * 0.6F),
+                        ImGui::GetColorU32(ImGuiCol_WindowBg));
+    }
     ImGui::Dummy(ImVec2(side, lineHeight));
     if (!head.empty())
     {
@@ -2482,10 +2529,9 @@ enum class ValueStripLayout : std::uint8_t
 };
 
 /// Each series' current value, readable without hovering (#1193): per bar, a swatch in the bar's
-/// colour and the same text its tooltip shows -- its tooltipText when it has one (richer, e.g. bytes
-/// beside a percent), otherwise the tooltip's own fallback "label: valueText" -- with the leading
-/// "label:" muted; then any `extras`, series the chart draws without a bar. Bar strings are already
-/// built for the frame, so the bars add no allocation.
+/// colour, with its series' marker shape (NowBar::marker) on it, and the same text its tooltip shows -- its tooltipText when it has one
+/// (richer, e.g. bytes beside a percent), otherwise the tooltip's own fallback "label: valueText" -- with the leading "label:" muted; then
+/// any `extras`, series the chart draws without a bar. Bar strings are already built for the frame, so the bars add no allocation.
 inline void renderNowBarValueStrip(std::span<const NowBar> bars,
                                    std::span<const ValueStripEntry> extras = {},
                                    ValueStripLayout layout = ValueStripLayout::Wrap)
@@ -2510,7 +2556,7 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
                 tail.remove_prefix(1);
             }
         }
-        Detail::drawValueStripEntry(head, tail, bar.color, first, wrap, rowRight, muted);
+        Detail::drawValueStripEntry(head, tail, bar.color, first, wrap, rowRight, muted, bar.marker);
         first = false;
     }
     for (const ValueStripEntry& entry : extras)
