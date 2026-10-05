@@ -1510,7 +1510,11 @@ class TimeAxisPool
     /// that switching tabs back and forth does not churn the allocator.
     static constexpr int RELEASE_AFTER_FRAMES = 600;
 
-    [[nodiscard]] std::vector<double>& acquire(int frame)
+    /// Starts @p frame: buffers handed out from now on belong to it, and those unused for
+    /// RELEASE_AFTER_FRAMES are freed. acquire() does this itself on a frame's first request; calling
+    /// it every frame as well (trimFrameCaches()) lets buffers age and go while no chart asks for an
+    /// axis at all, e.g. on the Processes tab (#1173). Repeat calls within a frame do nothing.
+    void beginFrame(int frame)
     {
         if (frame != m_Frame)
         {
@@ -1518,6 +1522,11 @@ class TimeAxisPool
             m_Next = 0;
             releaseUnused(frame);
         }
+    }
+
+    [[nodiscard]] std::vector<double>& acquire(int frame)
+    {
+        beginFrame(frame);
         if (m_Next == m_Slots.size())
         {
             // Growing the outer vector moves the inner ones, which keeps their heap buffers: spans
@@ -1581,11 +1590,28 @@ class TimeAxisPool
 ///
 /// Charts that share timestamps should share one axis: build it once with every timestamp and give
 /// each chart tailAlignedSpan(axis, itsCount), rather than one call per chart (#1173).
+namespace Detail
+{
+/// The process-wide pool behind frameTimeAxis() (see "Frame-keyed caches" above).
+[[nodiscard]] inline TimeAxisPool& timeAxisPool()
+{
+    static TimeAxisPool pool;
+    return pool;
+}
+} // namespace Detail
+
+/// Per-frame upkeep of the frame-keyed caches that hold memory between frames: call once per frame,
+/// right after ImGui::NewFrame() (UILayer::beginFrame()). Without it, the time-axis pool frees unused
+/// buffers only when some chart asks for an axis, so leaving the chart tabs kept them forever (#1173).
+inline void trimFrameCaches()
+{
+    Detail::timeAxisPool().beginFrame(ImGui::GetFrameCount());
+}
+
 [[nodiscard]] inline std::span<const double> frameTimeAxis(std::span<const double> timestamps, size_t desiredCount, double nowSeconds)
 {
     Detail::assertWithinImGuiFrame();
-    static TimeAxisPool pool;
-    auto& buffer = pool.acquire(ImGui::GetFrameCount());
+    auto& buffer = Detail::timeAxisPool().acquire(ImGui::GetFrameCount());
     fillTimeAxis(buffer, timestamps, desiredCount, nowSeconds);
     return buffer;
 }

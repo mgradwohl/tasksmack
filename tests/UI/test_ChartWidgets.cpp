@@ -347,6 +347,40 @@ TEST(TimeAxisPoolTest, ReleasesTheBuffersOfABurstOnceTheyGoUnused)
     EXPECT_LE(pool.retainedCapacity(), 2U * timestamps.size());
 }
 
+TEST(TimeAxisPoolTest, FramesThatAskForNoAxisStillReleaseUnusedBuffers)
+{
+    // #1173: after leaving the chart tabs (the Processes tab asks for no time axis), buffers must
+    // still go once unused; beginFrame() is called every frame, acquire() only by charts.
+    TimeAxisPool pool;
+    const std::vector<double> timestamps(18000, 1.0);
+    for (int i = 0; i < 8; ++i)
+    {
+        fillTimeAxis(pool.acquire(1), timestamps, timestamps.size(), 2.0);
+    }
+    ASSERT_EQ(pool.bufferCount(), 8U);
+
+    int frame = 2;
+    for (; frame <= 1 + TimeAxisPool::RELEASE_AFTER_FRAMES; ++frame)
+    {
+        pool.beginFrame(frame);
+    }
+    EXPECT_EQ(pool.bufferCount(), 8U); // still within the grace period
+    pool.beginFrame(frame);
+    EXPECT_EQ(pool.bufferCount(), 0U);
+    EXPECT_EQ(pool.retainedCapacity(), 0U);
+}
+
+TEST(TimeAxisPoolTest, BeginFrameTwiceInAFrameKeepsBuffersAlreadyHandedOut)
+{
+    TimeAxisPool pool;
+    auto& first = pool.acquire(5);
+    first.assign(3, 1.0);
+    pool.beginFrame(5);
+    auto& second = pool.acquire(5);
+    EXPECT_NE(&first, &second);
+    EXPECT_EQ(pool.bufferCount(), 2U);
+}
+
 TEST(TimeAxisPoolTest, KeepsBuffersThatAreStillAskedFor)
 {
     TimeAxisPool pool;
