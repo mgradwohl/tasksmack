@@ -155,8 +155,19 @@ class SocketTrafficAccumulator
             if (sample.pid > 0)
             {
                 // Attributed: its owner gets this interval's bytes and whatever it held while unowned
-                // (#1259), which ends its unowned run.
-                credit.add(state.held);
+                // (#1259), which ends its unowned run. The hold is judged at this reading's time: a
+                // run whose deadline passed since its last unowned reading (a long suspend, a stalled
+                // probe) has outlasted the hold, so its held bytes are dropped -- and so is this
+                // interval's growth, which straddles the deadline and can't be split, rather than
+                // landing as one interval's traffic.
+                if (holdOutlasted(state, sampleTimeNs))
+                {
+                    credit = {};
+                }
+                else
+                {
+                    credit.add(state.held);
+                }
                 if (credit.received != 0 || credit.sent != 0)
                 {
                     m_PendingByPid[sample.pid].add(credit);
@@ -258,6 +269,16 @@ class SocketTrafficAccumulator
         Totals held{};
     };
 
+    /// Whether `state` is in an unowned run whose hold is still live but whose deadline has passed by
+    /// `sampleTimeNs`: it began more than UNATTRIBUTED_SOCKET_HOLD_MS before. An unknown time (0) at
+    /// either end never ends a hold.
+    [[nodiscard]] static bool holdOutlasted(const SocketState& state, std::uint64_t sampleTimeNs) noexcept
+    {
+        constexpr std::uint64_t HOLD_NS = static_cast<std::uint64_t>(Sampling::UNATTRIBUTED_SOCKET_HOLD_MS) * 1'000'000ULL;
+        return state.unowned && !state.holdExpired && state.unownedSinceNs != 0 && sampleTimeNs > state.unownedSinceNs &&
+               sampleTimeNs - state.unownedSinceNs > HOLD_NS;
+    }
+
     /// Fold `growth` (bytes since an earlier sighting, or none) into an unowned connection's held
     /// bytes, starting its unowned run if this is its first unowned sighting, and end the hold once
     /// the run has lasted longer than an attributable connection takes to get an owner.
@@ -274,8 +295,7 @@ class SocketTrafficAccumulator
         {
             return;
         }
-        constexpr std::uint64_t HOLD_NS = static_cast<std::uint64_t>(Sampling::UNATTRIBUTED_SOCKET_HOLD_MS) * 1'000'000ULL;
-        if (state.unownedSinceNs != 0 && sampleTimeNs > state.unownedSinceNs && sampleTimeNs - state.unownedSinceNs > HOLD_NS)
+        if (holdOutlasted(state, sampleTimeNs))
         {
             state.holdExpired = true;
             state.held = {};

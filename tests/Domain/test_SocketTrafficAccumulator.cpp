@@ -312,6 +312,39 @@ TEST(SocketTrafficAccumulatorTest, HeldGrowthExpiresForAConnectionThatStaysUnown
     EXPECT_EQ(processes[0].netReceivedBytes, 1'200U);
 }
 
+TEST(SocketTrafficAccumulatorTest, AHoldWhoseDeadlinePassedBeforeAttributionIsDropped)
+{
+    // #1327 review: the hold used to be checked only on unowned readings. If the next reading after
+    // the last unowned one is past the deadline (a long suspend) and attributes the connection, the
+    // held bytes plus everything moved since the previous reading landed in one interval. Judged at
+    // the attributing reading's time, the hold has expired: the held bytes are dropped, and so is
+    // the growth that straddles the deadline.
+    constexpr std::uint64_t MS = 1'000'000ULL;
+    constexpr std::uint64_t HOLD_NS = static_cast<std::uint64_t>(Sampling::UNATTRIBUTED_SOCKET_HOLD_MS) * MS;
+    SocketTrafficAccumulator accumulator;
+    std::vector processes{process(10)};
+    const auto at = [&](std::uint64_t timeNs, const std::vector<SocketTrafficSample>& sockets)
+    {
+        accumulator.addReading(sockets, timeNs);
+        accumulator.publish(processes);
+    };
+    constexpr std::uint64_t T0 = 1'000 * MS;
+    at(T0, {{.key = 2, .pid = 0, .bytesReceived = 100}});
+    at(T0 + MS, {{.key = 2, .pid = 0, .bytesReceived = 1'100}});                    // holds 1000
+    at(T0 + (3'600'000 * MS), {{.key = 2, .pid = 10, .bytesReceived = 9'000'000}}); // an hour later
+    EXPECT_EQ(processes[0].netReceivedBytes, 0U) << "neither the held bytes nor the hour's growth";
+
+    at(T0 + (3'600'000 * MS) + MS, {{.key = 2, .pid = 10, .bytesReceived = 9'000'500}});
+    EXPECT_EQ(processes[0].netReceivedBytes, 500U) << "an owned connection credits its growth from here on";
+
+    // Attributed exactly at the deadline is still within the hold.
+    accumulator.reset();
+    at(T0, {{.key = 3, .pid = 0, .bytesReceived = 100}});
+    at(T0 + MS, {{.key = 3, .pid = 0, .bytesReceived = 400}});
+    at(T0 + HOLD_NS, {{.key = 3, .pid = 10, .bytesReceived = 500}});
+    EXPECT_EQ(processes[0].netReceivedBytes, 400U) << "the held 300 plus this interval's 100";
+}
+
 TEST(SocketTrafficAccumulatorTest, ApplyHoldsGrowthOnTheReadingClock)
 {
     // apply() passes each reading's time, so a connection attributed within the hold is credited
