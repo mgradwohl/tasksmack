@@ -1,5 +1,6 @@
 #include "DXGIGPUProbe.h"
 
+#include "ComPtr.h"
 #include "DXGIAdapterLocation.h"
 #include "DXGIGPUProbeMath.h"
 #include "Platform/GPUTypes.h"
@@ -28,7 +29,6 @@
 #pragma clang diagnostic pop
 // clang-format on
 
-#include <cstring>
 #include <format>
 #include <optional>
 
