@@ -75,17 +75,29 @@ try {
     & $LlvmProfdata merge -sparse $profrawFiles -o "$BuildDir\default.profdata"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-    # Files excluded from coverage: generated/third-party paths, test sources,
-    # and ImGui-only rendering files that cannot be exercised in unit tests.
+    # Files excluded from coverage: generated/third-party paths and test sources only. ImGui panel
+    # code is deliberately NOT excluded (#1131): untested code has to count against the total.
     # Keep in sync with tools/coverage.sh COV_IGNORE_REGEX.
-    $IgnoreRegex = ".*(\\|/)(build|_deps|tests|\.cache)(\\|/).*|(\\|/)UI(\\|/)Widgets\.h|(\\|/)App(\\|/)Panels(\\|/)(ProcessDetailsPanel|ProcessesPanel|SystemMetricsPanel)\.h"
+    $IgnoreRegex = ".*(\\|/)(build|_deps|tests|\.cache)(\\|/).*"
+
+    # llvm-cov only reports files compiled into the binaries it is given, so with the test binary
+    # alone everything never linked into TaskSmackTests (panels, layers, Theme.cpp, main.cpp, ...)
+    # drops out of the denominator (#1131). The coverage preset instruments every target, so also
+    # pass the app binary as an extra -object; files the tests never execute then report 0%.
+    # Keep in sync with tools/coverage.sh COV_OBJECTS.
+    $AppBinary = Join-Path $BuildDir "bin\TaskSmack.exe"
+    if (-not (Test-Path $AppBinary)) {
+        Write-Error "$AppBinary not found; without it the report would only count files linked into TaskSmackTests."
+        exit 1
+    }
+    $CovObjects = @("$BuildDir\tests\TaskSmackTests.exe", "-object", $AppBinary)
 
     # Step 4: Generate HTML report
     Write-Host "==> Generating HTML report..."
     New-Item -ItemType Directory -Force -Path $CoverageDir | Out-Null
 
     & $LlvmCov show `
-        "$BuildDir\tests\TaskSmackTests.exe" `
+        @CovObjects `
         "-instr-profile=$BuildDir\default.profdata" `
         -format=html `
         "-output-dir=$CoverageDir" `
@@ -98,7 +110,7 @@ try {
     Write-Host "==> Generating LCOV report..."
     $lcovPath = Join-Path $CoverageDir "coverage.lcov"
     & $LlvmCov export `
-        "$BuildDir\tests\TaskSmackTests.exe" `
+        @CovObjects `
         "-instr-profile=$BuildDir\default.profdata" `
         -format=lcov `
         "-ignore-filename-regex=$IgnoreRegex" `
@@ -108,7 +120,7 @@ try {
     # Step 6: Generate summary
     Write-Host "==> Coverage Summary:"
     & $LlvmCov report `
-        "$BuildDir\tests\TaskSmackTests.exe" `
+        @CovObjects `
         "-instr-profile=$BuildDir\default.profdata" `
         "-ignore-filename-regex=$IgnoreRegex"
 

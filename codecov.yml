@@ -3,14 +3,19 @@ coverage:
     project:
       default:
         enabled: false
+      # Ratchet (#1131): coverage now counts every src/ file, including ones no test runs, so the old
+      # fixed 80%/60% targets would fail on the honest baseline (~50% Linux). "auto" compares with
+      # the base commit: a change may not lower coverage by more than the threshold.
       linux:
         flags:
           - linux
-        target: 80%
+        target: auto
+        threshold: 1%
       windows:
         flags:
           - windows
-        target: 60%
+        target: auto
+        threshold: 1%
 
 flags:
   linux:

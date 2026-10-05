@@ -213,7 +213,7 @@ std::vector<unsigned char> makeMinimalRedBmp()
 // so tests relying on it must still skip.
 namespace
 {
-bool hasDisplay()
+bool detectDisplay()
 {
 #ifdef _WIN32
     char* ciEnv = nullptr;
@@ -237,6 +237,13 @@ bool hasDisplay()
     }
     return false; // offscreen driver cannot create a GL 3.3 core context; no point trying
 #endif
+}
+
+// Every display check goes through here so TASKSMACK_REQUIRE_DISPLAY=1 (set by Linux CI) turns a
+// missing display into a failure instead of a skip.
+bool hasDisplay()
+{
+    return TestSupport::enforceDisplayRequirement(detectDisplay());
 }
 
 bool isOffscreenVideoDriver()
@@ -264,6 +271,10 @@ class IconLoaderGLTest : public ::testing::Test
         }
         if (!SDL_Init(SDL_INIT_VIDEO))
         {
+            if (TestSupport::displayRequired())
+            {
+                FAIL() << "SDL_Init(SDL_INIT_VIDEO) failed with TASKSMACK_REQUIRE_DISPLAY=1: " << SDL_GetError();
+            }
             GTEST_SKIP() << "SDL_Init(SDL_INIT_VIDEO) failed: " << SDL_GetError();
         }
         m_SdlInitialized = true;
@@ -319,7 +330,7 @@ TEST_F(IconLoaderGLTest, LoadTextureWithRealImageAndRealGLContextSucceeds)
     }
     catch (const std::exception& e)
     {
-        if (isOffscreenVideoDriver())
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
         {
             GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
         }
