@@ -4,6 +4,8 @@
 // conversion math is directly unit-testable without a live SDL window (which is where the
 // `scale` parameter itself comes from, via SDL_GetWindowDisplayScale()) - see #770.
 
+#include "Core/WindowGeometry.h"
+
 #include <cmath>
 
 namespace UI
@@ -26,13 +28,10 @@ namespace UI
 /// Scaling fonts, style metrics and chrome by the full display scale *as well* applied it twice:
 /// 4x text at 200% instead of 2x (#1096). On Windows and X11 the density is 1, so nothing changes.
 /// A density that is not a usable number (0 on failure, NaN) falls back to the display scale alone.
+/// The same rule as Core::WindowGeometry::windowUnitScale(), which the saved window size uses (#1168).
 [[nodiscard]] inline float windowUnitScale(float displayScale, float pixelDensity) noexcept
 {
-    if (!std::isfinite(pixelDensity) || pixelDensity <= 0.0F)
-    {
-        return displayScale;
-    }
-    return displayScale / pixelDensity;
+    return Core::WindowGeometry::windowUnitScale(displayScale, pixelDensity);
 }
 
 /// Smallest difference between two display scales treated as a change. SDL computes the scale in

@@ -30,6 +30,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -163,6 +164,10 @@ void ShellLayer::onDetach()
     {
         settings.windowWidth = normal->width;
         settings.windowHeight = normal->height;
+        // With the scale it was measured at, so the next launch can convert it to the display it
+        // opens on (#1168). An unknown scale saves none: the size is then restored as saved.
+        const float scale = window.getUnitScale();
+        settings.windowScale = scale > 0.0F ? std::optional<float>{scale} : std::nullopt;
         if (Core::Window::supportsPositioning())
         {
             settings.windowPosX = normal->x;

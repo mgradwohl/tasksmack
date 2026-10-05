@@ -3,13 +3,17 @@
 /// persisted as the window's normal geometry (#1121), and how a restored rectangle is fitted to the
 /// connected displays (#1128), and when an OS maximize is replaced by the client-side one (#1208).
 
+#include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
 
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cstddef>
+#include <limits>
 #include <optional>
 #include <span>
+#include <utility>
 
 namespace Core::WindowGeometry
 {
@@ -222,6 +226,76 @@ TEST(WindowGeometryTest, FitIsUsableInConstantExpressions)
     constexpr Rect fitted = fitRectToDisplays(Rect{.x = -3000, .y = 0, .width = 1920, .height = 1080}, displays, 0, MIN_VISIBLE);
     static_assert(fitted == Rect{.x = 0, .y = 0, .width = 1920, .height = 1080});
     EXPECT_EQ(fitted.x, 0);
+}
+
+// ---- rescaleWindowSize / targetDisplayIndex (#1168) ----
+
+TEST(WindowGeometryTest, SizeSavedAtOneScaleKeepsItsApparentSizeAtAnother)
+{
+    // The default 1280 x 720 is for 100 %: at 200 % on Windows (pixel units) it is twice the pixels.
+    EXPECT_EQ(rescaleWindowSize(1280, 720, 1.0F, 2.0F), (std::pair{2560, 1440}));
+    // Saved on a 200 % display, reopened on a 100 % one: half the pixels, not double the size.
+    EXPECT_EQ(rescaleWindowSize(2560, 1440, 2.0F, 1.0F), (std::pair{1280, 720}));
+    // 175 % to 125 %, rounded to the nearest pixel.
+    EXPECT_EQ(rescaleWindowSize(1001, 700, 1.75F, 1.25F), (std::pair{715, 500}));
+    // Same scale: unchanged.
+    EXPECT_EQ(rescaleWindowSize(1234, 567, 1.5F, 1.5F), (std::pair{1234, 567}));
+}
+
+TEST(WindowGeometryTest, SizeWithoutASavedScaleIsRestoredAsSaved)
+{
+    // A config written before the scale was saved: the size is restored as it always was.
+    EXPECT_EQ(rescaleWindowSize(1920, 1080, std::nullopt, 2.0F), (std::pair{1920, 1080}));
+}
+
+TEST(WindowGeometryTest, UnusableScalesLeaveTheSizeAlone)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    EXPECT_EQ(rescaleWindowSize(1280, 720, 0.0F, 2.0F), (std::pair{1280, 720}));
+    EXPECT_EQ(rescaleWindowSize(1280, 720, -1.0F, 2.0F), (std::pair{1280, 720}));
+    EXPECT_EQ(rescaleWindowSize(1280, 720, nan, 2.0F), (std::pair{1280, 720}));
+    EXPECT_EQ(rescaleWindowSize(1280, 720, 1.0F, 0.0F), (std::pair{1280, 720}));
+    EXPECT_EQ(rescaleWindowSize(1280, 720, 1.0F, nan), (std::pair{1280, 720}));
+    EXPECT_EQ(rescaleWindowSize(1280, 720, inf, 1.0F), (std::pair{1280, 720}));
+    EXPECT_EQ(rescaleWindowSize(1280, 720, 1.0F, MAX_WINDOW_SCALE * 2.0F), (std::pair{1280, 720}));
+}
+
+TEST(WindowGeometryTest, RescaledSizeStaysWithinTheWindowLimits)
+{
+    EXPECT_EQ(rescaleWindowSize(300, 250, 4.0F, 1.0F), (std::pair{WINDOW_MIN_DIMENSION, WINDOW_MIN_DIMENSION}));
+    EXPECT_EQ(rescaleWindowSize(10'000, 9'000, 1.0F, 4.0F), (std::pair{WINDOW_MAX_DIMENSION, WINDOW_MAX_DIMENSION}));
+}
+
+TEST(WindowGeometryTest, RescaleIsUsableInConstantExpressions)
+{
+    static_assert(rescaleWindowSize(1280, 720, 1.0F, 1.5F) == std::pair{1920, 1080});
+    static_assert(isUsableWindowScale(1.0F) && !isUsableWindowScale(0.0F) && !isUsableWindowScale(MAX_WINDOW_SCALE + 1.0F));
+    SUCCEED();
+}
+
+TEST(WindowGeometryTest, TargetDisplayIsTheOneTheFitUses)
+{
+    const std::array displays{
+        Rect{.x = 0, .y = 0, .width = 1920, .height = 1040},    // primary, 100 %
+        Rect{.x = 1920, .y = 0, .width = 3840, .height = 2100}, // 200 %
+    };
+    // On the second display: that one, whatever the primary is.
+    EXPECT_EQ(targetDisplayIndex(Rect{.x = 2500, .y = 100, .width = 1280, .height = 720}, displays, 0, MIN_VISIBLE),
+              std::optional<std::size_t>{1});
+    // Off every display: the primary, where fitRectToDisplays() centres it.
+    EXPECT_EQ(targetDisplayIndex(Rect{.x = -9000, .y = -9000, .width = 800, .height = 600}, displays, 1, MIN_VISIBLE),
+              std::optional<std::size_t>{1});
+    EXPECT_EQ(targetDisplayIndex(Rect{.x = -9000, .y = -9000, .width = 800, .height = 600}, displays, 7, MIN_VISIBLE),
+              std::optional<std::size_t>{0});
+    EXPECT_EQ(targetDisplayIndex(Rect{}, std::span<const Rect>{}, 0, MIN_VISIBLE), std::nullopt);
+}
+
+TEST(WindowGeometryTest, WindowUnitScaleIsDisplayScaleOverPixelDensity)
+{
+    EXPECT_FLOAT_EQ(windowUnitScale(1.75F, 1.0F), 1.75F); // Windows at 175 %: pixel units
+    EXPECT_FLOAT_EQ(windowUnitScale(2.0F, 2.0F), 1.0F);   // Wayland at 200 %: logical units
+    EXPECT_FLOAT_EQ(windowUnitScale(1.5F, 0.0F), 1.5F);   // unknown density: the display scale
 }
 
 } // namespace

@@ -79,6 +79,11 @@ struct UserSettings
     // Window state
     int windowWidth = 1280;
     int windowHeight = 720;
+    // Window scale (Window::getUnitScale()) windowWidth/windowHeight are measured at: on Windows the
+    // size is in physical pixels, so it is converted to the scale of the display the window opens
+    // on (#1168). The default size is for 100 %; a config saved before the scale was recorded has
+    // none, and its size is restored unconverted, as it always was.
+    std::optional<float> windowScale = 1.0F;
     std::optional<int> windowPosX;
     std::optional<int> windowPosY;
     bool windowMaximized = false;

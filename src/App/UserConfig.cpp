@@ -3,6 +3,7 @@
 #include "App/Panels/ProcessTableSettings.h"
 #include "App/UserConfigHelpers.h"
 #include "Core/WindowConstants.h"
+#include "Core/WindowGeometry.h"
 #include "Domain/Numeric.h"
 #include "Domain/SamplingConfig.h"
 #include "ProcessColumnConfig.h"
@@ -270,6 +271,17 @@ void readSettings(const toml::table& config, UserSettings& settings)
         config, "window", "width", settings.windowWidth, 800, Core::WINDOW_MIN_DIMENSION, Core::WINDOW_MAX_DIMENSION);
     UserConfigHelpers::loadAndNarrowIntWithClamp(
         config, "window", "height", settings.windowHeight, 600, Core::WINDOW_MIN_DIMENSION, Core::WINDOW_MAX_DIMENSION);
+    // The scale the size was saved at (#1168). A saved size without one predates it and is restored
+    // unconverted; an unusable scale is treated the same way.
+    if (auto val = config["window"]["scale"].value<double>())
+    {
+        const auto scale = static_cast<float>(*val);
+        settings.windowScale = Core::WindowGeometry::isUsableWindowScale(scale) ? std::optional<float>{scale} : std::nullopt;
+    }
+    else if (config["window"]["width"] || config["window"]["height"])
+    {
+        settings.windowScale.reset();
+    }
     if (auto val = config["window"]["x"].value<std::int64_t>())
     {
         // Use default x position of 100 if narrowOr fails
@@ -395,6 +407,10 @@ void readSettings(const toml::table& config, UserSettings& settings)
     if (settings.windowPosY.has_value())
     {
         windowTable.insert("y", *settings.windowPosY);
+    }
+    if (settings.windowScale.has_value())
+    {
+        windowTable.insert("scale", static_cast<double>(*settings.windowScale));
     }
 
     return toml::table{

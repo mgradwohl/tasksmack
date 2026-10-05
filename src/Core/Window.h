@@ -96,7 +96,14 @@ class Window
     /// The normal rectangle is applied before maximizing so it becomes the restore target (#1121).
     /// Startup-only: before maximizing it waits for the window manager (SDL_SyncWindow), like
     /// setSize(), so never call it from the render loop.
-    void applySavedGeometry(std::optional<std::pair<int, int>> position, bool maximized);
+    /// @p savedScale is the window scale the size was saved at (getUnitScale()), if known: the size
+    /// is converted to the scale of the display the window opens on, so it keeps its apparent size
+    /// across displays and scale changes (#1168). Without it the size is applied as saved.
+    void applySavedGeometry(std::optional<std::pair<int, int>> position, bool maximized, std::optional<float> savedScale);
+
+    /// The window's UI scale in window units (WindowGeometry::windowUnitScale(): display scale over
+    /// pixel density) on the display it is on now; 1.0 at 100 % on Windows. 0 when unknown.
+    [[nodiscard]] auto getUnitScale() const noexcept -> float;
 
     /// The display the window is on, or 0 when unknown. Cheap enough to poll every frame, so a
     /// caller can tell when to re-read getUsableDisplaySize().
