@@ -127,11 +127,14 @@ jobs:
       os: ubuntu-24.04
       build_type: debug
 
+  # Release differs from Debug in NDEBUG paths, IPO/LTO, hardening flags and -Werror at -O3, so
+  # it is built and tested on every event that builds Debug (and on the weekly schedule), not just
+  # at release time (#1134). Linux only on PRs: it runs in parallel with the longer Windows debug
+  # and static-analysis jobs, so it adds runner minutes but no wall-clock time.
   build-linux-release:
     needs: [detect-docs-only]
     if: >-
       ((github.event_name != 'pull_request' && github.event_name != 'merge_group') || needs.detect-docs-only.outputs.docs_only != 'true') &&
-      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
       needs.detect-docs-only.outputs.windows_only != 'true'
     permissions:
       contents: read
@@ -155,11 +158,13 @@ jobs:
       os: windows-2025
       build_type: debug
 
+  # Windows release (~9 min) runs after merge -- on push to main/dev/** -- plus the weekly schedule
+  # and manual runs, rather than on every PR, to keep PR runner usage down; Linux release above
+  # covers the PR gate (#1134).
   build-windows-release:
     needs: [detect-docs-only]
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'merge_group') || needs.detect-docs-only.outputs.docs_only != 'true') &&
-      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
       needs.detect-docs-only.outputs.linux_only != 'true'
     permissions:
       contents: read
@@ -168,6 +173,19 @@ jobs:
     with:
       os: windows-2025
       build_type: release
+
+  # Weekly (and manual) unity/jumbo build: no PR or push workflow builds this preset otherwise,
+  # and unity builds break on file-local name clashes that normal builds never see (#1134).
+  build-linux-unity:
+    needs: [detect-docs-only]
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      checks: write
+    uses: ./.github/workflows/reusable-build-test.yml
+    with:
+      os: ubuntu-24.04
+      build_type: unity
 
   docs-hygiene:
     runs-on: ubuntu-24.04
@@ -217,8 +235,12 @@ jobs:
       - name: Cache FetchContent dependencies
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: .cache/fetchcontent
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
+          # Sources and population stamps only: <dep>-build holds objects compiled with this
+          # job's flags (sanitizer, coverage, ...), which another job must not restore (#1137).
+          path: |
+            .cache/fetchcontent
+            !.cache/fetchcontent/*-build
+          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'cmake/Dependencies.cmake', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
           restore-keys: ${{ runner.os }}-fetchcontent-
 
       - name: Configure
@@ -309,8 +331,12 @@ jobs:
       - name: Cache FetchContent dependencies
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: .cache/fetchcontent
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
+          # Sources and population stamps only: <dep>-build holds objects compiled with this
+          # job's flags (sanitizer, coverage, ...), which another job must not restore (#1137).
+          path: |
+            .cache/fetchcontent
+            !.cache/fetchcontent/*-build
+          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'cmake/Dependencies.cmake', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
           restore-keys: ${{ runner.os }}-fetchcontent-
 
       - name: Configure (debug preset)
@@ -419,8 +445,12 @@ jobs:
       - name: Cache FetchContent dependencies
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: .cache/fetchcontent
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
+          # Sources and population stamps only: <dep>-build holds objects compiled with this
+          # job's flags (sanitizer, coverage, ...), which another job must not restore (#1137).
+          path: |
+            .cache/fetchcontent
+            !.cache/fetchcontent/*-build
+          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'cmake/Dependencies.cmake', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
           restore-keys: ${{ runner.os }}-fetchcontent-
 
       - name: Configure
@@ -461,6 +491,7 @@ jobs:
       - build-linux-release
       - build-windows-debug
       - build-windows-release
+      - build-linux-unity
       - docs-hygiene
       - static-analysis
     runs-on: ubuntu-24.04
@@ -479,6 +510,7 @@ jobs:
           WINDOWS_RESULT: ${{ needs.build-windows-debug.result }}
           LINUX_RELEASE_RESULT:   ${{ needs.build-linux-release.result }}
           WINDOWS_RELEASE_RESULT: ${{ needs.build-windows-release.result }}
+          LINUX_UNITY_RESULT:     ${{ needs.build-linux-unity.result }}
           DOCS_RESULT:    ${{ needs.docs-hygiene.result }}
           STATIC_ANALYSIS_RESULT: ${{ needs.static-analysis.result }}
         run: |
@@ -507,13 +539,27 @@ jobs:
             fi
           fi
 
-          if [[ "$EVENT_NAME" == 'schedule' || "$EVENT_NAME" == 'workflow_dispatch' ]]; then
-            if [[ "$LINUX_RELEASE_RESULT" != 'success' ]]; then
-              echo "❌ Linux release build did not succeed: $LINUX_RELEASE_RESULT"
-              failed=true
-            fi
+          # Linux release runs on every event (#1134); it may only skip for docs-only or
+          # Windows-only changes, exactly like Linux debug.
+          if [[ "$LINUX_RELEASE_RESULT" != 'success' &&
+                ! ("$LINUX_RELEASE_RESULT" == 'skipped' &&
+                   ("$DOCS_ONLY" == 'true' || "$WINDOWS_ONLY" == 'true')) ]]; then
+            echo "❌ Linux release build did not succeed or have an intentional skip: $LINUX_RELEASE_RESULT"
+            failed=true
+          fi
+
+          # Windows release runs on push, schedule and workflow_dispatch only (skipped on PRs and
+          # merge_group by design).
+          if [[ "$EVENT_NAME" == 'push' || "$EVENT_NAME" == 'schedule' || "$EVENT_NAME" == 'workflow_dispatch' ]]; then
             if [[ "$WINDOWS_RELEASE_RESULT" != 'success' ]]; then
               echo "❌ Windows release build did not succeed: $WINDOWS_RELEASE_RESULT"
+              failed=true
+            fi
+          fi
+
+          if [[ "$EVENT_NAME" == 'schedule' || "$EVENT_NAME" == 'workflow_dispatch' ]]; then
+            if [[ "$LINUX_UNITY_RESULT" != 'success' ]]; then
+              echo "❌ Linux unity build did not succeed: $LINUX_UNITY_RESULT"
               failed=true
             fi
           fi

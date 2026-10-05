@@ -61,8 +61,12 @@ jobs:
       - name: Cache FetchContent dependencies
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: .cache/fetchcontent
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
+          # Sources and population stamps only: <dep>-build holds objects compiled with this
+          # job's flags (sanitizer, coverage, ...), which another job must not restore (#1137).
+          path: |
+            .cache/fetchcontent
+            !.cache/fetchcontent/*-build
+          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'cmake/Dependencies.cmake', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
           restore-keys: ${{ runner.os }}-fetchcontent-
 
       - name: Configure (Linux)
@@ -87,9 +91,21 @@ jobs:
           LLVM_ROOT: C:\Program Files\LLVM
         run: cmake --build --preset win-${{ inputs.build_type }}
 
+      - name: Install virtual display (Linux)
+        # Xvfb plus Mesa's software GL (llvmpipe) gives the Application/Window/IconLoader GL
+        # suites a real X11 display with a GL 3.3 core context, the same setup heavy-checks.yml's
+        # coverage job already runs the suite under (#1132). The Mesa packages are listed
+        # explicitly rather than relied on as transitive runner-image dependencies.
+        if: runner.os == 'Linux'
+        run: sudo timeout --kill-after=10s 300s apt-get install -y --no-install-recommends xvfb xauth libgl1-mesa-dri libglx-mesa0 libegl1 libegl-mesa0
+
       - name: Test (Linux)
         if: runner.os == 'Linux'
-        run: ctest --preset ${{ inputs.build_type }} -j $(nproc) --schedule-random --output-on-failure --timeout 60 --output-junit test-results.xml
+        env:
+          # A display is guaranteed here, so the display-dependent suites must fail rather than
+          # skip if it goes missing or construction throws (tests/Core/HeadlessVideoDriverTestUtils.h).
+          TASKSMACK_REQUIRE_DISPLAY: '1'
+        run: xvfb-run -a -s "-screen 0 1920x1080x24" ctest --preset ${{ inputs.build_type }} -j "$(nproc)" --schedule-random --output-on-failure --timeout 60 --output-junit test-results.xml
 
       - name: Test (Windows)
         if: runner.os == 'Windows'

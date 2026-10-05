@@ -4,11 +4,46 @@
 #include <SDL3/SDL.h>
 #endif
 
+#include <gtest/gtest.h>
+
+#include <cstddef>
 #include <cstdlib>
 #include <string_view>
 
 namespace TestSupport
 {
+
+// True when the environment promises a GL-capable display (TASKSMACK_REQUIRE_DISPLAY=1), as
+// Linux CI does by running the tests under Xvfb + Mesa. There, "no display" means the CI setup
+// broke, and the display-dependent suites must fail rather than quietly skip (#1132).
+[[maybe_unused]] inline bool displayRequired()
+{
+#ifdef _WIN32
+    char* value = nullptr;
+    std::size_t len = 0;
+    _dupenv_s(&value, &len, "TASKSMACK_REQUIRE_DISPLAY");
+    const bool required = (value != nullptr && std::string_view(value) == "1");
+    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory, cppcoreguidelines-no-malloc) - _dupenv_s allocates with malloc; must free with free()
+    free(value);
+    return required;
+#else
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - read-only env access during single-threaded test setup
+    const char* value = std::getenv("TASKSMACK_REQUIRE_DISPLAY");
+    return value != nullptr && std::string_view(value) == "1";
+#endif
+}
+
+// Passes a display probe's result through, recording a test failure first when the probe found
+// no display although displayRequired() promised one. The caller still skips, but the test is
+// reported as failed, not skipped.
+[[maybe_unused]] inline bool enforceDisplayRequirement(bool displayAvailable)
+{
+    if (!displayAvailable && displayRequired())
+    {
+        ADD_FAILURE() << "TASKSMACK_REQUIRE_DISPLAY=1, but no GL-capable display was found";
+    }
+    return displayAvailable;
+}
 
 #ifndef _WIN32
 // Returns true if SDL can initialize video AND create an OpenGL 3.3 core context.

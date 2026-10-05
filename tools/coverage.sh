@@ -102,16 +102,29 @@ export LD_LIBRARY_PATH="${BUILD_DIR}/tests/mocks${LD_LIBRARY_PATH:+:$LD_LIBRARY_
 echo "==> Merging coverage data..."
 $LLVM_PROFDATA merge -sparse "${BUILD_DIR}"/*.profraw -o "${BUILD_DIR}/default.profdata"
 
-# Files excluded from coverage: generated/third-party paths, test sources,
-# and ImGui-only rendering files that cannot be exercised in unit tests.
-COV_IGNORE_REGEX='.*/(build|_deps|tests|\.cache)/.*|.*/UI/Widgets\.h|.*/App/Panels/(ProcessDetailsPanel|ProcessesPanel|SystemMetricsPanel)\.h'
+# Files excluded from coverage: generated/third-party paths and test sources only. ImGui panel code
+# (Widgets.h, the panel headers) is deliberately NOT excluded any more (#1131): untested code has
+# to count against the total.
+COV_IGNORE_REGEX='.*/(build|_deps|tests|\.cache)/.*'
+
+# llvm-cov only reports files compiled into the binaries it is given, so with TaskSmackTests
+# alone the ~27% of src/ that is never linked into the tests (panels, layers, Theme.cpp,
+# main.cpp, ...) silently drops out of the denominator (#1131). The coverage preset
+# instruments every target, so also pass the app binary as an extra -object: its coverage
+# mapping covers all of src/, and every file the tests never execute is reported at 0%.
+APP_BINARY="${BUILD_DIR}/bin/TaskSmack"
+if [[ ! -x "$APP_BINARY" ]]; then
+    echo "Error: ${APP_BINARY} not found; without it the report would only count files linked into TaskSmackTests." >&2
+    exit 1
+fi
+COV_OBJECTS=("${BUILD_DIR}/tests/TaskSmackTests" -object "$APP_BINARY")
 
 # Step 4: Generate HTML report
 echo "==> Generating HTML report..."
 mkdir -p "$COVERAGE_DIR"
 
 $LLVM_COV show \
-    "${BUILD_DIR}/tests/TaskSmackTests" \
+    "${COV_OBJECTS[@]}" \
     -instr-profile="${BUILD_DIR}/default.profdata" \
     -format=html \
     -output-dir="$COVERAGE_DIR" \
@@ -122,7 +135,7 @@ $LLVM_COV show \
 # Step 5: Generate LCOV file for Codecov
 echo "==> Generating LCOV report..."
 $LLVM_COV export \
-    "${BUILD_DIR}/tests/TaskSmackTests" \
+    "${COV_OBJECTS[@]}" \
     -instr-profile="${BUILD_DIR}/default.profdata" \
     -format=lcov \
     -ignore-filename-regex="${COV_IGNORE_REGEX}" \
@@ -131,7 +144,7 @@ $LLVM_COV export \
 # Step 6: Generate summary
 echo "==> Coverage Summary:"
 $LLVM_COV report \
-    "${BUILD_DIR}/tests/TaskSmackTests" \
+    "${COV_OBJECTS[@]}" \
     -instr-profile="${BUILD_DIR}/default.profdata" \
     -ignore-filename-regex="${COV_IGNORE_REGEX}"
 

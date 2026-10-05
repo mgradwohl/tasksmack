@@ -42,8 +42,12 @@ jobs:
       - name: Cache FetchContent dependencies
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: .cache/fetchcontent
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
+          # Sources and population stamps only: <dep>-build holds objects compiled with this
+          # job's flags (sanitizer, coverage, ...), which another job must not restore (#1137).
+          path: |
+            .cache/fetchcontent
+            !.cache/fetchcontent/*-build
+          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'cmake/Dependencies.cmake', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
           restore-keys: ${{ runner.os }}-fetchcontent-
 
       - name: Configure
@@ -97,8 +101,12 @@ jobs:
       - name: Cache FetchContent dependencies
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: .cache/fetchcontent
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
+          # Sources and population stamps only: <dep>-build holds objects compiled with this
+          # job's flags (sanitizer, coverage, ...), which another job must not restore (#1137).
+          path: |
+            .cache/fetchcontent
+            !.cache/fetchcontent/*-build
+          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'cmake/Dependencies.cmake', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
           restore-keys: ${{ runner.os }}-fetchcontent-
 
       - name: Configure
