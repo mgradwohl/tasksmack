@@ -1514,6 +1514,18 @@ TEST(FormatTest, FormatPercentIsWholeFromTenAndOneDecimalBelow)
     EXPECT_EQ(UI::Format::formatPercent(std::numeric_limits<double>::quiet_NaN()), "N/A");
 }
 
+// #1202: anything under 0.05 % rounds to zero and reads "0%", as on a chart axis -- never "0.0%" or
+// "-0.0%".
+TEST(FormatTest, FormatPercentPrintsWhatRoundsToZeroAsZero)
+{
+    for (const double percent : {0.04, 0.0499, 1e-9, -0.0, -1e-9, -0.01, -0.04})
+    {
+        EXPECT_EQ(UI::Format::formatPercent(percent), "0%") << percent;
+    }
+    EXPECT_EQ(UI::Format::formatPercent(0.05), "0.1%");
+    EXPECT_EQ(UI::Format::formatPercent(-0.05), "-0.1%");
+}
+
 // Whole percents read the same as percentCompact(), the existing whole-percent value formatter.
 TEST(FormatTest, FormatPercentMatchesPercentCompactFromTen)
 {

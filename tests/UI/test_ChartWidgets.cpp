@@ -1049,7 +1049,7 @@ TEST(ChartWidgetsFormattersTest, AxisFormattersMatchValueFormatters)
     {
         EXPECT_EQ(axis(formatAxisWatts, watts), Format::formatWatts(watts));
     }
-    for (const double percent : {0.0, 0.2, 2.5, 9.9, 10.0, 42.0, 100.0})
+    for (const double percent : {0.0, 0.04, -0.04, 0.2, 2.5, 9.9, 10.0, 42.0, 100.0})
     {
         EXPECT_EQ(axis(formatAxisPercent, percent), Format::formatPercent(percent));
     }

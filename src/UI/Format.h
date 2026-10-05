@@ -60,6 +60,22 @@ namespace UI::Format
     return cachedSep;
 }
 
+/// The global locale's decimal point, the one std::format's "L" specs print, so the table's aligned
+/// cells read "1,5 MB" beside a tooltip's "1,5 MB" in a comma-decimal locale (#1202); '.' in the
+/// "C" locale. Not cached: read once per call from std::locale() (a reference-count bump, no
+/// allocation), so it always agrees with the "L" formatters even if the global locale changes.
+[[nodiscard]] inline auto getLocaleDecimalPoint() noexcept -> char
+{
+    try
+    {
+        return std::use_facet<std::numpunct<char>>(std::locale()).decimal_point();
+    }
+    catch (...)
+    {
+        return '.';
+    }
+}
+
 [[nodiscard]] inline auto toIntSaturated(long value) -> int
 {
     if (!std::in_range<int>(value))
@@ -334,7 +350,7 @@ inline constexpr ByteUnit BYTE_UNIT_B{.suffix = "B", .scale = 1.0, .decimals = 1
     return chooseByteUnit(bytesPerSec);
 }
 
-/// alue rounded to decimals places, halves away from zero, as the table's aligned cells round
+/// Value rounded to decimals places, halves away from zero, as the table's aligned cells round
 /// (splitBytesForAlignment() and friends). std::format alone rounds an exact half to even, so a
 /// binary-exact 3.25 MB read "3.2 MB" in a tooltip beside "3.3 MB" in the table (#1202).
 [[nodiscard]] inline auto roundHalfAwayFromZero(double value, int decimals) -> double
@@ -493,7 +509,7 @@ struct AlignedBytesParts
     assert(pos + 2 <= AlignedBytesParts::BUFFER_SIZE && "Buffer overflow in splitBytesForAlignmentFast");
     if (unit.decimals > 0)
     {
-        parts.buffer[pos++] = '.';
+        parts.buffer[pos++] = getLocaleDecimalPoint(); // As formatBytes()'s "L" spec prints it (#1202)
     }
     parts.buffer[pos] = '\0';
 
@@ -582,8 +598,8 @@ struct AlignedBytesParts
             wholeValue += (value >= 0) ? 1 : -1;
         }
 
-        // Whole part includes decimal point
-        parts.wholePart = std::format("{:L}.", wholeValue);
+        // Whole part includes the locale's decimal point, as formatBytes() prints it (#1202)
+        parts.wholePart = std::format("{:L}{}", wholeValue, getLocaleDecimalPoint());
         // Single digit for fractional part
         parts.decimalPart = std::format("{}", fractionalDigit);
     }
@@ -649,8 +665,8 @@ struct AlignedBytesParts
     {
         parts.buffer[pos++] = static_cast<char>('0' + wholeValue);
     }
-    parts.buffer[pos++] = '.'; // Decimal point
-    parts.buffer[pos] = '\0';  // Null terminate
+    parts.buffer[pos++] = getLocaleDecimalPoint(); // As formatPercent()'s "L" spec prints it (#1202)
+    parts.buffer[pos] = '\0';                      // Null terminate
 
     parts.wholePart = std::string_view(parts.buffer.data(), pos);
     parts.decimalDigit = static_cast<char>('0' + fractionalDigit);
@@ -659,9 +675,9 @@ struct AlignedBytesParts
 }
 
 /// "0.6%", one decimal, exactly as the Processes table shows a process's CPU and memory percents
-/// (the same splitPercentForAlignment() rounding and "." separator), or "N/A" for NaN. A process's
-/// share of the machine is usually under a few percent, where percentCompact() rounded it to "0%"
-/// or "1%" (#1195).
+/// (the same splitPercentForAlignment() rounding and locale decimal point), or "N/A" for NaN. A
+/// process's share of the machine is usually under a few percent, where percentCompact() rounded it
+/// to "0%" or "1%" (#1195).
 [[nodiscard]] inline auto percentOneDecimal(double percent) -> std::string
 {
     if (std::isnan(percent))
@@ -680,7 +696,7 @@ struct AlignedBytesParts
 {
     if (watts <= 0.0)
     {
-        return {.wholePart = "0.", .decimalPart = "0", .unitPart = " W"};
+        return {.wholePart = std::format("0{}", getLocaleDecimalPoint()), .decimalPart = "0", .unitPart = " W"};
     }
 
     const double absWatts = std::abs(watts);
@@ -714,8 +730,8 @@ struct AlignedBytesParts
     }
 
     AlignedNumericParts parts;
-    // Whole part includes decimal point
-    parts.wholePart = std::format("{:L}.", wholeValue);
+    // Whole part includes the locale's decimal point, as formatWatts() prints it (#1202)
+    parts.wholePart = std::format("{:L}{}", wholeValue, getLocaleDecimalPoint());
     // Single digit for fractional part
     parts.decimalPart = std::format("{}", fractionalDigit);
     parts.unitPart = std::format(" {}", unitSuffix);
@@ -882,14 +898,16 @@ struct AlignedBytesParts
 }
 
 /// "42%" from 10 % up, "4.2%" below it (where a whole number would read 0 % or 1 % for most
-/// processes), "0%" for zero, "N/A" for NaN (no reading). Localized.
+/// processes), "0%" for anything that rounds to zero, "N/A" for NaN (no reading). Localized.
 [[nodiscard]] inline auto formatPercent(double percent) -> std::string
 {
     if (std::isnan(percent))
     {
         return "N/A";
     }
-    if (percent == 0.0)
+    // Under 0.05 % rounds to zero: one canonical "0%", never "0.0%" or "-0.0%", so a value and the
+    // chart axis tick beside it (formatAxisPercent()) read alike (#1202).
+    if (std::abs(percent) < 0.05)
     {
         return "0%";
     }

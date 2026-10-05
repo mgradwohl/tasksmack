@@ -1231,12 +1231,8 @@ inline int formatAxisWatts(double value, char* buff, int size, void* /*userData*
 /// Use with ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisPercent)
 inline int formatAxisPercent(double value, char* buff, int size, void* /*userData*/)
 {
-    // Clamp values that print as zero to zero, to avoid "-0.0%". Only those: a percent axis can now
-    // scale down to 5 % (#1195), where ticks such as 0.2 % must not read 0 %.
-    if (std::abs(value) < 0.05)
-    {
-        value = 0.0;
-    }
+    // formatPercent() prints anything under 0.05 % as "0%" (no "-0.0%"), and nothing larger: a
+    // percent axis can scale down to 5 % (#1195), where ticks such as 0.2 % must not read 0 % (#1202).
     return Detail::copyAxisLabel(Format::formatPercent(value), buff, size);
 }
 
