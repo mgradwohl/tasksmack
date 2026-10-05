@@ -67,8 +67,8 @@ thread_local std::optional<std::reference_wrapper<Application>> g_StackApplicati
 // Animation only: the FPS readout gets the unclamped interval (lastFrameIntervalSeconds(), #1152).
 constexpr float MAX_DELTA_TIME = 0.1F;
 
-// When no SDL events arrive, sleep this long before rendering the next frame.
-// This limits the idle render rate to ~20 fps, reducing CPU usage when the display
+// When no SDL events arrive, render the next frame this long after the previous one started
+// (FramePacing::computeIdleWaitMs, #1276). This holds the idle render rate at 20 fps, reducing CPU usage when the display
 // hasn't changed. Mouse movement and keyboard events wake the sleep immediately,
 // so interactive frame rate is unaffected.
 constexpr int IDLE_FRAME_SLEEP_MS = 50;
@@ -862,7 +862,8 @@ void Application::run()
             // frame's onUpdate result (1-frame lag is intentional and benign).
             if (FramePacing::computeShouldSleepWhenIdle(keepInteractionRedrawActive, geometryChangedLastFrame))
             {
-                const int sleepMs = FramePacing::computeIdleSleepMs(isHidden, IDLE_FRAME_SLEEP_MS, MINIMIZED_FRAME_SLEEP_MS);
+                const int sleepMs =
+                    FramePacing::computeIdleWaitMs(isHidden, IDLE_FRAME_SLEEP_MS, MINIMIZED_FRAME_SLEEP_MS, getTime() - lastFrameStart);
                 const auto waitStart = traceResizePerfThisFrame ? SDL_GetPerformanceCounter() : 0;
                 SDL_WaitEventTimeout(nullptr, sleepMs);
                 if (traceResizePerfThisFrame)

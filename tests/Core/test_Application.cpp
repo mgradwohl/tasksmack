@@ -925,7 +925,7 @@ TEST(AnimationRequestTest, ConsumeReportsTheHighestRequestedRateAndClears)
     EXPECT_DOUBLE_EQ(Core::AnimationRequest::consume(), 0.0);
     // The unparameterised request asks for the full rate.
     Core::AnimationRequest::request();
-    EXPECT_EQ(Core::AnimationRequest::consume(), Core::AnimationRequest::FULL_RATE);
+    EXPECT_DOUBLE_EQ(Core::AnimationRequest::consume(), Core::AnimationRequest::FULL_RATE);
 }
 
 TEST(AnimationRequestTest, MotionRateKeepsMovementUnderHalfAPixelPerFrame)
@@ -998,6 +998,18 @@ TEST(FramePacingTest, ShouldSleepWhenIdleInsideGraceButGeometryUnchanged)
 TEST(FramePacingTest, ShouldNotSleepWhenIdleInsideGraceWithGeometryChanged)
 {
     EXPECT_FALSE(Core::FramePacing::computeShouldSleepWhenIdle(true, true));
+}
+
+TEST(FramePacingTest, IdleWaitIsMeasuredFromTheFrameStart)
+{
+    // #1276: the idle wait runs to 50 ms after the previous frame started, so an 8 ms frame waits 42
+    // ms and the idle rate really is 20 FPS (a fixed 50 ms after the frame gave about 17).
+    EXPECT_EQ(Core::FramePacing::computeIdleWaitMs(false, 50, 200, 0.008), 42);
+    EXPECT_EQ(Core::FramePacing::computeIdleWaitMs(false, 50, 200, 0.0), 50);
+    EXPECT_EQ(Core::FramePacing::computeIdleWaitMs(false, 50, 200, 0.0081), 42); // rounded up, never short
+    EXPECT_EQ(Core::FramePacing::computeIdleWaitMs(false, 50, 200, 0.075), 0);   // a slow frame: no wait
+    EXPECT_EQ(Core::FramePacing::computeIdleWaitMs(true, 50, 200, 0.008), 192);  // hidden: 5 FPS period
+    EXPECT_EQ(Core::FramePacing::computeIdleWaitMs(false, 50, 200, -1.0), 50);   // a clock step back
 }
 
 TEST(FramePacingTest, IdleSleepMsUsesMinimizedDurationWhenHidden)

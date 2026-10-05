@@ -203,4 +203,17 @@ computeVsyncTransition(bool wasInteracting, bool isInteracting, bool vsyncReques
     return isHidden ? minimizedFrameSleepMs : idleFrameSleepMs;
 }
 
+/// How long to wait before the next idle frame: until computeIdleSleepMs() after the previous frame
+/// *started*, not that long after it ended. A fixed post-frame sleep added the frame's own render time
+/// on top, so the nominal 20 FPS idle rate was really about 17 (#1276), slower than
+/// computeAnimationRate() assumes when it leaves motion of up to 20 FPS to the idle path.
+/// Rounded up to whole milliseconds (SDL_WaitEventTimeout's unit) so the deadline isn't undershot.
+[[nodiscard]] inline auto computeIdleWaitMs(bool isHidden, int idleFrameSleepMs, int minimizedFrameSleepMs, double secondsSinceFrameStart)
+    -> int
+{
+    const double periodMs = static_cast<double>(computeIdleSleepMs(isHidden, idleFrameSleepMs, minimizedFrameSleepMs));
+    const double elapsedMs = std::max(0.0, secondsSinceFrameStart) * 1000.0;
+    return static_cast<int>(std::ceil(std::max(0.0, periodMs - elapsedMs)));
+}
+
 } // namespace Core::FramePacing
