@@ -66,13 +66,13 @@ jobs:
           path: clang-tidy-output.txt
           retention-days: 14
 
-  # Advisory-only: surfaces Windows-specific findings (src/Platform/Windows/)
-  # without gating merges. Failures appear in the job log and artifact.
+  # Windows-only code (src/Platform/Windows/, the _WIN32 branches of shared files). Blocking,
+  # like the Linux job: ci.yml runs the same job on pull requests and gates CI Success on it
+  # (#1233); this one covers push to main, which ci.yml leaves to this workflow.
   static-analysis-windows:
-    name: Static Analysis (Windows, advisory)
+    name: Static Analysis (Windows)
     runs-on: windows-2025
     timeout-minutes: 45
-    continue-on-error: true
     permissions:
       contents: read
     env:
