@@ -795,29 +795,32 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     // built when a different snapshot is shown, once per sample, not every frame (#1171).
     // Only the panel's own snapshot is cached: holding it keeps its address from being reused by a
     // later one, which would otherwise look like the same key. Anything else (the empty placeholder
-    // before a first sample) is rebuilt every time, since nothing pins its address.
+    // before a first sample) is rebuilt every time, since nothing pins its address. The values are
+    // built in a fresh BasicInfoText and moved in whole, key last: a render exception is caught and
+    // the app carries on, so a rebuild that throws part-way must not leave a matching key behind.
     BasicInfoText& text = m_BasicInfoText;
     const bool ownedSnapshot = m_CachedSnapshot.get() == &proc;
     if (!ownedSnapshot || text.key != &proc)
     {
-        text.key = ownedSnapshot ? &proc : nullptr;
-        text.keepAlive = ownedSnapshot ? m_CachedSnapshot : nullptr;
-
+        BasicInfoText fresh;
         const auto formatCountLocale = [](std::int64_t value) -> std::string
         {
             return UI::Format::formatOrDash(value, [](auto v) { return UI::Format::formatIntLocalized(v); });
         };
-        text.pid = std::to_string(proc.pid);
-        text.parentPid = std::to_string(proc.parentPid);
-        text.started = (proc.startTimeEpoch > 0) ? UI::Format::formatEpochDateTimeShort(proc.startTimeEpoch) : std::string("-");
-        text.threads = proc.threadCount > 0 ? formatCountLocale(proc.threadCount) : std::string("-");
-        text.handles = "N/A"; // unreadable, e.g. another user's process without root (#1110)
+        fresh.pid = std::to_string(proc.pid);
+        fresh.parentPid = std::to_string(proc.parentPid);
+        fresh.started = (proc.startTimeEpoch > 0) ? UI::Format::formatEpochDateTimeShort(proc.startTimeEpoch) : std::string("-");
+        fresh.threads = proc.threadCount > 0 ? formatCountLocale(proc.threadCount) : std::string("-");
+        fresh.handles = "N/A"; // unreadable, e.g. another user's process without root (#1110)
         if (proc.handleCountAvailable)
         {
-            text.handles = proc.handleCount > 0 ? formatCountLocale(proc.handleCount) : std::string("-");
+            fresh.handles = proc.handleCount > 0 ? formatCountLocale(proc.handleCount) : std::string("-");
         }
-        text.cpuTime = UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds);
-        text.priority = Detail::priorityDisplayText(proc.nice, Detail::PRIORITY_USES_WINDOWS_CLASSES); // No nice on Windows (#1204)
+        fresh.cpuTime = UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds);
+        fresh.priority = Detail::priorityDisplayText(proc.nice, Detail::PRIORITY_USES_WINDOWS_CLASSES); // No nice on Windows (#1204)
+        fresh.keepAlive = ownedSnapshot ? m_CachedSnapshot : nullptr;
+        fresh.key = ownedSnapshot ? &proc : nullptr;
+        text = std::move(fresh);
     }
 
     // Build identity rows (conditionally include Publisher if available)

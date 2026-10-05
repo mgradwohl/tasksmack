@@ -81,16 +81,17 @@ void renderCpuCoresSection(RenderContext& ctx)
 
     // CPU model header
     // The count is of logical processors, not cores (#1203). Formatted when its inputs change, not
-    // every frame (#1171). UI thread only.
+    // every frame (#1171). UI thread only. The text is built before the keys are committed: a render
+    // exception is caught and the app carries on, so a failed rebuild must be retried next frame.
     static std::string coreInfo;
     static int coreInfoCount = -1;
     static std::uint64_t coreInfoFreqMHz = 0;
     if (snap.coreCount != coreInfoCount || snap.cpuFreqMHz != coreInfoFreqMHz)
     {
-        coreInfoCount = snap.coreCount;
-        coreInfoFreqMHz = snap.cpuFreqMHz;
         coreInfo = UI::Format::formatLogicalProcessorSummary(snap.coreCount,
                                                              (snap.cpuFreqMHz > 0) ? Domain::Numeric::toDouble(snap.cpuFreqMHz) : 0.0);
+        coreInfoCount = snap.coreCount;
+        coreInfoFreqMHz = snap.cpuFreqMHz;
     }
     ImGui::TextUnformatted(snap.cpuModel.c_str());
     ImGui::SameLine(0, 0);

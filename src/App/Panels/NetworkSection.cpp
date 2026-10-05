@@ -105,17 +105,20 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     FrameCache frameLocalCache;
     FrameCache& cache = (ctx.cache != nullptr) ? *ctx.cache : frameLocalCache;
     // The size check also covers a new publication that happens to reuse the old one's address and
-    // version: the selector is indexed by interface below.
+    // version: the selector is indexed by interface below. Every rebuild here builds first and commits
+    // its keys last: a render exception is caught and the app carries on, and a cache whose keys were
+    // committed before a throw would keep its stale contents for good.
     if (cache.publication != ctx.systemPublication || cache.version != ctx.systemPublication->version ||
         cache.interfaceNames.size() != interfaces.size() + 1)
     {
-        cache.publication = ctx.systemPublication;
-        cache.version = ctx.systemPublication->version;
         // "Total" then each interface; virtual interfaces are marked as left out of the Total (#1106)
-        cache.interfaceNames = NetInterfaceUtils::interfaceSelectorLabels(interfaces);
+        auto names = NetInterfaceUtils::interfaceSelectorLabels(interfaces);
         cache.dropdownFontSize = -1.0F;
         cache.labelsBuilt = false;
         cache.rowsValid = false;
+        cache.interfaceNames = std::move(names);
+        cache.publication = ctx.systemPublication;
+        cache.version = ctx.systemPublication->version;
     }
 
     // Build interface selector dropdown
@@ -311,11 +314,12 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     // changes, not every frame (#1171).
     if (!cache.labelsBuilt || cache.labelsName != ifaceDisplayName)
     {
-        cache.labelsBuilt = true;
-        cache.labelsName = ifaceDisplayName;
+        cache.labelsBuilt = false;
         cache.interfaceSentLabel = std::format("{} Sent", ifaceDisplayName);
         cache.interfaceRecvLabel = std::format("{} Received", ifaceDisplayName);
         cache.unavailableTitle = std::format("Total (selected: {}, history unavailable)", ifaceDisplayName);
+        cache.labelsName = ifaceDisplayName;
+        cache.labelsBuilt = true;
     }
     const std::string& ifaceSentLabel = cache.interfaceSentLabel;
     const std::string& ifaceRecvLabel = cache.interfaceRecvLabel;
@@ -530,11 +534,14 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     // moving traffic (which only grows) changes, not every frame: 20-40 interfaces on Windows (#1171).
     if (!cache.rowsValid || cache.rowsShowAll != showAllInterfaces || cache.rowsSeenTraffic != seenTraffic.size())
     {
-        cache.rowsValid = true;
+        cache.rowsValid = false;
+        auto rows = NetInterfaceUtils::getInterfaceStatusRows(interfaces, showAllInterfaces, seenTraffic);
+        const std::size_t hidden = NetInterfaceUtils::countHiddenInterfaces(interfaces, seenTraffic);
+        cache.statusRows = std::move(rows);
+        cache.hiddenCount = hidden;
         cache.rowsShowAll = showAllInterfaces;
         cache.rowsSeenTraffic = seenTraffic.size();
-        cache.statusRows = NetInterfaceUtils::getInterfaceStatusRows(interfaces, showAllInterfaces, seenTraffic);
-        cache.hiddenCount = NetInterfaceUtils::countHiddenInterfaces(interfaces, seenTraffic);
+        cache.rowsValid = true;
     }
     const auto& sortedInterfaces = cache.statusRows;
     if (!interfaces.empty())

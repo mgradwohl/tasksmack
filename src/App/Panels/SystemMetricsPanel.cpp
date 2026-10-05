@@ -541,30 +541,32 @@ void SystemMetricsPanel::renderOverview()
     if (!m_OverviewHeader.valid || m_OverviewHeader.systemVersion != systemVersion || m_OverviewHeader.gpuVersion != gpuVersion ||
         m_OverviewHeader.processCount != processCount || m_OverviewHeader.hasProcessModel != (m_ProcessModel != nullptr))
     {
-        m_OverviewHeader.valid = true;
-        m_OverviewHeader.systemVersion = systemVersion;
-        m_OverviewHeader.gpuVersion = gpuVersion;
-        m_OverviewHeader.processCount = processCount;
-        m_OverviewHeader.hasProcessModel = (m_ProcessModel != nullptr);
-
-        m_OverviewHeader.uptime = UI::Format::formatUptimeShort(snap.uptimeSeconds);
+        // Built in a fresh OverviewHeaderText and moved in whole, validity last: a render exception is
+        // caught and the app carries on, so a rebuild that throws part-way must leave the cache stale.
+        OverviewHeaderText fresh;
+        fresh.uptime = UI::Format::formatUptimeShort(snap.uptimeSeconds);
 
         // Display: "CPU Model (N logical processors @ X.XX GHz)     Uptime: Xd Yh Zm"
         // The count is of logical processors, not cores (#1203).
-        m_OverviewHeader.coreInfo = UI::Format::formatLogicalProcessorSummary(
+        fresh.coreInfo = UI::Format::formatLogicalProcessorSummary(
             snap.coreCount, (snap.cpuFreqMHz > 0) ? Domain::Numeric::toDouble(snap.cpuFreqMHz) : 0.0);
 
-        m_OverviewHeader.processes =
+        fresh.processes =
             (m_ProcessModel != nullptr) ? std::format("Processes: {}", UI::Format::formatIntLocalized(processCount)) : std::string{};
 
         // Total dedicated VRAM: discrete GPUs only, an integrated GPU's "memory" being system RAM (#1114).
         const std::uint64_t totalVramBytes = m_GPUPublication ? GpuSection::totalDedicatedVramBytes(m_GPUPublication->snapshots) : 0;
         // RAM and VRAM, appended to the CPU line
-        m_OverviewHeader.memory = (totalVramBytes > 0)
-                                    ? std::format(", {} RAM, {} VRAM",
-                                                  UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes)),
-                                                  UI::Format::formatBytes(static_cast<double>(totalVramBytes)))
-                                    : std::format(", {} RAM", UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes)));
+        fresh.memory = (totalVramBytes > 0) ? std::format(", {} RAM, {} VRAM",
+                                                          UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes)),
+                                                          UI::Format::formatBytes(static_cast<double>(totalVramBytes)))
+                                            : std::format(", {} RAM", UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes)));
+        fresh.systemVersion = systemVersion;
+        fresh.gpuVersion = gpuVersion;
+        fresh.processCount = processCount;
+        fresh.hasProcessModel = (m_ProcessModel != nullptr);
+        fresh.valid = true;
+        m_OverviewHeader = std::move(fresh);
     }
     const std::string& uptimeStr = m_OverviewHeader.uptime;
     const std::string& coreInfo = m_OverviewHeader.coreInfo;
