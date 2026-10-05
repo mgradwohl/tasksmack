@@ -200,7 +200,7 @@ The following table summarises capabilities that differ between Windows and Linu
 | CPU utilisation (total + per-core) | ✅ | ✅ |
 | Memory metrics | ✅ | ✅ |
 | System uptime | ✅ | ✅ |
-| Process I/O counters | ✅ (requires root / `CAP_DAC_READ_SEARCH`) | ✅ (no elevated privileges needed) |
+| Process I/O counters | ✅ (other users' processes: root, or `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE`) | ✅ (no elevated privileges needed) |
 | Per-process network (TCP only) | ✅ (Linux 4.2+ Netlink) | ✅ (TCP EStats; administrator required) |
 | Thread count per process | ✅ | ✅ |
 | Process priority (nice) | ✅ | ✅ (mapped −20 … +19) |

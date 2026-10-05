@@ -701,8 +701,8 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters, c
     // write_bytes: <bytes> <- actual I/O to storage layer
     // cancelled_write_bytes: <bytes>
     //
-    // Note: This file requires CAP_DAC_READ_SEARCH capability or running as root,
-    // or being the owner of the process. If we can't read it -- typically another user's
+    // Note: for another user's process this file needs root, or CAP_DAC_READ_SEARCH (to open the
+    // owner-only file) plus CAP_SYS_PTRACE (the read checks PTRACE_MODE_READ_FSCREDS). If we can't read it -- typically another user's
     // process without root -- the counters are marked unavailable rather than left at a
     // 0 that reads as "no I/O" (#1110).
 
@@ -807,8 +807,8 @@ void LinuxProcessProbe::countProcessFds(int32_t pid, ProcessCounters& counters, 
 bool LinuxProcessProbe::checkIoCountersAvailability(const std::filesystem::path& procRoot)
 {
     // Check if procRoot/self/io is readable to determine I/O counter availability.
-    // This file requires CAP_DAC_READ_SEARCH capability or root privileges,
-    // or being the owner of the target process.
+    // Our own io file is always readable unless procfs is restricted; another user's needs root, or
+    // CAP_DAC_READ_SEARCH plus CAP_SYS_PTRACE (see parseProcessIo()).
     const std::string selfIoPath = (procRoot / "self" / "io").string();
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — POSIX open() is variadic
     const int fd = ::open(selfIoPath.c_str(), O_RDONLY | O_CLOEXEC);

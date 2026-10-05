@@ -26,13 +26,21 @@ cmake --preset win-release-compatible  # Windows, x86-64-v2 (2009+ CPUs)
 sudo ./TaskSmack
 ```
 
-**Fix (option 2 — grant capability):**
+**Fix (option 2 — grant capabilities):**
 
 ```bash
-sudo setcap cap_dac_read_search+ep /path/to/TaskSmack
+sudo setcap cap_dac_read_search,cap_sys_ptrace+ep /path/to/TaskSmack
 ```
 
-`CAP_DAC_READ_SEARCH` grants access to `/proc/[pid]/io` without requiring full root. Re-apply the capability after each update.
+Each value needs a different kernel check, so one capability alone doesn't restore all of them:
+
+| Value | Kernel check for another user's process | Capability needed |
+|-------|------------------------------------------|-------------------|
+| FD count | Listing `/proc/[pid]/fd` (a directory only its owner can read) | `CAP_DAC_READ_SEARCH` |
+| I/O | Opening `/proc/[pid]/io` (owner-only) **and** ptrace read access to the process | `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE` |
+| Network | Reading the `/proc/[pid]/fd/*` links, which needs ptrace read access to the process | `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE` |
+
+With `CAP_DAC_READ_SEARCH` alone, only FD counts come back. `CAP_SYS_PTRACE` lets TaskSmack inspect any process on the system, so grant it only if you are comfortable with that; running as root is the alternative. Re-apply the capabilities after each update.
 
 > On Windows, I/O counters are always available — they come from the bulk `SystemProcessInformation` snapshot, so no elevated privileges are needed.
 

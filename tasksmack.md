@@ -214,7 +214,7 @@ Capability absence is not an error. A supported platform may still omit metrics 
 | GPU | NVML for NVIDIA, ROCm SMI for AMD, DRM/sysfs for Intel and generic discovery |
 | Process actions | POSIX signals, `setpriority`, affinity APIs |
 
-Per-process I/O may require root or `CAP_DAC_READ_SEARCH`. Per-process network attribution requires Linux 4.2+ Netlink support.
+For other users' processes, per-process I/O and network attribution need root or `CAP_DAC_READ_SEARCH` plus `CAP_SYS_PTRACE` (reading `/proc/[pid]/io` and the `/proc/[pid]/fd/*` links is checked with `PTRACE_MODE_READ_FSCREDS`); FD counts need only `CAP_DAC_READ_SEARCH` (listing `/proc/[pid]/fd` is a plain permission check). Per-process network attribution requires Linux 4.2+ Netlink support.
 
 ### Windows
 

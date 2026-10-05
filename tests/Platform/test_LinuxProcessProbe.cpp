@@ -491,7 +491,7 @@ TEST(LinuxProcessProbeTest, IoCountersForSelfProcess)
     // Only test if I/O counters are available
     if (!caps.hasIoCounters)
     {
-        GTEST_SKIP() << "I/O counters not available (requires root or CAP_DAC_READ_SEARCH)";
+        GTEST_SKIP() << "I/O counters not available (requires root, or CAP_DAC_READ_SEARCH + CAP_SYS_PTRACE)";
     }
 
     auto processes = probe.enumerate();
@@ -536,7 +536,7 @@ TEST(LinuxProcessProbeTest, IoCountersIncreaseWithActivity)
 
     if (!caps.hasIoCounters)
     {
-        GTEST_SKIP() << "I/O counters not available (requires root or CAP_DAC_READ_SEARCH)";
+        GTEST_SKIP() << "I/O counters not available (requires root, or CAP_DAC_READ_SEARCH + CAP_SYS_PTRACE)";
     }
 
     const pid_t selfPid = getpid();
