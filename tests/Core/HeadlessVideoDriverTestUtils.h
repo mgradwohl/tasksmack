@@ -62,6 +62,12 @@ namespace TestSupport
 #ifndef NDEBUG
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG);
 #endif
+    // And the same framebuffer (src/Core/Window.cpp): double-buffered, no depth or stencil. SDL's
+    // default asks for a depth buffer, which a driver could lack while supporting the app's own
+    // framebuffer, making the probe skip (or, with TASKSMACK_REQUIRE_DISPLAY=1, fail) wrongly.
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
+    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 0);
     bool glCapable = false;
     SDL_Window* testWin = SDL_CreateWindow("gl_probe", 1, 1, SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN);
     if (testWin != nullptr)
