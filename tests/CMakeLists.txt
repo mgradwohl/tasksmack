@@ -52,6 +52,11 @@ if(WIN32)
     endif()
 endif()
 
+# tools/check-benchmark-regression.py gates CI on benchmark regressions; Python3_EXECUTABLE is
+# already required (GLAD generation, cmake/Dependencies.cmake).
+add_test(NAME BenchmarkRegressionGateScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_benchmark_regression.py)
+
 # Test sources. Every list is defined on every platform, so the registration check below can see
 # all of them; the platform branch then picks its own.
 set(COMMON_TEST_SOURCES

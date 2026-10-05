@@ -4,7 +4,8 @@ tools/check-benchmark-regression.py — Compare benchmark results against a base
 
 Usage:
     python3 tools/check-benchmark-regression.py --baseline perf-data/linux-baseline.json \
-        --current perf-data/benchmark-latest.json [--threshold 15] [--min-coverage 90]
+        --current perf-data/benchmark-latest.json [--threshold 15] [--min-coverage 90] \
+        [--min-abs-delta-ns 1.0]
 
 Exit codes:
     0  All matched benchmarks are within threshold, and coverage meets --min-coverage
@@ -13,6 +14,12 @@ Exit codes:
 
 The threshold is a percentage: a benchmark that is more than THRESHOLD% slower than the
 baseline is considered a regression. Improvements are always accepted.
+
+--min-abs-delta-ns is an absolute noise floor: a benchmark only counts as a regression when it
+is both more than THRESHOLD% slower AND slower by more than this many nanoseconds. A
+sub-nanosecond microbenchmark (e.g. BM_Numeric_ToDouble_Int at ~0.4ns) moving by 0.2ns is timer
+and runner noise, yet reads as +50%; percentages alone cannot tell that apart from a real
+regression (#1322). Default 1.0ns; pass 0 to gate on the percentage alone.
 
 --min-coverage is the minimum percentage of baseline benchmarks that must be present and
 validly comparable in the current run. A benchmark missing from the current run, or one with
@@ -144,6 +151,15 @@ def main() -> int:
             "comparable in the current run (default: 90)"
         ),
     )
+    parser.add_argument(
+        "--min-abs-delta-ns",
+        type=finite_percentage(min_value=0.0),
+        default=1.0,
+        help=(
+            "Absolute noise floor in nanoseconds: a slowdown of this much or less is never a "
+            "regression, whatever its percentage (default: 1.0; 0 disables)"
+        ),
+    )
     args = parser.parse_args()
 
     if not args.baseline.exists():
@@ -169,6 +185,7 @@ def main() -> int:
 
     print(f"Comparing {len(current)} current benchmark(s) against {len(baseline)} baseline(s).")
     print(f"Regression threshold: {args.threshold:.1f}%")
+    print(f"Absolute noise floor: {args.min_abs_delta_ns:.2f}ns")
     print(f"Minimum required coverage: {args.min_coverage:.1f}%")
     print()
 
@@ -181,6 +198,7 @@ def main() -> int:
 
     regressions: list[tuple[str, float, str, float, str, float]] = []
     improvements: list[tuple[str, float, str, float, str, float]] = []
+    below_floor: list[tuple[str, float, str, float, str, float]] = []
     invalid: list[tuple[str, str]] = []
     compared = 0
 
@@ -234,8 +252,14 @@ def main() -> int:
         compared += 1
         pct_change = ((cur_time_normalized - base_time_normalized) / base_time_normalized) * 100.0
 
+        abs_delta_ns = cur_time_normalized - base_time_normalized
+
         if pct_change > args.threshold:
-            regressions.append((name, base_time, base_unit, cur_time, cur_unit, pct_change))
+            row = (name, base_time, base_unit, cur_time, cur_unit, pct_change)
+            if abs_delta_ns > args.min_abs_delta_ns:
+                regressions.append(row)
+            else:
+                below_floor.append(row)
         elif pct_change < -5.0:
             improvements.append((name, base_time, base_unit, cur_time, cur_unit, pct_change))
 
@@ -268,6 +292,14 @@ def main() -> int:
         print(f"Improvements ({len(improvements)}):")
         for name, base, base_unit, cur, cur_unit, pct in sorted(improvements, key=lambda x: x[5]):
             print(f"   {name}: {base:.1f}{base_unit} -> {cur:.1f}{cur_unit}  ({pct:+.1f}%)")
+        print()
+
+    # ── Report over-threshold changes inside the absolute noise floor ─────────
+    if below_floor:
+        print(f"Over {args.threshold:.1f}% but within the {args.min_abs_delta_ns:.2f}ns noise floor "
+              f"({len(below_floor)}, not regressions):")
+        for name, base, base_unit, cur, cur_unit, pct in sorted(below_floor, key=lambda x: -x[5]):
+            print(f"   {name}: {base:.2f}{base_unit} -> {cur:.2f}{cur_unit}  ({pct:+.1f}%)")
         print()
 
     # ── Report regressions ────────────────────────────────────────────────────

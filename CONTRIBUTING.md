@@ -689,6 +689,10 @@ enforces a `--min-coverage` floor (default 90%): a benchmark missing from the cu
 with no usable timing data on either side, counts against coverage instead of being silently
 ignored (see #871 -- this closed three concrete false-pass paths: a missing baseline benchmark,
 a non-finite/`NaN` timing, and comparing two different timing fields for the same benchmark).
+A slowdown also has to exceed an absolute noise floor, `--min-abs-delta-ns` (default 1.0ns), to
+count: a sub-nanosecond microbenchmark such as `BM_Numeric_ToDouble_Int` moving 0.4ns -> 0.6ns
+reads as +50% but is timer noise (#1322). Pass `--min-abs-delta-ns 0` to gate on percentage alone.
+
 This is a *separate* baseline from `perf-data/linux-baseline.json` above, deliberately: that one
 was recorded on a local developer machine (10 cores @ 3.7 GHz) for local `tools/bench.sh`
 comparisons, and comparing it against hosted `ubuntu-24.04` runners (shared 4-vCPU machines)
