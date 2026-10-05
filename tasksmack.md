@@ -107,13 +107,15 @@ Sampling is deliberately mixed according to workload:
 4. Domain models compute deltas under a sampling lock, producing snapshots keyed by PID/time and updating histories.
 5. System, Storage, and GPU models atomically publish immutable versioned snapshot-and-history generations; ProcessModel publishes a monotonic snapshot version.
 6. Panels retain those generations and rebuild process filter/sort caches only when versions change, avoiding render-frame locks and deep copies.
-7. Process Details records history once per ProcessModel publication rather than once per UI timer tick, so adaptive sampling cannot duplicate stale values.
+7. Process Details records history once per ProcessModel publication rather than once per UI timer tick, so adaptive sampling cannot duplicate stale values. `ProcessModel::watchProcess()` keeps a shared sample of the selected process from every publication (the last 64), each stamped with the time the generation was sampled; the details pane takes in every sample newer than its last, so generations published between two frames are not lost and its charts share the Overview's timebase. A frame with nothing new costs one atomic load and copies no snapshot.
 
 The default interval is 1 second and can be configured from 100 ms to 5 seconds. History defaults to 5 minutes and is bounded from 10 seconds to 30 minutes. Shared defaults and clamps live in `src/Domain/SamplingConfig.h`.
 
 ### Process Identity and Rates
 
 Process state is keyed by PID plus start time so PID reuse creates a fresh baseline. Domain models guard against counter rollback and implausible rates.
+
+A per-process value the probe could not read (on Linux without root: another user's `/proc/[pid]/fd` and `/proc/[pid]/io`, and so its FD count, I/O and network attribution) is flagged unavailable in `ProcessCounters`/`ProcessSnapshot` (`handleCountAvailable`, `ioAvailable`, `networkAvailable`). A rate needs both readings it is taken between. Unavailable values are shown as N/A and as gaps in the charts, and they are left out of the system totals rather than counted as 0.
 
 ## Dependency Direction
 

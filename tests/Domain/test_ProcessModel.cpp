@@ -10,6 +10,7 @@
 
 #include "Domain/GPUModel.h"
 #include "Domain/ProcessModel.h"
+#include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
 #include "Mocks/MockGPUProbe.h"
 #include "Mocks/MockProbes.h"
@@ -18,6 +19,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -2823,4 +2825,362 @@ TEST(ProcessModelTest, ConcurrentRefreshAndReadDoesNotCrash)
 
     writer.join();
     reader.join();
+}
+
+// =============================================================================
+// Watched-process samples (#1098, #1172)
+// =============================================================================
+
+namespace
+{
+
+double steadySeconds(Domain::ProcessModel::Clock::time_point time)
+{
+    return std::chrono::duration<double>(time.time_since_epoch()).count();
+}
+
+} // namespace
+
+TEST(ProcessModelTest, WatchedSamplesCarryEachGenerationsOwnSampleTime)
+{
+    // #1098: Process Details stamped history with the UI frame time that noticed
+    // a new generation. Each sample now carries the time the model sampled it
+    // (its NowFunction), the timebase of the Overview's process aggregates.
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({makeCounter(100, "watched", 'R', 1000, 0, 5000)});
+    probe->setTotalCpuTime(100000);
+    ManualClock clock;
+    clock.advance(std::chrono::seconds(1000));
+    const auto now = clock.now();
+    Domain::ProcessModel model(std::move(probe), now);
+    model.watchProcess(100);
+
+    model.refresh();
+    const double firstTime = steadySeconds(now());
+    clock.advance(std::chrono::milliseconds(250));
+    model.refresh();
+    const double secondTime = steadySeconds(now());
+
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(model.watchedSamplesSince(0, samples));
+    ASSERT_EQ(samples.size(), 2U);
+    EXPECT_DOUBLE_EQ(samples[0].sampleTimeSeconds, firstTime);
+    EXPECT_DOUBLE_EQ(samples[1].sampleTimeSeconds, secondTime);
+    EXPECT_EQ(samples[0].version, 1U);
+    EXPECT_EQ(samples[1].version, 2U);
+    ASSERT_NE(samples[1].snapshot, nullptr);
+    EXPECT_EQ(samples[1].snapshot->pid, 100);
+
+    // The same timebase as the model's own history timestamps.
+    const auto timestamps = model.historyTimestamps();
+    ASSERT_FALSE(timestamps.empty());
+    EXPECT_DOUBLE_EQ(timestamps.back(), secondTime);
+}
+
+TEST(ProcessModelTest, WatchedSamplesKeepEveryGenerationPublishedBetweenPolls)
+{
+    // #1098: a reader that polls once per frame saw only the latest generation,
+    // so two publishes between frames lost one. Every generation since the
+    // reader's last poll is returned, oldest first.
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->setCounters({makeCounter(100, "watched", 'R', 1000, 0, 5000)});
+    rawProbe->setTotalCpuTime(100000);
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
+    model.watchProcess(100);
+
+    model.refresh();
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(model.watchedSamplesSince(0, samples));
+    ASSERT_EQ(samples.size(), 1U);
+    const std::uint64_t lastSeen = samples.back().version;
+
+    // Three generations before the next poll.
+    for (std::uint64_t i = 1; i <= 3; ++i)
+    {
+        clock.advance(std::chrono::milliseconds(100));
+        rawProbe->setCounters({makeCounter(100, "watched", 'R', 1000 + (100 * i), 0, 5000)});
+        model.refresh();
+    }
+
+    samples.clear();
+    ASSERT_TRUE(model.watchedSamplesSince(lastSeen, samples));
+    ASSERT_EQ(samples.size(), 3U);
+    for (std::size_t i = 0; i < samples.size(); ++i)
+    {
+        EXPECT_EQ(samples[i].version, lastSeen + 1 + i) << "consecutive generations, none skipped";
+        EXPECT_NE(samples[i].snapshot, nullptr);
+    }
+    EXPECT_LT(samples[0].sampleTimeSeconds, samples[1].sampleTimeSeconds);
+    EXPECT_LT(samples[1].sampleTimeSeconds, samples[2].sampleTimeSeconds);
+}
+
+TEST(ProcessModelTest, WatchedSamplesSinceCopiesNothingWhenNothingNewWasPublished)
+{
+    // #1172: the selected process was looked up and deep-copied twice every
+    // frame, new data or not. With nothing new published the poll returns false
+    // and leaves the output untouched, and a sample handed out twice is the same
+    // shared snapshot, not a fresh copy.
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({makeCounter(100, "watched", 'R', 1000, 0, 5000)});
+    probe->setTotalCpuTime(100000);
+    Domain::ProcessModel model(std::move(probe));
+    model.watchProcess(100);
+    model.refresh();
+
+    std::vector<Domain::ProcessSample> first;
+    ASSERT_TRUE(model.watchedSamplesSince(0, first));
+    ASSERT_EQ(first.size(), 1U);
+
+    std::vector<Domain::ProcessSample> unchanged;
+    EXPECT_FALSE(model.watchedSamplesSince(first.back().version, unchanged));
+    EXPECT_TRUE(unchanged.empty());
+
+    std::vector<Domain::ProcessSample> again;
+    ASSERT_TRUE(model.watchedSamplesSince(0, again));
+    ASSERT_EQ(again.size(), 1U);
+    EXPECT_EQ(again[0].snapshot.get(), first[0].snapshot.get()) << "shared, not deep-copied per poll";
+}
+
+TEST(ProcessModelTest, WatchProcessStartsFromTheCurrentGeneration)
+{
+    // Selecting a process shows it at once, from the generation already
+    // published, rather than waiting for the next refresh.
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({makeCounter(100, "first", 'R', 1000, 0, 5000), makeCounter(200, "second", 'R', 1000, 0, 6000)});
+    probe->setTotalCpuTime(100000);
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    model.watchProcess(200);
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(model.watchedSamplesSince(0, samples));
+    ASSERT_EQ(samples.size(), 1U);
+    EXPECT_EQ(samples[0].version, model.snapshotVersion());
+    ASSERT_NE(samples[0].snapshot, nullptr);
+    EXPECT_EQ(samples[0].snapshot->pid, 200);
+
+    // Switching the watch drops the old process's samples.
+    model.watchProcess(100);
+    samples.clear();
+    ASSERT_TRUE(model.watchedSamplesSince(0, samples));
+    ASSERT_EQ(samples.size(), 1U);
+    ASSERT_NE(samples[0].snapshot, nullptr);
+    EXPECT_EQ(samples[0].snapshot->pid, 100);
+}
+
+TEST(ProcessModelTest, WatchedSampleOfAGenerationWithoutTheProcessIsEmpty)
+{
+    // A generation that no longer lists the process still gets a sample, with no
+    // snapshot, so the reader can tell "exited" from "missed generations".
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->setCounters({makeCounter(100, "watched", 'R', 1000, 0, 5000)});
+    rawProbe->setTotalCpuTime(100000);
+    Domain::ProcessModel model(std::move(probe));
+    model.watchProcess(100);
+    model.refresh();
+    rawProbe->setCounters({makeCounter(200, "other", 'R', 1000, 0, 6000)});
+    model.refresh();
+
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(model.watchedSamplesSince(0, samples));
+    ASSERT_EQ(samples.size(), 2U);
+    EXPECT_NE(samples[0].snapshot, nullptr);
+    EXPECT_EQ(samples[1].snapshot, nullptr);
+    EXPECT_EQ(samples[1].version, 2U);
+}
+
+TEST(ProcessModelTest, WatchedSamplesBeyondTheRingLeaveAVersionGap)
+{
+    // More generations than the ring holds between two polls: the oldest are
+    // gone, and the first sample returned is not the one after the reader's last,
+    // so it can mark the gap.
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({makeCounter(100, "watched", 'R', 1000, 0, 5000)});
+    probe->setTotalCpuTime(100000);
+    Domain::ProcessModel model(std::move(probe));
+    model.watchProcess(100);
+    model.refresh();
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(model.watchedSamplesSince(0, samples));
+    const std::uint64_t lastSeen = samples.back().version;
+
+    constexpr std::size_t EXTRA = 3;
+    for (std::size_t i = 0; i < Domain::ProcessModel::WATCHED_SAMPLE_CAPACITY + EXTRA; ++i)
+    {
+        model.refresh();
+    }
+
+    samples.clear();
+    ASSERT_TRUE(model.watchedSamplesSince(lastSeen, samples));
+    ASSERT_EQ(samples.size(), Domain::ProcessModel::WATCHED_SAMPLE_CAPACITY);
+    EXPECT_EQ(samples.front().version, lastSeen + 1 + EXTRA);
+    EXPECT_EQ(samples.back().version, model.snapshotVersion());
+}
+
+TEST(ProcessModelTest, NoSamplesAreKeptWhileNothingIsWatched)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({makeCounter(100, "watched", 'R', 1000, 0, 5000)});
+    probe->setTotalCpuTime(100000);
+    Domain::ProcessModel model(std::move(probe));
+    model.watchProcess(100);
+    model.refresh();
+    model.watchProcess(-1);
+    model.refresh();
+
+    std::vector<Domain::ProcessSample> samples;
+    EXPECT_FALSE(model.watchedSamplesSince(0, samples));
+    EXPECT_TRUE(samples.empty());
+}
+
+// =============================================================================
+// A throwing per-process GPU merge (#1142)
+// =============================================================================
+
+TEST(ProcessModelTest, ThrowingPerProcessGpuQueryStillPublishesProcesses)
+{
+    // #1142: readProcessGPUCounters() throwing escaped refresh() after the
+    // per-process state had advanced, so a GPU probe that threw every time froze
+    // the process list. The processes are now published without GPU fields.
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = processProbe.get();
+    rawProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1000, 500)});
+    rawProbe->setTotalCpuTime(100000);
+
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    gpuProbe->withCapabilities(caps);
+    gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor").withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024).withProcessCountersThrowing();
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    gpuModel->refresh();
+
+    Domain::ProcessModel processModel(std::move(processProbe));
+    processModel.setGPUModel(gpuModel);
+
+    ASSERT_NO_THROW(processModel.refresh());
+    EXPECT_EQ(processModel.snapshotVersion(), 1U);
+
+    rawProbe->setCounters({makeCounter(100, "gpu_process", 'R', 2000, 500), makeCounter(200, "new_process", 'R', 10, 5, 7000)});
+    ASSERT_NO_THROW(processModel.refresh());
+    EXPECT_EQ(processModel.snapshotVersion(), 2U) << "publication keeps going while the GPU query keeps throwing";
+
+    const auto snaps = processModel.snapshots();
+    ASSERT_EQ(snaps.size(), 2U);
+    for (const auto& snap : snaps)
+    {
+        EXPECT_EQ(snap.gpuMemoryBytes, 0U);
+        EXPECT_TRUE(snap.gpuDevices.empty());
+    }
+}
+
+// =============================================================================
+// Per-process values the probe could not read (#1110)
+// =============================================================================
+
+TEST(ProcessModelTest, UnreadableHandleCountIsUnavailableAndLeftOutOfTheTotal)
+{
+    // #1110: an unreadable FD/handle count was a 0 that the table showed and the
+    // system total counted. It is now flagged unavailable and left out of the
+    // total.
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto readable = makeCounter(100, "mine", 'R', 1000, 0, 5000);
+    readable.handleCount = 10;
+    auto unreadable = makeCounter(200, "root_owned", 'S', 1000, 0, 6000);
+    unreadable.handleCount = 50; // a placeholder that must not be shown or counted
+    unreadable.handleCountAvailable = false;
+    probe->setCounters({readable, unreadable});
+    probe->setTotalCpuTime(100000);
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
+    model.refresh();
+    clock.advance(std::chrono::seconds(1));
+    model.refresh(); // the aggregate history starts with the second refresh
+
+    const auto snaps = model.snapshots();
+    const auto mine = std::ranges::find(snaps, 100, &Domain::ProcessSnapshot::pid);
+    const auto theirs = std::ranges::find(snaps, 200, &Domain::ProcessSnapshot::pid);
+    ASSERT_NE(mine, snaps.end());
+    ASSERT_NE(theirs, snaps.end());
+    EXPECT_TRUE(mine->handleCountAvailable);
+    EXPECT_EQ(mine->handleCount, 10);
+    EXPECT_FALSE(theirs->handleCountAvailable);
+    EXPECT_EQ(theirs->handleCount, 0);
+
+    const auto handleTotals = model.systemHandleCountHistory();
+    ASSERT_FALSE(handleTotals.empty());
+    EXPECT_DOUBLE_EQ(handleTotals.back(), 10.0);
+}
+
+TEST(ProcessModelTest, IoRateNeedsBothReadingsToBeAvailable)
+{
+    // #1110: an I/O rate is taken between two readings. With the earlier one
+    // unreadable (a placeholder 0), the next real reading would have counted the
+    // process's lifetime of I/O as one interval's; that interval is unavailable
+    // instead, and the one after is a real rate.
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+    auto counter = makeCounter(100, "proc", 'R', 1000, 0, 5000);
+    counter.ioCountersAvailable = false;
+    rawProbe->setCounters({counter});
+    rawProbe->setTotalCpuTime(100000);
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
+    model.refresh();
+    EXPECT_FALSE(model.snapshots().at(0).ioAvailable);
+
+    clock.advance(std::chrono::seconds(1));
+    counter.ioCountersAvailable = true;
+    counter.readBytes = 1'000'000'000;
+    rawProbe->setCounters({counter});
+    model.refresh();
+    EXPECT_FALSE(model.snapshots().at(0).ioAvailable) << "no earlier reading to take a rate from";
+    EXPECT_DOUBLE_EQ(model.snapshots().at(0).ioReadBytesPerSec, 0.0);
+
+    clock.advance(std::chrono::seconds(1));
+    counter.readBytes += 4096;
+    rawProbe->setCounters({counter});
+    model.refresh();
+    EXPECT_TRUE(model.snapshots().at(0).ioAvailable);
+    EXPECT_DOUBLE_EQ(model.snapshots().at(0).ioReadBytesPerSec, 4096.0);
+}
+
+TEST(ProcessModelTest, UnattributableNetworkCountersAreUnavailableAndLeftOutOfTheTotal)
+{
+    // #1110: a process whose connections can't be attributed to it (another
+    // user's, without root, on Linux) showed 0 B/s. Its network rates are now
+    // unavailable and left out of the totals.
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+    auto mine = makeCounter(100, "mine", 'R', 1000, 0, 5000);
+    auto theirs = makeCounter(200, "theirs", 'R', 1000, 0, 6000);
+    theirs.networkCountersAvailable = false;
+    rawProbe->setCounters({mine, theirs});
+    rawProbe->setTotalCpuTime(100000);
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
+    model.refresh();
+
+    clock.advance(std::chrono::seconds(1));
+    mine.netSentBytes = 2000;
+    theirs.netSentBytes = 1'000'000; // a placeholder that must not be counted
+    rawProbe->setCounters({mine, theirs});
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    const auto theirsSnap = std::ranges::find(snaps, 200, &Domain::ProcessSnapshot::pid);
+    ASSERT_NE(theirsSnap, snaps.end());
+    EXPECT_FALSE(theirsSnap->networkAvailable);
+    EXPECT_DOUBLE_EQ(theirsSnap->netSentBytesPerSec, 0.0);
+    const auto mineSnap = std::ranges::find(snaps, 100, &Domain::ProcessSnapshot::pid);
+    ASSERT_NE(mineSnap, snaps.end());
+    EXPECT_TRUE(mineSnap->networkAvailable);
+    EXPECT_DOUBLE_EQ(mineSnap->netSentBytesPerSec, 2000.0);
+
+    const auto sentTotals = model.systemNetSentHistory();
+    ASSERT_FALSE(sentTotals.empty());
+    EXPECT_DOUBLE_EQ(sentTotals.back(), 2000.0);
 }

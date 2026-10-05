@@ -269,6 +269,10 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         {
             parseProcessIo(pid, counters, m_ProcRoot);
         }
+        else
+        {
+            counters.ioCountersAvailable = false; // not read at all (capabilities() reports hasIoCounters = false)
+        }
         counters.status = getProcessStatus(pid, m_ProcRoot); // Get cgroup freezer status
         processes.push_back(std::move(counters));
     }
@@ -698,8 +702,9 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters, c
     // cancelled_write_bytes: <bytes>
     //
     // Note: This file requires CAP_DAC_READ_SEARCH capability or running as root,
-    // or being the owner of the process. If we can't read it, we silently skip
-    // (capabilities() already reports hasIoCounters = false by default).
+    // or being the owner of the process. If we can't read it -- typically another user's
+    // process without root -- the counters are marked unavailable rather than left at a
+    // 0 that reads as "no I/O" (#1110).
 
     const std::string ioPath = (procRoot / std::to_string(pid) / "io").string();
     constexpr std::size_t BUF_SIZE = 512;
@@ -707,10 +712,13 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters, c
     const std::size_t len = readProcFile(ioPath.c_str(), buf.data(), BUF_SIZE);
     if (len == 0)
     {
-        // Common case: insufficient permissions, just return
+        // Common case: insufficient permissions
+        counters.ioCountersAvailable = false;
         return;
     }
 
+    bool hasRead = false;
+    bool hasWrite = false;
     const char* p = buf.data();
     const char* const end = buf.data() + len;
     while (p < end)
@@ -738,6 +746,7 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters, c
             if (std::from_chars(ptr, lineEnd, readBytes).ec == std::errc{})
             {
                 counters.readBytes = readBytes;
+                hasRead = true;
             }
         }
         else if (lineView.starts_with(writePrefix))
@@ -751,11 +760,14 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters, c
             if (std::from_chars(ptr, lineEnd, writeBytes).ec == std::errc{})
             {
                 counters.writeBytes = writeBytes;
+                hasWrite = true;
             }
         }
 
         p = (lineEnd < end) ? lineEnd + 1 : end;
     }
+
+    counters.ioCountersAvailable = hasRead && hasWrite;
 }
 
 void LinuxProcessProbe::countProcessFds(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot)
@@ -781,7 +793,13 @@ void LinuxProcessProbe::countProcessFds(int32_t pid, ProcessCounters& counters, 
     }
     catch (const std::exception& ex)
     {
-        // Permission errors and other exceptional situations - leave handleCount at 0
+        // Permission errors (another user's process without root) and other exceptional situations:
+        // the count is unknown, not 0 (#1110). The process's connections can't be attributed to it
+        // either -- the socket inode-to-PID map is built from these same fd directories -- so its
+        // network counters are unknown too, not "no traffic".
+        counters.handleCount = 0;
+        counters.handleCountAvailable = false;
+        counters.networkCountersAvailable = false;
         spdlog::debug("LinuxProcessProbe: failed to enumerate FDs for pid {} at {}: {}", pid, fdPath.string(), ex.what());
     }
 }

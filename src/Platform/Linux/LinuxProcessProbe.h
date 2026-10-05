@@ -136,10 +136,11 @@ class LinuxProcessProbe : public IProcessProbe
     /// Parse CPU affinity mask for a process using sched_getaffinity
     static void parseProcessAffinity(int32_t pid, ProcessCounters& counters);
 
-    /// Parse /proc/[pid]/io for I/O counters (requires permissions)
+    /// Parse /proc/[pid]/io for I/O counters (requires permissions); unreadable sets ioCountersAvailable = false
     static void parseProcessIo(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot);
 
-    /// Count file descriptors in /proc/[pid]/fd (may fail due to permissions)
+    /// Count file descriptors in /proc/[pid]/fd. Unreadable (permissions) sets handleCountAvailable and
+    /// networkCountersAvailable = false: neither the count nor the process's connections can be known.
     static void countProcessFds(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot);
 
     /// Check if we can read I/O counters using the injected proc root

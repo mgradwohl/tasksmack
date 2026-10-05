@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -51,11 +52,18 @@ struct ProcessSnapshot
     double gpuEncoderUtil = 0.0;      // Aggregate encoder utilization
     double gpuDecoderUtil = 0.0;      // Aggregate decoder utilization
 
-    // GDI object count (Windows-only; 0 if not available)
     // GDI object count (optional, Windows-only via GetGuiResources).
     // std::nullopt means the probe could not open the process with the required rights.
     // A stored value of 0 means the process is accessible but owns no GDI objects.
     std::optional<std::int32_t> gdiObjectCount;
+
+    // Whether a value was read for this process (#1110). False: the probe could not read it --
+    // typically for lack of rights, e.g. another user's process without root on Linux -- and the
+    // value is a placeholder 0, to be shown as unavailable and left out of totals, never as a
+    // measured 0. A rate is available only when both readings it is taken between were.
+    bool handleCountAvailable = true; // handleCount
+    bool ioAvailable = true;          // ioReadBytesPerSec / ioWriteBytesPerSec
+    bool networkAvailable = true;     // netSentBytesPerSec / netReceivedBytesPerSec
 
     // Strings at the end (reduce padding and improve cache for hot integer/float fields)
     std::string name;
@@ -84,6 +92,20 @@ struct ProcessSnapshot
         std::vector<std::string> engines; // Active engines on this GPU
     };
     std::vector<PerGPUUsage> perGpuUsage; // Breakdown for multi-GPU processes
+};
+
+/// One process as one published generation saw it (ProcessModel::watchedSamplesSince(), #1098).
+struct ProcessSample
+{
+    /// The process in that generation, or nullptr when the generation did not list it (it exited,
+    /// or the watched PID is not running). Immutable and shared, so handing it on copies nothing.
+    std::shared_ptr<const ProcessSnapshot> snapshot;
+    /// The generation's ProcessModel::snapshotVersion(). Every generation published while a process
+    /// is watched gets a sample, so consecutive samples have consecutive versions.
+    std::uint64_t version = 0;
+    /// When that generation was sampled, as std::chrono::steady_clock seconds since its epoch -- the
+    /// timebase of ProcessModel::historyTimestamps() -- not when a reader happened to see it.
+    double sampleTimeSeconds = 0.0;
 };
 
 } // namespace Domain
