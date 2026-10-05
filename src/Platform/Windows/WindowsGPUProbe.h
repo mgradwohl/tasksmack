@@ -18,8 +18,9 @@ class PDHGPUProbe;
 
 /// Composite Windows GPU probe that delegates to vendor-specific probes.
 /// - DXGI: Basic GPU enumeration (all vendors)
-/// - NVML: NVIDIA-specific metrics (temp, power, clocks, system utilization)
-/// - PDH: Per-process GPU utilization and memory via Performance Counters (all vendors)
+/// - NVML: NVIDIA-specific sensors (temp, power, clocks, fan) and VRAM
+/// - PDH: adapter and per-process GPU utilization, and memory, via Performance Counters (all
+///   vendors, NVIDIA included, so every adapter's % means what Task Manager's does, #1264)
 class WindowsGPUProbe : public IGPUProbe
 {
   public:
@@ -36,8 +37,8 @@ class WindowsGPUProbe : public IGPUProbe
     /// the DXGI→LUID mapping required for per-adapter PDH utilization merging.
     /// Without a prior call to enumerateGPUs(), the PDH per-adapter utilization
     /// merge is unavailable, so PDH-backed adapter utilization will be missing
-    /// (unread, a gap, unless another source populates it). NVML may still
-    /// provide utilizationPercent independently for supported NVIDIA adapters.
+    /// (unread, a gap). NVML supplies an NVIDIA adapter's utilizationPercent only
+    /// when PDH is unavailable altogether (#1264).
     /// A debug message may also be logged when PDH adapter utilization data is
     /// present but the DXGI→LUID mapping needed to merge that data is missing.
     [[nodiscard]] std::vector<GPUInfo> enumerateGPUs() override;
@@ -46,8 +47,8 @@ class WindowsGPUProbe : public IGPUProbe
     [[nodiscard]] GPUCapabilities capabilities() const override;
 
   private:
-    [[nodiscard]] std::unordered_set<std::string> mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounters,
-                                                                        std::unordered_set<std::string>& nvmlMemoryIds);
+    [[nodiscard]] std::unordered_set<std::string>
+    mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounters, std::unordered_set<std::string>& nvmlMemoryIds, bool takeUtilization);
     void mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiCounters, const std::unordered_set<std::string>& nvmlSourcedIds);
 
     std::unique_ptr<DXGIGPUProbe> m_DXGIProbe;

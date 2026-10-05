@@ -108,7 +108,8 @@ TEST(MergeNVMLIntoDXGICountersTest, FailedNVMLUtilizationReadLeavesThePDHFallbac
 {
     // #1111: NVML's utilization read failed (timeout, TDR). The GPU must not be marked NVML-sourced
     // with a real-looking 0%, which suppressed the valid PDH utilization; the read validity of the
-    // other fields comes along so they publish as gaps.
+    // other fields comes along so they publish as gaps. (NVML's utilization is taken only without
+    // PDH, #1264.)
     std::vector<GPUCounters> dxgi(1);
     dxgi[0].gpuId = "GPU0";
     dxgi[0].utilizationPercent = 37.0; // a later PDH merge fills this in
@@ -121,7 +122,7 @@ TEST(MergeNVMLIntoDXGICountersTest, FailedNVMLUtilizationReadLeavesThePDHFallbac
     nvml[0].powerAvailable = true;
     nvml[0].powerDrawWatts = 80.0;
 
-    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0, 0}});
+    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0, 0}}, nullptr, /*takeUtilization=*/true);
 
     EXPECT_FALSE(sourced.contains("GPU0"));
     EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 37.0);
@@ -145,7 +146,7 @@ TEST(MergeNVMLIntoDXGICountersTest, NVMLReadingsMakeDXGIsUnreadFieldsAvailable)
     nvml[0].memoryTotalBytes = 8ULL << 30U;
     nvml[0].memoryUsedBytes = 1ULL << 30U;
 
-    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0, 0}});
+    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0, 0}}, nullptr, /*takeUtilization=*/true);
 
     EXPECT_TRUE(sourced.contains("GPU0"));
     EXPECT_TRUE(dxgi[0].utilizationAvailable);
@@ -204,7 +205,7 @@ TEST(MergeNVMLIntoDXGICountersTest, MergesMappedGPUAndReportsIdAsSourced)
     nvml[0].memoryUsedBytes = 222;
     nvml[0].memoryTotalBytes = 8ULL * 1024 * 1024 * 1024;
 
-    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0, 0}});
+    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0, 0}}, nullptr, /*takeUtilization=*/true);
 
     EXPECT_TRUE(sourced.contains("GPU0"));
     EXPECT_EQ(dxgi[0].temperatureC, 65);
@@ -236,6 +237,32 @@ TEST(MergeNVMLIntoDXGICountersTest, ZeroNVMLMemoryTotalKeepsDXGIMemoryValues)
 
     EXPECT_EQ(dxgi[0].memoryUsedBytes, 111U);
     EXPECT_EQ(dxgi[0].memoryTotalBytes, 999U);
+}
+
+// #1264: an NVIDIA adapter's utilization is PDH's, like every other adapter's and every process's,
+// not NVML's util.gpu, which disagreed with Task Manager and the per-process sum. The NVML merge
+// leaves it alone and claims no GPU, so the PDH merge assigns it.
+TEST(MergeNVMLIntoDXGICountersTest, PDHUtilizationWinsForAnNVMLCoveredAdapter)
+{
+    std::vector<GPUCounters> dxgi(1);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[0].utilizationAvailable = false; // DXGI's counter starts unread (#1245)
+    std::vector<GPUCounters> nvml(1);
+    nvml[0].gpuId = "uuid-0";
+    nvml[0].utilizationPercent = 97.0; // NVML: "a kernel ran" in its last window
+    nvml[0].temperatureC = 70;
+
+    std::unordered_set<std::string> memoryIds;
+    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0, 0}}, &memoryIds);
+    EXPECT_TRUE(sourced.empty());
+    EXPECT_EQ(dxgi[0].temperatureC, 70); // Sensors still come from NVML
+
+    const std::unordered_map<std::string, double> byLuid = {{"GPU_0xLUID0", 41.5}};
+    const std::unordered_map<std::string, std::string> idToLuid = {{"GPU0", "GPU_0xLUID0"}};
+    assignPDHUtilizationToDXGICounters(dxgi, byLuid, idToLuid, sourced, /*absentMeansIdle=*/true);
+
+    EXPECT_TRUE(dxgi[0].utilizationAvailable);
+    EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 41.5);
 }
 
 TEST(AllGPUsHaveNVMLUtilizationTest, EmptyDXGICountersIsFalse)
@@ -587,7 +614,7 @@ TEST(MergeNVMLIntoDXGICountersTest, MemoryIdsListOnlyGPUsWhoseNVMLMemoryReadSucc
     nvml[1].memoryAvailable = false;
 
     std::unordered_set<std::string> memoryIds;
-    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0U, 0U}, {1U, 1U}}, &memoryIds);
+    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0U, 0U}, {1U, 1U}}, &memoryIds, /*takeUtilization=*/true);
 
     EXPECT_EQ(sourced.size(), 2U);
     EXPECT_EQ(memoryIds, (std::unordered_set<std::string>{"GPU0"}));

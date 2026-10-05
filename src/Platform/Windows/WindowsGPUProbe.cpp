@@ -117,16 +117,19 @@ std::vector<GPUCounters> WindowsGPUProbe::readGPUCounters()
     // neither NVML nor PDH reads this sample publishes a gap rather than 0% and 0 B (#1245).
     auto counters = m_DXGIProbe->readGPUCounters();
 
-    // Merge NVML enhancements for NVIDIA GPUs; returns IDs that got NVML utilization, and fills
-    // nvmlMemoryIds with those whose NVML memory read actually succeeded.
+    // Merge NVML sensors for NVIDIA GPUs, filling nvmlMemoryIds with those whose NVML memory read
+    // actually succeeded. Utilization is PDH's for every adapter, NVIDIA included, so it means what
+    // Task Manager's and the per-process figures do; NVML's is taken (and its GPUs returned) only
+    // when PDH can't supply one at all (#1264).
+    const bool pdhAvailable = m_PDHAdapterProbe && m_PDHAdapterProbe->isAvailable();
     std::unordered_set<std::string> nvmlSourcedIds;
     std::unordered_set<std::string> nvmlMemoryIds;
     if (m_NVMLProbe && m_NVMLProbe->isAvailable())
     {
-        nvmlSourcedIds = mergeNVMLEnhancements(counters, nvmlMemoryIds);
+        nvmlSourcedIds = mergeNVMLEnhancements(counters, nvmlMemoryIds, /*takeUtilization=*/!pdhAvailable);
     }
 
-    // For GPUs without NVML, merge PDH per-adapter utilization matched to each adapter
+    // PDH per-adapter utilization matched to each adapter
     mergePDHAdapterUtilization(counters, nvmlSourcedIds);
 
     // And their memory in use, from the same collect: adapter-wide, not this process's (#1029).
@@ -139,7 +142,8 @@ std::vector<GPUCounters> WindowsGPUProbe::readGPUCounters()
 }
 
 std::unordered_set<std::string> WindowsGPUProbe::mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounters,
-                                                                       std::unordered_set<std::string>& nvmlMemoryIds)
+                                                                       std::unordered_set<std::string>& nvmlMemoryIds,
+                                                                       bool takeUtilization)
 {
     if (!m_NVMLProbe || !m_NVMLProbe->isAvailable())
     {
@@ -163,23 +167,20 @@ std::unordered_set<std::string> WindowsGPUProbe::mergeNVMLEnhancements(std::vect
     // m_DXGIToNVMLMap holds positions in enumeration order; NVML reads counters in hash order, so
     // put them back in enumeration order by device id first (#1040).
     return mergeNVMLIntoDXGICounters(
-        dxgiCounters, orderNVMLCountersByIds(nvmlCounters, m_NVMLEnumeratedIds), m_DXGIToNVMLMap, &nvmlMemoryIds);
+        dxgiCounters, orderNVMLCountersByIds(nvmlCounters, m_NVMLEnumeratedIds), m_DXGIToNVMLMap, &nvmlMemoryIds, takeUtilization);
 }
 
 void WindowsGPUProbe::mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiCounters,
                                                  const std::unordered_set<std::string>& nvmlSourcedIds)
 {
-    // Skip if no PDH, or if all GPUs already have utilization data from NVML
-    // (0% at idle is a valid NVML reading, not a sentinel).
+    // Skip if no PDH. (nvmlSourcedIds is empty whenever PDH is available, #1264.)
     if (!m_PDHAdapterProbe || !m_PDHAdapterProbe->isAvailable())
     {
         return;
     }
 
-    // Collect on this sampler's own query every sample, even when NVML covers every GPU and the
-    // result is not used: PDH rates are computed between consecutive collects, so a query left
-    // idle would make its first use after an NVML gap a warm-up with no data, and the next one
-    // span however long the gap was.
+    // Collect on this sampler's own query every sample: PDH rates are computed between
+    // consecutive collects.
     static_cast<void>(m_PDHAdapterProbe->readProcessGPUCounters());
     if (allGPUsHaveNVMLUtilization(dxgiCounters, nvmlSourcedIds))
     {

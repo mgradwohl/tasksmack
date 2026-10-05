@@ -285,19 +285,25 @@ inline void assignPDHMemoryToDXGICounters(std::vector<GPUCounters>& dxgiCounters
 /// Pure merge logic extracted from WindowsGPUProbe::mergeNVMLEnhancements() so it can be unit
 /// tested with fabricated counter vectors and mappings - the real function requires NVML
 /// hardware and a live DXGI<->NVML index mapping, neither of which every dev/CI machine has.
-/// Overwrites the enhanced fields (temperature, power, clocks, fan, utilization, and memory
-/// when NVML reports a total) directly on @p dxgiCounters for every DXGI index present in
-/// @p dxgiToNvmlMap, and returns the gpuId of each counter that was updated (so a later merge
-/// step - e.g. PDH per-adapter utilization - knows not to overwrite it).
+/// Overwrites the enhanced fields (temperature, power, clocks, fan, and memory when NVML reports a
+/// total) directly on @p dxgiCounters for every DXGI index present in @p dxgiToNvmlMap.
+///
+/// Utilization is PDH's, for NVIDIA adapters too: NVML's util.gpu ("a kernel ran" over NVML's own
+/// ~1/6-1 s window) disagreed with Task Manager, with every other adapter and with the sum of the
+/// adapter's processes, all of which are PDH engine averages over the refresh interval (#1264). So
+/// NVML's utilization is taken only when @p takeUtilization -- WindowsGPUProbe asks for it only
+/// when PDH's GPU Engine counters are unavailable altogether. Returns the gpuId of each counter
+/// that took NVML's utilization (so the PDH merge leaves it alone); empty unless @p takeUtilization.
 ///
 /// @param nvmlMemoryIds  If given, receives the gpuId of each counter whose memory actually came
-///                       from NVML (a non-zero total). A GPU NVML covers for utilization but whose
+///                       from NVML (a non-zero total). A GPU NVML covers for sensors but whose
 ///                       memory read failed still needs the PDH memory fallback (#1029).
 [[nodiscard]] inline std::unordered_set<std::string>
 mergeNVMLIntoDXGICounters(std::vector<GPUCounters>& dxgiCounters,
                           const std::vector<GPUCounters>& nvmlCounters,
                           const std::unordered_map<std::uint32_t, std::uint32_t>& dxgiToNvmlMap,
-                          std::unordered_set<std::string>* nvmlMemoryIds = nullptr)
+                          std::unordered_set<std::string>* nvmlMemoryIds = nullptr,
+                          bool takeUtilization = false)
 {
     std::unordered_set<std::string> nvmlSourcedIds;
     if (nvmlCounters.empty())
@@ -339,20 +345,22 @@ mergeNVMLIntoDXGICounters(std::vector<GPUCounters>& dxgiCounters,
         dxgiCounter.fanSpeedRaw = nvmlCounter.fanSpeedRaw;
         dxgiCounter.fanSpeedMaxRaw = nvmlCounter.fanSpeedMaxRaw;
 
-        // Use NVML GPU utilization (NVML provides the actual GPU utilization, DXGI doesn't) when this
-        // sample's read succeeded, even if it's 0 (valid at idle). When it failed, leave the GPU
-        // un-NVML-sourced and mark its utilization unread: PDH's utilization -- a real reading --
-        // replaces it and restores availability, and with no PDH sample it publishes as a gap rather
-        // than DXGI's placeholder 0 (#1111).
-        if (nvmlCounter.utilizationAvailable)
+        // Otherwise PDH's merge supplies utilization, as for every other adapter (#1264). Without
+        // PDH: NVML's when this sample's read succeeded, even if it's 0 (valid at idle). When it
+        // failed, leave the GPU un-NVML-sourced and mark its utilization unread, so with no other
+        // reading it publishes as a gap rather than DXGI's placeholder 0 (#1111).
+        if (takeUtilization)
         {
-            dxgiCounter.utilizationPercent = nvmlCounter.utilizationPercent;
-            dxgiCounter.utilizationAvailable = true;  // DXGI's counter starts unread (#1245)
-            nvmlSourcedIds.insert(dxgiCounter.gpuId); // Track so PDH merge doesn't overwrite a valid 0%
-        }
-        else
-        {
-            dxgiCounter.utilizationAvailable = false;
+            if (nvmlCounter.utilizationAvailable)
+            {
+                dxgiCounter.utilizationPercent = nvmlCounter.utilizationPercent;
+                dxgiCounter.utilizationAvailable = true;  // DXGI's counter starts unread (#1245)
+                nvmlSourcedIds.insert(dxgiCounter.gpuId); // Track so PDH merge doesn't overwrite a valid 0%
+            }
+            else
+            {
+                dxgiCounter.utilizationAvailable = false;
+            }
         }
 
         // Prefer NVML memory metrics (more accurate)
