@@ -79,10 +79,15 @@ jobs:
           key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'cmake/Dependencies.cmake', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
           restore-keys: ${{ runner.os }}-fetchcontent-
 
-      - name: Install xvfb for headless display
-        run: sudo apt-get install -y xvfb
+      - name: Install xvfb and Mesa GL for a headless display
+        run: sudo timeout --kill-after=10s 300s apt-get install -y --no-install-recommends xvfb xauth libgl1-mesa-dri libglx-mesa0 libegl1 libegl-mesa0
 
       - name: Generate coverage report
+        env:
+          # As in reusable-build-test.yml: a display is guaranteed, so display-dependent suites must
+          # fail rather than skip if it, or its GL context, goes missing -- otherwise a broken setup
+          # would silently publish a coverage report without them (#1132).
+          TASKSMACK_REQUIRE_DISPLAY: '1'
         run: |
           set -o pipefail
           xvfb-run -s "-screen 0 1920x1080x24 -noreset" ./tools/coverage.sh -v 2>&1 | tee coverage-output.txt
