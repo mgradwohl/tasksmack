@@ -34,9 +34,31 @@ struct AlignedCellText
 {
     /// Sentinel meaning "not measured yet". Real widths are never negative.
     static constexpr float UNMEASURED_WIDTH = -1.0F;
+    /// unitStart for a cell with no unit to align ("-", "N/A", a count).
+    static constexpr std::size_t NO_UNIT = std::string::npos;
 
     std::string text;
     mutable float width = UNMEASURED_WIDTH;
+
+    /// Where the unit starts in `text`, its leading space included: 5 in "512.0 MiB". A column of
+    /// mixed units ("512.0 B", "1.5 KiB", "3.2 MiB") draws the number right-aligned against a
+    /// fixed-width unit slot and the unit in the slot, so the decimal points line up (#1201).
+    std::size_t unitStart = NO_UNIT;
+    /// Width of text before unitStart, measured lazily like `width`.
+    mutable float numberWidth = UNMEASURED_WIDTH;
+
+    [[nodiscard]] bool hasUnit() const noexcept
+    {
+        return unitStart < text.size();
+    }
+    [[nodiscard]] std::string_view number() const noexcept
+    {
+        return std::string_view(text).substr(0, hasUnit() ? unitStart : text.size());
+    }
+    [[nodiscard]] std::string_view unit() const noexcept
+    {
+        return hasUnit() ? std::string_view(text).substr(unitStart) : std::string_view{};
+    }
 };
 
 /// The CalcTextSize width of a free-text cell whose text lives in the ProcessSnapshot rather than in
@@ -96,39 +118,58 @@ struct RowFormatOptions
     return out;
 }
 
+/// A byte or byte-rate cell from its split parts, with unitStart marking where the unit begins.
+[[nodiscard]] inline AlignedCellText makeAlignedBytesCell(const UI::Format::AlignedBytesParts& parts)
+{
+    const auto wholePart = parts.wholePart();
+    AlignedCellText cell;
+    cell.text.reserve(wholePart.size() + parts.unitPart.size() + 1);
+    cell.text.append(wholePart.data(), wholePart.size());
+    cell.text.push_back(parts.decimalDigit);
+    cell.unitStart = cell.text.size();
+    cell.text.append(parts.unitPart.data(), parts.unitPart.size());
+    return cell;
+}
+
+/// "512.0 MiB", decimal-aligned on its unit (see AlignedCellText::unitStart).
+[[nodiscard]] inline AlignedCellText alignedBytesCell(double bytes, UI::Format::ByteUnit unit)
+{
+    return makeAlignedBytesCell(UI::Format::splitBytesForAlignmentFast(bytes, unit));
+}
+
+/// "1.5 MiB/s", decimal-aligned on its unit.
+[[nodiscard]] inline AlignedCellText alignedBytesPerSecCell(double bytesPerSec, UI::Format::ByteUnit unit)
+{
+    return makeAlignedBytesCell(UI::Format::splitBytesPerSecForAlignmentFast(bytesPerSec, unit));
+}
+
+/// "1.2 W" or "350.0 mW", decimal-aligned on its unit: AlignedNumericParts' whole and decimal parts
+/// are the number, its unitPart the unit.
+[[nodiscard]] inline AlignedCellText alignedPowerCell(double watts)
+{
+    const auto parts = UI::Format::splitPowerForAlignment(watts);
+    AlignedCellText cell;
+    cell.text.reserve(parts.wholePart.size() + parts.decimalPart.size() + parts.unitPart.size());
+    cell.text.append(parts.wholePart);
+    cell.text.append(parts.decimalPart);
+    cell.unitStart = cell.text.size();
+    cell.text.append(parts.unitPart);
+    return cell;
+}
+
 [[nodiscard]] inline std::string formatAlignedBytesString(double bytes, UI::Format::ByteUnit unit)
 {
-    const auto parts = UI::Format::splitBytesForAlignmentFast(bytes, unit);
-    const auto wholePart = parts.wholePart();
-    std::string out;
-    out.reserve(wholePart.size() + parts.unitPart.size() + 1);
-    out.append(wholePart.data(), wholePart.size());
-    out.push_back(parts.decimalDigit);
-    out.append(parts.unitPart.data(), parts.unitPart.size());
-    return out;
+    return alignedBytesCell(bytes, unit).text;
 }
 
 [[nodiscard]] inline std::string formatAlignedBytesPerSecString(double bytesPerSec, UI::Format::ByteUnit unit)
 {
-    const auto parts = UI::Format::splitBytesPerSecForAlignmentFast(bytesPerSec, unit);
-    const auto wholePart = parts.wholePart();
-    std::string out;
-    out.reserve(wholePart.size() + parts.unitPart.size() + 1);
-    out.append(wholePart.data(), wholePart.size());
-    out.push_back(parts.decimalDigit);
-    out.append(parts.unitPart.data(), parts.unitPart.size());
-    return out;
+    return alignedBytesPerSecCell(bytesPerSec, unit).text;
 }
 
 [[nodiscard]] inline std::string formatAlignedPowerString(double watts)
 {
-    const auto parts = UI::Format::splitPowerForAlignment(watts);
-    std::string out;
-    out.reserve(parts.wholePart.size() + parts.decimalPart.size() + parts.unitPart.size());
-    out.append(parts.wholePart);
-    out.append(parts.decimalPart);
-    out.append(parts.unitPart);
-    return out;
+    return alignedPowerCell(watts).text;
 }
 
 /// Cache of pre-formatted strings for one process row, keyed externally by uniqueKey (see
@@ -198,35 +239,32 @@ struct RowFormatCache
     fmt.cpuTime = makeAlignedCellText(UI::Format::formatDuration(proc.cpuTimeSeconds));
     fmt.cpuPercent = makeAlignedCellText(formatAlignedPercentString(proc.cpuPercent));
     fmt.memPercent = makeAlignedCellText(formatAlignedPercentString(proc.memoryPercent));
-    fmt.virtualMem = makeAlignedCellText(
-        formatAlignedBytesString(static_cast<double>(proc.virtualBytes), UI::Format::unitForTotalBytes(proc.virtualBytes)));
-    fmt.resident = makeAlignedCellText(
-        formatAlignedBytesString(static_cast<double>(proc.memoryBytes), UI::Format::unitForTotalBytes(proc.memoryBytes)));
-    fmt.peakRss = makeAlignedCellText(
-        formatAlignedBytesString(static_cast<double>(proc.peakMemoryBytes), UI::Format::unitForTotalBytes(proc.peakMemoryBytes)));
-    fmt.shared = makeAlignedCellText(options.hasSharedMemory ? formatAlignedBytesString(static_cast<double>(proc.sharedBytes),
-                                                                                        UI::Format::unitForTotalBytes(proc.sharedBytes))
-                                                             : "-");
+    const auto bytesCell = [](std::uint64_t bytes)
+    {
+        return alignedBytesCell(static_cast<double>(bytes), UI::Format::unitForTotalBytes(bytes));
+    };
+    fmt.virtualMem = bytesCell(proc.virtualBytes);
+    fmt.resident = bytesCell(proc.memoryBytes);
+    fmt.peakRss = bytesCell(proc.peakMemoryBytes);
+    fmt.shared = options.hasSharedMemory ? bytesCell(proc.sharedBytes) : makeAlignedCellText("-");
     // A rate that is 0 reads "-"; one the probe could not read reads "N/A" (#1110) -- without root, every
     // other user's process used to show the same "-" as an idle one.
-    const auto rateCell = [](bool available, double bytesPerSec) -> std::string
+    const auto rateCell = [](bool available, double bytesPerSec) -> AlignedCellText
     {
         if (!available)
         {
-            return std::string(UNAVAILABLE_CELL_TEXT);
+            return makeAlignedCellText(std::string(UNAVAILABLE_CELL_TEXT));
         }
-        return (bytesPerSec > 0.0) ? formatAlignedBytesPerSecString(bytesPerSec, UI::Format::unitForBytesPerSecond(bytesPerSec)) : "-";
+        return (bytesPerSec > 0.0) ? alignedBytesPerSecCell(bytesPerSec, UI::Format::unitForBytesPerSecond(bytesPerSec))
+                                   : makeAlignedCellText("-");
     };
-    fmt.ioRead = makeAlignedCellText(rateCell(proc.ioAvailable, proc.ioReadBytesPerSec));
-    fmt.ioWrite = makeAlignedCellText(rateCell(proc.ioAvailable, proc.ioWriteBytesPerSec));
-    fmt.netSent = makeAlignedCellText(rateCell(proc.networkAvailable, proc.netSentBytesPerSec));
-    fmt.netRecv = makeAlignedCellText(rateCell(proc.networkAvailable, proc.netReceivedBytesPerSec));
-    fmt.power = makeAlignedCellText(options.hasPowerUsage ? formatAlignedPowerString(proc.powerWatts) : "-");
+    fmt.ioRead = rateCell(proc.ioAvailable, proc.ioReadBytesPerSec);
+    fmt.ioWrite = rateCell(proc.ioAvailable, proc.ioWriteBytesPerSec);
+    fmt.netSent = rateCell(proc.networkAvailable, proc.netSentBytesPerSec);
+    fmt.netRecv = rateCell(proc.networkAvailable, proc.netReceivedBytesPerSec);
+    fmt.power = options.hasPowerUsage ? alignedPowerCell(proc.powerWatts) : makeAlignedCellText("-");
     fmt.gpuPercent = makeAlignedCellText((proc.gpuUtilPercent > 0.0) ? formatAlignedPercentString(proc.gpuUtilPercent) : "-");
-    fmt.gpuMemory =
-        makeAlignedCellText((proc.gpuMemoryBytes > 0) ? formatAlignedBytesString(static_cast<double>(proc.gpuMemoryBytes),
-                                                                                 UI::Format::unitForTotalBytes(proc.gpuMemoryBytes))
-                                                      : "-");
+    fmt.gpuMemory = (proc.gpuMemoryBytes > 0) ? bytesCell(proc.gpuMemoryBytes) : makeAlignedCellText("-");
     if (proc.gpuEngines.empty())
     {
         fmt.gpuEngines = "-";

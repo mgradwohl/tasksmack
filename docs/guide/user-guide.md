@@ -161,6 +161,8 @@ The UI shows only the metrics exposed by the available backend. If no backend di
 
 TaskSmack writes a quantity the same way wherever it appears: in a table cell, in the value strip beside a chart, in a chart tooltip and on a chart axis.
 
+Digits are all the same width, so a value that changes every second does not shift the text around it, and in the process table's size, rate and power columns the decimal points line up whatever the unit ("512.0 B" above "3.2 MiB").
+
 - **Sizes and rates** use binary units with their IEC names: B, KiB, MiB, GiB and TiB (1 KiB = 1,024 bytes), with one decimal, such as "512.0 MiB" or "1.5 GiB/s". A network interface's link speed is shown as a rate in the same units ("119.2 MiB/s" for a 1 Gbps link), with its rated speed ("1 Gbps") beside it or on hover.
 - **Percentages** are whole numbers from 10% up and keep one decimal below it ("4.2%"). Per-process CPU and memory percentages always keep one decimal, as the process table shows them.
 - **Power** has one decimal in W, mW or µW ("45.0 W"). **Temperature** is in whole degrees, rounded ("65°C").

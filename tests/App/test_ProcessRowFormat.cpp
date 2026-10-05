@@ -16,7 +16,10 @@ namespace
 {
 
 using Domain::ProcessSnapshot;
+using ProcessRowFormat::alignedBytesCell;
+using ProcessRowFormat::alignedBytesPerSecCell;
 using ProcessRowFormat::AlignedCellText;
+using ProcessRowFormat::alignedPowerCell;
 using ProcessRowFormat::buildRowFormatCache;
 using ProcessRowFormat::formatAlignedBytesPerSecString;
 using ProcessRowFormat::formatAlignedBytesString;
@@ -424,6 +427,50 @@ TEST(ProcessRowFormatTest, FreeTextWidthsAreMeasuredAgainForANewGenerationOrFont
     {
         EXPECT_FLOAT_EQ(width->width, ProcessRowFormat::LazyTextWidth::UNMEASURED_WIDTH);
     }
+}
+
+// ========== Decimal-aligned cells (#1201) ==========
+
+TEST(ProcessRowFormatTest, ByteCellsMarkWhereTheUnitStarts)
+{
+    const AlignedCellText cell = alignedBytesCell(512.0 * 1024.0 * 1024.0, UI::Format::BYTE_UNIT_MB);
+    EXPECT_EQ(cell.text, "512.0 MiB");
+    ASSERT_TRUE(cell.hasUnit());
+    EXPECT_EQ(cell.number(), "512.0");
+    EXPECT_EQ(cell.unit(), " MiB");
+    EXPECT_FLOAT_EQ(cell.numberWidth, AlignedCellText::UNMEASURED_WIDTH);
+
+    const AlignedCellText rate = alignedBytesPerSecCell(1536.0, UI::Format::BYTE_UNIT_KB);
+    EXPECT_EQ(rate.number(), "1.5");
+    EXPECT_EQ(rate.unit(), " KiB/s");
+}
+
+TEST(ProcessRowFormatTest, PowerCellsSplitNumberFromUnit)
+{
+    const AlignedCellText watts = alignedPowerCell(1.25);
+    EXPECT_EQ(watts.number(), "1.3"); // Halves round away from zero, as everywhere else
+    EXPECT_EQ(watts.unit(), " W");
+    const AlignedCellText milliwatts = alignedPowerCell(0.35);
+    EXPECT_EQ(milliwatts.number(), "350.0");
+    EXPECT_EQ(milliwatts.unit(), " mW");
+}
+
+TEST(ProcessRowFormatTest, CellsWithoutAUnitAreNotUnitAligned)
+{
+    const AlignedCellText dash = makeAlignedCellText("-");
+    EXPECT_FALSE(dash.hasUnit());
+    EXPECT_EQ(dash.number(), "-");
+    EXPECT_TRUE(dash.unit().empty());
+
+    // The row builder keeps the split for real values and leaves "-" / "N/A" plain.
+    ProcessSnapshot snap;
+    snap.memoryBytes = 3ULL * 1024 * 1024;
+    snap.ioAvailable = false;
+    const RowFormatCache fmt = buildRowFormatCache(snap);
+    EXPECT_TRUE(fmt.resident.hasUnit());
+    EXPECT_EQ(fmt.resident.unit(), " MiB");
+    EXPECT_FALSE(fmt.ioRead.hasUnit());
+    EXPECT_EQ(fmt.ioRead.text, UNAVAILABLE_CELL_TEXT);
 }
 
 } // namespace
