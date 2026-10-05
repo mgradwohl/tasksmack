@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <format>
 #include <limits>
 #include <optional>
@@ -79,9 +80,18 @@ void renderCpuCoresSection(RenderContext& ctx)
     auto& theme = UI::Theme::get();
 
     // CPU model header
-    // The count is of logical processors, not cores (#1203).
-    const std::string coreInfo =
-        UI::Format::formatLogicalProcessorSummary(snap.coreCount, (snap.cpuFreqMHz > 0) ? Domain::Numeric::toDouble(snap.cpuFreqMHz) : 0.0);
+    // The count is of logical processors, not cores (#1203). Formatted when its inputs change, not
+    // every frame (#1171). UI thread only.
+    static std::string coreInfo;
+    static int coreInfoCount = -1;
+    static std::uint64_t coreInfoFreqMHz = 0;
+    if (snap.coreCount != coreInfoCount || snap.cpuFreqMHz != coreInfoFreqMHz)
+    {
+        coreInfoCount = snap.coreCount;
+        coreInfoFreqMHz = snap.cpuFreqMHz;
+        coreInfo = UI::Format::formatLogicalProcessorSummary(snap.coreCount,
+                                                             (snap.cpuFreqMHz > 0) ? Domain::Numeric::toDouble(snap.cpuFreqMHz) : 0.0);
+    }
     ImGui::TextUnformatted(snap.cpuModel.c_str());
     ImGui::SameLine(0, 0);
     ImGui::TextUnformatted(coreInfo.c_str());

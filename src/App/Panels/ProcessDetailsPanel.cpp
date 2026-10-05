@@ -44,6 +44,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -695,50 +696,75 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     const float rowHeight = ImGui::GetTextLineHeightWithSpacing();
     const float basePadding = ImGui::GetStyle().WindowPadding.y * 2.0F;
 
-    auto rightAlignedText = [](const std::string& text, const ImVec4& color)
+    auto rightAlignedText = [](std::string_view text, const ImVec4& color)
     {
         const float colWidth = ImGui::GetColumnWidth();
-        const float textWidth = ImGui::CalcTextSize(text.c_str()).x;
+        const float textWidth = ImGui::CalcTextSize(text.data(), text.data() + text.size()).x;
         const float padding = ImGui::GetStyle().CellPadding.x * 2.0F;
         const float targetX = ImGui::GetCursorPosX() + std::max(0.0F, colWidth - textWidth - padding);
         ImGui::SetCursorPosX(targetX);
         ImGui::PushStyleColor(ImGuiCol_Text, color);
-        ImGui::TextUnformatted(text.c_str());
+        ImGui::TextUnformatted(text.data(), text.data() + text.size());
         ImGui::PopStyleColor();
     };
 
-    auto renderStatusValue = [&]() -> std::pair<std::string, ImVec4>
+    const auto statusColorFor = [&theme](std::string_view state) -> ImVec4
     {
-        ImVec4 statusColor = theme.scheme().textInfo;
-        if (proc.displayState == "Running")
+        if (state == "Running")
         {
-            statusColor = theme.scheme().statusRunning;
+            return theme.scheme().statusRunning;
         }
-        else if (proc.displayState == "Sleeping")
+        if (state == "Sleeping")
         {
-            statusColor = theme.scheme().statusSleeping;
+            return theme.scheme().statusSleeping;
         }
-        else if (proc.displayState == "Disk Sleep")
+        if (state == "Disk Sleep")
         {
-            statusColor = theme.scheme().statusDiskSleep;
+            return theme.scheme().statusDiskSleep;
         }
-        else if (proc.displayState == "Zombie")
+        if (state == "Zombie")
         {
-            statusColor = theme.scheme().statusZombie;
+            return theme.scheme().statusZombie;
         }
-        else if (proc.displayState == "Stopped" || proc.displayState == "Tracing")
+        if (state == "Stopped" || state == "Tracing")
         {
-            statusColor = theme.scheme().statusStopped;
+            return theme.scheme().statusStopped;
         }
-        else if (proc.displayState == "Idle")
+        if (state == "Idle")
         {
-            statusColor = theme.scheme().statusIdle;
+            return theme.scheme().statusIdle;
         }
-
-        return {proc.displayState, statusColor};
+        return theme.scheme().textInfo;
     };
 
-    auto renderInfoTable = [&](const char* tableId, const std::vector<std::pair<std::string, std::pair<std::string, ImVec4>>>& rows)
+    // One label/value row of the two tables. Views: the values are the snapshot's own strings or the
+    // text built from it below, both alive for the frame, so building the rows allocates nothing.
+    struct InfoRow
+    {
+        std::string_view label;
+        std::string_view value;
+        ImVec4 color;
+    };
+    // At most six rows a table (Publisher and Type are optional), held in place.
+    struct InfoRows
+    {
+        std::array<InfoRow, 6> rows{};
+        std::size_t count = 0;
+
+        void add(InfoRow row) noexcept
+        {
+            if (count < rows.size())
+            {
+                rows[count++] = row;
+            }
+        }
+        [[nodiscard]] std::span<const InfoRow> view() const noexcept
+        {
+            return {rows.data(), count};
+        }
+    };
+
+    auto renderInfoTable = [&](const char* tableId, std::span<const InfoRow> rows)
     {
         if (ImGui::BeginTable(tableId, 2, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg | ImGuiTableFlags_NoBordersInBody))
         {
@@ -750,19 +776,14 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
                 ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
-                ImGui::TextUnformatted(row.first.c_str());
+                ImGui::TextUnformatted(row.label.data(), row.label.data() + row.label.size());
                 ImGui::PopStyleColor();
                 ImGui::TableNextColumn();
-                rightAlignedText(row.second.first, row.second.second);
+                rightAlignedText(row.value, row.color);
             }
 
             ImGui::EndTable();
         }
-    };
-
-    auto formatCountLocale = [](std::int64_t value) -> std::string
-    {
-        return UI::Format::formatOrDash(value, [](auto v) { return UI::Format::formatIntLocalized(v); });
     };
 
 #ifdef _WIN32
@@ -771,41 +792,57 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     constexpr const char* handleLabel = "FDs";
 #endif
 
-    const auto [statusText, statusColor] = renderStatusValue();
-    const std::string userText = proc.user.empty() ? "-" : proc.user;
-    const std::string startedText =
-        (proc.startTimeEpoch > 0) ? UI::Format::formatEpochDateTimeShort(proc.startTimeEpoch) : std::string("-");
+    // The values formatted from the snapshot -- PID, start time, counts, CPU time, priority -- are
+    // built when a different snapshot is shown, once per sample, not every frame (#1171).
+    BasicInfoText& text = m_BasicInfoText;
+    if (text.key != &proc)
+    {
+        text.key = &proc;
+        // Holding the snapshot keeps its address from being reused by a later one, which would
+        // otherwise look like the same key.
+        text.keepAlive = (m_CachedSnapshot.get() == &proc) ? m_CachedSnapshot : nullptr;
+
+        const auto formatCountLocale = [](std::int64_t value) -> std::string
+        {
+            return UI::Format::formatOrDash(value, [](auto v) { return UI::Format::formatIntLocalized(v); });
+        };
+        text.pid = std::to_string(proc.pid);
+        text.parentPid = std::to_string(proc.parentPid);
+        text.started = (proc.startTimeEpoch > 0) ? UI::Format::formatEpochDateTimeShort(proc.startTimeEpoch) : std::string("-");
+        text.threads = proc.threadCount > 0 ? formatCountLocale(proc.threadCount) : std::string("-");
+        text.handles = "N/A"; // unreadable, e.g. another user's process without root (#1110)
+        if (proc.handleCountAvailable)
+        {
+            text.handles = proc.handleCount > 0 ? formatCountLocale(proc.handleCount) : std::string("-");
+        }
+        text.cpuTime = UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds);
+        text.priority = Detail::priorityDisplayText(proc.nice, Detail::PRIORITY_USES_WINDOWS_CLASSES); // No nice on Windows (#1204)
+    }
 
     // Build identity rows (conditionally include Publisher if available)
-    std::vector<std::pair<std::string, std::pair<std::string, ImVec4>>> identityRows = {
-        {"Name", {proc.name, theme.scheme().textPrimary}},
-        {"PID", {std::to_string(proc.pid), theme.scheme().textPrimary}},
-        {"Parent PID", {std::to_string(proc.parentPid), theme.scheme().textPrimary}},
-        {"User", {userText, theme.scheme().textPrimary}},
-        {"Started", {startedText, theme.scheme().textMuted}},
-    };
+    InfoRows identityRows;
+    identityRows.add({.label = "Name", .value = proc.name, .color = theme.scheme().textPrimary});
+    identityRows.add({.label = "PID", .value = text.pid, .color = theme.scheme().textPrimary});
+    identityRows.add({.label = "Parent PID", .value = text.parentPid, .color = theme.scheme().textPrimary});
+    identityRows.add({.label = "User",
+                      .value = proc.user.empty() ? std::string_view{"-"} : std::string_view{proc.user},
+                      .color = theme.scheme().textPrimary});
+    identityRows.add({.label = "Started", .value = text.started, .color = theme.scheme().textMuted});
     if (!proc.publisher.empty())
     {
-        identityRows.push_back({"Publisher", {proc.publisher, theme.scheme().textMuted}});
+        identityRows.add({.label = "Publisher", .value = proc.publisher, .color = theme.scheme().textMuted});
     }
-    const auto identityRowCount = static_cast<float>(identityRows.size());
+    const auto identityRowCount = static_cast<float>(identityRows.count);
     const float leftHeight = (rowHeight * identityRowCount) + basePadding;
 
     // Build runtime rows (conditionally include Type if available)
-    std::string handleText = "N/A"; // unreadable, e.g. another user's process without root (#1110)
-    if (proc.handleCountAvailable)
-    {
-        handleText = proc.handleCount > 0 ? formatCountLocale(proc.handleCount) : std::string("-");
-    }
-    const std::string priorityText =
-        Detail::priorityDisplayText(proc.nice, Detail::PRIORITY_USES_WINDOWS_CLASSES); // No nice on Windows (#1204)
-    std::vector<std::pair<std::string, std::pair<std::string, ImVec4>>> runtimeRows = {
-        {"State", {statusText, statusColor}}, // Same name as the table's State column (#1203)
-        {"Threads", {proc.threadCount > 0 ? formatCountLocale(proc.threadCount) : std::string("-"), theme.scheme().textPrimary}},
-        {handleLabel, {handleText, theme.scheme().textPrimary}},
-        {"CPU Time", {UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds), theme.scheme().textPrimary}},
-        {"Priority", {priorityText, theme.scheme().textPrimary}},
-    };
+    InfoRows runtimeRows;
+    // Same name as the table's State column (#1203)
+    runtimeRows.add({.label = "State", .value = proc.displayState, .color = statusColorFor(proc.displayState)});
+    runtimeRows.add({.label = "Threads", .value = text.threads, .color = theme.scheme().textPrimary});
+    runtimeRows.add({.label = handleLabel, .value = text.handles, .color = theme.scheme().textPrimary});
+    runtimeRows.add({.label = "CPU Time", .value = text.cpuTime, .color = theme.scheme().textPrimary});
+    runtimeRows.add({.label = "Priority", .value = text.priority, .color = theme.scheme().textPrimary});
     if (!proc.processType.empty())
     {
         // Color-code the process type using status colors for visual clarity
@@ -822,33 +859,33 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         {
             typeColor = theme.scheme().textMuted;
         }
-        runtimeRows.push_back({"Type", {proc.processType, typeColor}});
+        runtimeRows.add({.label = "Type", .value = proc.processType, .color = typeColor});
     }
-    const auto runtimeRowCount = static_cast<float>(runtimeRows.size());
+    const auto runtimeRowCount = static_cast<float>(runtimeRows.count);
     const float rightHeight = (rowHeight * runtimeRowCount) + basePadding;
 
     // Each block is capped at a readable width instead of taking half the pane, so a label and its
     // value stay together however wide the window is (#925). The blocks pack to the left and the
     // remaining width is left empty.
-    auto blockWidthFor = [&](const std::vector<std::pair<std::string, std::pair<std::string, ImVec4>>>& rows) -> float
+    auto blockWidthFor = [&](std::span<const InfoRow> rows) -> float
     {
         float widestValue = 0.0F;
         for (const auto& row : rows)
         {
-            widestValue = std::max(widestValue, ImGui::CalcTextSize(row.second.first.c_str()).x);
+            widestValue = std::max(widestValue, ImGui::CalcTextSize(row.value.data(), row.value.data() + row.value.size()).x);
         }
         const ImGuiStyle& style = ImGui::GetStyle();
         const float contentNeeded = labelColWidth + widestValue + (style.CellPadding.x * 4.0F) + (style.WindowPadding.x * 2.0F);
         return ProcessDetailsLayout::computeInfoBlockWidth(ImGui::GetFontSize(), halfWidth, contentNeeded);
     };
-    const float leftWidth = blockWidthFor(identityRows);
-    const float rightWidth = blockWidthFor(runtimeRows);
+    const float leftWidth = blockWidthFor(identityRows.view());
+    const float rightWidth = blockWidthFor(runtimeRows.view());
 
     // Identity section: Who is this process?
     ImGui::BeginGroup();
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_ID_CARD "  Identity");
     ImGui::BeginChild("BasicInfoLeft", ImVec2(leftWidth, leftHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
-    renderInfoTable("BasicInfoLeftTable", identityRows);
+    renderInfoTable("BasicInfoLeftTable", identityRows.view());
     ImGui::EndChild();
     ImGui::EndGroup();
 
@@ -859,7 +896,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CLOCK "  Runtime");
     ImGui::BeginChild("BasicInfoRight", ImVec2(rightWidth, rightHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
 
-    renderInfoTable("BasicInfoRightTable", runtimeRows);
+    renderInfoTable("BasicInfoRightTable", runtimeRows.view());
     ImGui::EndChild();
     ImGui::EndGroup();
 }

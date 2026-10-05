@@ -4,6 +4,7 @@
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/MemorySection.h"
 #include "App/Panels/NetInterfaceUtils.h"
+#include "App/Panels/NetworkSection.h"
 #include "App/Panels/StorageSection.h"
 #include "Core/Event.h"
 #include "Domain/BackgroundSampler.h"
@@ -129,6 +130,23 @@ class SystemMetricsPanel : public Panel
     // The stacked bands' reduced points (#1022), kept until the next publication (#1139)
     UI::Widgets::ReducedPointsCache m_CpuStackReduction;
     std::vector<double> m_CpuStackYBusy; // Bottom of the I/O Wait band: the busy total, 100 - idle - iowait
+    // The battery charge history as charted, "no reading" (-1) as NaN; rebuilt in place each frame (#1171)
+    std::vector<float> m_BatteryChartHistory;
+
+    // The Overview header's text, rebuilt only when what it shows changes -- the system and GPU
+    // publications or the process count -- rather than formatted every frame (#1171).
+    struct OverviewHeaderText
+    {
+        bool valid = false;
+        std::uint64_t systemVersion = 0;
+        std::uint64_t gpuVersion = 0;
+        std::size_t processCount = 0;
+        bool hasProcessModel = false;
+        std::string uptime;
+        std::string coreInfo;
+        std::string processes;
+        std::string memory;
+    } m_OverviewHeader;
 
     std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
     bool m_ForceRefresh = false;
@@ -194,9 +212,13 @@ class SystemMetricsPanel : public Panel
     // traffic, which stay listed while down.
     bool m_ShowAllInterfaces = false;
     NetInterfaceUtils::InterfaceNameSet m_InterfacesWithTraffic;
+    // The Network tab's strings and lists, kept until the next publication (#1171)
+    NetworkSection::FrameCache m_NetworkFrameCache;
 
     // GPU smoothed values (uses type from GpuSection)
     std::unordered_map<std::string, GpuSection::SmoothedGPU> m_SmoothedGPUs;
+    // The GPU tab's per-frame storage, kept so drawing it allocates nothing once warmed up (#1171).
+    GpuSection::FrameCache m_GpuFrameCache;
 
     std::vector<double> m_SmoothedPerCore;
 

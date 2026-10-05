@@ -109,7 +109,7 @@ class ProcessDetailsPanel : public Panel
     /// member enum.
     using ProcessAction = Detail::ProcessAction;
 
-    static void renderBasicInfo(const Domain::ProcessSnapshot& proc);
+    void renderBasicInfo(const Domain::ProcessSnapshot& proc);
     void renderResourceUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
     void renderCpuUsageSection(UI::Widgets::FillPlotLayout& fill);
     void renderMemoryUsageSection(UI::Widgets::FillPlotLayout& fill);
@@ -198,6 +198,22 @@ class ProcessDetailsPanel : public Panel
     // The selected process as last sampled, shared with ProcessModel's sample rather than copied
     // every frame (#1172); null before the first sample.
     std::shared_ptr<const Domain::ProcessSnapshot> m_CachedSnapshot;
+
+    // The Overview's Identity/Runtime values formatted from one snapshot, kept until a different one
+    // is shown, so the block is not reformatted every frame (#1171). keepAlive holds that snapshot,
+    // so a later one cannot be allocated at the same address and pass for it.
+    struct BasicInfoText
+    {
+        const Domain::ProcessSnapshot* key = nullptr;
+        std::shared_ptr<const Domain::ProcessSnapshot> keepAlive;
+        std::string pid;
+        std::string parentPid;
+        std::string started;
+        std::string threads;
+        std::string handles;
+        std::string cpuTime;
+        std::string priority;
+    } m_BasicInfoText;
     // Per-tab state for the shared chart-height rule (#959)
     UI::Widgets::PlotFillState m_OverviewFill;
     UI::Widgets::PlotFillState m_NetworkFill;

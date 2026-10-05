@@ -465,6 +465,7 @@ void SystemMetricsPanel::renderContent()
                     .lastDeltaSeconds = m_LastDeltaSeconds,
                     .refreshInterval = m_RefreshInterval,
                     .smoothedGPUs = &m_SmoothedGPUs,
+                    .cache = &m_GpuFrameCache,
                 };
                 {
                     const UI::Widgets::TabContentScope content("##GpuContent");
@@ -502,6 +503,7 @@ void SystemMetricsPanel::renderContent()
                     .showAllInterfaces = &m_ShowAllInterfaces,
                     .interfacesWithTraffic = &m_InterfacesWithTraffic,
                     .fillState = &m_NetworkFill,
+                    .cache = &m_NetworkFrameCache,
                 };
                 {
                     const UI::Widgets::TabContentScope content("##NetworkContent");
@@ -531,18 +533,43 @@ void SystemMetricsPanel::renderOverview()
     updateSmoothedCpu(snap, m_LastDeltaSeconds);
     updateSmoothedMemory(snap, m_LastDeltaSeconds);
 
-    // Header line: CPU Model | Cores | Freq | Uptime (right-aligned)
-    // Format uptime string
-    const std::string uptimeStr = UI::Format::formatUptimeShort(snap.uptimeSeconds);
+    // Header line: CPU Model | Cores | Freq | Uptime (right-aligned). Its strings come from the
+    // publications and the process count, so they are rebuilt only when one of those changes (#1171).
+    const std::size_t processCount = (m_ProcessModel != nullptr) ? m_ProcessModel->processCount() : 0;
+    const std::uint64_t systemVersion = m_SystemPublication ? m_SystemPublication->version : 0;
+    const std::uint64_t gpuVersion = m_GPUPublication ? m_GPUPublication->version : 0;
+    if (!m_OverviewHeader.valid || m_OverviewHeader.systemVersion != systemVersion || m_OverviewHeader.gpuVersion != gpuVersion ||
+        m_OverviewHeader.processCount != processCount || m_OverviewHeader.hasProcessModel != (m_ProcessModel != nullptr))
+    {
+        m_OverviewHeader.valid = true;
+        m_OverviewHeader.systemVersion = systemVersion;
+        m_OverviewHeader.gpuVersion = gpuVersion;
+        m_OverviewHeader.processCount = processCount;
+        m_OverviewHeader.hasProcessModel = (m_ProcessModel != nullptr);
 
-    // Display: "CPU Model (N logical processors @ X.XX GHz)     Uptime: Xd Yh Zm"
-    // The count is of logical processors, not cores (#1203).
-    const std::string coreInfo =
-        UI::Format::formatLogicalProcessorSummary(snap.coreCount, (snap.cpuFreqMHz > 0) ? Domain::Numeric::toDouble(snap.cpuFreqMHz) : 0.0);
+        m_OverviewHeader.uptime = UI::Format::formatUptimeShort(snap.uptimeSeconds);
 
-    const std::string processStr = (m_ProcessModel != nullptr)
-                                     ? std::format("Processes: {}", UI::Format::formatIntLocalized(m_ProcessModel->processCount()))
-                                     : std::string{};
+        // Display: "CPU Model (N logical processors @ X.XX GHz)     Uptime: Xd Yh Zm"
+        // The count is of logical processors, not cores (#1203).
+        m_OverviewHeader.coreInfo = UI::Format::formatLogicalProcessorSummary(
+            snap.coreCount, (snap.cpuFreqMHz > 0) ? Domain::Numeric::toDouble(snap.cpuFreqMHz) : 0.0);
+
+        m_OverviewHeader.processes =
+            (m_ProcessModel != nullptr) ? std::format("Processes: {}", UI::Format::formatIntLocalized(processCount)) : std::string{};
+
+        // Total dedicated VRAM: discrete GPUs only, an integrated GPU's "memory" being system RAM (#1114).
+        const std::uint64_t totalVramBytes = m_GPUPublication ? GpuSection::totalDedicatedVramBytes(m_GPUPublication->snapshots) : 0;
+        // RAM and VRAM, appended to the CPU line
+        m_OverviewHeader.memory = (totalVramBytes > 0)
+                                    ? std::format(", {} RAM, {} VRAM",
+                                                  UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes)),
+                                                  UI::Format::formatBytes(static_cast<double>(totalVramBytes)))
+                                    : std::format(", {} RAM", UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes)));
+    }
+    const std::string& uptimeStr = m_OverviewHeader.uptime;
+    const std::string& coreInfo = m_OverviewHeader.coreInfo;
+    const std::string& processStr = m_OverviewHeader.processes;
+    const std::string& memoryStr = m_OverviewHeader.memory;
 
     const ImGuiStyle& style = ImGui::GetStyle();
     const float availWidth = ImGui::GetContentRegionAvail().x;
@@ -550,22 +577,6 @@ void SystemMetricsPanel::renderOverview()
     const float processWidth = processStr.empty() ? 0.0F : ImGui::CalcTextSize(processStr.c_str()).x;
     const float spacer = (!processStr.empty() && !uptimeStr.empty()) ? style.ItemSpacing.x : 0.0F;
     const float rightBlockWidth = uptimeWidth + processWidth + spacer;
-
-    // Total dedicated VRAM: discrete GPUs only, an integrated GPU's "memory" being system RAM (#1114).
-    const std::uint64_t totalVramBytes = m_GPUPublication ? GpuSection::totalDedicatedVramBytes(m_GPUPublication->snapshots) : 0;
-
-    // Format RAM and VRAM info to append to CPU line
-    std::string memoryStr;
-    if (totalVramBytes > 0)
-    {
-        memoryStr = std::format(", {} RAM, {} VRAM",
-                                UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes)),
-                                UI::Format::formatBytes(static_cast<double>(totalVramBytes)));
-    }
-    else
-    {
-        memoryStr = std::format(", {} RAM", UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes)));
-    }
 
     // CPU model with core count, frequency, RAM, and VRAM
     ImGui::TextUnformatted(snap.cpuModel.c_str());
@@ -881,11 +892,11 @@ void SystemMetricsPanel::renderOverview()
             const auto powerHist = UI::Widgets::tailAlignedSpan(m_ProcessPowerHistory, powerCount).values;
 
             // Battery history, with the model's "no reading" value (-1) as NaN: a gap in the line,
-            // not a dive to 0 %.
-            std::vector<float> batteryHist;
+            // not a dive to 0 %. Rebuilt into a member each frame, reusing its capacity (#1171).
+            std::vector<float>& batteryHist = m_BatteryChartHistory;
+            batteryHist.clear();
             if (batteryCount > 0)
             {
-                batteryHist.reserve(batteryCount);
                 const auto startIt = batteryHistFloat.end() - static_cast<std::ptrdiff_t>(batteryCount);
                 for (auto it = startIt; it != batteryHistFloat.end(); ++it)
                 {

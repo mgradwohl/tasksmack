@@ -15,9 +15,9 @@
 #include <array>
 #include <chrono>
 #include <cinttypes>
+#include <cmath>
 #include <cstddef>
 #include <format>
-#include <functional>
 #include <limits>
 #include <optional>
 #include <span>
@@ -94,12 +94,32 @@ namespace
 {
 void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, double nowSeconds)
 {
+    if (ctx.systemPublication == nullptr)
+    {
+        return; // renderNetworkSection() checks first; kept so the cache below never reads a null publication
+    }
     const auto& netSnap = ctx.systemPublication->snapshot;
     const auto& interfaces = netSnap.networkInterfaces;
 
+    // Strings and lists built from the publication are kept until the next one (#1171).
+    FrameCache frameLocalCache;
+    FrameCache& cache = (ctx.cache != nullptr) ? *ctx.cache : frameLocalCache;
+    // The size check also covers a new publication that happens to reuse the old one's address and
+    // version: the selector is indexed by interface below.
+    if (cache.publication != ctx.systemPublication || cache.version != ctx.systemPublication->version ||
+        cache.interfaceNames.size() != interfaces.size() + 1)
+    {
+        cache.publication = ctx.systemPublication;
+        cache.version = ctx.systemPublication->version;
+        // "Total" then each interface; virtual interfaces are marked as left out of the Total (#1106)
+        cache.interfaceNames = NetInterfaceUtils::interfaceSelectorLabels(interfaces);
+        cache.dropdownFontSize = -1.0F;
+        cache.labelsInterface = FrameCache::NO_LABELS;
+        cache.rowsValid = false;
+    }
+
     // Build interface selector dropdown
-    // "Total" then each interface; virtual interfaces are marked as left out of the Total (#1106)
-    const std::vector<std::string> interfaceNames = NetInterfaceUtils::interfaceSelectorLabels(interfaces);
+    const std::vector<std::string>& interfaceNames = cache.interfaceNames;
 
     const auto interfaceCount = interfaces.size();
 
@@ -122,12 +142,20 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     // Calculate dropdown width based on longest interface name.
     // Use GetFrameHeight() for the arrow button and FramePadding.x*2 for text inset,
     // rather than a magic constant, so the width is correct at any font size/DPI.
+    // The names' widths are measured once per publication and font size.
     const float comboExtraWidth = ImGui::GetFrameHeight() + (ImGui::GetStyle().FramePadding.x * 2.0F);
-    float dropdownWidth = 0.0F;
-    for (const auto& name : interfaceNames)
+    // A tolerance rather than == on floats (CodeQL cpp/equality-on-floats), as CpuCoresSection's cache does.
+    constexpr float FONT_SIZE_EPSILON = 1e-4F;
+    if (const float fontSize = ImGui::GetFontSize(); std::abs(cache.dropdownFontSize - fontSize) > FONT_SIZE_EPSILON)
     {
-        dropdownWidth = std::max(dropdownWidth, ImGui::CalcTextSize(name.c_str()).x + comboExtraWidth);
+        cache.dropdownFontSize = fontSize;
+        cache.dropdownTextWidth = 0.0F;
+        for (const auto& name : interfaceNames)
+        {
+            cache.dropdownTextWidth = std::max(cache.dropdownTextWidth, ImGui::CalcTextSize(name.c_str()).x);
+        }
     }
+    float dropdownWidth = interfaceNames.empty() ? 0.0F : cache.dropdownTextWidth + comboExtraWidth;
 
     // Never wider than the pane. Interface names are long ("Realtek Gaming USB 2.5GbE Family
     // Controller"), and a combo measured from the longest one ran under the scrollbar on a narrow
@@ -177,8 +205,8 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         const auto& selectedIface = interfaces[static_cast<size_t>(selectedInterface)];
         if (selectedIface.linkSpeedMbps > 0)
         {
-            const auto linkText = std::format("Link: {} Mbps", selectedIface.linkSpeedMbps);
-            ImGui::TextColored(theme.scheme().textMuted, "%s", linkText.c_str());
+            // safe: PRIu64 handles uint64_t without narrowing; formatted by ImGui, no string built (#1171)
+            ImGui::TextColored(theme.scheme().textMuted, "Link: %" PRIu64 " Mbps", selectedIface.linkSpeedMbps);
         }
         else
         {
@@ -216,10 +244,11 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
 
     // Get per-interface history if an interface is selected
     const bool showingInterface = selectedInterface >= 0 && hasValidSelection;
-    const std::string ifaceName = showingInterface ? interfaces[static_cast<size_t>(selectedInterface)].name : "";
+    static const std::string NO_INTERFACE;
+    const std::string& ifaceName = showingInterface ? interfaces[static_cast<size_t>(selectedInterface)].name : NO_INTERFACE;
     const auto ifaceTxIt = ctx.systemPublication->perInterfaceTxHistory.find(ifaceName);
     const auto ifaceRxIt = ctx.systemPublication->perInterfaceRxHistory.find(ifaceName);
-    const std::vector<float> emptyHistory;
+    static const std::vector<float> emptyHistory;
     const auto& ifaceTxHist =
         showingInterface && ifaceTxIt != ctx.systemPublication->perInterfaceTxHistory.end() ? ifaceTxIt->second : emptyHistory;
     const auto& ifaceRxHist =
@@ -273,13 +302,22 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
 
     // Determine labels based on selection
     // Name the interface the way the picker above does (#1009).
-    const std::string ifaceDisplayName = showingInterface ? interfaceNames[static_cast<size_t>(selectedInterface) + 1] : "Network";
+    static const std::string NO_INTERFACE_NAME = "Network";
+    const std::string& ifaceDisplayName = showingInterface ? interfaceNames[static_cast<size_t>(selectedInterface) + 1] : NO_INTERFACE_NAME;
     // One label per series, shared by its legend entry, tooltip row and NowBar (#1008). The bars show
-    // the selected interface when there is one, else the totals.
-    const std::string ifaceSentLabel = std::format("{} Sent", ifaceDisplayName);
-    const std::string ifaceRecvLabel = std::format("{} Received", ifaceDisplayName);
-    const std::string sentBarLabel = showingInterface ? ifaceSentLabel : std::string(TOTAL_SENT_LABEL);
-    const std::string recvBarLabel = showingInterface ? ifaceRecvLabel : std::string(TOTAL_RECV_LABEL);
+    // the selected interface when there is one, else the totals. Built when the selection or the
+    // publication changes, not every frame (#1171).
+    if (cache.labelsInterface != selectedInterface)
+    {
+        cache.labelsInterface = selectedInterface;
+        cache.interfaceSentLabel = std::format("{} Sent", ifaceDisplayName);
+        cache.interfaceRecvLabel = std::format("{} Received", ifaceDisplayName);
+        cache.unavailableTitle = std::format("Total (selected: {}, history unavailable)", ifaceDisplayName);
+    }
+    const std::string& ifaceSentLabel = cache.interfaceSentLabel;
+    const std::string& ifaceRecvLabel = cache.interfaceRecvLabel;
+    const std::string_view sentBarLabel = showingInterface ? std::string_view{ifaceSentLabel} : std::string_view{TOTAL_SENT_LABEL};
+    const std::string_view recvBarLabel = showingInterface ? std::string_view{ifaceRecvLabel} : std::string_view{TOTAL_RECV_LABEL};
 
     // Determine plot title based on selection
     const bool usingInterfaceHistory = showingInterface && !ifaceSentData.empty() && !ifaceRecvData.empty();
@@ -335,14 +373,14 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     }
     const bool interfaceHistoryUnavailable = showingInterface && !usingInterfaceHistory;
 
-    std::string plotTitle = "Total";
+    const char* plotTitle = "Total";
     if (usingInterfaceHistory)
     {
-        plotTitle = ifaceDisplayName;
+        plotTitle = ifaceDisplayName.c_str();
     }
     else if (interfaceHistoryUnavailable)
     {
-        plotTitle = std::format("Total (selected: {}, history unavailable)", ifaceDisplayName);
+        plotTitle = cache.unavailableTitle.c_str();
     }
 
     // Shares the tab's height with the disk chart or grid below it (#959).
@@ -460,8 +498,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         }
     };
 
-    ImGui::TextColored(
-        theme.scheme().textPrimary, ICON_FA_NETWORK_WIRED "  Network Throughput - %s (%zu samples)", plotTitle.c_str(), aligned);
+    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_NETWORK_WIRED "  Network Throughput - %s (%zu samples)", plotTitle, aligned);
     if (interfaceHistoryUnavailable)
     {
         ImGui::TextColored(theme.scheme().textMuted, "Per-interface history unavailable; showing total network history below.");
@@ -486,14 +523,24 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     }
     const auto& seenTraffic = (ctx.interfacesWithTraffic != nullptr) ? *ctx.interfacesWithTraffic : NO_TRAFFIC_SEEN;
     const bool showAllInterfaces = (ctx.showAllInterfaces != nullptr) && *ctx.showAllInterfaces;
-    const auto sortedInterfaces = NetInterfaceUtils::getInterfaceStatusRows(interfaces, showAllInterfaces, seenTraffic);
+    // The rows are copied and sorted when the publication, "Show all" or the set of interfaces seen
+    // moving traffic (which only grows) changes, not every frame: 20-40 interfaces on Windows (#1171).
+    if (!cache.rowsValid || cache.rowsShowAll != showAllInterfaces || cache.rowsSeenTraffic != seenTraffic.size())
+    {
+        cache.rowsValid = true;
+        cache.rowsShowAll = showAllInterfaces;
+        cache.rowsSeenTraffic = seenTraffic.size();
+        cache.statusRows = NetInterfaceUtils::getInterfaceStatusRows(interfaces, showAllInterfaces, seenTraffic);
+        cache.hiddenCount = NetInterfaceUtils::countHiddenInterfaces(interfaces, seenTraffic);
+    }
+    const auto& sortedInterfaces = cache.statusRows;
     if (!interfaces.empty())
     {
         ImGui::Separator();
         ImGui::Spacing();
         ImGui::AlignTextToFramePadding();
         ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_LIST "  Interface Status");
-        const std::size_t hiddenCount = NetInterfaceUtils::countHiddenInterfaces(interfaces, seenTraffic);
+        const std::size_t hiddenCount = cache.hiddenCount;
         if (ctx.showAllInterfaces != nullptr && (hiddenCount > 0 || *ctx.showAllInterfaces))
         {
             ImGui::SameLine();

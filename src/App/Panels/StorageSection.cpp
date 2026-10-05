@@ -268,7 +268,6 @@ void renderStorageSection(RenderContext& ctx)
         ImGui::TextColored(
             theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  Disk I/O by Device (%zu disks, %zu samples)", diskCount, historySize);
 
-        // Pre-build device name → snapshot lookup to avoid O(n²) linear scans in the cell loop.
         const double diskAlpha = computeAlpha(ctx.lastDeltaSeconds, ctx.refreshInterval);
         if (ctx.smoothedPerDisk != nullptr)
         {
@@ -277,12 +276,6 @@ void renderStorageSection(RenderContext& ctx)
             std::erase_if(*ctx.smoothedPerDisk,
                           [&](const auto& entry)
                           { return std::ranges::none_of(perDisk, [&](const auto& disk) { return disk.deviceName == entry.first; }); });
-        }
-        std::unordered_map<std::string, const Domain::DiskSnapshot*> diskLookup;
-        diskLookup.reserve(diskSnap.disks.size());
-        for (const auto& d : diskSnap.disks)
-        {
-            diskLookup.emplace(d.deviceName, &d);
         }
 
         // Approximate overhead used only as a floor for the grid's minimum cell height; the real
@@ -360,14 +353,17 @@ void renderStorageSection(RenderContext& ctx)
                 const auto readData = tailAlignedSpan(disk.readBytesPerSec, alignedCount).values;
                 const auto writeData = tailAlignedSpan(disk.writeBytesPerSec, alignedCount).values;
 
-                // Per-disk snapshot values for NowBars (O(1) lookup via pre-built map).
-                // NaN if the disk is missing from the latest sample: renderDiskCell shows N/A, not 0.
+                // Per-disk snapshot values for NowBars. NaN if the disk is missing from the latest sample:
+                // renderDiskCell shows N/A, not 0. Looked up by a scan of the latest sample's disks, a
+                // handful even on a busy machine: a name -> snapshot map rebuilt every frame cost a
+                // heap allocation per disk per frame for keys copied from strings already there (#1171).
                 double diskRead = std::numeric_limits<double>::quiet_NaN();
                 double diskWrite = std::numeric_limits<double>::quiet_NaN();
-                if (const auto it = diskLookup.find(disk.deviceName); it != diskLookup.end())
+                if (const auto it = std::ranges::find(diskSnap.disks, disk.deviceName, &Domain::DiskSnapshot::deviceName);
+                    it != diskSnap.disks.end())
                 {
-                    diskRead = it->second->readBytesPerSec;
-                    diskWrite = it->second->writeBytesPerSec;
+                    diskRead = it->readBytesPerSec;
+                    diskWrite = it->writeBytesPerSec;
                 }
                 if (ctx.smoothedPerDisk != nullptr)
                 {
