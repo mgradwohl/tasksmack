@@ -249,7 +249,7 @@ These settings aren't in the Settings dialog. Edit them in `config.toml` while T
 | `[ui] chart_anti_aliasing` | true | true/false | Smooth chart line edges. Turn it off to save CPU/GPU time on integrated graphics. |
 | `[sampling] socket_stats_cache_ttl_ms` | 500 | 0–5000 ms | Linux only. How long per-process network readings are cached. |
 
-Older versions also wrote `[metrics] min_time_for_rate_seconds`, `[metrics] integrated_gpu_vram_threshold_mb`, `[ui] progress_color_low_threshold` and `[ui] progress_color_high_threshold`. None of them ever had an effect, and TaskSmack now removes them from `config.toml` the next time it saves. Network rates are measured over each interval, so no start-up delay is needed. Integrated and discrete GPUs are told apart by vendor (Windows) or PCI bus (Linux), not by a VRAM threshold. TaskSmack has no threshold-coloured progress bars.
+Older versions also wrote `[metrics] min_time_for_rate_seconds`, `[metrics] integrated_gpu_vram_threshold_mb`, `[ui] progress_color_low_threshold` and `[ui] progress_color_high_threshold`. None of them ever had an effect, and TaskSmack now removes them from `config.toml` the next time it saves. Network rates are measured over each interval, so no start-up delay is needed. Integrated and discrete GPUs are told apart by the driver's own report (DXCore on Windows, falling back to vendor where DXCore is unavailable) or PCI bus (Linux), not by a VRAM threshold. TaskSmack has no threshold-coloured progress bars.
 
 ### Running TaskSmack twice
 

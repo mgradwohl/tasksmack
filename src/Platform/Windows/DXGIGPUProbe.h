@@ -5,6 +5,7 @@
 #include "Platform/IGPUProbe.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -12,7 +13,7 @@
 // Forward declare DXGI interfaces to avoid including d3d headers in header
 // NOLINTBEGIN(cppcoreguidelines-virtual-class-destructor) - COM interface forward decls
 struct IDXGIFactory1;
-struct IDXGIAdapter1;
+struct IDXCoreAdapterFactory;
 // NOLINTEND(cppcoreguidelines-virtual-class-destructor)
 
 namespace Platform
@@ -41,7 +42,19 @@ class DXGIGPUProbe : public IGPUProbe
   private:
     bool initialize();
 
-    [[nodiscard]] static bool isIntegratedGPU(IDXGIAdapter1* adapter);
+    /// Whether the adapter with this LUID is integrated: DXCore's answer, or the descriptor
+    /// heuristic without one (see classifyIntegrated()). Decided once per LUID, so enumerateGPUs()
+    /// and readGPUCounters() -- which picks the memory pool from it -- always agree (#1263).
+    [[nodiscard]] bool isIntegratedAdapter(std::uint32_t vendorId,
+                                           std::uint32_t flags,
+                                           std::uint64_t dedicatedVideoMemory,
+                                           std::int32_t luidHighPart,
+                                           std::uint32_t luidLowPart);
+
+    /// DXCore's DXCoreAdapterProperty::IsIntegrated for the adapter with this LUID, or nullopt when
+    /// DXCore is unavailable (dxcore.dll is loaded at run time, so a Windows 10 without it still
+    /// runs) or can't answer for that adapter (#1263).
+    [[nodiscard]] std::optional<bool> dxcoreIsIntegrated(std::int32_t luidHighPart, std::uint32_t luidLowPart);
 
     /// Whether the adapter with these DXGI_ADAPTER_DESC1 flags and LUID is listed as a GPU (see
     /// shouldListAdapter()). enumerateGPUs() and readGPUCounters() both ask, so they skip the same
@@ -53,6 +66,12 @@ class DXGIGPUProbe : public IGPUProbe
     /// isListedAdapter()'s decision per adapter LUID, so the adapter-type query (which opens the
     /// kernel adapter) runs once per adapter rather than on every counter read (#1251).
     std::unordered_map<std::uint64_t, bool> m_ListedByLuid;
+    /// isIntegratedAdapter()'s decision per adapter LUID (#1263).
+    std::unordered_map<std::uint64_t, bool> m_IntegratedByLuid;
+    /// dxcore.dll and its adapter factory, created once at construction; null when unavailable.
+    /// The module stays loaded while the factory lives (#1263).
+    void* m_DXCoreModule{nullptr};
+    ComPtr<IDXCoreAdapterFactory> m_DXCoreFactory;
 };
 
 } // namespace Platform

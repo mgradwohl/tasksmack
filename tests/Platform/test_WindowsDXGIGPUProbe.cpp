@@ -287,6 +287,7 @@ TEST(VendorIdToNameTest, KnownVendorIdsMapCorrectly)
     EXPECT_EQ(vendorIdToName(0x1022), "AMD");
     EXPECT_EQ(vendorIdToName(0x8086), "Intel");
     EXPECT_EQ(vendorIdToName(0x8087), "Intel");
+    EXPECT_EQ(vendorIdToName(0x5143), "Qualcomm"); // #1263
 }
 
 TEST(VendorIdToNameTest, UnknownVendorIdMapsToUnknown)
@@ -350,6 +351,47 @@ TEST(IsIntegratedGPUFromDescTest, NvidiaIsNeverIntegrated)
 TEST(IsIntegratedGPUFromDescTest, UnknownVendorIsNeverIntegrated)
 {
     EXPECT_FALSE(isIntegratedGPUFromDesc(0x1234, 0, 0));
+}
+
+TEST(IsIntegratedGPUFromDescTest, QualcommIsIntegrated)
+{
+    // Adreno is always the SoC's own GPU, whatever DXGI reports as dedicated (#1263).
+    EXPECT_TRUE(isIntegratedGPUFromDesc(0x5143, 0, 0));
+    EXPECT_TRUE(isIntegratedGPUFromDesc(0x5143, 0, 2ULL * 1024 * 1024 * 1024));
+}
+
+// =============================================================================
+// classifyIntegrated: DXCore's answer first, the descriptor heuristic without it (#1263).
+// =============================================================================
+
+TEST(ClassifyIntegratedTest, AnAmdApuWithALargeCarveOutIsIntegratedByDXCore)
+{
+    // A ROG Ally / desktop APU: the heuristic's "under 1 GiB" rule reads 2 GiB as discrete.
+    constexpr uint64_t carveOut = 2ULL * 1024 * 1024 * 1024;
+    EXPECT_TRUE(classifyIntegrated(true, 0x1002, 0, carveOut));
+}
+
+TEST(ClassifyIntegratedTest, ASmallDiscreteGpuIsDiscreteByDXCore)
+{
+    // A 512 MiB AMD dGPU: the heuristic would call it integrated.
+    constexpr uint64_t vram = 512ULL * 1024 * 1024;
+    EXPECT_FALSE(classifyIntegrated(false, 0x1002, 0, vram));
+    EXPECT_FALSE(classifyIntegrated(false, 0x8086, 0, 0)); // An Arc with no reported VRAM
+}
+
+TEST(ClassifyIntegratedTest, WithoutDXCoreTheDescriptorHeuristicDecides)
+{
+    EXPECT_TRUE(classifyIntegrated(std::nullopt, 0x5143, 0, 0)); // Qualcomm
+    EXPECT_TRUE(classifyIntegrated(std::nullopt, 0x8086, 0, 128ULL * 1024 * 1024));
+    EXPECT_FALSE(classifyIntegrated(std::nullopt, 0x10DE, 0, 0));
+    EXPECT_FALSE(classifyIntegrated(std::nullopt, 0x1002, 0, 4ULL * 1024 * 1024 * 1024));
+}
+
+TEST(ClassifyIntegratedTest, ASoftwareAdapterIsNeverIntegrated)
+{
+    constexpr uint32_t SOFTWARE_FLAG = 2;
+    EXPECT_FALSE(classifyIntegrated(true, 0x1414, SOFTWARE_FLAG, 0));
+    EXPECT_FALSE(classifyIntegrated(std::nullopt, 0x5143, SOFTWARE_FLAG, 0));
 }
 
 // =============================================================================

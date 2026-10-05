@@ -24,6 +24,8 @@ namespace Platform
     case 0x8086:
     case 0x8087:
         return "Intel";
+    case 0x5143: // Adreno on Windows on Arm (#1263)
+        return "Qualcomm";
     default:
         return "Unknown";
     }
@@ -38,9 +40,10 @@ namespace Platform
     return std::format("GPU_0x{:08X}_0x{:08X}", luidHighPart, luidLowPart);
 }
 
-/// Pure decision logic behind DXGIGPUProbe::isIntegratedGPU, taking the relevant
-/// DXGI_ADAPTER_DESC1 fields directly so the vendor/VRAM-threshold branches can be unit
-/// tested without a real (or COM-mocked) IDXGIAdapter1.
+/// The descriptor heuristic classifyIntegrated() falls back on when DXCore can't say, taking the
+/// relevant DXGI_ADAPTER_DESC1 fields directly so the vendor/VRAM-threshold branches can be unit
+/// tested without a real (or COM-mocked) IDXGIAdapter1. A guess: an AMD APU with a carve-out of
+/// 1 GiB or more reads as discrete, and a small dGPU as integrated (#1263).
 /// @param vendorId DXGI_ADAPTER_DESC1::VendorId
 /// @param flags DXGI_ADAPTER_DESC1::Flags (DXGI_ADAPTER_FLAG_SOFTWARE = 0x2)
 /// @param dedicatedVideoMemory DXGI_ADAPTER_DESC1::DedicatedVideoMemory
@@ -68,9 +71,39 @@ namespace Platform
         return dedicatedVideoMemory < (1024ULL * 1024 * 1024);
     }
 
+    // Qualcomm's Adreno is only ever the SoC's own GPU (#1263).
+    if (vendorId == 0x5143)
+    {
+        return true;
+    }
+
     // NVIDIA doesn't make consumer integrated GPUs (Tegra is different architecture).
     // Assume discrete for NVIDIA.
     return false;
+}
+
+/// Whether an adapter is integrated (shares system memory) rather than discrete. DXCore's
+/// DXCoreAdapterProperty::IsIntegrated is the driver's own answer, so it wins whenever it could be
+/// read; only without it (Windows 10 before DXCore, or a failed query) does the descriptor
+/// heuristic guess from vendor and dedicated memory, which got AMD APUs with a 1 GiB+ carve-out
+/// and small dGPUs wrong and didn't know Qualcomm (#1263). A software adapter is never integrated.
+/// @param dxcoreIsIntegrated DXCore's IsIntegrated for this adapter, or nullopt when unavailable
+/// @param vendorId DXGI_ADAPTER_DESC1::VendorId
+/// @param flags DXGI_ADAPTER_DESC1::Flags (DXGI_ADAPTER_FLAG_SOFTWARE = 0x2)
+/// @param dedicatedVideoMemory DXGI_ADAPTER_DESC1::DedicatedVideoMemory
+[[nodiscard]] inline bool
+classifyIntegrated(std::optional<bool> dxcoreIsIntegrated, uint32_t vendorId, uint32_t flags, uint64_t dedicatedVideoMemory)
+{
+    constexpr uint32_t SOFTWARE_FLAG = 2;
+    if ((flags & SOFTWARE_FLAG) != 0)
+    {
+        return false;
+    }
+    if (dxcoreIsIntegrated.has_value())
+    {
+        return *dxcoreIsIntegrated;
+    }
+    return isIntegratedGPUFromDesc(vendorId, flags, dedicatedVideoMemory);
 }
 
 /// The D3DKMT_ADAPTERTYPE bits shouldListAdapter() decides on, as plain bools so this header stays

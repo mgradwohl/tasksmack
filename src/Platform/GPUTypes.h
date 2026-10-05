@@ -39,7 +39,7 @@ struct GPUInfo
     std::string id;     // Unique identifier (e.g., "GPU0", "GPU1")
     std::string luidId; // LUID-based identifier for PDH matching (e.g., "GPU_0x00000000_0x0000F78E")
     std::string name;   // Human-readable name (e.g., "NVIDIA GeForce RTX 2080 Ti")
-    std::string vendor; // "NVIDIA", "AMD", "Intel", "Unknown"
+    std::string vendor; // "NVIDIA", "AMD", "Intel", "Qualcomm" (Windows), "Unknown"
     std::string driverVersion;
     bool isIntegrated = false;     // Integrated vs discrete
     std::uint32_t deviceIndex = 0; // Vendor-specific index
