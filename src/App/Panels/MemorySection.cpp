@@ -4,6 +4,7 @@
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/InlineText.h"
 #include "UI/RateAxis.h"
 #include "UI/Theme.h"
 
@@ -17,8 +18,6 @@
 #include <cstdint>
 #include <optional>
 #include <span>
-#include <string>
-#include <utility>
 #include <vector>
 
 namespace App::MemorySection
@@ -105,7 +104,8 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
 
     // The peak of Used over the window, drawn as a reference line labelled PEAK_LABEL. It was
     // "##MemPeak": no legend entry and no tooltip row, so nothing said what the line was (#1007).
-    const double peakMemPercent = UI::Widgets::maxOfSeries(memData);
+    // Over the samples the window shows, not the one trimming keeps left of it (#1145).
+    const double peakMemPercent = UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, memData);
 
     // "N% (used / total)" when the RAM total is known: physical RAM is fixed, so bytes back-calculated
     // from a historical percent are exact. Swap is percent-only: its size can change at runtime.
@@ -222,20 +222,20 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
     NowBarList memoryBars;
     if (ctx.smoothedMemory != nullptr)
     {
-        const auto addBar = [&](const char* label, double smoothedPercent, std::string tooltip, const ImVec4& color)
+        const auto addBar = [&](const char* label, double smoothedPercent, const UI::InlineText& tooltip, const ImVec4& color)
         {
             const double clamped = std::clamp(smoothedPercent, 0.0, 100.0);
             memoryBars.push_back({.valueText = UI::Format::percentCompact(clamped),
                                   .label = label,
-                                  .tooltipText = std::move(tooltip),
+                                  .tooltipText = tooltip,
                                   .value01 = UI::Format::percent01(clamped),
                                   .color = color});
         };
         const auto ramTooltip = [&](const char* label, std::uint64_t bytes, double pct)
         {
             return snap.memoryTotalBytes > 0
-                     ? UI::Widgets::formatTooltipRow(label, UI::Format::bytesUsedTotalPercentCompact(bytes, snap.memoryTotalBytes, pct))
-                     : std::string{};
+                     ? UI::Widgets::tooltipRowText(label, UI::Format::bytesUsedTotalPercentCompact(bytes, snap.memoryTotalBytes, pct))
+                     : UI::InlineText{};
         };
         if (!memData.empty())
         {
