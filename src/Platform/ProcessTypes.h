@@ -86,6 +86,10 @@ struct SocketTrafficSample
     std::int32_t pid = 0;  // Owning process; 0 = not attributed (yet)
     std::uint64_t bytesReceived = 0;
     std::uint64_t bytesSent = 0;
+    // False for a connection present in the OS table whose counters couldn't be read this time
+    // (Windows: a failed or garbage EStats read); its byte fields are then ignored. Reported rather
+    // than left out so Domain doesn't take it as closed, and back as new (#1256).
+    bool readable = true;
 };
 
 /// One complete reading of every connection's raw byte counters (IProcessProbe::readSocketTraffic()).

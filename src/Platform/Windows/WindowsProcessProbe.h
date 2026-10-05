@@ -62,11 +62,17 @@ class WindowsProcessProbe : public IProcessProbe
     [[nodiscard]] uint64_t totalCpuTime() const override;
     [[nodiscard]] long ticksPerSecond() const override;
     [[nodiscard]] uint64_t systemTotalMemory() const override;
+    /// Keeps no per-connection state between calls: a connection whose EStats read fails is
+    /// reported unreadable and Domain keeps its baseline (#1256). The only state it updates is the
+    /// one-time EStats verification (#1161, verifyEStats()), whose inconclusive-sample streak
+    /// assumes one caller at a time: ProcessModel::refresh() is the only caller, under its sampling
+    /// lock. Concurrent calls stay data-race-free (atomics), but each would extend the streak.
+    [[nodiscard]] SocketTrafficReading readSocketTraffic() const override;
 
   private:
     bool m_IsElevated = false; // Process token elevation, queried once at construction (constant for the process lifetime)
     // The network flags can flip after construction when the first real sample proves EStats
-    // unusable (#1161). enumerate()'s const apply path writes them and capabilities() may read
+    // unusable (#1161). readSocketTraffic()'s const EStats walk writes them and capabilities() may read
     // them from another thread, hence mutable atomics.
     mutable std::atomic<bool> m_HasNetworkCounters{false};
     mutable std::atomic<bool> m_NetworkCountersAccessDenied{
@@ -142,16 +148,17 @@ class WindowsProcessProbe : public IProcessProbe
     /// Detect ETW/EStats availability for per-process network counters
     [[nodiscard]] bool detectNetworkCounters();
 
-    /// Collect cumulative network byte counts per PID (best-effort)
-    /// IPv4 and IPv6 TCP walks (#1100) are summed into one map
-    [[nodiscard]] PerPidNetworkBytes collectNetworkByteCounts() const;
+    /// Walk one address family's TCP table, appending each ESTABLISHED connection's EStats read to
+    /// reads and tallying the Set/Get results into counts (debug line and #1161 detection).
+    /// Returns false if the table could not be read this time: the walk is then incomplete
+    /// (#1256). A family whose EStats functions are unavailable is not walked and returns true.
+    [[nodiscard]] bool collectTcp4Reads(std::vector<EStatsConnectionRead>& reads, EStatsSampleCounts& counts) const;
+    [[nodiscard]] bool collectTcp6Reads(std::vector<EStatsConnectionRead>& reads, EStatsSampleCounts& counts) const;
 
-    /// Walk one address family's TCP table, adding ESTABLISHED connections' EStats byte counts
-    /// into perPid. Returns the per-row tallies for the debug line (and #1161 detection).
-    [[nodiscard]] EStatsSampleCounts collectTcp4ByteCounts(PerPidNetworkBytes& perPid) const;
-    [[nodiscard]] EStatsSampleCounts collectTcp6ByteCounts(PerPidNetworkBytes& perPid) const;
+    /// Log the periodic EStats debug line and, until a real sample has, decide whether EStats
+    /// works (#1161). Returns false if this sample proved it unusable (network counters now off).
+    [[nodiscard]] bool verifyEStats(const EStatsSampleCounts& counts) const;
 
-    void applyNetworkCounters(std::vector<ProcessCounters>& processes) const;
     std::unordered_map<DetailCacheKey, DetailCacheEntry, DetailCacheKeyHash> m_DetailCache;
     std::uint64_t m_DetailCacheGeneration = 0;
     std::size_t m_LastEnumeratedProcessCount = 256;

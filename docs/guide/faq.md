@@ -93,20 +93,18 @@ On Linux the counters come from a socket statistics cache that is refreshed ever
 
 Only TCP traffic is counted. The kernel (Linux) and TCP EStats (Windows) report byte counts per TCP connection, but not for UDP sockets. QUIC/HTTP3, WebRTC video calls, games, and DNS are therefore not attributed to any process. System-wide and per-interface rates come from the interface counters and include all traffic.
 
-On Linux each connection's own growth between two readings is credited to the process that owns it, so a connection closing doesn't erase the traffic on the others. A few bytes go uncounted:
+Each connection's own growth between two readings is credited to the process that owns it, so a connection closing doesn't erase the traffic on the others. A few bytes go uncounted:
 
-- A connection that is first seen before TaskSmack knows which process owns it is counted from the reading in which it is attributed. The socket-to-process map is rebuilt every 3 seconds.
+- On Linux, a connection that is first seen before TaskSmack knows which process owns it is counted from the reading in which it is attributed. The socket-to-process map is rebuilt every 3 seconds.
 - Bytes sent between a connection's last reading and its close are not counted.
 
-A socket shared by several processes, for example one inherited across `fork()`, is counted for the lowest PID.
-
-On Windows the byte counts are still summed over the process's open TCP connections. When a connection closes, its bytes leave the sum, so the rate for that one interval reads 0.
+On Linux, a socket shared by several processes, for example one inherited across `fork()`, is counted for the lowest PID.
 
 ---
 
 ## Why doesn't the network Total match the sum of the interfaces?
 
-On Linux the Total counts hardware interfaces only: network cards, Wi-Fi, USB adapters, and Hyper-V or virtio NICs. Bridges, `veth` pairs, VPN tunnels, VLANs, and bonds carry traffic that also crosses a hardware interface, so counting them as well would double it. These interfaces are still listed and selectable on their own. When no hardware interface exists, as inside a container, every interface counts.
+The Total counts hardware interfaces only. On Linux these are network cards, Wi-Fi, USB adapters, and Hyper-V or virtio NICs; bridges, `veth` pairs, VPN tunnels, VLANs, and bonds are left out. On Windows they are the adapters Windows reports as hardware; VPN adapters, Hyper-V and WSL `vEthernet` adapters, WAN Miniports, and tunnels such as Teredo are left out. Those interfaces carry traffic that also crosses a hardware interface, so counting them as well would double it. They are still listed and selectable on their own. When no hardware interface exists, as inside a container, every interface counts.
 
 ---
 

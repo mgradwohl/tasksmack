@@ -220,15 +220,17 @@ inline constexpr std::uint32_t IF_TYPE_LOOPBACK = 24;
 inline constexpr std::uint32_t IF_TYPE_VIRTUAL = 53;
 inline constexpr std::uint32_t IF_TYPE_WIFI = 71;
 inline constexpr std::uint32_t IF_TYPE_TUNNEL_LINK = 131;
+inline constexpr std::uint32_t IF_TYPE_WWAN_GSM = 243;  // Mobile broadband, GSM-based (#1257)
+inline constexpr std::uint32_t IF_TYPE_WWAN_CDMA = 244; // Mobile broadband, CDMA-based (#1257)
 
 /// Whether a GetIfTable2 row counts as a network interface of its own.
 ///
-/// Ethernet, Wi-Fi, tunnels, PPP and virtual adapters (VPN, Hyper-V, Docker) count; loopback and
-/// other types (Bluetooth, etc.) do not. Nor do NDIS filter-module rows: GetIfTable2 lists one per
-/// filter bound to an adapter (WFP MAC layer, QoS Packet Scheduler, Native WiFi filter, Hyper-V
-/// switch extensions), each repeating its adapter's byte counters. Counting them made the network
-/// Total several times the real traffic -- on a Wi-Fi laptop with WSL, Wi-Fi was counted 5 times
-/// and the WSL vEthernet adapter 4 times, 49.0 GB of lifetime bytes against 11.8 GB actual (#1030).
+/// Ethernet, Wi-Fi, mobile broadband (WWAN), tunnels, PPP and virtual adapters (VPN, Hyper-V, Docker)
+/// count; loopback and other types (Bluetooth, etc.) do not. A WWAN modem is the only uplink on some
+/// laptops, so leaving its types out left them with no network Total at all (#1257). Nor do NDIS filter-module rows: GetIfTable2 lists one
+/// per filter bound to an adapter (WFP MAC layer, QoS Packet Scheduler, Native WiFi filter, Hyper-V switch extensions), each repeating its
+/// adapter's byte counters. Counting them made the network Total several times the real traffic -- on a Wi-Fi laptop with WSL, Wi-Fi was
+/// counted 5 times and the WSL vEthernet adapter 4 times, 49.0 GB of lifetime bytes against 11.8 GB actual (#1030).
 ///
 /// @param ifType             MIB_IF_ROW2::Type.
 /// @param isFilterInterface  MIB_IF_ROW2::InterfaceAndOperStatusFlags.FilterInterface.
@@ -239,7 +241,36 @@ inline constexpr std::uint32_t IF_TYPE_TUNNEL_LINK = 131;
         return false;
     }
     return ifType == IF_TYPE_ETHERNET || ifType == IF_TYPE_WIFI || ifType == IF_TYPE_TUNNEL_LINK || ifType == IF_TYPE_PPP_LINK ||
-           ifType == IF_TYPE_VIRTUAL;
+           ifType == IF_TYPE_VIRTUAL || ifType == IF_TYPE_WWAN_GSM || ifType == IF_TYPE_WWAN_CDMA;
+}
+
+/// Cumulative bytes over the interfaces the network Total counts (#1257).
+struct NetworkTotals
+{
+    std::uint64_t rxBytes = 0;
+    std::uint64_t txBytes = 0;
+};
+
+/// The network Total from the counted interfaces: hardware ones only, unless none is listed (#1257).
+///
+/// Traffic over a VPN tunnel, a Hyper-V/WSL vEthernet adapter or a WAN Miniport also crosses a
+/// hardware adapter, so counting both doubled it. The probe marks a row virtual when
+/// MIB_IF_ROW2::InterfaceAndOperStatusFlags.HardwareInterface is clear. With no hardware interface
+/// at all every interface counts, so the Total isn't 0. Same rule as the Linux probe and
+/// SystemModel's Total rate (#1106); keep them in step.
+[[nodiscard]] inline NetworkTotals sumCountedInterfaces(std::span<const SystemCounters::InterfaceCounters> interfaces) noexcept
+{
+    const bool anyHardware = std::ranges::any_of(interfaces, [](const auto& iface) { return !iface.isVirtual; });
+    NetworkTotals totals;
+    for (const auto& iface : interfaces)
+    {
+        if (!anyHardware || !iface.isVirtual)
+        {
+            totals.rxBytes += iface.rxBytes;
+            totals.txBytes += iface.txBytes;
+        }
+    }
+    return totals;
 }
 
 } // namespace Platform

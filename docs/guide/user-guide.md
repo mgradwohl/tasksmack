@@ -124,7 +124,7 @@ The System Overview and process views provide three levels of visibility:
 | Per-interface | Individual interface throughput with status and link speed |
 | Per-process | Bytes sent and received attributed to each process |
 
-An interface selector lets you focus on a specific adapter. On Linux the Total leaves out virtual interfaces (bridges such as `docker0`, `veth` pairs, VPN tunnels such as `wg0` or `tun0`, VLANs), because their traffic also crosses a hardware interface and counting both doubled it. They remain in the selector, marked "virtual, not in Total". If there is no hardware interface at all, as inside a container, every interface counts. Windows doesn't classify interfaces this way yet.
+An interface selector lets you focus on a specific adapter. The Total leaves out virtual interfaces (on Linux, bridges such as `docker0`, `veth` pairs, VPN tunnels such as `wg0` or `tun0`, VLANs; on Windows, adapters Windows doesn't report as hardware, such as VPN adapters, WSL `vEthernet`, and WAN Miniports), because their traffic also crosses a hardware interface and counting both doubled it. They remain in the selector, marked "virtual, not in Total". If there is no hardware interface at all, as inside a container, every interface counts.
 
 Per-process network rates are the bytes the process's TCP connections transferred between two readings, divided by the time between them. On Linux the readings are cached (`socket_stats_cache_ttl_ms`, 500 ms by default), and a refresh that reuses one shows the last rate (see the FAQ). UDP traffic, including QUIC/HTTP3, video calls, games, and DNS, is not attributed to processes on either platform. A browser streaming over HTTP/3 can show close to 0 B/s while the interface is busy.
 

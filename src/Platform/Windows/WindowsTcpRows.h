@@ -21,7 +21,12 @@
 // clang-format on
 // NOLINTEND(misc-include-cleaner)
 
+#include "WindowsProcessProbeMath.h"
+
+#include <algorithm>
+#include <array>
 #include <bit>
+#include <cstdint>
 
 namespace Platform
 {
@@ -56,6 +61,35 @@ namespace Platform
         .RemoteAddr = std::bit_cast<IN6_ADDR>(ownerRow.ucRemoteAddr),
         .dwRemoteScopeId = ownerRow.dwRemoteScopeId,
         .dwRemotePort = ownerRow.dwRemotePort,
+    };
+}
+
+/// The endpoints estatsConnectionKey() identifies an IPv4 connection by (#1256). The addresses are
+/// stored in network byte order, so their in-memory bytes are copied as they are.
+[[nodiscard]] inline TcpConnectionEndpoints toConnectionEndpoints(const MIB_TCPROW_OWNER_PID& ownerRow) noexcept
+{
+    TcpConnectionEndpoints endpoints;
+    endpoints.family = TcpAddressFamily::IPv4;
+    endpoints.localPort = ownerRow.dwLocalPort;
+    endpoints.remotePort = ownerRow.dwRemotePort;
+    const auto localAddr = std::bit_cast<std::array<std::uint8_t, 4>>(ownerRow.dwLocalAddr);
+    const auto remoteAddr = std::bit_cast<std::array<std::uint8_t, 4>>(ownerRow.dwRemoteAddr);
+    std::ranges::copy(localAddr, endpoints.localAddr.begin());
+    std::ranges::copy(remoteAddr, endpoints.remoteAddr.begin());
+    return endpoints;
+}
+
+/// IPv6 twin of the above (#1256): 16-byte addresses plus each end's scope id.
+[[nodiscard]] inline TcpConnectionEndpoints toConnectionEndpoints(const MIB_TCP6ROW_OWNER_PID& ownerRow) noexcept
+{
+    return TcpConnectionEndpoints{
+        .family = TcpAddressFamily::IPv6,
+        .localAddr = std::bit_cast<std::array<std::uint8_t, 16>>(ownerRow.ucLocalAddr),
+        .localScopeId = ownerRow.dwLocalScopeId,
+        .localPort = ownerRow.dwLocalPort,
+        .remoteAddr = std::bit_cast<std::array<std::uint8_t, 16>>(ownerRow.ucRemoteAddr),
+        .remoteScopeId = ownerRow.dwRemoteScopeId,
+        .remotePort = ownerRow.dwRemotePort,
     };
 }
 
