@@ -8,7 +8,6 @@
 #include <cstdint>
 #include <optional>
 #include <span>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -335,51 +334,35 @@ struct EStatsConnectionRead
     std::uint64_t bytesSent = 0;     // DataBytesOut; likewise
 };
 
-/// The last sample reported for each connection still in the TCP tables, by key (#1256).
-using EStatsLastSamples = std::unordered_map<std::uint64_t, SocketTrafficSample>;
-
 /// Turn one complete walk of the TCP tables into the per-connection samples readSocketTraffic()
-/// reports (#1256), and remember them for the next walk.
+/// reports (#1256). Stateless: Domain::SocketTrafficAccumulator keeps the per-connection baselines.
 ///
 /// A connection whose EStats read failed or returned garbage this walk is still in the table, so
-/// it is reported with its last good sample rather than left out: Domain::SocketTrafficAccumulator
-/// would take a connection missing from one reading as closed, and the same connection back in the
-/// next as new, crediting all its lifetime bytes to the process in one interval. A connection with
-/// no good read yet is left out until it has one. Connections no longer in the table (closed, or
-/// out of ESTABLISHED) are dropped from @p lastSamples.
+/// it is reported unreadable (SocketTrafficSample::readable false) rather than left out: the
+/// accumulator would take a connection missing from one reading as closed, and the same connection
+/// back in the next as new, crediting all its lifetime bytes to the process in one interval.
+/// Reported unreadable, it keeps its baseline instead. Rows not in ESTABLISHED (SkippedState) are
+/// left out.
 ///
-/// Call only for a complete walk: if either table could not be read, report no reading and leave
-/// @p lastSamples alone.
-/// @param reads        This walk's ESTABLISHED rows (SkippedState rows are ignored).
-/// @param lastSamples  The previous walk's samples; replaced by this walk's.
-[[nodiscard]] inline std::vector<SocketTrafficSample> buildSocketTrafficSamples(std::span<const EStatsConnectionRead> reads,
-                                                                                EStatsLastSamples& lastSamples)
+/// Call only for a complete walk: if either table could not be read, report no reading.
+/// @param reads  This walk's ESTABLISHED rows (SkippedState rows are ignored).
+[[nodiscard]] inline std::vector<SocketTrafficSample> buildSocketTrafficSamples(std::span<const EStatsConnectionRead> reads)
 {
     std::vector<SocketTrafficSample> samples;
     samples.reserve(reads.size());
-    EStatsLastSamples next;
-    next.reserve(reads.size());
     for (const auto& read : reads)
     {
         const auto pid = static_cast<std::int32_t>(read.pid);
         if (read.outcome == EStatsRowOutcome::Accumulated)
         {
-            const SocketTrafficSample sample{.key = read.key, .pid = pid, .bytesReceived = read.bytesReceived, .bytesSent = read.bytesSent};
-            samples.push_back(sample);
-            next.insert_or_assign(read.key, sample);
+            samples.push_back(
+                SocketTrafficSample{.key = read.key, .pid = pid, .bytesReceived = read.bytesReceived, .bytesSent = read.bytesSent});
         }
         else if (read.outcome == EStatsRowOutcome::ReadFailed || read.outcome == EStatsRowOutcome::Garbage)
         {
-            if (const auto previous = lastSamples.find(read.key); previous != lastSamples.end())
-            {
-                SocketTrafficSample sample = previous->second;
-                sample.pid = pid;
-                samples.push_back(sample);
-                next.insert_or_assign(read.key, sample);
-            }
+            samples.push_back(SocketTrafficSample{.key = read.key, .pid = pid, .readable = false});
         }
     }
-    lastSamples = std::move(next);
     return samples;
 }
 
@@ -387,18 +370,16 @@ using EStatsLastSamples = std::unordered_map<std::uint64_t, SocketTrafficSample>
 /// @param complete      Both tables were read. If not, the walk is missing connections that are
 ///                      still open, and reported they would look closed and then, back in the next
 ///                      reading, new -- crediting their lifetime bytes. So no reading is reported
-///                      (sampleTimeNs 0, which Domain doesn't fold) and @p lastSamples is kept.
+///                      (sampleTimeNs 0, which Domain doesn't fold).
 /// @param sampleTimeNs  When the walk was taken (steady_clock ns); non-zero.
-[[nodiscard]] inline SocketTrafficReading makeSocketTrafficReading(std::span<const EStatsConnectionRead> reads,
-                                                                   bool complete,
-                                                                   std::uint64_t sampleTimeNs,
-                                                                   EStatsLastSamples& lastSamples)
+[[nodiscard]] inline SocketTrafficReading
+makeSocketTrafficReading(std::span<const EStatsConnectionRead> reads, bool complete, std::uint64_t sampleTimeNs)
 {
     if (!complete)
     {
         return {};
     }
-    return SocketTrafficReading{.sockets = buildSocketTrafficSamples(reads, lastSamples), .sampleTimeNs = sampleTimeNs};
+    return SocketTrafficReading{.sockets = buildSocketTrafficSamples(reads), .sampleTimeNs = sampleTimeNs};
 }
 
 } // namespace Platform

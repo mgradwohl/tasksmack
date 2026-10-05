@@ -22,7 +22,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -63,6 +62,11 @@ class WindowsProcessProbe : public IProcessProbe
     [[nodiscard]] uint64_t totalCpuTime() const override;
     [[nodiscard]] long ticksPerSecond() const override;
     [[nodiscard]] uint64_t systemTotalMemory() const override;
+    /// Keeps no per-connection state between calls: a connection whose EStats read fails is
+    /// reported unreadable and Domain keeps its baseline (#1256). The only state it updates is the
+    /// one-time EStats verification (#1161, verifyEStats()), whose inconclusive-sample streak
+    /// assumes one caller at a time: ProcessModel::refresh() is the only caller, under its sampling
+    /// lock. Concurrent calls stay data-race-free (atomics), but each would extend the streak.
     [[nodiscard]] SocketTrafficReading readSocketTraffic() const override;
 
   private:
@@ -154,13 +158,6 @@ class WindowsProcessProbe : public IProcessProbe
     /// Log the periodic EStats debug line and, until a real sample has, decide whether EStats
     /// works (#1161). Returns false if this sample proved it unusable (network counters now off).
     [[nodiscard]] bool verifyEStats(const EStatsSampleCounts& counts) const;
-
-    // Last sample reported per connection, so one whose EStats read fails for a sample is reported
-    // with it rather than dropped and then counted as new (#1256; see buildSocketTrafficSamples()).
-    // readSocketTraffic() is const and ProcessModel calls it under its sampling lock; the mutex
-    // keeps a second caller from interleaving with it.
-    mutable std::mutex m_SocketTrafficMutex;
-    mutable EStatsLastSamples m_LastSocketSamples; // guarded by m_SocketTrafficMutex
 
     std::unordered_map<DetailCacheKey, DetailCacheEntry, DetailCacheKeyHash> m_DetailCache;
     std::uint64_t m_DetailCacheGeneration = 0;

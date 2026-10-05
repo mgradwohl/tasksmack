@@ -1287,7 +1287,6 @@ struct EStatsTrafficHarness
     static constexpr std::uint64_t START_TICKS = 1'000;
     static constexpr std::uint64_t SECOND_NS = 1'000'000'000ULL;
 
-    EStatsLastSamples lastSamples;
     Domain::SocketTrafficAccumulator accumulator;
     std::uint64_t nowNs = 0;
 
@@ -1309,7 +1308,7 @@ struct EStatsTrafficHarness
         std::vector<ProcessCounters> processes(1);
         processes[0].pid = static_cast<std::int32_t>(PID);
         processes[0].startTimeTicks = startTicks;
-        accumulator.apply(makeSocketTrafficReading(reads, complete, nowNs, lastSamples), processes);
+        accumulator.apply(makeSocketTrafficReading(reads, complete, nowNs), processes);
         return {processes[0].netReceivedBytes, processes[0].netSentBytes};
     }
 };
@@ -1346,9 +1345,9 @@ TEST(EStatsSocketTrafficTest, Ipv4AndIpv6ConnectionsOfOneProcessAddUp)
 
 TEST(EStatsSocketTrafficTest, AFailedRowReadDoesNotSpike)
 {
-    // A connection whose EStats read fails for one sample (or reads garbage) is reported with its
-    // last sample. Left out, it would look closed and then new: its 10'000 lifetime bytes would
-    // land in one interval.
+    // A connection whose EStats read fails for one sample (or reads garbage) is reported unreadable
+    // and keeps its baseline in Domain. Left out, it would look closed and then new: its 10'000
+    // lifetime bytes would land in one interval.
     for (const EStatsRowOutcome outcome : {EStatsRowOutcome::ReadFailed, EStatsRowOutcome::Garbage})
     {
         EStatsTrafficHarness h;
@@ -1358,32 +1357,43 @@ TEST(EStatsSocketTrafficTest, AFailedRowReadDoesNotSpike)
     }
 }
 
-TEST(EStatsSocketTrafficTest, AFailedReadIsForgottenOnceTheConnectionLeavesTheTable)
+TEST(EStatsSocketTrafficTest, AFailedReadIsReportedUnreadable)
 {
-    EStatsLastSamples lastSamples;
-    const std::vector<EStatsConnectionRead> first{EStatsTrafficHarness::good(1, 100, 10), EStatsTrafficHarness::good(2, 200, 20)};
-    EXPECT_EQ(buildSocketTrafficSamples(first, lastSamples).size(), 2U);
-
-    // Connection 1 failed its read and is re-reported; connection 2 is gone from the table.
-    const std::vector<EStatsConnectionRead> second{EStatsTrafficHarness::failed(1)};
-    const auto samples = buildSocketTrafficSamples(second, lastSamples);
-    ASSERT_EQ(samples.size(), 1U);
-    EXPECT_EQ(samples[0].key, 1U);
-    EXPECT_EQ(samples[0].bytesReceived, 100U);
-    EXPECT_EQ(lastSamples.size(), 1U);
-    EXPECT_FALSE(lastSamples.contains(2));
-}
-
-TEST(EStatsSocketTrafficTest, AConnectionWithNoGoodReadYetIsLeftOut)
-{
-    EStatsLastSamples lastSamples;
+    // The probe keeps no per-connection state (#1256): a failed or garbage read is reported as an
+    // unreadable sample of a connection still in the table, whatever came before it; rows not in
+    // ESTABLISHED are left out.
     const std::vector<EStatsConnectionRead> reads{
+        EStatsTrafficHarness::good(1, 100, 10),
         EStatsTrafficHarness::failed(7),
         EStatsTrafficHarness::failed(8, EStatsRowOutcome::Garbage),
         {.key = 9, .pid = 1, .outcome = EStatsRowOutcome::SkippedState},
     };
-    EXPECT_TRUE(buildSocketTrafficSamples(reads, lastSamples).empty());
-    EXPECT_TRUE(lastSamples.empty());
+    const auto samples = buildSocketTrafficSamples(reads);
+    ASSERT_EQ(samples.size(), 3U);
+    EXPECT_TRUE(samples[0].readable);
+    EXPECT_EQ(samples[0].bytesReceived, 100U);
+    EXPECT_EQ(samples[0].bytesSent, 10U);
+    for (std::size_t i = 1; i < samples.size(); ++i)
+    {
+        EXPECT_FALSE(samples[i].readable);
+        EXPECT_EQ(samples[i].pid, static_cast<std::int32_t>(EStatsTrafficHarness::PID));
+    }
+    EXPECT_EQ(samples[1].key, 7U);
+    EXPECT_EQ(samples[2].key, 8U);
+}
+
+TEST(EStatsSocketTrafficTest, AConnectionFirstReadFailedDoesNotCreditItsLifetimeBytes)
+{
+    // A connection already open when its first read fails: once it reads, its 50'000 lifetime bytes
+    // only set the baseline instead of landing in one interval (#1256).
+    EStatsTrafficHarness h;
+    (void) h.sample({EStatsTrafficHarness::good(1, 0, 0)}); // baseline
+    EXPECT_EQ(h.sample({EStatsTrafficHarness::good(1, 10, 1), EStatsTrafficHarness::failed(2)}),
+              std::make_pair(std::uint64_t{10}, std::uint64_t{1}));
+    EXPECT_EQ(h.sample({EStatsTrafficHarness::good(1, 20, 2), EStatsTrafficHarness::good(2, 50'000, 5'000)}),
+              std::make_pair(std::uint64_t{20}, std::uint64_t{2}));
+    EXPECT_EQ(h.sample({EStatsTrafficHarness::good(1, 20, 2), EStatsTrafficHarness::good(2, 50'400, 5'040)}),
+              std::make_pair(std::uint64_t{420}, std::uint64_t{42}));
 }
 
 TEST(EStatsSocketTrafficTest, ASampleWithAnUnreadableTableIsSkipped)
@@ -1394,11 +1404,9 @@ TEST(EStatsSocketTrafficTest, ASampleWithAnUnreadableTableIsSkipped)
     EStatsTrafficHarness h;
     (void) h.sample({EStatsTrafficHarness::good(1, 1'000, 100), EStatsTrafficHarness::good(2, 2'000, 200)}); // baseline
 
-    const EStatsLastSamples before = h.lastSamples;
-    const auto partial = makeSocketTrafficReading({}, false, 123, h.lastSamples);
+    const auto partial = makeSocketTrafficReading({}, false, 123);
     EXPECT_EQ(partial.sampleTimeNs, 0U);
     EXPECT_TRUE(partial.sockets.empty());
-    EXPECT_EQ(h.lastSamples.size(), before.size());
 
     // Only connection 1's table was read this sample: skipped, totals held.
     EXPECT_EQ(h.sample({EStatsTrafficHarness::good(1, 1'100, 110)}, false), std::make_pair(std::uint64_t{0}, std::uint64_t{0}));

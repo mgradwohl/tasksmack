@@ -1318,8 +1318,7 @@ SocketTrafficReading WindowsProcessProbe::readSocketTraffic() const
     }
     const auto sampleTimeNs = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
-    const std::scoped_lock lock{m_SocketTrafficMutex};
-    return makeSocketTrafficReading(reads, complete, sampleTimeNs, m_LastSocketSamples);
+    return makeSocketTrafficReading(reads, complete, sampleTimeNs);
 }
 
 bool WindowsProcessProbe::verifyEStats(const EStatsSampleCounts& counts) const
