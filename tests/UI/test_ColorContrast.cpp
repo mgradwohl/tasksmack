@@ -192,4 +192,45 @@ TEST(ColorContrastTest, SurvivesDegenerateChannels)
 }
 
 } // namespace
+// #1301 review: a second axis's tick labels are drawn in its series' colour, which bundled themes hold
+// only to 3:1; as text they must reach 4.5:1.
+TEST(ReadableTintTest, AColourThatAlreadyReadsIsKept)
+{
+    const ImVec4 white{1.0F, 1.0F, 1.0F, 1.0F};
+    const ImVec4 black{0.0F, 0.0F, 0.0F, 1.0F};
+    const ImVec4 nearBlack{0.1F, 0.1F, 0.1F, 1.0F};
+    const ImVec4 tinted = readableTint(nearBlack, black, white, TEXT_CONTRAST_MIN);
+    EXPECT_FLOAT_EQ(tinted.x, nearBlack.x);
+    EXPECT_FLOAT_EQ(tinted.y, nearBlack.y);
+    EXPECT_FLOAT_EQ(tinted.z, nearBlack.z);
+}
+
+TEST(ReadableTintTest, ADimColourMovesTowardTheTextColourJustFarEnough)
+{
+    // Windows Dark-like: a mid blue series on a dark frame, light text.
+    const ImVec4 frame{0.12F, 0.12F, 0.12F, 1.0F};
+    const ImVec4 text{0.95F, 0.95F, 0.95F, 1.0F};
+    const ImVec4 series{0.20F, 0.35F, 0.75F, 1.0F};
+    ASSERT_LT(contrastRatio(series, frame), TEXT_CONTRAST_MIN);
+    const ImVec4 tinted = readableTint(series, text, frame, TEXT_CONTRAST_MIN);
+    EXPECT_GE(contrastRatio(tinted, frame), TEXT_CONTRAST_MIN);
+    // Still bluer than it is red: the hue survives, it isn't just the text colour.
+    EXPECT_GT(tinted.z, tinted.x);
+    // One twentieth less of the mix would not have read.
+    const float t = (tinted.x - series.x) / (text.x - series.x);
+    const float less = t - (1.0F / 20.0F);
+    const ImVec4 lessMixed{
+        series.x + ((text.x - series.x) * less), series.y + ((text.y - series.y) * less), series.z + ((text.z - series.z) * less), 1.0F};
+    EXPECT_LT(contrastRatio(lessMixed, frame), TEXT_CONTRAST_MIN);
+}
+
+TEST(ReadableTintTest, FallsBackToTheReadableColourWhenNoMixReads)
+{
+    const ImVec4 grey{0.5F, 0.5F, 0.5F, 1.0F};
+    const ImVec4 nearGrey{0.55F, 0.55F, 0.55F, 1.0F};
+    // Neither the colour nor any mix toward nearGrey reaches 4.5:1 on grey.
+    const ImVec4 tinted = readableTint(grey, nearGrey, grey, TEXT_CONTRAST_MIN);
+    EXPECT_FLOAT_EQ(tinted.x, nearGrey.x);
+}
+
 } // namespace UI::ColorContrast

@@ -3,6 +3,7 @@
 #include "Core/AnimationRequest.h"
 #include "Domain/Numeric.h"
 #include "Domain/SamplingConfig.h"
+#include "UI/ColorContrast.h"
 #include "UI/Format.h"
 #include "UI/RateAxis.h"
 #include "UI/RenderMetrics.h"
@@ -2157,14 +2158,23 @@ rateHistoryConfig(const char* id, double xMin, double xMax, ImPlotFormatter yFor
 /// before plotting; then plot that series between ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2) and
 /// ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1).
 ///
-/// The axis's tick labels and tick marks are drawn in @p seriesColor, the colour of the series on it, and that
+/// The axis's tick marks are drawn in @p seriesColor and its tick labels in that colour made readable
+/// as text (ColorContrast::readableTint()), the colour of the series on it, and that
 /// series' label ends in " →" (pointing at this right-hand axis), so a reader can tell which scale a
 /// line is read against (#1206).
 inline void setupSecondaryRateAxis(double upperBound, ImPlotFormatter formatter, const ImVec4& seriesColor)
 {
     // ImPlot reads an axis's colours from the style when the axis is set up (UpdateAxisColors), the
-    // tick marks' apart from the labels', so both are pushed.
-    ImPlot::PushStyleColor(ImPlotCol_AxisText, seriesColor);
+    // tick marks' apart from the labels', so both are pushed. The marks take the series colour as it
+    // is; the labels are text, held to 4.5:1 on the frame they sit on, which a series colour (3:1)
+    // need not reach, so they take it moved toward the theme's text colour as far as that needs.
+    // ImPlot's frame colour, or ImGui's when the theme leaves it on auto (IMPLOT_AUTO_COL).
+    const ImVec4 plotFrame = ImPlot::GetStyle().Colors[ImPlotCol_FrameBg];
+    const ImVec4 frameColor = (plotFrame.w < 0.0F) ? ImGui::GetStyleColorVec4(ImGuiCol_FrameBg) : plotFrame;
+    const ImVec4 frameBg = ColorContrast::flattenOver(frameColor, ImGui::GetStyleColorVec4(ImGuiCol_WindowBg));
+    const ImVec4 labelColor =
+        ColorContrast::readableTint(seriesColor, Theme::get().scheme().textPrimary, frameBg, ColorContrast::TEXT_CONTRAST_MIN);
+    ImPlot::PushStyleColor(ImPlotCol_AxisText, labelColor);
     ImPlot::PushStyleColor(ImPlotCol_AxisTick, seriesColor);
     // AuxDefault: no grid lines of its own, and Opposite, which puts its labels on the right.
     ImPlot::SetupAxis(ImAxis_Y2, nullptr, ImPlotAxisFlags_AuxDefault | ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
