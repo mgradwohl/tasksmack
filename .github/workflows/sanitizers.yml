@@ -70,7 +70,7 @@ jobs:
           # Sources and population stamps only: <dep>-build holds objects compiled with this
           # job's flags (sanitizer, coverage, ...), which another job must not restore (#1137).
           path: |
-            .cache/fetchcontent
+            .cache/fetchcontent/*
             !.cache/fetchcontent/*-build
           key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'cmake/Dependencies.cmake', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
           restore-keys: ${{ runner.os }}-fetchcontent-
