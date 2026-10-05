@@ -757,19 +757,24 @@ void SystemMetricsPanel::renderOverview()
                 // 35% fill as the swatch: a dull block unlike the band's opaque NowBar. The edge
                 // shares the label, so it is the same legend item, and its opaque colour becomes the
                 // swatch; hiding the item from the legend hides both (#1192).
-                const auto bandEdge = [&](const char* label, const std::vector<double>& top, const ImVec4& color)
+                // The bands are the chart's fill, so each edge is drawn as a secondary series: its own
+                // marker shape, shown on its legend key too, so the bands differ by more than colour
+                // (#1198).
+                const auto bandEdge = [&](const char* label, const std::vector<double>& top, const ImVec4& color, std::size_t slot)
                 {
+                    const UI::Widgets::SeriesStyle style = seriesStyle(SeriesRole::Secondary, slot);
                     ImPlot::PlotLine(label,
                                      m_CpuStackX.data(),
                                      top.data(),
                                      stackCount,
-                                     {ImPlotProp_LineColor, color, ImPlotProp_LineWeight, UI::Widgets::lineWeight(1.0F)});
+                                     {ImPlotProp_LineColor, color, ImPlotProp_LineWeight, UI::Widgets::lineWeight(style.lineWeightPx)});
+                    UI::Widgets::plotSeriesMarkers(label, m_CpuStackX.data(), top.data(), stackCount, color, style);
                 };
-                bandEdge(CPU_USER_LABEL, yUserTop, theme.scheme().cpuUser);
-                bandEdge(CPU_SYSTEM_LABEL, ySystemTop, theme.scheme().cpuSystem);
+                bandEdge(CPU_USER_LABEL, yUserTop, theme.scheme().cpuUser, 0);
+                bandEdge(CPU_SYSTEM_LABEL, ySystemTop, theme.scheme().cpuSystem, 1);
                 if (showIowait)
                 {
-                    bandEdge(CPU_IOWAIT_LABEL, yIowaitTop, theme.scheme().cpuIowait);
+                    bandEdge(CPU_IOWAIT_LABEL, yIowaitTop, theme.scheme().cpuIowait, 2);
                 }
 
                 // Total over the busy bands. It is 100 - (idle + iowait), so it includes irq, softirq
@@ -778,13 +783,14 @@ void SystemMetricsPanel::renderOverview()
                 // significant. The I/O Wait band sits on top of it.
                 if (!cpuData.empty())
                 {
+                    // The primary series' weight, but no fill of its own: the bands below are the fill.
                     plotLineWithFill(CPU_TOTAL_LABEL,
                                      cpuTimeData.data(),
                                      cpuData.data(),
                                      UI::Format::checkedCount(cpuData.size()),
                                      theme.scheme().chartCpu,
                                      theme.scheme().chartCpuFill,
-                                     2.0F,
+                                     UI::Widgets::PRIMARY_SERIES_WEIGHT,
                                      false);
                 }
 

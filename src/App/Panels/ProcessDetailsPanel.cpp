@@ -1034,23 +1034,30 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
                                                                      {ImPlotProp_FillColor, theme.scheme().cpuSystemFill});
                                               });
 
+                // Total at the primary series' weight; it has no fill of its own, the bands above are
+                // the fill. User and System are secondaries: lighter lines, each with its own marker
+                // shape (shown on its legend key too), so they differ by more than colour (#1198).
                 ImPlot::PlotLine(CPU_TOTAL_LABEL,
                                  m_CpuPlotX.data(),
                                  m_CpuPlotTotal.data(),
                                  drawCount,
-                                 {ImPlotProp_LineColor, theme.scheme().chartCpu, ImPlotProp_LineWeight, UI::Widgets::lineWeight(2.0F)});
+                                 {ImPlotProp_LineColor,
+                                  theme.scheme().chartCpu,
+                                  ImPlotProp_LineWeight,
+                                  UI::Widgets::lineWeight(UI::Widgets::PRIMARY_SERIES_WEIGHT)});
 
-                ImPlot::PlotLine(CPU_USER_LABEL,
-                                 m_CpuPlotX.data(),
-                                 m_CpuPlotUser.data(),
-                                 drawCount,
-                                 {ImPlotProp_LineColor, theme.scheme().cpuUser, ImPlotProp_LineWeight, UI::Widgets::lineWeight(2.0F)});
-
-                ImPlot::PlotLine(CPU_SYSTEM_LABEL,
-                                 m_CpuPlotX.data(),
-                                 m_CpuPlotSystem.data(),
-                                 drawCount,
-                                 {ImPlotProp_LineColor, theme.scheme().cpuSystem, ImPlotProp_LineWeight, UI::Widgets::lineWeight(2.0F)});
+                const auto secondaryLine = [&](const char* label, const std::vector<double>& values, const ImVec4& color, std::size_t slot)
+                {
+                    const UI::Widgets::SeriesStyle style = seriesStyle(SeriesRole::Secondary, slot);
+                    ImPlot::PlotLine(label,
+                                     m_CpuPlotX.data(),
+                                     values.data(),
+                                     drawCount,
+                                     {ImPlotProp_LineColor, color, ImPlotProp_LineWeight, UI::Widgets::lineWeight(style.lineWeightPx)});
+                    UI::Widgets::plotSeriesMarkers(label, m_CpuPlotX.data(), values.data(), drawCount, color, style);
+                };
+                secondaryLine(CPU_USER_LABEL, m_CpuPlotUser, theme.scheme().cpuUser, 0);
+                secondaryLine(CPU_SYSTEM_LABEL, m_CpuPlotSystem, theme.scheme().cpuSystem, 1);
 
                 if (ImPlot::IsPlotHovered())
                 {
