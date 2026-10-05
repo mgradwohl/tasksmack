@@ -205,13 +205,22 @@ using InterfaceNameSet = std::set<std::string, std::less<>>;
     return iface.rxBytesPerSec > 0.0 || iface.txBytesPerSec > 0.0;
 }
 
+/// Whether the interface is hidden by default whatever its traffic: virtual and Bluetooth
+/// interfaces (the platform's isVirtual flag where it is set, the name heuristic otherwise) (#1211).
+[[nodiscard]] inline bool isAlwaysHidden(const Domain::SystemSnapshot::InterfaceSnapshot& iface)
+{
+    return iface.isVirtual || isVirtualInterface(iface) || isBluetoothInterface(iface);
+}
+
 /// Add every interface moving traffic in this snapshot to `seen`, so a down interface that carried
 /// traffic earlier in the session (an unplugged USB adapter, a dropped VPN) stays listed (#1211).
+/// Always-hidden interfaces are not recorded: their membership changes nothing, and on a container
+/// host their short-lived veth/bridge names would otherwise accumulate for the session.
 inline void recordInterfaceTraffic(const std::vector<Domain::SystemSnapshot::InterfaceSnapshot>& interfaces, InterfaceNameSet& seen)
 {
     for (const auto& iface : interfaces)
     {
-        if (hasTraffic(iface) && !seen.contains(iface.name))
+        if (hasTraffic(iface) && !isAlwaysHidden(iface) && !seen.contains(iface.name))
         {
             seen.insert(iface.name);
         }
@@ -225,7 +234,7 @@ inline void recordInterfaceTraffic(const std::vector<Domain::SystemSnapshot::Int
 /// disconnected adapters -- unless they have carried traffic this session.
 [[nodiscard]] inline bool isHiddenByDefault(const Domain::SystemSnapshot::InterfaceSnapshot& iface, const InterfaceNameSet& seenTraffic)
 {
-    if (iface.isVirtual || isVirtualInterface(iface) || isBluetoothInterface(iface))
+    if (isAlwaysHidden(iface))
     {
         return true;
     }

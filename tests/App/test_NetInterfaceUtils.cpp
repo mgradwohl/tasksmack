@@ -615,6 +615,24 @@ TEST(NetInterfaceUtilsTest, SelectionMatchesTheRawNameNotTheDisplayName)
     EXPECT_TRUE(resolveInterfaceSelection(interfaces, "Wi-Fi").lost);
 }
 
+// #1298 review: virtual interfaces are always hidden, so recording their traffic changes nothing --
+// and churned container veth names would pile up in the session set. They are not recorded.
+TEST(NetInterfaceUtilsTest, TrafficOnAlwaysHiddenInterfacesIsNotRecorded)
+{
+    Domain::SystemSnapshot::InterfaceSnapshot veth;
+    veth.name = "veth1a2b3c";
+    veth.isVirtual = true;
+    veth.rxBytesPerSec = 1000.0;
+    Domain::SystemSnapshot::InterfaceSnapshot wifi;
+    wifi.name = "Wi-Fi";
+    wifi.rxBytesPerSec = 1000.0;
+
+    InterfaceNameSet seen;
+    recordInterfaceTraffic({veth, wifi}, seen);
+    EXPECT_FALSE(seen.contains("veth1a2b3c"));
+    EXPECT_TRUE(seen.contains("Wi-Fi"));
+}
+
 } // namespace
 } // namespace App::NetInterfaceUtils
 
