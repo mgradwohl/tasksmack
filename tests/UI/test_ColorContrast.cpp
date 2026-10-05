@@ -216,9 +216,9 @@ TEST(ReadableTintTest, ADimColourMovesTowardTheTextColourJustFarEnough)
     EXPECT_GE(contrastRatio(tinted, frame), TEXT_CONTRAST_MIN);
     // Still bluer than it is red: the hue survives, it isn't just the text colour.
     EXPECT_GT(tinted.z, tinted.x);
-    // One twentieth less of the mix would not have read.
+    // One step less of the mix would not have read.
     const float t = (tinted.x - series.x) / (text.x - series.x);
-    const float less = t - (1.0F / 20.0F);
+    const float less = t - (1.0F / static_cast<float>(READABLE_TINT_STEPS));
     const ImVec4 lessMixed{
         series.x + ((text.x - series.x) * less), series.y + ((text.y - series.y) * less), series.z + ((text.z - series.z) * less), 1.0F};
     EXPECT_LT(contrastRatio(lessMixed, frame), TEXT_CONTRAST_MIN);

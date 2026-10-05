@@ -1900,27 +1900,44 @@ template<typename Measure> [[nodiscard]] std::string fitLegendName(std::string_v
     {
         return std::string(name);
     }
-    // Byte offsets of each code point boundary after the first code point.
-    std::vector<std::size_t> cuts;
+    // Called every frame, so the search measures in one buffer rather than a string per probe.
+    const auto isBoundary = [&](std::size_t i)
+    {
+        return i == name.size() || (static_cast<unsigned char>(name[i]) & 0xC0U) != 0x80U;
+    };
+    // The byte offset of the @p n-th code point boundary after the first code point (n from 0).
+    const auto cutAt = [&](std::size_t n)
+    {
+        std::size_t i = 1;
+        for (; !isBoundary(i) || n > 0; ++i)
+        {
+            if (isBoundary(i))
+            {
+                --n;
+            }
+        }
+        return i;
+    };
+    std::size_t cutCount = 0;
     for (std::size_t i = 1; i <= name.size(); ++i)
     {
-        if (i == name.size() || (static_cast<unsigned char>(name[i]) & 0xC0U) != 0x80U)
-        {
-            cuts.push_back(i);
-        }
+        cutCount += isBoundary(i) ? 1U : 0U;
     }
     constexpr std::string_view ELLIPSIS = "\u2026";
-    const auto withEllipsis = [&](std::size_t cut)
+    std::string candidate;
+    candidate.reserve(name.size() + ELLIPSIS.size());
+    const auto withEllipsis = [&](std::size_t cut) -> std::string_view
     {
-        return std::string(name.substr(0, cut)).append(ELLIPSIS);
+        candidate.assign(name.substr(0, cut)).append(ELLIPSIS);
+        return candidate;
     };
     // Widths grow with the prefix: the largest cut that fits, by binary search.
     std::size_t lo = 0;
-    std::size_t hi = cuts.size();
+    std::size_t hi = cutCount;
     while (lo < hi)
     {
         const std::size_t mid = lo + ((hi - lo) / 2);
-        if (measure(withEllipsis(cuts[mid])) <= budget)
+        if (measure(withEllipsis(cutAt(mid))) <= budget)
         {
             lo = mid + 1;
         }
@@ -1929,7 +1946,15 @@ template<typename Measure> [[nodiscard]] std::string fitLegendName(std::string_v
             hi = mid;
         }
     }
-    return lo == 0 ? std::string(ELLIPSIS) : withEllipsis(cuts[lo - 1]);
+    if (lo == 0)
+    {
+        candidate.assign(ELLIPSIS);
+    }
+    else
+    {
+        static_cast<void>(withEllipsis(cutAt(lo - 1)));
+    }
+    return candidate;
 }
 
 /// Samples a history chart needs before its "collecting" hint is dropped.
@@ -2348,7 +2373,7 @@ class HistoryChart
         {
             const bool legendSuppressed = m_LegendShown && suppressLegendIfEntriesChanged(m_LegendSignature);
             ImPlot::EndPlot();
-            if (!Detail::legendMarkers().empty())
+            if (m_LegendShown && !Detail::legendMarkers().empty())
             {
                 drawLegendMarkers(m_Id, Detail::legendMarkers()); // nothing while the legend is suppressed
             }
