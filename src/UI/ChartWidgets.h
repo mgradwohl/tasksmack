@@ -1699,15 +1699,42 @@ inline auto hoveredIndexFromPlotX(std::span<const double> timeData, double mouse
     return (distUpper < distLower) ? upperIdx : lowerIdx;
 }
 
+/// Width of a legend laid out in one row, as ImPlot sizes it (CalcLegendSize): inner padding on each
+/// side, then per entry a square icon one text line wide and the label, with spacing between entries.
+[[nodiscard]] constexpr float
+horizontalLegendWidth(std::span<const float> labelWidths, float iconSize, float innerPaddingX, float spacingX) noexcept
+{
+    if (labelWidths.empty())
+    {
+        return 0.0F;
+    }
+    float width = 2.0F * innerPaddingX;
+    for (const float labelWidth : labelWidths)
+    {
+        width += iconSize + labelWidth;
+    }
+    return width + (static_cast<float>(labelWidths.size() - 1) * spacingX);
+}
+
+/// Whether a legend with these label widths fits in one row of `availableWidth` (#1275).
+[[nodiscard]] constexpr bool
+legendFitsOneRow(std::span<const float> labelWidths, float iconSize, float innerPaddingX, float spacingX, float availableWidth) noexcept
+{
+    return horizontalLegendWidth(labelWidths, iconSize, innerPaddingX, spacingX) <= availableWidth;
+}
+
 /// The legend of every history chart: one row above the plot area, outside it (#1198). Inside, at the
 /// top left, it covered the oldest samples near the top of the axis, and a column of entries was clipped
 /// on a short chart. Above the plot it takes one text row of the chart's height and none of its
 /// width, so charts stacked in a view keep the same plot edges (#1206).
-inline void setupLegendDefault()
-{
-    ImPlot::SetupLegend(ImPlotLocation_NorthWest,
-                        ImPlotLegendFlags_NoHighlightItem | ImPlotLegendFlags_Outside | ImPlotLegendFlags_Horizontal);
-}
+///
+/// A row too wide for the chart would be clipped at its right edge -- the Process Details Memory
+/// chart lost "Peak Used" (#1275) -- so a legend that does not fit (legendFitsOneRow()) becomes a
+/// column outside the plot's right edge instead. ImPlot sizes an outside legend from the previous
+/// frame's entries (the current frame's are not plotted yet when it lays the plot out), so the
+/// choice is made from those too -- through ImPlot's internal API, which is why this one is defined
+/// in ChartLegend.cpp rather than inline here.
+void setupLegendDefault();
 
 /// Samples a history chart needs before its "collecting" hint is dropped.
 ///

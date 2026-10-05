@@ -1676,5 +1676,34 @@ TEST(ForEachMarkerSampleTest, SkipsGapsAndDegenerateIntervals)
     EXPECT_TRUE(markerSamples(x, y, 0.0, nan, 0.0).empty());
     EXPECT_TRUE(markerSamples({}, {}, 0.0, 2.0, 0.0).empty());
 }
+
+// ========== Legend layout (#1275) ==========
+
+TEST(LegendLayoutTest, HorizontalWidthMatchesImPlotsRowLayout)
+{
+    // 2 * padding + per entry (icon + label) + spacing between entries.
+    const std::array widths{30.0F, 50.0F, 40.0F};
+    EXPECT_FLOAT_EQ(horizontalLegendWidth(widths, 16.0F, 5.0F, 5.0F), 10.0F + (3.0F * 16.0F) + 120.0F + 10.0F);
+    const std::array one{30.0F};
+    EXPECT_FLOAT_EQ(horizontalLegendWidth(one, 16.0F, 5.0F, 5.0F), 10.0F + 16.0F + 30.0F);
+    EXPECT_FLOAT_EQ(horizontalLegendWidth({}, 16.0F, 5.0F, 5.0F), 0.0F);
+}
+
+TEST(LegendLayoutTest, ProcessMemoryLegendFallsBackWhenTheRowIsTooWide)
+{
+    // Used, Shared, Virtual, Peak Used at ~16px text: 290px in one row.
+    const std::array widths{34.0F, 47.0F, 47.0F, 70.0F};
+    const float rowWidth = horizontalLegendWidth(widths, 16.0F, 5.0F, 5.0F);
+    EXPECT_FLOAT_EQ(rowWidth, 10.0F + 64.0F + 198.0F + 15.0F);
+    EXPECT_TRUE(legendFitsOneRow(widths, 16.0F, 5.0F, 5.0F, rowWidth));
+    EXPECT_TRUE(legendFitsOneRow(widths, 16.0F, 5.0F, 5.0F, 600.0F));
+    // "Peak Used" would be clipped: the legend must not stay one row.
+    EXPECT_FALSE(legendFitsOneRow(widths, 16.0F, 5.0F, 5.0F, rowWidth - 1.0F));
+}
+
+TEST(LegendLayoutTest, AnEmptyLegendAlwaysFits)
+{
+    EXPECT_TRUE(legendFitsOneRow({}, 16.0F, 5.0F, 5.0F, 0.0F));
+}
 } // namespace
 } // namespace UI::Widgets
