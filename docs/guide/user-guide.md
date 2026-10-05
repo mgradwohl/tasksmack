@@ -209,7 +209,7 @@ The following table summarises capabilities that differ between Windows and Linu
 | Memory metrics | ✅ | ✅ |
 | System uptime | ✅ | ✅ |
 | Process I/O counters | ✅ (other users' processes: root, or `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE`) | ✅ (no elevated privileges needed) |
-| Per-process network (TCP only) | ✅ (Linux 4.2+ Netlink) | ✅ (TCP EStats; administrator required) |
+| Per-process network (TCP only) | ✅ (Linux 4.2+ Netlink; other users' processes: root, or `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE`) | ✅ (TCP EStats; administrator required) |
 | Thread count per process | ✅ | ✅ |
 | Process priority (nice) | ✅ | ✅ (mapped −20 … +19) |
 | Process terminate / kill | ✅ | ✅ |
@@ -252,7 +252,7 @@ These settings aren't in the Settings dialog. Edit them in `config.toml` while T
 
 | Key | Default | Range | Effect |
 |-----|---------|-------|--------|
-| `[metrics] max_sane_rate_bps` | 12500000000 (100 Gbps) | 1e9–1e11 bytes/s | A per-process or per-interface network rate above this is taken for a bad reading (such as a counter reset) and shown as 0; on the network chart it is a gap. Raise it for links faster than 100 Gbps. Disk rates have their own fixed ceiling of 1 TB/s. |
+| `[metrics] max_sane_rate_bps` | 12500000000 (100 Gbps) | 1e9–1e11 bytes/s | A network rate above this is taken for a bad reading (such as a counter reset). An interface's rate is shown as 0 and is a gap in the system network chart (and in the all-interfaces total). A process's rate is shown as 0 and recorded as 0 in its charts and in the all-processes network totals, not as a gap. Raise it for links faster than 100 Gbps. Disk rates have their own fixed ceiling of 1 TB/s. |
 | `[ui] chart_smooth_factor` | 0.5 | 0.0–0.95 | How slowly live values and the bars beside the charts follow each new sample, as a fraction of the refresh interval. Lower follows changes faster; 0 barely eases. |
 | `[ui] chart_tau_ms_min` | 20 | 5–100 ms | The shortest easing time, used at fast refresh intervals. |
 | `[ui] chart_tau_ms_max` | 400 | 100–2000 ms | The longest easing time, used at slow refresh intervals. |
