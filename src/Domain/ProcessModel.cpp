@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -307,7 +308,11 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         //    one closes: counterRate reports 0 for that interval rather than a wrapped or negative rate.
         //  - A rate above the 100 Gbps sanity ceiling -- e.g. a connection appearing with traffic
         //    from before it was first attributed, on Windows -- is dropped to 0 too.
-        const NetworkInterval netInterval = previous != nullptr ? networkInterval(current, *previous, elapsedSeconds) : NetworkInterval{};
+        //  - Only between two readings the probe could take (#1110): with either unreadable -- another
+        //    user's process without root, on Linux -- the rate is unavailable, not a 0 or a jump.
+        const bool networkAvailable = current.networkCountersAvailable && (previous == nullptr || previous->networkCountersAvailable);
+        const NetworkInterval netInterval =
+            (previous != nullptr && networkAvailable) ? networkInterval(current, *previous, elapsedSeconds) : NetworkInterval{};
         if (netInterval.kind == NetworkInterval::Kind::Measure)
         {
             const auto netRate = [seconds = netInterval.seconds](std::uint64_t now, std::uint64_t before)
@@ -325,15 +330,24 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         }
         snapshot.netSentBytesPerSec = state.netSentBytesPerSec;
         snapshot.netReceivedBytesPerSec = state.netReceivedBytesPerSec;
+        snapshot.networkAvailable = networkAvailable;
 
         newSnapshots.push_back(std::move(snapshot));
 
+        // Totals are over the values that were read: an unreadable one is left out, not added as a
+        // reading (#1110).
         const ProcessSnapshot& snapRef = newSnapshots.back();
-        aggNetSent += snapRef.netSentBytesPerSec;
-        aggNetRecv += snapRef.netReceivedBytesPerSec;
+        if (snapRef.networkAvailable)
+        {
+            aggNetSent += snapRef.netSentBytesPerSec;
+            aggNetRecv += snapRef.netReceivedBytesPerSec;
+        }
         aggPageFaults += snapRef.pageFaultsPerSec;
         aggThreads += static_cast<double>(snapRef.threadCount);
-        aggHandles += static_cast<double>(snapRef.handleCount);
+        if (snapRef.handleCountAvailable)
+        {
+            aggHandles += static_cast<double>(snapRef.handleCount);
+        }
         aggPower += snapRef.powerWatts;
 
         // Store current counters so next refresh can compute deltas.
@@ -361,7 +375,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     // the ProcessModel write lock so UI readers are not blocked during resize.
     if (shouldMergeGpuData && (gpuModel != nullptr))
     {
-        mergeGPUData(newSnapshots, gpuModel);
+        mergeGPUDataContained(newSnapshots, gpuModel);
     }
     else if (!cachedGpuByUniqueKey.empty())
     {
@@ -426,18 +440,28 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     // reader-blocking critical section this shared_ptr scheme exists to shrink.
     auto newSnapshotsPublication = std::make_shared<const std::vector<ProcessSnapshot>>(std::move(newSnapshots));
 
+    // Absolute time (since the clock's epoch), to match SystemModel's timestamp format. Also the
+    // watched process's sample time, so Process Details and the Overview share one timebase (#1098).
+    const double sampleTimeSeconds = std::chrono::duration<double>(currentSampleTime.time_since_epoch()).count();
+
+    // The watched process's sample of this generation, copied before taking the lock (one snapshot,
+    // once per refresh -- not per UI frame, #1172). Checked again under the lock below, in case the
+    // watch changed in between.
+    const std::int32_t watchedPid = m_WatchedPid.load(std::memory_order_acquire);
+    std::shared_ptr<const ProcessSnapshot> watchedSnapshot = (watchedPid > 0) ? copyProcess(*newSnapshotsPublication, watchedPid) : nullptr;
+
     // Holds the outgoing generation so its destruction (freeing however many hundred
     // ProcessSnapshots' worth of strings/vectors, if this write is what drops the last
     // reference to it) happens after the lock below is released, not while it's held.
+    // The same for the watched sample this publish displaces from the ring.
     std::shared_ptr<const std::vector<ProcessSnapshot>> previousGeneration;
+    ProcessSample displacedSample;
     {
         std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
 
         if (hasElapsedForHistory)
         {
-            // Use absolute time (since epoch) to match SystemModel's timestamp format
-            const double nowSeconds = std::chrono::duration<double>(currentSampleTime.time_since_epoch()).count();
-            m_Timestamps.push(nowSeconds);
+            m_Timestamps.push(sampleTimeSeconds);
             m_SystemNetSentHistory.push(aggNetSent);
             m_SystemNetRecvHistory.push(aggNetRecv);
             m_SystemPageFaultsHistory.push(aggPageFaults);
@@ -450,6 +474,21 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         previousGeneration = std::move(m_Snapshots);      // move out, not destroy -- ownership transfers to the local
         m_Snapshots = std::move(newSnapshotsPublication); // pointer swap only, no allocation or destruction
         ++m_SnapshotVersion;
+        m_SnapshotSampleTimeSeconds = sampleTimeSeconds;
+
+        // Every generation published while a process is watched gets a sample, the process absent
+        // from it included, so a reader can tell "exited" and "missed generations" apart (#1098).
+        if (const std::int32_t pidNow = m_WatchedPid.load(std::memory_order_relaxed); pidNow > 0)
+        {
+            if (pidNow != watchedPid)
+            {
+                // watchProcess() ran between the copy above and this lock: rare, so copy again here.
+                watchedSnapshot = copyProcess(*m_Snapshots, pidNow);
+            }
+            displacedSample = pushWatchedSampleLocked(ProcessSample{
+                .snapshot = std::move(watchedSnapshot), .version = m_SnapshotVersion, .sampleTimeSeconds = sampleTimeSeconds});
+        }
+
         m_PublishedSnapshotVersion.store(m_SnapshotVersion, std::memory_order_release);
         if (shouldMergeGpuData)
         {
@@ -493,6 +532,88 @@ std::optional<ProcessModel::SnapshotLookupResult> ProcessModel::findSnapshotWith
         }
     }
     return std::nullopt;
+}
+
+std::shared_ptr<const ProcessSnapshot> ProcessModel::copyProcess(const std::vector<ProcessSnapshot>& snapshots, std::int32_t pid)
+{
+    const auto it = std::ranges::find(snapshots, pid, &ProcessSnapshot::pid);
+    return (it != snapshots.end()) ? std::make_shared<const ProcessSnapshot>(*it) : nullptr;
+}
+
+ProcessSample ProcessModel::pushWatchedSampleLocked(ProcessSample sample)
+{
+    ProcessSample displaced;
+    if (m_WatchedSampleCount < m_WatchedSamples.size())
+    {
+        m_WatchedSamples[(m_WatchedSampleStart + m_WatchedSampleCount) % m_WatchedSamples.size()] = std::move(sample);
+        ++m_WatchedSampleCount;
+    }
+    else
+    {
+        // Full: the oldest slot becomes the newest.
+        displaced = std::exchange(m_WatchedSamples[m_WatchedSampleStart], std::move(sample));
+        m_WatchedSampleStart = (m_WatchedSampleStart + 1) % m_WatchedSamples.size();
+    }
+    return displaced;
+}
+
+void ProcessModel::watchProcess(std::int32_t pid)
+{
+    const std::int32_t watched = std::max(pid, 0);
+
+    // Start the new watch with an empty ring, and note the current generation for its first sample.
+    // The replacement ring is allocated here, before the lock, and the old one (with the previous
+    // watch's samples) is destroyed after it is released.
+    std::vector<ProcessSample> ring(WATCHED_SAMPLE_CAPACITY);
+    std::shared_ptr<const std::vector<ProcessSnapshot>> current;
+    std::uint64_t currentVersion = 0;
+    double currentSampleTime = 0.0;
+    {
+        std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+        m_WatchedPid.store(watched, std::memory_order_release);
+        m_WatchedSamples.swap(ring);
+        m_WatchedSampleStart = 0;
+        m_WatchedSampleCount = 0;
+        current = m_Snapshots;
+        currentVersion = m_SnapshotVersion;
+        currentSampleTime = m_SnapshotSampleTimeSeconds;
+    }
+    if (watched == 0 || currentVersion == 0)
+    {
+        return; // Not watching, or nothing published yet: the first refresh records the first sample
+    }
+
+    // The process as the current generation lists it, copied outside the lock. A publish landing
+    // in between has already recorded a newer sample, which supersedes this one.
+    auto seed = copyProcess(*current, watched);
+    std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    if (m_WatchedPid.load(std::memory_order_relaxed) == watched && m_WatchedSampleCount == 0)
+    {
+        static_cast<void>(pushWatchedSampleLocked(
+            ProcessSample{.snapshot = std::move(seed), .version = currentVersion, .sampleTimeSeconds = currentSampleTime}));
+    }
+}
+
+bool ProcessModel::watchedSamplesSince(std::uint64_t lastSeenVersion, std::vector<ProcessSample>& outSamples) const
+{
+    // Fast path, the common case of a frame with no new generation: one atomic load, no lock, no copy.
+    if (m_PublishedSnapshotVersion.load(std::memory_order_acquire) == lastSeenVersion)
+    {
+        return false;
+    }
+
+    outSamples.reserve(outSamples.size() + WATCHED_SAMPLE_CAPACITY); // no allocation under the lock
+    const std::size_t before = outSamples.size();
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    for (std::size_t i = 0; i < m_WatchedSampleCount; ++i)
+    {
+        const ProcessSample& sample = m_WatchedSamples[(m_WatchedSampleStart + i) % m_WatchedSamples.size()];
+        if (sample.version > lastSeenVersion)
+        {
+            outSamples.push_back(sample); // shared_ptr copy: a refcount bump
+        }
+    }
+    return outSamples.size() > before;
 }
 
 std::uint64_t ProcessModel::snapshotVersion() const
@@ -776,6 +897,42 @@ void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const s
     spdlog::debug("ProcessModel::mergeGPUData: merged GPU data for {} processes", mergedCount);
 }
 
+void ProcessModel::mergeGPUDataContained(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel)
+{
+    // Uncontained, a throw here (bad_alloc, a DRM parse error, a PDH wrapper) escaped refresh()
+    // after the per-process state had already advanced, so a probe that threw every time stopped
+    // the process list from ever updating again (#1142). The processes are published regardless,
+    // without GPU fields for this refresh.
+    try
+    {
+        mergeGPUData(snapshots, gpuModel);
+        if (m_GpuMergeFailing)
+        {
+            spdlog::info("ProcessModel: per-process GPU data is being merged again");
+            m_GpuMergeFailing = false;
+        }
+    }
+    catch (const std::exception& ex)
+    {
+        if (!m_GpuMergeFailing)
+        {
+            spdlog::warn("ProcessModel: merging per-process GPU data failed; publishing processes without it: {}", ex.what());
+            m_GpuMergeFailing = true;
+        }
+        // A merge that threw part way may have filled some processes and not others: clear them all.
+        for (auto& snapshot : snapshots)
+        {
+            snapshot.gpuUtilPercent = 0.0;
+            snapshot.gpuMemoryBytes = 0;
+            snapshot.gpuEncoderUtil = 0.0;
+            snapshot.gpuDecoderUtil = 0.0;
+            snapshot.gpuEngines.clear();
+            snapshot.perGpuUsage.clear();
+            snapshot.gpuDevices.clear();
+        }
+    }
+}
+
 ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& current,
                                               const Platform::ProcessCounters* previous,
                                               std::uint64_t totalCpuDelta,
@@ -803,7 +960,11 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     snapshot.virtualBytes = current.virtualBytes;
     snapshot.sharedBytes = current.sharedBytes;
     snapshot.threadCount = current.threadCount;
-    snapshot.handleCount = current.handleCount;
+    snapshot.handleCount = current.handleCountAvailable ? current.handleCount : 0;
+    snapshot.handleCountAvailable = current.handleCountAvailable;
+    // A rate needs both of the readings it is taken between (#1110): from an unreadable 0 to a real
+    // count would read as the process's whole lifetime of I/O in one interval.
+    snapshot.ioAvailable = current.ioCountersAvailable && (previous == nullptr || previous->ioCountersAvailable);
     snapshot.nice = current.nice;
     snapshot.pageFaults = current.pageFaultCount;
     snapshot.cpuAffinityMask = current.cpuAffinityMask;
@@ -850,8 +1011,11 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
         // This works correctly for I/O because the probes report per-process cumulative
         // transfer counters (Linux: /proc/[pid]/io; Windows: the SystemProcessInformation
         // snapshot) that are stable and monotonically increasing.
-        snapshot.ioReadBytesPerSec = Numeric::counterRate(current.readBytes, previous->readBytes, elapsedSeconds);
-        snapshot.ioWriteBytesPerSec = Numeric::counterRate(current.writeBytes, previous->writeBytes, elapsedSeconds);
+        if (snapshot.ioAvailable)
+        {
+            snapshot.ioReadBytesPerSec = Numeric::counterRate(current.readBytes, previous->readBytes, elapsedSeconds);
+            snapshot.ioWriteBytesPerSec = Numeric::counterRate(current.writeBytes, previous->writeBytes, elapsedSeconds);
+        }
         snapshot.pageFaultsPerSec = Numeric::counterRate(current.pageFaultCount, previous->pageFaultCount, elapsedSeconds);
         // Network rates are computed in computeSnapshotsLocked(), which has the per-process state they
         // need (networkInterval, held rates).

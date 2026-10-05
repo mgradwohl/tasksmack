@@ -16,9 +16,9 @@ cmake --preset win-release-compatible  # Windows, x86-64-v2 (2009+ CPUs)
 
 ---
 
-## "Process I/O shows dashes" on Linux
+## "Process I/O, FDs or network show N/A" on Linux
 
-**Cause:** Per-process I/O counters come from `/proc/[pid]/io`, which is readable only by the process owner or root.
+**Cause:** Per-process I/O counters come from `/proc/[pid]/io`, and FD counts from `/proc/[pid]/fd`, which are readable only by the process owner or root. Network rates are attributed to a process through its `/proc/[pid]/fd` too. For other users' processes these values are shown as N/A (not 0), and the system FD and network totals leave them out.
 
 **Fix (option 1 — run as root):**
 

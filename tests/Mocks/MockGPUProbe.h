@@ -201,6 +201,14 @@ class MockGPUProbe : public Platform::IGPUProbe
         return *this;
     }
 
+    /// Makes readProcessGPUCounters() throw on every call, simulating a per-process query that
+    /// keeps failing (#1142).
+    MockGPUProbe& withProcessCountersThrowing()
+    {
+        m_ThrowOnReadProcessCounters = true;
+        return *this;
+    }
+
     // IGPUProbe interface implementation
     [[nodiscard]] std::vector<Platform::GPUInfo> enumerateGPUs() override
     {
@@ -227,6 +235,10 @@ class MockGPUProbe : public Platform::IGPUProbe
     [[nodiscard]] std::vector<Platform::ProcessGPUCounters> readProcessGPUCounters() override
     {
         ++m_ReadProcessCountersCount;
+        if (m_ThrowOnReadProcessCounters)
+        {
+            throw std::runtime_error("MockGPUProbe: simulated readProcessGPUCounters() failure");
+        }
         return m_ProcessCounters;
     }
 
@@ -328,6 +340,7 @@ class MockGPUProbe : public Platform::IGPUProbe
     bool m_RescanReportsChange = false;
     std::uint32_t m_QuickRescanCount = 0;
     std::uint32_t m_FullRescanCount = 0;
+    bool m_ThrowOnReadProcessCounters = false;
 
     std::atomic<std::uint32_t> m_EnumerateCount{0};
     std::atomic<std::uint32_t> m_ReadCountersCount{0};
