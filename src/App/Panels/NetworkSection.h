@@ -32,10 +32,11 @@ struct FrameCache
     float dropdownTextWidth = 0.0F;
 
     /// The selected interface's series labels, "<name> Sent" and "<name> Received", and the chart
-    /// title naming it when its history is unavailable; for labelsInterface (the selection index, -1 for
-    /// the Total; NO_LABELS before any are built).
-    static constexpr int NO_LABELS = -2;
-    int labelsInterface = NO_LABELS;
+    /// title naming it when its history is unavailable, built for labelsName: keyed on the display name
+    /// the labels are made from, not the selection index, so a selection that changes this frame or an
+    /// index that now names another interface can't keep stale labels.
+    bool labelsBuilt = false;
+    std::string labelsName;
     std::string interfaceSentLabel;
     std::string interfaceRecvLabel;
     std::string unavailableTitle;

@@ -136,8 +136,11 @@ void renderUnavailableMetricsNote(std::span<const std::string_view> unavailable,
 /// Rebuilds @p cache's per-entry strings when @p publication is not the one they were built from.
 void refreshEntryLabels(FrameCache& cache, const Domain::GPUPublication& publication)
 {
+    // All three per-entry vectors must be complete: an exception part-way through a rebuild (caught by
+    // the render loop) can leave them different lengths, and they are indexed per entry below.
     if (cache.labelsPublication == &publication && cache.labelsVersion == publication.version &&
-        cache.headerLabels.size() == cache.drawList.size())
+        cache.headerLabels.size() == cache.drawList.size() && cache.coreLayoutIds.size() == cache.drawList.size() &&
+        cache.thermalLayoutIds.size() == cache.drawList.size())
     {
         return;
     }

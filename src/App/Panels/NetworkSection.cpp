@@ -114,7 +114,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         // "Total" then each interface; virtual interfaces are marked as left out of the Total (#1106)
         cache.interfaceNames = NetInterfaceUtils::interfaceSelectorLabels(interfaces);
         cache.dropdownFontSize = -1.0F;
-        cache.labelsInterface = FrameCache::NO_LABELS;
+        cache.labelsBuilt = false;
         cache.rowsValid = false;
     }
 
@@ -307,11 +307,12 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     static const std::string NO_INTERFACE_NAME = "Network";
     const std::string& ifaceDisplayName = showingInterface ? interfaceNames[static_cast<size_t>(selectedInterface) + 1] : NO_INTERFACE_NAME;
     // One label per series, shared by its legend entry, tooltip row and NowBar (#1008). The bars show
-    // the selected interface when there is one, else the totals. Built when the selection or the
-    // publication changes, not every frame (#1171).
-    if (cache.labelsInterface != selectedInterface)
+    // the selected interface when there is one, else the totals. Rebuilt only when the name they show
+    // changes, not every frame (#1171).
+    if (!cache.labelsBuilt || cache.labelsName != ifaceDisplayName)
     {
-        cache.labelsInterface = selectedInterface;
+        cache.labelsBuilt = true;
+        cache.labelsName = ifaceDisplayName;
         cache.interfaceSentLabel = std::format("{} Sent", ifaceDisplayName);
         cache.interfaceRecvLabel = std::format("{} Received", ifaceDisplayName);
         cache.unavailableTitle = std::format("Total (selected: {}, history unavailable)", ifaceDisplayName);
