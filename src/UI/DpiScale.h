@@ -20,6 +20,28 @@ namespace UI
     return points * (BASE_DPI * scale) / 72.0F;
 }
 
+/// Title-bar height in points. Everything drawn in the bar -- the application icon, the window and
+/// app buttons, and their glyphs -- is derived from it, so they all scale together. It ignores the
+/// Font Size setting on purpose: the title bar is chrome, not content.
+inline constexpr float TITLE_BAR_PT = 24.0F;
+
+/// The title bar's height in window units at @p displayScale, rounded to a whole unit so the bar's
+/// edges and the controls inside it land on pixels. Shared by the normal font build and its
+/// built-in-font fallback, so a failed rebuild still resizes the bar to the new scale (#1169).
+[[nodiscard]] inline float computeTitleBarHeightPx(float displayScale) noexcept
+{
+    return std::round(computePointsToPixels(TITLE_BAR_PT, displayScale));
+}
+
+/// Font Awesome glyph size for the title bar's controls, as a share of the bar height: roughly the
+/// wordmark's cap height, with even clearance above and below (see UILayer::loadAllFonts()).
+inline constexpr float CHROME_ICON_RATIO = 0.55F;
+
+/// The chrome icon font's pixel size for a title bar @p titleBarPx tall.
+[[nodiscard]] inline float computeChromeIconPx(float titleBarPx) noexcept
+{
+    return std::round(titleBarPx * CHROME_ICON_RATIO);
+}
 /// The UI scale in window units: SDL's display scale divided by the window's pixel density.
 ///
 /// The window is created with SDL_WINDOW_HIGH_PIXEL_DENSITY, so on native Wayland (and macOS) window

@@ -198,8 +198,7 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir, float display
 
     // Everything drawn in the bar -- the application icon, the window and app buttons, and their
     // glyphs -- is derived from TITLE_BAR_PT, so they all scale together with it.
-    constexpr float TITLE_BAR_PT = 24.0F;
-    const float titleBarPx = std::round(pointsToPixels(TITLE_BAR_PT));
+    const float titleBarPx = computeTitleBarHeightPx(displayScale);
     theme.setTitleBarHeightPx(titleBarPx);
     spdlog::info("Title bar {}pt -> {}px (title font {}pt -> {}px)", TITLE_BAR_PT, titleBarPx, TITLE_FONT_PT, titleFontPx);
     auto titleFontPath = (assetsDir / "fonts" / "Sixtyfour.ttf").string();
@@ -239,8 +238,7 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir, float display
     // below, and still well inside the TITLE_BAR_BUTTON_ASPECT-wide button box.
     if (hasIconFont)
     {
-        constexpr float CHROME_ICON_RATIO = 0.55F;
-        const float chromeIconPx = std::round(titleBarPx * CHROME_ICON_RATIO);
+        const float chromeIconPx = computeChromeIconPx(titleBarPx);
         ImFontConfig chromeConfig;
         chromeConfig.Flags |= ImFontFlags_NoLoadError;
         chromeConfig.PixelSnapH = true;
@@ -256,23 +254,66 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir, float display
     spdlog::info("Pre-baked {} fonts into atlas using FreeType", imguiIO.Fonts->Fonts.Size);
 }
 
-void UILayer::loadFallbackFonts(float displayScale)
+void UILayer::loadFallbackFonts(const std::filesystem::path& assetsDir, float displayScale)
 {
-    // ImGui's embedded font at each preset's sizes: no files involved, so it cannot fail the way
-    // loadAllFonts() can. Without icons, and the title-bar fonts stay unregistered, which the title
-    // bar already handles.
+    // ImGui's embedded font at each preset's sizes: no font files needed, so it cannot fail the way
+    // loadAllFonts() can. The Sixtyfour wordmark stays unregistered, which the title bar already
+    // handles.
+    //
+    // The title bar is still resized to the new scale, and Font Awesome is still merged in when it
+    // can be read: without them a failed rebuild kept the old scale's bar height, and every
+    // ICON_FA_* label (the tabs among them) drew as missing-glyph boxes (#1169). The icon font is
+    // optional here -- ImFontFlags_NoLoadError makes an unreadable file add nothing.
     auto& theme = Theme::get();
     const ImGuiIO& imguiIO = ImGui::GetIO();
+    const float titleBarPx = computeTitleBarHeightPx(displayScale);
+    theme.setTitleBarHeightPx(titleBarPx);
+
+    const auto iconFontPath = (assetsDir / "fonts" / FONT_ICON_FILE_NAME_FAS).string();
+    std::error_code existsError;
+    const bool hasIconFont = !assetsDir.empty() && std::filesystem::exists(iconFontPath, existsError);
+    // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - ImGui API requires a null-terminated C array
+    static constexpr ImWchar ICON_RANGES[] = {ICON_MIN_FA, ICON_MAX_FA, 0};
+    const auto mergeIcons = [&](float sizePx)
+    {
+        if (!hasIconFont)
+        {
+            return;
+        }
+        ImFontConfig iconConfig;
+        iconConfig.Flags |= ImFontFlags_NoLoadError;
+        iconConfig.MergeMode = true;
+        iconConfig.PixelSnapH = true;
+        iconConfig.GlyphMinAdvanceX = sizePx;
+        imguiIO.Fonts->AddFontFromFileTTF(iconFontPath.c_str(), sizePx, &iconConfig, ICON_RANGES);
+    };
+
     for (const auto size : ALL_FONT_SIZES)
     {
         const auto& fontCfg = theme.fontConfig(size);
         ImFontConfig regularConfig;
         regularConfig.SizePixels = computePointsToPixels(fontCfg.regularPt, displayScale);
         ImFont* regular = imguiIO.Fonts->AddFontDefault(&regularConfig);
+        mergeIcons(regularConfig.SizePixels);
         ImFontConfig largeConfig;
         largeConfig.SizePixels = computePointsToPixels(fontCfg.largePt, displayScale);
         ImFont* large = imguiIO.Fonts->AddFontDefault(&largeConfig);
+        mergeIcons(largeConfig.SizePixels);
         theme.registerFonts(size, regular, large, regular);
+    }
+
+    if (hasIconFont)
+    {
+        const float chromeIconPx = computeChromeIconPx(titleBarPx);
+        ImFontConfig chromeConfig;
+        chromeConfig.Flags |= ImFontFlags_NoLoadError;
+        chromeConfig.PixelSnapH = true;
+        chromeConfig.GlyphMinAdvanceX = chromeIconPx;
+        if (ImFont* chromeIconFont = imguiIO.Fonts->AddFontFromFileTTF(iconFontPath.c_str(), chromeIconPx, &chromeConfig, ICON_RANGES);
+            chromeIconFont != nullptr)
+        {
+            theme.registerChromeIconFont(chromeIconFont, chromeIconPx);
+        }
     }
 }
 
@@ -457,7 +498,7 @@ void UILayer::rebuildForDisplayScaleChange()
         spdlog::error("Rebuilding fonts at display scale {:.2f} failed ({}); using the built-in font", measured, e.what());
         Theme::get().clearFontRegistrations();
         ImGui::GetIO().Fonts->ClearFonts();
-        loadFallbackFonts(measured);
+        loadFallbackFonts(m_AssetsDir, measured);
     }
     // Queues the style rebuild; applyPendingStyleChanges() flushes it straight after this.
     Theme::get().setDisplayScale(measured);

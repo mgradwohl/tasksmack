@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <limits>
 
 namespace App
@@ -1205,5 +1206,41 @@ TEST(TitleBarGeometryTest, DisplayModeChangesInvalidateTheUsableBoundsCap)
     EXPECT_FALSE(invalidatesUsableBounds(SDL_EVENT_MOUSE_MOTION));
 }
 
+// ---- selectIconPixelSize (#1169) ----
+
+TEST(TitleBarGeometryTest, IconIsTheSmallestBundledSizeAtLeastAsLargeAsDrawn)
+{
+    // 100 %: a 30 px icon in a 32 px bar uses the 32 px file, as it always did.
+    EXPECT_EQ(selectIconPixelSize(30.0F, APP_ICON_PIXEL_SIZES), 32);
+    EXPECT_EQ(selectIconPixelSize(32.0F, APP_ICON_PIXEL_SIZES), 32);
+    // 150 % and 200 %: about 45 and 60 px were the 32 px file upscaled; now they are scaled down.
+    EXPECT_EQ(selectIconPixelSize(45.0F, APP_ICON_PIXEL_SIZES), 48);
+    EXPECT_EQ(selectIconPixelSize(60.0F, APP_ICON_PIXEL_SIZES), 64);
+    EXPECT_EQ(selectIconPixelSize(64.5F, APP_ICON_PIXEL_SIZES), 128);
+    EXPECT_EQ(selectIconPixelSize(10.0F, APP_ICON_PIXEL_SIZES), 16);
+}
+
+TEST(TitleBarGeometryTest, IconLargerThanEveryBundledSizeUsesTheLargest)
+{
+    EXPECT_EQ(selectIconPixelSize(400.0F, APP_ICON_PIXEL_SIZES), 256);
+    EXPECT_EQ(selectIconPixelSize(std::numeric_limits<float>::infinity(), APP_ICON_PIXEL_SIZES), 256);
+}
+
+TEST(TitleBarGeometryTest, DegenerateIconSizeUsesTheSmallest)
+{
+    EXPECT_EQ(selectIconPixelSize(0.0F, APP_ICON_PIXEL_SIZES), 16);
+    EXPECT_EQ(selectIconPixelSize(-5.0F, APP_ICON_PIXEL_SIZES), 16);
+    EXPECT_EQ(selectIconPixelSize(std::numeric_limits<float>::quiet_NaN(), APP_ICON_PIXEL_SIZES), 16);
+}
+
+TEST(TitleBarGeometryTest, IconAtEveryCommonScaleIsNeverUpscaled)
+{
+    for (const float scale : {1.0F, 1.25F, 1.5F, 1.75F, 2.0F, 2.5F, 3.0F})
+    {
+        const float barPx = std::round(24.0F * (96.0F * scale) / 72.0F);
+        const float iconPx = computeTitleBarIconSize(barPx, barPx * 0.06F); // TitleBarLayer's TITLE_BAR_ICON_INSET_RATIO
+        EXPECT_GE(static_cast<float>(selectIconPixelSize(iconPx, APP_ICON_PIXEL_SIZES)), iconPx) << scale;
+    }
+}
 } // namespace
 } // namespace App
