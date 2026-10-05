@@ -3,8 +3,18 @@
 #include "App/ProcessColumnConfig.h"
 #include "Domain/ProcessSnapshot.h"
 
+#include <optional>
+
 namespace App::ProcessSortUtils
 {
+
+/// A value as a sort key that orders one the probe could not read (#1110) below every reading, 0
+/// included (std::optional's ordering, as the GDI column already sorts): sorted by Handles without
+/// root, other users' processes gather at one end instead of mixing in with real zeros.
+template<typename T> [[nodiscard]] constexpr std::optional<T> readingSortKey(bool available, T value) noexcept
+{
+    return available ? std::optional<T>(value) : std::nullopt;
+}
 
 /// Pure comparison logic for sorting the process table, extracted from
 /// ProcessesPanel's ImGui table-sort handling so it can be unit-tested without an
@@ -54,7 +64,7 @@ compareByColumn(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot&
     case ProcessColumn::Threads:
         return compare(a.threadCount, b.threadCount);
     case ProcessColumn::Handles:
-        return compare(a.handleCount, b.handleCount);
+        return compare(readingSortKey(a.handleCountAvailable, a.handleCount), readingSortKey(b.handleCountAvailable, b.handleCount));
     case ProcessColumn::PageFaults:
         return compare(a.pageFaults, b.pageFaults);
     case ProcessColumn::Affinity:
@@ -62,13 +72,14 @@ compareByColumn(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot&
     case ProcessColumn::Command:
         return compare(a.command, b.command);
     case ProcessColumn::IoRead:
-        return compare(a.ioReadBytesPerSec, b.ioReadBytesPerSec);
+        return compare(readingSortKey(a.ioAvailable, a.ioReadBytesPerSec), readingSortKey(b.ioAvailable, b.ioReadBytesPerSec));
     case ProcessColumn::IoWrite:
-        return compare(a.ioWriteBytesPerSec, b.ioWriteBytesPerSec);
+        return compare(readingSortKey(a.ioAvailable, a.ioWriteBytesPerSec), readingSortKey(b.ioAvailable, b.ioWriteBytesPerSec));
     case ProcessColumn::NetSent:
-        return compare(a.netSentBytesPerSec, b.netSentBytesPerSec);
+        return compare(readingSortKey(a.networkAvailable, a.netSentBytesPerSec), readingSortKey(b.networkAvailable, b.netSentBytesPerSec));
     case ProcessColumn::NetReceived:
-        return compare(a.netReceivedBytesPerSec, b.netReceivedBytesPerSec);
+        return compare(readingSortKey(a.networkAvailable, a.netReceivedBytesPerSec),
+                       readingSortKey(b.networkAvailable, b.netReceivedBytesPerSec));
     case ProcessColumn::Power:
         return compare(a.powerWatts, b.powerWatts);
     case ProcessColumn::GpuPercent:

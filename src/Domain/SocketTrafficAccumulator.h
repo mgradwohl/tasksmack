@@ -31,6 +31,14 @@ namespace Domain
 ///  - A connection that is new since the previous reading credits all its bytes to its owner: it
 ///    opened within this interval, so all of them were sent within it. On the first reading every
 ///    connection is new and only sets the baseline.
+///  - A connection whose counters couldn't be read this time (SocketTrafficSample::readable false,
+///    #1256) is still open: it keeps its previous baseline unchanged, credits nothing, and the next
+///    readable sample credits all the growth since the last readable one. One first seen unreadable
+///    is recorded as seen with no baseline, so its first readable sample only sets the baseline:
+///    crediting it as new would land the lifetime bytes of a connection that may have been open for
+///    hours in one interval. The cost is the bytes a connection that really did open while unreadable
+///    moved before its first readable sample, the same as for one attributed late. An unreadable
+///    sample's owner is not used: bytes are credited to the owner reported with them.
 /// Bytes a connection moves between the last reading and its close, or before it is attributed, are
 /// not counted. Feed only complete readings: a connection missing from a partial one would come back
 /// as "new" and credit its lifetime bytes.
@@ -94,9 +102,24 @@ class SocketTrafficAccumulator
             {
                 continue;
             }
-            Totals credit;
-            if (const auto previous = m_Sockets.find(sample.key); previous != m_Sockets.end())
+            const auto previous = m_Sockets.find(sample.key);
+            if (!sample.readable)
             {
+                // Still open, counters unknown this time: keep the baseline (or the "seen, no
+                // baseline" mark) as it was, credit nothing (#1256).
+                next.insert_or_assign(sample.key, (previous != m_Sockets.end()) ? previous->second : SocketState{.hasBaseline = false});
+                continue;
+            }
+            Totals credit;
+            if (previous != m_Sockets.end())
+            {
+                if (!previous->second.hasBaseline)
+                {
+                    // First readable sample of a connection first seen unreadable: its bytes may
+                    // predate this interval, so this only sets the baseline (#1256).
+                    next.insert_or_assign(sample.key, SocketState{.bytesReceived = sample.bytesReceived, .bytesSent = sample.bytesSent});
+                    continue;
+                }
                 // A counter that went backwards in either direction means a different connection is
                 // reusing the key: nothing is credited for it this interval in either direction (its
                 // other counter isn't comparable with the old connection's either); both are the new
@@ -185,6 +208,7 @@ class SocketTrafficAccumulator
     {
         std::uint64_t bytesReceived = 0;
         std::uint64_t bytesSent = 0;
+        bool hasBaseline = true; // False: seen only unreadable so far; the byte fields mean nothing (#1256)
     };
 
     struct Totals

@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 
@@ -71,6 +72,10 @@ struct LazyTextWidth
 {
     return AlignedCellText{.text = std::move(text)};
 }
+
+/// A cell whose value the probe could not read for this process -- for lack of rights, e.g. another
+/// user's process without root (#1110) -- as distinct from "-", a value that is 0 or not applicable.
+inline constexpr std::string_view UNAVAILABLE_CELL_TEXT = "N/A";
 
 /// Which optional fields the process probe fills; a field it does not is shown as "-".
 struct RowFormatOptions
@@ -202,22 +207,20 @@ struct RowFormatCache
     fmt.shared = makeAlignedCellText(options.hasSharedMemory ? formatAlignedBytesString(static_cast<double>(proc.sharedBytes),
                                                                                         UI::Format::unitForTotalBytes(proc.sharedBytes))
                                                              : "-");
-    fmt.ioRead = makeAlignedCellText(
-        (proc.ioReadBytesPerSec > 0.0)
-            ? formatAlignedBytesPerSecString(proc.ioReadBytesPerSec, UI::Format::unitForBytesPerSecond(proc.ioReadBytesPerSec))
-            : "-");
-    fmt.ioWrite = makeAlignedCellText(
-        (proc.ioWriteBytesPerSec > 0.0)
-            ? formatAlignedBytesPerSecString(proc.ioWriteBytesPerSec, UI::Format::unitForBytesPerSecond(proc.ioWriteBytesPerSec))
-            : "-");
-    fmt.netSent = makeAlignedCellText(
-        (proc.netSentBytesPerSec > 0.0)
-            ? formatAlignedBytesPerSecString(proc.netSentBytesPerSec, UI::Format::unitForBytesPerSecond(proc.netSentBytesPerSec))
-            : "-");
-    fmt.netRecv = makeAlignedCellText(
-        (proc.netReceivedBytesPerSec > 0.0)
-            ? formatAlignedBytesPerSecString(proc.netReceivedBytesPerSec, UI::Format::unitForBytesPerSecond(proc.netReceivedBytesPerSec))
-            : "-");
+    // A rate that is 0 reads "-"; one the probe could not read reads "N/A" (#1110) -- without root, every
+    // other user's process used to show the same "-" as an idle one.
+    const auto rateCell = [](bool available, double bytesPerSec) -> std::string
+    {
+        if (!available)
+        {
+            return std::string(UNAVAILABLE_CELL_TEXT);
+        }
+        return (bytesPerSec > 0.0) ? formatAlignedBytesPerSecString(bytesPerSec, UI::Format::unitForBytesPerSecond(bytesPerSec)) : "-";
+    };
+    fmt.ioRead = makeAlignedCellText(rateCell(proc.ioAvailable, proc.ioReadBytesPerSec));
+    fmt.ioWrite = makeAlignedCellText(rateCell(proc.ioAvailable, proc.ioWriteBytesPerSec));
+    fmt.netSent = makeAlignedCellText(rateCell(proc.networkAvailable, proc.netSentBytesPerSec));
+    fmt.netRecv = makeAlignedCellText(rateCell(proc.networkAvailable, proc.netReceivedBytesPerSec));
     fmt.power = makeAlignedCellText(options.hasPowerUsage ? formatAlignedPowerString(proc.powerWatts) : "-");
     fmt.gpuPercent = makeAlignedCellText((proc.gpuUtilPercent > 0.0) ? formatAlignedPercentString(proc.gpuUtilPercent) : "-");
     fmt.gpuMemory =
@@ -240,7 +243,9 @@ struct RowFormatCache
         }
     }
     fmt.threads = makeAlignedCellText(UI::Format::formatOrDash(proc.threadCount, [](auto v) { return UI::Format::formatIntLocalized(v); }));
-    fmt.handles = makeAlignedCellText(UI::Format::formatOrDash(proc.handleCount, [](auto v) { return UI::Format::formatIntLocalized(v); }));
+    fmt.handles = makeAlignedCellText(
+        proc.handleCountAvailable ? UI::Format::formatOrDash(proc.handleCount, [](auto v) { return UI::Format::formatIntLocalized(v); })
+                                  : std::string(UNAVAILABLE_CELL_TEXT));
     fmt.pageFaults =
         makeAlignedCellText(UI::Format::formatOrDash(proc.pageFaults, [](auto v) { return UI::Format::formatIntLocalized(v); }));
     fmt.affinity = makeAlignedCellText(UI::Format::formatCpuAffinityMask(proc.cpuAffinityMask));

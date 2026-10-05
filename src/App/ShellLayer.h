@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Core/Layer.h"
+#include "Domain/ProcessSnapshot.h"
 #include "FpsCounter.h"
 #include "PanelTabs.h"
 #include "Panels/ProcessDetailsPanel.h"
@@ -11,6 +12,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace App
 {
@@ -60,6 +62,11 @@ class ShellLayer : public Core::Layer
     // GPU debug logging throttling
     std::int32_t m_LastGpuLogPid = -1;
     bool m_LastGpuLogHasData = false;
+
+    // The PID the process model is watching for Process Details (ProcessModel::watchProcess()), and
+    // the scratch buffer its new samples are collected into each frame, reused to avoid allocating.
+    std::int32_t m_WatchedPid = -1;
+    std::vector<Domain::ProcessSample> m_PendingSamples;
 
     // Cached privilege status: populated in onAttach() from ProcessModel capabilities.
     // Used by renderStatusBar() to show a persistent lock indicator.
