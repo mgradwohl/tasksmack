@@ -2,6 +2,7 @@
 
 #include "Core/AnimationRequest.h"
 #include "Domain/Numeric.h"
+#include "Domain/SamplingConfig.h"
 #include "UI/Format.h"
 #include "UI/RateAxis.h"
 #include "UI/RenderMetrics.h"
@@ -126,9 +127,6 @@ inline constexpr float NOW_BAR_WIDTH_EM = 2.25F;
     const float em = (std::isfinite(emPx) && emPx > 0.0F) ? emPx : 1.0F;
     return std::max(1.0F, std::round(NOW_BAR_WIDTH_EM * em));
 }
-inline constexpr double SMOOTH_FACTOR = 0.5; // fraction of refresh interval used for tau
-inline constexpr double TAU_MS_MIN = 20.0;
-inline constexpr double TAU_MS_MAX = 400.0;
 inline constexpr int LINE_PLOT_MAX_POINTS_DENSE = 720;
 
 /// RAII guard that pushes the chart font (see UI::chartFontSize()) for axis labels, legends and hints.
@@ -162,10 +160,48 @@ class PlotFontGuard
     bool m_FontPushed = false;
 };
 
+/// How live values and "now" bars ease toward each new sample (computeAlpha): the time constant is
+/// `smoothFactor` times the refresh interval, kept within [tauMsMin, tauMsMax].
+struct ChartSmoothing
+{
+    double smoothFactor = Domain::Sampling::CHART_SMOOTH_FACTOR_DEFAULT;
+    double tauMsMin = static_cast<double>(Domain::Sampling::CHART_TAU_MS_MIN_DEFAULT);
+    double tauMsMax = static_cast<double>(Domain::Sampling::CHART_TAU_MS_MAX_DEFAULT);
+};
+
+static_assert(Domain::Sampling::CHART_TAU_MS_MIN_MAX <= Domain::Sampling::CHART_TAU_MS_MAX_BOUND,
+              "a clamped chart_tau_ms_min must never exceed a clamped chart_tau_ms_max (std::clamp needs lo <= hi)");
+
+namespace Detail
+{
+// One instance program-wide, like g_ChartAntiAliasingEnabled above. Read and written on the UI thread only.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+inline ChartSmoothing g_ChartSmoothing;
+} // namespace Detail
+
+/// Sets the smoothing computeAlpha() uses: the [ui] chart_smooth_factor / chart_tau_ms_min /
+/// chart_tau_ms_max settings, pushed in by the App composition root at startup (UI must not read
+/// UserConfig, #1123). Each value is clamped to its SamplingConfig range, so the minimum time
+/// constant can never exceed the maximum.
+inline void setChartSmoothing(double smoothFactor, int tauMsMin, int tauMsMax) noexcept
+{
+    Detail::g_ChartSmoothing = ChartSmoothing{
+        .smoothFactor = Domain::Sampling::clampChartSmoothFactor(smoothFactor),
+        .tauMsMin = static_cast<double>(Domain::Sampling::clampChartTauMsMin(tauMsMin)),
+        .tauMsMax = static_cast<double>(Domain::Sampling::clampChartTauMsMax(tauMsMax)),
+    };
+}
+
+[[nodiscard]] inline ChartSmoothing chartSmoothing() noexcept
+{
+    return Detail::g_ChartSmoothing;
+}
+
 inline double computeAlpha(double deltaTimeSeconds, std::chrono::milliseconds refreshInterval)
 {
+    const ChartSmoothing smoothing = chartSmoothing();
     const double baseIntervalMs = Domain::Numeric::toDouble(refreshInterval.count());
-    const double tauMs = std::clamp(baseIntervalMs * SMOOTH_FACTOR, TAU_MS_MIN, TAU_MS_MAX);
+    const double tauMs = std::clamp(baseIntervalMs * smoothing.smoothFactor, smoothing.tauMsMin, smoothing.tauMsMax);
     const double dtMs = (deltaTimeSeconds > 0.0) ? deltaTimeSeconds * 1000.0 : baseIntervalMs;
     return std::clamp(1.0 - std::exp(-dtMs / std::max(1.0, tauMs)), 0.0, 1.0);
 }

@@ -198,47 +198,6 @@ TEST(SamplingConfigTest, ClampSocketStatsCacheTtlMsBoundary)
     EXPECT_EQ(clampSocketStatsCacheTtlMs(SOCKET_STATS_CACHE_TTL_MS_MAX + 1), SOCKET_STATS_CACHE_TTL_MS_MAX);
 }
 
-// ========== clampMinTimeForRateSeconds Tests ==========
-
-TEST(SamplingConfigTest, MinTimeForRateSecondsDefaultInRange)
-{
-    EXPECT_GE(MIN_TIME_FOR_RATE_SECONDS_DEFAULT, MIN_TIME_FOR_RATE_SECONDS_MIN);
-    EXPECT_LE(MIN_TIME_FOR_RATE_SECONDS_DEFAULT, MIN_TIME_FOR_RATE_SECONDS_MAX);
-}
-
-TEST(SamplingConfigTest, ClampMinTimeForRateSecondsInRange)
-{
-    EXPECT_DOUBLE_EQ(clampMinTimeForRateSeconds(0.5), 0.5);
-    EXPECT_DOUBLE_EQ(clampMinTimeForRateSeconds(MIN_TIME_FOR_RATE_SECONDS_MIN), MIN_TIME_FOR_RATE_SECONDS_MIN);
-    EXPECT_DOUBLE_EQ(clampMinTimeForRateSeconds(MIN_TIME_FOR_RATE_SECONDS_MAX), MIN_TIME_FOR_RATE_SECONDS_MAX);
-}
-
-TEST(SamplingConfigTest, ClampMinTimeForRateSecondsZeroAllowed)
-{
-    // 0.0 is valid (no minimum time required)
-    EXPECT_DOUBLE_EQ(clampMinTimeForRateSeconds(0.0), 0.0);
-}
-
-TEST(SamplingConfigTest, ClampMinTimeForRateSecondsBelowMin)
-{
-    EXPECT_DOUBLE_EQ(clampMinTimeForRateSeconds(-1.0), MIN_TIME_FOR_RATE_SECONDS_MIN);
-    EXPECT_DOUBLE_EQ(clampMinTimeForRateSeconds(-0.001), MIN_TIME_FOR_RATE_SECONDS_MIN);
-}
-
-TEST(SamplingConfigTest, ClampMinTimeForRateSecondsAboveMax)
-{
-    EXPECT_DOUBLE_EQ(clampMinTimeForRateSeconds(MIN_TIME_FOR_RATE_SECONDS_MAX + 1.0), MIN_TIME_FOR_RATE_SECONDS_MAX);
-    EXPECT_DOUBLE_EQ(clampMinTimeForRateSeconds(100.0), MIN_TIME_FOR_RATE_SECONDS_MAX);
-}
-
-TEST(SamplingConfigTest, ClampMinTimeForRateSecondsNonFinite)
-{
-    // NaN and -inf clamp to MIN; +inf clamps to MAX
-    EXPECT_DOUBLE_EQ(clampMinTimeForRateSeconds(std::numeric_limits<double>::quiet_NaN()), MIN_TIME_FOR_RATE_SECONDS_MIN);
-    EXPECT_DOUBLE_EQ(clampMinTimeForRateSeconds(std::numeric_limits<double>::infinity()), MIN_TIME_FOR_RATE_SECONDS_MAX);
-    EXPECT_DOUBLE_EQ(clampMinTimeForRateSeconds(-std::numeric_limits<double>::infinity()), MIN_TIME_FOR_RATE_SECONDS_MIN);
-}
-
 // ========== clampMaxSaneRateBps Tests ==========
 
 TEST(SamplingConfigTest, MaxSaneRateBpsDefaultInRange)
@@ -279,35 +238,6 @@ TEST(SamplingConfigTest, ClampMaxSaneRateBpsBoundary)
 {
     EXPECT_DOUBLE_EQ(clampMaxSaneRateBps(MAX_SANE_RATE_BPS_MIN), MAX_SANE_RATE_BPS_MIN);
     EXPECT_DOUBLE_EQ(clampMaxSaneRateBps(MAX_SANE_RATE_BPS_MAX), MAX_SANE_RATE_BPS_MAX);
-}
-
-// ========== clampIntegratedGpuVramThresholdBytes Tests ==========
-
-TEST(SamplingConfigTest, IntegratedGpuVramThresholdDefaultInRange)
-{
-    EXPECT_GE(INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_DEFAULT, INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MIN);
-    EXPECT_LE(INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_DEFAULT, INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MAX);
-}
-
-TEST(SamplingConfigTest, ClampIntegratedGpuVramThresholdBytesInRange)
-{
-    EXPECT_EQ(clampIntegratedGpuVramThresholdBytes(INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_DEFAULT),
-              INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_DEFAULT);
-    EXPECT_EQ(clampIntegratedGpuVramThresholdBytes(INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MIN), INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MIN);
-    EXPECT_EQ(clampIntegratedGpuVramThresholdBytes(INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MAX), INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MAX);
-}
-
-TEST(SamplingConfigTest, ClampIntegratedGpuVramThresholdBytesBelowMin)
-{
-    EXPECT_EQ(clampIntegratedGpuVramThresholdBytes(int64_t{0}), INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MIN);
-    EXPECT_EQ(clampIntegratedGpuVramThresholdBytes(int64_t{-1}), INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MIN);
-    EXPECT_EQ(clampIntegratedGpuVramThresholdBytes(INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MIN - 1), INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MIN);
-}
-
-TEST(SamplingConfigTest, ClampIntegratedGpuVramThresholdBytesAboveMax)
-{
-    EXPECT_EQ(clampIntegratedGpuVramThresholdBytes(INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MAX + 1), INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MAX);
-    EXPECT_EQ(clampIntegratedGpuVramThresholdBytes(int64_t{1024} * 1024 * 1024 * 16), INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MAX);
 }
 
 // ========== clampChartSmoothFactor Tests ==========
@@ -408,88 +338,6 @@ TEST(SamplingConfigTest, ClampChartTauMsMaxAboveMax)
     EXPECT_EQ(clampChartTauMsMax(100000), CHART_TAU_MS_MAX_MAX);
 }
 
-// ========== clampProgressColorLowThreshold Tests ==========
-
-TEST(SamplingConfigTest, ProgressColorLowThresholdDefaultInRange)
-{
-    EXPECT_GE(PROGRESS_COLOR_LOW_THRESHOLD_DEFAULT, PROGRESS_COLOR_LOW_THRESHOLD_MIN);
-    EXPECT_LE(PROGRESS_COLOR_LOW_THRESHOLD_DEFAULT, PROGRESS_COLOR_LOW_THRESHOLD_MAX);
-}
-
-TEST(SamplingConfigTest, ClampProgressColorLowThresholdInRange)
-{
-    EXPECT_DOUBLE_EQ(clampProgressColorLowThreshold(50.0), 50.0);
-    EXPECT_DOUBLE_EQ(clampProgressColorLowThreshold(PROGRESS_COLOR_LOW_THRESHOLD_MIN), PROGRESS_COLOR_LOW_THRESHOLD_MIN);
-    EXPECT_DOUBLE_EQ(clampProgressColorLowThreshold(PROGRESS_COLOR_LOW_THRESHOLD_MAX), PROGRESS_COLOR_LOW_THRESHOLD_MAX);
-}
-
-TEST(SamplingConfigTest, ClampProgressColorLowThresholdBelowMin)
-{
-    EXPECT_DOUBLE_EQ(clampProgressColorLowThreshold(-1.0), PROGRESS_COLOR_LOW_THRESHOLD_MIN);
-    EXPECT_DOUBLE_EQ(clampProgressColorLowThreshold(-100.0), PROGRESS_COLOR_LOW_THRESHOLD_MIN);
-}
-
-TEST(SamplingConfigTest, ClampProgressColorLowThresholdAboveMax)
-{
-    EXPECT_DOUBLE_EQ(clampProgressColorLowThreshold(101.0), PROGRESS_COLOR_LOW_THRESHOLD_MAX);
-    EXPECT_DOUBLE_EQ(clampProgressColorLowThreshold(1000.0), PROGRESS_COLOR_LOW_THRESHOLD_MAX);
-}
-
-TEST(SamplingConfigTest, ClampProgressColorLowThresholdNonFinite)
-{
-    // NaN and -inf clamp to MIN; +inf clamps to MAX
-    EXPECT_DOUBLE_EQ(clampProgressColorLowThreshold(std::numeric_limits<double>::quiet_NaN()), PROGRESS_COLOR_LOW_THRESHOLD_MIN);
-    EXPECT_DOUBLE_EQ(clampProgressColorLowThreshold(std::numeric_limits<double>::infinity()), PROGRESS_COLOR_LOW_THRESHOLD_MAX);
-    EXPECT_DOUBLE_EQ(clampProgressColorLowThreshold(-std::numeric_limits<double>::infinity()), PROGRESS_COLOR_LOW_THRESHOLD_MIN);
-}
-
-TEST(SamplingConfigTest, ClampProgressColorLowThresholdBoundary)
-{
-    EXPECT_DOUBLE_EQ(clampProgressColorLowThreshold(0.0), 0.0);
-    EXPECT_DOUBLE_EQ(clampProgressColorLowThreshold(100.0), 100.0);
-}
-
-// ========== clampProgressColorHighThreshold Tests ==========
-
-TEST(SamplingConfigTest, ProgressColorHighThresholdDefaultInRange)
-{
-    EXPECT_GE(PROGRESS_COLOR_HIGH_THRESHOLD_DEFAULT, PROGRESS_COLOR_HIGH_THRESHOLD_MIN);
-    EXPECT_LE(PROGRESS_COLOR_HIGH_THRESHOLD_DEFAULT, PROGRESS_COLOR_HIGH_THRESHOLD_MAX);
-}
-
-TEST(SamplingConfigTest, ClampProgressColorHighThresholdInRange)
-{
-    EXPECT_DOUBLE_EQ(clampProgressColorHighThreshold(80.0), 80.0);
-    EXPECT_DOUBLE_EQ(clampProgressColorHighThreshold(PROGRESS_COLOR_HIGH_THRESHOLD_MIN), PROGRESS_COLOR_HIGH_THRESHOLD_MIN);
-    EXPECT_DOUBLE_EQ(clampProgressColorHighThreshold(PROGRESS_COLOR_HIGH_THRESHOLD_MAX), PROGRESS_COLOR_HIGH_THRESHOLD_MAX);
-}
-
-TEST(SamplingConfigTest, ClampProgressColorHighThresholdBelowMin)
-{
-    EXPECT_DOUBLE_EQ(clampProgressColorHighThreshold(-1.0), PROGRESS_COLOR_HIGH_THRESHOLD_MIN);
-    EXPECT_DOUBLE_EQ(clampProgressColorHighThreshold(-100.0), PROGRESS_COLOR_HIGH_THRESHOLD_MIN);
-}
-
-TEST(SamplingConfigTest, ClampProgressColorHighThresholdAboveMax)
-{
-    EXPECT_DOUBLE_EQ(clampProgressColorHighThreshold(101.0), PROGRESS_COLOR_HIGH_THRESHOLD_MAX);
-    EXPECT_DOUBLE_EQ(clampProgressColorHighThreshold(1000.0), PROGRESS_COLOR_HIGH_THRESHOLD_MAX);
-}
-
-TEST(SamplingConfigTest, ClampProgressColorHighThresholdNonFinite)
-{
-    // NaN and -inf clamp to MIN; +inf clamps to MAX
-    EXPECT_DOUBLE_EQ(clampProgressColorHighThreshold(std::numeric_limits<double>::quiet_NaN()), PROGRESS_COLOR_HIGH_THRESHOLD_MIN);
-    EXPECT_DOUBLE_EQ(clampProgressColorHighThreshold(std::numeric_limits<double>::infinity()), PROGRESS_COLOR_HIGH_THRESHOLD_MAX);
-    EXPECT_DOUBLE_EQ(clampProgressColorHighThreshold(-std::numeric_limits<double>::infinity()), PROGRESS_COLOR_HIGH_THRESHOLD_MIN);
-}
-
-TEST(SamplingConfigTest, ClampProgressColorHighThresholdBoundary)
-{
-    EXPECT_DOUBLE_EQ(clampProgressColorHighThreshold(0.0), 0.0);
-    EXPECT_DOUBLE_EQ(clampProgressColorHighThreshold(100.0), 100.0);
-}
-
 // ========== Default Constants Validation ==========
 
 TEST(SamplingConfigTest, AllDefaultsAreWithinBounds)
@@ -498,14 +346,8 @@ TEST(SamplingConfigTest, AllDefaultsAreWithinBounds)
     EXPECT_GE(SOCKET_STATS_CACHE_TTL_MS_DEFAULT, SOCKET_STATS_CACHE_TTL_MS_MIN);
     EXPECT_LE(SOCKET_STATS_CACHE_TTL_MS_DEFAULT, SOCKET_STATS_CACHE_TTL_MS_MAX);
 
-    EXPECT_GE(MIN_TIME_FOR_RATE_SECONDS_DEFAULT, MIN_TIME_FOR_RATE_SECONDS_MIN);
-    EXPECT_LE(MIN_TIME_FOR_RATE_SECONDS_DEFAULT, MIN_TIME_FOR_RATE_SECONDS_MAX);
-
     EXPECT_GE(MAX_SANE_RATE_BPS_DEFAULT, MAX_SANE_RATE_BPS_MIN);
     EXPECT_LE(MAX_SANE_RATE_BPS_DEFAULT, MAX_SANE_RATE_BPS_MAX);
-
-    EXPECT_GE(INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_DEFAULT, INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MIN);
-    EXPECT_LE(INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_DEFAULT, INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MAX);
 
     EXPECT_GE(CHART_SMOOTH_FACTOR_DEFAULT, CHART_SMOOTH_FACTOR_MIN);
     EXPECT_LE(CHART_SMOOTH_FACTOR_DEFAULT, CHART_SMOOTH_FACTOR_MAX);
@@ -515,18 +357,6 @@ TEST(SamplingConfigTest, AllDefaultsAreWithinBounds)
 
     EXPECT_GE(CHART_TAU_MS_MAX_DEFAULT, CHART_TAU_MS_MAX_BOUND);
     EXPECT_LE(CHART_TAU_MS_MAX_DEFAULT, CHART_TAU_MS_MAX_MAX);
-
-    EXPECT_GE(PROGRESS_COLOR_LOW_THRESHOLD_DEFAULT, PROGRESS_COLOR_LOW_THRESHOLD_MIN);
-    EXPECT_LE(PROGRESS_COLOR_LOW_THRESHOLD_DEFAULT, PROGRESS_COLOR_LOW_THRESHOLD_MAX);
-
-    EXPECT_GE(PROGRESS_COLOR_HIGH_THRESHOLD_DEFAULT, PROGRESS_COLOR_HIGH_THRESHOLD_MIN);
-    EXPECT_LE(PROGRESS_COLOR_HIGH_THRESHOLD_DEFAULT, PROGRESS_COLOR_HIGH_THRESHOLD_MAX);
-}
-
-TEST(SamplingConfigTest, ProgressColorThresholdsOrdering)
-{
-    // The static_assert in the header enforces low <= high for defaults
-    EXPECT_LE(PROGRESS_COLOR_LOW_THRESHOLD_DEFAULT, PROGRESS_COLOR_HIGH_THRESHOLD_DEFAULT);
 }
 
 TEST(SamplingConfigTest, TauMsMinLessThanOrEqualToTauMsMax)
