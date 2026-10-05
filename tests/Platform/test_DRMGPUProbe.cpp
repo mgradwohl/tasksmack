@@ -1599,6 +1599,54 @@ TEST_F(DRMGPUProbeUnitTest, RescanGPUs_LateRenderNodeIsPickedUpAndQueried)
     EXPECT_EQ(query.state->renderNode, "/dev/dri/renderD128");
 }
 
+// #1321 review: a VRAM total remembered from the query belongs to the query target. If the card's
+// render node or driver changes while it sleeps, the old target's capacity isn't reported for it;
+// a sysfs total (mem_info_vram_total) isn't tied to the render node and is kept.
+TEST_F(DRMGPUProbeUnitTest, RescanGPUs_QueriedTotalIsDroppedWhenTheQueryTargetChanges)
+{
+    const auto queried = makeCardAt("card1", "0000:03:00.0", "xe");
+    std::filesystem::create_directories(queried / "drm" / "renderD129");
+    std::filesystem::create_directories(queried / "power");
+    writeFile(queried / "power" / "runtime_status", "active");
+    const auto sysfs = makeCardAt("card2", "0000:04:00.0", "xe");
+    writeFile(sysfs / "mem_info_vram_total", "8589934592"); // 8 GiB
+    std::filesystem::create_directories(sysfs / "drm" / "renderD130");
+    std::filesystem::create_directories(sysfs / "power");
+    writeFile(sysfs / "power" / "runtime_status", "active");
+
+    const ScriptedVramQuery query;
+    query.state->reply = DRMGPUProbe::VramInfo{.totalBytes = 16 * GIB, .usedBytes = std::nullopt};
+    DRMGPUProbe probe(m_SysRoot.string(), query.fn());
+    auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 2U);
+    ASSERT_EQ(counters[0].memoryTotalBytes, 16 * GIB);
+    ASSERT_EQ(counters[1].memoryTotalBytes, 8 * GIB);
+
+    // Both cards sleep, and their render nodes are renumbered (a driver rebind).
+    writeFile(queried / "power" / "runtime_status", "suspended");
+    writeFile(sysfs / "power" / "runtime_status", "suspended");
+    std::filesystem::remove(queried / "drm" / "renderD129");
+    std::filesystem::create_directories(queried / "drm" / "renderD131");
+    std::filesystem::remove(sysfs / "drm" / "renderD130");
+    std::filesystem::create_directories(sysfs / "drm" / "renderD132");
+    ASSERT_TRUE(probe.rescanGPUs(GPURescan::Full));
+
+    counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 2U);
+    EXPECT_TRUE(counters[0].suspended);
+    EXPECT_EQ(counters[0].memoryTotalBytes, 0ULL); // Unknown until the new target is queried
+    EXPECT_TRUE(counters[1].suspended);
+    EXPECT_EQ(counters[1].memoryTotalBytes, 8 * GIB);
+    EXPECT_EQ(query.state->calls, 1);
+
+    // Awake again, the new target is queried.
+    query.state->reply = DRMGPUProbe::VramInfo{.totalBytes = 12 * GIB, .usedBytes = std::nullopt};
+    writeFile(queried / "power" / "runtime_status", "active");
+    counters = probe.readGPUCounters();
+    EXPECT_EQ(counters[0].memoryTotalBytes, 12 * GIB);
+    EXPECT_EQ(query.state->renderNode, "/dev/dri/renderD131");
+}
+
 } // namespace
 } // namespace Platform
 

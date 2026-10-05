@@ -80,6 +80,9 @@ class DRMGPUProbe : public IGPUProbe
         // VRAM capacity from the last read while awake, reported while the card is runtime-suspended
         // (and so not read), as NVML/ROCm do: capacity doesn't change when a card sleeps (#1117).
         uint64_t lastMemoryTotalBytes{0};
+        // Whether lastMemoryTotalBytes came from the DRM query rather than sysfs: a rescan then keeps
+        // it only while the query would still go to the same render node through the same driver.
+        bool lastMemoryTotalQueried{false};
         // Render node for the DRM query ioctl (/dev/dri/renderD128), from device/drm/renderD*; empty if none.
         std::string renderNodePath;
         // hwmon energy counter (µJ) Domain derives the power draw from (#1269): energy1_input (card),

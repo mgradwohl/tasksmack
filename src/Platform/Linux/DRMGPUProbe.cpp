@@ -233,7 +233,9 @@ bool DRMGPUProbe::rescanGPUs(GPURescan depth)
     // A card that persists keeps its last-known VRAM total for while it sleeps, and its DRM query
     // results (#1283), so a rescan neither reopens its render node for a total that can't change nor
     // forgets a total it can't re-query while asleep. The query results carry over only while the
-    // query would go to the same render node through the same driver; otherwise it's re-issued.
+    // query would go to the same render node through the same driver; otherwise it's re-issued, and
+    // a last-known total that came from the query is dropped with them, so a card that sleeps
+    // across the change doesn't report the old query target's capacity.
     for (auto& card : cards)
     {
         const auto previous = std::ranges::find(m_Cards, card.gpuId, &DRMCard::gpuId);
@@ -241,8 +243,13 @@ bool DRMGPUProbe::rescanGPUs(GPURescan depth)
         {
             continue;
         }
-        card.lastMemoryTotalBytes = previous->lastMemoryTotalBytes;
-        if (previous->driver == card.driver && previous->renderNodePath == card.renderNodePath)
+        const bool sameQueryTarget = previous->driver == card.driver && previous->renderNodePath == card.renderNodePath;
+        if (sameQueryTarget || !previous->lastMemoryTotalQueried)
+        {
+            card.lastMemoryTotalBytes = previous->lastMemoryTotalBytes;
+            card.lastMemoryTotalQueried = previous->lastMemoryTotalQueried;
+        }
+        if (sameQueryTarget)
         {
             card.vramQueried = previous->vramQueried;
             card.queriedVramTotalBytes = previous->queriedVramTotalBytes;
@@ -897,7 +904,8 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
         // published as a real-looking 0% (#1115). A known total is remembered for while the card sleeps.
         std::optional<uint64_t> usedBytes = readSysfsOptionalUint64(card.devicePath + "/mem_info_vram_used");
         uint64_t totalBytes = readSysfsUint64(card.devicePath + "/mem_info_vram_total");
-        if (totalBytes == 0)
+        card.lastMemoryTotalQueried = (totalBytes == 0);
+        if (card.lastMemoryTotalQueried)
         {
             refreshQueriedVram(card);
             totalBytes = card.queriedVramTotalBytes;
