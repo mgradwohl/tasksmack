@@ -14,7 +14,8 @@ namespace UI
 {
 
 /// The longest prefix of @p text, at most @p maxBytes long, that does not end part-way through a
-/// UTF-8 sequence: text cut at a byte limit must not end in half a character.
+/// UTF-8 sequence: text cut at a byte limit must not end in half a character. Text that already
+/// fits is returned whole: the check applies to the cut this makes, not to the input's own ending.
 [[nodiscard]] constexpr std::size_t utf8PrefixLength(std::string_view text, std::size_t maxBytes) noexcept
 {
     if (text.size() <= maxBytes)

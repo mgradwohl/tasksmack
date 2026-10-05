@@ -356,16 +356,26 @@ void renderStorageSection(RenderContext& ctx)
                 const auto writeData = tailAlignedSpan(disk.writeBytesPerSec, alignedCount).values;
 
                 // Per-disk snapshot values for NowBars. NaN if the disk is missing from the latest sample:
-                // renderDiskCell shows N/A, not 0. Looked up by a scan of the latest sample's disks, a
-                // handful even on a busy machine: a name -> snapshot map rebuilt every frame cost a
-                // heap allocation per disk per frame for keys copied from strings already there (#1171).
+                // renderDiskCell shows N/A, not 0. The latest sample normally lists the disks in the
+                // history's order, so the same index is checked first; a scan of its few disks covers a
+                // disk added or removed since. A name -> snapshot map rebuilt every frame cost a heap
+                // allocation per disk per frame for keys copied from strings already there (#1171).
                 double diskRead = std::numeric_limits<double>::quiet_NaN();
                 double diskWrite = std::numeric_limits<double>::quiet_NaN();
-                if (const auto it = std::ranges::find(diskSnap.disks, disk.deviceName, &Domain::DiskSnapshot::deviceName);
-                    it != diskSnap.disks.end())
+                const Domain::DiskSnapshot* latestDisk = nullptr;
+                if (diskIdx < diskSnap.disks.size() && diskSnap.disks[diskIdx].deviceName == disk.deviceName)
                 {
-                    diskRead = it->readBytesPerSec;
-                    diskWrite = it->writeBytesPerSec;
+                    latestDisk = &diskSnap.disks[diskIdx];
+                }
+                else if (const auto it = std::ranges::find(diskSnap.disks, disk.deviceName, &Domain::DiskSnapshot::deviceName);
+                         it != diskSnap.disks.end())
+                {
+                    latestDisk = &*it;
+                }
+                if (latestDisk != nullptr)
+                {
+                    diskRead = latestDisk->readBytesPerSec;
+                    diskWrite = latestDisk->writeBytesPerSec;
                 }
                 if (ctx.smoothedPerDisk != nullptr)
                 {

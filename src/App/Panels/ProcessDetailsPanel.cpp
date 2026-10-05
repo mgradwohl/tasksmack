@@ -794,13 +794,15 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
 
     // The values formatted from the snapshot -- PID, start time, counts, CPU time, priority -- are
     // built when a different snapshot is shown, once per sample, not every frame (#1171).
+    // Only the panel's own snapshot is cached: holding it keeps its address from being reused by a
+    // later one, which would otherwise look like the same key. Anything else (the empty placeholder
+    // before a first sample) is rebuilt every time, since nothing pins its address.
     BasicInfoText& text = m_BasicInfoText;
-    if (text.key != &proc)
+    const bool ownedSnapshot = m_CachedSnapshot.get() == &proc;
+    if (!ownedSnapshot || text.key != &proc)
     {
-        text.key = &proc;
-        // Holding the snapshot keeps its address from being reused by a later one, which would
-        // otherwise look like the same key.
-        text.keepAlive = (m_CachedSnapshot.get() == &proc) ? m_CachedSnapshot : nullptr;
+        text.key = ownedSnapshot ? &proc : nullptr;
+        text.keepAlive = ownedSnapshot ? m_CachedSnapshot : nullptr;
 
         const auto formatCountLocale = [](std::int64_t value) -> std::string
         {
