@@ -993,6 +993,60 @@ TEST(LinuxProcessProbeTest, ReadSocketTrafficReportsRawAttributedSocketCounters)
     EXPECT_EQ(third.sockets[0].bytesReceived, 3'000U) << "the raw cumulative counter, not a delta";
     EXPECT_EQ(third.sockets[0].pid, 4242);
 }
+
+TEST(LinuxProcessProbeTest, ANewSocketIsAttributedInTheReadingItFirstAppearsIn)
+{
+    // #1259: the inode-to-PID map is rebuilt every INODE_PID_CACHE_TTL_MS, so a connection opened
+    // just after a rebuild used to stay unowned for up to that long, and a short one was never
+    // credited at all. A socket that appears unowned after the map was built now triggers an early
+    // (rate-limited) rebuild; one that was already unowned before the build doesn't.
+    ScopedTempDir proc("ts_test_proc_net_early_rebuild");
+    writeFile(proc.path / "4242" / "stat",
+              "4242 (app) S 1 4242 4242 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+    writeFile(proc.path / "stat", "cpu  100 0 100 800 0 0 0 0 0 0\n");
+    const auto fdDir = proc.path / "4242" / "fd";
+    std::filesystem::create_directories(fdDir);
+    std::filesystem::create_symlink("socket:[11]", fdDir / "3");
+
+    using Platform::TestSupport::FakeSocket;
+    using Platform::TestSupport::ScriptedNetlinkTransport;
+    std::vector<FakeSocket> current{{.inode = 11, .bytesReceived = 100}, {.inode = 99, .bytesReceived = 7}};
+    auto transport = std::make_unique<ScriptedNetlinkTransport>();
+    auto* script = transport.get();
+    auto stats = std::make_shared<Platform::NetlinkSocketStats>(std::move(transport), std::chrono::milliseconds{0});
+    script->onRequest = [&](const ScriptedNetlinkTransport::Request& request) -> ScriptedNetlinkTransport::Reply
+    {
+        return Platform::TestSupport::completeDump(request, request.family == AF_INET ? current : std::vector<FakeSocket>{});
+    };
+
+    LinuxProcessProbe probe(proc.path);
+    probe.setSocketStatsForTesting(stats);
+    probe.setInodeMapEarlyRebuildIntervalForTesting(std::chrono::milliseconds{0}); // no rate limit, for the test
+    ASSERT_TRUE(probe.capabilities().hasNetworkCounters);
+    const auto ownerOf = [](const Platform::SocketTrafficReading& traffic, std::uint64_t inode)
+    {
+        const auto it = std::ranges::find(traffic.sockets, inode, &Platform::SocketTrafficSample::key);
+        return it != traffic.sockets.end() ? it->pid : -1;
+    };
+
+    const auto first = probe.readSocketTraffic(); // builds the map
+    EXPECT_EQ(ownerOf(first, 11), 4242);
+    EXPECT_EQ(ownerOf(first, 99), 0);
+
+    // 99 was unowned before the map was built (another user's process, say): it must not force a
+    // rebuild, so an fd for it appearing now isn't seen until the TTL rebuild.
+    std::filesystem::create_symlink("socket:[99]", fdDir / "5");
+    const auto second = probe.readSocketTraffic();
+    EXPECT_EQ(ownerOf(second, 99), 0) << "an already-unowned socket doesn't trigger an early rebuild";
+
+    // 12 opens after the build: the map is rebuilt in this very reading and it has its owner.
+    std::filesystem::create_symlink("socket:[12]", fdDir / "4");
+    current.push_back({.inode = 12, .bytesReceived = 4'096});
+    const auto third = probe.readSocketTraffic();
+    EXPECT_EQ(ownerOf(third, 12), 4242) << "a new socket is attributed in the reading it first appears in";
+    EXPECT_EQ(ownerOf(third, 99), 4242);
+}
 #endif
 
 TEST(LinuxProcessProbeTest, EmptyProcDirReturnsNoProcesses)

@@ -38,7 +38,7 @@ flowchart TD
 - OpenGL usage is confined to Core/UI (SDL3 + ImGui backends).
 - CPU percentage uses process CPU delta divided by total system CPU delta.
 - Disk I/O and page-fault rates use consecutive sample deltas.
-- Per-process network rates use deltas between consecutive network readings. Where a probe reports raw per-connection byte counters (Linux), `ProcessModel` accumulates each connection's growth into monotonic per-process counters, so a connection closing or being attributed late doesn't make a rate drop or spike.
+- Per-process network rates use deltas between consecutive network readings. Where a probe reports raw per-connection byte counters (Linux), `ProcessModel` accumulates each connection's growth into monotonic per-process counters, so a connection closing or being attributed late doesn't make a rate drop or spike. The growth a connection shows before it is attributed is held and credited to its owner once it is (bounded by `UNATTRIBUTED_SOCKET_HOLD_MS`), and the Linux probe rebuilds its inode-to-PID map early (rate-limited by `INODE_PID_CACHE_EARLY_REBUILD_MS`) when a socket appears unowned after the last rebuild.
 - System and interface network rates use consecutive sample deltas.
 - GPU data is merged into process snapshots when the platform can attribute usage.
 

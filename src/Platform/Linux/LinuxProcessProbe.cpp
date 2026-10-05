@@ -1118,56 +1118,95 @@ SocketTrafficReading LinuxProcessProbe::readSocketTraffic() const
     // Attribute each socket to the process holding it (socket inode -> PID, from /proc/[pid]/fd).
     // A socket not in the map (opened since its last rebuild, or held by a process we can't read)
     // is still reported, unattributed, so Domain tracks its counters from now on.
-    const auto inodeToPid = currentInodeToPidMap();
-    reading.sockets.reserve(sockets.size());
-    for (const auto& socket : sockets)
+    const auto ownerOf = [](const InodeToPidMap* inodeToPid, std::uint64_t inode) -> std::int32_t
     {
-        std::int32_t pid = 0;
-        if (inodeToPid)
+        if (inodeToPid != nullptr)
         {
-            if (const auto it = inodeToPid->find(socket.inode); it != inodeToPid->end())
+            if (const auto it = inodeToPid->find(inode); it != inodeToPid->end())
             {
-                pid = it->second;
+                return it->second;
             }
         }
-        reading.sockets.push_back(
-            SocketTrafficSample{.key = socket.inode, .pid = pid, .bytesReceived = socket.bytesReceived, .bytesSent = socket.bytesSent});
+        return 0;
+    };
+    auto snapshot = currentInodeToPidMap(std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_TTL_MS});
+
+    {
+        const std::scoped_lock lock{m_UnownedSocketsMutex};
+        // A socket with no owner that wasn't already unowned in a reading taken before the map was
+        // built may have been opened since the build: rebuild early (rate-limited) so a new
+        // connection is attributed in the reading it first appears in, rather than up to a TTL later
+        // with its first bytes, or all of a short one's, never credited (#1259). Sockets held by
+        // processes we can't read stay unowned through the rebuild and so don't trigger another.
+        const bool unownedSinceBuild = std::ranges::any_of(sockets,
+                                                           [&](const SocketStats& socket)
+                                                           {
+                                                               if (ownerOf(snapshot.map.get(), socket.inode) != 0)
+                                                               {
+                                                                   return false;
+                                                               }
+                                                               const auto seen = m_UnownedSocketsFirstSeen.find(socket.inode);
+                                                               const auto firstSeen =
+                                                                   (seen != m_UnownedSocketsFirstSeen.end()) ? seen->second : sampledAt;
+                                                               return firstSeen > snapshot.builtAt;
+                                                           });
+        if (unownedSinceBuild)
+        {
+            snapshot = currentInodeToPidMap(m_InodeMapEarlyRebuildInterval);
+        }
+
+        std::unordered_map<std::uint64_t, std::chrono::steady_clock::time_point> unowned;
+        reading.sockets.reserve(sockets.size());
+        for (const auto& socket : sockets)
+        {
+            const std::int32_t pid = ownerOf(snapshot.map.get(), socket.inode);
+            if (pid == 0)
+            {
+                const auto seen = m_UnownedSocketsFirstSeen.find(socket.inode);
+                unowned.insert_or_assign(socket.inode, (seen != m_UnownedSocketsFirstSeen.end()) ? seen->second : sampledAt);
+            }
+            reading.sockets.push_back(
+                SocketTrafficSample{.key = socket.inode, .pid = pid, .bytesReceived = socket.bytesReceived, .bytesSent = socket.bytesSent});
+        }
+        m_UnownedSocketsFirstSeen = std::move(unowned);
     }
     return reading;
 }
 
-std::shared_ptr<const std::unordered_map<std::uint64_t, std::int32_t>> LinuxProcessProbe::currentInodeToPidMap() const
+LinuxProcessProbe::InodeToPidSnapshot LinuxProcessProbe::currentInodeToPidMap(std::chrono::milliseconds maxAge) const
 {
     // Refresh inode-to-PID map on a TTL basis to avoid scanning /proc/[pid]/fd/* every
     // enumerate(). The rebuild slot is claimed by advancing m_InodeToPidCacheTime under
     // the initial lock, so only one thread rebuilds per TTL window while all others
     // continue using the previous shared_ptr snapshot (see #460).
-    std::shared_ptr<const std::unordered_map<std::uint64_t, std::int32_t>> inodeToPidPtr;
+    InodeToPidSnapshot snapshot;
     bool needsRebuild = false;
+    std::chrono::steady_clock::time_point scanStart;
     {
         const std::scoped_lock lock{m_InodePidCacheMutex};
         const auto now = std::chrono::steady_clock::now();
-        const auto cacheAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_InodeToPidCacheTime).count();
-        needsRebuild = (cacheAgeMs >= Domain::Sampling::INODE_PID_CACHE_TTL_MS);
+        needsRebuild = (now - m_InodeToPidCacheTime) >= maxAge;
         if (needsRebuild)
         {
             // Claim the rebuild slot: advance the timestamp now so any other thread that
             // checks while we are scanning /proc sees a fresh time and skips rebuilding.
             m_InodeToPidCacheTime = now;
+            scanStart = now;
         }
-        inodeToPidPtr = m_InodeToPidCache; // snapshot current (possibly stale) pointer
+        snapshot = {.map = m_InodeToPidCache, .builtAt = m_InodeToPidBuiltAt}; // current (possibly stale) snapshot
     }
     if (needsRebuild)
     {
         // Build the map outside the lock; concurrent threads keep using the old snapshot.
-        auto rebuilt = std::make_shared<const std::unordered_map<std::uint64_t, std::int32_t>>(buildInodeToPidMap(m_ProcRoot));
+        auto rebuilt = std::make_shared<const InodeToPidMap>(buildInodeToPidMap(m_ProcRoot));
         {
             const std::scoped_lock lock{m_InodePidCacheMutex};
             if (!rebuilt->empty())
             {
                 m_InodeToPidCache = std::move(rebuilt);
                 m_InodeToPidCacheTime = std::chrono::steady_clock::now();
-                inodeToPidPtr = m_InodeToPidCache;
+                m_InodeToPidBuiltAt = scanStart;
+                snapshot = {.map = m_InodeToPidCache, .builtAt = m_InodeToPidBuiltAt};
             }
             else
             {
@@ -1177,11 +1216,11 @@ std::shared_ptr<const std::unordered_map<std::uint64_t, std::int32_t>> LinuxProc
                 const auto ttl = std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_TTL_MS};
                 const auto retryDelay = std::min(EMPTY_REBUILD_RETRY_MS, ttl);
                 m_InodeToPidCacheTime = std::chrono::steady_clock::now() - (ttl - retryDelay);
-                // inodeToPidPtr already holds the previous (possibly non-empty) snapshot
+                // snapshot already holds the previous (possibly non-empty) map
             }
         }
     }
-    return inodeToPidPtr;
+    return snapshot;
 }
 #endif // TASKSMACK_HAS_NETLINK_SOCKET_STATS
 

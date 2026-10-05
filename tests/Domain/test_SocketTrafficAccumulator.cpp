@@ -1,5 +1,6 @@
 // Tests for SocketTrafficAccumulator: per-process network counters built from per-socket deltas (#1099).
 
+#include "Domain/SamplingConfig.h"
 #include "Domain/SocketTrafficAccumulator.h"
 #include "Platform/ProcessTypes.h"
 
@@ -238,6 +239,91 @@ TEST(SocketTrafficAccumulatorTest, UnattributedTrafficIsNotCredited)
     read(accumulator, {{.key = 1, .pid = 0}}, processes);
     read(accumulator, {{.key = 1, .pid = 0, .bytesReceived = 1'000}}, processes);
     EXPECT_EQ(processes[0].netReceivedBytes, 0U);
+}
+
+TEST(SocketTrafficAccumulatorTest, GrowthBeforeAttributionIsCreditedToTheLaterOwner)
+{
+    // #1259: the inode-to-PID map is rebuilt every few seconds, so a new connection can be in a few
+    // readings before it has an owner. The bytes it moved in them used to be lost; they are held and
+    // credited once it is attributed. Its bytes at its first sighting are not (they may predate it).
+    SocketTrafficAccumulator accumulator;
+    std::vector processes{process(10)};
+    read(accumulator, {}, processes);
+    read(accumulator, {{.key = 2, .pid = 0, .bytesReceived = 1'000, .bytesSent = 10}}, processes); // first sighting
+    read(accumulator, {{.key = 2, .pid = 0, .bytesReceived = 5'000, .bytesSent = 40}}, processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 0U) << "nothing is credited while it has no owner";
+
+    read(accumulator, {{.key = 2, .pid = 10, .bytesReceived = 6'000, .bytesSent = 50}}, processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 5'000U) << "the held 4000 plus this interval's 1000";
+    EXPECT_EQ(processes[0].netSentBytes, 40U);
+
+    read(accumulator, {{.key = 2, .pid = 10, .bytesReceived = 6'500, .bytesSent = 50}}, processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 5'500U) << "the held bytes are credited once";
+}
+
+TEST(SocketTrafficAccumulatorTest, AnUnreadableSampleKeepsTheHeldGrowth)
+{
+    SocketTrafficAccumulator accumulator;
+    std::vector processes{process(10)};
+    read(accumulator, {{.key = 2, .pid = 0, .bytesReceived = 100}}, processes);
+    read(accumulator, {{.key = 2, .pid = 0, .bytesReceived = 600}}, processes);
+    read(accumulator, {{.key = 2, .pid = 0, .readable = false}}, processes);
+    read(accumulator, {{.key = 2, .pid = 10, .bytesReceived = 900}}, processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 800U);
+}
+
+TEST(SocketTrafficAccumulatorTest, AReusedKeyDropsTheHeldGrowth)
+{
+    // A counter going backwards means another connection took the key: the old one's held bytes
+    // are not the new one's.
+    SocketTrafficAccumulator accumulator;
+    std::vector processes{process(10)};
+    read(accumulator, {{.key = 2, .pid = 0, .bytesReceived = 100}}, processes);
+    read(accumulator, {{.key = 2, .pid = 0, .bytesReceived = 9'000}}, processes);
+    read(accumulator, {{.key = 2, .pid = 0, .bytesReceived = 50}}, processes); // reused
+    read(accumulator, {{.key = 2, .pid = 10, .bytesReceived = 80}}, processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 30U);
+}
+
+TEST(SocketTrafficAccumulatorTest, HeldGrowthExpiresForAConnectionThatStaysUnowned)
+{
+    // One still unowned well past a map rebuild belongs to a process we can't read; if it is ever
+    // attributed it must not land all its unowned traffic in one interval.
+    constexpr std::uint64_t MS = 1'000'000ULL;
+    constexpr std::uint64_t HOLD_NS = static_cast<std::uint64_t>(Sampling::UNATTRIBUTED_SOCKET_HOLD_MS) * MS;
+    SocketTrafficAccumulator accumulator;
+    std::vector processes{process(10)};
+    const auto at = [&](std::uint64_t timeNs, const std::vector<SocketTrafficSample>& sockets)
+    {
+        accumulator.addReading(sockets, timeNs);
+        accumulator.publish(processes);
+    };
+    constexpr std::uint64_t T0 = 1'000 * MS;
+    at(T0, {{.key = 2, .pid = 0, .bytesReceived = 100}});
+    at(T0 + HOLD_NS, {{.key = 2, .pid = 0, .bytesReceived = 1'100}}); // still within the hold
+    at(T0 + HOLD_NS + MS, {{.key = 2, .pid = 0, .bytesReceived = 50'000}});
+    at(T0 + HOLD_NS + (2 * MS), {{.key = 2, .pid = 0, .bytesReceived = 60'000}});
+    at(T0 + HOLD_NS + (3 * MS), {{.key = 2, .pid = 10, .bytesReceived = 60'700}});
+    EXPECT_EQ(processes[0].netReceivedBytes, 700U) << "only the growth since the previous reading";
+
+    // A later unowned run of the same connection holds again.
+    at(T0 + HOLD_NS + (4 * MS), {{.key = 2, .pid = 0, .bytesReceived = 61'000}});
+    at(T0 + HOLD_NS + (5 * MS), {{.key = 2, .pid = 10, .bytesReceived = 61'200}});
+    EXPECT_EQ(processes[0].netReceivedBytes, 1'200U);
+}
+
+TEST(SocketTrafficAccumulatorTest, ApplyHoldsGrowthOnTheReadingClock)
+{
+    // apply() passes each reading's time, so a connection attributed within the hold is credited
+    // what it moved since its first sighting.
+    SocketTrafficAccumulator accumulator;
+    std::vector processes{process(10)};
+    constexpr std::uint64_t SECOND = 1'000'000'000ULL;
+    accumulator.apply({.sockets = {}, .sampleTimeNs = 10 * SECOND}, processes);
+    accumulator.apply({.sockets = {{.key = 2, .pid = 0, .bytesReceived = 100}}, .sampleTimeNs = 11 * SECOND}, processes);
+    accumulator.apply({.sockets = {{.key = 2, .pid = 0, .bytesReceived = 400}}, .sampleTimeNs = 12 * SECOND}, processes);
+    accumulator.apply({.sockets = {{.key = 2, .pid = 10, .bytesReceived = 500}}, .sampleTimeNs = 14 * SECOND}, processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 400U);
 }
 
 TEST(SocketTrafficAccumulatorTest, TotalsSaturateInsteadOfWrapping)

@@ -95,7 +95,7 @@ Only TCP traffic is counted. The kernel (Linux) and TCP EStats (Windows) report 
 
 Each connection's own growth between two readings is credited to the process that owns it, so a connection closing doesn't erase the traffic on the others. A few bytes go uncounted:
 
-- On Linux, a connection that is first seen before TaskSmack knows which process owns it is counted from the reading in which it is attributed. The socket-to-process map is rebuilt every 3 seconds.
+- On Linux, the socket-to-process map is rebuilt every 3 seconds, and early (at most once a second) when a connection appears that it doesn't know, so a new connection is normally attributed in the reading it first appears in. When the early rebuild is held back, the bytes the connection moved up to that first reading are not counted; what it moves after that is credited to its process once it is attributed. A connection that opens and closes before it is attributed is not counted.
 - Bytes sent between a connection's last reading and its close are not counted.
 
 On Linux, a socket shared by several processes, for example one inherited across `fork()`, is counted for the lowest PID.

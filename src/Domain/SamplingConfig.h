@@ -71,6 +71,21 @@ inline constexpr int64_t LINK_SPEED_CACHE_TTL_SECONDS = 60;
 // is acceptable for network attribution since the mapping drifts slowly.
 inline constexpr int INODE_PID_CACHE_TTL_MS = 3000;
 
+// Earliest rebuild of the inode-to-PID map (milliseconds) - Linux only
+// A socket that shows up with no owner after the map was built may have been opened since; the
+// probe then rebuilds the map ahead of its TTL so the new connection is attributed in the reading
+// it first appears in (#1259), but no more often than this, so a burst of short-lived connections
+// (or other users' connections, which never resolve) can't turn the /proc scan into a per-refresh one.
+inline constexpr int INODE_PID_CACHE_EARLY_REBUILD_MS = 1000;
+
+// How long a connection seen with no owner holds its growth for the owner it gets (milliseconds)
+// SocketTrafficAccumulator credits the bytes an unattributed connection moves to the process it is
+// attributed to later (#1259). An attributable connection gets its owner at the next map rebuild:
+// within one map TTL plus one refresh of its first sighting. One still unattributed after that
+// belongs to a process we can't read; it stops holding, so if it is ever attributed it can't land
+// hours of traffic in one interval.
+inline constexpr int UNATTRIBUTED_SOCKET_HOLD_MS = INODE_PID_CACHE_TTL_MS + REFRESH_INTERVAL_MAX_MS;
+
 // -----------------------------------------------------------------------------
 // Instance Enumeration Caches (User-Configurable via TOML)
 // -----------------------------------------------------------------------------
