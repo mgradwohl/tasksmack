@@ -10,13 +10,10 @@
 namespace Platform::ProcPrivileges
 {
 
-/// capability.h bit numbers of the two capabilities that open other users' /proc entries.
+/// capability.h bit numbers of the capabilities that open other users' /proc entries.
+inline constexpr unsigned CAP_DAC_OVERRIDE_BIT = 1;    // a superset of CAP_DAC_READ_SEARCH for these reads
 inline constexpr unsigned CAP_DAC_READ_SEARCH_BIT = 2; // list another user's /proc/[pid]/fd, open its io
 inline constexpr unsigned CAP_SYS_PTRACE_BIT = 19;     // ptrace read access: /proc/[pid]/io, /proc/[pid]/fd/* links
-
-/// Both bits together: what docs/guide/faq.md tells users to grant with setcap.
-inline constexpr std::uint64_t FULL_PROC_ACCESS_MASK =
-    (std::uint64_t{1} << CAP_DAC_READ_SEARCH_BIT) | (std::uint64_t{1} << CAP_SYS_PTRACE_BIT);
 
 /// The effective capability set from /proc/[pid]/status ("CapEff:\t000001ffffffffff"), or nullopt
 /// when the line is missing or its value isn't hex. Deliberately free of platform APIs so it is
@@ -64,17 +61,23 @@ inline constexpr std::uint64_t FULL_PROC_ACCESS_MASK =
 }
 
 /// Whether running with more privileges would restore per-process data for other users' processes
-/// (ProcessCapabilities::hasReducedPrivileges). Not reduced as root, or with both CAP_DAC_READ_SEARCH
-/// and CAP_SYS_PTRACE effective. Anything less is reduced, including CAP_DAC_READ_SEARCH alone: that
-/// restores FD counts but not I/O or network, so the notice (which names all three) still applies.
-/// An unknown capability set (status unreadable) is treated as none.
+/// (ProcessCapabilities::hasReducedPrivileges). When the effective set is known it decides, for root
+/// too: a process can keep EUID 0 with its capabilities dropped (a container, a hardened service) and
+/// then can't read other users' entries either. Not reduced with CAP_SYS_PTRACE plus
+/// CAP_DAC_READ_SEARCH (or CAP_DAC_OVERRIDE, which covers it); anything less is reduced, including
+/// CAP_DAC_READ_SEARCH alone: that restores FD counts but not I/O or network, so the notice (which
+/// names all three) still applies. With the set unknown (status unreadable), only root counts as not
+/// reduced.
 [[nodiscard]] constexpr bool hasReducedPrivileges(bool isRoot, std::optional<std::uint64_t> capEff) noexcept
 {
-    if (isRoot)
+    if (!capEff.has_value())
     {
-        return false;
+        return !isRoot;
     }
-    return !capEff.has_value() || (*capEff & FULL_PROC_ACCESS_MASK) != FULL_PROC_ACCESS_MASK;
+    constexpr std::uint64_t DAC_MASK = (std::uint64_t{1} << CAP_DAC_READ_SEARCH_BIT) | (std::uint64_t{1} << CAP_DAC_OVERRIDE_BIT);
+    const bool dacAccess = (*capEff & DAC_MASK) != 0;
+    const bool ptraceAccess = (*capEff & (std::uint64_t{1} << CAP_SYS_PTRACE_BIT)) != 0;
+    return !(dacAccess && ptraceAccess);
 }
 
 } // namespace Platform::ProcPrivileges

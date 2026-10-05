@@ -132,9 +132,16 @@ TEST(ProcPrivilegesTest, RootOrBothCapabilitiesAreNotReduced)
 {
     constexpr std::uint64_t DAC_READ_SEARCH = std::uint64_t{1} << 2;
     constexpr std::uint64_t SYS_PTRACE = std::uint64_t{1} << 19;
+    constexpr std::uint64_t DAC_OVERRIDE = std::uint64_t{1} << 1;
 
+    // Root with an unreadable status falls back to the EUID; root with its full set is not reduced.
     EXPECT_FALSE(ProcPrivileges::hasReducedPrivileges(true, std::nullopt));
-    EXPECT_FALSE(ProcPrivileges::hasReducedPrivileges(true, 0));
+    EXPECT_FALSE(ProcPrivileges::hasReducedPrivileges(true, 0x1ffffffffffULL));
+    // Root with its capabilities dropped (a container, a hardened service) is reduced like anyone else.
+    EXPECT_TRUE(ProcPrivileges::hasReducedPrivileges(true, 0));
+    EXPECT_TRUE(ProcPrivileges::hasReducedPrivileges(true, SYS_PTRACE));
+    // CAP_DAC_OVERRIDE covers CAP_DAC_READ_SEARCH for these reads.
+    EXPECT_FALSE(ProcPrivileges::hasReducedPrivileges(false, DAC_OVERRIDE | SYS_PTRACE));
     EXPECT_FALSE(ProcPrivileges::hasReducedPrivileges(false, DAC_READ_SEARCH | SYS_PTRACE));
     EXPECT_FALSE(ProcPrivileges::hasReducedPrivileges(false, 0x1ffffffffffULL));
 
