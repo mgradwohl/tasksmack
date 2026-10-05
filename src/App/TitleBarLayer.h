@@ -131,8 +131,13 @@ class TitleBarLayer : public Core::Layer
     void renderSystemMenu();
     void setupHitTest();
 
-    // Icon texture
+    // Load the bundled application icon closest above @p pixelSize (selectIconPixelSize()).
+    void loadIconTexture(int pixelSize);
+
+    // Icon texture, and the bundled size it was loaded from: reloaded when the drawn size calls for
+    // another one, after a display-scale change (#1169). 0 before the first load.
     UI::Texture m_IconTexture;
+    int m_IconTexturePx = 0;
 
     // System menu state
     bool m_ShowSystemMenu = false;

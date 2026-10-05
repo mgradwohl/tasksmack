@@ -186,6 +186,9 @@ class ProcessesPanel : public Panel
 
     // Tree view state
     bool m_TreeViewEnabled = false;
+    // m_CachedSortedIndices is in natural order and the list view must re-sort it on its next frame,
+    // even though ImGui's SpecsDirty is not set (e.g. the rows were reset while in tree view) (#1174).
+    bool m_SortPending = true;
 
     // Previous frame's table layout, feeding ProcessTableLayout::computeInnerWidth() (#924)
     float m_OtherColumnsWidth = 0.0F;                  // Everything but the Command column's own content

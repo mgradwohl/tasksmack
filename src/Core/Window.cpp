@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <optional>
 #include <span>
@@ -31,6 +32,9 @@ namespace Core
 
 namespace
 {
+/// How far from 1 a pixel density may be and still mean window units are physical pixels (#1168).
+constexpr float PIXEL_DENSITY_EPSILON = 1e-3F;
+
 [[nodiscard]] int clampWindowDimension(const int value) noexcept
 {
     return std::clamp(value, WINDOW_MIN_DIMENSION, WINDOW_MAX_DIMENSION);
@@ -409,7 +413,12 @@ auto Window::getNormalGeometry() const -> std::optional<WindowGeometry::Rect>
     return WindowGeometry::selectNormalGeometry(isMaximized(), current, restoreRect);
 }
 
-void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, bool maximized)
+auto Window::getNormalGeometryScale() const -> float
+{
+    return WindowGeometry::selectNormalGeometryScale(isMaximized(), m_HasRestoreRect, m_RestoreScale, getUnitScale());
+}
+
+void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, bool maximized, std::optional<float> savedScale)
 {
     if (m_Handle == nullptr)
     {
@@ -418,6 +427,7 @@ void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, boo
 
     // Usable bounds of every connected display, and which of them is primary.
     std::vector<WindowGeometry::Rect> displays;
+    std::vector<SDL_DisplayID> displayIdsByIndex;
     std::size_t primaryIndex = 0;
     int displayCount = 0;
     SDL_DisplayID* displayIds = SDL_GetDisplays(&displayCount);
@@ -437,6 +447,7 @@ void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, boo
                 primaryIndex = displays.size();
             }
             displays.push_back(WindowGeometry::Rect{.x = bounds.x, .y = bounds.y, .width = bounds.w, .height = bounds.h});
+            displayIdsByIndex.push_back(id);
         }
         SDL_free(displayIds);
     }
@@ -462,12 +473,51 @@ void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, boo
         saved.y = currentY;
     }
 
+    // Convert the saved size to the scale of the display the window opens on, so it keeps its
+    // apparent size when that display (or its scale) differs from the one it was saved on (#1168).
+    if (savedScale.has_value())
+    {
+        float targetScale = getUnitScale();
+        // Where window units are physical pixels (Windows, X11: pixel density 1), a display's unit
+        // scale is its content scale, which can be read before the window is moved there. Elsewhere
+        // window units are logical and the window's own scale is the one to keep.
+        const float pixelDensity = SDL_GetWindowPixelDensity(m_Handle);
+        const auto target = WindowGeometry::targetDisplayIndex(saved, displays, primaryIndex, WindowGeometry::MIN_VISIBLE_EXTENT);
+        if (canPosition && target.has_value() && std::abs(pixelDensity - 1.0F) < PIXEL_DENSITY_EPSILON)
+        {
+            const float contentScale = SDL_GetDisplayContentScale(displayIdsByIndex[*target]);
+            if (WindowGeometry::isUsableWindowScale(contentScale))
+            {
+                targetScale = contentScale;
+            }
+        }
+        const auto [scaledWidth, scaledHeight] = WindowGeometry::rescaleWindowSize(saved.width, saved.height, savedScale, targetScale);
+        if (scaledWidth != saved.width || scaledHeight != saved.height)
+        {
+            spdlog::info("Window::applySavedGeometry: saved size {}x{} at scale {:.2f} is {}x{} at scale {:.2f}",
+                         saved.width,
+                         saved.height,
+                         *savedScale,
+                         scaledWidth,
+                         scaledHeight,
+                         targetScale);
+        }
+        saved.width = scaledWidth;
+        saved.height = scaledHeight;
+    }
+
     const WindowGeometry::Rect fitted =
         WindowGeometry::fitRectToDisplays(saved, displays, primaryIndex, WindowGeometry::MIN_VISIBLE_EXTENT);
+    if (fitted.width != saved.width || fitted.height != saved.height)
+    {
+        spdlog::info("Window::applySavedGeometry: saved size {}x{} shrunk to {}x{} to fit the display",
+                     saved.width,
+                     saved.height,
+                     fitted.width,
+                     fitted.height);
+    }
     if (fitted.width != width || fitted.height != height)
     {
-        spdlog::info(
-            "Window::applySavedGeometry: saved size {}x{} shrunk to {}x{} to fit the display", width, height, fitted.width, fitted.height);
         setSize(fitted.width, fitted.height);
     }
     if (canPosition)
@@ -492,6 +542,16 @@ void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, boo
         SDL_SyncWindow(m_Handle);
         maximize();
     }
+}
+
+auto Window::getUnitScale() const noexcept -> float
+{
+    if (m_Handle == nullptr)
+    {
+        return 0.0F;
+    }
+    const float scale = WindowGeometry::windowUnitScale(SDL_GetWindowDisplayScale(m_Handle), SDL_GetWindowPixelDensity(m_Handle));
+    return WindowGeometry::isUsableWindowScale(scale) ? scale : 0.0F;
 }
 
 auto Window::getDisplayId() const noexcept -> SDL_DisplayID
@@ -637,6 +697,9 @@ void Window::rememberRestoreRect()
     SDL_GetWindowPosition(m_Handle, &m_RestoreX, &m_RestoreY);
     SDL_GetWindowSize(m_Handle, &m_RestoreWidth, &m_RestoreHeight);
     m_HasRestoreRect = m_RestoreWidth > 0 && m_RestoreHeight > 0;
+    // The scale this rectangle is in, so a later save tags it correctly even if the maximized window
+    // has since moved to another display or the scale changed (#1168).
+    m_RestoreScale = getUnitScale();
 }
 
 void Window::restore()

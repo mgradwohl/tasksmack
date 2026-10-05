@@ -18,6 +18,7 @@
 #include <spdlog/spdlog.h>
 
 #include <chrono>
+#include <format>
 #include <ratio>
 #include <tuple>
 #include <utility>
@@ -271,8 +272,21 @@ void TitleBarLayer::onAttach()
     buttonX -= buttonWidth;
     m_HelpBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = titleBarHeight};
 
-    // Load icon texture
-    const auto iconPath = UI::findAssetsDir() / "icons" / "tasksmack-32.png";
+    // The icon texture is loaded by the first renderTitleBar(), at the size the bar draws it; ImGui
+    // only knows the framebuffer scale from the first frame on (#1169).
+
+    m_TraceEnabled = Core::isEnvFlagEnabled(SDL_getenv("TASKSMACK_TRACE_RESIZE_PERF"));
+
+    // Set up hit test for window dragging
+    setupHitTest();
+    createSystemCursors();
+}
+
+void TitleBarLayer::loadIconTexture(const int pixelSize)
+{
+    // Remembered even when loading fails, so a missing file is not retried every frame.
+    m_IconTexturePx = pixelSize;
+    const auto iconPath = UI::findAssetsDir() / "icons" / std::format("tasksmack-{}.png", pixelSize);
     m_IconTexture = UI::loadTexture(iconPath);
     if (m_IconTexture.valid())
     {
@@ -282,12 +296,6 @@ void TitleBarLayer::onAttach()
     {
         spdlog::warn("Failed to load title bar icon from {}", iconPath.string());
     }
-
-    m_TraceEnabled = Core::isEnvFlagEnabled(SDL_getenv("TASKSMACK_TRACE_RESIZE_PERF"));
-
-    // Set up hit test for window dragging
-    setupHitTest();
-    createSystemCursors();
 }
 
 void TitleBarLayer::onDetach()
@@ -1055,6 +1063,15 @@ void TitleBarLayer::renderTitleBar()
     const float iconY = centerY - (ICON_SIZE * 0.5F);
     // Left margin and the gap after the icon, proportional to the bar so they hold at any density.
     const float iconX = titleBarHeight * TITLE_BAR_EDGE_MARGIN_RATIO;
+
+    // The bundled icon nearest above the drawn size in framebuffer pixels; after a display-scale
+    // change that is another file (#1169). Loading between NewFrame() and Render() is fine: the
+    // texture is only sampled when the frame is drawn.
+    if (const int wantedPx = selectIconPixelSize(ICON_SIZE * ImGui::GetIO().DisplayFramebufferScale.y, APP_ICON_PIXEL_SIZES);
+        wantedPx != m_IconTexturePx)
+    {
+        loadIconTexture(wantedPx);
+    }
 
     if (m_IconTexture.valid())
     {

@@ -480,6 +480,20 @@ void Theme::applyImGuiStyle() const
     style.ScrollbarSize = 14.0F * scale;
     style.GrabMinSize = 10.0F * scale;
 
+    // ImGui's own defaults for the remaining sizes the app visibly uses, authored so they scale
+    // with the rest instead of staying at 1x beside it (#1169). The scrollbar grab's inset grows
+    // with the scrollbar. The selected-tab overline (every tab bar draws it) and the tab bar's
+    // underline are accent strokes, not edges, so they thicken with the tabs, in whole pixels; so
+    // does the text caret. The docking splitter and SeparatorText() rule are authored for the same
+    // reason, though nothing draws them today. WindowBorderHoverPadding stays at ImGui's default: it
+    // also widens which window counts as hovered, and no ImGui window here is resizable.
+    style.ScrollbarPadding = 2.0F * scale;
+    style.TabBarBorderSize = scaledStrokePx(1.0F, scale);
+    style.TabBarOverlineSize = scaledStrokePx(1.0F, scale);
+    style.InputTextCursorSize = scaledStrokePx(1.0F, scale);
+    style.SeparatorTextBorderSize = scaledStrokePx(3.0F, scale);
+    style.DockingSeparatorSize = scaledStrokePx(2.0F, scale);
+
     spdlog::info("ImGui style scaled by {:.2f} ({} preset at {:.2f} display scale)", scale, fontConfig().name, m_DisplayScale);
 
     // Apply ImPlot style colors from theme

@@ -497,6 +497,8 @@ void SystemMetricsPanel::renderContent()
                     .smoothedNetRecvBytesPerSec = &m_SmoothedNetwork.recvBytesPerSec,
                     .smoothedNetInitialized = &m_SmoothedNetwork.initialized,
                     .selectedNetworkInterface = &m_SelectedNetworkInterface,
+                    .showAllInterfaces = &m_ShowAllInterfaces,
+                    .interfacesWithTraffic = &m_InterfacesWithTraffic,
                     .fillState = &m_NetworkFill,
                 };
                 {
@@ -531,16 +533,10 @@ void SystemMetricsPanel::renderOverview()
     // Format uptime string
     const std::string uptimeStr = UI::Format::formatUptimeShort(snap.uptimeSeconds);
 
-    // Display: "CPU Model (N cores @ X.XX GHz)     Uptime: Xd Yh Zm"
-    std::string coreInfo;
-    if (snap.cpuFreqMHz > 0)
-    {
-        coreInfo = std::format(" ({} cores @ {:.2f} GHz)", snap.coreCount, Domain::Numeric::toDouble(snap.cpuFreqMHz) / 1000.0);
-    }
-    else
-    {
-        coreInfo = std::format(" ({} cores)", snap.coreCount);
-    }
+    // Display: "CPU Model (N logical processors @ X.XX GHz)     Uptime: Xd Yh Zm"
+    // The count is of logical processors, not cores (#1203).
+    const std::string coreInfo =
+        UI::Format::formatLogicalProcessorSummary(snap.coreCount, (snap.cpuFreqMHz > 0) ? Domain::Numeric::toDouble(snap.cpuFreqMHz) : 0.0);
 
     const std::string processStr = (m_ProcessModel != nullptr)
                                      ? std::format("Processes: {}", UI::Format::formatIntLocalized(m_ProcessModel->processCount()))
