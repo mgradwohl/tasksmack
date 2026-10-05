@@ -128,7 +128,7 @@ TEST(ProcPrivilegesTest, MissingOrMalformedCapEffIsUnknown)
     EXPECT_EQ(ProcPrivileges::parseCapEff("XCapEff:\t0000000000080004\n"), std::nullopt);
 }
 
-TEST(ProcPrivilegesTest, RootOrBothCapabilitiesAreNotReduced)
+TEST(ProcPrivilegesTest, KnownCapabilitiesDecideForRootTooAndAnUnknownSetFallsBackToTheEuid)
 {
     constexpr std::uint64_t DAC_READ_SEARCH = std::uint64_t{1} << 2;
     constexpr std::uint64_t SYS_PTRACE = std::uint64_t{1} << 19;
@@ -866,10 +866,7 @@ TEST(LinuxProcessProbeTest, UnreadableRaplCounterDisablesPowerUsage)
 
 TEST(LinuxProcessProbeTest, ReducedPrivilegesReadsCapEffUnderTheProcRoot)
 {
-    if (::geteuid() == 0)
-    {
-        GTEST_SKIP() << "root is never reduced, whatever self/status says";
-    }
+    // A readable CapEff decides for root too, so these hold whatever the test runs as.
     ScopedTempDir withCaps("ts_test_proc_capeff_full");
     writeFile(withCaps.path / "self" / "status", "Name:\tTaskSmack\nCapEff:\t0000000000080004\n");
     EXPECT_FALSE(LinuxProcessProbe(withCaps.path).capabilities().hasReducedPrivileges);
@@ -878,8 +875,13 @@ TEST(LinuxProcessProbeTest, ReducedPrivilegesReadsCapEffUnderTheProcRoot)
     writeFile(dacOnly.path / "self" / "status", "Name:\tTaskSmack\nCapEff:\t0000000000000004\n");
     EXPECT_TRUE(LinuxProcessProbe(dacOnly.path).capabilities().hasReducedPrivileges);
 
+    ScopedTempDir dropped("ts_test_proc_capeff_dropped");
+    writeFile(dropped.path / "self" / "status", "Name:\tTaskSmack\nCapEff:\t0000000000000000\n");
+    EXPECT_TRUE(LinuxProcessProbe(dropped.path).capabilities().hasReducedPrivileges);
+
+    // Only an unreadable status falls back to the EUID.
     ScopedTempDir noStatus("ts_test_proc_capeff_none");
-    EXPECT_TRUE(LinuxProcessProbe(noStatus.path).capabilities().hasReducedPrivileges);
+    EXPECT_EQ(LinuxProcessProbe(noStatus.path).capabilities().hasReducedPrivileges, ::geteuid() != 0);
 }
 
 TEST(LinuxProcessProbeTest, NoRaplCounterDisablesPowerUsage)
