@@ -12,10 +12,12 @@
 
 #if defined(__linux__) && __has_include(<unistd.h>)
 
+#include "Domain/GPUModel.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/Linux/DRMGPUProbe.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -1291,6 +1293,68 @@ TEST_F(DRMGPUProbeUnitTest, VramQuery_TotalClassifiesTheCardAsDiscrete)
     EXPECT_TRUE(probe.enumerateGPUs()[0].isIntegrated); // Not queried yet
     std::ignore = probe.readGPUCounters();
     EXPECT_FALSE(probe.enumerateGPUs()[0].isIntegrated);
+}
+
+// GPUModel enumerates once and re-enumerates only when rescanGPUs() says to, so a total the query
+// learns after enumeration is reported by the next rescan -- a quick one, every sample -- and only once.
+TEST_F(DRMGPUProbeUnitTest, VramQuery_NewTotalAsksForReEnumerationOnce)
+{
+    const auto deviceDir = makeCard("card0", "xe"); // No PCI address: classified by VRAM
+    writeFile(deviceDir / "vendor", "0x8086");
+    writeFile(deviceDir / "class", "0x030000");
+    std::filesystem::create_directories(deviceDir / "drm" / "renderD128");
+
+    const ScriptedVramQuery query;
+    query.state->reply = DRMGPUProbe::VramInfo{.totalBytes = 4 * GIB, .usedBytes = 1 * GIB};
+    DRMGPUProbe probe(m_SysRoot.string(), query.fn());
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick));
+
+    std::ignore = probe.readGPUCounters();
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Quick));
+    EXPECT_FALSE(probe.enumerateGPUs()[0].isIntegrated);
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick)); // Reported once
+
+    // Used is re-queried each sample; the same total is no change.
+    query.state->reply = DRMGPUProbe::VramInfo{.totalBytes = 4 * GIB, .usedBytes = 2 * GIB};
+    std::ignore = probe.readGPUCounters();
+    EXPECT_EQ(query.state->calls, 2);
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick));
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full));
+
+    // A full rescan with no card change reports it too.
+    query.state->reply = DRMGPUProbe::VramInfo{.totalBytes = 8 * GIB, .usedBytes = 2 * GIB};
+    std::ignore = probe.readGPUCounters();
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick));
+}
+
+// #1321 review: through GPUModel, which enumerated before the first counter read, the queried total
+// reaches the published GPUInfo and snapshots: the card becomes discrete, with its VRAM capacity.
+TEST_F(DRMGPUProbeUnitTest, VramQuery_GPUModelPublishesTheCardAsDiscreteWithTheQueriedTotal)
+{
+    const auto deviceDir = makeCard("card0", "xe"); // No PCI address: classified by VRAM
+    writeFile(deviceDir / "vendor", "0x8086");
+    writeFile(deviceDir / "class", "0x030000");
+    std::filesystem::create_directories(deviceDir / "drm" / "renderD128");
+
+    const ScriptedVramQuery query;
+    query.state->reply = DRMGPUProbe::VramInfo{.totalBytes = 16 * GIB, .usedBytes = 3 * GIB};
+    Domain::GPUModel model(std::make_unique<DRMGPUProbe>(m_SysRoot.string(), query.fn()));
+    ASSERT_EQ(model.gpuInfo().size(), 1U);
+    EXPECT_TRUE(model.gpuInfo()[0].isIntegrated); // Enumerated before any query
+
+    const auto start = std::chrono::steady_clock::now();
+    model.refreshAt(start); // The first awake sample issues the query
+    model.refreshAt(start + std::chrono::seconds(1));
+
+    const auto info = model.gpuInfo();
+    ASSERT_EQ(info.size(), 1U);
+    EXPECT_FALSE(info[0].isIntegrated);
+    const auto snapshots = model.snapshots();
+    ASSERT_EQ(snapshots.size(), 1U);
+    EXPECT_FALSE(snapshots[0].isIntegrated);
+    EXPECT_EQ(snapshots[0].memoryTotalBytes, 16 * GIB);
+    EXPECT_EQ(snapshots[0].memoryUsedBytes, 3 * GIB);
 }
 
 #if __has_include(<drm/xe_drm.h>) && __has_include(<drm/i915_drm.h>)

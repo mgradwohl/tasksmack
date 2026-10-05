@@ -124,9 +124,14 @@ class DRMGPUProbe : public IGPUProbe
     [[nodiscard]] static uint64_t readVramTotal(const DRMCard& card);
     [[nodiscard]] GPUInfo cardToGPUInfo(const DRMCard& card) const;
     /// Issues the VRAM query for an awake card when its total isn't cached yet, or to refresh used (#1283).
-    void refreshQueriedVram(DRMCard& card) const;
+    /// A total that changes (first becomes known) marks the enumeration stale: it classifies the card.
+    void refreshQueriedVram(DRMCard& card);
 
     bool m_Available{false};
+    // Set when a card's GPUInfo would differ from the last enumerateGPUs() -- its queried VRAM total
+    // became known or changed, and with it the integrated/discrete classification -- and reported
+    // (and cleared) by the next rescanGPUs(), so GPUModel re-enumerates and publishes it.
+    bool m_GPUInfoStale{false};
     std::vector<DRMCard> m_Cards;
     std::string m_DrmBasePath; // Injectable base path for testing
     VramQuery m_VramQuery;

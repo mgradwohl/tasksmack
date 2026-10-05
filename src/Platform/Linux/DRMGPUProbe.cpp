@@ -204,11 +204,15 @@ std::vector<DRMGPUProbe::DRMCard> DRMGPUProbe::discoverIntelCards() const
 
 bool DRMGPUProbe::rescanGPUs(GPURescan depth)
 {
+    // A VRAM total the last awake sample's query learned changes the card's GPUInfo (it classifies the
+    // card as discrete), and GPUModel only re-enumerates when told to: any rescan reports it (#1283).
+    const bool infoStale = std::exchange(m_GPUInfoStale, false);
+
     // A card's sensors come from which sysfs files it has, not from querying it, so a card asleep at
     // enumeration needs no quick re-check (#1289): only a full rescan looks for changes.
     if (depth != GPURescan::Full)
     {
-        return false;
+        return infoStale;
     }
 
     // Hot-plugged, removed or rebound cards, or a card whose hwmon appeared after the driver bound
@@ -223,7 +227,7 @@ bool DRMGPUProbe::rescanGPUs(GPURescan depth)
     };
     if (std::ranges::equal(cards, m_Cards, sameCard))
     {
-        return false;
+        return infoStale;
     }
 
     // A card that persists keeps its last-known VRAM total for while it sleeps, and its DRM query
@@ -661,7 +665,7 @@ std::optional<DRMGPUProbe::VramInfo> DRMGPUProbe::queryVramByIoctl([[maybe_unuse
 #endif
 }
 
-void DRMGPUProbe::refreshQueriedVram(DRMCard& card) const
+void DRMGPUProbe::refreshQueriedVram(DRMCard& card)
 {
     // Once the total is known the query is repeated only for the used figure, and only while the
     // kernel reports it: otherwise every sample would open the render node for a number that can't change.
@@ -680,9 +684,10 @@ void DRMGPUProbe::refreshQueriedVram(DRMCard& card) const
         card.queriedVramUsedBytes.reset(); // Keep a cached total; stop re-querying
         return;
     }
-    if (info->totalBytes > 0)
+    if (info->totalBytes > 0 && info->totalBytes != card.queriedVramTotalBytes)
     {
         card.queriedVramTotalBytes = info->totalBytes;
+        m_GPUInfoStale = true; // Published GPUInfo was built without it: see rescanGPUs()
     }
     card.queriedVramUsedBytes = info->usedBytes;
 }
