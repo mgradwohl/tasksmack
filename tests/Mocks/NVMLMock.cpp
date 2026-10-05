@@ -401,22 +401,26 @@ extern "C"
         return NVML::NVML_SUCCESS;
     }
 
-    NVML::nvmlReturn_t nvmlDeviceGetComputeRunningProcesses(NVML::nvmlDevice_t device, unsigned int* count, void* infos)
+    NVML::nvmlReturn_t
+    nvmlDeviceGetComputeRunningProcesses(NVML::nvmlDevice_t device, unsigned int* count, NVML::nvmlProcessInfoEntries* infos)
     {
         return listProcesses<ProcessInfoV1>(device, count, infos, COMPUTE_PROCESSES);
     }
 
-    NVML::nvmlReturn_t nvmlDeviceGetGraphicsRunningProcesses(NVML::nvmlDevice_t device, unsigned int* count, void* infos)
+    NVML::nvmlReturn_t
+    nvmlDeviceGetGraphicsRunningProcesses(NVML::nvmlDevice_t device, unsigned int* count, NVML::nvmlProcessInfoEntries* infos)
     {
         return listProcesses<ProcessInfoV1>(device, count, infos, GRAPHICS_PROCESSES);
     }
 
-    NVML::nvmlReturn_t nvmlDeviceGetComputeRunningProcesses_v3(NVML::nvmlDevice_t device, unsigned int* count, void* infos)
+    NVML::nvmlReturn_t
+    nvmlDeviceGetComputeRunningProcesses_v3(NVML::nvmlDevice_t device, unsigned int* count, NVML::nvmlProcessInfoEntries* infos)
     {
         return listProcesses<ProcessInfoV2>(device, count, infos, COMPUTE_PROCESSES);
     }
 
-    NVML::nvmlReturn_t nvmlDeviceGetGraphicsRunningProcesses_v3(NVML::nvmlDevice_t device, unsigned int* count, void* infos)
+    NVML::nvmlReturn_t
+    nvmlDeviceGetGraphicsRunningProcesses_v3(NVML::nvmlDevice_t device, unsigned int* count, NVML::nvmlProcessInfoEntries* infos)
     {
         return listProcesses<ProcessInfoV2>(device, count, infos, GRAPHICS_PROCESSES);
     }
