@@ -242,13 +242,14 @@ auto runApp() -> int
         // Apply the saved normal geometry and maximized state now that the window exists. The size
         // and position are checked against the connected displays, so a position saved on a monitor
         // that is gone no longer opens the borderless window off-screen (#1128), and the normal
-        // rectangle is applied before maximizing so it is what Restore returns to (#1121).
+        // rectangle is applied before maximizing so it is what Restore returns to (#1121). The size is
+        // converted from the scale it was saved at to the scale of the display it opens on (#1168).
         std::optional<std::pair<int, int>> savedPosition;
         if (settings.windowPosX.has_value() && settings.windowPosY.has_value())
         {
             savedPosition = std::pair{*settings.windowPosX, *settings.windowPosY};
         }
-        appRef.getWindow().applySavedGeometry(savedPosition, settings.windowMaximized);
+        appRef.getWindow().applySavedGeometry(savedPosition, settings.windowMaximized, settings.windowScale);
 
         // Push UI layer (initializes ImGui/ImPlot backends). Must be pushed (and therefore
         // onRender()'d) before ShellLayer: UILayer::onRender() calls ImGui::NewFrame(), which is

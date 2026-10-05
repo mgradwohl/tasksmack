@@ -706,6 +706,72 @@ TEST(UserSettingsTest, ChartAntiAliasingDefaultsToTrue)
     EXPECT_TRUE(settings.chartAntiAliasing);
 }
 
+// ========== Window scale (#1168) ==========
+
+TEST(UserSettingsTest, DefaultWindowSizeIsAt100Percent)
+{
+    // The default size is for 100 %, so a first run on a 200 % display opens it at twice the pixels.
+    const UserSettings settings;
+    ASSERT_TRUE(settings.windowScale.has_value());
+    EXPECT_FLOAT_EQ(settings.windowScale.value_or(0.0F), 1.0F);
+}
+
+TEST_F(UserConfigSaveLoadFixture, WindowScaleIsSavedAndLoaded)
+{
+    auto& config = UserConfig::get();
+    config.settings().windowWidth = 2240;
+    config.settings().windowHeight = 1260;
+    config.settings().windowScale = 1.75F;
+    config.save();
+
+    UserConfig::get().resetConfigPathForTesting(m_TempDir / "config.toml");
+    config.load();
+    EXPECT_EQ(config.settings().windowWidth, 2240);
+    ASSERT_TRUE(config.settings().windowScale.has_value());
+    EXPECT_FLOAT_EQ(config.settings().windowScale.value_or(0.0F), 1.75F);
+}
+
+TEST_F(UserConfigSaveLoadFixture, SavedSizeWithoutAScaleIsRestoredUnconverted)
+{
+    // A config written before the scale was saved: its size is in unknown units, so it must not be
+    // treated as a 100 % size and converted on restore.
+    {
+        std::ofstream file(m_TempDir / "config.toml");
+        file << "[window]\nwidth = 1600\nheight = 900\n";
+    }
+    auto& config = UserConfig::get();
+    config.load();
+    EXPECT_EQ(config.settings().windowWidth, 1600);
+    EXPECT_FALSE(config.settings().windowScale.has_value());
+}
+
+TEST_F(UserConfigSaveLoadFixture, UnusableSavedWindowScaleIsIgnored)
+{
+    for (const char* scale : {"0.0", "-2.0", "nan", "1000.0"})
+    {
+        {
+            std::ofstream file(m_TempDir / "config.toml");
+            file << "[window]\nwidth = 1600\nheight = 900\nscale = " << scale << "\n";
+        }
+        UserConfig::get().resetConfigPathForTesting(m_TempDir / "config.toml");
+        auto& config = UserConfig::get();
+        config.load();
+        EXPECT_FALSE(config.settings().windowScale.has_value()) << scale;
+    }
+}
+
+TEST_F(UserConfigSaveLoadFixture, WholeNumberWindowScaleIsRead)
+{
+    {
+        std::ofstream file(m_TempDir / "config.toml");
+        file << "[window]\nwidth = 2560\nheight = 1440\nscale = 2\n";
+    }
+    auto& config = UserConfig::get();
+    config.load();
+    ASSERT_TRUE(config.settings().windowScale.has_value());
+    EXPECT_FLOAT_EQ(config.settings().windowScale.value_or(0.0F), 2.0F);
+}
+
 TEST_F(UserConfigSaveLoadFixture, ChartAntiAliasingFalseIsSavedAndLoaded)
 {
     auto& config = UserConfig::get();

@@ -6,8 +6,10 @@
 #include <SDL3/SDL_video.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
+#include <span>
 
 namespace App
 {
@@ -49,6 +51,29 @@ enum class ResizeEdge : std::uint8_t
 [[nodiscard]] inline auto computeTitleBarIconSize(const float titleBarHeightPx, const float insetPx) -> float
 {
     return std::max(0.0F, titleBarHeightPx - insetPx);
+}
+
+/// Pixel sizes of the bundled application icon, assets/icons/tasksmack-<size>.png, ascending.
+inline constexpr std::array<int, 7> APP_ICON_PIXEL_SIZES{16, 24, 32, 48, 64, 128, 256};
+
+/// Which bundled icon to draw at @p drawnPx framebuffer pixels: the smallest at least that large,
+/// so it is only ever scaled down, or the largest when none is (#1169). The title bar always loaded
+/// the 32 px icon, which was upscaled -- and blurred -- to about 45 px at 150 % and 60 px at 200 %.
+///
+/// @param drawnPx    The icon's drawn size in framebuffer pixels (window units times the pixel
+///                   density). A non-finite or non-positive size selects the smallest icon.
+/// @param available  The sizes there are, ascending and not empty.
+[[nodiscard]] constexpr auto selectIconPixelSize(const float drawnPx, std::span<const int> available) -> int
+{
+    for (const int size : available)
+    {
+        // Not `size >= drawnPx` alone: a NaN would fail every comparison and fall through to the largest.
+        if (!(drawnPx > 0.0F) || static_cast<float>(size) >= drawnPx)
+        {
+            return size;
+        }
+    }
+    return available.back();
 }
 
 /// Width of one window control button (minimize / maximize / close).

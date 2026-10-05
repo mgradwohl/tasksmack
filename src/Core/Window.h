@@ -89,6 +89,9 @@ class Window
     /// that rectangle is unknown -- maximized by the compositor or OS rather than by maximize() --
     /// in which case the caller should keep whatever normal geometry it saved before.
     [[nodiscard]] auto getNormalGeometry() const -> std::optional<WindowGeometry::Rect>;
+    /// The window scale getNormalGeometry()'s rectangle was measured at (#1168): the live scale when
+    /// not maximized, the scale captured with the restore rectangle when maximized; 0 if unknown.
+    [[nodiscard]] auto getNormalGeometryScale() const -> float;
 
     /// Apply saved geometry at startup: clamp the size to the display, move the window to
     /// @p position when positioning is supported and the position is reachable on a connected
@@ -96,7 +99,14 @@ class Window
     /// The normal rectangle is applied before maximizing so it becomes the restore target (#1121).
     /// Startup-only: before maximizing it waits for the window manager (SDL_SyncWindow), like
     /// setSize(), so never call it from the render loop.
-    void applySavedGeometry(std::optional<std::pair<int, int>> position, bool maximized);
+    /// @p savedScale is the window scale the size was saved at (getUnitScale()), if known: the size
+    /// is converted to the scale of the display the window opens on, so it keeps its apparent size
+    /// across displays and scale changes (#1168). Without it the size is applied as saved.
+    void applySavedGeometry(std::optional<std::pair<int, int>> position, bool maximized, std::optional<float> savedScale);
+
+    /// The window's UI scale in window units (WindowGeometry::windowUnitScale(): display scale over
+    /// pixel density) on the display it is on now; 1.0 at 100 % on Windows. 0 when unknown.
+    [[nodiscard]] auto getUnitScale() const noexcept -> float;
 
     /// The display the window is on, or 0 when unknown. Cheap enough to poll every frame, so a
     /// caller can tell when to re-read getUsableDisplaySize().
@@ -153,6 +163,7 @@ class Window
     int m_RestoreY = 0;
     int m_RestoreWidth = 0;
     int m_RestoreHeight = 0;
+    float m_RestoreScale = 0.0F; // getUnitScale() when the restore rectangle was captured (#1168)
 
 #ifdef _WIN32
     // Owned title-bar/taskbar icon handles (opaque void* here so <windows.h> stays out of
