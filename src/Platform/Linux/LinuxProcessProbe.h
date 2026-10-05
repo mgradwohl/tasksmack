@@ -4,7 +4,6 @@
 #include "Platform/PlatformConfig.h"
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
-#include "Domain/SamplingConfig.h"
 #include "Platform/Linux/NetlinkSocketStats.h"
 
 #include <chrono>
@@ -145,7 +144,9 @@ class LinuxProcessProbe : public IProcessProbe
     // scanned at most once per interval.
     mutable std::chrono::steady_clock::time_point m_InodeToPidLastAttempt;
     std::function<void()> m_InodeMapScanHook; // See setInodeMapScanHookForTesting()
-    std::chrono::milliseconds m_InodeMapEarlyRebuildInterval{Domain::Sampling::INODE_PID_CACHE_EARLY_REBUILD_MS};
+    // Defaults to Domain::Sampling::INODE_PID_CACHE_EARLY_REBUILD_MS, set in the constructor so this
+    // Platform header doesn't include a Domain one.
+    std::chrono::milliseconds m_InodeMapEarlyRebuildInterval{};
 
     // Sockets the last reading couldn't attribute, each with the sampledAt of the reading it was
     // first seen unowned in. Guarded by m_UnownedSocketsMutex.

@@ -9,10 +9,12 @@
 namespace App::ElevationNoticeText
 {
 
-/// Linux, neither root nor holding both CAP_DAC_READ_SEARCH and CAP_SYS_PTRACE: another user's
+/// Linux, effective capabilities (CapEff, for root too) lacking CAP_SYS_PTRACE or both of
+/// CAP_DAC_READ_SEARCH and CAP_DAC_OVERRIDE -- or, with CapEff unreadable, not root: another user's
 /// /proc/[pid]/fd and /proc/[pid]/io can't be read, so that process's FD count, I/O and network usage
-/// (attributed through its fd links) read N/A (#1287). CAP_DAC_READ_SEARCH alone restores only FD
-/// counts; it still gets this notice (Platform::ProcPrivileges::hasReducedPrivileges).
+/// (attributed through its fd links) read N/A (#1287). Root with those capabilities dropped (a
+/// container) gets the notice; CAP_DAC_READ_SEARCH alone restores only FD counts and still gets it
+/// (Platform::ProcPrivileges::hasReducedPrivileges).
 /// Keep in step with docs/guide/faq.md ("Process I/O, FDs or network show N/A").
 inline constexpr std::string_view LINUX = "TaskSmack is running without elevated privileges.\n\n"
                                           "File descriptor counts, I/O statistics and network\n"

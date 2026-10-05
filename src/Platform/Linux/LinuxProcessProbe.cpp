@@ -146,6 +146,9 @@ LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot, std::filesy
       m_PageSize(toU64PositiveOr(sysconf(_SC_PAGESIZE), 4096ULL)),
       m_BootTimeEpoch(readBootTime(m_ProcRoot))
 {
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+    m_InodeMapEarlyRebuildInterval = std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_EARLY_REBUILD_MS};
+#endif
     if (m_TicksPerSecond <= 0)
     {
         // /proc process times are typically reported in user-space clock ticks (USER_HZ),
