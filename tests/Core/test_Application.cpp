@@ -64,8 +64,9 @@ bool detectDisplay()
         // Windows CI runners are typically headless
         return false;
     }
-    // Local Windows development usually has a display
-    return true;
+    // Local Windows development usually has a display, but it must also offer a GL 3.3 core context:
+    // construction failures are fatal once a display is detected (#1132).
+    return TestSupport::probeGLCapability();
 #else
     // On Linux, check for DISPLAY environment variable (X11) or WAYLAND_DISPLAY
     // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay) - called during single-threaded test startup, read-only env check

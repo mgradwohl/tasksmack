@@ -1,9 +1,6 @@
 #pragma once
 
-#ifndef _WIN32
 #include <SDL3/SDL.h>
-#endif
-
 #include <gtest/gtest.h>
 
 #include <cstddef>
@@ -45,8 +42,10 @@ namespace TestSupport
     return displayAvailable;
 }
 
-#ifndef _WIN32
-// Returns true if SDL can initialize video AND create an OpenGL 3.3 core context.
+// Returns true if SDL can initialize video AND create an OpenGL 3.3 core context. On every platform:
+// a Windows machine without GL 3.3 (a VM, a basic display adapter) must skip the display-dependent
+// suites rather than fail them, since their construction failures are fatal once a display is
+// detected (#1132).
 // Uses the same SDL_GL attributes as Core::Window so a display that only supports
 // a default/legacy context is correctly rejected.
 // Calls SDL_Init / SDL_Quit internally; do not call while SDL is already initialized.
@@ -78,7 +77,6 @@ namespace TestSupport
     SDL_Quit();
     return glCapable;
 }
-#endif
 
 [[maybe_unused]] inline bool tryEnableOffscreenVideoDriver()
 {

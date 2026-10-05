@@ -31,7 +31,9 @@ bool detectDisplay()
     {
         return false;
     }
-    return true;
+    // A display must also offer a GL 3.3 core context: construction failures are fatal once a display
+    // is detected (#1132).
+    return TestSupport::probeGLCapability();
 #else
     // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
     const char* display = std::getenv("DISPLAY");
