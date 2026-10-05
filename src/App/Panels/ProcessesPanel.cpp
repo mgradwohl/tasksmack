@@ -361,6 +361,8 @@ void ProcessesPanel::onAttach()
     processProbe->setSocketStatsCacheTtl(std::chrono::milliseconds(socketStatsCacheTtlMs));
 
     m_ProcessModel = std::make_shared<Domain::ProcessModel>(std::move(processProbe));
+    // Config-file only (not in Settings), so applied once here, before the first refresh (#1123).
+    m_ProcessModel->setMaxSaneNetworkRate(UserConfig::get().settings().maxSaneRateBps);
 
     // Seed with one synchronous read so the first background callback produces valid CPU
     // deltas instead of all-zero percentages (first call establishes the prev-sample

@@ -231,3 +231,22 @@ If the saved position is no longer on any connected display (a monitor was unplu
 Dialogs (Settings, About and the privilege notice) are kept inside the main window. When the font size or display scaling makes the Settings dialog taller than the window, its options scroll and the Cancel and Apply buttons stay visible; Escape also cancels it.
 
 To reset all layout and theme settings, delete the `config.toml` file in the user config directory. TaskSmack will recreate it with defaults on the next launch.
+
+### Advanced settings (config.toml only)
+
+These settings aren't in the Settings dialog. Edit them in `config.toml` while TaskSmack is closed; they are read at startup. Out-of-range values are clamped to the range shown.
+
+| Key | Default | Range | Effect |
+|-----|---------|-------|--------|
+| `[metrics] max_sane_rate_bps` | 12500000000 (100 Gbps) | 1e9–1e11 bytes/s | A per-process network rate above this is taken for a bad reading and shown as 0. Raise it for links faster than 100 Gbps. |
+| `[ui] chart_smooth_factor` | 0.5 | 0.0–0.95 | How slowly live values and the bars beside the charts follow each new sample, as a fraction of the refresh interval. Lower follows changes faster; 0 barely eases. |
+| `[ui] chart_tau_ms_min` | 20 | 5–100 ms | The shortest easing time, used at fast refresh intervals. |
+| `[ui] chart_tau_ms_max` | 400 | 100–2000 ms | The longest easing time, used at slow refresh intervals. |
+| `[ui] chart_anti_aliasing` | true | true/false | Smooth chart line edges. Turn it off to save CPU/GPU time on integrated graphics. |
+| `[sampling] socket_stats_cache_ttl_ms` | 500 | 0–5000 ms | Linux only. How long per-process network readings are cached. |
+
+Older versions also wrote `[metrics] min_time_for_rate_seconds`, `[metrics] integrated_gpu_vram_threshold_mb`, `[ui] progress_color_low_threshold` and `[ui] progress_color_high_threshold`. None of them ever had an effect, and TaskSmack now removes them from `config.toml` the next time it saves. Network rates are measured over each interval, so no start-up delay is needed. Integrated and discrete GPUs are told apart by vendor (Windows) or PCI bus (Linux), not by a VRAM threshold. TaskSmack has no threshold-coloured progress bars.
+
+### Running TaskSmack twice
+
+Only one TaskSmack runs at a time for each config directory. Starting a second one shows "TaskSmack is already running", and the second one exits. Otherwise two copies saving the same `config.toml` could overwrite each other's settings. The check uses a `tasksmack.lock` file next to `config.toml`. The operating system releases the lock however TaskSmack exits, so you never need to delete the file. A Windows build and a WSL build on the same machine use different config directories, so both can run at once.

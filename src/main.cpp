@@ -4,6 +4,7 @@
 
 #include "App/AboutLayer.h"
 #include "App/ElevationNoticeLayer.h"
+#include "App/InstanceLock.h"
 #include "App/SettingsLayer.h"
 #include "App/ShellLayer.h"
 #include "App/TitleBarLayer.h"
@@ -179,6 +180,27 @@ auto runApp() -> int
 
     // Load user configuration early so we can apply window geometry before creating the SDL window.
     auto& userConfig = App::UserConfig::get();
+
+    // One TaskSmack per config directory (#1230): two instances saving the same config.toml could
+    // undo each other's settings change. Held until runApp() returns; the OS drops it on any exit.
+    // A lock that can't be taken at all (read-only directory, say) doesn't stop TaskSmack starting.
+    const std::filesystem::path instanceLockPath = userConfig.configPath().parent_path() / "tasksmack.lock";
+    const App::InstanceLock instanceLock(instanceLockPath);
+    if (instanceLock.status() == App::InstanceLock::Status::HeldByAnotherInstance)
+    {
+        spdlog::warn("TaskSmack is already running with the settings in {}; exiting", instanceLockPath.parent_path().string());
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION,
+                                 "TaskSmack",
+                                 "TaskSmack is already running.\n\nOnly one TaskSmack can run at a time, so that two can't overwrite "
+                                 "each other's settings.",
+                                 nullptr);
+        return EXIT_SUCCESS;
+    }
+    if (instanceLock.status() == App::InstanceLock::Status::Unavailable)
+    {
+        spdlog::warn("Can't take the single-instance lock {}: {}; starting anyway", instanceLockPath.string(), instanceLock.error());
+    }
+
     userConfig.load();
     const auto& settings = userConfig.settings();
 

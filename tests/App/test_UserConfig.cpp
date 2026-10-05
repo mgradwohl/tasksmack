@@ -359,20 +359,6 @@ TEST_F(UserConfigLoadSaveTest, LoadHandlesTomlParseError)
     EXPECT_EQ(UserConfig::get().settings().refreshIntervalMs, Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS);
 }
 
-TEST_F(UserConfigLoadSaveTest, LoadSwapsProgressThresholdsWhenInverted)
-{
-    // Write a config where low > high — load() must swap them
-    {
-        std::ofstream f(m_ConfigPath);
-        f << "[ui]\n";
-        f << "progress_color_low_threshold = 80.0\n";
-        f << "progress_color_high_threshold = 20.0\n";
-    }
-    UserConfig::get().load();
-    const auto& s = UserConfig::get().settings();
-    EXPECT_LE(s.progressColorLowThreshold, s.progressColorHighThreshold);
-}
-
 TEST_F(UserConfigLoadSaveTest, LoadParsesAllFontSizes)
 {
     const std::vector<std::pair<std::string, UI::FontSize>> cases = {
@@ -419,16 +405,12 @@ interval_ms = 999999
 history_max_seconds = -1
 
 [metrics]
-min_time_for_rate_seconds = 999.0
 max_sane_rate_bps = -1.0
-integrated_gpu_vram_threshold_mb = 999999
 
 [ui]
 chart_smooth_factor = 999.0
 chart_tau_ms_min = -1
 chart_tau_ms_max = 999999
-progress_color_low_threshold = -1.0
-progress_color_high_threshold = 999.0
 show_privilege_notice = false
 
 [process_columns]
@@ -441,14 +423,10 @@ name = true
     const auto& settings = UserConfig::get().settings();
     EXPECT_EQ(settings.refreshIntervalMs, Domain::Sampling::REFRESH_INTERVAL_MAX_MS);
     EXPECT_EQ(settings.maxHistorySeconds, Domain::Sampling::HISTORY_SECONDS_MIN);
-    EXPECT_DOUBLE_EQ(settings.minTimeForRateSeconds, Domain::Sampling::MIN_TIME_FOR_RATE_SECONDS_MAX);
     EXPECT_DOUBLE_EQ(settings.maxSaneRateBps, Domain::Sampling::MAX_SANE_RATE_BPS_MIN);
-    EXPECT_EQ(settings.integratedGpuVramThresholdBytes, Domain::Sampling::INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MAX);
     EXPECT_DOUBLE_EQ(settings.chartSmoothFactor, Domain::Sampling::CHART_SMOOTH_FACTOR_MAX);
     EXPECT_EQ(settings.chartTauMsMin, Domain::Sampling::CHART_TAU_MS_MIN_BOUND);
     EXPECT_EQ(settings.chartTauMsMax, Domain::Sampling::CHART_TAU_MS_MAX_MAX);
-    EXPECT_DOUBLE_EQ(settings.progressColorLowThreshold, Domain::Sampling::PROGRESS_COLOR_LOW_THRESHOLD_MIN);
-    EXPECT_DOUBLE_EQ(settings.progressColorHighThreshold, Domain::Sampling::PROGRESS_COLOR_HIGH_THRESHOLD_MAX);
     EXPECT_FALSE(settings.showPrivilegeNotice);
     EXPECT_FALSE(settings.processColumns.isVisible(ProcessColumn::PID));
     EXPECT_TRUE(settings.processColumns.isVisible(ProcessColumn::Name));

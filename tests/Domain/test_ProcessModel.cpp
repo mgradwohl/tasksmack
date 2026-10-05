@@ -1199,6 +1199,48 @@ TEST(ProcessModelTest, NetworkRatesAboveSanityCeilingAreDropped)
     EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 1000.0);
 }
 
+TEST(ProcessModelTest, ConfiguredSanityCeilingRaisesTheLimit)
+{
+    // [metrics] max_sane_rate_bps (#1123): raised for a fast link, a rate above the default 100 Gbps
+    // ceiling but below the configured one is reported, not dropped.
+    NetworkRateFixture fixture;
+    fixture.model->setMaxSaneNetworkRate(Domain::Sampling::MAX_SANE_RATE_BPS_MAX);
+    fixture.sample(std::chrono::milliseconds{0}, 0, 0);
+
+    const auto aboveDefault = static_cast<std::uint64_t>(Domain::Sampling::MAX_SANE_RATE_BPS_DEFAULT) * 2U;
+    const auto snap = fixture.sample(std::chrono::seconds{1}, aboveDefault, 0);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, static_cast<double>(aboveDefault));
+}
+
+TEST(ProcessModelTest, ConfiguredSanityCeilingLowersTheLimit)
+{
+    NetworkRateFixture fixture;
+    fixture.model->setMaxSaneNetworkRate(Domain::Sampling::MAX_SANE_RATE_BPS_MIN);
+    fixture.sample(std::chrono::milliseconds{0}, 0, 0);
+
+    const auto aboveMin = static_cast<std::uint64_t>(Domain::Sampling::MAX_SANE_RATE_BPS_MIN) * 2U;
+    const auto snap = fixture.sample(std::chrono::seconds{1}, aboveMin, 1000);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 1000.0);
+}
+
+TEST(ProcessModelTest, ConfiguredSanityCeilingIsClamped)
+{
+    // Out-of-range values (a NaN, a ceiling of 0) take the nearest bound rather than disabling
+    // network rates or the check.
+    NetworkRateFixture fixture;
+    fixture.model->setMaxSaneNetworkRate(0.0);
+    fixture.sample(std::chrono::milliseconds{0}, 0, 0);
+
+    const auto belowMin = static_cast<std::uint64_t>(Domain::Sampling::MAX_SANE_RATE_BPS_MIN) / 2U;
+    auto snap = fixture.sample(std::chrono::seconds{1}, belowMin, 0);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, static_cast<double>(belowMin));
+
+    fixture.model->setMaxSaneNetworkRate(std::numeric_limits<double>::quiet_NaN());
+    snap = fixture.sample(std::chrono::seconds{1}, belowMin * 2U, 0);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, static_cast<double>(belowMin));
+}
+
 namespace
 {
 

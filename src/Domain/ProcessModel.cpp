@@ -209,6 +209,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         }
     }
 
+    const double maxSaneRate = m_MaxSaneNetworkRateBps.load(std::memory_order_relaxed);
     const auto currentSampleTime = m_Now();
     if (!m_HasStartTime)
     {
@@ -305,15 +306,16 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         //    connection closing or being attributed late no longer makes them drop or jump (#1099).
         //    Windows still reports the sum over the process's *live* connections, which drops when
         //    one closes: counterRate reports 0 for that interval rather than a wrapped or negative rate.
-        //  - A rate above the 100 Gbps sanity ceiling -- e.g. a connection appearing with traffic
-        //    from before it was first attributed, on Windows -- is dropped to 0 too.
+        //  - A rate above the sanity ceiling ([metrics] max_sane_rate_bps, 100 Gbps by default,
+        //    #1123) -- e.g. a connection appearing with traffic from before it was first
+        //    attributed, on Windows -- is dropped to 0 too.
         const NetworkInterval netInterval = previous != nullptr ? networkInterval(current, *previous, elapsedSeconds) : NetworkInterval{};
         if (netInterval.kind == NetworkInterval::Kind::Measure)
         {
-            const auto netRate = [seconds = netInterval.seconds](std::uint64_t now, std::uint64_t before)
+            const auto netRate = [seconds = netInterval.seconds, maxSaneRate](std::uint64_t now, std::uint64_t before)
             {
                 const double rate = Numeric::counterRate(now, before, seconds);
-                return rate <= Sampling::MAX_SANE_RATE_BPS_DEFAULT ? rate : 0.0;
+                return rate <= maxSaneRate ? rate : 0.0;
             };
             state.netSentBytesPerSec = netRate(current.netSentBytes, previous->netSentBytes);
             state.netReceivedBytesPerSec = netRate(current.netReceivedBytes, previous->netReceivedBytes);
@@ -608,6 +610,11 @@ void ProcessModel::setMaxHistorySeconds(double seconds)
     m_MaxHistorySeconds = std::max(0.0, seconds);
     applyHistoryCapacity();
     trimHistory();
+}
+
+void ProcessModel::setMaxSaneNetworkRate(double bytesPerSecond) noexcept
+{
+    m_MaxSaneNetworkRateBps.store(Sampling::clampMaxSaneRateBps(bytesPerSecond), std::memory_order_relaxed);
 }
 
 std::size_t ProcessModel::processCount() const

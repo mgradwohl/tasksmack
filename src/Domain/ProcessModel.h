@@ -5,6 +5,7 @@
 #include "Platform/IProcessProbe.h"
 #include "ProcessEnergyAttribution.h"
 #include "ProcessSnapshot.h"
+#include "SamplingConfig.h"
 #include "SocketTrafficAccumulator.h"
 
 #include <atomic>
@@ -116,6 +117,11 @@ class ProcessModel : public ISamplable
 
     void setMaxHistorySeconds(double seconds);
 
+    /// The per-process network rate ceiling, bytes/s ([metrics] max_sane_rate_bps, #1123). A rate
+    /// above it is taken for a bad reading and shown as 0. Clamped to SamplingConfig's range.
+    /// Thread-safe; takes effect from the next refresh.
+    void setMaxSaneNetworkRate(double bytesPerSecond) noexcept;
+
     /// Number of processes in latest snapshot.
     [[nodiscard]] std::size_t processCount() const;
 
@@ -201,6 +207,7 @@ class ProcessModel : public ISamplable
     std::uint64_t m_SnapshotVersion = 0;
     std::atomic<std::uint64_t> m_PublishedSnapshotVersion{0};
     std::atomic<bool> m_InteractionActive{false};
+    std::atomic<double> m_MaxSaneNetworkRateBps{Sampling::MAX_SANE_RATE_BPS_DEFAULT};
     Clock::time_point m_LastGpuMergeTime;
     bool m_HasLastGpuMergeTime = false;
 

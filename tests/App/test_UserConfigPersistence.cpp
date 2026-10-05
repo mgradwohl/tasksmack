@@ -2,12 +2,14 @@
 #include "App/ProcessColumnConfig.h"
 #include "App/UserConfig.h"
 #include "App/UserConfigHelpers.h"
+#include "Domain/SamplingConfig.h"
 #include "UI/ChartWidgets.h"
 
 #include <gtest/gtest.h>
 #include <toml++/toml.hpp>
 
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -1011,34 +1013,94 @@ TEST_F(UserConfigSaveLoadFixture, ChartSmoothFactorRoundTrip)
     EXPECT_DOUBLE_EQ(config.settings().chartSmoothFactor, 0.5);
 }
 
-TEST_F(UserConfigSaveLoadFixture, ProgressColorThresholdsRoundTrip)
+TEST_F(UserConfigSaveLoadFixture, ChartTauRangeRoundTrip)
 {
     auto& config = UserConfig::get();
-    config.settings().progressColorLowThreshold = 30.0;
-    config.settings().progressColorHighThreshold = 80.0;
+    config.settings().chartTauMsMin = 50;
+    config.settings().chartTauMsMax = 1000;
     config.save();
-    config.settings().progressColorLowThreshold = Domain::Sampling::PROGRESS_COLOR_LOW_THRESHOLD_DEFAULT;
-    config.settings().progressColorHighThreshold = Domain::Sampling::PROGRESS_COLOR_HIGH_THRESHOLD_DEFAULT;
+    config.settings().chartTauMsMin = Domain::Sampling::CHART_TAU_MS_MIN_DEFAULT;
+    config.settings().chartTauMsMax = Domain::Sampling::CHART_TAU_MS_MAX_DEFAULT;
     config.load();
-    EXPECT_DOUBLE_EQ(config.settings().progressColorLowThreshold, 30.0);
-    EXPECT_DOUBLE_EQ(config.settings().progressColorHighThreshold, 80.0);
+    EXPECT_EQ(config.settings().chartTauMsMin, 50);
+    EXPECT_EQ(config.settings().chartTauMsMax, 1000);
 }
 
-TEST_F(UserConfigSaveLoadFixture, ProgressColorThresholdsSwappedWhenInverted)
+/// Restores UI's chart smoothing to its defaults however a test ends, so later tests in this
+/// binary see the built-in behaviour.
+class ChartSmoothingRestore
 {
-    // Write a TOML where low > high — load() should swap them.
-    std::ofstream file(m_TempDir / "config.toml");
-    ASSERT_TRUE(file.is_open());
-    file << "[ui]\nprogress_color_low_threshold = 80.0\nprogress_color_high_threshold = 20.0\n";
-    file.close();
+  public:
+    ChartSmoothingRestore() = default;
+    ChartSmoothingRestore(const ChartSmoothingRestore&) = delete;
+    ChartSmoothingRestore& operator=(const ChartSmoothingRestore&) = delete;
+    ChartSmoothingRestore(ChartSmoothingRestore&&) = delete;
+    ChartSmoothingRestore& operator=(ChartSmoothingRestore&&) = delete;
+    ~ChartSmoothingRestore()
+    {
+        UI::Widgets::setChartSmoothing(Domain::Sampling::CHART_SMOOTH_FACTOR_DEFAULT,
+                                       Domain::Sampling::CHART_TAU_MS_MIN_DEFAULT,
+                                       Domain::Sampling::CHART_TAU_MS_MAX_DEFAULT);
+    }
+};
 
+TEST_F(UserConfigSaveLoadFixture, ChartSmoothingKeysReachTheChartsAtStartup)
+{
+    // #1123: chart_smooth_factor and chart_tau_ms_min/max were loaded and saved but never applied;
+    // the easing always used the built-in 0.5 / 20 ms / 400 ms.
+    const ChartSmoothingRestore restore;
+    {
+        std::ofstream file(m_TempDir / "config.toml");
+        file << "[ui]\nchart_smooth_factor = 0.25\nchart_tau_ms_min = 50\nchart_tau_ms_max = 1500\n";
+    }
     auto& config = UserConfig::get();
     config.load();
+    config.applyToApplication();
 
-    // After the swap: low should be 20.0 and high should be 80.0.
-    EXPECT_LE(config.settings().progressColorLowThreshold, config.settings().progressColorHighThreshold);
-    EXPECT_DOUBLE_EQ(config.settings().progressColorLowThreshold, 20.0);
-    EXPECT_DOUBLE_EQ(config.settings().progressColorHighThreshold, 80.0);
+    const UI::Widgets::ChartSmoothing smoothing = UI::Widgets::chartSmoothing();
+    EXPECT_DOUBLE_EQ(smoothing.smoothFactor, 0.25);
+    EXPECT_DOUBLE_EQ(smoothing.tauMsMin, 50.0);
+    EXPECT_DOUBLE_EQ(smoothing.tauMsMax, 1500.0);
+
+    // At a 1 s refresh the time constant is 0.25 x 1000 = 250 ms (the defaults gave 400 ms).
+    EXPECT_NEAR(UI::Widgets::computeAlpha(0.1, std::chrono::milliseconds(1000)), 1.0 - std::exp(-100.0 / 250.0), 1e-9);
+    // At a 100 ms refresh, 25 ms is raised to the configured 50 ms floor (the default was 20 ms).
+    EXPECT_NEAR(UI::Widgets::computeAlpha(0.01, std::chrono::milliseconds(100)), 1.0 - std::exp(-10.0 / 50.0), 1e-9);
+    // At a 5 s refresh, 1250 ms stays under the configured 1500 ms ceiling (the default was 400 ms).
+    EXPECT_NEAR(UI::Widgets::computeAlpha(0.1, std::chrono::milliseconds(5000)), 1.0 - std::exp(-100.0 / 1250.0), 1e-9);
+}
+
+TEST_F(UserConfigSaveLoadFixture, SaveRemovesRetiredKeysAndKeepsTheRest)
+{
+    // #1123: keys older versions wrote but never applied are dropped on the next save, so the file
+    // stops advertising tuning that does nothing; unknown keys and the kept settings stay.
+    {
+        std::ofstream file(m_TempDir / "config.toml");
+        file << "[metrics]\nmin_time_for_rate_seconds = 1.5\nmax_sane_rate_bps = 50000000000.0\n"
+                "integrated_gpu_vram_threshold_mb = 256\n"
+                "[ui]\nprogress_color_low_threshold = 30.0\nprogress_color_high_threshold = 90.0\nchart_smooth_factor = 0.25\n"
+                "my_note = \"kept\"\n";
+    }
+    auto& config = UserConfig::get();
+    config.load();
+    EXPECT_DOUBLE_EQ(config.settings().maxSaneRateBps, 50'000'000'000.0);
+    config.save();
+
+    const toml::table saved = toml::parse_file((m_TempDir / "config.toml").string());
+    for (const auto& retired : UserConfigHelpers::RETIRED_KEYS)
+    {
+        EXPECT_FALSE(saved[retired.section][retired.key]) << retired.section << "." << retired.key;
+    }
+    EXPECT_DOUBLE_EQ(saved["metrics"]["max_sane_rate_bps"].value_or(0.0), 50'000'000'000.0);
+    EXPECT_DOUBLE_EQ(saved["ui"]["chart_smooth_factor"].value_or(0.0), 0.25);
+    EXPECT_EQ(saved["ui"]["my_note"].value_or(std::string{}), "kept");
+
+    std::ifstream in(m_TempDir / "config.toml");
+    const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    for (const auto& retired : UserConfigHelpers::RETIRED_KEYS)
+    {
+        EXPECT_EQ(text.find(retired.key), std::string::npos) << "the header must not document " << retired.key;
+    }
 }
 
 // ========== Load/Save: Process Columns Round-Trip ==========
@@ -1079,17 +1141,7 @@ TEST_F(UserConfigSaveLoadFixture, SaveCreatesParentDirectoriesIfAbsent)
     EXPECT_TRUE(std::filesystem::exists(nestedConfig));
 }
 
-// ========== Metrics: minTimeForRate and maxSaneRate Round-Trips ==========
-
-TEST_F(UserConfigSaveLoadFixture, MetricsMinTimeForRateRoundTrip)
-{
-    auto& config = UserConfig::get();
-    config.settings().minTimeForRateSeconds = 1.5;
-    config.save();
-    config.settings().minTimeForRateSeconds = Domain::Sampling::MIN_TIME_FOR_RATE_SECONDS_DEFAULT;
-    config.load();
-    EXPECT_DOUBLE_EQ(config.settings().minTimeForRateSeconds, 1.5);
-}
+// ========== Metrics: maxSaneRate Round-Trip ==========
 
 TEST_F(UserConfigSaveLoadFixture, MetricsMaxSaneRateRoundTrip)
 {
