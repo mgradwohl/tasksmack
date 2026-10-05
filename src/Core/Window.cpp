@@ -413,6 +413,11 @@ auto Window::getNormalGeometry() const -> std::optional<WindowGeometry::Rect>
     return WindowGeometry::selectNormalGeometry(isMaximized(), current, restoreRect);
 }
 
+auto Window::getNormalGeometryScale() const -> float
+{
+    return WindowGeometry::selectNormalGeometryScale(isMaximized(), m_HasRestoreRect, m_RestoreScale, getUnitScale());
+}
+
 void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, bool maximized, std::optional<float> savedScale)
 {
     if (m_Handle == nullptr)
@@ -692,6 +697,9 @@ void Window::rememberRestoreRect()
     SDL_GetWindowPosition(m_Handle, &m_RestoreX, &m_RestoreY);
     SDL_GetWindowSize(m_Handle, &m_RestoreWidth, &m_RestoreHeight);
     m_HasRestoreRect = m_RestoreWidth > 0 && m_RestoreHeight > 0;
+    // The scale this rectangle is in, so a later save tags it correctly even if the maximized window
+    // has since moved to another display or the scale changed (#1168).
+    m_RestoreScale = getUnitScale();
 }
 
 void Window::restore()

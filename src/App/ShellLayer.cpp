@@ -164,9 +164,10 @@ void ShellLayer::onDetach()
     {
         settings.windowWidth = normal->width;
         settings.windowHeight = normal->height;
-        // With the scale it was measured at, so the next launch can convert it to the display it
-        // opens on (#1168). An unknown scale saves none: the size is then restored as saved.
-        const float scale = window.getUnitScale();
+        // With the scale it was measured at -- for a maximized window, the scale captured with its
+        // restore rectangle, not the live maximized one -- so the next launch can convert it to the
+        // display it opens on (#1168). An unknown scale saves none: the size is then restored as saved.
+        const float scale = window.getNormalGeometryScale();
         settings.windowScale = scale > 0.0F ? std::optional<float>{scale} : std::nullopt;
         if (Core::Window::supportsPositioning())
         {

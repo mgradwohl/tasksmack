@@ -89,6 +89,9 @@ class Window
     /// that rectangle is unknown -- maximized by the compositor or OS rather than by maximize() --
     /// in which case the caller should keep whatever normal geometry it saved before.
     [[nodiscard]] auto getNormalGeometry() const -> std::optional<WindowGeometry::Rect>;
+    /// The window scale getNormalGeometry()'s rectangle was measured at (#1168): the live scale when
+    /// not maximized, the scale captured with the restore rectangle when maximized; 0 if unknown.
+    [[nodiscard]] auto getNormalGeometryScale() const -> float;
 
     /// Apply saved geometry at startup: clamp the size to the display, move the window to
     /// @p position when positioning is supported and the position is reachable on a connected
@@ -160,6 +163,7 @@ class Window
     int m_RestoreY = 0;
     int m_RestoreWidth = 0;
     int m_RestoreHeight = 0;
+    float m_RestoreScale = 0.0F; // getUnitScale() when the restore rectangle was captured (#1168)
 
 #ifdef _WIN32
     // Owned title-bar/taskbar icon handles (opaque void* here so <windows.h> stays out of

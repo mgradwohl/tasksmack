@@ -298,5 +298,16 @@ TEST(WindowGeometryTest, WindowUnitScaleIsDisplayScaleOverPixelDensity)
     EXPECT_FLOAT_EQ(windowUnitScale(1.5F, 0.0F), 1.5F);   // unknown density: the display scale
 }
 
+// #1297 review: a maximized window saves its restore rectangle, so it must be tagged with the scale
+// captured with that rectangle -- not the live scale of the maximized window, which can belong to
+// another display or a later scale setting.
+TEST(WindowGeometryTest, NormalGeometryScaleFollowsTheRectangleItTags)
+{
+    EXPECT_FLOAT_EQ(selectNormalGeometryScale(false, true, 1.0F, 1.75F), 1.75F); // Live rectangle, live scale
+    EXPECT_FLOAT_EQ(selectNormalGeometryScale(true, true, 1.0F, 1.75F), 1.0F);   // Restore rectangle, its scale
+    EXPECT_FLOAT_EQ(selectNormalGeometryScale(true, false, 1.0F, 1.75F), 0.0F);  // No rectangle saved: no scale
+    EXPECT_FLOAT_EQ(selectNormalGeometryScale(true, true, 0.0F, 1.75F), 0.0F);   // Captured without a scale
+}
+
 } // namespace
 } // namespace Core::WindowGeometry

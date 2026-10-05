@@ -64,6 +64,21 @@ inline constexpr int MIN_VISIBLE_EXTENT = 64;
     return std::nullopt;
 }
 
+/// The window scale that goes with selectNormalGeometry()'s rectangle (#1168): the live scale when
+/// not maximized, and when maximized the scale captured with the restore rectangle -- not the live
+/// one, which measures the maximized window and may belong to another display or a later scale
+/// setting. 0 (unknown) when maximized with no restore rectangle or no scale captured with it, so
+/// the size is saved without a scale and restored as saved.
+[[nodiscard]] constexpr auto selectNormalGeometryScale(bool maximized, bool hasRestoreRect, float restoreScale, float liveScale) noexcept
+    -> float
+{
+    if (!maximized)
+    {
+        return liveScale;
+    }
+    return hasRestoreRect ? restoreScale : 0.0F;
+}
+
 /// Whether an OS-initiated maximize (SDL_EVENT_WINDOW_MAXIMIZED) should be replaced by the window's
 /// own client-side maximize, the one the title-bar button uses (#1208).
 ///
