@@ -4,6 +4,7 @@
 #include "Domain/Numeric.h"
 #include "Domain/SamplingConfig.h"
 #include "UI/Format.h"
+#include "UI/InlineText.h"
 #include "UI/RateAxis.h"
 #include "UI/RenderMetrics.h"
 #include "UI/StyleScale.h"
@@ -11,6 +12,7 @@
 #include "UI/Widgets.h"
 
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <implot.h>
 
 #include <algorithm>
@@ -57,6 +59,47 @@ inline bool g_ChartAntiAliasingEnabled = true;
 // HistoryChart only if that chart is actually visible (#1125, #1281 review).
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 inline int g_PendingEaseRequestFrame = -1;
+
+// Frame-keyed caches (#1181)
+// --------------------------
+// historyFrameNowSeconds(), frameTimeAxis() (its TimeAxisPool), plotLineWithFill() (its drawX/drawY),
+// seriesReductionCache(), easedChartUpperBound() and Detail::requestNowBarMotion() keep function-local
+// statics keyed on ImGui::GetFrameCount(). Their contract:
+//
+//   - Call them only while an ImGui frame is being built (between ImGui::NewFrame() and
+//     ImGui::Render()), on the UI thread -- never from onUpdate(), which runs outside the frame, or
+//     from another thread. Outside a frame the frame count is the previous frame's: "now" would be
+//     stale and the time-axis buffers would carry on that frame's hand-out cycle.
+//   - They are process-wide, not per ImGui context: there is one context, and a second one would
+//     share (and confuse) their per-frame state.
+//   - Never store what they return across frames. A span from frameTimeAxis() is valid only until
+//     its buffer is handed out again in a later frame (TimeAxisPool); keep the timestamps and
+//     rebuild the axis each frame instead.
+//
+// Debug builds check the first rule (assertWithinImGuiFrame()); the others are by convention.
+
+/// Asserts, in debug builds, that @p withinFrame holds: a frame-keyed cache (see above) is being used
+/// while an ImGui frame is being built. Separate from the ImGui query so the check is testable
+/// without an ImGui context.
+inline void requireWithinImGuiFrame([[maybe_unused]] bool withinFrame) noexcept
+{
+    assert(withinFrame && "frame-keyed chart cache used outside an ImGui frame (see ChartWidgets.h, #1181)");
+}
+
+/// Whether an ImGui frame is being built right now: between ImGui::NewFrame() and ImGui::Render().
+[[nodiscard]] inline bool imguiWithinFrame() noexcept
+{
+    const ImGuiContext* context = ImGui::GetCurrentContext();
+    return (context != nullptr) && context->WithinFrameScope;
+}
+
+/// requireWithinImGuiFrame() for the current ImGui context. Compiles to nothing with NDEBUG.
+inline void assertWithinImGuiFrame() noexcept
+{
+#ifndef NDEBUG
+    requireWithinImGuiFrame(imguiWithinFrame());
+#endif
+}
 } // namespace Detail
 
 /// Whether a HistoryChart should ask for full-rate frames for an axis that was eased just before it:
@@ -246,6 +289,12 @@ struct TooltipRow
 [[nodiscard]] inline std::string formatTooltipRow(std::string_view label, std::string_view value)
 {
     return std::format("{}: {}", label, value);
+}
+
+/// formatTooltipRow() into an InlineText, for a NowBar's tooltipText: no allocation (#1171).
+[[nodiscard]] inline InlineText tooltipRowText(std::string_view label, std::string_view value)
+{
+    return InlineText::format("{}: {}", label, value);
 }
 
 /// `format(value)`, or "N/A" for a non-finite value: a history sample with no reading is NaN.
@@ -908,8 +957,11 @@ class ReducedPointsCache
 /// the axis would differ by however long the frame took to reach the chart, and a sample near a
 /// bucket boundary could change bucket from one frame to the next -- the shimmer the anchoring exists
 /// to prevent.
+///
+/// Frame-keyed: call it only while a frame is being built (see "Frame-keyed caches" above, #1181).
 [[nodiscard]] inline double historyFrameNowSeconds()
 {
+    Detail::assertWithinImGuiFrame();
     static int cachedFrame = -1;
     static double cachedNow = 0.0;
     if (const int frame = ImGui::GetFrameCount(); frame != cachedFrame)
@@ -979,9 +1031,10 @@ inline ChartDataScope g_ActiveChartDataScope;
 /// between two series' hashes costs only caching, never correctness, since a cached entry is also
 /// keyed on the series' data (ReducedPointsCache::Key). Bounded like easedChartUpperBound()'s
 /// state: entries not drawn for a while are dropped once there are many (per-disk and per-interface
-/// charts come and go).
+/// charts come and go). Frame-keyed: see "Frame-keyed caches" above (#1181).
 [[nodiscard]] inline ReducedPointsCache& seriesReductionCache(ImGuiID plotId, std::string_view label)
 {
+    Detail::assertWithinImGuiFrame();
     struct Entry
     {
         ReducedPointsCache cache;
@@ -1010,6 +1063,9 @@ inline ChartDataScope g_ActiveChartDataScope;
 /// Inside a HistoryChart with a data generation (HistoryChartConfig::dataGeneration), a long series'
 /// reduction is cached per plot and label and replayed until the generation, the series' buffer or
 /// its length changes (#1139). The generation must then cover everything `yData` is computed from.
+///
+/// Draws from function-local scratch buffers: call it only while a frame is being built, on the UI
+/// thread (see "Frame-keyed caches" above, #1181).
 template<typename TX, typename TY>
 inline void plotLineWithFill(const char* label,
                              const TX* xData,
@@ -1021,6 +1077,7 @@ inline void plotLineWithFill(const char* label,
                              bool drawFill = true,
                              int maxPointCount = LINE_PLOT_MAX_POINTS_DENSE)
 {
+    Detail::assertWithinImGuiFrame();
     if (count <= 0)
     {
         return;
@@ -1275,13 +1332,19 @@ inline void setupNiceAxisTicks(ImAxis axis, double upper, ImPlotFormatter format
     }
 }
 
+/// One bar of a chart's "now" column. Built every frame, so building one allocates nothing (#1171):
+/// valueText is a short formatted value that fits std::string's small-string buffer, label is a view,
+/// and tooltipText is held in place.
 struct NowBar
 {
     std::string valueText;
-    std::string label;       // Label used in fallback tooltip construction (e.g., "CPU Total")
-    std::string tooltipText; // Rich tooltip text shown on bar hover; falls back to "label: valueText",
-                             // then label, then valueText when empty. Leave it empty unless it says more
-                             // than that fallback: it is built every frame, the fallback only on hover (#1019).
+    /// The series' name, also used to build the fallback tooltip (e.g., "CPU Total"). A view: what it
+    /// names -- a constant, or a string the caller keeps -- must outlive the bar.
+    std::string_view label;
+    /// Rich tooltip text shown on bar hover and in the value strip; falls back to "label: valueText",
+    /// then label, then valueText when empty. Leave it empty unless it says more than that fallback
+    /// (#1019). Build it with InlineText::format() or tooltipRowText(), not from a std::string.
+    InlineText tooltipText;
     double value01 = 0.0;
     ImVec4 color;
 };
@@ -1360,7 +1423,7 @@ template<typename T> [[nodiscard]] inline TailAlignedSpan<T> tailAlignedSpan(con
 {
     if (!bar.tooltipText.empty())
     {
-        return bar.tooltipText;
+        return std::string(bar.tooltipText.view());
     }
     if (!bar.label.empty() && !bar.valueText.empty())
     {
@@ -1368,7 +1431,7 @@ template<typename T> [[nodiscard]] inline TailAlignedSpan<T> tailAlignedSpan(con
     }
     if (!bar.label.empty())
     {
-        return bar.label;
+        return std::string(bar.label);
     }
     return bar.valueText;
 }
@@ -1435,43 +1498,120 @@ inline void fillTimeAxis(std::vector<double>& out, std::span<const double> times
 /// vector each time that was a heap allocation per chart per frame. acquire() hands out the pool's
 /// buffers in turn and starts over when the frame number changes, so once each buffer has grown to
 /// its chart's length, building the axes allocates nothing. A buffer, and any span of it, stays valid
-/// until the same buffer is handed out again in a later frame.
+/// until the same buffer is handed out again in a later frame -- never keep one across frames.
+///
+/// A burst of charts (a busy frame, a tab with many) does not pin its buffers for good (#1173):
+/// buffers no frame has asked for in RELEASE_AFTER_FRAMES frames are freed when a new frame starts.
+/// Buffers are handed out in order, so the unused ones are always the last ones.
 class TimeAxisPool
 {
   public:
-    [[nodiscard]] std::vector<double>& acquire(int frame)
+    /// Frames a buffer may go unasked-for before it is freed: about ten seconds at 60 fps, long enough
+    /// that switching tabs back and forth does not churn the allocator.
+    static constexpr int RELEASE_AFTER_FRAMES = 600;
+
+    /// Starts @p frame: buffers handed out from now on belong to it, and those unused for
+    /// RELEASE_AFTER_FRAMES are freed. acquire() does this itself on a frame's first request; calling
+    /// it every frame as well (trimFrameCaches()) lets buffers age and go while no chart asks for an
+    /// axis at all, e.g. on the Processes tab (#1173). Repeat calls within a frame do nothing.
+    void beginFrame(int frame)
     {
         if (frame != m_Frame)
         {
             m_Frame = frame;
             m_Next = 0;
+            releaseUnused(frame);
         }
-        if (m_Next == m_Buffers.size())
+    }
+
+    [[nodiscard]] std::vector<double>& acquire(int frame)
+    {
+        beginFrame(frame);
+        if (m_Next == m_Slots.size())
         {
             // Growing the outer vector moves the inner ones, which keeps their heap buffers: spans
             // already handed out this frame stay valid.
-            m_Buffers.emplace_back();
+            m_Slots.emplace_back();
         }
-        return m_Buffers[m_Next++];
+        Slot& slot = m_Slots[m_Next++];
+        slot.lastFrame = frame;
+        return slot.buffer;
     }
 
     [[nodiscard]] std::size_t bufferCount() const noexcept
     {
-        return m_Buffers.size();
+        return m_Slots.size();
+    }
+
+    /// Doubles the pool's buffers can hold without allocating, summed over all of them.
+    [[nodiscard]] std::size_t retainedCapacity() const noexcept
+    {
+        std::size_t total = 0;
+        for (const Slot& slot : m_Slots)
+        {
+            total += slot.buffer.capacity();
+        }
+        return total;
     }
 
   private:
-    std::vector<std::vector<double>> m_Buffers;
+    struct Slot
+    {
+        std::vector<double> buffer;
+        int lastFrame = 0; ///< Frame the buffer was last handed out in
+    };
+
+    /// Frees the trailing buffers not asked for within RELEASE_AFTER_FRAMES of @p frame. Called at the
+    /// start of a frame, before anything is handed out in it, so no span of this frame is affected.
+    /// A frame count that went backwards (a new ImGui context) counts as unused, too.
+    void releaseUnused(int frame)
+    {
+        while (!m_Slots.empty())
+        {
+            const int lastFrame = m_Slots.back().lastFrame;
+            if (frame >= lastFrame && (frame - lastFrame) <= RELEASE_AFTER_FRAMES)
+            {
+                break;
+            }
+            m_Slots.pop_back();
+        }
+    }
+
+    std::vector<Slot> m_Slots;
     std::size_t m_Next = 0;
     int m_Frame = -1;
 };
 
 /// The time axis for a history chart (see fillTimeAxis()), in a buffer from this frame's
-/// TimeAxisPool rather than a new vector. Valid for the rest of the ImGui frame. UI thread only.
-[[nodiscard]] inline std::span<const double> frameTimeAxis(std::span<const double> timestamps, size_t desiredCount, double nowSeconds)
+/// TimeAxisPool rather than a new vector. Valid for the rest of the ImGui frame only: never store the
+/// span (e.g. in a member) and read it in a later frame, when its buffer may hold another chart's
+/// axis or have been freed. Frame-keyed: call it only while a frame is being built, on the UI thread
+/// (see "Frame-keyed caches" above, #1181).
+///
+/// Charts that share timestamps should share one axis: build it once with every timestamp and give
+/// each chart tailAlignedSpan(axis, itsCount), rather than one call per chart (#1173).
+namespace Detail
+{
+/// The process-wide pool behind frameTimeAxis() (see "Frame-keyed caches" above).
+[[nodiscard]] inline TimeAxisPool& timeAxisPool()
 {
     static TimeAxisPool pool;
-    auto& buffer = pool.acquire(ImGui::GetFrameCount());
+    return pool;
+}
+} // namespace Detail
+
+/// Per-frame upkeep of the frame-keyed caches that hold memory between frames: call once per frame,
+/// right after ImGui::NewFrame() (UILayer::beginFrame()). Without it, the time-axis pool frees unused
+/// buffers only when some chart asks for an axis, so leaving the chart tabs kept them forever (#1173).
+inline void trimFrameCaches()
+{
+    Detail::timeAxisPool().beginFrame(ImGui::GetFrameCount());
+}
+
+[[nodiscard]] inline std::span<const double> frameTimeAxis(std::span<const double> timestamps, size_t desiredCount, double nowSeconds)
+{
+    Detail::assertWithinImGuiFrame();
+    auto& buffer = Detail::timeAxisPool().acquire(ImGui::GetFrameCount());
     fillTimeAxis(buffer, timestamps, desiredCount, nowSeconds);
     return buffer;
 }
@@ -1703,9 +1843,10 @@ rateHistoryConfig(const char* id, double xMin, double xMax, ImPlotFormatter yFor
 /// The Y upper bound a HistoryChart with easeYUpper draws this frame: its previous frame's bound
 /// eased toward `target` (easeAxisUpperBound). Kept per chart, keyed by the chart's ImGui ID. A chart
 /// that was not drawn last frame -- just opened, or its tab just shown -- starts at its target rather
-/// than easing in from a stale value.
+/// than easing in from a stale value. Frame-keyed: see "Frame-keyed caches" above (#1181).
 [[nodiscard]] inline double easedChartUpperBound(ImGuiID chartId, double target)
 {
+    Detail::assertWithinImGuiFrame();
     // UI thread only, like everything else in ImGui. Bounded: one entry per chart ID ever drawn, and
     // entries not drawn for a while are dropped once there are many (per-disk charts come and go).
     static std::unordered_map<ImGuiID, EasedBound> state;
@@ -2095,7 +2236,7 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
         if (wrap && !bar.tooltipText.empty())
         {
             // A tooltipText that starts with "label:" ("Handles: 266,257") splits like the fallback.
-            const std::string_view tip = bar.tooltipText;
+            const std::string_view tip = bar.tooltipText.view();
             const bool labelled = !bar.label.empty() && tip.starts_with(bar.label) && tip.substr(bar.label.size()).starts_with(':');
             head = labelled ? tip.substr(0, bar.label.size() + 1) : std::string_view{};
             tail = labelled ? tip.substr(bar.label.size() + 1) : tip;
@@ -2132,8 +2273,10 @@ namespace Detail
 /// the previous frame, so a bar easing toward a new sample animates smoothly and a settled one stops
 /// asking. Before, any visible bar held the loop at the full animation rate forever (#1037). Keyed
 /// per bar by @p barId; a bar not drawn last frame (its tab was hidden) starts from rest.
+/// Frame-keyed: see "Frame-keyed caches" above (#1181).
 inline void requestNowBarMotion(ImGuiID barId, double value01, float heightPx)
 {
+    assertWithinImGuiFrame();
     struct LastDrawn
     {
         double value01 = 0.0;
@@ -2171,9 +2314,13 @@ inline void requestNowBarMotion(ImGuiID barId, double value01, float heightPx)
 }
 } // namespace Detail
 
+/// @p plotFn draws the chart; it is called before this returns, and never stored. A template parameter
+/// rather than a std::function: the charts' capturing lambdas are larger than any standard library's
+/// std::function small buffer, so wrapping one allocated once per chart per frame (#1171).
+template<typename PlotFn>
 inline void renderHistoryWithNowBars(const char* tableId,
                                      float plotHeight,
-                                     const std::function<void()>& plotFn,
+                                     const PlotFn& plotFn,
                                      std::span<const NowBar> bars,
                                      bool barsOnly = false,
                                      size_t minBarColumns = 0,
@@ -2317,9 +2464,10 @@ inline void renderHistoryWithNowBars(const char* tableId,
 
 /// renderHistoryWithNowBars() for bars listed in place, e.g. `{readBar, writeBar}`: the list's backing
 /// array lives on the stack, where a braced std::vector argument allocated every frame (#1018).
+template<typename PlotFn>
 inline void renderHistoryWithNowBars(const char* tableId,
                                      float plotHeight,
-                                     const std::function<void()>& plotFn,
+                                     const PlotFn& plotFn,
                                      std::initializer_list<NowBar> bars,
                                      bool barsOnly = false,
                                      size_t minBarColumns = 0,

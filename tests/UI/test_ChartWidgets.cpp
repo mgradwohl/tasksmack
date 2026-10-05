@@ -318,6 +318,118 @@ TEST(TimeAxisPoolTest, EarlierBuffersSurviveThePoolGrowingInTheSameFrame)
     EXPECT_DOUBLE_EQ(held[1], 0.0);
 }
 
+TEST(TimeAxisPoolTest, ReleasesTheBuffersOfABurstOnceTheyGoUnused)
+{
+    // #1173: one frame of 64 long axes (CPU Cores on a 64-core machine) used to pin 64 buffers at
+    // their peak size forever, long after the tab was left.
+    TimeAxisPool pool;
+    const std::vector<double> timestamps(18000, 1.0); // 30 min at 100 ms
+    for (int i = 0; i < 64; ++i)
+    {
+        fillTimeAxis(pool.acquire(1), timestamps, timestamps.size(), 2.0);
+    }
+    ASSERT_EQ(pool.bufferCount(), 64U);
+
+    // From then on, two short charts a frame.
+    int frame = 2;
+    for (; frame <= 1 + TimeAxisPool::RELEASE_AFTER_FRAMES; ++frame)
+    {
+        fillTimeAxis(pool.acquire(frame), timestamps, 10, 2.0);
+        fillTimeAxis(pool.acquire(frame), timestamps, 10, 2.0);
+    }
+    // Still within the grace period of the burst's last use: nothing is freed yet, so switching
+    // back to the tab does not reallocate.
+    EXPECT_EQ(pool.bufferCount(), 64U);
+
+    static_cast<void>(pool.acquire(frame));
+    EXPECT_EQ(pool.bufferCount(), 2U);
+    // The two buffers still in use keep their capacity; the 62 others' is gone.
+    EXPECT_LE(pool.retainedCapacity(), 2U * timestamps.size());
+}
+
+TEST(TimeAxisPoolTest, FramesThatAskForNoAxisStillReleaseUnusedBuffers)
+{
+    // #1173: after leaving the chart tabs (the Processes tab asks for no time axis), buffers must
+    // still go once unused; beginFrame() is called every frame, acquire() only by charts.
+    TimeAxisPool pool;
+    const std::vector<double> timestamps(18000, 1.0);
+    for (int i = 0; i < 8; ++i)
+    {
+        fillTimeAxis(pool.acquire(1), timestamps, timestamps.size(), 2.0);
+    }
+    ASSERT_EQ(pool.bufferCount(), 8U);
+
+    int frame = 2;
+    for (; frame <= 1 + TimeAxisPool::RELEASE_AFTER_FRAMES; ++frame)
+    {
+        pool.beginFrame(frame);
+    }
+    EXPECT_EQ(pool.bufferCount(), 8U); // still within the grace period
+    pool.beginFrame(frame);
+    EXPECT_EQ(pool.bufferCount(), 0U);
+    EXPECT_EQ(pool.retainedCapacity(), 0U);
+}
+
+TEST(TimeAxisPoolTest, BeginFrameTwiceInAFrameKeepsBuffersAlreadyHandedOut)
+{
+    // trimFrameCaches() and the frame's first acquire() both call beginFrame(); a repeat in the same
+    // frame must not reset the hand-out index, or the next acquire() would reuse a buffer in use.
+    TimeAxisPool pool;
+    auto& first = pool.acquire(5);
+    first.assign(3, 1.0);
+    // A span into the heap buffer, not a reference to the Slot: acquiring again may grow the pool and
+    // move the Slot, but its buffer stays put (see EarlierBuffersSurviveThePoolGrowingInTheSameFrame).
+    const std::span<const double> held(first);
+    pool.beginFrame(5);
+    auto& second = pool.acquire(5);
+    second.assign(3, 2.0);
+    EXPECT_EQ(pool.bufferCount(), 2U);
+    ASSERT_EQ(held.size(), 3U);
+    for (const double value : held)
+    {
+        EXPECT_DOUBLE_EQ(value, 1.0);
+    }
+}
+
+TEST(TimeAxisPoolTest, KeepsBuffersThatAreStillAskedFor)
+{
+    TimeAxisPool pool;
+    for (int frame = 1; frame <= 3 * TimeAxisPool::RELEASE_AFTER_FRAMES; ++frame)
+    {
+        static_cast<void>(pool.acquire(frame));
+        static_cast<void>(pool.acquire(frame));
+        static_cast<void>(pool.acquire(frame));
+    }
+    EXPECT_EQ(pool.bufferCount(), 3U);
+}
+
+TEST(TimeAxisPoolTest, AFrameCountThatGoesBackwardsReleasesTheOldBuffers)
+{
+    // A new ImGui context restarts the frame count; the old context's buffers are not kept forever.
+    TimeAxisPool pool;
+    for (int i = 0; i < 8; ++i)
+    {
+        static_cast<void>(pool.acquire(5000));
+    }
+    static_cast<void>(pool.acquire(1));
+    EXPECT_EQ(pool.bufferCount(), 1U);
+}
+
+// ========== Frame-keyed caches (#1181) ==========
+
+TEST(FrameScopeDeathTest, AFrameKeyedCacheUsedOutsideAFrameAssertsInDebugBuilds)
+{
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    // Release builds compile the check out, so the statement then simply runs.
+    EXPECT_DEBUG_DEATH(Detail::requireWithinImGuiFrame(false), "outside an ImGui frame");
+}
+
+TEST(FrameScopeTest, AFrameKeyedCacheUsedInsideAFrameDoesNotAssert)
+{
+    Detail::requireWithinImGuiFrame(true);
+    SUCCEED();
+}
+
 TEST(ChartWidgetsReduceTest, BucketWidthIsAPowerOfTwoThatHoldsAsTheSpanDrifts)
 {
     // 300 s into 239 buckets: 1.255 s rounds up to 2 s, and stays 2 s as the span drifts.
@@ -1085,6 +1197,18 @@ TEST(ChartWidgetsTest, TooltipRowIsLabelColonValue)
 {
     EXPECT_EQ(formatTooltipRow("Read", "1.5 MB/s"), "Read: 1.5 MB/s");
     EXPECT_EQ(formatTooltipRow("Page Faults/s", "12/s"), "Page Faults/s: 12/s");
+}
+
+TEST(ChartWidgetsTest, NowBarTooltipRowReadsLikeTheTooltipRow)
+{
+    // #1171: a NowBar's tooltip is held in place; it must say exactly what the std::string row did.
+    EXPECT_EQ(tooltipRowText("Read", "1.5 MB/s").view(), formatTooltipRow("Read", "1.5 MB/s"));
+    const NowBar bar{.valueText = "45%",
+                     .label = "Memory",
+                     .tooltipText = tooltipRowText("Memory", "45% (3.6 GB / 8.0 GB)"),
+                     .value01 = 0.45,
+                     .color = {}};
+    EXPECT_EQ(selectNowBarTooltip(bar), "Memory: 45% (3.6 GB / 8.0 GB)");
 }
 
 TEST(ChartWidgetsTest, SampleWithNoReadingFormatsAsNA)

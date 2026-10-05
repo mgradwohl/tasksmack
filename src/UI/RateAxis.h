@@ -6,8 +6,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <initializer_list>
+#include <iterator>
+#include <limits>
 #include <ranges>
+#include <span>
 
 namespace UI::Widgets
 {
@@ -155,6 +159,68 @@ template<std::ranges::input_range... Rs>
 [[nodiscard]] double maxOfSeries(const Rs&... series) noexcept
 {
     return std::max({maxOfSeries(series)...});
+}
+
+/// Index of the first entry of the ascending time axis @p x at or after @p xMin; x.size() if none is.
+[[nodiscard]] inline std::size_t firstIndexAtOrAfter(std::span<const double> x, double xMin) noexcept
+{
+    return static_cast<std::size_t>(std::ranges::lower_bound(x, xMin) - x.begin());
+}
+
+/// maxOfSeries() over the samples a chart's window shows: those at x >= @p xMin on the time axis
+/// @p x, where @p series is aligned to the tail of @p x (its last value is at x.back(), as with
+/// tailAlignedSpan()). Values with no x, or before xMin, are left out.
+///
+/// History trimming keeps one sample before the window's left edge, so a chart's line runs off that
+/// edge (HistoryUtils::keepTrimAnchor, #1016), and scrolling back leaves older samples off-screen.
+/// Neither is drawn, so neither may set the axis or a peak line: a peak just left of the window kept
+/// a rate axis scaled to it with nothing visible near the top (#1145). The right edge is not checked:
+/// the newest sample can be stamped a moment after the frame's "now", a little right of x = 0.
+template<std::ranges::sized_range R>
+    requires std::ranges::random_access_range<const R>
+[[nodiscard]] double maxOfSeriesSince(std::span<const double> x, double xMin, const R& series) noexcept
+{
+    const std::size_t visible = x.size() - firstIndexAtOrAfter(x, xMin);
+    const auto count = static_cast<std::size_t>(std::ranges::size(series));
+    const std::size_t skip = (count > visible) ? count - visible : 0;
+    return maxOfSeries(std::ranges::subrange(std::ranges::begin(series) + static_cast<std::ptrdiff_t>(skip), std::ranges::end(series)));
+}
+
+/// maxOfSeriesSince() across several series plotted on the same axis, each aligned to the tail of @p x.
+template<std::ranges::sized_range... Rs>
+    requires(sizeof...(Rs) >= 2)
+[[nodiscard]] double maxOfSeriesSince(std::span<const double> x, double xMin, const Rs&... series) noexcept
+{
+    return std::max({maxOfSeriesSince(x, xMin, series)...});
+}
+
+/// A current value a NowBar shows, or NaN -- which withCurrentValues() ignores -- when the bar shows
+/// N/A instead (an unreadable counter, a series the chart does not draw).
+[[nodiscard]] inline double currentIfAvailable(bool available, double value) noexcept
+{
+    return available ? value : std::numeric_limits<double>::quiet_NaN();
+}
+
+/// The target for an axis whose NowBars show smoothed current values: the larger of @p visibleMax
+/// (maxOfSeriesSince()) and every finite @p current value. Non-finite values are ignored, so an
+/// unavailable reading (currentIfAvailable()) does not move the axis.
+///
+/// The axis is sized to the samples in the window (#1145), but a bar's smoothed value can still be
+/// easing down from a peak that has just scrolled out of it, and when a tab resumes the axis restarts
+/// at the lower target. Either way the bar would exceed the axis and normalizeToUnitInterval() would
+/// clamp it to full height, disagreeing with its own value. Folding the bars' values in keeps every
+/// bar on the axis (#1003). An initializer_list, so per-frame callers allocate nothing (#1171).
+[[nodiscard]] inline double withCurrentValues(double visibleMax, std::initializer_list<double> current) noexcept
+{
+    double best = (std::isfinite(visibleMax) && visibleMax > 0.0) ? visibleMax : 0.0;
+    for (const double value : current)
+    {
+        if (std::isfinite(value) && value > best)
+        {
+            best = value;
+        }
+    }
+    return best;
 }
 
 /// Time constants for easing a rate chart's Y upper bound toward rateAxisUpperBound() (#1011).

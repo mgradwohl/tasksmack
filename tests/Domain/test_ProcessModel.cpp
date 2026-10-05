@@ -2118,7 +2118,7 @@ TEST(ProcessModelTest, HistoryTimestampsAreEmptyInitially)
     EXPECT_TRUE(timestamps.empty());
 }
 
-TEST(ProcessModelTest, ZeroHistoryRetentionKeepsOnlyCurrentSample)
+TEST(ProcessModelTest, HistoryRetentionBelowTheMinimumIsClamped)
 {
     // Drives sample time via the injectable clock instead of a real sleep, so the
     // pushed history entries get distinct, deterministic timestamps regardless of
@@ -2127,21 +2127,62 @@ TEST(ProcessModelTest, ZeroHistoryRetentionKeepsOnlyCurrentSample)
     Domain::ProcessModel model(nullptr, [&currentTime] { return currentTime; });
     const auto counter = makeCounter(100, "history_proc", 'R', 1000, 500);
 
-    model.updateFromCounters({counter}, 100000);
-    currentTime += std::chrono::milliseconds(10);
-    model.updateFromCounters({counter}, 200000);
-    currentTime += std::chrono::milliseconds(10);
-    model.updateFromCounters({counter}, 300000);
-    ASSERT_EQ(model.historyTimestamps().size(), 2);
+    // The first sample only seeds the deltas; each later one adds a history entry: t = 5, 10, ..., 25.
+    std::uint64_t totalCpu = 100000;
+    model.updateFromCounters({counter}, totalCpu);
+    for (int i = 0; i < 5; ++i)
+    {
+        currentTime += std::chrono::seconds(5);
+        totalCpu += 100000;
+        model.updateFromCounters({counter}, totalCpu);
+    }
+    ASSERT_EQ(model.historyTimestamps().size(), 5U);
 
-    currentTime += std::chrono::milliseconds(10);
-    model.updateFromCounters({counter}, 400000);
-    ASSERT_EQ(model.historyTimestamps().size(), 3);
-
+    // Clamped to HISTORY_SECONDS_MIN like every other model (#1145), where it used to keep a
+    // zero-second window and with it only the current sample: t = 15, 20, 25, plus t = 10 kept just
+    // before the cutoff (#1016).
+    static_assert(Domain::Sampling::HISTORY_SECONDS_MIN == 10, "the expected count below assumes a 10 s minimum");
     model.setMaxHistorySeconds(0.0);
-    // With a zero-second window the cutoff equals the newest timestamp, so trimming keeps only the
-    // current sample: an anchor before a zero-length window is never kept (keepTrimAnchor).
-    EXPECT_EQ(model.historyTimestamps().size(), 1);
+    EXPECT_EQ(model.historyTimestamps().size(), 4U);
+}
+
+// #1145: a window change trims the aggregated system histories at once and hands them out as a new
+// generation, instead of the Overview charts keeping the old window until the next sample. The
+// snapshot generation is unchanged: the process list did not change.
+TEST(ProcessModelTest, ShrinkingTheHistoryWindowPublishesTheTrimmedSystemHistories)
+{
+    auto currentTime = Domain::ProcessModel::Clock::time_point{};
+    Domain::ProcessModel model(nullptr, [&currentTime] { return currentTime; });
+    const auto counter = makeCounter(100, "history_proc", 'R', 1000, 500);
+
+    Domain::ProcessSystemHistories histories;
+    model.setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_DEFAULT);
+    EXPECT_FALSE(model.tryCopySystemHistoriesIfNewer(0, histories)); // Nothing published yet
+
+    // t = 5, 10, ..., 60 (the first sample only seeds the deltas).
+    std::uint64_t totalCpu = 100000;
+    model.updateFromCounters({counter}, totalCpu);
+    for (int i = 0; i < 12; ++i)
+    {
+        currentTime += std::chrono::seconds(5);
+        totalCpu += 100000;
+        model.updateFromCounters({counter}, totalCpu);
+    }
+    ASSERT_TRUE(model.tryCopySystemHistoriesIfNewer(0, histories));
+    ASSERT_EQ(histories.timestamps.size(), 12U);
+    const std::uint64_t historyVersion = histories.version;
+    const std::uint64_t snapshotVersion = model.snapshotVersion();
+
+    model.setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
+
+    ASSERT_TRUE(model.tryCopySystemHistoriesIfNewer(historyVersion, histories));
+    EXPECT_GT(histories.version, historyVersion);
+    // t = 50, 55, 60, plus t = 45 kept just before the cutoff (#1016).
+    EXPECT_EQ(histories.timestamps.size(), 4U);
+    EXPECT_EQ(histories.power.size(), 4U);
+    EXPECT_EQ(histories.threadCount.size(), 4U);
+    EXPECT_EQ(model.snapshotVersion(), snapshotVersion);
+    EXPECT_FALSE(model.tryCopySystemHistoriesIfNewer(histories.version, histories));
 }
 
 // =============================================================================
