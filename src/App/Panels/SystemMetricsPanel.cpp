@@ -81,7 +81,7 @@ using UI::Widgets::seriesStyle;
 /// Total is busy time, 100 - (idle + iowait), so it includes irq, softirq and steal time that the
 /// User/System bands do not; showing it is what makes the tooltip agree with the Total line and the
 /// Total bar. I/O Wait is idle time, not busy (#1157), and is listed after it.
-// One label per series, shared by its legend entry, tooltip row and NowBar (#1008).
+// One label per series, shared by its value-strip entry, tooltip row and NowBar (#1008).
 constexpr const char* CPU_TOTAL_LABEL = "Total";
 constexpr const char* CPU_USER_LABEL = "User";
 constexpr const char* CPU_SYSTEM_LABEL = "System";
@@ -652,7 +652,7 @@ void SystemMetricsPanel::renderOverview()
     const auto cpuIdleData = UI::Widgets::tailAlignedSpan(cpuIdleHist, breakdownCount).values;
     const auto breakdownTimeData = frameTimeAxis(timestamps, breakdownCount, nowSeconds);
 
-    // I/O Wait is drawn -- fill, legend entry, tooltip row and bar -- only where the platform
+    // I/O Wait is drawn -- fill, strip entry, tooltip row and bar -- only where the platform
     // reports it. Windows does not, and showed a permanently empty series and bar (#1031).
     const bool showIowait = (m_Model != nullptr) && m_Model->capabilities().hasIoWait;
 
@@ -760,14 +760,10 @@ void SystemMetricsPanel::renderOverview()
                                        {ImPlotProp_FillColor, theme.scheme().cpuIowaitFill});
                 }
 
-                // A 1px edge along the top of each band, under the band's own label. ImPlot draws a
-                // legend icon in its item's colour at that colour's alpha, so a band alone showed its
-                // 35% fill as the swatch: a dull block unlike the band's opaque NowBar. The edge
-                // shares the label, so it is the same legend item, and its opaque colour becomes the
-                // swatch; hiding the item from the legend hides both (#1192).
-                // The bands are the chart's fill, so each edge is drawn as a secondary series: its own
-                // marker shape, shown on its legend key too, so the bands differ by more than colour
-                // (#1198).
+                // An edge along the top of each band, under the band's own label, in its opaque
+                // colour (#1192). The bands are the chart's fill, so each edge is drawn as a secondary
+                // series: its own marker shape, shown on its value-strip swatch too, so the bands
+                // differ by more than colour (#1198).
                 const auto bandEdge = [&](const char* label, const std::vector<double>& top, const ImVec4& color, std::size_t slot)
                 {
                     const UI::Widgets::SeriesStyle style = seriesStyle(SeriesRole::Secondary, slot);
@@ -946,9 +942,12 @@ void SystemMetricsPanel::renderOverview()
 
             if (snap.power.hasBattery)
             {
+                // The battery's status -- on AC, charging, time left -- is its strip entry's text
+                // ("Battery: <plug> <battery> 94% (not charging)"), on the heading's line like every
+                // chart's value strip; it was a separate right-aligned status there.
                 bars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedPower.batteryChargePercent),
                                 .label = batteryLabel,
-                                .tooltipText = {},
+                                .tooltipText = std::format("{}: {}", batteryLabel, Detail::batteryHeaderStatus(snap.power)),
                                 .value01 = UI::Format::percent01(m_SmoothedPower.batteryChargePercent),
                                 .color = theme.scheme().chartMemory});
             }
@@ -1037,59 +1036,11 @@ void SystemMetricsPanel::renderOverview()
                 }
             };
 
-            // Chart header with sample count and battery status
-            std::string headerLeft;
-            std::string headerRight;
-
-            if (snap.power.hasBattery)
-            {
-                headerLeft = hasProcessPower ? std::format(ICON_FA_BOLT "  Power & Battery ({} samples)", alignedCount)
-                                             : std::format(ICON_FA_BOLT "  Battery ({} samples)", alignedCount);
-
-                // Right-aligned status string with icons
-                headerRight = Detail::batteryHeaderStatus(snap.power);
-            }
-            else
-            {
-                headerLeft = std::format(ICON_FA_BOLT "  Power ({} samples)", alignedCount);
-            }
-
-            // Render header with left and right parts
-            ImGui::TextColored(theme.scheme().textPrimary, "%s", headerLeft.c_str());
-            if (!headerRight.empty())
-            {
-                // Calculate right-aligned position to align with chart's right edge (not NowBars)
-                // NowBar column width: nowBarWidth() * overviewNowBarColumns() + spacing
-                const ImGuiStyle& headerStyle = ImGui::GetStyle();
-                const float barColumnWidth =
-                    (UI::Widgets::nowBarWidth(ImGui::GetFontSize()) * static_cast<float>(overviewNowBarColumns())) +
-                    (headerStyle.ItemSpacing.x * (static_cast<float>(overviewNowBarColumns()) - 1.0F));
-                // The chart's right edge in window-local X. The chart and its NowBars sit in a
-                // two-column table with no outer border, which ImGui lays out with CellPadding.x on
-                // each side of the boundary between the columns and none outside them: so the chart
-                // ends two paddings and the bar column short of the content's right edge. This was
-                // "available width - bar column - one padding", a width used as a position, which
-                // only landed near the chart because the window padding it left out happened to be
-                // about the size of the cell padding it was short by.
-                const float headingLineStartX = ImGui::GetCursorStartPos().x;
-                const float chartRightEdge =
-                    headingLineStartX + ImGui::GetContentRegionAvail().x - barColumnWidth - (headerStyle.CellPadding.x * 2.0F);
-                const float rightTextWidth = ImGui::CalcTextSize(headerRight.c_str()).x;
-                // Same guard as the header line above: beside the heading when it fits, on its own
-                // line when it does not, never over it (#967).
-                const float headingEndX = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + ImGui::GetScrollX();
-                const auto placement = UI::LineLayout::placeTrailingBlock(
-                    headingLineStartX, headingEndX, chartRightEdge, rightTextWidth, headerStyle.ItemSpacing.x * 2.0F);
-                if (placement.sameLine)
-                {
-                    ImGui::SameLine(placement.x);
-                }
-                else
-                {
-                    ImGui::SetCursorPosX(placement.x);
-                }
-                ImGui::TextUnformatted(headerRight.c_str());
-            }
+            // Chart heading with the sample count; the battery's status is in its value-strip entry.
+            const std::string heading = !snap.power.hasBattery ? std::format(ICON_FA_BOLT "  Power ({} samples)", alignedCount)
+                                      : hasProcessPower        ? std::format(ICON_FA_BOLT "  Power & Battery ({} samples)", alignedCount)
+                                                               : std::format(ICON_FA_BOLT "  Battery ({} samples)", alignedCount);
+            ImGui::TextColored(theme.scheme().textPrimary, "%s", heading.c_str());
 
             // Tooltip with detailed info
             if (ImGui::IsItemHovered())

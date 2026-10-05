@@ -61,7 +61,7 @@ void updateSmoothedNetwork(double targetSent, double targetRecv, float deltaTime
     *ctx.smoothedNetInitialized = true;
 }
 
-// One label per series, shared by its legend entry, tooltip row and NowBar (#1008).
+// One label per series, shared by its value-strip entry, tooltip row and NowBar (#1008).
 constexpr const char* TOTAL_SENT_LABEL = "Sent";
 constexpr const char* TOTAL_RECV_LABEL = "Received";
 constexpr const char* TOTAL_SENT_BEHIND_LABEL = "Sent (Total)";
@@ -275,17 +275,15 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     // Determine labels based on selection
     // Name the interface the way the picker above does (#1009).
     const std::string ifaceDisplayName = showingInterface ? interfaceNames[static_cast<size_t>(selectedInterface) + 1] : "Network";
-    // One label per series, shared by its legend entry, tooltip row and NowBar (#1008). The bars show
-    // the selected interface when there is one, else the totals. An adapter's name is the OS's
-    // description, of any length, so it is fitted to the chart's width for the labels
-    // (fitLegendName(); both labels cut at the longer suffix's budget, so they name it alike); the
-    // picker and the plot title keep it whole. The chart is the history column of
-    // renderHistoryWithNowBars() below, so the Now column's width comes off the budget.
-    constexpr std::size_t NET_BAR_COUNT = 2; // Sent and Received, as NETWORK_NOW_BAR_COLUMNS below
-    const std::string ifaceLabelName = UI::Widgets::fitLegendName(
-        ifaceDisplayName,
-        UI::Widgets::legendNameBudget(" Received", UI::Widgets::nowBarsReservedWidth(NET_BAR_COUNT, NET_BAR_COUNT, false)),
-        [](std::string_view text) { return ImGui::CalcTextSize(text.data(), text.data() + text.size()).x; });
+    // One label per series, shared by its value-strip entry, tooltip row and NowBar (#1008). The bars
+    // show the selected interface when there is one, else the totals. An adapter's name is the OS's
+    // description, of any length, so it is fitted to one row of the value strip for the labels
+    // (fitSeriesName(); both labels cut at the longer suffix's budget, so they name it alike); the
+    // picker and the plot title keep it whole.
+    const std::string ifaceLabelName =
+        UI::Widgets::fitSeriesName(ifaceDisplayName,
+                                   UI::Widgets::seriesNameBudget(" Received"),
+                                   [](std::string_view text) { return ImGui::CalcTextSize(text.data(), text.data() + text.size()).x; });
     const std::string ifaceSentLabel = std::format("{} Sent", ifaceLabelName);
     const std::string ifaceRecvLabel = std::format("{} Received", ifaceLabelName);
     const std::string sentBarLabel = showingInterface ? ifaceSentLabel : std::string(TOTAL_SENT_LABEL);
@@ -464,11 +462,17 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         theme.scheme().textPrimary, ICON_FA_NETWORK_WIRED "  Network Throughput - %s (%zu samples)", plotTitle.c_str(), aligned);
     if (interfaceHistoryUnavailable)
     {
+        // No spacing after it: the value strip below shares this line, right-aligned to the chart.
         ImGui::TextColored(theme.scheme().textMuted, "Per-interface history unavailable; showing total network history below.");
-        ImGui::Spacing();
     }
     constexpr size_t NETWORK_NOW_BAR_COLUMNS = 2; // Sent, Recv
-    UI::Widgets::renderNowBarValueStrip(netBars, stripExtras);
+    // Drawn here rather than by renderHistoryWithNowBars() so it can list the totals behind an
+    // interface (stripExtras) beside the bars' series; on the heading's line like every chart's.
+    UI::Widgets::renderNowBarValueStrip(netBars,
+                                        stripExtras,
+                                        UI::Widgets::ValueStripLayout::Wrap,
+                                        "SystemNetHistoryLayout",
+                                        UI::Widgets::nowBarsReservedWidth(netBars.size(), NETWORK_NOW_BAR_COLUMNS, false));
     renderHistoryWithNowBars(
         "SystemNetHistoryLayout", plotHeight, plot, netBars, false, NETWORK_NOW_BAR_COLUMNS, false, UI::Widgets::NowBarValues::None);
     if (ctx.fill != nullptr)

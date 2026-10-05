@@ -43,11 +43,10 @@ using UI::Widgets::SeriesRole;
 using UI::Widgets::seriesStyle;
 using UI::Widgets::tailAlignedSpan;
 
-// One label per series, shared by its legend entry, tooltip row and NowBar (#1008). The bars and
+// One label per series, shared by its value-strip entry, tooltip row and NowBar (#1008). The bars and
 // tooltips used to say "GPU Utilization", "GPU Temperature", "GPU Fan Speed" for series the legend
 // called "Utilization", "Temp (% of 100°C)" and "Fan". The scale a normalised series is drawn
-// against belongs in its value ("65°C (65% of 100°C)"), not its name, which must stay fixed for the
-// legend to keep its show/hide state (#994).
+// against belongs in its value ("65°C (65% of 100°C)"), not its name, which stays fixed (#994).
 constexpr const char* UTIL_LABEL = "Utilization";
 constexpr const char* MEMORY_LABEL = "Memory";
 constexpr const char* CLOCK_LABEL = "Clock";
@@ -358,8 +357,8 @@ void renderGpuSection(RenderContext& ctx)
                 }
 
                 // Plot clock as a percentage of gpuClockReferenceMHz(): the history's peak, or the floor
-                // when every clock is below it. The label stays fixed, so the legend keeps its show/hide
-                // state; the reference itself is in the tooltip.
+                // when every clock is below it. The label stays fixed; the reference itself is in the
+                // tooltip.
                 if (caps.hasClockSpeeds && !clockData.empty())
                 {
                     normalizeToPercent(clockData, maxClockMHz, clockPercentBuf);

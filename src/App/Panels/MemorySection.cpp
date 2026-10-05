@@ -38,7 +38,7 @@ using UI::Widgets::renderHistoryWithNowBars;
 using UI::Widgets::SeriesRole;
 using UI::Widgets::seriesStyle;
 
-// One label per series, shared by its legend entry, tooltip row and NowBar (#1008).
+// One label per series, shared by its value-strip entry, tooltip row and NowBar (#1008).
 constexpr const char* USED_LABEL = "Used";
 constexpr const char* CACHED_LABEL = "Cached";
 constexpr const char* SWAP_LABEL = "Swap";
@@ -84,7 +84,7 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
 
     ImGui::TextColored(
         theme.scheme().textPrimary, ICON_FA_MEMORY "  Memory & Swap (%zu samples)", std::min(memHist.size(), timestamps.size()));
-    ImGui::Spacing();
+    // No spacing here: the value strip shares the heading's line (renderNowBarValueStrip()), like every chart's.
 
     const size_t memCount = std::min(memHist.size(), timestamps.size());
     const size_t cachedCount = std::min(cachedHist.size(), timestamps.size());

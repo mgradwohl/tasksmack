@@ -1363,7 +1363,6 @@ TEST(HistoryChartConfigTest, PercentConfigLocksZeroToHundred)
     EXPECT_DOUBLE_EQ(cfg.yLimits->first, 0.0);
     EXPECT_DOUBLE_EQ(cfg.yLimits->second, 100.0);
     EXPECT_EQ(cfg.yFormatter, &formatAxisPercent);
-    EXPECT_TRUE(cfg.showLegend);
     EXPECT_FLOAT_EQ(cfg.height, HISTORY_PLOT_HEIGHT_DEFAULT);
 }
 
@@ -1411,8 +1410,7 @@ TEST(HistoryChartConfigTest, YAxisFlagsLockWithFixedLimitsAutoFitOtherwise)
     EXPECT_EQ(historyChartYAxisFlags(false), ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
 }
 
-// ========== historyChartBeginPlotFlags (perf-plan #843 phase 1: showLegend=false must
-// actually suppress the legend, not just skip customizing it) ==========
+// ========== historyChartBeginPlotFlags (#1198: the value strip is every chart's only key) ==========
 
 TEST(ChartWidgetsTest, DefaultPlotFlagsHideImPlotsMouseReadout)
 {
@@ -1461,22 +1459,16 @@ TEST(NowBarMotionTest, SettledBarsStopAskingForFrames)
     EXPECT_DOUBLE_EQ(nowBarMotionPixelsPerSecond(0.3, 0.6, 0.0, 0.016), 0.0);
 }
 
-TEST(HistoryChartConfigTest, BeginPlotFlagsUnchangedWhenLegendShown)
+TEST(HistoryChartConfigTest, BeginPlotFlagsNeverShowImPlotsLegend)
 {
-    EXPECT_EQ(historyChartBeginPlotFlags(PLOT_FLAGS_DEFAULT, true), PLOT_FLAGS_DEFAULT);
+    // The value strip above every chart is its only key (#1198).
+    EXPECT_EQ(historyChartBeginPlotFlags(PLOT_FLAGS_DEFAULT), PLOT_FLAGS_DEFAULT | ImPlotFlags_NoLegend);
 }
 
-TEST(HistoryChartConfigTest, BeginPlotFlagsAddsNoLegendWhenLegendHidden)
-{
-    const ImPlotFlags result = historyChartBeginPlotFlags(PLOT_FLAGS_DEFAULT, false);
-    EXPECT_EQ(result, PLOT_FLAGS_DEFAULT | ImPlotFlags_NoLegend);
-    EXPECT_TRUE(result & ImPlotFlags_NoLegend);
-}
-
-TEST(HistoryChartConfigTest, BeginPlotFlagsPreservesOtherConfiguredBitsWhenLegendHidden)
+TEST(HistoryChartConfigTest, BeginPlotFlagsPreserveOtherConfiguredBits)
 {
     const ImPlotFlags configured = PLOT_FLAGS_DEFAULT | ImPlotFlags_NoTitle;
-    const ImPlotFlags result = historyChartBeginPlotFlags(configured, false);
+    const ImPlotFlags result = historyChartBeginPlotFlags(configured);
     EXPECT_TRUE(result & ImPlotFlags_NoTitle);
     EXPECT_TRUE(result & ImPlotFlags_NoMenus);
     EXPECT_TRUE(result & ImPlotFlags_NoLegend);
@@ -1769,101 +1761,91 @@ float tenPerCodePoint(std::string_view text)
 }
 } // namespace
 
-// #1301 review: legend keys show each series' marker shape, placed where ImPlot draws the key.
-TEST(LegendKeyCentreTest, AColumnStepsByALineAndItsSpacing)
+// #1301: the value strip is the chart's only key, so it shows each series' marker shape, recorded by
+// the chart on its previous frame.
+TEST(StripMarkersTest, ALayoutsMarkersAreFoundByLabel)
 {
-    constexpr ImVec2 MIN{100.0F, 50.0F};
-    constexpr ImVec2 PAD{5.0F, 4.0F};
-    constexpr ImVec2 SPACING{6.0F, 3.0F};
-    const ImVec2 first = legendKeyCentre(MIN, PAD, SPACING, 16.0F, 0, 0.0F, true);
-    EXPECT_FLOAT_EQ(first.x, 113.0F);
-    EXPECT_FLOAT_EQ(first.y, 62.0F);
-    const ImVec2 third = legendKeyCentre(MIN, PAD, SPACING, 16.0F, 2, 999.0F, true);
-    EXPECT_FLOAT_EQ(third.x, 113.0F);
-    EXPECT_FLOAT_EQ(third.y, 62.0F + (2.0F * 19.0F));
+    constexpr ImGuiID LAYOUT = 0x5EED0001U;
+    Detail::rememberStripMarkers(LAYOUT,
+                                 {Detail::SeriesMarker{.label = "User", .marker = ImPlotMarker_Circle},
+                                  Detail::SeriesMarker{.label = "System", .marker = ImPlotMarker_Square}});
+    EXPECT_EQ(Detail::stripMarkerFor(LAYOUT, "User"), ImPlotMarker_Circle);
+    EXPECT_EQ(Detail::stripMarkerFor(LAYOUT, "System"), ImPlotMarker_Square);
+    // A series without a marker (a chart's primary), or one the layout did not draw.
+    EXPECT_EQ(Detail::stripMarkerFor(LAYOUT, "Total"), ImPlotMarker_None);
 }
 
-TEST(LegendKeyCentreTest, ARowStepsByTheKeysSpacingAndTheLabelsBefore)
+TEST(StripMarkersTest, LayoutsAreKeptApartAndAnUnknownLayoutHasNone)
 {
-    constexpr ImVec2 MIN{100.0F, 50.0F};
-    constexpr ImVec2 PAD{5.0F, 4.0F};
-    constexpr ImVec2 SPACING{6.0F, 3.0F};
-    // Two entries before, with labels 40 and 30 px wide.
-    const ImVec2 third = legendKeyCentre(MIN, PAD, SPACING, 16.0F, 2, 70.0F, false);
-    EXPECT_FLOAT_EQ(third.x, 113.0F + (2.0F * 22.0F) + 70.0F);
-    EXPECT_FLOAT_EQ(third.y, 62.0F);
+    constexpr ImGuiID FIRST = 0x5EED0002U;
+    constexpr ImGuiID SECOND = 0x5EED0003U;
+    Detail::rememberStripMarkers(FIRST, {Detail::SeriesMarker{.label = "Read", .marker = ImPlotMarker_Circle}});
+    Detail::rememberStripMarkers(SECOND, {Detail::SeriesMarker{.label = "Read", .marker = ImPlotMarker_Diamond}});
+    EXPECT_EQ(Detail::stripMarkerFor(FIRST, "Read"), ImPlotMarker_Circle);
+    EXPECT_EQ(Detail::stripMarkerFor(SECOND, "Read"), ImPlotMarker_Diamond);
+    EXPECT_EQ(Detail::stripMarkerFor(0x5EED00FFU, "Read"), ImPlotMarker_None);
+    EXPECT_EQ(Detail::stripMarkerFor(0, "Read"), ImPlotMarker_None);
 }
 
-TEST(FitLegendNameTest, ANameThatFitsIsKeptWhole)
+TEST(StripMarkersTest, ALaterFrameReplacesALayoutsMarkers)
 {
-    EXPECT_EQ(fitLegendName("Wi-Fi", 50.0F, tenPerCodePoint), "Wi-Fi");
-    EXPECT_EQ(fitLegendName("", 0.0F, tenPerCodePoint), "");
+    constexpr ImGuiID LAYOUT = 0x5EED0004U;
+    Detail::rememberStripMarkers(LAYOUT, {Detail::SeriesMarker{.label = "Sent", .marker = ImPlotMarker_Circle}});
+    Detail::rememberStripMarkers(LAYOUT, {Detail::SeriesMarker{.label = "Received", .marker = ImPlotMarker_Square}});
+    EXPECT_EQ(Detail::stripMarkerFor(LAYOUT, "Sent"), ImPlotMarker_None);
+    EXPECT_EQ(Detail::stripMarkerFor(LAYOUT, "Received"), ImPlotMarker_Square);
 }
 
-TEST(FitLegendNameTest, AWiderNameIsCutToTheWidestPrefixThatFitsWithItsEllipsis)
+// #1301: a right-aligned strip moved every time a value's text changed width.
+TEST(StripSlotTest, AWiderValueWidensItsSlotAtOnce)
+{
+    Detail::StripSlot slot;
+    EXPECT_FLOAT_EQ(Detail::settleStripSlot(slot, 80.0F, 0.0, 3.0), 80.0F);
+    EXPECT_FLOAT_EQ(Detail::settleStripSlot(slot, 95.0F, 0.1, 3.0), 95.0F);
+}
+
+TEST(StripSlotTest, ANarrowerValueKeepsItsSlotUntilTheDelayHasPassed)
+{
+    Detail::StripSlot slot;
+    static_cast<void>(Detail::settleStripSlot(slot, 95.0F, 0.0, 3.0));
+    EXPECT_FLOAT_EQ(Detail::settleStripSlot(slot, 80.0F, 1.0, 3.0), 95.0F);
+    EXPECT_FLOAT_EQ(Detail::settleStripSlot(slot, 80.0F, 3.9, 3.0), 95.0F);
+    EXPECT_FLOAT_EQ(Detail::settleStripSlot(slot, 80.0F, 4.0, 3.0), 80.0F);
+}
+
+TEST(StripSlotTest, AValueThatWidensAgainRestartsTheDelay)
+{
+    Detail::StripSlot slot;
+    static_cast<void>(Detail::settleStripSlot(slot, 95.0F, 0.0, 3.0));
+    static_cast<void>(Detail::settleStripSlot(slot, 80.0F, 1.0, 3.0));      // narrower from 1 s
+    static_cast<void>(Detail::settleStripSlot(slot, 95.0F, 2.0, 3.0));      // back to full width
+    EXPECT_FLOAT_EQ(Detail::settleStripSlot(slot, 80.0F, 3.0, 3.0), 95.0F); // narrower again from 3 s
+    EXPECT_FLOAT_EQ(Detail::settleStripSlot(slot, 80.0F, 5.0, 3.0), 95.0F);
+    EXPECT_FLOAT_EQ(Detail::settleStripSlot(slot, 80.0F, 6.0, 3.0), 80.0F);
+}
+
+TEST(FitSeriesNameTest, ANameThatFitsIsKeptWhole)
+{
+    EXPECT_EQ(fitSeriesName("Wi-Fi", 50.0F, tenPerCodePoint), "Wi-Fi");
+    EXPECT_EQ(fitSeriesName("", 0.0F, tenPerCodePoint), "");
+}
+
+TEST(FitSeriesNameTest, AWiderNameIsCutToTheWidestPrefixThatFitsWithItsEllipsis)
 {
     // 60 px for "abcdefgh" (80 px): "abcde…" is 60 px.
-    EXPECT_EQ(fitLegendName("abcdefgh", 60.0F, tenPerCodePoint), "abcde\u2026");
-    EXPECT_EQ(fitLegendName("abcdefgh", 65.0F, tenPerCodePoint), "abcde\u2026");
-    EXPECT_EQ(fitLegendName("abcdefgh", 79.0F, tenPerCodePoint), "abcdef\u2026");
-    EXPECT_EQ(fitLegendName("abcdefgh", 80.0F, tenPerCodePoint), "abcdefgh");
+    EXPECT_EQ(fitSeriesName("abcdefgh", 60.0F, tenPerCodePoint), "abcde\u2026");
+    EXPECT_EQ(fitSeriesName("abcdefgh", 65.0F, tenPerCodePoint), "abcde\u2026");
+    EXPECT_EQ(fitSeriesName("abcdefgh", 79.0F, tenPerCodePoint), "abcdef\u2026");
+    EXPECT_EQ(fitSeriesName("abcdefgh", 80.0F, tenPerCodePoint), "abcdefgh");
     // Room for nothing but the ellipsis, or not even that.
-    EXPECT_EQ(fitLegendName("abcdefgh", 15.0F, tenPerCodePoint), "\u2026");
-    EXPECT_EQ(fitLegendName("abcdefgh", -5.0F, tenPerCodePoint), "\u2026");
+    EXPECT_EQ(fitSeriesName("abcdefgh", 15.0F, tenPerCodePoint), "\u2026");
+    EXPECT_EQ(fitSeriesName("abcdefgh", -5.0F, tenPerCodePoint), "\u2026");
 }
 
-TEST(FitLegendNameTest, CutsOnlyAtCodePointBoundaries)
+TEST(FitSeriesNameTest, CutsOnlyAtCodePointBoundaries)
 {
-    EXPECT_EQ(fitLegendName("\u00e9\u00e9\u00e9\u00e9\u00e9", 30.0F, tenPerCodePoint), "\u00e9\u00e9\u2026");
-    EXPECT_EQ(fitLegendName("\u00e9\u00e9\u00e9", 30.0F, tenPerCodePoint), "\u00e9\u00e9\u00e9");
-}
-
-TEST(LegendLayoutTest, HorizontalWidthMatchesImPlotsRowLayout)
-{
-    // 2 * padding + per entry (icon + label) + spacing between entries.
-    const std::array widths{30.0F, 50.0F, 40.0F};
-    EXPECT_FLOAT_EQ(horizontalLegendWidth(widths, 16.0F, 5.0F, 5.0F), 10.0F + (3.0F * 16.0F) + 120.0F + 10.0F);
-    const std::array one{30.0F};
-    EXPECT_FLOAT_EQ(horizontalLegendWidth(one, 16.0F, 5.0F, 5.0F), 10.0F + 16.0F + 30.0F);
-    EXPECT_FLOAT_EQ(horizontalLegendWidth({}, 16.0F, 5.0F, 5.0F), 0.0F);
-}
-
-TEST(LegendLayoutTest, ProcessMemoryLegendFallsBackWhenTheRowIsTooWide)
-{
-    // Used, Shared, Virtual, Peak Used at ~16px text: 290px in one row.
-    const std::array widths{34.0F, 47.0F, 47.0F, 70.0F};
-    const float rowWidth = horizontalLegendWidth(widths, 16.0F, 5.0F, 5.0F);
-    EXPECT_FLOAT_EQ(rowWidth, 10.0F + 64.0F + 198.0F + 15.0F);
-    EXPECT_TRUE(legendFitsOneRow(widths, 16.0F, 5.0F, 5.0F, rowWidth));
-    EXPECT_TRUE(legendFitsOneRow(widths, 16.0F, 5.0F, 5.0F, 600.0F));
-    // "Peak Used" would be clipped: the legend must not stay one row.
-    EXPECT_FALSE(legendFitsOneRow(widths, 16.0F, 5.0F, 5.0F, rowWidth - 1.0F));
-}
-
-TEST(LegendLayoutTest, AnEmptyLegendAlwaysFits)
-{
-    EXPECT_TRUE(legendFitsOneRow({}, 16.0F, 5.0F, 5.0F, 0.0F));
-    EXPECT_TRUE(legendColumnFits(0, 16.0F, 5.0F, 2.0F, 0.0F));
-}
-
-TEST(LegendLayoutTest, ColumnHeightIsLinesSpacingAndPadding)
-{
-    EXPECT_FLOAT_EQ(legendColumnHeight(0, 16.0F, 5.0F, 2.0F), 0.0F);
-    EXPECT_FLOAT_EQ(legendColumnHeight(1, 16.0F, 5.0F, 2.0F), 10.0F + 16.0F);
-    // Process Memory's four entries: 4 lines, 3 gaps, padding above and below.
-    EXPECT_FLOAT_EQ(legendColumnHeight(4, 16.0F, 5.0F, 2.0F), 10.0F + 64.0F + 6.0F);
-}
-
-TEST(LegendLayoutTest, AColumnMayTakeAtMostAThirdOfTheFrame)
-{
-    // Four entries at ~16px text are 80px: a 240px chart keeps two thirds for data, a shorter one
-    // would be left a sliver (#1301 review: about 6px at the minimum chart height), so it drops the
-    // legend and the value strip names the series instead.
-    const float column = legendColumnHeight(4, 16.0F, 5.0F, 2.0F);
-    EXPECT_TRUE(legendColumnFits(4, 16.0F, 5.0F, 2.0F, column / LEGEND_COLUMN_MAX_FRAME_FRACTION));
-    EXPECT_TRUE(legendColumnFits(4, 16.0F, 5.0F, 2.0F, 600.0F));
-    EXPECT_FALSE(legendColumnFits(4, 16.0F, 5.0F, 2.0F, (column / LEGEND_COLUMN_MAX_FRAME_FRACTION) - 1.0F));
-    EXPECT_FALSE(legendColumnFits(4, 16.0F, 5.0F, 2.0F, 90.0F));
+    EXPECT_EQ(fitSeriesName("\u00e9\u00e9\u00e9\u00e9\u00e9", 30.0F, tenPerCodePoint), "\u00e9\u00e9\u2026");
+    EXPECT_EQ(fitSeriesName("\u00e9\u00e9\u00e9", 30.0F, tenPerCodePoint), "\u00e9\u00e9\u00e9");
 }
 
 // ========== Grid cells' time axis (#1206) ==========

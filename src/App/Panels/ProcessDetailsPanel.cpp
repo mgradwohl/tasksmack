@@ -97,7 +97,7 @@ void dropOldest(std::vector<double>& data, std::size_t count)
 
 // ImPlot series counts are int; keep conversion explicit + checked.
 
-// One label per series, shared by its legend entry, tooltip row and NowBar (#1008).
+// One label per series, shared by its value-strip entry, tooltip row and NowBar (#1008).
 constexpr const char* CPU_TOTAL_LABEL = "Total";
 constexpr const char* CPU_USER_LABEL = "User";
 constexpr const char* CPU_SYSTEM_LABEL = "System";
@@ -1014,8 +1014,7 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
                 const int drawCount = UI::Format::checkedCount(m_CpuPlotX.size());
 
                 // The bands share their labels with the User and System lines below, so ImPlot
-                // treats each band and its line as one legend item: hiding "User" hides both.
-                // With separate hidden labels the band stayed on screen after its line was hidden.
+                // treats each band and its line as one item.
                 // ImPlot's shaded renderer doesn't break at NaN, so the bands are filled run by run over
                 // the finite points: a gap (a missing sample, or a UI stall that overran the sample ring,
                 // #1098) is drawn as a gap rather than as fill triangles through NaN. A gap point is NaN
@@ -1041,7 +1040,7 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
 
                 // Total at the primary series' weight; it has no fill of its own, the bands above are
                 // the fill. User and System are secondaries: lighter lines, each with its own marker
-                // shape (shown on its legend key too), so they differ by more than colour (#1198).
+                // shape (shown on its value-strip swatch too), so they differ by more than colour (#1198).
                 ImPlot::PlotLine(CPU_TOTAL_LABEL,
                                  m_CpuPlotX.data(),
                                  m_CpuPlotTotal.data(),

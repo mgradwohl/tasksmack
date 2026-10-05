@@ -55,7 +55,7 @@ using UI::Widgets::tailAlignedSpan;
 
 constexpr size_t STORAGE_NOW_BAR_COLUMNS = 2; // Read, Write
 
-// One label per series, shared by its legend entry, tooltip row and NowBar (#1008).
+// One label per series, shared by its value-strip entry, tooltip row and NowBar (#1008).
 constexpr const char* READ_LABEL = "Read";
 constexpr const char* WRITE_LABEL = "Write";
 
@@ -158,11 +158,9 @@ void renderDiskCell(const std::string& deviceName,
         auto diskCfg = UI::Widgets::rateHistoryConfigWithUpper(
             deviceName.c_str(), axisConfig.xMin, axisConfig.xMax, formatAxisBytesPerSec, diskAxisUpper);
         diskCfg.flags |= ImPlotFlags_NoTitle;
-        // No "Time (s)" or time tick labels in each of the cells (#1206), and no legend: the cell's
-        // value strip above names Read and Write in their colours, and a legend row above each
-        // small plot (#1198) took the height the plot needs.
+        // No "Time (s)" or time tick labels in each of the cells (#1206); like every chart, no legend
+        // (#1198): the cell's value strip above names Read and Write.
         diskCfg.timeAxisLabels = false;
-        diskCfg.showLegend = false;
         diskCfg.height = plotHeight;
         const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(diskCfg, dataGeneration));
         if (chart.active())

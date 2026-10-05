@@ -275,7 +275,6 @@ void renderCpuCoresSection(RenderContext& ctx)
                             // to add one (#823 review).
                             auto coreCfg = UI::Widgets::percentHistoryConfig(coreLabel.c_str(), axisConfig.xMin, axisConfig.xMax);
                             coreCfg.flags |= ImPlotFlags_NoTitle;
-                            coreCfg.showLegend = false;
                             // No "Time (s)" or time tick labels in each of the cells (#1206).
                             coreCfg.timeAxisLabels = false;
                             coreCfg.height = plotHeight;
