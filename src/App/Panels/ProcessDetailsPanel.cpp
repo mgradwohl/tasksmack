@@ -59,7 +59,10 @@ using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
 using UI::Widgets::NowBarList;
 using UI::Widgets::plotLineWithFill;
+using UI::Widgets::plotSeries;
 using UI::Widgets::renderHistoryWithNowBars;
+using UI::Widgets::SeriesRole;
+using UI::Widgets::seriesStyle;
 
 constexpr size_t PROCESS_NOW_BAR_COLUMNS = 3;
 
@@ -1154,11 +1157,10 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
 
             auto memoryPlot = [&]()
             {
-                // Four legend entries (Used, Shared, Virtual, Peak Used): one row (see legendHorizontal).
                 const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
                     UI::Widgets::withHeight(
-                        UI::Widgets::withHorizontalLegend(UI::Widgets::rateHistoryConfigWithUpper(
-                            "##ProcOverviewMemory", axisConfig.xMin, axisConfig.xMax, UI::Widgets::formatAxisBytes, memAxisUpper)),
+                        UI::Widgets::rateHistoryConfigWithUpper(
+                            "##ProcOverviewMemory", axisConfig.xMin, axisConfig.xMax, UI::Widgets::formatAxisBytes, memAxisUpper),
                         fill.plotHeight()),
                     m_HistoryGeneration));
                 if (chart.active())
@@ -1182,36 +1184,37 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
 
                     if (!usedData.empty())
                     {
-                        plotLineWithFill(MEM_USED_LABEL,
-                                         timeData.data(),
-                                         usedData.data(),
-                                         UI::Format::checkedCount(usedData.size()),
-                                         theme.scheme().chartMemory,
-                                         theme.scheme().chartMemoryFill);
+                        plotSeries(MEM_USED_LABEL,
+                                   timeData.data(),
+                                   usedData.data(),
+                                   UI::Format::checkedCount(usedData.size()),
+                                   theme.scheme().chartMemory,
+                                   theme.scheme().chartMemoryFill,
+                                   seriesStyle(SeriesRole::Primary));
                     }
 
                     if (!sharedData.empty())
                     {
-                        plotLineWithFill(MEM_SHARED_LABEL,
-                                         timeData.data(),
-                                         sharedData.data(),
-                                         UI::Format::checkedCount(sharedData.size()),
-                                         theme.scheme().chartCpu,
-                                         theme.scheme().chartCpuFill);
+                        plotSeries(MEM_SHARED_LABEL,
+                                   timeData.data(),
+                                   sharedData.data(),
+                                   UI::Format::checkedCount(sharedData.size()),
+                                   theme.scheme().chartCpu,
+                                   theme.scheme().chartCpuFill,
+                                   seriesStyle(SeriesRole::Secondary, 0));
                     }
 
                     if (!virtData.empty())
                     {
                         // Line only: a fill on its own scale would cover the Used and Shared areas.
                         ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
-                        plotLineWithFill(MEM_VIRTUAL_LABEL,
-                                         timeData.data(),
-                                         virtData.data(),
-                                         UI::Format::checkedCount(virtData.size()),
-                                         theme.scheme().chartIo,
-                                         theme.scheme().chartIoFill,
-                                         2.0F,
-                                         false);
+                        plotSeries(MEM_VIRTUAL_LABEL,
+                                   timeData.data(),
+                                   virtData.data(),
+                                   UI::Format::checkedCount(virtData.size()),
+                                   theme.scheme().chartIo,
+                                   theme.scheme().chartIoFill,
+                                   seriesStyle(SeriesRole::Secondary, 1));
                         ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
                     }
 
@@ -1382,11 +1385,9 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
 
     auto plot = [&]()
     {
-        // One legend row: up to four short entries (with GDI on Windows) on a chart that shares the
-        // pane's height (see HistoryChartConfig::legendHorizontal).
         const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
-            UI::Widgets::withHeight(UI::Widgets::withHorizontalLegend(UI::Widgets::rateHistoryConfigWithUpper(
-                                        "##ProcThreadsFaults", axisConfig.xMin, axisConfig.xMax, formatAxisLocalized, countAxisUpper)),
+            UI::Widgets::withHeight(UI::Widgets::rateHistoryConfigWithUpper(
+                                        "##ProcThreadsFaults", axisConfig.xMin, axisConfig.xMax, formatAxisLocalized, countAxisUpper),
                                     fill.plotHeight()),
             m_HistoryGeneration));
         if (chart.active())
@@ -1394,49 +1395,41 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
             UI::Widgets::setupSecondaryRateAxis(faultAxisUpper, formatAxisLocalized);
             UI::Widgets::drawCollectingHint(alignedCount);
             const int plotCount = UI::Format::checkedCount(alignedCount);
-            plotLineWithFill(THREADS_LABEL,
-                             timeData.data(),
-                             threadData.data(),
-                             plotCount,
-                             theme.scheme().chartCpu,
-                             theme.scheme().chartCpuFill,
-                             2.0F,
-                             true,
-                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
-            plotLineWithFill(handleLabel,
-                             timeData.data(),
-                             handleData.data(),
-                             plotCount,
-                             theme.scheme().chartMemory,
-                             theme.scheme().chartMemoryFill,
-                             2.0F,
-                             true,
-                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+            plotSeries(THREADS_LABEL,
+                       timeData.data(),
+                       threadData.data(),
+                       plotCount,
+                       theme.scheme().chartCpu,
+                       theme.scheme().chartCpuFill,
+                       seriesStyle(SeriesRole::Primary));
+            plotSeries(handleLabel,
+                       timeData.data(),
+                       handleData.data(),
+                       plotCount,
+                       theme.scheme().chartMemory,
+                       theme.scheme().chartMemoryFill,
+                       seriesStyle(SeriesRole::Secondary, 0));
             ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
-            plotLineWithFill(FAULTS_LABEL,
-                             timeData.data(),
-                             faultData.data(),
-                             plotCount,
-                             theme.accentColor(3),
-                             std::nullopt,
-                             2.0F,
-                             true,
-                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+            plotSeries(FAULTS_LABEL,
+                       timeData.data(),
+                       faultData.data(),
+                       plotCount,
+                       theme.accentColor(3),
+                       std::nullopt,
+                       seriesStyle(SeriesRole::Secondary, 1));
             ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
 
 #ifdef _WIN32
             if (hasGdiSamples && gdiTimeOffset < timeData.size())
             {
                 const int gdiPlotCount = UI::Format::checkedCount(std::min(gdiData.size(), timeData.size() - gdiTimeOffset));
-                plotLineWithFill(GDI_LABEL,
-                                 std::span(timeData).subspan(gdiTimeOffset).data(),
-                                 gdiData.data(),
-                                 gdiPlotCount,
-                                 theme.accentColor(4),
-                                 std::nullopt,
-                                 2.0F,
-                                 true,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotSeries(GDI_LABEL,
+                           std::span(timeData).subspan(gdiTimeOffset).data(),
+                           gdiData.data(),
+                           gdiPlotCount,
+                           theme.accentColor(4),
+                           std::nullopt,
+                           seriesStyle(SeriesRole::Secondary, 2));
             }
 #endif
 
@@ -1543,25 +1536,21 @@ void ProcessDetailsPanel::renderIoStats(UI::Widgets::FillPlotLayout& fill)
         {
             UI::Widgets::drawCollectingHint(alignedCount);
             const int plotCount = UI::Format::checkedCount(alignedCount);
-            plotLineWithFill(IO_READ_LABEL,
-                             timeData.data(),
-                             readData.data(),
-                             plotCount,
-                             theme.scheme().chartIo,
-                             theme.scheme().chartIoFill,
-                             2.0F,
-                             true,
-                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+            plotSeries(IO_READ_LABEL,
+                       timeData.data(),
+                       readData.data(),
+                       plotCount,
+                       theme.scheme().chartIo,
+                       theme.scheme().chartIoFill,
+                       seriesStyle(SeriesRole::Primary));
 
-            plotLineWithFill(IO_WRITE_LABEL,
-                             timeData.data(),
-                             writeData.data(),
-                             plotCount,
-                             theme.scheme().chartIoWrite,
-                             theme.scheme().chartIoWriteFill,
-                             2.0F,
-                             true,
-                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+            plotSeries(IO_WRITE_LABEL,
+                       timeData.data(),
+                       writeData.data(),
+                       plotCount,
+                       theme.scheme().chartIoWrite,
+                       theme.scheme().chartIoWriteFill,
+                       seriesStyle(SeriesRole::Secondary, 0));
 
             if (ImPlot::IsPlotHovered())
             {
@@ -1649,25 +1638,21 @@ void ProcessDetailsPanel::renderNetworkStats(UI::Widgets::FillPlotLayout& fill)
         {
             UI::Widgets::drawCollectingHint(alignedCount);
             const int plotCount = UI::Format::checkedCount(alignedCount);
-            plotLineWithFill(NET_SENT_LABEL,
-                             timeData.data(),
-                             sentData.data(),
-                             plotCount,
-                             theme.scheme().chartNetTx,
-                             theme.scheme().chartNetTxFill,
-                             2.0F,
-                             true,
-                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+            plotSeries(NET_SENT_LABEL,
+                       timeData.data(),
+                       sentData.data(),
+                       plotCount,
+                       theme.scheme().chartNetTx,
+                       theme.scheme().chartNetTxFill,
+                       seriesStyle(SeriesRole::Primary));
 
-            plotLineWithFill(NET_RECV_LABEL,
-                             timeData.data(),
-                             recvData.data(),
-                             plotCount,
-                             theme.scheme().chartNetRx,
-                             theme.scheme().chartNetRxFill,
-                             2.0F,
-                             true,
-                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+            plotSeries(NET_RECV_LABEL,
+                       timeData.data(),
+                       recvData.data(),
+                       plotCount,
+                       theme.scheme().chartNetRx,
+                       theme.scheme().chartNetRxFill,
+                       seriesStyle(SeriesRole::Secondary, 0));
 
             if (ImPlot::IsPlotHovered())
             {

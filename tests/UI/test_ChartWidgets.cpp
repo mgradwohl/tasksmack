@@ -1578,5 +1578,103 @@ TEST(ChartWidgetsTest, NowBarWidthSurvivesDegenerateInput)
         EXPECT_GE(width, 1.0F);
     }
 }
+
+// ========== Series encoding (#1198) ==========
+
+TEST(SeriesStyleTest, OnlyThePrimaryFills)
+{
+    EXPECT_TRUE(seriesStyle(SeriesRole::Primary).fill);
+    EXPECT_FALSE(seriesStyle(SeriesRole::Reference).fill);
+    for (std::size_t i = 0; i < 6; ++i)
+    {
+        EXPECT_FALSE(seriesStyle(SeriesRole::Secondary, i).fill) << i;
+    }
+}
+
+TEST(SeriesStyleTest, RolesDifferByWeightNotJustColour)
+{
+    const SeriesStyle primary = seriesStyle(SeriesRole::Primary);
+    const SeriesStyle secondary = seriesStyle(SeriesRole::Secondary);
+    const SeriesStyle reference = seriesStyle(SeriesRole::Reference);
+    EXPECT_GT(primary.lineWeightPx, secondary.lineWeightPx);
+    EXPECT_GT(secondary.lineWeightPx, reference.lineWeightPx);
+    EXPECT_EQ(primary.marker, ImPlotMarker_None);
+    EXPECT_EQ(reference.marker, ImPlotMarker_None);
+}
+
+TEST(SeriesStyleTest, EachSecondaryOfAChartHasItsOwnMarkerAndPhase)
+{
+    for (std::size_t i = 0; i < SECONDARY_SERIES_MARKERS.size(); ++i)
+    {
+        const SeriesStyle a = seriesStyle(SeriesRole::Secondary, i);
+        EXPECT_NE(a.marker, ImPlotMarker_None);
+        EXPECT_GE(a.markerPhase, 0.0);
+        EXPECT_LT(a.markerPhase, 1.0);
+        for (std::size_t j = i + 1; j < SECONDARY_SERIES_MARKERS.size(); ++j)
+        {
+            const SeriesStyle b = seriesStyle(SeriesRole::Secondary, j);
+            EXPECT_NE(a.marker, b.marker) << i << " vs " << j;
+            EXPECT_NE(a.markerPhase, b.markerPhase) << i << " vs " << j;
+        }
+    }
+}
+
+namespace
+{
+std::vector<int> markerSamples(std::span<const double> x, std::span<const double> y, double anchor, double interval, double phase)
+{
+    std::vector<int> out;
+    forEachMarkerSample(x.data(), y.data(), UI::Format::checkedCount(x.size()), anchor, interval, phase, [&](int i) { out.push_back(i); });
+    return out;
+}
+} // namespace
+
+TEST(ForEachMarkerSampleTest, MarksTheFirstSampleAfterEachBoundaryButNotTheOldestBucket)
+{
+    // One sample a second from -10 s to 0 s; boundaries every 4 s of absolute time (anchor 100).
+    std::vector<double> x;
+    for (int s = -10; s <= 0; ++s)
+    {
+        x.push_back(static_cast<double>(s));
+    }
+    const std::vector<double> y(x.size(), 1.0);
+    // Absolute times 90..100: boundaries at 92, 96 and 100 -> indices 2, 6 and 10.
+    EXPECT_EQ(markerSamples(x, y, 100.0, 4.0, 0.0), (std::vector<int>{2, 6, 10}));
+}
+
+TEST(ForEachMarkerSampleTest, StaysOnTheSameSamplesAsTheChartScrolls)
+{
+    // The same absolute samples seen one frame later: x shifts by -0.5 s, the anchor by +0.5 s.
+    const std::vector<double> x0{-6.0, -5.0, -4.0, -3.0, -2.0, -1.0, 0.0};
+    std::vector<double> x1;
+    x1.reserve(x0.size());
+    for (const double v : x0)
+    {
+        x1.push_back(v - 0.5);
+    }
+    const std::vector<double> y(x0.size(), 1.0);
+    EXPECT_EQ(markerSamples(x0, y, 50.0, 3.0, 0.25), markerSamples(x1, y, 50.5, 3.0, 0.25));
+}
+
+TEST(ForEachMarkerSampleTest, PhaseShiftsTheGrid)
+{
+    const std::vector<double> x{0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0};
+    const std::vector<double> y(x.size(), 1.0);
+    EXPECT_EQ(markerSamples(x, y, 0.0, 4.0, 0.0), (std::vector<int>{4}));
+    // A phase of a half moves the boundaries to 2 and 6.
+    EXPECT_EQ(markerSamples(x, y, 0.0, 4.0, 0.5), (std::vector<int>{2, 6}));
+}
+
+TEST(ForEachMarkerSampleTest, SkipsGapsAndDegenerateIntervals)
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const std::vector<double> x{0.0, 1.0, 2.0, 3.0, 4.0, 5.0};
+    const std::vector<double> y{1.0, 1.0, nan, 1.0, 1.0, 1.0};
+    // The boundary at 2 falls on a gap: the next finite sample takes the marker.
+    EXPECT_EQ(markerSamples(x, y, 0.0, 2.0, 0.0), (std::vector<int>{3, 4}));
+    EXPECT_TRUE(markerSamples(x, y, 0.0, 0.0, 0.0).empty());
+    EXPECT_TRUE(markerSamples(x, y, 0.0, nan, 0.0).empty());
+    EXPECT_TRUE(markerSamples({}, {}, 0.0, 2.0, 0.0).empty());
+}
 } // namespace
 } // namespace UI::Widgets

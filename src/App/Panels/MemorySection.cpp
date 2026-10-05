@@ -33,8 +33,10 @@ using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBarList;
-using UI::Widgets::plotLineWithFill;
+using UI::Widgets::plotSeries;
 using UI::Widgets::renderHistoryWithNowBars;
+using UI::Widgets::SeriesRole;
+using UI::Widgets::seriesStyle;
 
 // One label per series, shared by its legend entry, tooltip row and NowBar (#1008).
 constexpr const char* USED_LABEL = "Used";
@@ -130,41 +132,35 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
             UI::Widgets::drawCollectingHint(alignedCount); // The same "no data yet" state on every chart (#1013)
             if (!memData.empty())
             {
-                plotLineWithFill(USED_LABEL,
-                                 timeData.data(),
-                                 memData.data(),
-                                 UI::Format::checkedCount(memData.size()),
-                                 theme.scheme().chartMemory,
-                                 theme.scheme().chartMemoryFill,
-                                 2.0F,
-                                 true,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotSeries(USED_LABEL,
+                           timeData.data(),
+                           memData.data(),
+                           UI::Format::checkedCount(memData.size()),
+                           theme.scheme().chartMemory,
+                           theme.scheme().chartMemoryFill,
+                           seriesStyle(SeriesRole::Primary));
             }
 
             if (!cachedData.empty())
             {
-                plotLineWithFill(CACHED_LABEL,
-                                 timeData.data(),
-                                 cachedData.data(),
-                                 UI::Format::checkedCount(cachedData.size()),
-                                 theme.scheme().chartCpu,
-                                 theme.scheme().chartCpuFill,
-                                 2.0F,
-                                 true,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotSeries(CACHED_LABEL,
+                           timeData.data(),
+                           cachedData.data(),
+                           UI::Format::checkedCount(cachedData.size()),
+                           theme.scheme().chartCpu,
+                           theme.scheme().chartCpuFill,
+                           seriesStyle(SeriesRole::Secondary, 0));
             }
 
             if (!swapData.empty())
             {
-                plotLineWithFill(SWAP_LABEL,
-                                 timeData.data(),
-                                 swapData.data(),
-                                 UI::Format::checkedCount(swapData.size()),
-                                 theme.scheme().chartIo,
-                                 theme.scheme().chartIoFill,
-                                 2.0F,
-                                 true,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotSeries(SWAP_LABEL,
+                           timeData.data(),
+                           swapData.data(),
+                           UI::Format::checkedCount(swapData.size()),
+                           theme.scheme().chartIo,
+                           theme.scheme().chartIoFill,
+                           seriesStyle(SeriesRole::Secondary, 1));
             }
 
             if (peakMemPercent > 0.0)

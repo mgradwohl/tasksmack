@@ -40,8 +40,10 @@ using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
-using UI::Widgets::plotLineWithFill;
+using UI::Widgets::plotSeries;
 using UI::Widgets::renderHistoryWithNowBars;
+using UI::Widgets::SeriesRole;
+using UI::Widgets::seriesStyle;
 
 /// Update smoothed network values
 void updateSmoothedNetwork(double targetSent, double targetRecv, float deltaTimeSeconds, RenderContext& ctx)
@@ -283,7 +285,9 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     // Determine plot title based on selection
     const bool usingInterfaceHistory = showingInterface && !ifaceSentData.empty() && !ifaceRecvData.empty();
 
-    // Colors for interface-specific lines (lighter/dashed to distinguish from total)
+    // Colours of the machine totals drawn behind an interface's lines: muted, and drawn as thin
+    // reference lines (SeriesRole::Reference), so they differ from the interface's by weight and not
+    // by alpha alone (#1198).
     const auto ifaceSentColor = UI::withAlpha(theme.scheme().chartNetTx, 0.7F);
     const auto ifaceRecvColor = UI::withAlpha(theme.scheme().chartNetRx, 0.7F);
 
@@ -362,66 +366,54 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
             if (usingInterfaceHistory)
             {
                 // Total lines (muted, in background)
-                plotLineWithFill(TOTAL_SENT_BEHIND_LABEL,
-                                 netTimes.data(),
-                                 sentData.data(),
-                                 count,
-                                 ifaceSentColor,
-                                 std::nullopt,
-                                 2.0F,
-                                 false, // line only: the interface fills in front are the series
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
-                plotLineWithFill(TOTAL_RECV_BEHIND_LABEL,
-                                 netTimes.data(),
-                                 recvData.data(),
-                                 count,
-                                 ifaceRecvColor,
-                                 std::nullopt,
-                                 2.0F,
-                                 false, // line only: the interface fills in front are the series
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotSeries(TOTAL_SENT_BEHIND_LABEL,
+                           netTimes.data(),
+                           sentData.data(),
+                           count,
+                           ifaceSentColor,
+                           std::nullopt,
+                           seriesStyle(SeriesRole::Reference));
+                plotSeries(TOTAL_RECV_BEHIND_LABEL,
+                           netTimes.data(),
+                           recvData.data(),
+                           count,
+                           ifaceRecvColor,
+                           std::nullopt,
+                           seriesStyle(SeriesRole::Reference));
 
                 // Interface-specific lines (bright, in foreground)
-                plotLineWithFill(ifaceSentLabel.c_str(),
-                                 netTimes.data(),
-                                 ifaceSentData.data(),
-                                 count,
-                                 theme.scheme().chartNetTx,
-                                 theme.scheme().chartNetTxFill,
-                                 2.0F,
-                                 true,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
-                plotLineWithFill(ifaceRecvLabel.c_str(),
-                                 netTimes.data(),
-                                 ifaceRecvData.data(),
-                                 count,
-                                 theme.scheme().chartNetRx,
-                                 theme.scheme().chartNetRxFill,
-                                 2.0F,
-                                 true,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotSeries(ifaceSentLabel.c_str(),
+                           netTimes.data(),
+                           ifaceSentData.data(),
+                           count,
+                           theme.scheme().chartNetTx,
+                           theme.scheme().chartNetTxFill,
+                           seriesStyle(SeriesRole::Primary));
+                plotSeries(ifaceRecvLabel.c_str(),
+                           netTimes.data(),
+                           ifaceRecvData.data(),
+                           count,
+                           theme.scheme().chartNetRx,
+                           theme.scheme().chartNetRxFill,
+                           seriesStyle(SeriesRole::Secondary, 0));
             }
             else
             {
                 // Just total
-                plotLineWithFill(TOTAL_SENT_LABEL,
-                                 netTimes.data(),
-                                 sentData.data(),
-                                 count,
-                                 theme.scheme().chartNetTx,
-                                 theme.scheme().chartNetTxFill,
-                                 2.0F,
-                                 true,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
-                plotLineWithFill(TOTAL_RECV_LABEL,
-                                 netTimes.data(),
-                                 recvData.data(),
-                                 count,
-                                 theme.scheme().chartNetRx,
-                                 theme.scheme().chartNetRxFill,
-                                 2.0F,
-                                 true,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotSeries(TOTAL_SENT_LABEL,
+                           netTimes.data(),
+                           sentData.data(),
+                           count,
+                           theme.scheme().chartNetTx,
+                           theme.scheme().chartNetTxFill,
+                           seriesStyle(SeriesRole::Primary));
+                plotSeries(TOTAL_RECV_LABEL,
+                           netTimes.data(),
+                           recvData.data(),
+                           count,
+                           theme.scheme().chartNetRx,
+                           theme.scheme().chartNetRxFill,
+                           seriesStyle(SeriesRole::Secondary, 0));
             }
 
             if (ImPlot::IsPlotHovered())

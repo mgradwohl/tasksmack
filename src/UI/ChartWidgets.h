@@ -1006,6 +1006,8 @@ inline ChartDataScope g_ActiveChartDataScope;
 }
 
 /// @p lineThickness is authored at the reference configuration; it is scaled by lineWeight().
+/// A chart fills one series at most (#1198): a chart with several draws them with plotSeries() and
+/// their SeriesRole rather than passing `drawFill` by hand.
 ///
 /// Inside a HistoryChart with a data generation (HistoryChartConfig::dataGeneration), a long series'
 /// reduction is cached per plot and label and replayed until the generation, the series' buffer or
@@ -1108,12 +1110,166 @@ inline void plotLineWithFill(const char* label,
 
 /// Helper for line-only rendering, reduced to at most LINE_PLOT_MAX_POINTS_DENSE points (see reduceSeriesMinMax).
 /// Fills are intentionally disabled; pass only the line color.
-/// NOTE: For visual consistency, prefer plotLineWithFill(..., drawFill=true) to show fills.
-/// Use plotDenseLine only for charts that should remain line-only (e.g., sparse event streams).
+/// A chart with more than one series draws them with plotSeries(), which gives only the primary a
+/// fill (#1198). Use plotDenseLine only for charts that should remain line-only (e.g., sparse event streams).
 template<typename TX, typename TY>
 inline void plotDenseLine(const char* label, const TX* xData, const TY* yData, int count, const ImVec4& lineColor)
 {
     plotLineWithFill(label, xData, yData, count, lineColor, std::nullopt, 2.0F, false, LINE_PLOT_MAX_POINTS_DENSE);
+}
+
+/// What a series is to the chart it is drawn in, which decides how it is drawn (#1198): colour alone
+/// must not be the only thing telling series apart (greyscale, colour-blind readers, overlaps).
+enum class SeriesRole : std::uint8_t
+{
+    /// The chart's main series: the only one with a fill, at full weight. One per chart.
+    Primary,
+    /// Another series of the chart's own: a lighter line with no fill, and a marker shape of its own
+    /// every few seconds (SeriesStyle::marker), so two secondaries differ by more than colour.
+    Secondary,
+    /// Context behind the series -- totals behind an interface's lines, say: a thin plain line.
+    Reference,
+};
+
+/// How a series of a given SeriesRole is drawn. Weights are authored at the reference configuration
+/// and scaled by lineWeight().
+struct SeriesStyle
+{
+    bool fill = false;
+    float lineWeightPx = 2.0F;
+    ImPlotMarker marker = ImPlotMarker_None;
+    /// Where in each marker interval this series' markers fall, as a fraction of it, so the markers of
+    /// two secondaries are not drawn on top of each other.
+    double markerPhase = 0.0;
+};
+
+inline constexpr float PRIMARY_SERIES_WEIGHT = 2.0F;
+inline constexpr float SECONDARY_SERIES_WEIGHT = 1.5F;
+inline constexpr float REFERENCE_SERIES_WEIGHT = 1.0F;
+/// Marker shapes of a chart's secondary series, in the order they are drawn. Charts have at most four.
+inline constexpr std::array<ImPlotMarker, 4> SECONDARY_SERIES_MARKERS{
+    ImPlotMarker_Circle, ImPlotMarker_Square, ImPlotMarker_Diamond, ImPlotMarker_Up};
+/// About this many markers per series across a chart's time axis.
+inline constexpr double SERIES_MARKERS_PER_AXIS = 10.0;
+/// Marker radius, authored at the reference configuration like a line weight.
+inline constexpr float SERIES_MARKER_RADIUS = 3.0F;
+
+/// The style of a series with role @p role; @p secondaryIndex numbers a chart's secondaries from 0 in
+/// the order they are drawn, and picks the marker shape (#1198).
+[[nodiscard]] constexpr SeriesStyle seriesStyle(SeriesRole role, std::size_t secondaryIndex = 0) noexcept
+{
+    switch (role)
+    {
+    case SeriesRole::Primary:
+        return SeriesStyle{.fill = true, .lineWeightPx = PRIMARY_SERIES_WEIGHT};
+    case SeriesRole::Secondary:
+    {
+        const std::size_t slot = secondaryIndex % SECONDARY_SERIES_MARKERS.size();
+        return SeriesStyle{.fill = false,
+                           .lineWeightPx = SECONDARY_SERIES_WEIGHT,
+                           .marker = SECONDARY_SERIES_MARKERS[slot],
+                           .markerPhase = static_cast<double>(slot) / static_cast<double>(SECONDARY_SERIES_MARKERS.size())};
+    }
+    case SeriesRole::Reference:
+        return SeriesStyle{.fill = false, .lineWeightPx = REFERENCE_SERIES_WEIGHT};
+    }
+    return SeriesStyle{};
+}
+
+/// Calls `fn(index)` for each sample of a series that carries one of its markers: the first finite
+/// sample after each boundary of a grid `intervalSeconds` wide in absolute time (x + anchorSeconds,
+/// as plotLineWithFill() anchors its reduction), shifted by `phase` of an interval. Anchored in
+/// absolute time, a marker stays on its sample as the chart scrolls; the oldest bucket, which loses
+/// samples as history is pruned, gets none, so no marker hops along the left edge.
+template<typename TX, typename TY, typename Fn>
+inline void
+forEachMarkerSample(const TX* xData, const TY* yData, int count, double anchorSeconds, double intervalSeconds, double phase, Fn&& fn)
+{
+    if (count <= 0 || !(intervalSeconds > 0.0) || !std::isfinite(intervalSeconds))
+    {
+        return;
+    }
+    std::optional<std::int64_t> lastBucket;
+    for (int i = 0; i < count; ++i)
+    {
+        const auto index = static_cast<std::size_t>(i);
+        const auto value = static_cast<double>(yData[index]);
+        const double x = static_cast<double>(xData[index]) + anchorSeconds;
+        if (!std::isfinite(value) || !std::isfinite(x))
+        {
+            continue;
+        }
+        const auto bucket = static_cast<std::int64_t>(std::floor((x / intervalSeconds) + phase));
+        if (lastBucket.has_value() && bucket != *lastBucket)
+        {
+            fn(i);
+        }
+        lastBucket = bucket;
+    }
+}
+
+/// Draws a series' markers (see SeriesStyle::marker), under the series' own label so they are the
+/// same legend item: hiding the series hides its markers. Call between BeginPlot and EndPlot.
+template<typename TX, typename TY>
+inline void plotSeriesMarkers(const char* label, const TX* xData, const TY* yData, int count, const ImVec4& color, const SeriesStyle& style)
+{
+    if (style.marker == ImPlotMarker_None || count <= 0)
+    {
+        return;
+    }
+    const double axisSpan = ImPlot::GetPlotLimits().X.Size();
+    const double interval = axisSpan / SERIES_MARKERS_PER_AXIS;
+
+    static std::vector<TX> markerX; // UI thread only; reused, like plotLineWithFill's buffers
+    static std::vector<TX> markerY;
+    markerX.clear();
+    markerY.clear();
+    forEachMarkerSample(xData,
+                        yData,
+                        count,
+                        historyFrameNowSeconds(),
+                        interval,
+                        style.markerPhase,
+                        [&](int i)
+                        {
+                            const auto index = static_cast<std::size_t>(i);
+                            markerX.push_back(xData[index]);
+                            markerY.push_back(static_cast<TX>(yData[index]));
+                        });
+    if (markerX.empty())
+    {
+        return;
+    }
+    ImPlot::PlotScatter(label,
+                        markerX.data(),
+                        markerY.data(),
+                        UI::Format::checkedCount(markerX.size()),
+                        {ImPlotProp_Marker,
+                         style.marker,
+                         ImPlotProp_MarkerSize,
+                         lineWeight(SERIES_MARKER_RADIUS),
+                         ImPlotProp_MarkerFillColor,
+                         color,
+                         ImPlotProp_MarkerLineColor,
+                         color,
+                         ImPlotProp_LineColor,
+                         color});
+}
+
+/// Draws a history series as its SeriesRole says (seriesStyle()): a primary with its fill, a
+/// secondary as a lighter line with markers, a reference as a thin line (#1198). @p fillColor is used
+/// only when the style fills.
+template<typename TX, typename TY>
+inline void plotSeries(const char* label,
+                       const TX* xData,
+                       const TY* yData,
+                       int count,
+                       const ImVec4& lineColor,
+                       std::optional<ImVec4> fillColor,
+                       const SeriesStyle& style)
+{
+    plotLineWithFill(label, xData, yData, count, lineColor, fillColor, style.lineWeightPx, style.fill, LINE_PLOT_MAX_POINTS_DENSE);
+    plotSeriesMarkers(label, xData, yData, count, lineColor, style);
 }
 
 // ============================================================================
@@ -1543,12 +1699,14 @@ inline auto hoveredIndexFromPlotX(std::span<const double> timeData, double mouse
     return (distUpper < distLower) ? upperIdx : lowerIdx;
 }
 
-/// @param horizontal  Lay the entries out in one row instead of a column; see
-///                    HistoryChartConfig::legendHorizontal for when.
-inline void setupLegendDefault(bool horizontal = false)
+/// The legend of every history chart: one row above the plot area, outside it (#1198). Inside, at the
+/// top left, it covered the oldest samples near the top of the axis, and a column of entries was clipped
+/// on a short chart. Above the plot it takes one text row of the chart's height and none of its
+/// width, so charts stacked in a view keep the same plot edges (#1206).
+inline void setupLegendDefault()
 {
     ImPlot::SetupLegend(ImPlotLocation_NorthWest,
-                        ImPlotLegendFlags_NoHighlightItem | (horizontal ? ImPlotLegendFlags_Horizontal : ImPlotLegendFlags_None));
+                        ImPlotLegendFlags_NoHighlightItem | ImPlotLegendFlags_Outside | ImPlotLegendFlags_Horizontal);
 }
 
 /// Samples a history chart needs before its "collecting" hint is dropped.
@@ -1602,12 +1760,6 @@ struct HistoryChartConfig
     ImPlotFormatter yFormatter = formatAxisLocalized;
     std::optional<std::pair<double, double>> yLimits;
     bool showLegend = true;
-    /// One row of legend entries instead of a column. ImPlot clips a legend to the plot area: a column
-    /// of four entries is taller than a short chart's data area at the largest font presets (the
-    /// system CPU chart's User/System/I/O Wait/Total lost its last entry), while a row of long labels
-    /// is wider than a narrow chart. So it is per chart: set for a chart with several short labels and
-    /// little height, left off for one with long labels (adapter names, GPU engines).
-    bool legendHorizontal = false;
     float height = HISTORY_PLOT_HEIGHT_DEFAULT;
     ImPlotFlags flags = PLOT_FLAGS_DEFAULT;
     /// Ease the Y upper bound toward yLimits->second over a few frames instead of jumping to it
@@ -1633,13 +1785,6 @@ struct HistoryChartConfig
 [[nodiscard]] inline HistoryChartConfig withHeight(HistoryChartConfig config, float height)
 {
     config.height = height;
-    return config;
-}
-
-/// Returns `config` with its legend laid out in one row (see HistoryChartConfig::legendHorizontal).
-[[nodiscard]] inline HistoryChartConfig withHorizontalLegend(HistoryChartConfig config)
-{
-    config.legendHorizontal = true;
     return config;
 }
 
@@ -1870,7 +2015,7 @@ class HistoryChart
 
         if (config.showLegend)
         {
-            setupLegendDefault(config.legendHorizontal);
+            setupLegendDefault();
         }
         ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, historyChartYAxisFlags(config.yLimits.has_value()));
         if (config.yLimits.has_value())

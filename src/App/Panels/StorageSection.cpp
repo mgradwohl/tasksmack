@@ -46,9 +46,11 @@ using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::normalizeToUnitInterval;
 using UI::Widgets::NowBar;
 using UI::Widgets::NowBarValues;
-using UI::Widgets::plotLineWithFill;
+using UI::Widgets::plotSeries;
 using UI::Widgets::renderChartGrid;
 using UI::Widgets::renderHistoryWithNowBars;
+using UI::Widgets::SeriesRole;
+using UI::Widgets::seriesStyle;
 using UI::Widgets::tailAlignedSpan;
 
 constexpr size_t STORAGE_NOW_BAR_COLUMNS = 2; // Read, Write
@@ -158,24 +160,20 @@ void renderDiskCell(const std::string& deviceName,
         {
             UI::Widgets::drawCollectingHint(timeData.size()); // The same "no data yet" state on every chart (#1013)
             const int count = UI::Format::checkedCount(timeData.size());
-            plotLineWithFill(READ_LABEL,
-                             timeData.data(),
-                             readData.data(),
-                             count,
-                             theme.scheme().chartIo,
-                             theme.scheme().chartIoFill,
-                             2.0F,
-                             true,
-                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
-            plotLineWithFill(WRITE_LABEL,
-                             timeData.data(),
-                             writeData.data(),
-                             count,
-                             theme.scheme().chartIoWrite,
-                             theme.scheme().chartIoWriteFill,
-                             2.0F,
-                             true,
-                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+            plotSeries(READ_LABEL,
+                       timeData.data(),
+                       readData.data(),
+                       count,
+                       theme.scheme().chartIo,
+                       theme.scheme().chartIoFill,
+                       seriesStyle(SeriesRole::Primary));
+            plotSeries(WRITE_LABEL,
+                       timeData.data(),
+                       writeData.data(),
+                       count,
+                       theme.scheme().chartIoWrite,
+                       theme.scheme().chartIoWriteFill,
+                       seriesStyle(SeriesRole::Secondary, 0));
 
             if (ImPlot::IsPlotHovered() && !timeData.empty())
             {
@@ -443,24 +441,20 @@ void renderStorageSection(RenderContext& ctx)
             {
                 UI::Widgets::drawCollectingHint(alignedDisk); // The same "no data yet" state on every chart (#1013)
                 const int count = UI::Format::checkedCount(alignedDisk);
-                plotLineWithFill(READ_LABEL,
-                                 aggregateTimes.data(),
-                                 readData.data(),
-                                 count,
-                                 theme.scheme().chartIo,
-                                 theme.scheme().chartIoFill,
-                                 2.0F,
-                                 true,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
-                plotLineWithFill(WRITE_LABEL,
-                                 aggregateTimes.data(),
-                                 writeData.data(),
-                                 count,
-                                 theme.scheme().chartIoWrite,
-                                 theme.scheme().chartIoWriteFill,
-                                 2.0F,
-                                 true,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotSeries(READ_LABEL,
+                           aggregateTimes.data(),
+                           readData.data(),
+                           count,
+                           theme.scheme().chartIo,
+                           theme.scheme().chartIoFill,
+                           seriesStyle(SeriesRole::Primary));
+                plotSeries(WRITE_LABEL,
+                           aggregateTimes.data(),
+                           writeData.data(),
+                           count,
+                           theme.scheme().chartIoWrite,
+                           theme.scheme().chartIoWriteFill,
+                           seriesStyle(SeriesRole::Secondary, 0));
 
                 if (ImPlot::IsPlotHovered())
                 {

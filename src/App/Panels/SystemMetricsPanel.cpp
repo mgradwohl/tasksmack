@@ -70,7 +70,10 @@ using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
 using UI::Widgets::NowBarList;
+using UI::Widgets::plotSeries;
 using UI::Widgets::renderHistoryWithNowBars;
+using UI::Widgets::SeriesRole;
+using UI::Widgets::seriesStyle;
 
 /// Hover tooltip for the system CPU chart: the age of the hovered sample to a tenth of a second, as
 /// every other chart shows it, then Total and each band of the stack.
@@ -640,15 +643,12 @@ void SystemMetricsPanel::renderOverview()
 
     auto cpuPlot = [&]()
     {
-        // Four short legend entries (User, System, I/O Wait, Total) on a chart that is short at large
-        // fonts: one row, so none is clipped (see HistoryChartConfig::legendHorizontal).
         // The Total line is drawn from the adopted publication, so its reduction is kept until
         // m_ChartDataGeneration next changes (HistoryChartConfig::dataGeneration, #1139).
-        const UI::Widgets::HistoryChart chart(
-            UI::Widgets::withDataGeneration(UI::Widgets::withHeight(UI::Widgets::withHorizontalLegend(UI::Widgets::percentHistoryConfig(
-                                                                        "##OverviewCPUHistory", axisConfig.xMin, axisConfig.xMax)),
-                                                                    plotHeight),
-                                            m_ChartDataGeneration));
+        const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
+            UI::Widgets::withHeight(UI::Widgets::percentHistoryConfig("##OverviewCPUHistory", axisConfig.xMin, axisConfig.xMax),
+                                    plotHeight),
+            m_ChartDataGeneration));
         if (chart.active())
         {
             UI::Widgets::drawCollectingHint(cpuData.size()); // The same "no data yet" state on every chart (#1013)
@@ -958,30 +958,26 @@ void SystemMetricsPanel::renderOverview()
                     // Plot power on primary Y-axis
                     if (!powerHist.empty())
                     {
-                        plotLineWithFill(POWER_LABEL,
-                                         powerTimeData.data(),
-                                         powerHist.data(),
-                                         UI::Format::checkedCount(powerHist.size()),
-                                         theme.scheme().chartCpu,
-                                         theme.scheme().chartCpuFill,
-                                         2.0F,
-                                         true,
-                                         UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                        plotSeries(POWER_LABEL,
+                                   powerTimeData.data(),
+                                   powerHist.data(),
+                                   UI::Format::checkedCount(powerHist.size()),
+                                   theme.scheme().chartCpu,
+                                   theme.scheme().chartCpuFill,
+                                   seriesStyle(SeriesRole::Primary));
                     }
 
                     // Plot battery charge on secondary Y-axis
                     if (snap.power.hasBattery && !batteryHist.empty())
                     {
                         ImPlot::SetAxes(ImAxis_X1, hasProcessPower ? ImAxis_Y2 : ImAxis_Y1);
-                        plotLineWithFill(BATTERY_LABEL,
-                                         batteryTimeData.data(),
-                                         batteryHist.data(),
-                                         UI::Format::checkedCount(batteryHist.size()),
-                                         theme.scheme().chartMemory,
-                                         theme.scheme().chartMemoryFill,
-                                         2.0F,
-                                         true,
-                                         UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                        plotSeries(BATTERY_LABEL,
+                                   batteryTimeData.data(),
+                                   batteryHist.data(),
+                                   UI::Format::checkedCount(batteryHist.size()),
+                                   theme.scheme().chartMemory,
+                                   theme.scheme().chartMemoryFill,
+                                   seriesStyle(SeriesRole::Secondary, 0));
                         ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1); // Reset to primary
                     }
 
@@ -1180,35 +1176,29 @@ void SystemMetricsPanel::renderOverview()
                 // After all axis setup: the hint reads the plot's geometry, which locks setup (#1013).
                 UI::Widgets::drawCollectingHint(alignedCount);
                 const int count = UI::Format::checkedCount(alignedCount);
-                plotLineWithFill(THREADS_LABEL,
-                                 timeData.data(),
-                                 threadData.data(),
-                                 count,
-                                 theme.scheme().chartCpu,
-                                 theme.scheme().chartCpuFill,
-                                 2.0F,
-                                 true,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotSeries(THREADS_LABEL,
+                           timeData.data(),
+                           threadData.data(),
+                           count,
+                           theme.scheme().chartCpu,
+                           theme.scheme().chartCpuFill,
+                           seriesStyle(SeriesRole::Primary));
                 ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
-                plotLineWithFill(FAULTS_LABEL,
-                                 timeData.data(),
-                                 faultData.data(),
-                                 count,
-                                 theme.accentColor(3),
-                                 std::nullopt,
-                                 2.0F,
-                                 true,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotSeries(FAULTS_LABEL,
+                           timeData.data(),
+                           faultData.data(),
+                           count,
+                           theme.accentColor(3),
+                           std::nullopt,
+                           seriesStyle(SeriesRole::Secondary, 0));
                 ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
-                plotLineWithFill(handleLabel,
-                                 timeData.data(),
-                                 handleData.data(),
-                                 count,
-                                 theme.scheme().chartMemory,
-                                 theme.scheme().chartMemoryFill,
-                                 2.0F,
-                                 true,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotSeries(handleLabel,
+                           timeData.data(),
+                           handleData.data(),
+                           count,
+                           theme.scheme().chartMemory,
+                           theme.scheme().chartMemoryFill,
+                           seriesStyle(SeriesRole::Secondary, 1));
 
                 if (ImPlot::IsPlotHovered())
                 {
