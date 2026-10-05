@@ -12,14 +12,12 @@
 #include <spdlog/spdlog.h>
 #include <toml++/toml.hpp>
 
-#include <algorithm>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <format>
-#include <limits>
 #include <optional>
 #include <random>
 #include <sstream>
@@ -162,23 +160,8 @@ void readSettings(const toml::table& config, UserSettings& settings)
                                           [](auto v) { return Domain::Sampling::clampSocketStatsCacheTtlMs(v); });
 
     // Metrics calculation parameters
-    UserConfigHelpers::loadAndClamp(config,
-                                    "metrics",
-                                    "min_time_for_rate_seconds",
-                                    settings.minTimeForRateSeconds,
-                                    [](auto v) { return Domain::Sampling::clampMinTimeForRateSeconds(v); });
-
     UserConfigHelpers::loadAndClamp(
         config, "metrics", "max_sane_rate_bps", settings.maxSaneRateBps, [](auto v) { return Domain::Sampling::clampMaxSaneRateBps(v); });
-
-    if (auto val = config["metrics"]["integrated_gpu_vram_threshold_mb"].value<std::int64_t>())
-    {
-        // Check for overflow before MB-to-bytes conversion
-        constexpr int64_t MAX_MB_BEFORE_OVERFLOW = std::numeric_limits<int64_t>::max() / (1024LL * 1024LL);
-        const int64_t mb = std::clamp(*val, static_cast<int64_t>(0), MAX_MB_BEFORE_OVERFLOW);
-        const int64_t bytes = mb * 1024LL * 1024LL;
-        settings.integratedGpuVramThresholdBytes = Domain::Sampling::clampIntegratedGpuVramThresholdBytes(bytes);
-    }
 
     // UI behavior parameters
     UserConfigHelpers::loadAndClamp(config,
@@ -204,28 +187,6 @@ void readSettings(const toml::table& config, UserSettings& settings)
     if (auto val = config["ui"]["chart_anti_aliasing"].value<bool>())
     {
         settings.chartAntiAliasing = *val;
-    }
-
-    UserConfigHelpers::loadAndClamp(config,
-                                    "ui",
-                                    "progress_color_low_threshold",
-                                    settings.progressColorLowThreshold,
-                                    [](auto v) { return Domain::Sampling::clampProgressColorLowThreshold(v); });
-
-    UserConfigHelpers::loadAndClamp(config,
-                                    "ui",
-                                    "progress_color_high_threshold",
-                                    settings.progressColorHighThreshold,
-                                    [](auto v) { return Domain::Sampling::clampProgressColorHighThreshold(v); });
-
-    // Validate that low <= high threshold
-    if (settings.progressColorLowThreshold > settings.progressColorHighThreshold)
-    {
-        spdlog::warn("User config: progress_color_low_threshold ({}) > progress_color_high_threshold ({}); "
-                     "swapping to maintain low <= high.",
-                     settings.progressColorLowThreshold,
-                     settings.progressColorHighThreshold);
-        std::swap(settings.progressColorLowThreshold, settings.progressColorHighThreshold);
     }
 
     // Theme
@@ -406,17 +367,13 @@ void readSettings(const toml::table& config, UserSettings& settings)
          }},
         {"metrics",
          toml::table{
-             {"min_time_for_rate_seconds", Domain::Sampling::clampMinTimeForRateSeconds(settings.minTimeForRateSeconds)},
              {"max_sane_rate_bps", Domain::Sampling::clampMaxSaneRateBps(settings.maxSaneRateBps)},
-             {"integrated_gpu_vram_threshold_mb", settings.integratedGpuVramThresholdBytes / (1024LL * 1024LL)},
          }},
         {"ui",
          toml::table{
              {"chart_smooth_factor", Domain::Sampling::clampChartSmoothFactor(settings.chartSmoothFactor)},
              {"chart_tau_ms_min", Domain::Sampling::clampChartTauMsMin(settings.chartTauMsMin)},
              {"chart_tau_ms_max", Domain::Sampling::clampChartTauMsMax(settings.chartTauMsMax)},
-             {"progress_color_low_threshold", Domain::Sampling::clampProgressColorLowThreshold(settings.progressColorLowThreshold)},
-             {"progress_color_high_threshold", Domain::Sampling::clampProgressColorHighThreshold(settings.progressColorHighThreshold)},
              {"show_privilege_notice", settings.showPrivilegeNotice},
              {"chart_anti_aliasing", settings.chartAntiAliasing},
          }},
@@ -712,6 +669,9 @@ void UserConfig::save()
     // A new file gets every setting; an existing one -- even one created or repaired since startup --
     // gets only the keys whose value TaskSmack changed from its baseline.
     UserConfigHelpers::mergeOwnedKeys(document, fileExists ? buildTable(m_Synced) : toml::table{}, mine);
+    // Settings TaskSmack wrote once but never applied, and has since dropped (#1123): removed, so
+    // the file doesn't keep advertising tuning that does nothing.
+    UserConfigHelpers::eraseRetiredKeys(document);
 
     // Write a temporary file beside it and rename it over the original, so a crash mid-write can't
     // leave the config truncated or empty (#1122). This does not make the new contents durable
@@ -725,12 +685,11 @@ void UserConfig::save()
     text << "#   [sampling] interval_ms: refresh cadence (100-5000ms); affects all samplers\n";
     text << "#   [sampling] history_max_seconds: timeline history window (10-1800s)\n";
     text << "#   [sampling] socket_stats_cache_ttl_ms: Linux only; per-process network stat cache TTL (0-5000ms)\n";
-    text << "#   [metrics] min_time_for_rate_seconds: delay before computing network rates (0.0-5.0s); avoids early spikes\n";
-    text << "#   [metrics] max_sane_rate_bps: sanity check for network/IO rates (bytes/sec); clamps outliers\n";
-    text << "#   [metrics] integrated_gpu_vram_threshold_mb: GPU classification threshold (16-512MB)\n";
-    text << "#   [ui] chart_smooth_factor: exponential smoothing for charts (0.0-0.95); 0=no smoothing, 0.95=max smoothing\n";
-    text << "#   [ui] chart_tau_ms_min/max: adaptive smoothing time constant range (ms); affects chart responsiveness\n";
-    text << "#   [ui] progress_color_low/high_threshold: color change percentages for progress bars\n";
+    text << "#   [metrics] max_sane_rate_bps: per-process network rate ceiling (1e9-1e11 bytes/sec); a higher rate is "
+            "taken for a bad reading and shown as 0; read at startup\n";
+    text << "#   [ui] chart_smooth_factor: how slowly live values and the bars beside charts follow each sample (0.0-0.95), "
+            "as a fraction of the refresh interval; read at startup\n";
+    text << "#   [ui] chart_tau_ms_min/max: the shortest (5-100ms) and longest (100-2000ms) that easing may take; read at startup\n";
     text << "#   [ui] show_privilege_notice: show startup dialog when running without elevated privileges (true/false)\n";
     text << "#   [ui] chart_anti_aliasing: smooth chart line/fill edges (true/false); disable for lower CPU/GPU cost "
             "on integrated GPUs\n";
@@ -916,11 +875,12 @@ void UserConfig::applyToApplication() const
     theme.setThemeById(m_Settings.themeId);
     theme.setFontSize(m_Settings.fontSize);
 
-    // Push the anti-aliasing preference into UI (which must not depend on App/UserConfig
-    // directly -- see tasksmack.md's Dependency Rules). Config-file-only for now, like the
-    // adjacent chart_smooth_factor/chart_tau_ms_min/max tuning knobs: not exposed as a Settings
-    // UI toggle, so re-applying only at startup (no live-change path to wire up) is sufficient.
+    // Push the anti-aliasing preference and the smoothing knobs into UI (which must not depend on
+    // App/UserConfig directly -- see tasksmack.md's Dependency Rules). All config-file-only, not
+    // exposed in Settings, so applying them at startup (no live-change path to wire up) is
+    // sufficient. The smoothing knobs used to be loaded and saved but never applied (#1123).
     UI::Widgets::setChartAntiAliasingEnabled(m_Settings.chartAntiAliasing);
+    UI::Widgets::setChartSmoothing(m_Settings.chartSmoothFactor, m_Settings.chartTauMsMin, m_Settings.chartTauMsMax);
 }
 
 void UserConfig::captureFromApplication()
