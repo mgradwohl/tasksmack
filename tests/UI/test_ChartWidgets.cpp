@@ -372,13 +372,23 @@ TEST(TimeAxisPoolTest, FramesThatAskForNoAxisStillReleaseUnusedBuffers)
 
 TEST(TimeAxisPoolTest, BeginFrameTwiceInAFrameKeepsBuffersAlreadyHandedOut)
 {
+    // trimFrameCaches() and the frame's first acquire() both call beginFrame(); a repeat in the same
+    // frame must not reset the hand-out index, or the next acquire() would reuse a buffer in use.
     TimeAxisPool pool;
     auto& first = pool.acquire(5);
     first.assign(3, 1.0);
+    // A span into the heap buffer, not a reference to the Slot: acquiring again may grow the pool and
+    // move the Slot, but its buffer stays put (see EarlierBuffersSurviveThePoolGrowingInTheSameFrame).
+    const std::span<const double> held(first);
     pool.beginFrame(5);
     auto& second = pool.acquire(5);
-    EXPECT_NE(&first, &second);
+    second.assign(3, 2.0);
     EXPECT_EQ(pool.bufferCount(), 2U);
+    ASSERT_EQ(held.size(), 3U);
+    for (const double value : held)
+    {
+        EXPECT_DOUBLE_EQ(value, 1.0);
+    }
 }
 
 TEST(TimeAxisPoolTest, KeepsBuffersThatAreStillAskedFor)
