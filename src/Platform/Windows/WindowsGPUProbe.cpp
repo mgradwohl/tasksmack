@@ -23,8 +23,8 @@ namespace Platform
 WindowsGPUProbe::WindowsGPUProbe()
     : m_DXGIProbe(std::make_unique<DXGIGPUProbe>()),
       m_NVMLProbe(std::make_unique<NVMLGPUProbe>()),
-      m_PDHProbe(std::make_unique<PDHGPUProbe>()),
-      m_PDHAdapterProbe(std::make_unique<PDHGPUProbe>())
+      m_PDHProbe(std::make_unique<PDHGPUProbe>(PDHGPUProbe::Role::Process)),
+      m_PDHAdapterProbe(std::make_unique<PDHGPUProbe>(PDHGPUProbe::Role::Adapter))
 {
     std::string probeSummary = "DXGI";
     if (m_NVMLProbe->isAvailable())
@@ -113,7 +113,8 @@ std::vector<GPUCounters> WindowsGPUProbe::readGPUCounters()
         return {};
     }
 
-    // Get base counters from DXGI
+    // Get base counters from DXGI: utilization and memory in use start unread, so an adapter
+    // neither NVML nor PDH reads this sample publishes a gap rather than 0% and 0 B (#1245).
     auto counters = m_DXGIProbe->readGPUCounters();
 
     // Merge NVML enhancements for NVIDIA GPUs; returns IDs that got NVML utilization, and fills
@@ -189,16 +190,23 @@ void WindowsGPUProbe::mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiC
     // busiest engine (Task Manager's definition), keyed by "GPU_0x{HighPart}_0x{LowPart}" -- the
     // same format as GPUInfo::luidId from DXGI. Summing process totals instead counted parallel
     // engines as if they were serial (#1033).
-    const auto utilizationByLuid = m_PDHAdapterProbe->adapterUtilization();
-    if (utilizationByLuid.empty())
+    if (!m_PDHAdapterProbe->adapterUtilizationCurrent())
     {
-        return;
+        return; // Warm-up or a failed collect: DXGI's counters stay unread, a gap, not 0% (#1245)
     }
+    // A successful collect with no engine instances for an adapter means nothing ran on it: an
+    // idle GPU reads 0%, not a permanent gap (#1166).
+    const auto utilizationByLuid = m_PDHAdapterProbe->adapterUtilization();
 
     // Assign per-GPU utilization by matching each DXGI counter's LUID-based id
     // to the corresponding PDH bucket. m_DXGIIdToLuidId is populated in
     // enumerateGPUs() and maps "GPU0" → "GPU_0x00000000_0x0000D3A0".
-    assignPDHUtilizationToDXGICounters(dxgiCounters, utilizationByLuid, m_DXGIIdToLuidId, nvmlSourcedIds);
+    assignPDHUtilizationToDXGICounters(dxgiCounters,
+                                       utilizationByLuid,
+                                       m_DXGIIdToLuidId,
+                                       nvmlSourcedIds,
+                                       /*absentMeansIdle=*/true,
+                                       m_PDHAdapterProbe->adapterUtilizationUnread());
 }
 
 std::vector<ProcessGPUCounters> WindowsGPUProbe::readProcessGPUCounters()

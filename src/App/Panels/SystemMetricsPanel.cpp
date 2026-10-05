@@ -111,6 +111,10 @@ void showCpuBreakdownTooltip(const UI::ColorScheme& scheme,
     UI::Widgets::renderHistoryTooltip(ageSeconds, rows);
 }
 
+// Kept at 4 even without I/O Wait: every Overview chart reserves the same bar columns so their
+// time axes line up.
+constexpr size_t OVERVIEW_NOW_BAR_COLUMNS = 4; // CPU: Total, User, System, I/O Wait
+
 // Network interface utilities (isVirtualInterface, isBluetoothInterface, getSortedFilteredInterfaces)
 // are now in App/Panels/NetInterfaceUtils.h to avoid duplication with NetworkPanel.cpp
 
@@ -119,6 +123,15 @@ void showCpuBreakdownTooltip(const UI::ColorScheme& scheme,
 SystemMetricsPanel::SystemMetricsPanel() : Panel("System")
 {}
 
+float SystemMetricsPanel::overviewNowBarColumnWidth()
+{
+    // As the Overview lays it out: OVERVIEW_NOW_BAR_COLUMNS bars with item spacing between them, in
+    // a table column that ImGui separates from the plot with CellPadding.x either side (#1207).
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const auto columns = static_cast<float>(OVERVIEW_NOW_BAR_COLUMNS);
+    return (UI::Widgets::nowBarWidth(ImGui::GetFontSize()) * columns) + (style.ItemSpacing.x * (columns - 1.0F)) +
+           (style.CellPadding.x * 2.0F);
+}
 SystemMetricsPanel::~SystemMetricsPanel()
 {
     // Mirrors onDetach()'s order/completeness (#782): BackgroundSampler observes the models via
@@ -534,15 +547,8 @@ void SystemMetricsPanel::renderOverview()
     const float spacer = (!processStr.empty() && !uptimeStr.empty()) ? style.ItemSpacing.x : 0.0F;
     const float rightBlockWidth = uptimeWidth + processWidth + spacer;
 
-    // Calculate total GPU VRAM across all GPUs (for discrete GPUs with dedicated memory)
-    std::uint64_t totalVramBytes = 0;
-    if (m_GPUPublication)
-    {
-        for (const auto& gpuSnap : m_GPUPublication->snapshots)
-        {
-            totalVramBytes += gpuSnap.memoryTotalBytes;
-        }
-    }
+    // Total dedicated VRAM: discrete GPUs only, an integrated GPU's "memory" being system RAM (#1114).
+    const std::uint64_t totalVramBytes = m_GPUPublication ? GpuSection::totalDedicatedVramBytes(m_GPUPublication->snapshots) : 0;
 
     // Format RAM and VRAM info to append to CPU line
     std::string memoryStr;
@@ -823,9 +829,6 @@ void SystemMetricsPanel::renderOverview()
         });
     }
 
-    // Kept at 4 even without I/O Wait: every Overview chart reserves the same bar columns so their
-    // time axes line up.
-    constexpr size_t OVERVIEW_NOW_BAR_COLUMNS = 4; // CPU: Total, User, System, I/O Wait
     renderHistoryWithNowBars("OverviewCPUHistoryLayout", plotHeight, cpuPlot, cpuBars, false, OVERVIEW_NOW_BAR_COLUMNS);
     fill.addPlot();
 

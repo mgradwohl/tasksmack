@@ -39,8 +39,9 @@ using PDHGPUProbeImplDetail::adapterUtilizationFromEngines;
 using PDHGPUProbeImplDetail::addEngineUtilization;
 using PDHGPUProbeImplDetail::busiestEngineUtilization;
 
-PDHGPUProbe::PDHGPUProbe() : m_Impl(std::make_unique<Impl>())
+PDHGPUProbe::PDHGPUProbe(Role role) : m_Impl(std::make_unique<Impl>())
 {
+    m_Impl->role = role;
     m_Impl->initialize();
 }
 
@@ -70,6 +71,9 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
     // are active even after the retry.
     if (!m_Impl->ensureCounters())
     {
+        // Nothing was read, so the adapter figures are unread: a gap, not the last reading repeated
+        // as if fresh (#1166).
+        m_Impl->clearAdapterReadings();
         // Cached results stand in only while recent; after that, no data rather than a frozen
         // repeat of an old reading (#1034).
         spdlog::debug("PDHGPUProbe: No counters active; returning recent cached results if any");
@@ -82,59 +86,41 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
     if (status != ERROR_SUCCESS)
     {
         spdlog::debug("PDHGPUProbe: PdhCollectQueryData failed: 0x{:x}", static_cast<unsigned>(status));
+        // The adapter figures are unread on every failed collect, however recent the per-process
+        // cache: the previous reading published again would look fresh (#1166).
+        m_Impl->clearAdapterReadings();
         // Cached results stand in only while recent; after that, no data rather than a frozen
         // repeat of an old reading (#1034).
-        auto cached = m_Impl->freshCachedResults();
-        if (cached.empty())
-        {
-            m_Impl->lastAdapterUtilization.clear();
-            m_Impl->lastAdapterMemory.clear();
-        }
-        return cached;
+        return m_Impl->freshCachedResults();
     }
 
-    // Adapter-wide memory in use (#1029). These are gauges, not rates, so they are read on the
-    // warm-up collect too -- otherwise the first GPU refresh published every non-NVML adapter with
-    // 0 bytes in use. One instance per adapter and physical node, so names are parsed directly
-    // rather than through the per-process instance caches.
     DWORD itemCount = 0;
-    std::unordered_map<std::string, AdapterMemoryUsage> adapterMemory;
-    const auto accumulateAdapterMemory = [&](PDH_HCOUNTER counter, std::uint64_t AdapterMemoryUsage::* member)
+    if (m_Impl->role == Role::Adapter)
     {
-        auto* items = m_Impl->readCounterArray(counter, PDH_FMT_LARGE, itemCount);
-        if (items == nullptr)
-        {
-            return;
-        }
-        for (const auto& item : std::span{items, itemCount})
-        {
-            if (item.FmtValue.CStatus != ERROR_SUCCESS && item.FmtValue.CStatus != PDH_CSTATUS_NEW_DATA)
-            {
-                continue;
-            }
-            const std::string luid =
-                PDHGPUProbeImplDetail::parseAdapterInstanceLuid(PDHGPUProbeImplDetail::wideToUtf8Fallback(std::wstring(item.szName)));
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access) - PDH_FMT_LARGE selects largeValue
-            if (!luid.empty() && item.FmtValue.largeValue > 0)
-            {
-                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access) - PDH_FMT_LARGE selects largeValue
-                adapterMemory["GPU_" + luid].*member += static_cast<std::uint64_t>(item.FmtValue.largeValue);
-            }
-        }
-    };
-    accumulateAdapterMemory(m_Impl->adapterDedicatedCounter, &AdapterMemoryUsage::dedicatedBytes);
-    accumulateAdapterMemory(m_Impl->adapterSharedCounter, &AdapterMemoryUsage::sharedBytes);
-    m_Impl->lastAdapterMemory = std::move(adapterMemory);
+        readAdapterMemory();
+    }
 
     // Handle warm-up: the first collected sample cannot produce utilization values
     // because PDH needs two samples to compute deltas
     if (!m_Impl->warmedUp)
     {
         m_Impl->warmedUp = true;
-        spdlog::debug("PDHGPUProbe: Warm-up sample collected, returning cached results");
-        // Return cached results during warm-up to avoid UI gaps
-        m_Impl->lastValidTimestamp = std::chrono::steady_clock::now();
-        return m_Impl->lastValidResults;
+        // No rates yet, so no adapter utilization: a gap, not 0% or a reading from before a
+        // counter re-add (#1166).
+        m_Impl->lastAdapterUtilization.clear();
+        m_Impl->adapterUtilizationCurrent = false;
+        spdlog::debug("PDHGPUProbe: Warm-up sample collected, returning recent cached results if any");
+        // Cached results stand in during warm-up only while recent. Refreshing their timestamp here
+        // made results from before a counter re-add count as fresh for another staleness window.
+        return m_Impl->freshCachedResults();
+    }
+
+    if (m_Impl->role == Role::Adapter)
+    {
+        // The adapter query needs only the per-engine totals, not the per-process aggregation the
+        // process query builds (#1175).
+        readAdapterUtilization();
+        return {};
     }
 
     std::vector<ProcessGPUCounters> result;
@@ -178,10 +164,6 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
     };
     std::unordered_map<AggKey, AggData, AggKeyHash> aggregated;
 
-    // Adapter utilization: for each engine of each adapter the sum over processes, then the
-    // busiest engine (gpuLuid -> engineKey -> percent).
-    std::unordered_map<std::string, std::unordered_map<std::string, double>> adapterEngines;
-
     // Read counter values from the three wildcard counter arrays.
     // The scratch buffer is reused across reads, so each array must be fully
     // processed before the next read.
@@ -203,9 +185,7 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
 
             auto& agg = aggregated[AggKey{.pid = inst.pid, .gpuLuid = inst.gpuLuid}];
             // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access) - PDH_FMT_DOUBLE selects doubleValue
-            const double utilization = item.FmtValue.doubleValue;
-            addEngineUtilization(agg.utilizationByEngine, inst.engineKey, utilization);
-            adapterEngines[inst.gpuLuid][inst.engineKey] += utilization;
+            addEngineUtilization(agg.utilizationByEngine, inst.engineKey, item.FmtValue.doubleValue);
 
             // Add engine type if not already present
             if (!inst.engineType.empty() && std::ranges::find(agg.engines, inst.engineType) == agg.engines.end())
@@ -270,12 +250,6 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
         result.push_back(std::move(counter));
     }
 
-    m_Impl->lastAdapterUtilization.clear();
-    for (const auto& [gpuLuid, engines] : adapterEngines)
-    {
-        m_Impl->lastAdapterUtilization["GPU_" + gpuLuid] = adapterUtilizationFromEngines(engines);
-    }
-
     if (!result.empty())
     {
         spdlog::debug("PDHGPUProbe: Got {} per-process GPU entries (util + memory)", result.size());
@@ -287,9 +261,110 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
     return result;
 }
 
+void PDHGPUProbe::readAdapterMemory()
+{
+    // Adapter-wide memory in use (#1029). These are gauges, not rates, so they are read on the
+    // warm-up collect too -- otherwise the first GPU refresh published every non-NVML adapter with
+    // 0 bytes in use. One instance per adapter and physical node, so names are parsed directly
+    // rather than through the per-process instance caches.
+    DWORD itemCount = 0;
+    std::unordered_map<std::string, AdapterMemoryUsage> adapterMemory;
+    // Every good item counts, 0 bytes included, and marks its segment read for the adapter: an
+    // idle adapter's real 0 B used to be dropped and so showed as N/A, indistinguishable from a
+    // segment whose counter array failed (#1246).
+    const auto accumulateAdapterMemory =
+        [&](PDH_HCOUNTER counter, std::uint64_t AdapterMemoryUsage::* bytesMember, bool AdapterMemoryUsage::* readMember)
+    {
+        auto* items = m_Impl->readCounterArray(counter, PDH_FMT_LARGE, itemCount);
+        if (items == nullptr)
+        {
+            return; // This segment is unread for every adapter
+        }
+        for (const auto& item : std::span{items, itemCount})
+        {
+            if (item.FmtValue.CStatus != ERROR_SUCCESS && item.FmtValue.CStatus != PDH_CSTATUS_NEW_DATA)
+            {
+                continue;
+            }
+            const std::string luid =
+                PDHGPUProbeImplDetail::parseAdapterInstanceLuid(PDHGPUProbeImplDetail::wideToUtf8Fallback(std::wstring(item.szName)));
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access) - PDH_FMT_LARGE selects largeValue
+            const LONGLONG bytes = item.FmtValue.largeValue;
+            if (luid.empty() || bytes < 0)
+            {
+                continue;
+            }
+            auto& usage = adapterMemory["GPU_" + luid];
+            usage.*bytesMember += static_cast<std::uint64_t>(bytes);
+            usage.*readMember = true;
+        }
+    };
+    accumulateAdapterMemory(m_Impl->adapterDedicatedCounter, &AdapterMemoryUsage::dedicatedBytes, &AdapterMemoryUsage::dedicatedRead);
+    accumulateAdapterMemory(m_Impl->adapterSharedCounter, &AdapterMemoryUsage::sharedBytes, &AdapterMemoryUsage::sharedRead);
+    m_Impl->lastAdapterMemory = std::move(adapterMemory);
+}
+
+void PDHGPUProbe::readAdapterUtilization()
+{
+    // For each engine of each adapter the sum over processes, then the busiest engine
+    // (gpuLuid -> engineKey -> percent) -- Task Manager's definition (#1033).
+    std::unordered_map<std::string, std::unordered_map<std::string, double>> adapterEngines;
+    std::unordered_set<std::string> unreadLuids; // Adapters with engine items, none of them readable
+    DWORD itemCount = 0;
+    auto* items = m_Impl->readCounterArray(m_Impl->utilizationCounter, PDH_FMT_DOUBLE | PDH_FMT_NOCAP100, itemCount);
+    if (!m_Impl->lastArrayReadOk)
+    {
+        // The array itself was not read: nothing is known about any adapter -- unread, a gap, not an
+        // idle 0% (#1166).
+        m_Impl->lastAdapterUtilization.clear();
+        m_Impl->adapterUtilizationUnread.clear();
+        m_Impl->adapterUtilizationCurrent = false;
+        return;
+    }
+    if (items != nullptr)
+    {
+        const std::span itemSpan{items, itemCount};
+        for (std::size_t idx = 0; idx < itemSpan.size(); ++idx)
+        {
+            const auto& item = itemSpan[idx];
+            const auto& inst = m_Impl->instanceForAt(item.szName, idx, m_Impl->utilizationPositional);
+            if (!inst.valid || inst.pid <= 0)
+            {
+                continue;
+            }
+            if (item.FmtValue.CStatus != ERROR_SUCCESS && item.FmtValue.CStatus != PDH_CSTATUS_NEW_DATA)
+            {
+                unreadLuids.insert("GPU_" + inst.gpuLuid);
+                continue;
+            }
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access) - PDH_FMT_DOUBLE selects doubleValue
+            adapterEngines[inst.gpuLuid][inst.engineKey] += item.FmtValue.doubleValue;
+        }
+    }
+
+    m_Impl->lastAdapterUtilization.clear();
+    for (const auto& [gpuLuid, engines] : adapterEngines)
+    {
+        m_Impl->lastAdapterUtilization["GPU_" + gpuLuid] = adapterUtilizationFromEngines(engines);
+        unreadLuids.erase("GPU_" + gpuLuid); // Some of its engines were read: it has a reading
+    }
+    m_Impl->adapterUtilizationUnread = std::move(unreadLuids);
+    m_Impl->adapterUtilizationCurrent = true;
+}
+
 std::unordered_map<std::string, double> PDHGPUProbe::adapterUtilization() const
 {
     return m_Impl ? m_Impl->lastAdapterUtilization : std::unordered_map<std::string, double>{};
+}
+
+std::unordered_set<std::string> PDHGPUProbe::adapterUtilizationUnread() const
+{
+    return m_Impl ? m_Impl->adapterUtilizationUnread : std::unordered_set<std::string>{};
+}
+
+bool PDHGPUProbe::adapterUtilizationCurrent() const
+{
+    return m_Impl && m_Impl->adapterUtilizationCurrent;
 }
 
 std::unordered_map<std::string, AdapterMemoryUsage> PDHGPUProbe::adapterMemory() const

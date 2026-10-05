@@ -98,9 +98,23 @@ class Window
     /// setSize(), so never call it from the render loop.
     void applySavedGeometry(std::optional<std::pair<int, int>> position, bool maximized);
 
+    /// The display the window is on, or 0 when unknown. Cheap enough to poll every frame, so a
+    /// caller can tell when to re-read getUsableDisplaySize().
+    [[nodiscard]] auto getDisplayId() const noexcept -> SDL_DisplayID;
+
+    /// Size of the usable bounds (work area) of the display the window is on, in window
+    /// coordinates like getSize(), or std::nullopt when unknown. Asks the windowing system (a
+    /// server round trip on X11), so read it when the display changes, not every frame (#1207).
+    [[nodiscard]] auto getUsableDisplaySize() const -> std::optional<std::pair<int, int>>;
+
     [[nodiscard]] bool isMaximized() const;
     [[nodiscard]] bool isMinimized() const noexcept;
     void maximize();
+    /// Replace an OS-initiated maximize (SDL_EVENT_WINDOW_MAXIMIZED: Win+Up, snap to the top edge,
+    /// ShowWindow(SW_MAXIMIZE)) with maximize()'s client-side one, which fills the current display's
+    /// usable bounds and records the real normal rectangle as the restore target (#1208). Does
+    /// nothing where WindowGeometry::shouldAdoptSystemMaximize() says the OS maximize is right.
+    void adoptSystemMaximize();
     void restore();
     void minimize() const;
 

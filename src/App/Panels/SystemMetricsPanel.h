@@ -72,6 +72,10 @@ class SystemMetricsPanel : public Panel
     /// Render content only (for embedding in tab, without window wrapper).
     void renderContent() override;
 
+    /// Width of the Overview's NowBar column, including the cell padding that separates it from the
+    /// plot, at the current font and style. For the window's content minimum (#1207); needs a frame.
+    [[nodiscard]] static float overviewNowBarColumnWidth();
+
     /// Get the hostname (for tab/window title).
     [[nodiscard]] const std::string& hostname() const
     {

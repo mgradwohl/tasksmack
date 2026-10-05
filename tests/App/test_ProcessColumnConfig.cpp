@@ -118,6 +118,31 @@ TEST(ProcessColumnConfigTest, HeadersUseThePlainLanguageNames)
     EXPECT_EQ(getColumnInfo(ProcessColumn::GpuDevice).name, "GPU");
 }
 
+// #1101: per-process network counts TCP only on both platforms; the column tooltips must say so
+// rather than let a browser streaming over QUIC read as idle.
+TEST(ProcessColumnConfigTest, NetworkColumnsNoteTheyAreTcpOnlyWithoutUdpCounters)
+{
+    for (const auto col : {ProcessColumn::NetSent, ProcessColumn::NetReceived})
+    {
+        const std::string_view note = columnCapabilityNote(col, false);
+        EXPECT_TRUE(note.contains("TCP only")) << getColumnInfo(col).configKey;
+        EXPECT_TRUE(note.contains("UDP")) << getColumnInfo(col).configKey;
+        EXPECT_TRUE(columnCapabilityNote(col, true).empty()) << getColumnInfo(col).configKey;
+    }
+}
+
+TEST(ProcessColumnConfigTest, OtherColumnsHaveNoCapabilityNote)
+{
+    for (const auto col : allProcessColumns())
+    {
+        if (col == ProcessColumn::NetSent || col == ProcessColumn::NetReceived)
+        {
+            continue;
+        }
+        EXPECT_TRUE(columnCapabilityNote(col, false).empty()) << getColumnInfo(col).configKey;
+    }
+}
+
 // ========== Column Count and Index Conversion ==========
 
 TEST(ProcessColumnConfigTest, ColumnCountIsCorrect)
