@@ -1371,6 +1371,17 @@ TEST(ChartWidgetsTest, DefaultPlotFlagsHideImPlotsMouseReadout)
 
 // ========== Motion-driven frame requests (#1125) ==========
 
+TEST(HistoryChartMotionTest, EaseFramesAreRequestedOnlyForAVisibleChartThisFrame)
+{
+    // #1281 review: an axis eased before its chart is drawn must not keep the app at full rate when the
+    // chart turns out to be clipped (BeginPlot false), nor carry a stale request to a later frame.
+    using UI::Widgets::shouldRequestEaseFrames;
+    EXPECT_TRUE(shouldRequestEaseFrames(42, 42, true));
+    EXPECT_FALSE(shouldRequestEaseFrames(42, 42, false)); // clipped chart
+    EXPECT_FALSE(shouldRequestEaseFrames(41, 42, true));  // from an earlier frame
+    EXPECT_FALSE(shouldRequestEaseFrames(-1, 42, true));  // nothing pending
+}
+
 TEST(HistoryChartMotionTest, ScrollSpeedIsPlotWidthOverWindowSeconds)
 {
     // The default 300 s window across 1000 px scrolls ~3.3 px/s: far too slow to need 60 fps.

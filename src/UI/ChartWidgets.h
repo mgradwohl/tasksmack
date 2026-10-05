@@ -50,7 +50,22 @@ namespace Detail
 // setChartAntiAliasingEnabled()/chartAntiAliasingEnabled() below are meant to provide.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 inline bool g_ChartAntiAliasingEnabled = true;
+
+// The frame on which an eased Y axis last asked for full-rate frames (easedChartUpperBound()), or -1.
+// The axis is eased before its chart is drawn, so the request is held here and made by the next
+// HistoryChart only if that chart is actually visible (#1125, #1281 review).
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+inline int g_PendingEaseRequestFrame = -1;
 } // namespace Detail
+
+/// Whether a HistoryChart should ask for full-rate frames for an axis that was eased just before it:
+/// only when an ease request is pending from this same frame and the chart is visible (BeginPlot
+/// returned true). A chart clipped below a scrolling child, whose axis is still easing, asks for
+/// nothing.
+[[nodiscard]] constexpr bool shouldRequestEaseFrames(int pendingFrame, int currentFrame, bool chartVisible) noexcept
+{
+    return chartVisible && pendingFrame >= 0 && pendingFrame == currentFrame;
+}
 
 /// Whether history chart plots render anti-aliased lines (see CHART_ANTI_ALIASING_FLAGS_MASK's
 /// doc comment for why "lines", not "lines/fills": ImPlot's shaded-fill path doesn't currently
@@ -1670,12 +1685,14 @@ rateHistoryConfig(const char* id, double xMin, double xMax, ImPlotFormatter yFor
     }
     const double bound = stepEasedBound(state[chartId], target, frame, static_cast<double>(ImGui::GetIO().DeltaTime));
     // A bound still easing rescales the whole chart every frame: keep the full animation rate until it
-    // settles (easeAxisUpperBound snaps to the target once close), then let the chart idle (#1125).
+    // settles (easeAxisUpperBound snaps to the target once close), then let the chart idle (#1125) --
+    // but only while the chart is visible.
     // easeAxisUpperBound snaps to the target once close, so "settled" is exact; compared with a
     // tolerance relative to the bound's size rather than with ==.
+    // The request is held until the chart is known to be visible: see Detail::g_PendingEaseRequestFrame.
     if (std::abs(bound - target) > 1e-9 * std::max(1.0, std::abs(target)))
     {
-        Core::AnimationRequest::request();
+        Detail::g_PendingEaseRequestFrame = frame;
     }
     return bound;
 }
@@ -1777,6 +1794,13 @@ class HistoryChart
         // labels), so this slightly overstates the scroll speed -- the safe side for pacing.
         const double plotWidthPx = static_cast<double>(ImGui::GetContentRegionAvail().x);
         m_Active = ImPlot::BeginPlot(config.id, ImVec2(-1, config.height), historyChartBeginPlotFlags(config.flags, config.showLegend));
+        // An axis eased just before this chart asks for full-rate frames only if the chart is visible;
+        // the pending request is consumed either way, so it can't carry to another chart.
+        if (shouldRequestEaseFrames(Detail::g_PendingEaseRequestFrame, ImGui::GetFrameCount(), m_Active))
+        {
+            Core::AnimationRequest::request();
+        }
+        Detail::g_PendingEaseRequestFrame = -1;
         if (!m_Active)
         {
             return;

@@ -127,7 +127,7 @@ TaskSmack only draws as many frames as the screen needs. The FPS readout in the 
 
 - **Idle, about 20 FPS or less:** nothing on screen moves faster than half a pixel per frame at that rate. With the default 300-second history, the charts scroll only a few pixels a second.
 - **Brief bursts, up to about 60 FPS:** a new sample has arrived and the now-bars or a chart's scale are easing to it, or a chart with a short history window scrolls quickly.
-- **Moving the mouse or typing:** frames are capped at about 60 FPS. The cap is a whole number of display refreshes, never slower than 60, for example 60 at 60 or 120 Hz, 75 at 75 Hz, 72 at 144 Hz and 82.5 at 165 Hz, so motion stays even with vsync.
+- **Moving the mouse or typing:** frames are capped at about 60 FPS. The cap is a whole number of display refreshes, never slower than 60 on a display refreshing at 60 Hz or faster, for example 60 at 60 or 120 Hz, 75 at 75 Hz, 72 at 144 Hz and 82.5 at 165 Hz, so motion stays even with vsync. A slower display caps at its own refresh rate (30 FPS on a 30 Hz display).
 - **Minimized:** about 5 FPS. A window fully covered by other windows drops to the same rate only where the desktop reports it: on Wayland. X11 and Windows don't report an ordinarily covered window, so there it keeps its normal rate.
 
 The readout shows the real frame time, so a stalled machine that draws 6 frames a second shows about 6 FPS.
