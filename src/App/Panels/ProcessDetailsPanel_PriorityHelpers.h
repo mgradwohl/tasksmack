@@ -13,6 +13,9 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <format>
+#include <string>
+#include <string_view>
 
 namespace App::Detail
 {
@@ -262,6 +265,121 @@ inline constexpr float PRIORITY_BADGE_TEXT_MIN_CONTRAST = 4.5F;
     const ImVec4 black{0.0F, 0.0F, 0.0F, 1.0F};
     const ImVec4 white{1.0F, 1.0F, 1.0F, 1.0F};
     return (UI::ColorContrast::contrastRatio(black, fill) >= UI::ColorContrast::contrastRatio(white, fill)) ? black : white;
+}
+
+// =============================================================================
+// Windows priority classes (#1204)
+// =============================================================================
+//
+// Windows has six priority classes, not forty nice steps, so on Windows Process Details offers the
+// classes by name. The probe reports each class as a nice value in the middle of its
+// getPriorityLabel() bucket (Platform::priorityClassToNice) and setPriority() maps a nice value back
+// to a class (Platform::niceToPriorityClass), so the control writes one representative nice value
+// per class through the same setPriority() path. Pure and platform-independent, so it is tested on
+// every platform; the panel uses it only under _WIN32.
+
+/// Width of the Windows priority-class combo, in ems: room for its longest name, "Below Normal",
+/// plus the arrow button.
+inline constexpr float PRIORITY_CLASS_COMBO_WIDTH_EM = 12.0F;
+
+/// Whether this build shows Windows priority classes rather than Unix nice values.
+#ifdef _WIN32
+inline constexpr bool PRIORITY_USES_WINDOWS_CLASSES = true;
+#else
+inline constexpr bool PRIORITY_USES_WINDOWS_CLASSES = false;
+#endif
+
+/// A Windows priority class, lowest first.
+enum class WindowsPriorityClass : std::uint8_t
+{
+    Idle,
+    BelowNormal,
+    Normal,
+    AboveNormal,
+    High,
+    /// Reported, never set: Platform::niceToPriorityClass() deliberately stops at High.
+    Realtime,
+};
+
+/// The classes the priority control offers, in its order. Realtime is not among them.
+inline constexpr std::array<WindowsPriorityClass, 5> SETTABLE_WINDOWS_PRIORITY_CLASSES = {
+    WindowsPriorityClass::Idle,
+    WindowsPriorityClass::BelowNormal,
+    WindowsPriorityClass::Normal,
+    WindowsPriorityClass::AboveNormal,
+    WindowsPriorityClass::High,
+};
+
+/// The nice value that stands for @p priorityClass: what the probe reports for it and what the
+/// control passes to setPriority() to select it. Mirrors Platform::priorityClassToNice(), which this
+/// layer cannot include (it pulls in <windows.h>); the tests hold both to getPriorityLabel().
+[[nodiscard]] constexpr auto windowsPriorityClassNice(WindowsPriorityClass priorityClass) noexcept -> int32_t
+{
+    switch (priorityClass)
+    {
+    case WindowsPriorityClass::Idle:
+        return Domain::Priority::MAX_NICE;
+    case WindowsPriorityClass::BelowNormal:
+        return 10;
+    case WindowsPriorityClass::AboveNormal:
+        return -7;
+    case WindowsPriorityClass::High:
+        return -15;
+    case WindowsPriorityClass::Realtime:
+        return Domain::Priority::MIN_NICE;
+    case WindowsPriorityClass::Normal:
+    default:
+        return Domain::Priority::NORMAL_NICE;
+    }
+}
+
+/// The class a reported nice value stands for. Realtime is MIN_NICE, which nothing else reports on
+/// Windows; every other value falls in a getPriorityLabel() bucket.
+[[nodiscard]] constexpr auto windowsPriorityClassFromNice(int32_t nice) noexcept -> WindowsPriorityClass
+{
+    if (nice <= Domain::Priority::MIN_NICE)
+    {
+        return WindowsPriorityClass::Realtime;
+    }
+    if (nice < Domain::Priority::HIGH_THRESHOLD)
+    {
+        return WindowsPriorityClass::High;
+    }
+    if (nice < Domain::Priority::ABOVE_NORMAL_THRESHOLD)
+    {
+        return WindowsPriorityClass::AboveNormal;
+    }
+    if (nice < Domain::Priority::BELOW_NORMAL_THRESHOLD)
+    {
+        return WindowsPriorityClass::Normal;
+    }
+    if (nice < Domain::Priority::IDLE_THRESHOLD)
+    {
+        return WindowsPriorityClass::BelowNormal;
+    }
+    return WindowsPriorityClass::Idle;
+}
+
+/// The class's name, as the Processes table's Priority column spells it (getPriorityLabel());
+/// Realtime, which that column cannot tell from High, is named here.
+[[nodiscard]] constexpr auto windowsPriorityClassName(WindowsPriorityClass priorityClass) noexcept -> std::string_view
+{
+    if (priorityClass == WindowsPriorityClass::Realtime)
+    {
+        return "Realtime";
+    }
+    return Domain::Priority::getPriorityLabel(windowsPriorityClassNice(priorityClass));
+}
+
+/// Process Details' Overview priority text: the class name on Windows, where nice values mean
+/// nothing to the user (#1204); the label with its nice value elsewhere.
+[[nodiscard]] inline auto priorityDisplayText(int32_t nice, bool windowsClasses) -> std::string
+{
+    if (windowsClasses)
+    {
+        return std::string(windowsPriorityClassName(windowsPriorityClassFromNice(nice)));
+    }
+    return std::format("{} (nice: {})", Domain::Priority::getPriorityLabel(nice), nice);
 }
 
 // Note: For priority labels, use Domain::Priority::getPriorityLabel() from PriorityConfig.h

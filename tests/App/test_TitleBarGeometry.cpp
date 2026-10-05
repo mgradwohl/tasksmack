@@ -1072,6 +1072,90 @@ TEST(TitleBarGeometryTest, MinimumSizeSurvivesDegenerateInput)
     EXPECT_EQ(computeMinimumWindowSize(1.0e6F, 0.0F).height, MAX);
 }
 
+// ========== Content floors (#1207) ==========
+
+// The Processes toolbar is the wider floor: the minimum is that row plus the chrome around it.
+TEST(TitleBarGeometryTest, ContentMinimumCoversTheProcessesToolbar)
+{
+    // 16px em: the chart row needs 96 + 15 * 16 = 336px; the toolbar 520px.
+    EXPECT_FLOAT_EQ(computeContentMinimumWidth(520.0F, 96.0F, 16.0F, 24.0F), 544.0F);
+}
+
+// The NowBar column plus 15 em of plot is the wider floor: at 200 units the Overview's plots were
+// about 50px wide.
+TEST(TitleBarGeometryTest, ContentMinimumLeavesFifteenEmsOfPlotBesideTheNowBars)
+{
+    // 32px em: 200 + 15 * 32 = 680px, wider than a 500px toolbar.
+    EXPECT_FLOAT_EQ(computeContentMinimumWidth(500.0F, 200.0F, 32.0F, 20.0F), 700.0F);
+    EXPECT_FLOAT_EQ(MIN_PLOT_WIDTH_EM, 15.0F);
+}
+
+TEST(TitleBarGeometryTest, ContentMinimumIgnoresUnusableInputs)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FLOAT_EQ(computeContentMinimumWidth(nan, -5.0F, nan, -1.0F), 0.0F);
+    EXPECT_FLOAT_EQ(computeContentMinimumWidth(0.0F, 0.0F, 10.0F, 0.0F), 150.0F);
+}
+
+// The old minimum ignored the panels: at the reference scale the window went down to 200 units
+// whatever they needed.
+TEST(TitleBarGeometryTest, MinimumWidthCoversThePanelContent)
+{
+    const auto minimum = computeMinimumWindowSize(1.0F, 300.0F, 640.4F);
+    EXPECT_EQ(minimum.width, 641);
+    EXPECT_EQ(minimum.height, MIN);
+    // The wider of the title bar and the panels wins.
+    EXPECT_EQ(computeMinimumWindowSize(1.0F, 900.0F, 640.0F).width, 900);
+    // Not known yet: the title bar alone, as before.
+    EXPECT_EQ(computeMinimumWindowSize(1.0F, 300.0F).width, 300);
+    EXPECT_EQ(computeMinimumWindowSize(1.0F, 300.0F, std::numeric_limits<float>::quiet_NaN()).width, 300);
+}
+
+// The status bar's FPS readout was drawn over "Ready" in a narrow window; it is left out instead.
+TEST(TitleBarGeometryTest, MinimumIsCappedToTheDisplaysUsableBounds)
+{
+    // A large font on a small display: four NowBars and 15 em of plot wanted more than the work
+    // area, so the window could not fit on-screen and maximize could not satisfy it (#1207).
+    const WindowMinimumSize wanted{.width = 1600, .height = 400};
+    const auto capped = capMinimumToUsable(wanted, 1280, 984);
+    EXPECT_EQ(capped.width, 1280);
+    EXPECT_EQ(capped.height, 400);
+
+    EXPECT_EQ(capMinimumToUsable(WindowMinimumSize{.width = 900, .height = 1200}, 1920, 1040).height, 1040);
+}
+
+TEST(TitleBarGeometryTest, MinimumThatFitsTheDisplayIsUnchanged)
+{
+    const WindowMinimumSize wanted{.width = 700, .height = 400};
+    EXPECT_EQ(capMinimumToUsable(wanted, 1920, 1040), wanted);
+    EXPECT_EQ(capMinimumToUsable(wanted, 700, 400), wanted); // exactly the usable size
+}
+
+TEST(TitleBarGeometryTest, MinimumIsUncappedWhenTheUsableBoundsAreUnknown)
+{
+    const WindowMinimumSize wanted{.width = 1600, .height = 1200};
+    EXPECT_EQ(capMinimumToUsable(wanted, 0, 0), wanted);
+    EXPECT_EQ(capMinimumToUsable(wanted, -1, 1040).width, 1600);
+    EXPECT_EQ(capMinimumToUsable(wanted, -1, 1040).height, 1040);
+}
+
+TEST(TitleBarGeometryTest, CappedMinimumNeverFallsBelowTheBaseMinimum)
+{
+    const WindowMinimumSize wanted{.width = 1600, .height = 1200};
+    const auto capped = capMinimumToUsable(wanted, 50, 50);
+    EXPECT_EQ(capped.width, MIN);
+    EXPECT_EQ(capped.height, MIN);
+}
+
+TEST(TitleBarGeometryTest, StatusBarReadoutOnlyWhenItFits)
+{
+    EXPECT_TRUE(computeStatusBarReadoutFits(60.0F, 300.0F, 8.0F));
+    EXPECT_TRUE(computeStatusBarReadoutFits(60.0F, 68.0F, 8.0F)); // exactly the gap
+    EXPECT_FALSE(computeStatusBarReadoutFits(60.0F, 67.0F, 8.0F));
+    EXPECT_FALSE(computeStatusBarReadoutFits(60.0F, 20.0F, 8.0F)); // would start left of "Ready"'s end
+    EXPECT_FALSE(computeStatusBarReadoutFits(std::numeric_limits<float>::quiet_NaN(), 300.0F, 8.0F));
+}
+
 // ========== Resize geometry with a caller-supplied minimum (#970) ==========
 
 // Dragging the right edge inward stops at the supplied minimum, not the base one.
@@ -1108,5 +1192,18 @@ TEST(ComputeResizeGeometryTest, SuppliedMinimum_IsHeldInsideTheAbsoluteBounds)
     EXPECT_EQ(tooLarge.width, MAX);
     EXPECT_EQ(tooLarge.height, MAX);
 }
+
+// #1282 review: a resolution change on the same display keeps its id and the wanted width, so only the
+// display event can trigger the refresh -- it must be recognised, and unrelated events must not.
+TEST(TitleBarGeometryTest, DisplayModeChangesInvalidateTheUsableBoundsCap)
+{
+    EXPECT_TRUE(invalidatesUsableBounds(SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED));
+    EXPECT_TRUE(invalidatesUsableBounds(SDL_EVENT_DISPLAY_USABLE_BOUNDS_CHANGED));
+    EXPECT_TRUE(invalidatesUsableBounds(SDL_EVENT_DISPLAY_ADDED));
+    EXPECT_TRUE(invalidatesUsableBounds(SDL_EVENT_DISPLAY_REMOVED));
+    EXPECT_FALSE(invalidatesUsableBounds(SDL_EVENT_WINDOW_RESIZED));
+    EXPECT_FALSE(invalidatesUsableBounds(SDL_EVENT_MOUSE_MOTION));
+}
+
 } // namespace
 } // namespace App
