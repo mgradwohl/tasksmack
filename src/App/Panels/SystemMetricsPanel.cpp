@@ -13,6 +13,7 @@
 #include "Domain/GPUModel.h"
 #include "Domain/Numeric.h"
 #include "Domain/ProcessModel.h"
+#include "Domain/SamplingConfig.h"
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
 #include "Platform/Factory.h"
@@ -262,7 +263,8 @@ void SystemMetricsPanel::onEvent(Core::Event& event)
     dispatcher.dispatch<Core::HistoryDurationChangedEvent>(
         [this](Core::HistoryDurationChangedEvent& e)
         {
-            const double seconds = Domain::Numeric::toDouble(e.getSeconds());
+            // Clamped as the models clamp it, so the charts' axes span the window the models keep (#1145).
+            const double seconds = Domain::Sampling::clampHistorySeconds(Domain::Numeric::toDouble(e.getSeconds()));
             // Whole seconds, so anything under half a second apart is the same setting.
             if (std::abs(seconds - m_MaxHistorySeconds) < 0.5)
             {
@@ -904,9 +906,12 @@ void SystemMetricsPanel::renderOverview()
                 updateSmoothedPower(targetPower, targetBattery, m_LastDeltaSeconds);
             }
 
-            // One upper bound for the power axis and its bar, so the bar and line agree (#1003).
-            const double powerAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-                "##PowerBatteryHistory", UI::Widgets::maxOfSeries(powerHist), UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS);
+            // One upper bound for the power axis and its bar, so the bar and line agree (#1003). Sized
+            // to the samples the window shows, not the one trimming keeps left of it (#1145).
+            const double powerAxisUpper =
+                UI::Widgets::easedRateAxisUpperBound("##PowerBatteryHistory",
+                                                     UI::Widgets::maxOfSeriesSince(powerTimeData, axis.xMin, powerHist),
+                                                     UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS);
 
             // Build NowBars
             NowBarList bars;
@@ -1140,10 +1145,13 @@ void SystemMetricsPanel::renderOverview()
         // Threads and handles are counts on the left axis; page faults are a rate, on their own
         // right-hand axis, so a fault spike no longer flattens the count lines (#1024). Each bar is
         // scaled to its series' axis, so a bar and its line show a value at the same height (#1003).
-        const double countAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-            "##ResourcesHistory", UI::Widgets::maxOfSeries(threadData, handleData), UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
+        // Both are sized to the samples in the window, not ones left of it (#1145).
+        const double countAxisUpper =
+            UI::Widgets::easedRateAxisUpperBound("##ResourcesHistory",
+                                                 UI::Widgets::maxOfSeriesSince(timeData, axis.xMin, threadData, handleData),
+                                                 UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
         const double faultAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-            "##ResourcesHistory/Y2", UI::Widgets::maxOfSeries(faultData), UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
+            "##ResourcesHistory/Y2", UI::Widgets::maxOfSeriesSince(timeData, axis.xMin, faultData), UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
 
 #ifdef _WIN32
         constexpr const char* handleLabel = "Handles";

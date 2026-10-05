@@ -7,6 +7,7 @@
 #include "Domain/History.h"
 #include "Domain/Numeric.h"
 #include "Domain/ProcessSnapshot.h"
+#include "Domain/SamplingConfig.h"
 #include "Platform/Factory.h"
 #include "Platform/IProcessActions.h"
 #include "ProcessDetailsLayout.h"
@@ -508,7 +509,15 @@ void ProcessDetailsPanel::onEvent(Core::Event& event)
     dispatcher.dispatch<Core::HistoryDurationChangedEvent>(
         [this](Core::HistoryDurationChangedEvent& e)
         {
-            m_MaxHistorySeconds = Domain::Numeric::toDouble(e.getSeconds());
+            // Clamped like the models' windows, and applied now: trimmed only by the next sample, the
+            // charts kept the old window's data and scale until then -- indefinitely for a process
+            // that is no longer sampled (#1145).
+            m_MaxHistorySeconds = Domain::Sampling::clampHistorySeconds(Domain::Numeric::toDouble(e.getSeconds()));
+            if (!m_Timestamps.empty())
+            {
+                trimHistory(m_Timestamps.back());
+                m_HistoryGeneration = UI::Widgets::nextChartDataGeneration();
+            }
             return false;
         });
 }
@@ -889,13 +898,14 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
         // The process's CPU is a percent of the whole machine, so a fixed 0-100 axis drew a flat line
         // for any typical process: one busy thread on 16 logical CPUs is 6.25 %. The axis scales to the
         // data instead, from a 5 % floor up to 100, eased like a rate axis, and the bars share its bound
-        // so each bar meets its line (#1195, #1003). Values show one decimal, as the table does.
-        const double cpuAxisUpper =
-            UI::Widgets::easedPercentAxisUpperBound("##ProcOverviewCPU",
-                                                    std::max({UI::Widgets::maxOfSeries(cpuData, cpuUserData, cpuSystemData),
-                                                              m_SmoothedUsage.cpuPercent,
-                                                              m_SmoothedUsage.cpuUserPercent,
-                                                              m_SmoothedUsage.cpuSystemPercent}));
+        // so each bar meets its line (#1195, #1003). Values show one decimal, as the table does. Every
+        // axis here is sized to the samples in the window, not the one trimming keeps left of it (#1145).
+        const double cpuAxisUpper = UI::Widgets::easedPercentAxisUpperBound(
+            "##ProcOverviewCPU",
+            std::max({UI::Widgets::maxOfSeriesSince(cpuTimeData, axisConfig.xMin, cpuData, cpuUserData, cpuSystemData),
+                      m_SmoothedUsage.cpuPercent,
+                      m_SmoothedUsage.cpuUserPercent,
+                      m_SmoothedUsage.cpuSystemPercent}));
 
         // Use smoothed values for NowBars for consistent animation
         const NowBar cpuTotalNow{.valueText = UI::Format::percentOneDecimal(m_SmoothedUsage.cpuPercent),
@@ -1107,10 +1117,10 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
             // Used and Shared in bytes on an axis that scales to them (#1195), eased like a rate axis and
             // shared with their bars. The lifetime peak is left out of the scale: one far above today's
             // usage would flatten the line again; its value is in the strip and the tooltip.
-            const double memAxisUpper =
-                UI::Widgets::easedRateAxisUpperBound("##ProcOverviewMemory",
-                                                     std::max({UI::Widgets::maxOfSeries(usedData, sharedData), usedNow, sharedNow}),
-                                                     UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES);
+            const double memAxisUpper = UI::Widgets::easedRateAxisUpperBound(
+                "##ProcOverviewMemory",
+                std::max({UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, usedData, sharedData), usedNow, sharedNow}),
+                UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES);
             // "412.0 MB (1.3% of RAM)": the bytes the chart plots and the share of RAM the table shows.
             const double percentPerByte = m_SmoothedUsage.memoryPercentPerByte;
             const auto withRamShare = [percentPerByte](double bytes) -> std::string
@@ -1125,8 +1135,10 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
             };
             // Virtual size in bytes on its own right-hand axis (#992), eased like a rate axis and shared
             // with its bar.
-            const double virtAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-                "##ProcOverviewMemory/Y2", UI::Widgets::maxOfSeries(virtData), UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES);
+            const double virtAxisUpper =
+                UI::Widgets::easedRateAxisUpperBound("##ProcOverviewMemory/Y2",
+                                                     UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, virtData),
+                                                     UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES);
 
             NowBarList memoryBars;
             // Used and Shared carry their share of RAM in tooltipText (shown on hover and in the value
@@ -1322,14 +1334,16 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
     // bound covers every series drawn on its axis, and each bar is scaled to its series' axis, so a
     // bar and its line show a value at the same height (#1003).
 #ifdef _WIN32
-    const double countSeriesMax = std::max(UI::Widgets::maxOfSeries(threadData, handleData), UI::Widgets::maxOfSeries(gdiData));
+    const double countSeriesMax = std::max(UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, threadData, handleData),
+                                           UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, gdiData));
 #else
-    const double countSeriesMax = UI::Widgets::maxOfSeries(threadData, handleData);
+    const double countSeriesMax = UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, threadData, handleData);
 #endif
     const double countAxisUpper =
         UI::Widgets::easedRateAxisUpperBound("##ProcThreadsFaults", countSeriesMax, UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
-    const double faultAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-        "##ProcThreadsFaults/Y2", UI::Widgets::maxOfSeries(faultData), UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
+    const double faultAxisUpper = UI::Widgets::easedRateAxisUpperBound("##ProcThreadsFaults/Y2",
+                                                                       UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, faultData),
+                                                                       UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
 
     const NowBar threadsBar{.valueText = UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.threadCount)),
                             .label = THREADS_LABEL,
@@ -1507,8 +1521,10 @@ void ProcessDetailsPanel::renderIoStats(UI::Widgets::FillPlotLayout& fill)
 
     // Compare the smoothed current rates with history when scaling the NowBars,
     // so either a historical or newly observed peak remains representable.
-    const double ioAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-        "##ProcIoHistory", UI::Widgets::maxOfSeries(readData, writeData), UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
+    const double ioAxisUpper =
+        UI::Widgets::easedRateAxisUpperBound("##ProcIoHistory",
+                                             UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, readData, writeData),
+                                             UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
 
     const auto readUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.ioReadBytesPerSec);
     const auto writeUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.ioWriteBytesPerSec);
@@ -1611,8 +1627,10 @@ void ProcessDetailsPanel::renderNetworkStats(UI::Widgets::FillPlotLayout& fill)
 
     // Scale the NowBars against both the historical peak and smoothed current
     // value so a new traffic burst cannot exceed the normalized range.
-    const double netAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-        "##ProcNetworkHistory", UI::Widgets::maxOfSeries(sentData, recvData), UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
+    const double netAxisUpper =
+        UI::Widgets::easedRateAxisUpperBound("##ProcNetworkHistory",
+                                             UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, sentData, recvData),
+                                             UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
 
     const auto sentUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.netSentBytesPerSec);
     const auto recvUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.netRecvBytesPerSec);
@@ -1727,7 +1745,7 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc, 
 
     // Use smoothed value for NowBar
     const double powerAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-        "##ProcPowerHistory", UI::Widgets::maxOfSeries(powerData), UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS);
+        "##ProcPowerHistory", UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, powerData), UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS);
 
     const NowBar powerBar{.valueText = UI::Format::formatPowerOrZero(m_SmoothedUsage.powerWatts),
                           .label = POWER_LABEL,
@@ -2064,9 +2082,10 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
             }
         };
 
-        // GPU Memory graph. One upper bound for its axis and its bar, so they agree (#1003).
+        // GPU Memory graph. One upper bound for its axis and its bar, so they agree (#1003), from the
+        // samples in the window, not the one trimming keeps left of it (#1145).
         const double gpuMemAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-            "##GPUMemPlot", UI::Widgets::maxOfSeries(gpuMemVec), UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES);
+            "##GPUMemPlot", UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, gpuMemVec), UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES);
         auto plotGpuMem = [&]()
         {
             const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(

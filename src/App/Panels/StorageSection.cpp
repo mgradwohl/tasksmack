@@ -97,9 +97,12 @@ void renderDiskCell(const std::string& deviceName,
     // One upper bound for the chart's Y axis and its bars, so a bar and its line show a value at the
     // same height (#1003). A per-disk series holds NaN for samples where the disk was absent, and
     // currentRead/Write are NaN when it is absent from the latest sample (#1015): maxOfSeries skips
-    // them, and the bars show N/A rather than a false 0 B/s, as the GPU fan bar does.
-    const double diskAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-        "##DiskAxis", UI::Widgets::maxOfSeries(readData, writeData), UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
+    // them, and the bars show N/A rather than a false 0 B/s, as the GPU fan bar does. Only the
+    // samples in the window count, not the one trimming keeps left of it (#1145).
+    const double diskAxisUpper =
+        UI::Widgets::easedRateAxisUpperBound("##DiskAxis",
+                                             UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, readData, writeData),
+                                             UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
 
     const auto makeBar = [&](const char* label, double current, const ImVec4& color)
     {
@@ -415,9 +418,11 @@ void renderStorageSection(RenderContext& ctx)
         const auto readData = tailAlignedSpan(diskReadHist, alignedDisk).values;
         const auto writeData = tailAlignedSpan(diskWriteHist, alignedDisk).values;
 
-        // One upper bound for the chart's Y axis and its bars (#1003).
-        const double diskAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-            "##SystemDiskHistory", UI::Widgets::maxOfSeries(readData, writeData), UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
+        // One upper bound for the chart's Y axis and its bars (#1003), from the samples in the window (#1145).
+        const double diskAxisUpper =
+            UI::Widgets::easedRateAxisUpperBound("##SystemDiskHistory",
+                                                 UI::Widgets::maxOfSeriesSince(aggregateTimes, diskAxis.xMin, readData, writeData),
+                                                 UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
 
         const NowBar readBar{.valueText = UI::Format::formatBytesPerSec(smoothedRead),
                              .label = READ_LABEL,

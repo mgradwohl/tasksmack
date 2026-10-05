@@ -6,8 +6,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <initializer_list>
+#include <iterator>
 #include <ranges>
+#include <span>
 
 namespace UI::Widgets
 {
@@ -155,6 +158,39 @@ template<std::ranges::input_range... Rs>
 [[nodiscard]] double maxOfSeries(const Rs&... series) noexcept
 {
     return std::max({maxOfSeries(series)...});
+}
+
+/// Index of the first entry of the ascending time axis @p x at or after @p xMin; x.size() if none is.
+[[nodiscard]] inline std::size_t firstIndexAtOrAfter(std::span<const double> x, double xMin) noexcept
+{
+    return static_cast<std::size_t>(std::ranges::lower_bound(x, xMin) - x.begin());
+}
+
+/// maxOfSeries() over the samples a chart's window shows: those at x >= @p xMin on the time axis
+/// @p x, where @p series is aligned to the tail of @p x (its last value is at x.back(), as with
+/// tailAlignedSpan()). Values with no x, or before xMin, are left out.
+///
+/// History trimming keeps one sample before the window's left edge, so a chart's line runs off that
+/// edge (HistoryUtils::keepTrimAnchor, #1016), and scrolling back leaves older samples off-screen.
+/// Neither is drawn, so neither may set the axis or a peak line: a peak just left of the window kept
+/// a rate axis scaled to it with nothing visible near the top (#1145). The right edge is not checked:
+/// the newest sample can be stamped a moment after the frame's "now", a little right of x = 0.
+template<std::ranges::sized_range R>
+    requires std::ranges::random_access_range<const R>
+[[nodiscard]] double maxOfSeriesSince(std::span<const double> x, double xMin, const R& series) noexcept
+{
+    const std::size_t visible = x.size() - firstIndexAtOrAfter(x, xMin);
+    const auto count = static_cast<std::size_t>(std::ranges::size(series));
+    const std::size_t skip = (count > visible) ? count - visible : 0;
+    return maxOfSeries(std::ranges::subrange(std::ranges::begin(series) + static_cast<std::ptrdiff_t>(skip), std::ranges::end(series)));
+}
+
+/// maxOfSeriesSince() across several series plotted on the same axis, each aligned to the tail of @p x.
+template<std::ranges::sized_range... Rs>
+    requires(sizeof...(Rs) >= 2)
+[[nodiscard]] double maxOfSeriesSince(std::span<const double> x, double xMin, const Rs&... series) noexcept
+{
+    return std::max({maxOfSeriesSince(x, xMin, series)...});
 }
 
 /// Time constants for easing a rate chart's Y upper bound toward rateAxisUpperBound() (#1011).

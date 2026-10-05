@@ -265,10 +265,11 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     // selected interface is plotted here too, and total vs per-interface rates are derived
     // independently, so the interface rate can exceed the total's. The interface vectors are empty
     // when none is selected, and hold NaN where the interface was absent; maxOfSeries() ignores both.
-    const double netAxisUpper =
-        UI::Widgets::easedRateAxisUpperBound("##SystemNetHistory",
-                                             UI::Widgets::maxOfSeries(sentData, recvData, ifaceSentData, ifaceRecvData),
-                                             UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
+    // Only the samples in the window count, not the one trimming keeps left of it (#1145).
+    const double netAxisUpper = UI::Widgets::easedRateAxisUpperBound(
+        "##SystemNetHistory",
+        UI::Widgets::maxOfSeriesSince(netTimes, axis.xMin, sentData, recvData, ifaceSentData, ifaceRecvData),
+        UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
 
     // Determine labels based on selection
     // Name the interface the way the picker above does (#1009).
