@@ -26,6 +26,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -1501,6 +1502,75 @@ TEST(SystemModelTest, NetworkTotalLeavesOutVirtualInterfaces)
     EXPECT_DOUBLE_EQ(snap.networkInterfaces[1].rxBytesPerSec, 5000.0);
     EXPECT_FALSE(snap.networkInterfaces[0].isVirtual);
     EXPECT_TRUE(snap.networkInterfaces[1].isVirtual);
+}
+
+namespace
+{
+/// Feed `model` one sample of interfaces (name, rx, tx) at `nowSeconds`.
+void sampleInterfaces(Domain::SystemModel& model,
+                      const std::vector<std::tuple<std::string, uint64_t, uint64_t>>& interfaces,
+                      double nowSeconds)
+{
+    std::vector<Platform::SystemCounters::InterfaceCounters> counters;
+    counters.reserve(interfaces.size());
+    for (const auto& [name, rx, tx] : interfaces)
+    {
+        counters.push_back(makeInterfaceCounters(name, rx, tx));
+    }
+    const auto cpu = makeCpuCounters(100, 0, 50, 850);
+    const auto memory = makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024);
+    model.updateFromCounters(makeSystemCounters(cpu, memory, 0, {}, 0, 0, counters), nowSeconds);
+}
+} // namespace
+
+TEST(SystemModelTest, AnInterfaceCounterJumpAboveTheCeilingIsAGapNotASpike)
+{
+    // #1291: max_sane_rate_bps guarded only per-process rates; a driver reset or reinitialised
+    // interface counter plotted an absurd spike that blew out the network chart's scale.
+    constexpr uint64_t BASE = 1'000'000;
+    const auto jump = static_cast<uint64_t>(2.0 * Domain::Sampling::MAX_SANE_RATE_BPS_DEFAULT); // 2x the ceiling in 1 s
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    sampleInterfaces(model, {{"eth0", BASE, BASE}, {"wlan0", BASE, BASE}}, 1.0);
+    sampleInterfaces(model, {{"eth0", BASE + 5'000, BASE + 700}, {"wlan0", BASE + 100, BASE + 10}}, 2.0);
+    sampleInterfaces(model, {{"eth0", BASE + 5'000 + jump, BASE + 1'400}, {"wlan0", BASE + 200, BASE + 20}}, 3.0);
+
+    const auto snap = model.snapshot();
+    ASSERT_EQ(snap.networkInterfaces.size(), 2U);
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].rxBytesPerSec, 0.0) << "the glitch is not traffic";
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].txBytesPerSec, 700.0) << "the other direction is measured";
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[1].rxBytesPerSec, 100.0);
+
+    const auto eth0Rx = model.netRxHistoryForInterface("eth0");
+    const auto eth0Tx = model.netTxHistoryForInterface("eth0");
+    ASSERT_EQ(eth0Rx.size(), 2U);
+    EXPECT_FLOAT_EQ(eth0Rx[0], 5'000.0F);
+    EXPECT_TRUE(std::isnan(eth0Rx[1])) << "a gap, not a spike or a false 0";
+    EXPECT_FLOAT_EQ(eth0Tx[1], 700.0F);
+    EXPECT_FLOAT_EQ(model.netRxHistoryForInterface("wlan0")[1], 100.0F);
+
+    const auto totalRx = model.netRxHistory();
+    const auto totalTx = model.netTxHistory();
+    ASSERT_EQ(totalRx.size(), 2U);
+    EXPECT_FLOAT_EQ(totalRx[0], 5'100.0F);
+    EXPECT_TRUE(std::isnan(totalRx[1])) << "a Total missing a counted interface's sample is a gap too";
+    EXPECT_FLOAT_EQ(totalTx[1], 710.0F);
+}
+
+TEST(SystemModelTest, TheConfiguredNetworkCeilingAppliesToInterfaceRates)
+{
+    // The ceiling is [metrics] max_sane_rate_bps, shared with ProcessModel; lowered to its minimum,
+    // a 2 GB/s interface sample is dropped, and one just under the ceiling is kept.
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    model.setMaxSaneNetworkRate(Domain::Sampling::MAX_SANE_RATE_BPS_MIN);
+    const auto ceiling = static_cast<uint64_t>(Domain::Sampling::MAX_SANE_RATE_BPS_MIN);
+    sampleInterfaces(model, {{"eth0", 0, 0}}, 1.0);
+    sampleInterfaces(model, {{"eth0", 2 * ceiling, ceiling}}, 2.0);
+
+    const auto snap = model.snapshot();
+    ASSERT_EQ(snap.networkInterfaces.size(), 1U);
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].rxBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].txBytesPerSec, Domain::Sampling::MAX_SANE_RATE_BPS_MIN) << "at the ceiling is kept";
+    EXPECT_TRUE(std::isnan(model.netRxHistoryForInterface("eth0")[0]));
 }
 
 TEST(SystemModelTest, InterfaceSnapshotsSayWhetherThePlatformClassifiedThem)

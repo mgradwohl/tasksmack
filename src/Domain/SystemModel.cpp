@@ -167,6 +167,11 @@ void SystemModel::setMaxHistorySeconds(double seconds)
     }
 }
 
+void SystemModel::setMaxSaneNetworkRate(double bytesPerSecond) noexcept
+{
+    m_MaxSaneNetworkRateBps.store(Sampling::clampMaxSaneRateBps(bytesPerSecond), std::memory_order_relaxed);
+}
+
 void SystemModel::refresh()
 {
     if (!m_Probe)
@@ -475,9 +480,28 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         timeDelta = 0.0;
     }
 
-    snap.networkInterfaces.reserve(counters.networkInterfaces.size());
-    for (const auto& iface : counters.networkInterfaces)
+    // A rate above the configured ceiling ([metrics] max_sane_rate_bps) is a counter glitch -- a
+    // driver reset, a reinitialised or re-registered counter -- not traffic: it reads 0 here and is
+    // a gap in the history, so one bogus sample can't blow out the chart's scale (#1291).
+    const double maxSaneRate = m_MaxSaneNetworkRateBps.load(std::memory_order_relaxed);
+    struct RateGap
     {
+        bool rx = false;
+        bool tx = false;
+    };
+    std::vector<RateGap> interfaceGaps(counters.networkInterfaces.size());
+    RateGap totalGap;
+    const auto saneRate = [maxSaneRate](double rate, bool& gap)
+    {
+        gap = rate > maxSaneRate;
+        return gap ? 0.0 : rate;
+    };
+
+    snap.networkInterfaces.reserve(counters.networkInterfaces.size());
+    for (std::size_t ifaceIndex = 0; ifaceIndex < counters.networkInterfaces.size(); ++ifaceIndex)
+    {
+        const auto& iface = counters.networkInterfaces[ifaceIndex];
+        auto& gap = interfaceGaps[ifaceIndex];
         SystemSnapshot::InterfaceSnapshot ifaceSnap;
         ifaceSnap.name = iface.name;
         ifaceSnap.displayName = iface.displayName;
@@ -494,11 +518,11 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
             {
                 if (iface.rxBytes >= prevIface->rxBytes)
                 {
-                    ifaceSnap.rxBytesPerSec = Numeric::counterRate(iface.rxBytes, prevIface->rxBytes, timeDelta);
+                    ifaceSnap.rxBytesPerSec = saneRate(Numeric::counterRate(iface.rxBytes, prevIface->rxBytes, timeDelta), gap.rx);
                 }
                 if (iface.txBytes >= prevIface->txBytes)
                 {
-                    ifaceSnap.txBytesPerSec = Numeric::counterRate(iface.txBytes, prevIface->txBytes, timeDelta);
+                    ifaceSnap.txBytesPerSec = saneRate(Numeric::counterRate(iface.txBytes, prevIface->txBytes, timeDelta), gap.tx);
                 }
             }
         }
@@ -576,14 +600,18 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         {
             const bool anyHardware =
                 std::ranges::any_of(snap.networkInterfaces, [](const auto& ifaceSnap) { return !ifaceSnap.isVirtual; });
-            for (const auto& ifaceSnap : snap.networkInterfaces)
+            for (std::size_t ifaceIndex = 0; ifaceIndex < snap.networkInterfaces.size(); ++ifaceIndex)
             {
+                const auto& ifaceSnap = snap.networkInterfaces[ifaceIndex];
                 if (anyHardware && ifaceSnap.isVirtual)
                 {
                     continue;
                 }
                 snap.netRxBytesPerSec += ifaceSnap.rxBytesPerSec;
                 snap.netTxBytesPerSec += ifaceSnap.txBytesPerSec;
+                // A Total missing a counted interface's glitched sample isn't a measurement either.
+                totalGap.rx = totalGap.rx || interfaceGaps[ifaceIndex].rx;
+                totalGap.tx = totalGap.tx || interfaceGaps[ifaceIndex].tx;
             }
         }
         else if (timeDelta > 0.0)
@@ -591,11 +619,13 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
             // Only compute if counters increased (handle overflow/restart)
             if (counters.netRxBytes >= m_PrevCounters.netRxBytes)
             {
-                snap.netRxBytesPerSec = Numeric::counterRate(counters.netRxBytes, m_PrevCounters.netRxBytes, timeDelta);
+                snap.netRxBytesPerSec =
+                    saneRate(Numeric::counterRate(counters.netRxBytes, m_PrevCounters.netRxBytes, timeDelta), totalGap.rx);
             }
             if (counters.netTxBytes >= m_PrevCounters.netTxBytes)
             {
-                snap.netTxBytesPerSec = Numeric::counterRate(counters.netTxBytes, m_PrevCounters.netTxBytes, timeDelta);
+                snap.netTxBytesPerSec =
+                    saneRate(Numeric::counterRate(counters.netTxBytes, m_PrevCounters.netTxBytes, timeDelta), totalGap.tx);
             }
         }
     }
@@ -621,8 +651,14 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         const float chargeVal = preservedPower.hasBattery ? static_cast<float>(preservedPower.chargePercent) : -1.0F;
         m_BatteryChargeHistory.push(chargeVal);
         // Network history (bytes per second)
-        m_NetRxHistory.push(static_cast<float>(snap.netRxBytesPerSec));
-        m_NetTxHistory.push(static_cast<float>(snap.netTxBytesPerSec));
+        // A rate dropped as a glitch is a gap (NaN), not the 0 the snapshot shows (#1291).
+        constexpr float NO_READING = std::numeric_limits<float>::quiet_NaN();
+        const auto historyRate = [](double rate, bool gap)
+        {
+            return gap ? NO_READING : static_cast<float>(rate);
+        };
+        m_NetRxHistory.push(historyRate(snap.netRxBytesPerSec, totalGap.rx));
+        m_NetTxHistory.push(historyRate(snap.netTxBytesPerSec, totalGap.tx));
 
         // Per-interface network history. New interfaces are backfilled (clamped to ring
         // capacity) so they align with m_Timestamps, and known interfaces absent from this
@@ -634,8 +670,9 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         {
             return std::ranges::any_of(snap.networkInterfaces, [&name](const auto& ifaceSnap) { return ifaceSnap.name == name; });
         };
-        for (const auto& ifaceSnap : snap.networkInterfaces)
+        for (std::size_t ifaceIndex = 0; ifaceIndex < snap.networkInterfaces.size(); ++ifaceIndex)
         {
+            const auto& ifaceSnap = snap.networkInterfaces[ifaceIndex];
             const auto& name = ifaceSnap.name;
             auto ensureAligned = [this](auto& map, const std::string& ifName) -> auto&
             {
@@ -652,8 +689,8 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
                 }
                 return it->second;
             };
-            ensureAligned(m_PerInterfaceRxHistory, name).push(static_cast<float>(ifaceSnap.rxBytesPerSec));
-            ensureAligned(m_PerInterfaceTxHistory, name).push(static_cast<float>(ifaceSnap.txBytesPerSec));
+            ensureAligned(m_PerInterfaceRxHistory, name).push(historyRate(ifaceSnap.rxBytesPerSec, interfaceGaps[ifaceIndex].rx));
+            ensureAligned(m_PerInterfaceTxHistory, name).push(historyRate(ifaceSnap.txBytesPerSec, interfaceGaps[ifaceIndex].tx));
             m_InterfaceLastSeenSeconds[name] = nowSeconds;
         }
         // Push a NaN placeholder for known interfaces absent from this sample.

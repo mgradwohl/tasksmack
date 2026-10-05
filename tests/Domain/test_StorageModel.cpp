@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <memory>
 #include <thread>
 
@@ -840,6 +841,54 @@ TEST(StorageModelTest, SeedSampleIsAGapNotAFalseZero)
     EXPECT_TRUE(std::isnan(totals[0]));
     EXPECT_TRUE(std::isnan(totals[1]));
     EXPECT_DOUBLE_EQ(totals[2], 2000.0 * 512.0);
+}
+
+TEST(StorageModelTest, ACounterJumpAboveTheCeilingIsAGapNotASpike)
+{
+    // #1291: a reinitialised or re-registered device counter can jump by a disk's lifetime bytes in
+    // one interval; that used to plot an absurd spike that pinned the chart's scale.
+    auto probe = std::make_unique<Mocks::MockDiskProbe>();
+    auto* mockProbe = probe.get();
+    Platform::SystemDiskCounters counters;
+    Platform::DiskCounters sda;
+    sda.deviceName = "sda";
+    sda.sectorSize = 512;
+    sda.readSectors = 1000;
+    sda.writeSectors = 1000;
+    counters.disks.push_back(sda);
+    mockProbe->setNextCounters(counters);
+
+    Domain::StorageModel model(std::move(probe));
+    const auto start = std::chrono::steady_clock::now();
+    model.sampleAt(start);
+    // Over the ceiling within one second: 2x MAX_SANE_DISK_RATE_BPS worth of sectors written.
+    constexpr auto JUMP_SECTORS = static_cast<std::uint64_t>(2.0 * Sampling::MAX_SANE_DISK_RATE_BPS / 512.0);
+    counters.disks[0].readSectors = 1100;
+    counters.disks[0].writeSectors = 1000 + JUMP_SECTORS;
+    mockProbe->setNextCounters(counters);
+    model.sampleAt(start + std::chrono::seconds(1));
+
+    const auto glitched = model.latestSnapshot();
+    ASSERT_EQ(glitched.disks.size(), 1U);
+    EXPECT_FALSE(glitched.disks[0].hasRates);
+    EXPECT_DOUBLE_EQ(glitched.disks[0].writeBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(glitched.totalWriteBytesPerSec, 0.0);
+
+    counters.disks[0].readSectors = 1300;
+    counters.disks[0].writeSectors = 1000 + JUMP_SECTORS + 400;
+    mockProbe->setNextCounters(counters);
+    model.sampleAt(start + std::chrono::seconds(2));
+
+    const auto history = model.perDiskHistory();
+    ASSERT_EQ(history.size(), 1U);
+    ASSERT_EQ(history[0].writeBytesPerSec.size(), 3U);
+    EXPECT_TRUE(std::isnan(history[0].writeBytesPerSec[1])) << "the glitch is a gap";
+    EXPECT_TRUE(std::isnan(history[0].readBytesPerSec[1])) << "the whole sample is unmeasured";
+    EXPECT_DOUBLE_EQ(history[0].writeBytesPerSec[2], 400.0 * 512.0) << "the next interval measures normally";
+    const auto totals = model.totalWriteHistory();
+    ASSERT_EQ(totals.size(), 3U);
+    EXPECT_TRUE(std::isnan(totals[1]));
+    EXPECT_DOUBLE_EQ(totals[2], 400.0 * 512.0);
 }
 
 // =============================================================================

@@ -244,7 +244,7 @@ These settings aren't in the Settings dialog. Edit them in `config.toml` while T
 
 | Key | Default | Range | Effect |
 |-----|---------|-------|--------|
-| `[metrics] max_sane_rate_bps` | 12500000000 (100 Gbps) | 1e9–1e11 bytes/s | A per-process network rate above this is taken for a bad reading and shown as 0. Raise it for links faster than 100 Gbps. |
+| `[metrics] max_sane_rate_bps` | 12500000000 (100 Gbps) | 1e9–1e11 bytes/s | A per-process or per-interface network rate above this is taken for a bad reading (such as a counter reset) and shown as 0; on the network chart it is a gap. Raise it for links faster than 100 Gbps. Disk rates have their own fixed ceiling of 1 TB/s. |
 | `[ui] chart_smooth_factor` | 0.5 | 0.0–0.95 | How slowly live values and the bars beside the charts follow each new sample, as a fraction of the refresh interval. Lower follows changes faster; 0 barely eases. |
 | `[ui] chart_tau_ms_min` | 20 | 5–100 ms | The shortest easing time, used at fast refresh intervals. |
 | `[ui] chart_tau_ms_max` | 400 | 100–2000 ms | The longest easing time, used at slow refresh intervals. |

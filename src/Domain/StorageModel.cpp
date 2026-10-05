@@ -313,9 +313,18 @@ StorageModel::computeDiskSnapshot(const Platform::DiskCounters& current, DiskSta
     const std::uint64_t deltaIoTime = Numeric::counterDelta(current.ioTimeMs, state.prevCounters.ioTimeMs);
 
     // Compute rates
+    const double readBytesPerSec = static_cast<double>(deltaReadSectors * current.sectorSize) / deltaSeconds;
+    const double writeBytesPerSec = static_cast<double>(deltaWriteSectors * current.sectorSize) / deltaSeconds;
+    if (readBytesPerSec > Sampling::MAX_SANE_DISK_RATE_BPS || writeBytesPerSec > Sampling::MAX_SANE_DISK_RATE_BPS)
+    {
+        // A counter glitch (a reinitialised or re-registered device counter), not I/O: the sample
+        // has no rates, so it reads 0 and its history records a gap instead of a spike that would
+        // blow out the chart's scale (#1291).
+        return snap;
+    }
     snap.hasRates = true;
-    snap.readBytesPerSec = static_cast<double>(deltaReadSectors * current.sectorSize) / deltaSeconds;
-    snap.writeBytesPerSec = static_cast<double>(deltaWriteSectors * current.sectorSize) / deltaSeconds;
+    snap.readBytesPerSec = readBytesPerSec;
+    snap.writeBytesPerSec = writeBytesPerSec;
     snap.readOpsPerSec = Numeric::toDouble(deltaReadOps) / deltaSeconds;
     snap.writeOpsPerSec = Numeric::toDouble(deltaWriteOps) / deltaSeconds;
 

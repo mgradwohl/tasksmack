@@ -117,14 +117,23 @@ inline constexpr int SOCKET_STATS_CACHE_TTL_MS_MAX = 5000; // Cap at max refresh
 // These control how metrics are computed from raw counter data.
 // They affect data freshness, responsiveness, and sanity checking.
 
-// Per-process network rate ceiling (bytes per second)
+// Network rate ceiling (bytes per second)
 // A per-process network rate above this is treated as a bad reading (e.g. on Windows, a connection
-// first attributed with traffic from before it was seen) and shown as 0 (ProcessModel). Default is
-// 100 Gbps (12.5 billion bytes/sec).
+// first attributed with traffic from before it was seen) and shown as 0 (ProcessModel); a
+// per-interface rate above it is a counter glitch, shown as 0 and charted as a gap (SystemModel,
+// #1291). Default is 100 Gbps (12.5 billion bytes/sec).
 // Configurable via [metrics] max_sane_rate_bps in config.toml (read at startup, #1123).
 inline constexpr double MAX_SANE_RATE_BPS_DEFAULT = 12'500'000'000.0; // 100 Gbps in bytes/sec
 inline constexpr double MAX_SANE_RATE_BPS_MIN = 1'000'000'000.0;      // 8 Gbps (minimum reasonable)
 inline constexpr double MAX_SANE_RATE_BPS_MAX = 100'000'000'000.0;    // 800 Gbps (upper bound)
+
+// Per-disk I/O rate ceiling (bytes per second) - fixed, not configurable
+// A disk read or write rate above this is a counter glitch (a reinitialised or re-registered
+// device counter), not I/O: the sample has no rates and its history records a gap (StorageModel,
+// #1291). Not max_sane_rate_bps: its 100 Gbps (12.5 GB/s) default is below what a single PCIe 5.0
+// NVMe drive reads, so a network-sized ceiling would drop real samples. 1 TB/s is far beyond any
+// block device while still catching a counter that jumps by a disk's lifetime bytes.
+inline constexpr double MAX_SANE_DISK_RATE_BPS = 1'000'000'000'000.0;
 
 // -----------------------------------------------------------------------------
 // UI Behavior Parameters (User-Configurable via TOML)
