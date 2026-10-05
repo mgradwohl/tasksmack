@@ -23,6 +23,13 @@ struct GPUCapabilities
     bool supportsMultiGPU = false;
 };
 
+/// How thoroughly IGPUProbe::rescanGPUs() looks for changes to the GPU set (#1116).
+enum class GPURescan : std::uint8_t
+{
+    Quick, ///< Every sample: only what the probe can tell cheaply, without waking a GPU.
+    Full,  ///< At a low rate: may also look for added, removed or lost devices and rebuild the device list.
+};
+
 /// Where an adapter sits on the PCI bus. DXGI and NVML enumerate adapters in different orders and
 /// name them differently, so on Windows this is what says which NVML device is which DXGI adapter
 /// (#1091). DXGI reports no PCI domain, so the domain is not part of the match.
@@ -49,7 +56,9 @@ struct GPUInfo
     /// the Intel iGPU too, and two NVIDIA cards with different sensors both drew every series
     /// (#1040). nullopt means the probe's capabilities apply to this adapter unchanged. Set on
     /// Windows (from NVML) and on Linux by each vendor probe: NVML and ROCm SMI by which sensor
-    /// reads succeed at enumeration, DRM by which sysfs/hwmon files the card has (#1112).
+    /// reads succeed at enumeration, DRM by which sysfs/hwmon files the card has (#1112). A GPU
+    /// asleep at enumeration is not woken to find out (#1117): it stays nullopt until the GPU is
+    /// first seen awake, when the probe asks GPUModel to re-enumerate and publish it (#1289).
     std::optional<GPUCapabilities> sensorCapabilities;
     /// PCI bus location, where the probe can read it (Windows: DXGI via D3DKMT, and NVML; Linux: NVML) (#1091).
     std::optional<PciLocation> pciLocation;
