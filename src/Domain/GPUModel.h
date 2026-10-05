@@ -176,6 +176,12 @@ class GPUModel : public ISamplable
     // default (all-false) values. readProcessGPUCounters() must not treat that as proof
     // per-process metrics are unsupported -- see its use of this flag for why.
     bool m_CapabilitiesKnown = false;
+    // m_CapabilitiesKnown && !m_Capabilities.hasPerProcessMetrics, kept in step with both
+    // (written with them, under the unique m_Mutex). readProcessGPUCounters() is called from
+    // the process sampler on every refresh and, on a backend that has no per-process data,
+    // returns straight away: reading this flag instead of taking m_Mutex shared for the two
+    // fields keeps that early exit to a single atomic load (#1322).
+    std::atomic<bool> m_PerProcessKnownUnsupported{false};
 
     // Current snapshots per GPU
     using SnapshotMap = GPUSnapshotMap;
