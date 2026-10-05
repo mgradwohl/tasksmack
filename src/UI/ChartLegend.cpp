@@ -102,7 +102,7 @@ namespace
 /// outside legend's layout depends on.
 std::size_t legendEntrySignature(ImPlotItemGroup& items)
 {
-    std::size_t signature = static_cast<std::size_t>(items.GetLegendCount());
+    auto signature = static_cast<std::size_t>(items.GetLegendCount());
     for (int i = 0; i < items.GetLegendCount(); ++i)
     {
         // boost::hash_combine's mix.
