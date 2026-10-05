@@ -128,6 +128,10 @@ class ProcessModel : public ISamplable
     /// Monotonically increasing counter, incremented each time snapshots are updated.
     /// UI can compare against a cached value to skip redundant copies when data hasn't changed.
     [[nodiscard]] std::uint64_t snapshotVersion() const;
+    /// Copies the aggregated system histories into @p outHistories when their generation differs from
+    /// @p lastSeenVersion (a previous ProcessSystemHistories::version) and returns whether it did. Their
+    /// generation advances with every snapshot generation and when setMaxHistorySeconds() trims them,
+    /// so it is not a snapshotVersion().
     [[nodiscard]] bool tryCopySystemHistoriesIfNewer(std::uint64_t lastSeenVersion, ProcessSystemHistories& outHistories) const;
 
     // Aggregated system-level histories derived from per-process data
@@ -139,6 +143,8 @@ class ProcessModel : public ISamplable
     [[nodiscard]] std::vector<double> systemPowerHistory() const;
     [[nodiscard]] std::vector<double> historyTimestamps() const;
 
+    /// Sets the history window, clamped to SamplingConfig's range, and trims the system histories to
+    /// it at once, advancing their generation (tryCopySystemHistoriesIfNewer()) when it has one (#1145).
     void setMaxHistorySeconds(double seconds);
 
     /// The per-process network rate ceiling, bytes/s ([metrics] max_sane_rate_bps, #1123). A rate
@@ -222,7 +228,7 @@ class ProcessModel : public ISamplable
     HistoryBuffer<double> m_SystemHandleCountHistory;
     HistoryBuffer<double> m_SystemPowerHistory;
     HistoryBuffer<double> m_Timestamps;
-    double m_MaxHistorySeconds = 300.0; // Align with Storage/System defaults
+    double m_MaxHistorySeconds = Sampling::HISTORY_SECONDS_DEFAULT; // Align with Storage/System defaults
 
     // Latest computed snapshots. Immutable once published (replaced wholesale by the writer,
     // never mutated in place), so it's handed to readers as a shared_ptr<const ...> instead of
@@ -230,6 +236,11 @@ class ProcessModel : public ISamplable
     std::shared_ptr<const std::vector<ProcessSnapshot>> m_Snapshots = std::make_shared<const std::vector<ProcessSnapshot>>();
     std::uint64_t m_SnapshotVersion = 0;
     std::atomic<std::uint64_t> m_PublishedSnapshotVersion{0};
+    // The aggregated system histories' generation (ProcessSystemHistories::version): advanced with
+    // every snapshot generation and also when a history-window change trims them (#1145). Kept apart
+    // from m_SnapshotVersion, whose generations each have a watched sample (watchedSamplesSince()).
+    std::uint64_t m_SystemHistoryVersion = 0;
+    std::atomic<std::uint64_t> m_PublishedSystemHistoryVersion{0};
     std::atomic<bool> m_InteractionActive{false};
     std::atomic<double> m_MaxSaneNetworkRateBps{Sampling::MAX_SANE_RATE_BPS_DEFAULT};
     Clock::time_point m_LastGpuMergeTime;

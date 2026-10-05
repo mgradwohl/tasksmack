@@ -4,6 +4,7 @@
 #include "History.h"
 #include "ISamplable.h"
 #include "Platform/IDiskProbe.h"
+#include "SamplingConfig.h"
 
 #include <atomic>
 #include <chrono>
@@ -76,7 +77,8 @@ class StorageModel : public ISamplable
     [[nodiscard]] std::shared_ptr<const StoragePublication> publication() const noexcept;
     [[nodiscard]] std::uint64_t publicationVersion() const noexcept;
 
-    /// Configure history retention.
+    /// Configure history retention, clamped to SamplingConfig's range. Trims the history to the new
+    /// window and republishes it at once, once anything has been published (#1145).
     void setMaxHistorySeconds(double seconds);
 
     /// Get capabilities from the underlying probe.
@@ -132,7 +134,7 @@ class StorageModel : public ISamplable
     std::uint64_t m_PublicationVersion = 0;
     std::atomic<std::uint64_t> m_PublishedPublicationVersion{0};
 
-    double m_MaxHistorySeconds = 300.0; // 5 minutes default
+    double m_MaxHistorySeconds = Sampling::HISTORY_SECONDS_DEFAULT; // 5 minutes default
 
     void publish();
 };

@@ -476,6 +476,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         previousGeneration = std::move(m_Snapshots);      // move out, not destroy -- ownership transfers to the local
         m_Snapshots = std::move(newSnapshotsPublication); // pointer swap only, no allocation or destruction
         ++m_SnapshotVersion;
+        ++m_SystemHistoryVersion;
         m_SnapshotSampleTimeSeconds = sampleTimeSeconds;
 
         // Every generation published while a process is watched gets a sample, the process absent
@@ -492,6 +493,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         }
 
         m_PublishedSnapshotVersion.store(m_SnapshotVersion, std::memory_order_release);
+        m_PublishedSystemHistoryVersion.store(m_SystemHistoryVersion, std::memory_order_release);
         if (shouldMergeGpuData)
         {
             m_LastGpuMergeTime = m_Now();
@@ -625,18 +627,18 @@ std::uint64_t ProcessModel::snapshotVersion() const
 
 bool ProcessModel::tryCopySystemHistoriesIfNewer(std::uint64_t lastSeenVersion, ProcessSystemHistories& outHistories) const
 {
-    if (m_PublishedSnapshotVersion.load(std::memory_order_acquire) == lastSeenVersion)
+    if (m_PublishedSystemHistoryVersion.load(std::memory_order_acquire) == lastSeenVersion)
     {
         return false;
     }
 
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    if (m_SnapshotVersion == lastSeenVersion)
+    if (m_SystemHistoryVersion == lastSeenVersion)
     {
         return false;
     }
 
-    outHistories.version = m_SnapshotVersion;
+    outHistories.version = m_SystemHistoryVersion;
     outHistories.timestamps = HistoryUtils::toVector(m_Timestamps);
     outHistories.power = HistoryUtils::toVector(m_SystemPowerHistory);
     outHistories.pageFaults = HistoryUtils::toVector(m_SystemPageFaultsHistory);
@@ -728,9 +730,18 @@ std::vector<double> ProcessModel::historyTimestamps() const
 void ProcessModel::setMaxHistorySeconds(double seconds)
 {
     std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    m_MaxHistorySeconds = std::max(0.0, seconds);
+    // The same guardrail as the other models, so every chart covers the same window (#1145).
+    m_MaxHistorySeconds = Sampling::clampHistorySeconds(seconds);
     applyHistoryCapacity();
     trimHistory();
+    // The trimmed histories are a new generation of them: without this, tryCopySystemHistoriesIfNewer()
+    // kept handing out the old window's data until the next sample (#1145). The snapshot version is
+    // left alone -- the process list did not change, and every snapshot generation has a watched sample.
+    if (m_SystemHistoryVersion != 0)
+    {
+        ++m_SystemHistoryVersion;
+        m_PublishedSystemHistoryVersion.store(m_SystemHistoryVersion, std::memory_order_release);
+    }
 }
 
 void ProcessModel::setMaxSaneNetworkRate(double bytesPerSecond) noexcept

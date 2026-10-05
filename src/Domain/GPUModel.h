@@ -115,7 +115,8 @@ class GPUModel : public ISamplable
     void refreshAt(std::chrono::steady_clock::time_point now);
 
     /// History window in seconds. Like SystemModel and StorageModel, samples older than this
-    /// are dropped, so the GPU charts cover the same window as every other chart (#993).
+    /// are dropped, so the GPU charts cover the same window as every other chart (#993). Clamped to
+    /// SamplingConfig's range; trims and republishes at once, once anything has been published (#1145).
     void setMaxHistorySeconds(double seconds);
     [[nodiscard]] double maxHistorySeconds() const;
 
