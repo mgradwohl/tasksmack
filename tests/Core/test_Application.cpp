@@ -809,7 +809,8 @@ TEST(FramePacingTest, InputDrivenFramesAreCapped)
 TEST(FramePacingTest, FramePeriodIsAWholeNumberOfRefreshes)
 {
     // #1126: a fixed 1/60 s period gave one/two vblank gaps at 75 Hz and two/three at 144 Hz. The
-    // period is now a whole number of refreshes, n = max(1, round(refresh / 60)).
+    // period is now a whole number of refreshes, n = max(1, floor(refresh / 60)) -- never slower than
+    // the target (#1281 review).
     struct Case
     {
         double refreshHz;
@@ -819,7 +820,7 @@ TEST(FramePacingTest, FramePeriodIsAWholeNumberOfRefreshes)
                          Case{.refreshHz = 75.0, .vblanks = 1},
                          Case{.refreshHz = 120.0, .vblanks = 2},
                          Case{.refreshHz = 144.0, .vblanks = 2},
-                         Case{.refreshHz = 165.0, .vblanks = 3},
+                         Case{.refreshHz = 165.0, .vblanks = 2},
                          Case{.refreshHz = 240.0, .vblanks = 4},
                          Case{.refreshHz = 30.0, .vblanks = 1}})
     {
@@ -834,6 +835,30 @@ TEST(FramePacingTest, FramePeriodIsAWholeNumberOfRefreshes)
     // The display rate itself (a move/resize cap) is one refresh.
     EXPECT_EQ(Core::FramePacing::vblanksPerFrame(144.0, Core::AnimationRequest::FULL_RATE), 1);
     EXPECT_NEAR(Core::FramePacing::framePeriodSeconds(144.0, Core::AnimationRequest::FULL_RATE), 1.0 / 144.0, 1e-12);
+}
+
+TEST(FramePacingTest, CadenceIsNeverSlowerThanTheTarget)
+{
+    // #1281 review: rounding picked 3 refreshes (20 FPS) for a 21 FPS motion request at 60 Hz, and
+    // 55 FPS for a 60 FPS target at 165 Hz, breaking the half-pixel-per-frame and request contracts.
+    for (const double refreshHz : {59.94, 60.0, 75.0, 120.0, 144.0, 165.0, 240.0})
+    {
+        for (const double target : {7.0, 20.0, 21.0, 30.0, 45.0, 60.0, 61.0})
+        {
+            SCOPED_TRACE(::testing::Message() << refreshHz << " Hz, target " << target);
+            const double period = Core::FramePacing::framePeriodSeconds(refreshHz, target);
+            if (target > refreshHz)
+            {
+                // Faster than the display: one refresh per frame is the most it can show.
+                EXPECT_NEAR(period, 1.0 / refreshHz, 1e-12);
+                continue;
+            }
+            EXPECT_LE(period, (1.0 / target) + 1e-9) << "paced slower than requested";
+        }
+    }
+    EXPECT_EQ(Core::FramePacing::vblanksPerFrame(60.0, 21.0), 2);  // 30 FPS, not 20
+    EXPECT_EQ(Core::FramePacing::vblanksPerFrame(165.0, 60.0), 2); // 82.5 FPS, not 55
+    EXPECT_EQ(Core::FramePacing::vblanksPerFrame(120.0, 60.0), 2); // exact ratios unaffected
 }
 
 TEST(FramePacingTest, VsyncPacedFramesPresentEveryNthRefresh)

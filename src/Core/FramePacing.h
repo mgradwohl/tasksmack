@@ -115,7 +115,9 @@ computeVsyncTransition(bool wasInteracting, bool isInteracting, bool vsyncReques
 }
 
 /// How many display refreshes (vblanks) one frame spans when targeting @p targetFps on a display
-/// refreshing at @p refreshHz: max(1, round(refresh / target)). Frames paced at a whole number of
+/// refreshing at @p refreshHz: max(1, floor(refresh / target)). Floor, not round: the cadence is never
+/// slower than the target, so a motion-derived request (at most half a pixel per frame) or a
+/// minimum-rate request is always met -- at 165 Hz a 60 FPS target paces at 82.5, not 55. Frames paced at a whole number of
 /// refreshes present on every n-th vblank, instead of the uneven one/two (75 Hz) or two/three
 /// (144 Hz) vblank gaps a fixed 1/60 s period gave with vsync (#1126). An infinite target means "the
 /// display rate" (1).
@@ -125,7 +127,9 @@ computeVsyncTransition(bool wasInteracting, bool isInteracting, bool vsyncReques
     {
         return 1;
     }
-    return std::max(1, static_cast<int>(std::lround(refreshHz / targetFps)));
+    // A tiny epsilon so a ratio that is a whole number up to rounding (119.99999 / 60) isn't floored one
+    // short.
+    return std::max(1, static_cast<int>(std::floor((refreshHz / targetFps) + 1e-6)));
 }
 
 /// The minimum time between frame starts when targeting @p targetFps on a @p refreshHz display:

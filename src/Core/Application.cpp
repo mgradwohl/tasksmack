@@ -77,9 +77,9 @@ constexpr int IDLE_FRAME_SLEEP_MS = 50;
 constexpr double IDLE_FRAME_RATE = 1000.0 / IDLE_FRAME_SLEEP_MS;
 
 // The fastest the loop paces frames, whatever asks: a visible chart or NowBar moving fast enough
-// (Core::AnimationRequest, #1037/#1125) or input (#1153). Rounded to a whole number of display
-// refreshes (FramePacing::vblanksPerFrame, #1126): 60 fps at 60/120 Hz, 75 at 75 Hz, 72 at 144 Hz,
-// 55 at 165 Hz. A move/resize interaction is capped at the display rate instead.
+// (Core::AnimationRequest, #1037/#1125) or input (#1153). A whole number of display refreshes never
+// slower than this (FramePacing::vblanksPerFrame, #1126): 60 fps at 60/120 Hz, 75 at 75 Hz, 72 at
+// 144 Hz, 82.5 at 165 Hz. A move/resize interaction is capped at the display rate instead.
 constexpr double MAX_FRAME_RATE = 60.0;
 
 // The refresh rate assumed when SDL does not report the display's (#1126).
