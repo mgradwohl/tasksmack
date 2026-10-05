@@ -531,6 +531,10 @@ long WindowsSystemProbe::ticksPerSecond() const
     return 10'000'000L;
 }
 
+// isCountedNetworkRow() spells the ifType values out to stay <windows.h>-free (#1257).
+static_assert(IF_TYPE_WWAN_GSM == IF_TYPE_WWANPP);
+static_assert(IF_TYPE_WWAN_CDMA == IF_TYPE_WWANPP2);
+
 void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
 {
     // Use GetIfTable2 for 64-bit counters and proper Unicode interface names.
@@ -543,9 +547,6 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
         spdlog::warn("GetIfTable2 failed: {}", status);
         return;
     }
-
-    uint64_t totalRxBytes = 0;
-    uint64_t totalTxBytes = 0;
 
     for (ULONG i = 0; i < table->NumEntries; ++i)
     {
@@ -560,9 +561,6 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
         // 64-bit byte counters - no more 32-bit overflow issues
         const uint64_t rxBytes = row.InOctets;
         const uint64_t txBytes = row.OutOctets;
-
-        totalRxBytes += rxBytes;
-        totalTxBytes += txBytes;
 
         // Store per-interface data
         SystemCounters::InterfaceCounters ifaceCounters;
@@ -596,6 +594,11 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
         // IF_OPER_STATUS enum - IfOperStatusUp (1) means interface is operational
         ifaceCounters.isUp = (row.OperStatus == IfOperStatusUp);
 
+        // A software interface -- VPN tunnel, Hyper-V/WSL vEthernet, WAN Miniport -- carries traffic
+        // that also crosses a hardware adapter, so the Total leaves it out (#1257, see
+        // sumCountedInterfaces()).
+        ifaceCounters.isVirtual = row.InterfaceAndOperStatusFlags.HardwareInterface == 0;
+
         // 64-bit link speeds in bits/sec - convert to Mbps
         // Use transmit speed (receive speed may differ on asymmetric links)
         // Windows uses 0 or ULONG64_MAX to indicate unknown speed
@@ -615,8 +618,10 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
     // Free the table allocated by GetIfTable2
     FreeMibTable(table);
 
-    counters.netRxBytes = totalRxBytes;
-    counters.netTxBytes = totalTxBytes;
+    // Hardware interfaces only, unless there are none -- as on Linux and in SystemModel (#1257).
+    const NetworkTotals totals = sumCountedInterfaces(counters.networkInterfaces);
+    counters.netRxBytes = totals.rxBytes;
+    counters.netTxBytes = totals.txBytes;
 }
 
 } // namespace Platform

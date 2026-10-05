@@ -37,6 +37,10 @@ enum class Action : std::uint8_t
     /// and on Wayland configure and occlusion changes. See exposeChangesSize() for the one case where
     /// it is treated as a resize.
     Exposed,
+    /// The window moved to another display (SDL_EVENT_WINDOW_DISPLAY_CHANGED) or a display's mode
+    /// changed (SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED): re-read the refresh rate frames are paced
+    /// against (#1126).
+    DisplayChanged,
     /// SDL_EVENT_WINDOW_MAXIMIZED: the OS maximized the window (Win+Up, snap to the top edge,
     /// ShowWindow(SW_MAXIMIZE), or SDL_MaximizeWindow()). For the borderless window on a
     /// client-side-maximize backend the OS sizes it from the primary screen rather than the current
@@ -61,6 +65,9 @@ enum class Action : std::uint8_t
         return Action::Moved;
     case SDL_EVENT_WINDOW_EXPOSED:
         return Action::Exposed;
+    case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
+    case SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED:
+        return Action::DisplayChanged;
     case SDL_EVENT_WINDOW_MAXIMIZED:
         return Action::SystemMaximized;
     default:

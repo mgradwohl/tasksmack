@@ -1,9 +1,11 @@
 #include "UI/ChartWidgets.h"
+#include "UI/Format.h"
 #include "UI/RateAxis.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -927,11 +929,11 @@ TEST(ChartWidgetsFormattersTest, FormatAxisBytesPerSecScalesUnits)
     char buf[32]{};
     int len = formatAxisBytesPerSec(100.0, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "100.0B/s");
+    EXPECT_EQ(std::string(buf), "100.0 B/s");
 
     len = formatAxisBytesPerSec(2048.0, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "2.0KB/s");
+    EXPECT_EQ(std::string(buf), "2.0 KB/s");
 }
 
 TEST(ChartWidgetsFormattersTest, FormatAxisBytesUsesBinaryUnitsWithoutRateSuffix)
@@ -940,19 +942,19 @@ TEST(ChartWidgetsFormattersTest, FormatAxisBytesUsesBinaryUnitsWithoutRateSuffix
     char buf[32]{};
     int len = formatAxisBytes(512.0, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "512.0B");
+    EXPECT_EQ(std::string(buf), "512.0 B");
 
     len = formatAxisBytes(1536.0, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "1.5KB");
+    EXPECT_EQ(std::string(buf), "1.5 KB");
 
     len = formatAxisBytes(1.5 * 1024.0 * 1024.0 * 1024.0, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "1.5GB");
+    EXPECT_EQ(std::string(buf), "1.5 GB");
 
     len = formatAxisBytes(-0.1, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "0.0B");
+    EXPECT_EQ(std::string(buf), "0.0 B");
 }
 
 TEST(ChartWidgetsFormattersTest, FormatAxisBytesPerSecClampsTinyNegativeToZero)
@@ -960,7 +962,7 @@ TEST(ChartWidgetsFormattersTest, FormatAxisBytesPerSecClampsTinyNegativeToZero)
     char buf[32]{};
     const int len = formatAxisBytesPerSec(-0.1, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "0.0B/s");
+    EXPECT_EQ(std::string(buf), "0.0 B/s");
 }
 
 TEST(ChartWidgetsFormattersTest, FormatAxisWattsUsesWAndMilliwatts)
@@ -968,27 +970,27 @@ TEST(ChartWidgetsFormattersTest, FormatAxisWattsUsesWAndMilliwatts)
     char buf[32]{};
     int len = formatAxisWatts(10.0, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "10.0W");
+    EXPECT_EQ(std::string(buf), "10.0 W");
 
     len = formatAxisWatts(0.5, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "500.0mW");
+    EXPECT_EQ(std::string(buf), "500.0 mW");
 }
 
-TEST(ChartWidgetsFormattersTest, FormatAxisWattsClampsTinyNegativeToZeroMilliwatts)
+TEST(ChartWidgetsFormattersTest, FormatAxisWattsClampsTinyNegativeToZeroWatts)
 {
     char buf[32]{};
     const int len = formatAxisWatts(-0.00001, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "0.0mW");
+    EXPECT_EQ(std::string(buf), "0.0 W");
 }
 
-TEST(ChartWidgetsFormattersTest, FormatAxisPercentFormatsOneDecimal)
+TEST(ChartWidgetsFormattersTest, FormatAxisPercentIsWholeFromTenPercent)
 {
     char buf[32]{};
     const int len = formatAxisPercent(12.34, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "12.3%");
+    EXPECT_EQ(std::string(buf), "12%");
 }
 
 TEST(ChartWidgetsFormattersTest, FormatAxisPercentClampsTinyNegativeToZero)
@@ -996,7 +998,7 @@ TEST(ChartWidgetsFormattersTest, FormatAxisPercentClampsTinyNegativeToZero)
     char buf[32]{};
     const int len = formatAxisPercent(-0.01, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "0.0%");
+    EXPECT_EQ(std::string(buf), "0%");
 }
 
 // #1195: a percent axis can scale down to 5 %, so a small tick must keep its value.
@@ -1021,11 +1023,60 @@ TEST(ChartWidgetsFormattersTest, FormatAxisBytesPerSecHandlesMegaAndGigaSuffixes
     char buf[32]{};
     int len = formatAxisBytesPerSec(5.0 * 1024.0 * 1024.0, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "5.0MB/s");
+    EXPECT_EQ(std::string(buf), "5.0 MB/s");
 
     len = formatAxisBytesPerSec(2.0 * 1024.0 * 1024.0 * 1024.0, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "2.0GB/s");
+    EXPECT_EQ(std::string(buf), "2.0 GB/s");
+}
+
+// #1202: every axis formatter is the value formatter for its quantity, so an axis tick reads
+// exactly like the tooltip and table cell beside it.
+TEST(ChartWidgetsFormattersTest, AxisFormattersMatchValueFormatters)
+{
+    std::array<char, 32> buf{};
+    const auto axis = [&buf](ImPlotFormatter formatter, double value, void* userData = nullptr)
+    {
+        EXPECT_GT(formatter(value, buf.data(), static_cast<int>(buf.size()), userData), 0);
+        return std::string(buf.data());
+    };
+    for (const double bytes : {1.0, 512.0, 1536.0, 3.25 * 1024.0 * 1024.0, 1.5 * 1024.0 * 1024.0 * 1024.0})
+    {
+        EXPECT_EQ(axis(formatAxisBytes, bytes), Format::formatBytes(bytes));
+        EXPECT_EQ(axis(formatAxisBytesPerSec, bytes), Format::formatBytesPerSec(bytes));
+    }
+    for (const double watts : {0.0, 0.0125, 0.5, 1.0, 45.0, 123.45})
+    {
+        EXPECT_EQ(axis(formatAxisWatts, watts), Format::formatWatts(watts));
+    }
+    for (const double percent : {0.0, 0.04, -0.04, 0.2, 2.5, 9.9, 10.0, 42.0, 100.0})
+    {
+        EXPECT_EQ(axis(formatAxisPercent, percent), Format::formatPercent(percent));
+    }
+}
+
+// A byte axis is labelled in the one unit its step is in: 0.5 GB, not 512.0 MB, on a 0-2 GB axis.
+TEST(ChartWidgetsFormattersTest, ByteAxisUsesTheUnitItIsGiven)
+{
+    std::array<char, 32> buf{};
+    const int size = static_cast<int>(buf.size());
+    constexpr double GIB = 1024.0 * 1024.0 * 1024.0;
+    EXPECT_GT(formatAxisBytes(0.5 * GIB, buf.data(), size, byteAxisUserData(Format::BYTE_UNIT_GB)), 0);
+    EXPECT_EQ(std::string(buf.data()), "0.5 GB");
+    EXPECT_GT(formatAxisBytesPerSec(0.0, buf.data(), size, byteAxisUserData(Format::BYTE_UNIT_MB)), 0);
+    EXPECT_EQ(std::string(buf.data()), "0.0 MB/s");
+    // Without a unit each tick picks its own, as before.
+    EXPECT_GT(formatAxisBytes(0.5 * GIB, buf.data(), size, nullptr), 0);
+    EXPECT_EQ(std::string(buf.data()), "512.0 MB");
+}
+
+TEST(ChartWidgetsFormattersTest, OnlyTheByteFormattersStepInBinaryUnits)
+{
+    EXPECT_TRUE(isByteAxisFormatter(formatAxisBytes));
+    EXPECT_TRUE(isByteAxisFormatter(formatAxisBytesPerSec));
+    EXPECT_FALSE(isByteAxisFormatter(formatAxisWatts));
+    EXPECT_FALSE(isByteAxisFormatter(formatAxisPercent));
+    EXPECT_FALSE(isByteAxisFormatter(formatAxisLocalized));
 }
 
 // ========== Tooltip rows (#1008, #1020) ==========
@@ -1367,6 +1418,46 @@ TEST(ChartWidgetsTest, DefaultPlotFlagsHideImPlotsMouseReadout)
     // Every history chart has its own tooltip; ImPlot's raw cursor coordinates were a second,
     // unlabelled readout of the same point (#1039).
     EXPECT_TRUE((PLOT_FLAGS_DEFAULT & ImPlotFlags_NoMouseText) != 0);
+}
+
+// ========== Motion-driven frame requests (#1125) ==========
+
+TEST(HistoryChartMotionTest, EaseFramesAreRequestedOnlyForAVisibleChartThisFrame)
+{
+    // #1281 review: an axis eased before its chart is drawn must not keep the app at full rate when the
+    // chart turns out to be clipped (BeginPlot false), nor carry a stale request to a later frame.
+    using UI::Widgets::shouldRequestEaseFrames;
+    EXPECT_TRUE(shouldRequestEaseFrames(42, 42, true));
+    EXPECT_FALSE(shouldRequestEaseFrames(42, 42, false)); // clipped chart
+    EXPECT_FALSE(shouldRequestEaseFrames(41, 42, true));  // from an earlier frame
+    EXPECT_FALSE(shouldRequestEaseFrames(-1, 42, true));  // nothing pending
+}
+
+TEST(HistoryChartMotionTest, ScrollSpeedIsPlotWidthOverWindowSeconds)
+{
+    // The default 300 s window across 1000 px scrolls ~3.3 px/s: far too slow to need 60 fps.
+    EXPECT_NEAR(historyChartScrollPixelsPerSecond(1000.0, -300.0, 0.0), 1000.0 / 300.0, 1e-12);
+    // A 10 s window over the same width scrolls 100 px/s.
+    EXPECT_DOUBLE_EQ(historyChartScrollPixelsPerSecond(1000.0, -10.0, 0.0), 100.0);
+    // A scrolled-back window moves at the same speed as one ending at "now".
+    EXPECT_DOUBLE_EQ(historyChartScrollPixelsPerSecond(1000.0, -70.0, -60.0), 100.0);
+    // An empty or inverted span, or no width, asks for nothing.
+    EXPECT_DOUBLE_EQ(historyChartScrollPixelsPerSecond(1000.0, 0.0, 0.0), 0.0);
+    EXPECT_DOUBLE_EQ(historyChartScrollPixelsPerSecond(1000.0, 0.0, -5.0), 0.0);
+    EXPECT_DOUBLE_EQ(historyChartScrollPixelsPerSecond(0.0, -300.0, 0.0), 0.0);
+}
+
+TEST(NowBarMotionTest, SettledBarsStopAskingForFrames)
+{
+    // A NowBar 100 px tall easing 0.30 -> 0.36 in a 16 ms frame moves 375 px/s.
+    EXPECT_NEAR(nowBarMotionPixelsPerSecond(0.30, 0.36, 100.0, 0.016), 375.0, 1e-9);
+    // Falling counts the same as rising.
+    EXPECT_NEAR(nowBarMotionPixelsPerSecond(0.36, 0.30, 100.0, 0.016), 375.0, 1e-9);
+    // Converged: no motion, no frames (it used to hold the loop at 60 fps forever).
+    EXPECT_DOUBLE_EQ(nowBarMotionPixelsPerSecond(0.5, 0.5, 100.0, 0.016), 0.0);
+    // Unknown frame time or height: nothing to go on, so nothing asked.
+    EXPECT_DOUBLE_EQ(nowBarMotionPixelsPerSecond(0.3, 0.6, 100.0, 0.0), 0.0);
+    EXPECT_DOUBLE_EQ(nowBarMotionPixelsPerSecond(0.3, 0.6, 0.0, 0.016), 0.0);
 }
 
 TEST(HistoryChartConfigTest, BeginPlotFlagsUnchangedWhenLegendShown)

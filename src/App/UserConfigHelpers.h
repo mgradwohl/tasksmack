@@ -5,6 +5,8 @@
 #include <toml++/toml.hpp>
 
 #include <algorithm>
+#include <array>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -162,6 +164,40 @@ inline void mergeOwnedKeys(toml::table& document, const toml::table& base, const
             {
                 documentSection->erase(key);
             }
+        }
+    }
+}
+
+/// A key TaskSmack used to write but has dropped.
+struct RetiredKey
+{
+    std::string_view section;
+    std::string_view key;
+};
+
+/// Settings older TaskSmack versions wrote that were never applied, and were dropped rather than
+/// wired up because nothing they described exists any more (#1123):
+///  - [metrics] min_time_for_rate_seconds: guarded the old lifetime-average network rate against
+///    early spikes; rates have been per-interval deltas since #1036.
+///  - [metrics] integrated_gpu_vram_threshold_mb: integrated vs. discrete is decided per vendor on
+///    Windows (DXGIGPUProbeMath.h) and by PCI bus on Linux, not by one VRAM threshold.
+///  - [ui] progress_color_low/high_threshold: TaskSmack draws no threshold-coloured progress bars.
+inline constexpr std::array<RetiredKey, 4> RETIRED_KEYS{{
+    {.section = "metrics", .key = "min_time_for_rate_seconds"},
+    {.section = "metrics", .key = "integrated_gpu_vram_threshold_mb"},
+    {.section = "ui", .key = "progress_color_low_threshold"},
+    {.section = "ui", .key = "progress_color_high_threshold"},
+}};
+
+/// Removes RETIRED_KEYS from `document`, so a config written by an older TaskSmack stops listing
+/// them on the next save. Everything else is left alone.
+inline void eraseRetiredKeys(toml::table& document)
+{
+    for (const RetiredKey& retired : RETIRED_KEYS)
+    {
+        if (auto* section = document.get_as<toml::table>(retired.section))
+        {
+            section->erase(retired.key);
         }
     }
 }

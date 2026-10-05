@@ -19,6 +19,7 @@
 #include "Domain/Numeric.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessModel.h"
+#include "Domain/ProcessSnapshot.h"
 #include "Platform/Factory.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
@@ -383,6 +384,8 @@ void ProcessesPanel::onAttach()
     processProbe->setSocketStatsCacheTtl(std::chrono::milliseconds(socketStatsCacheTtlMs));
 
     m_ProcessModel = std::make_shared<Domain::ProcessModel>(std::move(processProbe));
+    // Config-file only (not in Settings), so applied once here, before the first refresh (#1123).
+    m_ProcessModel->setMaxSaneNetworkRate(UserConfig::get().settings().maxSaneRateBps);
 
     // Seed with one synchronous read so the first background callback produces valid CPU
     // deltas instead of all-zero percentages (first call establishes the prev-sample
@@ -1005,19 +1008,17 @@ std::optional<Domain::ProcessSnapshot> ProcessesPanel::findSnapshot(std::int32_t
     return m_ProcessModel->findSnapshot(pid);
 }
 
-std::optional<Domain::ProcessModel::SnapshotLookupResult> ProcessesPanel::findSnapshotWithVersion(std::int32_t pid) const
+void ProcessesPanel::watchProcess(std::int32_t pid)
 {
-    if (!m_ProcessModel)
+    if (m_ProcessModel)
     {
-        return std::nullopt;
+        m_ProcessModel->watchProcess(pid);
     }
-    // See findSnapshot()'s doc comment for why this bypasses m_CachedRenderSnapshots. Unlike
-    // findSnapshot(), this also returns the exact publication version the snapshot was read
-    // under (atomically, under ProcessModel's own lock) -- callers that need to gate on "is
-    // this new data" (e.g. ProcessDetailsPanel's history recording) must use this instead of
-    // pairing findSnapshot() with a separately-read version, which can race with an
-    // intervening publish and pair a snapshot from one generation with another's version.
-    return m_ProcessModel->findSnapshotWithVersion(pid);
+}
+
+bool ProcessesPanel::watchedSamplesSince(std::uint64_t lastSeenVersion, std::vector<Domain::ProcessSample>& outSamples) const
+{
+    return m_ProcessModel && m_ProcessModel->watchedSamplesSince(lastSeenVersion, outSamples);
 }
 
 void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int depth, bool hasChildren, bool isExpanded)

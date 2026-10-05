@@ -862,6 +862,58 @@ TEST(LinuxProcessProbeTest, AFailedPreTailTotalReadIsReturnedNotRetriedAfterTheT
     EXPECT_EQ(probe.totalCpuTime(), 2000U); // taken once; then a fresh read
 }
 
+TEST(LinuxProcessProbeTest, UnreadableFdAndIoAreReportedUnavailableNotZero)
+{
+    // #1110: without root, another user's /proc/[pid]/fd and /proc/[pid]/io can't be read. Their
+    // values used to be left at 0, which the table showed as "0 FDs" / "no I/O" and the totals
+    // counted. They are now marked unavailable -- and so are the process's network counters, whose
+    // attribution needs that same fd directory. Here the fd "directory" is a plain file and there is
+    // no io file, which fails the reads the same way for any user (a mode-000 one wouldn't for root).
+    ScopedTempDir proc("ts_test_proc_unreadable_fd_io");
+    const auto writeStat = [&proc](std::int32_t pid)
+    {
+        writeFile(proc.path / std::to_string(pid) / "stat",
+                  std::format("{} (app) S 1 {} {} 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+                              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n",
+                              pid,
+                              pid,
+                              pid));
+    };
+    writeFile(proc.path / "self" / "io", "read_bytes: 0\nwrite_bytes: 0\n"); // I/O counters are readable in general
+
+    writeStat(4242); // readable: two fds and an io file
+    writeFile(proc.path / "4242" / "fd" / "0", "");
+    writeFile(proc.path / "4242" / "fd" / "1", "");
+    writeFile(proc.path / "4242" / "io", "rchar: 1\nwchar: 2\nread_bytes: 4096\nwrite_bytes: 8192\n");
+
+    writeStat(4343); // unreadable: no fd directory, no io file
+    writeFile(proc.path / "4343" / "fd", "not a directory");
+
+    LinuxProcessProbe probe(proc.path);
+    ASSERT_TRUE(probe.capabilities().hasIoCounters);
+    const auto processes = probe.enumerate();
+    ASSERT_EQ(processes.size(), 2U);
+    const auto find = [&processes](std::int32_t pid)
+    {
+        return std::ranges::find(processes, pid, &ProcessCounters::pid);
+    };
+
+    const auto readable = find(4242);
+    ASSERT_NE(readable, processes.end());
+    EXPECT_TRUE(readable->handleCountAvailable);
+    EXPECT_EQ(readable->handleCount, 2);
+    EXPECT_TRUE(readable->ioCountersAvailable);
+    EXPECT_EQ(readable->readBytes, 4096U);
+    EXPECT_EQ(readable->writeBytes, 8192U);
+    EXPECT_TRUE(readable->networkCountersAvailable);
+
+    const auto unreadable = find(4343);
+    ASSERT_NE(unreadable, processes.end());
+    EXPECT_FALSE(unreadable->handleCountAvailable);
+    EXPECT_FALSE(unreadable->ioCountersAvailable);
+    EXPECT_FALSE(unreadable->networkCountersAvailable);
+}
+
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 TEST(LinuxProcessProbeTest, ReadSocketTrafficReportsRawAttributedSocketCounters)
 {

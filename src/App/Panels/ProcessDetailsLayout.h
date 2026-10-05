@@ -44,7 +44,7 @@ inline constexpr float INFO_BLOCK_MAX_WIDTH_EM = 36.0F;
     return std::min(wanted, availableWidthPx);
 }
 
-/// Floor on the width of the process-control buttons (Terminate, Kill, Pause, Resume), in ems:
+/// Floor on the width of the process-control buttons (Terminate, Kill, Suspend, Resume), in ems:
 /// 180px at the reference em, the fixed width they had before (#949).
 inline constexpr float ACTION_BUTTON_MIN_WIDTH_EM = 16.875F;
 

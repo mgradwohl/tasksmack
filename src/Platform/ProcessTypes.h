@@ -67,6 +67,16 @@ struct ProcessCounters
     // std::nullopt means the probe could not open the process with the required rights.
     // A stored value of 0 means the process is accessible but owns no GDI objects.
     std::optional<std::int32_t> gdiObjectCount;
+
+    // Whether the probe could read these for this process (#1110). A probe sets one false when the
+    // read failed -- typically for lack of rights: without root, Linux cannot read another user's
+    // /proc/[pid]/fd or /proc/[pid]/io -- and the value beside it is then a placeholder 0, not a
+    // measurement. The defaults suit a probe that reads every process it lists; a field the probe
+    // never fills at all is reported by ProcessCapabilities instead.
+    bool handleCountAvailable = true;     // handleCount
+    bool ioCountersAvailable = true;      // readBytes / writeBytes
+    bool networkCountersAvailable = true; // netSentBytes / netReceivedBytes: the process's connections
+                                          // could be attributed to it (Linux: from its /proc/[pid]/fd)
 };
 
 /// One connection's cumulative byte counters as the OS reports them, and the process it belongs to.
@@ -76,6 +86,10 @@ struct SocketTrafficSample
     std::int32_t pid = 0;  // Owning process; 0 = not attributed (yet)
     std::uint64_t bytesReceived = 0;
     std::uint64_t bytesSent = 0;
+    // False for a connection present in the OS table whose counters couldn't be read this time
+    // (Windows: a failed or garbage EStats read); its byte fields are then ignored. Reported rather
+    // than left out so Domain doesn't take it as closed, and back as new (#1256).
+    bool readable = true;
 };
 
 /// One complete reading of every connection's raw byte counters (IProcessProbe::readSocketTraffic()).
