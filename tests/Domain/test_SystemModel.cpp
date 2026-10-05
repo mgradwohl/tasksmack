@@ -1503,6 +1503,27 @@ TEST(SystemModelTest, NetworkTotalLeavesOutVirtualInterfaces)
     EXPECT_TRUE(snap.networkInterfaces[1].isVirtual);
 }
 
+TEST(SystemModelTest, InterfaceSnapshotsSayWhetherThePlatformClassifiedThem)
+{
+    // #1260: the UI follows the platform's isVirtual flag where the platform could classify the
+    // interface and falls back to the name only where it couldn't, so the snapshot carries which.
+    auto classified = makeInterfaceCounters("wg0", 1000, 1000);
+    classified.isVirtual = true;
+    classified.isVirtualKnown = true;
+    const auto unclassified = makeInterfaceCounters("veth0", 1000, 1000);
+    const auto cpu = makeCpuCounters(100, 0, 50, 850);
+    const auto memory = makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024);
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    model.updateFromCounters(makeSystemCounters(cpu, memory, 0, {}, 0, 0, {classified, unclassified}), 1.0);
+
+    const auto snap = model.snapshot();
+    ASSERT_EQ(snap.networkInterfaces.size(), 2U);
+    EXPECT_TRUE(snap.networkInterfaces[0].isVirtual);
+    EXPECT_TRUE(snap.networkInterfaces[0].isVirtualKnown);
+    EXPECT_FALSE(snap.networkInterfaces[1].isVirtual);
+    EXPECT_FALSE(snap.networkInterfaces[1].isVirtualKnown);
+}
+
 TEST(SystemModelTest, NetworkTotalCountsEveryInterfaceWhenAllAreVirtual)
 {
     // Inside a container eth0 is a veth: with no hardware interface the Total must not read 0.

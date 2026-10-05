@@ -484,6 +484,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         ifaceSnap.isUp = iface.isUp;
         ifaceSnap.linkSpeedMbps = iface.linkSpeedMbps;
         ifaceSnap.isVirtual = iface.isVirtual;
+        ifaceSnap.isVirtualKnown = iface.isVirtualKnown;
 
         // Compute rates only if we have previous data and positive time delta
         if (m_HasPrevious && timeDelta > 0.0)

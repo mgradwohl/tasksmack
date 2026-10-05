@@ -598,6 +598,7 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
         // that also crosses a hardware adapter, so the Total leaves it out (#1257, see
         // sumCountedInterfaces()).
         ifaceCounters.isVirtual = row.InterfaceAndOperStatusFlags.HardwareInterface == 0;
+        ifaceCounters.isVirtualKnown = true; // Every MIB_IF_ROW2 carries the flag (#1260)
 
         // 64-bit link speeds in bits/sec - convert to Mbps
         // Use transmit speed (receive speed may differ on asymmetric links)

@@ -17,8 +17,9 @@
 namespace App::NetInterfaceUtils
 {
 
-/// Check if an interface is likely a virtual/loopback interface that users rarely care about
-[[nodiscard]] inline bool isVirtualInterface(const Domain::SystemSnapshot::InterfaceSnapshot& iface)
+/// Whether the interface's name looks like a virtual/loopback interface's. Only a fallback for an
+/// interface the platform couldn't classify; see isVirtualInterface().
+[[nodiscard]] inline bool hasVirtualInterfaceName(const Domain::SystemSnapshot::InterfaceSnapshot& iface)
 {
     const auto& name = iface.name;
 
@@ -90,6 +91,19 @@ namespace App::NetInterfaceUtils
     }
 
     return false;
+}
+
+/// Whether the interface is virtual (loopback, bridge, veth, tunnel/VPN, ...): the platform's isVirtual
+/// flag, the same one the network Total uses, wherever the platform could classify the interface; the
+/// name heuristic only where it couldn't. A name alone used to decide, so a WireGuard wg0 or a renamed
+/// bridge was left out of the Total but treated as hardware here (#1260).
+[[nodiscard]] inline bool isVirtualInterface(const Domain::SystemSnapshot::InterfaceSnapshot& iface)
+{
+    if (iface.isVirtual)
+    {
+        return true;
+    }
+    return !iface.isVirtualKnown && hasVirtualInterfaceName(iface);
 }
 
 /// Check if an interface is Bluetooth (usually not useful for throughput monitoring)
@@ -205,11 +219,11 @@ using InterfaceNameSet = std::set<std::string, std::less<>>;
     return iface.rxBytesPerSec > 0.0 || iface.txBytesPerSec > 0.0;
 }
 
-/// Whether the interface is hidden by default whatever its traffic: virtual and Bluetooth
-/// interfaces (the platform's isVirtual flag where it is set, the name heuristic otherwise) (#1211).
+/// Whether the interface is hidden by default whatever its traffic: virtual (isVirtualInterface())
+/// and Bluetooth interfaces (#1211).
 [[nodiscard]] inline bool isAlwaysHidden(const Domain::SystemSnapshot::InterfaceSnapshot& iface)
 {
-    return iface.isVirtual || isVirtualInterface(iface) || isBluetoothInterface(iface);
+    return isVirtualInterface(iface) || isBluetoothInterface(iface);
 }
 
 /// Add every interface moving traffic in this snapshot to `seen`, so a down interface that carried
@@ -229,8 +243,7 @@ inline void recordInterfaceTraffic(const std::vector<Domain::SystemSnapshot::Int
 
 /// Whether the Interface Status table leaves the interface out unless "Show all" is on (#1211).
 ///
-/// Virtual and Bluetooth interfaces are hidden (the platform's isVirtual flag where it is set, the
-/// name heuristic otherwise), as are down interfaces -- WAN Miniports, spare Wi-Fi instances,
+/// Virtual and Bluetooth interfaces are hidden (see isVirtualInterface()), as are down interfaces -- WAN Miniports, spare Wi-Fi instances,
 /// disconnected adapters -- unless they have carried traffic this session.
 [[nodiscard]] inline bool isHiddenByDefault(const Domain::SystemSnapshot::InterfaceSnapshot& iface, const InterfaceNameSet& seenTraffic)
 {

@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -515,7 +516,9 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
             ifaceCounters.txBytes = txBytes;
             ifaceCounters.isUp = readInterfaceOperState(ifaceName);
             ifaceCounters.linkSpeedMbps = getInterfaceLinkSpeed(ifaceName, ifaceCounters.isUp);
-            ifaceCounters.isVirtual = isVirtualInterface(m_SysClassNetRoot, ifaceName);
+            const auto isVirtual = isVirtualInterface(m_SysClassNetRoot, ifaceName);
+            ifaceCounters.isVirtual = isVirtual.value_or(false);
+            ifaceCounters.isVirtualKnown = isVirtual.has_value();
             counters.networkInterfaces.push_back(std::move(ifaceCounters));
         }
 
@@ -642,16 +645,17 @@ uint64_t LinuxSystemProbe::readInterfaceLinkSpeedFromSysfs(const std::string& if
     return static_cast<uint64_t>(speedMbps);
 }
 
-bool LinuxSystemProbe::isVirtualInterface(const std::filesystem::path& sysClassNetRoot, std::string_view ifaceName)
+std::optional<bool> LinuxSystemProbe::isVirtualInterface(const std::filesystem::path& sysClassNetRoot, std::string_view ifaceName)
 {
     // A hardware NIC (PCI, USB, SDIO, Hyper-V netvsc, virtio) has a `device` link to its bus device;
     // a software interface doesn't. When the interface can't be found at all (sysfs not mounted, or
-    // it vanished) it counts as hardware, the pre-#1106 behavior.
+    // it vanished) it can't be classified: the caller counts it as hardware, the pre-#1106 behavior,
+    // and the UI falls back to its name (#1260).
     std::error_code ec;
     const auto ifaceDir = sysClassNetRoot / ifaceName;
     if (!std::filesystem::exists(ifaceDir, ec))
     {
-        return false;
+        return std::nullopt;
     }
     return !std::filesystem::exists(ifaceDir / "device", ec);
 }
