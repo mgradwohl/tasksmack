@@ -53,5 +53,14 @@ TEST(ProcessGpuHelpersTest, HistoryThatHasAgedToAllZeroShowsTheMessage)
     EXPECT_FALSE(hasGpuUsageToShow(0, 0.0, false, util, memory));
 }
 
+// #1207: one GPU's breakdown repeated the usage table above it.
+TEST(ProcessGpuHelpersTest, PerGpuBreakdownOnlyForMoreThanOneGpu)
+{
+    EXPECT_FALSE(shouldShowPerGpuBreakdown(0));
+    EXPECT_FALSE(shouldShowPerGpuBreakdown(1));
+    EXPECT_TRUE(shouldShowPerGpuBreakdown(2));
+    EXPECT_TRUE(shouldShowPerGpuBreakdown(4));
+}
+
 } // namespace
 } // namespace App::Detail

@@ -648,6 +648,16 @@ void Application::run()
             case WindowEventRouting::Action::DisplayChanged:
                 refreshDisplayRate();
                 break;
+            case WindowEventRouting::Action::SystemMaximized:
+#ifdef _WIN32
+                // Win+Up, snap to the top edge or ShowWindow(SW_MAXIMIZE) on the borderless window:
+                // replaced by the title-bar button's maximize, whose resize events follow (#1208).
+                // Windows only: the quarter-screen maximize is SDL's Win32 WM_GETMINMAXINFO sizing.
+                // X11/XWayland window managers size a maximized borderless window themselves, and
+                // their asynchronous restore/maximize round trip is untested, so Linux is unchanged.
+                m_Window->adoptSystemMaximize();
+                break;
+#endif
             case WindowEventRouting::Action::None:
                 break;
             }

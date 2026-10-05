@@ -494,6 +494,22 @@ void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, boo
     }
 }
 
+auto Window::getDisplayId() const noexcept -> SDL_DisplayID
+{
+    return m_Handle != nullptr ? SDL_GetDisplayForWindow(m_Handle) : 0;
+}
+
+auto Window::getUsableDisplaySize() const -> std::optional<std::pair<int, int>>
+{
+    const SDL_DisplayID displayID = getDisplayId();
+    SDL_Rect usableBounds{};
+    if (displayID == 0 || !SDL_GetDisplayUsableBounds(displayID, &usableBounds) || usableBounds.w <= 0 || usableBounds.h <= 0)
+    {
+        return std::nullopt;
+    }
+    return std::pair{usableBounds.w, usableBounds.h};
+}
+
 bool Window::isMaximized() const
 {
     if (m_Handle == nullptr)
@@ -575,6 +591,39 @@ void Window::maximize()
         // getNormalGeometry() would save this maximized rectangle as the normal one (#1121).
         m_IsMaximizedBorderless = true;
     }
+}
+
+void Window::adoptSystemMaximize()
+{
+    if (m_Handle == nullptr)
+    {
+        return;
+    }
+
+    // Read the live flags, not the event: a queued MAXIMIZED can be handled after a later OS restore
+    // or minimize, which adopting it would undo (#1208).
+    const SDL_WindowFlags flags = SDL_GetWindowFlags(m_Handle);
+    const bool borderless = (flags & SDL_WINDOW_BORDERLESS) != 0;
+    const bool stillMaximized = (flags & SDL_WINDOW_MAXIMIZED) != 0;
+    const bool minimized = (flags & SDL_WINDOW_MINIMIZED) != 0;
+    const bool clientSideBackend = VideoBackend::supportsClientSideMaximize();
+    SDL_Rect usableBounds{};
+    const SDL_DisplayID displayID = SDL_GetDisplayForWindow(m_Handle);
+    const bool usableBoundsKnown = displayID != 0 && SDL_GetDisplayUsableBounds(displayID, &usableBounds);
+    if (!WindowGeometry::shouldAdoptSystemMaximize(borderless, clientSideBackend, usableBoundsKnown, stillMaximized, minimized))
+    {
+        return;
+    }
+
+    // Undo the OS maximize first, so the window is back at its normal rectangle: that is what
+    // maximize() records as the restore target (when not already maximized client-side), and it
+    // clears the OS's maximized state so a later restore() or SDL_SetWindowSize() is not fighting
+    // it. Waiting for the restore keeps the recorded rectangle the real one on asynchronous
+    // windowing systems. Once per OS maximize, never per frame.
+    spdlog::debug("Window::adoptSystemMaximize: replacing an OS maximize with the client-side one (#1208)");
+    SDL_RestoreWindow(m_Handle);
+    SDL_SyncWindow(m_Handle);
+    maximize();
 }
 
 void Window::rememberRestoreRect()
