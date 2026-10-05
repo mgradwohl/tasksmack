@@ -568,6 +568,20 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
     snapshot.encoderUtilPercent = current.encoderUtilPercent;
     snapshot.decoderUtilPercent = current.decoderUtilPercent;
 
+    // Power from a cumulative energy counter (#1269): its change over the sample interval. Without
+    // a readable previous counter, or when it went backwards (a driver reload), power is unread.
+    if (current.energyAvailable)
+    {
+        const bool haveDelta = previous != nullptr && previous->energyAvailable && timeDeltaSeconds > 0.0 &&
+                               current.energyMicroJoules >= previous->energyMicroJoules;
+        constexpr double MICROJOULES_PER_JOULE = 1'000'000.0;
+        snapshot.powerAvailable = haveDelta;
+        snapshot.powerDrawWatts =
+            haveDelta
+                ? Numeric::counterRate(current.energyMicroJoules, previous->energyMicroJoules, timeDeltaSeconds) / MICROJOULES_PER_JOULE
+                : 0.0;
+    }
+
     // Compute derived values
     if (current.memoryTotalBytes > 0)
     {
