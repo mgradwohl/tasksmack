@@ -148,8 +148,9 @@ void renderCpuCoresSection(RenderContext& ctx)
         // rows/scrolling (#823 review).
         const float approxLabelOverhead = (ImGui::GetStyle().WindowPadding.y * 2.0F) + ImGui::GetTextLineHeight() +
                                           (ImGui::GetStyle().ItemSpacing.y * 2.0F) + (ImGui::GetStyle().CellPadding.y * 2.0F);
-        const float barColumnAllowance =
-            UI::Widgets::nowBarWidth(ImGui::GetFontSize()); // extra width renderHistoryWithNowBars reserves for the NowBar column
+        // The width renderHistoryWithNowBars takes beside the plot: the one-bar column and the cell
+        // padding that separates it from the plot.
+        const float barColumnAllowance = UI::Widgets::nowBarsReservedWidth(1, 0, false);
 
         const ImVec2 avail = ImGui::GetContentRegionAvail();
         const ChartGridConfig gridConfig{
@@ -323,7 +324,9 @@ void renderCpuCoresSection(RenderContext& ctx)
                             // unlike the per-cell PushID scaffolding in ChartGrid.h, there's no
                             // allocation to avoid, and a per-core id keeps RenderMetrics entries
                             // from collapsing all cores into one (#823 review).
-                            renderHistoryWithNowBars(coreLabel.c_str(), plotHeight, plotFn, bars, false, 0, true, NowBarValues::None);
+                            // Not compactSpacing: the bar keeps the same gap from its chart as on every
+                            // other tab, rather than touching the plot's edge.
+                            renderHistoryWithNowBars(coreLabel.c_str(), plotHeight, plotFn, bars, false, 0, false, NowBarValues::None);
                         });
     }
 }

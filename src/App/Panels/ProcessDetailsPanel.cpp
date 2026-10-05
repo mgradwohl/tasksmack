@@ -64,15 +64,21 @@ using UI::Widgets::renderHistoryWithNowBars;
 using UI::Widgets::SeriesRole;
 using UI::Widgets::seriesStyle;
 
-// The NowBar column every Process Details chart reserves: the most bars any of them has, so charts
-// stacked on one tab are the same width and their time axes line up (#1206). Resources has four on
-// Windows (with GDI Objects): with a column of its own it was narrower than the CPU and Memory
-// charts above it, and its time axis shorter.
+// The NowBar columns each Process Details tab's charts reserve: the most bars any chart on that tab
+// has, so charts stacked on one tab are the same width and their time axes line up (#1206), without
+// a tab of one- or two-bar charts keeping empty columns for another tab's widest chart.
+//
+// Overview (CPU, Memory, Power, Resources): Resources has four on Windows (with GDI Objects); with a
+// column of its own it was narrower than the CPU and Memory charts above it, and its time axis shorter.
 #ifdef _WIN32
-constexpr size_t PROCESS_NOW_BAR_COLUMNS = 4;
+constexpr size_t PROCESS_OVERVIEW_NOW_BAR_COLUMNS = 4;
 #else
-constexpr size_t PROCESS_NOW_BAR_COLUMNS = 3;
+constexpr size_t PROCESS_OVERVIEW_NOW_BAR_COLUMNS = 3;
 #endif
+// Network and I/O: Read and Write, Sent and Received.
+constexpr size_t PROCESS_NETWORK_IO_NOW_BAR_COLUMNS = 2;
+// GPU: Utilization, and Memory, one bar each.
+constexpr size_t PROCESS_GPU_NOW_BAR_COLUMNS = 1;
 
 // Floor on the Confirm Action dialog's Yes/No buttons, in ems: 120px at the reference em.
 constexpr float CONFIRM_BUTTON_MIN_EM = 11.25F;
@@ -1090,7 +1096,7 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
                                  cpuPlot,
                                  {cpuTotalNow, cpuUserNow, cpuSystemNow},
                                  false,
-                                 PROCESS_NOW_BAR_COLUMNS);
+                                 PROCESS_OVERVIEW_NOW_BAR_COLUMNS);
         fill.addPlot();
         ImGui::Spacing();
     }
@@ -1291,7 +1297,7 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
                                      memoryPlot,
                                      memoryBars,
                                      false,
-                                     PROCESS_NOW_BAR_COLUMNS,
+                                     PROCESS_OVERVIEW_NOW_BAR_COLUMNS,
                                      false,
                                      UI::Widgets::NowBarValues::Strip,
                                      stripExtras);
@@ -1486,13 +1492,17 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
 
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GEARS "  Resources (%zu samples)", alignedCount);
 #ifdef _WIN32
-    // 4 NowBars on Windows: Threads, Handles, Page Faults, GDI Objects (PROCESS_NOW_BAR_COLUMNS)
-    renderHistoryWithNowBars(
-        "ProcessResourceHistory", fill.plotHeight(), plot, {threadsBar, handlesBar, faultsBar, gdiBar}, false, PROCESS_NOW_BAR_COLUMNS);
+    // 4 NowBars on Windows: Threads, Handles, Page Faults, GDI Objects (PROCESS_OVERVIEW_NOW_BAR_COLUMNS)
+    renderHistoryWithNowBars("ProcessResourceHistory",
+                             fill.plotHeight(),
+                             plot,
+                             {threadsBar, handlesBar, faultsBar, gdiBar},
+                             false,
+                             PROCESS_OVERVIEW_NOW_BAR_COLUMNS);
     fill.addPlot();
 #else
     renderHistoryWithNowBars(
-        "ProcessResourceHistory", fill.plotHeight(), plot, {threadsBar, handlesBar, faultsBar}, false, PROCESS_NOW_BAR_COLUMNS);
+        "ProcessResourceHistory", fill.plotHeight(), plot, {threadsBar, handlesBar, faultsBar}, false, PROCESS_OVERVIEW_NOW_BAR_COLUMNS);
     fill.addPlot();
 #endif
     ImGui::Spacing();
@@ -1593,7 +1603,7 @@ void ProcessDetailsPanel::renderIoStats(UI::Widgets::FillPlotLayout& fill)
     };
 
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  I/O Statistics (%zu samples)", alignedCount);
-    renderHistoryWithNowBars("ProcessIoHistory", fill.plotHeight(), plot, {readBar, writeBar}, false, PROCESS_NOW_BAR_COLUMNS);
+    renderHistoryWithNowBars("ProcessIoHistory", fill.plotHeight(), plot, {readBar, writeBar}, false, PROCESS_NETWORK_IO_NOW_BAR_COLUMNS);
     fill.addPlot();
     ImGui::Spacing();
 }
@@ -1701,7 +1711,8 @@ void ProcessDetailsPanel::renderNetworkStats(UI::Widgets::FillPlotLayout& fill)
         ImGui::SetTooltip("Network bytes/sec between readings of the process's open connections. A refresh that reuses a cached reading "
                           "shows the last rate.");
     }
-    renderHistoryWithNowBars("ProcessNetworkHistory", fill.plotHeight(), plot, {sentBar, recvBar}, false, PROCESS_NOW_BAR_COLUMNS);
+    renderHistoryWithNowBars(
+        "ProcessNetworkHistory", fill.plotHeight(), plot, {sentBar, recvBar}, false, PROCESS_NETWORK_IO_NOW_BAR_COLUMNS);
     fill.addPlot();
     ImGui::Spacing();
 }
@@ -1778,7 +1789,7 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc, 
     };
 
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_BOLT "  Power Usage (%zu samples)", alignedCount);
-    renderHistoryWithNowBars("ProcessPowerHistory", fill.plotHeight(), plot, {powerBar}, false, PROCESS_NOW_BAR_COLUMNS);
+    renderHistoryWithNowBars("ProcessPowerHistory", fill.plotHeight(), plot, {powerBar}, false, PROCESS_OVERVIEW_NOW_BAR_COLUMNS);
     fill.addPlot();
     ImGui::Spacing();
 }
@@ -2136,12 +2147,12 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
         };
 
         ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CHART_LINE "  GPU Utilization History (%zu samples)", alignedCount);
-        renderHistoryWithNowBars("ProcessGPUUtilHistory", fill.plotHeight(), plotGpuUtil, {gpuUtilBar}, false, PROCESS_NOW_BAR_COLUMNS);
+        renderHistoryWithNowBars("ProcessGPUUtilHistory", fill.plotHeight(), plotGpuUtil, {gpuUtilBar}, false, PROCESS_GPU_NOW_BAR_COLUMNS);
         fill.addPlot();
         ImGui::Spacing();
 
         ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CHART_LINE "  GPU Memory History (%zu samples)", alignedCount);
-        renderHistoryWithNowBars("ProcessGPUMemHistory", fill.plotHeight(), plotGpuMem, {gpuMemBar}, false, PROCESS_NOW_BAR_COLUMNS);
+        renderHistoryWithNowBars("ProcessGPUMemHistory", fill.plotHeight(), plotGpuMem, {gpuMemBar}, false, PROCESS_GPU_NOW_BAR_COLUMNS);
         fill.addPlot();
         ImGui::Spacing();
     }

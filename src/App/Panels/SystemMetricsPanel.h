@@ -75,7 +75,11 @@ class SystemMetricsPanel : public Panel
 
     /// Width of the Overview's NowBar column, including the cell padding that separates it from the
     /// plot, at the current font and style. For the window's content minimum (#1207); needs a frame.
-    [[nodiscard]] static float overviewNowBarColumnWidth();
+    [[nodiscard]] float overviewNowBarColumnWidth() const;
+
+    /// NowBar columns every Overview chart reserves: the most bars any of them has, which depends on
+    /// whether the platform reports I/O Wait (a fourth CPU bar).
+    [[nodiscard]] std::size_t overviewNowBarColumns() const;
 
     /// Get the hostname (for tab/window title).
     [[nodiscard]] const std::string& hostname() const

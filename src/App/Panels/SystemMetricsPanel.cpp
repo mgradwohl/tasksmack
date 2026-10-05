@@ -116,9 +116,11 @@ void showCpuBreakdownTooltip(const UI::ColorScheme& scheme,
     UI::Widgets::renderHistoryTooltip(ageSeconds, rows);
 }
 
-// Kept at 4 even without I/O Wait: every Overview chart reserves the same bar columns so their
-// time axes line up.
-constexpr size_t OVERVIEW_NOW_BAR_COLUMNS = 4; // CPU: Total, User, System, I/O Wait
+// Every Overview chart reserves the same NowBar columns so their time axes line up: as many as the
+// chart with the most bars has. Memory and Resources have three, Power and Battery two; CPU has
+// three (Total, User, System) plus I/O Wait where the platform reports it (#1031), so the column is
+// one bar wider only there (SystemMetricsPanel::overviewNowBarColumns()).
+constexpr size_t OVERVIEW_NOW_BAR_COLUMNS_WITHOUT_IOWAIT = 3;
 
 // Network interface utilities (isVirtualInterface, isBluetoothInterface, getSortedFilteredInterfaces)
 // are now in App/Panels/NetInterfaceUtils.h to avoid duplication with NetworkPanel.cpp
@@ -128,12 +130,18 @@ constexpr size_t OVERVIEW_NOW_BAR_COLUMNS = 4; // CPU: Total, User, System, I/O 
 SystemMetricsPanel::SystemMetricsPanel() : Panel("System")
 {}
 
-float SystemMetricsPanel::overviewNowBarColumnWidth()
+std::size_t SystemMetricsPanel::overviewNowBarColumns() const
 {
-    // As the Overview lays it out: OVERVIEW_NOW_BAR_COLUMNS bars with item spacing between them, in
+    const bool hasIoWait = (m_Model != nullptr) && m_Model->capabilities().hasIoWait;
+    return OVERVIEW_NOW_BAR_COLUMNS_WITHOUT_IOWAIT + (hasIoWait ? 1U : 0U);
+}
+
+float SystemMetricsPanel::overviewNowBarColumnWidth() const
+{
+    // As the Overview lays it out: overviewNowBarColumns() bars with item spacing between them, in
     // a table column that ImGui separates from the plot with CellPadding.x either side (#1207).
     const ImGuiStyle& style = ImGui::GetStyle();
-    const auto columns = static_cast<float>(OVERVIEW_NOW_BAR_COLUMNS);
+    const auto columns = static_cast<float>(overviewNowBarColumns());
     return (UI::Widgets::nowBarWidth(ImGui::GetFontSize()) * columns) + (style.ItemSpacing.x * (columns - 1.0F)) +
            (style.CellPadding.x * 2.0F);
 }
@@ -531,7 +539,7 @@ void SystemMetricsPanel::renderOverview()
     UI::Widgets::FillPlotLayout fill(m_OverviewFill);
     const float plotHeight = fill.plotHeight();
     // The CPU, Memory, Power and Resources charts share their plot edges, though only Resources
-    // (and Power with a battery) has a right-hand axis (#1206). All reserve OVERVIEW_NOW_BAR_COLUMNS.
+    // (and Power with a battery) has a right-hand axis (#1206). All reserve overviewNowBarColumns().
     const UI::Widgets::AlignedChartStack alignedCharts("##OverviewCharts");
 
     updateSmoothedCpu(snap, m_LastDeltaSeconds);
@@ -842,7 +850,7 @@ void SystemMetricsPanel::renderOverview()
         });
     }
 
-    renderHistoryWithNowBars("OverviewCPUHistoryLayout", plotHeight, cpuPlot, cpuBars, false, OVERVIEW_NOW_BAR_COLUMNS);
+    renderHistoryWithNowBars("OverviewCPUHistoryLayout", plotHeight, cpuPlot, cpuBars, false, overviewNowBarColumns());
     fill.addPlot();
 
     ImGui::Spacing();
@@ -859,7 +867,7 @@ void SystemMetricsPanel::renderOverview()
             .smoothedMemory = &m_SmoothedMemory,
             .plotHeight = plotHeight,
         };
-        MemorySection::renderMemorySection(memCtx, timestamps, nowSeconds, static_cast<int>(OVERVIEW_NOW_BAR_COLUMNS));
+        MemorySection::renderMemorySection(memCtx, timestamps, nowSeconds, static_cast<int>(overviewNowBarColumns()));
         fill.addPlot();
         ImGui::Spacing();
     }
@@ -1051,11 +1059,11 @@ void SystemMetricsPanel::renderOverview()
             if (!headerRight.empty())
             {
                 // Calculate right-aligned position to align with chart's right edge (not NowBars)
-                // NowBar column width: nowBarWidth() * OVERVIEW_NOW_BAR_COLUMNS + spacing
+                // NowBar column width: nowBarWidth() * overviewNowBarColumns() + spacing
                 const ImGuiStyle& headerStyle = ImGui::GetStyle();
                 const float barColumnWidth =
-                    (UI::Widgets::nowBarWidth(ImGui::GetFontSize()) * static_cast<float>(OVERVIEW_NOW_BAR_COLUMNS)) +
-                    (headerStyle.ItemSpacing.x * (static_cast<float>(OVERVIEW_NOW_BAR_COLUMNS) - 1.0F));
+                    (UI::Widgets::nowBarWidth(ImGui::GetFontSize()) * static_cast<float>(overviewNowBarColumns())) +
+                    (headerStyle.ItemSpacing.x * (static_cast<float>(overviewNowBarColumns()) - 1.0F));
                 // The chart's right edge in window-local X. The chart and its NowBars sit in a
                 // two-column table with no outer border, which ImGui lays out with CellPadding.x on
                 // each side of the boundary between the columns and none outside them: so the chart
@@ -1111,7 +1119,7 @@ void SystemMetricsPanel::renderOverview()
                 ImGui::EndTooltip();
             }
 
-            renderHistoryWithNowBars("PowerBatteryHistoryLayout", plotHeight, plot, bars, false, OVERVIEW_NOW_BAR_COLUMNS);
+            renderHistoryWithNowBars("PowerBatteryHistoryLayout", plotHeight, plot, bars, false, overviewNowBarColumns());
             fill.addPlot();
             ImGui::Spacing();
         }
@@ -1244,7 +1252,7 @@ void SystemMetricsPanel::renderOverview()
         ImGui::TextColored(
             theme.scheme().textPrimary, ICON_FA_GEARS "  Threads, Page Faults & %s (%zu samples)", handleLabel, alignedCount);
         renderHistoryWithNowBars(
-            "ResourcesHistoryLayout", plotHeight, plot, {threadsBar, faultsBar, handlesBar}, false, OVERVIEW_NOW_BAR_COLUMNS);
+            "ResourcesHistoryLayout", plotHeight, plot, {threadsBar, faultsBar, handlesBar}, false, overviewNowBarColumns());
         fill.addPlot();
         ImGui::Spacing();
     }
