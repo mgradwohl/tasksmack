@@ -75,9 +75,10 @@ struct NVMLGPUProbe::Impl
     // A running-process entry point and the size of the entries it writes (#1092). The entries are
     // nvmlProcessInfo_v1_t or _v2_t depending on the symbol, so the struct is opaque here: the
     // pointer keeps a struct-pointer parameter like the library's, and the caller's byte buffer is
-    // converted only at the call.
-    struct ProcessInfoEntries;
-    using RunningProcessesFn = nvmlReturn_t (*)(nvmlDevice_t, unsigned int*, ProcessInfoEntries*);
+    // converted only at the call. The opaque type is the shared NVML::nvmlProcessInfoEntries, which
+    // the test mock's definitions also take, so the call goes through the callee's own function
+    // type (#1306; UBSan -fsanitize=function).
+    using RunningProcessesFn = nvmlReturn_t (*)(nvmlDevice_t, unsigned int*, nvmlProcessInfoEntries*);
     struct RunningProcessesQuery
     {
         RunningProcessesFn fn = nullptr;
@@ -616,7 +617,7 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
     const auto runningProcesses = [](const Impl::RunningProcessesQuery& query, nvmlDevice_t device)
     {
         return NVMLGPUProbeMath::queryRunningProcesses([&query, device](unsigned int* count, void* buffer)
-                                                       { return query.fn(device, count, static_cast<Impl::ProcessInfoEntries*>(buffer)); },
+                                                       { return query.fn(device, count, static_cast<nvmlProcessInfoEntries*>(buffer)); },
                                                        query.entrySize);
     };
 
