@@ -153,6 +153,14 @@ TaskSmack combines operating-system GPU APIs with optional vendor libraries:
 | AMD | ROCm SMI (`librocm_smi64.so`) | DXGI/PDH capability-dependent data |
 | Intel/generic | DRM/sysfs | DXGI/PDH |
 
+**Intel GPUs on Linux** (i915 and xe drivers) report what the kernel exposes for each card:
+
+- **Clock:** i915's `gt_cur_freq_mhz`, or xe's `tile0/gt0/freq0/cur_freq`.
+- **Temperature and power:** from the card's hwmon, which only discrete cards (Arc) have. Power is worked out from hwmon's energy counter, so it appears from the second sample on.
+- **VRAM:** the capacity comes from the DRM memory-region query on the card's render node (`/dev/dri/renderD*`), made once while the card is awake and then remembered. Used VRAM appears only when the kernel reports it; i915 needs `CAP_PERFMON` for that.
+- **Not read:** utilisation.
+- **Sleeping cards:** a card in runtime suspend isn't queried, so watching it doesn't wake it.
+
 **Per-process GPU utilisation** sums utilisation across all GPUs, so a process working across two GPUs can legitimately show GPU% > 100 %.
 
 The UI shows only the metrics exposed by the available backend. If no backend discovers a usable GPU, GPU sections are hidden.

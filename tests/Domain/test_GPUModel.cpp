@@ -634,6 +634,79 @@ TEST(GPUModelTest, PCIeCounterRollbackHandled)
 }
 
 // =============================================================================
+// Power from an energy counter (#1269)
+// =============================================================================
+
+// Intel i915/xe report a cumulative energy counter, not power: Domain derives watts from its change.
+TEST(GPUModelTest, PowerIsDerivedFromTheEnergyCounter)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    auto counters = makeGPUCounters("GPU0");
+    counters.powerAvailable = false;
+    counters.energyAvailable = true;
+    counters.energyMicroJoules = 1'000'000'000;
+    rawProbe->withGPU("GPU0", "Test GPU", "Intel").withGPUCounters("GPU0", counters);
+
+    Domain::GPUModel model(std::move(probe));
+    const auto start = std::chrono::steady_clock::now();
+    model.refreshAt(start);
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1U);
+    EXPECT_FALSE(snaps[0].powerAvailable); // No previous counter yet: a gap, not 0 W
+
+    counters.energyMicroJoules += 30'000'000; // +30 J over 2 s
+    rawProbe->withGPUCounters("GPU0", counters);
+    model.refreshAt(start + std::chrono::seconds(2));
+    snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1U);
+    EXPECT_TRUE(snaps[0].powerAvailable);
+    EXPECT_DOUBLE_EQ(snaps[0].powerDrawWatts, 15.0);
+}
+
+TEST(GPUModelTest, EnergyCounterGapOrResetLeavesPowerUnread)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    auto counters = makeGPUCounters("GPU0");
+    counters.powerAvailable = false;
+    counters.energyAvailable = true;
+    counters.energyMicroJoules = 5'000'000;
+    rawProbe->withGPU("GPU0", "Test GPU", "Intel").withGPUCounters("GPU0", counters);
+
+    Domain::GPUModel model(std::move(probe));
+    const auto start = std::chrono::steady_clock::now();
+    model.refreshAt(start);
+
+    // A failed read (or a suspended card) has no counter...
+    counters.energyAvailable = false;
+    rawProbe->withGPUCounters("GPU0", counters);
+    model.refreshAt(start + std::chrono::seconds(1));
+    EXPECT_FALSE(model.snapshots()[0].powerAvailable);
+
+    // ...so the next sample has nothing to take a delta against.
+    counters.energyAvailable = true;
+    counters.energyMicroJoules = 9'000'000;
+    rawProbe->withGPUCounters("GPU0", counters);
+    model.refreshAt(start + std::chrono::seconds(2));
+    EXPECT_FALSE(model.snapshots()[0].powerAvailable);
+
+    // A counter that went backwards (driver reload) is not a huge or negative draw.
+    counters.energyMicroJoules = 10;
+    rawProbe->withGPUCounters("GPU0", counters);
+    model.refreshAt(start + std::chrono::seconds(3));
+    EXPECT_FALSE(model.snapshots()[0].powerAvailable);
+
+    counters.energyMicroJoules = 4'000'010; // +4 J over 1 s
+    rawProbe->withGPUCounters("GPU0", counters);
+    model.refreshAt(start + std::chrono::seconds(4));
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1U);
+    EXPECT_TRUE(snaps[0].powerAvailable);
+    EXPECT_DOUBLE_EQ(snaps[0].powerDrawWatts, 4.0);
+}
+
+// =============================================================================
 // Multi-GPU Tests
 // =============================================================================
 
