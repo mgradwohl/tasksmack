@@ -1813,9 +1813,10 @@ void setupLegendDefault();
 [[nodiscard]] bool legendEntriesKnown(const char* plotLabel);
 
 /// The pixel width left for the name in a legend entry "<name><suffix>" when the legend is a column
-/// in a chart filling the available width: the chart's width less ImPlot's plot and legend padding,
-/// the entry's icon and the suffix. Defined in ChartLegend.cpp.
-[[nodiscard]] float legendNameBudget(std::string_view suffix);
+/// in a chart filling the available width less @p reservedWidth (what a layout beside the chart takes,
+/// e.g. nowBarsReservedWidth()): that width less ImPlot's plot and legend padding, the entry's icon and
+/// the suffix. Defined in ChartLegend.cpp.
+[[nodiscard]] float legendNameBudget(std::string_view suffix, float reservedWidth = 0.0F);
 
 /// @p name, cut short with an ellipsis at a UTF-8 code point boundary if @p measure (the pixel width
 /// of a string) says it is wider than @p budget: the longest prefix whose "<prefix>…" fits, or just
@@ -2524,6 +2525,24 @@ inline void requestNowBarMotion(ImGuiID barId, double value01, float heightPx)
 }
 } // namespace Detail
 
+/// Width of renderHistoryWithNowBars()'s "Now" column for @p barColumnCount bars.
+[[nodiscard]] inline float nowBarColumnWidth(std::size_t barColumnCount)
+{
+    const float count = UI::Format::toFloatNarrow(Domain::Numeric::toDouble(barColumnCount));
+    const float spacing = (barColumnCount > 1) ? ImGui::GetStyle().ItemSpacing.x * (count - 1.0F) : 0.0F;
+    return (nowBarWidth(ImGui::GetFontSize()) * count) + spacing;
+}
+
+/// Width renderHistoryWithNowBars() takes from the available width beside its chart: the "Now" column
+/// for max(@p barCount, @p minBarColumns) bars and, unless @p compactSpacing, the cell padding on each
+/// side of the boundary between the two columns. Errs on the wide side, so a label fitted to what is
+/// left (legendNameBudget()) is never clipped.
+[[nodiscard]] inline float nowBarsReservedWidth(std::size_t barCount, std::size_t minBarColumns, bool compactSpacing)
+{
+    const float cellPadding = compactSpacing ? 0.0F : 2.0F * ImGui::GetStyle().CellPadding.x;
+    return nowBarColumnWidth(std::max(barCount, minBarColumns)) + cellPadding;
+}
+
 inline void renderHistoryWithNowBars(const char* tableId,
                                      float plotHeight,
                                      const std::function<void()>& plotFn,
@@ -2596,11 +2615,8 @@ inline void renderHistoryWithNowBars(const char* tableId,
     }
 
     const ImGuiStyle& style = ImGui::GetStyle();
-    const size_t barColumnCount = std::max(bars.size(), minBarColumns);
-    const float barColumnCountF = UI::Format::toFloatNarrow(Domain::Numeric::toDouble(barColumnCount));
-    const float spacing = (barColumnCount > 1) ? style.ItemSpacing.x * (barColumnCountF - 1.0F) : 0.0F;
     const float barWidth = nowBarWidth(ImGui::GetFontSize());
-    const float columnWidth = (barWidth * barColumnCountF) + spacing;
+    const float columnWidth = nowBarColumnWidth(std::max(bars.size(), minBarColumns));
 
     int pushedVars = 0;
     if (compactSpacing)
