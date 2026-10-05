@@ -85,9 +85,10 @@ class ProcessModel : public ISamplable
     /// was read under, both under the same lock. A caller that instead calls findSnapshot()
     /// and snapshotVersion() as two separate calls can have a publish land in between them,
     /// pairing a snapshot from one generation with the version number of another -- e.g. a
-    /// consumer using that version to gate "is this new data worth recording" (like
-    /// ProcessDetailsPanel's history) could see a version that never actually matched the
-    /// snapshot content it was given, silently skipping or duplicating a history point.
+    /// consumer using that version to gate "is this new data worth recording" (as
+    /// ProcessDetailsPanel's history once did; it now uses watchedSamplesSince()) could see a
+    /// version that never actually matched the snapshot content it was given, silently
+    /// skipping or duplicating a history point.
     [[nodiscard]] std::optional<SnapshotLookupResult> findSnapshotWithVersion(std::int32_t pid) const;
 
     /// Copy the snapshot generation only when a newer version exists. "Copy" is a shared_ptr
@@ -99,6 +100,29 @@ class ProcessModel : public ISamplable
     [[nodiscard]] bool tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
                                                std::shared_ptr<const std::vector<ProcessSnapshot>>& outSnapshots,
                                                std::uint64_t& outVersion) const;
+
+    /// How many of the watched process's samples are kept for watchedSamplesSince(): every generation
+    /// for 6.4 s at the fastest refresh interval, so a reader that polls once per UI frame -- 200 ms
+    /// apart while minimised -- misses none unless the UI stalls for longer than that.
+    static constexpr std::size_t WATCHED_SAMPLE_CAPACITY = 64;
+
+    /// Keep a sample of process @p pid from every generation published from now on, for
+    /// watchedSamplesSince() (#1098). Replaces any earlier watch and drops its samples; the process
+    /// as the current generation lists it (if one has been published) becomes the first sample, so
+    /// a reader needn't wait for the next refresh. pid <= 0 stops watching.
+    /// Thread-safe; meant for the UI thread (ProcessDetailsPanel's selection).
+    void watchProcess(std::int32_t pid);
+
+    /// Appends to @p outSamples, oldest first, the watched process's samples from generations newer
+    /// than @p lastSeenVersion that are still kept, and returns whether it appended any. Each carries
+    /// the generation's own sample time, so a reader stamps history with when the data was sampled,
+    /// not when it looked, and records generations published between two of its polls rather than
+    /// only the latest (#1098). When nothing new has been published it returns without locking or
+    /// copying anything, and a sample is a shared pointer, so polling every frame never deep-copies
+    /// a snapshot (#1172). A gap between @p lastSeenVersion and the first sample's version means
+    /// generations were published while more than WATCHED_SAMPLE_CAPACITY newer ones arrived
+    /// unread.
+    [[nodiscard]] bool watchedSamplesSince(std::uint64_t lastSeenVersion, std::vector<ProcessSample>& outSamples) const;
 
     /// Monotonically increasing counter, incremented each time snapshots are updated.
     /// UI can compare against a cached value to skip redundant copies when data hasn't changed.
@@ -203,6 +227,17 @@ class ProcessModel : public ISamplable
     std::atomic<bool> m_InteractionActive{false};
     Clock::time_point m_LastGpuMergeTime;
     bool m_HasLastGpuMergeTime = false;
+    bool m_GpuMergeFailing = false; // guarded by m_SamplingMutex; logs a failing GPU merge once per streak (#1142)
+
+    // The watched process (watchProcess()) and its latest samples, oldest first. A fixed ring --
+    // m_WatchedSampleStart is the oldest slot -- so recording a sample never allocates while the
+    // writer holds m_Mutex. m_WatchedPid is written under m_Mutex and also read without it by the
+    // writer, which looks the process up before taking the lock.
+    std::atomic<std::int32_t> m_WatchedPid{0};
+    std::vector<ProcessSample> m_WatchedSamples = std::vector<ProcessSample>(WATCHED_SAMPLE_CAPACITY); // guarded by m_Mutex
+    std::size_t m_WatchedSampleStart = 0;                                                              // guarded by m_Mutex
+    std::size_t m_WatchedSampleCount = 0;                                                              // guarded by m_Mutex
+    double m_SnapshotSampleTimeSeconds = 0.0; // guarded by m_Mutex; m_Snapshots' sample time (ProcessSample)
 
     // Thread safety
     mutable std::shared_mutex m_Mutex;
@@ -215,6 +250,18 @@ class ProcessModel : public ISamplable
     void computeSnapshotsLocked(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime);
 
     static void mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel);
+
+    /// mergeGPUData(), contained: a throwing GPU merge must not stop process publication (#1142).
+    /// On a throw the snapshots are published without GPU fields. Requires m_SamplingMutex held.
+    void mergeGPUDataContained(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel);
+
+    /// Records @p sample as the newest watched sample, returning the one it displaced from the ring
+    /// (for the caller to destroy after releasing the lock). Requires m_Mutex held exclusively.
+    [[nodiscard]] ProcessSample pushWatchedSampleLocked(ProcessSample sample);
+
+    /// A shared copy of process @p pid as @p snapshots lists it, or nullptr when it isn't listed.
+    [[nodiscard]] static std::shared_ptr<const ProcessSnapshot> copyProcess(const std::vector<ProcessSnapshot>& snapshots,
+                                                                            std::int32_t pid);
 
     [[nodiscard]] static ProcessSnapshot computeSnapshot(const Platform::ProcessCounters& current,
                                                          const Platform::ProcessCounters* previous,
