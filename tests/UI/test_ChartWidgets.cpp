@@ -1698,6 +1698,20 @@ TEST(ForEachMarkerSampleTest, SkipsGapsAndDegenerateIntervals)
     EXPECT_TRUE(markerSamples(x, allGaps, 0.0, 2.0, 0.0).empty());
 }
 
+// #1301 review: a history that has not crossed a boundary yet still gets one marker, on its oldest
+// finite sample, so a new chart's secondaries are told apart from their first samples.
+TEST(ForEachMarkerSampleTest, AHistoryWithinOneBucketPlacesNoneButHasAFallbackSample)
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const std::vector<double> x{0.0, 1.0, 2.0, 3.0};
+    const std::vector<double> y{nan, 1.0, 1.0, 1.0};
+    EXPECT_TRUE(markerSamples(x, y, 0.0, 30.0, 0.0).empty());
+    EXPECT_EQ(fallbackMarkerSample(y.data(), UI::Format::checkedCount(y.size())), 1);
+    const std::vector<double> allGaps(x.size(), nan);
+    EXPECT_EQ(fallbackMarkerSample(allGaps.data(), UI::Format::checkedCount(allGaps.size())), -1);
+    EXPECT_EQ(fallbackMarkerSample(y.data(), 0), -1);
+}
+
 // #1301 review: the boundaries are found by binary search instead of a walk of the whole history.
 // The marked samples are those of the walk: the first finite sample whose bucket differs from the
 // previous finite sample's.

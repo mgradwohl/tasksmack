@@ -1196,13 +1196,15 @@ inline constexpr float SERIES_MARKER_RADIUS = 3.0F;
 /// so a frame costs O(markers * log count) rather than a walk of the whole history -- 18,000 samples
 /// per series at 30 minutes of 100 ms samples -- for each series, every frame. Only a run of gaps
 /// (non-finite values) right after a boundary is stepped through.
+///
+/// Returns the number of markers placed.
 template<typename TX, typename TY, typename Fn>
-inline void
+inline int
 forEachMarkerSample(const TX* xData, const TY* yData, int count, double anchorSeconds, double intervalSeconds, double phase, Fn&& fn)
 {
     if (count <= 0 || !(intervalSeconds > 0.0) || !std::isfinite(intervalSeconds))
     {
-        return;
+        return 0;
     }
     const auto bucketOf = [&](int i)
     {
@@ -1219,10 +1221,11 @@ forEachMarkerSample(const TX* xData, const TY* yData, int count, double anchorSe
         return from;
     };
 
+    int placed = 0;
     int i = nextFinite(0);
     if (i >= count)
     {
-        return;
+        return placed;
     }
     std::int64_t lastBucket = bucketOf(i);
     while (true)
@@ -1245,11 +1248,29 @@ forEachMarkerSample(const TX* xData, const TY* yData, int count, double anchorSe
         i = nextFinite(lo);
         if (i >= count)
         {
-            return;
+            return placed;
         }
-        std::forward<Fn>(fn)(i);
+        fn(i);
+        ++placed;
         lastBucket = bucketOf(i);
     }
+}
+
+/// The sample that carries a series' one marker while its history has not yet crossed a marker
+/// boundary (forEachMarkerSample() places none): its oldest finite sample, which scrolls with the
+/// chart like any marker. Without it a new series -- a process just selected, a counter just
+/// available -- would have no marker for up to a whole interval (30 s at the default window), and two
+/// secondaries would differ by colour alone. -1 when the series has no finite sample.
+template<typename TY> [[nodiscard]] inline int fallbackMarkerSample(const TY* yData, int count) noexcept
+{
+    for (int i = 0; i < count; ++i)
+    {
+        if (std::isfinite(static_cast<double>(yData[static_cast<std::size_t>(i)])))
+        {
+            return i;
+        }
+    }
+    return -1;
 }
 
 /// Draws a series' markers (see SeriesStyle::marker), under the series' own label so they are the
@@ -1268,18 +1289,19 @@ inline void plotSeriesMarkers(const char* label, const TX* xData, const TY* yDat
     static std::vector<TX> markerY;
     markerX.clear();
     markerY.clear();
-    forEachMarkerSample(xData,
-                        yData,
-                        count,
-                        historyFrameNowSeconds(),
-                        interval,
-                        style.markerPhase,
-                        [&](int i)
-                        {
-                            const auto index = static_cast<std::size_t>(i);
-                            markerX.push_back(xData[index]);
-                            markerY.push_back(static_cast<TX>(yData[index]));
-                        });
+    const auto addMarker = [&](int i)
+    {
+        const auto index = static_cast<std::size_t>(i);
+        markerX.push_back(xData[index]);
+        markerY.push_back(static_cast<TX>(yData[index]));
+    };
+    if (forEachMarkerSample(xData, yData, count, historyFrameNowSeconds(), interval, style.markerPhase, addMarker) == 0)
+    {
+        if (const int fallback = fallbackMarkerSample(yData, count); fallback >= 0)
+        {
+            addMarker(fallback);
+        }
+    }
     if (markerX.empty())
     {
         return;
