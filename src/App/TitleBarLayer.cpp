@@ -18,7 +18,6 @@
 #include <spdlog/spdlog.h>
 
 #include <chrono>
-#include <cstddef>
 #include <ratio>
 #include <tuple>
 #include <utility>
