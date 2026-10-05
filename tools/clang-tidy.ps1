@@ -174,6 +174,13 @@ if ($ShowDetails) {
 # Run clang-tidy in parallel using PowerShell jobs
 $ConfigFile = Join-Path $ProjectRoot ".clang-tidy"
 
+# Windows-only check exclusions, appended to .clang-tidy's Checks (which Linux keeps in full).
+# - clang-analyzer-optin.core.EnumCastOutOfRange: MSVC STL false positive. std::filesystem::read_symlink
+#   ORs two __std_fs_file_flags bits (_BITMASK_OPS in <xfilesystem_abi.h>), and the analyzer reports
+#   the combined value as outside the enum's range. The report is located in that system header, so
+#   a NOLINT (or [[clang::suppress]]) in our code can't silence it. Reached via App/UserConfig.cpp.
+$WindowsCheckExclusions = "-clang-analyzer-optin.core.EnumCastOutOfRange"
+
 # Process files in batches for parallel execution
 $results = $SourceFiles | ForEach-Object -ThrottleLimit $Jobs -Parallel {
     $file = $_
@@ -195,6 +202,7 @@ $results = $SourceFiles | ForEach-Object -ThrottleLimit $Jobs -Parallel {
 
     $output = & $clangTidy `
         --config-file="$configFile" `
+        --checks="$using:WindowsCheckExclusions" `
         --header-filter="$using:HeaderFilterRegex" `
         --exclude-header-filter="$using:ExcludeHeaderFilterRegex" `
         -p "$buildDir" `
