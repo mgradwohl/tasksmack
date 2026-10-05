@@ -163,6 +163,36 @@ TEST(LinuxGPUProbeTest, HybridLaptopIntelGpuHasNoNvmlSensors)
     }
 }
 
+// #1116: the composite rescans every vendor probe, including one that had no
+// device at startup, and reports the change: here an Intel card appears after
+// construction, with no Intel card before.
+TEST(LinuxGPUProbeTest, FullRescanPicksUpACardFromAProbeThatHadNone)
+{
+    const TestSupport::ScopedTempDir sysRoot("tasksmack_linux_gpu_rescan");
+    std::filesystem::create_directories(sysRoot.path / "drm");
+
+    LinuxGPUProbe probe((sysRoot.path / "drm").string(), TestSupport::ISOLATED_PCI_ROOT);
+    const auto before = probe.enumerateGPUs();
+    EXPECT_TRUE(std::ranges::none_of(before, [](const GPUInfo& gpu) { return gpu.vendor == "Intel"; }));
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full));
+
+    const auto pciDir = sysRoot.path / "pci" / "0000:00:02.0";
+    std::filesystem::create_directories(pciDir);
+    std::filesystem::create_directories(sysRoot.path / "drm" / "card0");
+    std::filesystem::create_directory_symlink(pciDir, sysRoot.path / "drm" / "card0" / "device");
+    std::filesystem::create_symlink("/nonexistent/drivers/i915", pciDir / "driver");
+    std::ofstream(pciDir / "vendor") << "0x8086\n";
+    std::ofstream(pciDir / "class") << "0x030000\n";
+
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick));
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    const auto after = probe.enumerateGPUs();
+    EXPECT_EQ(after.size(), before.size() + 1);
+    EXPECT_TRUE(std::ranges::any_of(after, [](const GPUInfo& gpu) { return gpu.id == "0000:00:02.0"; }));
+    const auto counters = probe.readGPUCounters();
+    EXPECT_TRUE(std::ranges::any_of(counters, [](const GPUCounters& counter) { return counter.gpuId == "0000:00:02.0"; }));
+}
+
 } // namespace
 } // namespace Platform
 

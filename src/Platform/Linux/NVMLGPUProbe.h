@@ -15,6 +15,9 @@ namespace Platform
 /// Supports dynamic loading of libnvidia-ml.so for graceful degradation.
 /// A GPU that is runtime-suspended (its power/runtime_status under `pciDevicesRoot` says so) is not
 /// queried, so the probe doesn't keep a hybrid laptop's dGPU awake (#1117); tests pass a fake root.
+/// rescanGPUs() re-initialises NVML when the NVIDIA devices under that root change (hot-plug,
+/// removal, a driver rebind) or a query reported the GPU lost, and asks for a re-enumeration once a
+/// GPU that was asleep at enumeration wakes, so its own sensor set is found (#1116, #1289).
 class NVMLGPUProbe final : public IGPUProbe
 {
   public:
@@ -31,6 +34,7 @@ class NVMLGPUProbe final : public IGPUProbe
     [[nodiscard]] std::vector<GPUCounters> readGPUCounters() override;
     [[nodiscard]] std::vector<ProcessGPUCounters> readProcessGPUCounters() override;
     [[nodiscard]] GPUCapabilities capabilities() const override;
+    [[nodiscard]] bool rescanGPUs(GPURescan depth) override;
 
     /// Check if NVML is available and initialized
     [[nodiscard]] bool isAvailable() const;

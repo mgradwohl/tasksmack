@@ -1,5 +1,6 @@
 #include "ROCmGPUProbe.h"
 
+#include "PciDisplayDevices.h"
 #include "PciRuntimePm.h"
 #include "Platform/GPUTypes.h"
 #include "ROCmGPUProbeMath.h"
@@ -11,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -35,7 +37,7 @@ constexpr rsmi_status_t RSMI_STATUS_NOT_SUPPORTED = 2;
 [[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_OUT_OF_RESOURCES = 5;
 [[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_INTERNAL_EXCEPTION = 6;
 [[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_INPUT_OUT_OF_BOUNDS = 7;
-[[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_INIT_ERROR = 8;
+constexpr rsmi_status_t RSMI_STATUS_INIT_ERROR = 8;
 constexpr rsmi_status_t RSMI_STATUS_NOT_YET_IMPLEMENTED = 9;
 constexpr rsmi_status_t RSMI_STATUS_NOT_FOUND = 10;
 [[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_INSUFFICIENT_SIZE = 11;
@@ -149,7 +151,31 @@ struct ROCmGPUProbe::Impl
     std::vector<std::string> sysfsPaths;
     // The last VRAM total read while each device was awake, reported while it sleeps (#1117).
     std::vector<std::uint64_t> lastMemoryTotalBytes;
+    // Each device's name, read at load, so a repeat enumerateGPUs() needn't ask again.
+    std::vector<std::string> names;
+    // Which sensors each device reports, found by the first enumerateGPUs() that sees it awake
+    // (#1112). Unset while it has only been seen asleep: it isn't woken to find out (#1117), and
+    // rescanGPUs() asks for a re-enumeration once it is awake (#1289).
+    std::vector<std::optional<GPUCapabilities>> sensors;
     std::string pciDevicesRoot;
+    // AMD display devices in sysfs at the last full rescan (PciDisplayDevices::list): a change means
+    // a GPU was hot-plugged, removed or rebound, which ROCm SMI only sees after a re-init (#1116).
+    std::vector<std::string> pciDevicesSeen;
+    // A read returned RSMI_STATUS_INIT_ERROR since the last (re)init, or the last re-init failed:
+    // the next full rescan re-initialises ROCm SMI (#1116).
+    bool reinitNeeded = false;
+    // dlopen() and dlsym() have succeeded (the library stays loaded across a re-init).
+    bool symbolsLoaded = false;
+
+    /// Note a read's result: an initialisation error means ROCm SMI must be re-initialised (#1116).
+    rsmi_status_t noteResult(rsmi_status_t result)
+    {
+        if (result == RSMI_STATUS_INIT_ERROR)
+        {
+            reinitNeeded = true;
+        }
+        return result;
+    }
 
     /// Whether device `deviceIdx` is runtime-suspended now, so must not be queried (#1117).
     [[nodiscard]] bool asleep(std::uint32_t deviceIdx) const
@@ -182,6 +208,12 @@ struct ROCmGPUProbe::Impl
     ROCmGPUProbeMath::FrequenciesLayout frequenciesLayout = ROCmGPUProbeMath::FrequenciesLayout::V6;
 
     bool loadROCmSMI();
+    bool loadSymbols();
+    /// rsmi_init() and the device list; on failure the library is unloaded and false returned.
+    bool startROCmSMI();
+    /// Re-initialise ROCm SMI and rebuild the device list (#1116), keeping each surviving device's
+    /// last-known VRAM total. ROCm is left unavailable if the re-init fails or finds no device.
+    void restartROCmSMI();
     void unloadROCmSMI();
     [[nodiscard]] std::string getROCmError(rsmi_status_t result) const;
 
@@ -196,7 +228,15 @@ bool ROCmGPUProbe::Impl::loadROCmSMI()
     {
         return true;
     }
+    if (!symbolsLoaded && !loadSymbols())
+    {
+        return false;
+    }
+    return startROCmSMI();
+}
 
+bool ROCmGPUProbe::Impl::loadSymbols()
+{
     // Try to load librocm_smi64.so (dynamic loading for graceful fallback)
     // Note: tests inject the mock by setting LD_LIBRARY_PATH before process start (via CTest ENVIRONMENT_MODIFICATION)
     if (rocmHandle == nullptr)
@@ -258,6 +298,12 @@ bool ROCmGPUProbe::Impl::loadROCmSMI()
 #undef LOAD_ROCM_FUNC_OPTIONAL
     // NOLINTEND(concurrency-mt-unsafe,bugprone-macro-parentheses)
 
+    symbolsLoaded = true;
+    return true;
+}
+
+bool ROCmGPUProbe::Impl::startROCmSMI()
+{
     // Initialize ROCm SMI (flags = 0 for default initialization)
     rsmi_status_t result = rsmi_init(0);
     if (result != RSMI_STATUS_SUCCESS)
@@ -308,10 +354,53 @@ bool ROCmGPUProbe::Impl::loadROCmSMI()
             sysfsPaths[i] = pciDevicesRoot + "/" + ROCmGPUProbeMath::sysfsPciAddress(bdfId);
         }
     }
+    names.assign(deviceCount, std::string{});
+    for (std::uint32_t i = 0; i < deviceCount; ++i)
+    {
+        // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - C API buffer
+        char nameBuf[RSMI_MAX_BUFFER_LENGTH] = {};
+        names[i] =
+            (rsmi_dev_name_get(i, nameBuf, sizeof(nameBuf)) == RSMI_STATUS_SUCCESS) ? std::string(nameBuf) : "AMD GPU " + std::to_string(i);
+    }
+    sensors.assign(deviceCount, std::nullopt);
 
     initialized = true;
+    reinitNeeded = false;
     spdlog::info("ROCmGPUProbe: Initialized successfully with {} AMD GPU(s)", deviceCount);
     return true;
+}
+
+void ROCmGPUProbe::Impl::restartROCmSMI()
+{
+    std::unordered_map<std::string, std::uint64_t> lastMemoryTotals;
+    for (std::size_t i = 0; i < deviceIds.size() && i < lastMemoryTotalBytes.size(); ++i)
+    {
+        lastMemoryTotals.emplace(deviceIds[i], lastMemoryTotalBytes[i]);
+    }
+
+    // rsmi_shut_down() then rsmi_init() starts over with the library still loaded; a failed start
+    // unloads it, and the next restart loads it again.
+    if (initialized && rsmi_shut_down != nullptr)
+    {
+        rsmi_shut_down();
+    }
+    initialized = false;
+    deviceCount = 0;
+    devices.clear();
+    deviceIds.clear();
+    sysfsPaths.clear();
+    lastMemoryTotalBytes.clear();
+    names.clear();
+    sensors.clear();
+    // Retried at the next full rescan if it fails while AMD GPUs are present (a driver mid-reload).
+    reinitNeeded = !loadROCmSMI() && !pciDevicesSeen.empty();
+    for (std::size_t i = 0; i < deviceIds.size(); ++i)
+    {
+        if (const auto it = lastMemoryTotals.find(deviceIds[i]); it != lastMemoryTotals.end())
+        {
+            lastMemoryTotalBytes[i] = it->second;
+        }
+    }
 }
 
 void ROCmGPUProbe::Impl::unloadROCmSMI()
@@ -322,11 +411,14 @@ void ROCmGPUProbe::Impl::unloadROCmSMI()
         rocmHandle = nullptr;
     }
     initialized = false;
+    symbolsLoaded = false;
     deviceCount = 0;
     devices.clear();
     deviceIds.clear();
     sysfsPaths.clear();
     lastMemoryTotalBytes.clear();
+    names.clear();
+    sensors.clear();
 }
 
 std::string ROCmGPUProbe::Impl::getROCmError(rsmi_status_t result) const
@@ -344,6 +436,7 @@ std::string ROCmGPUProbe::Impl::deriveDeviceId(std::uint32_t deviceIdx) const
 ROCmGPUProbe::ROCmGPUProbe(std::string pciDevicesRoot) : m_Impl(std::make_unique<Impl>())
 {
     m_Impl->pciDevicesRoot = std::move(pciDevicesRoot);
+    m_Impl->pciDevicesSeen = PciDisplayDevices::list(m_Impl->pciDevicesRoot, PciDisplayDevices::PCI_VENDOR_AMD);
     m_Impl->loadROCmSMI();
 }
 
@@ -377,20 +470,8 @@ std::vector<GPUInfo> ROCmGPUProbe::enumerateGPUs()
         GPUInfo info{};
         info.deviceIndex = deviceIdx;
         info.vendor = "AMD";
-        info.isIntegrated = false; // ROCm typically monitors discrete AMD GPUs
-
-        // Get device name
-        // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - C API buffer
-        char nameBuf[RSMI_MAX_BUFFER_LENGTH] = {};
-        const rsmi_status_t result = m_Impl->rsmi_dev_name_get(deviceIdx, nameBuf, sizeof(nameBuf));
-        if (result == RSMI_STATUS_SUCCESS)
-        {
-            info.name = nameBuf;
-        }
-        else
-        {
-            info.name = "AMD GPU " + std::to_string(deviceIdx);
-        }
+        info.isIntegrated = false;            // ROCm typically monitors discrete AMD GPUs
+        info.name = m_Impl->names[deviceIdx]; // Read at load ("AMD GPU N" if ROCm SMI has none)
 
         // The id resolved once at load (uniqueId → pciId → "amd_N", #1162); readGPUCounters() uses
         // the same cached value, so GPUInfo::id and GPUCounters::gpuId always match.
@@ -404,9 +485,11 @@ std::vector<GPUInfo> ROCmGPUProbe::enumerateGPUs()
         // whole, but e.g. an APU or a passively cooled card has no fan, and older parts have no
         // junction sensor. Only a definitive answer (not supported, not found, not implemented) means
         // the device lacks a sensor: a transient failure now (busy, a reset) must not hide it for the
-        // whole session, since GPUModel enumerates once (#1111). A sleeping GPU isn't woken to find out
-        // (#1117): the probe's capabilities apply to it.
-        if (!m_Impl->asleep(deviceIdx))
+        // session, since the answer is kept (#1111). Found once per device: a sleeping GPU isn't woken
+        // to find out (#1117), so until it is seen awake the probe's capabilities apply to it, and
+        // rescanGPUs() asks for a re-enumeration then (#1289).
+        auto& deviceSensors = m_Impl->sensors[deviceIdx];
+        if (!deviceSensors.has_value() && !m_Impl->asleep(deviceIdx))
         {
             const auto supported = [](rsmi_status_t result)
             {
@@ -428,8 +511,9 @@ std::vector<GPUInfo> ROCmGPUProbe::enumerateGPUs()
             sensors.hasClockSpeeds = supported(freqResult);
             std::int64_t probeFan = 0;
             sensors.hasFanSpeed = sensors.hasFanSpeed && supported(m_Impl->rsmi_dev_fan_speed_get(deviceIdx, 0, &probeFan));
-            info.sensorCapabilities = sensors;
+            deviceSensors = sensors;
         }
+        info.sensorCapabilities = deviceSensors;
 
         gpus.push_back(std::move(info));
     }
@@ -473,7 +557,7 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
 
         // GPU utilization (0-100%)
         std::uint32_t busyPercent = 0;
-        rsmi_status_t result = m_Impl->rsmi_dev_gpu_busy_percent_get(deviceIdx, &busyPercent);
+        rsmi_status_t result = m_Impl->noteResult(m_Impl->rsmi_dev_gpu_busy_percent_get(deviceIdx, &busyPercent));
         if (result == RSMI_STATUS_SUCCESS)
         {
             counter.utilizationPercent = static_cast<double>(busyPercent);
@@ -626,6 +710,37 @@ std::vector<ProcessGPUCounters> ROCmGPUProbe::readProcessGPUCounters()
     // but this requires root privileges and is not part of the standard ROCm SMI API
 
     return {};
+}
+
+bool ROCmGPUProbe::rescanGPUs(GPURescan depth)
+{
+    if (depth == GPURescan::Full)
+    {
+        auto seen = PciDisplayDevices::list(m_Impl->pciDevicesRoot, PciDisplayDevices::PCI_VENDOR_AMD);
+        const bool pciChanged = seen != m_Impl->pciDevicesSeen;
+        m_Impl->pciDevicesSeen = std::move(seen);
+        if (pciChanged || m_Impl->reinitNeeded)
+        {
+            spdlog::info("ROCmGPUProbe: {}; re-initialising ROCm SMI", pciChanged ? "AMD PCI devices changed" : "ROCm SMI needs a re-init");
+            m_Impl->restartROCmSMI();
+            return true;
+        }
+    }
+
+    // An adapter asleep when it was enumerated and awake now: enumerate again to find its sensors
+    // (#1289). Reads only runtime_status, and only for such adapters.
+    if (!isAvailable())
+    {
+        return false;
+    }
+    for (std::uint32_t deviceIdx = 0; deviceIdx < m_Impl->deviceCount; ++deviceIdx)
+    {
+        if (!m_Impl->sensors[deviceIdx].has_value() && !m_Impl->asleep(deviceIdx))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 GPUCapabilities ROCmGPUProbe::capabilities() const

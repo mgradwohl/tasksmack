@@ -197,6 +197,17 @@ unsigned int g_FailingHandleIndex = NO_FAILING_HANDLE;
 int g_UuidCallsBeforeFailure = -1; // -1: never fail
 unsigned int g_UuidCalls = 0;
 bool g_FailSensorReads = false; // utilization, memory, temperature, power and graphics clock time out (#1111)
+// #1116: how many devices NVML reports (the first N of MOCK_DEVICES), so a test can hot-plug or remove
+// one; which device's sensor reads return NVML_ERROR_GPU_IS_LOST; and how often NVML was initialised.
+unsigned int g_DeviceCount = static_cast<unsigned int>(MOCK_DEVICES.size());
+unsigned int g_LostDeviceIndex = NO_FAILING_HANDLE;
+unsigned int g_InitCalls = 0;
+
+/// Whether `dev` is the device the test marked lost (#1116). Doesn't count as a device query.
+[[nodiscard]] bool isLost(const MockDevice* dev)
+{
+    return g_LostDeviceIndex < MOCK_DEVICES.size() && dev == &MOCK_DEVICES[g_LostDeviceIndex];
+}
 
 } // namespace
 
@@ -205,6 +216,7 @@ extern "C"
 
     NVML::nvmlReturn_t nvmlInit_v2()
     {
+        ++g_InitCalls;
         return NVML::NVML_SUCCESS;
     }
 
@@ -215,13 +227,13 @@ extern "C"
 
     NVML::nvmlReturn_t nvmlDeviceGetCount_v2(unsigned int* count)
     {
-        *count = static_cast<unsigned int>(MOCK_DEVICES.size());
+        *count = g_DeviceCount;
         return NVML::NVML_SUCCESS;
     }
 
     NVML::nvmlReturn_t nvmlDeviceGetHandleByIndex_v2(unsigned int index, NVML::nvmlDevice_t* device)
     {
-        if (index >= MOCK_HANDLES.size())
+        if (index >= MOCK_HANDLES.size() || index >= g_DeviceCount)
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
         }
@@ -272,6 +284,10 @@ extern "C"
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
         }
+        if (isLost(dev))
+        {
+            return NVML::NVML_ERROR_GPU_IS_LOST;
+        }
         if (g_FailSensorReads)
         {
             return NVML::NVML_ERROR_TIMEOUT;
@@ -286,6 +302,10 @@ extern "C"
         if (dev == nullptr)
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        if (isLost(dev))
+        {
+            return NVML::NVML_ERROR_GPU_IS_LOST;
         }
         if (g_FailSensorReads)
         {
@@ -304,6 +324,10 @@ extern "C"
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
         }
+        if (isLost(dev))
+        {
+            return NVML::NVML_ERROR_GPU_IS_LOST;
+        }
         if (g_FailSensorReads)
         {
             return NVML::NVML_ERROR_TIMEOUT;
@@ -318,6 +342,10 @@ extern "C"
         if (dev == nullptr)
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        if (isLost(dev))
+        {
+            return NVML::NVML_ERROR_GPU_IS_LOST;
         }
         if (!dev->hasPower)
         {
@@ -348,6 +376,10 @@ extern "C"
         if (dev == nullptr)
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        if (isLost(dev))
+        {
+            return NVML::NVML_ERROR_GPU_IS_LOST;
         }
         if (g_FailSensorReads && type != NVML::NVML_CLOCK_MEM)
         {
@@ -441,6 +473,24 @@ extern "C"
     unsigned int tasksmackNvmlMockUuidCalls()
     {
         return g_UuidCalls;
+    }
+
+    // Test controls (#1116): how many devices NVML reports from the next nvmlDeviceGetCount_v2 on
+    // (capped at the mock's two); which device's sensor reads return NVML_ERROR_GPU_IS_LOST
+    // (NO_FAILING_HANDLE for none); and how many times nvmlInit_v2 has been called.
+    void tasksmackNvmlMockSetDeviceCount(unsigned int count)
+    {
+        g_DeviceCount = count < MOCK_DEVICES.size() ? count : static_cast<unsigned int>(MOCK_DEVICES.size());
+    }
+
+    void tasksmackNvmlMockSetLostDevice(unsigned int index)
+    {
+        g_LostDeviceIndex = index;
+    }
+
+    unsigned int tasksmackNvmlMockInitCalls()
+    {
+        return g_InitCalls;
     }
 
     // Test control: how many calls have addressed a device so far (see g_DeviceQueries).

@@ -11,6 +11,7 @@ using rsmi_status_t = std::uint32_t;
 constexpr rsmi_status_t RSMI_STATUS_SUCCESS = 0;
 constexpr rsmi_status_t RSMI_STATUS_NOT_FOUND = 10;
 constexpr rsmi_status_t RSMI_STATUS_INVALID_ARGS = 1;
+constexpr rsmi_status_t RSMI_STATUS_INIT_ERROR = 8;
 constexpr rsmi_status_t RSMI_STATUS_BUSY = 16;
 
 // NOLINTBEGIN(cppcoreguidelines-use-enum-class, performance-enum-size, readability-identifier-naming) - must match AMD ROCm SMI API
@@ -180,6 +181,11 @@ unsigned int g_IdCalls = 0;
 // Utilization, memory, edge temperature, average power and GPU clock reads fail with
 // RSMI_STATUS_BUSY, as a busy or resetting GPU does (#1111). Set through tasksmackRocmMockFailSensorReads().
 bool g_FailSensorReads = false;
+// #1116: how many devices ROCm SMI reports (the first N of MOCK_DEVICES), so a test can hot-plug or
+// remove one; whether utilization reads return RSMI_STATUS_INIT_ERROR; and how often rsmi_init ran.
+unsigned int g_DeviceCount = static_cast<unsigned int>(MOCK_DEVICES.size());
+bool g_InitErrorReads = false;
+unsigned int g_InitCalls = 0;
 
 [[nodiscard]] bool idLookupFails()
 {
@@ -194,6 +200,7 @@ extern "C"
 
     rsmi_status_t rsmi_init(std::uint64_t /*flags*/)
     {
+        ++g_InitCalls;
         return RSMI_STATUS_SUCCESS;
     }
 
@@ -204,7 +211,7 @@ extern "C"
 
     rsmi_status_t rsmi_num_monitor_devices(std::uint32_t* count)
     {
-        *count = static_cast<std::uint32_t>(MOCK_DEVICES.size());
+        *count = g_DeviceCount;
         return RSMI_STATUS_SUCCESS;
     }
 
@@ -281,6 +288,10 @@ extern "C"
         if (device == nullptr)
         {
             return RSMI_STATUS_INVALID_ARGS;
+        }
+        if (g_InitErrorReads)
+        {
+            return RSMI_STATUS_INIT_ERROR;
         }
         if (g_FailSensorReads)
         {
@@ -440,6 +451,23 @@ extern "C"
     void tasksmackRocmMockFailSensorReads(int fail)
     {
         g_FailSensorReads = (fail != 0);
+    }
+
+    // Test controls (#1116): see g_DeviceCount (capped at the mock's three), g_InitErrorReads and
+    // g_InitCalls.
+    void tasksmackRocmMockSetDeviceCount(unsigned int count)
+    {
+        g_DeviceCount = count < MOCK_DEVICES.size() ? count : static_cast<unsigned int>(MOCK_DEVICES.size());
+    }
+
+    void tasksmackRocmMockInitErrorReads(int fail)
+    {
+        g_InitErrorReads = (fail != 0);
+    }
+
+    unsigned int tasksmackRocmMockInitCalls()
+    {
+        return g_InitCalls;
     }
 
     rsmi_status_t rsmi_version_get(rsmi_version_t* version)
