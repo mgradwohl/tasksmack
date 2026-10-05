@@ -499,7 +499,8 @@ void Application::run()
         constexpr double LOG_CHANGE_HZ = 0.5;
         if (std::abs(effective - m_DisplayRefreshHz) >= LOG_CHANGE_HZ)
         {
-            spdlog::info("Frame pacing: display refresh {:.2f} Hz{}", effective, (queried == effective) ? "" : " (assumed)");
+            spdlog::info(
+                "Frame pacing: display refresh {:.2f} Hz{}", effective, FramePacing::isUsableRefreshHz(queried) ? "" : " (assumed)");
         }
         m_DisplayRefreshHz = effective;
     };
@@ -776,14 +777,15 @@ void Application::run()
         // Minimized or covered (#1125): nothing on screen to animate, so no paced frames and the
         // longer hidden idle sleep.
         const bool isHidden = m_Window->isMinimized() || m_Window->isOccluded();
-        const bool vsyncPaced = m_Spec.VSync && !m_VsyncDisabledForInteraction;
 
-        if ((needsResizeRedraw || forceInteractionRedraw) && !m_Window->isMinimized() && !skipRenderThisFrame)
+        // isHidden, not only minimized: an occluded window that gets a move/resize event must not render
+        // at the display rate through the interaction grace period either (#1125).
+        if ((needsResizeRedraw || forceInteractionRedraw) && !isHidden && !skipRenderThisFrame)
         {
             // Vsync is off during an interaction, so a stream of mouse events would otherwise render
             // unbounded (#1153): cap it at the display rate, which vsync would have given.
             const double interactionWaitSeconds = FramePacing::computeFrameWaitSeconds(
-                getTime() - lastFrameStart, FramePacing::framePeriodSeconds(m_DisplayRefreshHz, AnimationRequest::FULL_RATE, vsyncPaced));
+                getTime() - lastFrameStart, FramePacing::framePeriodSeconds(m_DisplayRefreshHz, AnimationRequest::FULL_RATE));
             if (interactionWaitSeconds > 0.0)
             {
                 const auto waitStart = traceResizePerfThisFrame ? SDL_GetPerformanceCounter() : 0;
@@ -829,7 +831,7 @@ void Application::run()
         if (frameRateCap > 0.0 && !isInteracting)
         {
             const double waitSeconds = FramePacing::computeFrameWaitSeconds(
-                getTime() - lastFrameStart, FramePacing::framePeriodSeconds(m_DisplayRefreshHz, frameRateCap, vsyncPaced));
+                getTime() - lastFrameStart, FramePacing::framePeriodSeconds(m_DisplayRefreshHz, frameRateCap));
             if (waitSeconds > 0.0)
             {
                 const auto waitStart = traceResizePerfThisFrame ? SDL_GetPerformanceCounter() : 0;

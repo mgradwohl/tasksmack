@@ -758,8 +758,8 @@ TEST(FramePacingTest, ALowerRequestedRateGivesALongerWait)
 {
     // #1125: a slowly scrolling chart asks for fewer frames than a NowBar easing to a new sample.
     constexpr double REFRESH = 60.0;
-    const double slowPeriod = Core::FramePacing::framePeriodSeconds(REFRESH, 30.0, false);
-    const double fastPeriod = Core::FramePacing::framePeriodSeconds(REFRESH, 60.0, false);
+    const double slowPeriod = Core::FramePacing::framePeriodSeconds(REFRESH, 30.0);
+    const double fastPeriod = Core::FramePacing::framePeriodSeconds(REFRESH, 60.0);
     EXPECT_GT(slowPeriod, fastPeriod);
     EXPECT_GT(Core::FramePacing::computeFrameWaitSeconds(0.005, slowPeriod), Core::FramePacing::computeFrameWaitSeconds(0.005, fastPeriod));
 }
@@ -802,7 +802,7 @@ TEST(FramePacingTest, InputDrivenFramesAreCapped)
     // Input never slows an animation down (#1037: a steady rate whatever the input).
     EXPECT_DOUBLE_EQ(Core::FramePacing::computeFrameRateCap(33.0, true, false, 60.0), 60.0);
     // With vsync off (an interaction, or vsync disabled) a 1 ms frame at 144 Hz waits out the period.
-    const double period = Core::FramePacing::framePeriodSeconds(144.0, 60.0, false);
+    const double period = Core::FramePacing::framePeriodSeconds(144.0, 60.0);
     EXPECT_GT(Core::FramePacing::computeFrameWaitSeconds(0.001, period), 0.0);
 }
 
@@ -826,32 +826,51 @@ TEST(FramePacingTest, FramePeriodIsAWholeNumberOfRefreshes)
         SCOPED_TRACE(c.refreshHz);
         EXPECT_EQ(Core::FramePacing::vblanksPerFrame(c.refreshHz, 60.0), c.vblanks);
         const double refreshPeriod = 1.0 / c.refreshHz;
-        const double period = Core::FramePacing::framePeriodSeconds(c.refreshHz, 60.0, false);
+        const double period = Core::FramePacing::framePeriodSeconds(c.refreshHz, 60.0);
         const double multiple = period / refreshPeriod;
         EXPECT_NEAR(multiple, std::round(multiple), 1e-9);
         EXPECT_NEAR(multiple, static_cast<double>(c.vblanks), 1e-9);
     }
     // The display rate itself (a move/resize cap) is one refresh.
     EXPECT_EQ(Core::FramePacing::vblanksPerFrame(144.0, Core::AnimationRequest::FULL_RATE), 1);
-    EXPECT_NEAR(Core::FramePacing::framePeriodSeconds(144.0, Core::AnimationRequest::FULL_RATE, false), 1.0 / 144.0, 1e-12);
+    EXPECT_NEAR(Core::FramePacing::framePeriodSeconds(144.0, Core::AnimationRequest::FULL_RATE), 1.0 / 144.0, 1e-12);
 }
 
-TEST(FramePacingTest, VsyncPacedPeriodLandsTheSwapOnTheNthRefresh)
+TEST(FramePacingTest, VsyncPacedFramesPresentEveryNthRefresh)
 {
-    // With vsync blocking the swap, the next frame must start after refresh n-1 and early enough to
-    // swap before refresh n; a full n refreshes after a frame that started just past a vblank would
-    // start just past the n-th vblank and present on the (n+1)-th. Aim mid-interval instead.
-    for (const double refreshHz : {120.0, 144.0, 165.0})
+    // #1281 review: simulate several consecutive frames with a vsync-blocking swap. Each frame starts
+    // no sooner than one period after the previous start (and not before its swap returned), renders
+    // for a fraction of a refresh, then presents at the next vblank. The gaps between presents must
+    // all be exactly n refreshes; a period of n - 0.5 refreshes gave alternating one/two-refresh gaps.
+    for (const double refreshHz : {120.0, 144.0, 165.0, 240.0})
     {
         SCOPED_TRACE(refreshHz);
         const int vblanks = Core::FramePacing::vblanksPerFrame(refreshHz, 60.0);
-        const double refreshPeriod = 1.0 / refreshHz;
-        const double period = Core::FramePacing::framePeriodSeconds(refreshHz, 60.0, true);
-        EXPECT_GT(period, (vblanks - 1) * refreshPeriod);
-        EXPECT_LT(period, vblanks * refreshPeriod);
+        const double refresh = 1.0 / refreshHz;
+        const double period = Core::FramePacing::framePeriodSeconds(refreshHz, 60.0);
+        const double phase = 0.37 * refresh; // vblanks at phase + k * refresh
+        const double renderTime = 0.25 * refresh;
+        const auto nextVblankIndex = [&](double t)
+        {
+            return static_cast<long long>(std::ceil((t - phase) / refresh));
+        };
+
+        double start = 0.0;
+        long long previousPresent = -1;
+        for (int frame = 0; frame < 24; ++frame)
+        {
+            const long long present = nextVblankIndex(start + renderTime);
+            const double swapReturn = phase + (static_cast<double>(present) * refresh);
+            if (frame > 2) // after the first frames settle onto the vblank phase
+            {
+                EXPECT_EQ(present - previousPresent, vblanks) << "frame " << frame;
+            }
+            previousPresent = present;
+            start = std::max(start + period, swapReturn);
+        }
     }
-    // One refresh per frame: the swap itself takes the period, so the full period is only a cap.
-    EXPECT_NEAR(Core::FramePacing::framePeriodSeconds(60.0, 60.0, true), 1.0 / 60.0, 1e-12);
+    // One refresh per frame: the swap itself takes the period, so the period is only a cap.
+    EXPECT_NEAR(Core::FramePacing::framePeriodSeconds(60.0, 60.0), 1.0 / 60.0, 1e-12);
 }
 
 TEST(FramePacingTest, UnknownRefreshRateFallsBack)
@@ -862,7 +881,7 @@ TEST(FramePacingTest, UnknownRefreshRateFallsBack)
     EXPECT_DOUBLE_EQ(Core::FramePacing::effectiveRefreshHz(std::numeric_limits<double>::infinity(), 60.0), 60.0);
     EXPECT_DOUBLE_EQ(Core::FramePacing::effectiveRefreshHz(143.98, 60.0), 143.98);
     // With no refresh rate at all the period is the plain target period.
-    EXPECT_NEAR(Core::FramePacing::framePeriodSeconds(0.0, 60.0, true), 1.0 / 60.0, 1e-12);
+    EXPECT_NEAR(Core::FramePacing::framePeriodSeconds(0.0, 60.0), 1.0 / 60.0, 1e-12);
 }
 
 TEST(AnimationRequestTest, ConsumeReportsTheHighestRequestedRateAndClears)

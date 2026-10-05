@@ -1671,7 +1671,9 @@ rateHistoryConfig(const char* id, double xMin, double xMax, ImPlotFormatter yFor
     const double bound = stepEasedBound(state[chartId], target, frame, static_cast<double>(ImGui::GetIO().DeltaTime));
     // A bound still easing rescales the whole chart every frame: keep the full animation rate until it
     // settles (easeAxisUpperBound snaps to the target once close), then let the chart idle (#1125).
-    if (bound != target)
+    // easeAxisUpperBound snaps to the target once close, so "settled" is exact; compared with a
+    // tolerance relative to the bound's size rather than with ==.
+    if (std::abs(bound - target) > 1e-9 * std::max(1.0, std::abs(target)))
     {
         Core::AnimationRequest::request();
     }

@@ -102,10 +102,16 @@ computeVsyncTransition(bool wasInteracting, bool isInteracting, bool vsyncReques
 
 /// The display refresh rate to pace frames against (#1126): @p queriedHz from the window's display
 /// mode, or @p fallbackHz when SDL reports none (0 means "unspecified") or nonsense.
+/// Whether a refresh rate SDL reported is usable. A NaN fails the comparison; an infinite rate would
+/// make the period 0.
+[[nodiscard]] constexpr bool isUsableRefreshHz(double queriedHz) noexcept
+{
+    return queriedHz > 0.0 && queriedHz < 10000.0;
+}
+
 [[nodiscard]] constexpr auto effectiveRefreshHz(double queriedHz, double fallbackHz) noexcept -> double
 {
-    // A NaN fails the comparison, so it falls back too; an infinite rate would make the period 0.
-    return (queriedHz > 0.0 && queriedHz < 10000.0) ? queriedHz : fallbackHz;
+    return isUsableRefreshHz(queriedHz) ? queriedHz : fallbackHz;
 }
 
 /// How many display refreshes (vblanks) one frame spans when targeting @p targetFps on a display
@@ -123,27 +129,20 @@ computeVsyncTransition(bool wasInteracting, bool isInteracting, bool vsyncReques
 }
 
 /// The minimum time between frame starts when targeting @p targetFps on a @p refreshHz display:
-/// vblanksPerFrame() refreshes.
-///
-/// With vsync pacing the swap (@p vsyncPaced) and n > 1, the wait aims half a refresh short of n:
-/// the previous swap returned just after a vblank, so a frame started a full n refreshes later would
-/// start just *after* the n-th vblank and its swap would wait for the next one, spanning n + 1. Starting
-/// mid-interval lets the swap land on the n-th. For n == 1 the swap itself already took a refresh,
-/// so the full period is a cap that rarely waits -- and it still caps the rate when the swap does not
-/// block (a compositor that queues frames, or adaptive vsync running late).
-[[nodiscard]] inline auto framePeriodSeconds(double refreshHz, double targetFps, bool vsyncPaced) noexcept -> double
+/// vblanksPerFrame() whole refreshes. The average frame rate is 1 / this period, so it must be a whole
+/// number of refreshes even with vsync: a shorter "aim mid-interval" period (n - 0.5 refreshes) made
+/// starts drift across vblanks and presents alternate between one and two refreshes (about 96 fps at
+/// 144 Hz instead of 72). With vsync blocking the swap, a frame started n refreshes after the previous
+/// start lands just after a vblank and presents on the next one, so every present is n refreshes
+/// apart. For n == 1 the swap itself takes the refresh, so the period is a cap that rarely waits -- and
+/// still caps the rate when the swap does not block (a compositor that queues frames).
+[[nodiscard]] inline auto framePeriodSeconds(double refreshHz, double targetFps) noexcept -> double
 {
     if (!(refreshHz > 0.0))
     {
         return (targetFps > 0.0) ? 1.0 / targetFps : 0.0;
     }
-    const int vblanks = vblanksPerFrame(refreshHz, targetFps);
-    const double refreshPeriod = 1.0 / refreshHz;
-    if (vsyncPaced && vblanks > 1)
-    {
-        return (static_cast<double>(vblanks) - 0.5) * refreshPeriod;
-    }
-    return static_cast<double>(vblanks) * refreshPeriod;
+    return static_cast<double>(vblanksPerFrame(refreshHz, targetFps)) / refreshHz;
 }
 
 /// The animation rate to pace the next frame at, from the highest rate the previous frame asked for
