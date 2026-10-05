@@ -37,6 +37,7 @@
 #include <iostream>
 #include <locale>
 #include <memory>
+#include <optional>
 #include <print>
 #include <string>
 #include <vector>
@@ -212,16 +213,16 @@ auto runApp() -> int
     try
     {
 
-        // Apply saved position/maximized state after the window exists.
-        // Ordering: set restore geometry first, then maximize.
-        if (Core::Window::supportsPositioning() && settings.windowPosX.has_value() && settings.windowPosY.has_value())
+        // Apply the saved normal geometry and maximized state now that the window exists. The size
+        // and position are checked against the connected displays, so a position saved on a monitor
+        // that is gone no longer opens the borderless window off-screen (#1128), and the normal
+        // rectangle is applied before maximizing so it is what Restore returns to (#1121).
+        std::optional<std::pair<int, int>> savedPosition;
+        if (settings.windowPosX.has_value() && settings.windowPosY.has_value())
         {
-            appRef.getWindow().setPosition(*settings.windowPosX, *settings.windowPosY);
+            savedPosition = std::pair{*settings.windowPosX, *settings.windowPosY};
         }
-        if (settings.windowMaximized)
-        {
-            appRef.getWindow().maximize();
-        }
+        appRef.getWindow().applySavedGeometry(savedPosition, settings.windowMaximized);
 
         // Push UI layer (initializes ImGui/ImPlot backends). Must be pushed (and therefore
         // onRender()'d) before ShellLayer: UILayer::onRender() calls ImGui::NewFrame(), which is
@@ -233,13 +234,15 @@ auto runApp() -> int
         // Push title bar layer (custom window chrome) -- skipped when native OS decorations are in
         // use instead (opt-in, native Wayland only; see #745), since the OS/compositor already draws
         // a title bar in that case and ShellLayer reserves no space for a second one.
+        App::TitleBarLayer* titleBar = nullptr;
         if (appRef.getWindow().isBorderless())
         {
-            appRef.pushLayer<App::TitleBarLayer>();
+            titleBar = &appRef.pushLayer<App::TitleBarLayer>();
         }
 
-        // Push shell layer (docking workspace with panels)
-        appRef.pushLayer<App::ShellLayer>();
+        // Push shell layer (docking workspace with panels). It hands the title bar the width its
+        // panels need, which the title bar folds into the window's minimum size (#1207).
+        appRef.pushLayer<App::ShellLayer>().setTitleBar(titleBar);
 
         // Dialog layers (modal overlays), opened by OpenAboutEvent, OpenSettingsEvent and
         // OpenElevationNoticeEvent. The elevation notice is shown at startup when running without

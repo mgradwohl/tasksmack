@@ -4,9 +4,11 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
+#include "Core/WindowConstants.h"
 #include "Domain/ProcessSnapshot.h"
 #include "FontSizeChange.h"
 #include "Panels/ProcessesPanel.h"
+#include "Panels/SystemMetricsPanel.h"
 #include "ShellMetrics.h"
 #include "TabLabel.h"
 #include "TitleBarGeometry.h"
@@ -21,7 +23,9 @@
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -106,13 +110,38 @@ void ShellLayer::onAttach()
 void ShellLayer::applyBaseMinimumWindowSize()
 {
     m_MinimumSizeDisplayScale = UI::Theme::get().displayScale();
-    if (SDL_Window* sdlWindow = Core::Application::get().getWindow().getHandle(); sdlWindow != nullptr)
+    const auto& window = Core::Application::get().getWindow();
+    m_MinimumSizeDisplayId = window.getDisplayId();
+    if (SDL_Window* sdlWindow = window.getHandle(); sdlWindow != nullptr)
     {
-        const WindowMinimumSize baseMinimum = computeMinimumWindowSize(m_MinimumSizeDisplayScale, 0.0F);
+        // Held inside the display's usable bounds, so a large font on a small display cannot leave
+        // a window that does not fit on-screen (#1207).
+        const auto [usableWidth, usableHeight] = window.getUsableDisplaySize().value_or(std::pair{0, 0});
+        const WindowMinimumSize baseMinimum =
+            capMinimumToUsable(computeMinimumWindowSize(m_MinimumSizeDisplayScale, 0.0F, static_cast<float>(m_ContentMinimumWidthPx)),
+                               usableWidth,
+                               usableHeight);
         if (!SDL_SetWindowMinimumSize(sdlWindow, baseMinimum.width, baseMinimum.height))
         {
             spdlog::warn("SDL_SetWindowMinimumSize({}, {}) failed: {}", baseMinimum.width, baseMinimum.height, SDL_GetError());
         }
+    }
+}
+
+void ShellLayer::applyContentMinimumWidth(float widthPx)
+{
+    // With the custom title bar, it owns the minimum: hand it over, it re-derives the minimum every
+    // frame and calls SDL only on a change. Otherwise apply it here when the whole-pixel width moves.
+    if (m_TitleBar != nullptr)
+    {
+        m_TitleBar->setContentMinimumWidth(widthPx);
+        return;
+    }
+    const auto wholePx = static_cast<int>(std::ceil(std::clamp(widthPx, 0.0F, static_cast<float>(Core::WINDOW_MAX_DIMENSION))));
+    if (wholePx != m_ContentMinimumWidthPx)
+    {
+        m_ContentMinimumWidthPx = wholePx;
+        applyBaseMinimumWindowSize();
     }
 }
 
@@ -122,18 +151,22 @@ void ShellLayer::onDetach()
     auto& config = UserConfig::get();
     config.captureFromApplication();
 
-    // Capture current window geometry/state.
-    auto& window = Core::Application::get().getWindow();
-    const auto [width, height] = window.getSize();
+    // Capture the window's normal (restored) geometry plus whether it is maximized. While it is
+    // maximized its live size and position are the maximized ones; saving those made them the
+    // restore target on the next launch, so Restore did nothing (#1121). When the normal rectangle
+    // is unknown (maximized by the OS/compositor rather than by Window::maximize()), the geometry
+    // saved last time is kept.
+    const auto& window = Core::Application::get().getWindow();
     auto& settings = config.settings();
-    settings.windowWidth = width;
-    settings.windowHeight = height;
-
-    if (Core::Window::supportsPositioning())
+    if (const auto normal = window.getNormalGeometry(); normal.has_value())
     {
-        const auto [x, y] = window.getPosition();
-        settings.windowPosX = x;
-        settings.windowPosY = y;
+        settings.windowWidth = normal->width;
+        settings.windowHeight = normal->height;
+        if (Core::Window::supportsPositioning())
+        {
+            settings.windowPosX = normal->x;
+            settings.windowPosY = normal->y;
+        }
     }
 
     settings.windowMaximized = window.isMaximized();
@@ -157,6 +190,17 @@ void ShellLayer::onEvent(Core::Event& event)
 {
     // Forward events to all panels; each handles the settings events it needs itself
     m_Tabs.onEvent(event);
+}
+
+void ShellLayer::onSDLEvent(SDL_Event* event)
+{
+    // A display changed mode or its work area moved -- possibly the same display, at the same scale --
+    // so re-read the usable bounds the native-decorated minimum is capped to on the next update, as
+    // TitleBarLayer does for the borderless bar (#1207).
+    if (event != nullptr && invalidatesUsableBounds(event->type))
+    {
+        m_MinimumSizeDisplayId = 0;
+    }
 }
 
 void ShellLayer::onUpdate(float deltaTime)
@@ -184,11 +228,13 @@ void ShellLayer::onUpdate(float deltaTime)
 
     m_FpsCounter.update(deltaTime);
 
-    // With native decorations, follow a display-scale change (#943). Not with the borderless title
-    // bar: TitleBarLayer re-derives a wider minimum from the scale every frame, and re-applying the
-    // base here would overwrite it.
-    if (!Core::Application::get().getWindow().isBorderless() &&
-        UI::displayScaleChanged(m_MinimumSizeDisplayScale, UI::Theme::get().displayScale()))
+    // With native decorations, follow a display-scale change (#943), or a move to another display,
+    // whose usable bounds the minimum is capped to (#1207). Not with the borderless title bar:
+    // TitleBarLayer re-derives a wider minimum from the scale every frame, and re-applying the base
+    // here would overwrite it.
+    if (const auto& window = Core::Application::get().getWindow();
+        !window.isBorderless() && (UI::displayScaleChanged(m_MinimumSizeDisplayScale, UI::Theme::get().displayScale()) ||
+                                   window.getDisplayId() != m_MinimumSizeDisplayId))
     {
         applyBaseMinimumWindowSize();
     }
@@ -338,6 +384,14 @@ void ShellLayer::onRender()
         const float contentPaddingH = ShellMetrics::CONTENT_PADDING_H * styleScale;
         const float contentPaddingV = ShellMetrics::CONTENT_PADDING_V * styleScale;
 
+        // The window may not be narrower than the panels' content: the Processes toolbar row, or the
+        // Overview's NowBar column beside MIN_PLOT_WIDTH_EM of plot (#1207). Measured with the body
+        // font, here, where the panels will draw with it; a few text measurements a frame.
+        applyContentMinimumWidth(computeContentMinimumWidth(ProcessesPanel::measureToolbarMinimumWidth(),
+                                                            SystemMetricsPanel::overviewNowBarColumnWidth(),
+                                                            ImGui::GetFontSize(),
+                                                            (contentPaddingH * 2.0F) + ImGui::GetStyle().ScrollbarSize));
+
         // Add padding by using a child window with border that provides internal padding
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(contentPaddingH, contentPaddingV));
 
@@ -484,6 +538,9 @@ void ShellLayer::renderStatusBar() const
             }
         }
 
+        // Where the left-hand content ends, window-local, for the FPS readout's fit check.
+        const float leftContentEndX = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x;
+
         // Right-align FPS display. The text is formatted first and then measured, so the readout
         // ends at the status bar's padding at any font and any value. It used to be positioned from
         // the width of the *format string* plus a fixed 50px, which is not the width of what is
@@ -495,8 +552,13 @@ void ShellLayer::renderStatusBar() const
                                              static_cast<double>(m_FpsCounter.displayedFps()),
                                              static_cast<double>(m_FpsCounter.displayedFrameTime() * 1000.0F));
         const float fpsWidth = ImGui::CalcTextSize(fpsText.data(), fpsEnd.out).x;
-        ImGui::SameLine(ImGui::GetWindowWidth() - statusBarPaddingX - fpsWidth);
-        ImGui::TextUnformatted(fpsText.data(), fpsEnd.out);
+        const float fpsX = ImGui::GetWindowWidth() - statusBarPaddingX - fpsWidth;
+        // Left out, not drawn over "Ready" and the buttons, when the window is too narrow (#1207).
+        if (computeStatusBarReadoutFits(leftContentEndX, fpsX, ImGui::GetStyle().ItemSpacing.x))
+        {
+            ImGui::SameLine(fpsX);
+            ImGui::TextUnformatted(fpsText.data(), fpsEnd.out);
+        }
     }
     ImGui::End();
     ImGui::PopStyleVar(3);

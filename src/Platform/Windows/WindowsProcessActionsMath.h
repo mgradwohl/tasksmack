@@ -47,6 +47,42 @@ namespace Platform
     return IDLE_PRIORITY_CLASS;
 }
 
+/// Nice values the probe reports for each Windows priority class (#1204). Each sits in the middle
+/// of the class's Domain::Priority label bucket, never on a threshold: -5 and -10 used to stand for
+/// Above normal and High, but those are where getPriorityLabel() and niceToPriorityClass() start the
+/// next class down, so Above normal was shown as Normal and High as Above Normal. Realtime has no
+/// bucket of its own; MIN_NICE keeps it distinct from High (the UI names it from that value) and
+/// still labels and sets it as High.
+inline constexpr int32_t IDLE_CLASS_NICE = Domain::Priority::MAX_NICE;
+inline constexpr int32_t BELOW_NORMAL_CLASS_NICE = 10;
+inline constexpr int32_t NORMAL_CLASS_NICE = Domain::Priority::NORMAL_NICE;
+inline constexpr int32_t ABOVE_NORMAL_CLASS_NICE = -7;
+inline constexpr int32_t HIGH_CLASS_NICE = -15;
+inline constexpr int32_t REALTIME_CLASS_NICE = Domain::Priority::MIN_NICE;
+
+/// The nice value to report for a GetPriorityClass() result: the inverse of niceToPriorityClass()
+/// for the five classes it sets (#1204). An unknown class (or GetPriorityClass() failing with 0) is
+/// reported as Normal.
+[[nodiscard]] constexpr int32_t priorityClassToNice(uint32_t priorityClass) noexcept
+{
+    switch (priorityClass)
+    {
+    case IDLE_PRIORITY_CLASS:
+        return IDLE_CLASS_NICE;
+    case BELOW_NORMAL_PRIORITY_CLASS:
+        return BELOW_NORMAL_CLASS_NICE;
+    case ABOVE_NORMAL_PRIORITY_CLASS:
+        return ABOVE_NORMAL_CLASS_NICE;
+    case HIGH_PRIORITY_CLASS:
+        return HIGH_CLASS_NICE;
+    case REALTIME_PRIORITY_CLASS:
+        return REALTIME_CLASS_NICE;
+    case NORMAL_PRIORITY_CLASS:
+    default:
+        return NORMAL_CLASS_NICE;
+    }
+}
+
 /// Whether Terminate's close request goes to this top-level window (#1094): one the target process
 /// owns, that is visible, has no owner window, and is not a tool window. Those are the application
 /// windows a user would close. Closing an owned window (a dialog), a tool window (a palette or helper,

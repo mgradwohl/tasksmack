@@ -105,7 +105,7 @@ The System Metrics panel displays real-time and historical charts for:
 - **Swap** — swap usage percentage history
 - **Storage** — aggregate and per-device throughput
 - **Network** — aggregate and per-interface throughput, totals, status, and link speed
-- **GPU** — device utilization, memory, temperature, power, clocks, and engine data when available
+- **GPU** — device utilization, memory, temperature, power, clocks, and engine data when available. Each GPU shows only the sensors it reports, so an integrated GPU beside a discrete one doesn't get the discrete GPU's power or fan charts. On Linux, a GPU that has gone to sleep to save power (common for the discrete GPU on hybrid laptops) is labelled **(Sleeping)** and is not sampled until it wakes, so TaskSmack's periodic updates don't keep it awake; its readings show N/A meanwhile. Detecting GPUs at startup can still wake it once. A GPU that is asleep when TaskSmack starts shows the sensor charts its driver supports in general, rather than only its own, for the rest of the session. The Overview header's **VRAM** figure counts discrete GPUs only, since an integrated GPU's memory is system RAM
 - **Battery** — charge, power flow, remaining time, and health when present
 - **Load average** (Linux only) — 1, 5, and 15-minute load averages
 - **I/O wait** (Linux only) — percentage of CPU time spent waiting for I/O
@@ -118,11 +118,13 @@ The System Overview and process views provide three levels of visibility:
 
 | Level | What is shown |
 |-------|---------------|
-| System-wide | Total sent/received bytes per second across all interfaces |
+| System-wide | Total sent/received bytes per second across the hardware interfaces |
 | Per-interface | Individual interface throughput with status and link speed |
 | Per-process | Bytes sent and received attributed to each process |
 
-An interface selector lets you focus on a specific adapter. Per-process network rates are the bytes transferred between two readings of the process's network counters, summed over its open connections. On Linux the readings are cached (`socket_stats_cache_ttl_ms`, 500 ms by default), and a refresh that reuses one shows the last rate (see the FAQ).
+An interface selector lets you focus on a specific adapter. On Linux the Total leaves out virtual interfaces (bridges such as `docker0`, `veth` pairs, VPN tunnels such as `wg0` or `tun0`, VLANs), because their traffic also crosses a hardware interface and counting both doubled it. They remain in the selector, marked "virtual, not in Total". If there is no hardware interface at all, as inside a container, every interface counts. Windows doesn't classify interfaces this way yet.
+
+Per-process network rates are the bytes the process's TCP connections transferred between two readings, divided by the time between them. On Linux the readings are cached (`socket_stats_cache_ttl_ms`, 500 ms by default), and a refresh that reuses one shows the last rate (see the FAQ). UDP traffic, including QUIC/HTTP3, video calls, games, and DNS, is not attributed to processes on either platform. A browser streaming over HTTP/3 can show close to 0 B/s while the interface is busy.
 
 Linux per-process attribution uses Netlink and requires Linux 4.2 or later. Windows per-process attribution uses TCP EStats and requires administrator privileges to enable collection. System-wide and interface metrics remain available when process attribution is unavailable.
 
@@ -193,7 +195,7 @@ The following table summarises capabilities that differ between Windows and Linu
 | Memory metrics | ✅ | ✅ |
 | System uptime | ✅ | ✅ |
 | Process I/O counters | ✅ (requires root / `CAP_DAC_READ_SEARCH`) | ✅ (no elevated privileges needed) |
-| Per-process network | ✅ (Linux 4.2+ Netlink) | ✅ (TCP EStats; administrator required) |
+| Per-process network (TCP only) | ✅ (Linux 4.2+ Netlink) | ✅ (TCP EStats; administrator required) |
 | Thread count per process | ✅ | ✅ |
 | Process priority (nice) | ✅ | ✅ (mapped −20 … +19) |
 | Process terminate / kill | ✅ | ✅ |
@@ -219,5 +221,13 @@ TaskSmack persists settings in several places:
 |---------|----------|
 | Window state, column visibility, theme, font, sampling, history, and advanced metric/UI settings | `config.toml` in the user config directory (`%APPDATA%\TaskSmack\` on Windows, `~/.config/tasksmack/` on Linux) |
 | User themes | `%APPDATA%\TaskSmack\themes\` (Windows) or `~/.config/tasksmack/themes/` (Linux) |
+
+### Window size and position
+
+TaskSmack reopens at the size and position it had when it was closed, and maximized if it was maximized. Closing it while maximized keeps the size and position it had before it was maximized, so Restore returns there on the next launch. (Native Wayland does not let apps position their windows, so there only the size and maximized state are restored.)
+
+If the saved position is no longer on any connected display (a monitor was unplugged, say), TaskSmack opens centered on the primary display instead, and a saved size larger than the display is shrunk to fit it.
+
+Dialogs (Settings, About and the privilege notice) are kept inside the main window. When the font size or display scaling makes the Settings dialog taller than the window, its options scroll and the Cancel and Apply buttons stay visible; Escape also cancels it.
 
 To reset all layout and theme settings, delete the `config.toml` file in the user config directory. TaskSmack will recreate it with defaults on the next launch.

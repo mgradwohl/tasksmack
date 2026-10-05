@@ -36,6 +36,7 @@
 #include <string_view>
 #include <system_error>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -381,6 +382,9 @@ struct PDHGPUProbe::Impl
     PDH_HQUERY query = nullptr;
     bool initialized = false;
 
+    /// Which counters this query adds and reads (#1175). Set before initialize()/ensureCounters().
+    PDHGPUProbe::Role role = PDHGPUProbe::Role::Process;
+
     // Warm-up tracking - the first PdhCollectQueryData sample cannot produce utilization
     // values because PDH needs two samples to compute deltas.
     bool warmedUp = false;
@@ -410,11 +414,30 @@ struct PDHGPUProbe::Impl
 
     /// Per-adapter utilization from the most recent successful collect, keyed by "GPU_<luid>": for
     /// each engine the sum over processes, then the busiest engine -- Task Manager's definition
-    /// (#1033). Empty until a collect has produced utilization.
+    /// (#1033). Empty until a collect has produced utilization, and again after a warm-up collect or
+    /// a failed one (#1166).
     std::unordered_map<std::string, double> lastAdapterUtilization;
+    // Whether lastAdapterUtilization comes from a successful, warmed-up collect. An adapter missing
+    // from it then had no engine activity -- idle, 0% -- rather than unread (#1166).
+    bool adapterUtilizationCurrent = false;
+    // Adapters (keyed "GPU_<luid>") that had GPU Engine items this collect but none readable: unread,
+    // not idle, even when adapterUtilizationCurrent is set (#1166).
+    std::unordered_set<std::string> adapterUtilizationUnread;
+    // Whether the last readCounterArray() call succeeded (an empty array included).
+    bool lastArrayReadOk = false;
 
     /// Adapter-wide memory in use from the most recent collect, keyed by "GPU_<luid>".
     std::unordered_map<std::string, AdapterMemoryUsage> lastAdapterMemory;
+
+    /// Forget the adapter readings after a read that produced none (no counters, a failed
+    /// collect), so callers see them as unread rather than the previous reading again (#1166).
+    void clearAdapterReadings() noexcept
+    {
+        lastAdapterUtilization.clear();
+        adapterUtilizationCurrent = false;
+        adapterUtilizationUnread.clear();
+        lastAdapterMemory.clear();
+    }
 
     /// lastValidResults if it is recent enough to stand in for a failed collect, else nothing.
     [[nodiscard]] std::vector<ProcessGPUCounters> freshCachedResults() const
@@ -557,6 +580,8 @@ struct PDHGPUProbe::Impl
     /// @return true if at least one wildcard counter is active
     bool ensureCounters()
     {
+        // "GPU Engine(*)" is in both roles' queries: its rates are per query, between that query's
+        // own collects, and the process and system samplers collect at different intervals (#1034).
         if (utilizationCounter == nullptr)
         {
             addWildcardCounter(UTILIZATION_COUNTER_PATH, utilizationCounter);
@@ -567,21 +592,29 @@ struct PDHGPUProbe::Impl
                 warmedUp = false;
             }
         }
-        if (dedicatedMemoryCounter == nullptr)
+        // Each role adds only the memory counters it reads, so neither query collects the other's
+        // (#1175).
+        if (role == PDHGPUProbe::Role::Process)
         {
-            addWildcardCounter(DEDICATED_MEMORY_COUNTER_PATH, dedicatedMemoryCounter);
+            if (dedicatedMemoryCounter == nullptr)
+            {
+                addWildcardCounter(DEDICATED_MEMORY_COUNTER_PATH, dedicatedMemoryCounter);
+            }
+            if (sharedMemoryCounter == nullptr)
+            {
+                addWildcardCounter(SHARED_MEMORY_COUNTER_PATH, sharedMemoryCounter);
+            }
         }
-        if (sharedMemoryCounter == nullptr)
+        else
         {
-            addWildcardCounter(SHARED_MEMORY_COUNTER_PATH, sharedMemoryCounter);
-        }
-        if (adapterDedicatedCounter == nullptr)
-        {
-            addWildcardCounter(ADAPTER_DEDICATED_COUNTER_PATH, adapterDedicatedCounter);
-        }
-        if (adapterSharedCounter == nullptr)
-        {
-            addWildcardCounter(ADAPTER_SHARED_COUNTER_PATH, adapterSharedCounter);
+            if (adapterDedicatedCounter == nullptr)
+            {
+                addWildcardCounter(ADAPTER_DEDICATED_COUNTER_PATH, adapterDedicatedCounter);
+            }
+            if (adapterSharedCounter == nullptr)
+            {
+                addWildcardCounter(ADAPTER_SHARED_COUNTER_PATH, adapterSharedCounter);
+            }
         }
         // Any one active counter is worth a collect: the adapter-memory counters alone still give
         // the GPU tab its Memory line (#1029).
@@ -671,6 +704,8 @@ struct PDHGPUProbe::Impl
     PPDH_FMT_COUNTERVALUE_ITEM_W readCounterArray(PDH_HCOUNTER counter, DWORD format, DWORD& itemCount)
     {
         itemCount = 0;
+        // A null return is both "no items" and "the read failed"; this says which (#1166).
+        lastArrayReadOk = false;
         if (counter == nullptr)
         {
             return nullptr;
@@ -684,7 +719,16 @@ struct PDHGPUProbe::Impl
             const PDH_STATUS status = pdhGetFormattedCounterArray(counter, format, &bufferSize, &itemCount, items);
             if (status == ERROR_SUCCESS)
             {
+                lastArrayReadOk = true;
                 return items;
+            }
+            if (static_cast<unsigned long>(status) == PDH_MORE_DATA && bufferSize == 0)
+            {
+                // No instances at all (no process is using any GPU): a successful, empty read --
+                // PDH asks for "more" room of zero bytes rather than returning ERROR_SUCCESS (#1166).
+                itemCount = 0;
+                lastArrayReadOk = true;
+                return nullptr;
             }
             if (static_cast<unsigned long>(status) != PDH_MORE_DATA)
             {
@@ -704,6 +748,8 @@ struct PDHGPUProbe::Impl
         utilizationCounter = nullptr;
         dedicatedMemoryCounter = nullptr;
         sharedMemoryCounter = nullptr;
+        adapterDedicatedCounter = nullptr;
+        adapterSharedCounter = nullptr;
 
         if (query != nullptr && pdhCloseQuery != nullptr)
         {

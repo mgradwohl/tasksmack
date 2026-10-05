@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace App::NetInterfaceUtils
@@ -191,6 +192,34 @@ getSortedFilteredInterfaces(const std::vector<Domain::SystemSnapshot::InterfaceS
                       });
 
     return result;
+}
+
+/// The network chart's interface selector entries: the Total first, then each interface's display
+/// name (or system name) in list order.
+///
+/// The platform marks software interfaces (bridges, veth, VPN tunnels) virtual, and the Total leaves
+/// them out because their traffic also crosses a hardware interface -- unless no hardware interface
+/// is listed at all, as SystemModel's Total does (#1106). Those interfaces stay selectable; their
+/// entries say they aren't in the Total, and the Total's entry says what it sums.
+[[nodiscard]] inline std::vector<std::string>
+interfaceSelectorLabels(const std::vector<Domain::SystemSnapshot::InterfaceSnapshot>& interfaces)
+{
+    const bool anyHardware = std::ranges::any_of(interfaces, [](const auto& iface) { return !iface.isVirtual; });
+    const bool anyExcluded = anyHardware && std::ranges::any_of(interfaces, [](const auto& iface) { return iface.isVirtual; });
+
+    std::vector<std::string> labels;
+    labels.reserve(interfaces.size() + 1);
+    labels.emplace_back(anyExcluded ? "Total (Hardware Interfaces)" : "Total (All Interfaces)");
+    for (const auto& iface : interfaces)
+    {
+        std::string label = iface.displayName.empty() ? iface.name : iface.displayName;
+        if (anyHardware && iface.isVirtual)
+        {
+            label += " (virtual, not in Total)";
+        }
+        labels.push_back(std::move(label));
+    }
+    return labels;
 }
 
 /// Where the network chart's selected interface is in this frame's interface list.

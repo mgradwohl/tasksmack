@@ -397,6 +397,30 @@ TEST(GPUModelTest, MemoryUtilizationPercentIsComputed)
     EXPECT_DOUBLE_EQ(snaps[0].memoryUsedPercent, 25.0);
 }
 
+// #1117: a GPU the probe left asleep is carried through to the snapshot, so the UI can say so, and
+// its unread readings publish as gaps.
+TEST(GPUModelTest, SuspendedGpuIsMarkedInTheSnapshot)
+{
+    auto counters = makeGPUCounters("GPU0");
+    counters.suspended = true;
+    counters.utilizationAvailable = false;
+    counters.memoryAvailable = false;
+    counters.memoryTotalBytes = 8ULL * 1024 * 1024 * 1024;
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Sleepy GPU", "NVIDIA").withGPUCounters("GPU0", counters);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1U);
+    EXPECT_TRUE(snaps[0].suspended);
+    EXPECT_EQ(snaps[0].memoryTotalBytes, 8ULL * 1024 * 1024 * 1024);
+    const auto utilization = model.utilizationHistory("GPU0");
+    ASSERT_EQ(utilization.size(), 1U);
+    EXPECT_TRUE(std::isnan(utilization[0]));
+}
+
 TEST(GPUModelTest, PowerUtilizationPercentIsComputed)
 {
     auto probe = std::make_unique<MockGPUProbe>();

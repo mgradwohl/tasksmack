@@ -4,6 +4,7 @@
 #include "Domain/GPUSnapshot.h"
 #include "Platform/GPUTypes.h"
 #include "UI/FillPlotLayout.h"
+#include "UI/Format.h"
 
 #include <algorithm>
 #include <chrono>
@@ -157,6 +158,42 @@ struct GpuDrawEntry
         }
     }
     return entries;
+}
+
+/// The Overview header's "VRAM" figure: memory totals summed over discrete GPUs only. An integrated
+/// GPU's total is the share of system RAM it may borrow (on Windows DXGI's SharedSystemMemory, about
+/// half of RAM), so adding it double-counted RAM as VRAM on almost every laptop (#1114).
+[[nodiscard]] inline std::uint64_t totalDedicatedVramBytes(std::span<const Domain::GPUSnapshot> snapshots) noexcept
+{
+    std::uint64_t total = 0;
+    for (const auto& snapshot : snapshots)
+    {
+        if (!snapshot.isIntegrated)
+        {
+            total += snapshot.memoryTotalBytes;
+        }
+    }
+    return total;
+}
+
+/// The GPU's collapsing-header label: name, a discrete GPU's VRAM size, its kind, and "Sleeping"
+/// while the probe is leaving a runtime-suspended GPU alone (#1117). The "###" suffix keeps the
+/// header's ImGui id stable while the label changes, so it doesn't re-expand as the GPU wakes.
+[[nodiscard]] inline std::string
+gpuHeaderLabel(std::string_view icon, std::string_view name, bool isIntegrated, std::uint64_t memoryTotalBytes, bool suspended)
+{
+    std::string label = std::string(icon) + " " + std::string(name);
+    if (!isIntegrated && memoryTotalBytes > 0)
+    {
+        label += ", " + UI::Format::formatBytes(static_cast<double>(memoryTotalBytes)) + " VRAM";
+    }
+    label += isIntegrated ? " [Shared Memory]" : " [Discrete]";
+    if (suspended)
+    {
+        label += " (Sleeping)";
+    }
+    label += "###gpuHeader";
+    return label;
 }
 
 /// Lowest reference the clock line and bar are scaled against, so an idle GPU's few hundred MHz

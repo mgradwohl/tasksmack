@@ -88,7 +88,8 @@ struct SystemCounters
     // CPU frequency in MHz (current, may vary per-core)
     uint64_t cpuFreqMHz = 0;
 
-    // Network counters (cumulative bytes across all interfaces)
+    // Network counters (cumulative bytes across the interfaces counted in the Total; see
+    // InterfaceCounters::isVirtual)
     uint64_t netRxBytes = 0; // Total bytes received
     uint64_t netTxBytes = 0; // Total bytes transmitted
 
@@ -101,6 +102,10 @@ struct SystemCounters
         uint64_t txBytes = 0;       // Cumulative bytes transmitted
         bool isUp = false;          // Interface operational status
         uint64_t linkSpeedMbps = 0; // Link speed in Mbps (0 if unknown)
+        // Software interface (bridge, veth, tunnel/VPN, VLAN, loopback-like) whose traffic also crosses
+        // a hardware interface, so the network Total leaves it out unless no hardware interface is
+        // listed (#1106). Linux: no /sys/class/net/<if>/device. Windows: not classified yet (false).
+        bool isVirtual = false;
     };
     std::vector<InterfaceCounters> networkInterfaces;
 

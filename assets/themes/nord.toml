@@ -16,8 +16,8 @@ colors = [
     "#88C0D0",  # Nord Frost 2 (cyan-blue)
     "#D2727A",  # Aurora Red
     "#A3BE8C",  # Aurora Green
-    "#B48EAD",  # Aurora Purple
-    "#EBCB8B",  # Aurora Yellow
+    "#B18FAB",  # Aurora Purple
+    "#F1CF88",  # Aurora Yellow
     "#D08770",  # Aurora Orange
     "#81A1C1",  # Nord Frost 3 (blue)
     "#6D90BC",  # Nord Frost 4 (deep blue)
@@ -25,15 +25,15 @@ colors = [
 
 [progress]
 low = "#A3BE8C"       # 0-50%   - Aurora Green (healthy)
-medium = "#EBCB8B"    # 50-80%  - Aurora Yellow (caution)
+medium = "#F1CF88"    # 50-80%  - Aurora Yellow (caution)
 high = "#D2727A"      # 80-100% - Aurora Red (critical)
 
 [semantic]
 text_primary = "#ECEFF4"
 text_disabled = "#D8DEE9"
 text_muted = "#D8DEE9"
-text_error = "#F6929A"
-text_warning = "#EBCB8B"
+text_error = "#FDB4B8"
+text_warning = "#F1CF88"
 text_success = "#A3BE8C"
 text_info = "#88C0D0"
 
@@ -46,16 +46,16 @@ stopped = "#F9AC93"
 idle = "#B5BFD6"
 
 [charts]
-cpu = "#88C0D0"
+cpu = "#79BCCE"
 memory = "#A3BE8C"
 io = "#D2727A"
-io_write = "#D08770"
+io_write = "#DD896F"
 net_tx = "#81A1C1"
 net_rx = "#EBCB8B"
-cpu_fill = "#88C0D04D"
+cpu_fill = "#79BCCE4D"
 memory_fill = "#A3BE8C4D"
 io_fill = "#D2727A4D"
-io_write_fill = "#D087704D"
+io_write_fill = "#DD896F4D"
 net_tx_fill = "#81A1C14D"
 net_rx_fill = "#EBCB8B4D"
 peak_line = "#ECEFF4B3"
@@ -66,11 +66,11 @@ utilization_fill = "#B48EAD4D"
 memory = "#EBCB8B"
 memory_fill = "#EBCB8B4D"
 temperature = "#D08770"
-power = "#A3BE8C"
+power = "#ACC795"
 encoder = "#88C0D0"
 decoder = "#D2727A"
-clock = "#81A1C1"
-clock_fill = "#81A1C1CC"
+clock = "#B2D8FF"
+clock_fill = "#B2D8FFCC"
 fan = "#848EA4"
 
 [cpu_breakdown]

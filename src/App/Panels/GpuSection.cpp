@@ -227,8 +227,8 @@ void renderGpuSection(RenderContext& ctx)
         if (entry.snapshot == nullptr)
         {
             // Enumerated, but this read returned nothing for it: keep its slot rather than drop it.
-            const std::string headerLabel =
-                std::format("{} {} [{}]", ICON_FA_MICROCHIP, entry.info->name, entry.info->isIntegrated ? "Shared Memory" : "Discrete");
+            // Same ###gpuHeader id as a GPU with a reading, so its collapse state survives the gap.
+            const std::string headerLabel = gpuHeaderLabel(ICON_FA_MICROCHIP, entry.info->name, entry.info->isIntegrated, 0, false);
             if (ImGui::CollapsingHeader(headerLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen))
             {
                 ImGui::Indent();
@@ -257,14 +257,11 @@ void renderGpuSection(RenderContext& ctx)
         // GPU header with collapsible section
         // Discrete: show VRAM amount after name, label as "Discrete"
         // Integrated: no VRAM amount (shares system RAM), label as "Shared Memory"
-        std::string vramInfo;
-        if (!isIntegrated && snap.memoryTotalBytes > 0)
-        {
-            vramInfo = std::format(", {} VRAM", UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes)));
-        }
-        const std::string headerLabel =
-            std::format("{} {}{} [{}]", ICON_FA_MICROCHIP, gpuName, vramInfo, isIntegrated ? "Shared Memory" : "Discrete");
+        // A GPU the probe is leaving asleep is labelled so (#1117).
+        const std::string headerLabel = gpuHeaderLabel(ICON_FA_MICROCHIP, gpuName, isIntegrated, snap.memoryTotalBytes, snap.suspended);
 
+        // Scoped by the adapter's stable id (gpuIdScope above), not its position. The label's
+        // ###gpuHeader suffix keeps the id fixed as the label changes ("(Sleeping)", VRAM).
         const bool expanded = ImGui::CollapsingHeader(headerLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
 
         if (!expanded)

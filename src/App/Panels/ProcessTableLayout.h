@@ -107,4 +107,29 @@ inline constexpr float FILTER_MAX_ROW_FRACTION = 0.5F;
     return (wanted < cap) ? wanted : cap;
 }
 
+/// Narrowest toolbar row on which the filter box and the controls after it do not overlap (#1207).
+///
+/// The filter box takes computeFilterWidth(): its wanted width, capped at half the row. So the row
+/// fits once it holds the wanted box and the rest side by side, or once half of it holds the rest
+/// (the box then shrinks to the other half) -- whichever is narrower -- and never so narrow that
+/// half of it cannot show the box's hint.
+///
+/// @param filterWantedPx   computeFilterWidth() with the row unknown: the box uncapped.
+/// @param filterForHintPx  The hint plus its frame padding: the box's own floor.
+/// @param restPx           Everything after the box on that row, spacing included.
+[[nodiscard]] inline float computeToolbarMinimumWidth(float filterWantedPx, float filterForHintPx, float restPx) noexcept
+{
+    const auto atLeastZero = [](float value)
+    {
+        return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
+    };
+    const float rest = atLeastZero(restPx);
+    const float wanted = atLeastZero(filterWantedPx);
+    const float sideBySide = wanted + rest;
+    const float halfForRest = rest * 2.0F;
+    const float fits = (sideBySide < halfForRest) ? sideBySide : halfForRest;
+    const float forHint = atLeastZero(filterForHintPx) * 2.0F;
+    return (fits > forHint) ? fits : forHint;
+}
+
 } // namespace App::ProcessTableLayout

@@ -47,9 +47,11 @@ struct GPUInfo
     /// fan, PCIe, encoder/decoder); the other fields are not used. GPUCapabilities from a probe
     /// describes the probe as a whole, so on a hybrid Windows laptop NVML's capabilities applied to
     /// the Intel iGPU too, and two NVIDIA cards with different sensors both drew every series
-    /// (#1040). nullopt means the probe's capabilities apply to this adapter unchanged.
+    /// (#1040). nullopt means the probe's capabilities apply to this adapter unchanged. Set on
+    /// Windows (from NVML) and on Linux by each vendor probe: NVML and ROCm SMI by which sensor
+    /// reads succeed at enumeration, DRM by which sysfs/hwmon files the card has (#1112).
     std::optional<GPUCapabilities> sensorCapabilities;
-    /// PCI bus location, where the probe can read it (Windows: DXGI via D3DKMT, and NVML) (#1091).
+    /// PCI bus location, where the probe can read it (Windows: DXGI via D3DKMT, and NVML; Linux: NVML) (#1091).
     std::optional<PciLocation> pciLocation;
     /// PCI (device ID << 16) | vendor ID -- NVML's pciDeviceId encoding -- or 0 when unknown (#1091).
     std::uint32_t pciDeviceId = 0;
@@ -70,6 +72,12 @@ struct GPUCounters
     bool powerAvailable = true;
     bool gpuClockAvailable = true;
     bool memoryAvailable = true; // used/total bytes, and so the memory percent
+
+    // The GPU was asleep (PCI runtime-suspended) this sample, so the probe left it alone rather than
+    // wake it with sensor queries (#1117): every *Available flag above is then false. Linux reads
+    // this from /sys/bus/pci/devices/<address>/power/runtime_status. memoryTotalBytes may still hold
+    // the last total read while awake, so the adapter's VRAM size doesn't vanish while it sleeps.
+    bool suspended = false;
 
     // Utilization (instantaneous snapshot, 0-100, provided by hardware/driver)
     double utilizationPercent = 0.0; // GPU usage reported by hardware
