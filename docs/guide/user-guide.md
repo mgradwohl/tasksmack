@@ -156,8 +156,8 @@ TaskSmack combines operating-system GPU APIs with optional vendor libraries:
 **Intel GPUs on Linux** (i915 and xe drivers) report what the kernel exposes for each card:
 
 - **Clock:** i915's `gt_cur_freq_mhz`, or xe's `tile0/gt0/freq0/cur_freq`.
-- **Temperature and power:** from the card's hwmon, which only discrete cards (Arc) have. Power is worked out from hwmon's energy counter, so it appears from the second sample on.
-- **VRAM:** the capacity comes from the DRM memory-region query on the card's render node (`/dev/dri/renderD*`), made once while the card is awake and then remembered. Used VRAM appears only when the kernel reports it; i915 needs `CAP_PERFMON` for that.
+- **Temperature and power:** from the card's hwmon, which only discrete cards (Arc) have. Temperature is read from hwmon's first channel (`temp1_input`); xe cards report their package temperature as `temp2_input` instead, so they may show no temperature until [#1314](https://github.com/mgradwohl/tasksmack/issues/1314) is fixed. Power is worked out from hwmon's energy counter, so it appears from the second sample on.
+- **VRAM:** comes from the DRM memory-region query on the card's render node (`/dev/dri/renderD*`), made only while the card is awake. The capacity is remembered after the first answer, and also tells a discrete card from an integrated one. Used VRAM appears only when the kernel reports it (i915 needs `CAP_PERFMON` for that); when it does, the query is repeated each sample to keep the figure current, otherwise it isn't made again.
 - **Not read:** utilisation.
 - **Sleeping cards:** a card in runtime suspend isn't queried, so watching it doesn't wake it.
 
