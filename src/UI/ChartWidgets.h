@@ -1256,6 +1256,23 @@ forEachMarkerSample(const TX* xData, const TY* yData, int count, double anchorSe
     }
 }
 
+namespace Detail
+{
+/// A series' marker shape under its plot label, recorded by plotSeriesMarkers() so the legend can show it.
+struct LegendMarker
+{
+    std::string label;
+    ImPlotMarker marker = ImPlotMarker_None;
+};
+
+/// The markers of the HistoryChart being drawn. UI thread only; HistoryChart clears it as it begins.
+[[nodiscard]] inline std::vector<LegendMarker>& legendMarkers()
+{
+    static std::vector<LegendMarker> markers;
+    return markers;
+}
+} // namespace Detail
+
 /// The sample that carries a series' one marker while its history has not yet crossed a marker
 /// boundary (forEachMarkerSample() places none): its oldest finite sample, which scrolls with the
 /// chart like any marker. Without it a new series -- a process just selected, a counter just
@@ -1278,7 +1295,17 @@ template<typename TY> [[nodiscard]] inline int fallbackMarkerSample(const TY* yD
 template<typename TX, typename TY>
 inline void plotSeriesMarkers(const char* label, const TX* xData, const TY* yData, int count, const ImVec4& color, const SeriesStyle& style)
 {
-    if (style.marker == ImPlotMarker_None || count <= 0)
+    if (style.marker == ImPlotMarker_None)
+    {
+        return;
+    }
+    // Recorded even without samples, so the legend key shows the shape from the series' first frame.
+    auto& legendMarkers = Detail::legendMarkers();
+    if (std::ranges::none_of(legendMarkers, [label](const Detail::LegendMarker& m) { return m.label == label; }))
+    {
+        legendMarkers.push_back(Detail::LegendMarker{.label = label, .marker = style.marker});
+    }
+    if (count <= 0)
     {
         return;
     }
@@ -1812,6 +1839,26 @@ void setupLegendDefault();
 /// Defined in ChartLegend.cpp (ImPlot internal API).
 [[nodiscard]] bool legendEntriesKnown(const char* plotLabel);
 
+/// Centre of legend entry @p index's key, laid out as ImPlot's ShowLegendEntries() does: entries
+/// start at the legend's top-left plus @p innerPadding; a key is one text line square
+/// (@p lineHeight); a column steps by lineHeight + spacing.y, a row by the key, spacing.x and the
+/// labels before it (@p labelWidthsBefore).
+[[nodiscard]] constexpr ImVec2 legendKeyCentre(
+    ImVec2 legendMin, ImVec2 innerPadding, ImVec2 spacing, float lineHeight, int index, float labelWidthsBefore, bool vertical) noexcept
+{
+    const auto i = static_cast<float>(index);
+    const float x = vertical ? 0.0F : (i * (lineHeight + spacing.x)) + labelWidthsBefore;
+    const float y = vertical ? i * (lineHeight + spacing.y) : 0.0F;
+    return {legendMin.x + innerPadding.x + x + (lineHeight * 0.5F), legendMin.y + innerPadding.y + y + (lineHeight * 0.5F)};
+}
+
+/// Draws each recorded series' marker shape (Detail::legendMarkers()) on its legend key, cut out of
+/// the key's colour square in the legend's background colour. ImPlot draws every key as a plain colour
+/// square, so without this the shapes that tell series apart on the data had no key in greyscale
+/// (#1198). Call right after EndPlot (the legend's entries are still that frame's). Defined in
+/// ChartLegend.cpp (ImPlot internal API).
+void drawLegendMarkers(const char* plotLabel, std::span<const Detail::LegendMarker> markers);
+
 /// The pixel width left for the name in a legend entry "<name><suffix>" when the legend is a column
 /// in a chart filling the available width less @p reservedWidth (what a layout beside the chart takes,
 /// e.g. nowBarsReservedWidth()): that width less ImPlot's plot and legend padding, the entry's icon and
@@ -2180,6 +2227,7 @@ class HistoryChart
         // The plot fills the available width (size.x = -1); its data area is a little narrower (axis
         // labels), so this slightly overstates the scroll speed -- the safe side for pacing.
         const double plotWidthPx = static_cast<double>(ImGui::GetContentRegionAvail().x);
+        Detail::legendMarkers().clear();
         // No legend until the plot has drawn its entries once (legendEntriesKnown()), so it is never
         // drawn over the data in space ImPlot didn't reserve for it.
         const bool showLegend = config.showLegend && legendEntriesKnown(config.id);
@@ -2265,6 +2313,10 @@ class HistoryChart
         if (m_Active)
         {
             ImPlot::EndPlot();
+            if (!Detail::legendMarkers().empty())
+            {
+                drawLegendMarkers(m_Id, Detail::legendMarkers());
+            }
         }
 
         // Restored after EndPlot (not before): EndPlot may still emit plot-area geometry

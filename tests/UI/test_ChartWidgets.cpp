@@ -1769,6 +1769,31 @@ float tenPerCodePoint(std::string_view text)
 }
 } // namespace
 
+// #1301 review: legend keys show each series' marker shape, placed where ImPlot draws the key.
+TEST(LegendKeyCentreTest, AColumnStepsByALineAndItsSpacing)
+{
+    constexpr ImVec2 MIN{100.0F, 50.0F};
+    constexpr ImVec2 PAD{5.0F, 4.0F};
+    constexpr ImVec2 SPACING{6.0F, 3.0F};
+    const ImVec2 first = legendKeyCentre(MIN, PAD, SPACING, 16.0F, 0, 0.0F, true);
+    EXPECT_FLOAT_EQ(first.x, 113.0F);
+    EXPECT_FLOAT_EQ(first.y, 62.0F);
+    const ImVec2 third = legendKeyCentre(MIN, PAD, SPACING, 16.0F, 2, 999.0F, true);
+    EXPECT_FLOAT_EQ(third.x, 113.0F);
+    EXPECT_FLOAT_EQ(third.y, 62.0F + (2.0F * 19.0F));
+}
+
+TEST(LegendKeyCentreTest, ARowStepsByTheKeysSpacingAndTheLabelsBefore)
+{
+    constexpr ImVec2 MIN{100.0F, 50.0F};
+    constexpr ImVec2 PAD{5.0F, 4.0F};
+    constexpr ImVec2 SPACING{6.0F, 3.0F};
+    // Two entries before, with labels 40 and 30 px wide.
+    const ImVec2 third = legendKeyCentre(MIN, PAD, SPACING, 16.0F, 2, 70.0F, false);
+    EXPECT_FLOAT_EQ(third.x, 113.0F + (2.0F * 22.0F) + 70.0F);
+    EXPECT_FLOAT_EQ(third.y, 62.0F);
+}
+
 TEST(FitLegendNameTest, ANameThatFitsIsKeptWhole)
 {
     EXPECT_EQ(fitLegendName("Wi-Fi", 50.0F, tenPerCodePoint), "Wi-Fi");
