@@ -245,6 +245,53 @@ TEST(AxisTickRangeTest, TicksRunFromZeroToTheLastMultipleBelowTheBound)
     EXPECT_EQ(axisTickRange(10.0, 0.0).count, 0);
 }
 
+// ========== Time axis (#1202) ==========
+
+TEST(TimeAxisTest, StepsAreWholeSecondsMinutesOrHours)
+{
+    // A 5-minute window with up to 7 labels steps by a minute: 5m 4m 3m 2m 1m now.
+    EXPECT_DOUBLE_EQ(niceTimeAxisStep(300.0, 7), 60.0);
+    // 1 minute, 7 labels: 10 s steps.
+    EXPECT_DOUBLE_EQ(niceTimeAxisStep(60.0, 7), 10.0);
+    // 10 minutes, 3 labels: 5 minute steps.
+    EXPECT_DOUBLE_EQ(niceTimeAxisStep(600.0, 3), 300.0);
+    // 2 minutes, 5 labels: 30 s.
+    EXPECT_DOUBLE_EQ(niceTimeAxisStep(120.0, 5), 30.0);
+    // A span that is exactly a nice step per interval keeps it.
+    EXPECT_DOUBLE_EQ(niceTimeAxisStep(150.0, 6), 30.0);
+    // Longer than any listed step: whole days.
+    EXPECT_DOUBLE_EQ(niceTimeAxisStep(10.0 * 86400.0, 2), 10.0 * 86400.0);
+    EXPECT_DOUBLE_EQ(niceTimeAxisStep(0.0, 7), 0.0);
+    EXPECT_DOUBLE_EQ(niceTimeAxisStep(std::numeric_limits<double>::quiet_NaN(), 7), 0.0);
+}
+
+TEST(TimeAxisTest, TicksAreMultiplesOfTheStepInsideTheWindow)
+{
+    const auto ticks = timeAxisTicks(-300.0, 0.0, 60.0);
+    EXPECT_DOUBLE_EQ(ticks.first, -300.0);
+    EXPECT_DOUBLE_EQ(ticks.last, 0.0);
+    EXPECT_EQ(ticks.count, 6);
+
+    // Scrolled back by 25 s: the ticks stay on whole minutes and "now" is out of view.
+    const auto scrolled = timeAxisTicks(-325.0, -25.0, 60.0);
+    EXPECT_DOUBLE_EQ(scrolled.first, -300.0);
+    EXPECT_DOUBLE_EQ(scrolled.last, -60.0);
+    EXPECT_EQ(scrolled.count, 5);
+
+    EXPECT_EQ(timeAxisTicks(0.0, -10.0, 1.0).count, 0); // Empty window
+    EXPECT_EQ(timeAxisTicks(-10.0, 0.0, 0.0).count, 0); // No step
+    EXPECT_EQ(timeAxisTicks(-9.0, -6.0, 5.0).count, 0); // No multiple inside
+}
+
+TEST(TimeAxisTest, NarrowChartsGetFewerLabels)
+{
+    EXPECT_EQ(timeAxisMaxTicksForWidth(600.0F, 10.0F), 7); // 10 slots, capped
+    EXPECT_EQ(timeAxisMaxTicksForWidth(240.0F, 10.0F), 4); // 240 / 60
+    EXPECT_EQ(timeAxisMaxTicksForWidth(50.0F, 10.0F), 2);  // floor of 2
+    EXPECT_EQ(timeAxisMaxTicksForWidth(0.0F, 10.0F), TIME_AXIS_MAX_TICKS);
+    EXPECT_EQ(timeAxisMaxTicksForWidth(600.0F, 0.0F), TIME_AXIS_MAX_TICKS);
+}
+
 TEST(AxisMaxTicksForHeightTest, ShortChartsGetFewerLabels)
 {
     EXPECT_EQ(axisMaxTicksForHeight(180.0F, 15.0F), 6);  // 180 / 30

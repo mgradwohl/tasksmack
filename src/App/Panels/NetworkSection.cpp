@@ -14,7 +14,6 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
-#include <cinttypes>
 #include <cstddef>
 #include <format>
 #include <functional>
@@ -177,7 +176,11 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         const auto& selectedIface = interfaces[static_cast<size_t>(selectedInterface)];
         if (selectedIface.linkSpeedMbps > 0)
         {
-            const auto linkText = std::format("Link: {} Mbps", selectedIface.linkSpeedMbps);
+            // In the rates' own unit, so it compares with them at a glance, then as the adapter is
+            // rated (#1202).
+            const auto linkText = std::format("Link: {} ({})",
+                                              UI::Format::formatLinkSpeed(selectedIface.linkSpeedMbps),
+                                              UI::Format::formatLinkSpeedNominal(selectedIface.linkSpeedMbps));
             ImGui::TextColored(theme.scheme().textMuted, "%s", linkText.c_str());
         }
         else
@@ -523,7 +526,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
             ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, typeColumnWidth);
             ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_None, 2.5F);
             ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_None, 0.8F);
-            ImGui::TableSetupColumn("Speed", ImGuiTableColumnFlags_None, 1.0F);
+            ImGui::TableSetupColumn("Speed", ImGuiTableColumnFlags_None, 1.2F); // A rate, like Sent and Received (#1202)
             // Sent/Received, the words the charts and the process table use (#1203)
             ImGui::TableSetupColumn("Sent", ImGuiTableColumnFlags_None, 1.2F);
             ImGui::TableSetupColumn("Received", ImGuiTableColumnFlags_None, 1.2F);
@@ -578,21 +581,14 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                 ImGui::TableNextColumn();
                 if (iface.linkSpeedMbps > 0)
                 {
-                    if (iface.linkSpeedMbps >= 1000)
+                    // The same unit as the Sent and Received columns beside it; the rated speed
+                    // ("1 Gbps") on hover (#1202).
+                    const std::string speedText = UI::Format::formatLinkSpeed(iface.linkSpeedMbps);
+                    ImGui::TextUnformatted(speedText.c_str());
+                    if (ImGui::IsItemHovered())
                     {
-                        if ((iface.linkSpeedMbps % 1000) == 0)
-                        {
-                            // safe: PRIu64 handles uint64_t without narrowing
-                            ImGui::Text("%" PRIu64 " Gbps", iface.linkSpeedMbps / 1000);
-                        }
-                        else
-                        {
-                            ImGui::Text("%.1f Gbps", static_cast<double>(iface.linkSpeedMbps) / 1000.0);
-                        }
-                    }
-                    else
-                    {
-                        ImGui::Text("%" PRIu64 " Mbps", iface.linkSpeedMbps);
+                        const std::string rated = UI::Format::formatLinkSpeedNominal(iface.linkSpeedMbps);
+                        ImGui::SetTooltip("Rated %s", rated.c_str());
                     }
                 }
                 else

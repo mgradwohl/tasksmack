@@ -148,7 +148,7 @@ struct RowFormatCache
 
     AlignedCellText ppid;       // formatId(parentPid)          — immutable
     AlignedCellText startTime;  // formatEpochDateTimeShort      — immutable
-    AlignedCellText cpuTime;    // formatCpuTimeCompact          — changes at 1Hz
+    AlignedCellText cpuTime;    // formatDuration                — changes at 1Hz
     AlignedCellText cpuPercent; // pre-formatted to avoid per-frame decimal alignment work
     AlignedCellText memPercent; // pre-formatted to avoid per-frame decimal alignment work
     AlignedCellText virtualMem; // pre-formatted to avoid per-frame decimal alignment work
@@ -195,7 +195,7 @@ struct RowFormatCache
     RowFormatCache fmt;
     fmt.ppid = makeAlignedCellText(UI::Format::formatId(proc.parentPid));
     fmt.startTime = makeAlignedCellText(UI::Format::formatEpochDateTimeShort(proc.startTimeEpoch));
-    fmt.cpuTime = makeAlignedCellText(UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds));
+    fmt.cpuTime = makeAlignedCellText(UI::Format::formatDuration(proc.cpuTimeSeconds));
     fmt.cpuPercent = makeAlignedCellText(formatAlignedPercentString(proc.cpuPercent));
     fmt.memPercent = makeAlignedCellText(formatAlignedPercentString(proc.memoryPercent));
     fmt.virtualMem = makeAlignedCellText(

@@ -87,7 +87,7 @@ constexpr const char* CPU_IDLE_LABEL = "Idle";
 constexpr const char* POWER_LABEL = "Power";
 constexpr const char* BATTERY_LABEL = "Battery";
 constexpr const char* THREADS_LABEL = "Threads";
-constexpr const char* FAULTS_LABEL = "Page Faults/s";
+constexpr const char* FAULTS_LABEL = "Page Faults"; // Its values carry the "/s" ("12.0/s"), #1202
 
 void showCpuBreakdownTooltip(const UI::ColorScheme& scheme,
                              double ageSeconds,
@@ -98,16 +98,16 @@ void showCpuBreakdownTooltip(const UI::ColorScheme& scheme,
                              float idlePercent)
 {
     std::vector<UI::Widgets::TooltipRow> rows{
-        {.label = CPU_TOTAL_LABEL, .color = scheme.chartCpu, .value = UI::Format::percentCompact(totalPercent)},
-        {.label = CPU_USER_LABEL, .color = scheme.cpuUser, .value = UI::Format::percentCompact(userPercent)},
-        {.label = CPU_SYSTEM_LABEL, .color = scheme.cpuSystem, .value = UI::Format::percentCompact(systemPercent)},
+        {.label = CPU_TOTAL_LABEL, .color = scheme.chartCpu, .value = UI::Format::formatPercent(totalPercent)},
+        {.label = CPU_USER_LABEL, .color = scheme.cpuUser, .value = UI::Format::formatPercent(userPercent)},
+        {.label = CPU_SYSTEM_LABEL, .color = scheme.cpuSystem, .value = UI::Format::formatPercent(systemPercent)},
     };
     // Absent, not 0 %, where the platform does not report it (Windows, #1031).
     if (iowaitPercent.has_value())
     {
-        rows.push_back({.label = CPU_IOWAIT_LABEL, .color = scheme.cpuIowait, .value = UI::Format::percentCompact(*iowaitPercent)});
+        rows.push_back({.label = CPU_IOWAIT_LABEL, .color = scheme.cpuIowait, .value = UI::Format::formatPercent(*iowaitPercent)});
     }
-    rows.push_back({.label = CPU_IDLE_LABEL, .color = scheme.cpuIdle, .value = UI::Format::percentCompact(idlePercent)});
+    rows.push_back({.label = CPU_IDLE_LABEL, .color = scheme.cpuIdle, .value = UI::Format::formatPercent(idlePercent)});
     UI::Widgets::renderHistoryTooltip(ageSeconds, rows);
 }
 
@@ -805,17 +805,17 @@ void SystemMetricsPanel::renderOverview()
     };
 
     NowBarList cpuBars;
-    cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.total),
+    cpuBars.push_back({.valueText = UI::Format::formatPercent(m_SmoothedCpu.total),
                        .label = CPU_TOTAL_LABEL,
                        .tooltipText = {},
                        .value01 = UI::Format::percent01(m_SmoothedCpu.total),
                        .color = theme.scheme().chartCpu}); // The Total line's colour (#1192)
-    cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.user),
+    cpuBars.push_back({.valueText = UI::Format::formatPercent(m_SmoothedCpu.user),
                        .label = CPU_USER_LABEL,
                        .tooltipText = {},
                        .value01 = UI::Format::percent01(m_SmoothedCpu.user),
                        .color = theme.scheme().cpuUser});
-    cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.system),
+    cpuBars.push_back({.valueText = UI::Format::formatPercent(m_SmoothedCpu.system),
                        .label = CPU_SYSTEM_LABEL,
                        .tooltipText = {},
                        .value01 = UI::Format::percent01(m_SmoothedCpu.system),
@@ -823,7 +823,7 @@ void SystemMetricsPanel::renderOverview()
     if (showIowait)
     {
         cpuBars.push_back({
-            .valueText = UI::Format::percentCompact(m_SmoothedCpu.iowait),
+            .valueText = UI::Format::formatPercent(m_SmoothedCpu.iowait),
             .label = CPU_IOWAIT_LABEL,
             .tooltipText = {},
             .value01 = UI::Format::percent01(m_SmoothedCpu.iowait),
@@ -924,7 +924,7 @@ void SystemMetricsPanel::renderOverview()
 
             if (snap.power.hasBattery)
             {
-                bars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedPower.batteryChargePercent),
+                bars.push_back({.valueText = UI::Format::formatPercent(m_SmoothedPower.batteryChargePercent),
                                 .label = BATTERY_LABEL,
                                 .tooltipText = {},
                                 .value01 = UI::Format::percent01(m_SmoothedPower.batteryChargePercent),
@@ -1008,10 +1008,12 @@ void SystemMetricsPanel::renderOverview()
                             if (batteryIdx)
                             {
                                 const double batteryVal = Domain::Numeric::toDouble(batteryHist[*batteryIdx]);
-                                rows.push_back({.label = BATTERY_LABEL,
-                                                .color = theme.scheme().chartMemory,
-                                                .value = UI::Widgets::formatSampleOrNA(
-                                                    batteryVal, [](double v) { return UI::Format::percentCompact(v); })});
+                                rows.push_back({
+                                    .label = BATTERY_LABEL,
+                                    .color = theme.scheme().chartMemory,
+                                    .value =
+                                        UI::Widgets::formatSampleOrNA(batteryVal, [](double v) { return UI::Format::formatPercent(v); }),
+                                });
                             }
                             UI::Widgets::renderHistoryTooltip(powerIdx ? powerTimeData[*powerIdx] : batteryTimeData[*batteryIdx], rows);
                         }
@@ -1087,7 +1089,7 @@ void SystemMetricsPanel::renderOverview()
                     ImGui::Separator();
                     if (snap.power.healthPercent >= 0)
                     {
-                        ImGui::Text("Health: %s", UI::Format::percentCompact(snap.power.healthPercent).c_str());
+                        ImGui::Text("Health: %s", UI::Format::formatPercent(snap.power.healthPercent).c_str());
                     }
                     if (!snap.power.technology.empty())
                     {

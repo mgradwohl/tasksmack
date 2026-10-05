@@ -113,7 +113,7 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
     {
         if (snap.memoryTotalBytes == 0)
         {
-            return UI::Format::percentCompact(pct);
+            return UI::Format::formatPercent(pct);
         }
         const auto bytes = static_cast<std::uint64_t>((pct / 100.0) * static_cast<double>(snap.memoryTotalBytes));
         return UI::Format::bytesUsedTotalPercentCompact(bytes, snap.memoryTotalBytes, pct);
@@ -199,15 +199,19 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                     }
                     if (*idxVal < swapData.size())
                     {
-                        rows.push_back({.label = SWAP_LABEL,
-                                        .color = theme.scheme().chartIo,
-                                        .value = UI::Format::percentCompact(static_cast<double>(swapData[*idxVal]))});
+                        rows.push_back({
+                            .label = SWAP_LABEL,
+                            .color = theme.scheme().chartIo,
+                            .value = UI::Format::formatPercent(static_cast<double>(swapData[*idxVal])),
+                        });
                     }
                     if (peakMemPercent > 0.0)
                     {
-                        rows.push_back({.label = PEAK_LABEL,
-                                        .color = theme.scheme().chartPeakLine,
-                                        .value = UI::Format::percentCompact(peakMemPercent)});
+                        rows.push_back({
+                            .label = PEAK_LABEL,
+                            .color = theme.scheme().chartPeakLine,
+                            .value = UI::Format::formatPercent(peakMemPercent),
+                        });
                     }
                     UI::Widgets::renderHistoryTooltip(timeData[*idxVal], rows);
                 }
@@ -225,7 +229,7 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
         const auto addBar = [&](const char* label, double smoothedPercent, std::string tooltip, const ImVec4& color)
         {
             const double clamped = std::clamp(smoothedPercent, 0.0, 100.0);
-            memoryBars.push_back({.valueText = UI::Format::percentCompact(clamped),
+            memoryBars.push_back({.valueText = UI::Format::formatPercent(clamped),
                                   .label = label,
                                   .tooltipText = std::move(tooltip),
                                   .value01 = UI::Format::percent01(clamped),
@@ -260,7 +264,7 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
     // Peak Used is a line with a tooltip row but no bar; list it in the value strip too (#1193).
     const std::array peakEntry{UI::Widgets::ValueStripEntry{
         .label = PEAK_LABEL,
-        .value = UI::Format::percentCompact(peakMemPercent),
+        .value = UI::Format::formatPercent(peakMemPercent),
         .color = theme.scheme().chartPeakLine,
     }};
     const std::span<const UI::Widgets::ValueStripEntry> stripExtras =

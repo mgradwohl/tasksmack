@@ -221,7 +221,7 @@ void renderCpuCoresSection(RenderContext& ctx)
                                 smoothed = snap.cpuPerCore[coreIdx].totalPercent;
                             }
                             const NowBar bar{
-                                .valueText = UI::Format::percentCompact(smoothed),
+                                .valueText = UI::Format::formatPercent(smoothed),
                                 .label = coreName,
                                 .tooltipText = {},
                                 .value01 = UI::Format::percent01(smoothed),
@@ -310,7 +310,7 @@ void renderCpuCoresSection(RenderContext& ctx)
                                                 rows.push_back({
                                                     .label = coreName,
                                                     .color = themeRef.scheme().chartCpu,
-                                                    .value = UI::Format::percentCompact(static_cast<double>(sampleData[*idxVal])),
+                                                    .value = UI::Format::formatPercent(static_cast<double>(sampleData[*idxVal])),
                                                 });
                                             }
                                             UI::Widgets::renderHistoryTooltip(timeData[*idxVal], rows);

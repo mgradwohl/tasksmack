@@ -91,7 +91,7 @@ constexpr const char* MEM_SHARED_LABEL = "Shared";
 constexpr const char* MEM_VIRTUAL_LABEL = "Virtual";
 constexpr const char* MEM_PEAK_LABEL = "Peak Mem";
 constexpr const char* THREADS_LABEL = "Threads";
-constexpr const char* FAULTS_LABEL = "Page Faults/s";
+constexpr const char* FAULTS_LABEL = "Page Faults"; // Its values carry the "/s" ("12.0/s"), #1202
 #ifdef _WIN32
 constexpr const char* GDI_LABEL = "GDI Objects";
 #endif
@@ -802,7 +802,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         {"State", {statusText, statusColor}}, // Same name as the table's State column (#1203)
         {"Threads", {proc.threadCount > 0 ? formatCountLocale(proc.threadCount) : std::string("-"), theme.scheme().textPrimary}},
         {handleLabel, {handleText, theme.scheme().textPrimary}},
-        {"CPU Time", {UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds), theme.scheme().textPrimary}},
+        {"CPU Time", {UI::Format::formatDuration(proc.cpuTimeSeconds), theme.scheme().textPrimary}},
         {"Priority", {priorityText, theme.scheme().textPrimary}},
     };
     if (!proc.processType.empty())
@@ -1860,7 +1860,7 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
         ImGui::TextUnformatted(LABEL_UTILIZATION);
         ImGui::TableNextColumn();
         const ImVec4 gpuUtilColor = theme.scheme().gpuUtilization;
-        ImGui::TextColored(gpuUtilColor, "%.1f%%", m_SmoothedUsage.gpuUtilPercent);
+        ImGui::TextColored(gpuUtilColor, "%s", UI::Format::percentOneDecimal(m_SmoothedUsage.gpuUtilPercent).c_str());
 
         // GPU Memory
         ImGui::TableNextRow();
@@ -1908,7 +1908,7 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
             ImGui::TextUnformatted(LABEL_ENCODER);
             ImGui::TableNextColumn();
             const ImVec4 encColor = theme.scheme().gpuEncoder;
-            ImGui::TextColored(encColor, "%.1f%%", proc.gpuEncoderUtil);
+            ImGui::TextColored(encColor, "%s", UI::Format::percentOneDecimal(proc.gpuEncoderUtil).c_str());
         }
 
         if (proc.gpuDecoderUtil > 0.0)
@@ -1918,7 +1918,7 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
             ImGui::TextUnformatted(LABEL_DECODER);
             ImGui::TableNextColumn();
             const ImVec4 decColor = theme.scheme().gpuDecoder;
-            ImGui::TextColored(decColor, "%.1f%%", proc.gpuDecoderUtil);
+            ImGui::TextColored(decColor, "%s", UI::Format::percentOneDecimal(proc.gpuDecoderUtil).c_str());
         }
 
         ImGui::EndTable();
@@ -1968,7 +1968,7 @@ void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& p
                     ImGui::TableNextColumn();
                     ImGui::TextUnformatted(LABEL_UTILIZATION);
                     ImGui::TableNextColumn();
-                    ImGui::TextColored(gpuUtilColor, "%.1f%%", gpuUsage.utilPercent);
+                    ImGui::TextColored(gpuUtilColor, "%s", UI::Format::percentOneDecimal(gpuUsage.utilPercent).c_str());
 
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn();
@@ -2057,10 +2057,11 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
                         {
                             if (*idxVal < alignedCount)
                             {
-                                const std::array rows{
-                                    UI::Widgets::TooltipRow{.label = GPU_UTIL_LABEL,
-                                                            .color = theme.scheme().gpuUtilization,
-                                                            .value = UI::Format::percentCompact(static_cast<double>(gpuUtilVec[*idxVal]))}};
+                                const std::array rows{UI::Widgets::TooltipRow{
+                                    .label = GPU_UTIL_LABEL,
+                                    .color = theme.scheme().gpuUtilization,
+                                    .value = UI::Format::percentOneDecimal(static_cast<double>(gpuUtilVec[*idxVal])),
+                                }};
                                 UI::Widgets::renderHistoryTooltip(timeData[*idxVal], rows);
                             }
                         }
@@ -2126,7 +2127,7 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
 
         // Now bars for current values
         const NowBar gpuUtilBar{
-            .valueText = UI::Format::percentCompact(m_SmoothedUsage.gpuUtilPercent),
+            .valueText = UI::Format::percentOneDecimal(m_SmoothedUsage.gpuUtilPercent),
             .label = GPU_UTIL_LABEL,
             .tooltipText = {},
             .value01 = UI::Format::percent01(m_SmoothedUsage.gpuUtilPercent),

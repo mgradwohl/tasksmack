@@ -5,6 +5,7 @@
 // logic into a small header" pattern (as ProcessTreeFlatten.h and ProcessTreeIndent.h do).
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <initializer_list>
 #include <ranges>
@@ -14,7 +15,7 @@ namespace UI::Widgets
 
 /// Minimum spans for the non-negative history axes, chosen so an all-zero window renders one
 /// readable decade rather than a sliver around zero.
-inline constexpr double RATE_AXIS_MIN_SPAN_BYTES_PER_SEC = 1024.0; // 1 KB/s
+inline constexpr double RATE_AXIS_MIN_SPAN_BYTES_PER_SEC = 1024.0; // 1 KiB/s
 inline constexpr double RATE_AXIS_MIN_SPAN_BYTES = 1024.0;         // 1 KiB (a size, not a rate)
 inline constexpr double RATE_AXIS_MIN_SPAN_WATTS = 1.0;            // 1 W
 inline constexpr double RATE_AXIS_MIN_SPAN_COUNT = 10.0;           // 10 items
@@ -128,6 +129,102 @@ struct AxisTickRange
     constexpr double MAX_INTERVALS = 1000.0;
     const double clamped = std::min(intervals, MAX_INTERVALS);
     return {.last = clamped * step, .count = static_cast<int>(clamped) + 1};
+}
+
+// ============================================================================
+// The history charts' time axis (#1202): "5m ... 1m ... now" instead of -300 ... 0 seconds
+// ============================================================================
+
+/// Most labels the time axis shows, however wide the chart is.
+inline constexpr int TIME_AXIS_MAX_TICKS = 7;
+
+/// Width of one time-axis label slot, in ems: room for "10m 30s" and the gap after it.
+inline constexpr float TIME_AXIS_LABEL_SLOT_EM = 6.0F;
+
+/// Labels a time axis `plotWidthPx` wide can show without crowding: one per label slot, at least 2
+/// (the oldest sample and now) and at most TIME_AXIS_MAX_TICKS. A non-positive or non-finite width
+/// gets the cap.
+[[nodiscard]] inline int timeAxisMaxTicksForWidth(float plotWidthPx, float emPx) noexcept
+{
+    if (!std::isfinite(plotWidthPx) || plotWidthPx <= 0.0F || !std::isfinite(emPx) || emPx <= 0.0F)
+    {
+        return TIME_AXIS_MAX_TICKS;
+    }
+    const double fit =
+        std::floor(static_cast<double>(plotWidthPx) / (static_cast<double>(TIME_AXIS_LABEL_SLOT_EM) * static_cast<double>(emPx)));
+    return static_cast<int>(std::clamp(fit, 2.0, static_cast<double>(TIME_AXIS_MAX_TICKS)));
+}
+
+/// The smallest round time step, in seconds, that spaces at most `maxTicks` labels (both ends
+/// included) across `spanSeconds`: 1, 2, 5, 10, 15 or 30 seconds, minutes, then hours, so every
+/// tick reads as a whole number of one unit ("30s", "2m", "1h"). 0 for a span that is not positive
+/// and finite.
+[[nodiscard]] inline double niceTimeAxisStep(double spanSeconds, int maxTicks) noexcept
+{
+    if (!std::isfinite(spanSeconds) || spanSeconds <= 0.0)
+    {
+        return 0.0;
+    }
+    static constexpr std::array<double, 18> STEPS = {
+        1.0,
+        2.0,
+        5.0,
+        10.0,
+        15.0,
+        30.0, // seconds
+        60.0,
+        120.0,
+        300.0,
+        600.0,
+        900.0,
+        1800.0, // minutes
+        3600.0,
+        7200.0,
+        10800.0,
+        21600.0,
+        43200.0,
+        86400.0, // hours, then a day
+    };
+    const double raw = spanSeconds / static_cast<double>(std::max(1, maxTicks - 1));
+    constexpr double TOLERANCE = 1e-9;
+    for (const double step : STEPS)
+    {
+        if (step >= raw * (1.0 - TOLERANCE))
+        {
+            return step;
+        }
+    }
+    // Longer than any history TaskSmack keeps: whole days.
+    return std::ceil(raw / STEPS.back()) * STEPS.back();
+}
+
+/// Ticks at the multiples of a step that fall in [xMin, xMax], for ImPlot::SetupAxisTicks.
+struct TimeAxisTicks
+{
+    double first = 0.0; ///< Oldest tick
+    double last = 0.0;  ///< Newest tick
+    int count = 0;      ///< Number of ticks; 0 if there are none
+};
+
+/// The time axis's ticks: every multiple of `step` seconds between `xMin` and `xMax` (seconds
+/// relative to now, so 0 -- "now" -- is a tick whenever it is in view, and the ticks stay put as the
+/// chart scrolls).
+[[nodiscard]] inline TimeAxisTicks timeAxisTicks(double xMin, double xMax, double step) noexcept
+{
+    if (!std::isfinite(xMin) || !std::isfinite(xMax) || xMax <= xMin || !std::isfinite(step) || step <= 0.0)
+    {
+        return {};
+    }
+    constexpr double TOLERANCE = 1e-9;
+    const double first = std::ceil((xMin / step) - TOLERANCE) * step;
+    const double last = std::floor((xMax / step) + TOLERANCE) * step;
+    if (last < first)
+    {
+        return {};
+    }
+    constexpr double MAX_INTERVALS = 1000.0; // Only guards a nonsensical step
+    const double intervals = std::min(std::round((last - first) / step), MAX_INTERVALS);
+    return {.first = first, .last = first + (intervals * step), .count = static_cast<int>(intervals) + 1};
 }
 
 /// Largest finite, non-negative value across the given series. Empty input yields 0.
