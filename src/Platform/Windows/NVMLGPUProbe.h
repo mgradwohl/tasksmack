@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -24,6 +25,12 @@ class DisplayDevicePower;
 /// A GPU that is asleep (a hybrid laptop's runtime-suspended dGPU; see DisplayDevicePower) is not
 /// queried, since NVML calls can wake it and keep it awake (#1265): its counters are marked
 /// GPUCounters::suspended with every reading unavailable, and enumeration skips its sensor probe.
+///
+/// Each device's identity (handle, name, UUID, PCI) is read once per NVML session and its sensor set
+/// once it is first seen awake, so a repeat enumerateGPUs() makes no call to a known device (#1294).
+/// rescanGPUs() re-initialises NVML at a full rescan after a query reported the GPU lost or NVML
+/// uninitialised (a driver reset, say), and on a quick one asks for a re-enumeration once a GPU that
+/// was asleep at enumeration wakes, so its own sensor set is found (#1294, as Linux does #1289).
 class NVMLGPUProbe : public IGPUProbe
 {
   public:
@@ -40,11 +47,28 @@ class NVMLGPUProbe : public IGPUProbe
     [[nodiscard]] std::vector<GPUCounters> readGPUCounters() override;
     [[nodiscard]] std::vector<ProcessGPUCounters> readProcessGPUCounters() override;
     [[nodiscard]] GPUCapabilities capabilities() const override;
+    /// Full: re-initialise NVML if a query since the last (re)start reported NVML_ERROR_GPU_IS_LOST or
+    /// NVML_ERROR_UNINITIALIZED, reporting a change if that worked. Either depth: report a change
+    /// when a GPU that was asleep at enumeration (so its sensors are unknown) is awake now. Asking
+    /// whether it is awake doesn't wake it (#1265, #1294).
+    [[nodiscard]] bool rescanGPUs(GPURescan depth) override;
+
+    /// Shut NVML down and start it again (loading nvml.dll first if it isn't loaded), so the next
+    /// enumerateGPUs() lists the NVIDIA GPUs present now: after a GPU was lost, or when the adapter
+    /// set changed (#1294). A device that comes back keeps the VRAM total and sensor set already
+    /// found for it, since one asleep now isn't woken to find them again. Returns isAvailable().
+    bool restart();
 
     /// Check if NVML is available and initialized
     [[nodiscard]] bool isAvailable() const
     {
         return m_Initialized;
+    }
+
+    /// Whether nvml.dll is loaded, i.e. the NVIDIA driver is installed, whether or not NVML started.
+    [[nodiscard]] bool isLoaded() const
+    {
+        return m_NVML.Init != nullptr;
     }
 
   private:
@@ -59,8 +83,13 @@ class NVMLGPUProbe : public IGPUProbe
 
     bool loadNVML();
     void unloadNVML();
-    bool initializeNVML();
+    /// nvmlInit(). @p quietFailure logs a failure at debug rather than warn (a repeated retry).
+    bool initializeNVML(bool quietFailure = false);
     void shutdownNVML();
+
+    /// Note a device query's result: a lost GPU or an uninitialised library means NVML must be
+    /// re-initialised (#1294). Returns @p result unchanged.
+    NVML::nvmlReturn_t noteResult(NVML::nvmlReturn_t result);
 
     [[nodiscard]] static std::string getNVMLErrorString(NVML::nvmlReturn_t result);
 
@@ -102,6 +131,10 @@ class NVMLGPUProbe : public IGPUProbe
     // fallible query could give a device a different id and lose its NVML metrics (#1040).
     std::unordered_map<uint32_t, std::string> m_DeviceIds;
 
+    /// Read device @p index's handle, name, UUID and PCI identity into the per-device maps, restoring
+    /// what a restart() remembered for its id. False if NVML gives no handle for it (#1294).
+    bool readDeviceIdentity(uint32_t index);
+
     /// Whether device @p index is asleep now, so must not be queried (#1265). False for a device
     /// whose PCI location NVML didn't report.
     [[nodiscard]] bool isDeviceAsleep(uint32_t index) const;
@@ -111,6 +144,35 @@ class NVMLGPUProbe : public IGPUProbe
     // Map device index to the VRAM total last read while it was awake, still reported while it
     // sleeps so the adapter's size doesn't vanish (#1265).
     std::unordered_map<uint32_t, std::uint64_t> m_LastMemoryTotals;
+
+    // What enumeration learnt about each device beyond its id, by device index (#1294).
+    struct DeviceDetails
+    {
+        std::string name;
+        std::uint32_t pciDeviceId = 0;
+        std::string driverVersion; // VBIOS version, read with the sensors
+        // Which sensors it reports, found the first time enumeration sees it awake (#1040); unset
+        // while it has only been seen asleep, since it isn't woken to find out (#1265).
+        std::optional<GPUCapabilities> sensors;
+    };
+    std::unordered_map<uint32_t, DeviceDetails> m_DeviceDetails;
+
+    // What a device had learnt, by id, kept across restart() for when it comes back (#1294).
+    struct Remembered
+    {
+        std::uint64_t lastMemoryTotalBytes = 0;
+        bool hasMemoryTotal = false;
+        std::string driverVersion;
+        std::optional<GPUCapabilities> sensors;
+    };
+    std::unordered_map<std::string, Remembered> m_Remembered;
+
+    // A device query reported NVML_ERROR_GPU_IS_LOST or NVML_ERROR_UNINITIALIZED since the last
+    // (re)start, so the next full rescan re-initialises NVML (#1294).
+    bool m_GPULost{false};
+    // Consecutive restarts that failed; after the first, a failure is logged quietly.
+    int m_RestartFailures{0};
+
     // The non-waking PnP power query; its devnode cache is dropped at each enumeration (#1265).
     std::shared_ptr<DisplayDevicePower> m_DevicePower;
     // Whether the GPU at a PCI location is asleep; m_DevicePower's answer in production, a fake in

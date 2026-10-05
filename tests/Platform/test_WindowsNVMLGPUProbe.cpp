@@ -1,5 +1,6 @@
 #ifdef _WIN32
 
+#include "Mocks/WindowsNVMLFake.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/NVMLTypes.h"
 #include "Platform/Windows/NVMLGPUProbe.h"
@@ -8,7 +9,6 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <cstdint>
 #include <cstring>
 #include <functional>
 #include <limits>
@@ -16,7 +16,6 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
-#include <utility>
 #include <vector>
 
 namespace Platform
@@ -196,7 +195,8 @@ TEST(WindowsNVMLGPUProbeTest, AvailableProbeEnumerationIsStable)
 // Linux's dlopen-based NVML probe - a fake DLL placed elsewhere cannot be picked up. Instead,
 // NVMLGPUProbeTestAccessor (a friend of NVMLGPUProbe, see NVMLGPUProbe.h) lets tests substitute
 // a fake NVMLFunctions table and device handles after construction (the constructor's real
-// loadNVML() still runs as normal first; see NVMLGPUProbeTestAccessor::inject() below for how
+// loadNVML() still runs as normal first; see NVMLGPUProbeTestAccessor::inject() in
+// Mocks/WindowsNVMLFake.h for how
 // any real backend it loaded is torn down first). This exercises enumerateGPUs()/
 // readGPUCounters()/readProcessGPUCounters()/capabilities() deterministically without a real
 // NVIDIA GPU, without weakening the production DLL-loading path in any way.
@@ -205,400 +205,8 @@ TEST(WindowsNVMLGPUProbeTest, AvailableProbeEnumerationIsStable)
 namespace
 {
 
-using namespace Platform::NVML;
-
-// ---- Fake NVML backend --------------------------------------------------
-
-struct FakeDeviceData
-{
-    // Value fields grouped before the bools below to avoid padding between them.
-    std::uint64_t memUsed = 2ULL * 1024 * 1024 * 1024;
-    std::uint64_t memTotal = 24ULL * 1024 * 1024 * 1024;
-    std::string name = "NVIDIA GeForce RTX 4090";
-    std::string uuid = "GPU-11111111-1111-1111-1111-111111111111";
-    std::string vbios = "95.02.18.00.01";
-    unsigned int temperatureC = 63;
-    unsigned int powerMilliwatts = 180000;
-    unsigned int powerLimitMilliwatts = 450000;
-    unsigned int gpuClockMhz = 2100;
-    unsigned int memClockMhz = 10500;
-    unsigned int utilizationGpu = 37;
-    unsigned int fanPercent = 48;
-    unsigned int pciBus = 0x01;
-    unsigned int pciDevice = 0x00;
-    unsigned int pciDeviceId = 0x268410DEU; // (device ID << 16) | vendor ID, as NVML encodes it
-    bool nameOk = true;
-    bool uuidOk = true;
-    bool vbiosOk = true;
-    bool memoryOk = true;
-    bool temperatureOk = true;
-    bool powerOk = true;
-    bool powerLimitOk = true;
-    bool gpuClockOk = true;
-    bool memClockOk = true;
-    bool utilizationOk = true;
-    bool fanOk = true;
-    bool pciInfoOk = true;
-};
-
-struct FakeProcessQuery
-{
-    std::vector<nvmlProcessInfo_t> processes;
-    nvmlReturn_t firstCallResult = NVML_SUCCESS;
-    nvmlReturn_t secondCallResult = NVML_SUCCESS;
-    // When set, the "query count" call reports this instead of processes.size() - lets a
-    // test simulate an implausible driver-reported count independent of the real list size.
-    std::optional<unsigned int> reportedCountOverride;
-};
-
-struct FakeNvmlState
-{
-    nvmlReturn_t deviceCountResult = NVML_SUCCESS;
-    unsigned int deviceCount = 0;
-    std::unordered_set<unsigned int> invalidHandleIndices;
-    std::unordered_map<unsigned int, FakeDeviceData> devices;
-    std::unordered_map<unsigned int, FakeProcessQuery> computeProcesses;
-    std::unordered_map<unsigned int, FakeProcessQuery> graphicsProcesses;
-    int shutdownCallCount = 0;
-    // NVML calls addressed to each device, so a test can prove a sleeping GPU wasn't touched (#1265)
-    std::unordered_map<unsigned int, int> deviceQueries;
-};
-
-FakeNvmlState& fakeState()
-{
-    static FakeNvmlState state;
-    return state;
-}
-
-FakeDeviceData& deviceData(unsigned int index)
-{
-    return fakeState().devices[index];
-}
-
-unsigned int deviceIndexOf(nvmlDevice_t device)
-{
-    return static_cast<unsigned int>(reinterpret_cast<std::uintptr_t>(device) - 1);
-}
-
-/// The fake device a call is for, counting the call against it (#1265).
-const FakeDeviceData& touchDevice(nvmlDevice_t device)
-{
-    const unsigned int index = deviceIndexOf(device);
-    ++fakeState().deviceQueries[index];
-    return fakeState().devices.at(index);
-}
-
-nvmlDevice_t deviceHandleFor(unsigned int index)
-{
-    // nvmlDevice_t is an opaque handle; encoding the index as a small sentinel pointer (never
-    // dereferenced) is the simplest way for the fakes below to recover which device a call is for.
-    return reinterpret_cast<nvmlDevice_t>(static_cast<std::uintptr_t>(index) + 1); // NOLINT(performance-no-int-to-ptr)
-}
-
-FakeProcessQuery makeProcessQuery(std::vector<nvmlProcessInfo_t> processes,
-                                  nvmlReturn_t firstCallResult = NVML_SUCCESS,
-                                  nvmlReturn_t secondCallResult = NVML_SUCCESS,
-                                  std::optional<unsigned int> reportedCountOverride = std::nullopt)
-{
-    FakeProcessQuery query;
-    query.processes = std::move(processes);
-    query.firstCallResult = firstCallResult;
-    query.secondCallResult = secondCallResult;
-    query.reportedCountOverride = reportedCountOverride;
-    return query;
-}
-
-void copyToBuffer(char* dst, unsigned int size, const std::string& s)
-{
-    if (size == 0)
-    {
-        return;
-    }
-    const auto n = std::min<std::size_t>(static_cast<std::size_t>(size - 1), s.size());
-    std::memcpy(dst, s.data(), n);
-    dst[n] = '\0';
-}
-
-nvmlReturn_t fakeDeviceGetCount(unsigned int* count)
-{
-    *count = fakeState().deviceCount;
-    return fakeState().deviceCountResult;
-}
-
-nvmlReturn_t fakeDeviceGetHandleByIndex(unsigned int index, nvmlDevice_t* device)
-{
-    if (fakeState().invalidHandleIndices.contains(index))
-    {
-        return NVML_ERROR_NOT_FOUND;
-    }
-    *device = deviceHandleFor(index);
-    return NVML_SUCCESS;
-}
-
-nvmlReturn_t fakeDeviceGetName(nvmlDevice_t device, char* buf, unsigned int size)
-{
-    const auto& d = touchDevice(device);
-    if (!d.nameOk)
-    {
-        return NVML_ERROR_NOT_SUPPORTED;
-    }
-    copyToBuffer(buf, size, d.name);
-    return NVML_SUCCESS;
-}
-
-nvmlReturn_t fakeDeviceGetUUID(nvmlDevice_t device, char* buf, unsigned int size)
-{
-    const auto& d = touchDevice(device);
-    if (!d.uuidOk)
-    {
-        return NVML_ERROR_NOT_SUPPORTED;
-    }
-    copyToBuffer(buf, size, d.uuid);
-    return NVML_SUCCESS;
-}
-
-nvmlReturn_t fakeDeviceGetVbiosVersion(nvmlDevice_t device, char* buf, unsigned int size)
-{
-    const auto& d = touchDevice(device);
-    if (!d.vbiosOk)
-    {
-        return NVML_ERROR_NOT_SUPPORTED;
-    }
-    copyToBuffer(buf, size, d.vbios);
-    return NVML_SUCCESS;
-}
-
-nvmlReturn_t fakeDeviceGetMemoryInfo(nvmlDevice_t device, void* memInfoRaw)
-{
-    const auto& d = touchDevice(device);
-    if (!d.memoryOk)
-    {
-        return NVML_ERROR_NOT_SUPPORTED;
-    }
-    auto* memInfo = static_cast<nvmlMemory_t*>(memInfoRaw);
-    memInfo->used = d.memUsed;
-    memInfo->total = d.memTotal;
-    memInfo->free = d.memTotal - d.memUsed;
-    return NVML_SUCCESS;
-}
-
-nvmlReturn_t fakeDeviceGetTemperature(nvmlDevice_t device, int /*sensor*/, unsigned int* temp)
-{
-    const auto& d = touchDevice(device);
-    if (!d.temperatureOk)
-    {
-        return NVML_ERROR_NOT_SUPPORTED;
-    }
-    *temp = d.temperatureC;
-    return NVML_SUCCESS;
-}
-
-nvmlReturn_t fakeDeviceGetPowerUsage(nvmlDevice_t device, unsigned int* mw)
-{
-    const auto& d = touchDevice(device);
-    if (!d.powerOk)
-    {
-        return NVML_ERROR_NOT_SUPPORTED;
-    }
-    *mw = d.powerMilliwatts;
-    return NVML_SUCCESS;
-}
-
-nvmlReturn_t fakeDeviceGetPowerManagementLimit(nvmlDevice_t device, unsigned int* mw)
-{
-    const auto& d = touchDevice(device);
-    if (!d.powerLimitOk)
-    {
-        return NVML_ERROR_NOT_SUPPORTED;
-    }
-    *mw = d.powerLimitMilliwatts;
-    return NVML_SUCCESS;
-}
-
-nvmlReturn_t fakeDeviceGetClockInfo(nvmlDevice_t device, int clockType, unsigned int* mhz)
-{
-    const auto& d = touchDevice(device);
-    if (clockType == static_cast<int>(NVML_CLOCK_GRAPHICS))
-    {
-        if (!d.gpuClockOk)
-        {
-            return NVML_ERROR_NOT_SUPPORTED;
-        }
-        *mhz = d.gpuClockMhz;
-        return NVML_SUCCESS;
-    }
-    if (clockType == static_cast<int>(NVML_CLOCK_MEM))
-    {
-        if (!d.memClockOk)
-        {
-            return NVML_ERROR_NOT_SUPPORTED;
-        }
-        *mhz = d.memClockMhz;
-        return NVML_SUCCESS;
-    }
-    return NVML_ERROR_INVALID_ARGUMENT;
-}
-
-nvmlReturn_t fakeDeviceGetUtilizationRates(nvmlDevice_t device, void* utilRaw)
-{
-    const auto& d = touchDevice(device);
-    if (!d.utilizationOk)
-    {
-        return NVML_ERROR_NOT_SUPPORTED;
-    }
-    auto* util = static_cast<nvmlUtilization_t*>(utilRaw);
-    util->gpu = d.utilizationGpu;
-    util->memory = 0;
-    return NVML_SUCCESS;
-}
-
-nvmlReturn_t fakeDeviceGetFanSpeed(nvmlDevice_t device, unsigned int* speed)
-{
-    const auto& d = touchDevice(device);
-    if (!d.fanOk)
-    {
-        return NVML_ERROR_NOT_SUPPORTED;
-    }
-    *speed = d.fanPercent;
-    return NVML_SUCCESS;
-}
-
-nvmlReturn_t fakeDeviceGetPciInfo(nvmlDevice_t device, nvmlPciInfo_t* pci)
-{
-    const auto& d = touchDevice(device);
-    if (!d.pciInfoOk)
-    {
-        return NVML_ERROR_NOT_SUPPORTED;
-    }
-    *pci = nvmlPciInfo_t{};
-    pci->bus = d.pciBus;
-    pci->device = d.pciDevice;
-    pci->pciDeviceId = d.pciDeviceId;
-    return NVML_SUCCESS;
-}
-
-nvmlReturn_t
-queryFakeProcesses(std::unordered_map<unsigned int, FakeProcessQuery>& table, unsigned int deviceIndex, unsigned int* count, void* buffer)
-{
-    ++fakeState().deviceQueries[deviceIndex];
-    auto it = table.find(deviceIndex);
-    if (it == table.end())
-    {
-        *count = 0;
-        return NVML_SUCCESS;
-    }
-
-    const auto& query = it->second;
-    const unsigned int reportedCount = query.reportedCountOverride.value_or(static_cast<unsigned int>(query.processes.size()));
-
-    if (buffer == nullptr)
-    {
-        *count = reportedCount;
-        return query.firstCallResult;
-    }
-
-    auto* out = static_cast<nvmlProcessInfo_t*>(buffer);
-    const unsigned int toCopy = std::min(*count, static_cast<unsigned int>(query.processes.size()));
-    for (unsigned int i = 0; i < toCopy; ++i)
-    {
-        out[i] = query.processes[i];
-    }
-    *count = toCopy;
-    return query.secondCallResult;
-}
-
-nvmlReturn_t fakeDeviceGetComputeRunningProcesses(nvmlDevice_t device, unsigned int* count, void* buffer)
-{
-    return queryFakeProcesses(fakeState().computeProcesses, deviceIndexOf(device), count, buffer);
-}
-
-nvmlReturn_t fakeDeviceGetGraphicsRunningProcesses(nvmlDevice_t device, unsigned int* count, void* buffer)
-{
-    return queryFakeProcesses(fakeState().graphicsProcesses, deviceIndexOf(device), count, buffer);
-}
-
-nvmlReturn_t fakeShutdown()
-{
-    ++fakeState().shutdownCallCount;
-    return NVML_SUCCESS;
-}
-
-} // namespace
-
-// Test-only accessor: lets unit tests inject a fake NVMLFunctions table and device handles
-// so enumerateGPUs()/readGPUCounters()/readProcessGPUCounters()/capabilities() can be
-// exercised deterministically without a real NVIDIA GPU or nvml.dll. Declared directly in
-// namespace Platform (not inside an anonymous namespace) so the `friend struct
-// NVMLGPUProbeTestAccessor;` declaration in NVMLGPUProbe.h resolves to this exact type; its
-// members can still see the fakes above via the anonymous namespace's implicit visibility in
-// the rest of this translation unit. inject() below substitutes the backend after the
-// constructor's real loadNVML() has already run; this does not change or bypass
-// loadNVML()'s LOAD_LIBRARY_SEARCH_SYSTEM32 hardening in any way.
-struct NVMLGPUProbeTestAccessor
-{
-    static void inject(NVMLGPUProbe& probe, const NVMLGPUProbe::NVMLFunctions& fns, bool initialized)
-    {
-        // The constructor already ran the real loadNVML()/initializeNVML() against whatever
-        // NVML is actually present on this machine. On a machine with a real NVIDIA driver
-        // installed, that leaves a real nvmlInit() outstanding and a real DLL handle open;
-        // tear both down properly (matching real nvmlShutdown() to the real nvmlInit(), and
-        // freeing the real DLL) before substituting the fake backend below, so this doesn't
-        // leak an outstanding initialization or an unmatched DLL reference count.
-        probe.shutdownNVML();
-        probe.unloadNVML();
-
-        probe.m_NVML = fns;
-        probe.m_Initialized = initialized;
-        // Every fake GPU is awake unless a test says otherwise: the real PnP query would look at
-        // whatever adapter this machine has at the fake's PCI location (#1265).
-        probe.m_IsAsleep = [](const PciLocation&)
-        {
-            return false;
-        };
-    }
-
-    static void setAsleep(NVMLGPUProbe& probe, std::function<bool(const PciLocation&)> isAsleep)
-    {
-        probe.m_IsAsleep = std::move(isAsleep);
-    }
-
-    static void addDevice(NVMLGPUProbe& probe, uint32_t index, NVML::nvmlDevice_t handle)
-    {
-        probe.m_DeviceHandles[index] = handle;
-    }
-
-    [[nodiscard]] static std::string errorString(NVML::nvmlReturn_t result)
-    {
-        return NVMLGPUProbe::getNVMLErrorString(result);
-    }
-
-    /// Builds a fully-populated NVMLFunctions table pointing at the fakes above. Tests null
-    /// out individual fields (e.g. per-process functions) to exercise "not available" branches.
-    [[nodiscard]] static NVMLGPUProbe::NVMLFunctions fullFakeFunctions()
-    {
-        NVMLGPUProbe::NVMLFunctions fns{};
-        fns.Shutdown = fakeShutdown;
-        fns.DeviceGetCount = fakeDeviceGetCount;
-        fns.DeviceGetHandleByIndex = fakeDeviceGetHandleByIndex;
-        fns.DeviceGetName = fakeDeviceGetName;
-        fns.DeviceGetUUID = fakeDeviceGetUUID;
-        fns.DeviceGetMemoryInfo = fakeDeviceGetMemoryInfo;
-        fns.DeviceGetTemperature = fakeDeviceGetTemperature;
-        fns.DeviceGetPowerUsage = fakeDeviceGetPowerUsage;
-        fns.DeviceGetPowerManagementLimit = fakeDeviceGetPowerManagementLimit;
-        fns.DeviceGetClockInfo = fakeDeviceGetClockInfo;
-        fns.DeviceGetUtilizationRates = fakeDeviceGetUtilizationRates;
-        fns.DeviceGetVbiosVersion = fakeDeviceGetVbiosVersion;
-        fns.DeviceGetFanSpeed = fakeDeviceGetFanSpeed;
-        fns.DeviceGetPciInfo = fakeDeviceGetPciInfo;
-        fns.DeviceGetComputeRunningProcesses = fakeDeviceGetComputeRunningProcesses;
-        fns.DeviceGetGraphicsRunningProcesses = fakeDeviceGetGraphicsRunningProcesses;
-        return fns;
-    }
-};
-
-namespace
-{
+using namespace Platform::NVML;     // NOLINT(google-build-using-namespace) - test fakes mirror the C API
+using namespace Platform::NVMLFake; // NOLINT(google-build-using-namespace)
 
 // ---- Fixture -------------------------------------------------------------
 
@@ -788,10 +396,11 @@ TEST_F(NVMLGPUProbeFakeTest, CountersKeepTheIdEnumerationReported)
     EXPECT_EQ(counters[0].gpuId, "GPU-abc123");
 }
 
-// #1265: a sleeping GPU (a hybrid laptop's runtime-suspended dGPU) is left alone: enumeration
-// reads its identity but neither its VBIOS nor its sensors, and counter and process reads make no
-// call addressed to it. Its counters say it is suspended, with every reading unavailable and the
-// VRAM total from the last read while it was awake; the awake GPU is read as usual.
+// #1265: a sleeping GPU (a hybrid laptop's runtime-suspended dGPU) is left alone: a repeat
+// enumeration makes no call addressed to it -- its identity and sensor set were read while it was
+// awake, and are kept (#1294) -- and neither do counter and process reads. Its counters say it is
+// suspended, with every reading unavailable and the VRAM total from the last read while it was
+// awake; the awake GPU is read as usual.
 TEST_F(NVMLGPUProbeFakeTest, ASleepingGpuIsNotQueried)
 {
     fakeState().deviceCount = 2;
@@ -818,10 +427,10 @@ TEST_F(NVMLGPUProbeFakeTest, ASleepingGpuIsNotQueried)
     const auto asleep = probe.readGPUCounters();
     const auto processes = probe.readProcessGPUCounters();
 
-    // Enumeration reads only its identity (name, UUID, PCI); no sensor or VBIOS read.
+    // The repeat enumeration reads nothing from it, and keeps the sensor set found while it was awake.
     ASSERT_EQ(gpus.size(), 2U);
-    EXPECT_EQ(fakeState().deviceQueries[0], 3);
-    EXPECT_FALSE(gpus[0].sensorCapabilities.has_value());
+    EXPECT_EQ(fakeState().deviceQueries[0], 0);
+    EXPECT_TRUE(gpus[0].sensorCapabilities.has_value());
     EXPECT_TRUE(gpus[1].sensorCapabilities.has_value());
 
     ASSERT_EQ(asleep.size(), 2U);
@@ -840,8 +449,124 @@ TEST_F(NVMLGPUProbeFakeTest, ASleepingGpuIsNotQueried)
     EXPECT_TRUE(other->temperatureAvailable);
 
     EXPECT_TRUE(processes.empty()); // Its process (pid 1234) isn't listed: that would ask the GPU
-    EXPECT_EQ(fakeState().deviceQueries[0], 3) << "No NVML call reached the sleeping GPU after enumeration";
+    EXPECT_EQ(fakeState().deviceQueries[0], 0) << "No NVML call reached the sleeping GPU";
     EXPECT_GT(fakeState().deviceQueries[1], 3);
+}
+
+// ==========================================================================
+// rescanGPUs (#1294)
+// ==========================================================================
+
+// A GPU asleep at its first enumeration has only its identity read (name, UUID, PCI) and no sensor
+// set. A quick rescan reports nothing while it sleeps, then a change once it is awake -- asking only
+// the power state -- and the re-enumeration that follows finds its own sensors.
+TEST_F(NVMLGPUProbeFakeTest, AGpuAsleepAtEnumerationGetsItsSensorsOnceAwake)
+{
+    fakeState().deviceCount = 1;
+    deviceData(0).fanOk = false;
+
+    NVMLGPUProbe probe;
+    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
+    bool asleep = true;
+    NVMLGPUProbeTestAccessor::setAsleep(probe, [&asleep](const PciLocation&) { return asleep; });
+
+    const auto sleeping = probe.enumerateGPUs();
+    ASSERT_EQ(sleeping.size(), 1U);
+    EXPECT_FALSE(sleeping[0].sensorCapabilities.has_value());
+    EXPECT_EQ(fakeState().deviceQueries[0], 3) << "Only its name, UUID and PCI identity are read";
+
+    fakeState().deviceQueries.clear();
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick));
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full));
+
+    asleep = false;
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Quick));
+    EXPECT_EQ(fakeState().deviceQueries[0], 0) << "A rescan asks the power state, not the GPU";
+
+    const auto awake = probe.enumerateGPUs();
+    ASSERT_EQ(awake.size(), 1U);
+    ASSERT_TRUE(awake[0].sensorCapabilities.has_value());
+    EXPECT_TRUE(awake[0].sensorCapabilities.value_or(GPUCapabilities{}).hasTemperature);
+    EXPECT_FALSE(awake[0].sensorCapabilities.value_or(GPUCapabilities{}).hasFanSpeed);
+    EXPECT_EQ(awake[0].id, sleeping[0].id);
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick)) << "Found once: nothing more to report";
+}
+
+// A reading that reports the GPU lost (a driver reset) re-initialises NVML at the next full rescan,
+// not the next sample, and reports the change; the re-enumeration lists the GPUs present now, by
+// their new indices, and a returning GPU keeps its id and the sensor set found before.
+TEST_F(NVMLGPUProbeFakeTest, AGpuLostErrorReinitialisesNVMLAtTheNextFullRescan)
+{
+    fakeState().deviceCount = 1;
+    deviceData(0).uuid = "GPU-aaaa";
+    deviceData(0).pciBus = 0x01;
+    deviceData(0).fanOk = false;
+
+    NVMLGPUProbe probe;
+    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
+    ASSERT_EQ(probe.enumerateGPUs().size(), 1U);
+    ASSERT_EQ(probe.readGPUCounters().size(), 1U);
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full)) << "Nothing lost yet";
+
+    fakeState().lostDevices.insert(0);
+    const auto lost = probe.readGPUCounters();
+    ASSERT_EQ(lost.size(), 1U);
+    EXPECT_FALSE(lost[0].memoryAvailable);
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick)) << "A quick rescan doesn't re-initialise";
+    EXPECT_EQ(fakeState().initCallCount, 0);
+
+    // After the reset the GPU is back as index 1, behind a newly listed one; the fan still can't be read.
+    fakeState().lostDevices.clear();
+    fakeState().deviceCount = 2;
+    fakeState().devices[1] = fakeState().devices[0];
+    fakeState().devices[0] = FakeDeviceData{};
+    deviceData(0).uuid = "GPU-bbbb";
+    deviceData(0).pciBus = 0x41;
+    const int shutdownsBefore = fakeState().shutdownCallCount;
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    EXPECT_EQ(fakeState().initCallCount, 1);
+    EXPECT_EQ(fakeState().shutdownCallCount, shutdownsBefore + 1);
+    EXPECT_TRUE(probe.isAvailable());
+
+    fakeState().deviceQueries.clear();
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 2U);
+    EXPECT_EQ(fakeState().deviceQueries[1], 3) << "The returning GPU's identity is read; its sensors are already known";
+    EXPECT_GT(fakeState().deviceQueries[0], 3) << "The new GPU's sensors are probed";
+    EXPECT_EQ(gpus[0].id, "GPU-bbbb");
+    EXPECT_EQ(gpus[1].id, "GPU-aaaa");
+    EXPECT_EQ(gpus[1].pciLocation.value_or(PciLocation{}).bus, 0x01U);
+    EXPECT_FALSE(gpus[1].sensorCapabilities.value_or(GPUCapabilities{}).hasFanSpeed);
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 2U);
+    EXPECT_TRUE(std::ranges::all_of(counters, [](const GPUCounters& counter) { return counter.memoryAvailable; }));
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full)) << "Lost is cleared by the restart";
+}
+
+// NVML_ERROR_UNINITIALIZED means the same as a lost GPU: the library has to be started again. A
+// re-init that fails reports no change (the GPUs are still there; their readings are gaps) and
+// leaves NVML unavailable, ready to be retried.
+TEST_F(NVMLGPUProbeFakeTest, AFailedReinitialisationReportsNoChange)
+{
+    fakeState().deviceCount = 1;
+    deviceData(0).uuid = "GPU-aaaa";
+
+    NVMLGPUProbe probe;
+    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
+    ASSERT_EQ(probe.enumerateGPUs().size(), 1U);
+    fakeState().deviceCountResult = NVML_ERROR_UNINITIALIZED;
+    EXPECT_TRUE(probe.enumerateGPUs().empty());
+
+    fakeState().initResult = NVML_ERROR_DRIVER_NOT_LOADED;
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full));
+    EXPECT_EQ(fakeState().initCallCount, 1);
+    EXPECT_FALSE(probe.isAvailable());
+    EXPECT_TRUE(probe.isLoaded());
+
+    fakeState().deviceCountResult = NVML_SUCCESS;
+    fakeState().initResult = NVML_SUCCESS;
+    EXPECT_TRUE(probe.restart());
+    EXPECT_EQ(probe.enumerateGPUs().size(), 1U);
 }
 
 // ==========================================================================

@@ -8,6 +8,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -46,6 +47,7 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
     if (m_DXGIProbe)
     {
         auto gpus = m_DXGIProbe->enumerateGPUs();
+        restartNVMLIfNVIDIAAdaptersChanged(gpus);
         std::vector<GPUInfo> nvmlGPUs;
         GPUCapabilities nvmlCaps{};
         m_DXGIToNVMLMap.clear();
@@ -104,6 +106,54 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
     }
 
     return {};
+}
+
+void WindowsGPUProbe::restartNVMLIfNVIDIAAdaptersChanged(const std::vector<GPUInfo>& dxgiGPUs)
+{
+    std::vector<std::string> nvidiaLuids;
+    for (const auto& gpu : dxgiGPUs)
+    {
+        if (gpu.vendor == "NVIDIA")
+        {
+            nvidiaLuids.push_back(gpu.luidId);
+        }
+    }
+    std::ranges::sort(nvidiaLuids);
+    const bool changed = m_NVIDIAAdapterLuids.has_value() && *m_NVIDIAAdapterLuids != nvidiaLuids;
+    m_NVIDIAAdapterLuids = std::move(nvidiaLuids);
+    // NVML lists the GPUs present when it started, so a new NVIDIA adapter is only seen by a restart
+    // (which may wake a sleeping dGPU once, as starting it does) (#1294).
+    if (changed && m_NVMLProbe)
+    {
+        spdlog::info("WindowsGPUProbe: NVIDIA adapters changed; restarting NVML");
+        static_cast<void>(m_NVMLProbe->restart());
+    }
+}
+
+bool WindowsGPUProbe::rescanGPUs(GPURescan depth)
+{
+    // Every probe is rescanned, so no short-circuit: one changing doesn't excuse the other. A DXGI
+    // change means the adapter set did; the re-enumeration it asks for restarts NVML too if the
+    // NVIDIA adapters are among the changes (restartNVMLIfNVIDIAAdaptersChanged()).
+    const bool adaptersChanged = m_DXGIProbe && m_DXGIProbe->rescanGPUs(depth);
+    bool nvmlChanged = false;
+    if (m_NVMLProbe)
+    {
+        // NVML installed and an NVIDIA adapter present, but NVML not running -- it failed to start,
+        // or to restart after a lost GPU (a driver mid-reset, say) -- is tried again at the
+        // full-rescan rate. Without an NVIDIA adapter it never could start; one appearing changes
+        // the adapter set, which restarts NVML anyway.
+        const bool hasNVIDIAAdapter = m_NVIDIAAdapterLuids.has_value() && !m_NVIDIAAdapterLuids->empty();
+        if (depth == GPURescan::Full && !m_NVMLProbe->isAvailable() && m_NVMLProbe->isLoaded() && hasNVIDIAAdapter)
+        {
+            nvmlChanged = m_NVMLProbe->restart();
+        }
+        else
+        {
+            nvmlChanged = m_NVMLProbe->rescanGPUs(depth);
+        }
+    }
+    return adaptersChanged || nvmlChanged;
 }
 
 std::vector<GPUCounters> WindowsGPUProbe::readGPUCounters()

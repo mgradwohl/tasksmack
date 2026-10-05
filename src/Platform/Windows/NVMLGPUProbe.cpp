@@ -143,10 +143,13 @@ void NVMLGPUProbe::unloadNVML()
         FreeLibrary(static_cast<HMODULE>(m_NVMLHandle));
         m_NVMLHandle = nullptr;
     }
+    // The pointers lead into the freed module: clear them, so isLoaded() is false and nothing calls
+    // through one before a reload.
+    m_NVML = NVMLFunctions{};
 }
 
 // NOLINTNEXTLINE(readability-make-member-function-const) - Calls NVML init which has global side effects
-bool NVMLGPUProbe::initializeNVML()
+bool NVMLGPUProbe::initializeNVML(bool quietFailure)
 {
     if (m_NVML.Init == nullptr)
     {
@@ -156,13 +159,16 @@ bool NVMLGPUProbe::initializeNVML()
     nvmlReturn_t result = m_NVML.Init();
     if (result != NVML_SUCCESS)
     {
-        spdlog::warn("NVMLGPUProbe: nvmlInit failed: {}", getNVMLErrorString(result));
+        spdlog::log(
+            quietFailure ? spdlog::level::debug : spdlog::level::warn, "NVMLGPUProbe: nvmlInit failed: {}", getNVMLErrorString(result));
         return false;
     }
 
     // Get driver version
     std::array<char, NVML_SYSTEM_DRIVER_VERSION_BUFFER_SIZE> driverVersion{};
-    result = m_NVML.SystemGetDriverVersion(driverVersion.data(), NVML_SYSTEM_DRIVER_VERSION_BUFFER_SIZE);
+    result = m_NVML.SystemGetDriverVersion == nullptr
+               ? NVML_ERROR_FUNCTION_NOT_FOUND
+               : m_NVML.SystemGetDriverVersion(driverVersion.data(), NVML_SYSTEM_DRIVER_VERSION_BUFFER_SIZE);
     if (result == NVML_SUCCESS)
     {
         spdlog::info("NVMLGPUProbe: Initialized with driver version: {}", driverVersion.data());
@@ -181,12 +187,91 @@ bool NVMLGPUProbe::isDeviceAsleep(uint32_t index) const
     return location != m_DevicePciLocations.end() && m_IsAsleep && m_IsAsleep(location->second);
 }
 
+nvmlReturn_t NVMLGPUProbe::noteResult(nvmlReturn_t result)
+{
+    if (result == NVML_ERROR_GPU_IS_LOST || result == NVML_ERROR_UNINITIALIZED)
+    {
+        if (!m_GPULost)
+        {
+            spdlog::warn("NVMLGPUProbe: NVML reported {}; re-initialising at the next full rescan", getNVMLErrorString(result));
+        }
+        m_GPULost = true;
+    }
+    return result;
+}
+
+bool NVMLGPUProbe::restart()
+{
+    // What each device learnt while it was known, by id: one asleep now can't be asked again (#1265).
+    for (const auto& [index, id] : m_DeviceIds)
+    {
+        Remembered remembered;
+        if (const auto total = m_LastMemoryTotals.find(index); total != m_LastMemoryTotals.end())
+        {
+            remembered.lastMemoryTotalBytes = total->second;
+            remembered.hasMemoryTotal = true;
+        }
+        if (const auto details = m_DeviceDetails.find(index); details != m_DeviceDetails.end())
+        {
+            remembered.driverVersion = details->second.driverVersion;
+            remembered.sensors = details->second.sensors;
+        }
+        m_Remembered.insert_or_assign(id, std::move(remembered));
+    }
+
+    // nvmlShutdown() then nvmlInit() is NVML's supported way to start over; the device handles of
+    // the old session are dropped with it.
+    shutdownNVML();
+    m_GPULost = false;
+    const bool quiet = m_RestartFailures > 0;
+    if (!isLoaded() && !loadNVML())
+    {
+        ++m_RestartFailures;
+        spdlog::log(quiet ? spdlog::level::debug : spdlog::level::info,
+                    "NVMLGPUProbe: NVML re-initialisation failed (nvml.dll not loaded)");
+        return false;
+    }
+    m_Initialized = initializeNVML(quiet);
+    if (!m_Initialized)
+    {
+        ++m_RestartFailures;
+        return false;
+    }
+    m_RestartFailures = 0;
+    spdlog::info("NVMLGPUProbe: NVML re-initialised");
+    return true;
+}
+
+bool NVMLGPUProbe::rescanGPUs(GPURescan depth)
+{
+    // A lost GPU waits for a full rescan rather than re-initialising NVML on the next sample, so one
+    // that stays lost costs a re-init per interval, not per sample.
+    if (depth == GPURescan::Full && m_GPULost)
+    {
+        return restart();
+    }
+    if (!m_Initialized)
+    {
+        return false;
+    }
+    // A GPU asleep when it was enumerated and awake now: enumerate again to find its sensors
+    // (#1294). Asks only the PnP power state, and only for such GPUs.
+    return std::ranges::any_of(m_DeviceIds,
+                               [this](const auto& entry)
+                               {
+                                   const auto details = m_DeviceDetails.find(entry.first);
+                                   const bool sensorsKnown = details != m_DeviceDetails.end() && details->second.sensors.has_value();
+                                   return !sensorsKnown && !isDeviceAsleep(entry.first);
+                               });
+}
+
 void NVMLGPUProbe::shutdownNVML()
 {
     m_DeviceHandles.clear();
     m_DeviceIds.clear();
     m_DevicePciLocations.clear();
     m_LastMemoryTotals.clear();
+    m_DeviceDetails.clear();
 
     if (m_Initialized && m_NVML.Shutdown != nullptr)
     {
@@ -248,7 +333,7 @@ std::vector<GPUInfo> NVMLGPUProbe::enumerateGPUs()
 
     // Get device count
     unsigned int deviceCount = 0;
-    nvmlReturn_t result = m_NVML.DeviceGetCount(&deviceCount);
+    const nvmlReturn_t result = noteResult(m_NVML.DeviceGetCount(&deviceCount));
     if (result != NVML_SUCCESS)
     {
         spdlog::warn("NVMLGPUProbe: DeviceGetCount failed: {}", getNVMLErrorString(result));
@@ -264,92 +349,65 @@ std::vector<GPUInfo> NVMLGPUProbe::enumerateGPUs()
     // Enumerate devices
     for (unsigned int i = 0; i < deviceCount; ++i)
     {
-        nvmlDevice_t device = nullptr;
-        result = m_NVML.DeviceGetHandleByIndex(i, &device);
-        if (result != NVML_SUCCESS || device == nullptr)
+        // A device's identity is read once per NVML session, so a repeat enumeration (GPUModel
+        // re-enumerates whenever rescanGPUs() reports a change) makes no call to a known device,
+        // asleep or not (#1294).
+        if (!m_DeviceIds.contains(i) && !readDeviceIdentity(i))
         {
-            spdlog::warn("NVMLGPUProbe: DeviceGetHandleByIndex({}) failed: {}", i, getNVMLErrorString(result));
             continue;
         }
-
-        // Store device handle for later use
-        m_DeviceHandles[i] = device;
+        auto& details = m_DeviceDetails[i];
 
         GPUInfo info{};
-
-        // Get device name
-        std::array<char, NVML_DEVICE_NAME_BUFFER_SIZE> name{};
-        result = m_NVML.DeviceGetName(device, name.data(), NVML_DEVICE_NAME_BUFFER_SIZE);
-        if (result == NVML_SUCCESS)
-        {
-            info.name = name.data();
-        }
-
-        // Get device UUID (unique identifier)
-        std::array<char, NVML_DEVICE_UUID_BUFFER_SIZE> uuid{};
-        result = m_NVML.DeviceGetUUID(device, uuid.data(), NVML_DEVICE_UUID_BUFFER_SIZE);
-        if (result == NVML_SUCCESS)
-        {
-            info.id = uuid.data();
-        }
-        else
-        {
-            // Fallback to index-based ID
-            info.id = std::format("NVML_GPU{}", i);
-        }
-
-        m_DeviceIds[i] = info.id;
-
+        info.id = m_DeviceIds[i];
+        info.name = details.name;
         // NVML only works with NVIDIA GPUs
         info.vendor = "NVIDIA";
-
         // NVIDIA discrete GPUs (NVML doesn't expose integrated GPUs typically)
         info.isIntegrated = false;
-
         info.deviceIndex = i;
-
         // PCI identity, so the Windows probe can match this device to its DXGI adapter by hardware
         // rather than by name or enumeration order (#1091), and so a sleeping GPU can be left alone
         // (#1265).
-        m_DevicePciLocations.erase(i);
-        if (m_NVML.DeviceGetPciInfo != nullptr)
+        if (const auto location = m_DevicePciLocations.find(i); location != m_DevicePciLocations.end())
         {
-            NVML::nvmlPciInfo_t pci{};
-            if (m_NVML.DeviceGetPciInfo(device, &pci) == NVML_SUCCESS)
-            {
-                info.pciLocation = PciLocation{.bus = pci.bus, .device = pci.device};
-                info.pciDeviceId = pci.pciDeviceId;
-                m_DevicePciLocations[i] = *info.pciLocation;
-            }
+            info.pciLocation = location->second;
         }
-
-        // A sleeping GPU gets no VBIOS read or sensor probe, which could wake it (#1265); its
-        // sensor set is then the probe's (sensorCapabilities unset), as on Linux (#1117).
-        if (isDeviceAsleep(i))
-        {
-            spdlog::debug("NVMLGPUProbe: NVIDIA GPU {} ({}) is asleep; not probing its sensors", i, info.name);
-            gpus.push_back(std::move(info));
-            continue;
-        }
-
-        // Get VBIOS version (driver version)
-        std::array<char, NVML_DEVICE_VBIOS_VERSION_BUFFER_SIZE> vbiosVersion{};
-        result = m_NVML.DeviceGetVbiosVersion(device, vbiosVersion.data(), NVML_DEVICE_VBIOS_VERSION_BUFFER_SIZE);
-        if (result == NVML_SUCCESS)
-        {
-            info.driverVersion = vbiosVersion.data();
-        }
+        info.pciDeviceId = details.pciDeviceId;
 
         // Which sensors this device actually reports: capabilities() covers NVML as a whole, but
         // e.g. a passively cooled card has no fan reading, and a laptop GPU may not report power
-        // (#1040). A read that fails now is treated as unsupported for this device.
-        unsigned int probeValue = 0;
-        GPUCapabilities sensors = capabilities();
-        sensors.hasTemperature = m_NVML.DeviceGetTemperature(device, NVML_TEMPERATURE_GPU, &probeValue) == NVML_SUCCESS;
-        sensors.hasPowerMetrics = m_NVML.DeviceGetPowerUsage(device, &probeValue) == NVML_SUCCESS;
-        sensors.hasClockSpeeds = m_NVML.DeviceGetClockInfo(device, NVML_CLOCK_GRAPHICS, &probeValue) == NVML_SUCCESS;
-        sensors.hasFanSpeed = m_NVML.DeviceGetFanSpeed(device, &probeValue) == NVML_SUCCESS;
-        info.sensorCapabilities = sensors;
+        // (#1040). A read that fails now is treated as unsupported for this device. Found once, the
+        // first time the device is seen awake: a sleeping GPU gets no VBIOS read or sensor probe,
+        // which could wake it (#1265), so until then its sensor set is the probe's
+        // (sensorCapabilities unset), as on Linux (#1117), and rescanGPUs() asks for a
+        // re-enumeration once it wakes (#1294).
+        if (!details.sensors.has_value())
+        {
+            if (isDeviceAsleep(i))
+            {
+                spdlog::debug("NVMLGPUProbe: NVIDIA GPU {} ({}) is asleep; not probing its sensors", i, info.name);
+            }
+            else
+            {
+                nvmlDevice_t device = m_DeviceHandles[i];
+                std::array<char, NVML_DEVICE_VBIOS_VERSION_BUFFER_SIZE> vbiosVersion{};
+                if (m_NVML.DeviceGetVbiosVersion(device, vbiosVersion.data(), NVML_DEVICE_VBIOS_VERSION_BUFFER_SIZE) == NVML_SUCCESS)
+                {
+                    details.driverVersion = vbiosVersion.data();
+                }
+
+                unsigned int probeValue = 0;
+                GPUCapabilities sensors = capabilities();
+                sensors.hasTemperature = m_NVML.DeviceGetTemperature(device, NVML_TEMPERATURE_GPU, &probeValue) == NVML_SUCCESS;
+                sensors.hasPowerMetrics = m_NVML.DeviceGetPowerUsage(device, &probeValue) == NVML_SUCCESS;
+                sensors.hasClockSpeeds = m_NVML.DeviceGetClockInfo(device, NVML_CLOCK_GRAPHICS, &probeValue) == NVML_SUCCESS;
+                sensors.hasFanSpeed = m_NVML.DeviceGetFanSpeed(device, &probeValue) == NVML_SUCCESS;
+                details.sensors = sensors;
+            }
+        }
+        info.driverVersion = details.driverVersion;
+        info.sensorCapabilities = details.sensors;
 
         spdlog::debug("NVMLGPUProbe: Enumerated NVIDIA GPU {}: {}", i, info.name);
 
@@ -358,6 +416,61 @@ std::vector<GPUInfo> NVMLGPUProbe::enumerateGPUs()
 
     spdlog::info("NVMLGPUProbe: Enumerated {} NVIDIA GPU(s)", gpus.size());
     return gpus;
+}
+
+bool NVMLGPUProbe::readDeviceIdentity(uint32_t index)
+{
+    nvmlDevice_t device = nullptr;
+    nvmlReturn_t result = noteResult(m_NVML.DeviceGetHandleByIndex(index, &device));
+    if (result != NVML_SUCCESS || device == nullptr)
+    {
+        spdlog::warn("NVMLGPUProbe: DeviceGetHandleByIndex({}) failed: {}", index, getNVMLErrorString(result));
+        return false;
+    }
+
+    // Store device handle for later use
+    m_DeviceHandles[index] = device;
+    DeviceDetails details;
+
+    // Get device name
+    std::array<char, NVML_DEVICE_NAME_BUFFER_SIZE> name{};
+    if (m_NVML.DeviceGetName(device, name.data(), NVML_DEVICE_NAME_BUFFER_SIZE) == NVML_SUCCESS)
+    {
+        details.name = name.data();
+    }
+
+    // Get device UUID (unique identifier); fall back to an index-based id
+    std::array<char, NVML_DEVICE_UUID_BUFFER_SIZE> uuid{};
+    result = m_NVML.DeviceGetUUID(device, uuid.data(), NVML_DEVICE_UUID_BUFFER_SIZE);
+    std::string id = result == NVML_SUCCESS ? std::string(uuid.data()) : std::format("NVML_GPU{}", index);
+
+    // PCI identity, read once: it matches the device to its DXGI adapter (#1091) and says where to
+    // ask whether it is asleep (#1265).
+    m_DevicePciLocations.erase(index);
+    if (m_NVML.DeviceGetPciInfo != nullptr)
+    {
+        NVML::nvmlPciInfo_t pci{};
+        if (m_NVML.DeviceGetPciInfo(device, &pci) == NVML_SUCCESS)
+        {
+            m_DevicePciLocations[index] = PciLocation{.bus = pci.bus, .device = pci.device};
+            details.pciDeviceId = pci.pciDeviceId;
+        }
+    }
+
+    // A device known before an NVML restart keeps what was found for it then (#1294).
+    if (const auto remembered = m_Remembered.find(id); remembered != m_Remembered.end())
+    {
+        details.driverVersion = remembered->second.driverVersion;
+        details.sensors = remembered->second.sensors;
+        if (remembered->second.hasMemoryTotal)
+        {
+            m_LastMemoryTotals[index] = remembered->second.lastMemoryTotalBytes;
+        }
+        m_Remembered.erase(remembered);
+    }
+    m_DeviceIds[index] = std::move(id);
+    m_DeviceDetails[index] = std::move(details);
+    return true;
 }
 
 std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
@@ -407,7 +520,7 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
 
         // Memory info (raw counters only)
         nvmlMemory_t memInfo{};
-        result = m_NVML.DeviceGetMemoryInfo(device, &memInfo);
+        result = noteResult(m_NVML.DeviceGetMemoryInfo(device, &memInfo));
         if (result == NVML_SUCCESS)
         {
             counter.memoryUsedBytes = memInfo.used;
@@ -421,7 +534,7 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
 
         // Temperature (GPU die)
         unsigned int temp = 0;
-        result = m_NVML.DeviceGetTemperature(device, NVML_TEMPERATURE_GPU, &temp);
+        result = noteResult(m_NVML.DeviceGetTemperature(device, NVML_TEMPERATURE_GPU, &temp));
         if (result == NVML_SUCCESS)
         {
             counter.temperatureC = static_cast<int32_t>(temp);
@@ -433,7 +546,7 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
 
         // Power usage (milliwatts) - raw counter only
         unsigned int powerMilliwatts = 0;
-        result = m_NVML.DeviceGetPowerUsage(device, &powerMilliwatts);
+        result = noteResult(m_NVML.DeviceGetPowerUsage(device, &powerMilliwatts));
         if (result == NVML_SUCCESS)
         {
             counter.powerDrawWatts = static_cast<double>(powerMilliwatts) / 1000.0;
@@ -445,7 +558,7 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
 
         // Power limit (milliwatts) - raw counter only
         unsigned int powerLimitMilliwatts = 0;
-        result = m_NVML.DeviceGetPowerManagementLimit(device, &powerLimitMilliwatts);
+        result = noteResult(m_NVML.DeviceGetPowerManagementLimit(device, &powerLimitMilliwatts));
         if (result == NVML_SUCCESS)
         {
             counter.powerLimitWatts = static_cast<double>(powerLimitMilliwatts) / 1000.0;
@@ -453,7 +566,7 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
 
         // GPU clock (MHz)
         unsigned int gpuClock = 0;
-        result = m_NVML.DeviceGetClockInfo(device, NVML_CLOCK_GRAPHICS, &gpuClock);
+        result = noteResult(m_NVML.DeviceGetClockInfo(device, NVML_CLOCK_GRAPHICS, &gpuClock));
         if (result == NVML_SUCCESS)
         {
             counter.gpuClockMHz = gpuClock;
@@ -465,7 +578,7 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
 
         // Memory clock (MHz)
         unsigned int memClock = 0;
-        result = m_NVML.DeviceGetClockInfo(device, NVML_CLOCK_MEM, &memClock);
+        result = noteResult(m_NVML.DeviceGetClockInfo(device, NVML_CLOCK_MEM, &memClock));
         if (result == NVML_SUCCESS)
         {
             counter.memoryClockMHz = memClock;
@@ -473,7 +586,7 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
 
         // GPU utilization
         nvmlUtilization_t util{};
-        result = m_NVML.DeviceGetUtilizationRates(device, &util);
+        result = noteResult(m_NVML.DeviceGetUtilizationRates(device, &util));
         if (result == NVML_SUCCESS)
         {
             counter.utilizationPercent = static_cast<double>(util.gpu);
@@ -486,7 +599,7 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
         // Fan speed: NVML returns percentage 0-100 directly, so the max is always 100 (see
         // GPUCounters::fanSpeedRaw/fanSpeedMaxRaw; Domain computes the percent).
         unsigned int fanSpeed = 0;
-        result = m_NVML.DeviceGetFanSpeed(device, &fanSpeed);
+        result = noteResult(m_NVML.DeviceGetFanSpeed(device, &fanSpeed));
         if (result == NVML_SUCCESS)
         {
             counter.fanSpeedRaw = fanSpeed;

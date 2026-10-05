@@ -10,6 +10,7 @@
 #include <spdlog/spdlog.h>
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -31,7 +32,6 @@
 #pragma clang diagnostic pop
 // clang-format on
 
-#include <cstring>
 #include <format>
 #include <optional>
 
@@ -50,16 +50,66 @@ using DXCoreCreateAdapterFactoryFn = HRESULT(WINAPI*)(REFIID, void**);
     return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(luidHighPart)) << 32U) | luidLowPart;
 }
 
+/// A DXGI factory from CreateDXGIFactory1(), or null if it can't be created.
+[[nodiscard]] ComPtr<IDXGIFactory1> createSystemDXGIFactory()
+{
+    ComPtr<IDXGIFactory1> factory;
+    // __uuidof is a Microsoft extension, suppress warning
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wlanguage-extension-token"
+    const HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(factory.releaseAndGetAddressOf()));
+#pragma clang diagnostic pop
+    if (FAILED(hr))
+    {
+        spdlog::debug("DXGIGPUProbe: CreateDXGIFactory1 failed (HRESULT: 0x{:08X})", static_cast<uint32_t>(hr));
+        return {};
+    }
+    return factory;
+}
+
 } // namespace
 
 // DXCore says whether an adapter is integrated (#1263); load it from System32 only, like nvml.dll.
 DXGIGPUProbe::DXGIGPUProbe()
-    : m_Initialized(initialize()), m_DXCoreModule(LoadLibraryExW(L"dxcore.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32))
+    : m_CreateFactory(createSystemDXGIFactory),
+      m_D3DKMT(std::make_unique<D3DKMTAdapterFunctions>()),
+      m_Initialized(initialize()),
+      m_DXCoreModule(LoadLibraryExW(L"dxcore.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32))
 {
     if (m_DXCoreModule == nullptr)
     {
         spdlog::debug("DXGIGPUProbe: dxcore.dll not available; classifying adapters by their descriptor");
         return;
+    }
+    if (!createDXCoreFactory())
+    {
+        spdlog::debug("DXGIGPUProbe: DXCore adapter factory unavailable; classifying adapters by their descriptor");
+        unloadDXCore();
+    }
+}
+
+DXGIGPUProbe::~DXGIGPUProbe()
+{
+    unloadDXCore();
+}
+
+void DXGIGPUProbe::unloadDXCore()
+{
+    // The factory's code lives in dxcore.dll: release it before unloading the module.
+    m_DXCoreFactory.reset();
+    if (m_DXCoreModule != nullptr)
+    {
+        FreeLibrary(static_cast<HMODULE>(m_DXCoreModule));
+        m_DXCoreModule = nullptr;
+    }
+}
+
+bool DXGIGPUProbe::createDXCoreFactory()
+{
+    m_DXCoreFactory.reset();
+    if (m_DXCoreModule == nullptr)
+    {
+        return false;
     }
     const auto createFactory =
         Windows::getProcAddress<DXCoreCreateAdapterFactoryFn>(static_cast<HMODULE>(m_DXCoreModule), "DXCoreCreateAdapterFactory");
@@ -72,38 +122,58 @@ DXGIGPUProbe::DXGIGPUProbe()
 #pragma clang diagnostic pop
     if (!created)
     {
-        spdlog::debug("DXGIGPUProbe: DXCore adapter factory unavailable; classifying adapters by their descriptor");
         m_DXCoreFactory.reset();
-        FreeLibrary(static_cast<HMODULE>(m_DXCoreModule));
-        m_DXCoreModule = nullptr;
     }
-}
-
-DXGIGPUProbe::~DXGIGPUProbe()
-{
-    // The factory's code lives in dxcore.dll: release it before unloading the module.
-    m_DXCoreFactory.reset();
-    if (m_DXCoreModule != nullptr)
-    {
-        FreeLibrary(static_cast<HMODULE>(m_DXCoreModule));
-    }
+    return created;
 }
 
 bool DXGIGPUProbe::initialize()
 {
     // Create DXGI factory for GPU enumeration
-    // __uuidof is a Microsoft extension, suppress warning
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wlanguage-extension-token"
-    HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(m_Factory.releaseAndGetAddressOf()));
-#pragma clang diagnostic pop
-    if (FAILED(hr) || !m_Factory)
+    m_Factory = m_CreateFactory ? m_CreateFactory() : ComPtr<IDXGIFactory1>{};
+    if (!m_Factory)
     {
-        spdlog::warn("DXGIGPUProbe: Failed to create DXGI factory (HRESULT: 0x{:08X})", static_cast<uint32_t>(hr));
+        spdlog::warn("DXGIGPUProbe: Failed to create DXGI factory");
         return false;
     }
 
     spdlog::debug("DXGIGPUProbe: Successfully initialized");
+    return true;
+}
+
+bool DXGIGPUProbe::rescanGPUs(GPURescan depth)
+{
+    // DXGI adapters don't sleep, so a quick rescan has nothing to find.
+    if (depth != GPURescan::Full)
+    {
+        return false;
+    }
+    // A factory lists the adapters present when it was made; IsCurrent() turns false once one is
+    // added or removed, or a driver is updated or reset (#1294).
+    if (m_Factory && m_Factory->IsCurrent() != FALSE)
+    {
+        return false;
+    }
+    auto factory = m_CreateFactory ? m_CreateFactory() : ComPtr<IDXGIFactory1>{};
+    if (!factory)
+    {
+        // Keep the factory we had: the adapters it lists are better than none. Retried next time.
+        spdlog::debug("DXGIGPUProbe: Could not create a new DXGI factory; retrying at the next full rescan");
+        return false;
+    }
+    spdlog::info("DXGIGPUProbe: {}; re-enumerating adapters",
+                 m_Factory ? "The adapter set changed (DXGI factory no longer current)" : "DXGI factory created");
+    m_Factory = std::move(factory);
+    m_Initialized = true;
+    // A driver update or reset brings an adapter back under a new LUID, and a LUID can be reused, so
+    // what was decided per LUID is decided again as adapters are seen (#1251, #1263). DXCore's
+    // factory is made afresh alongside, so it knows the new adapters too.
+    m_ListedByLuid.clear();
+    m_IntegratedByLuid.clear();
+    if (m_DXCoreModule != nullptr && !createDXCoreFactory())
+    {
+        spdlog::debug("DXGIGPUProbe: DXCore adapter factory unavailable; classifying adapters by their descriptor");
+    }
     return true;
 }
 
@@ -163,7 +233,7 @@ bool DXGIGPUProbe::isListedAdapter(std::uint32_t flags, std::int32_t luidHighPar
     if (!softwareFlag)
     {
         const LUID luid{.LowPart = luidLowPart, .HighPart = luidHighPart};
-        if (const auto kind = adapterKind(luid))
+        if (const auto kind = adapterKind(luid, *m_D3DKMT))
         {
             typeBits = adapterTypeBits(*kind);
         }
@@ -240,7 +310,7 @@ std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
 
                 // PCI identity, in NVML's pciDeviceId encoding, for matching to NVML (#1091)
                 info.pciDeviceId = (static_cast<std::uint32_t>(desc.DeviceId) << 16U) | (desc.VendorId & 0xFFFFU);
-                info.pciLocation = adapterPciLocation(desc.AdapterLuid);
+                info.pciLocation = adapterPciLocation(desc.AdapterLuid, *m_D3DKMT);
 
                 spdlog::debug("DXGIGPUProbe: Enumerated GPU {}: {} ({}) - LUID: {}, PCI: {}, Integrated: {}",
                               adapterIndex,
