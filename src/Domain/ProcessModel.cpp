@@ -450,6 +450,9 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     // once per refresh -- not per UI frame, #1172). Checked again under the lock below, in case the
     // watch changed in between.
     const std::int32_t watchedPid = m_WatchedPid.load(std::memory_order_acquire);
+    // MSVC STL false positive: the analyzer loses track of make_shared's control block (shared_ptr's
+    // _Rep) returned by copyProcess() and reports a leak; ownership is a plain shared_ptr.
+    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
     std::shared_ptr<const ProcessSnapshot> watchedSnapshot = (watchedPid > 0) ? copyProcess(*newSnapshotsPublication, watchedPid) : nullptr;
 
     // Holds the outgoing generation so its destruction (freeing however many hundred
@@ -589,6 +592,7 @@ void ProcessModel::watchProcess(std::int32_t pid)
 
     // The process as the current generation lists it, copied outside the lock. A publish landing
     // in between has already recorded a newer sample, which supersedes this one.
+    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks) - MSVC STL false positive, see computeSnapshotsLocked()
     auto seed = copyProcess(*current, watched);
     std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     if (m_WatchedPid.load(std::memory_order_relaxed) == watched && m_WatchedSampleCount == 0)

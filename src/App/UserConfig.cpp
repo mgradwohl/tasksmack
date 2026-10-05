@@ -13,7 +13,6 @@
 #include <spdlog/spdlog.h>
 #include <toml++/toml.hpp>
 
-#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -26,7 +25,6 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
-#include <vector>
 
 #ifdef _WIN32
 // clang-format off
@@ -44,6 +42,8 @@
 // clang-format on
 #else
 #include <array>
+#include <cerrno>
+#include <vector>
 
 #include <fcntl.h>
 #include <pwd.h>

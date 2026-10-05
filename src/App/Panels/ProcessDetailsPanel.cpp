@@ -138,7 +138,6 @@ using Detail::NICE_MIN;
 using Detail::NICE_RANGE;
 using Detail::PRIORITY_APPLY_BUTTON_MIN_EM;
 using Detail::PRIORITY_GRADIENT_SEGMENTS;
-using Detail::PRIORITY_LABEL_PADDING_EM;
 
 // Constructor (inside App namespace)
 ProcessDetailsPanel::ProcessDetailsPanel() : ProcessDetailsPanel(Platform::makeProcessActions())
@@ -2631,7 +2630,7 @@ void ProcessDetailsPanel::renderPrioritySection()
     // ========================================
 
     // Calculate "High" label width for offsetting the slider
-    const float labelPadding = PRIORITY_LABEL_PADDING_EM * emPx;
+    const float labelPadding = Detail::PRIORITY_LABEL_PADDING_EM * emPx;
     const ImVec2 highLabelSize = ImGui::CalcTextSize("High");
     const float highLabelOffset = highLabelSize.x + labelPadding;
 
