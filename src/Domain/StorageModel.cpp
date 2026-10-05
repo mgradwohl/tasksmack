@@ -29,11 +29,14 @@ namespace Domain
 namespace
 {
 /// A system-wide rate for the history: NaN when no disk had measured rates in that sample (the
-/// seed transition), so the chart shows a gap rather than a false 0 B/s (#1102).
+/// seed transition), so the chart shows a gap rather than a false 0 B/s (#1102), and when any disk's
+/// sample was thrown out as a counter glitch (#1291), whose missing share would otherwise plot a
+/// false dip in the Total.
 [[nodiscard]] double totalRateOrNaN(const StorageSnapshot& snapshot, double StorageSnapshot::* total)
 {
     const bool anyRates = std::ranges::any_of(snapshot.disks, &DiskSnapshot::hasRates);
-    return anyRates ? snapshot.*total : std::numeric_limits<double>::quiet_NaN();
+    const bool anyRejected = std::ranges::any_of(snapshot.disks, &DiskSnapshot::ratesRejected);
+    return (anyRates && !anyRejected) ? snapshot.*total : std::numeric_limits<double>::quiet_NaN();
 }
 } // namespace
 
@@ -319,7 +322,8 @@ StorageModel::computeDiskSnapshot(const Platform::DiskCounters& current, DiskSta
     {
         // A counter glitch (a reinitialised or re-registered device counter), not I/O: the sample
         // has no rates, so it reads 0 and its history records a gap instead of a spike that would
-        // blow out the chart's scale (#1291).
+        // blow out the chart's scale (#1291). Flagged so the system Total is a gap too.
+        snap.ratesRejected = true;
         return snap;
     }
     snap.hasRates = true;
