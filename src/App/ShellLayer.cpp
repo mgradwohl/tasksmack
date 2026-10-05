@@ -14,6 +14,7 @@
 #include "TitleBarGeometry.h"
 #include "TitleBarLayer.h"
 #include "UI/DpiScale.h"
+#include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/RenderMetrics.h"
 #include "UI/Theme.h"
@@ -226,7 +227,9 @@ void ShellLayer::onUpdate(float deltaTime)
         Core::Application::get().raiseEvent(evt);
     }
 
-    m_FpsCounter.update(deltaTime);
+    // The frame's real duration, not deltaTime: deltaTime is capped at 0.1 s for animation, which made a
+    // 6.7 FPS stall read "10.0 FPS (100.00 ms)" (#1152).
+    m_FpsCounter.update(UI::Format::toFloatNarrow(Core::Application::get().lastFrameIntervalSeconds()));
 
     // With native decorations, follow a display-scale change (#943), or a move to another display,
     // whose usable bounds the minimum is capped to (#1207). Not with the borderless title bar:
