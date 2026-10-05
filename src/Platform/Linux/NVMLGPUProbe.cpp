@@ -672,7 +672,11 @@ bool NVMLGPUProbe::rescanGPUs(GPURescan depth)
             }
             spdlog::info("NVMLGPUProbe: {}; re-initialising NVML", reason);
             m_Impl->restartNVML();
-            return true;
+            // Report a change only if the restart worked, or if no NVIDIA-driver GPU is left (an empty
+            // list is then the truth). A transient failure with the GPUs still present reports no
+            // change, so GPUModel keeps the known GPU list -- their readings are gaps meanwhile -- and
+            // the next full rescan retries, instead of publishing an empty list.
+            return isAvailable() || !PciDisplayDevices::anyBoundTo(m_Impl->pciDevicesSeen, PciDisplayDevices::DRIVER_NVIDIA);
         }
     }
 

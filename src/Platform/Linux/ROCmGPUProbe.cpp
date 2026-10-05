@@ -752,7 +752,9 @@ bool ROCmGPUProbe::rescanGPUs(GPURescan depth)
         {
             spdlog::info("ROCmGPUProbe: {}; re-initialising ROCm SMI", pciChanged ? "AMD PCI devices changed" : "ROCm SMI needs a re-init");
             m_Impl->restartROCmSMI();
-            return true;
+            // As NVML: a change only if the restart worked or no amdgpu GPU is left; a transient failure
+            // keeps GPUModel's known list (readings are gaps) and the next full rescan retries.
+            return isAvailable() || !PciDisplayDevices::anyBoundTo(m_Impl->pciDevicesSeen, PciDisplayDevices::DRIVER_AMDGPU);
         }
     }
 

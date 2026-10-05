@@ -1144,6 +1144,39 @@ TEST(LinuxNVMLGPUProbeTest, AGpuAsleepThroughARestartKeepsItsSensors)
     EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick)); // nothing left to find
 }
 
+// #1295 review: a restart that fails while the NVIDIA GPUs are still there reports no change, so
+// GPUModel keeps the known GPU list (instead of publishing an empty one) and the next full rescan
+// retries. The restart that works then reports the change.
+TEST(LinuxNVMLGPUProbeTest, AFailedRestartWithTheGpusStillPresentReportsNoChange)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const NvmlMockControls controls;
+    ASSERT_TRUE(controls.controlsInit());
+    ASSERT_TRUE(controls.controlsDeviceSet());
+    const TestSupport::ScopedTempDir pciRoot("tasksmack_nvml_failed_restart");
+    makePciDevice(pciRoot.path, "0000:01:00.0", "0x10de", "nvidia");
+    makePciDevice(pciRoot.path, "0000:41:00.0", "0x10de", "nvidia");
+
+    NVMLGPUProbe probe(pciRoot.path.string());
+    ASSERT_TRUE(probe.isAvailable());
+    ASSERT_EQ(probe.enumerateGPUs().size(), 2U);
+
+    controls.setLostDevice(1);
+    [[maybe_unused]] const auto lost = probe.readGPUCounters(); // reports the GPU lost
+    controls.failInits(1);
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full)); // restart failed, GPUs still bound: keep the list
+    EXPECT_FALSE(probe.isAvailable());
+
+    controls.setLostDevice(NvmlMockControls::NO_FAILING_HANDLE);
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Full)); // retried and started: publish
+    EXPECT_TRUE(probe.isAvailable());
+    EXPECT_EQ(probe.enumerateGPUs().size(), 2U);
+}
+
 // #1295 review: NVML failing to start while an nvidia-bound GPU is present (TaskSmack started during
 // a driver reload) is retried at each full rescan -- not every sample -- until it starts; the rescan
 // that brings it up reports a change, so the GPUs are enumerated.
@@ -1168,7 +1201,7 @@ TEST(LinuxNVMLGPUProbeTest, NvmlNotStartingWithAnNvidiaGpuPresentIsRetriedAtFull
     EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick)); // waits for the full rescan
     EXPECT_EQ(controls.initCalls(), initsBefore + 1);
 
-    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Full)); // still not ready
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full)); // still not ready: no change reported, nothing to publish
     EXPECT_EQ(controls.initCalls(), initsBefore + 2);
     EXPECT_FALSE(probe.isAvailable());
 

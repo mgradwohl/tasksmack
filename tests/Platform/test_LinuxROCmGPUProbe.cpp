@@ -673,6 +673,37 @@ TEST(LinuxROCmGPUProbeTest, AHotPluggedGpuIsFoundOnTheNextFullRescan)
     EXPECT_EQ(probe.readGPUCounters().size(), 3U);
 }
 
+// #1295 review: a restart that fails while an amdgpu GPU is still bound reports no change, so
+// GPUModel keeps the known GPU list rather than publishing an empty one; the next full rescan retries,
+// and the restart that works reports the change.
+TEST(LinuxROCmGPUProbeTest, AFailedRestartWithTheGpusStillPresentReportsNoChange)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const RocmMockControls controls;
+    ASSERT_TRUE(controls.available());
+    const TestSupport::ScopedTempDir pciRoot("tasksmack_rocm_failed_restart");
+    makeAmdPciDevice(pciRoot.path, "0000:23:05.1");
+    controls.setDeviceCount(2);
+
+    ROCmGPUProbe probe(pciRoot.path.string());
+    ASSERT_TRUE(probe.isAvailable());
+    ASSERT_EQ(probe.enumerateGPUs().size(), 2U);
+
+    makeAmdPciDevice(pciRoot.path, "0000:c1:00.0"); // a hot-plug triggers a restart...
+    controls.setDeviceCount(3);
+    controls.failInits(1);                           // ...which fails once
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full)); // GPUs still bound: keep the known list
+    EXPECT_FALSE(probe.isAvailable());
+
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Full)); // retried and started: publish
+    EXPECT_TRUE(probe.isAvailable());
+    EXPECT_EQ(probe.enumerateGPUs().size(), 3U);
+}
+
 // #1116: a read failing with RSMI_STATUS_INIT_ERROR gets ROCm SMI re-initialised at the next full
 // rescan, not on every sample.
 TEST(LinuxROCmGPUProbeTest, AnInitErrorReinitialisesOnTheNextFullRescan)
@@ -804,7 +835,7 @@ TEST(LinuxROCmGPUProbeTest, RocmNotStartingWithAnAmdGpuPresentIsRetriedAtFullRes
     EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick)); // waits for the full rescan
     EXPECT_EQ(controls.initCalls(), initsBefore + 1);
 
-    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Full)); // still not ready
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full)); // still not ready: no change reported, nothing to publish
     EXPECT_EQ(controls.initCalls(), initsBefore + 2);
     EXPECT_FALSE(probe.isAvailable());
 
