@@ -75,6 +75,13 @@ class LinuxProcessProbe : public IProcessProbe
     {
         m_InodeMapEarlyRebuildInterval = interval;
     }
+
+    /// Test seam: called before each /proc/*/fd scan that rebuilds the inode-to-PID map, so a test can
+    /// count the scans. Not thread-safe; set it before sampling starts.
+    void setInodeMapScanHookForTesting(std::function<void()> hook)
+    {
+        m_InodeMapScanHook = std::move(hook);
+    }
 #endif
 
     /// Test seam: called at the end of enumerate(), after it captured the CPU total, so a test can
@@ -131,6 +138,12 @@ class LinuxProcessProbe : public IProcessProbe
     // When the scan behind m_InodeToPidCache started: a socket first seen unowned after this may have
     // been opened since, so readSocketTraffic() rebuilds the map early to attribute it (#1259).
     mutable std::chrono::steady_clock::time_point m_InodeToPidBuiltAt;
+    // When the last rebuild was claimed, successful or not. No rebuild -- TTL, early, or the quick
+    // retry after an empty scan -- starts within m_InodeMapEarlyRebuildInterval of it, so a /proc
+    // whose scans keep coming back empty (every socket held by a process we can't read) is still
+    // scanned at most once per interval.
+    mutable std::chrono::steady_clock::time_point m_InodeToPidLastAttempt;
+    std::function<void()> m_InodeMapScanHook; // See setInodeMapScanHookForTesting()
     std::chrono::milliseconds m_InodeMapEarlyRebuildInterval{Domain::Sampling::INODE_PID_CACHE_EARLY_REBUILD_MS};
 
     // Sockets the last reading couldn't attribute, each with the sampledAt of the reading it was

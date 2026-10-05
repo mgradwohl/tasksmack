@@ -1047,6 +1047,56 @@ TEST(LinuxProcessProbeTest, ANewSocketIsAttributedInTheReadingItFirstAppearsIn)
     EXPECT_EQ(ownerOf(third, 12), 4242) << "a new socket is attributed in the reading it first appears in";
     EXPECT_EQ(ownerOf(third, 99), 4242);
 }
+
+TEST(LinuxProcessProbeTest, AnEmptyInodeMapIsRescannedAtMostOncePerEarlyInterval)
+{
+    // #1327 review: when every visible socket belongs to a process we can't read, each scan comes
+    // back empty. The empty-scan path backdated the cache time for a quick retry, which also let the
+    // early rebuild for those (still unowned) sockets through: two /proc/*/fd scans per reading.
+    // The last attempt is now tracked separately and gates every rebuild.
+    ScopedTempDir proc("ts_test_proc_net_empty_map");
+    writeFile(proc.path / "4343" / "stat",
+              "4343 (app) S 1 4343 4343 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+    writeFile(proc.path / "stat", "cpu  100 0 100 800 0 0 0 0 0 0\n");
+    writeFile(proc.path / "4343" / "fd", "not a directory"); // its fds can't be read
+
+    using Platform::TestSupport::FakeSocket;
+    using Platform::TestSupport::ScriptedNetlinkTransport;
+    const std::vector<FakeSocket> current{{.inode = 99, .bytesReceived = 7}};
+    auto transport = std::make_unique<ScriptedNetlinkTransport>();
+    auto* script = transport.get();
+    auto stats = std::make_shared<Platform::NetlinkSocketStats>(std::move(transport), std::chrono::milliseconds{0});
+    script->onRequest = [&](const ScriptedNetlinkTransport::Request& request) -> ScriptedNetlinkTransport::Reply
+    {
+        return Platform::TestSupport::completeDump(request, request.family == AF_INET ? current : std::vector<FakeSocket>{});
+    };
+
+    constexpr auto EARLY_INTERVAL = std::chrono::milliseconds{500};
+    LinuxProcessProbe probe(proc.path);
+    probe.setSocketStatsForTesting(stats);
+    probe.setInodeMapEarlyRebuildIntervalForTesting(EARLY_INTERVAL);
+    int scans = 0;
+    probe.setInodeMapScanHookForTesting([&scans] { ++scans; });
+    ASSERT_TRUE(probe.capabilities().hasNetworkCounters);
+
+    const auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < 3; ++i)
+    {
+        const auto traffic = probe.readSocketTraffic();
+        ASSERT_EQ(traffic.sockets.size(), 1U);
+        EXPECT_EQ(traffic.sockets[0].pid, 0);
+    }
+    if (std::chrono::steady_clock::now() - start >= EARLY_INTERVAL)
+    {
+        GTEST_SKIP() << "the readings took longer than the early interval";
+    }
+    EXPECT_EQ(scans, 1) << "one scan for three readings within the early interval";
+
+    std::this_thread::sleep_for(EARLY_INTERVAL + std::chrono::milliseconds{100});
+    (void) probe.readSocketTraffic();
+    EXPECT_EQ(scans, 2) << "once the interval has passed, one more scan -- not a retry plus an early rebuild";
+}
 #endif
 
 TEST(LinuxProcessProbeTest, EmptyProcDirReturnsNoProcesses)

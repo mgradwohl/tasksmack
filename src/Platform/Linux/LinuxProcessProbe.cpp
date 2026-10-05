@@ -1185,12 +1185,16 @@ LinuxProcessProbe::InodeToPidSnapshot LinuxProcessProbe::currentInodeToPidMap(st
     {
         const std::scoped_lock lock{m_InodePidCacheMutex};
         const auto now = std::chrono::steady_clock::now();
-        needsRebuild = (now - m_InodeToPidCacheTime) >= maxAge;
+        // However the map got stale, never scan more often than the early-rebuild interval: an empty
+        // scan backdates m_InodeToPidCacheTime for a quick retry, and that retry must not combine
+        // with an early rebuild into two scans per reading.
+        needsRebuild = (now - m_InodeToPidCacheTime) >= maxAge && (now - m_InodeToPidLastAttempt) >= m_InodeMapEarlyRebuildInterval;
         if (needsRebuild)
         {
-            // Claim the rebuild slot: advance the timestamp now so any other thread that
+            // Claim the rebuild slot: advance the timestamps now so any other thread that
             // checks while we are scanning /proc sees a fresh time and skips rebuilding.
             m_InodeToPidCacheTime = now;
+            m_InodeToPidLastAttempt = now;
             scanStart = now;
         }
         snapshot = {.map = m_InodeToPidCache, .builtAt = m_InodeToPidBuiltAt}; // current (possibly stale) snapshot
@@ -1198,6 +1202,10 @@ LinuxProcessProbe::InodeToPidSnapshot LinuxProcessProbe::currentInodeToPidMap(st
     if (needsRebuild)
     {
         // Build the map outside the lock; concurrent threads keep using the old snapshot.
+        if (m_InodeMapScanHook)
+        {
+            m_InodeMapScanHook();
+        }
         auto rebuilt = std::make_shared<const InodeToPidMap>(buildInodeToPidMap(m_ProcRoot));
         {
             const std::scoped_lock lock{m_InodePidCacheMutex};
@@ -1211,7 +1219,8 @@ LinuxProcessProbe::InodeToPidSnapshot LinuxProcessProbe::currentInodeToPidMap(st
             else
             {
                 // Preserve the previous snapshot when procfs enumeration transiently
-                // produces no entries; allow a quick retry instead of waiting the full TTL.
+                // produces no entries; allow a quick retry instead of waiting the full TTL
+                // (still no sooner than m_InodeMapEarlyRebuildInterval after this attempt).
                 constexpr auto EMPTY_REBUILD_RETRY_MS = std::chrono::milliseconds{100};
                 const auto ttl = std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_TTL_MS};
                 const auto retryDelay = std::min(EMPTY_REBUILD_RETRY_MS, ttl);
