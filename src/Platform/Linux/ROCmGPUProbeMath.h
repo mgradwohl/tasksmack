@@ -4,6 +4,8 @@
 // unit-tested directly, without going through dlopen()/the ROCm SMI mock library. See
 // CONTRIBUTING.md's "extract the pure decision logic into a small header" pattern.
 
+#include "Platform/Linux/PciRuntimePm.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -179,6 +181,23 @@ using DeviceIdLookupFn = std::uint32_t (*)(std::uint32_t, std::uint64_t*);
     }
 
     return "amd_" + std::to_string(deviceIdx);
+}
+
+/// The sysfs name ("0000:03:00.0") of the PCI device whose rsmi_dev_pci_id_get() BDF id is `bdfId`,
+/// for its power/runtime_status (#1117). ROCm SMI packs it as
+/// (domain << 32) | (bus << 8) | (device << 3) | function.
+[[nodiscard]] inline std::string sysfsPciAddress(std::uint64_t bdfId)
+{
+    constexpr unsigned DOMAIN_SHIFT = 32U;
+    constexpr unsigned BUS_SHIFT = 8U;
+    constexpr unsigned DEVICE_SHIFT = 3U;
+    constexpr std::uint64_t BUS_MASK = 0xFFU;
+    constexpr std::uint64_t DEVICE_MASK = 0x1FU;
+    constexpr std::uint64_t FUNCTION_MASK = 0x7U;
+    return PciRuntimePm::pciAddress(static_cast<std::uint32_t>(bdfId >> DOMAIN_SHIFT),
+                                    static_cast<std::uint32_t>((bdfId >> BUS_SHIFT) & BUS_MASK),
+                                    static_cast<std::uint32_t>((bdfId >> DEVICE_SHIFT) & DEVICE_MASK),
+                                    static_cast<std::uint32_t>(bdfId & FUNCTION_MASK));
 }
 
 } // namespace Platform::ROCmGPUProbeMath

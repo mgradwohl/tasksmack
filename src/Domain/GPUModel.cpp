@@ -438,6 +438,7 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
     snapshot.powerAvailable = current.powerAvailable;
     snapshot.gpuClockAvailable = current.gpuClockAvailable;
     snapshot.memoryAvailable = current.memoryAvailable;
+    snapshot.suspended = current.suspended;
     snapshot.utilizationPercent = current.utilizationPercent;
     snapshot.memoryUsedBytes = current.memoryUsedBytes;
     snapshot.memoryTotalBytes = current.memoryTotalBytes;

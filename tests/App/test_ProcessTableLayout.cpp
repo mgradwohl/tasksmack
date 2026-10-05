@@ -183,5 +183,34 @@ TEST(ProcessTableLayoutTest, FilterWidthSurvivesDegenerateInput)
     }
 }
 
+// ========== Toolbar minimum width (#1207) ==========
+
+using ProcessTableLayout::computeToolbarMinimumWidth;
+
+// Room for the wanted filter box beside the rest: that is the minimum.
+TEST(ProcessTableLayoutTest, ToolbarMinimumHoldsTheBoxBesideTheRest)
+{
+    // 200px box + 450px of count and buttons; half of 650 already exceeds the hint's 103px.
+    EXPECT_FLOAT_EQ(computeToolbarMinimumWidth(200.0F, 103.0F, 450.0F), 650.0F);
+    // The box at that width really is uncapped: half the row is more than it wants.
+    EXPECT_GE(650.0F * 0.5F, 200.0F);
+}
+
+// A big font's wanted box (18.75 em) is wider than the rest: the box is capped to half the row, so
+// twice the rest is enough.
+TEST(ProcessTableLayoutTest, ToolbarMinimumLetsAWideBoxShrinkToHalfTheRow)
+{
+    EXPECT_FLOAT_EQ(computeToolbarMinimumWidth(700.0F, 300.0F, 320.0F), 640.0F);
+    // ...but never below twice the hint, or half the row could not show it.
+    EXPECT_FLOAT_EQ(computeToolbarMinimumWidth(700.0F, 350.0F, 320.0F), 700.0F);
+}
+
+TEST(ProcessTableLayoutTest, ToolbarMinimumSurvivesDegenerateInput)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FLOAT_EQ(computeToolbarMinimumWidth(nan, -1.0F, nan), 0.0F);
+    EXPECT_FLOAT_EQ(computeToolbarMinimumWidth(200.0F, 100.0F, -5.0F), 200.0F);
+}
+
 } // namespace
 } // namespace App
