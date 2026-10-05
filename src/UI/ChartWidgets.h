@@ -1837,6 +1837,13 @@ class HistoryChart
         if (config.yLimits.has_value())
         {
             const double upper = config.easeYUpper ? easedChartUpperBound(plotId, config.yLimits->second) : config.yLimits->second;
+            // This chart's own axis was just eased, and the chart is visible (we're past BeginPlot): make
+            // its request here rather than leaving it pending for the next chart or frame.
+            if (shouldRequestEaseFrames(Detail::g_PendingEaseRequestFrame, ImGui::GetFrameCount(), true))
+            {
+                Core::AnimationRequest::request();
+            }
+            Detail::g_PendingEaseRequestFrame = -1;
             ImPlot::SetupAxisLimits(ImAxis_Y1, config.yLimits->first, upper, ImPlotCond_Always);
         }
         ImPlot::SetupAxisLimits(ImAxis_X1, config.xMin, config.xMax, ImPlotCond_Always);
