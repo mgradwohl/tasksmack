@@ -256,13 +256,15 @@ auto runApp() -> int
         // Push title bar layer (custom window chrome) -- skipped when native OS decorations are in
         // use instead (opt-in, native Wayland only; see #745), since the OS/compositor already draws
         // a title bar in that case and ShellLayer reserves no space for a second one.
+        App::TitleBarLayer* titleBar = nullptr;
         if (appRef.getWindow().isBorderless())
         {
-            appRef.pushLayer<App::TitleBarLayer>();
+            titleBar = &appRef.pushLayer<App::TitleBarLayer>();
         }
 
-        // Push shell layer (docking workspace with panels)
-        appRef.pushLayer<App::ShellLayer>();
+        // Push shell layer (docking workspace with panels). It hands the title bar the width its
+        // panels need, which the title bar folds into the window's minimum size (#1207).
+        appRef.pushLayer<App::ShellLayer>().setTitleBar(titleBar);
 
         // Dialog layers (modal overlays), opened by OpenAboutEvent, OpenSettingsEvent and
         // OpenElevationNoticeEvent. The elevation notice is shown at startup when running without
