@@ -22,6 +22,7 @@
 #include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/InlineText.h"
 #include "UI/RateAxis.h"
 #include "UI/TabContent.h"
 #include "UI/Theme.h"
@@ -1145,7 +1146,7 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
             // strip); Virtual has none, being mostly reserved address space.
             memoryBars.push_back({.valueText = UI::Format::formatBytes(usedNow),
                                   .label = MEM_USED_LABEL,
-                                  .tooltipText = std::format("{}: {}", MEM_USED_LABEL, withRamShare(usedNow)),
+                                  .tooltipText = UI::InlineText::format("{}: {}", MEM_USED_LABEL, withRamShare(usedNow)),
                                   .value01 = UI::Widgets::normalizeToUnitInterval(usedNow, memAxisUpper),
                                   .color = theme.scheme().chartMemory});
             if (showShared)
@@ -1153,7 +1154,7 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
                 memoryBars.push_back({
                     .valueText = UI::Format::formatBytes(sharedNow),
                     .label = MEM_SHARED_LABEL,
-                    .tooltipText = std::format("{}: {}", MEM_SHARED_LABEL, withRamShare(sharedNow)),
+                    .tooltipText = UI::InlineText::format("{}: {}", MEM_SHARED_LABEL, withRamShare(sharedNow)),
                     .value01 = UI::Widgets::normalizeToUnitInterval(sharedNow, memAxisUpper),
                     .color = theme.scheme().chartCpu,
                 });
@@ -1347,8 +1348,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
 
     const NowBar threadsBar{.valueText = UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.threadCount)),
                             .label = THREADS_LABEL,
-                            .tooltipText = UI::Widgets::formatTooltipRow(
-                                THREADS_LABEL, UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.threadCount))),
+                            .tooltipText = {}, // The fallback, "Threads: <value>", says it all (#1019)
                             .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.threadCount, countAxisUpper),
                             .color = theme.scheme().chartCpu};
 
@@ -1364,7 +1364,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
                                       : std::string("N/A");
     const NowBar handlesBar{.valueText = handlesText,
                             .label = handleLabel,
-                            .tooltipText = UI::Widgets::formatTooltipRow(handleLabel, handlesText),
+                            .tooltipText = {}, // The fallback, "<label>: <value>", says it all (#1019)
                             .value01 = m_SmoothedUsage.handleCountAvailable
                                          ? UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.handleCount, countAxisUpper)
                                          : 0.0,
@@ -1385,10 +1385,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
         .valueText = m_SmoothedUsage.gdiInitialized ? UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.gdiObjectCount))
                                                     : std::string("N/A"),
         .label = GDI_LABEL,
-        .tooltipText =
-            m_SmoothedUsage.gdiInitialized
-                ? UI::Widgets::formatTooltipRow(GDI_LABEL, UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.gdiObjectCount)))
-                : UI::Widgets::formatTooltipRow(GDI_LABEL, "N/A"),
+        .tooltipText = {}, // The fallback, "GDI Objects: <value>", says it all (#1019)
         .value01 =
             m_SmoothedUsage.gdiInitialized ? UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.gdiObjectCount, countAxisUpper) : 0.0,
         .color = theme.accentColor(4)};

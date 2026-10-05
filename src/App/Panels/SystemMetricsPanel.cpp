@@ -1161,8 +1161,8 @@ void SystemMetricsPanel::renderOverview()
 
         const NowBar threadsBar{.valueText = UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.threads)),
                                 .label = THREADS_LABEL,
-                                .tooltipText = UI::Widgets::formatTooltipRow(
-                                    THREADS_LABEL, UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.threads))),
+                                // The fallback tooltip, "Threads: <value>", says it all (#1019)
+                                .tooltipText = {},
                                 .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.threads, countAxisUpper),
                                 .color = theme.scheme().chartCpu};
         const NowBar faultsBar{.valueText = UI::Format::formatCountPerSecond(m_SmoothedResources.pageFaults),
@@ -1170,12 +1170,11 @@ void SystemMetricsPanel::renderOverview()
                                .tooltipText = {},
                                .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.pageFaults, faultAxisUpper),
                                .color = theme.accentColor(3)};
-        const NowBar handlesBar{
-            .valueText = UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.handles)),
-            .label = handleLabel,
-            .tooltipText = std::format("{}: {}", handleLabel, UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.handles))),
-            .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.handles, countAxisUpper),
-            .color = theme.scheme().chartMemory};
+        const NowBar handlesBar{.valueText = UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.handles)),
+                                .label = handleLabel,
+                                .tooltipText = {}, // The fallback, "<label>: <value>", says it all (#1019)
+                                .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.handles, countAxisUpper),
+                                .color = theme.scheme().chartMemory};
 
         auto plot = [&]()
         {

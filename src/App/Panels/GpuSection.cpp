@@ -7,6 +7,7 @@
 #include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/InlineText.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -493,7 +494,7 @@ void renderGpuSection(RenderContext& ctx)
         {
             return NowBar{.valueText = "N/A",
                           .label = label,
-                          .tooltipText = std::format("{}: unavailable this sample", label),
+                          .tooltipText = UI::InlineText::format("{}: unavailable this sample", label),
                           .value01 = 0.0,
                           .color = theme.scheme().textMuted};
         };
@@ -513,22 +514,23 @@ void renderGpuSection(RenderContext& ctx)
             // Use the snapshot's own computed percent and raw byte values so the percent
             // and byte figures always come from the same sample and cannot show an
             // impossible combination (e.g. 50% with 8 GiB / 8 GiB).
-            gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.memoryPercent),
-                                   .label = MEMORY_LABEL,
-                                   .tooltipText = std::format("{}: {} ({} / {})",
-                                                              MEMORY_LABEL,
-                                                              UI::Format::percentCompact(snap.memoryUsedPercent),
-                                                              UI::Format::formatBytes(static_cast<double>(snap.memoryUsedBytes)),
-                                                              UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes))),
-                                   .value01 = UI::Format::percent01(smoothed.memoryPercent),
-                                   .color = theme.scheme().gpuMemory});
+            gpuCoreBars.push_back(
+                {.valueText = UI::Format::percentCompact(smoothed.memoryPercent),
+                 .label = MEMORY_LABEL,
+                 .tooltipText = UI::InlineText::format("{}: {} ({} / {})",
+                                                       MEMORY_LABEL,
+                                                       UI::Format::percentCompact(snap.memoryUsedPercent),
+                                                       UI::Format::formatBytes(static_cast<double>(snap.memoryUsedBytes)),
+                                                       UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes))),
+                 .value01 = UI::Format::percent01(smoothed.memoryPercent),
+                 .color = theme.scheme().gpuMemory});
         }
         else
         {
             gpuCoreBars.push_back(
                 {.valueText = UI::Format::percentCompact(smoothed.memoryPercent),
                  .label = MEMORY_LABEL,
-                 .tooltipText = UI::Widgets::formatTooltipRow(MEMORY_LABEL, UI::Format::percentCompact(smoothed.memoryPercent)),
+                 .tooltipText = UI::Widgets::tooltipRowText(MEMORY_LABEL, UI::Format::percentCompact(smoothed.memoryPercent)),
                  .value01 = UI::Format::percent01(smoothed.memoryPercent),
                  .color = theme.scheme().gpuMemory});
         }
@@ -537,20 +539,21 @@ void renderGpuSection(RenderContext& ctx)
         if (caps.hasClockSpeeds)
         {
             const double clockPercent = (smoothed.clockMHz / static_cast<double>(maxClockMHz)) * 100.0;
-            gpuCoreBars.push_back(smoothed.clockInitialized ? NowBar{.valueText = std::format("{:.0f} MHz", smoothed.clockMHz),
-                                                                     .label = CLOCK_LABEL,
-                                                                     .tooltipText = std::format("{}: {:.0f} MHz ({} of {:.0f} MHz)",
-                                                                                                CLOCK_LABEL,
-                                                                                                smoothed.clockMHz,
-                                                                                                UI::Format::percentCompact(clockPercent),
-                                                                                                static_cast<double>(maxClockMHz)),
-                                                                     .value01 = UI::Format::percent01(clockPercent),
-                                                                     .color = theme.scheme().gpuClock}
-                                                            : NowBar{.valueText = "N/A",
-                                                                     .label = CLOCK_LABEL,
-                                                                     .tooltipText = "Clock: unavailable this sample",
-                                                                     .value01 = 0.0,
-                                                                     .color = theme.scheme().textMuted});
+            gpuCoreBars.push_back(smoothed.clockInitialized
+                                      ? NowBar{.valueText = std::format("{:.0f} MHz", smoothed.clockMHz),
+                                               .label = CLOCK_LABEL,
+                                               .tooltipText = UI::InlineText::format("{}: {:.0f} MHz ({} of {:.0f} MHz)",
+                                                                                     CLOCK_LABEL,
+                                                                                     smoothed.clockMHz,
+                                                                                     UI::Format::percentCompact(clockPercent),
+                                                                                     static_cast<double>(maxClockMHz)),
+                                               .value01 = UI::Format::percent01(clockPercent),
+                                               .color = theme.scheme().gpuClock}
+                                      : NowBar{.valueText = "N/A",
+                                               .label = CLOCK_LABEL,
+                                               .tooltipText = "Clock: unavailable this sample",
+                                               .value01 = 0.0,
+                                               .color = theme.scheme().textMuted});
         }
         if (caps.hasEncoderDecoder)
         {
@@ -587,7 +590,7 @@ void renderGpuSection(RenderContext& ctx)
             gpuThermalBars.push_back(smoothed.powerInitialized
                                          ? NowBar{.valueText = std::format("{:.1f}W", smoothed.powerWatts),
                                                   .label = POWER_LABEL,
-                                                  .tooltipText = std::format("{}: {:.2Lf} W", POWER_LABEL, smoothed.powerWatts),
+                                                  .tooltipText = UI::InlineText::format("{}: {:.2Lf} W", POWER_LABEL, smoothed.powerWatts),
                                                   .value01 = UI::Format::percent01(powerPercent),
                                                   .color = theme.scheme().gpuPower}
                                          : unavailableBar(POWER_LABEL));

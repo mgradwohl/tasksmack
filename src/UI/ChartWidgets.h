@@ -4,6 +4,7 @@
 #include "Domain/Numeric.h"
 #include "Domain/SamplingConfig.h"
 #include "UI/Format.h"
+#include "UI/InlineText.h"
 #include "UI/RateAxis.h"
 #include "UI/RenderMetrics.h"
 #include "UI/StyleScale.h"
@@ -288,6 +289,12 @@ struct TooltipRow
 [[nodiscard]] inline std::string formatTooltipRow(std::string_view label, std::string_view value)
 {
     return std::format("{}: {}", label, value);
+}
+
+/// formatTooltipRow() into an InlineText, for a NowBar's tooltipText: no allocation (#1171).
+[[nodiscard]] inline InlineText tooltipRowText(std::string_view label, std::string_view value)
+{
+    return InlineText::format("{}: {}", label, value);
 }
 
 /// `format(value)`, or "N/A" for a non-finite value: a history sample with no reading is NaN.
@@ -1325,13 +1332,19 @@ inline void setupNiceAxisTicks(ImAxis axis, double upper, ImPlotFormatter format
     }
 }
 
+/// One bar of a chart's "now" column. Built every frame, so building one allocates nothing (#1171):
+/// valueText is a short formatted value that fits std::string's small-string buffer, label is a view,
+/// and tooltipText is held in place.
 struct NowBar
 {
     std::string valueText;
-    std::string label;       // Label used in fallback tooltip construction (e.g., "CPU Total")
-    std::string tooltipText; // Rich tooltip text shown on bar hover; falls back to "label: valueText",
-                             // then label, then valueText when empty. Leave it empty unless it says more
-                             // than that fallback: it is built every frame, the fallback only on hover (#1019).
+    /// The series' name, also used to build the fallback tooltip (e.g., "CPU Total"). A view: what it
+    /// names -- a constant, or a string the caller keeps -- must outlive the bar.
+    std::string_view label;
+    /// Rich tooltip text shown on bar hover and in the value strip; falls back to "label: valueText",
+    /// then label, then valueText when empty. Leave it empty unless it says more than that fallback
+    /// (#1019). Build it with InlineText::format() or tooltipRowText(), not from a std::string.
+    InlineText tooltipText;
     double value01 = 0.0;
     ImVec4 color;
 };
@@ -1410,7 +1423,7 @@ template<typename T> [[nodiscard]] inline TailAlignedSpan<T> tailAlignedSpan(con
 {
     if (!bar.tooltipText.empty())
     {
-        return bar.tooltipText;
+        return std::string(bar.tooltipText.view());
     }
     if (!bar.label.empty() && !bar.valueText.empty())
     {
@@ -1418,7 +1431,7 @@ template<typename T> [[nodiscard]] inline TailAlignedSpan<T> tailAlignedSpan(con
     }
     if (!bar.label.empty())
     {
-        return bar.label;
+        return std::string(bar.label);
     }
     return bar.valueText;
 }
@@ -2197,7 +2210,7 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
         if (wrap && !bar.tooltipText.empty())
         {
             // A tooltipText that starts with "label:" ("Handles: 266,257") splits like the fallback.
-            const std::string_view tip = bar.tooltipText;
+            const std::string_view tip = bar.tooltipText.view();
             const bool labelled = !bar.label.empty() && tip.starts_with(bar.label) && tip.substr(bar.label.size()).starts_with(':');
             head = labelled ? tip.substr(0, bar.label.size() + 1) : std::string_view{};
             tail = labelled ? tip.substr(bar.label.size() + 1) : tip;
@@ -2275,9 +2288,13 @@ inline void requestNowBarMotion(ImGuiID barId, double value01, float heightPx)
 }
 } // namespace Detail
 
+/// @p plotFn draws the chart; it is called before this returns, and never stored. A template parameter
+/// rather than a std::function: the charts' capturing lambdas are larger than any standard library's
+/// std::function small buffer, so wrapping one allocated once per chart per frame (#1171).
+template<typename PlotFn>
 inline void renderHistoryWithNowBars(const char* tableId,
                                      float plotHeight,
-                                     const std::function<void()>& plotFn,
+                                     const PlotFn& plotFn,
                                      std::span<const NowBar> bars,
                                      bool barsOnly = false,
                                      size_t minBarColumns = 0,
@@ -2421,9 +2438,10 @@ inline void renderHistoryWithNowBars(const char* tableId,
 
 /// renderHistoryWithNowBars() for bars listed in place, e.g. `{readBar, writeBar}`: the list's backing
 /// array lives on the stack, where a braced std::vector argument allocated every frame (#1018).
+template<typename PlotFn>
 inline void renderHistoryWithNowBars(const char* tableId,
                                      float plotHeight,
-                                     const std::function<void()>& plotFn,
+                                     const PlotFn& plotFn,
                                      std::initializer_list<NowBar> bars,
                                      bool barsOnly = false,
                                      size_t minBarColumns = 0,

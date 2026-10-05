@@ -8,6 +8,7 @@
 #include "UI/Format.h"
 #include "UI/HistoryPlotHeight.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/InlineText.h"
 #include "UI/RateAxis.h"
 #include "UI/Theme.h"
 
@@ -110,7 +111,7 @@ void renderDiskCell(const std::string& deviceName,
         {
             return NowBar{.valueText = "N/A",
                           .label = label,
-                          .tooltipText = std::format("{}: not reported this sample", label),
+                          .tooltipText = UI::InlineText::format("{}: not reported this sample", label),
                           .value01 = 0.0,
                           .color = theme.scheme().textMuted};
         }

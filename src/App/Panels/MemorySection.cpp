@@ -4,6 +4,7 @@
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/InlineText.h"
 #include "UI/RateAxis.h"
 #include "UI/Theme.h"
 
@@ -17,8 +18,6 @@
 #include <cstdint>
 #include <optional>
 #include <span>
-#include <string>
-#include <utility>
 #include <vector>
 
 namespace App::MemorySection
@@ -223,20 +222,20 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
     NowBarList memoryBars;
     if (ctx.smoothedMemory != nullptr)
     {
-        const auto addBar = [&](const char* label, double smoothedPercent, std::string tooltip, const ImVec4& color)
+        const auto addBar = [&](const char* label, double smoothedPercent, const UI::InlineText& tooltip, const ImVec4& color)
         {
             const double clamped = std::clamp(smoothedPercent, 0.0, 100.0);
             memoryBars.push_back({.valueText = UI::Format::percentCompact(clamped),
                                   .label = label,
-                                  .tooltipText = std::move(tooltip),
+                                  .tooltipText = tooltip,
                                   .value01 = UI::Format::percent01(clamped),
                                   .color = color});
         };
         const auto ramTooltip = [&](const char* label, std::uint64_t bytes, double pct)
         {
             return snap.memoryTotalBytes > 0
-                     ? UI::Widgets::formatTooltipRow(label, UI::Format::bytesUsedTotalPercentCompact(bytes, snap.memoryTotalBytes, pct))
-                     : std::string{};
+                     ? UI::Widgets::tooltipRowText(label, UI::Format::bytesUsedTotalPercentCompact(bytes, snap.memoryTotalBytes, pct))
+                     : UI::InlineText{};
         };
         if (!memData.empty())
         {

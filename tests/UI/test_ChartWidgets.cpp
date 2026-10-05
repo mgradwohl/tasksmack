@@ -1155,6 +1155,18 @@ TEST(ChartWidgetsTest, TooltipRowIsLabelColonValue)
     EXPECT_EQ(formatTooltipRow("Page Faults/s", "12/s"), "Page Faults/s: 12/s");
 }
 
+TEST(ChartWidgetsTest, NowBarTooltipRowReadsLikeTheTooltipRow)
+{
+    // #1171: a NowBar's tooltip is held in place; it must say exactly what the std::string row did.
+    EXPECT_EQ(tooltipRowText("Read", "1.5 MB/s").view(), formatTooltipRow("Read", "1.5 MB/s"));
+    const NowBar bar{.valueText = "45%",
+                     .label = "Memory",
+                     .tooltipText = tooltipRowText("Memory", "45% (3.6 GB / 8.0 GB)"),
+                     .value01 = 0.45,
+                     .color = {}};
+    EXPECT_EQ(selectNowBarTooltip(bar), "Memory: 45% (3.6 GB / 8.0 GB)");
+}
+
 TEST(ChartWidgetsTest, SampleWithNoReadingFormatsAsNA)
 {
     const auto percent = [](double v)
