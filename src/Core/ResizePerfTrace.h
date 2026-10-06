@@ -125,6 +125,14 @@ struct ResizePerfTraceStats
     /// Max wall time for any single 4-event budget-check interval inside the drain loop.
     /// A large value here indicates a single SDL_PollEvent call stalling (Wayland configure hold).
     double maxSinglePollBatchMs = 0.0;
+    /// Deliver-to-deliver loop intervals: wall time from one presented frame's end (after swap)
+    /// to the next one's. Unlike the frame figures above, which time only the work inside a frame,
+    /// this is what the user sees as cadence: it includes the pacing wait, the event drain and any
+    /// render skipped in between. A skipped render (skippedFrames) is not an interval of its own;
+    /// its time stays in the interval that spans it, so a stall can't hide by skipping frames.
+    std::uint32_t loopIntervals = 0;
+    double loopIntervalMs = 0.0;
+    double maxLoopIntervalMs = 0.0;
 
     /// Rolling-window cap: comfortably past the n=100 threshold where nearest-rank p99 stops
     /// being forced to equal the max, without letting the window span so much wall-clock time
@@ -137,6 +145,17 @@ struct ResizePerfTraceStats
     std::vector<double> postRenderSamplesMs;
     std::vector<double> swapSamplesMs;
     std::vector<double> totalFrameSamplesMs;
+    std::vector<double> loopIntervalSamplesMs;
+
+    /// One deliver-to-deliver interval (see loopIntervals). Call once per presented frame after
+    /// the first; the caller measures from the previous presented frame's end.
+    void recordLoopInterval(double intervalMs)
+    {
+        ++loopIntervals;
+        loopIntervalMs += intervalMs;
+        maxLoopIntervalMs = std::max(maxLoopIntervalMs, intervalMs);
+        pushRollingSample(loopIntervalSamplesMs, intervalMs);
+    }
 
     void
     recordEventBatch(std::uint32_t eventCount, std::uint32_t resizeEventCount, double durationMs, double singlePollBatchMs, bool p0Fired)
@@ -219,6 +238,9 @@ struct ResizePerfTraceStats
         p0BudgetCapHits = 0;
         skippedRenderFrames = 0;
         maxSinglePollBatchMs = 0.0;
+        loopIntervals = 0;
+        loopIntervalMs = 0.0;
+        maxLoopIntervalMs = 0.0;
     }
 
   private:
@@ -267,10 +289,15 @@ inline void logResizePerfTraceSummary(const ResizePerfTraceStats& stats, const s
     // while their sum still misses the frame budget.
     const double totalP95 = computePercentile(stats.totalFrameSamplesMs, 0.95);
     const double totalP99 = computePercentile(stats.totalFrameSamplesMs, 0.99);
+    // Deliver-to-deliver cadence (frame end to frame end, skipped renders included): the figure
+    // that shows a pacing or drain stall the per-frame work figures above can't.
+    const double loopP95 = computePercentile(stats.loopIntervalSamplesMs, 0.95);
+    const double loopP99 = computePercentile(stats.loopIntervalSamplesMs, 0.99);
 
     spdlog::info("ResizePerf[{}]: batches={} events={} resizeEvents={} maxBatchEvents={} "
                  "p0Hits={} skippedFrames={} maxPollBatch={:.3f} ms "
                  "frames={} resizeFrames={} frame avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms over100={} over250={} "
+                 "loopIntervals={} loop avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms "
                  "drain avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms "
                  "update avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms "
                  "render avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms "
@@ -292,6 +319,11 @@ inline void logResizePerfTraceSummary(const ResizePerfTraceStats& stats, const s
                  stats.maxTotalFrameMs,
                  stats.frameTail.over100,
                  stats.frameTail.over250,
+                 stats.loopIntervals,
+                 avg(stats.loopIntervalMs, stats.loopIntervals),
+                 loopP95,
+                 loopP99,
+                 stats.maxLoopIntervalMs,
                  avg(stats.drainMs, stats.eventBatches),
                  drainP95,
                  drainP99,

@@ -1360,6 +1360,61 @@ TEST_F(ResizePerfOperationTest, FirstFrameHasNoFabricatedGapAndSkippedLoopsRemai
     EXPECT_DOUBLE_EQ(Core::resizePerfOperations().frameGaps.maxMs, 2000.0);
 }
 
+TEST(ResizePerfTraceStatsTest, LoopIntervalsResetWithIntervalNotRollingWindow)
+{
+    Core::ResizePerfTraceStats stats;
+    stats.recordLoopInterval(50.0);
+    stats.recordLoopInterval(150.0);
+    EXPECT_EQ(stats.loopIntervals, 2U);
+    EXPECT_DOUBLE_EQ(stats.loopIntervalMs, 200.0);
+    EXPECT_DOUBLE_EQ(stats.maxLoopIntervalMs, 150.0);
+    stats.resetIntervalCounters();
+    EXPECT_EQ(stats.loopIntervals, 0U);
+    EXPECT_DOUBLE_EQ(stats.loopIntervalMs, 0.0);
+    EXPECT_DOUBLE_EQ(stats.maxLoopIntervalMs, 0.0);
+    EXPECT_EQ(stats.loopIntervalSamplesMs.size(), 2U);
+}
+
+TEST(ResizePerfTraceStatsTest, LoopIntervalWindowIsCapped)
+{
+    Core::ResizePerfTraceStats stats;
+    const std::size_t capacity = Core::ResizePerfTraceStats::PERCENTILE_WINDOW_SIZE;
+    for (std::size_t i = 0; i < capacity + 10; ++i)
+    {
+        stats.recordLoopInterval(static_cast<double>(i));
+    }
+    ASSERT_EQ(stats.loopIntervalSamplesMs.size(), capacity);
+    EXPECT_DOUBLE_EQ(stats.loopIntervalSamplesMs.front(), 10.0);
+}
+
+TEST_F(ResizePerfOperationTest, SummaryReportsLoopIntervalPercentilesBesideFramePercentiles)
+{
+    Core::ResizePerfTraceStats stats;
+    // 100 frames of 1..100 ms work, and 100 deliver-to-deliver intervals of 50 ms with one 1000 ms
+    // stall (a skipped render folded into its interval).
+    for (int i = 1; i <= 100; ++i)
+    {
+        stats.recordFrame(false, static_cast<double>(i), 0.0, 0.0, 0.0);
+        stats.recordLoopInterval(i == 100 ? 1000.0 : 50.0);
+    }
+    stats.skippedRenderFrames = 1;
+    Core::logResizePerfTraceSummary(stats, "test-loop");
+    const auto output = m_Output.str();
+    EXPECT_TRUE(output.contains("ResizePerf[test-loop]:")) << output;
+    EXPECT_TRUE(output.contains("skippedFrames=1 ")) << output;
+    EXPECT_TRUE(output.contains("frame avg/p95/p99/max=50.500/95.000/99.000/100.000 ms")) << output;
+    // avg = (99 * 50 + 1000) / 100 = 59.5; nearest-rank p95/p99 of 99x50 + 1x1000 are both 50.
+    EXPECT_TRUE(output.contains("loopIntervals=100 loop avg/p95/p99/max=59.500/50.000/50.000/1000.000 ms")) << output;
+}
+
+TEST_F(ResizePerfOperationTest, SummaryWithoutLoopIntervalsReportsZeroes)
+{
+    Core::ResizePerfTraceStats stats;
+    stats.recordFrame(false, 1.0, 0.0, 0.0, 0.0);
+    Core::logResizePerfTraceSummary(stats, "test-first-frame");
+    EXPECT_TRUE(m_Output.str().contains("loopIntervals=0 loop avg/p95/p99/max=0.000/0.000/0.000/0.000 ms")) << m_Output.str();
+}
+
 TEST_F(ResizePerfOperationTest, SlowVoidOperationReportsCounterBoundsWithoutInventingGpuStatus)
 {
     const auto frequency = SDL_GetPerformanceFrequency();

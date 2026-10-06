@@ -558,6 +558,20 @@ void Application::run()
         }
     };
 
+    // Deliver-to-deliver loop intervals (#843 measurement kit): renderFrame() stamps each presented
+    // frame's end (recordResizePerfFrameEnd), and the gap from the previous one is the cadence the
+    // user sees, skipped renders included.
+    std::uint64_t lastDeliveredFrameEnd = 0;
+    const auto recordDeliveredFrame = [&]()
+    {
+        const std::uint64_t delivered = resizePerfOperations().previousFrameEnd;
+        if (lastDeliveredFrameEnd != 0 && delivered > lastDeliveredFrameEnd)
+        {
+            resizeTraceStats.recordLoopInterval(resizePerfElapsedMs(lastDeliveredFrameEnd, delivered));
+        }
+        lastDeliveredFrameEnd = delivered;
+    };
+
     // The framebuffer size of the last WindowResizedEvent, so an SDL_EVENT_WINDOW_EXPOSED can tell
     // a repaint (same size) from a resize that surfaced only as an expose (#1154).
     std::pair<int, int> lastResizePixelSize = m_Window->getSizeInPixels();
@@ -848,6 +862,7 @@ void Application::run()
             if (traceResizePerfThisFrame)
             {
                 resizeTraceStats.recordFrame(true, updateMs, renderMs, postRenderMs, swapMs);
+                recordDeliveredFrame();
                 loopTiming.frameMs = updateMs + renderMs + postRenderMs + swapMs;
             }
             didImmediateResizeRedraw = true;
@@ -918,6 +933,7 @@ void Application::run()
             if (traceResizePerfThisFrame)
             {
                 resizeTraceStats.recordFrame(false, updateMs, renderMs, postRenderMs, swapMs);
+                recordDeliveredFrame();
                 loopTiming.frameMs = updateMs + renderMs + postRenderMs + swapMs;
             }
         }
