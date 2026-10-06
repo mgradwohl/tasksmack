@@ -25,10 +25,12 @@
 #
 # Steady-state captures wait for TaskSmack to log "Entering main loop" (up to 30 s; launched with
 # TASKSMACK_LOG_LEVEL=info unless already set, so release builds log it too), then for --warmup.
-# TaskSmack's own output goes to perf-<mode>-<timestamp>-app.log.
+# In every app capture, --include-startup included, TaskSmack's own stdout and stderr go to
+# perf-app-<timestamp>-app.log; perf's messages stay on the terminal and in the session log.
 #
 # The run fails if TaskSmack exits before recording starts, before --duration elapses, or with a
-# non-zero exit code. The preset, its build directory, build type and compiler flags are printed and
+# non-zero exit code. When the script closes TaskSmack (after --duration or Ctrl+C), a clean exit
+# after SIGTERM (code 0) passes; needing SIGKILL after 10 s, or any other exit code, fails. The preset, its build directory, build type and compiler flags are printed and
 # written to the log, so every profile says what it measured. The default app preset, profile, is an
 # -O2 build with frame pointers kept for better stacks; pass --preset release to profile the
 # shipped build's code generation instead.
@@ -291,13 +293,21 @@ info "Log:        ${LOG_FILE}"
 PERF_RECORD_FLAGS=(-e "${PERF_EVENT}" -F 997 -g --call-graph dwarf -o "${DATA_FILE}")
 
 PERF_EXIT_CODE=0
+# Every app capture keeps TaskSmack's own stdout/stderr here, apart from perf's messages.
+APP_LOG="${PERF_DIR}/${PREFIX}-${TIMESTAMP}-app.log"
 if [[ "${MODE}" = "app" && "${INCLUDE_STARTUP}" -eq 1 ]]; then
+    info "App log:    ${APP_LOG}"
+    echo "APP_LOG=${APP_LOG}" >> "${LOG_FILE}"
     echo ""
     echo "Launching TaskSmack under perf (startup included). Exercise the application, then close it."
     echo ""
     # perf record exits with the workload's exit status, so a crash or early failure fails the run.
+    # The workload is a shell that redirects its output to the app log and then execs TaskSmack in
+    # the same process, so perf keeps following it and perf's own stderr still reaches the terminal.
     set +e
-    perf record "${PERF_RECORD_FLAGS[@]}" -- "${BINARY}" 2> >(tee -a "${LOG_FILE}" >&2)
+    # shellcheck disable=SC2016 # $1/$2 are expanded by the inner shell, not here
+    perf record "${PERF_RECORD_FLAGS[@]}" -- /bin/sh -c 'exec "$1" > "$2" 2>&1' sh "${BINARY}" "${APP_LOG}" \
+        2> >(tee -a "${LOG_FILE}" >&2)
     PERF_EXIT_CODE=$?
     set -e
     echo "EXIT_CODE=${PERF_EXIT_CODE}" >> "${LOG_FILE}"
@@ -305,7 +315,6 @@ elif [[ "${MODE}" = "app" ]]; then
     # Steady-state capture (#1371): launch TaskSmack on its own, wait for its main loop plus a
     # warm-up, then attach perf to the running process, so startup costs (fonts, themes, the first
     # process enumeration) stay out of the profile.
-    APP_LOG="${PERF_DIR}/${PREFIX}-${TIMESTAMP}-app.log"
     MAIN_LOOP_TIMEOUT_SECONDS=30
     MAIN_LOOP_MARKER="Entering main loop" # Logged by Core::Application::run() at info level
     APP_PID=""
@@ -322,6 +331,7 @@ elif [[ "${MODE}" = "app" ]]; then
         APP_PID=""
     }
     # SIGTERM (SDL turns it into a normal quit), then SIGKILL if it hasn't exited after 10 s.
+    APP_KILLED=0
     stop_app() {
         [[ -n "${APP_PID}" ]] || return 0
         if app_alive; then
@@ -333,6 +343,7 @@ elif [[ "${MODE}" = "app" ]]; then
             done
             if app_alive; then
                 kill -KILL "${APP_PID}" 2>/dev/null || true
+                APP_KILLED=1
             fi
         fi
         reap_app
@@ -408,9 +419,20 @@ elif [[ "${MODE}" = "app" ]]; then
     # perf record -p exits 0 when its target exits, whatever the target's exit code, so check the
     # app's own status: a crash, or an exit before --duration elapsed, fails the run.
     if app_alive; then
-        END_REASON="closed by the script (after --duration or Ctrl+C); the exit code is from that stop"
+        # TaskSmack quits cleanly on SIGTERM: SDL turns it into SDL_EVENT_QUIT, the main loop ends and
+        # main() returns 0. Anything else -- the SIGKILL fallback for a hang (137), or a crash during
+        # shutdown (e.g. 134 for SIGABRT, 139 for SIGSEGV) -- fails the run.
         stop_app
-        APP_FAILED=0
+        if [[ "${APP_KILLED}" -eq 1 ]]; then
+            END_REASON="did not exit within 10s of SIGTERM and was killed with SIGKILL"
+            APP_FAILED=1
+        elif [[ "${APP_EXIT_CODE}" -ne 0 ]]; then
+            END_REASON="exited with a non-zero code after the script's SIGTERM (after --duration or Ctrl+C)"
+            APP_FAILED=1
+        else
+            END_REASON="closed cleanly by the script's SIGTERM (after --duration or Ctrl+C)"
+            APP_FAILED=0
+        fi
     else
         reap_app
         if [[ "${DURATION_SECONDS}" -gt 0 && "${INTERRUPTED}" -eq 0 ]]; then
@@ -430,7 +452,7 @@ elif [[ "${MODE}" = "app" ]]; then
     } >> "${LOG_FILE}"
     trap - INT EXIT
     if [[ "${APP_FAILED}" -eq 1 ]]; then
-        die "TaskSmack ${END_REASON} (code ${APP_EXIT_CODE}); the trace at ${DATA_FILE} may not cover the requested window. See ${APP_LOG}."
+        die "TaskSmack ${END_REASON} (code ${APP_EXIT_CODE}). The trace at ${DATA_FILE} was kept but the run failed; see ${APP_LOG}."
     fi
     info "TaskSmack ${END_REASON} (code ${APP_EXIT_CODE})."
 else

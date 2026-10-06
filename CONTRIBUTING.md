@@ -810,7 +810,10 @@ App mode profiles steady state, not startup (#1371). It launches TaskSmack, wait
 `perf record -p`. It records until you close TaskSmack, or for `--duration` seconds and then closes
 it. Ctrl+C also stops the capture and closes TaskSmack. `--include-startup` keeps the old behavior:
 TaskSmack runs under perf from launch. The run fails if TaskSmack exits before recording starts,
-exits before `--duration` elapses, or exits with a non-zero code. TaskSmack's own output goes to
+exits before `--duration` elapses, or exits with a non-zero code. When the script closes TaskSmack
+itself (after `--duration` or Ctrl+C), it sends SIGTERM, and TaskSmack quitting cleanly with code 0
+passes. Needing the SIGKILL fallback after 10 s, or any other exit code, fails the run. In every app
+capture, `--include-startup` included, TaskSmack's own stdout and stderr go to
 `perf-data/perf-app-<timestamp>-app.log`. The `profile` preset keeps frame pointers for better stacks;
 pass `--preset release` to profile the shipped build's code generation.
 
