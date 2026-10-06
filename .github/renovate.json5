@@ -58,6 +58,10 @@
       depNameTemplate: 'marzer/tomlplusplus',
       packageNameTemplate: 'marzer/tomlplusplus',
       datasourceTemplate: 'github-tags',
+      // toml++ is pinned to an untagged master commit for now (#1387, #1389: fixes with no
+      // release yet), commented "# master after v3.4.0", so this entry deliberately doesn't match
+      // and Renovate won't "update" it back to the v3.4.0 tag. When v3.5.0+ ships, move the pin
+      // to that tag with a "# vX.Y.Z" comment, re-check cmake/patches/, and this matches again.
     },
     // Deliberately no entry for nothings/stb: it's pinned to a raw commit with no upstream
     // tags at all, so there's no version to compare against. Left as an occasional manual
