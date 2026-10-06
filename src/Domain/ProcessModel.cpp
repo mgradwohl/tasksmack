@@ -127,6 +127,7 @@ void ProcessModel::refresh()
     // between samples) can never apply an older sample after a newer one (#1093).
     std::scoped_lock const samplingLock(m_SamplingMutex);
 
+    const bool hadNetworkCounters = m_Probe->capabilities().hasNetworkCounters;
     auto currentCounters = m_Probe->enumerate();
     const std::uint64_t currentTotalCpuTime = m_Probe->totalCpuTime();
 
@@ -134,6 +135,18 @@ void ProcessModel::refresh()
     // being attributed late doesn't make a process's counter drop or jump (#1099). Probes that report
     // per-process network counters themselves return no reading, and theirs are used as-is.
     m_NetTraffic.apply(m_Probe->readSocketTraffic(), currentCounters);
+
+    // The probe may turn its per-process network counters off during that read: on Windows the first
+    // real EStats sample can prove them unusable (#1161). The counters enumerate() returned were
+    // marked with the availability it had before, so without this the sample would publish a held or
+    // zero rate as a reading for one interval, instead of unavailable (#1285).
+    if (hadNetworkCounters && !m_Probe->capabilities().hasNetworkCounters)
+    {
+        for (auto& counters : currentCounters)
+        {
+            counters.networkCountersAvailable = false;
+        }
+    }
 
     // Per-process power from a package energy counter: share each interval's energy by each
     // process's CPU time in that interval. Probes that report per-process energy themselves

@@ -428,22 +428,18 @@ TEST(WindowsProcessProbeTest, ThreadCountsArePositive)
 TEST(WindowsProcessProbeTest, StateComesFromThreadStates)
 {
     // #1156: every live process used to read "R". The state now comes from the snapshot's thread
-    // states, for every process: most processes wait (S), the one enumerating runs (R), and the
-    // System Idle Process is Idle (I). Windows never reports Z.
+    // states, for every process: the one enumerating runs (R) and the System Idle Process is Idle
+    // (I). Windows never reports Z. How many of the rest wait depends on the host's load, so the
+    // R/S/T mapping itself is tested on fixed tallies (DeriveProcessStateTest).
     WindowsProcessProbe probe;
     const auto processes = probe.enumerate();
     ASSERT_FALSE(processes.empty());
 
     const std::string validStates = "RSTI?";
     const auto ourPid = static_cast<std::int32_t>(GetCurrentProcessId());
-    std::size_t sleeping = 0;
     for (const auto& proc : processes)
     {
         EXPECT_NE(validStates.find(proc.state), std::string::npos) << proc.name << " has state '" << proc.state << "'";
-        if (proc.state == 'S')
-        {
-            ++sleeping;
-        }
         if (proc.pid == 0)
         {
             EXPECT_EQ(proc.state, 'I') << "System Idle Process";
@@ -453,7 +449,6 @@ TEST(WindowsProcessProbeTest, StateComesFromThreadStates)
             EXPECT_EQ(proc.state, 'R') << "this thread was running while it enumerated";
         }
     }
-    EXPECT_GT(sleeping, processes.size() / 2) << "most processes should be waiting, not running";
 }
 
 TEST(WindowsProcessProbeTest, OurCommandIsTheCommandLineNotTheImagePath)
