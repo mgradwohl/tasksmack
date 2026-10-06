@@ -10,6 +10,7 @@
 #include <spdlog/spdlog.h>
 #include <toml++/toml.hpp>
 
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <ios>
@@ -369,44 +370,44 @@ TEST_F(UserConfigLoadSaveTest, LoadHandlesTomlParseError)
 // Malformed config.toml inputs the fuzzers found that crashed inside toml++ instead of throwing
 // toml::parse_error: a debug assert (abort) and, with NDEBUG, __builtin_assume/__builtin_unreachable
 // (UB). load() must log the parse failure and keep the defaults, in debug and release alike.
-struct MalformedToml
+TEST_F(UserConfigLoadSaveTest, LoadLogsParseFailureAndKeepsDefaultsForTomlppCrashInputs)
 {
-    const char* name;
-    std::string_view content;
-};
-
-class UserConfigMalformedTomlTest : public UserConfigLoadSaveTest, public ::testing::WithParamInterface<MalformedToml>
-{};
-
-TEST_P(UserConfigMalformedTomlTest, LoadLogsParseFailureAndKeepsDefaults)
-{
+    struct MalformedToml
     {
-        std::ofstream f(m_ConfigPath, std::ios::binary);
-        f << GetParam().content;
+        const char* name;
+        std::string_view content;
+    };
+    const std::array<MalformedToml, 6> inputs = {{
+        {.name = "TableHeaderThenNewline", .content = "[\n"}, // #1387
+        {.name = "TableHeaderThenEquals", .content = "[="},   // #1387
+        {.name = "ArrayClosedWithBrace", .content = "m=[}"},  // #1388
+        {.name = "CommaThenBrace", .content = "m=[1,}"},      // #1388
+        {.name = "CodePointFEBF", .content = "\xEF\xBA\xBF"}, // #1389
+        {.name = "CodePointFEFB", .content = "\xEF\xBB\xBB"}, // #1389
+    }};
+
+    for (const auto& input : inputs)
+    {
+        SCOPED_TRACE(input.name);
+        UserConfig::get().resetConfigPathForTesting(m_ConfigPath); // fresh defaults, isLoaded cleared
+        {
+            std::ofstream f(m_ConfigPath, std::ios::binary | std::ios::trunc);
+            f << input.content;
+        }
+
+        std::ostringstream log;
+        const auto previousLogger = spdlog::default_logger();
+        spdlog::set_default_logger(
+            std::make_shared<spdlog::logger>("malformed-config-test", std::make_shared<spdlog::sinks::ostream_sink_st>(log)));
+        UserConfig::get().load();
+        spdlog::set_default_logger(previousLogger);
+
+        EXPECT_NE(log.str().find("Failed to parse config file"), std::string::npos) << input.name << ": " << log.str();
+        const UserSettings defaults;
+        EXPECT_EQ(UserConfig::get().settings().refreshIntervalMs, defaults.refreshIntervalMs) << input.name;
+        EXPECT_EQ(UserConfig::get().settings().themeId, defaults.themeId) << input.name;
     }
-
-    std::ostringstream log;
-    const auto previousLogger = spdlog::default_logger();
-    spdlog::set_default_logger(
-        std::make_shared<spdlog::logger>("malformed-config-test", std::make_shared<spdlog::sinks::ostream_sink_st>(log)));
-    UserConfig::get().load();
-    spdlog::set_default_logger(previousLogger);
-
-    EXPECT_NE(log.str().find("Failed to parse config file"), std::string::npos) << log.str();
-    const UserSettings defaults;
-    EXPECT_EQ(UserConfig::get().settings().refreshIntervalMs, defaults.refreshIntervalMs);
-    EXPECT_EQ(UserConfig::get().settings().themeId, defaults.themeId);
 }
-
-INSTANTIATE_TEST_SUITE_P(TomlppCrashInputs,
-                         UserConfigMalformedTomlTest,
-                         ::testing::Values(MalformedToml{"TableHeaderThenNewline", "[\n"},  // #1387
-                                           MalformedToml{"TableHeaderThenEquals", "[="},    // #1387
-                                           MalformedToml{"ArrayClosedWithBrace", "m=[}"},   // #1388
-                                           MalformedToml{"CommaThenBrace", "m=[1,}"},       // #1388
-                                           MalformedToml{"CodePointFEBF", "\xEF\xBA\xBF"},  // #1389
-                                           MalformedToml{"CodePointFEFB", "\xEF\xBB\xBB"}), // #1389
-                         [](const ::testing::TestParamInfo<MalformedToml>& info) { return std::string(info.param.name); });
 
 TEST_F(UserConfigLoadSaveTest, LoadParsesAllFontSizes)
 {

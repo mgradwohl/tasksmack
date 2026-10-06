@@ -5,6 +5,7 @@
 #include <spdlog/sinks/ostream_sink.h>
 #include <spdlog/spdlog.h>
 
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -681,15 +682,25 @@ name = "Broken"
 // Malformed theme files the fuzzers found that crashed inside toml++ instead of throwing
 // toml::parse_error: a debug assert (abort) and, with NDEBUG, __builtin_assume/__builtin_unreachable
 // (UB). Every theme load path must log the parse failure and skip the file, in debug and release alike.
-struct MalformedTheme
-{
-    const char* name;
-    std::string_view content;
-};
-
-class ThemeLoaderMalformedTomlTest : public ThemeLoaderDiscoveryTest, public ::testing::WithParamInterface<MalformedTheme>
+class ThemeLoaderMalformedTomlTest : public ThemeLoaderDiscoveryTest
 {
   protected:
+    struct MalformedTheme
+    {
+        const char* name;
+        std::string_view content;
+    };
+
+    // Each input crashed toml++ before #1387/#1388/#1389 were fixed.
+    static constexpr std::array<MalformedTheme, 6> kTomlppCrashInputs = {{
+        {.name = "TableHeaderThenNewline", .content = "[\n"}, // #1387
+        {.name = "TableHeaderThenEquals", .content = "[="},   // #1387
+        {.name = "ArrayClosedWithBrace", .content = "m=[}"},  // #1388
+        {.name = "CommaThenBrace", .content = "m=[1,}"},      // #1388
+        {.name = "CodePointFEBF", .content = "\xEF\xBA\xBF"}, // #1389
+        {.name = "CodePointFEFB", .content = "\xEF\xBB\xBB"}, // #1389
+    }};
+
     void SetUp() override
     {
         ThemeLoaderDiscoveryTest::SetUp();
@@ -704,11 +715,14 @@ class ThemeLoaderMalformedTomlTest : public ThemeLoaderDiscoveryTest, public ::t
         ThemeLoaderDiscoveryTest::TearDown();
     }
 
-    [[nodiscard]] auto writeMalformedTheme() const -> std::filesystem::path
+    /// Writes the input to broken.toml and clears the captured log, so each input's checks see only its own output.
+    [[nodiscard]] auto writeMalformedTheme(const MalformedTheme& input) -> std::filesystem::path
     {
+        m_Log.str({});
+        m_Log.clear();
         auto path = m_TempDir / "broken.toml";
-        std::ofstream file(path, std::ios::binary);
-        file << GetParam().content;
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        file << input.content;
         return path;
     }
 
@@ -718,40 +732,42 @@ class ThemeLoaderMalformedTomlTest : public ThemeLoaderDiscoveryTest, public ::t
     std::shared_ptr<spdlog::logger> m_PreviousLogger;
 };
 
-TEST_P(ThemeLoaderMalformedTomlTest, LoadThemeInfoLogsParseFailure)
+TEST_F(ThemeLoaderMalformedTomlTest, LoadThemeInfoLogsParseFailureForTomlppCrashInputs)
 {
-    const auto path = writeMalformedTheme();
-    EXPECT_FALSE(ThemeLoader::loadThemeInfo(path).has_value());
-    EXPECT_NE(m_Log.str().find("Failed to parse theme"), std::string::npos) << m_Log.str();
+    for (const auto& input : kTomlppCrashInputs)
+    {
+        SCOPED_TRACE(input.name);
+        const auto path = writeMalformedTheme(input);
+        EXPECT_FALSE(ThemeLoader::loadThemeInfo(path).has_value()) << input.name;
+        EXPECT_NE(m_Log.str().find("Failed to parse theme"), std::string::npos) << input.name << ": " << m_Log.str();
+    }
 }
 
-TEST_P(ThemeLoaderMalformedTomlTest, LoadThemeLogsParseFailure)
+TEST_F(ThemeLoaderMalformedTomlTest, LoadThemeLogsParseFailureForTomlppCrashInputs)
 {
-    const auto path = writeMalformedTheme();
-    EXPECT_FALSE(ThemeLoader::loadTheme(path).has_value());
-    EXPECT_NE(m_Log.str().find("Failed to parse theme"), std::string::npos) << m_Log.str();
+    for (const auto& input : kTomlppCrashInputs)
+    {
+        SCOPED_TRACE(input.name);
+        const auto path = writeMalformedTheme(input);
+        EXPECT_FALSE(ThemeLoader::loadTheme(path).has_value()) << input.name;
+        EXPECT_NE(m_Log.str().find("Failed to parse theme"), std::string::npos) << input.name << ": " << m_Log.str();
+    }
 }
 
-TEST_P(ThemeLoaderMalformedTomlTest, DiscoverThemesSkipsMalformedFileAndKeepsTheRest)
+TEST_F(ThemeLoaderMalformedTomlTest, DiscoverThemesSkipsMalformedFileAndKeepsTheRestForTomlppCrashInputs)
 {
-    static_cast<void>(writeMalformedTheme());
     createThemeFile("good.toml", "[meta]\nname = \"Good\"\n");
+    for (const auto& input : kTomlppCrashInputs)
+    {
+        SCOPED_TRACE(input.name);
+        static_cast<void>(writeMalformedTheme(input));
 
-    const auto themes = ThemeLoader::discoverThemes(m_TempDir);
-    ASSERT_EQ(themes.size(), 1U);
-    EXPECT_EQ(themes[0].id, "good");
-    EXPECT_NE(m_Log.str().find("Failed to parse theme"), std::string::npos) << m_Log.str();
+        const auto themes = ThemeLoader::discoverThemes(m_TempDir);
+        ASSERT_EQ(themes.size(), 1U) << input.name;
+        EXPECT_EQ(themes[0].id, "good") << input.name;
+        EXPECT_NE(m_Log.str().find("Failed to parse theme"), std::string::npos) << input.name << ": " << m_Log.str();
+    }
 }
-
-INSTANTIATE_TEST_SUITE_P(TomlppCrashInputs,
-                         ThemeLoaderMalformedTomlTest,
-                         ::testing::Values(MalformedTheme{"TableHeaderThenNewline", "[\n"},  // #1387
-                                           MalformedTheme{"TableHeaderThenEquals", "[="},    // #1387
-                                           MalformedTheme{"ArrayClosedWithBrace", "m=[}"},   // #1388
-                                           MalformedTheme{"CommaThenBrace", "m=[1,}"},       // #1388
-                                           MalformedTheme{"CodePointFEBF", "\xEF\xBA\xBF"},  // #1389
-                                           MalformedTheme{"CodePointFEFB", "\xEF\xBB\xBB"}), // #1389
-                         [](const ::testing::TestParamInfo<MalformedTheme>& info) { return std::string(info.param.name); });
 
 // ========== loadTheme Tests ==========
 
