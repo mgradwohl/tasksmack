@@ -9,6 +9,8 @@
 // laid out in the non-scrolling parent, and only the body scrolls.
 
 // clang-format off
+#include "UI/Theme.h"
+
 #include <imgui.h>
 #include <imgui_internal.h> // ImGuiWindow: a window's recorded content extent has no public accessor
 // clang-format on
@@ -68,10 +70,17 @@ class TabContentScope
 
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();
+
+        // The panels push a tall FramePadding for their tabs and keep it until the tab bar ends, so
+        // the body's own frames -- a checkbox, a combo, a button -- were drawn tab-sized: "Show all"
+        // beside Interface Status was a square nearly three lines tall. The body gets the theme's.
+        const float scale = Theme::get().styleScale();
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(Theme::FRAME_PADDING_X * scale, Theme::FRAME_PADDING_Y * scale));
     }
 
     ~TabContentScope()
     {
+        ImGui::PopStyleVar(); // FramePadding
         ImGui::EndChild();
         ImGui::PopClipRect();
 

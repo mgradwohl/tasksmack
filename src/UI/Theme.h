@@ -258,6 +258,12 @@ static_assert(FONT_SIZE_PRESETS.size() == FONT_SIZE_COUNT);
 class Theme
 {
   public:
+    /// The style's FramePadding at the reference configuration, scaled by styleScale(). Named so a
+    /// scope that overrides it for its own frames -- the panels' tall tabs -- can restore it for the
+    /// content inside (TabContentScope).
+    static constexpr float FRAME_PADDING_X = 4.0F;
+    static constexpr float FRAME_PADDING_Y = 3.0F;
+
     /// Get the singleton instance
     static auto get() -> Theme&;
 
