@@ -231,6 +231,16 @@ TEST(ProcessColumnAvailabilityTest, GpuSupportComesFromTheGpuModelsFlags)
     EXPECT_EQ(gpuSupport(false, false, false), NO_PER_PROCESS_GPU); // No GPU model at all
 }
 
+TEST(ProcessColumnAvailabilityTest, CellsFollowTheSupportTheirGenerationWasReadUnder)
+{
+    // #1210: the table formats a generation's GPU cells by the support published with it.
+    using ProcessColumnAvailability::gpuSupportOfGeneration;
+    EXPECT_EQ(gpuSupportOfGeneration(true, true), (ProcessColumnAvailability::GpuSupport{.perProcess = true, .utilization = true}));
+    EXPECT_EQ(gpuSupportOfGeneration(true, false), NO_PER_PROCESS_GPU_UTILIZATION);
+    EXPECT_EQ(gpuSupportOfGeneration(false, true), NO_PER_PROCESS_GPU); // No data means no utilization
+    EXPECT_EQ(gpuSupportOfGeneration(false, false), NO_PER_PROCESS_GPU);
+}
+
 TEST(ProcessColumnAvailabilityTest, GpuColumnsNeedPerProcessGpuMetrics)
 {
     // #1210: DRM- or ROCm-only Linux (and no usable GPU probe) has no per-process GPU metrics, and

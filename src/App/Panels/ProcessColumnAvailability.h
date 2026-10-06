@@ -40,6 +40,15 @@ gpuSupport(bool hasGpuModel, bool perProcessKnownUnsupported, bool perProcessUti
     return {.perProcess = perProcess, .utilization = perProcess && !perProcessUtilizationKnownUnsupported};
 }
 
+/// GpuSupport for formatting one snapshot generation's cells, from the support published with it
+/// (Domain::ProcessModel::GpuSupport): its GPU fields were read under that, which can differ from the
+/// GPU model's current state while GPU merges are throttled (#1210). No per-process data means no
+/// utilization either.
+[[nodiscard]] constexpr GpuSupport gpuSupportOfGeneration(bool perProcess, bool utilization) noexcept
+{
+    return {.perProcess = perProcess, .utilization = perProcess && utilization};
+}
+
 /// Whether the process probe can fill `col` at all on this system. A column it cannot shows
 /// ProcessRowFormat::UNAVAILABLE_CELL_TEXT on every row, and its header says why. The GPU columns
 /// depend on the GPU probe instead (`gpu`): GPU % on per-process utilization, the others on

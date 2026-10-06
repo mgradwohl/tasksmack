@@ -990,7 +990,8 @@ void ProcessesPanel::adoptNewerSnapshots()
     // Detect and copy new data in a single lock acquisition. tryCopySnapshotsIfNewer() checks the
     // published version lock-free first, so a call with nothing new costs one atomic load.
     std::uint64_t newVersion = m_CachedSnapshotVersion;
-    if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion, &m_CachedCapabilities))
+    if (m_ProcessModel->tryCopySnapshotsIfNewer(
+            m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion, &m_CachedCapabilities, &m_CachedGpuSupport))
     {
         m_CachedSnapshotVersion = newVersion;
     }
@@ -1637,11 +1638,13 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
     // TextSizeCache::populate(), not with the font's address, which a rebuilt
     // font atlas can reuse (#943).
     const Platform::ProcessCapabilities caps = processCapabilities();
-    const RowFormatCache& fmt = ProcessRowFormat::getOrBuildRowFormatCache(m_RowFormatCache,
-                                                                           proc,
-                                                                           m_CachedSnapshotVersion,
-                                                                           m_TextSizeCache.stamp,
-                                                                           ProcessColumnAvailability::rowFormatOptions(caps, m_GpuSupport));
+    const RowFormatCache& fmt = ProcessRowFormat::getOrBuildRowFormatCache(
+        m_RowFormatCache,
+        proc,
+        m_CachedSnapshotVersion,
+        m_TextSizeCache.stamp,
+        ProcessColumnAvailability::rowFormatOptions(
+            caps, ProcessColumnAvailability::gpuSupportOfGeneration(m_CachedGpuSupport.perProcess, m_CachedGpuSupport.utilization)));
 
     // Render all columns
     int colIdx = 0;

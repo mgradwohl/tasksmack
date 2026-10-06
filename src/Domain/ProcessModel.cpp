@@ -197,7 +197,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     std::vector<ProcessSnapshot> newSnapshots;
     std::unordered_map<std::uint64_t, CachedGpuSnapshotFields> cachedGpuByUniqueKey;
     std::shared_ptr<GPUModel> gpuModel;
-    GpuMergeSupport previousGpuSupport;
+    GpuSupport previousGpuSupport;
     bool shouldMergeGpuData = false;
     std::size_t reserveSize = 0;
 
@@ -420,7 +420,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     // model can gain or lose it on re-enumeration, on its own sampler. Taken from the same GPUModel
     // operation as the counters (readProcessGPUData()), so the stamp always matches the data. No GPU
     // model means no per-process GPU data.
-    GpuMergeSupport gpuSupport;
+    GpuSupport gpuSupport;
 
     // GPU aggregation can be expensive (PDH queries/string work). Keep it outside
     // the ProcessModel write lock so UI readers are not blocked during resize.
@@ -727,7 +727,8 @@ bool ProcessModel::tryCopySystemHistoriesIfNewer(std::uint64_t lastSeenVersion, 
 bool ProcessModel::tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
                                            std::shared_ptr<const std::vector<ProcessSnapshot>>& outSnapshots,
                                            std::uint64_t& outVersion,
-                                           Platform::ProcessCapabilities* outCapabilities) const
+                                           Platform::ProcessCapabilities* outCapabilities,
+                                           GpuSupport* outGpuSupport) const
 {
     // Fast path: avoid the shared lock on the common case where no new snapshot exists.
     // m_PublishedSnapshotVersion is always equal to m_SnapshotVersion (written together
@@ -757,6 +758,10 @@ bool ProcessModel::tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
         if (outCapabilities != nullptr)
         {
             *outCapabilities = m_PublishedCapabilities;
+        }
+        if (outGpuSupport != nullptr)
+        {
+            *outGpuSupport = {.perProcess = m_PublishedGpuPerProcessSupported, .utilization = m_PublishedGpuUtilizationSupported};
         }
     }
 
@@ -854,7 +859,7 @@ void ProcessModel::setInteractionActive(const bool active) noexcept
     m_InteractionActive.store(active, std::memory_order_release);
 }
 
-ProcessModel::GpuMergeSupport ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel)
+ProcessModel::GpuSupport ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel)
 {
     if (gpuModel == nullptr)
     {
@@ -863,7 +868,7 @@ ProcessModel::GpuMergeSupport ProcessModel::mergeGPUData(std::vector<ProcessSnap
 
     // Query per-process GPU counters from GPUModel, with the support they were read under (#1210)
     GPUModel::ProcessGPUReading reading = gpuModel->readProcessGPUData();
-    const GpuMergeSupport support{.perProcess = reading.perProcessSupported, .utilization = reading.utilizationSupported};
+    const GpuSupport support{.perProcess = reading.perProcessSupported, .utilization = reading.utilizationSupported};
     auto gpuCounters = std::move(reading.counters);
     if (gpuCounters.empty())
     {
@@ -1020,8 +1025,8 @@ ProcessModel::GpuMergeSupport ProcessModel::mergeGPUData(std::vector<ProcessSnap
     return support;
 }
 
-ProcessModel::GpuMergeSupport ProcessModel::mergeGPUDataContained(std::vector<ProcessSnapshot>& snapshots,
-                                                                  const std::shared_ptr<GPUModel>& gpuModel)
+ProcessModel::GpuSupport ProcessModel::mergeGPUDataContained(std::vector<ProcessSnapshot>& snapshots,
+                                                             const std::shared_ptr<GPUModel>& gpuModel)
 {
     // Uncontained, a throw here (bad_alloc, a DRM parse error, a PDH wrapper) escaped refresh()
     // after the per-process state had already advanced, so a probe that threw every time stopped
@@ -1029,7 +1034,7 @@ ProcessModel::GpuMergeSupport ProcessModel::mergeGPUDataContained(std::vector<Pr
     // without GPU fields for this refresh.
     try
     {
-        const GpuMergeSupport support = mergeGPUData(snapshots, gpuModel);
+        const GpuSupport support = mergeGPUData(snapshots, gpuModel);
         if (m_GpuMergeFailing)
         {
             spdlog::info("ProcessModel: per-process GPU data is being merged again");

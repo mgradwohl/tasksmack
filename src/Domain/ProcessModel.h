@@ -48,6 +48,16 @@ class ProcessModel : public ISamplable
     using Clock = std::chrono::steady_clock;
     using NowFunction = std::function<Clock::time_point()>;
 
+    /// What the GPU probe supplied per process for a snapshot generation (#1210): the support its
+    /// per-process GPU counters were read under, published with the generation.
+    struct GpuSupport
+    {
+        bool perProcess = false;  ///< Per-process GPU data at all
+        bool utilization = false; ///< Per-process utilization among it
+
+        friend bool operator==(const GpuSupport&, const GpuSupport&) = default;
+    };
+
     explicit ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe, NowFunction now = [] { return Clock::now(); });
     ~ProcessModel() override = default;
 
@@ -102,10 +112,13 @@ class ProcessModel : public ISamplable
     /// when a newer generation is available; otherwise returns false and leaves outSnapshots
     /// untouched. With @p outCapabilities, the probe's capabilities published with that generation
     /// are copied into it under the same lock (#1254), so a reader keeps them current at no extra cost.
+    /// With @p outGpuSupport, likewise the GPU support that generation's GPU fields were read under
+    /// (#1210): not the GPU model's current state, which can differ while merges are throttled.
     [[nodiscard]] bool tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
                                                std::shared_ptr<const std::vector<ProcessSnapshot>>& outSnapshots,
                                                std::uint64_t& outVersion,
-                                               Platform::ProcessCapabilities* outCapabilities = nullptr) const;
+                                               Platform::ProcessCapabilities* outCapabilities = nullptr,
+                                               GpuSupport* outGpuSupport = nullptr) const;
 
     /// How many of the watched process's samples are kept for watchedSamplesSince(): every generation
     /// for 6.4 s at the fastest refresh interval, so a reader that polls once per UI frame -- 200 ms
@@ -282,20 +295,12 @@ class ProcessModel : public ISamplable
     /// Requires m_SamplingMutex held.
     void computeSnapshotsLocked(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime);
 
-    /// What the GPU probe supplied per process for a merge (#1210): the support the per-process GPU
-    /// counters were read under, so the generation is stamped with exactly that.
-    struct GpuMergeSupport
-    {
-        bool perProcess = false;
-        bool utilization = false;
-    };
-
-    static GpuMergeSupport mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel);
+    static GpuSupport mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel);
 
     /// mergeGPUData(), contained: a throwing GPU merge must not stop process publication (#1142).
     /// On a throw the snapshots are published without GPU fields, as unsupported. Requires
     /// m_SamplingMutex held.
-    GpuMergeSupport mergeGPUDataContained(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel);
+    GpuSupport mergeGPUDataContained(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel);
 
     /// Records @p sample as the newest watched sample, returning the one it displaced from the ring
     /// (for the caller to destroy after releasing the lock). Requires m_Mutex held exclusively.

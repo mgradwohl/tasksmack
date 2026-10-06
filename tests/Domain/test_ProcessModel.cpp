@@ -2810,6 +2810,41 @@ TEST(ProcessModelTest, CachedGpuDataKeepsTheSupportItWasReadWith)
     EXPECT_TRUE(samples[1].gpuUtilizationSupported); // Read under the earlier support
     ASSERT_NE(samples[1].snapshot, nullptr);
     EXPECT_EQ(samples[1].snapshot->gpuMemoryBytes, 512ULL * 1024 * 1024);
+
+    // The Processes table reads the same support with the generation it draws, not the GPU model's
+    // current (lost) utilization.
+    std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> snapshots;
+    std::uint64_t version = 0;
+    Domain::ProcessModel::GpuSupport support;
+    ASSERT_TRUE(processModel.tryCopySnapshotsIfNewer(0, snapshots, version, nullptr, &support));
+    EXPECT_TRUE(support.perProcess);
+    EXPECT_TRUE(support.utilization);
+}
+
+// #1210: tryCopySnapshotsIfNewer() hands out the GPU support published with the generation.
+TEST(ProcessModelTest, CopiedSnapshotsComeWithTheirGenerationsGpuSupport)
+{
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1000, 500)});
+    processProbe->setTotalCpuTime(100000);
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    caps.hasPerProcessUtilization = false; // NVML-like
+    gpuProbe->withCapabilities(caps);
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+
+    Domain::ProcessModel processModel(std::move(processProbe));
+    processModel.setGPUModel(gpuModel);
+    gpuModel->refresh();
+    processModel.refresh();
+
+    std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> snapshots;
+    std::uint64_t version = 0;
+    Domain::ProcessModel::GpuSupport support{.perProcess = false, .utilization = true};
+    ASSERT_TRUE(processModel.tryCopySnapshotsIfNewer(0, snapshots, version, nullptr, &support));
+    EXPECT_TRUE(support.perProcess);
+    EXPECT_FALSE(support.utilization);
 }
 
 // Edge case: GPU counters with empty list (no GPUs found)

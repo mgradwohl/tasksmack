@@ -304,6 +304,10 @@ class ProcessesPanel : public Panel
     std::uint64_t m_CachedSnapshotVersion = std::numeric_limits<std::uint64_t>::max();
     // The probe's capabilities published with m_CachedRenderSnapshots' generation (#1254).
     Platform::ProcessCapabilities m_CachedCapabilities;
+    // The GPU support m_CachedRenderSnapshots' GPU fields were read under (#1210), copied with them:
+    // the cells are formatted by it, not by the GPU model's current state (m_GpuSupport), which can
+    // differ while GPU merges are throttled. Column defaults and headers follow m_GpuSupport.
+    Domain::ProcessModel::GpuSupport m_CachedGpuSupport;
 
     // Per-frame filter cache: filtered indices, running count, and summary string are rebuilt
     // only when the snapshot version or search term changes (O(1) skip in 59/60 frames).
