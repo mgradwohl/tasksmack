@@ -50,6 +50,12 @@ struct GPUInfo
     std::string driverVersion;
     bool isIntegrated = false;     // Integrated vs discrete
     std::uint32_t deviceIndex = 0; // Vendor-specific index
+    /// Which memory segment the adapter's used/total figures count: true for its shared segment
+    /// (system memory the GPU maps -- a Windows integrated GPU's memory), false for dedicated VRAM
+    /// (every discrete GPU, and an APU's carve-out on Linux, where NVML/ROCm SMI/DRM have no shared
+    /// segment). Set by the probe that reads the figure, so per-process memory is counted against
+    /// the same segment whatever its value -- a 0 shared reading is a reading, not "no segment" (#1164).
+    bool memoryIsShared = false;
     /// The sensor metrics this particular adapter reports (temperature, hotspot, power, clocks,
     /// fan, PCIe, encoder/decoder); the other fields are not used. GPUCapabilities from a probe
     /// describes the probe as a whole, so on a hybrid Windows laptop NVML's capabilities applied to
@@ -142,8 +148,12 @@ struct ProcessGPUCounters
     std::int32_t pid = 0;
     std::string gpuId; // Which GPU
 
-    // Memory allocated by process (bytes)
-    std::uint64_t gpuMemoryBytes = 0;
+    // Memory allocated by the process on this GPU (bytes), kept apart as the adapter's own figures
+    // are (#1164): dedicated is the GPU's own memory (VRAM; what NVML and ROCm SMI report per
+    // process), shared is system memory the GPU maps for it (Windows' shared segment). Domain
+    // compares each with the adapter's matching figure, so neither is summed into the other here.
+    std::uint64_t gpuMemoryBytes = 0;       // dedicated
+    std::uint64_t gpuSharedMemoryBytes = 0; // shared (0 where the platform has no such segment)
 
     // Utilization attributed to this process (0-100, instantaneous)
     double gpuUtilPercent = 0.0;

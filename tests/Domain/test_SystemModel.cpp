@@ -18,6 +18,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -1122,6 +1123,44 @@ TEST(SystemModelTest, MaxHistorySecondsClamped)
     // NaN maps to the minimum instead of passing through the clamp (#1325)
     model.setMaxHistorySeconds(std::numeric_limits<double>::quiet_NaN());
     EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), Domain::Sampling::HISTORY_SECONDS_MIN);
+}
+
+// #1176: maxHistorySeconds() reads under the lock setMaxHistorySeconds() writes under, so reading it
+// while another thread changes it (and samples) is no data race. Run under the tsan preset to check;
+// elsewhere it checks every value read is one of those written.
+TEST(SystemModelTest, MaxHistorySecondsIsSafeToReadWhileItChanges)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    probe->setCounters(makeSystemCounters(makeCpuCounters(100, 0, 50, 500), makeMemoryCounters(1024, 512)));
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+
+    constexpr double SHORT_WINDOW = 60.0;
+    constexpr double LONG_WINDOW = 600.0;
+    constexpr int ITERATIONS = 500;
+    std::atomic<bool> done{false};
+    std::thread writer(
+        [&model, &done]()
+        {
+            for (int i = 0; i < ITERATIONS; ++i)
+            {
+                model.setMaxHistorySeconds((i % 2 == 0) ? SHORT_WINDOW : LONG_WINDOW);
+                model.refresh();
+            }
+            done = true;
+        });
+
+    bool onlyWrittenValues = true;
+    while (!done)
+    {
+        const double seconds = model.maxHistorySeconds();
+        onlyWrittenValues = onlyWrittenValues &&
+                            (seconds == SHORT_WINDOW || seconds == LONG_WINDOW || seconds == Domain::Sampling::HISTORY_SECONDS_DEFAULT);
+    }
+    writer.join();
+
+    EXPECT_TRUE(onlyWrittenValues);
+    EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), LONG_WINDOW); // the last write
 }
 
 // #1145: a window change republishes the trimmed history at once instead of leaving the old window's

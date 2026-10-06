@@ -1,16 +1,15 @@
 #pragma once
 
 #include "App/UserConfig.h"
-#include "Core/Application.h"
-#include "Core/ApplicationEvents.h"
 #include "UI/Theme.h"
 
 namespace App
 {
 
 /// The one way to change the UI font size at runtime, used by both the Settings dialog and the
-/// Ctrl+= / Ctrl+- shortcuts (#1076). Updates the saved setting and the theme, then raises
-/// FontSizeChangedEvent so font-dependent caches rebuild. Does nothing if neither changes.
+/// Ctrl+= / Ctrl+- shortcuts (#1076). Updates the saved setting and the theme. Does nothing if
+/// neither changes. No event is raised (#1178): font-dependent caches compare the font and
+/// UI::Theme::fontGeneration() each frame and rebuild themselves, and nothing needs re-sampling.
 inline void changeFontSize(UI::FontSize size)
 {
     auto& settings = UserConfig::get().settings();
@@ -22,8 +21,6 @@ inline void changeFontSize(UI::FontSize size)
 
     settings.fontSize = size;
     theme.setFontSize(size);
-    Core::FontSizeChangedEvent event(static_cast<int>(size));
-    Core::Application::get().raiseEvent(event);
 }
 
 } // namespace App

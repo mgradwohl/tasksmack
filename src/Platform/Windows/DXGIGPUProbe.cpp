@@ -154,6 +154,7 @@ std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
 
                 // Determine if integrated
                 info.isIntegrated = isIntegratedGPU(adapter.get());
+                info.memoryIsShared = adapterMemoryIsShared(info.isIntegrated); // What its used figure counts (#1164)
 
                 // Device index
                 info.deviceIndex = adapterIndex;

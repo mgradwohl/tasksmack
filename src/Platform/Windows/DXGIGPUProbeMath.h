@@ -97,13 +97,22 @@ struct AdapterTypeBits
     return !adapterType.has_value() || (!adapterType->softwareDevice && !adapterType->indirectDisplayDevice);
 }
 
+/// Whether an adapter's memory figures (size, and the PDH used bytes WindowsGPUProbe assigns) count
+/// its shared segment: an integrated GPU's memory is shared system memory, a discrete GPU's is its
+/// dedicated VRAM. Published as GPUInfo::memoryIsShared so per-process memory counts the same
+/// segment, a 0 shared reading included (#1164).
+[[nodiscard]] constexpr bool adapterMemoryIsShared(bool isIntegrated)
+{
+    return isIntegrated;
+}
+
 /// An adapter's memory size, from DXGI_ADAPTER_DESC1: the shared system memory an integrated GPU
 /// may use, or a discrete GPU's dedicated VRAM. Fixed for the adapter's lifetime, unlike the
 /// per-process budget QueryVideoMemoryInfo reports, which moved over time and made the GPU tab's
 /// total disagree with its header (16 GB vs 17.2 GB on an Arc 140T, #1029).
 [[nodiscard]] constexpr uint64_t adapterMemoryTotalBytes(bool isIntegrated, uint64_t dedicatedVideoMemory, uint64_t sharedSystemMemory)
 {
-    return isIntegrated ? sharedSystemMemory : dedicatedVideoMemory;
+    return adapterMemoryIsShared(isIntegrated) ? sharedSystemMemory : dedicatedVideoMemory;
 }
 
 /// The counters DXGIGPUProbe reads for one adapter: its id and memory size. DXGI reads neither

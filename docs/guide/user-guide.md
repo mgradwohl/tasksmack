@@ -109,7 +109,7 @@ The System Metrics panel displays real-time and historical charts for:
 - **Swap** — swap usage percentage history
 - **Storage** — aggregate and per-device throughput
 - **Network** — aggregate and per-interface throughput, totals, status, and link speed
-- **GPU** — device utilization, memory, temperature, power, clocks, and engine data when available. Each GPU shows only the sensors it reports, so an integrated GPU beside a discrete one doesn't get the discrete GPU's power or fan charts. On Linux, a GPU that has gone to sleep to save power (common for the discrete GPU on hybrid laptops) is labelled **(Sleeping)** and is not sampled until it wakes, so TaskSmack's periodic updates don't keep it awake; its readings show N/A meanwhile. Detecting GPUs at startup can still wake it once. A GPU that is asleep when TaskSmack starts shows the sensor charts its driver supports in general until it first wakes, then only its own. The Overview header's **VRAM** figure counts discrete GPUs only, since an integrated GPU's memory is system RAM
+- **GPU** — device utilization, memory, temperature, power, clocks, and engine data when available. Each GPU shows only the sensors it reports, so an integrated GPU beside a discrete one doesn't get the discrete GPU's power or fan charts. On Linux, a GPU that has gone to sleep to save power (common for the discrete GPU on hybrid laptops) is labelled **(Sleeping)** and is not sampled until it wakes, so TaskSmack's periodic updates don't keep it awake; its readings show N/A meanwhile. Detecting an NVIDIA GPU at startup doesn't wake it either: until it first wakes it is listed under the model name its driver reports (or "NVIDIA GPU"), and TaskSmack asks NVML about it only once it is awake. On WSL, in a container that hides the PCI devices, or with an NVIDIA driver too old to look a GPU up by PCI address, startup detection can still wake it once. A GPU that is asleep when TaskSmack starts shows the sensor charts its driver supports in general until it first wakes, then only its own. The Overview header's **VRAM** figure counts discrete GPUs only, since an integrated GPU's memory is system RAM
 - **Battery** — charge, power flow, remaining time, and health when present
 - **Load average** (Linux only) — 1, 5, and 15-minute load averages
 - **I/O wait** (Linux only) — percentage of CPU time spent waiting for I/O
@@ -163,7 +163,7 @@ TaskSmack combines operating-system GPU APIs with optional vendor libraries:
 
 **AMD GPUs on Linux** (ROCm SMI): an APU's integrated GPU is recognised from the graphics-core version amdgpu publishes in sysfs (`ip_discovery`), or from its PCI device ID on kernels without it, so it is labelled integrated and its shared memory isn't counted as VRAM. An APU generation newer than TaskSmack's list still shows as discrete.
 
-**Per-process GPU utilisation** sums utilisation across all GPUs, so a process working across two GPUs can legitimately show GPU% > 100 %.
+**Per-process GPU figures** are counted the way the GPU tab counts each GPU. GPU% is the process's utilisation of the busiest GPU it uses (0–100 %). GPU memory counts dedicated memory on a discrete GPU and, on Windows, shared memory on an integrated one, added up across GPUs. Process Details also lists dedicated and shared memory separately when the process has shared memory, which only Windows reports.
 
 The UI shows only the metrics exposed by the available backend. If no backend discovers a usable GPU, GPU sections are hidden.
 

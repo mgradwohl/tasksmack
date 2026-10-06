@@ -16,8 +16,6 @@ enum class EventType : uint8_t
     ProcessSelected,
     RefreshRateChanged,
     HistoryDurationChanged,
-    ThemeChanged,
-    FontSizeChanged,
     ActiveTabChanged,
     OpenSettings,
     OpenAbout,

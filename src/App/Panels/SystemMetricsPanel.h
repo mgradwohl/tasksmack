@@ -26,6 +26,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace App
@@ -59,11 +60,13 @@ class SystemMetricsPanel : public Panel
     /// Request an immediate refresh.
     void requestRefresh();
 
-    /// Inject process model for aggregated system histories (non-owning, read-only: ProcessesPanel
-    /// owns it and sets its history length, #1078).
-    void setProcessModel(Domain::ProcessModel* model)
+    /// Inject process model for aggregated system histories (read-only: ProcessesPanel owns it and
+    /// sets its history length, #1078). Held as a weak_ptr, so once ProcessesPanel releases the
+    /// model (its onDetach) this panel sees no model rather than a dangling one (#1176). Cleared on
+    /// this panel's own detach.
+    void setProcessModel(std::weak_ptr<Domain::ProcessModel> model)
     {
-        m_ProcessModel = model;
+        m_ProcessModel = std::move(model);
     }
 
     /// Render the panel (with ImGui window wrapper).
@@ -104,7 +107,9 @@ class SystemMetricsPanel : public Panel
     std::shared_ptr<Domain::SystemModel> m_Model;
     std::shared_ptr<Domain::StorageModel> m_StorageModel;
     std::shared_ptr<Domain::GPUModel> m_GPUModel;
-    Domain::ProcessModel* m_ProcessModel = nullptr; // non-owning
+    // Owned by ProcessesPanel; locked where used, so its lifetime never depends on panel detach
+    // order (#1176).
+    std::weak_ptr<Domain::ProcessModel> m_ProcessModel;
     std::shared_ptr<const Domain::SystemPublication> m_SystemPublication;
     std::shared_ptr<const Domain::StoragePublication> m_StoragePublication;
     std::shared_ptr<const Domain::GPUPublication> m_GPUPublication;

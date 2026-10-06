@@ -16,10 +16,10 @@ namespace
 
 // ========== Concrete event types for testing ==========
 
-class ThemeChangedEvent : public Event
+class OtherAppEvent : public Event
 {
   public:
-    EVENT_CLASS_TYPE(ThemeChanged) // NOLINT(cppcoreguidelines-macro-usage)
+    EVENT_CLASS_TYPE(OpenAbout) // NOLINT(cppcoreguidelines-macro-usage)
 };
 
 /// Flips an external flag on destruction, so a test can observe whether the derived
@@ -39,7 +39,7 @@ class DestructorTrackingEvent : public Event
     DestructorTrackingEvent(DestructorTrackingEvent&&) = delete;
     DestructorTrackingEvent& operator=(DestructorTrackingEvent&&) = delete;
 
-    EVENT_CLASS_TYPE(ThemeChanged) // NOLINT(cppcoreguidelines-macro-usage)
+    EVENT_CLASS_TYPE(OpenAbout) // NOLINT(cppcoreguidelines-macro-usage)
 
   private:
     bool& m_DestroyedFlag;
@@ -103,7 +103,7 @@ TEST(EventTest, ToStringReturnsGetName)
 TEST(EventTest, DifferentEventTypesAreDistinct)
 {
     WindowCloseEvent wc;
-    ThemeChangedEvent tc;
+    OtherAppEvent tc;
     EXPECT_NE(wc.getEventType(), tc.getEventType());
     EXPECT_STRNE(wc.getName(), tc.getName());
 }
@@ -134,8 +134,8 @@ TEST(EventDispatcherTest, DispatchNonMatchingTypeReturnsFalse)
     EventDispatcher dispatcher(ev);
 
     bool handlerCalled = false;
-    const bool dispatched = dispatcher.dispatch<ThemeChangedEvent>(
-        [&handlerCalled](ThemeChangedEvent& /*e*/) -> bool
+    const bool dispatched = dispatcher.dispatch<OtherAppEvent>(
+        [&handlerCalled](OtherAppEvent& /*e*/) -> bool
         {
             handlerCalled = true;
             return true;
