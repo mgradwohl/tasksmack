@@ -14,6 +14,7 @@
 #include "Domain/GPUModel.h"
 #include "Domain/Numeric.h"
 #include "Domain/ProcessModel.h"
+#include "Domain/SamplingConfig.h"
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
 #include "Platform/Factory.h"
@@ -265,7 +266,8 @@ void SystemMetricsPanel::onEvent(Core::Event& event)
     dispatcher.dispatch<Core::HistoryDurationChangedEvent>(
         [this](Core::HistoryDurationChangedEvent& e)
         {
-            const double seconds = Domain::Numeric::toDouble(e.getSeconds());
+            // Clamped as the models clamp it, so the charts' axes span the window the models keep (#1145).
+            const double seconds = Domain::Sampling::clampHistorySeconds(Domain::Numeric::toDouble(e.getSeconds()));
             // Whole seconds, so anything under half a second apart is the same setting.
             if (std::abs(seconds - m_MaxHistorySeconds) < 0.5)
             {
@@ -466,6 +468,7 @@ void SystemMetricsPanel::renderContent()
                     .lastDeltaSeconds = m_LastDeltaSeconds,
                     .refreshInterval = m_RefreshInterval,
                     .smoothedGPUs = &m_SmoothedGPUs,
+                    .cache = &m_GpuFrameCache,
                 };
                 {
                     const UI::Widgets::TabContentScope content("##GpuContent");
@@ -503,6 +506,7 @@ void SystemMetricsPanel::renderContent()
                     .showAllInterfaces = &m_ShowAllInterfaces,
                     .interfacesWithTraffic = &m_InterfacesWithTraffic,
                     .fillState = &m_NetworkFill,
+                    .cache = &m_NetworkFrameCache,
                 };
                 {
                     const UI::Widgets::TabContentScope content("##NetworkContent");
@@ -532,18 +536,45 @@ void SystemMetricsPanel::renderOverview()
     updateSmoothedCpu(snap, m_LastDeltaSeconds);
     updateSmoothedMemory(snap, m_LastDeltaSeconds);
 
-    // Header line: CPU Model | Cores | Freq | Uptime (right-aligned)
-    // Format uptime string
-    const std::string uptimeStr = UI::Format::formatUptimeShort(snap.uptimeSeconds);
+    // Header line: CPU Model | Cores | Freq | Uptime (right-aligned). Its strings come from the
+    // publications and the process count, so they are rebuilt only when one of those changes (#1171).
+    const std::size_t processCount = (m_ProcessModel != nullptr) ? m_ProcessModel->processCount() : 0;
+    const std::uint64_t systemVersion = m_SystemPublication ? m_SystemPublication->version : 0;
+    const std::uint64_t gpuVersion = m_GPUPublication ? m_GPUPublication->version : 0;
+    if (!m_OverviewHeader.valid || m_OverviewHeader.systemVersion != systemVersion || m_OverviewHeader.gpuVersion != gpuVersion ||
+        m_OverviewHeader.processCount != processCount || m_OverviewHeader.hasProcessModel != (m_ProcessModel != nullptr))
+    {
+        // Built in a fresh OverviewHeaderText and moved in whole, validity last: a render exception is
+        // caught and the app carries on, so a rebuild that throws part-way must leave the cache stale.
+        OverviewHeaderText fresh;
+        fresh.uptime = UI::Format::formatUptimeShort(snap.uptimeSeconds);
 
-    // Display: "CPU Model (N logical processors @ X.XX GHz)     Uptime: Xd Yh Zm"
-    // The count is of logical processors, not cores (#1203).
-    const std::string coreInfo =
-        UI::Format::formatLogicalProcessorSummary(snap.coreCount, (snap.cpuFreqMHz > 0) ? Domain::Numeric::toDouble(snap.cpuFreqMHz) : 0.0);
+        // Display: "CPU Model (N logical processors @ X.XX GHz)     Uptime: Xd Yh Zm"
+        // The count is of logical processors, not cores (#1203).
+        fresh.coreInfo = UI::Format::formatLogicalProcessorSummary(
+            snap.coreCount, (snap.cpuFreqMHz > 0) ? Domain::Numeric::toDouble(snap.cpuFreqMHz) : 0.0);
 
-    const std::string processStr = (m_ProcessModel != nullptr)
-                                     ? std::format("Processes: {}", UI::Format::formatIntLocalized(m_ProcessModel->processCount()))
-                                     : std::string{};
+        fresh.processes =
+            (m_ProcessModel != nullptr) ? std::format("Processes: {}", UI::Format::formatIntLocalized(processCount)) : std::string{};
+
+        // Total dedicated VRAM: discrete GPUs only, an integrated GPU's "memory" being system RAM (#1114).
+        const std::uint64_t totalVramBytes = m_GPUPublication ? GpuSection::totalDedicatedVramBytes(m_GPUPublication->snapshots) : 0;
+        // RAM and VRAM, appended to the CPU line
+        fresh.memory = (totalVramBytes > 0) ? std::format(", {} RAM, {} VRAM",
+                                                          UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes)),
+                                                          UI::Format::formatBytes(static_cast<double>(totalVramBytes)))
+                                            : std::format(", {} RAM", UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes)));
+        fresh.systemVersion = systemVersion;
+        fresh.gpuVersion = gpuVersion;
+        fresh.processCount = processCount;
+        fresh.hasProcessModel = (m_ProcessModel != nullptr);
+        fresh.valid = true;
+        m_OverviewHeader = std::move(fresh);
+    }
+    const std::string& uptimeStr = m_OverviewHeader.uptime;
+    const std::string& coreInfo = m_OverviewHeader.coreInfo;
+    const std::string& processStr = m_OverviewHeader.processes;
+    const std::string& memoryStr = m_OverviewHeader.memory;
 
     const ImGuiStyle& style = ImGui::GetStyle();
     const float availWidth = ImGui::GetContentRegionAvail().x;
@@ -551,22 +582,6 @@ void SystemMetricsPanel::renderOverview()
     const float processWidth = processStr.empty() ? 0.0F : ImGui::CalcTextSize(processStr.c_str()).x;
     const float spacer = (!processStr.empty() && !uptimeStr.empty()) ? style.ItemSpacing.x : 0.0F;
     const float rightBlockWidth = uptimeWidth + processWidth + spacer;
-
-    // Total dedicated VRAM: discrete GPUs only, an integrated GPU's "memory" being system RAM (#1114).
-    const std::uint64_t totalVramBytes = m_GPUPublication ? GpuSection::totalDedicatedVramBytes(m_GPUPublication->snapshots) : 0;
-
-    // Format RAM and VRAM info to append to CPU line
-    std::string memoryStr;
-    if (totalVramBytes > 0)
-    {
-        memoryStr = std::format(", {} RAM, {} VRAM",
-                                UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes)),
-                                UI::Format::formatBytes(static_cast<double>(totalVramBytes)));
-    }
-    else
-    {
-        memoryStr = std::format(", {} RAM", UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes)));
-    }
 
     // CPU model with core count, frequency, RAM, and VRAM
     ImGui::TextUnformatted(snap.cpuModel.c_str());
@@ -882,11 +897,11 @@ void SystemMetricsPanel::renderOverview()
             const auto powerHist = UI::Widgets::tailAlignedSpan(m_ProcessPowerHistory, powerCount).values;
 
             // Battery history, with the model's "no reading" value (-1) as NaN: a gap in the line,
-            // not a dive to 0 %.
-            std::vector<float> batteryHist;
+            // not a dive to 0 %. Rebuilt into a member each frame, reusing its capacity (#1171).
+            std::vector<float>& batteryHist = m_BatteryChartHistory;
+            batteryHist.clear();
             if (batteryCount > 0)
             {
-                batteryHist.reserve(batteryCount);
                 const auto startIt = batteryHistFloat.end() - static_cast<std::ptrdiff_t>(batteryCount);
                 for (auto it = startIt; it != batteryHistFloat.end(); ++it)
                 {
@@ -907,9 +922,14 @@ void SystemMetricsPanel::renderOverview()
                 updateSmoothedPower(targetPower, targetBattery, m_LastDeltaSeconds);
             }
 
-            // One upper bound for the power axis and its bar, so the bar and line agree (#1003).
+            // One upper bound for the power axis and its bar, so the bar and line agree (#1003). Sized
+            // to the samples the window shows, not the one trimming keeps left of it (#1145), and to the
+            // bar's smoothed value, which can still be easing down from a peak that has just left it.
             const double powerAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-                "##PowerBatteryHistory", UI::Widgets::maxOfSeries(powerHist), UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS);
+                "##PowerBatteryHistory",
+                UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(powerTimeData, axis.xMin, powerHist),
+                                               {UI::Widgets::currentIfAvailable(hasProcessPower, m_SmoothedPower.watts)}),
+                UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS);
 
             // Build NowBars
             NowBarList bars;
@@ -1143,10 +1163,17 @@ void SystemMetricsPanel::renderOverview()
         // Threads and handles are counts on the left axis; page faults are a rate, on their own
         // right-hand axis, so a fault spike no longer flattens the count lines (#1024). Each bar is
         // scaled to its series' axis, so a bar and its line show a value at the same height (#1003).
+        // Both are sized to the samples in the window, not ones left of it (#1145), and to their bars'
+        // smoothed values, which can still be easing down from a peak that has just left it.
         const double countAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-            "##ResourcesHistory", UI::Widgets::maxOfSeries(threadData, handleData), UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
+            "##ResourcesHistory",
+            UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axis.xMin, threadData, handleData),
+                                           {m_SmoothedResources.threads, m_SmoothedResources.handles}),
+            UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
         const double faultAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-            "##ResourcesHistory/Y2", UI::Widgets::maxOfSeries(faultData), UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
+            "##ResourcesHistory/Y2",
+            UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axis.xMin, faultData), {m_SmoothedResources.pageFaults}),
+            UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
 
 #ifdef _WIN32
         constexpr const char* handleLabel = "Handles";
@@ -1156,8 +1183,8 @@ void SystemMetricsPanel::renderOverview()
 
         const NowBar threadsBar{.valueText = UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.threads)),
                                 .label = THREADS_LABEL,
-                                .tooltipText = UI::Widgets::formatTooltipRow(
-                                    THREADS_LABEL, UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.threads))),
+                                // The fallback tooltip, "Threads: <value>", says it all (#1019)
+                                .tooltipText = {},
                                 .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.threads, countAxisUpper),
                                 .color = theme.scheme().chartCpu};
         const NowBar faultsBar{.valueText = UI::Format::formatCountPerSecond(m_SmoothedResources.pageFaults),
@@ -1165,12 +1192,11 @@ void SystemMetricsPanel::renderOverview()
                                .tooltipText = {},
                                .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.pageFaults, faultAxisUpper),
                                .color = theme.accentColor(3)};
-        const NowBar handlesBar{
-            .valueText = UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.handles)),
-            .label = handleLabel,
-            .tooltipText = std::format("{}: {}", handleLabel, UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.handles))),
-            .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.handles, countAxisUpper),
-            .color = theme.scheme().chartMemory};
+        const NowBar handlesBar{.valueText = UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.handles)),
+                                .label = handleLabel,
+                                .tooltipText = {}, // The fallback, "<label>: <value>", says it all (#1019)
+                                .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.handles, countAxisUpper),
+                                .color = theme.scheme().chartMemory};
 
         auto plot = [&]()
         {

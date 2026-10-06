@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <format>
 #include <limits>
 #include <optional>
@@ -79,9 +80,19 @@ void renderCpuCoresSection(RenderContext& ctx)
     auto& theme = UI::Theme::get();
 
     // CPU model header
-    // The count is of logical processors, not cores (#1203).
-    const std::string coreInfo =
-        UI::Format::formatLogicalProcessorSummary(snap.coreCount, (snap.cpuFreqMHz > 0) ? Domain::Numeric::toDouble(snap.cpuFreqMHz) : 0.0);
+    // The count is of logical processors, not cores (#1203). Formatted when its inputs change, not
+    // every frame (#1171). UI thread only. The text is built before the keys are committed: a render
+    // exception is caught and the app carries on, so a failed rebuild must be retried next frame.
+    static std::string coreInfo;
+    static int coreInfoCount = -1;
+    static std::uint64_t coreInfoFreqMHz = 0;
+    if (snap.coreCount != coreInfoCount || snap.cpuFreqMHz != coreInfoFreqMHz)
+    {
+        coreInfo = UI::Format::formatLogicalProcessorSummary(snap.coreCount,
+                                                             (snap.cpuFreqMHz > 0) ? Domain::Numeric::toDouble(snap.cpuFreqMHz) : 0.0);
+        coreInfoCount = snap.coreCount;
+        coreInfoFreqMHz = snap.cpuFreqMHz;
+    }
     ImGui::TextUnformatted(snap.cpuModel.c_str());
     ImGui::SameLine(0, 0);
     ImGui::TextUnformatted(coreInfo.c_str());
@@ -111,6 +122,11 @@ void renderCpuCoresSection(RenderContext& ctx)
         return;
     }
     static const std::vector<float> noSamples;
+
+    // Every core's samples share these timestamps, so one time axis serves them all: each core takes
+    // the tail of it its samples cover, rather than rebuilding an identical axis per core per frame --
+    // O(cores x history) work, and one pooled buffer per core held at its peak size (#1173).
+    const auto sharedTimeData = frameTimeAxis(timestamps, timestamps.size(), nowSeconds);
 
     // Each core's heading ("<icon> Core N") and series name ("Core N"), built once per core count
     // rather than with two std::format calls per core every frame (#1018). UI thread only.
@@ -258,7 +274,7 @@ void renderCpuCoresSection(RenderContext& ctx)
                             }
                             const float measuredOverhead = *cachedOverhead;
 
-                            const auto timeData = frameTimeAxis(timestamps, samples.size(), nowSeconds);
+                            const auto timeData = tailAlignedSpan(sharedTimeData, samples.size()).values;
                             const float plotHeight = std::max(minCorePlotHeight(), cellHeight - measuredOverhead);
 
                             // timeData holds the newest min(samples, timestamps) entries; take the same

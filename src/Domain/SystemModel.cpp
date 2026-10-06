@@ -165,6 +165,13 @@ void SystemModel::setMaxHistorySeconds(double seconds)
     {
         trimHistory(m_Timestamps.latest());
     }
+    // Republish the trimmed history now rather than at the next sample, which can be several
+    // seconds away while sampling is throttled: until then the charts kept the old window's data,
+    // scale and peaks (#1145). Nothing is published before the first sample.
+    if (m_PublicationVersion != 0)
+    {
+        publish();
+    }
 }
 
 void SystemModel::setMaxSaneNetworkRate(double bytesPerSecond) noexcept

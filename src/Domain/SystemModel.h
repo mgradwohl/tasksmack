@@ -80,7 +80,9 @@ class SystemModel : public ISamplable
     /// What the underlying probe supports.
     [[nodiscard]] const Platform::SystemCapabilities& capabilities() const;
 
-    /// Configure maximum retained history duration (seconds).
+    /// Configure maximum retained history duration (seconds), clamped to SamplingConfig's range.
+    /// Trims the history to the new window and republishes it at once, once anything has been
+    /// published, rather than leaving the old window on show until the next sample (#1145).
     void setMaxHistorySeconds(double seconds);
     [[nodiscard]] double maxHistorySeconds() const
     {
