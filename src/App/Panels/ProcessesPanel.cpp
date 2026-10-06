@@ -432,7 +432,7 @@ void renderLeftAlignedText(std::string_view text, const ProcessRowFormat::LazyTe
 // ============================================================================
 //
 // Every column but PID and Name is drawn by one small function, looked up by
-// column in CELL_RENDERERS below: its format (which RowFormatCache or snapshot
+// column in cellRenderers() below: its format (which RowFormatCache or snapshot
 // field), alignment (left, right, centred, or decimal-aligned against a unit
 // slot) and N/A handling live in that one entry. PID (the row's selectable) and
 // Name (the tree indent and expander) need the panel's selection and tree
@@ -557,8 +557,9 @@ void typeCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, co
     }
 }
 
-/// The renderer for every column but PID and Name, indexed by toIndex(column).
-[[nodiscard]] consteval auto makeCellRenderers() -> std::array<ProcessCellRenderer, processColumnCount()>
+/// The renderer for every column but PID and Name, indexed by toIndex(column). constexpr rather than
+/// consteval: see cellRenderers() for why it is also called outside a constant expression.
+[[nodiscard]] constexpr auto makeCellRenderers() noexcept -> std::array<ProcessCellRenderer, processColumnCount()>
 {
     using Snapshot = Domain::ProcessSnapshot;
     using Widths = ProcessCellWidths;
@@ -616,16 +617,30 @@ void typeCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, co
     return renderers;
 }
 
-constexpr std::array<ProcessCellRenderer, processColumnCount()> CELL_RENDERERS = makeCellRenderers();
+/// The table of makeCellRenderers(), built once.
+///
+/// Deliberately a function-local `static const`, not a `constexpr` table, with makeCellRenderers()
+/// not consteval. CodeQL does not follow calls made only in a constant-evaluated initializer, so it
+/// reported every renderer, and makeCellRenderers() itself, as an unused static function
+/// (cpp/unused-static-function). As an ordinary initializer the call is in its call graph. It costs
+/// nothing at run time: the initializer is a constant expression, so the compiler constant-
+/// initializes the table (no dynamic initialization, so no guard, and no allocation), and each cell
+/// is still one array index. Function-local rather than namespace-scope, where a non-constexpr
+/// initializer reads to clang-tidy as one that may throw (bugprone-throwing-static-initialization).
+[[nodiscard]] const std::array<ProcessCellRenderer, processColumnCount()>& cellRenderers() noexcept
+{
+    static const std::array<ProcessCellRenderer, processColumnCount()> renderers = makeCellRenderers();
+    return renderers;
+}
 
 // Every column but PID and Name has a renderer, and those two have none: a
 // column added to ProcessColumn without one fails to compile here instead of
-// drawing an empty cell.
+// drawing an empty cell. Checked on makeCellRenderers() itself, since cellRenderers() is not constexpr.
 static_assert(std::ranges::all_of(allProcessColumns(),
                                   [](ProcessColumn col)
                                   {
                                       const bool drawnByRow = (col == ProcessColumn::PID) || (col == ProcessColumn::Name);
-                                      return (CELL_RENDERERS[toIndex(col)] != nullptr) != drawnByRow;
+                                      return (makeCellRenderers()[toIndex(col)] != nullptr) != drawnByRow;
                                   }),
               "every Processes column but PID and Name needs a cell renderer "
               "in makeCellRenderers()");
@@ -1671,7 +1686,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             renderNameCell(proc, fmt, depth, hasChildren, isExpanded);
             continue;
         }
-        CELL_RENDERERS[toIndex(col)](proc, fmt, m_TextSizeCache.cells);
+        cellRenderers()[toIndex(col)](proc, fmt, m_TextSizeCache.cells);
     }
 }
 
