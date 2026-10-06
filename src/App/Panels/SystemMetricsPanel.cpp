@@ -225,6 +225,7 @@ void SystemMetricsPanel::onAttach()
 void SystemMetricsPanel::onDetach()
 {
     m_Sampler.reset();
+    m_ProcessModel.reset();
     m_GPUPublication.reset();
     m_StoragePublication.reset();
     m_SystemPublication.reset();
@@ -361,10 +362,10 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
         m_GPUPublication = m_GPUModel->publication();
         m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
     }
-    if (m_ProcessModel != nullptr)
+    if (const auto processModel = m_ProcessModel.lock(); processModel != nullptr)
     {
         Domain::ProcessSystemHistories histories;
-        if (m_ProcessModel->tryCopySystemHistoriesIfNewer(m_ProcessHistoryVersion, histories))
+        if (processModel->tryCopySystemHistoriesIfNewer(m_ProcessHistoryVersion, histories))
         {
             m_ProcessHistoryVersion = histories.version;
             m_ProcessHistoryTimestamps = std::move(histories.timestamps);
@@ -539,6 +540,8 @@ void SystemMetricsPanel::renderContent()
 void SystemMetricsPanel::renderOverview()
 {
     const auto& snap = m_CachedSnapshot; // See renderContent() (#1017)
+    // Held for the frame: ProcessesPanel owns the model and may already have released it (#1176).
+    const std::shared_ptr<Domain::ProcessModel> processModel = m_ProcessModel.lock();
 
     // Every chart on this tab shares the height available, between a font-relative minimum and
     // maximum (UI/HistoryPlotHeight.h), instead of a fixed 180px that left up to a third of a tall
@@ -555,11 +558,11 @@ void SystemMetricsPanel::renderOverview()
 
     // Header line: CPU Model | Cores | Freq | Uptime (right-aligned). Its strings come from the
     // publications and the process count, so they are rebuilt only when one of those changes (#1171).
-    const std::size_t processCount = (m_ProcessModel != nullptr) ? m_ProcessModel->processCount() : 0;
+    const std::size_t processCount = (processModel != nullptr) ? processModel->processCount() : 0;
     const std::uint64_t systemVersion = m_SystemPublication ? m_SystemPublication->version : 0;
     const std::uint64_t gpuVersion = m_GPUPublication ? m_GPUPublication->version : 0;
     if (!m_OverviewHeader.valid || m_OverviewHeader.systemVersion != systemVersion || m_OverviewHeader.gpuVersion != gpuVersion ||
-        m_OverviewHeader.processCount != processCount || m_OverviewHeader.hasProcessModel != (m_ProcessModel != nullptr))
+        m_OverviewHeader.processCount != processCount || m_OverviewHeader.hasProcessModel != (processModel != nullptr))
     {
         // Built in a fresh OverviewHeaderText and moved in whole, validity last: a render exception is
         // caught and the app carries on, so a rebuild that throws part-way must leave the cache stale.
@@ -572,7 +575,7 @@ void SystemMetricsPanel::renderOverview()
             snap.coreCount, (snap.cpuFreqMHz > 0) ? Domain::Numeric::toDouble(snap.cpuFreqMHz) : 0.0);
 
         fresh.processes =
-            (m_ProcessModel != nullptr) ? std::format("Processes: {}", UI::Format::formatIntLocalized(processCount)) : std::string{};
+            (processModel != nullptr) ? std::format("Processes: {}", UI::Format::formatIntLocalized(processCount)) : std::string{};
 
         // Total dedicated VRAM: discrete GPUs only, an integrated GPU's "memory" being system RAM (#1114).
         const std::uint64_t totalVramBytes = m_GPUPublication ? GpuSection::totalDedicatedVramBytes(m_GPUPublication->snapshots) : 0;
@@ -584,7 +587,7 @@ void SystemMetricsPanel::renderOverview()
         fresh.systemVersion = systemVersion;
         fresh.gpuVersion = gpuVersion;
         fresh.processCount = processCount;
-        fresh.hasProcessModel = (m_ProcessModel != nullptr);
+        fresh.hasProcessModel = (processModel != nullptr);
         fresh.valid = true;
         m_OverviewHeader = std::move(fresh);
     }
@@ -890,7 +893,7 @@ void SystemMetricsPanel::renderOverview()
     // Power & Battery history chart (combines per-process power aggregation with battery charge %).
     // Power is drawn only where the process probe actually measures it: on Windows it does not, and
     // used to show a fabricated figure (#1028). Without it the chart is a plain Battery chart.
-    const bool hasProcessPower = (m_ProcessModel != nullptr) && m_ProcessModel->capabilities().hasPowerUsage;
+    const bool hasProcessPower = (processModel != nullptr) && processModel->capabilities().hasPowerUsage;
     if (hasProcessPower || snap.power.hasBattery)
     {
         // Get power history from ProcessModel (aggregated per-process power)
@@ -1113,7 +1116,7 @@ void SystemMetricsPanel::renderOverview()
     }
 
     // Threads, Page Faults, and Handles/FDs combined (aggregated from processes)
-    if (m_ProcessModel != nullptr)
+    if (processModel != nullptr)
     {
         const auto& procTimestamps = m_ProcessHistoryTimestamps;
         const auto& pageFaultHist = m_ProcessPageFaultsHistory;

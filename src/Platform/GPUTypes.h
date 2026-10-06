@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -50,6 +52,12 @@ struct GPUInfo
     std::string driverVersion;
     bool isIntegrated = false;     // Integrated vs discrete
     std::uint32_t deviceIndex = 0; // Vendor-specific index
+    /// Which memory segment the adapter's used/total figures count: true for its shared segment
+    /// (system memory the GPU maps -- a Windows integrated GPU's memory), false for dedicated VRAM
+    /// (every discrete GPU, and an APU's carve-out on Linux, where NVML/ROCm SMI/DRM have no shared
+    /// segment). Set by the probe that reads the figure, so per-process memory is counted against
+    /// the same segment whatever its value -- a 0 shared reading is a reading, not "no segment" (#1164).
+    bool memoryIsShared = false;
     /// The sensor metrics this particular adapter reports (temperature, hotspot, power, clocks,
     /// fan, PCIe, encoder/decoder); the other fields are not used. GPUCapabilities from a probe
     /// describes the probe as a whole, so on a hybrid Windows laptop NVML's capabilities applied to
@@ -64,6 +72,37 @@ struct GPUInfo
     std::optional<PciLocation> pciLocation;
     /// PCI (device ID << 16) | vendor ID -- NVML's pciDeviceId encoding -- or 0 when unknown (#1091).
     std::uint32_t pciDeviceId = 0;
+};
+
+/// The engine classes DRM fdinfo reports busyness for (the kernel's drm-usage-stats.rst): i915 names
+/// them render/copy/video/video-enhance/compute, xe rcs/bcs/vcs/vecs/ccs (#1267).
+enum class GPUEngineClass : std::uint8_t
+{
+    Render,
+    Copy,
+    Video,
+    VideoEnhance,
+    Compute,
+};
+inline constexpr std::size_t GPU_ENGINE_CLASS_COUNT = 5;
+
+/// One engine class's cumulative busyness for one DRM client. `busy` and `total` are in one unit, so
+/// their changes between two samples give the share of the time the client kept the class busy:
+/// i915 reports busy nanoseconds, and the probe stamps `total` with CLOCK_MONOTONIC nanoseconds as
+/// it reads them; xe reports busy GPU-timestamp cycles together with the GPU timestamp itself.
+struct GPUEngineBusyCounter
+{
+    bool available = false;
+    std::uint64_t busy = 0;
+    std::uint64_t total = 0;
+    std::uint32_t capacity = 1; // Engines of the class (drm-engine-capacity-*; the kernel omits it when 1)
+};
+
+/// One DRM client's (one open DRM file's) cumulative engine busyness, from /proc/<pid>/fdinfo (#1267).
+struct GPUEngineClientCounters
+{
+    std::uint64_t clientId = 0; // drm-client-id: one per open DRM file, shared by dup'd and inherited fds
+    std::array<GPUEngineBusyCounter, GPU_ENGINE_CLASS_COUNT> engines{};
 };
 
 // Raw GPU counters (Platform layer provides raw values only)
@@ -112,6 +151,15 @@ struct GPUCounters
     bool energyAvailable = false;
     std::uint64_t energyMicroJoules = 0;
 
+    // Per-client cumulative engine busyness, for a GPU whose driver reports no utilization of its own
+    // (Intel i915/xe, from each DRM client's fdinfo, #1267). When engineBusyAvailable, Domain derives
+    // utilizationPercent from the clients in both this and the previous sample: per engine class, the
+    // sum of their busy shares over the class's capacity, the busiest class being the GPU's
+    // utilization; no clients means idle. A probe that couldn't see every client (an unreadable /proc,
+    // a walk cut short, every fd directory denied) leaves engineBusyAvailable false. Without a previous sample, utilization is unread.
+    bool engineBusyAvailable = false;
+    std::vector<GPUEngineClientCounters> engineClients;
+
     // Clock speeds (MHz)
     std::uint32_t gpuClockMHz = 0;
     std::uint32_t memoryClockMHz = 0;
@@ -142,8 +190,12 @@ struct ProcessGPUCounters
     std::int32_t pid = 0;
     std::string gpuId; // Which GPU
 
-    // Memory allocated by process (bytes)
-    std::uint64_t gpuMemoryBytes = 0;
+    // Memory allocated by the process on this GPU (bytes), kept apart as the adapter's own figures
+    // are (#1164): dedicated is the GPU's own memory (VRAM; what NVML and ROCm SMI report per
+    // process), shared is system memory the GPU maps for it (Windows' shared segment). Domain
+    // compares each with the adapter's matching figure, so neither is summed into the other here.
+    std::uint64_t gpuMemoryBytes = 0;       // dedicated
+    std::uint64_t gpuSharedMemoryBytes = 0; // shared (0 where the platform has no such segment)
 
     // Utilization attributed to this process (0-100, instantaneous)
     double gpuUtilPercent = 0.0;

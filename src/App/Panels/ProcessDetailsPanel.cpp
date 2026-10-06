@@ -40,6 +40,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -1930,12 +1931,14 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
     // repeating the strings.
     constexpr const char* LABEL_UTILIZATION = "GPU Utilization:";
     constexpr const char* LABEL_MEMORY = "GPU Memory:";
+    constexpr const char* LABEL_DEDICATED = "  Dedicated:";
+    constexpr const char* LABEL_SHARED = "  Shared:";
     constexpr const char* LABEL_DEVICES = "GPU Device(s):";
     constexpr const char* LABEL_ENGINES = "Active Engines:";
     constexpr const char* LABEL_ENCODER = "Video Encoder:";
     constexpr const char* LABEL_DECODER = "Video Decoder:";
-    constexpr auto LABELS =
-        std::to_array<const char*>({LABEL_UTILIZATION, LABEL_MEMORY, LABEL_DEVICES, LABEL_ENGINES, LABEL_ENCODER, LABEL_DECODER});
+    constexpr auto LABELS = std::to_array<const char*>(
+        {LABEL_UTILIZATION, LABEL_MEMORY, LABEL_DEDICATED, LABEL_SHARED, LABEL_DEVICES, LABEL_ENGINES, LABEL_ENCODER, LABEL_DECODER});
 
     // Current GPU metrics
     if (ImGui::BeginTable("GPUCurrentMetrics", 2, ImGuiTableFlags_SizingStretchProp))
@@ -1959,6 +1962,23 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
         const ImVec4 gpuMemColor = theme.scheme().gpuMemory;
         const std::string memStr = UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes);
         ImGui::TextColored(gpuMemColor, "%s", memStr.c_str());
+
+        // GPU Memory counts what each GPU's "used" figure on the GPU tab counts (#1164). Both kinds are
+        // listed beneath it whenever that total doesn't already show them: shared memory is mapped, or
+        // the dedicated bytes aren't what was counted (a shared-segment GPU with no shared use yet).
+        if (proc.gpuSharedMemoryBytes > 0 || proc.gpuDedicatedMemoryBytes != proc.gpuMemoryBytes)
+        {
+            for (const auto& [label, bytes] :
+                 {std::pair{LABEL_DEDICATED, proc.gpuDedicatedMemoryBytes}, std::pair{LABEL_SHARED, proc.gpuSharedMemoryBytes}})
+            {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(label);
+                ImGui::TableNextColumn();
+                const std::string bytesStr = UI::Format::formatBytes(Domain::Numeric::toDouble(bytes));
+                ImGui::TextColored(gpuMemColor, "%s", bytesStr.c_str());
+            }
+        }
 
         // GPU Device(s)
         if (!proc.gpuDevices.empty())
@@ -2033,8 +2053,10 @@ void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& p
         // As in renderGpuCurrentMetricsTable(): the label column is measured from these (#966).
         constexpr const char* LABEL_UTILIZATION = "Utilization:";
         constexpr const char* LABEL_MEMORY = "Memory:";
+        constexpr const char* LABEL_DEDICATED = "  Dedicated:";
+        constexpr const char* LABEL_SHARED = "  Shared:";
         constexpr const char* LABEL_ENGINES = "Engines:";
-        constexpr auto LABELS = std::to_array<const char*>({LABEL_UTILIZATION, LABEL_MEMORY, LABEL_ENGINES});
+        constexpr auto LABELS = std::to_array<const char*>({LABEL_UTILIZATION, LABEL_MEMORY, LABEL_DEDICATED, LABEL_SHARED, LABEL_ENGINES});
         const float labelColumnWidth = UI::Widgets::measureLabelColumnWidth(LABELS);
 
         for (const auto& gpuUsage : proc.perGpuUsage)
@@ -2065,6 +2087,21 @@ void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& p
                     ImGui::TableNextColumn();
                     const std::string memoryStr = UI::Format::formatBytes(static_cast<double>(gpuUsage.memoryBytes));
                     ImGui::TextColored(gpuMemColor, "%s", memoryStr.c_str());
+
+                    // As in renderGpuCurrentMetricsTable(): both kinds whenever the total doesn't show them (#1164).
+                    if (gpuUsage.sharedMemoryBytes > 0 || gpuUsage.dedicatedMemoryBytes != gpuUsage.memoryBytes)
+                    {
+                        for (const auto& [label, bytes] : {std::pair{LABEL_DEDICATED, gpuUsage.dedicatedMemoryBytes},
+                                                           std::pair{LABEL_SHARED, gpuUsage.sharedMemoryBytes}})
+                        {
+                            ImGui::TableNextRow();
+                            ImGui::TableNextColumn();
+                            ImGui::TextUnformatted(label);
+                            ImGui::TableNextColumn();
+                            const std::string bytesStr = UI::Format::formatBytes(Domain::Numeric::toDouble(bytes));
+                            ImGui::TextColored(gpuMemColor, "%s", bytesStr.c_str());
+                        }
+                    }
 
                     if (!gpuUsage.engines.empty())
                     {

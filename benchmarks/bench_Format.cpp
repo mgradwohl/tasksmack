@@ -59,7 +59,9 @@ static void BM_Format_PercentCompact(benchmark::State& state)
 }
 BENCHMARK(BM_Format_PercentCompact);
 
-// Benchmark formatCpuTimeCompact() - called for TIME+ column
+// Benchmark formatDuration() - called for the CPU Time column (the benchmark keeps its old name so it
+// still matches its entry in perf-data/linux-ci-baseline.json; formatCpuTimeCompact() became
+// formatDuration() in #1341)
 static void BM_Format_FormatCpuTimeCompact(benchmark::State& state)
 {
     std::mt19937_64 rng(42);
@@ -68,7 +70,7 @@ static void BM_Format_FormatCpuTimeCompact(benchmark::State& state)
     for (auto _ : state)
     {
         const auto seconds = dist(rng);
-        auto result = UI::Format::formatCpuTimeCompact(static_cast<double>(seconds));
+        auto result = UI::Format::formatDuration(static_cast<double>(seconds));
         benchmark::DoNotOptimize(result.data());
     }
 }
@@ -175,7 +177,7 @@ static void BM_Format_FullProcessRow(benchmark::State& state)
         auto rssStr = UI::Format::formatBytes(static_cast<double>(rssBytes));
         auto virtStr = UI::Format::formatBytes(static_cast<double>(virtBytes));
         auto shrStr = UI::Format::formatBytes(static_cast<double>(sharedBytes));
-        auto timeStr = UI::Format::formatCpuTimeCompact(static_cast<double>(cpuTimeSeconds));
+        auto timeStr = UI::Format::formatDuration(static_cast<double>(cpuTimeSeconds));
         auto threadsStr = UI::Format::formatIntLocalized(threadCount);
         auto ioReadStr = UI::Format::formatBytesPerSec(ioReadRate);
         auto ioWriteStr = UI::Format::formatBytesPerSec(ioWriteRate);

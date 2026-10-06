@@ -131,10 +131,11 @@ class ProcessesPanel : public Panel
     /// rendered this session (in which case the caller should keep whatever it already has).
     [[nodiscard]] std::string captureTableLayout() const;
 
-    /// Access the underlying process model (non-owning).
-    [[nodiscard]] Domain::ProcessModel* processModel() const
+    /// The process model this panel owns, null before onAttach() and after onDetach(). Other panels
+    /// should keep it as a weak_ptr, so they never outlive it (#1176).
+    [[nodiscard]] std::shared_ptr<Domain::ProcessModel> processModel() const
     {
-        return m_ProcessModel.get();
+        return m_ProcessModel;
     }
 
     /// Returns true if the process probe reported reduced privileges at startup.

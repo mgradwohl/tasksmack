@@ -8,12 +8,15 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <clocale>
 #include <cstdint>
+#include <format>
 #include <limits>
 #include <locale>
 #include <random>
 #include <string>
+#include <utility>
 #include <vector>
 
 // =============================================================================
@@ -1615,5 +1618,224 @@ TEST(FormatTest, FormatPercentMatchesPercentCompactFromTen)
     for (const double percent : {10.0, 12.0, 42.0, 99.0, 100.0})
     {
         EXPECT_EQ(UI::Format::formatPercent(percent), UI::Format::percentCompact(percent)) << percent;
+    }
+}
+
+// =============================================================================
+// formatFixedLocalizedTo (#1334): the allocation-free formatter behind every chart axis tick must
+// print exactly what std::format("{:.{}Lf}") prints, in every locale.
+// =============================================================================
+
+namespace
+{
+
+/// Numeric punctuation with a chosen decimal point, separator and grouping, without depending on an
+/// OS locale name.
+class TestNumpunct : public std::numpunct<char>
+{
+  public:
+    TestNumpunct(char decimalPoint, char thousandsSep, std::string grouping)
+        : m_DecimalPoint(decimalPoint), m_ThousandsSep(thousandsSep), m_Grouping(std::move(grouping))
+    {}
+
+  protected:
+    [[nodiscard]] char do_decimal_point() const override
+    {
+        return m_DecimalPoint;
+    }
+    [[nodiscard]] char do_thousands_sep() const override
+    {
+        return m_ThousandsSep;
+    }
+    [[nodiscard]] std::string do_grouping() const override
+    {
+        return m_Grouping;
+    }
+
+  private:
+    char m_DecimalPoint;
+    char m_ThousandsSep;
+    std::string m_Grouping;
+};
+
+/// Makes a locale with TestNumpunct global for one scope and restores the previous one after it.
+class ScopedTestNumpunct
+{
+  public:
+    // std::locale takes ownership of the facet and deletes it with its last copy, which the analyzer
+    // does not see.
+    // NOLINTBEGIN(clang-analyzer-cplusplus.NewDeleteLeaks,cppcoreguidelines-owning-memory)
+    ScopedTestNumpunct(char decimalPoint, char thousandsSep, std::string grouping)
+        : m_Previous(
+              std::locale::global(std::locale(std::locale::classic(), new TestNumpunct(decimalPoint, thousandsSep, std::move(grouping)))))
+    {}
+    // NOLINTEND(clang-analyzer-cplusplus.NewDeleteLeaks,cppcoreguidelines-owning-memory)
+    ~ScopedTestNumpunct()
+    {
+        std::locale::global(m_Previous);
+    }
+    ScopedTestNumpunct(const ScopedTestNumpunct&) = delete;
+    ScopedTestNumpunct& operator=(const ScopedTestNumpunct&) = delete;
+    ScopedTestNumpunct(ScopedTestNumpunct&&) = delete;
+    ScopedTestNumpunct& operator=(ScopedTestNumpunct&&) = delete;
+
+  private:
+    std::locale m_Previous;
+};
+
+[[nodiscard]] std::string fastFixed(double value, int decimals)
+{
+    std::array<char, 512> buffer{}; // Room for 1e300 with its separators
+    const std::size_t length = UI::Format::formatFixedLocalizedTo(buffer.data(), buffer.size(), value, decimals);
+    return {buffer.data(), length};
+}
+
+/// Values covering the sign, -0.0, exact binary halves (which std::format rounds to even), group
+/// boundaries and very large magnitudes, plus random ones across the axis ranges.
+[[nodiscard]] std::vector<double> fixedFormatSamples()
+{
+    std::vector<double> values{0.0,
+                               -0.0,
+                               0.04,
+                               0.05,
+                               0.25,
+                               1.25,
+                               2.5,
+                               -2.5,
+                               3.25,
+                               -0.04,
+                               9.95,
+                               99.95,
+                               999.95,
+                               1000.0,
+                               1023.95,
+                               12345.678,
+                               -12345.678,
+                               123456.0,
+                               1234567.891,
+                               -987654321.5,
+                               1.0e15,
+                               -1.0e15,
+                               1.0e20,
+                               123456789012345678.0,
+                               1.0e300,
+                               5e-324,
+                               0.1,
+                               0.15,
+                               0.35,
+                               1e9 / 3.0,
+                               4398046511104.0};
+    std::mt19937 rng(1334); // NOLINT(bugprone-random-generator-seed) -- reproducible samples
+    std::uniform_real_distribution<double> dist(-5.0e9, 5.0e9);
+    for (int i = 0; i < 500; ++i)
+    {
+        values.push_back(dist(rng));
+        values.push_back(dist(rng) / 1024.0 / 1024.0);
+    }
+    return values;
+}
+
+void expectMatchesStdFormat(const char* localeName)
+{
+    for (const double value : fixedFormatSamples())
+    {
+        for (int decimals = 0; decimals <= 3; ++decimals)
+        {
+            EXPECT_EQ(fastFixed(value, decimals), std::format("{:.{}Lf}", value, decimals))
+                << localeName << ": value " << value << ", decimals " << decimals;
+        }
+    }
+}
+
+} // namespace
+
+TEST(FormatFixedLocalizedTest, MatchesStdFormatInTheClassicLocale)
+{
+    const ScopedTestNumpunct classic('.', ',', "");
+    expectMatchesStdFormat("classic");
+}
+
+TEST(FormatFixedLocalizedTest, MatchesStdFormatWithThousandsGrouping)
+{
+    const ScopedTestNumpunct enUs('.', ',', "\3");
+    expectMatchesStdFormat("en_US-like");
+}
+
+TEST(FormatFixedLocalizedTest, MatchesStdFormatWithACommaDecimalAndDotGroups)
+{
+    const ScopedTestNumpunct deDe(',', '.', "\3");
+    expectMatchesStdFormat("de_DE-like");
+}
+
+TEST(FormatFixedLocalizedTest, MatchesStdFormatWithIndianGrouping)
+{
+    // First group of 3, then groups of 2: 12,34,56,789.
+    const ScopedTestNumpunct enIn('.', ',', "\3\2");
+    expectMatchesStdFormat("en_IN-like");
+    EXPECT_EQ(fastFixed(123456789.0, 1), "12,34,56,789.0");
+}
+
+TEST(FormatFixedLocalizedTest, GroupingEndsAtCharMax)
+{
+    // CHAR_MAX ends grouping: one separator, then every remaining digit in one group.
+    const ScopedTestNumpunct limited('.', ' ', std::string{'\3', std::numeric_limits<char>::max()});
+    EXPECT_EQ(fastFixed(123456789.0, 0), "123456 789");
+    EXPECT_EQ(fastFixed(123456789.0, 0), std::format("{:.0Lf}", 123456789.0));
+}
+
+TEST(FormatFixedLocalizedTest, FollowsAGlobalLocaleChange)
+{
+    // The punctuation is cached; replacing the global locale must be noticed on the next call.
+    {
+        const ScopedTestNumpunct comma(',', '.', "\3");
+        EXPECT_EQ(fastFixed(1234.5, 1), "1.234,5");
+    }
+    {
+        const ScopedTestNumpunct dot('.', ',', "\3");
+        EXPECT_EQ(fastFixed(1234.5, 1), "1,234.5");
+    }
+    const ScopedTestNumpunct classic('.', ',', "");
+    EXPECT_EQ(fastFixed(1234.5, 1), "1234.5");
+}
+
+TEST(FormatFixedLocalizedTest, ReturnsZeroWhenItCannotFormatSoCallersFallBack)
+{
+    const ScopedTestNumpunct classic('.', ',', "");
+    std::array<char, 8> small{};
+    EXPECT_EQ(UI::Format::formatFixedLocalizedTo(small.data(), small.size(), 123456789.0, 1), 0U) << "does not fit";
+    EXPECT_EQ(UI::Format::formatFixedLocalizedTo(small.data(), small.size(), 1234567.0, 0), 7U) << "fits exactly";
+    EXPECT_EQ(UI::Format::formatFixedLocalizedTo(small.data(), small.size(), std::numeric_limits<double>::quiet_NaN(), 1), 0U);
+    EXPECT_EQ(UI::Format::formatFixedLocalizedTo(small.data(), small.size(), std::numeric_limits<double>::infinity(), 1), 0U);
+    EXPECT_EQ(UI::Format::formatFixedLocalizedTo(small.data(), small.size(), 1.0, -1), 0U);
+    EXPECT_EQ(UI::Format::formatFixedLocalizedTo(small.data(), small.size(), 1.0, 10), 0U);
+}
+
+TEST(FormatFixedLocalizedTest, ValueFormattersStillPrintNonFiniteValuesLikeStdFormat)
+{
+    // Non-finite values take the std::format fallback, so their text is unchanged.
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    // The unit text comes from the ByteUnit itself (IEC names since #1341), not a literal here.
+    using UI::Format::BYTE_UNIT_GB;
+    using UI::Format::BYTE_UNIT_KB;
+    using UI::Format::BYTE_UNIT_MB;
+    EXPECT_EQ(UI::Format::formatBytesWithUnit(inf, BYTE_UNIT_MB), std::format("{:.1Lf} {}", inf, BYTE_UNIT_MB.suffix));
+    EXPECT_EQ(UI::Format::formatBytesPerSecWithUnit(-inf, BYTE_UNIT_KB), std::format("{:.1Lf} {}/s", -inf, BYTE_UNIT_KB.suffix));
+    EXPECT_EQ(UI::Format::formatWatts(inf), std::format("{:.1Lf} W", inf));
+    EXPECT_EQ(UI::Format::formatBytesWithUnit(nan, BYTE_UNIT_GB), std::format("{:.1Lf} {}", nan, BYTE_UNIT_GB.suffix));
+}
+
+TEST(FormatFixedLocalizedTest, ByteFormattersMatchTheirStdFormatDefinition)
+{
+    const ScopedTestNumpunct enUs('.', ',', "\3");
+    for (const double bytes : fixedFormatSamples())
+    {
+        for (const auto* unit : {&UI::Format::BYTE_UNIT_B, &UI::Format::BYTE_UNIT_KB, &UI::Format::BYTE_UNIT_MB, &UI::Format::BYTE_UNIT_GB})
+        {
+            const double rounded = UI::Format::roundHalfAwayFromZero(bytes / unit->scale, unit->decimals);
+            const std::string expected = std::format("{:.{}Lf} {}", rounded, unit->decimals, unit->suffix);
+            EXPECT_EQ(UI::Format::formatBytesWithUnit(bytes, *unit), expected) << bytes;
+            EXPECT_EQ(UI::Format::formatBytesPerSecWithUnit(bytes, *unit), expected + "/s") << bytes;
+        }
     }
 }

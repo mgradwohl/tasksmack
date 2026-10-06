@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <span>
@@ -125,10 +126,10 @@ TEST(BuildInodeToPidMapTest, ReturnsNonEmptyMapOnRunningSystem)
 TEST(BuildInodeToPidMapTest, MapsSocketsToValidPids)
 {
     auto inodeToPid = buildInodeToPidMap();
-    for (const auto& [inode, pid] : inodeToPid)
+    for (const auto& [inode, owner] : inodeToPid)
     {
         EXPECT_GT(inode, 0UL) << "Inode should be positive";
-        EXPECT_GT(pid, 0) << "PID should be positive";
+        EXPECT_GT(owner.pid, 0) << "PID should be positive";
     }
 }
 
@@ -141,9 +142,9 @@ TEST(BuildInodeToPidMapTest, FindsOwnProcessSockets)
 
     // Check if any sockets are mapped to our process
     bool foundOwnSocket = false;
-    for (const auto& [inode, pid] : inodeToPid)
+    for (const auto& [inode, owner] : inodeToPid)
     {
-        if (pid == ownPid)
+        if (owner.pid == ownPid)
         {
             foundOwnSocket = true;
             break;
@@ -329,7 +330,7 @@ TEST(NetlinkSocketStatsIntegrationTest, EndToEndPidMapping)
     {
         if (const auto it = inodeToPid.find(socket.inode); it != inodeToPid.end())
         {
-            EXPECT_GT(it->second, 0) << "PID should be positive";
+            EXPECT_GT(it->second.pid, 0) << "PID should be positive";
             ++mapped;
         }
     }
@@ -702,8 +703,47 @@ TEST(BuildInodeToPidMapTest, ASharedSocketBelongsToTheLowestPid)
 
     const auto inodeToPid = buildInodeToPidMap(proc.path);
     ASSERT_EQ(inodeToPid.size(), 2U);
-    EXPECT_EQ(inodeToPid.at(77), 100);
-    EXPECT_EQ(inodeToPid.at(88), 400);
+    EXPECT_EQ(inodeToPid.at(77).pid, 100);
+    EXPECT_EQ(inodeToPid.at(88).pid, 400);
+}
+
+TEST(BuildInodeToPidMapTest, EachOwnerComesWithItsStartTime)
+{
+    // #1336: the owner is reported with its start time (stat field 22), so Domain can tell it from a
+    // process that reused its PID. A shared socket's owner is the lowest PID, with that PID's start
+    // time; a process whose stat can't be read reports 0 (unknown).
+    const TestSupport::ScopedTempDir proc("ts_test_inode_map_start_time");
+    const auto addProcess = [&proc](int pid, const char* stat)
+    {
+        const auto pidDir = proc.path / std::to_string(pid);
+        std::filesystem::create_directories(pidDir / "fd");
+        if (stat != nullptr)
+        {
+            std::ofstream(pidDir / "stat") << stat;
+        }
+    };
+    const auto addFd = [&proc](int pid, int fd, const char* target)
+    {
+        std::filesystem::create_symlink(target, proc.path / std::to_string(pid) / "fd" / std::to_string(fd));
+    };
+
+    // A comm with spaces and parentheses: fields are counted from the last ')'.
+    addProcess(100, "100 (we (ird) name) S 1 100 100 0 -1 4194560 10 0 0 0 5 6 0 0 20 0 1 0 4242 1000 50\n");
+    addProcess(200, "200 (other) S 1 200 200 0 -1 4194560 10 0 0 0 5 6 0 0 20 0 1 0 9999 1000 50\n");
+    addProcess(300, nullptr);
+    addFd(100, 3, "socket:[77]");
+    addFd(200, 3, "socket:[77]");
+    addFd(200, 4, "socket:[88]");
+    addFd(300, 3, "socket:[99]");
+
+    const auto inodeToPid = buildInodeToPidMap(proc.path);
+    ASSERT_EQ(inodeToPid.size(), 3U);
+    EXPECT_EQ(inodeToPid.at(77).pid, 100);
+    EXPECT_EQ(inodeToPid.at(77).startTimeTicks, 4242U) << "the lowest PID's own start time";
+    EXPECT_EQ(inodeToPid.at(88).pid, 200);
+    EXPECT_EQ(inodeToPid.at(88).startTimeTicks, 9999U);
+    EXPECT_EQ(inodeToPid.at(99).pid, 300);
+    EXPECT_EQ(inodeToPid.at(99).startTimeTicks, 0U) << "no stat: unknown";
 }
 
 } // namespace

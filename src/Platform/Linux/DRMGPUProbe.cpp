@@ -1,17 +1,24 @@
 #include "DRMGPUProbe.h"
 
+#include "AmdApu.h"
 #include "PciRuntimePm.h"
 #include "Platform/GPUTypes.h"
 
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
+#include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <fstream>
+#include <iterator>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -95,6 +102,58 @@ constexpr uint32_t PCI_VENDOR_AMD = 0x1002U;
     return target.filename().string();
 }
 
+/// `text` without leading and trailing spaces, tabs and CRs.
+[[nodiscard]] std::string_view trimmed(std::string_view text)
+{
+    constexpr std::string_view SPACE = " \t\r";
+    const auto first = text.find_first_not_of(SPACE);
+    if (first == std::string_view::npos)
+    {
+        return {};
+    }
+    return text.substr(first, text.find_last_not_of(SPACE) - first + 1);
+}
+
+/// The leading unsigned number of an fdinfo value (" 1234 ns" -> 1234), or nullopt if it has none or
+/// the number runs straight into other text.
+[[nodiscard]] std::optional<std::uint64_t> leadingUint64(std::string_view value)
+{
+    value = trimmed(value);
+    std::uint64_t number = 0;
+    const auto [ptr, ec] = std::from_chars(value.data(), value.data() + value.size(), number);
+    if (ec != std::errc{} || ptr == value.data() || (ptr != value.data() + value.size() && *ptr != ' ' && *ptr != '\t'))
+    {
+        return std::nullopt;
+    }
+    return number;
+}
+
+/// The index (GPUEngineClass) of the engine class an fdinfo key names after its prefix: i915's
+/// render/copy/video/video-enhance/compute or xe's rcs/bcs/vcs/vecs/ccs (#1267).
+[[nodiscard]] std::optional<std::size_t> engineClassIndex(std::string_view name)
+{
+    struct EngineName
+    {
+        std::string_view i915;
+        std::string_view xe;
+        GPUEngineClass engineClass;
+    };
+    static constexpr std::array<EngineName, GPU_ENGINE_CLASS_COUNT> NAMES{{
+        {.i915 = "render", .xe = "rcs", .engineClass = GPUEngineClass::Render},
+        {.i915 = "copy", .xe = "bcs", .engineClass = GPUEngineClass::Copy},
+        {.i915 = "video", .xe = "vcs", .engineClass = GPUEngineClass::Video},
+        {.i915 = "video-enhance", .xe = "vecs", .engineClass = GPUEngineClass::VideoEnhance},
+        {.i915 = "compute", .xe = "ccs", .engineClass = GPUEngineClass::Compute},
+    }};
+    const auto* const match =
+        std::ranges::find_if(NAMES, [name](const EngineName& entry) { return name == entry.i915 || name == entry.xe; });
+    if (match == NAMES.end())
+    {
+        return std::nullopt;
+    }
+    return static_cast<std::size_t>(match->engineClass);
+}
+
 #if TASKSMACK_HAS_DRM_QUERY_UAPI
 /// An ioctl retried on EINTR/EAGAIN, as libdrm's drmIoctl() does.
 [[nodiscard]] int drmIoctl(int fd, unsigned long request, void* arg)
@@ -159,12 +218,20 @@ template<typename T> [[nodiscard]] T readAt(std::span<const std::byte> bytes, st
 #endif
 } // namespace
 
-DRMGPUProbe::DRMGPUProbe(std::string drmBasePath, VramQuery vramQuery)
-    : m_DrmBasePath(std::move(drmBasePath)), m_VramQuery(std::move(vramQuery))
+DRMGPUProbe::DRMGPUProbe(std::string drmBasePath, VramQuery vramQuery, std::string procRoot, MonotonicClock clock)
+    : m_DrmBasePath(std::move(drmBasePath)), m_VramQuery(std::move(vramQuery)), m_ProcRoot(std::move(procRoot)), m_Clock(std::move(clock))
 {
     if (!m_VramQuery)
     {
         m_VramQuery = &DRMGPUProbe::queryVramByIoctl;
+    }
+    if (!m_Clock)
+    {
+        m_Clock = []
+        {
+            const auto sinceEpoch = std::chrono::steady_clock::now().time_since_epoch();
+            return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(sinceEpoch).count());
+        };
     }
 
     // Must call initialize() in the body, not the initializer list,
@@ -223,10 +290,11 @@ bool DRMGPUProbe::rescanGPUs(GPURescan depth)
         // The energy counter and render node are found at discovery too: one that appears late (a
         // render node registered after the card) is a change, or the card would never get it (#1269, #1283).
         return lhs.gpuId == rhs.gpuId && lhs.cardPath == rhs.cardPath && lhs.hwmonPath == rhs.hwmonPath && lhs.driver == rhs.driver &&
-               lhs.energyPath == rhs.energyPath && lhs.renderNodePath == rhs.renderNodePath;
+               lhs.energyPath == rhs.energyPath && lhs.temperaturePath == rhs.temperaturePath && lhs.renderNodePath == rhs.renderNodePath;
     };
     if (std::ranges::equal(cards, m_Cards, sameCard))
     {
+        discoverDrmClients(); // New DRM clients are found at the full-rescan rate (#1267)
         return infoStale;
     }
 
@@ -259,6 +327,7 @@ bool DRMGPUProbe::rescanGPUs(GPURescan depth)
     spdlog::info("DRMGPUProbe: Intel DRM cards changed, now {}", cards.size());
     m_Cards = std::move(cards);
     m_Available = !m_Cards.empty();
+    discoverDrmClients();
     return true;
 }
 
@@ -320,6 +389,7 @@ std::vector<DRMGPUProbe::DRMCard> DRMGPUProbe::discoverDRMCards() const
         // Find hwmon directory for temperature and energy sensors, and the render node for the VRAM query
         card.hwmonPath = findHwmonPath(card.devicePath);
         card.energyPath = findEnergyPath(card.hwmonPath);
+        card.temperaturePath = findTemperaturePath(card.hwmonPath);
         card.renderNodePath = findRenderNodePath(card.devicePath);
 
         // Generate unique GPU ID (use PCI address if available, e.g. 0000:00:02.0), else cardX
@@ -453,6 +523,46 @@ std::string DRMGPUProbe::findEnergyPath(const std::string& hwmonPath)
         }
     }
     return "";
+}
+
+std::string DRMGPUProbe::findTemperaturePath(const std::string& hwmonPath)
+{
+    // i915_hwmon.c exposes one unlabelled temp1_input. xe_hwmon.c labels its channels and numbers
+    // them from 1 with no temp1_input: the package temperature is temp2_input (label "pkg"), VRAM
+    // temp3_input ("vram") where present (#1314). Prefer the package sensor by its label, so a
+    // driver that renumbers its channels still gets the right one; otherwise the lowest-numbered
+    // input that exists.
+    if (hwmonPath.empty())
+    {
+        return "";
+    }
+    std::optional<std::uint32_t> lowest;
+    for (const auto& entryPath : listDirectory(hwmonPath))
+    {
+        const std::string name = entryPath.filename().string();
+        constexpr std::string_view PREFIX = "temp";
+        constexpr std::string_view SUFFIX = "_input";
+        if (!name.starts_with(PREFIX) || !name.ends_with(SUFFIX) || name.size() <= PREFIX.size() + SUFFIX.size())
+        {
+            continue;
+        }
+        const std::string_view digits = std::string_view(name).substr(PREFIX.size(), name.size() - PREFIX.size() - SUFFIX.size());
+        std::uint32_t channel = 0;
+        const auto [ptr, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), channel);
+        if (ec != std::errc{} || ptr != digits.data() + digits.size())
+        {
+            continue;
+        }
+        if (readSysfsString(std::format("{}/temp{}_label", hwmonPath, channel)) == "pkg")
+        {
+            return entryPath.string();
+        }
+        if (!lowest.has_value() || channel < *lowest)
+        {
+            lowest = channel;
+        }
+    }
+    return lowest.has_value() ? std::format("{}/temp{}_input", hwmonPath, *lowest) : "";
 }
 
 std::string DRMGPUProbe::clockPath(const DRMCard& card)
@@ -699,10 +809,225 @@ void DRMGPUProbe::refreshQueriedVram(DRMCard& card)
     card.queriedVramUsedBytes = info->usedBytes;
 }
 
-bool DRMGPUProbe::detectIsIntegrated(const std::string& vendorId, uint32_t pciClass, uint64_t vramTotal, std::optional<uint32_t> pciBus)
+std::optional<DRMGPUProbe::DrmFdinfo> DRMGPUProbe::parseFdinfo(std::string_view text, std::uint64_t monotonicNs)
+{
+    constexpr std::string_view CAPACITY_PREFIX = "drm-engine-capacity-";
+    constexpr std::string_view ENGINE_PREFIX = "drm-engine-";             // i915: busy nanoseconds ("123 ns")
+    constexpr std::string_view CYCLES_PREFIX = "drm-cycles-";             // xe: busy GPU-timestamp cycles
+    constexpr std::string_view TOTAL_CYCLES_PREFIX = "drm-total-cycles-"; // xe: the GPU timestamp itself
+
+    DrmFdinfo info;
+    bool haveClientId = false;
+    std::array<std::optional<std::uint64_t>, GPU_ENGINE_CLASS_COUNT> busyNs{};
+    std::array<std::optional<std::uint64_t>, GPU_ENGINE_CLASS_COUNT> cycles{};
+    std::array<std::optional<std::uint64_t>, GPU_ENGINE_CLASS_COUNT> totalCycles{};
+    std::array<std::uint32_t, GPU_ENGINE_CLASS_COUNT> capacity{};
+    capacity.fill(1);
+
+    // "key:\tvalue" lines; the value's leading number is what's wanted, units ("ns") aside.
+    const auto perClass = [](std::string_view key, std::string_view prefix, std::string_view value) -> std::optional<std::size_t>
+    {
+        const auto index = engineClassIndex(key.substr(prefix.size()));
+        return (index.has_value() && leadingUint64(value).has_value()) ? index : std::nullopt;
+    };
+    while (!text.empty())
+    {
+        const auto eol = text.find('\n');
+        const std::string_view line = text.substr(0, eol);
+        text = (eol == std::string_view::npos) ? std::string_view{} : text.substr(eol + 1);
+        const auto colon = line.find(':');
+        if (colon == std::string_view::npos)
+        {
+            continue;
+        }
+        const std::string_view key = line.substr(0, colon);
+        const std::string_view value = line.substr(colon + 1);
+        if (key == "drm-client-id")
+        {
+            if (const auto id = leadingUint64(value))
+            {
+                info.client.clientId = *id;
+                haveClientId = true;
+            }
+        }
+        else if (key == "drm-pdev")
+        {
+            info.pdev = std::string(trimmed(value));
+        }
+        else if (key.starts_with(CAPACITY_PREFIX))
+        {
+            const auto index = perClass(key, CAPACITY_PREFIX, value);
+            const auto engines = leadingUint64(value);
+            if (index.has_value() && engines.has_value() && *engines > 0 && *engines <= std::numeric_limits<std::uint32_t>::max())
+            {
+                capacity.at(*index) = static_cast<std::uint32_t>(*engines); // Range-checked just above
+            }
+        }
+        else if (key.starts_with(TOTAL_CYCLES_PREFIX))
+        {
+            if (const auto index = perClass(key, TOTAL_CYCLES_PREFIX, value))
+            {
+                totalCycles.at(*index) = leadingUint64(value);
+            }
+        }
+        else if (key.starts_with(CYCLES_PREFIX))
+        {
+            if (const auto index = perClass(key, CYCLES_PREFIX, value))
+            {
+                cycles.at(*index) = leadingUint64(value);
+            }
+        }
+        else if (key.starts_with(ENGINE_PREFIX))
+        {
+            if (const auto index = perClass(key, ENGINE_PREFIX, value))
+            {
+                busyNs.at(*index) = leadingUint64(value);
+            }
+        }
+    }
+    if (!haveClientId)
+    {
+        return std::nullopt;
+    }
+    for (std::size_t i = 0; i < GPU_ENGINE_CLASS_COUNT; ++i)
+    {
+        auto& engine = info.client.engines.at(i);
+        engine.capacity = capacity.at(i);
+        if (cycles.at(i).has_value() && totalCycles.at(i).has_value())
+        {
+            engine.available = true;
+            engine.busy = *cycles.at(i);
+            engine.total = *totalCycles.at(i);
+        }
+        else if (busyNs.at(i).has_value())
+        {
+            engine.available = true;
+            engine.busy = *busyNs.at(i);
+            engine.total = monotonicNs;
+        }
+        info.hasEngineStats = info.hasEngineStats || engine.available;
+    }
+    return info;
+}
+
+void DRMGPUProbe::discoverDrmClients()
+{
+    m_ClientsDiscovered = true;
+    if (m_Cards.empty())
+    {
+        return;
+    }
+
+    // Each card's DRM nodes as an fd link names them, and the card they belong to.
+    std::vector<std::pair<std::string, std::size_t>> nodes;
+    for (std::size_t i = 0; i < m_Cards.size(); ++i)
+    {
+        nodes.emplace_back(std::format("/dev/dri/card{}", m_Cards[i].cardIndex), i);
+        if (!m_Cards[i].renderNodePath.empty())
+        {
+            nodes.emplace_back(m_Cards[i].renderNodePath, i);
+        }
+    }
+
+    // Built whole, then committed: a walk cut short by an exception leaves the last lists in place.
+    std::vector<std::vector<std::string>> found(m_Cards.size());
+    // Whether the walk could see clients at all, apart from whether it found any: an empty list
+    // from a /proc that can't be listed, or whose every process's fds are denied (a sandbox), is
+    // no evidence the card is idle, so its busyness stays unread (N/A) rather than 0% (#1267).
+    bool anyFdDirRead = false;
+    std::error_code procErr;
+    Fs::directory_iterator procIt(m_ProcRoot, procErr);
+    for (const Fs::directory_iterator procEnd; !procErr && procIt != procEnd; procIt.increment(procErr))
+    {
+        const Fs::path procEntry = procIt->path();
+        const std::string pid = procEntry.filename().string();
+        if (pid.empty() || !std::ranges::all_of(pid, [](char c) { return c >= '0' && c <= '9'; }))
+        {
+            continue;
+        }
+        // Another user's process can't be looked into (EACCES) without privileges, and a process can
+        // exit mid-walk: either just has no fds here. Iterated directly, not with listDirectory(), so
+        // that every unreadable process isn't logged.
+        std::error_code fsErr;
+        Fs::directory_iterator fds(procEntry / "fd", fsErr);
+        anyFdDirRead = anyFdDirRead || !fsErr;
+        for (const Fs::directory_iterator end; !fsErr && fds != end; fds.increment(fsErr))
+        {
+            std::error_code linkErr;
+            const auto target = Fs::read_symlink(fds->path(), linkErr);
+            if (linkErr || !target.native().starts_with("/dev/dri/"))
+            {
+                continue;
+            }
+            const auto node = std::ranges::find(nodes, target.native(), &std::pair<std::string, std::size_t>::first);
+            if (node != nodes.end())
+            {
+                found[node->second].push_back((procEntry / "fdinfo" / fds->path().filename()).string());
+            }
+        }
+    }
+    if (procErr)
+    {
+        // Unlisted, or cut short mid-walk: either way, the clients found may not be all of them.
+        spdlog::debug("DRMGPUProbe: failed to list {}: {}", m_ProcRoot, procErr.message());
+    }
+    m_ClientScanReliable = !procErr && anyFdDirRead;
+    for (std::size_t i = 0; i < m_Cards.size(); ++i)
+    {
+        m_Cards[i].clientFdinfoPaths = std::move(found[i]);
+    }
+}
+
+void DRMGPUProbe::readEngineClients(DRMCard& card, GPUCounters& counter) const
+{
+    // drm-pdev can be checked only against a card whose id is its PCI address.
+    const bool idIsPciAddress = pciBusFromAddress(card.gpuId).has_value();
+    bool anyEngineStats = false;
+    std::vector<std::string> stillOpen;
+    stillOpen.reserve(card.clientFdinfoPaths.size());
+    for (auto& path : card.clientFdinfoPaths)
+    {
+        std::ifstream file(path);
+        if (!file.is_open())
+        {
+            continue; // The fd was closed or its process exited
+        }
+        const std::string text{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+        const auto info = parseFdinfo(text, m_Clock());
+        if (!info.has_value() || (idIsPciAddress && !info->pdev.empty() && info->pdev != card.gpuId))
+        {
+            continue; // The fd number now names another file
+        }
+        stillOpen.push_back(std::move(path));
+        anyEngineStats = anyEngineStats || info->hasEngineStats;
+        // Dup'd and inherited fds share one DRM file, and so one client id: it counts once.
+        if (info->hasEngineStats && std::ranges::find(counter.engineClients, info->client.clientId, &GPUEngineClientCounters::clientId) ==
+                                        counter.engineClients.end())
+        {
+            counter.engineClients.push_back(info->client);
+        }
+    }
+    card.clientFdinfoPaths = std::move(stillOpen);
+    // Unread when the card has clients and none reports any busyness: a kernel without fdinfo engine
+    // stats (i915 before Linux 5.19). A card with no clients at all is idle. Either needs a /proc walk
+    // that could see every client: an unlistable /proc, a walk cut short, or every process's fds denied
+    // leaves the client set partial, so neither idle nor the busyness of the clients found is published.
+    counter.engineBusyAvailable = m_ClientScanReliable && (anyEngineStats || card.clientFdinfoPaths.empty());
+}
+
+bool DRMGPUProbe::detectIsIntegrated(
+    const std::string& vendorId, uint32_t pciClass, uint64_t vramTotal, std::optional<uint32_t> pciBus, bool amdApu)
 {
     const uint32_t classSubclass = (pciClass & PCI_CLASS_SUBCLASS_MASK);
     const uint32_t vendor = parseHexUint32(vendorId);
+
+    // AMD by the rule the ROCm probe uses (AmdApu::isAmdApu, #1344), before the VRAM test below: an
+    // APU reports its BIOS carve-out (512 MiB-2 GiB of system RAM) as mem_info_vram_total, and is a
+    // VGA controller like any Radeon card, so neither VRAM nor class tells it from a discrete GPU.
+    if (vendor == PCI_VENDOR_AMD)
+    {
+        return amdApu;
+    }
 
     // Dedicated memory means a discrete GPU, whatever its class or bus.
     if (vramTotal > 0)
@@ -727,7 +1052,7 @@ bool DRMGPUProbe::detectIsIntegrated(const std::string& vendorId, uint32_t pciCl
 
     // VGA-compatible controllers have display output.
     // Intel VGA GPUs are integrated unless they carry dedicated VRAM (e.g., Arc discrete).
-    // Non-Intel VGA controllers (NVIDIA/AMD) are discrete.
+    // Other vendors' VGA controllers (NVIDIA) are discrete; AMD was decided above.
     // If the vendor is unknown (e.g., /vendor file missing), fall back conservatively to
     // VRAM presence rather than incorrectly classifying as discrete.
     if (classSubclass == PCI_CLASS_VGA_COMPATIBLE)
@@ -737,7 +1062,7 @@ bool DRMGPUProbe::detectIsIntegrated(const std::string& vendorId, uint32_t pciCl
             // Intel iGPU (or unknown vendor — conservative): integrated unless VRAM is present.
             return vramTotal == 0;
         }
-        return false; // NVIDIA/AMD VGA controllers are discrete
+        return false; // NVIDIA VGA controllers are discrete
     }
 
     // Display controllers that are not VGA-compatible (e.g., Intel Arc on some platforms).
@@ -805,14 +1130,17 @@ GPUInfo DRMGPUProbe::cardToGPUInfo(const DRMCard& card) const
     const std::string pciClassStr = readSysfsString(pciClassPath);
     const uint32_t pciClass = parseHexUint32(pciClassStr);
 
-    info.isIntegrated = detectIsIntegrated(vendorId, pciClass, vramTotal, pciBusFromAddress(card.gpuId));
+    // An AMD GPU's APU signals (ip_discovery GC version, PCI device id) are cached sysfs attributes,
+    // read only for AMD: they never wake a sleeping card (#1117).
+    const bool amdApu = parseHexUint32(vendorId) == PCI_VENDOR_AMD && AmdApu::isAmdApuDevice(card.devicePath);
+    info.isIntegrated = detectIsIntegrated(vendorId, pciClass, vramTotal, pciBusFromAddress(card.gpuId), amdApu);
 
     // Which sensors this card has (#1112). The probe-wide capabilities are OR'd with NVML's and
     // ROCm's on Linux, so without this an Intel iGPU beside an NVIDIA dGPU drew NVML's Power and Fan
     // series stuck at 0, and a temperature line although i915 iGPUs have no hwmon at all.
     GPUCapabilities sensors = capabilities();
     std::error_code fsErr;
-    sensors.hasTemperature = !card.hwmonPath.empty() && Fs::exists(card.hwmonPath + "/temp1_input", fsErr);
+    sensors.hasTemperature = !card.temperaturePath.empty(); // #1314
     sensors.hasClockSpeeds = Fs::exists(clockPath(card), fsErr);
     sensors.hasPowerMetrics = !card.energyPath.empty();
     info.sensorCapabilities = sensors;
@@ -837,6 +1165,12 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
 {
     std::vector<GPUCounters> counters;
 
+    // The first read finds the cards' DRM clients; later ones are found at each full rescan (#1267).
+    if (!m_ClientsDiscovered)
+    {
+        discoverDrmClients();
+    }
+
     for (auto& card : m_Cards)
     {
         GPUCounters counter{};
@@ -859,15 +1193,14 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
 
         // Read temperature from hwmon (if available). capabilities() advertises temperature for
         // every card, so a card without hwmon has an unread temperature, not 0 °C (#1111).
-        if (card.hwmonPath.empty())
+        if (card.temperaturePath.empty())
         {
             counter.temperatureAvailable = false;
         }
         else
         {
-            // Intel GPUs typically expose temp1_input (in millidegrees Celsius)
-            const std::string tempPath = card.hwmonPath + "/temp1_input";
-            const uint64_t tempMilliC = readSysfsUint64(tempPath);
+            // i915's temp1_input or xe's package temp2_input, in millidegrees Celsius (#1314)
+            const uint64_t tempMilliC = readSysfsUint64(card.temperaturePath);
             if (tempMilliC > 0)
             {
                 counter.temperatureC = static_cast<std::int32_t>(tempMilliC / 1000);
@@ -922,10 +1255,10 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
             counter.memoryAvailable = false;
         }
 
-        // GPU utilization: Not directly available via sysfs for Intel
-        // Would require reading i915_gem_objects debugfs or using IGT tools (future enhancement, #1115).
-        // Never read, so it publishes as a gap / N/A rather than a real-looking 0% (#1111).
+        // GPU utilization: i915/xe report none of their own, so utilizationPercent is never read; Domain
+        // derives it from the engine busyness of the card's DRM clients (#1267), read only while it's awake.
         counter.utilizationAvailable = false;
+        readEngineClients(card, counter);
 
         counters.push_back(counter);
     }
@@ -935,9 +1268,8 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
 
 std::vector<ProcessGPUCounters> DRMGPUProbe::readProcessGPUCounters()
 {
-    // Per-process GPU metrics are not exposed via DRM sysfs for Intel
-    // Would require fdinfo parsing or DRM client stats (kernel 5.19+)
-    // Not in scope for Phase 5
+    // The DRM clients' fdinfo is read for the card's utilization (#1267), but not yet attributed to
+    // processes: per-process GPU metrics stay unsupported here.
     return {};
 }
 
