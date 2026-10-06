@@ -218,6 +218,12 @@ bool NVMLGPUProbe::isResetResult(nvmlReturn_t result)
     return result == NVML_ERROR_GPU_IS_LOST || result == NVML_ERROR_UNINITIALIZED;
 }
 
+bool NVMLGPUProbe::isDeviceIdle(uint32_t index) const
+{
+    const auto id = m_DeviceIds.find(index);
+    return id != m_DeviceIds.end() && m_IdleDeviceIds.contains(id->second);
+}
+
 nvmlReturn_t NVMLGPUProbe::noteResult(nvmlReturn_t result)
 {
     if (isResetResult(result))
@@ -306,6 +312,8 @@ void NVMLGPUProbe::shutdownNVML()
     m_DevicePciLocations.clear();
     m_LastMemoryTotals.clear();
     m_DeviceDetails.clear();
+    m_LastCounters.clear();
+    m_LastProcessCounters.clear();
 
     if (m_Initialized && m_NVML.Shutdown != nullptr)
     {
@@ -572,6 +580,17 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
             continue;
         }
 
+        // Idle by PDH: not queried, which could keep a hybrid dGPU from suspending (#1265); its last
+        // readings stand, rather than gaps or zeros, until it is read again.
+        if (isDeviceIdle(index))
+        {
+            if (const auto last = m_LastCounters.find(index); last != m_LastCounters.end())
+            {
+                counters.push_back(last->second);
+                continue;
+            }
+        }
+
         // Memory info (raw counters only)
         nvmlMemory_t memInfo{};
         nvmlReturn_t result = noteResult(m_NVML.DeviceGetMemoryInfo(device, &memInfo));
@@ -666,6 +685,7 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
         // Future enhancement: Add rate fields or implement tracking.
         // For now, Domain layer will compute rates as 0 from cumulative fields.
 
+        m_LastCounters.insert_or_assign(index, counter);
         counters.push_back(std::move(counter));
     }
 
@@ -731,6 +751,15 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
         {
             continue; // Not queried while asleep, which could wake it (#1265)
         }
+        // Nor while idle by PDH: its last list stands (#1265).
+        if (isDeviceIdle(index))
+        {
+            if (const auto last = m_LastProcessCounters.find(index); last != m_LastProcessCounters.end())
+            {
+                allCounters.insert(allCounters.end(), last->second.begin(), last->second.end());
+                continue;
+            }
+        }
 
         // The id of the DXGI adapter this device is (see setProcessGpuIds()), or the device's own,
         // recorded with its handle at enumeration. Not "GPU{index}": NVML's numbering is not DXGI's,
@@ -747,6 +776,7 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
         // summed. Memory NVML can't report counts as 0.
         const auto compute = runningProcesses(computeQuery, device, index, "DeviceGetComputeRunningProcesses");
         const auto graphics = runningProcesses(graphicsQuery, device, index, "DeviceGetGraphicsRunningProcesses");
+        std::vector<ProcessGPUCounters> deviceCounters;
         for (const auto& usage : NVMLRunningProcesses::combineRunningProcesses(compute, graphics))
         {
             ProcessGPUCounters counter;
@@ -761,8 +791,10 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
             {
                 counter.activeEngines.emplace_back("3D");
             }
-            allCounters.push_back(std::move(counter));
+            deviceCounters.push_back(std::move(counter));
         }
+        allCounters.insert(allCounters.end(), deviceCounters.begin(), deviceCounters.end());
+        m_LastProcessCounters.insert_or_assign(index, std::move(deviceCounters));
     }
 
     spdlog::debug("NVMLGPUProbe: Found {} processes using GPU", allCounters.size());

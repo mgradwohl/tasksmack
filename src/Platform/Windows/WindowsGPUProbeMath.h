@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -494,6 +495,55 @@ inline void assignPDHUtilizationToDXGICounters(std::vector<GPUCounters>& dxgiCou
         }
         // Otherwise no PDH data for this GPU's LUID: utilization stays unread
     }
+}
+
+/// The busiest-engine utilization (PDH, Task Manager's figure) below which an NVIDIA adapter counts
+/// as idle, so its NVML queries are skipped (#1265): effectively no engine activity in the interval.
+/// A dGPU driving a display normally shows some (DWM composition), so it keeps its NVML readings.
+inline constexpr double NVML_IDLE_PDH_UTILIZATION_PERCENT = 0.1;
+
+/// The longest an idle adapter's NVML readings are kept before NVML is asked again anyway, so a GPU
+/// that stays idle and awake (a desktop card whose display hasn't changed) shows readings at most
+/// this old. Long enough that a hybrid laptop's dGPU, with nothing else waking it, reaches D3 between
+/// reads; once there the PnP sleep check leaves it alone without this (#1265).
+inline constexpr std::chrono::seconds NVML_IDLE_MAX_READING_AGE{60};
+
+/// The NVML devices (by device id) to leave unqueried this sample, keeping their previous readings
+/// (#1265). NVML's queries can keep a hybrid laptop's dGPU in D0 -- each one restarts the runtime
+/// idle timer -- so it never reaches D3, where the PnP sleep check would stop them; PDH's per-adapter
+/// utilization comes from the OS's own scheduler records and doesn't wake it. A device is left alone
+/// when its adapter's PDH utilization in the previous interval was below
+/// NVML_IDLE_PDH_UTILIZATION_PERCENT and NVML last read it less than NVML_IDLE_MAX_READING_AGE ago.
+/// A device with no matched adapter, or whose adapter has no PDH reading (PDH unavailable, warming
+/// up, or a failed collect), is read as before.
+/// @param adapterIdByDeviceId The matched DXGI adapter's id per NVML device id (nvmlDeviceAdapterIds())
+/// @param lastPDHUtilizationByAdapterId Last sample's PDH utilization, by adapter id, where read
+/// @param lastReadByDeviceId When NVML last read each device; updated for each device read now
+/// @param now The current time
+[[nodiscard]] inline std::unordered_set<std::string>
+nvmlDevicesToLeaveIdle(const std::unordered_map<std::string, std::string>& adapterIdByDeviceId,
+                       const std::unordered_map<std::string, double>& lastPDHUtilizationByAdapterId,
+                       std::unordered_map<std::string, std::chrono::steady_clock::time_point>& lastReadByDeviceId,
+                       std::chrono::steady_clock::time_point now)
+{
+    std::unordered_set<std::string> idle;
+    for (const auto& [deviceId, adapterId] : adapterIdByDeviceId)
+    {
+        const auto utilization = lastPDHUtilizationByAdapterId.find(adapterId);
+        const auto lastRead = lastReadByDeviceId.find(deviceId);
+        const bool pdhIdle = utilization != lastPDHUtilizationByAdapterId.end() && utilization->second < NVML_IDLE_PDH_UTILIZATION_PERCENT;
+        const bool recentlyRead = lastRead != lastReadByDeviceId.end() && now - lastRead->second < NVML_IDLE_MAX_READING_AGE;
+        if (pdhIdle && recentlyRead)
+        {
+            idle.insert(deviceId);
+        }
+        else
+        {
+            lastReadByDeviceId[deviceId] = now;
+        }
+    }
+    std::erase_if(lastReadByDeviceId, [&adapterIdByDeviceId](const auto& entry) { return !adapterIdByDeviceId.contains(entry.first); });
+    return idle;
 }
 
 } // namespace Platform

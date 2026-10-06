@@ -545,6 +545,60 @@ TEST_F(NVMLGPUProbeFakeTest, AGpuLostErrorReinitialisesNVMLAtTheNextFullRescan)
     EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full)) << "Lost is cleared by the restart";
 }
 
+// A GPU WindowsGPUProbe marks idle (PDH saw no activity on it) gets no NVML call, which could keep a
+// hybrid dGPU from suspending (#1265): its previous readings and process list are repeated, not
+// zeroed or marked unread. Once it is no longer idle it is read again.
+TEST_F(NVMLGPUProbeFakeTest, AnIdleGPUIsNotQueriedAndKeepsItsPreviousReadings)
+{
+    fakeState().deviceCount = 1;
+    deviceData(0).uuid = "GPU-aaaa";
+    deviceData(0).temperatureC = 45;
+    fakeState().graphicsProcesses[0] = makeProcessQuery({{.pid = 1234, .usedGpuMemory = 1024, .gpuInstanceId = 0, .computeInstanceId = 0}});
+
+    NVMLGPUProbe probe;
+    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
+    ASSERT_EQ(probe.enumerateGPUs().size(), 1U);
+    ASSERT_EQ(probe.readGPUCounters().size(), 1U);
+    ASSERT_EQ(probe.readProcessGPUCounters().size(), 1U);
+
+    probe.setIdleDevices({"GPU-aaaa"});
+    deviceData(0).temperatureC = 60;
+    fakeState().graphicsProcesses[0] = makeProcessQuery({});
+    fakeState().deviceQueries.clear();
+    const auto idle = probe.readGPUCounters();
+    const auto idleProcesses = probe.readProcessGPUCounters();
+    EXPECT_EQ(fakeState().deviceQueries[0], 0) << "No NVML call reached the idle GPU";
+    ASSERT_EQ(idle.size(), 1U);
+    EXPECT_FALSE(idle[0].suspended) << "Idle is not asleep";
+    EXPECT_TRUE(idle[0].temperatureAvailable);
+    EXPECT_EQ(idle[0].temperatureC, 45) << "The previous reading stands";
+    EXPECT_EQ(idle[0].gpuId, "GPU-aaaa");
+    ASSERT_EQ(idleProcesses.size(), 1U);
+    EXPECT_EQ(idleProcesses[0].pid, 1234);
+
+    probe.setIdleDevices({});
+    const auto busy = probe.readGPUCounters();
+    ASSERT_EQ(busy.size(), 1U);
+    EXPECT_EQ(busy[0].temperatureC, 60);
+    EXPECT_TRUE(probe.readProcessGPUCounters().empty());
+}
+
+// A GPU marked idle before NVML has ever read it is read anyway: there is nothing to repeat.
+TEST_F(NVMLGPUProbeFakeTest, AnIdleGPUWithNoPreviousReadingIsRead)
+{
+    fakeState().deviceCount = 1;
+    deviceData(0).uuid = "GPU-aaaa";
+
+    NVMLGPUProbe probe;
+    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
+    ASSERT_EQ(probe.enumerateGPUs().size(), 1U);
+    probe.setIdleDevices({"GPU-aaaa"});
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_TRUE(counters[0].temperatureAvailable);
+    EXPECT_EQ(counters[0].temperatureC, 63);
+}
+
 // A GPU lost while enumeration probes its sensors (a driver reset as it wakes) tells nothing about
 // which sensors it has: the set stays unknown rather than cached as "none", the loss restarts NVML
 // at the next full rescan, and the enumeration after that finds the real set. Caching the failed

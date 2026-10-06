@@ -3,6 +3,7 @@
 #include "Platform/GPUTypes.h"
 #include "Platform/IGPUProbe.h"
 
+#include <chrono>
 #include <memory>
 #include <optional>
 #include <string>
@@ -102,6 +103,14 @@ class WindowsGPUProbe : public IGPUProbe
     // start), so a changed NVIDIA LUID set at that enumeration -- the same driver reset, seen by
     // DXGI -- doesn't restart it a second time.
     bool m_NVMLRestartedSinceEnumeration{false};
+
+    // Each matched NVML device's adapter id, by device id, from the last enumeration.
+    std::unordered_map<std::string, std::string> m_NVMLAdapterIds;
+    // The last sample's PDH utilization per adapter id, where PDH read one, and when NVML last read
+    // each NVIDIA device: an adapter PDH saw idle isn't queried through NVML (#1265,
+    // nvmlDevicesToLeaveIdle()).
+    std::unordered_map<std::string, double> m_LastPDHUtilization;
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> m_NVMLLastRead;
 };
 
 } // namespace Platform

@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -906,6 +907,77 @@ TEST(WindowsGPUProbeTest, ReadGPUCountersAfterEnumerateIsConsistent)
     // GPUs should remain enumerated
     auto gpus2 = probe.enumerateGPUs();
     EXPECT_EQ(gpus.size(), gpus2.size()) << "GPU count should not change";
+}
+
+// =============================================================================
+// nvmlDevicesToLeaveIdle: NVML queries skipped for an NVIDIA adapter PDH saw idle (#1265)
+// =============================================================================
+
+namespace
+{
+using std::chrono::seconds;
+using std::chrono::steady_clock;
+} // namespace
+
+// A device PDH saw idle last interval, and that NVML read recently, is left alone; one with any
+// engine activity is read.
+TEST(NVMLDevicesToLeaveIdleTest, AnAdapterIdleByPDHIsLeftAloneAndABusyOneIsRead)
+{
+    const std::unordered_map<std::string, std::string> adapters = {{"GPU-idle", "PCI_01:00.0_10DE:2684"},
+                                                                   {"GPU-busy", "PCI_41:00.0_10DE:2684"}};
+    const std::unordered_map<std::string, double> pdh = {{"PCI_01:00.0_10DE:2684", 0.0}, {"PCI_41:00.0_10DE:2684", 3.0}};
+    const steady_clock::time_point start{};
+    std::unordered_map<std::string, steady_clock::time_point> lastRead = {{"GPU-idle", start}, {"GPU-busy", start}};
+
+    const auto idle = nvmlDevicesToLeaveIdle(adapters, pdh, lastRead, start + seconds{1});
+    EXPECT_EQ(idle, (std::unordered_set<std::string>{"GPU-idle"}));
+    EXPECT_EQ(lastRead.at("GPU-idle"), start) << "Not read, so its last read stands";
+    EXPECT_EQ(lastRead.at("GPU-busy"), start + seconds{1});
+}
+
+// The threshold is "no engine activity": a reading at it counts as activity.
+TEST(NVMLDevicesToLeaveIdleTest, AReadingAtTheThresholdIsActivity)
+{
+    const std::unordered_map<std::string, std::string> adapters = {{"GPU-a", "A"}};
+    std::unordered_map<std::string, steady_clock::time_point> lastRead = {{"GPU-a", steady_clock::time_point{}}};
+    EXPECT_TRUE(nvmlDevicesToLeaveIdle(adapters, {{"A", NVML_IDLE_PDH_UTILIZATION_PERCENT}}, lastRead, steady_clock::time_point{}).empty());
+    EXPECT_FALSE(
+        nvmlDevicesToLeaveIdle(adapters, {{"A", NVML_IDLE_PDH_UTILIZATION_PERCENT / 2}}, lastRead, steady_clock::time_point{}).empty());
+}
+
+// Without a PDH reading for the adapter (PDH unavailable, warming up, a failed collect), or without
+// a matched adapter, the device is read as before; so is one NVML hasn't read yet, so its readings
+// exist before they are repeated.
+TEST(NVMLDevicesToLeaveIdleTest, NoPDHReadingOrNoEarlierReadMeansRead)
+{
+    const std::unordered_map<std::string, std::string> adapters = {{"GPU-a", "A"}, {"GPU-b", "B"}};
+    const steady_clock::time_point now{};
+    std::unordered_map<std::string, steady_clock::time_point> lastRead = {{"GPU-a", now}};
+    EXPECT_TRUE(nvmlDevicesToLeaveIdle(adapters, {{"B", 0.0}}, lastRead, now).empty());
+    EXPECT_TRUE(lastRead.contains("GPU-b")) << "Read now, so it can be left alone from the next sample";
+    EXPECT_EQ(nvmlDevicesToLeaveIdle(adapters, {{"B", 0.0}}, lastRead, now), (std::unordered_set<std::string>{"GPU-b"}));
+}
+
+// An adapter that stays idle is still read once NVML's readings reach NVML_IDLE_MAX_READING_AGE, so
+// they are never older than that, and then left alone again.
+TEST(NVMLDevicesToLeaveIdleTest, IdleReadingsAreRefreshedAtTheMaximumAge)
+{
+    const std::unordered_map<std::string, std::string> adapters = {{"GPU-a", "A"}};
+    const std::unordered_map<std::string, double> pdh = {{"A", 0.0}};
+    const steady_clock::time_point start{};
+    std::unordered_map<std::string, steady_clock::time_point> lastRead = {{"GPU-a", start}};
+
+    EXPECT_FALSE(nvmlDevicesToLeaveIdle(adapters, pdh, lastRead, start + NVML_IDLE_MAX_READING_AGE - seconds{1}).empty());
+    EXPECT_TRUE(nvmlDevicesToLeaveIdle(adapters, pdh, lastRead, start + NVML_IDLE_MAX_READING_AGE).empty());
+    EXPECT_FALSE(nvmlDevicesToLeaveIdle(adapters, pdh, lastRead, start + NVML_IDLE_MAX_READING_AGE + seconds{1}).empty());
+}
+
+// A device no longer matched (removed, or re-enumerated under another id) is forgotten.
+TEST(NVMLDevicesToLeaveIdleTest, AnUnmatchedDevicesLastReadIsForgotten)
+{
+    std::unordered_map<std::string, steady_clock::time_point> lastRead = {{"GPU-gone", steady_clock::time_point{}}};
+    EXPECT_TRUE(nvmlDevicesToLeaveIdle({}, {}, lastRead, steady_clock::time_point{}).empty());
+    EXPECT_TRUE(lastRead.empty());
 }
 
 // ==========================================================================

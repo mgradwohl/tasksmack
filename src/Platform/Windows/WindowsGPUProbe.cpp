@@ -51,6 +51,7 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
         std::vector<GPUInfo> nvmlGPUs;
         GPUCapabilities nvmlCaps{};
         m_DXGIToNVMLMap.clear();
+        m_NVMLAdapterIds.clear();
 
         // If NVML is available, try to match NVIDIA GPUs for enhanced data
         if (m_NVMLProbe && m_NVMLProbe->isAvailable())
@@ -63,7 +64,8 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
             // identical cards do not all map to the first (#1040).
             m_DXGIToNVMLMap = mapDXGIToNVML(gpus, nvmlGPUs);
             // NVML's per-process counters name each device by its matched adapter's id (#1317).
-            m_NVMLProbe->setProcessGpuIds(nvmlDeviceAdapterIds(gpus, nvmlGPUs, m_DXGIToNVMLMap));
+            m_NVMLAdapterIds = nvmlDeviceAdapterIds(gpus, nvmlGPUs, m_DXGIToNVMLMap);
+            m_NVMLProbe->setProcessGpuIds(m_NVMLAdapterIds);
             // The mapping holds enumeration positions; counter reads are reordered to match by id.
             m_NVMLEnumeratedIds.clear();
             for (const auto& nvmlGPU : nvmlGPUs)
@@ -192,11 +194,30 @@ std::vector<GPUCounters> WindowsGPUProbe::readGPUCounters()
     std::unordered_set<std::string> nvmlMemoryIds;
     if (m_NVMLProbe && m_NVMLProbe->isAvailable())
     {
+        // An NVIDIA GPU PDH saw idle last interval isn't queried through NVML, whose queries could
+        // keep a hybrid dGPU from suspending; its previous NVML readings stand (#1265). Without a PDH
+        // reading for it, it is queried as before.
+        m_NVMLProbe->setIdleDevices(
+            pdhAvailable ? nvmlDevicesToLeaveIdle(m_NVMLAdapterIds, m_LastPDHUtilization, m_NVMLLastRead, std::chrono::steady_clock::now())
+                         : std::unordered_set<std::string>{});
         nvmlSourcedIds = mergeNVMLEnhancements(counters, nvmlMemoryIds, /*takeUtilization=*/!pdhAvailable);
     }
 
     // PDH per-adapter utilization matched to each adapter
     mergePDHAdapterUtilization(counters, nvmlSourcedIds);
+
+    // With PDH available NVML's utilization is never taken, so every reading here is PDH's.
+    m_LastPDHUtilization.clear();
+    if (pdhAvailable)
+    {
+        for (const auto& counter : counters)
+        {
+            if (counter.utilizationAvailable)
+            {
+                m_LastPDHUtilization[counter.gpuId] = counter.utilizationPercent;
+            }
+        }
+    }
 
     // And their memory in use, from the same collect: adapter-wide, not this process's (#1029).
     if (m_PDHAdapterProbe && m_PDHAdapterProbe->isAvailable())

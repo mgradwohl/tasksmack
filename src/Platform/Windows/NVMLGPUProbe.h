@@ -12,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -77,6 +78,15 @@ class NVMLGPUProbe : public IGPUProbe
     void setProcessGpuIds(std::unordered_map<std::string, std::string> adapterIdByDeviceId)
     {
         m_ProcessGpuIds = std::move(adapterIdByDeviceId);
+    }
+
+    /// The devices (by device id) readGPUCounters() and readProcessGPUCounters() leave unqueried,
+    /// repeating each one's previous readings instead: WindowsGPUProbe's choice of NVIDIA GPUs idle
+    /// by PDH, whose NVML queries could keep a hybrid dGPU from suspending (#1265). A device never
+    /// read yet is read anyway. Replaces the previous set.
+    void setIdleDevices(std::unordered_set<std::string> deviceIds)
+    {
+        m_IdleDeviceIds = std::move(deviceIds);
     }
 
     /// Check if NVML is available and initialized
@@ -175,6 +185,14 @@ class NVMLGPUProbe : public IGPUProbe
     std::unordered_map<uint32_t, std::string> m_DeviceIds;
     // setProcessGpuIds(): per-process counters' gpuId by device id (#1317).
     std::unordered_map<std::string, std::string> m_ProcessGpuIds;
+    // setIdleDevices(): devices left unqueried, by device id, and each device's last readings
+    // (counters and processes, by device index) repeated for them meanwhile (#1265).
+    std::unordered_set<std::string> m_IdleDeviceIds;
+    std::unordered_map<uint32_t, GPUCounters> m_LastCounters;
+    std::unordered_map<uint32_t, std::vector<ProcessGPUCounters>> m_LastProcessCounters;
+
+    /// Whether device @p index is one setIdleDevices() named (by its enumerated id).
+    [[nodiscard]] bool isDeviceIdle(uint32_t index) const;
 
     /// Read device @p index's handle, name, UUID and PCI identity into the per-device maps, restoring
     /// what a restart() remembered for its id. False if NVML gives no handle for it (#1294).
