@@ -121,4 +121,40 @@ computeFillPlotHeight(float emPx, float availableHeightPx, float nonPlotHeightPx
     return std::floor(std::clamp(each, minHeight, maxHeight));
 }
 
+/// computeFillPlotHeight() for a region that `plotCount` charts share with content drawn after
+/// them that takes the rest (the per-disk grid on Network and I/O), counted as `reservedShares`
+/// shares of the height but never less than `reservedMinHeightPx`.
+///
+/// One share was not always enough: with the charts filling the region (#1278), eight disks in an
+/// 800x1400 region at Medium need four grid rows, about 708px with their heading, but one share
+/// left them 601px, so the tab scrolled (#1370 review). The reserve is the grid's real minimum
+/// (UI::Widgets::computeChartGridMinimumHeight()), and the charts share what is left.
+///
+/// @param reservedShares      Shares of the height for the content after the charts; 0 for none,
+///                            which makes this computeFillPlotHeight().
+/// @param reservedMinHeightPx Least height that content needs; not positive and finite means none.
+[[nodiscard]] inline float computeFillPlotHeightWithReserve(float emPx,
+                                                            float availableHeightPx,
+                                                            float nonPlotHeightPx,
+                                                            std::size_t plotCount,
+                                                            std::size_t reservedShares,
+                                                            float reservedMinHeightPx,
+                                                            float chartEmPx = 0.0F) noexcept
+{
+    if (plotCount == 0 || reservedShares == 0 || !std::isfinite(availableHeightPx) || availableHeightPx <= 0.0F ||
+        !std::isfinite(nonPlotHeightPx))
+    {
+        // Nothing to reserve from, or nothing measured: the plain rule (the minimum, in the latter cases).
+        return computeFillPlotHeight(emPx, availableHeightPx, nonPlotHeightPx, plotCount, chartEmPx);
+    }
+
+    const float forPlots = availableHeightPx - std::max(nonPlotHeightPx, 0.0F) - HISTORY_PLOT_FILL_MARGIN_PX;
+    const float shares = static_cast<float>(plotCount + reservedShares);
+    const float shareReserve = std::max(forPlots, 0.0F) * static_cast<float>(reservedShares) / shares;
+    const float minReserve = (std::isfinite(reservedMinHeightPx) && reservedMinHeightPx > 0.0F) ? reservedMinHeightPx : 0.0F;
+    // The reserved content is taken out of the region first; the charts share what is left. When
+    // its share already covers its minimum this is exactly the old division by plotCount + shares.
+    return computeFillPlotHeight(emPx, availableHeightPx - std::max(shareReserve, minReserve), nonPlotHeightPx, plotCount, chartEmPx);
+}
+
 } // namespace UI::Widgets

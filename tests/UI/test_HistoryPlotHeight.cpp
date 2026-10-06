@@ -2,6 +2,7 @@
 /// @brief Tests for UI::Widgets::computeFillPlotHeight(), the one height rule shared by the tabs
 /// that stack several history charts (#922, #923).
 
+#include "UI/ChartGridLayout.h"
 #include "UI/HistoryPlotHeight.h"
 
 #include <gtest/gtest.h>
@@ -271,6 +272,77 @@ TEST(HistoryPlotHeightTest, SurvivesDegenerateInput)
         EXPECT_LE(height, 1100.0F - 160.0F);
         EXPECT_FLOAT_EQ(height, std::floor(HISTORY_PLOT_MIN_FILL_SHARE * (1100.0F - 162.0F) / 4.0F));
     }
+}
+
+// ========== Content after the charts (#1370 review) ==========
+
+// Copilot on #1370: at Medium, an 800x1400 Network and I/O region with eight disks and 200px of
+// measured non-plot content. One share gave the network chart 599px and left the per-disk grid
+// 601px, but its four rows need about 693px plus their heading, so the tab scrolled. The grid's
+// real minimum is now reserved, and chart, non-plot content and grid fit the region.
+TEST(HistoryPlotHeightTest, DiskGridKeepsTheHeightItsRowsNeed)
+{
+    // Medium on a 1.0 display: StorageSection's per-disk grid sizing with the theme's style
+    // (WindowPadding 8, ItemSpacing.y 4, CellPadding 4 x 2, text line = one em).
+    const float em = REFERENCE_EM_PX;
+    const float labelOverhead = (8.0F * 2.0F) + (em * 2.0F) + (4.0F * 2.0F) + (2.0F * 2.0F);
+    const ChartGridConfig grid{.availableWidth = 800.0F,
+                               .itemCount = 8,
+                               .minCellWidth = 30.0F * em,
+                               .minCellHeight = labelOverhead + std::floor(historyPlotMinHeight(em)),
+                               .maxCellHeight = labelOverhead + historyPlotMaxHeight(em),
+                               .columnOverhead = 4.0F * 2.0F,
+                               .rowOverhead = 2.0F * 2.0F};
+    const float heading = em + 4.0F; // "Disk I/O by Device", with item spacing
+    const float gridRows = computeChartGridMinimumHeight(grid);
+    EXPECT_NEAR(gridRows, 693.33F, 0.01F); // Copilot's "about 693px": four rows of two
+    const float gridMinimum = heading + gridRows;
+
+    const float available = 1400.0F;
+    const float nonPlot = 200.0F;
+
+    // The old division: one share each, which overflows.
+    const float oneShare = computeFillPlotHeight(em, available, nonPlot, 2);
+    EXPECT_FLOAT_EQ(oneShare, 599.0F);
+    EXPECT_GT(nonPlot + oneShare + gridMinimum, available);
+
+    // Reserved at its minimum, the grid fits below the network chart, and its laid-out rows
+    // fit the height left for them.
+    const float chart = computeFillPlotHeightWithReserve(em, available, nonPlot, 1, 1, gridMinimum);
+    EXPECT_NEAR(chart, 490.0F, 1.0F); // 1400 - 708 - 200 - 2, rounded down
+    EXPECT_LE(nonPlot + chart + gridMinimum, available);
+
+    ChartGridConfig laidOut = grid;
+    laidOut.availableHeight = available - nonPlot - chart - heading;
+    const auto dims = computeChartGridLayout(laidOut);
+    EXPECT_EQ(dims.rows, 4U);
+    EXPECT_LE(static_cast<float>(dims.rows) * (dims.cellHeight + laidOut.rowOverhead), laidOut.availableHeight);
+}
+
+// When the reserved share already covers the content's minimum, the division is the old one.
+TEST(HistoryPlotHeightTest, ReserveBelowItsShareChangesNothing)
+{
+    for (const float available : {800.0F, 1100.0F, 2400.0F})
+    {
+        const float plain = computeFillPlotHeight(REFERENCE_EM_PX, available, 160.0F, 2);
+        const float reserved = computeFillPlotHeightWithReserve(REFERENCE_EM_PX, available, 160.0F, 1, 1, 50.0F);
+        EXPECT_NEAR(reserved, plain, 1.0F) << "available=" << available;
+    }
+}
+
+TEST(HistoryPlotHeightTest, ReserveSurvivesDegenerateInput)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    // No reserved shares: the plain rule, whatever the minimum says.
+    EXPECT_FLOAT_EQ(computeFillPlotHeightWithReserve(REFERENCE_EM_PX, 1100.0F, 160.0F, 4, 0, 900.0F),
+                    computeFillPlotHeight(REFERENCE_EM_PX, 1100.0F, 160.0F, 4));
+    // Nothing measured yet: the minimum.
+    EXPECT_FLOAT_EQ(computeFillPlotHeightWithReserve(REFERENCE_EM_PX, 1100.0F, 0.0F, 0, 1, 300.0F), 120.0F);
+    // An unusable minimum is ignored; one larger than the region leaves the charts at their floor.
+    EXPECT_FLOAT_EQ(computeFillPlotHeightWithReserve(REFERENCE_EM_PX, 1100.0F, 160.0F, 1, 1, nan),
+                    computeFillPlotHeight(REFERENCE_EM_PX, 1100.0F, 160.0F, 2));
+    EXPECT_FLOAT_EQ(computeFillPlotHeightWithReserve(REFERENCE_EM_PX, 1100.0F, 160.0F, 1, 1, 5000.0F), 120.0F);
+    EXPECT_FLOAT_EQ(computeFillPlotHeightWithReserve(REFERENCE_EM_PX, nan, 160.0F, 1, 1, 300.0F), 120.0F);
 }
 
 } // namespace

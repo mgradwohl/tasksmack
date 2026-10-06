@@ -43,16 +43,21 @@ class FillPlotLayout
     ///                        I/O). They count when the height is divided but are never measured,
     ///                        so content that fills the remainder cannot feed back into the next
     ///                        frame's division.
-    explicit FillPlotLayout(PlotFillState& state, std::size_t reservedShares = 0)
+    /// @param reservedMinHeightPx  Least height that content needs, however few shares it is
+    ///                        given (the grid's rows at their minimum, #1370 review); see
+    ///                        computeFillPlotHeightWithReserve().
+    explicit FillPlotLayout(PlotFillState& state, std::size_t reservedShares = 0, float reservedMinHeightPx = 0.0F)
         : m_State(state),
           m_Top(ImGui::GetCursorPosY()),
-          m_PlotHeight(computeFillPlotHeight(ImGui::GetFontSize(),
-                                             ImGui::GetContentRegionAvail().y,
-                                             state.nonPlotHeight,
-                                             // Nothing measured yet stays nothing: the first frame
-                                             // under-fills (see computeFillPlotHeight()).
-                                             (state.plotCount == 0) ? 0 : state.plotCount + reservedShares,
-                                             chartEmPx()))
+          m_PlotHeight(computeFillPlotHeightWithReserve(ImGui::GetFontSize(),
+                                                        ImGui::GetContentRegionAvail().y,
+                                                        state.nonPlotHeight,
+                                                        // Nothing measured yet stays nothing: the first
+                                                        // frame under-fills (see computeFillPlotHeight()).
+                                                        state.plotCount,
+                                                        reservedShares,
+                                                        reservedMinHeightPx,
+                                                        chartEmPx()))
     {}
 
     ~FillPlotLayout()
