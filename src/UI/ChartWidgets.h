@@ -1023,27 +1023,89 @@ class ReducedPointsCache
     return scaledLineWeight(authoredPx, Theme::get().styleScale());
 }
 
+/// How many of a series' own sample intervals its last reading is held out to "now" for
+/// (holdLastValueToNow(), #1147). Above 3 because the samplers slow to 3x the refresh interval while
+/// the window is being resized or dragged (AdaptiveIntervalUtils), and the next reading also waits
+/// for its publish.
+inline constexpr double HOLD_MAX_SAMPLE_INTERVALS = 4.0;
+/// The shortest hold limit, in seconds, so a fast refresh (100 ms) doesn't make the line flicker
+/// between held and not held on ordinary sampling jitter.
+inline constexpr double HOLD_MIN_SECONDS = 1.0;
+/// The hold limit for a series with one sample, and so no interval of its own: as long as the slowest
+/// refresh interval would allow.
+inline constexpr double HOLD_FALLBACK_SECONDS =
+    HOLD_MAX_SAMPLE_INTERVALS * static_cast<double>(Domain::Sampling::REFRESH_INTERVAL_MAX_MS) / 1000.0;
+
+/// The longest a series' last reading is held out to "now" (holdLastValueToNow()), in seconds, from
+/// its time axis @p x (seconds before now, oldest first): HOLD_MAX_SAMPLE_INTERVALS of the interval
+/// between its last two samples, at least HOLD_MIN_SECONDS. Taken from the data rather than from the
+/// refresh setting, so it follows the samplers' adaptive slow-downs and needs no plumbing; a stall
+/// shows because the interval before it was an ordinary one (#1147).
+template<typename T> [[nodiscard]] inline double maxHoldSecondsForAxis(const T* x, int count) noexcept
+{
+    if (x == nullptr || count < 2)
+    {
+        return HOLD_FALLBACK_SECONDS;
+    }
+    const double interval = static_cast<double>(x[count - 1]) - static_cast<double>(x[count - 2]);
+    if (!std::isfinite(interval) || !(interval > 0.0))
+    {
+        return HOLD_FALLBACK_SECONDS;
+    }
+    return std::max(HOLD_MIN_SECONDS, HOLD_MAX_SAMPLE_INTERVALS * interval);
+}
+
+template<typename T> [[nodiscard]] inline double maxHoldSecondsForAxis(std::span<const T> x) noexcept
+{
+    return maxHoldSecondsForAxis(x.data(), UI::Format::checkedCount(x.size()));
+}
+
+/// Whether a series' last sample, @p lastX seconds before now (negative), is held out to x = 0: it is
+/// in the past, and no older than @p maxHoldSeconds.
+[[nodiscard]] inline bool lastSampleHoldsToNow(double lastX, double maxHoldSeconds) noexcept
+{
+    return (lastX < 0.0) && (-lastX <= maxHoldSeconds);
+}
+
 /// Extend a history series to x = 0 ("now") by repeating its last value there.
 ///
 /// Samples arrive once per refresh interval while the chart scrolls every frame, so the newest
 /// point sits up to an interval left of the right edge: the line stopped short of "now" and jumped
 /// forward with each new sample (#1016). Holding the latest reading until the next one -- the usual
 /// sample-and-hold reading of a sampled series -- draws it to the edge. Nothing is added when the
-/// last sample is a gap (NaN: no reading to hold) or already at or past x = 0.
-template<typename T> inline void holdLastValueToNow(std::vector<T>& x, std::vector<T>& y)
+/// last sample is a gap (NaN: no reading to hold), already at or past x = 0, or older than
+/// @p maxHoldSeconds (lastSampleHoldsToNow()): a sampler that has stalled must show as a line that
+/// stops, not a flat one that looks live (#1147).
+template<typename T> inline void holdLastValueToNow(std::vector<T>& x, std::vector<T>& y, double maxHoldSeconds)
 {
     if (x.empty() || y.size() != x.size())
     {
         return;
     }
-    const auto lastX = static_cast<double>(x.back());
     const auto lastY = static_cast<double>(y.back());
-    if (!(lastX < 0.0) || !std::isfinite(lastY))
+    if (!lastSampleHoldsToNow(static_cast<double>(x.back()), maxHoldSeconds) || !std::isfinite(lastY))
     {
         return;
     }
     x.push_back(T{0});
     y.push_back(y.back());
+}
+
+/// holdLastValueToNow() for series drawn together on one time axis @p x -- a stacked chart's band
+/// edges -- so they all reach "now", or none does. Each series gets its own last value repeated
+/// (a trailing gap stays a gap: NaN repeated).
+template<typename T> inline void holdLastValuesToNow(std::vector<T>& x, std::initializer_list<std::vector<T>*> ys, double maxHoldSeconds)
+{
+    if (x.empty() || !lastSampleHoldsToNow(static_cast<double>(x.back()), maxHoldSeconds) ||
+        std::ranges::any_of(ys, [&x](const std::vector<T>* y) { return y->size() != x.size(); }))
+    {
+        return;
+    }
+    x.push_back(T{0});
+    for (std::vector<T>* y : ys)
+    {
+        y->push_back(y->back());
+    }
 }
 
 /// The data generation of the HistoryChart being drawn (HistoryChartConfig::dataGeneration) and the
@@ -1204,7 +1266,7 @@ inline void plotLineWithFill(const char* label,
         drawX.assign(xData, xData + count);
         drawY.assign(yData, yData + count);
     }
-    holdLastValueToNow(drawX, drawY);
+    holdLastValueToNow(drawX, drawY, maxHoldSecondsForAxis(xData, count)); // Interval from every sample, not the reduced ones
     renderSeries(drawX.data(), drawY.data(), UI::Format::checkedCount(drawX.size()));
 }
 

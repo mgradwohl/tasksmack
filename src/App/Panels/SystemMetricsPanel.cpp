@@ -749,15 +749,10 @@ void SystemMetricsPanel::renderOverview()
                 }
 
                 // The bands reach "now" like every plotLineWithFill series: the last sample held to
-                // x = 0 (UI::Widgets::holdLastValueToNow, #1016).
-                if (!m_CpuStackX.empty() && m_CpuStackX.back() < 0.0)
-                {
-                    m_CpuStackX.push_back(0.0);
-                    for (auto* band : {&y0, &yUserTop, &ySystemTop, &yIowaitTop, &yBusyTop})
-                    {
-                        band->push_back(band->back());
-                    }
-                }
+                // x = 0 (#1016), unless it is too old to pass for current (#1147).
+                UI::Widgets::holdLastValuesToNow(m_CpuStackX,
+                                                 {&y0, &yUserTop, &ySystemTop, &yIowaitTop, &yBusyTop},
+                                                 UI::Widgets::maxHoldSecondsForAxis(breakdownTimeData));
                 const int stackCount = UI::Format::checkedCount(m_CpuStackX.size());
 
                 // ImPlot's shaded renderer has no NaN handling, so each band is filled run by run over

@@ -1033,16 +1033,11 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
                 }
 
                 // Bands and lines reach "now" like every plotLineWithFill series: the last sample
-                // held to x = 0 (UI::Widgets::holdLastValueToNow, #1016). Built in their own buffers,
-                // so the tooltip's lookup over cpuTimeData still finds real samples only.
-                if (!m_CpuPlotX.empty() && m_CpuPlotX.back() < 0.0)
-                {
-                    m_CpuPlotX.push_back(0.0);
-                    for (auto* series : {&y0, &yUserTop, &ySystemTop, &m_CpuPlotTotal, &m_CpuPlotUser, &m_CpuPlotSystem})
-                    {
-                        series->push_back(series->back());
-                    }
-                }
+                // held to x = 0 (#1016), unless it is too old to pass for current (#1147). Built in
+                // their own buffers, so the tooltip's lookup over cpuTimeData still finds real samples only.
+                UI::Widgets::holdLastValuesToNow(m_CpuPlotX,
+                                                 {&y0, &yUserTop, &ySystemTop, &m_CpuPlotTotal, &m_CpuPlotUser, &m_CpuPlotSystem},
+                                                 UI::Widgets::maxHoldSecondsForAxis(cpuTimeData));
                 const int drawCount = UI::Format::checkedCount(m_CpuPlotX.size());
 
                 // The bands share their labels with the User and System lines below, so ImPlot

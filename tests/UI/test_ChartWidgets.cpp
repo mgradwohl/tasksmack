@@ -1335,7 +1335,7 @@ TEST(ChartWidgetsTest, HoldExtendsTheLastValueToNow)
 {
     std::vector<double> x{-3.0, -2.0, -0.7};
     std::vector<double> y{10.0, 20.0, 30.0};
-    holdLastValueToNow(x, y);
+    holdLastValueToNow(x, y, HOLD_FALLBACK_SECONDS);
     ASSERT_EQ(x.size(), 4U);
     EXPECT_DOUBLE_EQ(x.back(), 0.0);
     EXPECT_DOUBLE_EQ(y.back(), 30.0);
@@ -1346,7 +1346,7 @@ TEST(ChartWidgetsTest, HoldLeavesAGapAtTheEndAlone)
     // A trailing NaN is a missing reading: there is nothing to hold, and the gap must stay a gap.
     std::vector<double> x{-2.0, -1.0};
     std::vector<double> y{5.0, std::numeric_limits<double>::quiet_NaN()};
-    holdLastValueToNow(x, y);
+    holdLastValueToNow(x, y, HOLD_FALLBACK_SECONDS);
     EXPECT_EQ(x.size(), 2U);
 }
 
@@ -1354,13 +1354,79 @@ TEST(ChartWidgetsTest, HoldDoesNothingForAnEmptyOrAlreadyCurrentSeries)
 {
     std::vector<double> emptyX;
     std::vector<double> emptyY;
-    holdLastValueToNow(emptyX, emptyY);
+    holdLastValueToNow(emptyX, emptyY, HOLD_FALLBACK_SECONDS);
     EXPECT_TRUE(emptyX.empty());
 
     std::vector<double> x{-1.0, 0.0};
     std::vector<double> y{1.0, 2.0};
-    holdLastValueToNow(x, y);
+    holdLastValueToNow(x, y, HOLD_FALLBACK_SECONDS);
     EXPECT_EQ(x.size(), 2U);
+}
+
+// A stalled sampler: the last reading is 30 s old on a 1 s series, so it is not drawn out to now as
+// if it were current (#1147).
+TEST(ChartWidgetsTest, HoldDoesNotExtendAStaleSample)
+{
+    std::vector<double> x{-32.0, -31.0, -30.0};
+    std::vector<double> y{1.0, 2.0, 3.0};
+    holdLastValueToNow(x, y, 2.0);
+    EXPECT_EQ(x.size(), 3U);
+
+    std::vector<double> fresh{-3.0, -2.0, -1.5};
+    std::vector<double> freshY{1.0, 2.0, 3.0};
+    holdLastValueToNow(fresh, freshY, 2.0);
+    EXPECT_EQ(fresh.size(), 4U);
+}
+
+TEST(ChartWidgetsTest, HoldLimitFollowsTheSeriesOwnInterval)
+{
+    // HOLD_MAX_SAMPLE_INTERVALS of the last interval...
+    const std::vector<double> oneSecond{-3.0, -2.0, -1.0};
+    EXPECT_DOUBLE_EQ(maxHoldSecondsForAxis(oneSecond.data(), 3), HOLD_MAX_SAMPLE_INTERVALS * 1.0);
+    const std::vector<double> fiveSeconds{-10.0, -5.0};
+    EXPECT_DOUBLE_EQ(maxHoldSecondsForAxis(fiveSeconds.data(), 2), HOLD_MAX_SAMPLE_INTERVALS * 5.0);
+    // ...never under the floor, so a fast refresh doesn't flicker on jitter...
+    const std::vector<double> fast{-0.2, -0.1};
+    EXPECT_DOUBLE_EQ(maxHoldSecondsForAxis(fast.data(), 2), HOLD_MIN_SECONDS);
+    // ...and with no interval to go by, the slowest refresh's limit.
+    const std::vector<double> single{-1.0};
+    EXPECT_DOUBLE_EQ(maxHoldSecondsForAxis(single.data(), 1), HOLD_FALLBACK_SECONDS);
+    const std::vector<double> repeated{-1.0, -1.0};
+    EXPECT_DOUBLE_EQ(maxHoldSecondsForAxis(repeated.data(), 2), HOLD_FALLBACK_SECONDS);
+}
+
+TEST(ChartWidgetsTest, LastSampleHoldsOnlyWhileRecent)
+{
+    EXPECT_TRUE(lastSampleHoldsToNow(-0.5, 4.0));
+    EXPECT_TRUE(lastSampleHoldsToNow(-4.0, 4.0));
+    EXPECT_FALSE(lastSampleHoldsToNow(-4.5, 4.0));
+    EXPECT_FALSE(lastSampleHoldsToNow(0.0, 4.0));
+    EXPECT_FALSE(lastSampleHoldsToNow(std::numeric_limits<double>::quiet_NaN(), 4.0));
+}
+
+// Stacked bands are held together: every edge reaches now, or none does.
+TEST(ChartWidgetsTest, HoldManySeriesTogether)
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    std::vector<double> x{-2.0, -1.0};
+    std::vector<double> lower{0.0, 0.0};
+    std::vector<double> upper{5.0, nan};
+    holdLastValuesToNow(x, {&lower, &upper}, 4.0);
+    ASSERT_EQ(x.size(), 3U);
+    EXPECT_DOUBLE_EQ(x.back(), 0.0);
+    EXPECT_DOUBLE_EQ(lower.back(), 0.0);
+    EXPECT_TRUE(std::isnan(upper.back())); // a trailing gap stays a gap
+
+    std::vector<double> stale{-31.0, -30.0};
+    std::vector<double> band{1.0, 2.0};
+    holdLastValuesToNow(stale, {&band}, 4.0);
+    EXPECT_EQ(stale.size(), 2U);
+    EXPECT_EQ(band.size(), 2U);
+
+    std::vector<double> mismatched{-2.0, -1.0};
+    std::vector<double> shortBand{1.0};
+    holdLastValuesToNow(mismatched, {&shortBand}, 4.0);
+    EXPECT_EQ(mismatched.size(), 2U);
 }
 
 // ========== normalizeToUnitInterval ==========
