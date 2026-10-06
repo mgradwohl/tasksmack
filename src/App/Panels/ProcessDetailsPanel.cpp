@@ -1963,9 +1963,10 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
         const std::string memStr = UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes);
         ImGui::TextColored(gpuMemColor, "%s", memStr.c_str());
 
-        // GPU Memory counts what each GPU's "used" figure on the GPU tab counts (#1164); when the
-        // process also has shared memory mapped, both kinds are listed beneath it.
-        if (proc.gpuSharedMemoryBytes > 0)
+        // GPU Memory counts what each GPU's "used" figure on the GPU tab counts (#1164). Both kinds are
+        // listed beneath it whenever that total doesn't already show them: shared memory is mapped, or
+        // the dedicated bytes aren't what was counted (a shared-segment GPU with no shared use yet).
+        if (proc.gpuSharedMemoryBytes > 0 || proc.gpuDedicatedMemoryBytes != proc.gpuMemoryBytes)
         {
             for (const auto& [label, bytes] :
                  {std::pair{LABEL_DEDICATED, proc.gpuDedicatedMemoryBytes}, std::pair{LABEL_SHARED, proc.gpuSharedMemoryBytes}})
@@ -2087,8 +2088,8 @@ void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& p
                     const std::string memoryStr = UI::Format::formatBytes(static_cast<double>(gpuUsage.memoryBytes));
                     ImGui::TextColored(gpuMemColor, "%s", memoryStr.c_str());
 
-                    // As in renderGpuCurrentMetricsTable(): both kinds once shared memory is mapped (#1164).
-                    if (gpuUsage.sharedMemoryBytes > 0)
+                    // As in renderGpuCurrentMetricsTable(): both kinds whenever the total doesn't show them (#1164).
+                    if (gpuUsage.sharedMemoryBytes > 0 || gpuUsage.dedicatedMemoryBytes != gpuUsage.memoryBytes)
                     {
                         for (const auto& [label, bytes] : {std::pair{LABEL_DEDICATED, gpuUsage.dedicatedMemoryBytes},
                                                            std::pair{LABEL_SHARED, gpuUsage.sharedMemoryBytes}})
