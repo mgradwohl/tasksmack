@@ -1,7 +1,8 @@
 /// @file test_WindowGeometry.cpp
 /// @brief Tests for the pure window-geometry decisions in Core/WindowGeometry.h: which rectangle is
 /// persisted as the window's normal geometry (#1121), and how a restored rectangle is fitted to the
-/// connected displays (#1128), and when an OS maximize is replaced by the client-side one (#1208).
+/// connected displays (#1128), when an OS maximize is replaced by the client-side one (#1208), and how
+/// the normal rectangle is tracked through maximizes and restores from any source (#1250).
 
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
@@ -307,6 +308,167 @@ TEST(WindowGeometryTest, NormalGeometryScaleFollowsTheRectangleItTags)
     EXPECT_FLOAT_EQ(selectNormalGeometryScale(true, true, 1.0F, 1.75F), 1.0F);   // Restore rectangle, its scale
     EXPECT_FLOAT_EQ(selectNormalGeometryScale(true, false, 1.0F, 1.75F), 0.0F);  // No rectangle saved: no scale
     EXPECT_FLOAT_EQ(selectNormalGeometryScale(true, true, 0.0F, 1.75F), 0.0F);   // Captured without a scale
+}
+
+// ---- NormalGeometryTracker (#1250) ----
+
+constexpr Rect NORMAL_A{.x = 100, .y = 80, .width = 1280, .height = 720};
+constexpr Rect NORMAL_B{.x = 300, .y = 200, .width = 900, .height = 600};
+constexpr Rect MAXIMIZED{.x = 0, .y = 0, .width = 2560, .height = 1400};
+
+/// What Window::getNormalGeometry() would save for a window in @p tracker's state at @p live.
+std::optional<Rect> savedNormal(const NormalGeometryTracker& tracker, bool maximizedNow, const Rect& live)
+{
+    return selectNormalGeometry(maximizedNow, live, tracker.restoreTarget());
+}
+
+TEST(NormalGeometryTrackerTest, AnOutsideMaximizeSavesTheLastNormalGeometry)
+{
+    // The #1250 scenario: the window manager maximizes the window (not the title-bar button). On exit
+    // the saved geometry must be the normal rectangle plus maximized = true, not the maximized one.
+    NormalGeometryTracker tracker;
+    tracker.observe(NORMAL_A, 1.5F, true);
+    // The window manager's resize to the maximized size is drained with SDL_WINDOW_MAXIMIZED set.
+    tracker.observe(MAXIMIZED, 1.5F, false);
+    tracker.systemMaximized(true, false);
+
+    EXPECT_TRUE(tracker.isMaximized());
+    EXPECT_EQ(tracker.state(), MaximizeState::System);
+    EXPECT_EQ(savedNormal(tracker, true, MAXIMIZED), NORMAL_A);
+    EXPECT_FLOAT_EQ(selectNormalGeometryScale(true, tracker.restoreTarget().has_value(), tracker.restoreScale(), 2.0F), 1.5F);
+}
+
+TEST(NormalGeometryTrackerTest, AnOutsideMaximizeBeforeAnyNormalGeometryKeepsTheSavedOne)
+{
+    // Nothing seen at a normal size: no restore target, so the caller keeps its saved geometry
+    // rather than saving the maximized rectangle.
+    NormalGeometryTracker tracker;
+    tracker.systemMaximized(true, false);
+    EXPECT_TRUE(tracker.isMaximized());
+    EXPECT_FALSE(tracker.restoreTarget().has_value());
+    EXPECT_EQ(savedNormal(tracker, true, MAXIMIZED), std::nullopt);
+}
+
+TEST(NormalGeometryTrackerTest, AStaleMaximizedEventChangesNothing)
+{
+    // A queued MAXIMIZED drained after a later restore or minimize: the live flags decide.
+    NormalGeometryTracker tracker;
+    tracker.observe(NORMAL_A, 1.0F, true);
+    tracker.systemMaximized(false, false);
+    EXPECT_FALSE(tracker.isMaximized());
+    tracker.systemMaximized(true, true);
+    EXPECT_FALSE(tracker.isMaximized());
+}
+
+TEST(NormalGeometryTrackerTest, CompositorRestoreThenResizeThenMaximizeSavesTheNewSize)
+{
+    // From the #1253 review (comment on #1250): the app maximizes at A, the compositor restores, the
+    // user resizes to B, the compositor maximizes, the user quits. The normal rectangle saved must be
+    // B, not the stale A.
+    NormalGeometryTracker tracker;
+    tracker.maximizing(NORMAL_A, 1.0F, true, MaximizeState::System); // Window::maximize() on Wayland
+    EXPECT_EQ(tracker.restoreTarget(), NORMAL_A);
+
+    tracker.systemRestored(false, false); // The compositor restores
+    EXPECT_FALSE(tracker.isMaximized());
+    EXPECT_FALSE(tracker.restoreTarget().has_value());
+
+    tracker.observe(NORMAL_B, 1.0F, true); // The user resizes
+    tracker.systemMaximized(true, false);  // The compositor maximizes
+    EXPECT_EQ(savedNormal(tracker, true, MAXIMIZED), NORMAL_B);
+}
+
+TEST(NormalGeometryTrackerTest, TheAppsOwnMaximizeRecordsTheRectangleItLeaves)
+{
+    NormalGeometryTracker tracker;
+    tracker.observe(NORMAL_B, 1.0F, true);
+    // The window is at A when maximize() runs (a move not yet observed): A is what it leaves.
+    tracker.maximizing(NORMAL_A, 1.25F, true, MaximizeState::ClientSide);
+    EXPECT_EQ(tracker.state(), MaximizeState::ClientSide);
+    EXPECT_EQ(tracker.restoreTarget(), NORMAL_A);
+    EXPECT_FLOAT_EQ(tracker.restoreScale(), 1.25F);
+}
+
+TEST(NormalGeometryTrackerTest, ASecondMaximizeKeepsTheFirstRestoreTarget)
+{
+    NormalGeometryTracker tracker;
+    tracker.maximizing(NORMAL_A, 1.0F, true, MaximizeState::ClientSide);
+    tracker.maximizing(MAXIMIZED, 1.0F, false, MaximizeState::ClientSide);
+    EXPECT_EQ(tracker.restoreTarget(), NORMAL_A);
+
+    // Nor does an outside maximize reported while already maximized.
+    tracker.systemMaximized(true, false);
+    EXPECT_EQ(tracker.restoreTarget(), NORMAL_A);
+    EXPECT_EQ(tracker.state(), MaximizeState::ClientSide);
+}
+
+TEST(NormalGeometryTrackerTest, MaximizeOfAWindowAlreadyMaximizedFromOutsideUsesTheLastNormalGeometry)
+{
+    // maximize() finds the window maximized although the compositor's MAXIMIZED is still queued: the
+    // live rectangle is the maximized one, so the last normal geometry is the restore target.
+    NormalGeometryTracker tracker;
+    tracker.observe(NORMAL_B, 1.0F, true);
+    tracker.maximizing(MAXIMIZED, 1.0F, false, MaximizeState::System);
+    EXPECT_EQ(tracker.restoreTarget(), NORMAL_B);
+}
+
+TEST(NormalGeometryTrackerTest, AnOsRestoreDoesNotEndAClientSideMaximize)
+{
+    // SDL sends RESTORED when a minimized window comes back and when adoptSystemMaximize() undoes an
+    // OS maximize on its way to the client-side one; neither ends a client-side maximize, which no
+    // OS flag shows.
+    NormalGeometryTracker tracker;
+    tracker.maximizing(NORMAL_A, 1.0F, true, MaximizeState::ClientSide);
+    tracker.systemRestored(false, false);
+    EXPECT_TRUE(tracker.isMaximized());
+    EXPECT_EQ(tracker.restoreTarget(), NORMAL_A);
+}
+
+TEST(NormalGeometryTrackerTest, AStaleOrMinimizedRestoreDoesNotEndAnOutsideMaximize)
+{
+    NormalGeometryTracker tracker;
+    tracker.observe(NORMAL_A, 1.0F, true);
+    tracker.systemMaximized(true, false);
+
+    tracker.systemRestored(true, false); // Un-minimized, still maximized; or re-maximized since
+    EXPECT_TRUE(tracker.isMaximized());
+    tracker.systemRestored(false, true); // Minimized now: cannot tell
+    EXPECT_TRUE(tracker.isMaximized());
+    EXPECT_EQ(tracker.restoreTarget(), NORMAL_A);
+}
+
+TEST(NormalGeometryTrackerTest, GeometryWhileNotNormalIsNotRecorded)
+{
+    NormalGeometryTracker tracker;
+    tracker.observe(NORMAL_A, 1.0F, true);
+    tracker.observe(MAXIMIZED, 1.0F, false);                                    // Maximized, minimized or fullscreen
+    tracker.observe(Rect{.x = 0, .y = 0, .width = 0, .height = 0}, 1.0F, true); // Not a real size
+    tracker.systemMaximized(true, false);
+    EXPECT_EQ(tracker.restoreTarget(), NORMAL_A);
+}
+
+TEST(NormalGeometryTrackerTest, AClientSideMaximizeIgnoresGeometryEvenWhenSdlFlagsLookNormal)
+{
+    // A client-side maximize sets no SDL flag; its own resize to the usable bounds must not become the
+    // last normal geometry.
+    NormalGeometryTracker tracker;
+    tracker.maximizing(NORMAL_A, 1.0F, true, MaximizeState::ClientSide);
+    tracker.observe(MAXIMIZED, 1.0F, true);
+    tracker.restored();
+    tracker.systemMaximized(true, false);
+    EXPECT_EQ(tracker.restoreTarget(), NORMAL_A);
+}
+
+TEST(NormalGeometryTrackerTest, RestoreSpendsTheRestoreTarget)
+{
+    NormalGeometryTracker tracker;
+    tracker.maximizing(NORMAL_A, 1.5F, true, MaximizeState::ClientSide);
+    tracker.restored();
+    EXPECT_EQ(tracker.state(), MaximizeState::Normal);
+    EXPECT_FALSE(tracker.restoreTarget().has_value());
+    EXPECT_FLOAT_EQ(tracker.restoreScale(), 0.0F);
+    // Not maximized: the live geometry is saved.
+    EXPECT_EQ(savedNormal(tracker, false, NORMAL_B), NORMAL_B);
 }
 
 } // namespace

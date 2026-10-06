@@ -111,6 +111,145 @@ shouldAdoptSystemMaximize(bool borderless, bool clientSideBackend, bool usableBo
     return borderless && clientSideBackend && usableBoundsKnown && stillMaximized && !minimized;
 }
 
+/// How the window is maximized, as far as NormalGeometryTracker knows.
+enum class MaximizeState : std::uint8_t
+{
+    /// Not maximized: the live geometry is the normal geometry.
+    Normal,
+    /// Maximized client-side by Window::maximize(): moved and sized to the display's usable bounds,
+    /// with no OS maximized state (X11, XWayland and Windows, borderless). Only Window::restore()
+    /// ends it; an OS "restored" notification is not about it.
+    ClientSide,
+    /// Maximized by the OS, window manager or compositor (SDL_WINDOW_MAXIMIZED is set): a system
+    /// maximize, a native Wayland compositor maximize, or maximize()'s SDL_MaximizeWindow fallback.
+    /// The OS can end it, which SDL reports as SDL_EVENT_WINDOW_RESTORED.
+    System,
+};
+
+/// Tracks the window's normal (restored) rectangle through every maximize and restore, whoever
+/// starts it (#1250).
+///
+/// The restore rectangle used to be recorded only when Window::maximize() ran. A maximize by the
+/// window manager (an X11/XWayland shortcut or menu) or the compositor was never seen, so on exit
+/// the maximized rectangle was saved as the normal one, and the next launch opened a screen-sized
+/// normal window (#1121 by another route). A compositor restore was not seen either, so a later
+/// compositor maximize kept the restore rectangle from before it, and the size the user had chosen
+/// since was lost. The tracker therefore remembers the last geometry the window had while normal and
+/// takes that as the restore target when a maximize from outside the app is reported.
+///
+/// Pure state: Window feeds it SDL's live geometry and flags. Every rectangle is in logical screen
+/// coordinates; a scale of 0 means unknown.
+class NormalGeometryTracker
+{
+  public:
+    /// The window moved or resized (SDL_EVENT_WINDOW_MOVED / _RESIZED) to @p live. Recorded as the
+    /// last normal geometry only when @p normalNow -- not maximized (by any route), minimized or
+    /// fullscreen right now -- and the tracker does not hold a client-side maximize, which no SDL
+    /// flag shows. SDL updates its flags before queuing the events, so a resize that is part of a
+    /// maximize is handled with the maximized flag already set and is left out.
+    constexpr void observe(const Rect& live, float scale, bool normalNow) noexcept
+    {
+        if (normalNow && m_State != MaximizeState::ClientSide && live.width > 0 && live.height > 0)
+        {
+            m_LastNormal = live;
+            m_LastNormalScale = scale;
+        }
+    }
+
+    /// Window::maximize() is maximizing the window, @p how. When @p normalNow the window is still at
+    /// its normal rectangle @p live, which becomes the restore target; otherwise it is already
+    /// maximized, and the restore target found then is kept (a second maximize must not replace it
+    /// with the maximized rectangle). If it is maximized although the tracker had not heard of it --
+    /// a compositor maximize whose event is still queued -- the last normal geometry is taken, as
+    /// systemMaximized() would.
+    constexpr void maximizing(const Rect& live, float scale, bool normalNow, MaximizeState how) noexcept
+    {
+        if (normalNow)
+        {
+            observe(live, scale, true);
+            captureRestoreTarget(live.width > 0 && live.height > 0 ? std::optional<Rect>{live} : std::nullopt, scale);
+        }
+        else if (m_State == MaximizeState::Normal)
+        {
+            captureRestoreTarget(m_LastNormal, m_LastNormalScale);
+        }
+        m_State = how;
+    }
+
+    /// SDL reported SDL_EVENT_WINDOW_MAXIMIZED and the window was not adopted into a client-side
+    /// maximize. @p stillMaximized and @p minimized are the live flags when the event is handled:
+    /// events are queued, so a MAXIMIZED can be drained after a later restore or minimize, and only a
+    /// window that is still maximized and not minimized is taken as maximized (as with
+    /// shouldAdoptSystemMaximize()). The restore target is the last normal geometry, unless the
+    /// window was already maximized, whose restore target is kept.
+    constexpr void systemMaximized(bool stillMaximized, bool minimized) noexcept
+    {
+        if (!stillMaximized || minimized || m_State != MaximizeState::Normal)
+        {
+            return;
+        }
+        captureRestoreTarget(m_LastNormal, m_LastNormalScale);
+        m_State = MaximizeState::System;
+    }
+
+    /// SDL reported SDL_EVENT_WINDOW_RESTORED. Ends a System maximize when the live flags say the
+    /// window is no longer maximized and is not minimized. Ignored otherwise: SDL also sends it when a
+    /// minimized window comes back (still maximized, perhaps), when a queued restore is drained after
+    /// a newer maximize, and when Window::adoptSystemMaximize() undoes an OS maximize on its way to a
+    /// ClientSide one, which this must not end.
+    constexpr void systemRestored(bool stillMaximized, bool minimized) noexcept
+    {
+        if (stillMaximized || minimized || m_State != MaximizeState::System)
+        {
+            return;
+        }
+        restored();
+    }
+
+    /// Window::restore() returned the window to its normal rectangle: the restore target is spent.
+    constexpr void restored() noexcept
+    {
+        m_State = MaximizeState::Normal;
+        m_RestoreTarget.reset();
+        m_RestoreScale = 0.0F;
+    }
+
+    [[nodiscard]] constexpr auto state() const noexcept -> MaximizeState
+    {
+        return m_State;
+    }
+
+    [[nodiscard]] constexpr bool isMaximized() const noexcept
+    {
+        return m_State != MaximizeState::Normal;
+    }
+
+    /// The rectangle the window returns to when restored, while maximized and it is known.
+    [[nodiscard]] constexpr auto restoreTarget() const noexcept -> const std::optional<Rect>&
+    {
+        return m_RestoreTarget;
+    }
+
+    /// The window scale restoreTarget() was measured at (#1168); 0 when unknown.
+    [[nodiscard]] constexpr auto restoreScale() const noexcept -> float
+    {
+        return m_RestoreScale;
+    }
+
+  private:
+    constexpr void captureRestoreTarget(const std::optional<Rect>& target, float scale) noexcept
+    {
+        m_RestoreTarget = target;
+        m_RestoreScale = target.has_value() ? scale : 0.0F;
+    }
+
+    MaximizeState m_State = MaximizeState::Normal;
+    std::optional<Rect> m_LastNormal;
+    float m_LastNormalScale = 0.0F;
+    std::optional<Rect> m_RestoreTarget;
+    float m_RestoreScale = 0.0F;
+};
+
 /// Length of the overlap of the half-open spans [aStart, aStart + aLength) and
 /// [bStart, bStart + bLength), or 0 when they do not overlap. Computed in 64 bits so extreme saved
 /// coordinates cannot overflow.
