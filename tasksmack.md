@@ -31,7 +31,7 @@ flowchart TD
     Platform -. path provider only .-> Core
 ```
 
-- Platform probes are stateless readers of OS counters. The only state they keep is bounded optimization caches of raw readings (the "Platform-Level Optimization Caches" in `Domain/SamplingConfig.h`): on Linux, each process's command line, keyed by PID, start time and comm and re-read within `PROCESS_CMDLINE_CACHE_TTL_MS`, and the socket inode-to-PID map, rebuilt every `INODE_PID_CACHE_TTL_MS`. Probes never compute deltas or rates.
+- Platform probes are stateless readers of OS counters. The only state they keep is bounded optimization caches of raw readings (the "Platform-Level Optimization Caches" in `Domain/SamplingConfig.h`): on Linux, each process's command line, keyed by PID, start time and comm and re-read within `PROCESS_CMDLINE_CACHE_TTL_MS`, and the socket inode-to-PID map, which `enumerate()` rebuilds every `INODE_PID_CACHE_TTL_MS` from the same `/proc/[pid]/fd` walk that counts FDs. Probes never compute deltas or rates.
 - Process enumeration and heavy system metrics (System, Storage, GPU) run asynchronously on a background thread via `BackgroundSampler` (after an initial synchronous baseline read). This decoupled polling ensures UI responsiveness under heavy load.
 - Domain code transforms counters into snapshots and maintains history.
 - UI (panels) consumes snapshots, renders views through ImGui/ImPlot, and never calls platform APIs directly.

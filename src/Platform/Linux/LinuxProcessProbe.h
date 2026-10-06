@@ -97,6 +97,13 @@ class LinuxProcessProbe : public IProcessProbe
     {
         m_InodeMapScanHook = std::move(hook);
     }
+
+    /// Test seam: how old the inode-to-PID map gets before it is rebuilt, normally
+    /// Domain::Sampling::INODE_PID_CACHE_TTL_MS. Not thread-safe; call before sampling starts.
+    void setInodeMapTtlForTesting(std::chrono::milliseconds ttl)
+    {
+        m_InodeMapTtl = ttl;
+    }
 #endif
 
     /// Test seam: the longest a cached command line is reused before it is read again (#1425),
@@ -173,6 +180,8 @@ class LinuxProcessProbe : public IProcessProbe
     // Defaults to Domain::Sampling::INODE_PID_CACHE_EARLY_REBUILD_MS, set in the constructor so this
     // Platform header doesn't include a Domain one.
     std::chrono::milliseconds m_InodeMapEarlyRebuildInterval{};
+    // Defaults to Domain::Sampling::INODE_PID_CACHE_TTL_MS, likewise. See setInodeMapTtlForTesting().
+    std::chrono::milliseconds m_InodeMapTtl{};
 
     // Sockets the last reading couldn't attribute, each with the sampledAt of the reading it was
     // first seen unowned in. Guarded by m_UnownedSocketsMutex.
@@ -235,12 +244,15 @@ class LinuxProcessProbe : public IProcessProbe
     /// sets ioCountersAvailable = false
     static void parseProcessIo(int pidDirFd, ProcessCounters& counters);
 
-    /// Count file descriptors in /proc/[pid]/fd. Unreadable (permissions) sets handleCountAvailable and
-    /// networkCountersAvailable = false: neither the count nor the process's connections can be known.
-    /// A directory that can be listed but whose links can't be read (CAP_DAC_READ_SEARCH without
-    /// CAP_SYS_PTRACE) sets only networkCountersAvailable = false: the count is known, but the socket
-    /// inode-to-PID map reads those links, so none of its connections are attributed to it (#1328).
-    static void countProcessFds(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot);
+    /// Count file descriptors in /proc/[pid]/fd, through `pidDirFd`. Unreadable (permissions) sets
+    /// handleCountAvailable and networkCountersAvailable = false: neither the count nor the process's
+    /// connections can be known. A directory that can be listed but whose links can't be read
+    /// (CAP_DAC_READ_SEARCH without CAP_SYS_PTRACE) sets only networkCountersAvailable = false: the
+    /// count is known, but the socket inode-to-PID map reads those links, so none of its connections
+    /// are attributed to it (#1328). With `readEveryLink`, every link is read and each socket's inode
+    /// passed to `onSocket`: the inode-to-PID map from the same walk (#1426).
+    template<typename OnSocket>
+    static void countProcessFds(int pidDirFd, ProcessCounters& counters, bool readEveryLink, OnSocket&& onSocket);
 
     /// Check if we can read I/O counters using the injected proc root
     [[nodiscard]] static bool checkIoCountersAvailability(const std::filesystem::path& procRoot);
@@ -298,6 +310,20 @@ class LinuxProcessProbe : public IProcessProbe
     /// The inode-to-PID map, rebuilt from /proc/[pid]/fd when the last rebuild is at least `maxAge` old
     /// (see m_InodeToPidCache): the TTL normally, m_InodeMapEarlyRebuildInterval for an early rebuild.
     [[nodiscard]] InodeToPidSnapshot currentInodeToPidMap(std::chrono::milliseconds maxAge) const;
+
+    /// Claim the next rebuild of the inode-to-PID map if the last is at least `maxAge` old and none
+    /// was attempted within m_InodeMapEarlyRebuildInterval; the caller then builds and publishes it.
+    /// Returns the current (possibly stale) snapshot, and whether the rebuild is the caller's.
+    [[nodiscard]] std::pair<InodeToPidSnapshot, bool> claimInodeMapRebuild(std::chrono::milliseconds maxAge) const;
+
+    /// Publish a rebuilt inode-to-PID map whose scan started at `scanStart`, and return the snapshot
+    /// now current. An empty map keeps the previous one, with a quick retry.
+    InodeToPidSnapshot publishInodeToPidMap(InodeToPidMap rebuilt, std::chrono::steady_clock::time_point scanStart) const;
+
+    /// enumerate()'s rebuild pass (#1426): count every process's FDs, reading every link, and publish
+    /// the inode-to-PID map of the sockets among them. `procDirFd` is open on the proc root (-1 if it
+    /// couldn't be listed: the map is then published empty, which keeps the last one).
+    void rebuildInodeMapWithFdCounts(int procDirFd, std::vector<ProcessCounters>& processes) const;
 
     /// Thread-safe copy of the current NetlinkSocketStats instance (see m_SocketStats).
     [[nodiscard]] std::shared_ptr<NetlinkSocketStats> socketStats() const;

@@ -21,6 +21,7 @@
 
 #include "Platform/CpuAffinity.h"
 #include "Platform/Linux/LinuxProcessProbe.h"
+#include "Platform/Linux/ProcFdScan.h"
 #include "Platform/Linux/ProcPrivileges.h"
 #include "Platform/PlatformConfig.h"
 #include "Platform/ProcessTypes.h"
@@ -1402,6 +1403,18 @@ TEST(LinuxProcessProbeTest, ListableFdsWhoseLinksCantBeReadReportNetworkUnavaila
     EXPECT_TRUE(processes[0].handleCountAvailable);
     EXPECT_EQ(processes[0].handleCount, 2);
     EXPECT_FALSE(processes[0].networkCountersAvailable);
+
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+    // The same from a pass that only counts (no network attribution, so no inode-to-PID map built
+    // from the walk, #1426): the first pass above rebuilt the map wherever netlink is available.
+    LinuxProcessProbe countOnly(proc.path);
+    countOnly.setSocketStatsForTesting(nullptr);
+    const auto counted = countOnly.enumerate();
+    ASSERT_EQ(counted.size(), 1U);
+    EXPECT_TRUE(counted[0].handleCountAvailable);
+    EXPECT_EQ(counted[0].handleCount, 2);
+    EXPECT_FALSE(counted[0].networkCountersAvailable);
+#endif
 }
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
@@ -1918,6 +1931,137 @@ TEST(LinuxProcessProbeTest, AnUnreadableCommandLineIsTriedAgainNextSample)
     EXPECT_EQ(enumerateOne(probe, 4242).command, "app");
 }
 
+TEST(ProcFdScanTest, OnlyASocketLinkNamesASocketInode)
+{
+    // #1426: the shared fd walk takes a socket's inode from its link target, as buildInodeToPidMap() did.
+    EXPECT_EQ(ProcFdScan::socketInode("socket:[12345]"), std::optional<std::uint64_t>{12345});
+    EXPECT_EQ(ProcFdScan::socketInode("socket:[18446744073709551615]"), std::optional<std::uint64_t>{18446744073709551615ULL});
+    for (const std::string_view target : {"pipe:[12345]",
+                                          "/dev/null",
+                                          "anon_inode:[eventpoll]",
+                                          "socket:[]",
+                                          "socket:[0]",
+                                          "socket:[12a]",
+                                          "socket:[123",
+                                          "socket:[18446744073709551616]"})
+    {
+        EXPECT_EQ(ProcFdScan::socketInode(target), std::nullopt) << target;
+    }
+}
+
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+TEST(LinuxProcessProbeTest, ARebuildPassCountsFdsAndBuildsTheInodeMapInOneWalk)
+{
+    // #1426: every process's /proc/[pid]/fd was walked twice on the samples that
+    // rebuilt the socket inode-to-PID map -- once by enumerate() to count FDs,
+    // once by buildInodeToPidMap(). enumerate() now builds the map from its own
+    // walk when it is due, and readSocketTraffic() uses it. Both results must be
+    // what the two separate walks gave.
+    ScopedTempDir proc("ts_test_proc_shared_fd_walk");
+    writeFile(proc.path / "stat", "cpu  100 0 100 800 0 0 0 0 0 0\n");
+    const auto writeProcess = [&proc](std::int32_t pid, std::uint64_t startTime)
+    {
+        writeFile(proc.path / std::to_string(pid) / "stat",
+                  std::format("{} (app) S 1 {} {} 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 {} 0 0 "
+                              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n",
+                              pid,
+                              pid,
+                              pid,
+                              startTime));
+        std::filesystem::create_directories(proc.path / std::to_string(pid) / "fd");
+        return proc.path / std::to_string(pid) / "fd";
+    };
+    const auto fd4242 = writeProcess(4242, 1000); // two sockets, a file and a pipe
+    std::filesystem::create_symlink("socket:[11]", fd4242 / "3");
+    std::filesystem::create_symlink("socket:[12]", fd4242 / "4");
+    std::filesystem::create_symlink("/dev/null", fd4242 / "5");
+    std::filesystem::create_symlink("pipe:[77]", fd4242 / "6");
+    const auto fd4343 = writeProcess(4343, 2000); // shares 11 (the lowest PID keeps it) and has 13
+    std::filesystem::create_symlink("socket:[11]", fd4343 / "3");
+    std::filesystem::create_symlink("socket:[13]", fd4343 / "4");
+    const auto fd4444 = writeProcess(4444, 3000); // fds can't be listed
+    std::filesystem::remove(fd4444);
+    writeFile(fd4444, "not a directory");
+    const auto fd4545 = writeProcess(4545, 4000); // listable, no links (a synthetic /proc's plain files)
+    writeFile(fd4545 / "0", "");
+    writeFile(fd4545 / "1", "");
+
+    using Platform::TestSupport::FakeSocket;
+    using Platform::TestSupport::ScriptedNetlinkTransport;
+    const std::vector<FakeSocket> sockets{{.inode = 11}, {.inode = 12}, {.inode = 13}, {.inode = 99}};
+    auto transport = std::make_unique<ScriptedNetlinkTransport>();
+    auto* script = transport.get();
+    auto stats = std::make_shared<Platform::NetlinkSocketStats>(std::move(transport), std::chrono::milliseconds{0});
+    script->onRequest = [&](const ScriptedNetlinkTransport::Request& request) -> ScriptedNetlinkTransport::Reply
+    {
+        return Platform::TestSupport::completeDump(request, request.family == AF_INET ? sockets : std::vector<FakeSocket>{});
+    };
+
+    LinuxProcessProbe probe(proc.path);
+    probe.setSocketStatsForTesting(stats);
+    int scans = 0;
+    probe.setInodeMapScanHookForTesting([&scans] { ++scans; });
+    ASSERT_TRUE(probe.capabilities().hasNetworkCounters);
+
+    // The first pass rebuilds the map (it has never been built), walking each fd
+    // directory once.
+    const auto rebuildPass = probe.enumerate();
+    EXPECT_EQ(scans, 1) << "enumerate() built the map";
+    const auto traffic = probe.readSocketTraffic();
+    EXPECT_EQ(scans, 1) << "readSocketTraffic() used it rather than walking /proc/*/fd again";
+
+    // The map is the one buildInodeToPidMap()'s own walk builds.
+    const auto expected = buildInodeToPidMap(proc.path);
+    ASSERT_EQ(traffic.sockets.size(), sockets.size());
+    for (const auto& socket : traffic.sockets)
+    {
+        const auto it = expected.find(socket.key);
+        const SocketOwner owner = it != expected.end() ? it->second : SocketOwner{};
+        EXPECT_EQ(socket.pid, owner.pid) << "socket " << socket.key;
+        EXPECT_EQ(socket.ownerStartTimeTicks, owner.startTimeTicks) << "socket " << socket.key;
+    }
+    const auto ownerOf = [&traffic](std::uint64_t inode)
+    {
+        const auto it = std::ranges::find(traffic.sockets, inode, &SocketTrafficSample::key);
+        return it != traffic.sockets.end() ? std::pair{it->pid, it->ownerStartTimeTicks} : std::pair{-1, std::uint64_t{0}};
+    };
+    EXPECT_EQ(ownerOf(11), (std::pair{4242, std::uint64_t{1000}})) << "shared: the lowest PID keeps it (#1099)";
+    EXPECT_EQ(ownerOf(12), (std::pair{4242, std::uint64_t{1000}}));
+    EXPECT_EQ(ownerOf(13), (std::pair{4343, std::uint64_t{2000}})) << "with its owner's start time (#1336)";
+    EXPECT_EQ(ownerOf(99), (std::pair{0, std::uint64_t{0}})) << "held by no process listed";
+
+    // The FD counts are the ones a pass that doesn't rebuild the map gives: this
+    // probe's next pass (the map is fresh) and a probe with no network
+    // attribution at all.
+    const auto countPass = probe.enumerate();
+    EXPECT_EQ(scans, 1) << "the map isn't due again yet";
+    LinuxProcessProbe noNetwork(proc.path);
+    noNetwork.setSocketStatsForTesting(nullptr);
+    const auto plainPass = noNetwork.enumerate();
+    struct FdView
+    {
+        std::int32_t count;
+        bool countAvailable;
+        bool networkAvailable;
+        bool operator==(const FdView&) const = default;
+    };
+    const auto fdsOf = [](const std::vector<ProcessCounters>& processes, std::int32_t pid)
+    {
+        const auto it = std::ranges::find(processes, pid, &ProcessCounters::pid);
+        EXPECT_NE(it, processes.end()) << pid;
+        return it != processes.end() ? FdView{it->handleCount, it->handleCountAvailable, it->networkCountersAvailable}
+                                     : FdView{-1, false, false};
+    };
+    const std::vector<std::pair<std::int32_t, FdView>> expectedFds{
+        {4242, {4, true, true}}, {4343, {2, true, true}}, {4444, {0, false, false}}, {4545, {2, true, true}}};
+    for (const auto& [pid, fds] : expectedFds)
+    {
+        EXPECT_EQ(fdsOf(rebuildPass, pid), fds) << "rebuild pass, pid " << pid;
+        EXPECT_EQ(fdsOf(countPass, pid), fds) << "count-only pass, pid " << pid;
+        EXPECT_EQ(fdsOf(plainPass, pid), fds) << "no network, pid " << pid;
+    }
+}
+#endif
 TEST(LinuxProcessProbeTest, EmptyProcDirReturnsNoProcesses)
 {
     ScopedTempDir scoped("ts_test_proc_empty");

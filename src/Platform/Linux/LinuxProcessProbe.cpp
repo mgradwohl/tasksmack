@@ -17,6 +17,7 @@
 
 #include "Platform/ProcessTypes.h"
 #include "PosixGuards.h"
+#include "ProcFdScan.h"
 #include "ProcParsing.h"
 #include "ProcPrivileges.h"
 #include "ProcessName.h"
@@ -32,7 +33,6 @@
 #include <concepts>
 #include <cstdint>
 #include <cstdio>
-#include <exception>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -221,6 +221,7 @@ LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot,
 {
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     m_InodeMapEarlyRebuildInterval = std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_EARLY_REBUILD_MS};
+    m_InodeMapTtl = std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_TTL_MS};
 #endif
     if (m_TicksPerSecond <= 0)
     {
@@ -321,6 +322,15 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
     // Freeze states by /proc/[pid]/cgroup contents, for this pass only (see getProcessStatus()).
     FrozenByCgroup frozenByCgroup;
 
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+    // Whether this pass also rebuilds the socket inode-to-PID map (#1426): due every m_InodeMapTtl, it
+    // is built from the same /proc/[pid]/fd walk that counts the FDs, instead of readSocketTraffic()
+    // walking every fd directory a second time.
+    const bool rebuildInodeMap = m_HasNetworkCounters && claimInodeMapRebuild(m_InodeMapTtl).second;
+#else
+    constexpr bool rebuildInodeMap = false;
+#endif
+
     // Every read of a process goes through one handle on its /proc/[pid] directory: one path lookup per
     // file rather than a walk from the root, and all of a process's fields come from that process even
     // if it exits and its PID is reused mid-pass (as the inode-to-PID map's reads already did, #1336).
@@ -364,8 +374,12 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         parseProcessStatus(pidDirFd.get(), pid, counters, onlineCpus); // Owner, peak RSS (after statm) and CPU affinity
         readProcessCommand(pidDirFd.get(), counters, previousCmdlines, seenCmdlines, now);
 
-        // Count open file descriptors (may fail for some processes due to permissions)
-        countProcessFds(pid, counters, m_ProcRoot);
+        // Count open file descriptors (may fail for some processes due to permissions). A pass that
+        // rebuilds the inode-to-PID map counts them in the same walk, after the CPU total (below).
+        if (!rebuildInodeMap)
+        {
+            countProcessFds(pidDirFd.get(), counters, /*readEveryLink=*/false, [](std::uint64_t /*inode*/) {});
+        }
 
         // Only attempt I/O counters if we know they're readable
         // Use std::call_once for thread-safe lazy initialization; relaxed ordering is sufficient
@@ -397,6 +411,16 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
     // their stat reads, so nothing that runs before totalCpuTime() is called can skew its interval
     // from theirs (#1119).
     m_TotalCpuTimeAtEnumerate.store(readTotalCpuTime(), std::memory_order_relaxed);
+
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+    if (rebuildInodeMap)
+    {
+        // The FD counts and the inode-to-PID map from one walk of every /proc/[pid]/fd (#1426). After
+        // the CPU total, not inside the stat pass: reading every link makes the walk longer, and on the
+        // rebuild samples only that would stretch the interval the total is read over (#1119).
+        rebuildInodeMapWithFdCounts(procDirFd, processes);
+    }
+#endif
 
     if (m_EnumerateTailHook)
     {
@@ -920,66 +944,31 @@ void LinuxProcessProbe::parseProcessIo(int pidDirFd, ProcessCounters& counters)
     counters.ioCountersAvailable = hasRead && hasWrite;
 }
 
-void LinuxProcessProbe::countProcessFds(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot)
+template<typename OnSocket>
+void LinuxProcessProbe::countProcessFds(int pidDirFd, ProcessCounters& counters, bool readEveryLink, OnSocket&& onSocket)
 {
-    // Count entries in /proc/[pid]/fd directory.
-    // Each entry is a symlink to an open file descriptor.
-    // Note: May fail due to permissions (needs same user or root).
-
-    const auto fdPath = procRoot / std::to_string(pid) / "fd";
-
-    int32_t count = 0;
-    // Whether the fd links can be read, judged on the first entry that answers. Listing the directory
-    // needs only DAC permission (CAP_DAC_READ_SEARCH for another user's process), but reading its
-    // links -- which the socket inode-to-PID map does -- also needs ptrace access (CAP_SYS_PTRACE). A
-    // process whose links can't be read has none of its connections attributed to it, so its network
-    // counters are unknown, not "no traffic" (#1328).
-    enum class LinkAccess : std::uint8_t
+    // Count entries in /proc/[pid]/fd: each is a symlink to an open file descriptor. Listing another
+    // user's needs CAP_DAC_READ_SEARCH; reading its links -- which the socket inode-to-PID map does --
+    // also needs CAP_SYS_PTRACE. See ProcFdScan.h.
+    const ProcFdScan::FdScan scan = ProcFdScan::scanFds(pidDirFd, readEveryLink, std::forward<OnSocket>(onSocket));
+    if (!scan.listed)
     {
-        Unknown,
-        Readable,
-        Denied
-    };
-    LinkAccess linkAccess = LinkAccess::Unknown;
-    try
-    {
-        // Don't use error_code variant because errors during iteration
-        // (not just construction) won't be captured in it. Rely on exceptions.
-        std::array<char, 64> linkTarget{};
-        for (const auto& entry : std::filesystem::directory_iterator(fdPath))
-        {
-            ++count;
-            if (linkAccess != LinkAccess::Unknown)
-            {
-                continue;
-            }
-            if (::readlink(entry.path().c_str(), linkTarget.data(), linkTarget.size()) >= 0 || errno == EINVAL)
-            {
-                linkAccess = LinkAccess::Readable; // EINVAL: not a link (a synthetic /proc), but access was granted
-            }
-            else if (errno == EACCES || errno == EPERM)
-            {
-                linkAccess = LinkAccess::Denied;
-            }
-            // Anything else (ENOENT: the fd closed since the listing): try the next entry.
-        }
-        // Only set if we successfully enumerated the directory
-        counters.handleCount = count;
-        if (linkAccess == LinkAccess::Denied)
-        {
-            counters.networkCountersAvailable = false;
-        }
-    }
-    catch (const std::exception& ex)
-    {
-        // Permission errors (another user's process, without CAP_DAC_READ_SEARCH) and other exceptional situations:
-        // the count is unknown, not 0 (#1110). The process's connections can't be attributed to it
-        // either -- the socket inode-to-PID map is built from these same fd directories -- so its
-        // network counters are unknown too, not "no traffic".
+        // Permission errors (another user's process, without CAP_DAC_READ_SEARCH), a process that
+        // exited, a listing cut short: the count is unknown, not 0 (#1110). The process's connections
+        // can't be attributed to it either -- the socket inode-to-PID map is built from these same fd
+        // directories -- so its network counters are unknown too, not "no traffic".
         counters.handleCount = 0;
         counters.handleCountAvailable = false;
         counters.networkCountersAvailable = false;
-        spdlog::debug("LinuxProcessProbe: failed to enumerate FDs for pid {} at {}: {}", pid, fdPath.string(), ex.what());
+        spdlog::debug("LinuxProcessProbe: failed to enumerate FDs for pid {}", counters.pid);
+        return;
+    }
+    counters.handleCount = scan.count;
+    if (scan.linkAccess == ProcFdScan::LinkAccess::Denied)
+    {
+        // Listed, but its links can't be read (#1328): none of its connections can be attributed to
+        // it, so its network counters are unknown, not "no traffic".
+        counters.networkCountersAvailable = false;
     }
 }
 
@@ -1382,67 +1371,116 @@ SocketTrafficReading LinuxProcessProbe::readSocketTraffic() const
     return reading;
 }
 
+std::pair<LinuxProcessProbe::InodeToPidSnapshot, bool> LinuxProcessProbe::claimInodeMapRebuild(std::chrono::milliseconds maxAge) const
+{
+    // The rebuild slot is claimed by advancing m_InodeToPidCacheTime under the lock, so only one
+    // thread rebuilds per TTL window while all others continue using the previous shared_ptr
+    // snapshot (see #460).
+    const std::scoped_lock lock{m_InodePidCacheMutex};
+    const auto now = std::chrono::steady_clock::now();
+    // However the map got stale, never scan more often than the early-rebuild interval: an empty
+    // scan backdates m_InodeToPidCacheTime for a quick retry, and that retry must not combine
+    // with an early rebuild into two scans per reading.
+    const bool claimed = (now - m_InodeToPidCacheTime) >= maxAge && (now - m_InodeToPidLastAttempt) >= m_InodeMapEarlyRebuildInterval;
+    if (claimed)
+    {
+        // Advance the timestamps now so any other thread that checks while we are scanning /proc sees
+        // a fresh time and skips rebuilding.
+        m_InodeToPidCacheTime = now;
+        m_InodeToPidLastAttempt = now;
+    }
+    return {InodeToPidSnapshot{.map = m_InodeToPidCache, .builtAt = m_InodeToPidBuiltAt}, claimed}; // current (possibly stale) snapshot
+}
+
+LinuxProcessProbe::InodeToPidSnapshot LinuxProcessProbe::publishInodeToPidMap(InodeToPidMap rebuilt,
+                                                                              std::chrono::steady_clock::time_point scanStart) const
+{
+    // Allocated outside the lock; readers keep using the old snapshot until the swap.
+    auto map = rebuilt.empty() ? nullptr : std::make_shared<const InodeToPidMap>(std::move(rebuilt));
+    const std::scoped_lock lock{m_InodePidCacheMutex};
+    if (map)
+    {
+        m_InodeToPidCache = std::move(map);
+        m_InodeToPidCacheTime = std::chrono::steady_clock::now();
+    }
+    else
+    {
+        // Preserve the previous snapshot when procfs enumeration transiently
+        // produces no entries; allow a quick retry instead of waiting the full TTL
+        // (still no sooner than m_InodeMapEarlyRebuildInterval after this attempt).
+        constexpr auto EMPTY_REBUILD_RETRY_MS = std::chrono::milliseconds{100};
+        const auto retryDelay = std::min(EMPTY_REBUILD_RETRY_MS, m_InodeMapTtl);
+        m_InodeToPidCacheTime = std::chrono::steady_clock::now() - (m_InodeMapTtl - retryDelay);
+        // The scan still tried to resolve every socket unowned before it: advance builtAt so
+        // those sockets don't count as opened since the build and trigger an early rebuild
+        // every interval (#1259).
+    }
+    m_InodeToPidBuiltAt = scanStart;
+    return {.map = m_InodeToPidCache, .builtAt = m_InodeToPidBuiltAt};
+}
+
 LinuxProcessProbe::InodeToPidSnapshot LinuxProcessProbe::currentInodeToPidMap(std::chrono::milliseconds maxAge) const
 {
-    // Refresh inode-to-PID map on a TTL basis to avoid scanning /proc/[pid]/fd/* every
-    // enumerate(). The rebuild slot is claimed by advancing m_InodeToPidCacheTime under
-    // the initial lock, so only one thread rebuilds per TTL window while all others
-    // continue using the previous shared_ptr snapshot (see #460).
-    InodeToPidSnapshot snapshot;
-    bool needsRebuild = false;
-    std::chrono::steady_clock::time_point scanStart;
+    // Refresh inode-to-PID map on a TTL basis to avoid scanning /proc/[pid]/fd/* for every reading.
+    // Normally enumerate() has just rebuilt it from its own fd walk (#1426), and this only rebuilds
+    // it early (a socket that appeared unowned) or for a reading taken without an enumerate().
+    auto [snapshot, claimed] = claimInodeMapRebuild(maxAge);
+    if (!claimed)
     {
-        const std::scoped_lock lock{m_InodePidCacheMutex};
-        const auto now = std::chrono::steady_clock::now();
-        // However the map got stale, never scan more often than the early-rebuild interval: an empty
-        // scan backdates m_InodeToPidCacheTime for a quick retry, and that retry must not combine
-        // with an early rebuild into two scans per reading.
-        needsRebuild = (now - m_InodeToPidCacheTime) >= maxAge && (now - m_InodeToPidLastAttempt) >= m_InodeMapEarlyRebuildInterval;
-        if (needsRebuild)
-        {
-            // Claim the rebuild slot: advance the timestamps now so any other thread that
-            // checks while we are scanning /proc sees a fresh time and skips rebuilding.
-            m_InodeToPidCacheTime = now;
-            m_InodeToPidLastAttempt = now;
-            scanStart = now;
-        }
-        snapshot = {.map = m_InodeToPidCache, .builtAt = m_InodeToPidBuiltAt}; // current (possibly stale) snapshot
+        return snapshot;
     }
-    if (needsRebuild)
+    // Build the map outside the lock; concurrent threads keep using the old snapshot.
+    const auto scanStart = std::chrono::steady_clock::now();
+    if (m_InodeMapScanHook)
     {
-        // Build the map outside the lock; concurrent threads keep using the old snapshot.
-        if (m_InodeMapScanHook)
-        {
-            m_InodeMapScanHook();
-        }
-        auto rebuilt = std::make_shared<const InodeToPidMap>(buildInodeToPidMap(m_ProcRoot));
-        {
-            const std::scoped_lock lock{m_InodePidCacheMutex};
-            if (!rebuilt->empty())
-            {
-                m_InodeToPidCache = std::move(rebuilt);
-                m_InodeToPidCacheTime = std::chrono::steady_clock::now();
-                m_InodeToPidBuiltAt = scanStart;
-                snapshot = {.map = m_InodeToPidCache, .builtAt = m_InodeToPidBuiltAt};
-            }
-            else
-            {
-                // Preserve the previous snapshot when procfs enumeration transiently
-                // produces no entries; allow a quick retry instead of waiting the full TTL
-                // (still no sooner than m_InodeMapEarlyRebuildInterval after this attempt).
-                constexpr auto EMPTY_REBUILD_RETRY_MS = std::chrono::milliseconds{100};
-                const auto ttl = std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_TTL_MS};
-                const auto retryDelay = std::min(EMPTY_REBUILD_RETRY_MS, ttl);
-                m_InodeToPidCacheTime = std::chrono::steady_clock::now() - (ttl - retryDelay);
-                // The scan still tried to resolve every socket unowned before it: advance builtAt so
-                // those sockets don't count as opened since the build and trigger an early rebuild
-                // every interval (#1259).
-                m_InodeToPidBuiltAt = scanStart;
-                snapshot = {.map = m_InodeToPidCache, .builtAt = m_InodeToPidBuiltAt};
-            }
-        }
+        m_InodeMapScanHook();
     }
-    return snapshot;
+    return publishInodeToPidMap(buildInodeToPidMap(m_ProcRoot), scanStart);
+}
+
+void LinuxProcessProbe::rebuildInodeMapWithFdCounts(int procDirFd, std::vector<ProcessCounters>& processes) const
+{
+    const auto scanStart = std::chrono::steady_clock::now();
+    if (m_InodeMapScanHook)
+    {
+        m_InodeMapScanHook();
+    }
+    InodeToPidMap inodeToPid;
+    inodeToPid.reserve(1024); // Pre-allocate for typical system, as buildInodeToPidMap() does
+
+    std::array<char, 16> pidName{}; // A PID's decimal digits and a NUL
+    for (ProcessCounters& counters : processes)
+    {
+        const auto [nameEnd, ec] = std::to_chars(pidName.data(), pidName.data() + pidName.size() - 1, counters.pid);
+        *nameEnd = '\0';
+        // Opened again (one stays open per process only while it is read, well under any fd limit):
+        // the fd links and the owner's start time are read through this one handle, so a process that
+        // exits and has its PID reused since the stat pass can't pair the new process's start time with
+        // the old one's sockets, or the reverse -- buildInodeToPidMap()'s guarantee (#1336).
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
+        const FdGuard pidDirFd(::openat(procDirFd, pidName.data(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+        if (ec != std::errc{} || pidDirFd.get() == -1)
+        {
+            // Exited since the stat pass: its FDs, and so its connections, are unknown.
+            counters.handleCount = 0;
+            counters.handleCountAvailable = false;
+            counters.networkCountersAvailable = false;
+            continue;
+        }
+        std::optional<std::uint64_t> ownerStartTimeTicks; // read once, on the process's first socket
+        countProcessFds(pidDirFd.get(),
+                        counters,
+                        /*readEveryLink=*/true,
+                        [&](std::uint64_t inode)
+                        {
+                            if (!ownerStartTimeTicks.has_value())
+                            {
+                                ownerStartTimeTicks = readStartTimeTicksAt(pidDirFd.get());
+                            }
+                            addSocketOwner(inodeToPid, inode, SocketOwner{.pid = counters.pid, .startTimeTicks = *ownerStartTimeTicks});
+                        });
+    }
+    (void) publishInodeToPidMap(std::move(inodeToPid), scanStart);
 }
 #endif // TASKSMACK_HAS_NETLINK_SOCKET_STATS
 

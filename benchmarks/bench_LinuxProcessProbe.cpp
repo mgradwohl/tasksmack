@@ -3,7 +3,7 @@
 // BM_ProcessProbe_Enumerate (bench_ProcessModel.cpp) times the real /proc, whose size and contents
 // depend on the machine. These build a fixed /proc of thousands of processes in a temporary
 // directory, so runs and machines compare like for like at a process count where the per-process
-// reads dominate (#598: plan #843's Phase 3b, #1425).
+// reads dominate (#598: plan #843's Phase 3b, #1425 cmdline cache, #1426 shared fd scan).
 
 #if defined(__linux__) && __has_include(<unistd.h>)
 
@@ -12,6 +12,7 @@
 
 #include <benchmark/benchmark.h>
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <format>
@@ -189,7 +190,7 @@ const SyntheticProc& syntheticProc(int count)
 
 // Steady-state enumerate() of a synthetic /proc: one warm-up pass first, so the per-process caches
 // (#1425's command lines) are as they are between samples in the app. Network attribution is off,
-// so no pass is also the periodic socket inode-to-PID map rebuild.
+// so no pass is also the periodic socket inode-to-PID rebuild (BM_ProcessProbe_EnumerateSyntheticRebuild).
 static void BM_ProcessProbe_EnumerateSynthetic(benchmark::State& state)
 {
     const auto& fixture = syntheticProc(static_cast<int>(state.range(0)));
@@ -212,6 +213,34 @@ static void BM_ProcessProbe_EnumerateSynthetic(benchmark::State& state)
     state.counters["processes"] = benchmark::Counter(static_cast<double>(warmUp.size()));
 }
 BENCHMARK(BM_ProcessProbe_EnumerateSynthetic)->Arg(5000)->Unit(benchmark::kMillisecond);
+
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+// A sample on which the socket inode-to-PID map is due for its rebuild (every
+// INODE_PID_CACHE_TTL_MS in the app): enumerate() plus the map, built from the same /proc/[pid]/fd
+// walk (#1426) rather than a second one.
+static void BM_ProcessProbe_EnumerateSyntheticRebuild(benchmark::State& state)
+{
+    const auto& fixture = syntheticProc(static_cast<int>(state.range(0)));
+    const auto probe = fixture.makeProbe();
+    if (!probe->capabilities().hasNetworkCounters)
+    {
+        state.SkipWithError("Netlink INET_DIAG not available");
+        return;
+    }
+    // Every pass is a rebuild pass.
+    probe->setInodeMapTtlForTesting(std::chrono::milliseconds{0});
+    probe->setInodeMapEarlyRebuildIntervalForTesting(std::chrono::milliseconds{0});
+    const auto warmUp = probe->enumerate();
+
+    for (auto _ : state)
+    {
+        auto processes = probe->enumerate();
+        benchmark::DoNotOptimize(processes.data());
+    }
+    state.counters["processes"] = benchmark::Counter(static_cast<double>(warmUp.size()));
+}
+BENCHMARK(BM_ProcessProbe_EnumerateSyntheticRebuild)->Arg(5000)->Unit(benchmark::kMillisecond);
+#endif
 
 } // namespace
 
