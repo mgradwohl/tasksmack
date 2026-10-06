@@ -395,6 +395,11 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         stripExtras = totalEntries;
     }
     const bool interfaceHistoryUnavailable = showingInterface && !usingInterfaceHistory;
+    // The totals' labels as the chart plots them: "(Total)" whenever an interface is selected -- drawn
+    // behind its lines, or alone while it has no history -- so they match the strip's extras above,
+    // whose swatches take the plotted series' markers by label, and the tooltip's rows (#1008).
+    const char* const totalSentLabel = showingInterface ? TOTAL_SENT_BEHIND_LABEL : TOTAL_SENT_LABEL;
+    const char* const totalRecvLabel = showingInterface ? TOTAL_RECV_BEHIND_LABEL : TOTAL_RECV_LABEL;
 
     const char* plotTitle = "Total";
     if (usingInterfaceHistory)
@@ -458,14 +463,14 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
             else
             {
                 // Just total
-                plotSeries(TOTAL_SENT_LABEL,
+                plotSeries(totalSentLabel,
                            netTimes.data(),
                            sentData.data(),
                            count,
                            theme.scheme().chartNetTx,
                            theme.scheme().chartNetTxFill,
                            seriesStyle(SeriesRole::Primary));
-                plotSeries(TOTAL_RECV_LABEL,
+                plotSeries(totalRecvLabel,
                            netTimes.data(),
                            recvData.data(),
                            count,
@@ -497,10 +502,8 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                         }
                         else
                         {
-                            rows.push_back(
-                                {.label = TOTAL_SENT_LABEL, .color = theme.scheme().chartNetTx, .value = rate(sentData[*idxVal])});
-                            rows.push_back(
-                                {.label = TOTAL_RECV_LABEL, .color = theme.scheme().chartNetRx, .value = rate(recvData[*idxVal])});
+                            rows.push_back({.label = totalSentLabel, .color = theme.scheme().chartNetTx, .value = rate(sentData[*idxVal])});
+                            rows.push_back({.label = totalRecvLabel, .color = theme.scheme().chartNetRx, .value = rate(recvData[*idxVal])});
                         }
                         UI::Widgets::renderHistoryTooltip(netTimes[*idxVal], rows);
                     }
