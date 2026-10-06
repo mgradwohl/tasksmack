@@ -573,10 +573,12 @@ else {
         Write-Host "ETW collector started; trace: $tracePath"
     }
     $stopCollector = {
-        # Once only; and only if it was launched.
+        # Once only; and only if it was launched. The flag is set only once the marker is written:
+        # if writing it throws, the finally's second call must try again rather than return early
+        # and leave the collector recording until its deadline (#1372 review).
         if ($null -eq $script:collector -or $script:collectorStopRequested) { return }
-        $script:collectorStopRequested = $true
         Set-Content -LiteralPath (Join-Path $controlDir 'stop-requested') -Value (Get-Date).ToUniversalTime().ToString('o') -Encoding utf8
+        $script:collectorStopRequested = $true
         $script:collectorExited = $script:collector.WaitForExit(600000)
     }
     $target = $null
