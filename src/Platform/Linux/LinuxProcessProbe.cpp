@@ -789,17 +789,46 @@ void LinuxProcessProbe::countProcessFds(int32_t pid, ProcessCounters& counters, 
     const auto fdPath = procRoot / std::to_string(pid) / "fd";
 
     int32_t count = 0;
+    // Whether the fd links can be read, judged on the first entry that answers. Listing the directory
+    // needs only DAC permission (CAP_DAC_READ_SEARCH for another user's process), but reading its
+    // links -- which the socket inode-to-PID map does -- also needs ptrace access (CAP_SYS_PTRACE). A
+    // process whose links can't be read has none of its connections attributed to it, so its network
+    // counters are unknown, not "no traffic" (#1328).
+    enum class LinkAccess : std::uint8_t
+    {
+        Unknown,
+        Readable,
+        Denied
+    };
+    LinkAccess linkAccess = LinkAccess::Unknown;
     try
     {
         // Don't use error_code variant because errors during iteration
         // (not just construction) won't be captured in it. Rely on exceptions.
+        std::array<char, 64> linkTarget{};
         for (const auto& entry : std::filesystem::directory_iterator(fdPath))
         {
-            (void) entry; // We just count entries
             ++count;
+            if (linkAccess != LinkAccess::Unknown)
+            {
+                continue;
+            }
+            if (::readlink(entry.path().c_str(), linkTarget.data(), linkTarget.size()) >= 0 || errno == EINVAL)
+            {
+                linkAccess = LinkAccess::Readable; // EINVAL: not a link (a synthetic /proc), but access was granted
+            }
+            else if (errno == EACCES || errno == EPERM)
+            {
+                linkAccess = LinkAccess::Denied;
+            }
+            // Anything else (ENOENT: the fd closed since the listing): try the next entry.
         }
         // Only set if we successfully enumerated the directory
         counters.handleCount = count;
+        if (linkAccess == LinkAccess::Denied)
+        {
+            counters.networkCountersAvailable = false;
+        }
     }
     catch (const std::exception& ex)
     {

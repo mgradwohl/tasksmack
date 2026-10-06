@@ -174,6 +174,9 @@ class LinuxProcessProbe : public IProcessProbe
 
     /// Count file descriptors in /proc/[pid]/fd. Unreadable (permissions) sets handleCountAvailable and
     /// networkCountersAvailable = false: neither the count nor the process's connections can be known.
+    /// A directory that can be listed but whose links can't be read (CAP_DAC_READ_SEARCH without
+    /// CAP_SYS_PTRACE) sets only networkCountersAvailable = false: the count is known, but the socket
+    /// inode-to-PID map reads those links, so none of its connections are attributed to it (#1328).
     static void countProcessFds(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot);
 
     /// Check if we can read I/O counters using the injected proc root
