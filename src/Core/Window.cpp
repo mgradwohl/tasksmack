@@ -206,6 +206,15 @@ LRESULT CALLBACK shellCommandWindowProc(HWND hwnd, UINT message, WPARAM wParam, 
     return CallWindowProcW(sdlWindowProc, hwnd, message, wParam, lParam);
 }
 
+// Replace the window procedure, checked as the Win32 documentation prescribes: SetWindowLongPtr()
+// returns 0 both on failure and when the previous value was 0, so the last error tells them apart.
+[[nodiscard]] bool replaceWindowProc(HWND hwnd, LONG_PTR windowProc)
+{
+    SetLastError(0);
+    const LONG_PTR previous = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, windowProc);
+    return !WindowGeometry::windowLongPtrSetFailed(previous, GetLastError());
+}
+
 // Put shellCommandWindowProc() in front of SDL's window procedure. SDL only replaces the procedure of
 // a window it did not create, so the subclass stays in place until unhookShellCommands().
 void hookShellCommands(SDL_Window* sdlWindow, Window* window)
@@ -227,7 +236,13 @@ void hookShellCommands(SDL_Window* sdlWindow, Window* window)
         return;
     }
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - SetWindowLongPtr takes the window procedure as LONG_PTR
-    SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&shellCommandWindowProc));
+    if (!replaceWindowProc(hwnd, reinterpret_cast<LONG_PTR>(&shellCommandWindowProc)))
+    {
+        // SDL's procedure is still in place and nothing reads the properties; don't leave them behind.
+        spdlog::warn("Failed to subclass the window (error {}); Win+Down will minimize the maximized window (#1279)", GetLastError());
+        RemovePropW(hwnd, SDL_WINDOW_PROC_PROP);
+        RemovePropW(hwnd, WINDOW_PROP);
+    }
 }
 
 // Undo hookShellCommands() before SDL destroys the window.
@@ -249,7 +264,13 @@ void unhookShellCommands(SDL_Window* sdlWindow)
         return;
     }
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - SetWindowLongPtr takes the window procedure as LONG_PTR
-    SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(sdlWindowProc));
+    if (!replaceWindowProc(hwnd, reinterpret_cast<LONG_PTR>(sdlWindowProc)))
+    {
+        // Our procedure is still installed and still receives every message SDL_DestroyWindow()
+        // sends, so keep the property it forwards them to SDL's procedure through.
+        spdlog::warn("Failed to restore SDL's window procedure (error {}); it stays reached through the subclass", GetLastError());
+        return;
+    }
     RemovePropW(hwnd, SDL_WINDOW_PROC_PROP);
 }
 } // namespace

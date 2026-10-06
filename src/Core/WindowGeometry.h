@@ -181,6 +181,19 @@ enum class MaximizeState : std::uint8_t
     return state == MaximizeState::ClientSide && winKeyDown && downKeyDown;
 }
 
+/// Whether a Win32 SetWindowLongPtr() call failed, from what it returned and the thread's last error
+/// read right after it, with the last error cleared to 0 right before it (#1279). The call returns
+/// the previous value, or 0 on failure -- but 0 is also a valid previous value, so only 0 together
+/// with a nonzero last error is a failure, as the Win32 documentation prescribes. Kept here, free of
+/// <windows.h>, so it is tested on every platform.
+///
+/// @param previous   SetWindowLongPtr()'s return value.
+/// @param lastError  GetLastError() right after the call.
+[[nodiscard]] constexpr bool windowLongPtrSetFailed(std::intptr_t previous, std::uint32_t lastError) noexcept
+{
+    return previous == 0 && lastError != 0;
+}
+
 /// Tracks the window's normal (restored) rectangle through every maximize and restore, whoever
 /// starts it (#1250).
 ///

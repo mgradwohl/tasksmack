@@ -13,6 +13,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <optional>
 #include <span>
@@ -76,6 +77,26 @@ TEST(WindowGeometryTest, WinDownMinimizesAWindowThatIsNotMaximizedClientSide)
     // the OS's to restore.
     EXPECT_FALSE(shellMinimizeRestores(MaximizeState::Normal, true, true));
     EXPECT_FALSE(shellMinimizeRestores(MaximizeState::System, true, true));
+}
+
+// ---- windowLongPtrSetFailed (#1279) ----
+
+TEST(WindowGeometryTest, SetWindowLongPtrFailsOnlyWithZeroAndALastError)
+{
+    constexpr std::uint32_t ERROR_INVALID_WINDOW_HANDLE = 1400;
+    constexpr std::uint32_t ERROR_ACCESS_DENIED = 5;
+    EXPECT_TRUE(windowLongPtrSetFailed(0, ERROR_INVALID_WINDOW_HANDLE));
+    EXPECT_TRUE(windowLongPtrSetFailed(0, ERROR_ACCESS_DENIED));
+}
+
+TEST(WindowGeometryTest, SetWindowLongPtrReturningZeroWithoutAnErrorSucceeded)
+{
+    // The previous value was 0: the documented reason to clear the last error before the call.
+    EXPECT_FALSE(windowLongPtrSetFailed(0, 0));
+    // A previous value is success, whatever a stale last error says.
+    constexpr std::intptr_t PREVIOUS_PROC = 0x1234'5670;
+    EXPECT_FALSE(windowLongPtrSetFailed(PREVIOUS_PROC, 0));
+    EXPECT_FALSE(windowLongPtrSetFailed(PREVIOUS_PROC, 1400));
 }
 
 // ---- shouldAdoptSystemMaximize (#1208) ----
