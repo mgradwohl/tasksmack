@@ -84,12 +84,27 @@ class DRMGPUProbe : public IGPUProbe
     /// Parses a DRM file's /proc/<pid>/fdinfo/<fd> text (the kernel's drm-usage-stats format): i915's
     /// drm-engine-<class> busy nanoseconds, stamped with `monotonicNs` as their total, or xe's
     /// drm-cycles-<class> with drm-total-cycles-<class>, and drm-engine-capacity-<class> for either.
-    /// nullopt when the text has no drm-client-id (the fd isn't, or is no longer, a DRM file).
+    /// nullopt when the text has no drm-client-id: the fd isn't, or is no longer, a DRM file, or its
+    /// kernel prints no drm-* keys (i915 before Linux 5.19), which only the fd's link tells apart.
     [[nodiscard]] static std::optional<DrmFdinfo> parseFdinfo(std::string_view text, std::uint64_t monotonicNs);
 
   private:
     // Lets tests build a GPUInfo for a card the Intel-only discovery would skip (an amdgpu card, #1344).
     friend struct DRMGPUProbeTestAccessor;
+
+    /// One DRM file open on a card, and the fds that name it. Dup'd and inherited fds share the file
+    /// and so its drm-client-id and engine counters: reading any one of them reads the client (#1356).
+    struct DrmClientFds
+    {
+        // The client's drm-client-id, once one of its fdinfo files has been read; nullopt for a path
+        // discoverDrmClients() has found but no sample has read yet, or for a DRM file whose kernel
+        // prints no drm-client-id (i915 before 5.19), which is kept with that one path (#1361).
+        std::optional<std::uint64_t> clientId;
+        // The client's fdinfo paths, never empty: the first is the one read each sample, the rest are
+        // aliases, read in turn only once the first has closed or names another file, and each read
+        // again after a full rescan, which ungroups them.
+        std::vector<std::string> fdinfoPaths;
+    };
 
     struct DRMCard
     {
@@ -120,10 +135,11 @@ class DRMGPUProbe : public IGPUProbe
         bool vramQueried{false};
         uint64_t queriedVramTotalBytes{0};
         std::optional<uint64_t> queriedVramUsedBytes;
-        // The fdinfo files (/proc/<pid>/fdinfo/<fd>) of the fds open on this card's DRM nodes, found by
-        // discoverDrmClients() and re-read each awake sample for engine busyness (#1267). A file that
-        // can no longer be read, or is no longer this card's DRM file, is dropped until rediscovered.
-        std::vector<std::string> clientFdinfoPaths;
+        // The card's DRM clients: the fdinfo files (/proc/<pid>/fdinfo/<fd>) of the fds open on its DRM
+        // nodes, found by discoverDrmClients() and grouped by drm-client-id as they are read (#1267).
+        // Each awake sample reads one file per client for its engine busyness (#1356). A file that can
+        // no longer be read, or is no longer this card's DRM file, is dropped until rediscovered.
+        std::vector<DrmClientFds> clients;
     };
 
     bool initialize();
@@ -167,10 +183,34 @@ class DRMGPUProbe : public IGPUProbe
     /// Finds the fds open on each card's DRM nodes (/dev/dri/cardN, renderDN) under m_ProcRoot: a walk
     /// of every visible process's fd links, so only at the first read and each full rescan (#1267).
     /// Link targets only: nothing here touches a GPU, so it never wakes a sleeping card (#1117).
+    /// The paths found are reconciled with each card's clients: the path read for a client keeps its
+    /// client, paths no longer found are dropped, and new paths and the clients' aliases -- unread since
+    /// they were grouped, so possibly reused for another client -- are ungrouped until read (#1356).
     void discoverDrmClients();
     /// Reads the card's clients' fdinfo into `counter`'s engine fields. Only for an awake card: xe takes
     /// a runtime-PM reference to report its cycles (#1117).
-    void readEngineClients(DRMCard& card, GPUCounters& counter) const;
+    /// One fdinfo file is read per client: a client's aliases only once the file read for it has
+    /// closed or names another file. Clients found to share a drm-client-id are merged (#1356).
+    void readEngineClients(DRMCard& card, GPUCounters& counter);
+    /// What readClientFdinfo() found at a client's fdinfo path.
+    struct ClientFdinfoRead
+    {
+        enum class Kind : std::uint8_t
+        {
+            Gone,            // Closed, or no longer a DRM file of the card: dropped
+            WithoutClientId, // A DRM file of the card whose kernel prints no drm-* keys (i915 before 5.19)
+            Client,          // A DRM client of the card: `info` holds its fdinfo
+        };
+        Kind kind{Kind::Gone};
+        DrmFdinfo info;
+    };
+    /// Reads the fdinfo at `path`: a client if it is still a DRM file of `card`'s device. An fdinfo
+    /// that has no drm-client-id is a DRM file without usage stats when its fd still links to one
+    /// of the card's DRM nodes (#1361), and gone otherwise.
+    [[nodiscard]] ClientFdinfoRead readClientFdinfo(const std::string& path, const DRMCard& card);
+    /// Whether the fd whose fdinfo is at `fdinfoPath` (<proc>/<pid>/fdinfo/<n>) links to one of `card`'s
+    /// DRM nodes (/dev/dri/cardN or its render node).
+    [[nodiscard]] static bool fdLinksToCard(const std::string& fdinfoPath, const DRMCard& card);
 
     bool m_Available{false};
     // Set when a card's GPUInfo would differ from the last enumerateGPUs() -- its queried VRAM total
@@ -189,6 +229,8 @@ class DRMGPUProbe : public IGPUProbe
     // at least one process's fd directory was readable. Without that, "no clients found" says
     // nothing about the card, and its engine busyness is left unread (N/A) rather than idle (#1267).
     bool m_ClientScanReliable{false};
+    // How many client fdinfo files readEngineClients() has opened or tried to, for the tests (#1356).
+    std::uint64_t m_FdinfoReads{0};
 };
 
 } // namespace Platform
