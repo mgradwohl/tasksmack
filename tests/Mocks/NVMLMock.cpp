@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#include <string_view>
 #include <utility>
 
 namespace
@@ -85,6 +86,12 @@ constexpr std::size_t INVALID_DEVICE_INDEX = std::numeric_limits<std::size_t>::m
 // can prove a runtime-suspended GPU wasn't touched (#1117). Read via tasksmackNvmlMockDeviceQueries().
 unsigned int g_DeviceQueries = 0; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - mock call counter
 
+// Per mock device, every call that addressed it, handle lookups (by index or PCI bus id) included:
+// getting a handle is what makes real NVML initialise -- and so wake -- a GPU (#1270). Read via
+// tasksmackNvmlMockQueriesForDevice().
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - mock call counters
+std::array<unsigned int, MOCK_DEVICES.size()> g_QueriesPerDevice{};
+
 [[nodiscard]] auto deviceIndex(NVML::nvmlDevice_t device) -> std::size_t
 {
     ++g_DeviceQueries;
@@ -92,6 +99,7 @@ unsigned int g_DeviceQueries = 0; // NOLINT(cppcoreguidelines-avoid-non-const-gl
     {
         if (device == &MOCK_HANDLES[i])
         {
+            ++g_QueriesPerDevice.at(i);
             return i;
         }
     }
@@ -245,11 +253,53 @@ extern "C"
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
         }
+        ++g_QueriesPerDevice.at(index);
         if (index == g_FailingHandleIndex)
         {
             return NVML::NVML_ERROR_UNKNOWN;
         }
         *device = &MOCK_HANDLES[index];
+        return NVML::NVML_SUCCESS;
+    }
+
+    // Matches "bus:device.function" after the domain, so the kernel's four-digit domain ("0000:01:00.0")
+    // and NVML's eight-digit one ("00000000:01:00.0") both find a device, as with real NVML.
+    // NOLINTNEXTLINE(readability-identifier-naming) - the exported NVML symbol name
+    NVML::nvmlReturn_t nvmlDeviceGetHandleByPciBusId_v2(const char* pciBusId, NVML::nvmlDevice_t* device)
+    {
+        if (pciBusId == nullptr)
+        {
+            return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        const std::string_view wanted(pciBusId);
+        const auto afterDomain = [](std::string_view busId)
+        {
+            return busId.substr(busId.find(':') + 1);
+        };
+        for (unsigned int index = 0; index < g_DeviceCount && index < MOCK_DEVICES.size(); ++index)
+        {
+            if (wanted.contains(':') && afterDomain(wanted) == afterDomain(MOCK_DEVICES.at(index).busId))
+            {
+                ++g_QueriesPerDevice.at(index);
+                if (index == g_FailingHandleIndex)
+                {
+                    return NVML::NVML_ERROR_UNKNOWN;
+                }
+                *device = &MOCK_HANDLES.at(index);
+                return NVML::NVML_SUCCESS;
+            }
+        }
+        return NVML::NVML_ERROR_NOT_FOUND;
+    }
+
+    NVML::nvmlReturn_t nvmlDeviceGetIndex(NVML::nvmlDevice_t device, unsigned int* index)
+    {
+        const auto idx = deviceIndex(device);
+        if (idx == INVALID_DEVICE_INDEX)
+        {
+            return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        *index = static_cast<unsigned int>(idx);
         return NVML::NVML_SUCCESS;
     }
 
@@ -515,6 +565,13 @@ extern "C"
     unsigned int tasksmackNvmlMockDeviceQueries()
     {
         return g_DeviceQueries;
+    }
+
+    // Test control (#1270): how many calls have addressed mock device `index`, handle lookups included
+    // (see g_QueriesPerDevice); 0 for an index the mock doesn't have.
+    unsigned int tasksmackNvmlMockQueriesForDevice(unsigned int index)
+    {
+        return index < g_QueriesPerDevice.size() ? g_QueriesPerDevice.at(index) : 0U;
     }
 
     const char* nvmlErrorString(NVML::nvmlReturn_t /*result*/)

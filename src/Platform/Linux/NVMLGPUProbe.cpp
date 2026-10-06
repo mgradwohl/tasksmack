@@ -11,6 +11,9 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -37,9 +40,20 @@ struct NVMLGPUProbe::Impl
     // UUID failure turn a GPU into a phantom "nvidia-N" for one sample.
     struct Device
     {
+        // Null while the device is deferred: it was asleep when NVML started, so it hasn't been asked
+        // for a handle, which would wake it (#1270). Its id, name and PCI identity then come from
+        // sysfs and the driver's procfs, and resolveDeferred() looks it up by PCI address once awake.
         nvmlDevice_t handle = nullptr;
         std::uint32_t index = 0;
         std::string id;
+        // The id is the GPU's UUID (from NVML, or from the driver's procfs while deferred), not the
+        // "nvidia-<...>" fallback.
+        bool idIsUuid = false;
+        // The sysfs name ("0000:01:00.0"), when known; how a deferred device is looked up.
+        std::string pciAddress;
+        // A deferred device whose lookup failed while it was awake isn't retried until NVML restarts,
+        // so a lookup that keeps failing doesn't ask for a re-enumeration every sample.
+        bool resolveFailed = false;
         // PCI identity from nvmlDeviceGetPciInfo, when the driver exports it (#1091, #1117).
         std::optional<PciLocation> pciLocation;
         std::uint32_t pciDeviceId = 0;
@@ -57,6 +71,9 @@ struct NVMLGPUProbe::Impl
     };
     std::vector<Device> devices;
     std::string pciDevicesRoot;
+    // Where the nvidia driver lists its GPUs by PCI address (/proc/driver/nvidia/gpus), each with an
+    // "information" file that is read without waking the GPU (#1270).
+    std::string nvidiaProcRoot;
     // NVIDIA display devices in sysfs at the last full rescan (PciDisplayDevices::list): a change
     // means a GPU was hot-plugged, removed or rebound, which NVML only sees after a re-init (#1116).
     std::vector<std::string> pciDevicesSeen;
@@ -104,6 +121,9 @@ struct NVMLGPUProbe::Impl
     nvmlReturn_t (*nvmlDeviceGetPcieThroughput)(nvmlDevice_t, nvmlPcieUtilCounter_t, unsigned int*) = nullptr;
     // Optional: nvml.h maps nvmlDeviceGetPciInfo to the _v3 export; older drivers have only _v2 (same struct).
     nvmlReturn_t (*nvmlDeviceGetPciInfo)(nvmlDevice_t, nvmlPciInfo_t*) = nullptr;
+    // Optional: a device asleep when NVML starts is deferred only when both exist (#1270).
+    nvmlReturn_t (*nvmlDeviceGetHandleByPciBusId_v2)(const char*, nvmlDevice_t*) = nullptr;
+    nvmlReturn_t (*nvmlDeviceGetIndex)(nvmlDevice_t, unsigned int*) = nullptr;
     const char* (*nvmlErrorString)(nvmlReturn_t) = nullptr;
 
     /// Whether the device is runtime-suspended now, so must not be queried (#1117).
@@ -111,6 +131,32 @@ struct NVMLGPUProbe::Impl
     {
         return PciRuntimePm::isRuntimeSuspended(device.sysfsPath);
     }
+
+    /// Whether the device still has something to learn once awake: its handle (deferred, #1270) or
+    /// its own sensor set (#1289).
+    [[nodiscard]] static bool awaitingWake(const Device& device)
+    {
+        if (device.handle == nullptr)
+        {
+            return !device.resolveFailed; // its sensors can only be found through a handle
+        }
+        return !device.sensors.has_value();
+    }
+
+    /// A device NVML returned a handle for, described by NVML: UUID (else "nvidia-<index>"), name
+    /// and PCI identity, read once (#1162). These are the device-addressed calls that would wake a
+    /// runtime-suspended GPU, so a deferred device gets them only once awake (#1270).
+    [[nodiscard]] Device describe(nvmlDevice_t handle, std::uint32_t index) const;
+    /// A device asleep when NVML started, described without NVML (#1270): the PCI location from its
+    /// address, the device id from sysfs, the model and UUID from the driver's procfs.
+    [[nodiscard]] Device describeDeferred(const std::string& address, std::uint32_t provisionalIndex) const;
+    /// Builds the device list. Defers the devices asleep now when that is possible: the PCI bus-id
+    /// lookup is available and sysfs lists exactly as many nvidia-bound devices as NVML counts, so
+    /// every NVML device can be found by address. Returns false, building nothing, otherwise.
+    bool buildDeviceListDeferringSleepers();
+    /// Looks a deferred device up by PCI address, now that it is awake, and describes it from NVML,
+    /// keeping what was learnt meanwhile. False if NVML won't return its handle.
+    bool resolveDeferred(Device& device);
 
     /// Note a device query's result: a lost GPU or an uninitialised library means NVML must be
     /// re-initialised (#1116). Returns `result` unchanged.
@@ -220,6 +266,10 @@ bool NVMLGPUProbe::Impl::loadSymbols()
     // optional so a minimal/older NVML build missing it doesn't block loading the rest of
     // the counters.
     LOAD_NVML_FUNC_OPTIONAL(nvmlDeviceGetPcieThroughput);
+    // Without these a GPU asleep at start-up is looked up by index like the rest, which wakes it
+    // once (#1270).
+    LOAD_NVML_FUNC_OPTIONAL(nvmlDeviceGetHandleByPciBusId_v2);
+    LOAD_NVML_FUNC_OPTIONAL(nvmlDeviceGetIndex);
     // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast) - dlsym returns void* by POSIX definition
     nvmlDeviceGetPciInfo = reinterpret_cast<decltype(nvmlDeviceGetPciInfo)>(dlsym(nvmlHandle, "nvmlDeviceGetPciInfo_v3"));
     if (nvmlDeviceGetPciInfo == nullptr)
@@ -269,45 +319,166 @@ bool NVMLGPUProbe::Impl::startNVML()
     // through a null handle, which produced an all-zero phantom GPU (#1162).
     devices.clear();
     devices.reserve(deviceCount);
-    for (std::uint32_t i = 0; i < deviceCount; ++i)
+    if (!buildDeviceListDeferringSleepers())
     {
-        nvmlDevice_t handle = nullptr;
-        result = nvmlDeviceGetHandleByIndex_v2(i, &handle);
-        if (result != NVML_SUCCESS || handle == nullptr)
+        for (std::uint32_t i = 0; i < deviceCount; ++i)
         {
-            spdlog::warn("NVMLGPUProbe: Failed to get handle for GPU {} - {}", i, getNVMLError(result));
-            continue;
+            nvmlDevice_t handle = nullptr;
+            result = nvmlDeviceGetHandleByIndex_v2(i, &handle);
+            if (result != NVML_SUCCESS || handle == nullptr)
+            {
+                spdlog::warn("NVMLGPUProbe: Failed to get handle for GPU {} - {}", i, getNVMLError(result));
+                continue;
+            }
+            devices.push_back(describe(handle, i));
         }
-
-        // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - C API buffer
-        char uuid[NVML_DEVICE_UUID_BUFFER_SIZE]{};
-        std::string id =
-            (nvmlDeviceGetUUID(handle, uuid, sizeof(uuid)) == NVML_SUCCESS) ? std::string(uuid) : "nvidia-" + std::to_string(i);
-        Device device;
-        device.handle = handle;
-        device.index = i;
-        device.id = std::move(id);
-        // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - C API buffer
-        char name[NVML_DEVICE_NAME_BUFFER_SIZE]{};
-        if (nvmlDeviceGetName(handle, name, sizeof(name)) == NVML_SUCCESS)
-        {
-            device.name = name;
-        }
-
-        // PCI identity, read once: it says where the device's power/runtime_status is (#1117).
-        nvmlPciInfo_t pci{};
-        if (nvmlDeviceGetPciInfo != nullptr && nvmlDeviceGetPciInfo(handle, &pci) == NVML_SUCCESS)
-        {
-            device.pciLocation = PciLocation{.bus = pci.bus, .device = pci.device};
-            device.pciDeviceId = pci.pciDeviceId;
-            device.sysfsPath = pciDevicesRoot + "/" + NVMLGPUProbeMath::sysfsPciAddress(pci);
-        }
-        devices.push_back(std::move(device));
     }
 
     initialized = true;
     gpuLost = false;
     spdlog::info("NVMLGPUProbe: Initialized successfully, found {} NVIDIA GPU(s)", deviceCount);
+    return true;
+}
+
+NVMLGPUProbe::Impl::Device NVMLGPUProbe::Impl::describe(nvmlDevice_t handle, std::uint32_t index) const
+{
+    Device device;
+    device.handle = handle;
+    device.index = index;
+    // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - C API buffer
+    char uuid[NVML_DEVICE_UUID_BUFFER_SIZE]{};
+    device.idIsUuid = nvmlDeviceGetUUID(handle, uuid, sizeof(uuid)) == NVML_SUCCESS;
+    device.id = device.idIsUuid ? std::string(uuid) : "nvidia-" + std::to_string(index);
+    // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - C API buffer
+    char name[NVML_DEVICE_NAME_BUFFER_SIZE]{};
+    if (nvmlDeviceGetName(handle, name, sizeof(name)) == NVML_SUCCESS)
+    {
+        device.name = name;
+    }
+
+    // PCI identity, read once: it says where the device's power/runtime_status is (#1117).
+    nvmlPciInfo_t pci{};
+    if (nvmlDeviceGetPciInfo != nullptr && nvmlDeviceGetPciInfo(handle, &pci) == NVML_SUCCESS)
+    {
+        device.pciLocation = PciLocation{.bus = pci.bus, .device = pci.device};
+        device.pciDeviceId = pci.pciDeviceId;
+        device.pciAddress = NVMLGPUProbeMath::sysfsPciAddress(pci);
+        device.sysfsPath = pciDevicesRoot + "/" + device.pciAddress;
+    }
+    return device;
+}
+
+NVMLGPUProbe::Impl::Device NVMLGPUProbe::Impl::describeDeferred(const std::string& address, std::uint32_t provisionalIndex) const
+{
+    Device device;
+    device.index = provisionalIndex;
+    device.pciAddress = address;
+    device.sysfsPath = pciDevicesRoot + "/" + address;
+    if (const auto fields = NVMLGPUProbeMath::parsePciAddress(address))
+    {
+        device.pciLocation = PciLocation{.bus = fields->bus, .device = fields->device};
+    }
+    // sysfs caches the PCI ids; NVML encodes pciDeviceId as (device id << 16) | vendor id.
+    std::uint32_t deviceId = 0;
+    if (PciDisplayDevices::readHexAttribute(std::filesystem::path(device.sysfsPath) / "device", deviceId))
+    {
+        constexpr unsigned DEVICE_ID_SHIFT = 16U;
+        device.pciDeviceId = (deviceId << DEVICE_ID_SHIFT) | PciDisplayDevices::PCI_VENDOR_NVIDIA;
+    }
+
+    NVMLGPUProbeMath::NvidiaProcGpuInfo procInfo;
+    if (std::ifstream file(nvidiaProcRoot + "/" + address + "/information"); file.is_open())
+    {
+        const std::string text{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+        procInfo = NVMLGPUProbeMath::parseNvidiaProcGpuInformation(text);
+    }
+    device.idIsUuid = !procInfo.uuid.empty();
+    // Without the UUID the id is the PCI address, which is stable while the GPU stays in its slot.
+    // NVML's UUID replaces it once the GPU wakes, so its history then starts afresh.
+    device.id = device.idIsUuid ? procInfo.uuid : "nvidia-" + address;
+    device.name = procInfo.model.empty() ? std::string("NVIDIA GPU") : procInfo.model;
+    return device;
+}
+
+bool NVMLGPUProbe::Impl::buildDeviceListDeferringSleepers()
+{
+    if (nvmlDeviceGetHandleByPciBusId_v2 == nullptr || nvmlDeviceGetIndex == nullptr)
+    {
+        return false;
+    }
+    // pciDevicesSeen is current: the constructor and every full rescan list it before (re)starting NVML.
+    const auto addresses = PciDisplayDevices::addressesBoundTo(pciDevicesSeen, PciDisplayDevices::DRIVER_NVIDIA);
+    if (addresses.size() != deviceCount ||
+        std::ranges::none_of(
+            addresses, [this](const std::string& address) { return PciRuntimePm::isRuntimeSuspended(pciDevicesRoot + "/" + address); }))
+    {
+        // Nothing asleep, or sysfs doesn't account for every NVML device (WSL has no PCI sysfs, a
+        // container may hide it): enumerate by index as always.
+        return false;
+    }
+
+    for (std::uint32_t position = 0; position < addresses.size(); ++position)
+    {
+        const auto& address = addresses[position];
+        if (PciRuntimePm::isRuntimeSuspended(pciDevicesRoot + "/" + address))
+        {
+            // NVML numbers devices in PCI order in practice; the real index is read once it wakes.
+            devices.push_back(describeDeferred(address, position));
+            spdlog::info("NVMLGPUProbe: GPU at {} is runtime-suspended; deferring its NVML queries until it wakes", address);
+            continue;
+        }
+        nvmlDevice_t handle = nullptr;
+        const auto result = nvmlDeviceGetHandleByPciBusId_v2(address.c_str(), &handle);
+        if (result != NVML_SUCCESS || handle == nullptr)
+        {
+            spdlog::warn("NVMLGPUProbe: Failed to get handle for GPU at {} - {}", address, getNVMLError(result));
+            continue;
+        }
+        unsigned int index = position;
+        if (nvmlDeviceGetIndex(handle, &index) != NVML_SUCCESS)
+        {
+            index = position;
+        }
+        devices.push_back(describe(handle, index));
+    }
+    return true;
+}
+
+bool NVMLGPUProbe::Impl::resolveDeferred(Device& device)
+{
+    nvmlDevice_t handle = nullptr;
+    const auto result = noteResult(nvmlDeviceGetHandleByPciBusId_v2(device.pciAddress.c_str(), &handle));
+    if (result != NVML_SUCCESS || handle == nullptr)
+    {
+        spdlog::warn("NVMLGPUProbe: Failed to get handle for woken GPU at {} - {}", device.pciAddress, getNVMLError(result));
+        device.resolveFailed = true;
+        return false;
+    }
+    unsigned int index = device.index;
+    if (nvmlDeviceGetIndex(handle, &index) != NVML_SUCCESS)
+    {
+        index = device.index;
+    }
+    Device resolved = describe(handle, index);
+    if (!resolved.idIsUuid && device.idIsUuid)
+    {
+        resolved.id = device.id; // NVML couldn't report the UUID the driver already gave
+        resolved.idIsUuid = true;
+    }
+    if (resolved.name.empty())
+    {
+        resolved.name = device.name;
+    }
+    if (resolved.sysfsPath.empty())
+    {
+        resolved.pciAddress = device.pciAddress;
+        resolved.sysfsPath = device.sysfsPath;
+        resolved.pciLocation = device.pciLocation;
+        resolved.pciDeviceId = device.pciDeviceId;
+    }
+    resolved.lastMemoryTotalBytes = device.lastMemoryTotalBytes;
+    resolved.sensors = device.sensors;
+    device = std::move(resolved);
     return true;
 }
 
@@ -320,9 +491,16 @@ void NVMLGPUProbe::Impl::restartNVML()
         std::optional<GPUCapabilities> sensors;
     };
     std::unordered_map<std::string, Remembered> remembered;
+    // A GPU asleep through the restart is deferred, described without NVML (#1270): it keeps the
+    // identity it had, found by PCI address, so its id -- and so its history -- carries on.
+    std::unordered_map<std::string, Device> rememberedByAddress;
     for (const auto& device : devices)
     {
         remembered.emplace(device.id, Remembered{.lastMemoryTotalBytes = device.lastMemoryTotalBytes, .sensors = device.sensors});
+        if (!device.pciAddress.empty())
+        {
+            rememberedByAddress.emplace(device.pciAddress, device);
+        }
     }
 
     // nvmlShutdown() then nvmlInit_v2() is NVML's supported way to start over; the library stays
@@ -344,6 +522,14 @@ void NVMLGPUProbe::Impl::restartNVML()
     loadRetryPending = false;
     for (auto& device : devices)
     {
+        if (const auto known = rememberedByAddress.find(device.pciAddress); device.handle == nullptr && known != rememberedByAddress.end())
+        {
+            device.id = known->second.id;
+            device.idIsUuid = known->second.idIsUuid;
+            device.name = known->second.name;
+            device.index = known->second.index;
+            device.pciDeviceId = known->second.pciDeviceId;
+        }
         if (const auto it = remembered.find(device.id); it != remembered.end())
         {
             device.lastMemoryTotalBytes = it->second.lastMemoryTotalBytes;
@@ -391,9 +577,10 @@ std::string NVMLGPUProbe::Impl::getNVMLError(nvmlReturn_t result) const
 }
 
 // Constructor
-NVMLGPUProbe::NVMLGPUProbe(std::string pciDevicesRoot) : m_Impl(std::make_unique<Impl>())
+NVMLGPUProbe::NVMLGPUProbe(std::string pciDevicesRoot, std::string nvidiaProcRoot) : m_Impl(std::make_unique<Impl>())
 {
     m_Impl->pciDevicesRoot = std::move(pciDevicesRoot);
+    m_Impl->nvidiaProcRoot = std::move(nvidiaProcRoot);
     m_Impl->pciDevicesSeen = PciDisplayDevices::list(m_Impl->pciDevicesRoot, PciDisplayDevices::PCI_VENDOR_NVIDIA);
     // NVML installed but not starting while an nvidia-bound GPU is present (TaskSmack started during
     // a driver reload, say) is retried at the next full rescan, which reports the GPUs it then finds.
@@ -430,6 +617,12 @@ std::vector<GPUInfo> NVMLGPUProbe::enumerateGPUs()
 
     for (auto& dev : m_Impl->devices)
     {
+        // A device deferred because it was asleep when NVML started is looked up now that it is
+        // awake (rescanGPUs() asks for this enumeration once it wakes, #1270).
+        if (dev.handle == nullptr && !dev.resolveFailed && !Impl::asleep(dev))
+        {
+            m_Impl->resolveDeferred(dev); // on failure it stays unread, and isn't retried until a restart
+        }
         nvmlDevice_t device = dev.handle;
 
         GPUInfo info;
@@ -448,7 +641,7 @@ std::vector<GPUInfo> NVMLGPUProbe::enumerateGPUs()
         // answer is kept; its readings are just unavailable until a read succeeds (#1111). Found
         // once per device: a sleeping GPU isn't woken to find out (#1117), so until it is seen awake
         // the probe's capabilities apply to it, and rescanGPUs() asks for a re-enumeration then (#1289).
-        if (!dev.sensors.has_value() && !Impl::asleep(dev))
+        if (device != nullptr && !dev.sensors.has_value() && !Impl::asleep(dev))
         {
             const auto supported = [](nvmlReturn_t result)
             {
@@ -487,10 +680,13 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
         counter.gpuId = dev.id;
 
         // A runtime-suspended GPU gets no NVML query at all, which would wake it (#1117): every
-        // reading is unavailable this sample, and the memory total is the last one read awake.
-        if (Impl::asleep(dev))
+        // reading is unavailable this sample, and the memory total is the last one read awake. A
+        // deferred device (no handle yet, #1270) that has just woken is likewise unread until the
+        // re-enumeration rescanGPUs() asks for looks it up.
+        const bool asleep = Impl::asleep(dev);
+        if (asleep || device == nullptr)
         {
-            counter.suspended = true;
+            counter.suspended = asleep;
             counter.utilizationAvailable = false;
             counter.temperatureAvailable = false;
             counter.powerAvailable = false;
@@ -623,8 +819,9 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
 
     for (const auto& dev : m_Impl->devices)
     {
-        // A sleeping GPU runs no processes, and asking would wake it (#1117).
-        if (Impl::asleep(dev))
+        // A sleeping GPU runs no processes, and asking would wake it (#1117); a deferred one has no
+        // handle to ask through yet (#1270).
+        if (dev.handle == nullptr || Impl::asleep(dev))
         {
             continue;
         }
@@ -681,11 +878,12 @@ bool NVMLGPUProbe::rescanGPUs(GPURescan depth)
         }
     }
 
-    // An adapter asleep when it was enumerated and awake now: enumerate again to find its sensors
-    // (#1289). Reads only runtime_status, and only for such adapters.
+    // An adapter asleep when it was enumerated and awake now: enumerate again to look it up if it was
+    // deferred (#1270) and to find its sensors (#1289). Reads only runtime_status, and only for such
+    // adapters.
     return isAvailable() &&
            std::ranges::any_of(m_Impl->devices,
-                               [](const Impl::Device& device) { return !device.sensors.has_value() && !Impl::asleep(device); });
+                               [](const Impl::Device& device) { return Impl::awaitingWake(device) && !Impl::asleep(device); });
 }
 
 GPUCapabilities NVMLGPUProbe::capabilities() const

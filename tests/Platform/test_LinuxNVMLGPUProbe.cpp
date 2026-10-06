@@ -458,6 +458,7 @@ class NvmlMockControls
             m_SetLostDevice = reinterpret_cast<SetIndexFn>(dlsym(m_Library, "tasksmackNvmlMockSetLostDevice"));
             m_InitCalls = reinterpret_cast<UuidCallsFn>(dlsym(m_Library, "tasksmackNvmlMockInitCalls"));
             m_FailInits = reinterpret_cast<SetIndexFn>(dlsym(m_Library, "tasksmackNvmlMockFailInits"));
+            m_QueriesForDevice = reinterpret_cast<QueriesForDeviceFn>(dlsym(m_Library, "tasksmackNvmlMockQueriesForDevice"));
             // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
         }
     }
@@ -558,8 +559,10 @@ class NvmlMockControls
     using UuidCallsFn = unsigned int (*)();
     using FailSensorReadsFn = void (*)(int);
     using SetIndexFn = void (*)(unsigned int);
+    using QueriesForDeviceFn = unsigned int (*)(unsigned int);
 
     void* m_Library;
+    QueriesForDeviceFn m_QueriesForDevice = nullptr;
     ConfigureFn m_Configure = nullptr;
     UuidCallsFn m_UuidCalls = nullptr;
     FailSensorReadsFn m_FailSensorReads = nullptr;
@@ -579,6 +582,17 @@ class NvmlMockControls
     [[nodiscard]] bool countsDeviceQueries() const
     {
         return m_DeviceQueries != nullptr;
+    }
+
+    /// Calls that have addressed mock device `index`, handle lookups included (#1270).
+    [[nodiscard]] unsigned int queriesForDevice(unsigned int index) const
+    {
+        return m_QueriesForDevice != nullptr ? m_QueriesForDevice(index) : 0U;
+    }
+
+    [[nodiscard]] bool countsQueriesPerDevice() const
+    {
+        return m_QueriesForDevice != nullptr;
     }
 };
 
@@ -929,6 +943,23 @@ void setRuntimeStatus(const std::filesystem::path& root, const std::string& addr
     std::ofstream(root / address / "power" / "runtime_status") << status << "\n";
 }
 
+/// A fake /proc/driver/nvidia/gpus/<address>/information, laid out as the driver prints it (#1270).
+/// An empty `uuid` leaves the line out, as the driver does before the GPU's UUID is cached.
+void makeProcGpuInformation(const std::filesystem::path& root,
+                            const std::string& address,
+                            const std::string& model,
+                            const std::string& uuid)
+{
+    std::filesystem::create_directories(root / address);
+    std::ofstream file(root / address / "information");
+    file << "Model: \t\t " << model << "\n" << "IRQ:   \t\t 142\n";
+    if (!uuid.empty())
+    {
+        file << "GPU UUID: \t " << uuid << "\n";
+    }
+    file << "Video BIOS: \t ??.??.??.??.??\n" << "Bus Location: \t " << address << "\n";
+}
+
 TEST(PciDisplayDevicesTest, ListsOnlyTheVendorsDisplayDevicesWithTheirDriver)
 {
     const TestSupport::ScopedTempDir pciRoot("tasksmack_pci_display");
@@ -1035,16 +1066,18 @@ TEST(LinuxNVMLGPUProbeTest, AGpuAsleepAtEnumerationGetsItsOwnSensorsOnceAwake)
     const NvmlMockControls controls;
     ASSERT_TRUE(controls.countsDeviceQueries());
     const TestSupport::ScopedTempDir pciRoot("tasksmack_nvml_wake");
+    const TestSupport::ScopedTempDir procRoot("tasksmack_nvml_wake_proc");
     makePciDevice(pciRoot.path, "0000:01:00.0", "0x10de", "nvidia");
     makePciDevice(pciRoot.path, "0000:41:00.0", "0x10de", "nvidia", "suspended");
+    makeProcGpuInformation(procRoot.path, "0000:41:00.0", "Mock NVIDIA GPU 1", "");
 
-    NVMLGPUProbe probe(pciRoot.path.string());
+    NVMLGPUProbe probe(pciRoot.path.string(), procRoot.path.string());
     ASSERT_TRUE(probe.isAvailable());
     const auto asleep = probe.enumerateGPUs();
     ASSERT_EQ(asleep.size(), 2U);
     EXPECT_TRUE(asleep[0].sensorCapabilities.has_value());
     EXPECT_FALSE(asleep[1].sensorCapabilities.has_value());
-    EXPECT_EQ(asleep[1].name, "Mock NVIDIA GPU 1"); // the name comes from load, not a query now
+    EXPECT_EQ(asleep[1].name, "Mock NVIDIA GPU 1"); // the driver's procfs name, not an NVML query
 
     const unsigned int queriesWhileAsleep = controls.deviceQueries();
     EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick)); // still asleep: nothing to find yet
@@ -1072,10 +1105,10 @@ TEST(LinuxNVMLGPUProbeTest, AGpuAsleepAtEnumerationGetsItsOwnSensorsOnceAwake)
     EXPECT_TRUE(again[1].sensorCapabilities.has_value());
 }
 
-// #1270 (enumeration half): with re-enumeration, enumerateGPUs() can run again while a GPU sleeps.
-// It then addresses no device at all -- name and identity are read at load, and sensors are not
-// probed while asleep -- so a repeat enumeration can't wake it.
-TEST(LinuxNVMLGPUProbeTest, RepeatEnumerationAddressesNoSleepingGpu)
+// #1270: GPUs already asleep when NVML starts get no device-addressed call at all -- not even the
+// handle lookup, which is what wakes a GPU -- at load, at enumeration or at a rescan. They are
+// described from sysfs and the driver's procfs instead.
+TEST(LinuxNVMLGPUProbeTest, GpusAsleepAtLoadAreNotAddressed)
 {
     const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
     if (!envGuard.mocksPreloaded())
@@ -1083,21 +1116,250 @@ TEST(LinuxNVMLGPUProbeTest, RepeatEnumerationAddressesNoSleepingGpu)
         GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
     }
     const NvmlMockControls controls;
-    ASSERT_TRUE(controls.countsDeviceQueries());
+    ASSERT_TRUE(controls.countsQueriesPerDevice());
     const TestSupport::ScopedTempDir pciRoot("tasksmack_nvml_enum_asleep");
+    const TestSupport::ScopedTempDir procRoot("tasksmack_nvml_enum_asleep_proc");
     makePciDevice(pciRoot.path, "0000:01:00.0", "0x10de", "nvidia", "suspended");
     makePciDevice(pciRoot.path, "0000:41:00.0", "0x10de", "nvidia", "suspended");
+    std::ofstream(pciRoot.path / "0000:01:00.0" / "device") << "0x2684\n";
+    makeProcGpuInformation(procRoot.path, "0000:01:00.0", "Mock NVIDIA GPU 0", "mock-nvml-uuid-0");
+    const unsigned int device0Before = controls.queriesForDevice(0);
+    const unsigned int device1Before = controls.queriesForDevice(1);
 
-    NVMLGPUProbe probe(pciRoot.path.string());
+    NVMLGPUProbe probe(pciRoot.path.string(), procRoot.path.string());
     ASSERT_TRUE(probe.isAvailable());
-    const unsigned int queriesAfterLoad = controls.deviceQueries();
     const auto gpus = probe.enumerateGPUs();
+    const auto counters = probe.readGPUCounters();
+    const auto processes = probe.readProcessGPUCounters();
     EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick));
     EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full));
-    EXPECT_EQ(controls.deviceQueries(), queriesAfterLoad);
+    EXPECT_EQ(controls.queriesForDevice(0), device0Before);
+    EXPECT_EQ(controls.queriesForDevice(1), device1Before);
+
     ASSERT_EQ(gpus.size(), 2U);
-    EXPECT_EQ(gpus[0].name, "Mock NVIDIA GPU 0");
+    EXPECT_EQ(gpus[0].name, "Mock NVIDIA GPU 0"); // from procfs
+    EXPECT_EQ(gpus[0].id, "mock-nvml-uuid-0");    // the UUID the driver cached: the id NVML will give
+    EXPECT_EQ(gpus[0].pciLocation, (PciLocation{.bus = 0x01, .device = 0}));
+    EXPECT_EQ(gpus[0].pciDeviceId, 0x2684'10DEU); // NVML's encoding, from sysfs
+    EXPECT_FALSE(gpus[0].sensorCapabilities.has_value());
+    EXPECT_EQ(gpus[1].name, "NVIDIA GPU"); // no procfs entry: a generic name until it wakes
+    EXPECT_EQ(gpus[1].id, "nvidia-0000:41:00.0");
+    EXPECT_EQ(gpus[1].pciLocation, (PciLocation{.bus = 0x41, .device = 0}));
+    ASSERT_EQ(counters.size(), 2U);
+    EXPECT_TRUE(counters[0].suspended);
+    EXPECT_FALSE(counters[0].utilizationAvailable);
+    EXPECT_TRUE(processes.empty());
+}
+
+// #1270: a GPU deferred at load is looked up by its PCI address once it wakes: the quick rescan asks
+// for a re-enumeration, which reads its NVML identity, index and sensors. The id the driver's procfs
+// gave is kept (NVML can't report this mock device's UUID), so its history carries on. The GPU that
+// was awake at load was looked up the same way and read as normal throughout.
+TEST(LinuxNVMLGPUProbeTest, AGpuDeferredAtLoadIsLookedUpOnceAwake)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const NvmlMockControls controls;
+    ASSERT_TRUE(controls.countsQueriesPerDevice());
+    const TestSupport::ScopedTempDir pciRoot("tasksmack_nvml_deferred_wake");
+    const TestSupport::ScopedTempDir procRoot("tasksmack_nvml_deferred_wake_proc");
+    makePciDevice(pciRoot.path, "0000:01:00.0", "0x10de", "nvidia");
+    makePciDevice(pciRoot.path, "0000:41:00.0", "0x10de", "nvidia", "suspended");
+    makeProcGpuInformation(procRoot.path, "0000:41:00.0", "Mock NVIDIA GPU 1 (procfs)", "GPU-proc-uuid-1");
+    const unsigned int device1Before = controls.queriesForDevice(1);
+
+    NVMLGPUProbe probe(pciRoot.path.string(), procRoot.path.string());
+    ASSERT_TRUE(probe.isAvailable());
+    const auto asleep = probe.enumerateGPUs();
+    const auto asleepCounters = probe.readGPUCounters();
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick));
+    EXPECT_EQ(controls.queriesForDevice(1), device1Before);
+    ASSERT_EQ(asleep.size(), 2U);
+    EXPECT_EQ(asleep[0].id, "mock-nvml-uuid-0");
+    EXPECT_EQ(asleep[0].name, "Mock NVIDIA GPU 0");
+    EXPECT_EQ(asleep[0].deviceIndex, 0U);
+    EXPECT_TRUE(asleep[0].sensorCapabilities.has_value());
+    EXPECT_EQ(asleep[1].id, "GPU-proc-uuid-1");
+    EXPECT_EQ(asleep[1].name, "Mock NVIDIA GPU 1 (procfs)");
+    ASSERT_EQ(asleepCounters.size(), 2U);
+    EXPECT_DOUBLE_EQ(asleepCounters[0].utilizationPercent, 75.0);
+    EXPECT_TRUE(asleepCounters[1].suspended);
+
+    // Awake, but not yet looked up: unread (not marked asleep), and no process query through it.
+    setRuntimeStatus(pciRoot.path, "0000:41:00.0", "active");
+    const auto beforeLookup = probe.readGPUCounters();
+    ASSERT_EQ(beforeLookup.size(), 2U);
+    EXPECT_FALSE(beforeLookup[1].suspended);
+    EXPECT_FALSE(beforeLookup[1].utilizationAvailable);
+    EXPECT_EQ(controls.queriesForDevice(1), device1Before);
+
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Quick));
+    const auto awake = probe.enumerateGPUs();
+    EXPECT_GT(controls.queriesForDevice(1), device1Before);
+    ASSERT_EQ(awake.size(), 2U);
+    EXPECT_EQ(awake[1].id, "GPU-proc-uuid-1"); // kept: NVML has no UUID for this device
+    EXPECT_EQ(awake[1].name, "Mock NVIDIA GPU 1");
+    EXPECT_EQ(awake[1].deviceIndex, 1U);
+    ASSERT_TRUE(awake[1].sensorCapabilities.has_value());
+    EXPECT_FALSE(awake[1].sensorCapabilities.value_or(GPUCapabilities{}).hasFanSpeed);
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick)); // nothing left to find
+
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 2U);
+    EXPECT_EQ(counters[1].gpuId, "GPU-proc-uuid-1");
+    EXPECT_FALSE(counters[1].suspended);
+    EXPECT_DOUBLE_EQ(counters[1].utilizationPercent, 25.0);
+    EXPECT_EQ(counters[1].memoryTotalBytes, 16ULL * 1024ULL * 1024ULL * 1024ULL);
+}
+
+// #1270: without a procfs entry the deferred GPU's provisional id is its PCI address; once awake it
+// takes NVML's id, as a GPU awake at load would have had.
+TEST(LinuxNVMLGPUProbeTest, AGpuDeferredWithoutProcfsTakesNvmlsIdOnceAwake)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const TestSupport::ScopedTempDir pciRoot("tasksmack_nvml_deferred_noproc");
+    makePciDevice(pciRoot.path, "0000:01:00.0", "0x10de", "nvidia", "suspended");
+    makePciDevice(pciRoot.path, "0000:41:00.0", "0x10de", "nvidia");
+
+    NVMLGPUProbe probe(pciRoot.path.string(), TestSupport::ISOLATED_PCI_ROOT);
+    ASSERT_TRUE(probe.isAvailable());
+    const auto asleep = probe.enumerateGPUs();
+    ASSERT_EQ(asleep.size(), 2U);
+    EXPECT_EQ(asleep[0].id, "nvidia-0000:01:00.0");
+    EXPECT_EQ(asleep[1].id, "nvidia-1"); // awake at load: looked up by address, NVML's fallback id
+
+    setRuntimeStatus(pciRoot.path, "0000:01:00.0", "active");
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Quick));
+    const auto awake = probe.enumerateGPUs();
+    ASSERT_EQ(awake.size(), 2U);
+    EXPECT_EQ(awake[0].id, "mock-nvml-uuid-0");
+    EXPECT_EQ(awake[0].name, "Mock NVIDIA GPU 0");
+}
+
+// #1270: when sysfs doesn't account for every device NVML counts (WSL has no PCI sysfs; here one of
+// two is missing), the devices can't all be found by address, so they are enumerated by index as
+// before -- a GPU asleep then is described by NVML, as it always was.
+TEST(LinuxNVMLGPUProbeTest, SysfsNotListingEveryNvmlDeviceFallsBackToIndexEnumeration)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const TestSupport::ScopedTempDir pciRoot("tasksmack_nvml_deferred_fallback");
+    makePciDevice(pciRoot.path, "0000:41:00.0", "0x10de", "nvidia", "suspended");
+
+    NVMLGPUProbe probe(pciRoot.path.string(), TestSupport::ISOLATED_PCI_ROOT);
+    ASSERT_TRUE(probe.isAvailable());
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 2U);
     EXPECT_EQ(gpus[0].id, "mock-nvml-uuid-0");
+    EXPECT_EQ(gpus[1].id, "nvidia-1");
+    EXPECT_EQ(gpus[1].name, "Mock NVIDIA GPU 1");
+}
+
+// #1270: a GPU known while awake and asleep through an NVML restart is deferred by the restart, but
+// keeps the identity it had -- found by PCI address -- with its sensor set and memory total, so its
+// history carries on and it isn't addressed.
+TEST(LinuxNVMLGPUProbeTest, AGpuDeferredByARestartKeepsItsIdentity)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const NvmlMockControls controls;
+    ASSERT_TRUE(controls.controlsDeviceSet());
+    ASSERT_TRUE(controls.countsQueriesPerDevice());
+    const TestSupport::ScopedTempDir pciRoot("tasksmack_nvml_deferred_restart");
+    makePciDevice(pciRoot.path, "0000:01:00.0", "0x10de", "nvidia");
+    makePciDevice(pciRoot.path, "0000:41:00.0", "0x10de", "nvidia");
+
+    NVMLGPUProbe probe(pciRoot.path.string(), TestSupport::ISOLATED_PCI_ROOT);
+    ASSERT_TRUE(probe.isAvailable());
+    ASSERT_EQ(probe.enumerateGPUs().size(), 2U);   // both sensor sets found while awake
+    ASSERT_EQ(probe.readGPUCounters().size(), 2U); // and both memory totals
+
+    setRuntimeStatus(pciRoot.path, "0000:41:00.0", "suspended");
+    controls.setLostDevice(0);
+    [[maybe_unused]] const auto lost = probe.readGPUCounters(); // device 0 reports itself lost
+    controls.setLostDevice(NvmlMockControls::NO_FAILING_HANDLE);
+    const unsigned int device1Before = controls.queriesForDevice(1);
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Full)); // re-initialises NVML
+    const auto gpus = probe.enumerateGPUs();
+    const auto counters = probe.readGPUCounters();
+    EXPECT_EQ(controls.queriesForDevice(1), device1Before);
+
+    ASSERT_EQ(gpus.size(), 2U);
+    EXPECT_EQ(gpus[1].id, "nvidia-1");
+    EXPECT_EQ(gpus[1].name, "Mock NVIDIA GPU 1");
+    ASSERT_TRUE(gpus[1].sensorCapabilities.has_value());
+    EXPECT_FALSE(gpus[1].sensorCapabilities.value_or(GPUCapabilities{}).hasPowerMetrics);
+    ASSERT_EQ(counters.size(), 2U);
+    EXPECT_TRUE(counters[1].suspended);
+    EXPECT_EQ(counters[1].memoryTotalBytes, 16ULL * 1024ULL * 1024ULL * 1024ULL);
+
+    // Awake again: looked up, and the id stays.
+    setRuntimeStatus(pciRoot.path, "0000:41:00.0", "active");
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Quick));
+    const auto awake = probe.enumerateGPUs();
+    ASSERT_EQ(awake.size(), 2U);
+    EXPECT_EQ(awake[1].id, "nvidia-1");
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick));
+}
+
+TEST(NVMLGPUProbeMathTest, ParsesSysfsAndNvmlPciAddresses)
+{
+    const auto sysfs = NVMLGPUProbeMath::parsePciAddress("0000:41:1f.3");
+    ASSERT_TRUE(sysfs.has_value());
+    EXPECT_EQ(sysfs.value_or(NVMLGPUProbeMath::PciAddressFields{}).bus, 0x41U);
+    EXPECT_EQ(sysfs.value_or(NVMLGPUProbeMath::PciAddressFields{}).device, 0x1fU);
+    EXPECT_EQ(sysfs.value_or(NVMLGPUProbeMath::PciAddressFields{}).function, 3U);
+    const auto nvml = NVMLGPUProbeMath::parsePciAddress("00010000:C1:00.0");
+    ASSERT_TRUE(nvml.has_value());
+    EXPECT_EQ(nvml.value_or(NVMLGPUProbeMath::PciAddressFields{}).domain, 0x10000U);
+    EXPECT_EQ(nvml.value_or(NVMLGPUProbeMath::PciAddressFields{}).bus, 0xc1U);
+
+    for (const char* bad : {"", "0000", "0000:01", "0000:01:00", "0000:01.00:0", "0000:zz:00.0", "0000:01:00.", ":01:00.0"})
+    {
+        EXPECT_FALSE(NVMLGPUProbeMath::parsePciAddress(bad).has_value()) << bad;
+    }
+}
+
+TEST(NVMLGPUProbeMathTest, ParsesTheDriversGpuInformation)
+{
+    const auto info = NVMLGPUProbeMath::parseNvidiaProcGpuInformation("Model: \t\t NVIDIA GeForce RTX 4090 Laptop GPU\n"
+                                                                      "IRQ:   \t\t 142\n"
+                                                                      "GPU UUID: \t GPU-3f1c2a6e-0d4b-11ee-be56-0242ac120002\n"
+                                                                      "Video BIOS: \t 95.03.1d.00.80\n");
+    EXPECT_EQ(info.model, "NVIDIA GeForce RTX 4090 Laptop GPU");
+    EXPECT_EQ(info.uuid, "GPU-3f1c2a6e-0d4b-11ee-be56-0242ac120002");
+
+    // A UUID the driver hasn't cached yet is printed with placeholders: no UUID.
+    // (Built up, since "??-" in a literal is a trigraph.)
+    const std::string placeholder = "GPU-" + std::string(8, '?') + "-" + std::string(4, '?') + "-" + std::string(12, '?');
+    const auto unknown = NVMLGPUProbeMath::parseNvidiaProcGpuInformation("Model: \t\t NVIDIA T500\r\nGPU UUID: \t " + placeholder + "\r\n");
+    EXPECT_EQ(unknown.model, "NVIDIA T500");
+    EXPECT_TRUE(unknown.uuid.empty());
+
+    const auto empty = NVMLGPUProbeMath::parseNvidiaProcGpuInformation("");
+    EXPECT_TRUE(empty.model.empty());
+    EXPECT_TRUE(empty.uuid.empty());
+}
+
+TEST(PciDisplayDevicesTest, AddressesBoundToADriver)
+{
+    const std::vector<std::string> devices{"0000:01:00.0=nvidia", "0000:41:00.0=", "0000:42:00.0=nvidia", "0000:43:00.0=nouveau"};
+    EXPECT_EQ(PciDisplayDevices::addressesBoundTo(devices, PciDisplayDevices::DRIVER_NVIDIA),
+              (std::vector<std::string>{"0000:01:00.0", "0000:42:00.0"}));
+    EXPECT_TRUE(PciDisplayDevices::addressesBoundTo({}, PciDisplayDevices::DRIVER_NVIDIA).empty());
 }
 
 // #1295 review: a GPU asleep through an NVML restart -- here one triggered by another NVIDIA GPU
