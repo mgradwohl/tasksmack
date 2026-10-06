@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string_view>
 
 namespace
 {
@@ -41,6 +42,17 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     if (Platform::ProcParsing::parseDouble(cursor, end, value))
     {
         g_DoubleSink = value;
+    }
+
+    // The /proc/[pid]/stat parser: comm is attacker-chosen, so a crafted line must never misparse (#1183).
+    const std::string_view statLine(begin, size);
+    if (const auto fields = Platform::ProcParsing::parseStatFields(statLine))
+    {
+        g_UnsignedSink = fields->startTime;
+    }
+    if (const auto startTime = Platform::ProcParsing::parseStatStartTime(statLine))
+    {
+        g_UnsignedSink = *startTime;
     }
 
     return 0;

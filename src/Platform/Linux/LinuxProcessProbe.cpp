@@ -15,6 +15,7 @@
 #endif
 
 #include "Platform/ProcessTypes.h"
+#include "PosixGuards.h"
 #include "ProcParsing.h"
 #include "ProcPrivileges.h"
 #include "ProcessName.h"
@@ -92,11 +93,10 @@ template<std::integral T> [[nodiscard]] constexpr auto toU64PositiveOr(T value, 
     return static_cast<uint64_t>(value);
 }
 
-using ProcParsing::FdGuard;
+using Posix::FdGuard;
 using ProcParsing::parseNum;
 using ProcParsing::readProcFile;
 using ProcParsing::readProcFileFull;
-using ProcParsing::skipSpaces;
 
 /// Cache UID to username mappings to avoid repeated getpwuid calls
 std::unordered_map<uid_t, std::string>& getUsernameCache()
@@ -140,8 +140,13 @@ LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot)
 {}
 
 LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot, std::filesystem::path powercapRoot)
+    : LinuxProcessProbe(std::move(procRoot), std::move(powercapRoot), std::filesystem::path("/sys/fs/cgroup"))
+{}
+
+LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot, std::filesystem::path powercapRoot, std::filesystem::path cgroupRoot)
     : m_ProcRoot(std::move(procRoot)),
       m_PowercapRoot(std::move(powercapRoot)),
+      m_CgroupRoot(std::move(cgroupRoot)),
       m_TicksPerSecond(sysconf(_SC_CLK_TCK)),
       m_PageSize(toU64PositiveOr(sysconf(_SC_PAGESIZE), 4096ULL)),
       m_BootTimeEpoch(readBootTime(m_ProcRoot))
@@ -277,7 +282,7 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         {
             counters.ioCountersAvailable = false; // not read at all (capabilities() reports hasIoCounters = false)
         }
-        counters.status = getProcessStatus(pid, m_ProcRoot); // Get cgroup freezer status
+        counters.status = getProcessStatus(pid, m_ProcRoot, m_CgroupRoot); // Get cgroup freezer status
         processes.push_back(std::move(counters));
     }
 
@@ -374,101 +379,28 @@ bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters)
         return false;
     }
 
-    const char* const beg = buf.data();
-    const char* const end = buf.data() + len;
-
-    // Process name is in parentheses; find first '(' and last ')' to handle
-    // names that themselves contain parentheses (e.g. "process (name)").
-    const char* nameStart = beg;
-    while (nameStart < end && *nameStart != '(')
-    {
-        ++nameStart;
-    }
-    if (nameStart >= end)
-    {
-        return false;
-    }
-
-    const char* nameEnd = end - 1;
-    while (nameEnd > nameStart && *nameEnd != ')')
-    {
-        --nameEnd;
-    }
-    if (nameEnd <= nameStart)
+    // One parser for the format (#1183): the start time read here is the one the identity check
+    // before a process action (#973) and socket attribution (#1336) read.
+    const auto fields = ProcParsing::parseStatFields(std::string_view(buf.data(), len));
+    if (!fields.has_value())
     {
         return false;
     }
 
     counters.pid = pid;
-    counters.name = std::string(nameStart + 1, static_cast<std::size_t>(nameEnd - nameStart - 1));
-
-    // Fields follow the closing ')': ") state ppid pgrp ..."
-    const char* q = nameEnd + 1;
-    if (q < end && *q == ' ')
-    {
-        ++q;
-    }
-
-    char stateChar = '?';
-    int32_t parentPid = 0;
-    int32_t pgrp = 0;
-    int32_t session = 0;
-    int32_t ttyNr = 0;
-    int32_t tpgid = 0;
-    uint32_t flags = 0;
-    uint64_t minflt = 0;
-    uint64_t cminflt = 0;
-    uint64_t majflt = 0;
-    uint64_t cmajflt = 0;
-    uint64_t utime = 0;
-    uint64_t stime = 0;
-    int64_t cutime = 0;
-    int64_t cstime = 0;
-    int64_t priority = 0;
-    int64_t nice = 0;
-    int64_t numThreads = 0;
-    int64_t itrealvalue = 0;
-    uint64_t starttime = 0;
-    uint64_t vsize = 0;
-    int64_t rss = 0;
-
-    // State is a single character; skip leading whitespace then read it.
-    q = skipSpaces(q, end);
-    if (q >= end)
-    {
-        return false;
-    }
-    stateChar = *q++;
-
-    // clang-format off
-    if (!parseNum(q, end, parentPid)  || !parseNum(q, end, pgrp)        ||
-        !parseNum(q, end, session)    || !parseNum(q, end, ttyNr)       ||
-        !parseNum(q, end, tpgid)      || !parseNum(q, end, flags)       ||
-        !parseNum(q, end, minflt)     || !parseNum(q, end, cminflt)     ||
-        !parseNum(q, end, majflt)     || !parseNum(q, end, cmajflt)     ||
-        !parseNum(q, end, utime)      || !parseNum(q, end, stime)       ||
-        !parseNum(q, end, cutime)     || !parseNum(q, end, cstime)      ||
-        !parseNum(q, end, priority)   || !parseNum(q, end, nice)        ||
-        !parseNum(q, end, numThreads) || !parseNum(q, end, itrealvalue) ||
-        !parseNum(q, end, starttime)  || !parseNum(q, end, vsize)       ||
-        !parseNum(q, end, rss))
-    // clang-format on
-    {
-        return false;
-    }
-
-    counters.state = stateChar;
-    counters.parentPid = parentPid;
-    counters.userTime = utime;
-    counters.systemTime = stime;
-    counters.threadCount = clampToI32((numThreads > 0) ? numThreads : 1);
-    counters.startTimeTicks = starttime;
+    counters.name = std::string(fields->comm);
+    counters.state = fields->state;
+    counters.parentPid = fields->parentPid;
+    counters.userTime = fields->userTime;
+    counters.systemTime = fields->systemTime;
+    counters.threadCount = clampToI32((fields->numThreads > 0) ? fields->numThreads : 1);
+    counters.startTimeTicks = fields->startTime;
 
     // Convert start time from jiffies since boot to Unix epoch seconds
     // startTimeTicks is in clock ticks (jiffies), m_BootTimeEpoch is Unix epoch seconds
     if (m_BootTimeEpoch > 0 && m_TicksPerSecond > 0)
     {
-        const auto secondsSinceBoot = starttime / static_cast<uint64_t>(m_TicksPerSecond);
+        const auto secondsSinceBoot = fields->startTime / static_cast<uint64_t>(m_TicksPerSecond);
         constexpr auto maxEpoch = std::numeric_limits<uint64_t>::max();
 
         // Overflow protection: ensure addition won't wrap
@@ -483,10 +415,10 @@ bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters)
         }
     }
 
-    counters.virtualBytes = vsize;
-    counters.rssBytes = toU64PositiveOr(rss, 0ULL) * m_PageSize;
-    counters.nice = clampToI32(nice);
-    counters.pageFaultCount = minflt + majflt; // Total page faults (minor + major)
+    counters.virtualBytes = fields->virtualBytes;
+    counters.rssBytes = toU64PositiveOr(fields->rssPages, 0ULL) * m_PageSize;
+    counters.nice = clampToI32(fields->nice);
+    counters.pageFaultCount = fields->minorFaults + fields->majorFaults; // Total page faults (minor + major)
 
     return true;
 }
@@ -859,7 +791,7 @@ bool LinuxProcessProbe::checkIoCountersAvailability(const std::filesystem::path&
     return true;
 }
 
-std::string LinuxProcessProbe::getProcessStatus(int32_t pid, const std::filesystem::path& procRoot)
+std::string LinuxProcessProbe::getProcessStatus(int32_t pid, const std::filesystem::path& procRoot, const std::filesystem::path& cgroupRoot)
 {
     // /proc/<pid>/cgroup names the process's cgroups: the v2 "0::<path>" line and/or v1 lines,
     // including the freezer controller's. isCgroupFrozen() checks the matching freeze state.
@@ -867,8 +799,7 @@ std::string LinuxProcessProbe::getProcessStatus(int32_t pid, const std::filesyst
     // at the wrong cgroup.events (#1228 review).
     const auto cgroupPath = (procRoot / std::to_string(pid) / "cgroup").string();
     const std::vector<char> cgroupContents = ProcParsing::readProcFileFull(cgroupPath.c_str());
-    if (!cgroupContents.empty() &&
-        CgroupPath::isCgroupFrozen(std::string_view(cgroupContents.data(), cgroupContents.size()), std::filesystem::path("/sys/fs/cgroup")))
+    if (!cgroupContents.empty() && CgroupPath::isCgroupFrozen(std::string_view(cgroupContents.data(), cgroupContents.size()), cgroupRoot))
     {
         return "Suspended";
     }

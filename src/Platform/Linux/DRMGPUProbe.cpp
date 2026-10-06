@@ -2,6 +2,7 @@
 
 #include "PciRuntimePm.h"
 #include "Platform/GPUTypes.h"
+#include "PosixGuards.h"
 
 #include <spdlog/spdlog.h>
 
@@ -24,7 +25,6 @@
 
 #include <fcntl.h>
 #include <sys/ioctl.h>
-#include <unistd.h>
 
 // Kernel UAPI for the DRM memory-region queries (#1283). xe_drm.h ships with the kernel headers
 // since Linux 6.8 (Ubuntu 24.04's linux-libc-dev); without it the VRAM query is simply unavailable.
@@ -111,33 +111,6 @@ constexpr uint32_t PCI_VENDOR_AMD = 0x1002U;
         }
     }
 }
-
-/// Closes a file descriptor on scope exit.
-class FdGuard
-{
-  public:
-    explicit FdGuard(int fd) : m_Fd(fd)
-    {}
-    ~FdGuard()
-    {
-        if (m_Fd >= 0)
-        {
-            ::close(m_Fd);
-        }
-    }
-    FdGuard(const FdGuard&) = delete;
-    FdGuard& operator=(const FdGuard&) = delete;
-    FdGuard(FdGuard&&) = delete;
-    FdGuard& operator=(FdGuard&&) = delete;
-
-    [[nodiscard]] int get() const
-    {
-        return m_Fd;
-    }
-
-  private:
-    int m_Fd;
-};
 
 /// A reply buffer for a DRM query, 8-byte aligned for the kernel's __u64 fields.
 [[nodiscard]] std::vector<uint64_t> makeReplyBuffer(std::size_t bytes)
@@ -665,7 +638,7 @@ std::optional<DRMGPUProbe::VramInfo> DRMGPUProbe::queryVramByIoctl([[maybe_unuse
     }
     // Read-only is enough: DRM ioctls don't check the file mode, and both queries are DRM_RENDER_ALLOW.
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg,hicpp-vararg) -- open(2) is variadic
-    const FdGuard fd(::open(renderNodePath.c_str(), O_RDONLY | O_CLOEXEC));
+    const Posix::FdGuard fd(::open(renderNodePath.c_str(), O_RDONLY | O_CLOEXEC));
     if (fd.get() < 0)
     {
         spdlog::debug(
