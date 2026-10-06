@@ -545,6 +545,51 @@ TEST_F(NVMLGPUProbeFakeTest, AGpuLostErrorReinitialisesNVMLAtTheNextFullRescan)
     EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full)) << "Lost is cleared by the restart";
 }
 
+// A GPU lost while enumeration probes its sensors (a driver reset as it wakes) tells nothing about
+// which sensors it has: the set stays unknown rather than cached as "none", the loss restarts NVML
+// at the next full rescan, and the enumeration after that finds the real set. Caching the failed
+// probe left the GPU without sensors for good, since the set survives restart().
+TEST_F(NVMLGPUProbeFakeTest, AGpuLostDuringTheSensorProbeLeavesTheSensorsUnknownUntilNVMLRestarts)
+{
+    fakeState().deviceCount = 1;
+    deviceData(0).uuid = "GPU-aaaa";
+    fakeState().lostDevices.insert(0);
+
+    NVMLGPUProbe probe;
+    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
+    const auto lost = probe.enumerateGPUs();
+    ASSERT_EQ(lost.size(), 1U);
+    EXPECT_FALSE(lost[0].sensorCapabilities.has_value()) << "A failed probe is not an empty sensor set";
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick)) << "No re-enumeration until NVML has restarted";
+    EXPECT_EQ(fakeState().initCallCount, 0);
+
+    fakeState().lostDevices.clear();
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Full)) << "The loss the probe saw restarts NVML";
+    EXPECT_EQ(fakeState().initCallCount, 1);
+    const auto back = probe.enumerateGPUs();
+    ASSERT_EQ(back.size(), 1U);
+    ASSERT_TRUE(back[0].sensorCapabilities.has_value());
+    EXPECT_TRUE(back[0].sensorCapabilities->hasTemperature);
+    EXPECT_TRUE(back[0].sensorCapabilities->hasFanSpeed);
+}
+
+// NVML_ERROR_UNINITIALIZED from a running-process query is a reset too: NVML restarts at the next
+// full rescan, as it does after a counter read's.
+TEST_F(NVMLGPUProbeFakeTest, AResetReportedByAProcessQueryRestartsNVMLAtTheNextFullRescan)
+{
+    fakeState().deviceCount = 1;
+    deviceData(0).uuid = "GPU-aaaa";
+
+    NVMLGPUProbe probe;
+    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
+    ASSERT_EQ(probe.enumerateGPUs().size(), 1U);
+    fakeState().graphicsProcesses[0] = makeProcessQuery({}, NVML_ERROR_UNINITIALIZED);
+    static_cast<void>(probe.readProcessGPUCounters());
+
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    EXPECT_EQ(fakeState().initCallCount, 1);
+}
+
 // NVML_ERROR_UNINITIALIZED means the same as a lost GPU: the library has to be started again. A
 // re-init that fails reports no change (the GPUs are still there; their readings are gaps) and
 // leaves NVML unavailable, ready to be retried.

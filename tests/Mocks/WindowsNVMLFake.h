@@ -110,7 +110,8 @@ struct FakeNvmlState
     // nvmlInit's answer and how often it was called, for restart() (#1294)
     nvmlReturn_t initResult = NVML_SUCCESS;
     int initCallCount = 0;
-    // Devices whose readings report NVML_ERROR_GPU_IS_LOST (a driver reset, say) (#1294)
+    // Devices whose readings (memory, sensors, VBIOS, running processes) report
+    // NVML_ERROR_GPU_IS_LOST (a driver reset, say) (#1294); identity reads still answer
     std::unordered_set<unsigned int> lostDevices;
 };
 
@@ -136,6 +137,12 @@ inline const FakeDeviceData& touchDevice(nvmlDevice_t device)
     const unsigned int index = deviceIndexOf(device);
     ++fakeState().deviceQueries[index];
     return fakeState().devices.at(index);
+}
+
+/// Whether the device a call is for is in lostDevices, so the call reports NVML_ERROR_GPU_IS_LOST.
+inline bool isLost(nvmlDevice_t device)
+{
+    return fakeState().lostDevices.contains(deviceIndexOf(device));
 }
 
 inline nvmlDevice_t deviceHandleFor(unsigned int index)
@@ -210,6 +217,10 @@ inline nvmlReturn_t fakeDeviceGetUUID(nvmlDevice_t device, char* buf, unsigned i
 inline nvmlReturn_t fakeDeviceGetVbiosVersion(nvmlDevice_t device, char* buf, unsigned int size)
 {
     const auto& d = touchDevice(device);
+    if (isLost(device))
+    {
+        return NVML_ERROR_GPU_IS_LOST;
+    }
     if (!d.vbiosOk)
     {
         return NVML_ERROR_NOT_SUPPORTED;
@@ -221,7 +232,7 @@ inline nvmlReturn_t fakeDeviceGetVbiosVersion(nvmlDevice_t device, char* buf, un
 inline nvmlReturn_t fakeDeviceGetMemoryInfo(nvmlDevice_t device, void* memInfoRaw)
 {
     const auto& d = touchDevice(device);
-    if (fakeState().lostDevices.contains(deviceIndexOf(device)))
+    if (isLost(device))
     {
         return NVML_ERROR_GPU_IS_LOST;
     }
@@ -239,6 +250,10 @@ inline nvmlReturn_t fakeDeviceGetMemoryInfo(nvmlDevice_t device, void* memInfoRa
 inline nvmlReturn_t fakeDeviceGetTemperature(nvmlDevice_t device, int /*sensor*/, unsigned int* temp)
 {
     const auto& d = touchDevice(device);
+    if (isLost(device))
+    {
+        return NVML_ERROR_GPU_IS_LOST;
+    }
     if (!d.temperatureOk)
     {
         return NVML_ERROR_NOT_SUPPORTED;
@@ -250,6 +265,10 @@ inline nvmlReturn_t fakeDeviceGetTemperature(nvmlDevice_t device, int /*sensor*/
 inline nvmlReturn_t fakeDeviceGetPowerUsage(nvmlDevice_t device, unsigned int* mw)
 {
     const auto& d = touchDevice(device);
+    if (isLost(device))
+    {
+        return NVML_ERROR_GPU_IS_LOST;
+    }
     if (!d.powerOk)
     {
         return NVML_ERROR_NOT_SUPPORTED;
@@ -261,6 +280,10 @@ inline nvmlReturn_t fakeDeviceGetPowerUsage(nvmlDevice_t device, unsigned int* m
 inline nvmlReturn_t fakeDeviceGetPowerManagementLimit(nvmlDevice_t device, unsigned int* mw)
 {
     const auto& d = touchDevice(device);
+    if (isLost(device))
+    {
+        return NVML_ERROR_GPU_IS_LOST;
+    }
     if (!d.powerLimitOk)
     {
         return NVML_ERROR_NOT_SUPPORTED;
@@ -272,6 +295,10 @@ inline nvmlReturn_t fakeDeviceGetPowerManagementLimit(nvmlDevice_t device, unsig
 inline nvmlReturn_t fakeDeviceGetClockInfo(nvmlDevice_t device, int clockType, unsigned int* mhz)
 {
     const auto& d = touchDevice(device);
+    if (isLost(device))
+    {
+        return NVML_ERROR_GPU_IS_LOST;
+    }
     if (clockType == static_cast<int>(NVML_CLOCK_GRAPHICS))
     {
         if (!d.gpuClockOk)
@@ -296,6 +323,10 @@ inline nvmlReturn_t fakeDeviceGetClockInfo(nvmlDevice_t device, int clockType, u
 inline nvmlReturn_t fakeDeviceGetUtilizationRates(nvmlDevice_t device, void* utilRaw)
 {
     const auto& d = touchDevice(device);
+    if (isLost(device))
+    {
+        return NVML_ERROR_GPU_IS_LOST;
+    }
     if (!d.utilizationOk)
     {
         return NVML_ERROR_NOT_SUPPORTED;
@@ -309,6 +340,10 @@ inline nvmlReturn_t fakeDeviceGetUtilizationRates(nvmlDevice_t device, void* uti
 inline nvmlReturn_t fakeDeviceGetFanSpeed(nvmlDevice_t device, unsigned int* speed)
 {
     const auto& d = touchDevice(device);
+    if (isLost(device))
+    {
+        return NVML_ERROR_GPU_IS_LOST;
+    }
     if (!d.fanOk)
     {
         return NVML_ERROR_NOT_SUPPORTED;
@@ -342,6 +377,10 @@ inline nvmlReturn_t queryFakeProcesses(std::unordered_map<unsigned int, FakeProc
                                        std::size_t entrySize)
 {
     ++fakeState().deviceQueries[deviceIndex];
+    if (fakeState().lostDevices.contains(deviceIndex))
+    {
+        return NVML_ERROR_GPU_IS_LOST;
+    }
     auto it = table.find(deviceIndex);
     if (it == table.end())
     {

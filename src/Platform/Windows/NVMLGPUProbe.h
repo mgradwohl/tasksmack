@@ -52,8 +52,8 @@ class NVMLGPUProbe : public IGPUProbe
     [[nodiscard]] GPUCapabilities capabilities() const override;
     /// Full: re-initialise NVML if a query since the last (re)start reported NVML_ERROR_GPU_IS_LOST or
     /// NVML_ERROR_UNINITIALIZED, reporting a change if that worked. Either depth: report a change
-    /// when a GPU that was asleep at enumeration (so its sensors are unknown) is awake now. Asking
-    /// whether it is awake doesn't wake it (#1265, #1294).
+    /// when a GPU that was asleep at enumeration (so its sensors are unknown) is awake now, unless
+    /// NVML is waiting for that restart. Asking whether it is awake doesn't wake it (#1265, #1294).
     [[nodiscard]] bool rescanGPUs(GPURescan depth) override;
 
     /// Shut NVML down and start it again (loading nvml.dll first if it isn't loaded), so the next
@@ -103,6 +103,8 @@ class NVMLGPUProbe : public IGPUProbe
     /// Note a device query's result: a lost GPU or an uninitialised library means NVML must be
     /// re-initialised (#1294). Returns @p result unchanged.
     NVML::nvmlReturn_t noteResult(NVML::nvmlReturn_t result);
+    /// Whether @p result is one noteResult() records: NVML_ERROR_GPU_IS_LOST or NVML_ERROR_UNINITIALIZED.
+    [[nodiscard]] static bool isResetResult(NVML::nvmlReturn_t result);
 
     [[nodiscard]] static std::string getNVMLErrorString(NVML::nvmlReturn_t result);
 
