@@ -9,6 +9,7 @@
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/InlineText.h"
+#include "UI/RateAxis.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -389,8 +390,13 @@ void renderGpuSection(RenderContext& ctx)
         const auto axisConfig = makeTimeAxisConfig(perGpuTimestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
 
         // Only the clocks the window shows set the scale: not the trim anchor left of it, nor older
-        // samples when scrolled back (#1324).
-        const float maxClockMHz = gpuClockReferenceMHz(timeData, axisConfig.xMin, clockData, snap.gpuClockMHz);
+        // samples when scrolled back (#1324). The NowBar's smoothed clock counts too, so the bar never
+        // exceeds the scale while it eases down from a peak that has left the window.
+        const float maxClockMHz = gpuClockReferenceMHz(timeData,
+                                                       axisConfig.xMin,
+                                                       clockData,
+                                                       snap.gpuClockMHz,
+                                                       UI::Widgets::currentIfAvailable(smoothed.clockInitialized, smoothed.clockMHz));
 
         // ========================================
         // Chart 1: Core + Video (all percentages)
