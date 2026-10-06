@@ -627,6 +627,23 @@ TEST(SocketTrafficAccumulatorTest, ApplyFoldsARepeatedReadingOnce)
     EXPECT_EQ(processes[0].netSampleTimeNs, 2'000U);
 }
 
+TEST(SocketTrafficAccumulatorTest, AListedProcessWithAnUnknownStartTimeTakesItsPidsCredit)
+{
+    // #1340 review: a sample with a known owner start time used to be dropped when the listed process's
+    // own start time was unknown (0): publish() looked up {pid, 0} exactly. Either start time unknown
+    // means matching by PID alone.
+    SocketTrafficAccumulator accumulator;
+    accumulator.addReading(std::vector<SocketTrafficSample>{{.key = 1, .pid = 10, .ownerStartTimeTicks = 1000, .bytesReceived = 100}});
+    accumulator.addReading(std::vector<SocketTrafficSample>{{.key = 1, .pid = 10, .ownerStartTimeTicks = 1000, .bytesReceived = 400}});
+    std::vector processes{process(10, 0)};
+    accumulator.publish(processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 300U);
+
+    accumulator.addReading(std::vector<SocketTrafficSample>{{.key = 1, .pid = 10, .ownerStartTimeTicks = 0, .bytesReceived = 450}});
+    accumulator.publish(processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 350U) << "an unknown sample start counts once too";
+}
+
 TEST(SocketTrafficAccumulatorTest, ApplyDoesNotFoldAnOlderReading)
 {
     // Folding a reading older than the last one would rewind the baselines: socket 1 back at 100
