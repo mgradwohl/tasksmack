@@ -333,6 +333,27 @@ struct ProcessColumnSettings
         setVisible(col, !isVisible(col));
     }
 
+    /// Takes `col`'s visibility from the table (ImGui's state) when it differs, and returns whether it
+    /// did. Only `userChange` -- a toggle in ImGui's header menu -- counts as a choice; state ImGui
+    /// produced itself, such as a column layout it restored, is taken without marking the column
+    /// chosen, so it keeps following this system's defaults (#1210).
+    bool adoptTableVisibility(ProcessColumn col, bool enabled, bool userChange)
+    {
+        if (isVisible(col) == enabled)
+        {
+            return false;
+        }
+        if (userChange)
+        {
+            setVisible(col, enabled);
+        }
+        else
+        {
+            visible[toIndex(col)] = enabled;
+        }
+        return true;
+    }
+
     /// Whether `col`'s visibility was chosen rather than left at a default.
     [[nodiscard]] bool isChosen(ProcessColumn col) const
     {

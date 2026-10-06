@@ -339,6 +339,29 @@ TEST(ProcessColumnSettingsTest, OnlyAnUnchosenColumnTakesANewDefault)
     EXPECT_TRUE(settings.isChosen(ProcessColumn::Threads));
 }
 
+TEST(ProcessColumnSettingsTest, TableStateIsAChoiceOnlyWhenTheUserMadeIt)
+{
+    // #1210: before the table has been drawn with our settings, an enabled column comes from the
+    // ImGui layout ShellLayer restored, not from the user, and must not pin the column as chosen.
+    ProcessColumnSettings settings;
+    settings.setDefaultVisible(ProcessColumn::Power, false); // e.g. no RAPL
+    EXPECT_TRUE(settings.adoptTableVisibility(ProcessColumn::Power, true, /*userChange=*/false));
+    EXPECT_TRUE(settings.isVisible(ProcessColumn::Power));
+    EXPECT_FALSE(settings.isChosen(ProcessColumn::Power)); // Still follows the system's default
+    settings.setDefaultVisible(ProcessColumn::Power, false);
+    EXPECT_FALSE(settings.isVisible(ProcessColumn::Power));
+
+    // Once the table shows our settings, a difference is the user's toggle in ImGui's header menu.
+    EXPECT_TRUE(settings.adoptTableVisibility(ProcessColumn::Power, true, /*userChange=*/true));
+    EXPECT_TRUE(settings.isChosen(ProcessColumn::Power));
+    settings.setDefaultVisible(ProcessColumn::Power, false);
+    EXPECT_TRUE(settings.isVisible(ProcessColumn::Power));
+
+    // No difference: nothing changes, nothing is marked.
+    EXPECT_FALSE(settings.adoptTableVisibility(ProcessColumn::Threads, settings.isVisible(ProcessColumn::Threads), true));
+    EXPECT_FALSE(settings.isChosen(ProcessColumn::Threads));
+}
+
 TEST(ProcessColumnSettingsTest, RequestVisibleKeepsUnhideableColumnsShown)
 {
     ProcessColumnSettings settings;

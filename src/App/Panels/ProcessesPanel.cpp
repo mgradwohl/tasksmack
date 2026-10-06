@@ -602,6 +602,10 @@ void ProcessesPanel::onAttach()
     // Before the table is first drawn, since its default visibility is set from these settings.
     m_ColumnDefaultsCapabilities = processCapabilities();
     ProcessColumnAvailability::applyCapabilityDefaults(m_ColumnSettings, m_ColumnDefaultsCapabilities);
+    // Handed to the table on its first frame, as a Columns menu request is: ShellLayer restores the
+    // saved ImGui layout after this, and its visibility would otherwise win over DefaultHide.
+    m_RequestedColumns = m_ColumnSettings;
+    m_TableShowsColumnSettings = false;
 
     spdlog::info("ProcessesPanel: initialized with background sampler ({}ms interval)", m_AppliedSamplerInterval.count());
 }
@@ -1201,6 +1205,8 @@ void ProcessesPanel::renderContent()
         // Sync column visibility from ImGui back to our settings
         // This captures changes made via the right-click context menu. Not on a frame the Columns
         // menu changed it: ImGui applies that next frame, so its flags still show the old state.
+        // Only once the table has been drawn with our settings is a difference the user's own toggle;
+        // before that it is ImGui's restored layout, which must not mark a column chosen (#1210).
         if (!columnsChangedByMenu)
         {
             bool settingsChanged = false;
@@ -1208,11 +1214,7 @@ void ProcessesPanel::renderContent()
             for (const ProcessColumn col : allProcessColumns())
             {
                 const bool isEnabled = (ImGui::TableGetColumnFlags(idx) & ImGuiTableColumnFlags_IsEnabled) != 0;
-                if (m_ColumnSettings.isVisible(col) != isEnabled)
-                {
-                    m_ColumnSettings.setVisible(col, isEnabled);
-                    settingsChanged = true;
-                }
+                settingsChanged = m_ColumnSettings.adoptTableVisibility(col, isEnabled, m_TableShowsColumnSettings) || settingsChanged;
                 ++idx;
             }
             if (settingsChanged)
@@ -1220,6 +1222,7 @@ void ProcessesPanel::renderContent()
                 UserConfig::get().settings().processColumns = m_ColumnSettings;
             }
         }
+        m_TableShowsColumnSettings = true;
 
         ImGui::EndTable();
     }

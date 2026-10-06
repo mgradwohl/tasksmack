@@ -194,6 +194,9 @@ class ProcessesPanel : public Panel
     // The capabilities the columns' defaults were last applied for: when the probe's change, the
     // columns whose visibility was not chosen follow them (#1210).
     Platform::ProcessCapabilities m_ColumnDefaultsCapabilities;
+    // Whether the table has been drawn with m_ColumnSettings: from then on, a column ImGui shows or
+    // hides differently is the user's toggle in its header menu; before, it is a restored layout.
+    bool m_TableShowsColumnSettings = false;
 
     // Tree view gives the Name column room (#1209): adjusted once when the view mode changes. The
     // width it had before, and the width tree view set (0 when it left it alone), so leaving tree
