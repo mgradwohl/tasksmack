@@ -1375,6 +1375,39 @@ TEST(ResizePerfTraceStatsTest, LoopIntervalsResetWithIntervalNotRollingWindow)
     EXPECT_EQ(stats.loopIntervalSamplesMs.size(), 2U);
 }
 
+TEST(ResizePerfTraceStatsTest, DeliveredFrameEndsRecordIntervalsAcrossPeriodicResets)
+{
+    constexpr std::uint64_t FREQUENCY = 1000; // 1 tick = 1 ms
+    Core::ResizePerfTraceStats stats;
+    stats.recordDeliveredFrameEnd(1000, FREQUENCY); // first frame: no fabricated interval
+    EXPECT_EQ(stats.loopIntervals, 0U);
+    stats.recordDeliveredFrameEnd(1050, FREQUENCY);
+    EXPECT_EQ(stats.loopIntervals, 1U);
+    EXPECT_DOUBLE_EQ(stats.maxLoopIntervalMs, 50.0);
+    // A periodic log within the same state keeps the anchor: the next interval is not lost.
+    stats.resetIntervalCounters();
+    stats.recordDeliveredFrameEnd(1120, FREQUENCY);
+    EXPECT_EQ(stats.loopIntervals, 1U);
+    EXPECT_DOUBLE_EQ(stats.maxLoopIntervalMs, 70.0);
+    EXPECT_EQ(stats.loopIntervalSamplesMs.size(), 2U);
+}
+
+TEST(ResizePerfTraceStatsTest, FullResetAtStateTransitionDropsCrossStateInterval)
+{
+    constexpr std::uint64_t FREQUENCY = 1000;
+    Core::ResizePerfTraceStats stats;
+    stats.recordDeliveredFrameEnd(1000, FREQUENCY);
+    stats.recordDeliveredFrameEnd(1050, FREQUENCY);
+    // Idle -> interaction transition: Application::run() does `resizeTraceStats = {}`.
+    stats = {};
+    stats.recordDeliveredFrameEnd(3000, FREQUENCY); // would be a 1950 ms idle-to-interaction gap
+    EXPECT_EQ(stats.loopIntervals, 0U);
+    EXPECT_TRUE(stats.loopIntervalSamplesMs.empty());
+    stats.recordDeliveredFrameEnd(3016, FREQUENCY);
+    EXPECT_EQ(stats.loopIntervals, 1U);
+    EXPECT_DOUBLE_EQ(stats.maxLoopIntervalMs, 16.0);
+}
+
 TEST(ResizePerfTraceStatsTest, LoopIntervalWindowIsCapped)
 {
     Core::ResizePerfTraceStats stats;

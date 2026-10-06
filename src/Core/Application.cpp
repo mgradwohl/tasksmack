@@ -560,16 +560,11 @@ void Application::run()
 
     // Deliver-to-deliver loop intervals (#843 measurement kit): renderFrame() stamps each presented
     // frame's end (recordResizePerfFrameEnd), and the gap from the previous one is the cadence the
-    // user sees, skipped renders included.
-    std::uint64_t lastDeliveredFrameEnd = 0;
+    // user sees, skipped renders included. The previous frame's end is kept in resizeTraceStats, so
+    // the `= {}` resets at idle<->interaction transitions drop the interval that spans both states.
     const auto recordDeliveredFrame = [&]()
     {
-        const std::uint64_t delivered = resizePerfOperations().previousFrameEnd;
-        if (lastDeliveredFrameEnd != 0 && delivered > lastDeliveredFrameEnd)
-        {
-            resizeTraceStats.recordLoopInterval(resizePerfElapsedMs(lastDeliveredFrameEnd, delivered));
-        }
-        lastDeliveredFrameEnd = delivered;
+        resizeTraceStats.recordDeliveredFrameEnd(resizePerfOperations().previousFrameEnd, SDL_GetPerformanceFrequency());
     };
 
     // The framebuffer size of the last WindowResizedEvent, so an SDL_EVENT_WINDOW_EXPOSED can tell

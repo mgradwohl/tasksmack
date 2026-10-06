@@ -157,6 +157,24 @@ struct ResizePerfTraceStats
         pushRollingSample(loopIntervalSamplesMs, intervalMs);
     }
 
+    /// A presented frame ended at performance-counter value `frameEndCounter` (`counterFrequency`
+    /// ticks per second): records the interval from the previous presented frame's end, if any.
+    /// The anchor lives in the stats so a full `= {}` reset at an idle<->interaction transition
+    /// also drops it: the first interval after a transition would start in the other state and
+    /// mix the two windows. resetIntervalCounters() keeps it, so periodic logs lose no interval.
+    void recordDeliveredFrameEnd(std::uint64_t frameEndCounter, std::uint64_t counterFrequency)
+    {
+        if (lastDeliveredFrameEnd != 0 && frameEndCounter > lastDeliveredFrameEnd && counterFrequency != 0)
+        {
+            recordLoopInterval((static_cast<double>(frameEndCounter - lastDeliveredFrameEnd) * 1000.0) /
+                               static_cast<double>(counterFrequency));
+        }
+        lastDeliveredFrameEnd = frameEndCounter;
+    }
+
+    /// Counter value of the last presented frame's end; 0 = none since the last full reset.
+    std::uint64_t lastDeliveredFrameEnd = 0;
+
     void
     recordEventBatch(std::uint32_t eventCount, std::uint32_t resizeEventCount, double durationMs, double singlePollBatchMs, bool p0Fired)
     {

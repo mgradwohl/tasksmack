@@ -10,12 +10,18 @@
 # with SIGTERM, then prints one table:
 #   - per-thread average CPU% (100% = one logical CPU fully busy), and the process total;
 #   - fps: presented frames per second, from the deliver-to-deliver loop intervals in the
-#     ResizePerf summaries logged during the sample window;
+#     ResizePerf summaries;
 #   - frame p95/p99/max: work per presented frame (update+render+post+swap);
 #   - loop p95/p99: deliver-to-deliver interval (frame end to frame end, skipped renders included).
-# Percentiles are the worst ResizePerf summary logged during the sample window (each summary's
-# p95/p99 is over a rolling window of up to 200 samples, which can reach back before the window
-# when the warm-up is short); max is the largest per-interval max logged in the window.
+#
+# The frame figures come from TaskSmack's periodic ResizePerf summaries (every 5 s at idle), which
+# the app logs on its own schedule, so they cannot cover exactly the CPU sample. The script uses
+# the summaries logged while CPU was being sampled and prints the span they actually cover (from
+# the summary before the first one to the last one) beside the CPU sample's own start and end, so
+# the two time ranges are visible instead of assumed equal. They differ by up to one summary
+# interval at each end. Percentiles are the worst of those summaries (each summary's p95/p99 is
+# over a rolling window of up to 200 samples, which also reaches back before the span when the
+# warm-up is short); max is the largest per-interval max among them.
 #
 # Options:
 #   --preset <preset>     CMake preset whose bin/TaskSmack is measured. Default: profile.
@@ -23,7 +29,9 @@
 #   --warmup <seconds>    Wait this long after the main loop starts (and after --setup-cmd) before
 #                         sampling, so startup work stays out of the numbers. Default: 15, long
 #                         enough at idle frame rates (20-60 fps) for the 200-sample percentile
-#                         window to hold no startup or tab-switch frames when sampling begins.
+#                         window to hold no startup or tab-switch frames when sampling begins; 45
+#                         when --label contains "minimized" (or "minimised"), since a minimized
+#                         window presents only ~5 fps and needs that long to refill the window.
 #   --duration <seconds>  Sample for this long. Default: 30.
 #   --label <name>        Scenario name printed with the results (e.g. overview, processes).
 #                         Default: idle.
@@ -66,7 +74,7 @@ info() { echo "  $*"; }
 
 PRESET="profile"
 SKIP_BUILD=0
-WARMUP_SECONDS=15
+WARMUP_SECONDS="" # default chosen from --label below
 DURATION_SECONDS=30
 LABEL="idle"
 SETUP_CMD=""
@@ -84,6 +92,14 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [[ -z "${WARMUP_SECONDS}" ]]; then
+    # ~5 fps minimized (MINIMIZED_FRAME_SLEEP_MS = 200) vs 20+ fps idle: 200 samples take ~40 s.
+    if [[ "${LABEL,,}" =~ minimi[sz]ed ]]; then
+        WARMUP_SECONDS=45
+    else
+        WARMUP_SECONDS=15
+    fi
+fi
 [[ "${WARMUP_SECONDS}" =~ ^[0-9]+$ ]]   || die "--warmup must be a whole number of seconds"
 [[ "${DURATION_SECONDS}" =~ ^[0-9]+$ ]] || die "--duration must be a whole number of seconds"
 # Base 10: Bash reads a leading zero as octal in -gt and $(( )), so "08" would abort.
@@ -190,8 +206,9 @@ if [[ "${WARMUP_SECONDS}" -gt 0 ]]; then
 fi
 check_alive "during the warm-up"
 
-# Only ResizePerf summaries logged after this line count toward the sample window.
+# ResizePerf summaries logged after this line, while CPU is sampled, supply the frame figures.
 LOG_START_LINE="$(wc -l < "${APP_LOG}")"
+CPU_START="$(date +%s.%3N)"
 CLK_TCK="$(getconf CLK_TCK)"
 
 # Prints "utime+stime ticks" of a /proc stat file; the comm field may hold spaces or ')' so the
@@ -248,6 +265,7 @@ fi
 
 # ...and only up to here: the shutdown summary covers the SIGTERM handling, not idle.
 LOG_END_LINE="$(wc -l < "${APP_LOG}")"
+CPU_END="$(date +%s.%3N)"
 
 echo "Closing TaskSmack..."
 stop_app
@@ -275,7 +293,7 @@ if [[ "${SAMPLER}" = "pidstat" ]]; then
     grep -q '^TOTAL ' "${CPU_RAW}" || die "Could not read pidstat's Average block."
 fi
 
-# ResizePerf summaries in the sample window → fps, frame p95/p99/max, loop p95/p99.
+# ResizePerf summaries logged while sampling → fps, frame p95/p99/max, loop p95/p99.
 FRAME_STATS="$(sed -n "$((LOG_START_LINE + 1)),${LOG_END_LINE}p" "${APP_LOG}" | awk '
     /ResizePerf\[/ {
         lines++
@@ -300,8 +318,36 @@ FRAME_STATS="$(sed -n "$((LOG_START_LINE + 1)),${LOG_END_LINE}p" "${APP_LOG}" | 
 ')"
 read -r SUMMARIES FPS FRAME_P95 FRAME_P99 FRAME_MAX LOOP_P95 LOOP_P99 <<<"${FRAME_STATS}"
 if [[ "${SUMMARIES}" -eq 0 ]]; then
-    echo "WARNING: no ResizePerf summaries were logged during the sample window (they are logged every 5 s at idle); frame figures are 0." >&2
+    echo "WARNING: no ResizePerf summaries were logged while sampling (they are logged every 5 s at idle); frame figures are 0." >&2
 fi
+
+# Epoch seconds of a spdlog line ("[2026-10-06 15:13:32.952] ..."); empty if it has none.
+log_line_epoch() {
+    local stamp
+    stamp="$(sed -n 's/^\[\([0-9-]* [0-9:.]*\)\].*/\1/p' <<<"$1")"
+    [[ -n "${stamp}" ]] && date -d "${stamp}" +%s.%3N
+}
+# The span the summaries cover: each periodic summary describes the time since the previous one
+# (or since tracing started with the main loop), so the span starts at the last summary logged
+# before sampling and ends at the last summary logged during it.
+TRACE_START=""
+TRACE_END=""
+if [[ "${SUMMARIES}" -gt 0 ]]; then
+    PREVIOUS_SUMMARY="$(head -n "${LOG_START_LINE}" "${APP_LOG}" | grep 'ResizePerf\[' | tail -n 1 || true)"
+    [[ -n "${PREVIOUS_SUMMARY}" ]] || PREVIOUS_SUMMARY="$(grep -m 1 "${MAIN_LOOP_MARKER}" "${APP_LOG}" || true)"
+    TRACE_START="$(log_line_epoch "${PREVIOUS_SUMMARY}" || true)"
+    TRACE_END="$(log_line_epoch "$(sed -n "$((LOG_START_LINE + 1)),${LOG_END_LINE}p" "${APP_LOG}" | grep 'ResizePerf\[' | tail -n 1)" || true)"
+fi
+# "HH:MM:SS.mmm → HH:MM:SS.mmm (N.N s)" for two epoch times, or "n/a".
+describe_span() {
+    if [[ -z "$1" || -z "$2" ]]; then
+        echo "n/a"
+        return
+    fi
+    printf '%s → %s (%.1f s)' "$(date -d "@$1" +%H:%M:%S.%3N)" "$(date -d "@$2" +%H:%M:%S.%3N)" \
+        "$(awk -v a="$1" -v b="$2" 'BEGIN { print b - a }')"
+}
+TRACE_SPAN_SECONDS="$(awk -v a="${TRACE_START:-0}" -v b="${TRACE_END:-0}" 'BEGIN { printf "%.1f", (a > 0 && b > a) ? b - a : 0 }')"
 
 TOTAL_CPU="$(awk '/^TOTAL / { print $2 }' "${CPU_RAW}")"
 
@@ -322,5 +368,10 @@ printf '  %-28s %10s\n' "frame p95 / p99 / max (ms)" "${FRAME_P95} / ${FRAME_P99
 printf '  %-28s %10s\n' "loop p95 / p99 (ms)" "${LOOP_P95} / ${LOOP_P99}"
 printf '  %-28s %10s\n' "ResizePerf summaries" "${SUMMARIES}"
 echo
+echo "  CPU sample:             $(describe_span "${CPU_START}" "${CPU_END}")"
+echo "  Frame figures' span:    $(describe_span "${TRACE_START}" "${TRACE_END}")"
+echo "  (The app logs summaries on its own 5 s schedule, so the two spans differ by up to one"
+echo "   summary interval at each end.)"
+echo
 # One machine-readable line per run, for collecting a scenario matrix.
-echo "RESULT label=${LABEL} preset=${PRESET} duration=${DURATION_SECONDS} sampler=${SAMPLER} totalCpu=${TOTAL_CPU} fps=${FPS} frameP95=${FRAME_P95} frameP99=${FRAME_P99} frameMax=${FRAME_MAX} loopP95=${LOOP_P95} loopP99=${LOOP_P99}"
+echo "RESULT label=${LABEL} preset=${PRESET} duration=${DURATION_SECONDS} sampler=${SAMPLER} totalCpu=${TOTAL_CPU} fps=${FPS} frameP95=${FRAME_P95} frameP99=${FRAME_P99} frameMax=${FRAME_MAX} loopP95=${LOOP_P95} loopP99=${LOOP_P99} cpuStart=${CPU_START} cpuEnd=${CPU_END} traceStart=${TRACE_START:-0} traceEnd=${TRACE_END:-0} traceSpan=${TRACE_SPAN_SECONDS}"

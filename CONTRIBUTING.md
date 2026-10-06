@@ -1304,7 +1304,7 @@ with SIGTERM (a non-zero exit or a SIGKILL fails the run), and prints a table pl
 machine-readable `RESULT` line.
 
 ```bash
-# Default: profile preset (built first), 15 s warm-up, 30 s sample
+# Default: profile preset (built first), 15 s warm-up (45 s for a "minimized" label), 30 s sample
 ./tools/measure-idle.sh --label overview
 
 # Existing debug build; switch tabs before the warm-up with any command (it gets TASKSMACK_PID).
@@ -1333,10 +1333,19 @@ Names come from `Platform/ThreadName.h`; give any new worker thread one there (1
 | Frame p95/p99/max | update+render+post+swap per presented frame (the 16.6 ms budget figure) | `ResizePerf[...]` `frame` |
 | Loop p95/p99 | Deliver-to-deliver interval, frame end to frame end, skipped renders included | `ResizePerf[...]` `loop` |
 
-The p95/p99 figures are the worst `ResizePerf` summary logged inside the sample window (each is
-nearest-rank over a rolling window of up to 200 samples); max is the largest per-interval max in it.
-The default 15 s warm-up keeps startup and tab-switch frames out of that rolling window at idle
-frame rates.
+The frame figures come from the `ResizePerf` summaries TaskSmack logs on its own schedule (every 5 s
+at idle), so they cannot cover exactly the CPU sample. The script uses the summaries logged while it
+sampled CPU and prints the span they actually cover (from the summary before the first one to the
+last one) next to the CPU sample's start and end. The `RESULT` line carries both as `cpuStart`/`cpuEnd`
+and `traceStart`/`traceEnd`/`traceSpan`. The two spans differ by up to one summary interval at each
+end. The p95/p99 figures are the worst of those summaries (each is nearest-rank over a rolling window
+of up to 200 samples); max is the largest per-interval max among them.
+
+The warm-up keeps startup and tab-switch frames out of that 200-sample rolling window before
+sampling starts. The default is 15 s, enough at idle frame rates (20–60 fps). A minimized window
+presents only about 5 fps (`MINIMIZED_FRAME_SLEEP_MS = 200`), so it needs about 45 s to refill the
+window; with fewer than 100 samples, nearest-rank p99 also just equals the max. The script uses 45 s
+by default when `--label` contains `minimized`, and `--warmup` overrides either default.
 
 **Scenario matrix:** run each for 30 s at the default 1 s refresh, window left alone, after a
 warm-up on that tab:
@@ -1346,7 +1355,7 @@ warm-up on that tab:
 | Overview | System charts: CPU, memory, battery, threads/faults |
 | Processes | The process table and process enumeration |
 | CPU Cores | One chart per logical CPU |
-| Minimized (optional) | The hidden-window pacing path; should be close to the sampler threads alone |
+| Minimized (optional) | The hidden-window pacing path; should be close to the sampler threads alone. Use `--label minimized` (45 s warm-up) and minimize the window in `--setup-cmd` |
 
 Compare like with like: the same machine, preset, window size and refresh interval, and the same
 scenario. Run each scenario more than once; one run on a shared desktop is noisy.
