@@ -17,6 +17,7 @@
 #include <span>
 #include <string>
 #include <tuple>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -1761,39 +1762,36 @@ float tenPerCodePoint(std::string_view text)
 }
 } // namespace
 
-// #1301: the value strip is the chart's only key, so it shows each series' marker shape, recorded by
-// the chart on its previous frame.
-TEST(StripMarkersTest, ALayoutsMarkersAreFoundByLabel)
+// #1301: the value strip is the chart's only key, so each swatch shows its series' marker shape,
+// looked up by label among the markers the chart recorded this frame.
+TEST(StripMarkersTest, ASeriesMarkerIsFoundByLabel)
 {
-    constexpr ImGuiID LAYOUT = 0x5EED0001U;
-    Detail::rememberStripMarkers(LAYOUT,
-                                 {Detail::SeriesMarker{.label = "User", .marker = ImPlotMarker_Circle},
-                                  Detail::SeriesMarker{.label = "System", .marker = ImPlotMarker_Square}});
-    EXPECT_EQ(Detail::stripMarkerFor(LAYOUT, "User"), ImPlotMarker_Circle);
-    EXPECT_EQ(Detail::stripMarkerFor(LAYOUT, "System"), ImPlotMarker_Square);
-    // A series without a marker (a chart's primary), or one the layout did not draw.
-    EXPECT_EQ(Detail::stripMarkerFor(LAYOUT, "Total"), ImPlotMarker_None);
+    const std::array markers{Detail::SeriesMarker{.label = "User", .marker = ImPlotMarker_Circle},
+                             Detail::SeriesMarker{.label = "System", .marker = ImPlotMarker_Square}};
+    EXPECT_EQ(Detail::markerForLabel(markers, "User"), ImPlotMarker_Circle);
+    EXPECT_EQ(Detail::markerForLabel(markers, "System"), ImPlotMarker_Square);
+    // A series without a marker (the chart's primary), or one the chart did not draw.
+    EXPECT_EQ(Detail::markerForLabel(markers, "Total"), ImPlotMarker_None);
+    EXPECT_EQ(Detail::markerForLabel({}, "User"), ImPlotMarker_None);
 }
 
-TEST(StripMarkersTest, LayoutsAreKeptApartAndAnUnknownLayoutHasNone)
+TEST(StripSlotsTest, StaleLayoutsAreDroppedOnlyOnceThereAreMany)
 {
-    constexpr ImGuiID FIRST = 0x5EED0002U;
-    constexpr ImGuiID SECOND = 0x5EED0003U;
-    Detail::rememberStripMarkers(FIRST, {Detail::SeriesMarker{.label = "Read", .marker = ImPlotMarker_Circle}});
-    Detail::rememberStripMarkers(SECOND, {Detail::SeriesMarker{.label = "Read", .marker = ImPlotMarker_Diamond}});
-    EXPECT_EQ(Detail::stripMarkerFor(FIRST, "Read"), ImPlotMarker_Circle);
-    EXPECT_EQ(Detail::stripMarkerFor(SECOND, "Read"), ImPlotMarker_Diamond);
-    EXPECT_EQ(Detail::stripMarkerFor(0x5EED00FFU, "Read"), ImPlotMarker_None);
-    EXPECT_EQ(Detail::stripMarkerFor(0, "Read"), ImPlotMarker_None);
-}
-
-TEST(StripMarkersTest, ALaterFrameReplacesALayoutsMarkers)
-{
-    constexpr ImGuiID LAYOUT = 0x5EED0004U;
-    Detail::rememberStripMarkers(LAYOUT, {Detail::SeriesMarker{.label = "Sent", .marker = ImPlotMarker_Circle}});
-    Detail::rememberStripMarkers(LAYOUT, {Detail::SeriesMarker{.label = "Received", .marker = ImPlotMarker_Square}});
-    EXPECT_EQ(Detail::stripMarkerFor(LAYOUT, "Sent"), ImPlotMarker_None);
-    EXPECT_EQ(Detail::stripMarkerFor(LAYOUT, "Received"), ImPlotMarker_Square);
+    std::unordered_map<ImGuiID, Detail::StripSlots> byLayout;
+    for (ImGuiID id = 1; id <= Detail::STRIP_SLOTS_PRUNE_ABOVE; ++id)
+    {
+        byLayout[id].lastUsed = 0.0;
+    }
+    // At the limit nothing is dropped, however old.
+    Detail::pruneStaleStripSlots(byLayout, 1000.0);
+    EXPECT_EQ(byLayout.size(), Detail::STRIP_SLOTS_PRUNE_ABOVE);
+    // Past it, layouts unused for longer than the stale time go; recently used ones stay.
+    byLayout[1000].lastUsed = 1000.0;
+    byLayout[1001].lastUsed = 1000.0 - Detail::STRIP_SLOTS_STALE_SECONDS + 1.0;
+    Detail::pruneStaleStripSlots(byLayout, 1000.0);
+    EXPECT_EQ(byLayout.size(), 2U);
+    EXPECT_TRUE(byLayout.contains(1000));
+    EXPECT_TRUE(byLayout.contains(1001));
 }
 
 // #1301: a right-aligned strip moved every time a value's text changed width.

@@ -279,11 +279,13 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     // show the selected interface when there is one, else the totals. An adapter's name is the OS's
     // description, of any length, so it is fitted to one row of the value strip for the labels
     // (fitSeriesName(); both labels cut at the longer suffix's budget, so they name it alike); the
-    // picker and the plot title keep it whole.
-    const std::string ifaceLabelName =
-        UI::Widgets::fitSeriesName(ifaceDisplayName,
-                                   UI::Widgets::seriesNameBudget(" Received"),
-                                   [](std::string_view text) { return ImGui::CalcTextSize(text.data(), text.data() + text.size()).x; });
+    // picker and the plot title keep it whole. The strip is as wide as the chart, so the Now column of
+    // renderHistoryWithNowBars() below comes off the budget.
+    constexpr std::size_t NET_BAR_COUNT = 2; // Sent and Received, as NETWORK_NOW_BAR_COLUMNS below
+    const std::string ifaceLabelName = UI::Widgets::fitSeriesName(
+        ifaceDisplayName,
+        UI::Widgets::seriesNameBudget(" Received", UI::Widgets::nowBarsReservedWidth(NET_BAR_COUNT, NET_BAR_COUNT, false)),
+        [](std::string_view text) { return ImGui::CalcTextSize(text.data(), text.data() + text.size()).x; });
     const std::string ifaceSentLabel = std::format("{} Sent", ifaceLabelName);
     const std::string ifaceRecvLabel = std::format("{} Received", ifaceLabelName);
     const std::string sentBarLabel = showingInterface ? ifaceSentLabel : std::string(TOTAL_SENT_LABEL);

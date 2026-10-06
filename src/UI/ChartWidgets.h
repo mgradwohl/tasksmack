@@ -1257,6 +1257,11 @@ forEachMarkerSample(const TX* xData, const TY* yData, int count, double anchorSe
     }
 }
 
+/// One marker shape of @p radius at @p centre in @p colour: filled, or stroked for the line-only Cross
+/// and Plus. Draws a key's shape on a value-strip swatch,
+/// matching the series' markers on the data. Defined in ChartLegend.cpp.
+void drawMarkerGlyph(ImDrawList& drawList, ImPlotMarker marker, ImVec2 centre, float radius, ImU32 colour);
+
 namespace Detail
 {
 /// A series' marker shape under its plot label, recorded by plotSeriesMarkers() so the value strip,
@@ -1275,23 +1280,50 @@ struct SeriesMarker
     return markers;
 }
 
-/// Each chart layout's series markers from its last frame, keyed by the ImGui ID of the layout's id
-/// (renderHistoryWithNowBars()'s tableId). The value strip is drawn above its chart, before the chart
-/// records this frame's markers, so it reads the previous frame's. UI thread only.
-[[nodiscard]] inline std::unordered_map<ImGuiID, std::vector<SeriesMarker>>& stripMarkersByLayout()
+/// The marker recorded for the series labelled @p label, or none.
+[[nodiscard]] inline ImPlotMarker markerForLabel(std::span<const SeriesMarker> markers, std::string_view label) noexcept
 {
-    static std::unordered_map<ImGuiID, std::vector<SeriesMarker>> markers;
-    return markers;
+    const auto it = std::ranges::find_if(markers, [label](const SeriesMarker& m) { return m.label == label; });
+    return it == markers.end() ? ImPlotMarker_None : it->marker;
 }
 
-/// Keeps @p markers as layout @p layoutKey's for the next frame's strip; copies only when they changed.
-inline void rememberStripMarkers(ImGuiID layoutKey, const std::vector<SeriesMarker>& markers)
+/// A value-strip swatch still waiting for its series' marker shape: the strip is drawn above its
+/// chart, before the chart has recorded this frame's markers, so the shape is cut into the swatch once
+/// it has (drawPendingStripMarkers()). Using this frame's markers, not the last frame's, the key has
+/// its shapes on a chart's first frame too. The label views the bar's or extra's label, which outlive
+/// the frame's layout call.
+struct PendingStripMarker
 {
-    auto& stored = stripMarkersByLayout()[layoutKey];
-    if (stored != markers)
+    std::string_view label;
+    ImVec2 centre;
+    float radius = 0.0F;
+};
+
+/// The swatches of the strip drawn last, waiting for their chart's markers. UI thread only.
+[[nodiscard]] inline std::vector<PendingStripMarker>& pendingStripMarkers()
+{
+    static std::vector<PendingStripMarker> pending;
+    return pending;
+}
+
+/// Cuts each pending swatch's series marker (from @p markers, the chart just drawn) into its swatch,
+/// then forgets them. Called after the chart, outside its layout table, so it draws in the window.
+inline void drawPendingStripMarkers(std::span<const SeriesMarker> markers)
+{
+    auto& pending = pendingStripMarkers();
+    if (!pending.empty())
     {
-        stored = markers;
+        ImDrawList& drawList = *ImGui::GetWindowDrawList();
+        const ImU32 cutOut = ImGui::GetColorU32(ImGuiCol_WindowBg);
+        for (const PendingStripMarker& swatch : pending)
+        {
+            if (const ImPlotMarker marker = markerForLabel(markers, swatch.label); marker != ImPlotMarker_None)
+            {
+                drawMarkerGlyph(drawList, marker, swatch.centre, swatch.radius, cutOut);
+            }
+        }
     }
+    pending.clear();
 }
 
 /// How long a value-strip entry's value must stay narrower than its slot before the slot shrinks.
@@ -1326,25 +1358,34 @@ struct StripSlot
     return slot.width;
 }
 
-/// Each chart layout's value-strip slots, keyed like stripMarkersByLayout(). UI thread only.
-[[nodiscard]] inline std::unordered_map<ImGuiID, std::vector<StripSlot>>& stripSlotsByLayout()
+/// A chart layout's value-strip slots, and when they were last used.
+struct StripSlots
 {
-    static std::unordered_map<ImGuiID, std::vector<StripSlot>> slots;
-    return slots;
+    std::vector<StripSlot> slots;
+    double lastUsed = 0.0;
+};
+
+/// Strip slots unused for this long are dropped once there are more than STRIP_SLOTS_PRUNE_ABOVE layouts:
+/// layout ids include per-disk device names, so devices that come and go would otherwise leave slots behind.
+inline constexpr double STRIP_SLOTS_STALE_SECONDS = 30.0;
+inline constexpr std::size_t STRIP_SLOTS_PRUNE_ABOVE = 64;
+
+/// Drops the layouts in @p byLayout not used since @p now - STRIP_SLOTS_STALE_SECONDS, when there are
+/// more than STRIP_SLOTS_PRUNE_ABOVE of them.
+inline void pruneStaleStripSlots(std::unordered_map<ImGuiID, StripSlots>& byLayout, double now)
+{
+    if (byLayout.size() > STRIP_SLOTS_PRUNE_ABOVE)
+    {
+        std::erase_if(byLayout, [now](const auto& entry) { return entry.second.lastUsed < now - STRIP_SLOTS_STALE_SECONDS; });
+    }
 }
 
-/// The marker of the series labelled @p label in layout @p layoutKey, from its last frame; none if it
-/// has no marker or the layout has not drawn yet.
-[[nodiscard]] inline ImPlotMarker stripMarkerFor(ImGuiID layoutKey, std::string_view label)
+/// Each chart layout's value-strip slots, keyed by the ImGui ID of the layout's id (renderHistoryWithNowBars()'s
+/// tableId). UI thread only.
+[[nodiscard]] inline std::unordered_map<ImGuiID, StripSlots>& stripSlotsByLayout()
 {
-    const auto& all = stripMarkersByLayout();
-    const auto layout = all.find(layoutKey);
-    if (layoutKey == 0 || layout == all.end())
-    {
-        return ImPlotMarker_None;
-    }
-    const auto it = std::ranges::find_if(layout->second, [label](const SeriesMarker& m) { return m.label == label; });
-    return it == layout->second.end() ? ImPlotMarker_None : it->marker;
+    static std::unordered_map<ImGuiID, StripSlots> slots;
+    return slots;
 }
 } // namespace Detail
 
@@ -1871,15 +1912,11 @@ inline auto hoveredIndexFromPlotX(std::span<const double> timeData, double mouse
     return (distUpper < distLower) ? upperIdx : lowerIdx;
 }
 
-/// One marker shape of @p radius at @p centre in @p colour: filled, or stroked for the line-only Cross
-/// and Plus. Draws a key's shape on a value-strip swatch,
-/// matching the series' markers on the data. Defined in ChartLegend.cpp.
-void drawMarkerGlyph(ImDrawList& drawList, ImPlotMarker marker, ImVec2 centre, float radius, ImU32 colour);
-
-/// The pixel width left for the name in a value-strip entry "<name><suffix>: <value>" on one row of
-/// the available width: that width less the entry's swatch, the suffix and room for a rate value, so
-/// an entry built from an uncapped name fits one row of the strip. Defined in ChartLegend.cpp.
-[[nodiscard]] float seriesNameBudget(std::string_view suffix);
+/// The pixel width left for the name in a value-strip entry "<name><suffix>: <value>" on one row of a
+/// strip as wide as its chart -- the available width less @p reservedWidth, what the layout takes beside
+/// the chart (nowBarsReservedWidth()) -- less the entry's swatch, the suffix and room for a rate value,
+/// so an entry built from an uncapped name fits one row. Defined in ChartLegend.cpp.
+[[nodiscard]] float seriesNameBudget(std::string_view suffix, float reservedWidth = 0.0F);
 
 /// @p name, cut short with an ellipsis at a UTF-8 code point boundary if @p measure (the pixel width
 /// of a string) says it is wider than @p budget: the longest prefix whose "<prefix>…" fits, or just
@@ -2486,7 +2523,8 @@ inline void drawValueStripEntry(std::string_view head,
                                 float rowRight,
                                 const ImVec4& muted,
                                 ImPlotMarker marker = ImPlotMarker_None,
-                                float slotWidth = 0.0F)
+                                float slotWidth = 0.0F,
+                                std::string_view seriesLabel = {})
 {
     const ImGuiStyle& style = ImGui::GetStyle();
     const float lineHeight = ImGui::GetTextLineHeight();
@@ -2506,15 +2544,18 @@ inline void drawValueStripEntry(std::string_view head,
     const ImVec2 at = ImGui::GetCursorScreenPos();
     ImGui::GetWindowDrawList()->AddRectFilled(
         ImVec2(at.x, at.y + inset), ImVec2(at.x + side, at.y + inset + side), ImGui::ColorConvertFloat4ToU32(color));
+    // The series' marker cut out of the swatch: the shape its line carries on the chart. One the strip
+    // does not know yet is cut in once the chart has drawn (drawPendingStripMarkers()).
+    const float half = side * 0.5F;
+    const ImVec2 swatchCentre(at.x + half, at.y + inset + half);
+    const float glyphRadius = std::max(1.0F, half * 0.6F);
     if (marker != ImPlotMarker_None)
     {
-        // The series' marker cut out of the swatch: the shape its line carries on the chart.
-        const float half = side * 0.5F;
-        drawMarkerGlyph(*ImGui::GetWindowDrawList(),
-                        marker,
-                        ImVec2(at.x + half, at.y + inset + half),
-                        std::max(1.0F, half * 0.6F),
-                        ImGui::GetColorU32(ImGuiCol_WindowBg));
+        drawMarkerGlyph(*ImGui::GetWindowDrawList(), marker, swatchCentre, glyphRadius, ImGui::GetColorU32(ImGuiCol_WindowBg));
+    }
+    else if (!seriesLabel.empty())
+    {
+        pendingStripMarkers().push_back({.label = seriesLabel, .centre = swatchCentre, .radius = glyphRadius});
     }
     ImGui::Dummy(ImVec2(side, lineHeight));
     if (!head.empty())
@@ -2549,7 +2590,8 @@ enum class ValueStripLayout : std::uint8_t
 /// tooltip shows -- its tooltipText when it has one (richer, e.g. bytes beside a percent), otherwise
 /// the tooltip's own fallback "label: valueText" -- with the leading "label:" muted; then any `extras`,
 /// series the chart draws without a bar. A bar's marker is its NowBar::marker, else the one its chart
-/// recorded for its label (Detail::stripMarkerFor(), keyed by @p layoutId, the chart layout's id).
+/// records for its label this frame, cut in once the chart has drawn (Detail::drawPendingStripMarkers();
+/// renderHistoryWithNowBars() does it after the chart). @p layoutId keys the entries' slots.
 ///
 /// With @p chartReservedRight (what the layout takes beside its chart, nowBarsReservedWidth()), a Wrap
 /// strip is placed like a heading's trailing status: on the line of the item just drawn -- the chart's
@@ -2569,11 +2611,13 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
         ImVec4 color;
         ImPlotMarker marker = ImPlotMarker_None;
         float slotWidth = 0.0F;
+        std::string_view seriesLabel;
     };
     static std::vector<Entry> entries; // UI thread only; reused
     entries.clear();
+    Detail::pendingStripMarkers().clear(); // a strip not followed by its chart leaves none for another
     const bool wrap = layout == ValueStripLayout::Wrap;
-    const ImGuiID markersKey = (layoutId != nullptr) ? ImGui::GetID(layoutId) : 0;
+    const ImGuiID slotsKey = (layoutId != nullptr) ? ImGui::GetID(layoutId) : 0;
     for (const NowBar& bar : bars)
     {
         std::string_view head = bar.label;
@@ -2590,13 +2634,11 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
                 tail.remove_prefix(1);
             }
         }
-        const ImPlotMarker marker = (bar.marker != ImPlotMarker_None) ? bar.marker : Detail::stripMarkerFor(markersKey, bar.label);
-        entries.push_back({.head = head, .tail = tail, .color = bar.color, .marker = marker});
+        entries.push_back({.head = head, .tail = tail, .color = bar.color, .marker = bar.marker, .seriesLabel = bar.label});
     }
     for (const ValueStripEntry& entry : extras)
     {
-        entries.push_back(
-            {.head = entry.label, .tail = entry.value, .color = entry.color, .marker = Detail::stripMarkerFor(markersKey, entry.label)});
+        entries.push_back({.head = entry.label, .tail = entry.value, .color = entry.color, .seriesLabel = entry.label});
     }
     if (entries.empty())
     {
@@ -2605,16 +2647,20 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
     // Each entry's slot: its width, held for a while when its value narrows (settleStripSlot()), so
     // the strip -- right-aligned, where every entry moves with the ones after it -- stays still.
     // A strip with no layout to remember slots by uses each entry's own width.
+    const double now = ImGui::GetTime();
     std::vector<Detail::StripSlot>* slots = nullptr;
-    if (markersKey != 0)
+    if (slotsKey != 0)
     {
-        slots = &Detail::stripSlotsByLayout()[markersKey];
+        auto& byLayout = Detail::stripSlotsByLayout();
+        Detail::pruneStaleStripSlots(byLayout, now);
+        Detail::StripSlots& layoutSlots = byLayout[slotsKey];
+        layoutSlots.lastUsed = now;
+        slots = &layoutSlots.slots;
         if (slots->size() != entries.size())
         {
             slots->assign(entries.size(), Detail::StripSlot{});
         }
     }
-    const double now = ImGui::GetTime();
     for (std::size_t i = 0; i < entries.size(); ++i)
     {
         const float natural = Detail::valueStripEntryWidth(entries[i].head, entries[i].tail);
@@ -2657,7 +2703,8 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
     bool first = true;
     for (const Entry& entry : entries)
     {
-        Detail::drawValueStripEntry(entry.head, entry.tail, entry.color, first, rowWraps, rowRight, muted, entry.marker, entry.slotWidth);
+        Detail::drawValueStripEntry(
+            entry.head, entry.tail, entry.color, first, rowWraps, rowRight, muted, entry.marker, entry.slotWidth, entry.seriesLabel);
         first = false;
     }
 }
@@ -2769,8 +2816,6 @@ inline void renderHistoryWithNowBars(const char* tableId,
         renderNowBarValueStrip(
             bars, stripExtras, ValueStripLayout::Wrap, tableId, nowBarsReservedWidth(bars.size(), minBarColumns, compactSpacing));
     }
-    // The strip above reads the chart's markers from its previous frame; this frame's are kept below.
-    const ImGuiID layoutKey = ImGui::GetID(tableId);
 
     if (barsOnly)
     {
@@ -2829,7 +2874,6 @@ inline void renderHistoryWithNowBars(const char* tableId,
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
         plotFn();
-        Detail::rememberStripMarkers(layoutKey, Detail::seriesMarkers());
 
         ImGui::TableNextColumn();
 
@@ -2873,8 +2917,10 @@ inline void renderHistoryWithNowBars(const char* tableId,
     else
     {
         plotFn();
-        Detail::rememberStripMarkers(layoutKey, Detail::seriesMarkers());
     }
+    // The strip above the chart -- drawn here, or by the caller just before -- gets the shapes of the
+    // markers the chart has just recorded, outside the layout table so they draw in the window.
+    Detail::drawPendingStripMarkers(Detail::seriesMarkers());
 
     if (pushedVars > 0)
     {
