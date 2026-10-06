@@ -47,6 +47,9 @@ if(WIN32)
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-profile-etw-resize.ps1)
         add_test(NAME EtwCaptureScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-profile-etw.ps1)
+        # Runs real stub apps through the app-capture lifecycle (#1186), about 30 s; keep it clear
+        # of the 60 s --timeout the CI ctest steps pass under parallel load.
+        set_tests_properties(EtwCaptureScript PROPERTIES TIMEOUT 180)
         add_test(NAME EtwAnalysisScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-analyze-etw.ps1)
     endif()
