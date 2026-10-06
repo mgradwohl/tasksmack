@@ -1,6 +1,7 @@
 #include "ProcessDetailsPanel.h"
 
 #include "App/Panel.h"
+#include "App/Panels/ProcessStateColor.h"
 #include "App/ShellMetrics.h"
 #include "App/TabLabel.h"
 #include "Core/ApplicationEvents.h"
@@ -736,35 +737,6 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         ImGui::PopStyleColor();
     };
 
-    const auto statusColorFor = [&theme](std::string_view state) -> ImVec4
-    {
-        if (state == "Running")
-        {
-            return theme.scheme().statusRunning;
-        }
-        if (state == "Sleeping")
-        {
-            return theme.scheme().statusSleeping;
-        }
-        if (state == "Disk Sleep")
-        {
-            return theme.scheme().statusDiskSleep;
-        }
-        if (state == "Zombie")
-        {
-            return theme.scheme().statusZombie;
-        }
-        if (state == "Stopped" || state == "Tracing")
-        {
-            return theme.scheme().statusStopped;
-        }
-        if (state == "Idle")
-        {
-            return theme.scheme().statusIdle;
-        }
-        return theme.scheme().textInfo;
-    };
-
     // One label/value row of the two tables. Views: the values are the snapshot's own strings or the
     // text built from it below, both alive for the frame, so building the rows allocates nothing.
     struct InfoRow
@@ -871,7 +843,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     // Build runtime rows (conditionally include Type if available)
     InfoRows runtimeRows;
     // Same name as the table's State column (#1203)
-    runtimeRows.add({.label = "State", .value = proc.displayState, .color = statusColorFor(proc.displayState)});
+    runtimeRows.add({.label = "State", .value = proc.displayState, .color = processStateColor(proc.displayState, theme.scheme())});
     runtimeRows.add({.label = "Threads", .value = text.threads, .color = theme.scheme().textPrimary});
     runtimeRows.add({.label = handleLabel, .value = text.handles, .color = theme.scheme().textPrimary});
     runtimeRows.add({.label = "CPU Time", .value = text.cpuTime, .color = theme.scheme().textPrimary});

@@ -16,6 +16,7 @@
 #include "Domain/StorageSnapshot.h"
 #include "Domain/SystemModel.h"
 #include "Domain/SystemSnapshot.h"
+#include "Platform/ProcessTypes.h"
 #include "UI/ChartWidgets.h"
 #include "UI/FillPlotLayout.h"
 #include "UI/Theme.h"
@@ -123,6 +124,8 @@ class SystemMetricsPanel : public Panel
     std::vector<double> m_ProcessPageFaultsHistory;
     std::vector<double> m_ProcessThreadCountHistory;
     std::vector<double> m_ProcessHandleCountHistory;
+    // The process probe's capabilities, copied with the process histories (#1254).
+    Platform::ProcessCapabilities m_ProcessCapabilities;
 
     double m_MaxHistorySeconds = Domain::Numeric::toDouble(Domain::Sampling::HISTORY_SECONDS_DEFAULT);
     double m_HistoryScrollSeconds = 0.0;
