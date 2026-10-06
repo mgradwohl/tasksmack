@@ -1120,7 +1120,13 @@ SocketTrafficReading LinuxProcessProbe::readSocketTraffic() const
         static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(sampledAt.time_since_epoch()).count());
     if (sockets.empty())
     {
-        return reading; // a complete reading with no sockets: every connection closed
+        // A complete reading with no sockets: every connection closed, so none is unowned any more.
+        // Forget them: a later connection reusing one of their inodes would otherwise inherit its
+        // first-seen time, look older than the map, and not trigger the early rebuild (#1327 review).
+        // A failed reading (returned above) leaves them alone: its sockets are unknown, not closed.
+        const std::scoped_lock lock{m_UnownedSocketsMutex};
+        m_UnownedSocketsFirstSeen.clear();
+        return reading;
     }
 
     // Attribute each socket to the process holding it (socket inode -> PID, from /proc/[pid]/fd).

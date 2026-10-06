@@ -1249,6 +1249,65 @@ TEST(LinuxProcessProbeTest, AConnectionAttributedOnACachedSocketQueryKeepsItsHel
     accumulator.apply(probe.readSocketTraffic(), processes);
     EXPECT_EQ(processes[0].netReceivedBytes, 500U) << "the bytes 12 moved while unowned";
 }
+
+TEST(LinuxProcessProbeTest, ACompleteEmptyReadingForgetsUnownedSocketsAndAFailedOneDoesNot)
+{
+    // #1327 review: the unowned sockets' first-seen times were replaced only by a reading with
+    // sockets in it, so an empty one left them behind. A later connection reusing one of those
+    // inodes then looked older than the map and never triggered the early rebuild.
+    using Platform::TestSupport::FakeSocket;
+    using Platform::TestSupport::ScriptedNetlinkTransport;
+    const auto ownerOfReused = [](bool failMiddleReading)
+    {
+        ScopedTempDir proc(failMiddleReading ? "ts_test_proc_net_unowned_failed" : "ts_test_proc_net_unowned_empty");
+        writeFile(proc.path / "4242" / "stat",
+                  "4242 (app) S 1 4242 4242 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+                  "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+        writeFile(proc.path / "stat", "cpu  100 0 100 800 0 0 0 0 0 0\n");
+        const auto fdDir = proc.path / "4242" / "fd";
+        std::filesystem::create_directories(fdDir);
+        std::filesystem::create_symlink("socket:[11]", fdDir / "3");
+
+        std::vector<FakeSocket> current{{.inode = 11, .bytesReceived = 10}, {.inode = 99, .bytesReceived = 7}};
+        bool failNext = false;
+        auto transport = std::make_unique<ScriptedNetlinkTransport>();
+        auto* script = transport.get();
+        auto stats = std::make_shared<Platform::NetlinkSocketStats>(std::move(transport), std::chrono::milliseconds{0});
+        script->onRequest = [&](const ScriptedNetlinkTransport::Request& request) -> ScriptedNetlinkTransport::Reply
+        {
+            if (request.family == AF_INET && failNext)
+            {
+                failNext = false;
+                return {Platform::TestSupport::errorDatagram(request.sequence, ScriptedNetlinkTransport::PORT_ID, -ENOBUFS)};
+            }
+            return Platform::TestSupport::completeDump(request, request.family == AF_INET ? current : std::vector<FakeSocket>{});
+        };
+
+        LinuxProcessProbe probe(proc.path);
+        probe.setSocketStatsForTesting(stats);
+        probe.setInodeMapEarlyRebuildIntervalForTesting(std::chrono::milliseconds{0}); // no rate limit, for the test
+        EXPECT_TRUE(probe.capabilities().hasNetworkCounters);
+
+        const auto first = probe.readSocketTraffic(); // builds the map; 99 is unowned before the build
+        EXPECT_EQ(first.sockets.size(), 2U);
+
+        current.clear();
+        failNext = failMiddleReading;
+        const auto middle = probe.readSocketTraffic();
+        EXPECT_TRUE(middle.sockets.empty());
+        EXPECT_EQ(middle.sampleTimeNs != 0, !failMiddleReading);
+
+        // A connection now holds inode 99, and its fd is visible.
+        std::filesystem::create_symlink("socket:[99]", fdDir / "4");
+        current.push_back({.inode = 99, .bytesReceived = 1});
+        const auto reused = probe.readSocketTraffic();
+        const auto it = std::ranges::find(reused.sockets, std::uint64_t{99}, &Platform::SocketTrafficSample::key);
+        return it != reused.sockets.end() ? it->pid : -1;
+    };
+
+    EXPECT_EQ(ownerOfReused(false), 4242) << "after a complete empty reading, a reused inode is new and rebuilds the map";
+    EXPECT_EQ(ownerOfReused(true), 0) << "a failed reading says nothing about the sockets: 99 is still unowned from before the build";
+}
 #endif
 
 TEST(LinuxProcessProbeTest, EmptyProcDirReturnsNoProcesses)
