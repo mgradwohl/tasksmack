@@ -7,6 +7,7 @@
 #include "Platform/IProcessProbe.h"
 #include "Platform/ProcessTypes.h"
 #include "ProcessSnapshot.h"
+#include "ProcessState.h"
 #include "SamplingConfig.h"
 #include "SingleLineText.h"
 
@@ -1142,27 +1143,7 @@ void ProcessModel::applyHistoryCapacity()
 
 std::string ProcessModel::translateState(char rawState)
 {
-    switch (rawState)
-    {
-    case 'R':
-        return "Running";
-    case 'S':
-        return "Sleeping";
-    case 'D':
-        return "Disk Sleep";
-    case 'Z':
-        return "Zombie";
-    case 'T':
-        return "Stopped";
-    case 't':
-        return "Tracing";
-    case 'X':
-        return "Dead";
-    case 'I':
-        return "Idle";
-    default:
-        return "Unknown";
-    }
+    return std::string(processStateName(rawState));
 }
 
 } // namespace Domain

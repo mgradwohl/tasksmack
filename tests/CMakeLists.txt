@@ -80,6 +80,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_SocketTrafficAccumulator.cpp
     Domain/test_GPUModel.cpp
     Domain/test_ProcessStatus.cpp
+    Domain/test_ProcessState.cpp
     Domain/test_SystemModel.cpp
     Domain/test_StorageModel.cpp
     Domain/test_BackgroundSampler.cpp
@@ -124,6 +125,7 @@ set(COMMON_TEST_SOURCES
     App/test_GpuSectionEmptyState.cpp
     App/test_GpuSectionDrawList.cpp
     App/test_ProcessRowFormat.cpp
+    App/test_ProcessStateColor.cpp
     Platform/test_CgroupFreezerPath.cpp
     Platform/test_ProcessIdentity.cpp
     Platform/test_ProcessName.cpp

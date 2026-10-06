@@ -5,6 +5,7 @@
 #include "App/Panels/ProcessDetailsLayout.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessSortUtils.h"
+#include "App/Panels/ProcessStateColor.h"
 #include "App/Panels/ProcessTableFlags.h"
 #include "App/Panels/ProcessTableLayout.h"
 #include "App/Panels/ProcessTableSettings.h"
@@ -20,6 +21,7 @@
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
+#include "Domain/ProcessState.h"
 #include "Platform/Factory.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
@@ -1220,36 +1222,9 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
 
         case ProcessColumn::State:
         {
-            const char stateChar = proc.displayState.empty() ? '?' : proc.displayState[0];
-            const auto& scheme = UI::Theme::get().scheme();
-
-            // Color based on process state
-            ImVec4 stateColor;
-            switch (stateChar)
-            {
-            case 'R': // Running
-                stateColor = scheme.statusRunning;
-                break;
-            case 'S': // Sleeping (interruptible)
-                stateColor = scheme.statusSleeping;
-                break;
-            case 'D': // Disk sleep (uninterruptible)
-                stateColor = scheme.statusDiskSleep;
-                break;
-            case 'Z': // Zombie
-                stateColor = scheme.statusZombie;
-                break;
-            case 'T': // Stopped/Traced
-            case 't': // Tracing stop
-                stateColor = scheme.statusStopped;
-                break;
-            case 'I': // Idle kernel thread
-                stateColor = scheme.statusIdle;
-                break;
-            default:
-                stateColor = scheme.statusSleeping; // Default to muted
-                break;
-            }
+            // The kernel-style code, not the name's first letter: Stopped is T, Dead is X (#1352).
+            const char stateChar = Domain::processStateCode(proc.displayState);
+            const ImVec4 stateColor = processStateColor(stateChar, UI::Theme::get().scheme());
 
             // Center the state character in the column
             const std::array<char, 2> stateStr = {stateChar, '\0'};
