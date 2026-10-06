@@ -159,6 +159,9 @@ enum class TextCell : std::uint8_t
     options.hasCpuAffinity = caps.hasCpuAffinity;
     options.hasGdiObjects = caps.hasGdiObjects;
     options.hasPerProcessGpu = perProcessGpu;
+    options.hasStatus = caps.hasStatus;
+    options.hasPublisher = caps.hasPublisher;
+    options.hasProcessType = caps.hasProcessType;
     return options;
 }
 

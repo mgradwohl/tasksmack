@@ -435,6 +435,27 @@ TEST(ProcessRowFormatTest, GpuCellsAreUnavailableWithoutPerProcessGpuMetrics)
     expectMeasuredZero(measured.gpuMemory);
 }
 
+TEST(ProcessRowFormatTest, FreeTextColumnSupportTravelsWithTheEntry)
+{
+    // The per-column cell renderers (#1382) draw Status, Publisher, Type and the GPU text columns
+    // from the entry alone, so it carries whether this system can fill them (#1210).
+    const RowFormatCache all = buildRowFormatCache(makeSnapshot());
+    EXPECT_TRUE(all.statusSupported);
+    EXPECT_TRUE(all.publisherSupported);
+    EXPECT_TRUE(all.processTypeSupported);
+    EXPECT_TRUE(all.gpuSupported);
+
+    ProcessRowFormat::RowFormatOptions linuxLike;
+    linuxLike.hasPublisher = false;
+    linuxLike.hasProcessType = false;
+    linuxLike.hasPerProcessGpu = false;
+    const RowFormatCache some = buildRowFormatCache(makeSnapshot(), linuxLike);
+    EXPECT_TRUE(some.statusSupported);
+    EXPECT_FALSE(some.publisherSupported);
+    EXPECT_FALSE(some.processTypeSupported);
+    EXPECT_FALSE(some.gpuSupported);
+}
+
 TEST(ProcessRowFormatTest, BuildRowFormatCacheStampsFreshAlignedCellTextAsUnmeasured)
 {
     // A freshly built entry's widths must all still be UNMEASURED_WIDTH -- the caller (renderProcessRow)

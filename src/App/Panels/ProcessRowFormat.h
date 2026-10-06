@@ -136,6 +136,9 @@ struct RowFormatOptions
     bool hasCpuAffinity = true;
     bool hasGdiObjects = true;
     bool hasPerProcessGpu = true; ///< Platform::GPUCapabilities::hasPerProcessMetrics, from the GPU probe (#1210)
+    bool hasStatus = true;
+    bool hasPublisher = true;
+    bool hasProcessType = true;
 };
 
 /// A cell with no value: UNAVAILABLE_CELL_TEXT, with `reason` (a string literal) as its tooltip.
@@ -284,6 +287,14 @@ struct RowFormatCache
     LazyTextWidth gpuDevicesWidth;
     LazyTextWidth publisherWidth;
     LazyTextWidth processTypeWidth;
+
+    // Whether this system can fill the free-text columns drawn straight from the snapshot (#1210):
+    // where it cannot, the cell is the unavailable dash rather than blank. Copied from the
+    // RowFormatOptions the entry was built with, so the cell renderers need no capabilities.
+    bool statusSupported = true;
+    bool publisherSupported = true;
+    bool processTypeSupported = true;
+    bool gpuSupported = true; // GPU Engine and GPU Device; GPU % and GPU Memory carry their own tone
 };
 
 /// Formats every RowFormatCache field for one process snapshot. Pure (no ImGui calls, no shared
@@ -300,6 +311,10 @@ struct RowFormatCache
 [[nodiscard]] inline RowFormatCache buildRowFormatCache(const Domain::ProcessSnapshot& proc, const RowFormatOptions& options = {})
 {
     RowFormatCache fmt;
+    fmt.statusSupported = options.hasStatus;
+    fmt.publisherSupported = options.hasPublisher;
+    fmt.processTypeSupported = options.hasProcessType;
+    fmt.gpuSupported = options.hasPerProcessGpu;
     fmt.ppid = makeAlignedCellText(UI::Format::formatId(proc.parentPid));
     fmt.startTime = (proc.startTimeEpoch != 0) ? makeAlignedCellText(UI::Format::formatEpochDateTimeShort(proc.startTimeEpoch))
                                                : unavailableCell(UNREADABLE_CELL_REASON);

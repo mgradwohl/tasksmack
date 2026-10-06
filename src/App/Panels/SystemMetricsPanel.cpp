@@ -4,6 +4,7 @@
 #include "App/Panels/AdaptiveIntervalUtils.h"
 #include "App/Panels/CpuCoreGridIds.h"
 #include "App/Panels/CpuCoresSection.h"
+#include "App/Panels/CpuSummaryText.h"
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/MemorySection.h"
 #include "App/Panels/NetworkSection.h"
@@ -203,25 +204,38 @@ void SystemMetricsPanel::onAttach()
     }
     m_Sampler->start();
 
-    m_SystemPublication = m_Model->publication();
-    m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
+    adoptSystemPublication();
     m_StoragePublication = m_StorageModel->publication();
     m_GPUPublication = m_GPUModel ? m_GPUModel->publication() : nullptr;
-    m_TimestampsCache = m_SystemPublication->timestamps;
-    if (!m_TimestampsCache.empty())
+    m_ForceRefresh = false;
+
+    // NOTE: m_Hostname intentionally stores the raw hostname without any icon prefix.
+    // UI code (e.g., tab labels) is responsible for adding icons when rendering.
+    const std::string& hostname = m_SystemPublication->snapshot.hostname;
+    m_Hostname = hostname.empty() ? "System" : hostname;
+}
+
+void SystemMetricsPanel::adoptSystemPublication()
+{
+    // Held, not copied: the publication is immutable and shared with the model, so its snapshot and
+    // timestamps are read in place (#1180) rather than copied into panel members on every adoption.
+    m_SystemPublication = m_Model->publication();
+    m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
+    const std::vector<double>& timestamps = m_SystemPublication->timestamps;
+    if (!timestamps.empty())
     {
-        m_CurrentNowSeconds = m_TimestampsCache.back();
+        m_CurrentNowSeconds = timestamps.back();
     }
     else
     {
         m_CurrentNowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     }
-    m_ForceRefresh = false;
+}
 
-    m_CachedSnapshot = m_SystemPublication->snapshot;
-    // NOTE: m_Hostname intentionally stores the raw hostname without any icon prefix.
-    // UI code (e.g., tab labels) is responsible for adding icons when rendering.
-    m_Hostname = m_CachedSnapshot.hostname.empty() ? "System" : m_CachedSnapshot.hostname;
+const Domain::SystemSnapshot& SystemMetricsPanel::systemSnapshot() const
+{
+    static const Domain::SystemSnapshot empty{};
+    return m_SystemPublication ? m_SystemPublication->snapshot : empty;
 }
 
 void SystemMetricsPanel::onDetach()
@@ -336,22 +350,10 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
 
     if (!m_SystemPublication || m_Model->publicationVersion() != m_SystemPublication->version)
     {
-        m_SystemPublication = m_Model->publication();
-        m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
-        m_TimestampsCache = m_SystemPublication->timestamps;
-        if (!m_TimestampsCache.empty())
+        adoptSystemPublication();
+        if (const std::string& hostname = m_SystemPublication->snapshot.hostname; !hostname.empty())
         {
-            m_CurrentNowSeconds = m_TimestampsCache.back();
-        }
-        else
-        {
-            m_CurrentNowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-        }
-
-        m_CachedSnapshot = m_SystemPublication->snapshot;
-        if (!m_CachedSnapshot.hostname.empty())
-        {
-            m_Hostname = m_CachedSnapshot.hostname;
+            m_Hostname = hostname;
         }
     }
     if (m_StorageModel && (!m_StoragePublication || m_StorageModel->publicationVersion() != m_StoragePublication->version))
@@ -416,9 +418,9 @@ void SystemMetricsPanel::renderContent()
         m_LayoutDirty = true;
     }
 
-    // A reference, not a copy: m_CachedSnapshot is only reassigned in onUpdate(), never while
+    // A reference, not a copy: m_SystemPublication is only reassigned in onUpdate(), never while
     // rendering, and a copy duplicated every per-core and per-interface vector each frame (#1017).
-    const auto& snap = m_CachedSnapshot;
+    const auto& snap = systemSnapshot();
 
     const int coreCount = snap.coreCount;
     if (coreCount != m_LastCoreCount)
@@ -542,7 +544,7 @@ void SystemMetricsPanel::renderContent()
 
 void SystemMetricsPanel::renderOverview()
 {
-    const auto& snap = m_CachedSnapshot; // See renderContent() (#1017)
+    const auto& snap = systemSnapshot(); // See renderContent() (#1017)
     // Held for the frame: ProcessesPanel owns the model and may already have released it (#1176).
     const std::shared_ptr<Domain::ProcessModel> processModel = m_ProcessModel.lock();
 
@@ -573,9 +575,8 @@ void SystemMetricsPanel::renderOverview()
         fresh.uptime = UI::Format::formatUptimeShort(snap.uptimeSeconds);
 
         // Display: "CPU Model (N logical processors @ X.XX GHz)     Uptime: Xd Yh Zm"
-        // The count is of logical processors, not cores (#1203).
-        fresh.coreInfo = UI::Format::formatLogicalProcessorSummary(
-            snap.coreCount, (snap.cpuFreqMHz > 0) ? Domain::Numeric::toDouble(snap.cpuFreqMHz) : 0.0);
+        // The same summary as the CPU Cores header (#1180).
+        fresh.coreInfo = Detail::cpuCoreSummary(snap.coreCount, snap.cpuFreqMHz);
 
         fresh.processes =
             (processModel != nullptr) ? std::format("Processes: {}", UI::Format::formatIntLocalized(processCount)) : std::string{};
@@ -658,7 +659,7 @@ void SystemMetricsPanel::renderOverview()
     const auto& cpuSystemHist = m_SystemPublication->cpuSystemHistory;
     const auto& cpuIowaitHist = m_SystemPublication->cpuIowaitHistory;
     const auto& cpuIdleHist = m_SystemPublication->cpuIdleHistory;
-    const auto& timestamps = m_TimestampsCache;
+    const std::vector<double>& timestamps = m_SystemPublication->timestamps;
     const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds);
 
@@ -718,63 +719,44 @@ void SystemMetricsPanel::renderOverview()
                                                                                            out);
                                                });
 
-                auto& y0 = m_CpuStackY0;
-                auto& yUserTop = m_CpuStackYUser;
-                auto& ySystemTop = m_CpuStackYSystem;
+                // The User and System bands' edges (shared with Process Details, #1180). A gap point is
+                // NaN in every band (see UI::Widgets::reduceAlignedSeries).
+                auto& stack = m_CpuStack;
+                UI::Widgets::buildUserSystemStack<float>(points, breakdownTimeData, cpuUserData, cpuSystemData, stack);
                 auto& yIowaitTop = m_CpuStackYIowait;
                 auto& yBusyTop = m_CpuStackYBusy;
-                m_CpuStackX.resize(points.size());
-                y0.assign(points.size(), 0.0);
-                yUserTop.resize(points.size());
-                ySystemTop.resize(points.size());
                 yIowaitTop.resize(points.size());
                 yBusyTop.resize(points.size());
                 for (std::size_t k = 0; k < points.size(); ++k)
                 {
-                    // A gap point is NaN in every band (see UI::Widgets::reduceAlignedSeries).
-                    const auto i = static_cast<std::size_t>(points[k].index);
-                    m_CpuStackX[k] = breakdownTimeData[i];
                     if (points[k].gap)
                     {
-                        yUserTop[k] = ySystemTop[k] = yIowaitTop[k] = yBusyTop[k] = std::numeric_limits<double>::quiet_NaN();
+                        yIowaitTop[k] = yBusyTop[k] = std::numeric_limits<double>::quiet_NaN();
                         continue;
                     }
-                    // PlotShaded fills between two Y series, so the stack needs cumulative tops.
-                    yUserTop[k] = static_cast<double>(cpuUserData[i]);
-                    ySystemTop[k] = yUserTop[k] + static_cast<double>(cpuSystemData[i]);
                     // I/O Wait is idle time, not busy (#1157): its band sits on the busy total
                     // (100 - idle - iowait, which the Total line follows) rather than on System, so
                     // the Total line runs along its bottom edge instead of through it.
+                    const auto i = static_cast<std::size_t>(points[k].index);
                     yIowaitTop[k] = 100.0 - static_cast<double>(cpuIdleData[i]);
                     yBusyTop[k] = yIowaitTop[k] - static_cast<double>(cpuIowaitData[i]);
                 }
 
                 // The bands reach "now" like every plotLineWithFill series: the last sample held to
                 // x = 0 (#1016), unless it is too old to pass for current (#1147).
-                UI::Widgets::holdLastValuesToNow(m_CpuStackX,
-                                                 {&y0, &yUserTop, &ySystemTop, &yIowaitTop, &yBusyTop},
+                UI::Widgets::holdLastValuesToNow(stack.x,
+                                                 {&stack.base, &stack.userTop, &stack.systemTop, &yIowaitTop, &yBusyTop},
                                                  UI::Widgets::maxHoldSecondsForAxis(breakdownTimeData));
-                const int stackCount = UI::Format::checkedCount(m_CpuStackX.size());
+                const int stackCount = UI::Format::checkedCount(stack.x.size());
 
-                // ImPlot's shaded renderer has no NaN handling, so each band is filled run by run over
-                // the points where both of its edges have a reading: a gap point (a missed sample) or
-                // a band with no reading is drawn as a gap, not as triangles through NaN (#1149).
+                // Each band is filled only where both of its edges have a reading (#1149).
                 const auto shadeBand =
                     [&](const char* label, const std::vector<double>& lower, const std::vector<double>& upper, const ImVec4& fillColor)
                 {
-                    UI::Widgets::forEachJointFiniteRun(
-                        lower.data(),
-                        upper.data(),
-                        stackCount,
-                        [&](int runStart, int runLength)
-                        {
-                            const auto at = static_cast<std::size_t>(runStart);
-                            ImPlot::PlotShaded(
-                                label, &m_CpuStackX[at], &lower[at], &upper[at], runLength, {ImPlotProp_FillColor, fillColor});
-                        });
+                    UI::Widgets::plotShadedBand(label, stack.x.data(), lower.data(), upper.data(), stackCount, fillColor);
                 };
-                shadeBand(CPU_USER_LABEL, y0, yUserTop, theme.scheme().cpuUserFill);
-                shadeBand(CPU_SYSTEM_LABEL, yUserTop, ySystemTop, theme.scheme().cpuSystemFill);
+                shadeBand(CPU_USER_LABEL, stack.base, stack.userTop, theme.scheme().cpuUserFill);
+                shadeBand(CPU_SYSTEM_LABEL, stack.userTop, stack.systemTop, theme.scheme().cpuSystemFill);
                 if (showIowait)
                 {
                     shadeBand(CPU_IOWAIT_LABEL, yBusyTop, yIowaitTop, theme.scheme().cpuIowaitFill);
@@ -786,16 +768,11 @@ void SystemMetricsPanel::renderOverview()
                 // differ by more than colour (#1198).
                 const auto bandEdge = [&](const char* label, const std::vector<double>& top, const ImVec4& color, std::size_t slot)
                 {
-                    const UI::Widgets::SeriesStyle style = seriesStyle(SeriesRole::Secondary, slot);
-                    ImPlot::PlotLine(label,
-                                     m_CpuStackX.data(),
-                                     top.data(),
-                                     stackCount,
-                                     {ImPlotProp_LineColor, color, ImPlotProp_LineWeight, UI::Widgets::lineWeight(style.lineWeightPx)});
-                    UI::Widgets::plotSeriesMarkers(label, m_CpuStackX.data(), top.data(), stackCount, color, style);
+                    UI::Widgets::plotStyledLine(
+                        label, stack.x.data(), top.data(), stackCount, color, seriesStyle(SeriesRole::Secondary, slot));
                 };
-                bandEdge(CPU_USER_LABEL, yUserTop, theme.scheme().cpuUser, 0);
-                bandEdge(CPU_SYSTEM_LABEL, ySystemTop, theme.scheme().cpuSystem, 1);
+                bandEdge(CPU_USER_LABEL, stack.userTop, theme.scheme().cpuUser, 0);
+                bandEdge(CPU_SYSTEM_LABEL, stack.systemTop, theme.scheme().cpuSystem, 1);
                 if (showIowait)
                 {
                     bandEdge(CPU_IOWAIT_LABEL, yIowaitTop, theme.scheme().cpuIowait, 2);

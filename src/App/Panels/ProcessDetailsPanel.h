@@ -199,13 +199,11 @@ class ProcessDetailsPanel : public Panel
 
     // Render scratch buffers for stacked CPU chart (reused across frames to avoid per-frame heap allocation):
     // only the reduced points, at most LINE_PLOT_MAX_POINTS_DENSE, are built into them each frame.
-    std::vector<double> m_CpuPlotX; // CPU chart points as drawn, held to now (#1016)
+    // The User and System bands, their x axis held to now (#1016), shared with the Overview (#1180);
+    // the User line is the User band's top.
+    UI::Widgets::UserSystemStack m_CpuStack;
     std::vector<double> m_CpuPlotTotal;
-    std::vector<double> m_CpuPlotUser;
     std::vector<double> m_CpuPlotSystem;
-    std::vector<double> m_CpuStackY0;
-    std::vector<double> m_CpuStackYUser;
-    std::vector<double> m_CpuStackYSystem;
     UI::Widgets::ReducedPointsCache m_CpuPlotReduction; // The CPU chart's reduced points (#1022), kept per m_HistoryGeneration (#1139)
 
     // The selected process as last sampled, shared with ProcessModel's sample rather than copied

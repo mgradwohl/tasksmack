@@ -6,6 +6,7 @@
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDetailsLayout.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
+#include "App/Panels/ProcessFilterCache.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessSortUtils.h"
 #include "App/Panels/ProcessStateColor.h"
@@ -14,6 +15,7 @@
 #include "App/Panels/ProcessTableSettings.h"
 #include "App/Panels/ProcessTreeFlatten.h"
 #include "App/Panels/ProcessTreeIndent.h"
+#include "App/Panels/ProcessTypeColor.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/UserConfig.h"
 #include "Core/Application.h"
@@ -387,6 +389,209 @@ void renderLeftAlignedText(std::string_view text, const ProcessRowFormat::LazyTe
     renderCellText(text, cachedTextWidth(text, width), /*rightAligned=*/false);
 }
 
+// ============================================================================
+// Per-column cell renderers (#1382)
+// ============================================================================
+//
+// Every column but PID and Name is drawn by one small function, looked up by
+// column in CELL_RENDERERS below: its format (which RowFormatCache or snapshot
+// field), alignment (left, right, centred, or decimal-aligned against a unit
+// slot) and N/A handling live in that one entry. PID (the row's selectable) and
+// Name (the tree indent and expander) need the panel's selection and tree
+// state, so renderProcessRow() draws them itself. A plain function pointer per
+// column: no allocation and no std::function per cell, and the lookup is an
+// array index.
+
+/// Draws one cell of the current row in the current table column.
+using ProcessCellRenderer = void (*)(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, const ProcessCellWidths& widths);
+
+/// A RowFormatCache cell right-aligned: a number, a duration, a date, an ID, a
+/// percentage, or "-".
+template<AlignedCellText RowFormatCache::* Cell>
+void rightAlignedCell(const Domain::ProcessSnapshot& /*proc*/, const RowFormatCache& fmt, const ProcessCellWidths& /*widths*/)
+{
+    renderRightAlignedText(fmt.*Cell);
+}
+
+/// A RowFormatCache cell of a mixed-unit column, decimal-aligned against the
+/// column's unit slot (#1201).
+template<AlignedCellText RowFormatCache::* Cell, float ProcessCellWidths::* UnitSlot>
+void unitAlignedCell(const Domain::ProcessSnapshot& /*proc*/, const RowFormatCache& fmt, const ProcessCellWidths& widths)
+{
+    renderUnitAlignedText(fmt.*Cell, widths.*UnitSlot);
+}
+
+/// Free text from the snapshot, left-aligned.
+template<std::string Domain::ProcessSnapshot::* Text, ProcessRowFormat::LazyTextWidth RowFormatCache::* Width>
+void leftAlignedCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, const ProcessCellWidths& /*widths*/)
+{
+    renderLeftAlignedText(proc.*Text, fmt.*Width);
+}
+
+/// Free text from the snapshot, left-aligned; blank when the process has none, and the unavailable
+/// dash when this system cannot fill the column at all (`Supported`, ProcessColumnAvailability::
+/// textCell(), #1210). Blank, not a dash, for an empty value: no status is a process in neither
+/// state the column names, no GPU device is one using none, and an empty publisher is either an
+/// executable without one or one that could not be read -- the probe cannot tell which.
+template<std::string Domain::ProcessSnapshot::* Text,
+         ProcessRowFormat::LazyTextWidth RowFormatCache::* Width,
+         bool RowFormatCache::* Supported>
+void leftAlignedOrBlankCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, const ProcessCellWidths& widths)
+{
+    renderTextCell(
+        ProcessColumnAvailability::textCell(fmt.*Supported, !(proc.*Text).empty()), proc.*Text, fmt.*Width, widths.unavailableText);
+}
+
+/// The GPU engines in use: RowFormatCache's comma-joined list, left-aligned; blank for none, and the
+/// unavailable dash where per-process GPU usage cannot be observed (#1210).
+void gpuEngineCell(const Domain::ProcessSnapshot& /*proc*/, const RowFormatCache& fmt, const ProcessCellWidths& widths)
+{
+    renderTextCell(ProcessColumnAvailability::textCell(fmt.gpuSupported, !fmt.gpuEngines.empty()),
+                   fmt.gpuEngines,
+                   fmt.gpuEnginesWidth,
+                   widths.unavailableText);
+}
+
+/// The kernel-style state code, centred, in its state colour.
+void stateCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& /*fmt*/, const ProcessCellWidths& /*widths*/)
+{
+    // The kernel-style code, not the name's first letter: Stopped is T, Dead is X
+    // (#1352).
+    const char stateChar = Domain::processStateCode(proc.displayState);
+    const ImVec4 stateColor = processStateColor(stateChar, UI::Theme::get().scheme());
+
+    // Center the state character in the column
+    const std::array<char, 2> stateStr = {stateChar, '\0'};
+    const float textWidth = ImGui::CalcTextSize(stateStr.data()).x;
+    const float availWidth = ImGui::GetContentRegionAvail().x;
+    const float offset = std::max(0.0F, (availWidth - textWidth) * 0.5F);
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
+
+    ImGui::PushStyleColor(ImGuiCol_Text, stateColor);
+    ImGui::TextUnformatted(stateStr.data());
+    ImGui::PopStyleColor();
+}
+
+/// The priority label for the nice value, right-aligned.
+void priorityCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& /*fmt*/, const ProcessCellWidths& widths)
+{
+    // getPriorityLabel returns string_view into static storage — no allocation
+    // needed. Not RowFormatCache-backed (it's a direct nice-value lookup, not a
+    // per-row formatted string), so its width comes from ProcessCellWidths' small
+    // fixed-label width cache instead of an AlignedCellText.
+    const std::string_view priorityLabel = Domain::Priority::getPriorityLabel(proc.nice);
+    renderRightAlignedText(priorityLabel, widths.priorityLabelWidth(priorityLabel));
+}
+
+/// The command line, left-aligned, or the name in brackets when there is none
+/// (a kernel thread, or a process whose command line could not be read).
+void commandCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, const ProcessCellWidths& /*widths*/)
+{
+    if (!proc.command.empty())
+    {
+        renderLeftAlignedText(proc.command, fmt.commandWidth);
+    }
+    else
+    {
+        // Show name in brackets if no command line available
+        ImGui::Text("[%s]", proc.name.c_str());
+    }
+}
+
+/// The process type, left-aligned in its type colour (shared with Process
+/// Details, #1180); the unavailable dash where this system cannot classify
+/// processes, or could not classify this one (#1210).
+void typeCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, const ProcessCellWidths& widths)
+{
+    if (!fmt.processTypeSupported)
+    {
+        renderUnavailableTextCell(ProcessRowFormat::UNSUPPORTED_CELL_REASON, widths.unavailableText);
+    }
+    else if (!proc.processType.empty())
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, processTypeColor(proc.processType, UI::Theme::get().scheme()));
+        renderLeftAlignedText(proc.processType, fmt.processTypeWidth);
+        ImGui::PopStyleColor();
+    }
+    else
+    {
+        renderUnavailableTextCell(ProcessRowFormat::UNREADABLE_CELL_REASON, widths.unavailableText);
+    }
+}
+
+/// The renderer for every column but PID and Name, indexed by toIndex(column).
+[[nodiscard]] consteval auto makeCellRenderers() -> std::array<ProcessCellRenderer, processColumnCount()>
+{
+    using Snapshot = Domain::ProcessSnapshot;
+    using Widths = ProcessCellWidths;
+    std::array<ProcessCellRenderer, processColumnCount()> renderers{};
+    const auto set = [&renderers](ProcessColumn col, ProcessCellRenderer renderer)
+    {
+        renderers[toIndex(col)] = renderer;
+    };
+
+    // Identity
+    set(ProcessColumn::User, &leftAlignedCell<&Snapshot::user, &RowFormatCache::userWidth>);
+    set(ProcessColumn::PPID, &rightAlignedCell<&RowFormatCache::ppid>);
+    set(ProcessColumn::Publisher,
+        &leftAlignedOrBlankCell<&Snapshot::publisher, &RowFormatCache::publisherWidth, &RowFormatCache::publisherSupported>);
+    // State
+    set(ProcessColumn::State, &stateCell);
+    set(ProcessColumn::Status, &leftAlignedOrBlankCell<&Snapshot::status, &RowFormatCache::statusWidth, &RowFormatCache::statusSupported>);
+    set(ProcessColumn::Type, &typeCell);
+    // Resources
+    set(ProcessColumn::CpuPercent, &rightAlignedCell<&RowFormatCache::cpuPercent>);
+    set(ProcessColumn::MemPercent, &rightAlignedCell<&RowFormatCache::memPercent>);
+    set(ProcessColumn::Resident, &unitAlignedCell<&RowFormatCache::resident, &Widths::unitBytes>);
+    set(ProcessColumn::Virtual, &unitAlignedCell<&RowFormatCache::virtualMem, &Widths::unitBytes>);
+    set(ProcessColumn::Shared, &unitAlignedCell<&RowFormatCache::shared, &Widths::unitBytes>);
+    set(ProcessColumn::PeakResident, &unitAlignedCell<&RowFormatCache::peakRss, &Widths::unitBytes>);
+    // Scheduling
+    set(ProcessColumn::Priority, &priorityCell);
+    set(ProcessColumn::Affinity, &rightAlignedCell<&RowFormatCache::affinity>);
+    set(ProcessColumn::Threads, &rightAlignedCell<&RowFormatCache::threads>);
+    set(ProcessColumn::Handles, &rightAlignedCell<&RowFormatCache::handles>);
+    // Unavailable only when the probe could not read the count (process not accessible).
+    // A count of 0 is a valid result for non-GUI background processes and is
+    // shown as a muted "0" (#1210).
+    set(ProcessColumn::GdiObjects, &rightAlignedCell<&RowFormatCache::gdiObjects>);
+    // Time
+    set(ProcessColumn::CpuTime, &rightAlignedCell<&RowFormatCache::cpuTime>);
+    set(ProcessColumn::StartTime, &rightAlignedCell<&RowFormatCache::startTime>);
+    // I/O
+    set(ProcessColumn::IoRead, &unitAlignedCell<&RowFormatCache::ioRead, &Widths::unitBytesPerSec>);
+    set(ProcessColumn::IoWrite, &unitAlignedCell<&RowFormatCache::ioWrite, &Widths::unitBytesPerSec>);
+    set(ProcessColumn::PageFaults, &rightAlignedCell<&RowFormatCache::pageFaults>);
+    // Network
+    set(ProcessColumn::NetSent, &unitAlignedCell<&RowFormatCache::netSent, &Widths::unitBytesPerSec>);
+    set(ProcessColumn::NetReceived, &unitAlignedCell<&RowFormatCache::netRecv, &Widths::unitBytesPerSec>);
+    // Power
+    set(ProcessColumn::Power, &unitAlignedCell<&RowFormatCache::power, &Widths::unitPower>);
+    // GPU
+    set(ProcessColumn::GpuPercent, &rightAlignedCell<&RowFormatCache::gpuPercent>);
+    set(ProcessColumn::GpuMemory, &unitAlignedCell<&RowFormatCache::gpuMemory, &Widths::unitBytes>);
+    set(ProcessColumn::GpuEngine, &gpuEngineCell);
+    set(ProcessColumn::GpuDevice,
+        &leftAlignedOrBlankCell<&Snapshot::gpuDevices, &RowFormatCache::gpuDevicesWidth, &RowFormatCache::gpuSupported>);
+    // Command
+    set(ProcessColumn::Command, &commandCell);
+    return renderers;
+}
+
+constexpr std::array<ProcessCellRenderer, processColumnCount()> CELL_RENDERERS = makeCellRenderers();
+
+// Every column but PID and Name has a renderer, and those two have none: a
+// column added to ProcessColumn without one fails to compile here instead of
+// drawing an empty cell.
+static_assert(std::ranges::all_of(allProcessColumns(),
+                                  [](ProcessColumn col)
+                                  {
+                                      const bool drawnByRow = (col == ProcessColumn::PID) || (col == ProcessColumn::Name);
+                                      return (CELL_RENDERERS[toIndex(col)] != nullptr) != drawnByRow;
+                                  }),
+              "every Processes column but PID and Name needs a cell renderer "
+              "in makeCellRenderers()");
+
 } // namespace
 
 // ============================================================================
@@ -467,9 +672,9 @@ void ProcessesPanel::TextSizeCache::populate()
         byteUnits[i] = UI::Format::cellUnitSuffix(*UI::Format::BYTE_UNITS[i], false);
         byteRateUnits[i] = UI::Format::cellUnitSuffix(*UI::Format::BYTE_UNITS[i], true);
     }
-    unitBytesWidth = widestTextWidth(byteUnits);
-    unitBytesPerSecWidth = widestTextWidth(byteRateUnits);
-    unitPowerWidth = widestTextWidth(POWER_UNITS);
+    cells.unitBytes = widestTextWidth(byteUnits);
+    cells.unitBytesPerSec = widestTextWidth(byteRateUnits);
+    cells.unitPower = widestTextWidth(POWER_UNITS);
 
     // Cache static label widths
     treeViewLabelWidth = measureTextWidth(TREE_VIEW_LABEL);
@@ -477,13 +682,13 @@ void ProcessesPanel::TextSizeCache::populate()
     columnsLabelWidth = measureTextWidth(COLUMNS_LABEL);
     caretRightWidth = measureTextWidth(ICON_FA_CARET_RIGHT);
     caretDownWidth = measureTextWidth(ICON_FA_CARET_DOWN);
-    unavailableTextWidth = measureTextWidth(ProcessRowFormat::UNAVAILABLE_CELL_TEXT);
+    cells.unavailableText = measureTextWidth(ProcessRowFormat::UNAVAILABLE_CELL_TEXT);
 
     // Cache Domain::Priority::getPriorityLabel()'s fixed label widths
     for (std::size_t i = 0; i < PRIORITY_LABELS.size(); ++i)
     {
         const auto& label = PRIORITY_LABELS[i];
-        priorityLabelWidths[i] = ImGui::CalcTextSize(label.data(), label.data() + label.size()).x;
+        cells.priorityLabels[i] = ImGui::CalcTextSize(label.data(), label.data() + label.size()).x;
     }
 }
 
@@ -506,18 +711,6 @@ float ProcessesPanel::measureToolbarMinimumWidth()
     const float viewModeControl = measureTextWidth(LIST_VIEW_LABEL) + measureTextWidth(TREE_VIEW_LABEL) + (style.FramePadding.x * 4.0F);
     const float rest = (style.ItemSpacing.x * 4.0F) + clearButton + count + columnsButton + viewModeControl;
     return ProcessTableLayout::computeToolbarMinimumWidth(filterWanted, filterForHint, rest);
-}
-
-float ProcessesPanel::TextSizeCache::getPriorityLabelWidth(std::string_view label) const noexcept
-{
-    for (std::size_t i = 0; i < PRIORITY_LABELS.size(); ++i)
-    {
-        if (PRIORITY_LABELS[i] == label)
-        {
-            return priorityLabelWidths[i];
-        }
-    }
-    return 0.0F; // Unreachable in practice: getPriorityLabel() only returns PRIORITY_LABELS entries.
 }
 
 void ProcessesPanel::ensureTextSizeCacheValid()
@@ -594,11 +787,7 @@ void ProcessesPanel::onAttach()
 
     // Ensure the initial seed snapshots are loaded into the render cache so the UI
     // isn't empty before the first background sample arrives.
-    std::uint64_t newVersion = m_CachedSnapshotVersion;
-    if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion, &m_CachedCapabilities))
-    {
-        m_CachedSnapshotVersion = newVersion;
-    }
+    adoptNewerSnapshots();
 
     // A column this system cannot fill is hidden by default, unless its visibility was chosen (#1210).
     // Before the table is first drawn, since its default visibility is set from these settings.
@@ -731,7 +920,13 @@ void ProcessesPanel::onUpdate(float deltaTime)
         m_ForceRefresh = false;
     }
 
-    // Detect and copy new data in a single lock acquisition.
+    adoptNewerSnapshots();
+}
+
+void ProcessesPanel::adoptNewerSnapshots()
+{
+    // Detect and copy new data in a single lock acquisition. tryCopySnapshotsIfNewer() checks the
+    // published version lock-free first, so a call with nothing new costs one atomic load.
     std::uint64_t newVersion = m_CachedSnapshotVersion;
     if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion, &m_CachedCapabilities))
     {
@@ -785,15 +980,12 @@ void ProcessesPanel::renderContent()
 
     // Get thread-safe copy of snapshots — only when data has actually changed (version-cached).
     // ProcessModel updates at 1Hz but render runs at 60fps; skip 59/60 redundant deep copies.
-    const auto currentVersion = m_ProcessModel->snapshotVersion();
-    if (currentVersion != m_CachedSnapshotVersion)
-    {
-        std::uint64_t copiedVersion = m_CachedSnapshotVersion;
-        if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, copiedVersion, &m_CachedCapabilities))
-        {
-            m_CachedSnapshotVersion = copiedVersion;
-        }
-    }
+    // onUpdate() adopts too, but onUpdate() is skipped without a sampler and a generation can be
+    // published between the two; with nothing new this is one atomic load. Everything below is keyed
+    // on m_CachedSnapshotVersion, the generation adopted with the vector, not on a version read
+    // before adopting (#1394).
+    adoptNewerSnapshots();
+    const std::uint64_t adoptedVersion = m_CachedSnapshotVersion;
     const auto& currentSnapshots = *m_CachedRenderSnapshots;
 
     // The probe's capabilities can change mid-run (#1254): columns whose visibility was not chosen
@@ -861,7 +1053,7 @@ void ProcessesPanel::renderContent()
     // Filtered indices, running count, and summary string are only recomputed when snapshot
     // version or search term changes (typically once per second at the 1Hz refresh rate).
     const std::string_view searchTerm(m_SearchBuffer);
-    const bool filterDirty = (currentVersion != m_CachedFilterVersion || searchTerm != m_CachedSearchTerm);
+    const bool filterDirty = ProcessFilterCache::isStale(adoptedVersion, m_CachedFilterVersion, searchTerm, m_CachedSearchTerm);
     if (filterDirty)
     {
         m_CachedFilteredIndices.clear();
@@ -927,7 +1119,7 @@ void ProcessesPanel::renderContent()
                                              static_cast<long long>(currentSnapshots.size()));
         }
 
-        m_CachedFilterVersion = currentVersion;
+        m_CachedFilterVersion = adoptedVersion;
         m_CachedSearchTerm = std::string(searchTerm);
         ++m_FilterGeneration; // The tree's rows are rebuilt from the new indices (#1138)
 
@@ -1239,8 +1431,14 @@ void ProcessesPanel::renderContent()
             {
                 for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
                 {
-                    const auto& proc = currentSnapshots[m_CachedSortedIndices[static_cast<size_t>(i)]];
-                    renderProcessRow(proc, 0, false, false);
+                    // The indices are rebuilt for every adopted generation, so they always fit the
+                    // vector; checked anyway, so a keying mistake can't read past its end (#1394).
+                    const std::size_t procIdx = m_CachedSortedIndices[static_cast<size_t>(i)];
+                    if (procIdx >= currentSnapshots.size())
+                    {
+                        continue;
+                    }
+                    renderProcessRow(currentSnapshots[procIdx], 0, false, false);
                 }
             }
         }
@@ -1341,24 +1539,28 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
 {
     ImGui::TableNextRow();
 
-    // Get-or-build the pre-formatted strings for this row. Built lazily here -- the first time
-    // this specific row is actually rendered after its snapshot data or the current font
-    // changes -- rather than eagerly for every process whenever the snapshot version advances,
-    // so cost scales with visible rows (bounded by ImGuiListClipper), not total process count
-    // (perf-plan #843). A font/size/DPI change alone, with no new data version, must still force
-    // a rebuild of this entry, or its cached AlignedCellText widths (measured for the old font)
-    // would stay wrong until the next ~1Hz data refresh happens to land. The get-or-build
-    // decision itself lives in ProcessRowFormat.h (ImGui-free) so it's directly unit-testable.
-    // The font is passed as an identity value, not a pointer: RowFormatCache only ever compares
-    // this stamp for equality, so it stores a std::uintptr_t and no address escapes into the
-    // long-lived cache map (see #904). The stamp changes on every TextSizeCache::populate(), not
-    // with the font's address, which a rebuilt font atlas can reuse (#943).
+    // Get-or-build the pre-formatted strings for this row. Built lazily here --
+    // the first time this specific row is actually rendered after its snapshot
+    // data or the current font changes -- rather than eagerly for every process
+    // whenever the snapshot version advances, so cost scales with visible rows
+    // (bounded by ImGuiListClipper), not total process count (perf-plan #843). A
+    // font/size/DPI change alone, with no new data version, must still force a
+    // rebuild of this entry, or its cached AlignedCellText widths (measured for
+    // the old font) would stay wrong until the next ~1Hz data refresh happens to
+    // land. The get-or-build decision itself lives in ProcessRowFormat.h
+    // (ImGui-free) so it's directly unit-testable. The font is passed as an
+    // identity value, not a pointer: RowFormatCache only ever compares this stamp
+    // for equality, so it stores a std::uintptr_t and no address escapes into the
+    // long-lived cache map (see #904). The stamp changes on every
+    // TextSizeCache::populate(), not with the font's address, which a rebuilt
+    // font atlas can reuse (#943).
     const Platform::ProcessCapabilities caps = processCapabilities();
-    RowFormatCache& fmt = ProcessRowFormat::getOrBuildRowFormatCache(m_RowFormatCache,
-                                                                     proc,
-                                                                     m_CachedSnapshotVersion,
-                                                                     m_TextSizeCache.stamp,
-                                                                     ProcessColumnAvailability::rowFormatOptions(caps, m_PerProcessGpu));
+    const RowFormatCache& fmt =
+        ProcessRowFormat::getOrBuildRowFormatCache(m_RowFormatCache,
+                                                   proc,
+                                                   m_CachedSnapshotVersion,
+                                                   m_TextSizeCache.stamp,
+                                                   ProcessColumnAvailability::rowFormatOptions(caps, m_PerProcessGpu));
 
     // Render all columns
     int colIdx = 0;
@@ -1367,371 +1569,185 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         const bool columnVisible = ImGui::TableSetColumnIndex(colIdx);
         ++colIdx;
 
-        // The PID column anchors the row's selectable, so it is entered even when it is not
-        // visible. TableSetColumnIndex() returns false for a column scrolled out of view as well
-        // as for a hidden one, and skipping PID on that basis skipped the only item that makes the
-        // row clickable: with the table scrolled right, rows could not be selected and the
-        // selected row lost its highlight (#962). The selectable spans all columns and is drawn
-        // and hit-tested against the whole table, not this cell, so it works from a clipped
-        // column; PID cannot be hidden (canHide is false), so it is never a disabled one.
-        if (!columnVisible && col != ProcessColumn::PID)
+        // The PID column anchors the row's selectable, so it is entered even when
+        // it is not visible. TableSetColumnIndex() returns false for a column
+        // scrolled out of view as well as for a hidden one, and skipping PID on
+        // that basis skipped the only item that makes the row clickable: with the
+        // table scrolled right, rows could not be selected and the selected row
+        // lost its highlight (#962). The selectable spans all columns and is drawn
+        // and hit-tested against the whole table, not this cell, so it works from a
+        // clipped column; PID cannot be hidden (canHide is false), so it is never a
+        // disabled one.
+        if (col == ProcessColumn::PID)
+        {
+            renderPidCell(proc, fmt, columnVisible);
+            continue;
+        }
+        if (!columnVisible)
         {
             continue; // Column is hidden or clipped
         }
 
-        // PID column: selectable row anchor and right-aligned PID text. The tree indent and
-        // expand/collapse control deliberately do NOT live here -- see the comment below and #906.
-        if (col == ProcessColumn::PID)
+        // Name carries the tree indent and expander, so it is drawn with the
+        // panel's tree state; every other column is a small function looked up by
+        // column (#1382).
+        if (col == ProcessColumn::Name)
         {
-            // By identity, not PID alone: after the selected process exits, a new process given
-            // its PID is a different row and must not inherit the highlight.
-            const bool isSelected =
-                ProcessDetailsLayout::snapshotIsSelectedProcess(m_SelectedPid, m_SelectedUniqueKey, proc.pid, proc.uniqueKey);
-
-            // The tree indent and expand/collapse button live in the Name column, not here. This
-            // column is a fixed 60px, so indenting it pushed the PID text past the cell's clip
-            // rect and silently truncated digits at depth >= 1 -- 589 rendered as "5" (see #906).
-            // Name is fixed-width too (120px), so it cannot absorb the indent for free -- the
-            // indent is clamped against the cell instead, see the Name case below. Indenting the
-            // name is what comparable process viewers do.
-
-            // Stack-allocated label and selectable ID — avoids heap allocations per visible row per frame
-            std::array<char, 16> labelBuf{};
-            const auto labelResult = std::to_chars(labelBuf.data(), labelBuf.data() + labelBuf.size() - 1, proc.pid);
-            *labelResult.ptr = '\0';
-            const std::string_view label(labelBuf.data(), static_cast<std::size_t>(labelResult.ptr - labelBuf.data()));
-
-            std::array<char, 40> selectableIdBuf{};
-            auto selRes = std::format_to_n(selectableIdBuf.data(), selectableIdBuf.size() - 1, "##pid_select_{}", proc.uniqueKey);
-            *selRes.out = '\0';
-            // ImGui fills a hovered row with HeaderHovered even when it is selected, so the row just
-            // clicked would show the weaker hover tint until the pointer left it. Keep the selected
-            // fill while hovered (#1190).
-            if (isSelected)
-            {
-                ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImGui::GetStyleColorVec4(ImGuiCol_Header));
-            }
-            const bool clicked = ImGui::Selectable(
-                selectableIdBuf.data(), isSelected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap);
-            if (isSelected)
-            {
-                ImGui::PopStyleColor();
-            }
-            if (clicked)
-            {
-                selectProcess(proc);
-            }
-            // A right-press selects the row and opens its menu for that same process, in the same
-            // frame. ImGui's context-item popup opens on the release instead, by which time the
-            // table may have re-sorted and put another process under the pointer (#1365).
-            if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-            {
-                selectProcess(proc);
-                m_RowMenuTarget = proc;
-                ImGui::OpenPopup(m_RowMenuPopupId);
-            }
-            if (!columnVisible)
-            {
-                continue; // Scrolled out of view: the row stays selectable, the PID text is not drawn
-            }
-            ImGui::SameLine(0.0F, 0.0F);
-            // Keep PID text right-aligned in its column in both list and tree modes.
-            renderRightAlignedText(label, cachedTextWidth(label, fmt.pidWidth));
+            renderNameCell(proc, fmt, depth, hasChildren, isExpanded);
             continue;
         }
-
-        // Render other columns (same as before)
-        switch (col)
-        {
-        case ProcessColumn::User:
-            renderLeftAlignedText(proc.user, fmt.userWidth);
-            break;
-
-        case ProcessColumn::CpuPercent:
-            renderRightAlignedText(fmt.cpuPercent);
-            break;
-
-        case ProcessColumn::MemPercent:
-            renderRightAlignedText(fmt.memPercent);
-            break;
-
-        case ProcessColumn::Virtual:
-            renderUnitAlignedText(fmt.virtualMem, m_TextSizeCache.unitBytesWidth);
-            break;
-
-        case ProcessColumn::Resident:
-            renderUnitAlignedText(fmt.resident, m_TextSizeCache.unitBytesWidth);
-            break;
-
-        case ProcessColumn::PeakResident:
-            renderUnitAlignedText(fmt.peakRss, m_TextSizeCache.unitBytesWidth);
-            break;
-
-        case ProcessColumn::Shared:
-            renderUnitAlignedText(fmt.shared, m_TextSizeCache.unitBytesWidth);
-            break;
-
-        case ProcessColumn::CpuTime:
-            renderRightAlignedText(fmt.cpuTime);
-            break;
-
-        case ProcessColumn::StartTime:
-            renderRightAlignedText(fmt.startTime);
-            break;
-
-        case ProcessColumn::State:
-        {
-            // The kernel-style code, not the name's first letter: Stopped is T, Dead is X (#1352).
-            const char stateChar = Domain::processStateCode(proc.displayState);
-            const ImVec4 stateColor = processStateColor(stateChar, UI::Theme::get().scheme());
-
-            // Center the state character in the column
-            const std::array<char, 2> stateStr = {stateChar, '\0'};
-            const float textWidth = ImGui::CalcTextSize(stateStr.data()).x;
-            const float availWidth = ImGui::GetContentRegionAvail().x;
-            const float offset = std::max(0.0F, (availWidth - textWidth) * 0.5F);
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
-
-            ImGui::PushStyleColor(ImGuiCol_Text, stateColor);
-            ImGui::TextUnformatted(stateStr.data());
-            ImGui::PopStyleColor();
-            break;
-        }
-
-        case ProcessColumn::Status:
-            // No status is a process in neither of the states the column names, so it is blank.
-            renderTextCell(ProcessColumnAvailability::textCell(caps.hasStatus, !proc.status.empty()),
-                           proc.status,
-                           fmt.statusWidth,
-                           m_TextSizeCache.unavailableTextWidth);
-            break;
-
-        case ProcessColumn::Name:
-        {
-            // Tree depth is expressed here rather than in the PID column, which is a fixed 60px
-            // and truncated PIDs once the indent was inside it (#906).
-            //
-            // Name is fixed-width too (120px by default), so the indent has to come out of the
-            // name's own room; it cannot be granted extra width per frame. TableSetupColumn()'s
-            // init_width_or_weight is applied to a *resizable* column only while the table is
-            // initializing (imgui_tables.cpp:989 gates it on !column_is_resizable), so passing a
-            // depth-dependent width on later frames is silently ignored.
-            //
-            // So the indent yields instead: it is clamped against the cell's actual width, always
-            // reserving the expander slot plus MIN_NAME_WIDTH_EM of name. Deep rows therefore
-            // show less indentation than their depth would suggest rather than losing the name or,
-            // worse, the expander -- a parent whose expander is pushed out of the cell cannot be
-            // collapsed back to a usable width, which is a dead end rather than a cosmetic clip.
-            // Restoring full indent fidelity needs a wider default Name column, tracked in #913.
-            // The expander slot is the control itself plus the ItemSpacing.x that SameLine() adds
-            // after it -- both the button and the leaf Dummy are followed by SameLine(), so the
-            // spacing is always paid and must be reserved or the name keeps less room than promised.
-            const float expanderSlotWidth = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.x;
-            const float treeEmPx = ImGui::GetFontSize();
-            const float reservedForControls = expanderSlotWidth + (ProcessTreeIndent::MIN_NAME_WIDTH_EM * treeEmPx);
-            const float indentWidth =
-                m_TreeViewEnabled
-                    ? ProcessTreeIndent::clampedIndent(
-                          depth, ProcessTreeIndent::INDENT_PER_LEVEL_EM * treeEmPx, ImGui::GetContentRegionAvail().x, reservedForControls)
-                    : 0.0F;
-            const bool indented = indentWidth > 0.0F;
-            if (indented)
-            {
-                ImGui::Indent(indentWidth);
-            }
-
-            if (m_TreeViewEnabled && hasChildren)
-            {
-                // A caret, pointing down when expanded and right when collapsed (#1209), centred in the
-                // same slot a leaf's spacer takes, as tall as the text so the row keeps its height.
-                // Stack-allocated button ID: avoids heap allocation per visible row per frame
-                std::array<char, 40> buttonIdBuf{};
-                auto btnRes = std::format_to_n(buttonIdBuf.data(), buttonIdBuf.size() - 1, "##tree_btn_{}", proc.uniqueKey);
-                *btnRes.out = '\0';
-                const ImVec2 slotPos = ImGui::GetCursorScreenPos();
-                const float slotWidth = ImGui::GetFrameHeight();
-                const bool toggled = ImGui::InvisibleButton(buttonIdBuf.data(), ImVec2(slotWidth, ImGui::GetTextLineHeight()));
-                const auto& scheme = UI::Theme::get().scheme();
-                const float caretWidth = isExpanded ? m_TextSizeCache.caretDownWidth : m_TextSizeCache.caretRightWidth;
-                ImGui::GetWindowDrawList()->AddText(
-                    ImVec2(slotPos.x + std::floor((slotWidth - caretWidth) * 0.5F), slotPos.y),
-                    ImGui::ColorConvertFloat4ToU32(ImGui::IsItemHovered() ? scheme.textPrimary : scheme.textMuted),
-                    isExpanded ? ICON_FA_CARET_DOWN : ICON_FA_CARET_RIGHT);
-                ImGui::SetItemTooltip(isExpanded ? "Collapse" : "Expand");
-                if (toggled)
-                {
-                    // Toggle collapsed state using uniqueKey
-                    if (isExpanded)
-                    {
-                        m_CollapsedKeys.insert(proc.uniqueKey);
-                    }
-                    else
-                    {
-                        m_CollapsedKeys.erase(proc.uniqueKey);
-                    }
-                    ++m_CollapseGeneration; // The tree's rows are rebuilt next frame (#1138)
-                }
-                ImGui::SameLine();
-            }
-            else if (m_TreeViewEnabled)
-            {
-                // Keep names aligned with their siblings that do have an expander.
-                ImGui::Dummy(ImVec2(ImGui::GetFrameHeight(), 0.0F));
-                ImGui::SameLine();
-            }
-
-            renderLeftAlignedText(proc.name, fmt.nameWidth);
-
-            if (indented)
-            {
-                ImGui::Unindent(indentWidth);
-            }
-            break;
-        }
-
-        case ProcessColumn::PPID:
-            renderRightAlignedText(fmt.ppid);
-            break;
-
-        case ProcessColumn::Priority:
-        {
-            // getPriorityLabel returns string_view into static storage — no allocation needed.
-            // Not RowFormatCache-backed (it's a direct nice-value lookup, not a per-row
-            // formatted string), so its width comes from TextSizeCache's small fixed-label
-            // width cache instead of an AlignedCellText.
-            const std::string_view priorityLabel = Domain::Priority::getPriorityLabel(proc.nice);
-            renderRightAlignedText(priorityLabel, m_TextSizeCache.getPriorityLabelWidth(priorityLabel));
-            break;
-        }
-
-        case ProcessColumn::Threads:
-            renderRightAlignedText(fmt.threads);
-            break;
-
-        case ProcessColumn::Handles:
-            renderRightAlignedText(fmt.handles);
-            break;
-
-        case ProcessColumn::PageFaults:
-            renderRightAlignedText(fmt.pageFaults);
-            break;
-
-        case ProcessColumn::Affinity:
-            renderRightAlignedText(fmt.affinity);
-            break;
-
-        case ProcessColumn::Command:
-            if (!proc.command.empty())
-            {
-                renderLeftAlignedText(proc.command, fmt.commandWidth);
-            }
-            else
-            {
-                // Show name in brackets if no command line available
-                ImGui::Text("[%s]", proc.name.c_str());
-            }
-            break;
-
-        case ProcessColumn::IoRead:
-            renderUnitAlignedText(fmt.ioRead, m_TextSizeCache.unitBytesPerSecWidth);
-            break;
-
-        case ProcessColumn::IoWrite:
-            renderUnitAlignedText(fmt.ioWrite, m_TextSizeCache.unitBytesPerSecWidth);
-            break;
-
-        case ProcessColumn::NetSent:
-            renderUnitAlignedText(fmt.netSent, m_TextSizeCache.unitBytesPerSecWidth);
-            break;
-
-        case ProcessColumn::NetReceived:
-            renderUnitAlignedText(fmt.netRecv, m_TextSizeCache.unitBytesPerSecWidth);
-            break;
-
-        case ProcessColumn::Power:
-            renderUnitAlignedText(fmt.power, m_TextSizeCache.unitPowerWidth);
-            break;
-
-        case ProcessColumn::GpuPercent:
-            renderRightAlignedText(fmt.gpuPercent);
-            break;
-
-        case ProcessColumn::GpuMemory:
-            renderUnitAlignedText(fmt.gpuMemory, m_TextSizeCache.unitBytesWidth);
-            break;
-
-        // A process using no GPU has no engine or device: blank, like a measured nothing. Where the GPU
-        // probe has no per-process metrics, unavailable instead (#1210).
-        case ProcessColumn::GpuEngine:
-            renderTextCell(ProcessColumnAvailability::textCell(m_PerProcessGpu, !fmt.gpuEngines.empty()),
-                           fmt.gpuEngines,
-                           fmt.gpuEnginesWidth,
-                           m_TextSizeCache.unavailableTextWidth);
-            break;
-
-        case ProcessColumn::GpuDevice:
-            renderTextCell(ProcessColumnAvailability::textCell(m_PerProcessGpu, !proc.gpuDevices.empty()),
-                           proc.gpuDevices,
-                           fmt.gpuDevicesWidth,
-                           m_TextSizeCache.unavailableTextWidth);
-            break;
-
-        case ProcessColumn::Publisher:
-        {
-            // An executable without a publisher and one that could not be read look alike (both
-            // empty), so an empty publisher is blank rather than claimed unavailable.
-            renderTextCell(ProcessColumnAvailability::textCell(caps.hasPublisher, !proc.publisher.empty()),
-                           proc.publisher,
-                           fmt.publisherWidth,
-                           m_TextSizeCache.unavailableTextWidth);
-            break;
-        }
-
-        case ProcessColumn::Type:
-        {
-            if (!caps.hasProcessType)
-            {
-                renderUnavailableTextCell(ProcessRowFormat::UNSUPPORTED_CELL_REASON, m_TextSizeCache.unavailableTextWidth);
-            }
-            else if (!proc.processType.empty())
-            {
-                const auto& scheme = UI::Theme::get().scheme();
-                ImVec4 typeColor;
-                if (proc.processType == "App")
-                {
-                    typeColor = scheme.statusRunning;
-                }
-                else if (proc.processType == "Windows Process")
-                {
-                    typeColor = scheme.textInfo;
-                }
-                else
-                {
-                    typeColor = scheme.textMuted;
-                }
-                ImGui::PushStyleColor(ImGuiCol_Text, typeColor);
-                renderLeftAlignedText(proc.processType, fmt.processTypeWidth);
-                ImGui::PopStyleColor();
-            }
-            else
-            {
-                renderUnavailableTextCell(ProcessRowFormat::UNREADABLE_CELL_REASON, m_TextSizeCache.unavailableTextWidth);
-            }
-            break;
-        }
-
-        case ProcessColumn::GdiObjects:
-            // Unavailable only when the probe could not read the count (process not accessible).
-            // A count of 0 is a valid result for non-GUI background processes and is shown as a muted "0".
-            renderRightAlignedText(fmt.gdiObjects);
-            break;
-
-        default:
-            break;
-        }
+        CELL_RENDERERS[toIndex(col)](proc, fmt, m_TextSizeCache.cells);
     }
 }
 
+void ProcessesPanel::renderPidCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, bool columnVisible)
+{
+    // The PID column: the row's selectable anchor and its right-aligned PID text.
+    // The tree indent and expand/collapse control deliberately do NOT live here
+    // -- see the comment below and #906.
+
+    // By identity, not PID alone: after the selected process exits, a new process
+    // given its PID is a different row and must not inherit the highlight.
+    const bool isSelected = ProcessDetailsLayout::snapshotIsSelectedProcess(m_SelectedPid, m_SelectedUniqueKey, proc.pid, proc.uniqueKey);
+
+    // The tree indent and expand/collapse button live in the Name column, not
+    // here. This column is a fixed 60px, so indenting it pushed the PID text past
+    // the cell's clip rect and silently truncated digits at depth >= 1 -- 589
+    // rendered as "5" (see #906). Name is fixed-width too (120px), so it cannot
+    // absorb the indent for free -- the indent is clamped against the cell
+    // instead, see renderNameCell(). Indenting the name is what comparable
+    // process viewers do.
+
+    // Stack-allocated label and selectable ID — avoids heap allocations per
+    // visible row per frame
+    std::array<char, 16> labelBuf{};
+    const auto labelResult = std::to_chars(labelBuf.data(), labelBuf.data() + labelBuf.size() - 1, proc.pid);
+    *labelResult.ptr = '\0';
+    const std::string_view label(labelBuf.data(), static_cast<std::size_t>(labelResult.ptr - labelBuf.data()));
+
+    std::array<char, 40> selectableIdBuf{};
+    auto selRes = std::format_to_n(selectableIdBuf.data(), selectableIdBuf.size() - 1, "##pid_select_{}", proc.uniqueKey);
+    *selRes.out = '\0';
+    // ImGui fills a hovered row with HeaderHovered even when it is selected, so
+    // the row just clicked would show the weaker hover tint until the pointer
+    // left it. Keep the selected fill while hovered (#1190).
+    if (isSelected)
+    {
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImGui::GetStyleColorVec4(ImGuiCol_Header));
+    }
+    const bool clicked =
+        ImGui::Selectable(selectableIdBuf.data(), isSelected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap);
+    if (isSelected)
+    {
+        ImGui::PopStyleColor();
+    }
+    if (clicked)
+    {
+        selectProcess(proc);
+    }
+    // A right-press selects the row and opens its menu for that same process, in the same
+    // frame. ImGui's context-item popup opens on the release instead, by which time the
+    // table may have re-sorted and put another process under the pointer (#1365).
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+    {
+        selectProcess(proc);
+        m_RowMenuTarget = proc;
+        ImGui::OpenPopup(m_RowMenuPopupId);
+    }
+    if (!columnVisible)
+    {
+        return; // Scrolled out of view: the row stays selectable, the PID text is
+                // not drawn
+    }
+    ImGui::SameLine(0.0F, 0.0F);
+    // Keep PID text right-aligned in its column in both list and tree modes.
+    renderRightAlignedText(label, cachedTextWidth(label, fmt.pidWidth));
+}
+
+void ProcessesPanel::renderNameCell(
+    const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, int depth, bool hasChildren, bool isExpanded)
+{
+    // Tree depth is expressed here rather than in the PID column, which is a
+    // fixed 60px and truncated PIDs once the indent was inside it (#906).
+    //
+    // Name is fixed-width too (120px by default), so the indent has to come out
+    // of the name's own room; it cannot be granted extra width per frame.
+    // TableSetupColumn()'s init_width_or_weight is applied to a *resizable*
+    // column only while the table is initializing (imgui_tables.cpp:989 gates it
+    // on !column_is_resizable), so passing a depth-dependent width on later
+    // frames is silently ignored.
+    //
+    // So the indent yields instead: it is clamped against the cell's actual
+    // width, always reserving the expander slot plus MIN_NAME_WIDTH_EM of name.
+    // Deep rows therefore show less indentation than their depth would suggest
+    // rather than losing the name or, worse, the expander -- a parent whose
+    // expander is pushed out of the cell cannot be collapsed back to a usable
+    // width, which is a dead end rather than a cosmetic clip. Restoring full
+    // indent fidelity needs a wider default Name column, tracked in #913. The
+    // expander slot is the control itself plus the ItemSpacing.x that SameLine()
+    // adds after it -- both the button and the leaf Dummy are followed by
+    // SameLine(), so the spacing is always paid and must be reserved or the name
+    // keeps less room than promised.
+    const float expanderSlotWidth = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.x;
+    const float treeEmPx = ImGui::GetFontSize();
+    const float reservedForControls = expanderSlotWidth + (ProcessTreeIndent::MIN_NAME_WIDTH_EM * treeEmPx);
+    const float indentWidth =
+        m_TreeViewEnabled
+            ? ProcessTreeIndent::clampedIndent(
+                  depth, ProcessTreeIndent::INDENT_PER_LEVEL_EM * treeEmPx, ImGui::GetContentRegionAvail().x, reservedForControls)
+            : 0.0F;
+    const bool indented = indentWidth > 0.0F;
+    if (indented)
+    {
+        ImGui::Indent(indentWidth);
+    }
+
+    if (m_TreeViewEnabled && hasChildren)
+    {
+        // A caret, pointing down when expanded and right when collapsed (#1209), centred in the
+        // same slot a leaf's spacer takes, as tall as the text so the row keeps its height.
+        // Stack-allocated button ID: avoids heap allocation per visible row per frame
+        std::array<char, 40> buttonIdBuf{};
+        auto btnRes = std::format_to_n(buttonIdBuf.data(), buttonIdBuf.size() - 1, "##tree_btn_{}", proc.uniqueKey);
+        *btnRes.out = '\0';
+        const ImVec2 slotPos = ImGui::GetCursorScreenPos();
+        const float slotWidth = ImGui::GetFrameHeight();
+        const bool toggled = ImGui::InvisibleButton(buttonIdBuf.data(), ImVec2(slotWidth, ImGui::GetTextLineHeight()));
+        const auto& scheme = UI::Theme::get().scheme();
+        const float caretWidth = isExpanded ? m_TextSizeCache.caretDownWidth : m_TextSizeCache.caretRightWidth;
+        ImGui::GetWindowDrawList()->AddText(ImVec2(slotPos.x + std::floor((slotWidth - caretWidth) * 0.5F), slotPos.y),
+                                            ImGui::ColorConvertFloat4ToU32(ImGui::IsItemHovered() ? scheme.textPrimary : scheme.textMuted),
+                                            isExpanded ? ICON_FA_CARET_DOWN : ICON_FA_CARET_RIGHT);
+        ImGui::SetItemTooltip(isExpanded ? "Collapse" : "Expand");
+        if (toggled)
+        {
+            // Toggle collapsed state using uniqueKey
+            if (isExpanded)
+            {
+                m_CollapsedKeys.insert(proc.uniqueKey);
+            }
+            else
+            {
+                m_CollapsedKeys.erase(proc.uniqueKey);
+            }
+            ++m_CollapseGeneration; // The tree's rows are rebuilt next frame (#1138)
+        }
+        ImGui::SameLine();
+    }
+    else if (m_TreeViewEnabled)
+    {
+        // Keep names aligned with their siblings that do have an expander.
+        ImGui::Dummy(ImVec2(ImGui::GetFrameHeight(), 0.0F));
+        ImGui::SameLine();
+    }
+
+    renderLeftAlignedText(proc.name, fmt.nameWidth);
+
+    if (indented)
+    {
+        ImGui::Unindent(indentWidth);
+    }
+}
 void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots, const std::vector<std::size_t>& filteredIndices)
 {
     // The expanded, filtered tree flattened into render order (roots in the order of filteredIndices,

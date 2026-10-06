@@ -277,6 +277,10 @@ TEST(ProcessColumnAvailabilityTest, RowFormatOptionsMirrorTheCapabilities)
     EXPECT_TRUE(options.hasPageFaults);
     EXPECT_TRUE(options.hasCpuAffinity);
     EXPECT_TRUE(options.hasGdiObjects);
+    EXPECT_TRUE(options.hasStatus);
+    EXPECT_TRUE(options.hasPublisher);
+    EXPECT_TRUE(options.hasProcessType);
+    EXPECT_FALSE(rowFormatOptions(linuxWithoutRaplCapabilities()).hasPublisher);
 
     // And every column the options gate agrees with isSupported().
     const Platform::ProcessCapabilities none{};
