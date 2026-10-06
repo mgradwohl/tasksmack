@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -647,13 +648,21 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
     // Use GetIfTable2 for 64-bit counters and proper Unicode interface names.
     // GetIfTable2 allocates the buffer internally; we must free it with FreeMibTable.
     // Available since Windows Vista/Server 2008.
-    MIB_IF_TABLE2* table = nullptr;
-    const DWORD status = GetIfTable2(&table);
-    if (status != NO_ERROR || table == nullptr)
+    MIB_IF_TABLE2* rawTable = nullptr;
+    const DWORD status = GetIfTable2(&rawTable);
+    if (status != NO_ERROR || rawTable == nullptr)
     {
         spdlog::warn("GetIfTable2 failed: {}", status);
         return;
     }
+    // Owned from here, so an exception thrown while the rows are read (the device-id cache and
+    // registry lookups allocate) still frees it; the sampler catches and carries on, so a raw
+    // pointer leaked a table on every failed sample (#1369 review).
+    const auto freeTable = [](MIB_IF_TABLE2* t) noexcept
+    {
+        FreeMibTable(t);
+    };
+    const std::unique_ptr<MIB_IF_TABLE2, decltype(freeTable)> table(rawTable, freeTable);
 
     for (ULONG i = 0; i < table->NumEntries; ++i)
     {
@@ -734,9 +743,6 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
 
         counters.networkInterfaces.push_back(std::move(ifaceCounters));
     }
-
-    // Free the table allocated by GetIfTable2
-    FreeMibTable(table);
 
     // Hardware interfaces only, unless there are none -- as on Linux and in SystemModel (#1257).
     const NetworkTotals totals = sumCountedInterfaces(counters.networkInterfaces);
