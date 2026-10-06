@@ -980,6 +980,46 @@ TEST(NVMLDevicesToLeaveIdleTest, AnUnmatchedDevicesLastReadIsForgotten)
     EXPECT_TRUE(lastRead.empty());
 }
 
+// An idle NVIDIA adapter's NVML counters are its last reading repeated, still marked available. Its
+// memory in use must come from PDH's current collect, not the repeated NVML figure, while the NVML
+// total and sensors are kept (#1265).
+TEST(ExcludeIdleNVMLMemoryTest, AnIdleAdaptersMemoryInUseIsPDHsCurrentFigure)
+{
+    std::vector<GPUCounters> dxgi(2);
+    dxgi[0].gpuId = "PCI_01:00.0_10DE:2684";
+    dxgi[1].gpuId = "PCI_41:00.0_10DE:2684";
+    std::vector<GPUCounters> nvml(2);
+    for (std::size_t i = 0; i < nvml.size(); ++i)
+    {
+        nvml[i].gpuId = i == 0 ? "GPU-idle" : "GPU-busy";
+        nvml[i].memoryUsedBytes = 1'000'000'000; // The idle one's is a repeated, stale reading
+        nvml[i].memoryTotalBytes = 24'000'000'000;
+        nvml[i].temperatureC = 40;
+    }
+    std::unordered_set<std::string> memoryIds;
+    static_cast<void>(mergeNVMLIntoDXGICounters(dxgi, nvml, {{0U, 0U}, {1U, 1U}}, &memoryIds));
+    ASSERT_EQ(memoryIds.size(), 2U);
+
+    const std::unordered_map<std::string, std::string> adapters = {{"GPU-idle", "PCI_01:00.0_10DE:2684"},
+                                                                   {"GPU-busy", "PCI_41:00.0_10DE:2684"}};
+    excludeIdleNVMLMemory(memoryIds, {"GPU-idle"}, adapters);
+    EXPECT_EQ(memoryIds, (std::unordered_set<std::string>{"PCI_41:00.0_10DE:2684"}));
+
+    const std::unordered_map<std::string, AdapterMemoryUsage> pdhMemory = {
+        {"GPU_0x0_0x1", {.dedicatedBytes = 300'000'000, .sharedBytes = 0, .dedicatedRead = true, .sharedRead = true}},
+        {"GPU_0x0_0x2", {.dedicatedBytes = 5'000'000'000, .sharedBytes = 0, .dedicatedRead = true, .sharedRead = true}},
+    };
+    const std::unordered_map<std::string, std::string> idToLuid = {{"PCI_01:00.0_10DE:2684", "GPU_0x0_0x1"},
+                                                                   {"PCI_41:00.0_10DE:2684", "GPU_0x0_0x2"}};
+    assignPDHMemoryToDXGICounters(dxgi, pdhMemory, idToLuid, {}, memoryIds);
+
+    EXPECT_TRUE(dxgi[0].memoryAvailable);
+    EXPECT_EQ(dxgi[0].memoryUsedBytes, 300'000'000U) << "PDH's current figure, not the repeated NVML one";
+    EXPECT_EQ(dxgi[0].memoryTotalBytes, 24'000'000'000U) << "NVML's total is kept";
+    EXPECT_EQ(dxgi[0].temperatureC, 40) << "And its sensors";
+    EXPECT_EQ(dxgi[1].memoryUsedBytes, 1'000'000'000U) << "A device read this sample keeps NVML's memory";
+}
+
 // ==========================================================================
 // Process Counter Reading Tests
 // ==========================================================================

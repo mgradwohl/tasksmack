@@ -546,4 +546,26 @@ nvmlDevicesToLeaveIdle(const std::unordered_map<std::string, std::string>& adapt
     return idle;
 }
 
+/// Take the adapters of the NVML devices left idle this sample (nvmlDevicesToLeaveIdle()) out of
+/// @p nvmlMemoryIds, so assignPDHMemoryToDXGICounters() gives them PDH's current memory in use. An
+/// idle device's NVML counters are its last reading repeated, still marked available, so without
+/// this the merge counted them as NVML's memory and the adapter's memory in use froze for as long
+/// as it stayed idle (up to NVML_IDLE_MAX_READING_AGE). The repeated total and sensors are kept: they
+/// change slowly, and only NVML has them (#1265).
+/// @param nvmlMemoryIds The adapter ids whose memory came from NVML (mergeNVMLIntoDXGICounters())
+/// @param idleDeviceIds The NVML device ids left idle this sample
+/// @param adapterIdByDeviceId The matched DXGI adapter's id per NVML device id
+inline void excludeIdleNVMLMemory(std::unordered_set<std::string>& nvmlMemoryIds,
+                                  const std::unordered_set<std::string>& idleDeviceIds,
+                                  const std::unordered_map<std::string, std::string>& adapterIdByDeviceId)
+{
+    for (const auto& deviceId : idleDeviceIds)
+    {
+        if (const auto adapterId = adapterIdByDeviceId.find(deviceId); adapterId != adapterIdByDeviceId.end())
+        {
+            nvmlMemoryIds.erase(adapterId->second);
+        }
+    }
+}
+
 } // namespace Platform

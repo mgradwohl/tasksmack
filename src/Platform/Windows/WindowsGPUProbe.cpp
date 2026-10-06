@@ -198,10 +198,13 @@ std::vector<GPUCounters> WindowsGPUProbe::readGPUCounters()
         // An NVIDIA GPU PDH saw idle last interval isn't queried through NVML, whose queries could
         // keep a hybrid dGPU from suspending; its previous NVML readings stand (#1265). Without a PDH
         // reading for it, it is queried as before.
-        m_NVMLProbe->setIdleDevices(
+        const std::unordered_set<std::string> idleDevices =
             pdhAvailable ? nvmlDevicesToLeaveIdle(m_NVMLAdapterIds, m_LastPDHUtilization, m_NVMLLastRead, std::chrono::steady_clock::now())
-                         : std::unordered_set<std::string>{});
+                         : std::unordered_set<std::string>{};
+        m_NVMLProbe->setIdleDevices(idleDevices);
         nvmlSourcedIds = mergeNVMLEnhancements(counters, nvmlMemoryIds, /*takeUtilization=*/!pdhAvailable);
+        // Their memory in use is PDH's current figure, not the repeated NVML one.
+        excludeIdleNVMLMemory(nvmlMemoryIds, idleDevices, m_NVMLAdapterIds);
     }
 
     // PDH per-adapter utilization matched to each adapter
