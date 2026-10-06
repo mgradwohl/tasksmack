@@ -86,7 +86,7 @@ void ShellLayer::onAttach()
     ProcessesPanel::restoreTableLayout(config.settings().processTableLayout);
 
     // Share the process model with panels that render system-level aggregates
-    if (auto* processModel = m_ProcessesPanel.processModel(); processModel != nullptr)
+    if (const auto processModel = m_ProcessesPanel.processModel(); processModel != nullptr)
     {
         m_SystemMetricsPanel.setProcessModel(processModel);
 
