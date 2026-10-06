@@ -177,38 +177,16 @@ void renderCpuCoresSection(RenderContext& ctx)
         };
 
         // Every cell gets the same cellHeight (ImGuiTableFlags_SizingStretchSame) and renders an
-        // identically-shaped label row (same font, same one Spacing() call, same wrapping
-        // table), so the resulting vertical overhead -- and therefore plotHeight -- is identical
-        // across all coreCount cells and doesn't change frame to frame unless the metrics it's
-        // built from do. Cache it across frames (not just across cells within one frame) so it's
-        // remeasured only when that actually happens, not on every single frame regardless.
-        //
-        // Keyed on the actual style values the measurement depends on (text line height,
-        // ItemSpacing.y, CellPadding.y) rather than theme.currentFontSize() alone: today's theme
-        // switches happen to leave those metrics untouched (Theme::applyImGuiStyle sets them to
-        // fixed values independent of the color scheme), but that's a property of the current
-        // theme implementation, not something this cache should have to assume stays true (#823
-        // review).
-        static std::optional<float> cachedOverhead;
-        static float cachedTextLineHeight = -1.0F;
-        static float cachedItemSpacingY = -1.0F;
-        static float cachedCellPaddingY = -1.0F;
-        // Epsilon rather than `==`/`!=` on floats (CodeQL cpp/equality-on-floats): these are
-        // stored style values, not accumulated arithmetic, so exact comparison would actually be
-        // safe here, but a tolerance costs nothing and avoids relying on that.
-        constexpr float STYLE_METRIC_EPSILON = 1e-4F;
-        if (const float textLineHeight = ImGui::GetTextLineHeight(),
-            itemSpacingY = ImGui::GetStyle().ItemSpacing.y,
-            cellPaddingY = ImGui::GetStyle().CellPadding.y;
-            std::abs(cachedTextLineHeight - textLineHeight) > STYLE_METRIC_EPSILON ||
-            std::abs(cachedItemSpacingY - itemSpacingY) > STYLE_METRIC_EPSILON ||
-            std::abs(cachedCellPaddingY - cellPaddingY) > STYLE_METRIC_EPSILON)
-        {
-            cachedOverhead.reset();
-            cachedTextLineHeight = textLineHeight;
-            cachedItemSpacingY = itemSpacingY;
-            cachedCellPaddingY = cellPaddingY;
-        }
+        // identically-shaped label row (same font, same one Spacing() call, same wrapping table), so
+        // the resulting vertical overhead -- and therefore plotHeight -- is identical across all
+        // coreCount cells and doesn't change frame to frame unless the style metrics it's built from
+        // do: measured once and cached across frames (UI::Widgets::CellOverheadCache).
+        static UI::Widgets::CellOverheadCache overheadCache;
+        const UI::Widgets::CellStyleMetrics styleMetrics{
+            .textLineHeight = ImGui::GetTextLineHeight(),
+            .itemSpacingY = ImGui::GetStyle().ItemSpacing.y,
+            .cellPaddingY = ImGui::GetStyle().CellPadding.y,
+        };
 
         renderChartGrid("PerCoreGrid",
                         coreCount,
@@ -261,16 +239,21 @@ void renderCpuCoresSection(RenderContext& ctx)
                             ImGui::SameLine(0.0F, valueGap);
                             ImGui::TextUnformatted(bar.valueText.c_str());
                             ImGui::Spacing();
-                            if (!cachedOverhead.has_value())
+                            float measuredOverhead = 0.0F;
+                            if (const auto cached = overheadCache.get(styleMetrics))
+                            {
+                                measuredOverhead = *cached;
+                            }
+                            else
                             {
                                 // renderHistoryWithNowBars wraps the chart+bar in its own table, whose
                                 // CellPadding.y (top+bottom) compactSpacing doesn't zero (only the
                                 // horizontal padding) -- account for it here rather than clipping the
                                 // chart against it (#823 review: residual scrollbar after the cell's
                                 // own WindowPadding was already corrected for).
-                                cachedOverhead = (ImGui::GetCursorPosY() - cellContentTop) + (ImGui::GetStyle().CellPadding.y * 2.0F);
+                                measuredOverhead = (ImGui::GetCursorPosY() - cellContentTop) + (ImGui::GetStyle().CellPadding.y * 2.0F);
+                                overheadCache.store(styleMetrics, measuredOverhead);
                             }
-                            const float measuredOverhead = *cachedOverhead;
 
                             const auto timeData = tailAlignedSpan(sharedTimeData, samples.size()).values;
                             const float plotHeight = std::max(minCorePlotHeight(), cellHeight - measuredOverhead);

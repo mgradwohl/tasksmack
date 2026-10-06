@@ -135,6 +135,74 @@ TEST(ChartWidgetsTest, TailAlignedSpanWithEmptyDataReturnsEmptySpan)
     EXPECT_TRUE(span.values.empty());
 }
 
+// ========== tailAlignedOffset / tailAlignedSampleAt (#1180) ==========
+
+TEST(ChartWidgetsTest, TailAlignedOffsetPutsAShortSeriesAtTheEndOfTheAxis)
+{
+    EXPECT_EQ(tailAlignedOffset(5, 3), 2U);
+    EXPECT_EQ(tailAlignedOffset(5, 5), 0U);
+    EXPECT_EQ(tailAlignedOffset(5, 0), 5U);
+    EXPECT_EQ(tailAlignedOffset(5, 8), 0U); // longer than the axis
+    // The same offset tailAlignedSpan() takes the newest entries from.
+    const std::vector<double> axis{1.0, 2.0, 3.0, 4.0, 5.0};
+    EXPECT_EQ(tailAlignedSpan(axis, 3).offset, tailAlignedOffset(axis.size(), 3));
+}
+
+TEST(ChartWidgetsTest, TailAlignedSampleAtReadsTheSampleUnderAnAxisIndex)
+{
+    // Three float samples on a five-entry axis: indices 0 and 1 have none.
+    const std::vector<float> series{10.0F, std::numeric_limits<float>::quiet_NaN(), 30.0F};
+    const std::size_t offset = tailAlignedOffset(5, series.size());
+    EXPECT_FALSE(tailAlignedSampleAt<float>(series, offset, 0).has_value());
+    EXPECT_FALSE(tailAlignedSampleAt<float>(series, offset, 1).has_value());
+    EXPECT_DOUBLE_EQ(tailAlignedSampleAt<float>(series, offset, 2).value_or(-1.0), 10.0);
+    // A gap is a sample, returned as NaN for the caller to show as N/A.
+    const auto gap = tailAlignedSampleAt<float>(series, offset, 3);
+    ASSERT_TRUE(gap.has_value());
+    EXPECT_TRUE(std::isnan(gap.value_or(0.0)));
+    EXPECT_DOUBLE_EQ(tailAlignedSampleAt<float>(series, offset, 4).value_or(-1.0), 30.0);
+    EXPECT_FALSE(tailAlignedSampleAt<float>(series, offset, 5).has_value()); // past the axis
+}
+
+// ========== holdLastSamplesToNow (#1016, #1180) ==========
+
+TEST(ChartWidgetsTest, HoldLastSamplesToNowExtendsEverySeriesToNow)
+{
+    std::vector<double> x{-3.0, -1.5};
+    std::vector<double> band{10.0, 20.0};
+    std::vector<double> line{1.0, std::numeric_limits<double>::quiet_NaN()};
+    holdLastSamplesToNow(x, {&band, &line});
+    ASSERT_EQ(x.size(), 3U);
+    EXPECT_DOUBLE_EQ(x.back(), 0.0);
+    ASSERT_EQ(band.size(), 3U);
+    EXPECT_DOUBLE_EQ(band.back(), 20.0);
+    // A trailing gap is held too, so every series stays the axis's length.
+    ASSERT_EQ(line.size(), 3U);
+    EXPECT_TRUE(std::isnan(line.back()));
+}
+
+TEST(ChartWidgetsTest, HoldLastSamplesToNowLeavesAnAxisAlreadyAtNowAlone)
+{
+    std::vector<double> atNow{-1.0, 0.0};
+    std::vector<double> values{1.0, 2.0};
+    holdLastSamplesToNow(atNow, {&values});
+    EXPECT_EQ(atNow.size(), 2U);
+    EXPECT_EQ(values.size(), 2U);
+
+    std::vector<double> empty;
+    std::vector<double> none;
+    holdLastSamplesToNow(empty, {&none});
+    EXPECT_TRUE(empty.empty());
+    EXPECT_TRUE(none.empty());
+
+    // A series of another length is not padded.
+    std::vector<double> x{-2.0, -1.0};
+    std::vector<double> shorter{5.0};
+    holdLastSamplesToNow(x, {&shorter});
+    EXPECT_EQ(x.size(), 3U);
+    EXPECT_EQ(shorter.size(), 1U);
+}
+
 // ========== NowBar ==========
 
 TEST(NowBarListTest, HoldsBarsInOrderAndViewsThemAsASpan)

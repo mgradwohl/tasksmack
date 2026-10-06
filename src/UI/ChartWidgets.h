@@ -10,6 +10,7 @@
 #include "UI/RateAxis.h"
 #include "UI/RenderMetrics.h"
 #include "UI/StyleScale.h"
+#include "UI/TailAlignedSeries.h" // IWYU pragma: export
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
@@ -1012,6 +1013,27 @@ template<typename T> inline void holdLastValueToNow(std::vector<T>& x, std::vect
     y.push_back(y.back());
 }
 
+/// holdLastValueToNow() for a chart whose series share one x axis -- a stacked chart's bands and the
+/// lines drawn over them: when the newest point is left of x = 0, every series gets its last value
+/// repeated at x = 0, gap (NaN) or not, so the bands stay the same length as the axis (#1016, #1180).
+/// A series not the length of @p x is left alone.
+template<typename T> inline void holdLastSamplesToNow(std::vector<T>& x, std::initializer_list<std::vector<T>*> series)
+{
+    if (x.empty() || !(static_cast<double>(x.back()) < 0.0))
+    {
+        return;
+    }
+    const std::size_t count = x.size();
+    x.push_back(T{0});
+    for (std::vector<T>* values : series)
+    {
+        if (values != nullptr && values->size() == count)
+        {
+            values->push_back(values->back());
+        }
+    }
+}
+
 /// The data generation of the HistoryChart being drawn (HistoryChartConfig::dataGeneration) and the
 /// ID of its plot. HistoryChart sets it for its lifetime, so plotLineWithFill() can cache its series'
 /// reductions (#1139) without every call site passing a key of its own.
@@ -1789,23 +1811,7 @@ class NowBarList
     return std::clamp(value / maxValue, 0.0, 1.0);
 }
 
-template<typename T> struct TailAlignedSpan
-{
-    std::span<const T> values;
-    std::size_t offset = 0;
-};
-
-template<typename T> [[nodiscard]] inline TailAlignedSpan<T> tailAlignedSpan(std::span<const T> data, std::size_t count)
-{
-    const std::size_t clampedCount = std::min(count, data.size());
-    const std::size_t offset = data.size() - clampedCount;
-    return {data.subspan(offset, clampedCount), offset};
-}
-
-template<typename T> [[nodiscard]] inline TailAlignedSpan<T> tailAlignedSpan(const std::vector<T>& data, std::size_t count)
-{
-    return tailAlignedSpan(std::span<const T>(data), count);
-}
+// TailAlignedSpan / tailAlignedSpan(): UI/TailAlignedSeries.h, exported through this header.
 
 // Returns the tooltip string to display for a NowBar, using the fallback chain:
 //   tooltipText (if non-empty) -> "label: valueText" (if both non-empty) -> label -> valueText
