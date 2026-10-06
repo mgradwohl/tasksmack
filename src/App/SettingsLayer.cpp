@@ -173,12 +173,8 @@ void SettingsLayer::applySettings()
         if (newThemeId != settings.themeId)
         {
             settings.themeId = newThemeId;
+            // The next frame renders with it; nothing needs notifying or re-sampling (#1178).
             themeManager.setThemeById(newThemeId);
-            // Notify UI to invalidate theme-dependent caches
-            {
-                Core::ThemeChangedEvent event(newThemeId);
-                Core::Application::get().raiseEvent(event);
-            }
             spdlog::info("Theme changed to {}", newThemeId);
         }
     }

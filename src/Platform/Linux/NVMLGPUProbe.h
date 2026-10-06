@@ -19,10 +19,14 @@ namespace Platform
 /// removal, a driver rebind), a query reported the GPU lost, or NVML failed to start while a GPU is
 /// bound to the nvidia driver (a driver mid-reload), and asks for a re-enumeration once a
 /// GPU that was asleep at enumeration wakes, so its own sensor set is found (#1116, #1289).
+/// A GPU already asleep when NVML starts gets no device-addressed NVML call at all -- no handle,
+/// UUID, name or PCI query, any of which would wake it -- as long as sysfs accounts for every device
+/// NVML counts. It is described from sysfs and the driver's `nvidiaProcRoot`/<address>/information
+/// until it first wakes, and then looked up by its PCI address (#1270); tests pass a fake root.
 class NVMLGPUProbe final : public IGPUProbe
 {
   public:
-    explicit NVMLGPUProbe(std::string pciDevicesRoot = "/sys/bus/pci/devices");
+    explicit NVMLGPUProbe(std::string pciDevicesRoot = "/sys/bus/pci/devices", std::string nvidiaProcRoot = "/proc/driver/nvidia/gpus");
     ~NVMLGPUProbe() override;
 
     // Rule of 5: Delete copy/move operations

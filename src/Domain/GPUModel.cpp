@@ -612,6 +612,7 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
         snapshot.name = infoIt->name;
         snapshot.vendor = infoIt->vendor;
         snapshot.isIntegrated = infoIt->isIntegrated;
+        snapshot.memoryIsShared = infoIt->memoryIsShared;
         snapshot.luidId = infoIt->luidId; // For PDH counter matching
     }
 
