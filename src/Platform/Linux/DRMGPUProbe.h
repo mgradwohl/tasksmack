@@ -84,7 +84,8 @@ class DRMGPUProbe : public IGPUProbe
     /// Parses a DRM file's /proc/<pid>/fdinfo/<fd> text (the kernel's drm-usage-stats format): i915's
     /// drm-engine-<class> busy nanoseconds, stamped with `monotonicNs` as their total, or xe's
     /// drm-cycles-<class> with drm-total-cycles-<class>, and drm-engine-capacity-<class> for either.
-    /// nullopt when the text has no drm-client-id (the fd isn't, or is no longer, a DRM file).
+    /// nullopt when the text has no drm-client-id: the fd isn't, or is no longer, a DRM file, or its
+    /// kernel prints no drm-* keys (i915 before Linux 5.19), which only the fd's link tells apart.
     [[nodiscard]] static std::optional<DrmFdinfo> parseFdinfo(std::string_view text, std::uint64_t monotonicNs);
 
   private:
@@ -96,7 +97,8 @@ class DRMGPUProbe : public IGPUProbe
     struct DrmClientFds
     {
         // The client's drm-client-id, once one of its fdinfo files has been read; nullopt for a path
-        // discoverDrmClients() has found but no sample has read yet.
+        // discoverDrmClients() has found but no sample has read yet, or for a DRM file whose kernel
+        // prints no drm-client-id (i915 before 5.19), which is kept with that one path (#1361).
         std::optional<std::uint64_t> clientId;
         // The client's fdinfo paths, never empty: the first is the one read each sample, the rest are
         // aliases, read in turn only once the first has closed or names another file.
@@ -186,8 +188,25 @@ class DRMGPUProbe : public IGPUProbe
     /// One fdinfo file is read per client: a client's aliases only once the file read for it has
     /// closed or names another file. Clients found to share a drm-client-id are merged (#1356).
     void readEngineClients(DRMCard& card, GPUCounters& counter);
-    /// The fdinfo at `path` if it is still a DRM file of `card`'s device; nullopt otherwise.
-    [[nodiscard]] std::optional<DrmFdinfo> readClientFdinfo(const std::string& path, const DRMCard& card);
+    /// What readClientFdinfo() found at a client's fdinfo path.
+    struct ClientFdinfoRead
+    {
+        enum class Kind : std::uint8_t
+        {
+            Gone,            // Closed, or no longer a DRM file of the card: dropped
+            WithoutClientId, // A DRM file of the card whose kernel prints no drm-* keys (i915 before 5.19)
+            Client,          // A DRM client of the card: `info` holds its fdinfo
+        };
+        Kind kind{Kind::Gone};
+        DrmFdinfo info;
+    };
+    /// Reads the fdinfo at `path`: a client if it is still a DRM file of `card`'s device. An fdinfo
+    /// that has no drm-client-id is a DRM file without usage stats when its fd still links to one
+    /// of the card's DRM nodes (#1361), and gone otherwise.
+    [[nodiscard]] ClientFdinfoRead readClientFdinfo(const std::string& path, const DRMCard& card);
+    /// Whether the fd whose fdinfo is at `fdinfoPath` (<proc>/<pid>/fdinfo/<n>) links to one of `card`'s
+    /// DRM nodes (/dev/dri/cardN or its render node).
+    [[nodiscard]] static bool fdLinksToCard(const std::string& fdinfoPath, const DRMCard& card);
 
     bool m_Available{false};
     // Set when a card's GPUInfo would differ from the last enumerateGPUs() -- its queried VRAM total

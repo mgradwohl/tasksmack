@@ -30,6 +30,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <tuple>
 #include <utility>
@@ -2076,12 +2077,61 @@ TEST_F(DRMGPUProbeEngineTest, ASuspendedCardsClientsAreNotRead)
     EXPECT_TRUE(counters[0].engineClients.empty());
 }
 
-// A kernel whose fdinfo has no engine stats (i915 before 5.19): utilization stays N/A, not 0%.
+// A client whose fdinfo has a drm-client-id but no engine busyness (none of its classes reported):
+// utilization stays N/A, not 0%. A real pre-5.19 i915 prints no drm-* keys at all: see the next test.
 TEST_F(DRMGPUProbeEngineTest, ClientsWithoutEngineStatsLeaveBusynessUnread)
 {
     makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", "drm-driver:\txe\ndrm-pdev:\t0000:03:00.0\ndrm-client-id:\t7\n");
     const auto probe = makeProbe();
     EXPECT_FALSE(probe->readGPUCounters()[0].engineBusyAvailable);
+}
+
+/// A DRM fd's fdinfo on i915 before Linux 5.19: no drm-* keys at all, so no drm-client-id (#1361).
+constexpr std::string_view PRE_5_19_FDINFO = "pos:\t0\nflags:\t02100002\nmnt_id:\t25\nino:\t1234\n";
+
+// #1361: on i915 before 5.19 a client's fdinfo has no drm-client-id, which isn't a closed fd while the
+// fd still links to the card: the card has a client without engine stats, so N/A, not idle (0%).
+TEST_F(DRMGPUProbeEngineTest, Pre519DrmFdWithoutClientIdLeavesBusynessUnread)
+{
+    std::filesystem::remove(m_PciDir / "driver");
+    std::filesystem::create_symlink("/nonexistent/drivers/i915", m_PciDir / "driver");
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", std::string(PRE_5_19_FDINFO));
+    const auto probe = makeProbe();
+    for (int sample = 0; sample < 2; ++sample)
+    {
+        const auto counters = probe->readGPUCounters();
+        ASSERT_EQ(counters.size(), 1U);
+        EXPECT_FALSE(counters[0].engineBusyAvailable) << "sample " << sample;
+        EXPECT_TRUE(counters[0].engineClients.empty());
+    }
+    // One fdinfo read per sample for the client, kept from one sample to the next.
+    const auto before = DRMGPUProbeTestAccessor::fdinfoReads(*probe);
+    std::ignore = probe->readGPUCounters();
+    EXPECT_EQ(DRMGPUProbeTestAccessor::fdinfoReads(*probe), before + 1U);
+    EXPECT_FALSE(utilizationAfterTwoSamples(makeProbe()).has_value());
+
+    // Once the fd closes, the card has no clients: idle.
+    std::filesystem::remove_all(m_ProcRoot / "100");
+    EXPECT_TRUE(probe->readGPUCounters()[0].engineBusyAvailable);
+}
+
+// #1361: the same fdinfo from an fd whose number now names something other than the card's DRM node
+// is a closed client's reused fd, dropped as before: with no other clients, the card is idle.
+TEST_F(DRMGPUProbeEngineTest, ReusedFdWithoutClientIdIsDropped)
+{
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", std::string(PRE_5_19_FDINFO));
+    const auto probe = makeProbe();
+    const auto first = probe->readGPUCounters();
+    ASSERT_EQ(first.size(), 1U);
+    EXPECT_FALSE(first[0].engineBusyAvailable); // Still the card's: a client without stats
+
+    const auto link = m_ProcRoot / "100" / "fd" / "4";
+    std::filesystem::remove(link);
+    std::filesystem::create_symlink("/home/user/notes.txt", link); // Closed, and its number reused
+    const auto counters = probe->readGPUCounters();
+    EXPECT_TRUE(counters[0].engineClients.empty());
+    EXPECT_TRUE(counters[0].engineBusyAvailable); // Idle, not unread
+    EXPECT_TRUE(probe->readGPUCounters()[0].engineBusyAvailable);
 }
 
 // The issue's regression test: a fake fdinfo tree, two samples, the utilization Domain derives.

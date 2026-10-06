@@ -987,22 +987,43 @@ void DRMGPUProbe::discoverDrmClients()
     }
 }
 
-std::optional<DRMGPUProbe::DrmFdinfo> DRMGPUProbe::readClientFdinfo(const std::string& path, const DRMCard& card)
+DRMGPUProbe::ClientFdinfoRead DRMGPUProbe::readClientFdinfo(const std::string& path, const DRMCard& card)
 {
+    using Kind = ClientFdinfoRead::Kind;
     ++m_FdinfoReads;
     std::ifstream file(path);
     if (!file.is_open())
     {
-        return std::nullopt; // The fd was closed or its process exited
+        return {}; // The fd was closed or its process exited
     }
     const std::string text{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
     auto info = parseFdinfo(text, m_Clock());
-    // drm-pdev can be checked only against a card whose id is its PCI address.
-    if (!info.has_value() || (pciBusFromAddress(card.gpuId).has_value() && !info->pdev.empty() && info->pdev != card.gpuId))
+    if (!info.has_value())
     {
-        return std::nullopt; // The fd number now names another file
+        // No drm-client-id: the fd number now names another file, or this is a DRM file on a kernel
+        // that prints no drm-* keys at all (i915 before Linux 5.19, whose fdinfo is only pos, flags,
+        // mnt_id and ino). Only the fd's link tells them apart (#1361).
+        return fdLinksToCard(path, card) ? ClientFdinfoRead{.kind = Kind::WithoutClientId, .info = {}} : ClientFdinfoRead{};
     }
-    return info;
+    // drm-pdev can be checked only against a card whose id is its PCI address.
+    if (pciBusFromAddress(card.gpuId).has_value() && !info->pdev.empty() && info->pdev != card.gpuId)
+    {
+        return {}; // The fd number now names another device's DRM file
+    }
+    return {.kind = Kind::Client, .info = std::move(*info)};
+}
+
+bool DRMGPUProbe::fdLinksToCard(const std::string& fdinfoPath, const DRMCard& card)
+{
+    const Fs::path fdinfo(fdinfoPath);
+    std::error_code linkErr;
+    const auto target = Fs::read_symlink(fdinfo.parent_path().parent_path() / "fd" / fdinfo.filename(), linkErr);
+    if (linkErr)
+    {
+        return false; // Closed since its fdinfo was read, or its process exited
+    }
+    const std::string& node = target.native();
+    return node == std::format("/dev/dri/card{}", card.cardIndex) || (!card.renderNodePath.empty() && node == card.renderNodePath);
 }
 
 void DRMGPUProbe::readEngineClients(DRMCard& card, GPUCounters& counter)
@@ -1035,30 +1056,40 @@ void DRMGPUProbe::readEngineClients(DRMCard& card, GPUCounters& counter)
         std::size_t next = 0;
         while (next < paths.size())
         {
-            const auto info = readClientFdinfo(paths[next], card);
-            if (!info.has_value())
+            const auto read = readClientFdinfo(paths[next], card);
+            if (read.kind == ClientFdinfoRead::Kind::Gone)
             {
                 ++next; // Closed, or no longer this card's DRM file: dropped
                 continue;
             }
-            if (client.clientId.has_value() && client.clientId != info->client.clientId)
+            if (read.kind == ClientFdinfoRead::Kind::WithoutClientId)
+            {
+                // A client without usage stats (#1361): without an id it can't be matched to its aliases,
+                // so each such path is kept as a client of its own, and the rest of the paths read on.
+                kept.push_back(DrmClientFds{.clientId = std::nullopt, .fdinfoPaths = {std::move(paths[next])}});
+                ++next;
+                continue;
+            }
+            const auto& info = read.info;
+            if (client.clientId.has_value() && client.clientId != info.client.clientId)
             {
                 // The fd number was reused for another DRM file: it is that client's now, while the
                 // rest of the paths may still name this one.
-                keep({std::move(paths[next])}, *info);
+                keep({std::move(paths[next])}, info);
                 ++next;
                 continue;
             }
             paths.erase(paths.begin(), paths.begin() + static_cast<std::ptrdiff_t>(next)); // next < size()
-            keep(std::move(paths), *info);
+            keep(std::move(paths), info);
             break;
         }
     }
     card.clients = std::move(kept);
     // Unread when the card has clients and none reports any busyness: a kernel without fdinfo engine
-    // stats (i915 before Linux 5.19). A card with no clients at all is idle. Either needs a /proc walk
-    // that could see every client: an unlistable /proc, a walk cut short, or every process's fds denied
-    // leaves the client set partial, so neither idle nor the busyness of the clients found is published.
+    // stats (i915 before Linux 5.19, whose clients are kept without an id). A card with no clients at
+    // all is idle. Either needs a /proc walk that could see every client: an unlistable /proc, a walk
+    // cut short, or every process's fds denied leaves the client set partial, so neither idle nor the
+    // busyness of the clients found is published.
     counter.engineBusyAvailable = m_ClientScanReliable && (anyEngineStats || card.clients.empty());
 }
 
