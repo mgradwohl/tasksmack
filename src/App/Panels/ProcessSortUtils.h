@@ -1,6 +1,7 @@
 #pragma once
 
 #include "App/ProcessColumnConfig.h"
+#include "Domain/PriorityConfig.h"
 #include "Domain/ProcessSnapshot.h"
 
 #include <optional>
@@ -57,7 +58,9 @@ compareColumnKey(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot
     case ProcessColumn::PPID:
         return compare(a.parentPid, b.parentPid);
     case ProcessColumn::Priority:
-        return compare(a.nice, b.nice);
+        // By class, then nice: on Windows, Realtime sorts above High (#1280).
+        return compare(Domain::Priority::prioritySortKey(a.priorityClass, a.nice),
+                       Domain::Priority::prioritySortKey(b.priorityClass, b.nice));
     case ProcessColumn::Threads:
         return compare(a.threadCount, b.threadCount);
     case ProcessColumn::Handles:

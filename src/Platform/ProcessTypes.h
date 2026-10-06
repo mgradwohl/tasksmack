@@ -8,6 +8,20 @@
 namespace Platform
 {
 
+/// The OS's own priority class for a process, on a platform that schedules by class (Windows,
+/// GetPriorityClass()), lowest first. None: the platform has no classes (Linux; nice is the
+/// priority) or the class could not be read. A raw OS value, not a label: Domain names it (#1280).
+enum class PriorityClass : std::uint8_t
+{
+    None,
+    Idle,
+    BelowNormal,
+    Normal,
+    AboveNormal,
+    High,
+    Realtime,
+};
+
 /// Raw counters from OS - no computed values.
 /// Probes populate this; domain computes deltas and rates.
 struct ProcessCounters
@@ -20,6 +34,9 @@ struct ProcessCounters
     char state = '?';      // Raw state character from OS (e.g., 'R', 'S', 'Z')
     std::string status;    // Process status (e.g., "Suspended", "Efficiency Mode")
     std::int32_t nice = 0; // Nice value (-20 to 19 on Linux)
+    // Windows: the class nice stands for, which nice alone can't name (Realtime and High both sit
+    // below HIGH_THRESHOLD, #1280). None on Linux, or when the class was not read.
+    PriorityClass priorityClass = PriorityClass::None;
 
     std::uint64_t startTimeTicks = 0; // For PID reuse detection (raw platform ticks)
     std::uint64_t startTimeEpoch = 0; // Process start time (Unix epoch seconds)

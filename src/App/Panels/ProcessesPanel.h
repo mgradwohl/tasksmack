@@ -34,21 +34,14 @@ namespace App
 using ProcessRowFormat::AlignedCellText;
 using ProcessRowFormat::RowFormatCache;
 
-/// Domain::Priority::getPriorityLabel()'s complete fixed set of possible return values, derived
-/// by calling the real function at one representative nice value per threshold bucket instead
-/// of duplicating its label strings here -- a hand-duplicated copy would silently drift (and
-/// make getPriorityLabelWidth() fall back to a wrong width of 0, misplacing the cell) if Domain
-/// ever renamed a label. Namespace-scope (not nested in ProcessesPanel) for the same reason as
+/// Domain::Priority::getProcessPriorityLabel()'s complete fixed set of possible return values, taken
+/// from Domain rather than duplicated here -- a hand-duplicated copy would silently drift (and make
+/// getPriorityLabelWidth() fall back to a wrong width of 0, misplacing the cell) if Domain ever
+/// renamed a label. Namespace-scope (not nested in ProcessesPanel) for the same reason as
 /// AlignedCellText: both ProcessesPanel::TextSizeCache (header) and the free helper functions in
 /// ProcessesPanel.cpp's anonymous namespace need to see it, and it must be visible wherever
 /// TextSizeCache::priorityLabelWidths is sized.
-inline constexpr std::array<std::string_view, 5> PRIORITY_LABELS = {
-    Domain::Priority::getPriorityLabel(Domain::Priority::MIN_NICE),               // < HIGH_THRESHOLD           -> "High"
-    Domain::Priority::getPriorityLabel(Domain::Priority::HIGH_THRESHOLD),         // < ABOVE_NORMAL_THRESHOLD   -> "Above Normal"
-    Domain::Priority::getPriorityLabel(Domain::Priority::NORMAL_NICE),            // < BELOW_NORMAL_THRESHOLD   -> "Normal"
-    Domain::Priority::getPriorityLabel(Domain::Priority::BELOW_NORMAL_THRESHOLD), // < IDLE_THRESHOLD          -> "Below Normal"
-    Domain::Priority::getPriorityLabel(Domain::Priority::MAX_NICE),               // >= IDLE_THRESHOLD          -> "Idle"
-};
+inline constexpr auto PRIORITY_LABELS = Domain::Priority::PROCESS_PRIORITY_LABELS;
 
 /// Panel for displaying and managing the process list.
 /// Refresh cadence is driven by the main loop via onUpdate().
@@ -245,12 +238,13 @@ class ProcessesPanel : public Panel
         float treeViewLabelWidth = 0.0F;
         float listViewLabelWidth = 0.0F;
 
-        // Widths for PRIORITY_LABELS (Domain::Priority::getPriorityLabel()'s fixed label set).
+        // Widths for PRIORITY_LABELS (Domain::Priority::getProcessPriorityLabel()'s fixed label set).
         // That column isn't backed by RowFormatCache (it's a live std::string_view lookup, not
         // a per-row formatted string), so its width can't ride along with RowFormatCache's
         // per-row AlignedCellText widths -- cached here instead, alongside this panel's other
         // small fixed-string-set widths.
         std::array<float, PRIORITY_LABELS.size()> priorityLabelWidths{};
+        float widestPriorityLabelWidth = 0.0F; // The Priority column's default width fits it (#1280)
 
         // Font pointer and font-atlas generation used when cache was populated (for invalidation)
         const ImFont* fontPtr = nullptr;
@@ -272,8 +266,8 @@ class ProcessesPanel : public Panel
             return columnHeaderWidths[toIndex(col)];
         }
 
-        /// Get the cached width of one of Domain::Priority::getPriorityLabel()'s fixed labels.
-        /// Returns 0 for any other string (getPriorityLabel never returns anything else).
+        /// Get the cached width of one of Domain::Priority::getProcessPriorityLabel()'s fixed labels.
+        /// Returns 0 for any other string (getProcessPriorityLabel never returns anything else).
         [[nodiscard]] float getPriorityLabelWidth(std::string_view label) const noexcept;
     };
 

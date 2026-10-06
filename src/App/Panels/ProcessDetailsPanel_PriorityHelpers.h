@@ -289,17 +289,10 @@ inline constexpr bool PRIORITY_USES_WINDOWS_CLASSES = true;
 inline constexpr bool PRIORITY_USES_WINDOWS_CLASSES = false;
 #endif
 
-/// A Windows priority class, lowest first.
-enum class WindowsPriorityClass : std::uint8_t
-{
-    Idle,
-    BelowNormal,
-    Normal,
-    AboveNormal,
-    High,
-    /// Reported, never set: Platform::niceToPriorityClass() deliberately stops at High.
-    Realtime,
-};
+/// A Windows priority class, lowest first: Domain's, which the Processes table names too (#1280).
+/// Realtime is reported, never set: Platform::niceToPriorityClass() deliberately stops at High.
+/// None never comes from windowsPriorityClassFromNice().
+using WindowsPriorityClass = Domain::Priority::PriorityClass;
 
 /// The classes the priority control offers, in its order. Realtime is not among them.
 inline constexpr std::array<WindowsPriorityClass, 5> SETTABLE_WINDOWS_PRIORITY_CLASSES = {
@@ -360,15 +353,11 @@ inline constexpr std::array<WindowsPriorityClass, 5> SETTABLE_WINDOWS_PRIORITY_C
     return WindowsPriorityClass::Idle;
 }
 
-/// The class's name, as the Processes table's Priority column spells it (getPriorityLabel());
-/// Realtime, which that column cannot tell from High, is named here.
+/// The class's name, as the Processes table's Priority column spells it
+/// (Domain::Priority::getPriorityClassLabel(), #1280).
 [[nodiscard]] constexpr auto windowsPriorityClassName(WindowsPriorityClass priorityClass) noexcept -> std::string_view
 {
-    if (priorityClass == WindowsPriorityClass::Realtime)
-    {
-        return "Realtime";
-    }
-    return Domain::Priority::getPriorityLabel(windowsPriorityClassNice(priorityClass));
+    return Domain::Priority::getPriorityClassLabel(priorityClass);
 }
 
 /// Process Details' Overview priority text: the class name on Windows, where nice values mean

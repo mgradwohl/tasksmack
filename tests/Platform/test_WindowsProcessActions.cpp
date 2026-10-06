@@ -120,6 +120,26 @@ TEST(PriorityClassToNiceTest, AnUnknownClassIsNormal)
 static_assert(priorityClassToNice(HIGH_PRIORITY_CLASS) < Domain::Priority::HIGH_THRESHOLD);
 
 // =============================================================================
+// toPriorityClass: the class the probe reports beside nice (#1280)
+// =============================================================================
+
+TEST(ToPriorityClassTest, EveryWin32ClassIsNamed)
+{
+    EXPECT_EQ(toPriorityClass(IDLE_PRIORITY_CLASS), PriorityClass::Idle);
+    EXPECT_EQ(toPriorityClass(BELOW_NORMAL_PRIORITY_CLASS), PriorityClass::BelowNormal);
+    EXPECT_EQ(toPriorityClass(NORMAL_PRIORITY_CLASS), PriorityClass::Normal);
+    EXPECT_EQ(toPriorityClass(ABOVE_NORMAL_PRIORITY_CLASS), PriorityClass::AboveNormal);
+    EXPECT_EQ(toPriorityClass(HIGH_PRIORITY_CLASS), PriorityClass::High);
+    EXPECT_EQ(toPriorityClass(REALTIME_PRIORITY_CLASS), PriorityClass::Realtime);
+}
+
+TEST(ToPriorityClassTest, AnUnknownClassIsNone)
+{
+    EXPECT_EQ(toPriorityClass(0), PriorityClass::None); // GetPriorityClass() failed
+    EXPECT_EQ(toPriorityClass(0x12345U), PriorityClass::None);
+}
+
+// =============================================================================
 // Terminate's close request (#1094)
 // =============================================================================
 
