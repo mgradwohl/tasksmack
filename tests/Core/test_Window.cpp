@@ -518,6 +518,8 @@ TEST_F(WindowTest, ShellMinimizeWithoutWinDownStillMinimizesTheMaximizedWindow)
     try
     {
         Window window(WindowSpecification{.Title = "ShellMinimizeTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        // No Win+Down, whatever the real keyboard is doing.
+        window.setShellRestoreKeysReader([]() noexcept { return std::pair{false, false}; });
         window.maximize();
         if (!window.isMaximized())
         {
@@ -541,6 +543,75 @@ TEST_F(WindowTest, ShellMinimizeWithoutWinDownStillMinimizesTheMaximizedWindow)
     }
 }
 #endif
+
+// #1279: the fix itself. With Win+Down held, the shell's minimize of the client-side maximized
+// window is dropped and the window is restored to its normal rectangle instead, as the first
+// Win+Down restores a native maximized window. The key state is injected: a locked or headless
+// desktop cannot hold real keys.
+TEST_F(WindowTest, ShellMinimizeWithWinDownRestoresTheMaximizedWindow)
+{
+    try
+    {
+        Window window(WindowSpecification{.Title = "ShellRestoreTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        window.setShellRestoreKeysReader([]() noexcept { return std::pair{true, true}; });
+        const auto normalGeometry = window.getNormalGeometry();
+        ASSERT_TRUE(normalGeometry.has_value());
+        const WindowGeometry::Rect normal = normalGeometry.value_or(WindowGeometry::Rect{});
+        window.maximize();
+        if (!window.isMaximized())
+        {
+            GTEST_SKIP() << "Maximize unavailable on this display (headless environment)";
+        }
+        auto* const hwnd = static_cast<HWND>(
+            SDL_GetPointerProperty(SDL_GetWindowProperties(window.getHandle()), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+        ASSERT_NE(hwnd, nullptr);
+
+        SendMessageW(hwnd, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+        SDL_PumpEvents();
+
+        EXPECT_FALSE(window.isMinimized());
+        EXPECT_FALSE(window.isMaximized());
+        EXPECT_EQ(window.getSize(), (std::pair{normal.width, normal.height}));
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
+
+// #1279: a minimize that did not pass through WM_SYSCOMMAND (here SDL_MinimizeWindow(), standing in
+// for one the shell carried out directly) is undone from SDL_EVENT_WINDOW_MINIMIZED: the window is
+// brought back and restored to its normal rectangle.
+TEST_F(WindowTest, MinimizeAlreadyCarriedOutWithWinDownIsUndoneAndRestored)
+{
+    try
+    {
+        Window window(
+            WindowSpecification{.Title = "ShellRestoreFallbackTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        window.setShellRestoreKeysReader([]() noexcept { return std::pair{true, true}; });
+        const auto normalGeometry = window.getNormalGeometry();
+        ASSERT_TRUE(normalGeometry.has_value());
+        const WindowGeometry::Rect normal = normalGeometry.value_or(WindowGeometry::Rect{});
+        window.maximize();
+        if (!window.isMaximized())
+        {
+            GTEST_SKIP() << "Maximize unavailable on this display (headless environment)";
+        }
+        window.minimize();
+        SDL_PumpEvents();
+        ASSERT_TRUE(window.isMinimized());
+
+        EXPECT_TRUE(window.restoreForShellMinimize());
+
+        EXPECT_FALSE(window.isMinimized());
+        EXPECT_FALSE(window.isMaximized());
+        EXPECT_EQ(window.getSize(), (std::pair{normal.width, normal.height}));
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
 
 TEST_F(WindowTest, SetHitTestCallbackDoesNotThrow)
 {

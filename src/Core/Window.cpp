@@ -914,7 +914,7 @@ bool Window::restoreForShellMinimize()
     {
         return false;
     }
-    const auto [winKeyDown, downKeyDown] = shellRestoreKeysHeld();
+    const auto [winKeyDown, downKeyDown] = m_ShellRestoreKeysReader != nullptr ? m_ShellRestoreKeysReader() : shellRestoreKeysHeld();
     if (!WindowGeometry::shellMinimizeRestores(m_Geometry.state(), winKeyDown, downKeyDown))
     {
         return false;

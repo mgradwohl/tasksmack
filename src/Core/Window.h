@@ -158,6 +158,14 @@ class Window
     /// keyboard state on Windows; does nothing elsewhere.
     /// @return Whether the window was restored, so a minimize not yet carried out should be dropped.
     bool restoreForShellMinimize();
+    /// Reads whether {a Windows key, the Down arrow} are held, for restoreForShellMinimize().
+    using ShellRestoreKeysReader = auto (*)() noexcept -> std::pair<bool, bool>;
+    /// Replace how this window reads the Win+Down key state; nullptr restores the real keyboard
+    /// state. A test seam: synthetic input cannot hold keys on a locked or headless desktop (#1279).
+    void setShellRestoreKeysReader(ShellRestoreKeysReader reader) noexcept
+    {
+        m_ShellRestoreKeysReader = reader;
+    }
     void restore();
     void minimize() const;
 
@@ -185,6 +193,8 @@ class Window
     // restore whoever starts it (#1250). Its state is the only maximized signal for a borderless
     // window on a client-side-maximize backend (see isMaximized()).
     WindowGeometry::NormalGeometryTracker m_Geometry;
+    // See setShellRestoreKeysReader(); nullptr reads the keyboard.
+    ShellRestoreKeysReader m_ShellRestoreKeysReader = nullptr;
 
 #ifdef _WIN32
     // Owned title-bar/taskbar icon handles (opaque void* here so <windows.h> stays out of
