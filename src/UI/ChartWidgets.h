@@ -590,6 +590,20 @@ inline void reduceSeriesKeepingGaps(const TX* xData, const TY* yData, int count,
     return std::exp2(std::ceil(std::log2(span / static_cast<double>(bucketCount))));
 }
 
+/// The integer index of the min-max bucket of width `width` that holds `x`: floor(x / width), taken
+/// once, so samples are grouped by comparing integers rather than doubles (#1380). Saturates at
+/// +/-2^62 so the conversion is always defined; NaN, which no bucket holds, reads 0.
+[[nodiscard]] inline std::int64_t minMaxBucketIndex(double x, double width) noexcept
+{
+    constexpr double LIMIT = 4611686018427387904.0; // 2^62, exactly representable
+    const double bucket = std::floor(x / width);
+    if (std::isnan(bucket))
+    {
+        return 0;
+    }
+    return static_cast<std::int64_t>(std::clamp(bucket, -LIMIT, LIMIT));
+}
+
 /// Reduce `count` samples to at most `maxOut` points for drawing, keeping peaks and gaps (#1010).
 ///
 /// The samples are grouped into buckets of minMaxBucketWidth() along x, and each bucket contributes
@@ -648,13 +662,13 @@ inline int forEachMinMaxReducedPoint(const TX* xData,
 
     const auto bucketOf = [&](int index)
     {
-        return std::floor((static_cast<double>(xData[index]) + xOffset) / width);
+        return minMaxBucketIndex(static_cast<double>(xData[index]) + xOffset, width);
     };
     int written = 0;
     int bucketStart = 0;
     while (bucketStart < count)
     {
-        const double bucket = bucketOf(bucketStart);
+        const std::int64_t bucket = bucketOf(bucketStart);
         int minIdx = -1;
         int maxIdx = -1;
         int gapIdx = -1;
@@ -802,12 +816,12 @@ inline void forEachAlignedReducedPoint(std::span<const double> x,
 
     const auto bucketOf = [&](int index)
     {
-        return std::floor((x[static_cast<std::size_t>(index)] + xOffset) / width);
+        return minMaxBucketIndex(x[static_cast<std::size_t>(index)] + xOffset, width);
     };
     int bucketStart = 0;
     while (bucketStart < count)
     {
-        const double bucket = bucketOf(bucketStart);
+        const std::int64_t bucket = bucketOf(bucketStart);
         int next = bucketStart;
         while (next < count && bucketOf(next) == bucket)
         {

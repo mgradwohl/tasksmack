@@ -475,6 +475,74 @@ TEST(ChartWidgetsReduceTest, BucketWidthIsAPowerOfTwoThatHoldsAsTheSpanDrifts)
     EXPECT_DOUBLE_EQ(minMaxBucketWidth(std::numeric_limits<double>::quiet_NaN(), 239), 0.0);
 }
 
+TEST(ChartWidgetsReduceTest, BucketIndexIsTheFlooredIntegerAndABoundaryStartsTheNextBucket)
+{
+    // #1380: bucket indices are integers, floored once, so grouping compares integers, not doubles.
+    EXPECT_EQ(minMaxBucketIndex(0.0, 2.0), 0);
+    EXPECT_EQ(minMaxBucketIndex(1.999, 2.0), 0);
+    EXPECT_EQ(minMaxBucketIndex(2.0, 2.0), 1); // exactly on the edge: the next bucket
+    EXPECT_EQ(minMaxBucketIndex(864'150.0, 2.0), 432'075);
+    EXPECT_EQ(minMaxBucketIndex(864'150.0 - 2e-6, 2.0), 432'074);
+    EXPECT_EQ(minMaxBucketIndex(-0.5, 2.0), -1);
+    EXPECT_EQ(minMaxBucketIndex(-2.0, 2.0), -1);
+    EXPECT_EQ(minMaxBucketIndex(std::numeric_limits<double>::quiet_NaN(), 2.0), 0);
+    EXPECT_EQ(minMaxBucketIndex(1e300, 2.0), std::int64_t{1} << 62); // saturates: always defined
+    EXPECT_EQ(minMaxBucketIndex(-1e300, 2.0), -(std::int64_t{1} << 62));
+}
+
+namespace
+{
+// 16 samples 0.5 apart (x = 0 .. 7.5) reduced to 20 points: 5 buckets fit, so the width is 2 and the
+// buckets are [0, 2), [2, 4), [4, 6), [6, 8). Sample 3 (x = 1.5) is the first bucket's peak; sample 4
+// sits exactly on the x = 2 edge, starts the second bucket, and is its peak. Were sample 4 grouped
+// with the first bucket, it would displace sample 3 as that bucket's maximum.
+struct BoundaryFixture
+{
+    static constexpr int COUNT = 16;
+    static constexpr int MAX_OUT = 20;
+    std::vector<double> x = std::vector<double>(COUNT);
+    std::vector<double> y = std::vector<double>(COUNT, 10.0);
+    BoundaryFixture()
+    {
+        for (int i = 0; i < COUNT; ++i)
+        {
+            x[static_cast<std::size_t>(i)] = static_cast<double>(i) * 0.5;
+        }
+        y[3] = 50.0;
+        y[4] = 90.0;
+    }
+};
+} // namespace
+
+TEST(ChartWidgetsReduceTest, MinMaxReductionStartsANewBucketAtAnExactBoundary)
+{
+    const BoundaryFixture f;
+    ASSERT_DOUBLE_EQ(minMaxBucketWidth(f.x.back() - f.x.front(), ((BoundaryFixture::MAX_OUT - 2) / 3) - 1), 2.0);
+    std::vector<int> kept;
+    forEachMinMaxReducedPoint(f.x.data(),
+                              f.y.data(),
+                              BoundaryFixture::COUNT,
+                              BoundaryFixture::MAX_OUT,
+                              0.0,
+                              [&kept](int index, bool /*gap*/) { kept.push_back(index); });
+    EXPECT_NE(std::ranges::find(kept, 3), kept.end()) << "the first bucket lost its peak";
+    EXPECT_NE(std::ranges::find(kept, 4), kept.end()) << "the boundary sample lost its peak";
+}
+
+TEST(ChartWidgetsReduceTest, AlignedReductionStartsANewBucketAtAnExactBoundary)
+{
+    const BoundaryFixture f;
+    const std::array<std::span<const double>, 1> keyed{std::span<const double>(f.y)};
+    std::vector<int> kept;
+    forEachAlignedReducedPoint<double>(std::span<const double>(f.x),
+                                       std::span<const std::span<const double>>(keyed),
+                                       BoundaryFixture::MAX_OUT,
+                                       0.0,
+                                       [&kept](int index, bool /*gap*/) { kept.push_back(index); });
+    EXPECT_NE(std::ranges::find(kept, 3), kept.end()) << "the first bucket lost its peak";
+    EXPECT_NE(std::ranges::find(kept, 4), kept.end()) << "the boundary sample lost its peak";
+}
+
 namespace
 {
 // 100 ms samples over 300 s, as "seconds before now" (the last sample at x = 0).
