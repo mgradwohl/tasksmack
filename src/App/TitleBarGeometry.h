@@ -203,10 +203,69 @@ struct ContentMinimumHeightParts
     float titleBarPx;  ///< The custom title bar; 0 with native decorations (outside the client area).
     float mainTabsPx;  ///< The main tab strip, with the padding above and below it.
     float subTabsPx;   ///< A panel's sub-tab strip (Overview / CPU Cores / ...) and the gap below it.
-    float chartPx;     ///< One history chart at its minimum height, with the heading line above it.
+    float chartPx;     ///< The tallest tab's first chart block, from computeTallestFirstChartBlock().
     float statusBarPx; ///< The status bar.
     float chromePx;    ///< Padding above and below the content area.
 };
+
+/// Style metrics a tab's first history chart is laid out with, in pixels (#1278).
+struct ChartBlockStyle
+{
+    float textLineWithSpacingPx;    ///< ImGui::GetTextLineHeightWithSpacing(): a heading or text line.
+    float frameHeightWithSpacingPx; ///< ImGui::GetFrameHeightWithSpacing() at the tab body's frame
+                                    ///< padding: a collapsing header or a combo row.
+    float itemSpacingYPx;           ///< ImGuiStyle::ItemSpacing.y: an ImGui::Spacing(), and the gap after the chart.
+    float cellPaddingYPx;           ///< ImGuiStyle::CellPadding.y: renderHistoryWithNowBars() lays the plot out
+                                    ///< in a table that keeps it above and below the row, even when compact.
+    float plotMinHeightPx;          ///< The plot at UI::Widgets::historyPlotMinHeight(), whole pixels.
+};
+
+/// What a tab draws above its first history chart (#1278).
+struct ChartBlockLead
+{
+    int textLines; ///< Lines of text, the chart's own heading included.
+    int frameRows; ///< Framed rows: a collapsing header, a combo.
+    int spacings;  ///< ImGui::Spacing() calls.
+};
+
+/// System Overview: the CPU summary line, with process count and uptime wrapped onto a line of their
+/// own when the window is narrow, a Spacing(), then the "CPU Usage" heading.
+inline constexpr ChartBlockLead OVERVIEW_FIRST_CHART_LEAD{.textLines = 3, .frameRows = 0, .spacings = 1};
+/// System GPU, one adapter expanded: "GPU Monitoring (1 GPU)", a Spacing(), the adapter's
+/// collapsing header, then the "GPU Core & Video" heading (GpuSection::renderGpuSection()).
+inline constexpr ChartBlockLead GPU_FIRST_CHART_LEAD{.textLines = 2, .frameRows = 1, .spacings = 1};
+/// Network and I/O: the interface combo row, a Spacing(), then the "Network Throughput" heading.
+inline constexpr ChartBlockLead NETWORK_FIRST_CHART_LEAD{.textLines = 1, .frameRows = 1, .spacings = 1};
+
+/// Height a tab needs to show its first history chart whole, from the top of its body: what it draws
+/// above the chart, then the chart's table (cell padding above and below a plot at its minimum) and
+/// the item spacing after it. Unusable metrics and negative counts count as 0.
+[[nodiscard]] inline auto computeChartBlockHeight(const ChartBlockStyle& style, const ChartBlockLead& lead) -> float
+{
+    const auto atLeastZero = [](const float value)
+    {
+        return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
+    };
+    const auto count = [](const int n)
+    {
+        return static_cast<float>(std::max(n, 0));
+    };
+    const float above = (count(lead.textLines) * atLeastZero(style.textLineWithSpacingPx)) +
+                        (count(lead.frameRows) * atLeastZero(style.frameHeightWithSpacingPx)) +
+                        (count(lead.spacings) * atLeastZero(style.itemSpacingYPx));
+    const float chart = (atLeastZero(style.cellPaddingYPx) * 2.0F) + atLeastZero(style.plotMinHeightPx) + atLeastZero(style.itemSpacingYPx);
+    return above + chart;
+}
+
+/// The first chart block of whichever system tab needs the most height above its first chart, so
+/// that the minimum window height shows one whole chart on every one of them (#1278). The GPU tab,
+/// with its title line and adapter header, is the tallest at every style the theme produces.
+[[nodiscard]] inline auto computeTallestFirstChartBlock(const ChartBlockStyle& style) -> float
+{
+    return std::max({computeChartBlockHeight(style, OVERVIEW_FIRST_CHART_LEAD),
+                     computeChartBlockHeight(style, GPU_FIRST_CHART_LEAD),
+                     computeChartBlockHeight(style, NETWORK_FIRST_CHART_LEAD)});
+}
 
 /// Shortest content the window has to show without clipping it, in pixels (#1278): the title bar,
 /// the tab strips, one history chart at its minimum height (UI::Widgets::historyPlotMinHeight())

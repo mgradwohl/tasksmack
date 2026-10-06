@@ -412,22 +412,28 @@ void ShellLayer::onRender()
         // measurements a frame.
         const ImGuiStyle& style = ImGui::GetStyle();
         const float fontSize = ImGui::GetFontSize();
-        applyContentMinimumSize(
-            computeContentMinimumWidth(ProcessesPanel::measureToolbarMinimumWidth(),
-                                       m_SystemMetricsPanel.overviewNowBarColumnWidth(),
-                                       fontSize,
-                                       (contentPaddingH * 2.0F) + style.ScrollbarSize),
-            computeContentMinimumHeight({
-                .titleBarPx = titleBarHeight,
-                .mainTabsPx = mainTabsHeight,
-                // As the panels draw them: a tab bar at SUB_TAB_PADDING_Y, then the item spacing below it.
-                .subTabsPx = fontSize + (ShellMetrics::SUB_TAB_PADDING_Y * styleScale * 2.0F) + style.ItemSpacing.y,
-                // A chart's heading line above a plot at its floor (UI/HistoryPlotHeight.h).
-                .chartPx = ImGui::GetTextLineHeightWithSpacing() +
-                           std::floor(UI::Widgets::historyPlotMinHeight(fontSize, UI::chartEmPx())) + style.ItemSpacing.y,
-                .statusBarPx = statusBarHeight,
-                .chromePx = contentPaddingV * 2.0F,
-            }));
+        applyContentMinimumSize(computeContentMinimumWidth(ProcessesPanel::measureToolbarMinimumWidth(),
+                                                           m_SystemMetricsPanel.overviewNowBarColumnWidth(),
+                                                           fontSize,
+                                                           (contentPaddingH * 2.0F) + style.ScrollbarSize),
+                                computeContentMinimumHeight({
+                                    .titleBarPx = titleBarHeight,
+                                    .mainTabsPx = mainTabsHeight,
+                                    // As the panels draw them: a tab bar at SUB_TAB_PADDING_Y, then the item spacing below it.
+                                    .subTabsPx = fontSize + (ShellMetrics::SUB_TAB_PADDING_Y * styleScale * 2.0F) + style.ItemSpacing.y,
+                                    // The tallest tab's lead-in and first chart, at its floor (UI/HistoryPlotHeight.h). The
+                                    // tab bodies draw with the theme's FramePadding (TabContentScope), which is what is
+                                    // pushed here, outside the tab bars.
+                                    .chartPx = computeTallestFirstChartBlock({
+                                        .textLineWithSpacingPx = ImGui::GetTextLineHeightWithSpacing(),
+                                        .frameHeightWithSpacingPx = ImGui::GetFrameHeightWithSpacing(),
+                                        .itemSpacingYPx = style.ItemSpacing.y,
+                                        .cellPaddingYPx = style.CellPadding.y,
+                                        .plotMinHeightPx = std::floor(UI::Widgets::historyPlotMinHeight(fontSize, UI::chartEmPx())),
+                                    }),
+                                    .statusBarPx = statusBarHeight,
+                                    .chromePx = contentPaddingV * 2.0F,
+                                }));
 
         // Add padding by using a child window with border that provides internal padding
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(contentPaddingH, contentPaddingV));

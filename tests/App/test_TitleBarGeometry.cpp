@@ -1143,6 +1143,76 @@ TEST(TitleBarGeometryTest, ContentMinimumHeightIgnoresUnusableParts)
     EXPECT_FLOAT_EQ(computeContentMinimumHeight(parts), 210.0F);
 }
 
+// Style at 150% Medium: a 16px em, 4.5px item spacing, 3px cell padding, 4.5px frame padding.
+constexpr ChartBlockStyle STYLE_150{
+    .textLineWithSpacingPx = 20.5F,
+    .frameHeightWithSpacingPx = 29.5F,
+    .itemSpacingYPx = 4.5F,
+    .cellPaddingYPx = 3.0F,
+    .plotMinHeightPx = 180.0F,
+};
+
+// Copilot on #1370: renderHistoryWithNowBars() wraps the plot in a table that keeps its vertical cell
+// padding even with compact spacing, so the chart block is the plot plus that padding top and bottom.
+TEST(TitleBarGeometryTest, ChartBlockIncludesTheTablesCellPadding)
+{
+    const ChartBlockLead headingOnly{.textLines = 1, .frameRows = 0, .spacings = 0};
+    // heading 20.5 + cell padding 2 * 3 + plot 180 + spacing after 4.5
+    EXPECT_FLOAT_EQ(computeChartBlockHeight(STYLE_150, headingOnly), 211.0F);
+}
+
+// Copilot on #1370: the GPU tab draws "GPU Monitoring", a Spacing() and the expanded adapter's
+// header before its first chart's heading. The minimum must cover that, the tallest tab.
+TEST(TitleBarGeometryTest, ChartBlockCoversTheExpandedGpuTab)
+{
+    // 2 lines (41) + header row (29.5) + Spacing (4.5) + table (6 + 180) + spacing after (4.5)
+    EXPECT_FLOAT_EQ(computeChartBlockHeight(STYLE_150, GPU_FIRST_CHART_LEAD), 265.5F);
+    EXPECT_FLOAT_EQ(computeTallestFirstChartBlock(STYLE_150), 265.5F);
+    EXPECT_GE(computeTallestFirstChartBlock(STYLE_150), computeChartBlockHeight(STYLE_150, OVERVIEW_FIRST_CHART_LEAD));
+    EXPECT_GE(computeTallestFirstChartBlock(STYLE_150), computeChartBlockHeight(STYLE_150, NETWORK_FIRST_CHART_LEAD));
+
+    // And the window minimum built from it: title 45 + main tabs 58 + sub-tabs 44.5 + status 34 + chrome 12.
+    const float height = computeContentMinimumHeight({
+        .titleBarPx = 45.0F,
+        .mainTabsPx = 58.0F,
+        .subTabsPx = 44.5F,
+        .chartPx = computeTallestFirstChartBlock(STYLE_150),
+        .statusBarPx = 34.0F,
+        .chromePx = 12.0F,
+    });
+    EXPECT_FLOAT_EQ(height, 459.0F);
+    EXPECT_EQ(computeMinimumWindowSize(1.5F, 0.0F, 0.0F, height).height, 459);
+}
+
+// The largest lead-in wins whatever the style: a frame padding of zero still leaves the GPU tab
+// at least as tall as the Overview, and a combo row never makes Network taller than GPU.
+TEST(TitleBarGeometryTest, TallestFirstChartBlockIsTheMaximumOverTheTabs)
+{
+    const ChartBlockStyle flat{
+        .textLineWithSpacingPx = 20.0F,
+        .frameHeightWithSpacingPx = 20.0F,
+        .itemSpacingYPx = 4.0F,
+        .cellPaddingYPx = 2.0F,
+        .plotMinHeightPx = 100.0F,
+    };
+    const float tallest = computeTallestFirstChartBlock(flat);
+    EXPECT_FLOAT_EQ(tallest, computeChartBlockHeight(flat, OVERVIEW_FIRST_CHART_LEAD));
+    EXPECT_FLOAT_EQ(tallest, computeChartBlockHeight(flat, GPU_FIRST_CHART_LEAD));
+}
+
+TEST(TitleBarGeometryTest, ChartBlockIgnoresUnusableInputs)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const ChartBlockStyle broken{
+        .textLineWithSpacingPx = nan,
+        .frameHeightWithSpacingPx = -3.0F,
+        .itemSpacingYPx = std::numeric_limits<float>::infinity(),
+        .cellPaddingYPx = 2.0F,
+        .plotMinHeightPx = 100.0F,
+    };
+    EXPECT_FLOAT_EQ(computeChartBlockHeight(broken, ChartBlockLead{.textLines = -2, .frameRows = 1, .spacings = 1}), 104.0F);
+}
+
 // The reported case: at 150% the minimum height was the scaled base, 300px, which does not hold
 // the tab strips, one chart at its minimum and the status bar. The content now sets it.
 TEST(TitleBarGeometryTest, MinimumHeightCoversThePanelContent)
