@@ -2238,6 +2238,39 @@ TEST(ProcessModelTest, PeakRssTracksMaximumMemory)
     EXPECT_EQ(peak3, 20 * 1024 * 1024); // Peak should not decrease
 }
 
+TEST(ProcessModelTest, PageFaultRateCountsThroughTheProbesCounterWidth)
+{
+    // #1184: Windows keeps the page-fault count in a 32-bit ULONG. A wrap between samples is that
+    // interval's faults, not a 0 rate; a 64-bit counter that goes down is still a reset.
+    constexpr std::uint64_t MAX32 = 0xFFFF'FFFFULL;
+    for (const std::uint8_t bits : {std::uint8_t{32}, std::uint8_t{64}})
+    {
+        SCOPED_TRACE(static_cast<int>(bits));
+        auto probe = std::make_unique<MockProcessProbe>();
+        probe->setTotalCpuTime(100000);
+        probe->setCapabilities(Platform::ProcessCapabilities{.hasPageFaults = true, .pageFaultCountBits = bits});
+        auto* rawProbe = probe.get();
+        ManualClock clock;
+        Domain::ProcessModel model(std::move(probe), clock.now());
+
+        auto counter = makeCounter(100, "proc1", 'R', 1000, 500, 1000, 1024);
+        counter.pageFaultCount = MAX32 - 99;
+        rawProbe->setCounters({counter});
+        model.refresh();
+
+        clock.advance(std::chrono::seconds(1));
+        counter.pageFaultCount = 100; // 200 faults later, past the 32-bit top
+        counter.userTime += 100;
+        rawProbe->setCounters({counter});
+        rawProbe->setTotalCpuTime(200000);
+        model.refresh();
+
+        const auto snaps = model.snapshots();
+        ASSERT_EQ(snaps.size(), 1U);
+        EXPECT_DOUBLE_EQ(snaps[0].pageFaultsPerSec, bits == 32 ? 200.0 : 0.0);
+    }
+}
+
 TEST(ProcessModelTest, PeakRssResetForNewProcess)
 {
     auto probe = std::make_unique<MockProcessProbe>();

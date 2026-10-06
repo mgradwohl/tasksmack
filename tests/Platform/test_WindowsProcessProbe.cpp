@@ -62,6 +62,8 @@ TEST(WindowsProcessProbeTest, PowerAndSharedMemoryAreNotClaimedAndNoEnergyIsInve
     const auto caps = probe.capabilities();
     EXPECT_FALSE(caps.hasPowerUsage);
     EXPECT_FALSE(caps.hasSharedMemory);
+    // SYSTEM_PROCESS_INFORMATION's PageFaultCount is a 32-bit ULONG that wraps (#1184).
+    EXPECT_EQ(caps.pageFaultCountBits, 32U);
 
     for (int sample = 0; sample < 2; ++sample)
     {

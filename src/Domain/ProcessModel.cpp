@@ -304,8 +304,14 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
             state.peakRss = inserted ? current.rssBytes : std::max(state.peakRss, current.rssBytes);
         }
 
-        auto snapshot =
-            computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond, elapsedSeconds, timeDeltaUs);
+        auto snapshot = computeSnapshot(current,
+                                        previous,
+                                        totalCpuDelta,
+                                        m_SystemTotalMemory,
+                                        m_TicksPerSecond,
+                                        elapsedSeconds,
+                                        timeDeltaUs,
+                                        m_Capabilities.pageFaultCountBits);
         snapshot.peakMemoryBytes = state.peakRss;
 
         // Network rates are the byte delta over the last interval (#1036). They were (bytes now -
@@ -974,7 +980,8 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
                                               std::uint64_t systemTotalMemory,
                                               long ticksPerSecond,
                                               double elapsedSeconds,
-                                              std::uint64_t timeDeltaUs)
+                                              std::uint64_t timeDeltaUs,
+                                              unsigned pageFaultCountBits)
 {
     ProcessSnapshot snapshot;
     snapshot.pid = current.pid;
@@ -1051,7 +1058,10 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
             snapshot.ioReadBytesPerSec = Numeric::counterRate(current.readBytes, previous->readBytes, elapsedSeconds);
             snapshot.ioWriteBytesPerSec = Numeric::counterRate(current.writeBytes, previous->writeBytes, elapsedSeconds);
         }
-        snapshot.pageFaultsPerSec = Numeric::counterRate(current.pageFaultCount, previous->pageFaultCount, elapsedSeconds);
+        // The page-fault count wraps at 2^pageFaultCountBits (32 on Windows): a wrap is one interval's
+        // faults, not 0 (#1184).
+        snapshot.pageFaultsPerSec =
+            Numeric::wrappingCounterRate(current.pageFaultCount, previous->pageFaultCount, elapsedSeconds, pageFaultCountBits);
         // Network rates are computed in computeSnapshotsLocked(), which has the per-process state they
         // need (networkInterval, held rates).
     }

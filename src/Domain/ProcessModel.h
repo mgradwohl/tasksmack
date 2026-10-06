@@ -287,7 +287,8 @@ class ProcessModel : public ISamplable
                                                          std::uint64_t systemTotalMemory,
                                                          long ticksPerSecond,
                                                          double elapsedSeconds,
-                                                         std::uint64_t timeDeltaUs);
+                                                         std::uint64_t timeDeltaUs,
+                                                         unsigned pageFaultCountBits);
 
     void trimHistory();
     void applyHistoryCapacity();

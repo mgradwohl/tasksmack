@@ -163,6 +163,38 @@ TEST(NumericTest, CounterDeltaAtTheTopOfTheRange)
     EXPECT_EQ(counterDelta(std::numeric_limits<std::uint64_t>::max(), std::uint64_t{0}), std::numeric_limits<std::uint64_t>::max());
 }
 
+// ========== wrappingCounterDelta/wrappingCounterRate Tests (#1184) ==========
+
+TEST(NumericTest, WrappingCounterDeltaIsThePlainDeltaWithoutAWrap)
+{
+    EXPECT_EQ(wrappingCounterDelta(std::uint64_t{125}, std::uint64_t{100}, 32), 25U);
+    EXPECT_EQ(wrappingCounterDelta(std::uint64_t{100}, std::uint64_t{100}, 32), 0U);
+}
+
+TEST(NumericTest, WrappingCounterDeltaCountsThroughA32BitWrap)
+{
+    // Windows' ULONG page-fault count: 10 below the top, then 5 past 0 -- 16 faults, not 0.
+    constexpr std::uint64_t MAX32 = 0xFFFF'FFFFULL;
+    EXPECT_EQ(wrappingCounterDelta(std::uint64_t{5}, MAX32 - 10, 32), 16U);
+    EXPECT_EQ(wrappingCounterDelta(std::uint64_t{0}, MAX32, 32), 1U);
+    EXPECT_DOUBLE_EQ(wrappingCounterRate(std::uint64_t{5}, MAX32 - 10, 2.0, 32), 8.0);
+}
+
+TEST(NumericTest, WrappingCounterDeltaWithoutAWidthIsCounterDelta)
+{
+    // 64 bits (Linux) or 0: a decrease is a reset, not a wrap.
+    EXPECT_EQ(wrappingCounterDelta(std::uint64_t{5}, std::uint64_t{100}, 64), 0U);
+    EXPECT_EQ(wrappingCounterDelta(std::uint64_t{5}, std::uint64_t{100}, 0), 0U);
+}
+
+TEST(NumericTest, WrappingCounterDeltaRejectsReadingsTooBigForTheWidth)
+{
+    // A previous reading above 2^32 - 1 cannot have come from a 32-bit counter.
+    EXPECT_EQ(wrappingCounterDelta(std::uint64_t{5}, std::uint64_t{0x1'0000'0000ULL}, 32), 0U);
+    EXPECT_DOUBLE_EQ(wrappingCounterRate(std::uint64_t{5}, std::uint64_t{0x1'0000'0000ULL}, 1.0, 32), 0.0);
+    EXPECT_DOUBLE_EQ(wrappingCounterRate(std::uint64_t{5}, std::uint64_t{1}, 0.0, 32), 0.0);
+}
+
 } // namespace
 } // namespace Domain::Numeric
 // NOLINTEND(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)

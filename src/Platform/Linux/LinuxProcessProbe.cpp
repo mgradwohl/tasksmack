@@ -330,11 +330,11 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasHandleCount = true, // Can count FDs in /proc/[pid]/fd (others' need CAP_DAC_READ_SEARCH)
                                .hasUserSystemTime = true,
                                .hasStartTime = true,
-                               .hasUser = true,       // From /proc/[pid]/status Uid field
-                               .hasCommand = true,    // From /proc/[pid]/cmdline
-                               .hasNice = true,       // From /proc/[pid]/stat
-                               .hasPageFaults = true, // From /proc/[pid]/stat (minflt + majflt)
-                               .hasPeakRss = false,
+                               .hasUser = true,                           // From /proc/[pid]/status Uid field
+                               .hasCommand = true,                        // From /proc/[pid]/cmdline
+                               .hasNice = true,                           // From /proc/[pid]/stat
+                               .hasPageFaults = true,                     // From /proc/[pid]/stat (minflt + majflt)
+                               .hasPeakRss = true,                        // From /proc/[pid]/status VmHWM (kernel threads have none)
                                .hasCpuAffinity = true,                    // From sched_getaffinity
                                .hasNetworkCounters = hasNetworkCounters,  // From Netlink INET_DIAG (if available)
                                .hasUdpNetworkCounters = false,            // sock_diag has no UDP byte counters (#1101)
@@ -451,12 +451,15 @@ void LinuxProcessProbe::parseProcessStatm(int32_t pid, ProcessCounters& counters
 
 void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot)
 {
-    // Read /proc/[pid]/status for UID (owner) information
-    // Format is key:value pairs, one per line
-    // We need: Uid: <real> <effective> <saved> <filesystem>
+    // Read /proc/[pid]/status, key:value pairs one per line, for:
+    //   Uid:   <real> <effective> <saved> <filesystem>  -- the owner
+    //   VmHWM: <n> kB                                    -- peak resident set size (#1184)
+    // VmHWM comes after Uid; a kernel thread has no Vm* lines at all.
 
     const std::string statusPath = (procRoot / std::to_string(pid) / "status").string();
-    constexpr std::size_t BUF_SIZE = 2048;
+    // A status file is about 1.5 KiB; VmHWM sits in its first half, after Groups:, which grows with
+    // the owner's supplementary groups.
+    constexpr std::size_t BUF_SIZE = 4096;
     std::array<char, BUF_SIZE> buf{};
     const std::size_t len = readProcFile(statusPath.c_str(), buf.data(), BUF_SIZE);
     if (len == 0)
@@ -465,12 +468,16 @@ void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counter
     }
     if (len == BUF_SIZE)
     {
-        // readProcFile() truncates silently at BUF_SIZE. "Uid:" is well inside this on
-        // every kernel this project has seen, but if a future kernel adds/grows earlier
-        // fields (Groups:, Seccomp_filters:, ...) enough to push it past the buffer, this
-        // makes that regression diagnosable instead of a silently-empty counters.user.
-        spdlog::debug("LinuxProcessProbe: /proc/{}/status truncated at {} bytes; Uid: may have been missed", pid, BUF_SIZE);
+        // readProcFile() truncates silently at BUF_SIZE. "Uid:" and "VmHWM:" are well inside this
+        // on every kernel this project has seen, but if a future kernel adds/grows earlier fields
+        // (Groups:, Seccomp_filters:, ...) enough to push them past the buffer, this makes that
+        // regression diagnosable instead of a silently-empty counters.user.
+        spdlog::debug("LinuxProcessProbe: /proc/{}/status truncated at {} bytes; Uid:/VmHWM: may have been missed", pid, BUF_SIZE);
     }
+
+    constexpr std::string_view UID_PREFIX = "Uid:";
+    constexpr std::string_view VM_HWM_PREFIX = "VmHWM:";
+    constexpr std::uint64_t BYTES_PER_KIB = 1024;
 
     const char* p = buf.data();
     const char* const end = buf.data() + len;
@@ -481,23 +488,30 @@ void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counter
         {
             ++lineEnd;
         }
+        const std::string_view line(p, static_cast<std::size_t>(lineEnd - p));
 
-        // Look for "Uid:" line
-        constexpr std::string_view UID_PREFIX = "Uid:";
-        if (static_cast<std::size_t>(lineEnd - p) > UID_PREFIX.size() && std::string_view(p, UID_PREFIX.size()) == UID_PREFIX)
+        if (line.size() > UID_PREFIX.size() && line.starts_with(UID_PREFIX))
         {
             // Skip "Uid:" and whitespace, parse first UID with from_chars (no alloc)
-            const char* ptr = p + UID_PREFIX.size();
-            while (ptr < lineEnd && (*ptr == ' ' || *ptr == '\t'))
-            {
-                ++ptr;
-            }
+            const char* ptr = ProcParsing::skipSpaces(p + UID_PREFIX.size(), lineEnd);
             uid_t realUid = 0;
             if (std::from_chars(ptr, lineEnd, realUid).ec == std::errc{})
             {
                 counters.user = getUsername(realUid);
             }
-            break;
+        }
+        else if (line.starts_with(VM_HWM_PREFIX))
+        {
+            // Only a whole line: a line cut off by the buffer could hold a truncated number.
+            const char* ptr = p + VM_HWM_PREFIX.size();
+            std::uint64_t peakKib = 0;
+            if (lineEnd < end && parseNum(ptr, lineEnd, peakKib) && peakKib <= (std::numeric_limits<std::uint64_t>::max() / BYTES_PER_KIB))
+            {
+                // Never below the resident size statm gave a moment ago: the kernel's RSS counters
+                // are batched per CPU, so the two reads can disagree by a little.
+                counters.peakRssBytes = std::max(peakKib * BYTES_PER_KIB, counters.rssBytes);
+            }
+            break; // Nothing needed after VmHWM
         }
 
         p = (lineEnd < end) ? lineEnd + 1 : end;

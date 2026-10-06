@@ -46,6 +46,7 @@
 #include <format>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -93,6 +94,9 @@ TEST(LinuxProcessProbeTest, CapabilitiesReportedCorrectly)
     // Shared memory comes from /proc/[pid]/statm; the process details chart draws it only when
     // this is set (#1035).
     EXPECT_TRUE(caps.hasSharedMemory);
+    // Peak RSS is the kernel's VmHWM (#1184), and the page-fault count doesn't wrap.
+    EXPECT_TRUE(caps.hasPeakRss);
+    EXPECT_EQ(caps.pageFaultCountBits, 64U);
 }
 
 TEST(LinuxProcessProbeTest, ReducedPrivilegesMatchesEuidAndEffectiveCapabilities)
@@ -825,6 +829,64 @@ void writeFile(const std::filesystem::path& path, std::string_view content)
 {
     std::filesystem::create_directories(path.parent_path());
     std::ofstream(path) << content;
+}
+
+TEST(LinuxProcessProbeTest, PeakRssIsVmHwmFromStatus)
+{
+    // #1184: the peak is the kernel's high-water mark over the process's whole life, from the status
+    // file enumerate() already reads -- not just the largest RSS TaskSmack happened to sample.
+    ScopedTempDir proc("ts_test_proc_vmhwm");
+    const auto writeProcess = [&proc](int pid, std::string_view status, std::string_view statm)
+    {
+        const auto dir = proc.path / std::to_string(pid);
+        writeFile(dir / "stat",
+                  std::to_string(pid) + " (app) S 1 1 1 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+                                        "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+        writeFile(dir / "status", status);
+        writeFile(dir / "statm", statm);
+    };
+    const long pageSize = sysconf(_SC_PAGESIZE);
+    ASSERT_GT(pageSize, 0);
+    const auto page = static_cast<std::uint64_t>(pageSize);
+
+    // An ordinary process: VmHWM 8192 kB, RSS 100 pages.
+    writeProcess(
+        4242, "Name:\tapp\nUid:\t0\t0\t0\t0\nVmPeak:\t  20000 kB\nVmHWM:\t    8192 kB\nVmRSS:\t    4096 kB\n", "500 100 10 1 0 50 0\n");
+    // A kernel thread has no Vm* lines: unknown, left to Domain's own tracking.
+    writeProcess(4343, "Name:\tkworker/0:1\nUid:\t0\t0\t0\t0\n", "0 0 0 0 0 0 0\n");
+    // A peak a moment behind the RSS statm reported (batched per-CPU counters) is raised to it.
+    writeProcess(4444, "Name:\tapp\nUid:\t0\t0\t0\t0\nVmHWM:\t       4 kB\n", "500 100 10 1 0 50 0\n");
+
+    LinuxProcessProbe probe(proc.path);
+    const auto processes = probe.enumerate();
+    const auto peakOf = [&processes](std::int32_t pid) -> std::uint64_t
+    {
+        const auto it = std::ranges::find_if(processes, [pid](const ProcessCounters& p) { return p.pid == pid; });
+        return it == processes.end() ? std::numeric_limits<std::uint64_t>::max() : it->peakRssBytes;
+    };
+    EXPECT_EQ(peakOf(4242), 8192U * 1024U);
+    EXPECT_EQ(peakOf(4343), 0U);
+    EXPECT_EQ(peakOf(4444), 100U * page);
+}
+
+TEST(LinuxProcessProbeTest, VmHwmCutOffByTheReadBufferIsIgnored)
+{
+    // A VmHWM line the status read cut short could carry a truncated number: it is not used.
+    ScopedTempDir proc("ts_test_proc_vmhwm_cut");
+    const auto dir = proc.path / "4242";
+    writeFile(dir / "stat",
+              "4242 (app) S 1 1 1 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+    // Pad Groups: so the buffer (4 KiB) ends inside VmHWM's digits.
+    const std::string head = "Name:\tapp\nUid:\t0\t0\t0\t0\nGroups:\t";
+    const std::string vmHwm = "\nVmHWM:\t 123";
+    const std::string status = head + std::string(4096 - head.size() - vmHwm.size(), '1') + vmHwm + "456789 kB\n";
+    writeFile(dir / "status", status);
+
+    LinuxProcessProbe probe(proc.path);
+    const auto processes = probe.enumerate();
+    ASSERT_EQ(processes.size(), 1U);
+    EXPECT_EQ(processes[0].peakRssBytes, 0U);
 }
 
 TEST(LinuxProcessProbeTest, ReadableRaplCounterEnablesPowerUsage)

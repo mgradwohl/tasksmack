@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <concepts>
+#include <limits>
 #include <utility>
 
 namespace Domain::Numeric
@@ -45,6 +46,36 @@ template<std::integral To, std::integral From> [[nodiscard]] constexpr auto narr
     }
     // Explicit conversion is safe here because we've verified the value is in range for the target type
     return static_cast<To>(value);
+}
+
+/// counterDelta() for a cumulative counter the OS keeps in only @p bits bits and lets wrap to 0
+/// past its maximum -- Windows' per-process page-fault count is a 32-bit ULONG (#1184). A reading
+/// below the previous one is one wrap, so the delta is taken modulo 2^bits instead of reading 0 for
+/// that interval. @p bits of 0 or at least T's width means the counter does not wrap (counterDelta()).
+/// A previous reading too big for @p bits cannot have come from such a counter: the delta is 0.
+template<std::unsigned_integral T> [[nodiscard]] constexpr auto wrappingCounterDelta(T current, T previous, unsigned bits) noexcept -> T
+{
+    if (bits == 0 || bits >= static_cast<unsigned>(std::numeric_limits<T>::digits) || current >= previous)
+    {
+        return counterDelta(current, previous);
+    }
+    const T maxValue = (T{1} << bits) - T{1};
+    if (previous > maxValue || current > maxValue)
+    {
+        return T{};
+    }
+    return (maxValue - previous) + current + T{1};
+}
+
+/// counterRate() for a counter that wraps at 2^bits (wrappingCounterDelta()).
+template<std::unsigned_integral T>
+[[nodiscard]] constexpr auto wrappingCounterRate(T current, T previous, double elapsedSeconds, unsigned bits) noexcept -> double
+{
+    if (elapsedSeconds <= 0.0)
+    {
+        return 0.0;
+    }
+    return toDouble(wrappingCounterDelta(current, previous, bits)) / elapsedSeconds;
 }
 
 } // namespace Domain::Numeric
