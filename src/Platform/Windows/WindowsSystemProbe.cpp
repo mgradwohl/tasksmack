@@ -9,7 +9,10 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <span>
+#include <string>
 #include <utility>
+#include <vector>
 
 // clang-format off
 // Windows headers - version macros set via CMake compile definitions
@@ -535,6 +538,11 @@ long WindowsSystemProbe::ticksPerSecond() const
 // isCountedNetworkRow() spells the ifType values out to stay <windows.h>-free (#1257).
 static_assert(IF_TYPE_WWAN_GSM == IF_TYPE_WWANPP);
 static_assert(IF_TYPE_WWAN_CDMA == IF_TYPE_WWANPP2);
+// As are isNotPresentNetworkRow()'s and isHardwareNetworkRow()'s (#1284).
+static_assert(NDIS_PHYSICAL_MEDIUM_BLUETOOTH == NdisPhysicalMediumBluetooth);
+static_assert(IF_OPER_STATUS_UP == IfOperStatusUp);
+static_assert(IF_OPER_STATUS_NOT_PRESENT == IfOperStatusNotPresent);
+static_assert(MEDIA_CONNECT_STATE_UNKNOWN == MediaConnectStateUnknown);
 
 void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
 {
@@ -549,6 +557,12 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
         return;
     }
 
+    // Each listed row's type, hardware flag and description, in step with the interfaces appended to
+    // counters.networkInterfaces, for picking out secondary Wi-Fi instances once all are known (#1284).
+    const std::size_t firstInterface = counters.networkInterfaces.size();
+    std::vector<std::uint32_t> rowTypes;
+    std::vector<std::string> rowDescriptions;
+
     for (ULONG i = 0; i < table->NumEntries; ++i)
     {
         const MIB_IF_ROW2& row = table->Table[i];
@@ -556,6 +570,11 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
         // Loopback, non-network types and NDIS filter-module rows are not interfaces of their own
         // (#1030); see isCountedNetworkRow().
         if (!isCountedNetworkRow(row.Type, row.InterfaceAndOperStatusFlags.FilterInterface != 0))
+        {
+            continue;
+        }
+        // Adapters removed from the system stay listed; they carry nothing (#1284).
+        if (isNotPresentNetworkRow(row.OperStatus, row.MediaConnectState, row.InterfaceAndOperStatusFlags.HardwareInterface != 0))
         {
             continue;
         }
@@ -597,8 +616,10 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
 
         // A software interface -- VPN tunnel, Hyper-V/WSL vEthernet, WAN Miniport -- carries traffic
         // that also crosses a hardware adapter, so the Total leaves it out (#1257, see
-        // sumCountedInterfaces()).
-        ifaceCounters.isVirtual = row.InterfaceAndOperStatusFlags.HardwareInterface == 0;
+        // sumCountedInterfaces()). A Bluetooth PAN link is hardware although its flag is clear (#1284).
+        const bool hardware =
+            isHardwareNetworkRow(row.InterfaceAndOperStatusFlags.HardwareInterface != 0, row.Type, row.PhysicalMediumType);
+        ifaceCounters.isVirtual = !hardware;
         ifaceCounters.isVirtualKnown = true; // Every MIB_IF_ROW2 carries the flag (#1260)
 
         // 64-bit link speeds in bits/sec - convert to Mbps
@@ -615,10 +636,30 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
         }
 
         counters.networkInterfaces.push_back(std::move(ifaceCounters));
+        rowTypes.push_back(row.Type);
+        rowDescriptions.push_back(description);
     }
 
     // Free the table allocated by GetIfTable2
     FreeMibTable(table);
+
+    // A Wi-Fi adapter's secondary instances ("Wi-Fi 2" to "Wi-Fi 5": Wi-Fi Direct and multi-link
+    // ports) report HardwareInterface too; the Total counts the adapter once (#1284).
+    const std::span<SystemCounters::InterfaceCounters> listed = std::span(counters.networkInterfaces).subspan(firstInterface);
+    std::vector<NetworkAdapterInstance> instances;
+    instances.reserve(listed.size());
+    for (std::size_t i = 0; i < listed.size(); ++i)
+    {
+        instances.push_back(
+            NetworkAdapterInstance{.ifType = rowTypes[i], .hardware = !listed[i].isVirtual, .description = rowDescriptions[i]});
+    }
+    for (std::size_t i = 0; i < listed.size(); ++i)
+    {
+        if (isSecondaryWifiInstance(instances[i], instances))
+        {
+            listed[i].isVirtual = true;
+        }
+    }
 
     // Hardware interfaces only, unless there are none -- as on Linux and in SystemModel (#1257).
     const NetworkTotals totals = sumCountedInterfaces(counters.networkInterfaces);

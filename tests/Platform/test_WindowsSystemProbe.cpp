@@ -15,6 +15,7 @@
 #include <cstring>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -487,6 +488,126 @@ TEST(WindowsSystemProbeMathTest, TotalCountsEveryInterfaceWhenAllAreVirtual)
     const auto totals = sumCountedInterfaces(interfaces);
     EXPECT_EQ(totals.rxBytes, 700U);
     EXPECT_EQ(totals.txBytes, 70U);
+}
+
+// ---- #1284: not-present adapters, Bluetooth PAN, secondary Wi-Fi instances ----
+
+namespace
+{
+constexpr std::uint32_t IF_OPER_STATUS_DOWN = 2;
+constexpr std::uint32_t MEDIA_CONNECT_STATE_CONNECTED = 1;
+constexpr std::uint32_t MEDIA_CONNECT_STATE_DISCONNECTED = 2;
+} // namespace
+
+TEST(WindowsSystemProbeMathTest, AdaptersNoLongerInTheSystemAreLeftOut)
+{
+    // A long-unplugged USB dongle, an unused Wi-Fi port, Teredo: NotPresent, media state unknown.
+    EXPECT_TRUE(isNotPresentNetworkRow(IF_OPER_STATUS_NOT_PRESENT, MEDIA_CONNECT_STATE_UNKNOWN, true));
+    EXPECT_TRUE(isNotPresentNetworkRow(IF_OPER_STATUS_NOT_PRESENT, MEDIA_CONNECT_STATE_UNKNOWN, false));
+    // An unplugged dock's "Ethernet 3", a phantom device that Windows reports as down rather than
+    // not present.
+    EXPECT_TRUE(isNotPresentNetworkRow(IF_OPER_STATUS_DOWN, MEDIA_CONNECT_STATE_UNKNOWN, true));
+}
+
+TEST(WindowsSystemProbeMathTest, PresentAdaptersAreListedWhateverTheirState)
+{
+    EXPECT_FALSE(isNotPresentNetworkRow(IF_OPER_STATUS_UP, MEDIA_CONNECT_STATE_CONNECTED, true));
+    EXPECT_FALSE(isNotPresentNetworkRow(IF_OPER_STATUS_DOWN, MEDIA_CONNECT_STATE_DISCONNECTED, true)); // Wi-Fi with no network
+    EXPECT_FALSE(isNotPresentNetworkRow(IF_OPER_STATUS_UP, MEDIA_CONNECT_STATE_UNKNOWN, true));
+    // A down WAN Miniport (PPPoE, SSTP) reports an unknown media state but is present.
+    EXPECT_FALSE(isNotPresentNetworkRow(IF_OPER_STATUS_DOWN, MEDIA_CONNECT_STATE_UNKNOWN, false));
+    // Not present but with a known media state: not the stale entry the probe drops.
+    EXPECT_FALSE(isNotPresentNetworkRow(IF_OPER_STATUS_NOT_PRESENT, MEDIA_CONNECT_STATE_DISCONNECTED, true));
+}
+
+TEST(WindowsSystemProbeMathTest, BluetoothPanIsAHardwareLink)
+{
+    // Windows reports the Bluetooth PAN adapter as Ethernet without HardwareInterface; a phone
+    // tethered over it is the machine's own link, so it counts beside an idle Wi-Fi.
+    EXPECT_TRUE(isHardwareNetworkRow(false, IF_TYPE_ETHERNET, NDIS_PHYSICAL_MEDIUM_BLUETOOTH));
+}
+
+TEST(WindowsSystemProbeMathTest, TheHardwareFlagDecidesForEverythingElse)
+{
+    constexpr std::uint32_t NDIS_PHYSICAL_MEDIUM_UNSPECIFIED = 0;
+    constexpr std::uint32_t NDIS_PHYSICAL_MEDIUM_802_3 = 14;
+    constexpr std::uint32_t NDIS_PHYSICAL_MEDIUM_NATIVE_802_11 = 9;
+    EXPECT_FALSE(isHardwareNetworkRow(false, IF_TYPE_ETHERNET, NDIS_PHYSICAL_MEDIUM_UNSPECIFIED)); // vEthernet, WAN Miniport
+    EXPECT_FALSE(isHardwareNetworkRow(false, IF_TYPE_ETHERNET, NDIS_PHYSICAL_MEDIUM_802_3));       // Kernel Debug adapter
+    EXPECT_FALSE(isHardwareNetworkRow(false, IF_TYPE_TUNNEL_LINK, NDIS_PHYSICAL_MEDIUM_BLUETOOTH));
+    EXPECT_TRUE(isHardwareNetworkRow(true, IF_TYPE_ETHERNET, NDIS_PHYSICAL_MEDIUM_802_3));
+    EXPECT_TRUE(isHardwareNetworkRow(true, IF_TYPE_WIFI, NDIS_PHYSICAL_MEDIUM_NATIVE_802_11));
+}
+
+TEST(WindowsSystemProbeMathTest, AdapterInstanceBaseStripsTheInstanceNumber)
+{
+    EXPECT_EQ(adapterInstanceBase("Intel(R) Wi-Fi 7 BE201 320MHz #3"), std::optional<std::string_view>{"Intel(R) Wi-Fi 7 BE201 320MHz"});
+    EXPECT_EQ(adapterInstanceBase("Adapter #12"), std::optional<std::string_view>{"Adapter"});
+    EXPECT_EQ(adapterInstanceBase("Intel(R) Wi-Fi 7 BE201 320MHz"), std::nullopt);
+    EXPECT_EQ(adapterInstanceBase("Adapter #"), std::nullopt);
+    EXPECT_EQ(adapterInstanceBase("Adapter #2a"), std::nullopt);
+    EXPECT_EQ(adapterInstanceBase(" #2"), std::nullopt);
+    EXPECT_EQ(adapterInstanceBase(""), std::nullopt);
+}
+
+namespace
+{
+constexpr std::string_view WIFI_ADAPTER = "Intel(R) Wi-Fi 7 BE201 320MHz";
+} // namespace
+
+TEST(WindowsSystemProbeMathTest, SecondaryWifiInstancesAreFoundBesideTheirAdapter)
+{
+    // The Wi-Fi 7 laptop from the report: "Wi-Fi" and "Wi-Fi 2" to "Wi-Fi 3" all report
+    // HardwareInterface; only "Wi-Fi" is the adapter's link.
+    const std::array<NetworkAdapterInstance, 4> rows{{
+        {.ifType = IF_TYPE_WIFI, .hardware = true, .description = WIFI_ADAPTER},
+        {.ifType = IF_TYPE_WIFI, .hardware = true, .description = "Intel(R) Wi-Fi 7 BE201 320MHz #2"},
+        {.ifType = IF_TYPE_WIFI, .hardware = true, .description = "Intel(R) Wi-Fi 7 BE201 320MHz #3"},
+        {.ifType = IF_TYPE_ETHERNET, .hardware = true, .description = "Realtek Gaming USB 2.5GbE Family Controller"},
+    }};
+    EXPECT_FALSE(isSecondaryWifiInstance(rows[0], rows));
+    EXPECT_TRUE(isSecondaryWifiInstance(rows[1], rows));
+    EXPECT_TRUE(isSecondaryWifiInstance(rows[2], rows));
+    EXPECT_FALSE(isSecondaryWifiInstance(rows[3], rows));
+}
+
+TEST(WindowsSystemProbeMathTest, ANumberedWifiAdapterWithoutItsPrimaryStillCounts)
+{
+    // The primary is gone (not present, or another model): "#2" is then the only link of its adapter.
+    const std::array<NetworkAdapterInstance, 2> rows{{
+        {.ifType = IF_TYPE_WIFI, .hardware = true, .description = "Intel(R) Wi-Fi 7 BE201 320MHz #2"},
+        {.ifType = IF_TYPE_WIFI, .hardware = true, .description = "Realtek RTL8852BE WiFi 6 802.11ax PCIe Adapter"},
+    }};
+    EXPECT_FALSE(isSecondaryWifiInstance(rows[0], rows));
+    EXPECT_FALSE(isSecondaryWifiInstance(rows[1], rows));
+}
+
+TEST(WindowsSystemProbeMathTest, OnlyHardwareWifiRowsAreSecondaryInstances)
+{
+    // A dual-port wired adapter's second port is a link of its own, and a virtual row is already out.
+    const std::array<NetworkAdapterInstance, 4> rows{{
+        {.ifType = IF_TYPE_ETHERNET, .hardware = true, .description = "Intel(R) Ethernet Controller X550"},
+        {.ifType = IF_TYPE_ETHERNET, .hardware = true, .description = "Intel(R) Ethernet Controller X550 #2"},
+        {.ifType = IF_TYPE_WIFI, .hardware = false, .description = WIFI_ADAPTER},
+        {.ifType = IF_TYPE_WIFI, .hardware = true, .description = "Intel(R) Wi-Fi 7 BE201 320MHz #2"},
+    }};
+    EXPECT_FALSE(isSecondaryWifiInstance(rows[1], rows));
+    EXPECT_FALSE(isSecondaryWifiInstance(rows[3], rows)); // its base is not a hardware row
+}
+
+TEST(WindowsSystemProbeMathTest, TotalCountsBluetoothPanAndTheWifiAdapterOnce)
+{
+    // Wi-Fi idle, a phone tethered over Bluetooth PAN, the Wi-Fi's secondary instances marked
+    // virtual: the Total is the PAN link's traffic plus Wi-Fi's, once.
+    const std::vector<SystemCounters::InterfaceCounters> interfaces{
+        makeInterface(1'000, 100, false), // Wi-Fi
+        makeInterface(1'000, 100, true),  // Wi-Fi 2 mirroring Wi-Fi's counters
+        makeInterface(5'000, 500, false), // Bluetooth Network Connection
+        makeInterface(4'000, 400, true),  // vEthernet (WSL)
+    };
+    const auto totals = sumCountedInterfaces(interfaces);
+    EXPECT_EQ(totals.rxBytes, 6'000U);
+    EXPECT_EQ(totals.txBytes, 600U);
 }
 
 TEST(WindowsSystemProbeMathTest, TotalOfNoInterfacesIsZero)

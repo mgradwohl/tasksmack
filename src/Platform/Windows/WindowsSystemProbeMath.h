@@ -11,6 +11,7 @@
 #include <cstring>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 namespace Platform
@@ -244,6 +245,106 @@ inline constexpr std::uint32_t IF_TYPE_WWAN_CDMA = 244; // Mobile broadband, CDM
            ifType == IF_TYPE_VIRTUAL || ifType == IF_TYPE_WWAN_GSM || ifType == IF_TYPE_WWAN_CDMA;
 }
 
+/// MIB_IF_ROW2 values spelled out, like the ifTypes above, to keep this header free of Windows includes.
+inline constexpr std::uint32_t NDIS_PHYSICAL_MEDIUM_BLUETOOTH = 10; // NdisPhysicalMediumBluetooth (#1284)
+inline constexpr std::uint32_t IF_OPER_STATUS_UP = 1;               // IfOperStatusUp (#1284)
+inline constexpr std::uint32_t IF_OPER_STATUS_NOT_PRESENT = 6;      // IfOperStatusNotPresent (#1284)
+inline constexpr std::uint32_t MEDIA_CONNECT_STATE_UNKNOWN = 0;     // MediaConnectStateUnknown (#1284)
+
+/// Whether a GetIfTable2 row is an adapter that is no longer in the system (#1284).
+///
+/// Windows keeps listing removed adapters -- a USB Ethernet dongle or dock unplugged long ago, an
+/// adapter whose driver was uninstalled -- with MediaConnectState MediaConnectStateUnknown. They
+/// carry no traffic and only cluttered the interface list, so the probe leaves them out. Most report
+/// OperStatus IfOperStatusNotPresent; some removed hardware adapters (a dock's USB Ethernet, which
+/// Device Manager shows as a phantom) report IfOperStatusDown instead. A present hardware adapter's
+/// driver reports its media as connected or disconnected, so a hardware row that is not up with its
+/// media state unknown is taken as removed too (an adapter disabled in Windows may look the same; it
+/// carries nothing either). Software rows (WAN Miniports) commonly report an unknown media state
+/// while down, so for them only IfOperStatusNotPresent counts.
+///
+/// @param operStatus         MIB_IF_ROW2::OperStatus.
+/// @param mediaConnectState  MIB_IF_ROW2::MediaConnectState.
+/// @param hardwareInterface  MIB_IF_ROW2::InterfaceAndOperStatusFlags.HardwareInterface.
+[[nodiscard]] constexpr bool
+isNotPresentNetworkRow(std::uint32_t operStatus, std::uint32_t mediaConnectState, bool hardwareInterface) noexcept
+{
+    if (mediaConnectState != MEDIA_CONNECT_STATE_UNKNOWN)
+    {
+        return false;
+    }
+    return operStatus == IF_OPER_STATUS_NOT_PRESENT || (hardwareInterface && operStatus != IF_OPER_STATUS_UP);
+}
+
+/// Whether a counted GetIfTable2 row is a hardware link of its own rather than software whose traffic
+/// also crosses a hardware adapter (#1257, #1284).
+///
+/// MIB_IF_ROW2::InterfaceAndOperStatusFlags.HardwareInterface decides, except for a Bluetooth
+/// Personal Area Network adapter: Windows reports it as an Ethernet interface without the flag, yet a
+/// phone tethered over Bluetooth is a link of its own, and with any other hardware adapter listed
+/// (an idle Wi-Fi) its traffic was left out of the Total. It is recognised by its Bluetooth physical
+/// medium, which no software adapter reports.
+///
+/// @param hardwareInterface   MIB_IF_ROW2::InterfaceAndOperStatusFlags.HardwareInterface.
+/// @param ifType              MIB_IF_ROW2::Type.
+/// @param physicalMediumType  MIB_IF_ROW2::PhysicalMediumType.
+[[nodiscard]] constexpr bool isHardwareNetworkRow(bool hardwareInterface, std::uint32_t ifType, std::uint32_t physicalMediumType) noexcept
+{
+    return hardwareInterface || (ifType == IF_TYPE_ETHERNET && physicalMediumType == NDIS_PHYSICAL_MEDIUM_BLUETOOTH);
+}
+
+/// A counted GetIfTable2 row as isSecondaryWifiInstance() sees it.
+struct NetworkAdapterInstance
+{
+    std::uint32_t ifType = 0;     // MIB_IF_ROW2::Type
+    bool hardware = false;        // isHardwareNetworkRow()
+    std::string_view description; // MIB_IF_ROW2::Description
+};
+
+/// The adapter description an instance description extends: "Intel(R) Wi-Fi 7 BE201 320MHz" for
+/// "Intel(R) Wi-Fi 7 BE201 320MHz #3", or std::nullopt when @p description has no " #<number>" suffix.
+[[nodiscard]] constexpr auto adapterInstanceBase(std::string_view description) noexcept -> std::optional<std::string_view>
+{
+    const std::size_t hash = description.rfind(" #");
+    if (hash == std::string_view::npos || hash == 0 || hash + 2 == description.size())
+    {
+        return std::nullopt;
+    }
+    const std::string_view number = description.substr(hash + 2);
+    if (!std::ranges::all_of(number, [](char c) { return c >= '0' && c <= '9'; }))
+    {
+        return std::nullopt;
+    }
+    return description.substr(0, hash);
+}
+
+/// Whether @p row is a secondary instance of a Wi-Fi adapter also listed in @p rows (#1284).
+///
+/// A Wi-Fi 7 adapter appears several times in GetIfTable2 -- "Wi-Fi" and "Wi-Fi 2" to "Wi-Fi 5",
+/// described as "<adapter>" and "<adapter> #2" to "#5" -- for the Wi-Fi Direct and multi-link ports
+/// its driver exposes. All of them report HardwareInterface, so all were counted in the Total; they
+/// read 0 bytes, but a driver that mirrored the primary link's counters on them would have multiplied
+/// it. A Wi-Fi row whose description is another listed hardware Wi-Fi row's with a " #<number>" suffix
+/// is such an instance, and the probe leaves it out of the Total like a virtual adapter. Windows
+/// numbers a second physical adapter of the same model the same way, so this is limited to Wi-Fi,
+/// where two identical cards are rare; wired multi-port adapters (a dual-port NIC) keep counting.
+///
+/// @param row   The row to classify.
+/// @param rows  Every counted row of the same GetIfTable2 snapshot (may include @p row).
+[[nodiscard]] constexpr bool isSecondaryWifiInstance(const NetworkAdapterInstance& row,
+                                                     std::span<const NetworkAdapterInstance> rows) noexcept
+{
+    if (row.ifType != IF_TYPE_WIFI || !row.hardware)
+    {
+        return false;
+    }
+    const std::optional<std::string_view> base = adapterInstanceBase(row.description);
+    return base.has_value() &&
+           std::ranges::any_of(rows,
+                               [&base](const NetworkAdapterInstance& other)
+                               { return other.ifType == IF_TYPE_WIFI && other.hardware && other.description == *base; });
+}
+
 /// Cumulative bytes over the interfaces the network Total counts (#1257).
 struct NetworkTotals
 {
@@ -255,7 +356,9 @@ struct NetworkTotals
 ///
 /// Traffic over a VPN tunnel, a Hyper-V/WSL vEthernet adapter or a WAN Miniport also crosses a
 /// hardware adapter, so counting both doubled it. The probe marks a row virtual when
-/// MIB_IF_ROW2::InterfaceAndOperStatusFlags.HardwareInterface is clear. With no hardware interface
+/// MIB_IF_ROW2::InterfaceAndOperStatusFlags.HardwareInterface is clear, unless it is a Bluetooth PAN
+/// link (isHardwareNetworkRow()), and marks a secondary Wi-Fi instance virtual too
+/// (isSecondaryWifiInstance(), #1284). With no hardware interface
 /// at all every interface counts, so the Total isn't 0. Same rule as the Linux probe and
 /// SystemModel's Total rate (#1106); keep them in step.
 [[nodiscard]] inline NetworkTotals sumCountedInterfaces(std::span<const SystemCounters::InterfaceCounters> interfaces) noexcept
