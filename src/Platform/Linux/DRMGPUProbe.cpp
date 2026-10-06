@@ -1009,9 +1009,10 @@ void DRMGPUProbe::readEngineClients(DRMCard& card, GPUCounters& counter) const
     }
     card.clientFdinfoPaths = std::move(stillOpen);
     // Unread when the card has clients and none reports any busyness: a kernel without fdinfo engine
-    // stats (i915 before Linux 5.19). A card with no clients at all is idle -- but only if the /proc
-    // walk could see clients: an unlistable /proc, or every process's fds denied, is unknown, not idle.
-    counter.engineBusyAvailable = anyEngineStats || (card.clientFdinfoPaths.empty() && m_ClientScanReliable);
+    // stats (i915 before Linux 5.19). A card with no clients at all is idle. Either needs a /proc walk
+    // that could see every client: an unlistable /proc, a walk cut short, or every process's fds denied
+    // leaves the client set partial, so neither idle nor the busyness of the clients found is published.
+    counter.engineBusyAvailable = m_ClientScanReliable && (anyEngineStats || card.clientFdinfoPaths.empty());
 }
 
 bool DRMGPUProbe::detectIsIntegrated(
