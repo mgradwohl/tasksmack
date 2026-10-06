@@ -130,7 +130,11 @@ set(COMMON_TEST_SOURCES
     App/test_GpuSectionDrawList.cpp
     App/test_ProcessRowFormat.cpp
     App/test_ProcessStateColor.cpp
+    App/test_ProcessTypeColor.cpp
+    App/test_ProcessCellWidths.cpp
+    App/test_ProcessFilterCache.cpp
     App/test_CpuCoreGridIds.cpp
+    App/test_CpuSummaryText.cpp
     Platform/test_CgroupFreezerPath.cpp
     Platform/test_ProcessIdentity.cpp
     Platform/test_ProcessName.cpp

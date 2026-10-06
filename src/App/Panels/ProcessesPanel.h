@@ -50,6 +50,38 @@ inline constexpr std::array<std::string_view, 5> PRIORITY_LABELS = {
     Domain::Priority::getPriorityLabel(Domain::Priority::MAX_NICE),               // >= IDLE_THRESHOLD          -> "Idle"
 };
 
+/// The font-measured widths the Processes table's per-column cell renderers read (#1382): each
+/// decimal-aligned column's unit slot, the widest unit it can show as its cells print it (#1201),
+/// and PRIORITY_LABELS' widths. Measured by ProcessesPanel::TextSizeCache::populate().
+/// Namespace-scope, like PRIORITY_LABELS, so the renderers in ProcessesPanel.cpp's anonymous
+/// namespace can take it.
+struct ProcessCellWidths
+{
+    float unitBytes = 0.0F;       // " MiB", " GiB", etc.
+    float unitBytesPerSec = 0.0F; // " MiB/s", " GiB/s", etc.
+    float unitPower = 0.0F;       // " W", " mW", " µW"
+
+    // Widths for PRIORITY_LABELS (Domain::Priority::getPriorityLabel()'s fixed label set), in the
+    // same order. That column isn't backed by RowFormatCache (it's a live std::string_view lookup,
+    // not a per-row formatted string), so its width can't ride along with RowFormatCache's per-row
+    // AlignedCellText widths -- cached here instead, alongside the other small fixed-string widths.
+    std::array<float, PRIORITY_LABELS.size()> priorityLabels{};
+
+    /// The cached width of one of Domain::Priority::getPriorityLabel()'s fixed labels. Returns 0 for
+    /// any other string (getPriorityLabel never returns anything else).
+    [[nodiscard]] float priorityLabelWidth(std::string_view label) const noexcept
+    {
+        for (std::size_t i = 0; i < PRIORITY_LABELS.size(); ++i)
+        {
+            if (PRIORITY_LABELS[i] == label)
+            {
+                return priorityLabels[i];
+            }
+        }
+        return 0.0F; // Unreachable in practice: getPriorityLabel() only returns PRIORITY_LABELS entries.
+    }
+};
+
 /// Panel for displaying and managing the process list.
 /// Refresh cadence is driven by the main loop via onUpdate().
 class ProcessesPanel : public Panel
@@ -235,22 +267,12 @@ class ProcessesPanel : public Panel
         // Column header widths (indexed by ProcessColumn enum)
         std::array<float, processColumnCount()> columnHeaderWidths{};
 
-        // Unit slot widths of the decimal-aligned columns (#1201): the widest unit each can show,
-        // measured from the strings the cells print (renderUnitAlignedText())
-        float unitBytesWidth = 0.0F;       // " MiB", " GiB", etc.
-        float unitBytesPerSecWidth = 0.0F; // " MiB/s", " GiB/s", etc.
-        float unitPowerWidth = 0.0F;       // " W", " mW", " µW"
+        // The unit slots and priority label widths the table's cell renderers read (#1201, #1382)
+        ProcessCellWidths cells;
 
         // Static label widths
         float treeViewLabelWidth = 0.0F;
         float listViewLabelWidth = 0.0F;
-
-        // Widths for PRIORITY_LABELS (Domain::Priority::getPriorityLabel()'s fixed label set).
-        // That column isn't backed by RowFormatCache (it's a live std::string_view lookup, not
-        // a per-row formatted string), so its width can't ride along with RowFormatCache's
-        // per-row AlignedCellText widths -- cached here instead, alongside this panel's other
-        // small fixed-string-set widths.
-        std::array<float, PRIORITY_LABELS.size()> priorityLabelWidths{};
 
         // Font pointer and font-atlas generation used when cache was populated (for invalidation)
         const ImFont* fontPtr = nullptr;
@@ -271,10 +293,6 @@ class ProcessesPanel : public Panel
         {
             return columnHeaderWidths[toIndex(col)];
         }
-
-        /// Get the cached width of one of Domain::Priority::getPriorityLabel()'s fixed labels.
-        /// Returns 0 for any other string (getPriorityLabel never returns anything else).
-        [[nodiscard]] float getPriorityLabelWidth(std::string_view label) const noexcept;
     };
 
     TextSizeCache m_TextSizeCache;
@@ -294,6 +312,10 @@ class ProcessesPanel : public Panel
     /// Ensure text size cache is populated for current font
     void ensureTextSizeCacheValid();
 
+    /// Adopts the model's latest snapshot generation and its capabilities into the render cache if
+    /// it is newer than the cached one (onAttach(), onUpdate() and renderContent(), #1180).
+    void adoptNewerSnapshots();
+
     /// Get the number of visible columns
     [[nodiscard]] int visibleColumnCount() const;
 
@@ -312,6 +334,13 @@ class ProcessesPanel : public Panel
     /// @param hasChildren Whether the process has children.
     /// @param isExpanded Whether the children are visible.
     void renderProcessRow(const Domain::ProcessSnapshot& proc, int depth, bool hasChildren, bool isExpanded);
+
+    /// The PID cell: the row's selectable (entered even when the column is scrolled out of view, so
+    /// the row stays clickable, #962) and, when `columnVisible`, the right-aligned PID.
+    void renderPidCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, bool columnVisible);
+
+    /// The Name cell: the tree indent and expand/collapse control in tree view, then the name (#906).
+    void renderNameCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, int depth, bool hasChildren, bool isExpanded);
 };
 
 } // namespace App
