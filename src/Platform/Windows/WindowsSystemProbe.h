@@ -53,13 +53,16 @@ class WindowsSystemProbe : public ISystemProbe
     mutable std::optional<CpuCounters> m_LastAllGroupTotal;
 
     // The PnP device instance id of the adapter behind each network interface, by interface LUID
-    // (#1284). An id once read is kept: an interface's adapter never changes. An empty read -- no
-    // value yet, or a failed read -- is retried no sooner than retryAt, so a value that appears later
-    // is still found without a registry read every sample. Sampler thread only.
+    // (#1284). An id once read is kept while the LUID still names the same interface -- its GUID,
+    // held as two halves, is checked, since Windows can give a freed LUID to a later interface. An
+    // empty read -- no value yet, or a failed read -- is retried no sooner than retryAt, so a value
+    // that appears later is still found without a registry read every sample. Sampler thread only.
     struct AdapterDeviceInstanceId
     {
+        std::uint64_t guidLow = 0;
+        std::uint64_t guidHigh = 0;
         std::wstring id;
-        std::chrono::steady_clock::time_point retryAt{};
+        std::chrono::steady_clock::time_point retryAt;
     };
     std::unordered_map<std::uint64_t, AdapterDeviceInstanceId> m_AdapterDeviceInstanceIds;
     // Cached static info (read once)

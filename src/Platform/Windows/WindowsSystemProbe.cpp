@@ -7,12 +7,11 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <optional>
-#include <span>
 #include <string>
 #include <utility>
-#include <vector>
 
 // clang-format off
 // Windows headers - version macros set via CMake compile definitions
@@ -39,7 +38,6 @@
 #include <format>
 #include <span>
 #include <type_traits>
-#include <unordered_map>
 #include <vector>
 
 #include <psapi.h> // GetPerformanceInfo (K32GetPerformanceInfo, in kernel32)
@@ -623,7 +621,18 @@ template<typename Cache>
 [[nodiscard]] const std::wstring& adapterDeviceInstanceId(Cache& cache, std::uint64_t interfaceLuid, const GUID& interfaceGuid)
 {
     const auto now = std::chrono::steady_clock::now();
+    std::array<std::uint64_t, 2> guidHalves{};
+    static_assert(sizeof(guidHalves) == sizeof(GUID));
+    std::memcpy(guidHalves.data(), &interfaceGuid, sizeof(GUID));
     auto& entry = cache[interfaceLuid];
+    // Windows can give a freed LUID to a later interface: a different GUID is a different adapter,
+    // whose id is read afresh rather than inherited (#1369 review).
+    if (entry.guidLow != guidHalves[0] || entry.guidHigh != guidHalves[1])
+    {
+        entry = {};
+        entry.guidLow = guidHalves[0];
+        entry.guidHigh = guidHalves[1];
+    }
     if (entry.id.empty() && now >= entry.retryAt)
     {
         entry.id = readAdapterDeviceInstanceId(interfaceGuid);
