@@ -76,6 +76,165 @@ namespace UI::Format
     }
 }
 
+// ============================================================================
+// Allocation-free localized fixed-point formatting (#1334)
+// ============================================================================
+
+/// The global locale's numeric punctuation, as std::format's "L" specs apply it to a number.
+struct NumericPunctuation
+{
+    char decimalPoint = '.';
+    char thousandsSep = ',';
+    std::string grouping; // numpunct::grouping(): empty for no separators ("C" locale)
+};
+
+/// The global locale's punctuation, cached per thread and re-read whenever the global locale is
+/// replaced (the test suites switch it; TaskSmack sets it once at startup). Checking costs one
+/// std::locale() copy and a pointer compare, against the locale lookup, facet calls and grouping
+/// string std::format("{:L}") pays on every call.
+[[nodiscard]] inline auto numericPunctuation() noexcept -> const NumericPunctuation&
+{
+    // NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables,misc-const-correctness)
+    thread_local std::locale cachedLocale = std::locale::classic();
+    thread_local NumericPunctuation cached{.decimalPoint = '.', .thousandsSep = ',', .grouping = {}};
+    // NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables,misc-const-correctness)
+    try
+    {
+        const std::locale current;
+        if (current != cachedLocale)
+        {
+            // Build the new value first and commit the key last, so a throw leaves the old pair intact.
+            const auto& facet = std::use_facet<std::numpunct<char>>(current);
+            NumericPunctuation fresh{
+                .decimalPoint = facet.decimal_point(), .thousandsSep = facet.thousands_sep(), .grouping = facet.grouping()};
+            cached = std::move(fresh);
+            cachedLocale = current;
+        }
+        return cached;
+    }
+    catch (...)
+    {
+        return cached; // The last punctuation read (the "C" locale's until one is read successfully)
+    }
+}
+
+/// Writes `value` with `decimals` fraction digits into [out, out + capacity), exactly as
+/// std::format("{:.{}Lf}", value, decimals) prints it with the global locale: its decimal point,
+/// and its thousands separator placed by its grouping. No allocation and no locale lookup per call,
+/// which is what made every chart axis tick about twice as slow once the axes went localized (#1334).
+/// Returns the length written, or 0 if it doesn't fit, `value` isn't finite, or `decimals` is outside
+/// 0-9; the caller then falls back to std::format, so the output never differs from it.
+[[nodiscard]] inline auto formatFixedLocalizedTo(char* out, std::size_t capacity, double value, int decimals) noexcept -> std::size_t
+{
+    constexpr int MAX_DECIMALS = 9;
+    if (!std::isfinite(value) || decimals < 0 || decimals > MAX_DECIMALS)
+    {
+        return 0;
+    }
+    // std::format's "f" is to_chars' fixed format: up to 309 integer digits, a sign and a point.
+    std::array<char, 330> digits{};
+    const auto [digitsEnd, error] = std::to_chars(digits.data(), digits.data() + digits.size(), value, std::chars_format::fixed, decimals);
+    if (error != std::errc{})
+    {
+        return 0;
+    }
+
+    const NumericPunctuation& punct = numericPunctuation();
+    const char* first = digits.data();
+    std::size_t length = 0;
+    const auto put = [out, capacity, &length](char c) noexcept
+    {
+        if (length < capacity)
+        {
+            out[length] = c;
+        }
+        ++length;
+    };
+
+    if (*first == '-')
+    {
+        put('-');
+        ++first;
+    }
+    const char* const textEnd = digitsEnd;
+    const char* integerEnd = std::find(first, textEnd, '.');
+    const auto integerDigits = static_cast<std::size_t>(integerEnd - first);
+
+    // Separator positions, as the count of integer digits to their right: numpunct grouping gives
+    // the group sizes from the right, its last entry repeating; a size <= 0 or CHAR_MAX ends grouping.
+    std::array<std::size_t, 320> cuts{};
+    std::size_t cutCount = 0;
+    if (!punct.grouping.empty())
+    {
+        std::size_t position = 0;
+        for (std::size_t group = 0; cutCount < cuts.size(); ++group)
+        {
+            const char size = punct.grouping[std::min(group, punct.grouping.size() - 1)];
+            if (size <= 0 || size == std::numeric_limits<char>::max())
+            {
+                break;
+            }
+            position += static_cast<std::size_t>(size);
+            if (position >= integerDigits)
+            {
+                break;
+            }
+            cuts[cutCount++] = position;
+        }
+    }
+
+    for (std::size_t i = 0; i < integerDigits; ++i)
+    {
+        put(first[i]);
+        const std::size_t toTheRight = integerDigits - i - 1;
+        if (cutCount > 0 && toTheRight == cuts[cutCount - 1])
+        {
+            put(punct.thousandsSep);
+            --cutCount;
+        }
+    }
+    if (integerEnd != textEnd)
+    {
+        put(punct.decimalPoint);
+        for (const char* p = integerEnd + 1; p != textEnd; ++p)
+        {
+            put(*p);
+        }
+    }
+    return length <= capacity ? length : 0;
+}
+
+/// Appends `text` at out[length], tracking the length past `capacity` so the caller can tell it
+/// didn't fit (formatFixedLocalizedTo()'s convention).
+inline void appendText(char* out, std::size_t capacity, std::size_t& length, std::string_view text) noexcept
+{
+    for (const char c : text)
+    {
+        if (length < capacity)
+        {
+            out[length] = c;
+        }
+        ++length;
+    }
+}
+
+/// std::format("{:.{}Lf}{}", value, decimals, suffix) through formatFixedLocalizedTo(): the same
+/// text, built in a stack buffer instead of through std::format's locale-aware path (#1334).
+[[nodiscard]] inline auto formatFixedLocalized(double value, int decimals, std::string_view suffix) -> std::string
+{
+    std::array<char, 64> buffer{};
+    std::size_t length = formatFixedLocalizedTo(buffer.data(), buffer.size(), value, decimals);
+    if (length > 0)
+    {
+        appendText(buffer.data(), buffer.size(), length, suffix);
+        if (length <= buffer.size())
+        {
+            return {buffer.data(), length};
+        }
+    }
+    return std::format("{:.{}Lf}{}", value, decimals, suffix);
+}
+
 [[nodiscard]] inline auto toIntSaturated(long value) -> int
 {
     if (!std::in_range<int>(value))
@@ -416,8 +575,37 @@ inline constexpr std::array<const ByteUnit*, 5> BYTE_UNITS = {&BYTE_UNIT_TB, &BY
     return std::isfinite(rounded) ? rounded : value;
 }
 
+/// formatBytesWithUnit() / formatBytesPerSecWithUnit() written into [out, out + capacity) ("1.5 GB",
+/// "1.5 GB/s"), without allocating: chart axis ticks call this for every label every frame (#1334).
+/// Returns the length, or 0 if it doesn't fit or the value isn't finite.
+[[nodiscard]] inline auto formatBytesWithUnitTo(char* out, std::size_t capacity, double bytes, ByteUnit unit, bool perSecond) noexcept
+    -> std::size_t
+{
+    const double value = roundHalfAwayFromZero(bytes / unit.scale, unit.decimals);
+    std::size_t length = formatFixedLocalizedTo(out, capacity, value, unit.decimals);
+    if (length == 0)
+    {
+        return 0;
+    }
+    appendText(out, capacity, length, " ");
+    appendText(out, capacity, length, unit.suffix);
+    if (perSecond)
+    {
+        appendText(out, capacity, length, "/s");
+    }
+    return length <= capacity ? length : 0;
+}
+
+/// The longest byte value a stack buffer holds before formatBytesWithUnit() falls back to std::format.
+inline constexpr std::size_t BYTE_TEXT_CAPACITY = 64;
+
 [[nodiscard]] inline auto formatBytesWithUnit(double bytes, ByteUnit unit) -> std::string
 {
+    std::array<char, BYTE_TEXT_CAPACITY> buffer{};
+    if (const std::size_t length = formatBytesWithUnitTo(buffer.data(), buffer.size(), bytes, unit, false); length > 0)
+    {
+        return {buffer.data(), length};
+    }
     const double value = roundHalfAwayFromZero(bytes / unit.scale, unit.decimals);
     return std::format("{:.{}Lf} {}", value, unit.decimals, unit.suffix);
 }
@@ -430,6 +618,11 @@ inline constexpr std::array<const ByteUnit*, 5> BYTE_UNITS = {&BYTE_UNIT_TB, &BY
 
 [[nodiscard]] inline auto formatBytesPerSecWithUnit(double bytesPerSec, ByteUnit unit) -> std::string
 {
+    std::array<char, BYTE_TEXT_CAPACITY> buffer{};
+    if (const std::size_t length = formatBytesWithUnitTo(buffer.data(), buffer.size(), bytesPerSec, unit, true); length > 0)
+    {
+        return {buffer.data(), length};
+    }
     return formatBytesWithUnit(bytesPerSec, unit) + "/s";
 }
 
@@ -889,18 +1082,18 @@ struct AlignedBytesParts
 {
     if (watts == 0.0)
     {
-        return std::format("{:.1Lf} W", 0.0); // Also -0.0, which would print as "-0.0 W"
+        return formatFixedLocalized(0.0, 1, " W"); // Also -0.0, which would print as "-0.0 W"
     }
     const double absWatts = std::abs(watts);
     if (absWatts >= 1.0)
     {
-        return std::format("{:.1Lf} W", roundHalfAwayFromZero(watts, 1));
+        return formatFixedLocalized(roundHalfAwayFromZero(watts, 1), 1, " W");
     }
     if (absWatts >= 0.001)
     {
-        return std::format("{:.1Lf} mW", roundHalfAwayFromZero(watts * 1000.0, 1));
+        return formatFixedLocalized(roundHalfAwayFromZero(watts * 1000.0, 1), 1, " mW");
     }
-    return std::format("{:.1Lf} µW", roundHalfAwayFromZero(watts * 1'000'000.0, 1));
+    return formatFixedLocalized(roundHalfAwayFromZero(watts * 1'000'000.0, 1), 1, " µW");
 }
 
 /// "42%" from 10 % up, "4.2%" below it (where a whole number would read 0 % or 1 % for most
@@ -919,8 +1112,8 @@ struct AlignedBytesParts
     }
     // Decide on the rounded value, so 9.96 becomes "10%" rather than "10.0%".
     const bool wholeNumber = std::abs(percent) >= 9.95;
-    return wholeNumber ? std::format("{:.0Lf}%", roundHalfAwayFromZero(percent, 0))
-                       : std::format("{:.1Lf}%", roundHalfAwayFromZero(percent, 1));
+    return wholeNumber ? formatFixedLocalized(roundHalfAwayFromZero(percent, 0), 0, "%")
+                       : formatFixedLocalized(roundHalfAwayFromZero(percent, 1), 1, "%");
 }
 
 /// formatPercent() for a float history sample, so the panels' float series need no cast.

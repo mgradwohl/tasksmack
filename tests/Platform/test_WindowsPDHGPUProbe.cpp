@@ -801,6 +801,25 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, MemoryCounterSkipsFailingCstatusAndMalfor
     EXPECT_EQ(results[0].gpuMemoryBytes, 4096U);
 }
 
+// #1164: a process's dedicated and shared GPU memory are reported apart, as the adapter's are, so
+// Domain can compare each with the adapter's matching figure instead of a sum that could exceed it.
+TEST_F(WindowsPDHGPUProbeInjectedTest, DedicatedAndSharedMemoryAreKeptApart)
+{
+    auto impl = makeInjectedImpl();
+    m_scenario->items[impl->dedicatedMemoryCounter] = {{.name = L"pid_802_luid_0x0_0x1_phys_0", .largeValue = 4096}};
+    m_scenario->items[impl->sharedMemoryCounter] = {{.name = L"pid_802_luid_0x0_0x1_phys_0", .largeValue = 1000}};
+    m_scenario->items[impl->utilizationCounter] = {
+        {.name = L"pid_802_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .doubleValue = 5.0},
+    };
+
+    PDHGPUProbe probe(std::move(impl));
+    const auto results = probe.readProcessGPUCounters();
+
+    ASSERT_EQ(results.size(), 1U);
+    EXPECT_EQ(results[0].gpuMemoryBytes, 4096U);
+    EXPECT_EQ(results[0].gpuSharedMemoryBytes, 1000U);
+}
+
 TEST_F(WindowsPDHGPUProbeInjectedTest, ReadCounterArrayHardFailureIsTreatedAsNoData)
 {
     auto impl = makeInjectedImpl();

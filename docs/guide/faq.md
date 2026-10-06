@@ -70,11 +70,12 @@ With `CAP_DAC_READ_SEARCH` alone, only FD counts come back. `CAP_SYS_PTRACE` let
 
 ---
 
-## Why is GPU% greater than 100 %?
+## How are a process's GPU% and GPU memory counted?
 
-**Cause:** Per-process GPU utilisation is summed across all GPUs in the system. A process that actively uses two GPUs simultaneously can show GPU% up to `number_of_GPUs × 100 %`.
+They are counted the way the GPU tab counts each GPU, so the two can be compared:
 
-This matches how multi-CPU CPU% reporting works — it is intentional, not a bug.
+- **GPU %** is the process's utilisation of the busiest GPU it uses, from 0 to 100 %. It is not summed across GPUs, so it never goes past 100 %.
+- **GPU Mem** counts, on each GPU, the memory the GPU tab reports as used there: dedicated memory (VRAM) on a discrete GPU, shared system memory on an integrated GPU on Windows, even while the process uses none of it. It is added up across the GPUs the process uses, so it is never more than those GPUs show in use. Process Details also lists the dedicated and shared amounts separately when the process has shared GPU memory, which Windows reports and Linux does not.
 
 ---
 

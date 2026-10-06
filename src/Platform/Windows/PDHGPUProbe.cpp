@@ -245,7 +245,10 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
         // ProcessModel will match this against the gpuIdToName map (which includes both gpuId and luidId).
         counter.gpuId = "GPU_" + key.gpuLuid;
         counter.gpuUtilPercent = busiestEngine;
-        counter.gpuMemoryBytes = agg.dedicatedMemory + agg.sharedMemory;
+        // Kept apart, as the adapter figures are: summed, a process could show more "GPU memory"
+        // than the adapter's dedicated usage beside it (#1164).
+        counter.gpuMemoryBytes = agg.dedicatedMemory;
+        counter.gpuSharedMemoryBytes = agg.sharedMemory;
         counter.activeEngines = agg.engines;
 
         result.push_back(std::move(counter));

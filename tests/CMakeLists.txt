@@ -147,6 +147,7 @@ set(COMMON_TEST_SOURCES
     App/test_NetInterfaceUtils.cpp
     App/test_PowerStatusText.cpp
     App/test_ElevationNoticeText.cpp
+    App/test_FontSizeChange.cpp
 )
 set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_ProcessProbeContract.cpp
@@ -262,6 +263,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Core/PathService.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/VideoBackend.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/Window.cpp
+    ${CMAKE_SOURCE_DIR}/src/Core/X11WindowManager.cpp
     # App layer
     ${CMAKE_SOURCE_DIR}/src/App/UserConfig.cpp
     ${CMAKE_SOURCE_DIR}/src/App/InstanceLock.cpp

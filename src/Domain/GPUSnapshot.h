@@ -29,6 +29,9 @@ struct GPUSnapshot
     std::string name;
     std::string vendor;
     bool isIntegrated = false;
+    // The memory used/total figures count the shared segment rather than dedicated VRAM
+    // (Platform::GPUInfo::memoryIsShared): what a process's "GPU memory" on this GPU counts (#1164).
+    bool memoryIsShared = false;
 
     // Whether this sample's read of each field succeeded. False when a supported sensor couldn't be
     // read this time (NVML_ERROR_TIMEOUT, GPU lost, a driver reset): its value is then meaningless,

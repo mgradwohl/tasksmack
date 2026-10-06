@@ -1,6 +1,7 @@
 #if defined(__linux__) && __has_include(<unistd.h>)
 
 #include "Platform/GpuMockLibraryTestUtils.h"
+#include "Platform/Linux/AmdApu.h"
 #include "Platform/Linux/ROCmGPUProbe.h"
 #include "Platform/Linux/ROCmGPUProbeMath.h"
 #include "Platform/ScopedTempDir.h"
@@ -12,8 +13,10 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <ios>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <dlfcn.h>
 
@@ -413,6 +416,169 @@ TEST(ROCmGPUProbeMathTest, SysfsPciAddressUnpacksTheBdfId)
     EXPECT_EQ(ROCmGPUProbeMath::sysfsPciAddress(0x0300ULL), "0000:03:00.0");
     EXPECT_EQ(ROCmGPUProbeMath::sysfsPciAddress(9001ULL), "0000:23:05.1"); // 0x2329
     EXPECT_EQ(ROCmGPUProbeMath::sysfsPciAddress((1ULL << 32U) | 0xC100ULL), "0001:c1:00.0");
+}
+
+// =============================================================================
+// APU classification (#1266), shared with DRMGPUProbe through AmdApu.h (#1344)
+// =============================================================================
+
+using AmdApu::GcIpVersion;
+
+TEST(AmdApuTest, AnApuGraphicsCoreVersionIsIntegrated)
+{
+    // The GC IP versions amdgpu flags AMD_IS_APU: Renoir, Rembrandt, Phoenix, Strix Point, Strix Halo.
+    for (const GcIpVersion gc : {GcIpVersion{.major = 9, .minor = 3, .revision = 0},
+                                 GcIpVersion{.major = 10, .minor = 3, .revision = 3},
+                                 GcIpVersion{.major = 11, .minor = 0, .revision = 1},
+                                 GcIpVersion{.major = 11, .minor = 5, .revision = 0},
+                                 GcIpVersion{.major = 11, .minor = 5, .revision = 1},
+                                 GcIpVersion{.major = 11, .minor = 5, .revision = 4},
+                                 GcIpVersion{.major = 11, .minor = 5, .revision = 6},
+                                 GcIpVersion{.major = 11, .minor = 7, .revision = 0},
+                                 GcIpVersion{.major = 11, .minor = 7, .revision = 1}})
+    {
+        EXPECT_TRUE(AmdApu::isAmdApu(gc, std::nullopt)) << gc.major << "." << gc.minor << "." << gc.revision;
+    }
+}
+
+TEST(AmdApuTest, ADiscreteGraphicsCoreVersionIsDiscreteWhateverTheDeviceId)
+{
+    // Navi 21 (10.3.0), Navi 31 (11.0.0), Navi 48 (12.0.1), MI210 (9.4.2): discrete. The GC version
+    // decides when it is known, even against a device id that looks like an APU's.
+    for (const GcIpVersion gc : {GcIpVersion{.major = 10, .minor = 3, .revision = 0},
+                                 GcIpVersion{.major = 11, .minor = 0, .revision = 0},
+                                 GcIpVersion{.major = 12, .minor = 0, .revision = 1},
+                                 GcIpVersion{.major = 9, .minor = 4, .revision = 2}})
+    {
+        EXPECT_FALSE(AmdApu::isAmdApu(gc, std::nullopt));
+        EXPECT_FALSE(AmdApu::isAmdApu(gc, std::uint16_t{0x15BF}));
+    }
+}
+
+TEST(AmdApuTest, WithoutAGraphicsCoreVersionTheDeviceIdDecides)
+{
+    EXPECT_TRUE(AmdApu::isAmdApu(std::nullopt, std::uint16_t{0x15DD}));  // Raven
+    EXPECT_TRUE(AmdApu::isAmdApu(std::nullopt, std::uint16_t{0x1636}));  // Renoir
+    EXPECT_TRUE(AmdApu::isAmdApu(std::nullopt, std::uint16_t{0x1304}));  // Kaveri, first of its range
+    EXPECT_TRUE(AmdApu::isAmdApu(std::nullopt, std::uint16_t{0x131D}));  // Kaveri, last of its range
+    EXPECT_TRUE(AmdApu::isAmdApu(std::nullopt, std::uint16_t{0x1586}));  // Strix Halo
+    EXPECT_FALSE(AmdApu::isAmdApu(std::nullopt, std::uint16_t{0x131E})); // just past Kaveri
+    // Gaps in Kaveri's ids that the kernel's pciidlist doesn't flag AMD_IS_APU (#1343 review).
+    for (const std::uint16_t gap : {std::uint16_t{0x1308}, std::uint16_t{0x1314}, std::uint16_t{0x1319}, std::uint16_t{0x131A}})
+    {
+        EXPECT_FALSE(AmdApu::isAmdApu(std::nullopt, gap)) << std::hex << gap;
+    }
+    // IP-discovery APUs' ids, for a kernel without ip_discovery (#1343 review, ids from pci.ids).
+    for (const std::uint16_t id : {std::uint16_t{0x1435},
+                                   std::uint16_t{0x13C0},
+                                   std::uint16_t{0x1900},
+                                   std::uint16_t{0x1901},
+                                   std::uint16_t{0x1114},
+                                   std::uint16_t{0x1902}})
+    {
+        EXPECT_TRUE(AmdApu::isAmdApu(std::nullopt, id)) << std::hex << id;
+    }
+    // Every Cyan Skillfish id the kernel flags AMD_IS_APU (#1343 review).
+    for (const std::uint16_t id : {std::uint16_t{0x13DB},
+                                   std::uint16_t{0x13F9},
+                                   std::uint16_t{0x13FA},
+                                   std::uint16_t{0x13FB},
+                                   std::uint16_t{0x13FC},
+                                   std::uint16_t{0x13FE},
+                                   std::uint16_t{0x143F}})
+    {
+        EXPECT_TRUE(AmdApu::isAmdApu(std::nullopt, id)) << std::hex << id;
+    }
+    EXPECT_FALSE(AmdApu::isAmdApu(std::nullopt, std::uint16_t{0x73BF})); // Navi 21
+    EXPECT_FALSE(AmdApu::isAmdApu(std::nullopt, std::uint16_t{0x744C})); // Navi 31
+    EXPECT_FALSE(AmdApu::isAmdApu(std::nullopt, std::nullopt)) << "no signal: discrete, as before #1266";
+}
+
+/// A fake amdgpu sysfs entry for mock device 1 (PCI id 9001 = 0000:23:05.1): its PCI device id and,
+/// if given, the ip_discovery GC entry under `gcDirName` ("GC" or the hardware id "11").
+void makeAmdgpuSysfs(const std::filesystem::path& root,
+                     const std::string& deviceId,
+                     std::optional<GcIpVersion> gc,
+                     const std::string& gcDirName = "GC")
+{
+    const auto dir = root / "0000:23:05.1";
+    std::filesystem::create_directories(dir / "power");
+    std::ofstream(dir / "power" / "runtime_status") << "active\n";
+    std::ofstream(dir / "device") << deviceId << "\n";
+    if (gc.has_value())
+    {
+        const auto gcDir = dir / "ip_discovery" / "die" / "0" / gcDirName / "0";
+        std::filesystem::create_directories(gcDir);
+        std::ofstream(gcDir / "major") << gc->major << "\n";
+        std::ofstream(gcDir / "minor") << gc->minor << "\n";
+        std::ofstream(gcDir / "revision") << gc->revision << "\n";
+    }
+}
+
+/// isIntegrated of each mock device, enumerated with `pciRoot` as the sysfs PCI root.
+std::vector<bool> integratedFlags(const std::filesystem::path& pciRoot)
+{
+    ROCmGPUProbe probe(pciRoot.string());
+    std::vector<bool> flags;
+    for (const auto& gpu : probe.enumerateGPUs())
+    {
+        flags.push_back(gpu.isIntegrated);
+    }
+    return flags;
+}
+
+TEST(LinuxROCmGPUProbeTest, AnApuIsReportedAsIntegrated)
+{
+    // #1266: every ROCm GPU was hard-coded discrete, so an APU's shared memory counted as VRAM.
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+
+    {
+        // Phoenix (GC 11.0.1) by its ip_discovery entry.
+        const TestSupport::ScopedTempDir pciRoot("tasksmack_rocm_apu_gc");
+        makeAmdgpuSysfs(pciRoot.path, "0x15bf", GcIpVersion{.major = 11, .minor = 0, .revision = 1});
+        EXPECT_EQ(integratedFlags(pciRoot.path), (std::vector<bool>{false, true, false}))
+            << "only device 1 has a PCI address; the others have no signal and stay discrete";
+    }
+    {
+        // The same entry listed under the GC hardware id (11) rather than its name.
+        const TestSupport::ScopedTempDir pciRoot("tasksmack_rocm_apu_hwid");
+        makeAmdgpuSysfs(pciRoot.path, "0x15bf", GcIpVersion{.major = 11, .minor = 0, .revision = 1}, "11");
+        EXPECT_EQ(integratedFlags(pciRoot.path), (std::vector<bool>{false, true, false}));
+    }
+    {
+        // A kernel without ip_discovery: Renoir's PCI device id decides.
+        const TestSupport::ScopedTempDir pciRoot("tasksmack_rocm_apu_id");
+        makeAmdgpuSysfs(pciRoot.path, "0x1636", std::nullopt);
+        EXPECT_EQ(integratedFlags(pciRoot.path), (std::vector<bool>{false, true, false}));
+    }
+}
+
+TEST(LinuxROCmGPUProbeTest, ADiscreteGpuIsNotReportedAsIntegrated)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+
+    {
+        // Navi 21 (GC 10.3.0).
+        const TestSupport::ScopedTempDir pciRoot("tasksmack_rocm_dgpu_gc");
+        makeAmdgpuSysfs(pciRoot.path, "0x73bf", GcIpVersion{.major = 10, .minor = 3, .revision = 0});
+        EXPECT_EQ(integratedFlags(pciRoot.path), (std::vector<bool>(3, false)));
+    }
+    {
+        // Navi 21 by device id alone.
+        const TestSupport::ScopedTempDir pciRoot("tasksmack_rocm_dgpu_id");
+        makeAmdgpuSysfs(pciRoot.path, "0x73bf", std::nullopt);
+        EXPECT_EQ(integratedFlags(pciRoot.path), (std::vector<bool>(3, false)));
+    }
+    // No sysfs at all: discrete, as before.
+    EXPECT_EQ(integratedFlags(TestSupport::ISOLATED_PCI_ROOT), (std::vector<bool>(3, false)));
 }
 
 // #1272 review: a transient failure (RSMI_STATUS_BUSY) while sensors are probed at enumeration doesn't

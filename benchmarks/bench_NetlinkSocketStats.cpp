@@ -109,8 +109,12 @@ static void BM_NetlinkSocketStats_FullPipeline(benchmark::State& state)
         for (const auto& socket : sockets)
         {
             const auto it = inodeToPid.find(socket.inode);
-            const std::int32_t pid = it != inodeToPid.end() ? it->second : 0;
-            samples.push_back({.key = socket.inode, .pid = pid, .bytesReceived = socket.bytesReceived, .bytesSent = socket.bytesSent});
+            const Platform::SocketOwner owner = it != inodeToPid.end() ? it->second : Platform::SocketOwner{};
+            samples.push_back({.key = socket.inode,
+                               .pid = owner.pid,
+                               .ownerStartTimeTicks = owner.startTimeTicks,
+                               .bytesReceived = socket.bytesReceived,
+                               .bytesSent = socket.bytesSent});
         }
         accumulator.addReading(samples);
         benchmark::DoNotOptimize(samples.size());

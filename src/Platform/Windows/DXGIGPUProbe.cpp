@@ -338,6 +338,7 @@ std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
                                                         desc.DedicatedVideoMemory,
                                                         static_cast<std::int32_t>(desc.AdapterLuid.HighPart),
                                                         static_cast<std::uint32_t>(desc.AdapterLuid.LowPart));
+                info.memoryIsShared = adapterMemoryIsShared(info.isIntegrated); // What its used figure counts (#1164)
 
                 // Position in DXGI's list: display order only, never identity (#1317)
                 info.deviceIndex = adapterIndex;

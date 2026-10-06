@@ -84,10 +84,8 @@ class SystemModel : public ISamplable
     /// Trims the history to the new window and republishes it at once, once anything has been
     /// published, rather than leaving the old window on show until the next sample (#1145).
     void setMaxHistorySeconds(double seconds);
-    [[nodiscard]] double maxHistorySeconds() const
-    {
-        return m_MaxHistorySeconds;
-    }
+    /// Thread-safe: read under m_Mutex, which setMaxHistorySeconds() writes it under (#1176).
+    [[nodiscard]] double maxHistorySeconds() const;
 
     /// The network rate ceiling, bytes/s ([metrics] max_sane_rate_bps, shared with ProcessModel, #1291).
     /// An interface rate (or the aggregate fallback rate) above it is taken for a counter glitch: it
