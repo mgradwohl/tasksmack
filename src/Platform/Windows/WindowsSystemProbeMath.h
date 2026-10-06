@@ -11,7 +11,6 @@
 #include <cstring>
 #include <optional>
 #include <span>
-#include <string_view>
 #include <vector>
 
 namespace Platform
@@ -305,58 +304,6 @@ enum class DevicePresence : std::uint8_t
     return hardwareInterface || (ifType == IF_TYPE_ETHERNET && physicalMediumType == NDIS_PHYSICAL_MEDIUM_BLUETOOTH);
 }
 
-/// A counted GetIfTable2 row as isSecondaryWifiPort() sees it.
-struct NetworkAdapterPort
-{
-    std::uint32_t ifType = 0;          // MIB_IF_ROW2::Type
-    bool hardware = false;             // isHardwareNetworkRow()
-    bool isWlanStation = false;        // Listed by WlanEnumInterfaces(): a Wi-Fi station interface
-    std::string_view deviceInstanceId; // The adapter's PnP device instance id; empty when unknown
-};
-
-/// Whether two strings are equal ignoring ASCII case: PnP device instance ids are case-insensitive,
-/// and Windows does not always store one with the same case in every place.
-[[nodiscard]] constexpr bool equalsIgnoringAsciiCase(std::string_view a, std::string_view b) noexcept
-{
-    const auto lower = [](char c)
-    {
-        return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
-    };
-    return a.size() == b.size() && std::ranges::equal(a, b, [&lower](char x, char y) { return lower(x) == lower(y); });
-}
-
-/// Whether @p row is a secondary port of a Wi-Fi adapter whose primary port is also in @p rows (#1284).
-///
-/// A Wi-Fi 7 adapter appears several times in GetIfTable2 -- "Wi-Fi" and "Wi-Fi 2" to "Wi-Fi 5" --
-/// for the Wi-Fi Direct and multi-link ports its driver exposes, all reporting HardwareInterface, so
-/// all were counted in the Total; they read 0 bytes, but a driver that mirrored the primary link's
-/// counters on them would have multiplied it. They are ports of one PnP device: every one carries
-/// the same device instance id, while a second physical card -- even of the same model, whose
-/// description differs only by a " #2" -- is a device of its own with its own id. So hardware Wi-Fi
-/// rows that share a device instance id are one adapter, counted once through its station port: the
-/// interface the WLAN service (WlanEnumInterfaces()) lists, which only lists station interfaces --
-/// on the report's laptop "Wi-Fi" and none of "Wi-Fi 2" to "Wi-Fi 5". The adapter's other ports are
-/// left out of the Total like virtual adapters. Nothing is left out without that proof: a row whose
-/// device id is unknown, or one whose adapter has no listed station port (the WLAN service stopped,
-/// wlanapi.dll missing), is counted. Limited to Wi-Fi: a mobile broadband modem's extra contexts are
-/// ports of one device too, but carry traffic of their own.
-///
-/// @param row   The row to classify.
-/// @param rows  Every counted row of the same GetIfTable2 snapshot (may include @p row).
-[[nodiscard]] constexpr bool isSecondaryWifiPort(const NetworkAdapterPort& row, std::span<const NetworkAdapterPort> rows) noexcept
-{
-    if (row.ifType != IF_TYPE_WIFI || !row.hardware || row.isWlanStation || row.deviceInstanceId.empty())
-    {
-        return false;
-    }
-    return std::ranges::any_of(rows,
-                               [&row](const NetworkAdapterPort& other)
-                               {
-                                   return other.ifType == IF_TYPE_WIFI && other.hardware && other.isWlanStation &&
-                                          equalsIgnoringAsciiCase(other.deviceInstanceId, row.deviceInstanceId);
-                               });
-}
-
 /// Cumulative bytes over the interfaces the network Total counts (#1257).
 struct NetworkTotals
 {
@@ -369,8 +316,9 @@ struct NetworkTotals
 /// Traffic over a VPN tunnel, a Hyper-V/WSL vEthernet adapter or a WAN Miniport also crosses a
 /// hardware adapter, so counting both doubled it. The probe marks a row virtual when
 /// MIB_IF_ROW2::InterfaceAndOperStatusFlags.HardwareInterface is clear, unless it is a Bluetooth PAN
-/// link (isHardwareNetworkRow()), and marks a secondary Wi-Fi port virtual too
-/// (isSecondaryWifiPort(), #1284). With no hardware interface
+/// link (isHardwareNetworkRow(), #1284). A Wi-Fi adapter's extra ports ("Wi-Fi 2" to "Wi-Fi 5":
+/// Wi-Fi Direct, hotspot, multi-link) report HardwareInterface and are counted like any hardware
+/// link: their traffic is the machine's own radio traffic, and leaving it out would undercount. With no hardware interface
 /// at all every interface counts, so the Total isn't 0. Same rule as the Linux probe and
 /// SystemModel's Total rate (#1106); keep them in step.
 [[nodiscard]] inline NetworkTotals sumCountedInterfaces(std::span<const SystemCounters::InterfaceCounters> interfaces) noexcept
