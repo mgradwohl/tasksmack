@@ -244,6 +244,9 @@ class ProcessDetailsPanel : public Panel
     Platform::ProcessActionCapabilities m_ActionCapabilities;
     Platform::ProcessCapabilities m_ProcessCapabilities;
     bool m_PerProcessGpuSupported = true;
+    // The GPU tab's "No GPU usage" explanation, naming the history window (#1210). Empty until built,
+    // and cleared when the window changes so the next frame rebuilds it.
+    std::string m_NoGpuUsageDetail;
 
     // Confirmation dialog state
     bool m_ShowConfirmDialog = false;

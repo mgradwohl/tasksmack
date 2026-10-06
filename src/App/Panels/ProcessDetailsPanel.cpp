@@ -470,8 +470,13 @@ void ProcessDetailsPanel::renderContent()
                 }
                 else if (gpuContent == Detail::GpuTabContent::NoUsage)
                 {
-                    UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  No GPU usage",
-                                                  "This process has not used a GPU since it was selected.");
+                    // Only the retained history is looked at, so the text names that window (#1210);
+                    // rebuilt only when the window changes.
+                    if (m_NoGpuUsageDetail.empty())
+                    {
+                        m_NoGpuUsageDetail = Detail::noGpuUsageDetail(m_MaxHistorySeconds);
+                    }
+                    UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  No GPU usage", m_NoGpuUsageDetail.c_str());
                 }
                 else
                 {
@@ -563,6 +568,7 @@ void ProcessDetailsPanel::onEvent(Core::Event& event)
             // charts kept the old window's data and scale until then -- indefinitely for a process
             // that is no longer sampled (#1145).
             m_MaxHistorySeconds = Domain::Sampling::clampHistorySeconds(Domain::Numeric::toDouble(e.getSeconds()));
+            m_NoGpuUsageDetail.clear(); // It names the window (#1210)
             if (!m_Timestamps.empty())
             {
                 trimHistory(m_Timestamps.back());

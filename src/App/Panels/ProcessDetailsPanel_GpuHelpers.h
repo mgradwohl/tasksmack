@@ -3,10 +3,14 @@
 // The process details GPU tab's "is there anything to show" decision, extracted from
 // ProcessDetailsPanel::renderContent() so it is unit-testable without a live ImGui context.
 
+#include "UI/Format.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <ranges>
+#include <string>
 
 namespace App::Detail
 {
@@ -57,6 +61,16 @@ enum class GpuTabContent : std::uint8_t
         return GpuTabContent::Unavailable;
     }
     return hasUsageToShow ? GpuTabContent::Usage : GpuTabContent::NoUsage;
+}
+
+/// The GPU tab's "No GPU usage" explanation, for a history window of `historySeconds` (#1210).
+/// hasGpuUsageToShow() looks only at the retained history, so a process that used the GPU before
+/// the window gets this message too: it says "in the last 5m", in formatDuration()'s grammar, rather
+/// than claiming the process never used one. Built when the window changes, not every frame.
+[[nodiscard]] inline std::string noGpuUsageDetail(double historySeconds)
+{
+    return std::format("This process has not used a GPU in the last {}.",
+                       UI::Format::formatDuration(historySeconds, UI::Format::DurationStyle::Compact));
 }
 
 /// Whether the GPU tab shows its "Per-GPU Breakdown" under the usage table. With a single GPU its

@@ -62,6 +62,15 @@ TEST(ProcessGpuHelpersTest, PerGpuBreakdownOnlyForMoreThanOneGpu)
     EXPECT_TRUE(shouldShowPerGpuBreakdown(4));
 }
 
+// #1210: the "No GPU usage" text says which window was looked at, since a process that used the GPU
+// before the retained history gets it too.
+TEST(ProcessGpuHelpersTest, NoGpuUsageTextNamesTheHistoryWindow)
+{
+    EXPECT_EQ(noGpuUsageDetail(300.0), "This process has not used a GPU in the last 5m.");
+    EXPECT_EQ(noGpuUsageDetail(90.0), "This process has not used a GPU in the last 1m 30s.");
+    EXPECT_EQ(noGpuUsageDetail(3600.0), "This process has not used a GPU in the last 1h.");
+}
+
 // #1210: without per-process GPU metrics (DRM- or ROCm-only Linux) the tab must not claim the process
 // used no GPU, since no use could be seen.
 TEST(ProcessGpuHelpersTest, GpuTabSaysUnavailableRatherThanNoUsageWithoutPerProcessMetrics)
