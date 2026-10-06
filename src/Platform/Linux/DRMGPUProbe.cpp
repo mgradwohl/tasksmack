@@ -931,8 +931,15 @@ void DRMGPUProbe::discoverDrmClients()
 
     // Built whole, then committed: a walk cut short by an exception leaves the last lists in place.
     std::vector<std::vector<std::string>> found(m_Cards.size());
-    for (const auto& procEntry : listDirectory(m_ProcRoot))
+    // Whether the walk could see clients at all, apart from whether it found any: an empty list
+    // from a /proc that can't be listed, or whose every process's fds are denied (a sandbox), is
+    // no evidence the card is idle, so its busyness stays unread (N/A) rather than 0% (#1267).
+    bool anyFdDirRead = false;
+    std::error_code procErr;
+    Fs::directory_iterator procIt(m_ProcRoot, procErr);
+    for (const Fs::directory_iterator procEnd; !procErr && procIt != procEnd; procIt.increment(procErr))
     {
+        const Fs::path procEntry = procIt->path();
         const std::string pid = procEntry.filename().string();
         if (pid.empty() || !std::ranges::all_of(pid, [](char c) { return c >= '0' && c <= '9'; }))
         {
@@ -943,6 +950,7 @@ void DRMGPUProbe::discoverDrmClients()
         // that every unreadable process isn't logged.
         std::error_code fsErr;
         Fs::directory_iterator fds(procEntry / "fd", fsErr);
+        anyFdDirRead = anyFdDirRead || !fsErr;
         for (const Fs::directory_iterator end; !fsErr && fds != end; fds.increment(fsErr))
         {
             std::error_code linkErr;
@@ -958,6 +966,12 @@ void DRMGPUProbe::discoverDrmClients()
             }
         }
     }
+    if (procErr)
+    {
+        // Unlisted, or cut short mid-walk: either way, the clients found may not be all of them.
+        spdlog::debug("DRMGPUProbe: failed to list {}: {}", m_ProcRoot, procErr.message());
+    }
+    m_ClientScanReliable = !procErr && anyFdDirRead;
     for (std::size_t i = 0; i < m_Cards.size(); ++i)
     {
         m_Cards[i].clientFdinfoPaths = std::move(found[i]);
@@ -994,9 +1008,10 @@ void DRMGPUProbe::readEngineClients(DRMCard& card, GPUCounters& counter) const
         }
     }
     card.clientFdinfoPaths = std::move(stillOpen);
-    // Unread only when the card has clients and none reports any busyness: a kernel without fdinfo
-    // engine stats (i915 before Linux 5.19). A card with no clients at all is idle.
-    counter.engineBusyAvailable = anyEngineStats || card.clientFdinfoPaths.empty();
+    // Unread when the card has clients and none reports any busyness: a kernel without fdinfo engine
+    // stats (i915 before Linux 5.19). A card with no clients at all is idle -- but only if the /proc
+    // walk could see clients: an unlistable /proc, or every process's fds denied, is unknown, not idle.
+    counter.engineBusyAvailable = anyEngineStats || (card.clientFdinfoPaths.empty() && m_ClientScanReliable);
 }
 
 bool DRMGPUProbe::detectIsIntegrated(

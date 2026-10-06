@@ -185,6 +185,10 @@ class DRMGPUProbe : public IGPUProbe
     // Whether discoverDrmClients() has run: the first counter read does, rather than the constructor,
     // so a probe that is never sampled never walks /proc (#1267).
     bool m_ClientsDiscovered{false};
+    // Whether the last discoverDrmClients() walk could see clients: m_ProcRoot was listed in full and
+    // at least one process's fd directory was readable. Without that, "no clients found" says
+    // nothing about the card, and its engine busyness is left unread (N/A) rather than idle (#1267).
+    bool m_ClientScanReliable{false};
 };
 
 } // namespace Platform

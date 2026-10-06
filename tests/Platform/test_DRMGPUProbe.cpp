@@ -31,6 +31,7 @@
 #include <string>
 #include <system_error>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include <unistd.h>
@@ -1982,6 +1983,78 @@ TEST_F(DRMGPUProbeEngineTest, AClosedClientIsDroppedAndNoClientsIsIdle)
     const auto counters = probe->readGPUCounters();
     EXPECT_TRUE(counters[0].engineClients.empty());
     EXPECT_TRUE(counters[0].engineBusyAvailable); // Idle, not unread
+}
+
+// Whether a GPUModel fed by a probe over the fake /proc publishes a utilization after its second
+// sample, and the percent if it does: 0% for an idle card, nothing (N/A) for an unknown one.
+[[nodiscard]] std::optional<double> utilizationAfterTwoSamples(std::unique_ptr<DRMGPUProbe> probe)
+{
+    Domain::GPUModel model(std::move(probe));
+    const auto start = std::chrono::steady_clock::now();
+    model.refreshAt(start);
+    model.refreshAt(start + std::chrono::seconds(1));
+    const auto snapshots = model.snapshots();
+    if (snapshots.size() != 1U || !snapshots[0].utilizationAvailable)
+    {
+        return std::nullopt;
+    }
+    return snapshots[0].utilizationPercent;
+}
+
+// A /proc the walk could read, with processes but none on the card: the card is idle, 0%.
+TEST_F(DRMGPUProbeEngineTest, ReadableProcWithNoClientsIsIdle)
+{
+    makeFd(m_ProcRoot, 100, 3, "/dev/null", "pos:\t0\n");
+    EXPECT_TRUE(makeProbe()->readGPUCounters()[0].engineBusyAvailable);
+    const auto utilization = utilizationAfterTwoSamples(makeProbe());
+    ASSERT_TRUE(utilization.has_value());
+    EXPECT_DOUBLE_EQ(*utilization, 0.0);
+}
+
+// No /proc to walk: finding no clients there says nothing about the card, so N/A, not 0%.
+TEST_F(DRMGPUProbeEngineTest, MissingProcRootLeavesBusynessUnread)
+{
+    std::filesystem::remove_all(m_ProcRoot);
+    EXPECT_FALSE(makeProbe()->readGPUCounters()[0].engineBusyAvailable);
+    EXPECT_FALSE(utilizationAfterTwoSamples(makeProbe()).has_value());
+}
+
+TEST_F(DRMGPUProbeEngineTest, UnreadableProcRootLeavesBusynessUnread)
+{
+    if (getuid() == 0)
+    {
+        GTEST_SKIP() << "Cannot test EACCES as root";
+    }
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", xeFdinfo(7, 10, 100));
+    std::filesystem::permissions(m_ProcRoot, std::filesystem::perms::none);
+    const bool available = makeProbe()->readGPUCounters()[0].engineBusyAvailable;
+    const auto utilization = utilizationAfterTwoSamples(makeProbe());
+    std::filesystem::permissions(m_ProcRoot, std::filesystem::perms::all); // So TearDown can remove it
+    EXPECT_FALSE(available);
+    EXPECT_FALSE(utilization.has_value());
+}
+
+// A sandbox that lists /proc but denies every process's fd directory: unknown, not idle.
+TEST_F(DRMGPUProbeEngineTest, EveryFdDirectoryDeniedLeavesBusynessUnread)
+{
+    if (getuid() == 0)
+    {
+        GTEST_SKIP() << "Cannot test EACCES as root";
+    }
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", xeFdinfo(7, 10, 100));
+    makeFd(m_ProcRoot, 200, 3, "/dev/null", "pos:\t0\n");
+    for (const int pid : {100, 200})
+    {
+        std::filesystem::permissions(m_ProcRoot / std::to_string(pid) / "fd", std::filesystem::perms::none);
+    }
+    const bool available = makeProbe()->readGPUCounters()[0].engineBusyAvailable;
+    const auto utilization = utilizationAfterTwoSamples(makeProbe());
+    for (const int pid : {100, 200})
+    {
+        std::filesystem::permissions(m_ProcRoot / std::to_string(pid) / "fd", std::filesystem::perms::all);
+    }
+    EXPECT_FALSE(available);
+    EXPECT_FALSE(utilization.has_value());
 }
 
 // xe takes a runtime-PM reference to report a client's cycles, so a sleeping card's fdinfo isn't read.
