@@ -268,7 +268,13 @@ void unhookShellCommands(SDL_Window* sdlWindow)
     {
         // Our procedure is still installed and still receives every message SDL_DestroyWindow()
         // sends, so keep the property it forwards them to SDL's procedure through.
-        spdlog::warn("Failed to restore SDL's window procedure (error {}); it stays reached through the subclass", GetLastError());
+        const DWORD error = GetLastError();
+        try
+        {
+            spdlog::warn("Failed to restore SDL's window procedure (error {}); it stays reached through the subclass", error);
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) -- intentional: called from ~Window(), which must not throw
+        {}
         return;
     }
     RemovePropW(hwnd, SDL_WINDOW_PROC_PROP);

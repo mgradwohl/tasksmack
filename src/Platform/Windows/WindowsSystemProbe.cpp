@@ -744,7 +744,11 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
     for (std::size_t i = 0; i < listed.size(); ++i)
     {
         ports.push_back(NetworkAdapterPort{
-            .ifType = rowTypes[i], .interfaceLuid = rowLuids[i], .hardware = !listed[i].isVirtual, .deviceInstanceId = rowDeviceIds[i]});
+            .ifType = rowTypes[i],
+            .interfaceLuid = rowLuids[i],
+            .hardware = !listed[i].isVirtual,
+            .deviceInstanceId = rowDeviceIds[i],
+        });
     }
     for (std::size_t i = 0; i < listed.size(); ++i)
     {

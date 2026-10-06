@@ -519,7 +519,7 @@ TEST_F(WindowTest, ShellMinimizeWithoutWinDownStillMinimizesTheMaximizedWindow)
     {
         Window window(WindowSpecification{.Title = "ShellMinimizeTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
         // No Win+Down, whatever the real keyboard is doing.
-        window.setShellRestoreKeysReader([]() noexcept { return std::pair{false, false}; });
+        window.setShellRestoreKeysReader([] noexcept { return std::pair{false, false}; });
         window.maximize();
         if (!window.isMaximized())
         {
@@ -553,7 +553,7 @@ TEST_F(WindowTest, ShellMinimizeWithWinDownRestoresTheMaximizedWindow)
     try
     {
         Window window(WindowSpecification{.Title = "ShellRestoreTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
-        window.setShellRestoreKeysReader([]() noexcept { return std::pair{true, true}; });
+        window.setShellRestoreKeysReader([] noexcept { return std::pair{true, true}; });
         const auto normalGeometry = window.getNormalGeometry();
         ASSERT_TRUE(normalGeometry.has_value());
         const WindowGeometry::Rect normal = normalGeometry.value_or(WindowGeometry::Rect{});
@@ -588,7 +588,7 @@ TEST_F(WindowTest, MinimizeAlreadyCarriedOutWithWinDownIsUndoneAndRestored)
     {
         Window window(
             WindowSpecification{.Title = "ShellRestoreFallbackTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
-        window.setShellRestoreKeysReader([]() noexcept { return std::pair{true, true}; });
+        window.setShellRestoreKeysReader([] noexcept { return std::pair{true, true}; });
         const auto normalGeometry = window.getNormalGeometry();
         ASSERT_TRUE(normalGeometry.has_value());
         const WindowGeometry::Rect normal = normalGeometry.value_or(WindowGeometry::Rect{});
