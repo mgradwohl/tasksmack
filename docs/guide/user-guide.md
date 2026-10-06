@@ -90,7 +90,7 @@ The process table is the primary view. It lists all running processes with these
 
 Column visibility is toggled via the column header context menu and persisted across sessions.
 
-A cell reading **-** is a value of 0 (or one that doesn't apply). A cell reading **N/A** is a value TaskSmack could not read for that process: on Linux, without the needed privileges (root with its normal capabilities, or `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE`; see the FAQ), the FD count, I/O rates and network rates of other users' processes. Process Details shows the same values as N/A, with a gap in their charts, and the system totals leave them out. Sorting puts N/A below every reading.
+A cell reading **-** is a value of 0 (or one that doesn't apply). A cell reading **N/A** is a value TaskSmack could not read for that process: on Linux, for other users' processes, the FD count without `CAP_DAC_READ_SEARCH`, and the I/O and network rates without both `CAP_DAC_READ_SEARCH` and `CAP_SYS_PTRACE` (root with its normal capabilities has both; see the FAQ). Process Details shows the same values as N/A, with a gap in their charts, and the system totals leave them out. Sorting puts N/A below every reading.
 
 **Sorting** is available on any column with a single click. Click again to reverse order.
 
