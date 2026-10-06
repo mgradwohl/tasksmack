@@ -482,11 +482,13 @@ TEST(DisplayDevicePowerTest, PciAddressCarriesTheDeviceInItsHighWordAndTheFuncti
 
 TEST(DisplayDevicePowerTest, AnUnknownLocationIsAwake)
 {
-    // No display adapter sits at bus 255, device 31: unknown counts as awake, so a GPU is never
-    // left unmonitored by mistake.
+    // Bus 0x100 and device 0x20 are outside PCI's 8-bit bus and 5-bit device ranges, so no devnode
+    // can ever report them, whatever hardware runs the test: unknown counts as awake, so a GPU is
+    // never left unmonitored by mistake.
+    constexpr PciLocation IMPOSSIBLE{.bus = 0x100, .device = 0x20, .function = std::nullopt};
     DisplayDevicePower power;
-    EXPECT_FALSE(power.isAsleep(PciLocation{.bus = 0xFF, .device = 0x1F, .function = std::nullopt}));
-    EXPECT_FALSE(power.isAsleep(PciLocation{.bus = 0xFF, .device = 0x1F, .function = std::nullopt})); // Cached miss
+    EXPECT_FALSE(power.isAsleep(IMPOSSIBLE));
+    EXPECT_FALSE(power.isAsleep(IMPOSSIBLE)); // Cached miss
 }
 
 TEST(DisplayDevicePowerTest, QueryingRealAdaptersDoesNotFail)
