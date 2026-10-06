@@ -612,17 +612,24 @@ constexpr const wchar_t* PNP_INSTANCE_ID_VALUE = L"PnPInstanceId";
     }
 }
 
-// The adapter's device instance id, from @p cache or, the first time, the registry: an interface's
-// adapter never changes.
-[[nodiscard]] const std::wstring&
-adapterDeviceInstanceId(std::unordered_map<std::uint64_t, std::wstring>& cache, std::uint64_t interfaceLuid, const GUID& interfaceGuid)
+// How long an empty device-id read waits before the registry is asked again (#1369 review).
+constexpr std::chrono::seconds ADAPTER_ID_RETRY_INTERVAL{30};
+
+// The adapter's device instance id, from @p cache or the registry. A found id is kept for good (an
+// interface's adapter never changes); an empty read is not taken as final -- the value may not be
+// written yet, or the read failed -- and is retried after ADAPTER_ID_RETRY_INTERVAL, so a phantom
+// adapter first seen too early is still recognised later rather than listed until restart.
+template<typename Cache>
+[[nodiscard]] const std::wstring& adapterDeviceInstanceId(Cache& cache, std::uint64_t interfaceLuid, const GUID& interfaceGuid)
 {
-    const auto found = cache.find(interfaceLuid);
-    if (found != cache.end())
+    const auto now = std::chrono::steady_clock::now();
+    auto& entry = cache[interfaceLuid];
+    if (entry.id.empty() && now >= entry.retryAt)
     {
-        return found->second;
+        entry.id = readAdapterDeviceInstanceId(interfaceGuid);
+        entry.retryAt = now + ADAPTER_ID_RETRY_INTERVAL;
     }
-    return cache.emplace(interfaceLuid, readAdapterDeviceInstanceId(interfaceGuid)).first->second;
+    return entry.id;
 }
 } // namespace
 
