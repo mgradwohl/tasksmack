@@ -2,7 +2,8 @@
 /// @brief Tests for the pure window-geometry decisions in Core/WindowGeometry.h: which rectangle is
 /// persisted as the window's normal geometry (#1121), and how a restored rectangle is fitted to the
 /// connected displays (#1128), when an OS maximize is replaced by the client-side one (#1208), and how
-/// the normal rectangle is tracked through maximizes and restores from any source (#1250).
+/// the normal rectangle is tracked through maximizes and restores from any source (#1250); and when a
+/// shell minimize of a client-side maximized window restores it instead (#1279).
 
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
@@ -12,6 +13,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <optional>
 #include <span>
@@ -51,6 +53,50 @@ TEST(WindowGeometryTest, MaximizedWithNoKnownRestoreRectangleKeepsTheSavedGeomet
     EXPECT_EQ(selectNormalGeometry(true, maximized, std::nullopt), std::nullopt);
     EXPECT_EQ(selectNormalGeometry(true, maximized, Rect{.x = 5, .y = 5, .width = 0, .height = 600}), std::nullopt);
     EXPECT_EQ(selectNormalGeometry(true, maximized, Rect{.x = 5, .y = 5, .width = 800, .height = -1}), std::nullopt);
+}
+
+// ---- shellMinimizeRestores (#1279) ----
+
+TEST(WindowGeometryTest, WinDownOnAClientSideMaximizedWindowRestoresIt)
+{
+    // Windows sees a normal window filling the work area, so Win+Down asks it to minimize; a native
+    // maximized window is restored by the first Win+Down.
+    EXPECT_TRUE(shellMinimizeRestores(MaximizeState::ClientSide, true, true));
+}
+
+TEST(WindowGeometryTest, OtherMinimizesOfAClientSideMaximizedWindowGoThrough)
+{
+    EXPECT_FALSE(shellMinimizeRestores(MaximizeState::ClientSide, false, false)); // taskbar or title-bar button
+    EXPECT_FALSE(shellMinimizeRestores(MaximizeState::ClientSide, true, false));  // Win+M, Win+Home
+    EXPECT_FALSE(shellMinimizeRestores(MaximizeState::ClientSide, false, true));  // Down alone is no shell gesture
+}
+
+TEST(WindowGeometryTest, WinDownMinimizesAWindowThatIsNotMaximizedClientSide)
+{
+    // A normal window -- including one Win+Down has just restored -- minimizes, and an OS maximize is
+    // the OS's to restore.
+    EXPECT_FALSE(shellMinimizeRestores(MaximizeState::Normal, true, true));
+    EXPECT_FALSE(shellMinimizeRestores(MaximizeState::System, true, true));
+}
+
+// ---- windowLongPtrSetFailed (#1279) ----
+
+TEST(WindowGeometryTest, SetWindowLongPtrFailsOnlyWithZeroAndALastError)
+{
+    constexpr std::uint32_t ERROR_INVALID_WINDOW_HANDLE = 1400;
+    constexpr std::uint32_t ERROR_ACCESS_DENIED = 5;
+    EXPECT_TRUE(windowLongPtrSetFailed(0, ERROR_INVALID_WINDOW_HANDLE));
+    EXPECT_TRUE(windowLongPtrSetFailed(0, ERROR_ACCESS_DENIED));
+}
+
+TEST(WindowGeometryTest, SetWindowLongPtrReturningZeroWithoutAnErrorSucceeded)
+{
+    // The previous value was 0: the documented reason to clear the last error before the call.
+    EXPECT_FALSE(windowLongPtrSetFailed(0, 0));
+    // A previous value is success, whatever a stale last error says.
+    constexpr std::intptr_t PREVIOUS_PROC = 0x1234'5670;
+    EXPECT_FALSE(windowLongPtrSetFailed(PREVIOUS_PROC, 0));
+    EXPECT_FALSE(windowLongPtrSetFailed(PREVIOUS_PROC, 1400));
 }
 
 // ---- shouldAdoptSystemMaximize (#1208) ----
