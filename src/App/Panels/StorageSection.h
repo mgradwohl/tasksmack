@@ -59,6 +59,12 @@ struct RenderContext
     return (publication != nullptr) && (publication->perDiskHistory.size() > 1);
 }
 
+/// Least height the per-disk grid needs, its heading included, when the section is @p availableWidth
+/// wide: every row at its minimum cell height (UI::Widgets::computeChartGridMinimumHeight()). 0 when
+/// the section draws no grid. The Network and I/O tab reserves it before sizing the chart above
+/// the grid, so the chart cannot take the grid's rows and push them into scrolling (#1370 review).
+[[nodiscard]] float diskGridMinimumHeight(const Domain::StoragePublication* publication, float availableWidth);
+
 /// Render the Disk I/O section with history chart and now bars.
 /// @param ctx Render context containing model and smoothed values
 void renderStorageSection(RenderContext& ctx);

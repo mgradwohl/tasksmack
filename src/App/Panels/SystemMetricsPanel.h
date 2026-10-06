@@ -21,6 +21,7 @@
 #include "UI/FillPlotLayout.h"
 #include "UI/Theme.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -81,6 +82,17 @@ class SystemMetricsPanel : public Panel
     /// Width of the Overview's NowBar column, including the cell padding that separates it from the
     /// plot, at the current font and style. For the window's content minimum (#1207); needs a frame.
     [[nodiscard]] float overviewNowBarColumnWidth() const;
+
+    /// The most any of this panel's chart tabs spent around and above its first chart, plot aside,
+    /// counting only measurements taken at this window width and font size
+    /// (UI::Widgets::currentFirstPlotNonPlotHeight()): the minimum window height keeps room for it
+    /// (#1370 review). 0 when no tab has a current measurement.
+    [[nodiscard]] float firstChartNonPlotHeight(float windowWidth, float fontSize) const noexcept
+    {
+        return std::max({UI::Widgets::currentFirstPlotNonPlotHeight(m_OverviewFill.firstPlot, windowWidth, fontSize),
+                         UI::Widgets::currentFirstPlotNonPlotHeight(m_GpuFill.firstPlot, windowWidth, fontSize),
+                         UI::Widgets::currentFirstPlotNonPlotHeight(m_NetworkFill.firstPlot, windowWidth, fontSize)});
+    }
 
     /// NowBar columns every Overview chart reserves: the most bars any of them has, which depends on
     /// whether the platform reports I/O Wait (a fourth CPU bar).

@@ -1152,9 +1152,9 @@ void TitleBarLayer::renderTitleBar()
     const float BUTTON_WIDTH = computeTitleBarButtonWidth(titleBarHeight, TITLE_BAR_BUTTON_ASPECT);
 
     // The window may not be made narrower than what this bar or the panels below it have to show
-    // (#1207), or shorter than the base minimum at this display scale. Derived from the sizes just used for drawing, so it cannot
-    // drift from them, and handed to SDL only when it changes (#970). ShellLayer has already set
-    // the scaled base minimum at attach; this widens it to cover the bar.
+    // (#1207), or shorter than the panels' content (#1278) or the base minimum at this display scale. Derived from the sizes just used for
+    // drawing, so it cannot drift from them, and handed to SDL only when it changes (#970). ShellLayer has already set the scaled base
+    // minimum at attach; this widens it to cover the bar.
     const WindowMinimumSize desiredMinimumSize =
         computeMinimumWindowSize(UI::Theme::get().displayScale(),
                                  computeTitleBarContentWidth(iconX,
@@ -1163,7 +1163,8 @@ void TitleBarLayer::renderTitleBar()
                                                              wordmarkWidth,
                                                              BUTTON_WIDTH,
                                                              titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO),
-                                 m_ContentMinimumWidthPx);
+                                 m_ContentMinimumWidthPx,
+                                 m_ContentMinimumHeightPx);
     // Held inside the current display's usable bounds, or a large font on a small display would
     // leave a window that cannot fit on-screen or be maximized (#1207). The bounds are read only
     // when the wanted minimum or the display changes.

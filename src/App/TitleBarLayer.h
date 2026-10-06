@@ -48,11 +48,13 @@ class TitleBarLayer : public Core::Layer
     /// height
     [[nodiscard]] static auto height() -> float;
 
-    /// Width the panels below need, from computeContentMinimumWidth() (#1207). The window's minimum
-    /// size covers it from the next frame the bar is drawn. Set by ShellLayer every frame.
-    void setContentMinimumWidth(float widthPx) noexcept
+    /// Size the panels below need, from computeContentMinimumWidth() (#1207) and
+    /// computeContentMinimumHeight() (#1278). The window's minimum size covers it from the next frame
+    /// the bar is drawn. Set by ShellLayer every frame.
+    void setContentMinimumSize(float widthPx, float heightPx) noexcept
     {
         m_ContentMinimumWidthPx = widthPx;
+        m_ContentMinimumHeightPx = heightPx;
     }
 
     // Cached button bounds for hit testing - see App::ButtonBounds (TitleBarGeometry.h).
@@ -162,8 +164,9 @@ class TitleBarLayer : public Core::Layer
     // usable bounds are re-read only when one of them changes (#1207).
     WindowMinimumSize m_DesiredMinimumSize{};
     SDL_DisplayID m_MinimumSizeDisplayId = 0;
-    // The panels' share of that minimum (#1207), from setContentMinimumWidth().
+    // The panels' share of that minimum (#1207, #1278), from setContentMinimumSize().
     float m_ContentMinimumWidthPx = 0.0F;
+    float m_ContentMinimumHeightPx = 0.0F;
 
     ResizeEdge m_CachedHoverEdge = ResizeEdge::None;
     int m_LastCursorMouseLocalX = 0;
