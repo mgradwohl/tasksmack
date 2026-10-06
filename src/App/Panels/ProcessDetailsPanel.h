@@ -90,6 +90,14 @@ class ProcessDetailsPanel : public Panel
     /// Set once by ShellLayer at attach; the default (all false) hides those optional series.
     void setProcessCapabilities(const Platform::ProcessCapabilities& capabilities);
 
+    /// Whether per-process GPU usage can be observed on this system (ProcessesPanel::
+    /// hasPerProcessGpuMetrics()), so the GPU tab does not claim "no usage" where it cannot see any
+    /// (#1210). Set by ShellLayer every update; true until then.
+    void setPerProcessGpuSupported(bool supported)
+    {
+        m_PerProcessGpuSupported = supported;
+    }
+
     /// Get currently displayed PID.
     [[nodiscard]] std::int32_t selectedPid() const
     {
@@ -237,6 +245,7 @@ class ProcessDetailsPanel : public Panel
     std::unique_ptr<Platform::IProcessActions> m_ProcessActions;
     Platform::ProcessActionCapabilities m_ActionCapabilities;
     Platform::ProcessCapabilities m_ProcessCapabilities;
+    bool m_PerProcessGpuSupported = true;
 
     // Confirmation dialog state
     bool m_ShowConfirmDialog = false;

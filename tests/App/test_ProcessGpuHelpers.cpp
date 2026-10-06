@@ -62,5 +62,15 @@ TEST(ProcessGpuHelpersTest, PerGpuBreakdownOnlyForMoreThanOneGpu)
     EXPECT_TRUE(shouldShowPerGpuBreakdown(4));
 }
 
+// #1210: without per-process GPU metrics (DRM- or ROCm-only Linux) the tab must not claim the process
+// used no GPU, since no use could be seen.
+TEST(ProcessGpuHelpersTest, GpuTabSaysUnavailableRatherThanNoUsageWithoutPerProcessMetrics)
+{
+    EXPECT_EQ(gpuTabContent(/*perProcessGpuSupported=*/false, /*hasUsageToShow=*/false), GpuTabContent::Unavailable);
+    EXPECT_EQ(gpuTabContent(false, true), GpuTabContent::Unavailable);
+    EXPECT_EQ(gpuTabContent(true, false), GpuTabContent::NoUsage);
+    EXPECT_EQ(gpuTabContent(true, true), GpuTabContent::Usage);
+}
+
 } // namespace
 } // namespace App::Detail

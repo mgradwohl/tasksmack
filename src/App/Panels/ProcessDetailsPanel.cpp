@@ -454,8 +454,17 @@ void ProcessDetailsPanel::renderContent()
             {
                 const UI::Widgets::TabContentScope content("##GpuContent");
                 const auto& proc = cachedSnapshot();
-                if (!Detail::hasGpuUsageToShow(
-                        proc.gpuMemoryBytes, proc.gpuUtilPercent, !proc.gpuDevices.empty(), m_GpuUtilHistory, m_GpuMemHistory))
+                const Detail::GpuTabContent gpuContent = Detail::gpuTabContent(
+                    m_PerProcessGpuSupported,
+                    Detail::hasGpuUsageToShow(
+                        proc.gpuMemoryBytes, proc.gpuUtilPercent, !proc.gpuDevices.empty(), m_GpuUtilHistory, m_GpuMemHistory));
+                if (gpuContent == Detail::GpuTabContent::Unavailable)
+                {
+                    // Not "no usage": without per-process metrics none can be seen (#1210).
+                    UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  Per-process GPU usage is not available",
+                                                  "This system's GPU monitoring does not report GPU usage per process.");
+                }
+                else if (gpuContent == Detail::GpuTabContent::NoUsage)
                 {
                     UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  No GPU usage",
                                                   "This process has not used a GPU since it was selected.");
