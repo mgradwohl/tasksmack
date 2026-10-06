@@ -1425,6 +1425,14 @@ TEST(FormatTest, FormatCelsiusRoundsHalfAwayFromZero)
     EXPECT_EQ(UI::Format::formatCelsius(std::numeric_limits<double>::quiet_NaN()), "N/A");
 }
 
+TEST(FormatTest, FormatMegahertzIsWholeMegahertz)
+{
+    EXPECT_EQ(UI::Format::formatMegahertz(1850.0), "1850 MHz");
+    EXPECT_EQ(UI::Format::formatMegahertz(1849.5), "1850 MHz");
+    EXPECT_EQ(UI::Format::formatMegahertz(-0.2), "0 MHz");
+    EXPECT_EQ(UI::Format::formatMegahertz(std::numeric_limits<double>::quiet_NaN()), "N/A");
+}
+
 TEST(FormatTest, FormatLinkSpeedIsARateInTheRatesUnits)
 {
     // 1 Gbps = 125,000,000 bytes/s = 119.2 MiB/s

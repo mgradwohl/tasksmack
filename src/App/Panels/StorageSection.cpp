@@ -52,7 +52,18 @@ using UI::Widgets::renderChartGrid;
 using UI::Widgets::renderHistoryWithNowBars;
 using UI::Widgets::SeriesRole;
 using UI::Widgets::seriesStyle;
+using UI::Widgets::sharedAxisUpperBound;
 using UI::Widgets::tailAlignedSpan;
+
+/// One disk cell's data for a frame, gathered before the grid draws (#1299).
+struct DiskCellFrame
+{
+    std::span<const double> times;
+    std::span<const double> readData;
+    std::span<const double> writeData;
+    double currentRead = std::numeric_limits<double>::quiet_NaN();
+    double currentWrite = std::numeric_limits<double>::quiet_NaN();
+};
 
 constexpr size_t STORAGE_NOW_BAR_COLUMNS = 2; // Read, Write
 
@@ -85,30 +96,22 @@ constexpr float MIN_DISK_CELL_WIDTH_EM = 30.0F;
 /// same cellHeight (ImGuiTableFlags_SizingStretchSame) and renders an identically-shaped
 /// single-line label row, so the resulting vertical overhead is the same across all disks and
 /// doesn't change frame to frame on its own.
+///
+/// diskAxisUpper is the grid's shared Y upper bound (sharedAxisUpperBound(), #1299), for the chart's
+/// axis and its bars alike, so a bar and its line show a value at the same height (#1003).
 void renderDiskCell(const std::string& deviceName,
                     std::span<const double> timeData,
                     std::span<const double> readData,
                     std::span<const double> writeData,
                     double currentRead,
                     double currentWrite,
+                    double diskAxisUpper,
                     const UI::Widgets::TimeAxisConfig& axisConfig,
                     const UI::Theme& theme,
                     float cellHeight,
                     std::optional<float>& cachedOverhead,
                     std::uint64_t dataGeneration)
 {
-    // One upper bound for the chart's Y axis and its bars, so a bar and its line show a value at the
-    // same height (#1003). A per-disk series holds NaN for samples where the disk was absent, and
-    // currentRead/Write are NaN when it is absent from the latest sample (#1015): maxOfSeries skips
-    // them, and the bars show N/A rather than a false 0 B/s, as the GPU fan bar does. Only the
-    // samples in the window count, not the one trimming keeps left of it (#1145), plus the bars'
-    // current values, so a bar easing down from a peak that has just left the window is not clamped.
-    const double diskAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-        "##DiskAxis",
-        UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, readData, writeData),
-                                       {currentRead, currentWrite}),
-        UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
-
     // The cell has no legend, so its value strip is the chart's key: each bar carries its series'
     // marker, so Read (the filled primary) and Write (a secondary's marker) differ by more than colour.
     const auto makeBar = [&](const char* label, double current, const ImVec4& color, ImPlotMarker marker)
@@ -343,72 +346,102 @@ void renderStorageSection(RenderContext& ctx)
             .maxCellHeight = approxLabelOverhead + UI::Widgets::historyPlotMaxHeight(ImGui::GetFontSize()),
         };
 
+        // One frame's data for each disk cell, gathered before the grid draws so every cell can be
+        // drawn to one shared Y bound (#1299). Reused across frames (UI thread only), so a frame
+        // allocates nothing once it has seen as many disks (#1171).
+        static std::vector<DiskCellFrame> diskFrames;
+        static std::vector<double> diskUpperBounds;
+        diskFrames.clear();
+        diskUpperBounds.clear();
+        for (size_t diskIdx = 0; diskIdx < diskCount; ++diskIdx)
+        {
+            const auto& disk = perDisk[diskIdx];
+            const size_t alignedCount = std::min({diskTimes.size(), disk.readBytesPerSec.size(), disk.writeBytesPerSec.size()});
+
+            // An empty history still draws the cell's chart, with the collecting hint, rather than
+            // plain text in place of the chart (#1013).
+
+            // Views into the published history, plotted as doubles against the double time axis --
+            // no per-frame float copies (#1018). The pooled axis, viewed in place: no per-disk copy
+            // (#1066 review).
+            DiskCellFrame frame{
+                .times = tailAlignedSpan(diskTimes, alignedCount).values,
+                .readData = tailAlignedSpan(disk.readBytesPerSec, alignedCount).values,
+                .writeData = tailAlignedSpan(disk.writeBytesPerSec, alignedCount).values,
+            };
+
+            // Per-disk snapshot values for NowBars. NaN if the disk is missing from the latest sample:
+            // renderDiskCell shows N/A, not 0. The latest sample normally lists the disks in the
+            // history's order, so the same index is checked first; a scan of its few disks covers a
+            // disk added or removed since. A name -> snapshot map rebuilt every frame cost a heap
+            // allocation per disk per frame for keys copied from strings already there (#1171).
+            const Domain::DiskSnapshot* latestDisk = nullptr;
+            if (diskIdx < diskSnap.disks.size() && diskSnap.disks[diskIdx].deviceName == disk.deviceName)
+            {
+                latestDisk = &diskSnap.disks[diskIdx];
+            }
+            else if (const auto it = std::ranges::find(diskSnap.disks, disk.deviceName, &Domain::DiskSnapshot::deviceName);
+                     it != diskSnap.disks.end())
+            {
+                latestDisk = &*it;
+            }
+            if (latestDisk != nullptr)
+            {
+                frame.currentRead = latestDisk->readBytesPerSec;
+                frame.currentWrite = latestDisk->writeBytesPerSec;
+            }
+            if (ctx.smoothedPerDisk != nullptr)
+            {
+                auto& smoothed = (*ctx.smoothedPerDisk)[disk.deviceName];
+                if (std::isfinite(frame.currentRead) && std::isfinite(frame.currentWrite))
+                {
+                    smoothed.readBytesPerSec =
+                        initializeOrSmooth(smoothed.readBytesPerSec, frame.currentRead, diskAlpha, smoothed.initialized);
+                    smoothed.writeBytesPerSec =
+                        initializeOrSmooth(smoothed.writeBytesPerSec, frame.currentWrite, diskAlpha, smoothed.initialized);
+                    smoothed.initialized = true;
+                    frame.currentRead = smoothed.readBytesPerSec;
+                    frame.currentWrite = smoothed.writeBytesPerSec;
+                }
+                else
+                {
+                    // Absent this sample: the bars show N/A, and start afresh when the disk returns.
+                    smoothed.initialized = false;
+                }
+            }
+
+            // This disk's own eased bound (#1011), from the samples in the window (#1145) and its bars'
+            // current values (#1003): a bar easing down from a peak that has just left the window is
+            // not clamped. A per-disk series holds NaN for samples where the disk was absent, and the
+            // current values are NaN when it is absent from the latest sample (#1015): both are skipped.
+            // Keyed by device name, like the cell, so a disk keeps its easing when another is unplugged.
+            ImGui::PushID(disk.deviceName.data(), disk.deviceName.data() + disk.deviceName.size());
+            diskUpperBounds.push_back(UI::Widgets::easedRateAxisUpperBound(
+                "##DiskAxis",
+                UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(frame.times, diskAxis.xMin, frame.readData, frame.writeData),
+                                               {frame.currentRead, frame.currentWrite}),
+                UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC));
+            ImGui::PopID();
+            diskFrames.push_back(frame);
+        }
+        // Every cell is drawn to the largest disk's bound, so cells side by side compare at a glance
+        // and an idle disk's noise is not scaled up to fill its cell (#1299).
+        const double sharedDiskAxisUpper = sharedAxisUpperBound(diskUpperBounds, UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
+
         renderChartGrid(
             "PerDiskGrid",
             diskCount,
             gridConfig,
             [&](const size_t diskIdx, float /*cellWidth*/, const float cellHeight)
             {
-                const auto& disk = perDisk[diskIdx];
-                const size_t alignedCount = std::min({diskTimes.size(), disk.readBytesPerSec.size(), disk.writeBytesPerSec.size()});
-
-                // An empty history still draws the cell's chart, with the collecting hint, rather than
-                // plain text in place of the chart (#1013).
-
-                // Views into the published history, plotted as doubles against the double time axis --
-                // no per-frame float copies (#1018).
-                const auto readData = tailAlignedSpan(disk.readBytesPerSec, alignedCount).values;
-                const auto writeData = tailAlignedSpan(disk.writeBytesPerSec, alignedCount).values;
-
-                // Per-disk snapshot values for NowBars. NaN if the disk is missing from the latest sample:
-                // renderDiskCell shows N/A, not 0. The latest sample normally lists the disks in the
-                // history's order, so the same index is checked first; a scan of its few disks covers a
-                // disk added or removed since. A name -> snapshot map rebuilt every frame cost a heap
-                // allocation per disk per frame for keys copied from strings already there (#1171).
-                double diskRead = std::numeric_limits<double>::quiet_NaN();
-                double diskWrite = std::numeric_limits<double>::quiet_NaN();
-                const Domain::DiskSnapshot* latestDisk = nullptr;
-                if (diskIdx < diskSnap.disks.size() && diskSnap.disks[diskIdx].deviceName == disk.deviceName)
-                {
-                    latestDisk = &diskSnap.disks[diskIdx];
-                }
-                else if (const auto it = std::ranges::find(diskSnap.disks, disk.deviceName, &Domain::DiskSnapshot::deviceName);
-                         it != diskSnap.disks.end())
-                {
-                    latestDisk = &*it;
-                }
-                if (latestDisk != nullptr)
-                {
-                    diskRead = latestDisk->readBytesPerSec;
-                    diskWrite = latestDisk->writeBytesPerSec;
-                }
-                if (ctx.smoothedPerDisk != nullptr)
-                {
-                    auto& smoothed = (*ctx.smoothedPerDisk)[disk.deviceName];
-                    if (std::isfinite(diskRead) && std::isfinite(diskWrite))
-                    {
-                        smoothed.readBytesPerSec = initializeOrSmooth(smoothed.readBytesPerSec, diskRead, diskAlpha, smoothed.initialized);
-                        smoothed.writeBytesPerSec =
-                            initializeOrSmooth(smoothed.writeBytesPerSec, diskWrite, diskAlpha, smoothed.initialized);
-                        smoothed.initialized = true;
-                        diskRead = smoothed.readBytesPerSec;
-                        diskWrite = smoothed.writeBytesPerSec;
-                    }
-                    else
-                    {
-                        // Absent this sample: the bars show N/A, and start afresh when the disk returns.
-                        smoothed.initialized = false;
-                    }
-                }
-
-                // The pooled axis, viewed in place: no per-disk copy (#1066 review).
-                const auto cellTimes = UI::Widgets::tailAlignedSpan(diskTimes, alignedCount).values;
-                renderDiskCell(disk.deviceName,
-                               cellTimes,
-                               readData,
-                               writeData,
-                               diskRead,
-                               diskWrite,
+                const DiskCellFrame& frame = diskFrames[diskIdx];
+                renderDiskCell(perDisk[diskIdx].deviceName,
+                               frame.times,
+                               frame.readData,
+                               frame.writeData,
+                               frame.currentRead,
+                               frame.currentWrite,
+                               sharedDiskAxisUpper,
                                diskAxis,
                                theme,
                                cellHeight,

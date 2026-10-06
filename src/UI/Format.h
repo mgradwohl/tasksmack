@@ -1178,6 +1178,18 @@ template<std::integral T> [[nodiscard]] inline auto formatPercent(T percent) -> 
     return std::format("{:.0f}°C", rounded == 0.0 ? 0.0 : rounded); // No "-0°C"
 }
 
+/// "1850 MHz", whole megahertz rounded half away from zero, or "N/A" for NaN (no reading): a GPU
+/// clock, in its value strip, its tooltip and its series label alike (#1205).
+[[nodiscard]] inline auto formatMegahertz(double megahertz) -> std::string
+{
+    if (std::isnan(megahertz))
+    {
+        return "N/A";
+    }
+    const double rounded = roundHalfAwayFromZero(megahertz, 0);
+    return std::format("{:.0f} MHz", rounded == 0.0 ? 0.0 : rounded); // No "-0 MHz"
+}
+
 /// A link speed in the same unit family as the rates beside it (#1202): "119.2 MiB/s" for a
 /// 1 Gbps link, so it can be compared with the interface's "12.5 MiB/s" at a glance. Link speeds
 /// are reported in megabits per second (10^6 bits/s), 125,000 bytes/s each.

@@ -49,16 +49,29 @@ using UI::Widgets::tailAlignedSpan;
 
 // One label per series, shared by its value-strip entry, tooltip row and NowBar (#1008). The bars and
 // tooltips used to say "GPU Utilization", "GPU Temperature", "GPU Fan Speed" for series the legend
-// called "Utilization", "Temp (% of 100°C)" and "Fan". The scale a normalised series is drawn
-// against belongs in its value ("65°C (65% of 100°C)"), not its name, which stays fixed (#994).
+// called "Utilization", "Temp (% of 100°C)" and "Fan". Clock, temperature and power are drawn on the
+// percent axis as a percentage of a scale, and their one label names it -- "Temperature (% of 100°C)"
+// -- while their values are readings in their own unit (#1205): with the scale only in a hover tooltip,
+// nothing on screen said what the axis meant for them. Those labels are built in GpuSection.h.
 constexpr const char* UTIL_LABEL = "Utilization";
 constexpr const char* MEMORY_LABEL = "Memory";
-constexpr const char* CLOCK_LABEL = "Clock";
 constexpr const char* ENCODER_LABEL = "Encoder";
 constexpr const char* DECODER_LABEL = "Decoder";
-constexpr const char* TEMP_LABEL = "Temperature";
-constexpr const char* POWER_LABEL = "Power";
 constexpr const char* FAN_LABEL = "Fan";
+
+/// The temperature series' label (gpuTemperatureSeriesLabel()). Its scale is fixed, so it is built once.
+[[nodiscard]] const std::string& temperatureLabel()
+{
+    static const std::string label = gpuTemperatureSeriesLabel();
+    return label;
+}
+
+/// "1850 MHz (93%)": a reading in its own unit and the percentage of @p scale it is drawn at, for a
+/// series whose label names the scale (#1205).
+[[nodiscard]] std::string readingWithPercent(std::string (*format)(double), double reading, double scale)
+{
+    return std::format("{} ({})", format(reading), UI::Format::formatPercent((reading / scale) * 100.0));
+}
 
 /// Pushes one GPU's ImGui ID for the scope, popping it on every path out, early continues
 /// included. Keyed by the GPU's id rather than its position, so a GPU missing from a read does not
@@ -302,6 +315,9 @@ void renderGpuSection(RenderContext& ctx)
     std::vector<float>& clockPercentBuf = cache.clockPercent;
     std::vector<float>& tempPercentBuf = cache.temperaturePercent;
     std::vector<float>& powerPercentBuf = cache.powerPercent;
+    // Grows or shrinks only when the GPU count does; each entry rebuilds a label only when its scale moves.
+    cache.scaledLabels.resize(drawList.size());
+    const char* const tempLabel = temperatureLabel().c_str();
 
     // Render each GPU
     for (std::size_t entryIndex = 0; entryIndex < drawList.size(); ++entryIndex)
@@ -398,6 +414,13 @@ void renderGpuSection(RenderContext& ctx)
                                                        clockData,
                                                        snap.gpuClockMHz,
                                                        UI::Widgets::currentIfAvailable(smoothed.clockInitialized, smoothed.clockMHz));
+        // What 100 % means for the clock, temperature and power lines, named by their labels (#1205).
+        const float clockScaleMHz = gpuClockScaleMHz(maxClockMHz);
+        const GpuPowerScale powerScale = gpuPowerScale(snap.powerLimitWatts);
+        GpuScaledLabels& scaledLabels = cache.scaledLabels[entryIndex];
+        scaledLabels.update(clockScaleMHz, powerScale);
+        const char* const clockLabel = scaledLabels.clock.c_str();
+        const char* const powerLabel = scaledLabels.power.c_str();
 
         // ========================================
         // Chart 1: Core + Video (all percentages)
@@ -436,14 +459,13 @@ void renderGpuSection(RenderContext& ctx)
                                seriesStyle(SeriesRole::Secondary, 0));
                 }
 
-                // Plot clock as a percentage of gpuClockReferenceMHz(): the window's peak, or the floor
-                // when every clock is below it. The label stays fixed; the reference itself is in the
-                // tooltip.
+                // Plot clock as a percentage of gpuClockScaleMHz(): the window's peak, or the floor when
+                // every clock is below it, rounded up to a step. Its label names that scale (#1205).
                 if (caps.hasClockSpeeds && !clockData.empty())
                 {
-                    normalizeToPercent(clockData, maxClockMHz, clockPercentBuf);
+                    normalizeToPercent(clockData, clockScaleMHz, clockPercentBuf);
                     const auto clockTimeData = tailAlignedSpan(timeData, clockPercentBuf.size());
-                    plotSeries(CLOCK_LABEL,
+                    plotSeries(clockLabel,
                                clockTimeData.values.data(),
                                clockPercentBuf.data(),
                                UI::Format::checkedCount(clockTimeData.values.size()),
@@ -523,18 +545,16 @@ void renderGpuSection(RenderContext& ctx)
                         {
                             if (const auto clockMHz = valueAt(clockData))
                             {
-                                rows.push_back({.label = CLOCK_LABEL,
+                                rows.push_back({.label = clockLabel,
                                                 .color = theme.scheme().gpuClock,
-                                                .value = UI::Widgets::formatSampleOrNA(
-                                                    *clockMHz,
-                                                    [maxClockMHz](double mhz)
-                                                    {
-                                                        return std::format(
-                                                            "{:.0f} MHz ({} of {:.0f} MHz)",
-                                                            mhz,
-                                                            UI::Format::formatPercent((mhz / static_cast<double>(maxClockMHz)) * 100.0),
-                                                            static_cast<double>(maxClockMHz));
-                                                    })});
+                                                .value = UI::Widgets::formatSampleOrNA(*clockMHz,
+                                                                                       [clockScaleMHz](double mhz)
+                                                                                       {
+                                                                                           return readingWithPercent(
+                                                                                               &UI::Format::formatMegahertz,
+                                                                                               mhz,
+                                                                                               static_cast<double>(clockScaleMHz));
+                                                                                       })});
                             }
                         }
                         if (caps.hasEncoderDecoder && !encoderData.empty())
@@ -616,22 +636,15 @@ void renderGpuSection(RenderContext& ctx)
         // shows N/A instead of removing the bar and shifting every bar after it (#995).
         if (caps.hasClockSpeeds)
         {
-            const double clockPercent = (smoothed.clockMHz / static_cast<double>(maxClockMHz)) * 100.0;
-            gpuCoreBars.push_back(smoothed.clockInitialized
-                                      ? NowBar{.valueText = std::format("{:.0f} MHz", smoothed.clockMHz),
-                                               .label = CLOCK_LABEL,
-                                               .tooltipText = UI::InlineText::format("{}: {:.0f} MHz ({} of {:.0f} MHz)",
-                                                                                     CLOCK_LABEL,
-                                                                                     smoothed.clockMHz,
-                                                                                     UI::Format::formatPercent(clockPercent),
-                                                                                     static_cast<double>(maxClockMHz)),
-                                               .value01 = UI::Format::percent01(clockPercent),
-                                               .color = theme.scheme().gpuClock}
-                                      : NowBar{.valueText = "N/A",
-                                               .label = CLOCK_LABEL,
-                                               .tooltipText = "Clock: unavailable this sample",
-                                               .value01 = 0.0,
-                                               .color = theme.scheme().textMuted});
+            // The label names the scale and the value is the clock in MHz, so the strip's
+            // "Clock (% of 2100 MHz): 1850 MHz" needs no tooltip text of its own (#1205).
+            const double clockPercent = (smoothed.clockMHz / static_cast<double>(clockScaleMHz)) * 100.0;
+            gpuCoreBars.push_back(smoothed.clockInitialized ? NowBar{.valueText = UI::Format::formatMegahertz(smoothed.clockMHz),
+                                                                     .label = clockLabel,
+                                                                     .tooltipText = {},
+                                                                     .value01 = UI::Format::percent01(clockPercent),
+                                                                     .color = theme.scheme().gpuClock}
+                                                            : unavailableBar(clockLabel));
         }
         if (caps.hasEncoderDecoder)
         {
@@ -649,27 +662,29 @@ void renderGpuSection(RenderContext& ctx)
 
         // Build thermal bars early so we can calculate max column count for alignment
         NowBarList gpuThermalBars;
-        constexpr float maxTempC = 100.0F;
-        const float maxPowerW = snap.powerLimitWatts > 0.0 ? static_cast<float>(snap.powerLimitWatts) : 300.0F;
+        // Temperature and power are drawn as percentages of GPU_TEMPERATURE_SCALE_C and powerScale; their
+        // labels name those scales, and their values are the readings in °C and W (#1205).
+        const auto maxTempC = static_cast<float>(GPU_TEMPERATURE_SCALE_C);
+        const auto maxPowerW = static_cast<float>(powerScale.watts);
         if (caps.hasTemperature)
         {
-            const double tempPercent = (smoothed.temperatureC / static_cast<double>(maxTempC)) * 100.0;
+            const double tempPercent = (smoothed.temperatureC / GPU_TEMPERATURE_SCALE_C) * 100.0;
             gpuThermalBars.push_back(smoothed.temperatureInitialized ? NowBar{.valueText = UI::Format::formatCelsius(smoothed.temperatureC),
-                                                                              .label = TEMP_LABEL,
+                                                                              .label = tempLabel,
                                                                               .tooltipText = {},
                                                                               .value01 = UI::Format::percent01(tempPercent),
                                                                               .color = theme.scheme().gpuTemperature,}
-                                                                     : unavailableBar(TEMP_LABEL));
+                                                                     : unavailableBar(tempLabel));
         }
         if (caps.hasPowerMetrics)
         {
-            const double powerPercent = (smoothed.powerWatts / static_cast<double>(maxPowerW)) * 100.0;
+            const double powerPercent = (smoothed.powerWatts / powerScale.watts) * 100.0;
             gpuThermalBars.push_back(smoothed.powerInitialized ? NowBar{.valueText = UI::Format::formatWatts(smoothed.powerWatts),
-                                                                        .label = POWER_LABEL,
+                                                                        .label = powerLabel,
                                                                         .tooltipText = {},
                                                                         .value01 = UI::Format::percent01(powerPercent),
                                                                         .color = theme.scheme().gpuPower}
-                                                               : unavailableBar(POWER_LABEL));
+                                                               : unavailableBar(powerLabel));
         }
         // Keep pushing a bar (stable column count) whenever the capability is present, so the
         // now-bar layout doesn't jitter frame-to-frame as fanSpeedAvailable flips on a transient
@@ -739,7 +754,7 @@ void renderGpuSection(RenderContext& ctx)
                     {
                         normalizeToPercent(tempData, maxTempC, tempPercentBuf);
                         const auto tempTimeData = tailAlignedSpan(timeData, tempPercentBuf.size());
-                        plotSeries(TEMP_LABEL,
+                        plotSeries(tempLabel,
                                    tempTimeData.values.data(),
                                    tempPercentBuf.data(),
                                    UI::Format::checkedCount(tempTimeData.values.size()),
@@ -748,12 +763,12 @@ void renderGpuSection(RenderContext& ctx)
                                    seriesStyle(SeriesRole::Primary));
                     }
 
-                    // Power (normalized to actual reference watts; includes fallback note when limit is unavailable)
+                    // Power (normalized to the GPU's limit, or an assumed one its label says is assumed)
                     if (caps.hasPowerMetrics && !powerData.empty())
                     {
                         normalizeToPercent(powerData, maxPowerW, powerPercentBuf);
                         const auto powerTimeData = tailAlignedSpan(timeData, powerPercentBuf.size());
-                        plotSeries(POWER_LABEL,
+                        plotSeries(powerLabel,
                                    powerTimeData.values.data(),
                                    powerPercentBuf.data(),
                                    UI::Format::checkedCount(powerTimeData.values.size()),
@@ -791,21 +806,13 @@ void renderGpuSection(RenderContext& ctx)
                                 return static_cast<double>(series[*idxVal - aligned.offset]);
                             };
                             // "N/A" for a sample with no reading, such as while the GPU was missing (#1146).
-                            // The reading and its reference are written by the value strip's own
-                            // formatter, so the tooltip, the strip and the axis agree (#1202).
-                            const auto ofReference =
-                                [](double value, double reference, std::string (*format)(double), std::string_view note)
+                            // The reading is written by the value strip's own formatter, so the tooltip,
+                            // the strip and the axis agree (#1202); the row's label names the scale the
+                            // percentage is of (#1205).
+                            const auto ofScale = [](double value, double scale, std::string (*format)(double))
                             {
-                                return UI::Widgets::formatSampleOrNA(value,
-                                                                     [&](double reading)
-                                                                     {
-                                                                         return std::format(
-                                                                             "{} ({} of {}{})",
-                                                                             format(reading),
-                                                                             UI::Format::formatPercent((reading / reference) * 100.0),
-                                                                             format(reference),
-                                                                             note);
-                                                                     });
+                                return UI::Widgets::formatSampleOrNA(
+                                    value, [&](double reading) { return readingWithPercent(format, reading, scale); });
                             };
                             std::vector<UI::Widgets::TooltipRow> rows;
                             if (caps.hasTemperature && !tempData.empty())
@@ -813,9 +820,9 @@ void renderGpuSection(RenderContext& ctx)
                                 if (const auto temp = valueAt(tempData))
                                 {
                                     rows.push_back({
-                                        .label = TEMP_LABEL,
+                                        .label = tempLabel,
                                         .color = theme.scheme().gpuTemperature,
-                                        .value = ofReference(*temp, static_cast<double>(maxTempC), &UI::Format::formatCelsius, ""),
+                                        .value = ofScale(*temp, GPU_TEMPERATURE_SCALE_C, &UI::Format::formatCelsius),
                                     });
                                 }
                             }
@@ -823,13 +830,9 @@ void renderGpuSection(RenderContext& ctx)
                             {
                                 if (const auto power = valueAt(powerData))
                                 {
-                                    // Without a reported power limit the line is scaled to an assumed one.
-                                    rows.push_back({.label = POWER_LABEL,
+                                    rows.push_back({.label = powerLabel,
                                                     .color = theme.scheme().gpuPower,
-                                                    .value = ofReference(*power,
-                                                                         static_cast<double>(maxPowerW),
-                                                                         &UI::Format::formatWatts,
-                                                                         snap.powerLimitWatts > 0.0 ? "" : ", assumed limit")});
+                                                    .value = ofScale(*power, powerScale.watts, &UI::Format::formatWatts)});
                                 }
                             }
                             if (caps.hasFanSpeed && !fanData.empty())
