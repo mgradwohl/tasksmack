@@ -5,6 +5,7 @@
 #include "Platform/GPUTypes.h"
 #include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
+#include "UI/RateAxis.h"
 
 #include <algorithm>
 #include <chrono>
@@ -225,6 +226,31 @@ inline constexpr float GPU_CLOCK_REFERENCE_FLOOR_MHZ = 2000.0F;
         }
     }
     return reference;
+}
+
+/// gpuClockReferenceMHz() over only the clock samples the chart's window shows: those at x >= @p xMin
+/// on @p timeAxis, to whose tail @p clockHistory is aligned (UI::Widgets::maxOfSeriesSince()).
+///
+/// The history holds the trim anchor just left of the window (#1016) and, when the chart is scrolled
+/// back, older samples too. Neither is drawn, so neither may set the 100 % mark: a boost spike that had
+/// just scrolled out kept the idle clock line drawn low against it (#1324), as #1145 fixed for the rate
+/// axes. The current clock still counts, and so does @p shownClockMHz, the smoothed clock the NowBar
+/// shows (UI::Widgets::currentIfAvailable(): NaN when the bar shows N/A, which is ignored). Easing down
+/// from a peak that has just left the window, the bar's value can stay above every visible sample and
+/// the current clock; without it the tooltip read over 100 % and the bar clamped full, as
+/// UI::Widgets::withCurrentValues() prevents on the other windowed axes (#1003). It is folded in rounded
+/// up to a whole MHz, which a float holds exactly, so the narrowed reference is never below it.
+[[nodiscard]] inline float gpuClockReferenceMHz(std::span<const double> timeAxis,
+                                                double xMin,
+                                                std::span<const float> clockHistory,
+                                                std::uint32_t currentClockMHz,
+                                                double shownClockMHz) noexcept
+{
+    // The result is one of the float samples, the floor or current clock, or a whole MHz, so narrowing
+    // it back to float is exact.
+    return static_cast<float>(
+        UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeAxis, xMin, clockHistory),
+                                       {static_cast<double>(gpuClockReferenceMHz({}, currentClockMHz)), std::ceil(shownClockMHz)}));
 }
 
 /// What the GPU tab keeps from frame to frame, so that once warmed up drawing it allocates nothing
