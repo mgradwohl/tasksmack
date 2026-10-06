@@ -19,6 +19,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -769,6 +770,19 @@ TEST(NVMLGPUProbeMathTest, SysfsPciAddressUsesTheKernelsFourDigitDomain)
 
     pci.busId[0] = '\0'; // no busId: function 0
     EXPECT_EQ(NVMLGPUProbeMath::sysfsPciAddress(pci), "10000:c1:1f.0");
+}
+
+// The function number nvmlPciInfo_t has no field for, read from busId's ".F" suffix (shared with the
+// Windows probe, which needs it to tell two functions of one device apart).
+TEST(NVMLGPUProbeMathTest, PciFunctionComesFromTheBusIdSuffix)
+{
+    NVML::nvmlPciInfo_t pci{};
+    std::strncpy(std::data(pci.busId), "00000000:01:00.3", std::size(pci.busId) - 1);
+    EXPECT_EQ(NVML::pciFunction(pci), std::optional<std::uint32_t>{3});
+    std::strncpy(std::data(pci.busId), "00000000:01:00.9", std::size(pci.busId) - 1);
+    EXPECT_FALSE(NVML::pciFunction(pci).has_value()) << "Not a PCI function digit";
+    pci.busId[0] = '\0';
+    EXPECT_FALSE(NVML::pciFunction(pci).has_value());
 }
 
 // =============================================================================

@@ -298,7 +298,7 @@ bool NVMLGPUProbe::Impl::startNVML()
         nvmlPciInfo_t pci{};
         if (nvmlDeviceGetPciInfo != nullptr && nvmlDeviceGetPciInfo(handle, &pci) == NVML_SUCCESS)
         {
-            device.pciLocation = PciLocation{.bus = pci.bus, .device = pci.device};
+            device.pciLocation = PciLocation{.bus = pci.bus, .device = pci.device, .function = NVML::pciFunction(pci)};
             device.pciDeviceId = pci.pciDeviceId;
             device.sysfsPath = pciDevicesRoot + "/" + NVMLGPUProbeMath::sysfsPciAddress(pci);
         }

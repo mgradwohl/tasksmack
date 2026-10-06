@@ -41,12 +41,24 @@ namespace Platform
     return std::format("GPU_0x{:08X}_0x{:08X}", luidHighPart, luidLowPart);
 }
 
-/// The id of an adapter at this PCI location: "PCI_{bus}:{device}_{vendor id}:{device id}", in hex.
-/// Where the adapter sits on the bus doesn't change while it is present, or across a driver reset
-/// that gives it a new LUID; the vendor and device ids keep a different card later fitted at the same
-/// location from taking this one's id (#1317).
+/// The id of an adapter at this PCI location: "PCI_{bus}:{device}.{function}_{vendor id}:{device id}",
+/// in hex (the function decimal, as PCI addresses print it). Where the adapter sits on the bus doesn't
+/// change while it is present, or across a driver reset that gives it a new LUID; the vendor and
+/// device ids keep a different card later fitted at the same location from taking this one's id
+/// (#1317). The function number keeps two display functions of one multi-function device (same
+/// vendor and device ids, same bus and device) from colliding, which sent the second to its LUID id;
+/// a location without one (D3DKMT always reports it) is named by bus and device alone.
 [[nodiscard]] inline std::string adapterPciId(const PciLocation& location, uint32_t vendorId, uint32_t deviceId)
 {
+    if (location.function.has_value())
+    {
+        return std::format("PCI_{:02X}:{:02X}.{:X}_{:04X}:{:04X}",
+                           location.bus,
+                           location.device,
+                           *location.function,
+                           vendorId & 0xFFFFU,
+                           deviceId & 0xFFFFU);
+    }
     return std::format("PCI_{:02X}:{:02X}_{:04X}:{:04X}", location.bus, location.device, vendorId & 0xFFFFU, deviceId & 0xFFFFU);
 }
 

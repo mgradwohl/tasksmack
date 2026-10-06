@@ -329,7 +329,7 @@ inline NTSTATUS APIENTRY fakeQueryAdapterInfo(const D3DKMT_QUERYADAPTERINFO* que
         auto* address = static_cast<D3DKMT_ADAPTERADDRESS*>(query->pPrivateDriverData);
         address->BusNumber = adapter->pciLocation->bus;
         address->DeviceNumber = adapter->pciLocation->device;
-        address->FunctionNumber = 0;
+        address->FunctionNumber = adapter->pciLocation->function.value_or(0);
         return 0;
     }
     if (query->Type == KMTQAITYPE_ADAPTERTYPE && query->PrivateDriverDataSize == sizeof(D3DKMT_ADAPTERTYPE))

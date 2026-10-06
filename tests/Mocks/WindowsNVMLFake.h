@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -56,6 +57,7 @@ struct FakeDeviceData
     unsigned int pciBus = 0x01;
     unsigned int pciDevice = 0x00;
     unsigned int pciDeviceId = 0x268410DEU; // (device ID << 16) | vendor ID, as NVML encodes it
+    std::string pciBusId;                   // nvmlPciInfo_t::busId ("00000000:01:00.0"); empty reports none
     bool nameOk = true;
     bool uuidOk = true;
     bool vbiosOk = true;
@@ -326,6 +328,7 @@ inline nvmlReturn_t fakeDeviceGetPciInfo(nvmlDevice_t device, nvmlPciInfo_t* pci
     pci->bus = d.pciBus;
     pci->device = d.pciDevice;
     pci->pciDeviceId = d.pciDeviceId;
+    std::copy_n(d.pciBusId.data(), std::min(d.pciBusId.size(), std::size(pci->busId) - 1), std::data(pci->busId));
     return NVML_SUCCESS;
 }
 

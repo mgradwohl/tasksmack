@@ -478,7 +478,7 @@ bool NVMLGPUProbe::readDeviceIdentity(uint32_t index)
         NVML::nvmlPciInfo_t pci{};
         if (m_NVML.DeviceGetPciInfo(device, &pci) == NVML_SUCCESS)
         {
-            m_DevicePciLocations[index] = PciLocation{.bus = pci.bus, .device = pci.device};
+            m_DevicePciLocations[index] = PciLocation{.bus = pci.bus, .device = pci.device, .function = NVML::pciFunction(pci)};
             details.pciDeviceId = pci.pciDeviceId;
         }
     }

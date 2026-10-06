@@ -62,12 +62,14 @@ constexpr std::uint32_t DEVICE_RTX = 0x2684;
 
 FakeAdapter intelIGPU()
 {
-    return makeAdapter(L"Intel(R) UHD Graphics", VENDOR_INTEL, 0x9A49, 0x100, PciLocation{.bus = 0x00, .device = 0x02}, 128ULL << 20U);
+    return makeAdapter(
+        L"Intel(R) UHD Graphics", VENDOR_INTEL, 0x9A49, 0x100, PciLocation{.bus = 0x00, .device = 0x02, .function = 0}, 128ULL << 20U);
 }
 
 FakeAdapter nvidiaGPU(std::uint32_t luidLowPart, std::uint32_t bus)
 {
-    return makeAdapter(L"NVIDIA GeForce RTX 4090", VENDOR_NVIDIA, DEVICE_RTX, luidLowPart, PciLocation{.bus = bus, .device = 0x00});
+    return makeAdapter(
+        L"NVIDIA GeForce RTX 4090", VENDOR_NVIDIA, DEVICE_RTX, luidLowPart, PciLocation{.bus = bus, .device = 0x00, .function = 0});
 }
 
 /// NVML device @p index: the card at @p bus, with this UUID and temperature.
@@ -237,7 +239,8 @@ TEST_F(WindowsGPURescanTest, AnAdapterWithoutAUniquePciLocationIsNamedByItsLuid)
     const auto gpus = probe.enumerateGPUs();
     ASSERT_EQ(gpus.size(), 3U);
     EXPECT_EQ(findByLuid(gpus, 0x400)->id, adapterLuidId(0, 0x400));
-    EXPECT_EQ(findByLuid(gpus, 0x200)->id, adapterPciId(PciLocation{.bus = 0x01, .device = 0x00}, VENDOR_NVIDIA, DEVICE_RTX));
+    EXPECT_EQ(findByLuid(gpus, 0x200)->id,
+              adapterPciId(PciLocation{.bus = 0x01, .device = 0x00, .function = 0}, VENDOR_NVIDIA, DEVICE_RTX));
     EXPECT_EQ(findByLuid(gpus, 0x500)->id, adapterLuidId(0, 0x500)) << "The PCI id is taken: the LUID names it";
     const auto counters = probe.readGPUCounters();
     ASSERT_EQ(counters.size(), 3U);

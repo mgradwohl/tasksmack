@@ -8,6 +8,10 @@
 /// Both Linux and Windows NVMLGPUProbe implementations use these types.
 
 #include <cstdint>
+#include <cstring>
+#include <iterator>
+#include <optional>
+#include <string_view>
 
 namespace Platform::NVML
 {
@@ -123,5 +127,24 @@ struct nvmlPciInfo_t
 };
 
 // NOLINTEND(readability-identifier-naming)
+
+/// The PCI function number of the device @p pci describes. nvmlPciInfo_t has no field for it, so it
+/// comes from busId's ".F" suffix ("00000000:01:00.0"); nullopt when busId is empty or doesn't end in
+/// a function digit (0-7).
+[[nodiscard]] inline std::optional<std::uint32_t> pciFunction(const nvmlPciInfo_t& pci)
+{
+    const std::string_view busId(std::data(pci.busId), ::strnlen(std::data(pci.busId), std::size(pci.busId)));
+    const auto dot = busId.rfind('.');
+    if (dot == std::string_view::npos || dot + 2 != busId.size())
+    {
+        return std::nullopt;
+    }
+    const char digit = busId[dot + 1];
+    if (digit < '0' || digit > '7')
+    {
+        return std::nullopt;
+    }
+    return static_cast<std::uint32_t>(digit - '0');
+}
 
 } // namespace Platform::NVML

@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -443,7 +444,7 @@ GPUInfo makeInfo(const std::string& name, const std::string& vendor)
 GPUInfo makeLocatedInfo(const std::string& name, std::uint32_t bus, std::uint32_t pciDeviceId = 0)
 {
     GPUInfo info = makeInfo(name, "NVIDIA");
-    info.pciLocation = PciLocation{.bus = bus, .device = 0};
+    info.pciLocation = PciLocation{.bus = bus, .device = 0, .function = std::nullopt};
     info.pciDeviceId = pciDeviceId;
     return info;
 }
@@ -466,8 +467,8 @@ TEST(MapDXGIToNVMLTest, IdenticalCardsMapByPciLocationWhateverTheOrder)
 TEST(NVMLDeviceAdapterIdsTest, EachMappedDeviceTakesItsAdaptersId)
 {
     std::vector<GPUInfo> dxgi = {makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x02), makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x01)};
-    dxgi[0].id = "PCI_02:00_10DE:2684";
-    dxgi[1].id = "PCI_01:00_10DE:2684";
+    dxgi[0].id = "PCI_02:00.0_10DE:2684";
+    dxgi[1].id = "PCI_01:00.0_10DE:2684";
     std::vector<GPUInfo> nvml = {makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x01),
                                  makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x02),
                                  makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x03)};
@@ -477,8 +478,8 @@ TEST(NVMLDeviceAdapterIdsTest, EachMappedDeviceTakesItsAdaptersId)
 
     const auto ids = nvmlDeviceAdapterIds(dxgi, nvml, mapDXGIToNVML(dxgi, nvml));
     ASSERT_EQ(ids.size(), 2U);
-    EXPECT_EQ(ids.at("GPU-aaaa"), "PCI_01:00_10DE:2684");
-    EXPECT_EQ(ids.at("GPU-bbbb"), "PCI_02:00_10DE:2684");
+    EXPECT_EQ(ids.at("GPU-aaaa"), "PCI_01:00.0_10DE:2684");
+    EXPECT_EQ(ids.at("GPU-bbbb"), "PCI_02:00.0_10DE:2684");
     EXPECT_FALSE(ids.contains("GPU-cccc"));
 }
 
@@ -547,6 +548,31 @@ TEST(MapDXGIToNVMLTest, SubstringMatchNeedsAKnownEqualPciDeviceId)
     const auto mapping = mapDXGIToNVML({laptopAdapter}, {knownDevice});
     ASSERT_EQ(mapping.size(), 1U);
     EXPECT_EQ(mapping.at(0), 0U);
+}
+
+// Two functions of one multi-function device at the same bus and device: the function number pairs
+// each adapter with its own NVML device. Where NVML's busId couldn't be read the function is unknown,
+// and a device still matches the one adapter at its bus and device.
+TEST(MapDXGIToNVMLTest, TheFunctionNumberPairsFunctionsAtOneBusAndDevice)
+{
+    const auto atFunction = [](std::optional<std::uint32_t> function)
+    {
+        GPUInfo info = makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x01);
+        info.pciLocation->function = function;
+        return info;
+    };
+    const std::vector<GPUInfo> dxgi = {atFunction(1), atFunction(0)};
+    const std::vector<GPUInfo> nvml = {atFunction(0), atFunction(1)};
+    const auto mapping = mapDXGIToNVML(dxgi, nvml);
+    ASSERT_EQ(mapping.size(), 2U);
+    EXPECT_EQ(mapping.at(0), 1U);
+    EXPECT_EQ(mapping.at(1), 0U);
+
+    const auto unknownFunction = mapDXGIToNVML({atFunction(0)}, {atFunction(std::nullopt)});
+    ASSERT_EQ(unknownFunction.size(), 1U);
+    EXPECT_EQ(unknownFunction.at(0), 0U);
+
+    EXPECT_TRUE(mapDXGIToNVML({atFunction(1)}, {atFunction(0)}).empty()) << "Different functions are different devices";
 }
 
 // Different PCI locations are different cards, even when the names match exactly.

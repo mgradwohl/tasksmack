@@ -287,6 +287,7 @@ TEST_F(NVMLGPUProbeFakeTest, EnumerateRecordsEachDevicesPciIdentity)
     deviceData(1).pciBus = 0x41;
     deviceData(1).pciDevice = 0x03;
     deviceData(1).pciDeviceId = 0x270410DEU;
+    deviceData(1).pciBusId = "00000000:41:03.1"; // The function number comes from busId
 
     NVMLGPUProbe probe;
     NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
@@ -294,10 +295,11 @@ TEST_F(NVMLGPUProbeFakeTest, EnumerateRecordsEachDevicesPciIdentity)
     const auto gpus = probe.enumerateGPUs();
     ASSERT_EQ(gpus.size(), 2U);
     ASSERT_TRUE(gpus[0].pciLocation.has_value());
-    EXPECT_EQ(gpus[0].pciLocation.value_or(PciLocation{}), (PciLocation{.bus = 0x01, .device = 0x00}));
+    EXPECT_EQ(gpus[0].pciLocation.value_or(PciLocation{}), (PciLocation{.bus = 0x01, .device = 0x00, .function = std::nullopt}))
+        << "No busId: function unknown";
     EXPECT_EQ(gpus[0].pciDeviceId, 0x268410DEU);
     ASSERT_TRUE(gpus[1].pciLocation.has_value());
-    EXPECT_EQ(gpus[1].pciLocation.value_or(PciLocation{}), (PciLocation{.bus = 0x41, .device = 0x03}));
+    EXPECT_EQ(gpus[1].pciLocation.value_or(PciLocation{}), (PciLocation{.bus = 0x41, .device = 0x03, .function = 1}));
     EXPECT_EQ(gpus[1].pciDeviceId, 0x270410DEU);
 }
 

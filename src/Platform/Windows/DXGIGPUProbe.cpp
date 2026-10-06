@@ -348,7 +348,10 @@ std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
                               info.name,
                               info.vendor,
                               info.luidId,
-                              info.pciLocation ? std::format("{:02x}:{:02x}", info.pciLocation->bus, info.pciLocation->device)
+                              info.pciLocation ? std::format("{:02x}:{:02x}.{}",
+                                                             info.pciLocation->bus,
+                                                             info.pciLocation->device,
+                                                             info.pciLocation->function.value_or(0))
                                                : std::string("unknown"),
                               info.isIntegrated);
 

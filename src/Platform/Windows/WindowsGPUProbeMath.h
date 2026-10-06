@@ -110,7 +110,9 @@ namespace Platform
 /// Matching is by hardware identity first, then by name only where that is unambiguous, in three
 /// passes over every adapter so an earlier, weaker claim never takes a later adapter's exact match:
 ///
-///   1. PCI bus location, where both sides report it: exact, whatever the names or order.
+///   1. PCI bus location, where both sides report it: exact, whatever the names or order. The function
+///      number counts where both report it; NVML's comes from its busId string, and where that can't
+///      be read the device matches on bus and device (samePciLocation()), still unique-only.
 ///   2. Exact name (see comparableGPUName), among devices with the same PCI device id where both
 ///      sides report one, and only when exactly one device fits: identical cards with no location
 ///      are left unmapped, since guessing would show one card's data as the other's.
@@ -130,7 +132,7 @@ namespace Platform
     // Could this NVML device be this adapter, judged by what both report about their hardware?
     const auto sameHardware = [](const GPUInfo& dxgi, const GPUInfo& nvml)
     {
-        if (dxgi.pciLocation.has_value() && nvml.pciLocation.has_value() && *dxgi.pciLocation != *nvml.pciLocation)
+        if (dxgi.pciLocation.has_value() && nvml.pciLocation.has_value() && !samePciLocation(*dxgi.pciLocation, *nvml.pciLocation))
         {
             return false;
         }
@@ -186,7 +188,10 @@ namespace Platform
         {
             claimUnique(dxgiIdx,
                         [](const GPUInfo& dxgi, const GPUInfo& nvml)
-                        { return dxgi.pciLocation.has_value() && nvml.pciLocation == dxgi.pciLocation; });
+                        {
+                            return dxgi.pciLocation.has_value() && nvml.pciLocation.has_value() &&
+                                   samePciLocation(*dxgi.pciLocation, *nvml.pciLocation);
+                        });
         }
     }
     // 2. Exact name.

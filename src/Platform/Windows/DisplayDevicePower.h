@@ -37,7 +37,7 @@ namespace Platform
 /// DEVPKEY_Device_Address; for PCI the address is (device << 16) | function (#1265).
 [[nodiscard]] constexpr PciLocation pciLocationFromDevNode(std::uint32_t busNumber, std::uint32_t address) noexcept
 {
-    return PciLocation{.bus = busNumber, .device = address >> 16U};
+    return PciLocation{.bus = busNumber, .device = address >> 16U, .function = address & 0xFFFFU};
 }
 
 /// Whether a display adapter is asleep (in a low device power state), read from the PnP manager's
@@ -93,7 +93,10 @@ class DisplayDevicePower
 
     [[nodiscard]] static std::uint64_t locationKey(const PciLocation& location) noexcept
     {
-        return (static_cast<std::uint64_t>(location.bus) << 32U) | location.device;
+        // The function in the low 16 bits (all ones when unknown), the device above it.
+        const std::uint64_t function = location.function.value_or(0xFFFFU) & 0xFFFFU;
+        return (static_cast<std::uint64_t>(location.bus) << 32U) | (static_cast<std::uint64_t>(location.device & 0xFFFFU) << 16U) |
+               function;
     }
 
     [[nodiscard]] static std::optional<std::uint32_t> readUInt32(DEVINST devNode, const DEVPROPKEY& key)
@@ -154,7 +157,7 @@ class DisplayDevicePower
             }
             const auto bus = readUInt32(devNode, BUS_NUMBER_KEY);
             const auto address = readUInt32(devNode, ADDRESS_KEY);
-            if (bus.has_value() && address.has_value() && pciLocationFromDevNode(*bus, *address) == location)
+            if (bus.has_value() && address.has_value() && samePciLocation(pciLocationFromDevNode(*bus, *address), location))
             {
                 return devNode;
             }

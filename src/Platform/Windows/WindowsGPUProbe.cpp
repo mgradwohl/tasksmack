@@ -87,7 +87,7 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
         // Build DXGI id → LUID map for PDH per-GPU utilization matching.
         // PDH process counters use "GPU_0x{High}_0x{Low}" as their gpuId; DXGI
         // stores the same value in GPUInfo::luidId. We need to look up a counter's
-        // LUID from its gpuId (its PCI location, "PCI_01:00_10DE:2684", or LUID) to match PDH data.
+        // LUID from its gpuId (its PCI location, "PCI_01:00.0_10DE:2684", or LUID) to match PDH data.
         // Clear before rebuilding because enumerateGPUs() may be called multiple times
         // (e.g., on device change) and the adapter list can change between calls.
         m_DXGIIdToLuidId.clear();

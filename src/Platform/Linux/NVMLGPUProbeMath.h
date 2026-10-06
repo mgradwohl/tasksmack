@@ -8,10 +8,7 @@
 #include "Platform/NVMLRunningProcesses.h"
 #include "Platform/NVMLTypes.h"
 
-#include <cstdint>
-#include <cstring>
 #include <string>
-#include <string_view>
 
 namespace Platform::NVMLGPUProbeMath
 {
@@ -57,17 +54,7 @@ using StatusStringFn = const char* (*) (Platform::NVML::nvmlReturn_t);
 /// number has no field of its own and comes from busId's ".F" suffix (0 if it can't be read).
 [[nodiscard]] inline std::string sysfsPciAddress(const NVML::nvmlPciInfo_t& pci)
 {
-    const std::string_view busId(std::data(pci.busId), ::strnlen(std::data(pci.busId), std::size(pci.busId)));
-    std::uint32_t function = 0;
-    if (const auto dot = busId.rfind('.'); dot != std::string_view::npos && dot + 1 < busId.size())
-    {
-        const char digit = busId[dot + 1];
-        if (digit >= '0' && digit <= '7')
-        {
-            function = static_cast<std::uint32_t>(digit - '0');
-        }
-    }
-    return PciRuntimePm::pciAddress(pci.domain, pci.bus, pci.device, function);
+    return PciRuntimePm::pciAddress(pci.domain, pci.bus, pci.device, NVML::pciFunction(pci).value_or(0));
 }
 
 } // namespace Platform::NVMLGPUProbeMath
