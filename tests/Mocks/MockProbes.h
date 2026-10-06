@@ -295,8 +295,20 @@ class MockProcessProbe : public Platform::IProcessProbe
         m_SocketTraffic = std::move(reading);
     }
 
+    /// Capabilities the probe switches to during its next readSocketTraffic(), as the Windows probe
+    /// does when a real EStats sample proves its per-process network counters unusable (#1161).
+    void switchCapabilitiesOnNextSocketRead(Platform::ProcessCapabilities caps)
+    {
+        m_CapabilitiesAfterSocketRead = caps;
+    }
+
     [[nodiscard]] Platform::SocketTrafficReading readSocketTraffic() const override
     {
+        if (m_CapabilitiesAfterSocketRead.has_value())
+        {
+            m_Capabilities = *m_CapabilitiesAfterSocketRead;
+            m_CapabilitiesAfterSocketRead.reset();
+        }
         return m_SocketTraffic;
     }
 
@@ -339,7 +351,8 @@ class MockProcessProbe : public Platform::IProcessProbe
     std::vector<Platform::ProcessCounters> m_Counters;
     uint64_t m_TotalCpuTime = 0;
     uint64_t m_SystemTotalMemory = 8ULL * 1024 * 1024 * 1024; // Default 8 GB
-    Platform::ProcessCapabilities m_Capabilities;
+    mutable Platform::ProcessCapabilities m_Capabilities;     // readSocketTraffic() may switch it
+    mutable std::optional<Platform::ProcessCapabilities> m_CapabilitiesAfterSocketRead;
     long m_TicksPerSecond = 100; // Standard HZ value
     std::atomic<int> m_EnumerateCount{0};
     std::optional<Platform::PackageEnergyReading> m_PackageEnergy;
