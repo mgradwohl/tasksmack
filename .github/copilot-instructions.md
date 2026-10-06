@@ -265,7 +265,8 @@ Separate each group with a blank line. Use `#pragma once` in all headers.
 - `Platform::Windows` probes touch real hardware/OS state most CI runners don't have (battery,
   GPU, NVML). See CONTRIBUTING.md "Testing Windows platform-probe code that touches real
   hardware/OS APIs": extract pure logic into a `*Math.h` header taking primitives instead of
-  Win32 structs/handles (`WindowsPowerProbeMath.h`, `DXGIGPUProbeMath.h`, etc.), or — when the
+  Win32 structs/handles (`WindowsPowerProbeMath.h`, `DXGIGPUProbeMath.h`, etc.; their tests live in
+  `tests/Platform/WindowsMath/` and build on every platform, so no `windows.h` there), or — when the
   logic needs a real OS handle/function table it can't take as a primitive — use a
   `friend struct FooTestAccessor;` declared in the production class and defined only in the test
   file (`NVMLGPUProbeTestAccessor` in `test_WindowsNVMLGPUProbe.cpp`).
