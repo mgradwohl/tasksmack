@@ -185,8 +185,9 @@ TEST_F(WindowsGPURescanTest, AFailedFactoryReplacementKeepsTheOldFactoryAndRetri
 // An adapter's id is its own, not its place in DXGI's list (#1317). Removing the adapter listed
 // first used to renumber the one after it ("GPU1" became "GPU0"), so its history and chart state
 // moved to the removed card's, and an adapter added later took the next free number. Now the
-// remaining adapter keeps its id, an added adapter gets one no adapter had before, and the same
-// card back under a new LUID (a driver reset) is still the same GPU.
+// remaining adapter keeps its id, an added adapter in another slot gets one no adapter had before,
+// and the same card back under a new LUID (a driver reset) is still the same GPU. (The id names a
+// slot and model, so an identical card swapped into the same slot would continue the old history.)
 TEST_F(WindowsGPURescanTest, AnAdapterKeepsItsIdWhenOneListedBeforeItIsRemoved)
 {
     setAdapters({intelIGPU(), nvidiaGPU(0x200, 0x01)});

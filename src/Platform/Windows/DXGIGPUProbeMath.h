@@ -43,11 +43,12 @@ namespace Platform
 
 /// The id of an adapter at this PCI location: "PCI_{bus}:{device}.{function}_{vendor id}:{device id}",
 /// in hex (the function decimal, as PCI addresses print it). Where the adapter sits on the bus doesn't
-/// change while it is present, or across a driver reset that gives it a new LUID; the vendor and
-/// device ids keep a different card later fitted at the same location from taking this one's id
-/// (#1317). The function number keeps two display functions of one multi-function device (same
-/// vendor and device ids, same bus and device) from colliding, which sent the second to its LUID id;
-/// a location without one (D3DKMT always reports it) is named by bus and device alone.
+/// change while it is present, or across a driver reset that gives it a new LUID (#1317). The id
+/// names a slot and a model, not a physical card: an identical card swapped into the same slot gets
+/// the same id and continues the old one's history, as a reconnect would, while a different model in
+/// that slot, or the same model in another slot, gets a new id. The function number keeps two display functions of one multi-function
+/// device (same vendor and device ids, same bus and device) from colliding, which sent the second to its LUID id; a location without one
+/// (D3DKMT always reports it) is named by bus and device alone.
 [[nodiscard]] inline std::string adapterPciId(const PciLocation& location, uint32_t vendorId, uint32_t deviceId)
 {
     if (location.function.has_value())
@@ -72,10 +73,12 @@ namespace Platform
 /// The id DXGIGPUProbe gives an adapter, which keys its history, its GPU tab state and its counters
 /// (#1317). It used to be the adapter's position in DXGI's list ("GPU{index}"), so removing an
 /// adapter renumbered every one listed after it -- moving their history to the wrong card -- and a
-/// later adapter took a removed one's number. Now it is the adapter's PCI location (see
+/// later adapter took a removed one's number. Now it is the adapter's PCI location and model (see
 /// adapterPciId()) where it reports one, and its LUID otherwise (see adapterLuidId()): an adapter
 /// with no bus address, or a second adapter at a location whose id is already in @p takenIds, so two
-/// adapters never share one. Enumeration order is kept only as display order.
+/// adapters present at once never share one. Over time the id follows the slot and model, so an
+/// identical card later fitted in the same slot continues the old one's history. Enumeration order is
+/// kept only as display order.
 /// @param location The adapter's PCI location, or nullopt when it reports none
 /// @param vendorId DXGI_ADAPTER_DESC1::VendorId
 /// @param deviceId DXGI_ADAPTER_DESC1::DeviceId

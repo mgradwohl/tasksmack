@@ -84,7 +84,7 @@ class DXGIGPUProbe : public IGPUProbe
 
     /// The id of the adapter with this LUID (see stableAdapterId()): its PCI location, read through
     /// @p pciLocation, or its LUID. Decided once per LUID, so enumerateGPUs() and readGPUCounters()
-    /// always agree, and no two adapters get the same one (#1317).
+    /// always agree, and no two adapters present at once get the same one (#1317).
     [[nodiscard]] std::string adapterId(std::uint32_t vendorId,
                                         std::uint32_t deviceId,
                                         std::int32_t luidHighPart,

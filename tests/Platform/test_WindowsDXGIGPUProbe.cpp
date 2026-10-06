@@ -335,13 +335,14 @@ TEST(StableAdapterIdTest, ASecondAdapterAtATakenLocationIsNamedByItsLuid)
               "PCI_41:00.0_10DE:2684");
 }
 
-// #1317: the id depends on the adapter, not on where DXGI lists it or the LUID it has now.
+// #1317: the id depends on the slot and model, not on where DXGI lists the adapter or the LUID it has
+// now. A different model in the slot is a different GPU; an identical one would take the same id.
 TEST(StableAdapterIdTest, TheIdIgnoresTheLuidWhenThereIsAPciLocation)
 {
     const PciLocation location{.bus = 0x01, .device = 0x00, .function = 0};
     EXPECT_EQ(stableAdapterId(location, 0x10DE, 0x2684, 0, 0x200, {}), stableAdapterId(location, 0x10DE, 0x2684, 0, 0x210, {}));
     EXPECT_NE(stableAdapterId(location, 0x10DE, 0x2684, 0, 0x200, {}), stableAdapterId(location, 0x10DE, 0x2782, 0, 0x200, {}))
-        << "A different card later fitted at the same location is a different GPU";
+        << "A different model later fitted at the same location is a different GPU";
 }
 
 TEST(VendorIdToNameTest, KnownVendorIdsMapCorrectly)
