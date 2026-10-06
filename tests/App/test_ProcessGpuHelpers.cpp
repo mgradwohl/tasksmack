@@ -3,6 +3,7 @@
 /// tab shows its charts or "No GPU usage detected" (#1014).
 
 #include "App/Panels/ProcessDetailsPanel_GpuHelpers.h"
+#include "UI/Format.h"
 
 #include <gtest/gtest.h>
 
@@ -69,6 +70,16 @@ TEST(ProcessGpuHelpersTest, NoGpuUsageTextNamesTheHistoryWindow)
     EXPECT_EQ(noGpuUsageDetail(300.0), "This process has not used a GPU in the last 5m.");
     EXPECT_EQ(noGpuUsageDetail(90.0), "This process has not used a GPU in the last 1m 30s.");
     EXPECT_EQ(noGpuUsageDetail(3600.0), "This process has not used a GPU in the last 1h.");
+}
+
+// #1210: NVML on Linux reports a process's GPU memory but not its utilization; the tab shows N/A,
+// not a measured 0%.
+TEST(ProcessGpuHelpersTest, GpuUtilizationIsNotAvailableWithoutPerProcessUtilization)
+{
+    EXPECT_EQ(gpuUtilizationText(/*perProcessUtilizationSupported=*/false, 0.0), "N/A");
+    EXPECT_EQ(gpuUtilizationText(false, 42.0), "N/A");
+    EXPECT_EQ(gpuUtilizationText(true, 42.0), UI::Format::percentOneDecimal(42.0));
+    EXPECT_EQ(gpuUtilizationText(true, 0.0), UI::Format::percentOneDecimal(0.0)); // A measured zero
 }
 
 // #1210: without per-process GPU metrics (DRM- or ROCm-only Linux) the tab must not claim the process

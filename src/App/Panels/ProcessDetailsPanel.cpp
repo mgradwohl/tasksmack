@@ -330,7 +330,8 @@ void ProcessDetailsPanel::recordHistoryPoint(const Domain::ProcessSnapshot& snap
         Detail::readingOrGap(networkReading, snapshot.netSentBytesPerSec),
         Detail::readingOrGap(networkReading, snapshot.netReceivedBytesPerSec),
         snapshot.powerWatts,
-        snapshot.gpuUtilPercent,
+        // A gap where the GPU probe has per-process memory but not utilization (NVML on Linux, #1210).
+        Detail::readingOrGap(m_PerProcessGpuUtilizationSupported, snapshot.gpuUtilPercent),
         toDouble(snapshot.gpuMemoryBytes),
         // NaN signals "no data" to the plot; ImPlot renders NaN as a gap in the
         // line.
@@ -1898,7 +1899,8 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
         ImGui::TextUnformatted(LABEL_UTILIZATION);
         ImGui::TableNextColumn();
         const ImVec4 gpuUtilColor = theme.scheme().gpuUtilization;
-        ImGui::TextColored(gpuUtilColor, "%s", UI::Format::percentOneDecimal(m_SmoothedUsage.gpuUtilPercent).c_str());
+        ImGui::TextColored(
+            gpuUtilColor, "%s", Detail::gpuUtilizationText(m_PerProcessGpuUtilizationSupported, m_SmoothedUsage.gpuUtilPercent).c_str());
 
         // GPU Memory
         ImGui::TableNextRow();
@@ -1983,7 +1985,7 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
 // Renders a collapsible per-GPU breakdown (utilization, memory, engines) for each entry in
 // proc.perGpuUsage. No-op if that list is empty, regardless of how many GPUs the system has; the caller
 // skips it for a single GPU (#1207).
-void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& proc)
+void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& proc) const
 {
     const auto& theme = UI::Theme::get();
 
@@ -2025,7 +2027,8 @@ void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& p
                     ImGui::TableNextColumn();
                     ImGui::TextUnformatted(LABEL_UTILIZATION);
                     ImGui::TableNextColumn();
-                    ImGui::TextColored(gpuUtilColor, "%s", UI::Format::percentOneDecimal(gpuUsage.utilPercent).c_str());
+                    ImGui::TextColored(
+                        gpuUtilColor, "%s", Detail::gpuUtilizationText(m_PerProcessGpuUtilizationSupported, gpuUsage.utilPercent).c_str());
 
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn();
@@ -2206,10 +2209,10 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
 
         // Now bars for current values
         const NowBar gpuUtilBar{
-            .valueText = UI::Format::percentOneDecimal(m_SmoothedUsage.gpuUtilPercent),
+            .valueText = Detail::gpuUtilizationText(m_PerProcessGpuUtilizationSupported, m_SmoothedUsage.gpuUtilPercent),
             .label = GPU_UTIL_LABEL,
             .tooltipText = {},
-            .value01 = UI::Format::percent01(m_SmoothedUsage.gpuUtilPercent),
+            .value01 = m_PerProcessGpuUtilizationSupported ? UI::Format::percent01(m_SmoothedUsage.gpuUtilPercent) : 0.0,
             .color = theme.scheme().gpuUtilization,
         };
 

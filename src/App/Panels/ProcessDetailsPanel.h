@@ -98,6 +98,14 @@ class ProcessDetailsPanel : public Panel
         m_PerProcessGpuSupported = supported;
     }
 
+    /// Whether per-process GPU utilization can be observed (ProcessesPanel::gpuSupport().utilization):
+    /// where the GPU probe reports per-process memory but not utilization (NVML on Linux), the GPU tab
+    /// shows utilization as N/A and its chart as a gap rather than a measured 0% (#1210).
+    void setPerProcessGpuUtilizationSupported(bool supported)
+    {
+        m_PerProcessGpuUtilizationSupported = supported;
+    }
+
     /// Get currently displayed PID.
     [[nodiscard]] std::int32_t selectedPid() const
     {
@@ -128,7 +136,7 @@ class ProcessDetailsPanel : public Panel
     void renderPowerUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
     void renderGpuUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
     void renderGpuCurrentMetricsTable(const Domain::ProcessSnapshot& proc) const;
-    static void renderPerGpuBreakdown(const Domain::ProcessSnapshot& proc);
+    void renderPerGpuBreakdown(const Domain::ProcessSnapshot& proc) const;
     void renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fill);
     void renderActions();
     void renderActionResultFeedback();
@@ -244,6 +252,7 @@ class ProcessDetailsPanel : public Panel
     Platform::ProcessActionCapabilities m_ActionCapabilities;
     Platform::ProcessCapabilities m_ProcessCapabilities;
     bool m_PerProcessGpuSupported = true;
+    bool m_PerProcessGpuUtilizationSupported = true;
     // The GPU tab's "No GPU usage" explanation, naming the history window (#1210). Empty until built,
     // and cleared when the window changes so the next frame rebuilds it.
     std::string m_NoGpuUsageDetail;

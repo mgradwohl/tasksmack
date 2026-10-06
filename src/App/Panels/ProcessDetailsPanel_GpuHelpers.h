@@ -73,6 +73,13 @@ enum class GpuTabContent : std::uint8_t
                        UI::Format::formatDuration(historySeconds, UI::Format::DurationStyle::Compact));
 }
 
+/// A process's GPU utilization as the GPU tab shows it: "N/A" where the GPU probe reports per-process
+/// memory but not utilization (NVML on Linux, #1210), since every process would read a measured 0%.
+[[nodiscard]] inline std::string gpuUtilizationText(bool perProcessUtilizationSupported, double percent)
+{
+    return perProcessUtilizationSupported ? UI::Format::percentOneDecimal(percent) : std::string("N/A");
+}
+
 /// Whether the GPU tab shows its "Per-GPU Breakdown" under the usage table. With a single GPU its
 /// utilization, memory and engines are the "GPU Usage" table's, so it only repeated them (#1207);
 /// it earns its place once the process uses more than one GPU.

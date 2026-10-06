@@ -7,6 +7,7 @@
 #include "Core/WindowConstants.h"
 #include "Domain/ProcessSnapshot.h"
 #include "FontSizeChange.h"
+#include "Panels/ProcessColumnAvailability.h"
 #include "Panels/ProcessesPanel.h"
 #include "Panels/SystemMetricsPanel.h"
 #include "ShellMetrics.h"
@@ -276,7 +277,9 @@ void ShellLayer::onUpdate(float deltaTime)
     // plain copy of what ProcessesPanel fetched with its snapshots, so no lock is taken here.
     m_ProcessDetailsPanel.setProcessCapabilities(m_ProcessesPanel.processCapabilities());
     // Whether its GPU tab can see per-process usage at all (#1210): one atomic load.
-    m_ProcessDetailsPanel.setPerProcessGpuSupported(m_ProcessesPanel.hasPerProcessGpuMetrics());
+    const ProcessColumnAvailability::GpuSupport gpuSupport = m_ProcessesPanel.gpuSupport();
+    m_ProcessDetailsPanel.setPerProcessGpuSupported(gpuSupport.perProcess);
+    m_ProcessDetailsPanel.setPerProcessGpuUtilizationSupported(gpuSupport.utilization);
 
     // Hand Process Details the selected process's new samples: one per generation the sampler
     // published since its last frame, each with its own sample time (#1098). The model keeps them for
