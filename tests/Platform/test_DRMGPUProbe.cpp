@@ -16,12 +16,14 @@
 #include "Platform/GPUTypes.h"
 #include "Platform/Linux/DRMGPUProbe.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <memory>
 #include <optional>
@@ -29,6 +31,7 @@
 #include <string>
 #include <system_error>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include <unistd.h>
@@ -40,6 +43,24 @@
 
 namespace Platform
 {
+
+/// Builds a GPUInfo for a card from its sysfs device directory, as enumeration would. Discovery keeps
+/// only Intel (i915/xe) cards, so this is how an AMD card's classification is reached (#1344). Defined
+/// outside the anonymous namespace so it matches DRMGPUProbe's `friend struct DRMGPUProbeTestAccessor`.
+struct DRMGPUProbeTestAccessor
+{
+    [[nodiscard]] static GPUInfo
+    gpuInfoFor(const DRMGPUProbe& probe, const std::filesystem::path& deviceDir, const std::string& gpuId, const std::string& driver)
+    {
+        DRMGPUProbe::DRMCard card;
+        card.cardPath = deviceDir.parent_path().string();
+        card.devicePath = deviceDir.string();
+        card.driver = driver;
+        card.gpuId = gpuId;
+        return probe.cardToGPUInfo(card);
+    }
+};
+
 namespace
 {
 
@@ -627,6 +648,82 @@ TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_HwmonZeroTemp_IsIgnored)
     EXPECT_FALSE(counters[0].temperatureAvailable);
 }
 
+// xe has no temp1_input: its channel 1 has a label only, and the package temperature is temp2_input,
+// labelled "pkg" (VRAM temp3_input, "vram", on some parts) (#1314).
+TEST_F(DRMGPUProbeUnitTest, XeCard_PackageTemperatureReadFromTheInputLabelledPkg)
+{
+    const auto deviceDir = makeCard("card0", "xe");
+    writeFile(deviceDir / "vendor", "0x8086");
+    writeFile(deviceDir / "class", "0x030000");
+    makeHwmon(deviceDir);
+    writeHwmonFile(deviceDir, "hwmon0", "temp1_label", "mctp");
+    writeHwmonFile(deviceDir, "hwmon0", "temp2_label", "pkg");
+    writeHwmonFile(deviceDir, "hwmon0", "temp2_input", "61000");
+    writeHwmonFile(deviceDir, "hwmon0", "temp3_label", "vram");
+    writeHwmonFile(deviceDir, "hwmon0", "temp3_input", "70000");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    ASSERT_TRUE(probe.isAvailable());
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    EXPECT_TRUE(gpus[0].sensorCapabilities.value_or(GPUCapabilities{}).hasTemperature);
+
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_TRUE(counters[0].temperatureAvailable);
+    EXPECT_EQ(counters[0].temperatureC, 61) << "the package sensor, not VRAM";
+}
+
+TEST_F(DRMGPUProbeUnitTest, XeCard_OnlyTemp2InputLabelledPkgIsRead)
+{
+    // The issue's case: temp2_input + temp2_label = pkg, and nothing else.
+    const auto deviceDir = makeCard("card0", "xe");
+    writeFile(deviceDir / "vendor", "0x8086");
+    makeHwmon(deviceDir);
+    writeHwmonFile(deviceDir, "hwmon0", "temp2_input", "55000");
+    writeHwmonFile(deviceDir, "hwmon0", "temp2_label", "pkg");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_TRUE(counters[0].temperatureAvailable);
+    EXPECT_EQ(counters[0].temperatureC, 55);
+}
+
+TEST_F(DRMGPUProbeUnitTest, UnlabelledTemperatureInputsFallBackToTheLowestNumbered)
+{
+    const auto deviceDir = makeCard("card0", "xe");
+    writeFile(deviceDir / "vendor", "0x8086");
+    makeHwmon(deviceDir);
+    writeHwmonFile(deviceDir, "hwmon0", "temp3_input", "70000");
+    writeHwmonFile(deviceDir, "hwmon0", "temp2_input", "58000");
+    writeHwmonFile(deviceDir, "hwmon0", "temp2_crit", "105000"); // not an input
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_TRUE(counters[0].temperatureAvailable);
+    EXPECT_EQ(counters[0].temperatureC, 58);
+}
+
+TEST_F(DRMGPUProbeUnitTest, HwmonWithoutTemperatureInputHasNoTemperature)
+{
+    // An hwmon with only an energy counter (and xe's input-less channel-1 label) has no temperature sensor.
+    const auto deviceDir = makeCard("card0", "xe");
+    writeFile(deviceDir / "vendor", "0x8086");
+    makeHwmon(deviceDir);
+    writeHwmonFile(deviceDir, "hwmon0", "temp1_label", "pkg");
+    writeHwmonFile(deviceDir, "hwmon0", "energy1_input", "1000");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    EXPECT_FALSE(gpus[0].sensorCapabilities.value_or(GPUCapabilities{}).hasTemperature);
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_FALSE(counters[0].temperatureAvailable);
+}
+
 TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_GpuFrequency_IsRead)
 {
     const auto deviceDir = makeCard("card0", "i915");
@@ -876,6 +973,84 @@ TEST_F(DRMGPUProbeUnitTest, IntelDisplayController_OnBusZero_IsIntegrated)
     const auto gpus = probe.enumerateGPUs();
     ASSERT_EQ(gpus.size(), 1U);
     EXPECT_TRUE(gpus[0].isIntegrated);
+}
+
+// =============================================================================
+// AMD APUs (#1344): the shared AmdApu rule, not the carve-out or the VGA class
+// =============================================================================
+
+constexpr uint64_t MIB = 1024ULL * 1024ULL;
+
+/// An amdgpu PCI device directory with `vendor`, `class`, `device` and `mem_info_vram_total`, and an
+/// ip_discovery GC entry when `gc` is given ({11, 0, 1} for GC 11.0.1).
+[[nodiscard]] std::filesystem::path makeAmdDevice(const std::filesystem::path& root,
+                                                  const std::string& pciAddress,
+                                                  const std::string& deviceId,
+                                                  uint64_t vramTotalBytes,
+                                                  std::optional<std::tuple<int, int, int>> gc)
+{
+    const auto dir = root / "pci" / pciAddress;
+    std::filesystem::create_directories(dir);
+    const auto write = [](const std::filesystem::path& path, const std::string& text)
+    {
+        std::ofstream file(path);
+        file << text << '\n';
+    };
+    write(dir / "vendor", "0x1002");
+    write(dir / "class", "0x030000"); // VGA compatible, as both APUs and Radeon cards are
+    write(dir / "device", deviceId);
+    write(dir / "mem_info_vram_total", std::to_string(vramTotalBytes));
+    if (gc.has_value())
+    {
+        const auto gcDir = dir / "ip_discovery" / "die" / "0" / "GC" / "0";
+        std::filesystem::create_directories(gcDir);
+        write(gcDir / "major", std::to_string(std::get<0>(*gc)));
+        write(gcDir / "minor", std::to_string(std::get<1>(*gc)));
+        write(gcDir / "revision", std::to_string(std::get<2>(*gc)));
+    }
+    return dir;
+}
+
+// The bug: a 512 MiB carve-out in mem_info_vram_total read as dedicated VRAM, and any non-Intel VGA
+// controller as discrete, so a Phoenix APU was "Discrete" and its carve-out joined the Overview's
+// VRAM total (#1114, which counts discrete GPUs only).
+TEST_F(DRMGPUProbeUnitTest, AmdApu_CarveOutAndApuGraphicsCoreVersion_IsIntegrated)
+{
+    const auto dir = makeAmdDevice(m_SysRoot, "0000:c4:00.0", "0x15bf", 512 * MIB, std::tuple{11, 0, 1}); // Phoenix
+
+    const DRMGPUProbe probe(m_SysRoot.string());
+    const auto info = DRMGPUProbeTestAccessor::gpuInfoFor(probe, dir, "0000:c4:00.0", "amdgpu");
+    EXPECT_EQ(info.vendor, "AMD");
+    EXPECT_TRUE(info.isIntegrated);
+}
+
+// A kernel without ip_discovery: the PCI device id decides, as in the ROCm probe.
+TEST_F(DRMGPUProbeUnitTest, AmdApu_WithoutIpDiscovery_DeviceIdDecides)
+{
+    const auto renoir = makeAmdDevice(m_SysRoot, "0000:05:00.0", "0x1636", 2048 * MIB, std::nullopt);
+
+    const DRMGPUProbe probe(m_SysRoot.string());
+    EXPECT_TRUE(DRMGPUProbeTestAccessor::gpuInfoFor(probe, renoir, "0000:05:00.0", "amdgpu").isIntegrated);
+}
+
+TEST_F(DRMGPUProbeUnitTest, AmdDiscreteNavi_IsDiscrete)
+{
+    // Navi 21 (GC 10.3.0) with 16 GiB of real VRAM.
+    const auto navi = makeAmdDevice(m_SysRoot, "0000:03:00.0", "0x73bf", 16 * 1024 * MIB, std::tuple{10, 3, 0});
+
+    const DRMGPUProbe probe(m_SysRoot.string());
+    EXPECT_FALSE(DRMGPUProbeTestAccessor::gpuInfoFor(probe, navi, "0000:03:00.0", "amdgpu").isIntegrated);
+}
+
+// A discrete GC version is discrete even with an APU-looking device id, and no signal at all is discrete.
+TEST_F(DRMGPUProbeUnitTest, AmdWithDiscreteGraphicsCoreOrNoSignal_IsDiscrete)
+{
+    const auto discreteGc = makeAmdDevice(m_SysRoot, "0000:03:00.0", "0x15bf", 8 * 1024 * MIB, std::tuple{11, 0, 0});
+    const auto noSignal = makeAmdDevice(m_SysRoot, "0000:04:00.0", "garbage", 8 * 1024 * MIB, std::nullopt);
+
+    const DRMGPUProbe probe(m_SysRoot.string());
+    EXPECT_FALSE(DRMGPUProbeTestAccessor::gpuInfoFor(probe, discreteGc, "0000:03:00.0", "amdgpu").isIntegrated);
+    EXPECT_FALSE(DRMGPUProbeTestAccessor::gpuInfoFor(probe, noSignal, "0000:04:00.0", "amdgpu").isIntegrated);
 }
 
 // =============================================================================
@@ -1645,6 +1820,303 @@ TEST_F(DRMGPUProbeUnitTest, RescanGPUs_QueriedTotalIsDroppedWhenTheQueryTargetCh
     counters = probe.readGPUCounters();
     EXPECT_EQ(counters[0].memoryTotalBytes, 12 * GIB);
     EXPECT_EQ(query.state->renderNode, "/dev/dri/renderD131");
+}
+
+// =============================================================================
+// Utilization from the DRM clients' fdinfo engine busyness (#1267)
+// =============================================================================
+
+constexpr auto RENDER = static_cast<std::size_t>(GPUEngineClass::Render);
+constexpr auto COPY = static_cast<std::size_t>(GPUEngineClass::Copy);
+constexpr auto VIDEO = static_cast<std::size_t>(GPUEngineClass::Video);
+constexpr auto COMPUTE = static_cast<std::size_t>(GPUEngineClass::Compute);
+
+TEST(DRMGPUProbeFdinfoTest, I915BusyNanosecondsAreStampedWithTheClock)
+{
+    const auto info = DRMGPUProbe::parseFdinfo("pos:\t0\nflags:\t02100002\ndrm-driver:\ti915\ndrm-pdev:\t0000:00:02.0\n"
+                                               "drm-client-id:\t7\ndrm-engine-render:\t5000 ns\ndrm-engine-copy:\t0 ns\n"
+                                               "drm-engine-video:\t10 ns\ndrm-engine-capacity-video:\t2\n",
+                                               123'456);
+    ASSERT_TRUE(info.has_value());
+    EXPECT_EQ(info->client.clientId, 7U);
+    EXPECT_EQ(info->pdev, "0000:00:02.0");
+    EXPECT_TRUE(info->hasEngineStats);
+    const auto& render = info->client.engines.at(RENDER);
+    EXPECT_TRUE(render.available);
+    EXPECT_EQ(render.busy, 5000U);
+    EXPECT_EQ(render.total, 123'456U);
+    EXPECT_EQ(render.capacity, 1U);
+    EXPECT_TRUE(info->client.engines.at(COPY).available); // 0 ns is a reading, not a missing one
+    EXPECT_EQ(info->client.engines.at(VIDEO).capacity, 2U);
+    EXPECT_FALSE(info->client.engines.at(COMPUTE).available);
+}
+
+TEST(DRMGPUProbeFdinfoTest, XeCyclesPairWithTheirTotalCycles)
+{
+    const auto info = DRMGPUProbe::parseFdinfo("drm-driver:\txe\ndrm-client-id:\t42\n"
+                                               "drm-cycles-rcs:\t100\ndrm-total-cycles-rcs:\t1000\n"
+                                               "drm-cycles-vcs:\t3\ndrm-total-cycles-vcs:\t1000\ndrm-engine-capacity-vcs:\t2\n"
+                                               "drm-cycles-ccs:\t5\n",
+                                               999);
+    ASSERT_TRUE(info.has_value());
+    EXPECT_EQ(info->client.clientId, 42U);
+    const auto& render = info->client.engines.at(RENDER);
+    EXPECT_TRUE(render.available);
+    EXPECT_EQ(render.busy, 100U);
+    EXPECT_EQ(render.total, 1000U); // The GPU timestamp, not the clock
+    EXPECT_EQ(info->client.engines.at(VIDEO).capacity, 2U);
+    EXPECT_FALSE(info->client.engines.at(COMPUTE).available); // Cycles without their total
+}
+
+TEST(DRMGPUProbeFdinfoTest, NotADrmFileOrNoEngineStats)
+{
+    // A regular file's fdinfo has no drm-client-id.
+    EXPECT_FALSE(DRMGPUProbe::parseFdinfo("pos:\t0\nflags:\t0100000\nmnt_id:\t25\nino:\t1234\n", 1).has_value());
+    // A DRM file on a kernel without fdinfo engine stats, and malformed values, carry none.
+    const auto info = DRMGPUProbe::parseFdinfo("drm-driver:\ti915\ndrm-client-id:\t3\ndrm-engine-render:\tlots\n"
+                                               "drm-engine-teleporter:\t5 ns\ndrm-engine-copy:\t12x ns\n",
+                                               1);
+    ASSERT_TRUE(info.has_value());
+    EXPECT_FALSE(info->hasEngineStats);
+}
+
+/// A process `pid` in the fake /proc under `procRoot` with fd `fd` linked to `target` and, if
+/// given, that fd's fdinfo text.
+void makeFd(const std::filesystem::path& procRoot,
+            int pid,
+            int fd,
+            const std::string& target,
+            const std::optional<std::string>& fdinfo = std::nullopt)
+{
+    const auto processDir = procRoot / std::to_string(pid);
+    std::filesystem::create_directories(processDir / "fd");
+    std::filesystem::create_directories(processDir / "fdinfo");
+    std::filesystem::create_symlink(target, processDir / "fd" / std::to_string(fd));
+    if (fdinfo.has_value())
+    {
+        std::ofstream(processDir / "fdinfo" / std::to_string(fd)) << *fdinfo;
+    }
+}
+
+/// xe fdinfo text for client `clientId` on 0000:03:00.0 with these render-class cycles.
+[[nodiscard]] std::string xeFdinfo(int clientId, std::uint64_t cycles, std::uint64_t totalCycles)
+{
+    return std::format("drm-driver:\txe\ndrm-pdev:\t0000:03:00.0\ndrm-client-id:\t{}\ndrm-cycles-rcs:\t{}\ndrm-total-cycles-rcs:\t{}\n",
+                       clientId,
+                       cycles,
+                       totalCycles);
+}
+
+class DRMGPUProbeEngineTest : public DRMGPUProbeUnitTest
+{
+  protected:
+    std::filesystem::path m_ProcRoot;
+    std::filesystem::path m_PciDir;
+
+    void SetUp() override
+    {
+        DRMGPUProbeUnitTest::SetUp();
+        m_ProcRoot = m_SysRoot / "proc";
+        std::filesystem::create_directories(m_ProcRoot);
+        // An Arc on xe: card1, render node renderD129, awake.
+        m_PciDir = makeCardAt("card1", "0000:03:00.0", "xe");
+        std::filesystem::create_directories(m_PciDir / "drm" / "renderD129");
+        std::filesystem::create_directories(m_PciDir / "power");
+        writeFile(m_PciDir / "power" / "runtime_status", "active");
+    }
+
+    [[nodiscard]] std::unique_ptr<DRMGPUProbe> makeProbe(DRMGPUProbe::MonotonicClock clock = {}) const
+    {
+        const ScriptedVramQuery query; // No VRAM reply: keeps the real ioctl out of these tests
+        return std::make_unique<DRMGPUProbe>(m_SysRoot.string(), query.fn(), m_ProcRoot.string(), std::move(clock));
+    }
+};
+
+TEST_F(DRMGPUProbeEngineTest, ClientsOfTheCardAreReadOnceEach)
+{
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", xeFdinfo(7, 10, 100));
+    makeFd(m_ProcRoot, 100, 5, "/dev/dri/renderD129", xeFdinfo(7, 10, 100)); // dup'd: the same client
+    makeFd(m_ProcRoot, 200, 3, "/dev/dri/card1", xeFdinfo(9, 20, 100));      // the card node counts too
+    makeFd(m_ProcRoot, 300, 3, "/dev/null", "pos:\t0\n");
+    makeFd(m_ProcRoot, 400, 3, "/dev/dri/renderD200", xeFdinfo(11, 30, 100)); // another device
+    makeFd(m_ProcRoot,
+           500,
+           3,
+           "/dev/dri/renderD129", // fd reused for another device's file
+           "drm-driver:\txe\ndrm-pdev:\t0000:04:00.0\ndrm-client-id:\t12\ndrm-cycles-rcs:\t1\ndrm-total-cycles-rcs:\t2\n");
+
+    const auto probe = makeProbe();
+    const auto counters = probe->readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_TRUE(counters[0].engineBusyAvailable);
+    EXPECT_FALSE(counters[0].utilizationAvailable); // Domain derives it; the probe never reads a percent
+    ASSERT_EQ(counters[0].engineClients.size(), 2U);
+    std::vector<std::uint64_t> ids{counters[0].engineClients[0].clientId, counters[0].engineClients[1].clientId};
+    std::ranges::sort(ids);
+    EXPECT_EQ(ids, (std::vector<std::uint64_t>{7, 9}));
+}
+
+// The /proc walk is the expensive part, so it runs at the first read and at full rescans only: the
+// samples between re-read just the fdinfo files already found.
+TEST_F(DRMGPUProbeEngineTest, NewClientsAreFoundAtFullRescansNotEverySample)
+{
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", xeFdinfo(7, 10, 100));
+    const auto probe = makeProbe();
+    ASSERT_EQ(probe->readGPUCounters()[0].engineClients.size(), 1U);
+
+    makeFd(m_ProcRoot, 200, 4, "/dev/dri/renderD129", xeFdinfo(8, 10, 100));
+    EXPECT_EQ(probe->readGPUCounters()[0].engineClients.size(), 1U);
+    std::ignore = probe->rescanGPUs(GPURescan::Quick);
+    EXPECT_EQ(probe->readGPUCounters()[0].engineClients.size(), 1U);
+
+    EXPECT_FALSE(probe->rescanGPUs(GPURescan::Full)); // Same cards: no re-enumeration
+    EXPECT_EQ(probe->readGPUCounters()[0].engineClients.size(), 2U);
+}
+
+TEST_F(DRMGPUProbeEngineTest, AClosedClientIsDroppedAndNoClientsIsIdle)
+{
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", xeFdinfo(7, 10, 100));
+    const auto probe = makeProbe();
+    ASSERT_EQ(probe->readGPUCounters()[0].engineClients.size(), 1U);
+
+    std::filesystem::remove_all(m_ProcRoot / "100"); // The process exited
+    const auto counters = probe->readGPUCounters();
+    EXPECT_TRUE(counters[0].engineClients.empty());
+    EXPECT_TRUE(counters[0].engineBusyAvailable); // Idle, not unread
+}
+
+// Whether a GPUModel fed by a probe over the fake /proc publishes a utilization after its second
+// sample, and the percent if it does: 0% for an idle card, nothing (N/A) for an unknown one.
+[[nodiscard]] std::optional<double> utilizationAfterTwoSamples(std::unique_ptr<DRMGPUProbe> probe)
+{
+    Domain::GPUModel model(std::move(probe));
+    const auto start = std::chrono::steady_clock::now();
+    model.refreshAt(start);
+    model.refreshAt(start + std::chrono::seconds(1));
+    const auto snapshots = model.snapshots();
+    if (snapshots.size() != 1U || !snapshots[0].utilizationAvailable)
+    {
+        return std::nullopt;
+    }
+    return snapshots[0].utilizationPercent;
+}
+
+// A /proc the walk could read, with processes but none on the card: the card is idle, 0%.
+TEST_F(DRMGPUProbeEngineTest, ReadableProcWithNoClientsIsIdle)
+{
+    makeFd(m_ProcRoot, 100, 3, "/dev/null", "pos:\t0\n");
+    EXPECT_TRUE(makeProbe()->readGPUCounters()[0].engineBusyAvailable);
+    const auto utilization = utilizationAfterTwoSamples(makeProbe());
+    EXPECT_TRUE(utilization.has_value());
+    EXPECT_DOUBLE_EQ(utilization.value_or(-1.0), 0.0);
+}
+
+// No /proc to walk: finding no clients there says nothing about the card, so N/A, not 0%.
+TEST_F(DRMGPUProbeEngineTest, MissingProcRootLeavesBusynessUnread)
+{
+    std::filesystem::remove_all(m_ProcRoot);
+    EXPECT_FALSE(makeProbe()->readGPUCounters()[0].engineBusyAvailable);
+    EXPECT_FALSE(utilizationAfterTwoSamples(makeProbe()).has_value());
+}
+
+TEST_F(DRMGPUProbeEngineTest, UnreadableProcRootLeavesBusynessUnread)
+{
+    if (getuid() == 0)
+    {
+        GTEST_SKIP() << "Cannot test EACCES as root";
+    }
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", xeFdinfo(7, 10, 100));
+    std::filesystem::permissions(m_ProcRoot, std::filesystem::perms::none);
+    const bool available = makeProbe()->readGPUCounters()[0].engineBusyAvailable;
+    const auto utilization = utilizationAfterTwoSamples(makeProbe());
+    std::filesystem::permissions(m_ProcRoot, std::filesystem::perms::all); // So TearDown can remove it
+    EXPECT_FALSE(available);
+    EXPECT_FALSE(utilization.has_value());
+}
+
+// A sandbox that lists /proc but denies every process's fd directory: unknown, not idle.
+TEST_F(DRMGPUProbeEngineTest, EveryFdDirectoryDeniedLeavesBusynessUnread)
+{
+    if (getuid() == 0)
+    {
+        GTEST_SKIP() << "Cannot test EACCES as root";
+    }
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", xeFdinfo(7, 10, 100));
+    makeFd(m_ProcRoot, 200, 3, "/dev/null", "pos:\t0\n");
+    for (const int pid : {100, 200})
+    {
+        std::filesystem::permissions(m_ProcRoot / std::to_string(pid) / "fd", std::filesystem::perms::none);
+    }
+    const bool available = makeProbe()->readGPUCounters()[0].engineBusyAvailable;
+    const auto utilization = utilizationAfterTwoSamples(makeProbe());
+    for (const int pid : {100, 200})
+    {
+        std::filesystem::permissions(m_ProcRoot / std::to_string(pid) / "fd", std::filesystem::perms::all);
+    }
+    EXPECT_FALSE(available);
+    EXPECT_FALSE(utilization.has_value());
+}
+
+// xe takes a runtime-PM reference to report a client's cycles, so a sleeping card's fdinfo isn't read.
+TEST_F(DRMGPUProbeEngineTest, ASuspendedCardsClientsAreNotRead)
+{
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", xeFdinfo(7, 10, 100));
+    writeFile(m_PciDir / "power" / "runtime_status", "suspended");
+    const auto probe = makeProbe();
+    const auto counters = probe->readGPUCounters();
+    EXPECT_TRUE(counters[0].suspended);
+    EXPECT_FALSE(counters[0].engineBusyAvailable);
+    EXPECT_TRUE(counters[0].engineClients.empty());
+}
+
+// A kernel whose fdinfo has no engine stats (i915 before 5.19): utilization stays N/A, not 0%.
+TEST_F(DRMGPUProbeEngineTest, ClientsWithoutEngineStatsLeaveBusynessUnread)
+{
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", "drm-driver:\txe\ndrm-pdev:\t0000:03:00.0\ndrm-client-id:\t7\n");
+    const auto probe = makeProbe();
+    EXPECT_FALSE(probe->readGPUCounters()[0].engineBusyAvailable);
+}
+
+// The issue's regression test: a fake fdinfo tree, two samples, the utilization Domain derives.
+TEST_F(DRMGPUProbeEngineTest, GPUModelDerivesUtilizationFromTwoSamples)
+{
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", xeFdinfo(7, 1'000, 10'000));
+    makeFd(m_ProcRoot, 200, 4, "/dev/dri/renderD129", xeFdinfo(8, 0, 10'000));
+    Domain::GPUModel model(makeProbe());
+    const auto start = std::chrono::steady_clock::now();
+    model.refreshAt(start);
+    ASSERT_EQ(model.snapshots().size(), 1U);
+    EXPECT_FALSE(model.snapshots()[0].utilizationAvailable); // Nothing to take a change against yet
+
+    // Over 1000 GPU-timestamp cycles, client 7 kept the render engine busy 300 and client 8 200: 50%.
+    std::ofstream(m_ProcRoot / "100" / "fdinfo" / "4") << xeFdinfo(7, 1'300, 11'000);
+    std::ofstream(m_ProcRoot / "200" / "fdinfo" / "4") << xeFdinfo(8, 200, 11'000);
+    model.refreshAt(start + std::chrono::seconds(1));
+    const auto snapshots = model.snapshots();
+    ASSERT_EQ(snapshots.size(), 1U);
+    EXPECT_TRUE(snapshots[0].utilizationAvailable);
+    EXPECT_DOUBLE_EQ(snapshots[0].utilizationPercent, 50.0);
+}
+
+TEST_F(DRMGPUProbeEngineTest, I915BusyNanosecondsAgainstTheClock)
+{
+    const auto i915Fdinfo = [](std::uint64_t busyNs)
+    {
+        return std::format("drm-driver:\ti915\ndrm-pdev:\t0000:03:00.0\ndrm-client-id:\t5\ndrm-engine-render:\t{} ns\n", busyNs);
+    };
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", i915Fdinfo(0));
+    const auto nowNs = std::make_shared<std::uint64_t>(1'000'000'000);
+    Domain::GPUModel model(makeProbe([nowNs] { return *nowNs; }));
+    const auto start = std::chrono::steady_clock::now();
+    model.refreshAt(start);
+
+    *nowNs += 1'000'000'000; // 1 s, of which the render engine was busy 250 ms
+    std::ofstream(m_ProcRoot / "100" / "fdinfo" / "4") << i915Fdinfo(250'000'000);
+    model.refreshAt(start + std::chrono::seconds(1));
+    const auto snapshots = model.snapshots();
+    ASSERT_EQ(snapshots.size(), 1U);
+    EXPECT_TRUE(snapshots[0].utilizationAvailable);
+    EXPECT_DOUBLE_EQ(snapshots[0].utilizationPercent, 25.0);
 }
 
 } // namespace

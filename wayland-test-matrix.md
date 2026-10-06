@@ -103,7 +103,11 @@ Test that borderless window maximize/restore works reliably:
 
 **X11/XWayland/Windows:**
 - [ ] Maximize and restore using same tests as Wayland
-  - Expected: Behavior should match previous versions (client-side positioning)
+  - Expected: Behavior should match previous versions (client-side positioning on Windows, and on
+    X11 window managers without EWMH maximize)
+- [ ] X11/XWayland with a panel or taskbar (GNOME on Xorg, KDE, XFCE, WSLg): maximize with the
+  title-bar button, then with the window manager's own shortcut or menu (#1339)
+  - Expected: both fill the same rectangle and stop at the panel/taskbar
 
 #### 2. **Window Dragging**
 Test that title-bar dragging is smooth and accurate:

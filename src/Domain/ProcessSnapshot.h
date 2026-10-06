@@ -46,11 +46,19 @@ struct ProcessSnapshot
     std::uint64_t pageFaults = 0;      // Total page faults (cumulative)
     std::uint64_t cpuAffinityMask = 0; // Bitmask of allowed CPU cores (0 = not available)
 
-    // GPU usage (per-process, aggregated across all GPUs)
-    double gpuUtilPercent = 0.0;      // Total GPU % across all GPUs process uses
-    std::uint64_t gpuMemoryBytes = 0; // Total VRAM allocated across all GPUs
-    double gpuEncoderUtil = 0.0;      // Aggregate encoder utilization
-    double gpuDecoderUtil = 0.0;      // Aggregate decoder utilization
+    // GPU usage (per-process, across the GPUs it uses), on the same terms as the adapter figures on
+    // the GPU tab (#1164). Utilization is that of the busiest GPU it uses, 0-100, as an adapter's is
+    // (not a sum, which could pass 100%). "GPU memory" counts on each GPU the memory the GPU tab
+    // reports as used for it -- shared (system) memory on an integrated GPU where the platform
+    // reports it (Windows), otherwise dedicated memory -- summed across GPUs, so it never exceeds
+    // what the adapters show in use. The
+    // dedicated and shared amounts are also kept apart.
+    double gpuUtilPercent = 0.0;               // Busiest GPU's utilization by this process, 0-100
+    std::uint64_t gpuMemoryBytes = 0;          // As each GPU's "used" figure counts it, summed across GPUs
+    std::uint64_t gpuDedicatedMemoryBytes = 0; // Dedicated (VRAM) across all GPUs
+    std::uint64_t gpuSharedMemoryBytes = 0;    // Shared (system memory mapped by the GPU) across all GPUs
+    double gpuEncoderUtil = 0.0;               // Busiest GPU's encoder utilization
+    double gpuDecoderUtil = 0.0;               // Busiest GPU's decoder utilization
 
     // GDI object count (optional, Windows-only via GetGuiResources).
     // std::nullopt means the probe could not open the process with the required rights.
@@ -84,12 +92,14 @@ struct ProcessSnapshot
     // Per-GPU breakdown (for tooltip/details view)
     struct PerGPUUsage
     {
-        std::string gpuId;                // GPU identifier
-        std::string gpuName;              // e.g., "NVIDIA RTX 4090"
-        bool isIntegrated = false;        // Integrated vs discrete
-        double utilPercent = 0.0;         // GPU % on this specific GPU
-        std::uint64_t memoryBytes = 0;    // VRAM allocated on this GPU
-        std::vector<std::string> engines; // Active engines on this GPU
+        std::string gpuId;                      // GPU identifier
+        std::string gpuName;                    // e.g., "NVIDIA RTX 4090"
+        bool isIntegrated = false;              // Integrated vs discrete
+        double utilPercent = 0.0;               // GPU % on this specific GPU, 0-100
+        std::uint64_t memoryBytes = 0;          // As this GPU's "used" figure counts it (#1164)
+        std::uint64_t dedicatedMemoryBytes = 0; // VRAM allocated on this GPU
+        std::uint64_t sharedMemoryBytes = 0;    // System memory this GPU maps for the process
+        std::vector<std::string> engines;       // Active engines on this GPU
     };
     std::vector<PerGPUUsage> perGpuUsage; // Breakdown for multi-GPU processes
 };

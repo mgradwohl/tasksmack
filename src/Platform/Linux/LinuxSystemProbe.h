@@ -103,6 +103,19 @@ class LinuxSystemProbe : public ISystemProbe
     };
     std::mutex m_InterfaceCacheMutex;
     std::unordered_map<std::string, InterfaceCacheEntry> m_InterfaceCache;
+
+    // Virtual/hardware classification per interface (#1335): isVirtualInterface() costs two sysfs
+    // lookups per interface, and an interface's class can't change while it exists. Valid for the
+    // interface set in m_ClassifiedInterfaces (the /proc/net/dev names, in order); any change to the
+    // set re-classifies every interface, so a name that is removed and re-added -- possibly as a
+    // different kind of interface -- is looked up again. Interfaces that couldn't be classified
+    // (nullopt, #1260) aren't cached and are retried on every read. Guarded by m_InterfaceCacheMutex.
+    std::vector<std::string> m_ClassifiedInterfaces;
+    std::unordered_map<std::string, bool> m_InterfaceIsVirtual;
+
+    /// Classify each of `names` as virtual or hardware (nullopt: can't tell), from the cache where
+    /// the interface set is unchanged. Returns whether the set changed since the last call.
+    bool classifyInterfaces(const std::vector<std::string>& names, std::vector<std::optional<bool>>& isVirtual);
 };
 
 } // namespace Platform

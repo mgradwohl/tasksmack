@@ -111,17 +111,54 @@ shouldAdoptSystemMaximize(bool borderless, bool clientSideBackend, bool usableBo
     return borderless && clientSideBackend && usableBoundsKnown && stillMaximized && !minimized;
 }
 
+/// Who sizes the borderless window when Window::maximize() runs (#1339).
+enum class BorderlessMaximize : std::uint8_t
+{
+    /// SDL_MaximizeWindow(): the window manager or compositor maximizes it to its own work area,
+    /// tracked as a MaximizeState::System maximize.
+    WindowManager,
+    /// The window moves and sizes itself to SDL_GetDisplayUsableBounds() (MaximizeState::ClientSide).
+    ClientSide,
+};
+
+/// How Window::maximize() maximizes a borderless window (#1339).
+///
+/// Native Wayland always leaves it to the compositor. On X11 and XWayland the client-side maximize
+/// sizes the window to SDL_GetDisplayUsableBounds(), which SDL reads from the EWMH work area
+/// (_NET_WORKAREA); a server without one (WSLg's XWayland) reports the whole display, so the window
+/// covered the taskbar, while the window manager's own maximize stopped at it. So when the window
+/// manager supports EWMH maximize (_NET_SUPPORTED lists _NET_WM_STATE_MAXIMIZED_VERT and _HORZ) it
+/// sizes the window, as it does for a maximize from its own shortcut or menu (#1250), and the two
+/// agree. Client-side positioning stays for X11 window managers without it, and for Windows, whose
+/// OS maximize of a borderless window is wrong (#1208, #1282).
+///
+/// @param clientSideBackend   VideoBackend::supportsClientSideMaximize(): false only on native Wayland.
+/// @param x11Backend          Whether the backend is X11 or XWayland.
+/// @param ewmhMaximize        Whether the X11 window manager supports EWMH maximize
+///                            (X11WindowManager::supportsEwmhMaximize()); ignored elsewhere.
+[[nodiscard]] constexpr auto chooseBorderlessMaximize(bool clientSideBackend, bool x11Backend, bool ewmhMaximize) noexcept
+    -> BorderlessMaximize
+{
+    if (!clientSideBackend || (x11Backend && ewmhMaximize))
+    {
+        return BorderlessMaximize::WindowManager;
+    }
+    return BorderlessMaximize::ClientSide;
+}
+
 /// How the window is maximized, as far as NormalGeometryTracker knows.
 enum class MaximizeState : std::uint8_t
 {
     /// Not maximized: the live geometry is the normal geometry.
     Normal,
     /// Maximized client-side by Window::maximize(): moved and sized to the display's usable bounds,
-    /// with no OS maximized state (X11, XWayland and Windows, borderless). Only Window::restore()
-    /// ends it; an OS "restored" notification is not about it.
+    /// with no OS maximized state (borderless, on Windows, and on X11/XWayland under a window manager
+    /// without EWMH maximize, #1339). Only Window::restore() ends it; an OS "restored" notification
+    /// is not about it.
     ClientSide,
     /// Maximized by the OS, window manager or compositor (SDL_WINDOW_MAXIMIZED is set): a system
-    /// maximize, a native Wayland compositor maximize, or maximize()'s SDL_MaximizeWindow fallback.
+    /// maximize, a native Wayland compositor maximize, the X11 window manager's EWMH maximize that
+    /// maximize() asks for (#1339), or maximize()'s SDL_MaximizeWindow fallback.
     /// The OS can end it, which SDL reports as SDL_EVENT_WINDOW_RESTORED.
     System,
 };
