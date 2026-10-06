@@ -149,5 +149,41 @@ TEST(ProcStatFieldsTest, MalformedLinesAreRejected)
     EXPECT_FALSE(ProcParsing::parseStatFields("1 (a) S 0 1 1 0 -1 4194560 1 2 3 x 5 6 7 8 20 0 1 0 42 9 9").has_value());
 }
 
+TEST(ProcStatFieldsTest, EveryFieldMustEndAtASeparator)
+{
+    // Each malformed line keeps the field count of the valid one, so only the token boundary rejects it.
+    constexpr const char* VALID = "1 (a) S 0 1 1 0 -1 4194560 1 2 3 4 5 6 7 8 20 0 1 0 42 9 9";
+    const auto valid = ProcParsing::parseStatFields(VALID);
+    ASSERT_TRUE(valid.has_value());
+    EXPECT_EQ(valid.value_or(ProcParsing::StatFields{}).startTime, 42U);
+    EXPECT_EQ(valid.value_or(ProcParsing::StatFields{}).rssPages, 9);
+    EXPECT_EQ(ProcParsing::parseStatStartTime(VALID), 42ULL);
+
+    // "7-8" in place of cutime/cstime "7 8" is not the two fields 7 and -8, for either entry point.
+    constexpr const char* JOINED_CHILD_TIMES = "1 (a) S 0 1 1 0 -1 4194560 1 2 3 4 5 6 7-8 20 0 1 0 42 9 9";
+    EXPECT_FALSE(ProcParsing::parseStatFields(JOINED_CHILD_TIMES).has_value());
+    EXPECT_FALSE(ProcParsing::parseStatStartTime(JOINED_CHILD_TIMES).has_value());
+
+    // A unit-like suffix on a field before the start time.
+    constexpr const char* SUFFIXED_FLAGS = "1 (a) S 0 1 1 0 -1 4194560kB 1 2 3 4 5 6 7 8 20 0 1 0 42 9 9";
+    EXPECT_FALSE(ProcParsing::parseStatFields(SUFFIXED_FLAGS).has_value());
+    EXPECT_FALSE(ProcParsing::parseStatStartTime(SUFFIXED_FLAGS).has_value());
+
+    // A trailing "9x" as rss is not 9; the start time, read before it, is unaffected.
+    constexpr const char* SUFFIXED_RSS = "1 (a) S 0 1 1 0 -1 4194560 1 2 3 4 5 6 7 8 20 0 1 0 42 9 9x";
+    EXPECT_FALSE(ProcParsing::parseStatFields(SUFFIXED_RSS).has_value());
+    EXPECT_EQ(ProcParsing::parseStatStartTime(SUFFIXED_RSS), 42ULL);
+    EXPECT_FALSE(ProcParsing::parseStatFields("1 (a) S 0 1 1 0 -1 4194560 1 2 3 4 5 6 7 8 20 0 1 0 42 9 9x\n").has_value());
+}
+
+TEST(ProcStatFieldsTest, StateMustBeFollowedByASeparator)
+{
+    // "S0" is not the state S followed by ppid 0.
+    constexpr const char* JOINED_STATE = "1 (a) S0 1 1 0 -1 4194560 1 2 3 4 5 6 7 8 20 0 1 0 42 9 9";
+    EXPECT_FALSE(ProcParsing::parseStatFields(JOINED_STATE).has_value());
+    EXPECT_FALSE(ProcParsing::parseStatStartTime(JOINED_STATE).has_value());
+    EXPECT_FALSE(ProcParsing::parseStatFields("1 (a) S").has_value()); // state ends the line
+}
+
 } // namespace
 } // namespace Platform

@@ -161,6 +161,26 @@ struct StatFields
 namespace Detail
 {
 
+/// True if @p c separates /proc/[pid]/stat fields.
+[[nodiscard]] constexpr bool isStatSeparator(char c) noexcept
+{
+    return c == ' ' || c == '\t' || c == '\n';
+}
+
+/// parseNum() for a /proc/[pid]/stat field: the number must also end at a separator or the end of
+/// the line, so "7-8" is not read as the two fields 7 and -8, nor "9x" as 9. parseNum() itself stays
+/// prefix-based for the readers of unit-suffixed values ("1234 kB"). Leaves p unchanged on failure.
+template<std::integral T> bool parseStatNum(const char*& p, const char* end, T& out) noexcept
+{
+    const char* const saved = p;
+    if (!parseNum(p, end, out) || (p < end && !isStatSeparator(*p)))
+    {
+        p = saved;
+        return false;
+    }
+    return true;
+}
+
 /// How far parseStatPrefix() reads: to the start time, or on through rss.
 enum class StatParseExtent : std::uint8_t
 {
@@ -172,8 +192,9 @@ enum class StatParseExtent : std::uint8_t
 ///
 /// comm (2) is the executable name as the process set it and may itself contain spaces and
 /// parentheses, so it runs from the first '(' to the *last* ')' and the numbered fields are counted
-/// from there: a crafted name cannot shift which number is read as which field (#973). Every field
-/// read must be a whole number of its type, and the start time must end at a separator.
+/// from there: a crafted name cannot shift which number is read as which field (#973). The state
+/// must be followed by a separator, and every field read must be a whole number of its type that
+/// ends at a separator or the end of the line.
 [[nodiscard]] inline bool parseStatPrefix(std::string_view line, StatFields& out, StatParseExtent extent) noexcept
 {
     const std::size_t commOpen = line.find('(');
@@ -193,6 +214,10 @@ enum class StatParseExtent : std::uint8_t
         return false;
     }
     out.state = *p++;
+    if (p >= end || !isStatSeparator(*p))
+    {
+        return false;
+    }
 
     // Fields 5-9, 11, 13, 16-18 and 21 are read only to step over them.
     std::int32_t pgrp = 0;
@@ -208,22 +233,17 @@ enum class StatParseExtent : std::uint8_t
     std::int64_t itrealvalue = 0;
 
     // clang-format off
-    if (!parseNum(p, end, out.parentPid)   || !parseNum(p, end, pgrp)            ||
-        !parseNum(p, end, session)         || !parseNum(p, end, ttyNr)           ||
-        !parseNum(p, end, tpgid)           || !parseNum(p, end, flags)           ||
-        !parseNum(p, end, out.minorFaults) || !parseNum(p, end, cminflt)         ||
-        !parseNum(p, end, out.majorFaults) || !parseNum(p, end, cmajflt)         ||
-        !parseNum(p, end, out.userTime)    || !parseNum(p, end, out.systemTime)  ||
-        !parseNum(p, end, cutime)          || !parseNum(p, end, cstime)          ||
-        !parseNum(p, end, priority)        || !parseNum(p, end, out.nice)        ||
-        !parseNum(p, end, out.numThreads)  || !parseNum(p, end, itrealvalue)     ||
-        !parseNum(p, end, out.startTime))
+    if (!parseStatNum(p, end, out.parentPid)   || !parseStatNum(p, end, pgrp)            ||
+        !parseStatNum(p, end, session)         || !parseStatNum(p, end, ttyNr)           ||
+        !parseStatNum(p, end, tpgid)           || !parseStatNum(p, end, flags)           ||
+        !parseStatNum(p, end, out.minorFaults) || !parseStatNum(p, end, cminflt)         ||
+        !parseStatNum(p, end, out.majorFaults) || !parseStatNum(p, end, cmajflt)         ||
+        !parseStatNum(p, end, out.userTime)    || !parseStatNum(p, end, out.systemTime)  ||
+        !parseStatNum(p, end, cutime)          || !parseStatNum(p, end, cstime)          ||
+        !parseStatNum(p, end, priority)        || !parseStatNum(p, end, out.nice)        ||
+        !parseStatNum(p, end, out.numThreads)  || !parseStatNum(p, end, itrealvalue)     ||
+        !parseStatNum(p, end, out.startTime))
     // clang-format on
-    {
-        return false;
-    }
-    // A start time with anything but a separator after it ("12x") is not a number.
-    if (p < end && *p != ' ' && *p != '\t' && *p != '\n')
     {
         return false;
     }
@@ -231,7 +251,7 @@ enum class StatParseExtent : std::uint8_t
     {
         return true;
     }
-    return parseNum(p, end, out.virtualBytes) && parseNum(p, end, out.rssPages);
+    return parseStatNum(p, end, out.virtualBytes) && parseStatNum(p, end, out.rssPages);
 }
 
 } // namespace Detail
