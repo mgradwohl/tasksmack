@@ -40,7 +40,7 @@ Each value needs a different kernel check, so one capability alone doesn't resto
 | I/O | Opening `/proc/[pid]/io` (owner-only) **and** ptrace read access to the process | `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE` |
 | Network | Reading the `/proc/[pid]/fd/*` links, which needs ptrace read access to the process | `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE` |
 
-With `CAP_DAC_READ_SEARCH` alone, only FD counts come back. `CAP_SYS_PTRACE` lets TaskSmack inspect any process on the system, so grant it only if you are comfortable with that; running as root is the alternative. Re-apply the capabilities after each update.
+With `CAP_DAC_READ_SEARCH` alone, only FD counts come back. `CAP_SYS_PTRACE` lets TaskSmack inspect any process on the system, so grant it only if you are comfortable with that; running as root (with its normal capabilities) is the alternative, but root alone isn't enough in a container or hardened service that drops capabilities — allow those two there. Re-apply the capabilities after each update.
 
 > On Windows, I/O counters are always available — they come from the bulk `SystemProcessInformation` snapshot, so no elevated privileges are needed.
 

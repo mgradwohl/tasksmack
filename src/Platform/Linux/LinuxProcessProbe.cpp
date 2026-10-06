@@ -312,8 +312,9 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
 #endif
 
     // Reduced privileges: FD counts (/proc/[pid]/fd), I/O counters (/proc/[pid]/io) and network
-    // attribution for processes owned by other users need root, or CAP_DAC_READ_SEARCH and
-    // CAP_SYS_PTRACE in the effective set (docs/guide/faq.md's setcap line).
+    // attribution for processes owned by other users need CAP_DAC_READ_SEARCH and CAP_SYS_PTRACE in
+    // the effective set -- root with its normal capabilities has them, but root alone isn't enough
+    // where capabilities are dropped (docs/guide/faq.md's setcap line).
     const std::vector<char> selfStatus = readProcFileFull((m_ProcRoot / "self" / "status").c_str());
     const bool reducedPrivileges = ProcPrivileges::hasReducedPrivileges(
         geteuid() == 0,
@@ -321,7 +322,7 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
 
     return ProcessCapabilities{.hasIoCounters = m_IoCountersAvailable.load(std::memory_order_acquire),
                                .hasThreadCount = true,
-                               .hasHandleCount = true, // Can count FDs in /proc/[pid]/fd (own processes only when non-root)
+                               .hasHandleCount = true, // Can count FDs in /proc/[pid]/fd (others' need CAP_DAC_READ_SEARCH)
                                .hasUserSystemTime = true,
                                .hasStartTime = true,
                                .hasUser = true,       // From /proc/[pid]/status Uid field
@@ -709,10 +710,11 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters, c
     // write_bytes: <bytes> <- actual I/O to storage layer
     // cancelled_write_bytes: <bytes>
     //
-    // Note: for another user's process this file needs root, or CAP_DAC_READ_SEARCH (to open the
-    // owner-only file) plus CAP_SYS_PTRACE (the read checks PTRACE_MODE_READ_FSCREDS). If we can't read it -- typically another user's
-    // process without root -- the counters are marked unavailable rather than left at a
-    // 0 that reads as "no I/O" (#1110).
+    // Note: for another user's process this file needs CAP_DAC_READ_SEARCH (to open the owner-only
+    // file) plus CAP_SYS_PTRACE (the read checks PTRACE_MODE_READ_FSCREDS) in the effective set --
+    // root with its normal capabilities has them, but root alone isn't enough where capabilities are
+    // dropped. If we can't read it -- typically another user's process without those capabilities --
+    // the counters are marked unavailable rather than left at a 0 that reads as "no I/O" (#1110).
 
     const std::string ioPath = (procRoot / std::to_string(pid) / "io").string();
     constexpr std::size_t BUF_SIZE = 512;
@@ -815,8 +817,8 @@ void LinuxProcessProbe::countProcessFds(int32_t pid, ProcessCounters& counters, 
 bool LinuxProcessProbe::checkIoCountersAvailability(const std::filesystem::path& procRoot)
 {
     // Check if procRoot/self/io is readable to determine I/O counter availability.
-    // Our own io file is always readable unless procfs is restricted; another user's needs root, or
-    // CAP_DAC_READ_SEARCH plus CAP_SYS_PTRACE (see parseProcessIo()).
+    // Our own io file is always readable unless procfs is restricted; another user's needs
+    // CAP_DAC_READ_SEARCH plus CAP_SYS_PTRACE (root with its normal capabilities; see parseProcessIo()).
     const std::string selfIoPath = (procRoot / "self" / "io").string();
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — POSIX open() is variadic
     const int fd = ::open(selfIoPath.c_str(), O_RDONLY | O_CLOEXEC);

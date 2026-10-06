@@ -100,7 +100,8 @@ TEST(LinuxProcessProbeTest, ReducedPrivilegesMatchesEuidAndEffectiveCapabilities
     const LinuxProcessProbe probe;
     const auto caps = probe.capabilities();
 
-    // Not reduced as root, or with CAP_DAC_READ_SEARCH + CAP_SYS_PTRACE effective (setcap).
+    // Not reduced with CAP_SYS_PTRACE + CAP_DAC_READ_SEARCH (or CAP_DAC_OVERRIDE) effective -- root with
+    // its normal capabilities, or setcap; with CapEff unreadable, only as root.
     std::ifstream statusFile("/proc/self/status");
     const std::string status{std::istreambuf_iterator<char>(statusFile), std::istreambuf_iterator<char>()};
     const bool expectedReducedPrivileges = ProcPrivileges::hasReducedPrivileges(geteuid() == 0, ProcPrivileges::parseCapEff(status));

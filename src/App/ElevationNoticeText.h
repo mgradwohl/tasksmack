@@ -19,9 +19,9 @@ namespace App::ElevationNoticeText
 /// process's bounding set (a container or hardened service), so the capabilities themselves are named.
 /// Keep in step with docs/guide/faq.md ("Process I/O, FDs or network show N/A").
 inline constexpr std::string_view LINUX = "TaskSmack can't read other users' processes.\n\n"
-                                          "File descriptor counts, I/O statistics and network\n"
-                                          "usage are unavailable for processes owned by\n"
-                                          "other users.\n\n"
+                                          "File descriptor counts, I/O statistics and/or\n"
+                                          "network usage may be unavailable for processes\n"
+                                          "owned by other users.\n\n"
                                           "For complete data, run it as root (sudo TaskSmack)\n"
                                           "or grant it CAP_DAC_READ_SEARCH and CAP_SYS_PTRACE.\n"
                                           "In a container or service that drops capabilities,\n"
