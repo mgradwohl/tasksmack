@@ -388,7 +388,9 @@ void renderGpuSection(RenderContext& ctx)
         // first seen mid-run) or be pruned on its own, so the global timestamps could mismatch.
         const auto axisConfig = makeTimeAxisConfig(perGpuTimestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
 
-        const float maxClockMHz = gpuClockReferenceMHz(clockData, snap.gpuClockMHz);
+        // Only the clocks the window shows set the scale: not the trim anchor left of it, nor older
+        // samples when scrolled back (#1324).
+        const float maxClockMHz = gpuClockReferenceMHz(timeData, axisConfig.xMin, clockData, snap.gpuClockMHz);
 
         // ========================================
         // Chart 1: Core + Video (all percentages)
@@ -431,7 +433,7 @@ void renderGpuSection(RenderContext& ctx)
                                      UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
                 }
 
-                // Plot clock as a percentage of gpuClockReferenceMHz(): the history's peak, or the floor
+                // Plot clock as a percentage of gpuClockReferenceMHz(): the window's peak, or the floor
                 // when every clock is below it. The label stays fixed, so the legend keeps its show/hide
                 // state; the reference itself is in the tooltip.
                 if (caps.hasClockSpeeds && !clockData.empty())

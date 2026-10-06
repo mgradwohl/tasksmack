@@ -5,6 +5,7 @@
 #include "Platform/GPUTypes.h"
 #include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
+#include "UI/RateAxis.h"
 
 #include <algorithm>
 #include <chrono>
@@ -225,6 +226,23 @@ inline constexpr float GPU_CLOCK_REFERENCE_FLOOR_MHZ = 2000.0F;
         }
     }
     return reference;
+}
+
+/// gpuClockReferenceMHz() over only the clock samples the chart's window shows: those at x >= @p xMin
+/// on @p timeAxis, to whose tail @p clockHistory is aligned (UI::Widgets::maxOfSeriesSince()).
+///
+/// The history holds the trim anchor just left of the window (#1016) and, when the chart is scrolled
+/// back, older samples too. Neither is drawn, so neither may set the 100 % mark: a boost spike that had
+/// just scrolled out kept the idle clock line drawn low against it (#1324), as #1145 fixed for the rate
+/// axes. The current clock still counts, since the bar shows it.
+[[nodiscard]] inline float gpuClockReferenceMHz(std::span<const double> timeAxis,
+                                                double xMin,
+                                                std::span<const float> clockHistory,
+                                                std::uint32_t currentClockMHz) noexcept
+{
+    // The peak is one of the float samples (or 0 when none is visible), so narrowing it back is exact.
+    const auto visiblePeakMHz = static_cast<float>(UI::Widgets::maxOfSeriesSince(timeAxis, xMin, clockHistory));
+    return std::max(gpuClockReferenceMHz({}, currentClockMHz), visiblePeakMHz);
 }
 
 /// What the GPU tab keeps from frame to frame, so that once warmed up drawing it allocates nothing
