@@ -145,6 +145,7 @@ set(COMMON_TEST_SOURCES
     App/test_SettingsLayerDetail.cpp
     App/test_NetInterfaceUtils.cpp
     App/test_PowerStatusText.cpp
+    App/test_ElevationNoticeText.cpp
 )
 set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_ProcessProbeContract.cpp

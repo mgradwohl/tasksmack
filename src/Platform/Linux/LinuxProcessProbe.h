@@ -66,6 +66,21 @@ class LinuxProcessProbe : public IProcessProbe
     /// Test seam: attribute network traffic from `socketStats` (e.g. one over a scripted netlink
     /// transport) instead of the real socket. Not thread-safe; call before sampling starts.
     void setSocketStatsForTesting(std::shared_ptr<NetlinkSocketStats> socketStats);
+
+    /// Test seam: the minimum age of the inode-to-PID map before readSocketTraffic() rebuilds it early
+    /// for a socket that appeared unowned since it was built (#1259), normally
+    /// Domain::Sampling::INODE_PID_CACHE_EARLY_REBUILD_MS. Not thread-safe; call before sampling starts.
+    void setInodeMapEarlyRebuildIntervalForTesting(std::chrono::milliseconds interval)
+    {
+        m_InodeMapEarlyRebuildInterval = interval;
+    }
+
+    /// Test seam: called before each /proc/*/fd scan that rebuilds the inode-to-PID map, so a test can
+    /// count the scans. Not thread-safe; set it before sampling starts.
+    void setInodeMapScanHookForTesting(std::function<void()> hook)
+    {
+        m_InodeMapScanHook = std::move(hook);
+    }
 #endif
 
     /// Test seam: called at the end of enumerate(), after it captured the CPU total, so a test can
@@ -119,6 +134,24 @@ class LinuxProcessProbe : public IProcessProbe
     mutable std::mutex m_InodePidCacheMutex;
     mutable std::shared_ptr<const std::unordered_map<std::uint64_t, std::int32_t>> m_InodeToPidCache;
     mutable std::chrono::steady_clock::time_point m_InodeToPidCacheTime;
+    // When the last completed scan started, whether it replaced m_InodeToPidCache or came back empty:
+    // a socket first seen unowned after this may have been opened since, so readSocketTraffic()
+    // rebuilds the map early to attribute it (#1259).
+    mutable std::chrono::steady_clock::time_point m_InodeToPidBuiltAt;
+    // When the last rebuild was claimed, successful or not. No rebuild -- TTL, early, or the quick
+    // retry after an empty scan -- starts within m_InodeMapEarlyRebuildInterval of it, so a /proc
+    // whose scans keep coming back empty (every socket held by a process we can't read) is still
+    // scanned at most once per interval.
+    mutable std::chrono::steady_clock::time_point m_InodeToPidLastAttempt;
+    std::function<void()> m_InodeMapScanHook; // See setInodeMapScanHookForTesting()
+    // Defaults to Domain::Sampling::INODE_PID_CACHE_EARLY_REBUILD_MS, set in the constructor so this
+    // Platform header doesn't include a Domain one.
+    std::chrono::milliseconds m_InodeMapEarlyRebuildInterval{};
+
+    // Sockets the last reading couldn't attribute, each with the sampledAt of the reading it was
+    // first seen unowned in. Guarded by m_UnownedSocketsMutex.
+    mutable std::mutex m_UnownedSocketsMutex;
+    mutable std::unordered_map<std::uint64_t, std::chrono::steady_clock::time_point> m_UnownedSocketsFirstSeen;
 #endif
 
     /// Parse /proc/[pid]/stat for a single process
@@ -172,8 +205,18 @@ class LinuxProcessProbe : public IProcessProbe
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 
-    /// The inode-to-PID map, rebuilt from /proc/[pid]/fd when its TTL has expired (see m_InodeToPidCache).
-    [[nodiscard]] std::shared_ptr<const std::unordered_map<std::uint64_t, std::int32_t>> currentInodeToPidMap() const;
+    using InodeToPidMap = std::unordered_map<std::uint64_t, std::int32_t>;
+
+    /// The inode-to-PID map, and when the last completed scan started (m_InodeToPidBuiltAt).
+    struct InodeToPidSnapshot
+    {
+        std::shared_ptr<const InodeToPidMap> map;
+        std::chrono::steady_clock::time_point builtAt;
+    };
+
+    /// The inode-to-PID map, rebuilt from /proc/[pid]/fd when the last rebuild is at least `maxAge` old
+    /// (see m_InodeToPidCache): the TTL normally, m_InodeMapEarlyRebuildInterval for an early rebuild.
+    [[nodiscard]] InodeToPidSnapshot currentInodeToPidMap(std::chrono::milliseconds maxAge) const;
 
     /// Thread-safe copy of the current NetlinkSocketStats instance (see m_SocketStats).
     [[nodiscard]] std::shared_ptr<NetlinkSocketStats> socketStats() const;

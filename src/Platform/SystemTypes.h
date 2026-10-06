@@ -106,6 +106,10 @@ struct SystemCounters
         // a hardware interface, so the network Total leaves it out unless no hardware interface is
         // listed (#1106). Linux: no /sys/class/net/<if>/device. Windows: HardwareInterface clear (#1257).
         bool isVirtual = false;
+        // Whether the probe could classify the interface, so isVirtual is its answer (false: it
+        // couldn't, e.g. no sysfs entry, and isVirtual is false by default). The UI falls back to a
+        // name heuristic only then (#1260).
+        bool isVirtualKnown = false;
     };
     std::vector<InterfaceCounters> networkInterfaces;
 
