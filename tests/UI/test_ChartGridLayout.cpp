@@ -1,7 +1,8 @@
 /// @file test_ChartGridLayout.cpp
 /// @brief Tests for UI::Widgets::computeChartGridLayout(), the pure grid-sizing math shared by
 /// CpuCoresSection's per-core grid and StorageSection's per-disk grid (see UI/ChartGrid.h for
-/// the ImGui rendering helper built on top of this).
+/// the ImGui rendering helper built on top of this), and CellOverheadCache, the cell-overhead cache both
+/// grids share (#1180).
 
 #include "UI/ChartGridLayout.h"
 
@@ -315,6 +316,37 @@ TEST(ChartGridLayoutTest, CappedGridNeverExceedsAvailableHeightWhenUncappedFits)
                 << "itemCount=" << itemCount << " height=" << height;
         }
     }
+}
+
+// ========== CellOverheadCache (#1180) ==========
+
+TEST(CellOverheadCacheTest, EmptyUntilAMeasurementIsStored)
+{
+    CellOverheadCache cache;
+    const CellStyleMetrics metrics{.textLineHeight = 16.0F, .itemSpacingY = 4.0F, .cellPaddingY = 2.0F};
+    EXPECT_FALSE(cache.get(metrics).has_value());
+
+    cache.store(metrics, 31.0F);
+    EXPECT_FLOAT_EQ(cache.get(metrics).value_or(-1.0F), 31.0F); // the next cell, or the next frame
+    const CellStyleMetrics jitter{.textLineHeight = 16.00001F, .itemSpacingY = 4.0F, .cellPaddingY = 2.0F};
+    EXPECT_FLOAT_EQ(cache.get(jitter).value_or(-1.0F), 31.0F); // within the tolerance
+}
+
+TEST(CellOverheadCacheTest, AnyChangedMetricMeansRemeasure)
+{
+    CellOverheadCache cache;
+    const CellStyleMetrics base{.textLineHeight = 16.0F, .itemSpacingY = 4.0F, .cellPaddingY = 2.0F};
+    cache.store(base, 31.0F);
+
+    EXPECT_FALSE(cache.get({.textLineHeight = 20.0F, .itemSpacingY = 4.0F, .cellPaddingY = 2.0F}).has_value());
+    EXPECT_FALSE(cache.get({.textLineHeight = 16.0F, .itemSpacingY = 5.0F, .cellPaddingY = 2.0F}).has_value());
+    EXPECT_FALSE(cache.get({.textLineHeight = 16.0F, .itemSpacingY = 4.0F, .cellPaddingY = 3.0F}).has_value());
+
+    // A new measurement replaces the old one together with the metrics it was taken under.
+    const CellStyleMetrics larger{.textLineHeight = 20.0F, .itemSpacingY = 5.0F, .cellPaddingY = 3.0F};
+    cache.store(larger, 40.0F);
+    EXPECT_FLOAT_EQ(cache.get(larger).value_or(-1.0F), 40.0F);
+    EXPECT_FALSE(cache.get(base).has_value());
 }
 
 } // namespace

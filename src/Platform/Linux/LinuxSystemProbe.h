@@ -30,6 +30,10 @@ class LinuxSystemProbe : public ISystemProbe
     /// /sys/class/net), where interfaces are classified as hardware or virtual (#1106).
     LinuxSystemProbe(std::filesystem::path procRoot, std::filesystem::path sysClassNetRoot);
 
+    /// Testability constructor that also takes the CPU sysfs root (normally /sys/devices/system/cpu),
+    /// where the CPU frequency is read (#1183).
+    LinuxSystemProbe(std::filesystem::path procRoot, std::filesystem::path sysClassNetRoot, std::filesystem::path cpuSysfsRoot);
+
     ~LinuxSystemProbe() override = default;
 
     // Non-copyable, non-movable (contains mutex)
@@ -47,7 +51,7 @@ class LinuxSystemProbe : public ISystemProbe
     static void readMemoryCounters(SystemCounters& counters, const std::filesystem::path& procRoot);
     static void readUptime(SystemCounters& counters, const std::filesystem::path& procRoot);
     static void readLoadAvg(SystemCounters& counters, const std::filesystem::path& procRoot);
-    static void readCpuFreq(SystemCounters& counters);
+    static void readCpuFreq(SystemCounters& counters, const std::filesystem::path& cpuSysfsRoot);
 
     /// Read network-related counters (bytes, packets, etc.) from /proc/net/dev.
     /// Unlike the other read* helpers, this method is non-static because it
@@ -70,11 +74,11 @@ class LinuxSystemProbe : public ISystemProbe
     /// classified, and is counted as hardware (#1260).
     [[nodiscard]] static std::optional<bool> isVirtualInterface(const std::filesystem::path& sysClassNetRoot, std::string_view ifaceName);
 
-    /// Read interface operational state from sysfs (up/down/unknown).
-    [[nodiscard]] static bool readInterfaceOperState(const std::string& ifaceName);
+    /// Read interface operational state from <sysClassNetRoot>/<iface>/operstate (up/down/unknown).
+    [[nodiscard]] static bool readInterfaceOperState(const std::filesystem::path& sysClassNetRoot, std::string_view ifaceName);
 
-    /// Read link speed directly from sysfs (uncached).
-    [[nodiscard]] static uint64_t readInterfaceLinkSpeedFromSysfs(const std::string& ifaceName);
+    /// Read link speed directly from <sysClassNetRoot>/<iface>/speed (uncached).
+    [[nodiscard]] static uint64_t readInterfaceLinkSpeedFromSysfs(const std::filesystem::path& sysClassNetRoot, std::string_view ifaceName);
 
     /// Remove cache entries for interfaces that no longer exist.
     /// @param currentInterfaces Vector of interface names seen in current enumeration
@@ -82,6 +86,7 @@ class LinuxSystemProbe : public ISystemProbe
 
     std::filesystem::path m_ProcRoot;
     std::filesystem::path m_SysClassNetRoot;
+    std::filesystem::path m_CpuSysfsRoot;
     long m_TicksPerSecond;
     std::size_t m_NumCores;
 
