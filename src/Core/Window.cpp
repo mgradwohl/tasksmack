@@ -4,6 +4,7 @@
 #include "Core/VideoBackend.h"
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
+#include "Core/X11WindowManager.h"
 
 #include <SDL3/SDL.h>
 #include <glad/gl.h>
@@ -603,9 +604,10 @@ bool Window::isMaximized() const
         return false;
     }
 
-    // For borderless windows, X11/XWayland/Windows fake maximize by resizing to the usable
-    // display bounds, so SDL_WINDOW_MAXIMIZED never gets set there and our tracked state is
-    // the only source of truth. Native Wayland is different: maximize()/restore() delegate to
+    // For borderless windows, Windows (and X11/XWayland without EWMH maximize, #1339) fake maximize
+    // by resizing to the usable display bounds, so SDL_WINDOW_MAXIMIZED never gets set there and our
+    // tracked state is the only source of truth; on X11 the tracker also knows a window-manager
+    // maximize (System, #1250). Native Wayland is different: maximize()/restore() delegate to
     // the compositor via SDL_MaximizeWindow()/SDL_RestoreWindow(), so SDL_WINDOW_MAXIMIZED is a
     // real, live signal there -- querying it instead of the cached bool keeps this correct when
     // the compositor changes maximize state outside the app (tiling shortcut, etc.), which the
@@ -639,22 +641,42 @@ void Window::maximize()
     const float liveScale = getUnitScale();
     const bool normalNow = isNormalNow();
 
-    // For borderless windows, use backend-gated behavior.
-    // On native Wayland, prefer compositor maximize (avoids client-side geometry issues).
-    // On X11, XWayland, and Windows, use manual client-side positioning for compatibility.
+    // For borderless windows, use backend-gated behavior (WindowGeometry::chooseBorderlessMaximize()).
+    // On native Wayland, and on X11/XWayland under a window manager with EWMH maximize, the
+    // compositor or window manager sizes the window to its own work area (#1339). Otherwise (Windows,
+    // an X11 window manager without it) use manual client-side positioning.
     if ((SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_BORDERLESS) != 0)
     {
-        if (!VideoBackend::supportsClientSideMaximize())
+        const bool clientSideBackend = VideoBackend::supportsClientSideMaximize();
+        const bool x11Backend = VideoBackend::isX11() || VideoBackend::isXWaylandFallback();
+        // Only asked on X11/XWayland: one X server round trip, once per maximize.
+        const bool ewmhMaximize = clientSideBackend && x11Backend && X11WindowManager::supportsEwmhMaximize(m_Handle);
+        if (WindowGeometry::chooseBorderlessMaximize(clientSideBackend, x11Backend, ewmhMaximize) ==
+            WindowGeometry::BorderlessMaximize::WindowManager)
         {
-            // Native Wayland: use compositor-managed maximize via SDL_MaximizeWindow
-            // This avoids the unreliability of client-side usable-bounds queries on Wayland.
-            spdlog::debug("Window::maximize: Native Wayland detected; using compositor-managed maximize");
-            SDL_MaximizeWindow(m_Handle);
-            m_Geometry.maximizing(live, liveScale, normalNow, WindowGeometry::MaximizeState::System);
-            return;
+            if (!clientSideBackend)
+            {
+                // Native Wayland: use compositor-managed maximize via SDL_MaximizeWindow
+                // This avoids the unreliability of client-side usable-bounds queries on Wayland.
+                spdlog::debug("Window::maximize: Native Wayland detected; using compositor-managed maximize");
+                SDL_MaximizeWindow(m_Handle);
+                m_Geometry.maximizing(live, liveScale, normalNow, WindowGeometry::MaximizeState::System);
+                return;
+            }
+            // X11/XWayland: the window manager's work area, not SDL_GetDisplayUsableBounds(), which is
+            // the whole display on a server without _NET_WORKAREA (WSLg). Tracked as a System
+            // maximize like one from the window manager's own shortcut (#1250): restore() returns to
+            // the rectangle recorded here, and a window-manager restore ends it.
+            if (SDL_MaximizeWindow(m_Handle))
+            {
+                spdlog::debug("Window::maximize: X11 window manager supports EWMH maximize; letting it size the window");
+                m_Geometry.maximizing(live, liveScale, normalNow, WindowGeometry::MaximizeState::System);
+                return;
+            }
+            spdlog::warn("Window::maximize: SDL_MaximizeWindow failed ({}); maximizing client-side", SDL_GetError());
         }
 
-        // X11, XWayland, Windows: use client-side maximize with manual positioning
+        // Windows, or X11 without EWMH maximize: client-side maximize with manual positioning
 
         const SDL_DisplayID displayID = SDL_GetDisplayForWindow(m_Handle);
         if (displayID != 0)
