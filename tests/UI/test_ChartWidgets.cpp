@@ -1318,6 +1318,54 @@ TEST(ChartWidgetsTest, NowBarTooltipRowReadsLikeTheTooltipRow)
     EXPECT_EQ(selectNowBarTooltip(bar), "Memory: 45% (3.6 GB / 8.0 GB)");
 }
 
+// ========== Right-hand-axis mark (#1300) ==========
+
+TEST(ChartWidgetsTest, SecondaryAxisMarkSplitsOffTheLabel)
+{
+    const SeriesLabelParts marked = splitSecondaryAxisMark("Page Faults →");
+    EXPECT_EQ(marked.name, "Page Faults");
+    EXPECT_TRUE(marked.rightAxis);
+
+    const SeriesLabelParts plain = splitSecondaryAxisMark("Threads");
+    EXPECT_EQ(plain.name, "Threads");
+    EXPECT_FALSE(plain.rightAxis);
+
+    // The mark alone is not a series name.
+    EXPECT_FALSE(splitSecondaryAxisMark(" →").rightAxis);
+    EXPECT_FALSE(splitSecondaryAxisMark("").rightAxis);
+}
+
+// The arrow points at the axis the value is read on, so it follows the value, not the name: the
+// strip read "Page Faults →: 3.2K/s".
+TEST(ChartWidgetsTest, TooltipRowPutsTheAxisMarkAfterTheValue)
+{
+    EXPECT_EQ(formatTooltipRow("Page Faults →", "3.2K/s"), "Page Faults: 3.2K/s →");
+    EXPECT_EQ(tooltipRowText("Virtual →", "10.1 GB").view(), "Virtual: 10.1 GB →");
+    const NowBar bar{.valueText = "3.2K/s", .label = "Page Faults →", .tooltipText = {}, .value01 = 0.5, .color = {}};
+    EXPECT_EQ(selectNowBarTooltip(bar), "Page Faults: 3.2K/s →");
+}
+
+TEST(ChartWidgetsTest, StripTextSplitsNameFromValueWithoutTheMark)
+{
+    // As tooltipRowText() builds it.
+    const StripTextParts row = splitStripText("Page Faults: 3.2K/s →", "Page Faults →");
+    EXPECT_EQ(row.head, "Page Faults");
+    EXPECT_EQ(row.tail, "3.2K/s");
+
+    // A tip still built from the whole label.
+    const StripTextParts legacy = splitStripText("Battery →: 94% (charging)", "Battery →");
+    EXPECT_EQ(legacy.head, "Battery");
+    EXPECT_EQ(legacy.tail, "94% (charging)");
+
+    // A plain series, and a tip that doesn't name its series at all.
+    const StripTextParts plain = splitStripText("Handles: 266,257", "Handles");
+    EXPECT_EQ(plain.head, "Handles");
+    EXPECT_EQ(plain.tail, "266,257");
+    const StripTextParts unnamed = splitStripText("45% (3.6 GB / 8.0 GB)", "Memory");
+    EXPECT_TRUE(unnamed.head.empty());
+    EXPECT_EQ(unnamed.tail, "45% (3.6 GB / 8.0 GB)");
+}
+
 TEST(ChartWidgetsTest, SampleWithNoReadingFormatsAsNA)
 {
     const auto percent = [](double v)
@@ -1335,7 +1383,7 @@ TEST(ChartWidgetsTest, HoldExtendsTheLastValueToNow)
 {
     std::vector<double> x{-3.0, -2.0, -0.7};
     std::vector<double> y{10.0, 20.0, 30.0};
-    holdLastValueToNow(x, y);
+    holdLastValueToNow(x, y, HOLD_FALLBACK_SECONDS);
     ASSERT_EQ(x.size(), 4U);
     EXPECT_DOUBLE_EQ(x.back(), 0.0);
     EXPECT_DOUBLE_EQ(y.back(), 30.0);
@@ -1346,7 +1394,7 @@ TEST(ChartWidgetsTest, HoldLeavesAGapAtTheEndAlone)
     // A trailing NaN is a missing reading: there is nothing to hold, and the gap must stay a gap.
     std::vector<double> x{-2.0, -1.0};
     std::vector<double> y{5.0, std::numeric_limits<double>::quiet_NaN()};
-    holdLastValueToNow(x, y);
+    holdLastValueToNow(x, y, HOLD_FALLBACK_SECONDS);
     EXPECT_EQ(x.size(), 2U);
 }
 
@@ -1354,13 +1402,79 @@ TEST(ChartWidgetsTest, HoldDoesNothingForAnEmptyOrAlreadyCurrentSeries)
 {
     std::vector<double> emptyX;
     std::vector<double> emptyY;
-    holdLastValueToNow(emptyX, emptyY);
+    holdLastValueToNow(emptyX, emptyY, HOLD_FALLBACK_SECONDS);
     EXPECT_TRUE(emptyX.empty());
 
     std::vector<double> x{-1.0, 0.0};
     std::vector<double> y{1.0, 2.0};
-    holdLastValueToNow(x, y);
+    holdLastValueToNow(x, y, HOLD_FALLBACK_SECONDS);
     EXPECT_EQ(x.size(), 2U);
+}
+
+// A stalled sampler: the last reading is 30 s old on a 1 s series, so it is not drawn out to now as
+// if it were current (#1147).
+TEST(ChartWidgetsTest, HoldDoesNotExtendAStaleSample)
+{
+    std::vector<double> x{-32.0, -31.0, -30.0};
+    std::vector<double> y{1.0, 2.0, 3.0};
+    holdLastValueToNow(x, y, 2.0);
+    EXPECT_EQ(x.size(), 3U);
+
+    std::vector<double> fresh{-3.0, -2.0, -1.5};
+    std::vector<double> freshY{1.0, 2.0, 3.0};
+    holdLastValueToNow(fresh, freshY, 2.0);
+    EXPECT_EQ(fresh.size(), 4U);
+}
+
+TEST(ChartWidgetsTest, HoldLimitFollowsTheSeriesOwnInterval)
+{
+    // HOLD_MAX_SAMPLE_INTERVALS of the last interval...
+    const std::vector<double> oneSecond{-3.0, -2.0, -1.0};
+    EXPECT_DOUBLE_EQ(maxHoldSecondsForAxis(oneSecond.data(), 3), HOLD_MAX_SAMPLE_INTERVALS * 1.0);
+    const std::vector<double> fiveSeconds{-10.0, -5.0};
+    EXPECT_DOUBLE_EQ(maxHoldSecondsForAxis(fiveSeconds.data(), 2), HOLD_MAX_SAMPLE_INTERVALS * 5.0);
+    // ...never under the floor, so a fast refresh doesn't flicker on jitter...
+    const std::vector<double> fast{-0.2, -0.1};
+    EXPECT_DOUBLE_EQ(maxHoldSecondsForAxis(fast.data(), 2), HOLD_MIN_SECONDS);
+    // ...and with no interval to go by, the slowest refresh's limit.
+    const std::vector<double> single{-1.0};
+    EXPECT_DOUBLE_EQ(maxHoldSecondsForAxis(single.data(), 1), HOLD_FALLBACK_SECONDS);
+    const std::vector<double> repeated{-1.0, -1.0};
+    EXPECT_DOUBLE_EQ(maxHoldSecondsForAxis(repeated.data(), 2), HOLD_FALLBACK_SECONDS);
+}
+
+TEST(ChartWidgetsTest, LastSampleHoldsOnlyWhileRecent)
+{
+    EXPECT_TRUE(lastSampleHoldsToNow(-0.5, 4.0));
+    EXPECT_TRUE(lastSampleHoldsToNow(-4.0, 4.0));
+    EXPECT_FALSE(lastSampleHoldsToNow(-4.5, 4.0));
+    EXPECT_FALSE(lastSampleHoldsToNow(0.0, 4.0));
+    EXPECT_FALSE(lastSampleHoldsToNow(std::numeric_limits<double>::quiet_NaN(), 4.0));
+}
+
+// Stacked bands are held together: every edge reaches now, or none does.
+TEST(ChartWidgetsTest, HoldManySeriesTogether)
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    std::vector<double> x{-2.0, -1.0};
+    std::vector<double> lower{0.0, 0.0};
+    std::vector<double> upper{5.0, nan};
+    holdLastValuesToNow(x, {&lower, &upper}, 4.0);
+    ASSERT_EQ(x.size(), 3U);
+    EXPECT_DOUBLE_EQ(x.back(), 0.0);
+    EXPECT_DOUBLE_EQ(lower.back(), 0.0);
+    EXPECT_TRUE(std::isnan(upper.back())); // a trailing gap stays a gap
+
+    std::vector<double> stale{-31.0, -30.0};
+    std::vector<double> band{1.0, 2.0};
+    holdLastValuesToNow(stale, {&band}, 4.0);
+    EXPECT_EQ(stale.size(), 2U);
+    EXPECT_EQ(band.size(), 2U);
+
+    std::vector<double> mismatched{-2.0, -1.0};
+    std::vector<double> shortBand{1.0};
+    holdLastValuesToNow(mismatched, {&shortBand}, 4.0);
+    EXPECT_EQ(mismatched.size(), 2U);
 }
 
 // ========== normalizeToUnitInterval ==========
@@ -1441,6 +1555,37 @@ TEST(ChartWidgetsTest, FiniteRunsOfNothingFiniteIsNoRuns)
     EXPECT_TRUE(finiteRuns({}).empty());
     EXPECT_TRUE(finiteRuns({nan, nan}).empty());
     EXPECT_TRUE(finiteRuns({std::numeric_limits<float>::infinity()}).empty());
+}
+
+// ========== forEachJointFiniteRun (#1149) ==========
+
+namespace
+{
+[[nodiscard]] std::vector<std::pair<int, int>> jointFiniteRuns(const std::vector<double>& lower, const std::vector<double>& upper)
+{
+    std::vector<std::pair<int, int>> runs;
+    UI::Widgets::forEachJointFiniteRun(
+        lower.data(), upper.data(), static_cast<int>(lower.size()), [&](int start, int length) { runs.emplace_back(start, length); });
+    return runs;
+}
+} // namespace
+
+// A stacked band is filled between two edges: a NaN gap in either edge splits the band there.
+TEST(ChartWidgetsTest, JointFiniteRunsSplitWhereEitherEdgeIsNaN)
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    // A gap point (NaN in both edges), as reduceAlignedPoints emits for a missed sample.
+    EXPECT_EQ(jointFiniteRuns({0.0, 0.0, 0.0, 0.0}, {10.0, 20.0, nan, 30.0}), (std::vector<std::pair<int, int>>{{0, 2}, {3, 1}}));
+    // The lower edge alone missing a reading (an offline core in the band below) still splits it.
+    EXPECT_EQ(jointFiniteRuns({1.0, nan, 1.0, 1.0}, {2.0, 2.0, 2.0, 2.0}), (std::vector<std::pair<int, int>>{{0, 1}, {2, 2}}));
+    // Gaps in different edges at different points leave only the points where both are finite.
+    EXPECT_EQ(jointFiniteRuns({nan, 1.0, 1.0, 1.0, 1.0}, {2.0, 2.0, 2.0, nan, 2.0}), (std::vector<std::pair<int, int>>{{1, 2}, {4, 1}}));
+}
+
+TEST(ChartWidgetsTest, JointFiniteRunsOfUnbrokenEdgesIsOneRun)
+{
+    EXPECT_EQ(jointFiniteRuns({0.0, 0.0, 0.0}, {1.0, 2.0, 3.0}), (std::vector<std::pair<int, int>>{{0, 3}}));
+    EXPECT_TRUE(jointFiniteRuns({}, {}).empty());
 }
 
 TEST(ChartWidgetsTest, NormalizeToUnitIntervalScalesWithinRange)
@@ -1826,6 +1971,55 @@ TEST(ChartWidgetsTest, NowBarWidthSurvivesDegenerateInput)
         EXPECT_TRUE(std::isfinite(width));
         EXPECT_GE(width, 1.0F);
     }
+}
+
+// ========== NowBar column cap (#1300) ==========
+
+// At a wide row the bars keep their full width.
+TEST(ChartWidgetsTest, FittedNowBarWidthIsFullInAWideRow)
+{
+    const float em = 32.0F / 3.0F; // 24px bars
+    EXPECT_FLOAT_EQ(fittedNowBarWidth(em, 4, 8.0F, 2000.0F), 24.0F);
+    // An unknown row width leaves them alone too.
+    EXPECT_FLOAT_EQ(fittedNowBarWidth(em, 4, 8.0F, -1.0F), 24.0F);
+    EXPECT_FLOAT_EQ(fittedNowBarWidth(em, 4, 8.0F, std::numeric_limits<float>::quiet_NaN()), 24.0F);
+}
+
+// The reported case: four bars in a narrow Process Details pane took ~30 % of it.
+TEST(ChartWidgetsTest, FittedNowBarWidthCapsTheColumnInANarrowRow)
+{
+    const float em = 32.0F / 3.0F;
+    const float row = 400.0F;
+    const float spacing = 8.0F;
+    const float bar = fittedNowBarWidth(em, 4, spacing, row);
+    EXPECT_LT(bar, 24.0F);
+    EXPECT_LE((bar * 4.0F) + (spacing * 3.0F), row * NOW_BAR_COLUMN_MAX_FRACTION);
+    EXPECT_FLOAT_EQ(bar, std::floor(bar)); // whole pixels
+}
+
+// Never thinner than the readable minimum, however narrow the row.
+TEST(ChartWidgetsTest, FittedNowBarWidthKeepsItsMinimum)
+{
+    const float em = 32.0F / 3.0F;
+    EXPECT_FLOAT_EQ(fittedNowBarWidth(em, 4, 8.0F, 50.0F), std::round(NOW_BAR_MIN_WIDTH_EM * em));
+    EXPECT_FLOAT_EQ(fittedNowBarWidth(em, 0, 8.0F, 50.0F), 24.0F);
+}
+
+// ========== Percent axis headroom (#1300) ==========
+
+// A full battery's line sits below the plot's top edge; the labels still stop at 100 %.
+TEST(ChartWidgetsTest, PercentAxisWithHeadroomTicksUpTo100)
+{
+    const HistoryChartConfig cfg = percentHistoryConfigWithHeadroom("##Battery", -60.0, 0.0);
+    ASSERT_TRUE(cfg.yLimits.has_value());
+    EXPECT_DOUBLE_EQ(cfg.yLimits.value_or(std::pair{0.0, 0.0}).first, 0.0);
+    EXPECT_GT(cfg.yLimits.value_or(std::pair{0.0, 0.0}).second, 100.0);
+    EXPECT_DOUBLE_EQ(cfg.yTicksUpTo.value_or(0.0), 100.0);
+    EXPECT_EQ(cfg.yFormatter, percentHistoryConfig("##Battery", -60.0, 0.0).yFormatter);
+    // The bar beside it, scaled to the same top, meets the line: full charge is not a full bar.
+    EXPECT_LT(normalizeToUnitInterval(100.0, PERCENT_AXIS_UPPER_WITH_HEADROOM), 1.0);
+    // A plain percent chart keeps its 0-100 axis.
+    EXPECT_FALSE(percentHistoryConfig("##CPU", -60.0, 0.0).yTicksUpTo.has_value());
 }
 
 // ========== Series encoding (#1198) ==========
