@@ -1239,12 +1239,12 @@ TEST(ChartWidgetsFormattersTest, AxisFormattersFitExactlyOrLeaveAnEmptyLabel)
     EXPECT_EQ(formatAxisLocalized(1500.0, tooSmall.data(), static_cast<int>(tooSmall.size()), nullptr), 0);
     EXPECT_EQ(tooSmall[0], '\0');
 
-    // "2.0 KB/s" is 8 characters.
-    std::array<char, 9> bytesExact{};
-    EXPECT_EQ(formatAxisBytesPerSec(2048.0, bytesExact.data(), static_cast<int>(bytesExact.size()), nullptr), 8);
-    EXPECT_EQ(std::string(bytesExact.data()), "2.0 KB/s");
+    // "2.0 KiB/s" is 9 characters (IEC unit names since #1341).
+    std::array<char, 10> bytesExact{};
+    EXPECT_EQ(formatAxisBytesPerSec(2048.0, bytesExact.data(), static_cast<int>(bytesExact.size()), nullptr), 9);
+    EXPECT_EQ(std::string(bytesExact.data()), "2.0 KiB/s");
 
-    std::array<char, 8> bytesTooSmall{'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x'};
+    std::array<char, 9> bytesTooSmall{'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x'};
     EXPECT_EQ(formatAxisBytesPerSec(2048.0, bytesTooSmall.data(), static_cast<int>(bytesTooSmall.size()), nullptr), 0);
     EXPECT_EQ(bytesTooSmall[0], '\0');
 }

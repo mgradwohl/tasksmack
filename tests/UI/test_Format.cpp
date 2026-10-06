@@ -1807,10 +1807,14 @@ TEST(FormatFixedLocalizedTest, ValueFormattersStillPrintNonFiniteValuesLikeStdFo
     // Non-finite values take the std::format fallback, so their text is unchanged.
     const double nan = std::numeric_limits<double>::quiet_NaN();
     const double inf = std::numeric_limits<double>::infinity();
-    EXPECT_EQ(UI::Format::formatBytesWithUnit(inf, UI::Format::BYTE_UNIT_MB), std::format("{:.1Lf} MB", inf));
-    EXPECT_EQ(UI::Format::formatBytesPerSecWithUnit(-inf, UI::Format::BYTE_UNIT_KB), std::format("{:.1Lf} KB/s", -inf));
+    // The unit text comes from the ByteUnit itself (IEC names since #1341), not a literal here.
+    using UI::Format::BYTE_UNIT_GB;
+    using UI::Format::BYTE_UNIT_KB;
+    using UI::Format::BYTE_UNIT_MB;
+    EXPECT_EQ(UI::Format::formatBytesWithUnit(inf, BYTE_UNIT_MB), std::format("{:.1Lf} {}", inf, BYTE_UNIT_MB.suffix));
+    EXPECT_EQ(UI::Format::formatBytesPerSecWithUnit(-inf, BYTE_UNIT_KB), std::format("{:.1Lf} {}/s", -inf, BYTE_UNIT_KB.suffix));
     EXPECT_EQ(UI::Format::formatWatts(inf), std::format("{:.1Lf} W", inf));
-    EXPECT_EQ(UI::Format::formatBytesWithUnit(nan, UI::Format::BYTE_UNIT_GB), std::format("{:.1Lf} GB", nan));
+    EXPECT_EQ(UI::Format::formatBytesWithUnit(nan, BYTE_UNIT_GB), std::format("{:.1Lf} {}", nan, BYTE_UNIT_GB.suffix));
 }
 
 TEST(FormatFixedLocalizedTest, ByteFormattersMatchTheirStdFormatDefinition)
