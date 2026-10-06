@@ -2,6 +2,7 @@
 
 #include "App/Panel.h"
 #include "App/Panels/AdaptiveIntervalUtils.h"
+#include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDetailsLayout.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessSortUtils.h"
@@ -23,6 +24,8 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/ProcessState.h"
 #include "Platform/Factory.h"
+#include "Platform/ProcessTypes.h"
+#include "UI/EmptyState.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
@@ -107,6 +110,13 @@ constexpr const char* FILTER_HINT = "Filter by name...";
 /// instead of one line running off the screen.
 constexpr float CLIPPED_CELL_TOOLTIP_WRAP_EM = 60.0F;
 
+/// Tooltip of a Publisher cell with no publisher on a system that reads them (#1210).
+constexpr const char* NO_PUBLISHER_REASON =
+    "Not available: the executable names no publisher in its version information, or it could not be read.";
+
+/// Column header tooltips wrap at this many ems.
+constexpr float HEADER_TOOLTIP_WRAP_EM = 32.0F;
+
 /// Draws `text` in the current table cell, left- or right-aligned, using an already-measured
 /// `textWidth`. When the text does not fit it is drawn with an ellipsis and gets a tooltip carrying
 /// the full value (#914): a hard-clipped value is indistinguishable from one that is genuinely that
@@ -173,6 +183,43 @@ void renderRightAlignedText(std::string_view text, float textWidth)
     renderCellText(text, textWidth, /*rightAligned=*/true);
 }
 
+/// Draws the cells of a measured zero or a missing value muted (#1210) for as long as it lives;
+/// pushes nothing for a measured value.
+class MutedCellScope
+{
+  public:
+    explicit MutedCellScope(bool muted) : m_Muted(muted)
+    {
+        if (m_Muted)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, UI::Theme::get().scheme().textMuted);
+        }
+    }
+    ~MutedCellScope()
+    {
+        if (m_Muted)
+        {
+            ImGui::PopStyleColor();
+        }
+    }
+    MutedCellScope(const MutedCellScope&) = delete;
+    MutedCellScope& operator=(const MutedCellScope&) = delete;
+    MutedCellScope(MutedCellScope&&) = delete;
+    MutedCellScope& operator=(MutedCellScope&&) = delete;
+
+  private:
+    bool m_Muted;
+};
+
+/// The tooltip of a cell with no value, saying why (#1210); nothing for a cell that has one.
+void setUnavailableReasonTooltip(const char* reason)
+{
+    if (reason != nullptr)
+    {
+        ImGui::SetItemTooltip("%s", reason);
+    }
+}
+
 /// Common case: a RowFormatCache-backed cell whose text is built lazily, on demand, only for
 /// rows that are actually rendered (see renderProcessRow()'s get-or-build lookup), and whose
 /// width is likewise measured lazily -- the first time this specific cell is actually drawn --
@@ -187,22 +234,22 @@ void renderRightAlignedText(const AlignedCellText& cell)
     {
         cell.width = ImGui::CalcTextSize(cell.text.c_str(), cell.text.c_str() + cell.text.size()).x;
     }
-    renderRightAlignedText(cell.text, cell.width);
+    {
+        const MutedCellScope muted(cell.tone != ProcessRowFormat::CellTone::Value);
+        renderRightAlignedText(cell.text, cell.width);
+    }
+    setUnavailableReasonTooltip(cell.unavailableReason);
 }
 
 /// Renders a cell of a mixed-unit column ("512.0 B", "1.5 KiB", "3.2 MiB") decimal-aligned (#1201):
 /// the unit in a slot `unitSlotWidth` wide at the cell's right edge, the number right-aligned
 /// against it, so the decimal points of every row line up (see
-/// ProcessTableLayout::layoutUnitAlignedCell()). A cell with no unit ("-", "N/A") is right-aligned;
-/// one too narrow for its number and the slot is drawn clipped, as renderRightAlignedText() does.
-/// Widths are measured once per cache entry, like renderRightAlignedText()'s.
+/// ProcessTableLayout::layoutUnitAlignedCell()). A cell with no unit (the unavailable dash) is
+/// right-aligned against the slot too, under the numbers; one too narrow for its number and the slot
+/// is drawn clipped, as renderRightAlignedText() does. Widths are measured once per cache entry,
+/// like renderRightAlignedText()'s.
 void renderUnitAlignedText(const AlignedCellText& cell, float unitSlotWidth)
 {
-    if (!cell.hasUnit())
-    {
-        renderRightAlignedText(cell);
-        return;
-    }
     const std::string_view number = cell.number();
     const std::string_view unit = cell.unit();
     if (cell.width < 0.0F)
@@ -211,13 +258,13 @@ void renderUnitAlignedText(const AlignedCellText& cell, float unitSlotWidth)
     }
     if (cell.numberWidth < 0.0F)
     {
-        cell.numberWidth = ImGui::CalcTextSize(number.data(), number.data() + number.size()).x;
+        cell.numberWidth = cell.hasUnit() ? ImGui::CalcTextSize(number.data(), number.data() + number.size()).x : cell.width;
     }
     const auto layout = ProcessTableLayout::layoutUnitAlignedCell(
         cell.numberWidth, cell.width - cell.numberWidth, unitSlotWidth, ImGui::GetContentRegionAvail().x);
     if (!layout.fits)
     {
-        renderRightAlignedText(cell.text, cell.width);
+        renderRightAlignedText(cell);
         return;
     }
 
@@ -237,8 +284,26 @@ void renderUnitAlignedText(const AlignedCellText& cell, float unitSlotWidth)
     {
         return;
     }
-    ImGui::RenderText(numberPos, number.data(), number.data() + number.size(), false);
-    ImGui::RenderText(ImVec2(origin.x + layout.unitX, origin.y), unit.data(), unit.data() + unit.size(), false);
+    {
+        const MutedCellScope muted(cell.tone != ProcessRowFormat::CellTone::Value);
+        ImGui::RenderText(numberPos, number.data(), number.data() + number.size(), false);
+        if (!unit.empty())
+        {
+            ImGui::RenderText(ImVec2(origin.x + layout.unitX, origin.y), unit.data(), unit.data() + unit.size(), false);
+        }
+    }
+    setUnavailableReasonTooltip(cell.unavailableReason);
+}
+
+/// A free-text cell with no value (#1210): the unavailable dash, muted, left-aligned, with `reason`
+/// as its tooltip. `dashWidth` is ProcessRowFormat::UNAVAILABLE_CELL_TEXT's width in the current font.
+void renderUnavailableTextCell(const char* reason, float dashWidth)
+{
+    {
+        const MutedCellScope muted(true);
+        renderCellText(ProcessRowFormat::UNAVAILABLE_CELL_TEXT, dashWidth, /*rightAligned=*/false);
+    }
+    setUnavailableReasonTooltip(reason);
 }
 
 /// Width of the widest of `units` in the current font.
@@ -355,6 +420,8 @@ void ProcessesPanel::TextSizeCache::populate()
     // Cache static label widths
     treeViewLabelWidth = ImGui::CalcTextSize(TREE_VIEW_LABEL.data(), TREE_VIEW_LABEL.data() + TREE_VIEW_LABEL.size()).x;
     listViewLabelWidth = ImGui::CalcTextSize(LIST_VIEW_LABEL.data(), LIST_VIEW_LABEL.data() + LIST_VIEW_LABEL.size()).x;
+    const std::string_view dash = ProcessRowFormat::UNAVAILABLE_CELL_TEXT;
+    unavailableTextWidth = ImGui::CalcTextSize(dash.data(), dash.data() + dash.size()).x;
 
     // Cache Domain::Priority::getPriorityLabel()'s fixed label widths
     for (std::size_t i = 0; i < PRIORITY_LABELS.size(); ++i)
@@ -626,8 +693,8 @@ void ProcessesPanel::renderContent()
 {
     if (!m_ProcessModel)
     {
-        const auto& theme = UI::Theme::get();
-        ImGui::TextColored(theme.scheme().textError, "Process model not initialized");
+        UI::Widgets::renderEmptyState(ICON_FA_TRIANGLE_EXCLAMATION "  Process list unavailable",
+                                      "The process model is not initialized, so no processes can be listed.");
         return;
     }
 
@@ -901,6 +968,7 @@ void ProcessesPanel::renderContent()
         ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
         int headerIdx = 0;
         const ImGuiStyle& headerStyle = ImGui::GetStyle();
+        const Platform::ProcessCapabilities headerCaps = processCapabilities();
         for (const ProcessColumn col : allProcessColumns())
         {
             if (!ImGui::TableSetColumnIndex(headerIdx))
@@ -917,24 +985,37 @@ void ProcessesPanel::renderContent()
             const float paddingX = headerStyle.CellPadding.x;
             const float targetX = startX + std::max(0.0F, ((colWidth - textWidth) * 0.5F) - paddingX);
             ImGui::SetCursorPosX(targetX);
-            // info.name is a constexpr string literal in ProcessColumnConfig.h.
-            // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - literals are null-terminated
-            ImGui::TableHeader(info.name.data());
-
-            // Show tooltip with full column name and description on hover
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+            // A column this system cannot fill is headed muted, like its cells (#1210).
+            const bool columnSupported = ProcessColumnAvailability::isSupported(col, headerCaps);
             {
-                const std::string_view note = columnCapabilityNote(col, processCapabilities().hasUdpNetworkCounters);
-                if (note.empty())
+                const MutedCellScope muted(!columnSupported);
+                // info.name is a constexpr string literal in ProcessColumnConfig.h.
+                // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - literals are null-terminated
+                ImGui::TableHeader(info.name.data());
+            }
+
+            // Show tooltip with full column name and description on hover, and what the column's
+            // missing values mean (#1210). Every line is a constexpr literal: nothing is formatted.
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort) && ImGui::BeginTooltip())
+            {
+                ImGui::PushTextWrapPos(ImGui::GetFontSize() * HEADER_TOOLTIP_WRAP_EM);
+                const auto line = [](std::string_view text)
                 {
-                    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - constexpr string literals are null-terminated
-                    ImGui::SetTooltip("%s\n%s", info.menuName.data(), info.description.data());
-                }
-                else
+                    if (!text.empty())
+                    {
+                        ImGui::TextUnformatted(text.data(), text.data() + text.size());
+                    }
+                };
+                line(info.menuName);
+                line(info.description);
+                // The TCP-only note says nothing more for a column that has no values at all.
+                if (columnSupported)
                 {
-                    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - constexpr string literals are null-terminated
-                    ImGui::SetTooltip("%s\n%s\n%s", info.menuName.data(), info.description.data(), note.data());
+                    line(columnCapabilityNote(col, headerCaps.hasUdpNetworkCounters));
                 }
+                line(ProcessColumnAvailability::unavailableValuesNote(col, headerCaps));
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
             }
 
             ++headerIdx;
@@ -1108,14 +1189,8 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
     // long-lived cache map (see #904). The stamp changes on every TextSizeCache::populate(), not
     // with the font's address, which a rebuilt font atlas can reuse (#943).
     const Platform::ProcessCapabilities caps = processCapabilities();
-    RowFormatCache& fmt = ProcessRowFormat::getOrBuildRowFormatCache(m_RowFormatCache,
-                                                                     proc,
-                                                                     m_CachedSnapshotVersion,
-                                                                     m_TextSizeCache.stamp,
-                                                                     {
-                                                                         .hasPowerUsage = caps.hasPowerUsage,
-                                                                         .hasSharedMemory = caps.hasSharedMemory,
-                                                                     });
+    RowFormatCache& fmt = ProcessRowFormat::getOrBuildRowFormatCache(
+        m_RowFormatCache, proc, m_CachedSnapshotVersion, m_TextSizeCache.stamp, ProcessColumnAvailability::rowFormatOptions(caps));
 
     // Render all columns
     int colIdx = 0;
@@ -1252,13 +1327,14 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         }
 
         case ProcessColumn::Status:
-            if (!proc.status.empty())
+            // No status is a process in neither of the states the column names, so it is blank.
+            if (!caps.hasStatus)
+            {
+                renderUnavailableTextCell(ProcessRowFormat::UNSUPPORTED_CELL_REASON, m_TextSizeCache.unavailableTextWidth);
+            }
+            else if (!proc.status.empty())
             {
                 renderLeftAlignedText(proc.status, fmt.statusWidth);
-            }
-            else
-            {
-                ImGui::TextUnformatted("-");
             }
             break;
 
@@ -1405,8 +1481,12 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             renderUnitAlignedText(fmt.gpuMemory, m_TextSizeCache.unitBytesWidth);
             break;
 
+        // A process using no GPU has no engine or device: blank, like a measured nothing (#1210).
         case ProcessColumn::GpuEngine:
-            renderLeftAlignedText(fmt.gpuEngines, fmt.gpuEnginesWidth);
+            if (!fmt.gpuEngines.empty())
+            {
+                renderLeftAlignedText(fmt.gpuEngines, fmt.gpuEnginesWidth);
+            }
             break;
 
         case ProcessColumn::GpuDevice:
@@ -1415,29 +1495,33 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             {
                 renderLeftAlignedText(proc.gpuDevices, fmt.gpuDevicesWidth);
             }
-            else
-            {
-                ImGui::TextUnformatted("-");
-            }
             break;
         }
 
         case ProcessColumn::Publisher:
         {
-            if (!proc.publisher.empty())
+            if (!caps.hasPublisher)
+            {
+                renderUnavailableTextCell(ProcessRowFormat::UNSUPPORTED_CELL_REASON, m_TextSizeCache.unavailableTextWidth);
+            }
+            else if (!proc.publisher.empty())
             {
                 renderLeftAlignedText(proc.publisher, fmt.publisherWidth);
             }
             else
             {
-                ImGui::TextUnformatted("-");
+                renderUnavailableTextCell(NO_PUBLISHER_REASON, m_TextSizeCache.unavailableTextWidth);
             }
             break;
         }
 
         case ProcessColumn::Type:
         {
-            if (!proc.processType.empty())
+            if (!caps.hasProcessType)
+            {
+                renderUnavailableTextCell(ProcessRowFormat::UNSUPPORTED_CELL_REASON, m_TextSizeCache.unavailableTextWidth);
+            }
+            else if (!proc.processType.empty())
             {
                 const auto& scheme = UI::Theme::get().scheme();
                 ImVec4 typeColor;
@@ -1459,14 +1543,14 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             }
             else
             {
-                ImGui::TextUnformatted("-");
+                renderUnavailableTextCell(ProcessRowFormat::UNREADABLE_CELL_REASON, m_TextSizeCache.unavailableTextWidth);
             }
             break;
         }
 
         case ProcessColumn::GdiObjects:
-            // Show "-" only when the probe could not read the count (process not accessible).
-            // A count of 0 is a valid result for non-GUI background processes and is shown as "0".
+            // Unavailable only when the probe could not read the count (process not accessible).
+            // A count of 0 is a valid result for non-GUI background processes and is shown as a muted "0".
             renderRightAlignedText(fmt.gdiObjects);
             break;
 

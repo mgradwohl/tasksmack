@@ -125,6 +125,7 @@ set(COMMON_TEST_SOURCES
     App/test_GpuSectionEmptyState.cpp
     App/test_GpuSectionDrawList.cpp
     App/test_ProcessRowFormat.cpp
+    App/test_ProcessColumnAvailability.cpp
     App/test_ProcessStateColor.cpp
     App/test_CpuCoreGridIds.cpp
     Platform/test_CgroupFreezerPath.cpp

@@ -5,6 +5,7 @@
 #include "UI/ChartGrid.h"
 #include "UI/ChartGridLayout.h"
 #include "UI/ChartWidgets.h"
+#include "UI/EmptyState.h"
 #include "UI/Format.h"
 #include "UI/HistoryPlotHeight.h"
 #include "UI/IconsFontAwesome6.h"
@@ -242,7 +243,8 @@ void renderStorageSection(RenderContext& ctx)
 
     if (ctx.publication == nullptr)
     {
-        ImGui::TextUnformatted("Storage model not available.");
+        UI::Widgets::renderEmptyState(ICON_FA_HARD_DRIVE "  Disk data unavailable",
+                                      "The storage model is not available, so there is no disk activity to show.");
         return;
     }
 

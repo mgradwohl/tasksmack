@@ -6,8 +6,10 @@
 #include "UI/ChartGrid.h"
 #include "UI/ChartGridLayout.h"
 #include "UI/ChartWidgets.h"
+#include "UI/EmptyState.h"
 #include "UI/Format.h"
 #include "UI/HistoryPlotHeight.h"
+#include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -72,7 +74,8 @@ void renderCpuCoresSection(RenderContext& ctx)
 {
     if (ctx.publication == nullptr)
     {
-        ImGui::TextUnformatted("System model not available");
+        UI::Widgets::renderEmptyState(ICON_FA_TRIANGLE_EXCLAMATION "  CPU data unavailable",
+                                      "The system model is not available, so there is no per-core data to show.");
         return;
     }
 
@@ -102,7 +105,7 @@ void renderCpuCoresSection(RenderContext& ctx)
     const size_t numCores = snap.cpuPerCore.size();
     if (numCores == 0)
     {
-        ImGui::TextColored(theme.scheme().textMuted, "No per-core data available");
+        UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  No per-core data", "This system did not report CPU usage per core.");
         return;
     }
 
@@ -123,7 +126,8 @@ void renderCpuCoresSection(RenderContext& ctx)
     const size_t coreCount = gridCoreIds.size();
     if (coreCount == 0)
     {
-        ImGui::TextColored(theme.scheme().textMuted, "Collecting data...");
+        // No chart yet to draw the collecting hint on; the same words, as the pane's empty state.
+        UI::Widgets::renderEmptyState(UI::Widgets::HISTORY_COLLECTING_TEXT, "Per-core charts appear once the first samples arrive.");
         return;
     }
     static const std::vector<float> noSamples;

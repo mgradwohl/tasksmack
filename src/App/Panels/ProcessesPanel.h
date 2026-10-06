@@ -244,6 +244,7 @@ class ProcessesPanel : public Panel
         // Static label widths
         float treeViewLabelWidth = 0.0F;
         float listViewLabelWidth = 0.0F;
+        float unavailableTextWidth = 0.0F; // ProcessRowFormat::UNAVAILABLE_CELL_TEXT, for free-text cells (#1210)
 
         // Widths for PRIORITY_LABELS (Domain::Priority::getPriorityLabel()'s fixed label set).
         // That column isn't backed by RowFormatCache (it's a live std::string_view lookup, not

@@ -10,6 +10,7 @@
 #include "Domain/ProcessSnapshot.h"
 #include "UI/Format.h"
 
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -19,6 +20,15 @@
 
 namespace App::ProcessRowFormat
 {
+
+/// How a cell's value reads beside a measured one (#1210). A measured zero and a value TaskSmack does
+/// not have are different facts, and used to share one "-".
+enum class CellTone : std::uint8_t
+{
+    Value,       ///< A measured value
+    Zero,        ///< A measured zero, drawn muted so it recedes without reading as "no data"
+    Unavailable, ///< No value: UNAVAILABLE_CELL_TEXT, muted, with AlignedCellText::unavailableReason as its tooltip
+};
 
 /// A pre-formatted right-aligned cell's text plus its CalcTextSize width, measured lazily (on
 /// first render, not at cache population time) and cached from then on (perf-plan #843 phase 1).
@@ -34,7 +44,7 @@ struct AlignedCellText
 {
     /// Sentinel meaning "not measured yet". Real widths are never negative.
     static constexpr float UNMEASURED_WIDTH = -1.0F;
-    /// unitStart for a cell with no unit to align ("-", "N/A", a count).
+    /// unitStart for a cell with no unit to align (UNAVAILABLE_CELL_TEXT, a count).
     static constexpr std::size_t NO_UNIT = std::string::npos;
 
     std::string text;
@@ -46,6 +56,10 @@ struct AlignedCellText
     std::size_t unitStart = NO_UNIT;
     /// Width of text before unitStart, measured lazily like `width`.
     mutable float numberWidth = UNMEASURED_WIDTH;
+
+    CellTone tone = CellTone::Value;
+    /// Why there is no value, for the cell's tooltip: a string literal, null unless tone is Unavailable.
+    const char* unavailableReason = nullptr;
 
     [[nodiscard]] bool hasUnit() const noexcept
     {
@@ -95,16 +109,65 @@ struct LazyTextWidth
     return AlignedCellText{.text = std::move(text)};
 }
 
-/// A cell whose value the probe could not read for this process -- for lack of rights, e.g. another
-/// user's process without root (#1110) -- as distinct from "-", a value that is 0 or not applicable.
-inline constexpr std::string_view UNAVAILABLE_CELL_TEXT = "N/A";
+/// The one glyph the table shows for a value it does not have, whatever the reason (#1210): an em
+/// dash, drawn muted. A measured zero reads as a (muted) zero instead, never as this.
+inline constexpr std::string_view UNAVAILABLE_CELL_TEXT = "\xE2\x80\x94";
 
-/// Which optional fields the process probe fills; a field it does not is shown as "-".
+/// Tooltip of a cell the probe could not read for this one process -- for lack of rights, e.g.
+/// another user's process without root (#1110).
+inline constexpr const char* UNREADABLE_CELL_REASON =
+    "Not available: TaskSmack could not read this for this process, usually for lack of privileges.";
+
+/// Tooltip of a cell in a column this system's process probe cannot fill at all (#1028, #1035).
+inline constexpr const char* UNSUPPORTED_CELL_REASON = "Not available on this system.";
+
+/// Which optional fields the process probe can fill (Platform::ProcessCapabilities). A column it
+/// cannot reads UNAVAILABLE_CELL_TEXT on every row, rather than a column of zeros that reads like a
+/// measurement (#1028, #1035).
 struct RowFormatOptions
 {
     bool hasPowerUsage = true;
     bool hasSharedMemory = true;
+    bool hasIoCounters = true;
+    bool hasNetworkCounters = true;
+    bool hasThreadCount = true;
+    bool hasHandleCount = true;
+    bool hasPageFaults = true;
+    bool hasCpuAffinity = true;
+    bool hasGdiObjects = true;
 };
+
+/// A cell with no value: UNAVAILABLE_CELL_TEXT, with `reason` (a string literal) as its tooltip.
+[[nodiscard]] inline AlignedCellText unavailableCell(const char* reason)
+{
+    AlignedCellText cell = makeAlignedCellText(std::string(UNAVAILABLE_CELL_TEXT));
+    cell.tone = CellTone::Unavailable;
+    cell.unavailableReason = reason;
+    return cell;
+}
+
+/// `cell`, marked as a measured zero when `isZero`.
+[[nodiscard]] inline AlignedCellText withZeroTone(AlignedCellText cell, bool isZero)
+{
+    if (isZero)
+    {
+        cell.tone = CellTone::Zero;
+    }
+    return cell;
+}
+
+/// Whether a value shown with one decimal digit reads as zero ("0.0"). NaN and negatives do too.
+[[nodiscard]] constexpr bool readsAsZeroAtOneDecimal(double value) noexcept
+{
+    constexpr double HALF_OF_LAST_DIGIT = 0.05;
+    return !(value >= HALF_OF_LAST_DIGIT);
+}
+
+/// A count ("1,234"), marked as a measured zero when it is 0.
+template<std::integral T> [[nodiscard]] inline AlignedCellText countCell(T value)
+{
+    return withZeroTone(makeAlignedCellText(UI::Format::formatIntLocalized(value)), value == T{0});
+}
 
 [[nodiscard]] inline std::string formatAlignedPercentString(double percent)
 {
@@ -203,12 +266,12 @@ struct RowFormatCache
     AlignedCellText power;      // pre-formatted to avoid per-frame decimal alignment work
     AlignedCellText gpuPercent; // pre-formatted to avoid per-frame decimal alignment work
     AlignedCellText gpuMemory;  // pre-formatted to avoid per-frame decimal alignment work
-    std::string gpuEngines;     // comma-joined engine list; avoids per-frame string joins; left-aligned, no width needed
-    AlignedCellText threads;    // formatOrDash/formatIntLocalized(threadCount)
-    AlignedCellText handles;    // formatOrDash/formatIntLocalized(handleCount)
-    AlignedCellText pageFaults; // formatOrDash/formatIntLocalized(pageFaults)
+    std::string gpuEngines;     // comma-joined engine list, empty for none; avoids per-frame string joins
+    AlignedCellText threads;    // countCell(threadCount), or unavailable
+    AlignedCellText handles;    // countCell(handleCount), or unavailable
+    AlignedCellText pageFaults; // countCell(pageFaults), or unavailable
     AlignedCellText affinity;   // formatCpuAffinityMask         — rarely changes
-    AlignedCellText gdiObjects; // formatIntLocalized(*gdiObjectCount) or "-"
+    AlignedCellText gdiObjects; // countCell(*gdiObjectCount), or unavailable
 
     // Widths of the cells drawn straight from the snapshot's own text (#1141); see LazyTextWidth.
     LazyTextWidth pidWidth;
@@ -228,66 +291,105 @@ struct RowFormatCache
 /// changes. `generation`/`fontId` are stamped by the caller after construction (they're not
 /// derivable from `proc` alone).
 ///
-/// `options` carries the process probe's capabilities for fields a platform may not fill: there the
-/// cell reads "-", as the GPU cells do for no data, instead of a column of zeros that reads like a
-/// measurement (#1028, #1035). They are fixed for the probe's lifetime, so they need no stamp.
+/// A value TaskSmack does not have -- in a column the probe cannot fill on this system (`options`,
+/// #1028, #1035), or one it could not read for this process (#1110) -- is UNAVAILABLE_CELL_TEXT with
+/// the reason as its tooltip. A measured zero keeps its number in the column's own format and is
+/// marked CellTone::Zero, so the two never look alike (#1210). The capabilities are published with
+/// the snapshot generation the entry is stamped with, so they need no stamp of their own.
 [[nodiscard]] inline RowFormatCache buildRowFormatCache(const Domain::ProcessSnapshot& proc, const RowFormatOptions& options = {})
 {
     RowFormatCache fmt;
     fmt.ppid = makeAlignedCellText(UI::Format::formatId(proc.parentPid));
-    fmt.startTime = makeAlignedCellText(UI::Format::formatEpochDateTimeShort(proc.startTimeEpoch));
+    fmt.startTime = (proc.startTimeEpoch != 0) ? makeAlignedCellText(UI::Format::formatEpochDateTimeShort(proc.startTimeEpoch))
+                                               : unavailableCell(UNREADABLE_CELL_REASON);
     fmt.cpuTime = makeAlignedCellText(UI::Format::formatDuration(proc.cpuTimeSeconds));
-    fmt.cpuPercent = makeAlignedCellText(formatAlignedPercentString(proc.cpuPercent));
-    fmt.memPercent = makeAlignedCellText(formatAlignedPercentString(proc.memoryPercent));
+    fmt.cpuPercent =
+        withZeroTone(makeAlignedCellText(formatAlignedPercentString(proc.cpuPercent)), readsAsZeroAtOneDecimal(proc.cpuPercent));
+    fmt.memPercent =
+        withZeroTone(makeAlignedCellText(formatAlignedPercentString(proc.memoryPercent)), readsAsZeroAtOneDecimal(proc.memoryPercent));
     const auto bytesCell = [](std::uint64_t bytes)
     {
-        return alignedBytesCell(static_cast<double>(bytes), UI::Format::unitForTotalBytes(bytes));
+        return withZeroTone(alignedBytesCell(static_cast<double>(bytes), UI::Format::unitForTotalBytes(bytes)), bytes == 0);
     };
     fmt.virtualMem = bytesCell(proc.virtualBytes);
     fmt.resident = bytesCell(proc.memoryBytes);
+    // Not gated on ProcessCapabilities::hasPeakRss: where the OS has no peak, the model tracks one.
     fmt.peakRss = bytesCell(proc.peakMemoryBytes);
-    fmt.shared = options.hasSharedMemory ? bytesCell(proc.sharedBytes) : makeAlignedCellText("-");
-    // A rate that is 0 reads "-"; one the probe could not read reads "N/A" (#1110) -- without root, every
-    // other user's process used to show the same "-" as an idle one.
-    const auto rateCell = [](bool available, double bytesPerSec) -> AlignedCellText
+    fmt.shared = options.hasSharedMemory ? bytesCell(proc.sharedBytes) : unavailableCell(UNSUPPORTED_CELL_REASON);
+    // An idle rate is a measured "0.0 B/s"; one the probe could not read is unavailable (#1110) --
+    // without root, every other user's process used to look as idle as a process that was.
+    const auto rateCell = [](bool supported, bool available, double bytesPerSec) -> AlignedCellText
     {
+        if (!supported)
+        {
+            return unavailableCell(UNSUPPORTED_CELL_REASON);
+        }
         if (!available)
         {
-            return makeAlignedCellText(std::string(UNAVAILABLE_CELL_TEXT));
+            return unavailableCell(UNREADABLE_CELL_REASON);
         }
-        return (bytesPerSec > 0.0) ? alignedBytesPerSecCell(bytesPerSec, UI::Format::unitForBytesPerSecond(bytesPerSec))
-                                   : makeAlignedCellText("-");
+        const double rate = (bytesPerSec > 0.0) ? bytesPerSec : 0.0;
+        return withZeroTone(alignedBytesPerSecCell(rate, UI::Format::unitForBytesPerSecond(rate)), readsAsZeroAtOneDecimal(rate));
     };
-    fmt.ioRead = rateCell(proc.ioAvailable, proc.ioReadBytesPerSec);
-    fmt.ioWrite = rateCell(proc.ioAvailable, proc.ioWriteBytesPerSec);
-    fmt.netSent = rateCell(proc.networkAvailable, proc.netSentBytesPerSec);
-    fmt.netRecv = rateCell(proc.networkAvailable, proc.netReceivedBytesPerSec);
-    fmt.power = options.hasPowerUsage ? alignedPowerCell(proc.powerWatts) : makeAlignedCellText("-");
-    fmt.gpuPercent = makeAlignedCellText((proc.gpuUtilPercent > 0.0) ? formatAlignedPercentString(proc.gpuUtilPercent) : "-");
-    fmt.gpuMemory = (proc.gpuMemoryBytes > 0) ? bytesCell(proc.gpuMemoryBytes) : makeAlignedCellText("-");
-    if (proc.gpuEngines.empty())
+    fmt.ioRead = rateCell(options.hasIoCounters, proc.ioAvailable, proc.ioReadBytesPerSec);
+    fmt.ioWrite = rateCell(options.hasIoCounters, proc.ioAvailable, proc.ioWriteBytesPerSec);
+    fmt.netSent = rateCell(options.hasNetworkCounters, proc.networkAvailable, proc.netSentBytesPerSec);
+    fmt.netRecv = rateCell(options.hasNetworkCounters, proc.networkAvailable, proc.netReceivedBytesPerSec);
+    // Power is shown down to microwatts, so it reads as zero below a twentieth of one.
+    constexpr double MICROWATTS_PER_WATT = 1.0e6;
+    fmt.power = options.hasPowerUsage
+                  ? withZeroTone(alignedPowerCell(proc.powerWatts), readsAsZeroAtOneDecimal(proc.powerWatts * MICROWATTS_PER_WATT))
+                  : unavailableCell(UNSUPPORTED_CELL_REASON);
+    fmt.gpuPercent =
+        withZeroTone(makeAlignedCellText(formatAlignedPercentString(proc.gpuUtilPercent)), readsAsZeroAtOneDecimal(proc.gpuUtilPercent));
+    fmt.gpuMemory = bytesCell(proc.gpuMemoryBytes);
+    // No engine in use is a fact rather than a gap, so it is left blank rather than marked unavailable.
+    for (std::size_t i = 0; i < proc.gpuEngines.size(); ++i)
     {
-        fmt.gpuEngines = "-";
+        if (i > 0)
+        {
+            fmt.gpuEngines += ", ";
+        }
+        fmt.gpuEngines += proc.gpuEngines[i];
+    }
+    // A running process has at least one thread, so a count of 0 is one that was not read.
+    if (!options.hasThreadCount)
+    {
+        fmt.threads = unavailableCell(UNSUPPORTED_CELL_REASON);
     }
     else
     {
-        for (size_t i = 0; i < proc.gpuEngines.size(); ++i)
-        {
-            if (i > 0)
-            {
-                fmt.gpuEngines += ", ";
-            }
-            fmt.gpuEngines += proc.gpuEngines[i];
-        }
+        fmt.threads = (proc.threadCount > 0) ? countCell(proc.threadCount) : unavailableCell(UNREADABLE_CELL_REASON);
     }
-    fmt.threads = makeAlignedCellText(UI::Format::formatOrDash(proc.threadCount, [](auto v) { return UI::Format::formatIntLocalized(v); }));
-    fmt.handles = makeAlignedCellText(
-        proc.handleCountAvailable ? UI::Format::formatOrDash(proc.handleCount, [](auto v) { return UI::Format::formatIntLocalized(v); })
-                                  : std::string(UNAVAILABLE_CELL_TEXT));
-    fmt.pageFaults =
-        makeAlignedCellText(UI::Format::formatOrDash(proc.pageFaults, [](auto v) { return UI::Format::formatIntLocalized(v); }));
-    fmt.affinity = makeAlignedCellText(UI::Format::formatCpuAffinityMask(proc.cpuAffinityMask));
-    fmt.gdiObjects = makeAlignedCellText(proc.gdiObjectCount.has_value() ? UI::Format::formatIntLocalized(*proc.gdiObjectCount) : "-");
+    if (!options.hasHandleCount)
+    {
+        fmt.handles = unavailableCell(UNSUPPORTED_CELL_REASON);
+    }
+    else
+    {
+        fmt.handles =
+            (proc.handleCountAvailable && proc.handleCount >= 0) ? countCell(proc.handleCount) : unavailableCell(UNREADABLE_CELL_REASON);
+    }
+    fmt.pageFaults = options.hasPageFaults ? countCell(proc.pageFaults) : unavailableCell(UNSUPPORTED_CELL_REASON);
+    // A mask of 0 is one that was not read (ProcessSnapshot::cpuAffinityMask): a process can always run somewhere.
+    if (!options.hasCpuAffinity)
+    {
+        fmt.affinity = unavailableCell(UNSUPPORTED_CELL_REASON);
+    }
+    else
+    {
+        fmt.affinity = (proc.cpuAffinityMask != 0) ? makeAlignedCellText(UI::Format::formatCpuAffinityMask(proc.cpuAffinityMask))
+                                                   : unavailableCell(UNREADABLE_CELL_REASON);
+    }
+    // No GDI count means the process could not be opened; 0 is a background process that owns none.
+    if (!options.hasGdiObjects)
+    {
+        fmt.gdiObjects = unavailableCell(UNSUPPORTED_CELL_REASON);
+    }
+    else
+    {
+        fmt.gdiObjects = proc.gdiObjectCount.has_value() ? countCell(*proc.gdiObjectCount) : unavailableCell(UNREADABLE_CELL_REASON);
+    }
     return fmt;
 }
 

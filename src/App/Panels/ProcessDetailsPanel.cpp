@@ -454,7 +454,8 @@ void ProcessDetailsPanel::renderContent()
                 if (!Detail::hasGpuUsageToShow(
                         proc.gpuMemoryBytes, proc.gpuUtilPercent, !proc.gpuDevices.empty(), m_GpuUtilHistory, m_GpuMemHistory))
                 {
-                    ImGui::TextUnformatted("No GPU usage detected for this process");
+                    UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  No GPU usage",
+                                                  "This process has not used a GPU since it was selected.");
                 }
                 else
                 {
@@ -468,28 +469,33 @@ void ProcessDetailsPanel::renderContent()
             ImGui::EndTabItem();
         }
 
-        // 3. Network and I/O - show if process has network or I/O data
+        // 3. Network and I/O. Always present, like the GPU tab, so the tab set does not change while a
+        // process stays selected; an empty state stands in until there is data (#1210).
+        if (ImGui::BeginTabItem(ICON_FA_NETWORK_WIRED "  Network and I/O"))
         {
-            const bool hasNetworkData = (cachedSnapshot().netSentBytesPerSec > 0.0 || cachedSnapshot().netReceivedBytesPerSec > 0.0 ||
-                                         !m_NetSentHistory.empty() || !m_NetRecvHistory.empty());
-            const bool hasIoData = (cachedSnapshot().ioReadBytesPerSec > 0.0 || cachedSnapshot().ioWriteBytesPerSec > 0.0 ||
-                                    !m_IoReadHistory.empty() || !m_IoWriteHistory.empty());
-            if (hasNetworkData || hasIoData)
             {
-                if (ImGui::BeginTabItem(ICON_FA_NETWORK_WIRED "  Network and I/O"))
+                const UI::Widgets::TabContentScope content("##NetworkContent");
+                const auto& proc = cachedSnapshot();
+                const bool hasNetworkData = (proc.netSentBytesPerSec > 0.0 || proc.netReceivedBytesPerSec > 0.0 ||
+                                             !m_NetSentHistory.empty() || !m_NetRecvHistory.empty());
+                const bool hasIoData = (proc.ioReadBytesPerSec > 0.0 || proc.ioWriteBytesPerSec > 0.0 || !m_IoReadHistory.empty() ||
+                                        !m_IoWriteHistory.empty());
+                if (!hasNetworkData && !hasIoData)
                 {
-                    {
-                        const UI::Widgets::TabContentScope content("##NetworkContent");
-                        UI::Widgets::FillPlotLayout fill(m_NetworkFill);
-                        const UI::Widgets::AlignedChartStack alignedCharts("##ProcNetworkCharts"); // #1206
-                        // Render I/O stats first (at the top)
-                        renderIoStats(fill);
-                        ImGui::Separator();
-                        renderNetworkStats(fill);
-                    }
-                    ImGui::EndTabItem();
+                    UI::Widgets::renderEmptyState(ICON_FA_NETWORK_WIRED "  No network or disk I/O yet",
+                                                  "Disk and network rates for this process appear here once they have been sampled.");
+                }
+                else
+                {
+                    UI::Widgets::FillPlotLayout fill(m_NetworkFill);
+                    const UI::Widgets::AlignedChartStack alignedCharts("##ProcNetworkCharts"); // #1206
+                    // Render I/O stats first (at the top)
+                    renderIoStats(fill);
+                    ImGui::Separator();
+                    renderNetworkStats(fill);
                 }
             }
+            ImGui::EndTabItem();
         }
 
         // 4. Actions (last)
