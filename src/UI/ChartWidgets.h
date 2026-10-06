@@ -375,6 +375,40 @@ inline void forEachFiniteRun(const T* values, int count, OnRun&& onRun) // NOLIN
     }
 }
 
+/// Calls `onRun(start, length)` for each maximal run over which both `lower[i]` and `upper[i]` are
+/// finite, for i in [0, count).
+///
+/// A band filled between two series (ImPlot::PlotShaded with two Y arrays, as the stacked CPU bands
+/// are) is drawn only where both of its edges have a reading: ImPlot's shaded renderer has no NaN
+/// handling, so a NaN in either edge would otherwise become garbage triangles (#1149).
+// onRun is called once per run, so it is used as an lvalue rather than forwarded.
+template<typename T, typename OnRun>
+inline void forEachJointFiniteRun(const T* lower, const T* upper, int count, OnRun&& onRun) // NOLINT(cppcoreguidelines-missing-std-forward)
+{
+    const auto finiteAt = [&](int i)
+    {
+        return std::isfinite(static_cast<double>(lower[i])) && std::isfinite(static_cast<double>(upper[i]));
+    };
+    int runStart = 0;
+    while (runStart < count)
+    {
+        while (runStart < count && !finiteAt(runStart))
+        {
+            ++runStart;
+        }
+        int runEnd = runStart;
+        while (runEnd < count && finiteAt(runEnd))
+        {
+            ++runEnd;
+        }
+        if (runEnd > runStart)
+        {
+            onRun(runStart, runEnd - runStart);
+        }
+        runStart = runEnd;
+    }
+}
+
 /// One point a history-chart reduction keeps: the index of the source sample it is drawn from, and
 /// whether it is drawn as a gap (NaN: no reading) instead of that sample's value. The reductions
 /// below emit these rather than copying values, so the choice of points can be cached and replayed

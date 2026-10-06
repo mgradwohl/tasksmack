@@ -1443,6 +1443,37 @@ TEST(ChartWidgetsTest, FiniteRunsOfNothingFiniteIsNoRuns)
     EXPECT_TRUE(finiteRuns({std::numeric_limits<float>::infinity()}).empty());
 }
 
+// ========== forEachJointFiniteRun (#1149) ==========
+
+namespace
+{
+[[nodiscard]] std::vector<std::pair<int, int>> jointFiniteRuns(const std::vector<double>& lower, const std::vector<double>& upper)
+{
+    std::vector<std::pair<int, int>> runs;
+    UI::Widgets::forEachJointFiniteRun(
+        lower.data(), upper.data(), static_cast<int>(lower.size()), [&](int start, int length) { runs.emplace_back(start, length); });
+    return runs;
+}
+} // namespace
+
+// A stacked band is filled between two edges: a NaN gap in either edge splits the band there.
+TEST(ChartWidgetsTest, JointFiniteRunsSplitWhereEitherEdgeIsNaN)
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    // A gap point (NaN in both edges), as reduceAlignedPoints emits for a missed sample.
+    EXPECT_EQ(jointFiniteRuns({0.0, 0.0, 0.0, 0.0}, {10.0, 20.0, nan, 30.0}), (std::vector<std::pair<int, int>>{{0, 2}, {3, 1}}));
+    // The lower edge alone missing a reading (an offline core in the band below) still splits it.
+    EXPECT_EQ(jointFiniteRuns({1.0, nan, 1.0, 1.0}, {2.0, 2.0, 2.0, 2.0}), (std::vector<std::pair<int, int>>{{0, 1}, {2, 2}}));
+    // Gaps in different edges at different points leave only the points where both are finite.
+    EXPECT_EQ(jointFiniteRuns({nan, 1.0, 1.0, 1.0, 1.0}, {2.0, 2.0, 2.0, nan, 2.0}), (std::vector<std::pair<int, int>>{{1, 2}, {4, 1}}));
+}
+
+TEST(ChartWidgetsTest, JointFiniteRunsOfUnbrokenEdgesIsOneRun)
+{
+    EXPECT_EQ(jointFiniteRuns({0.0, 0.0, 0.0}, {1.0, 2.0, 3.0}), (std::vector<std::pair<int, int>>{{0, 3}}));
+    EXPECT_TRUE(jointFiniteRuns({}, {}).empty());
+}
+
 TEST(ChartWidgetsTest, NormalizeToUnitIntervalScalesWithinRange)
 {
     EXPECT_DOUBLE_EQ(normalizeToUnitInterval(50.0, 100.0), 0.5);

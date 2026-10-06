@@ -760,28 +760,28 @@ void SystemMetricsPanel::renderOverview()
                 }
                 const int stackCount = UI::Format::checkedCount(m_CpuStackX.size());
 
-                ImPlot::PlotShaded(CPU_USER_LABEL,
-                                   m_CpuStackX.data(),
-                                   y0.data(),
-                                   yUserTop.data(),
-                                   stackCount,
-                                   {ImPlotProp_FillColor, theme.scheme().cpuUserFill});
-
-                ImPlot::PlotShaded(CPU_SYSTEM_LABEL,
-                                   m_CpuStackX.data(),
-                                   yUserTop.data(),
-                                   ySystemTop.data(),
-                                   stackCount,
-                                   {ImPlotProp_FillColor, theme.scheme().cpuSystemFill});
-
+                // ImPlot's shaded renderer has no NaN handling, so each band is filled run by run over
+                // the points where both of its edges have a reading: a gap point (a missed sample) or
+                // a band with no reading is drawn as a gap, not as triangles through NaN (#1149).
+                const auto shadeBand =
+                    [&](const char* label, const std::vector<double>& lower, const std::vector<double>& upper, const ImVec4& fillColor)
+                {
+                    UI::Widgets::forEachJointFiniteRun(
+                        lower.data(),
+                        upper.data(),
+                        stackCount,
+                        [&](int runStart, int runLength)
+                        {
+                            const auto at = static_cast<std::size_t>(runStart);
+                            ImPlot::PlotShaded(
+                                label, &m_CpuStackX[at], &lower[at], &upper[at], runLength, {ImPlotProp_FillColor, fillColor});
+                        });
+                };
+                shadeBand(CPU_USER_LABEL, y0, yUserTop, theme.scheme().cpuUserFill);
+                shadeBand(CPU_SYSTEM_LABEL, yUserTop, ySystemTop, theme.scheme().cpuSystemFill);
                 if (showIowait)
                 {
-                    ImPlot::PlotShaded(CPU_IOWAIT_LABEL,
-                                       m_CpuStackX.data(),
-                                       yBusyTop.data(),
-                                       yIowaitTop.data(),
-                                       stackCount,
-                                       {ImPlotProp_FillColor, theme.scheme().cpuIowaitFill});
+                    shadeBand(CPU_IOWAIT_LABEL, yBusyTop, yIowaitTop, theme.scheme().cpuIowaitFill);
                 }
 
                 // An edge along the top of each band, under the band's own label, in its opaque
