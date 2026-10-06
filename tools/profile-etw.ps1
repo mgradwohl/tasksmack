@@ -22,8 +22,11 @@
     subject to run-to-run system-load variance, so occasional drops are expected, just far
     fewer) - see TaskSmackCPU.wprp's own comment for where its buffer sizing came from.
 .PARAMETER Mode
-    app   - launch TaskSmack.exe, then either wait for it to be closed manually (default) or
-            run for a fixed window and close it automatically (-DurationSeconds)
+    app   - launch TaskSmack.exe, let it warm up (see -WarmupSeconds), start the trace, then
+            either wait for it to be closed manually (default) or record for a fixed window
+            and close it automatically (-DurationSeconds). The capture fails, without printing
+            TRACE=, if the app exits during warm-up, exits before a -DurationSeconds window ends,
+            or is closed with a nonzero exit code (#1186).
     bench - run TaskSmackBenchmarks.exe with the supplied benchmark filter
     resize - separated normal-user app / elevated collector diagnostic capture (#882).
 .PARAMETER Phase
@@ -33,18 +36,36 @@
 .PARAMETER RunDirectory
     resize mode only: unique directory shared by all four phases; must not exist at Prepare.
 .PARAMETER Preset
-        Build preset that contains the binaries to run. Defaults depend on mode:
-            - app   -> win-optimized for production-like timings
-            - bench -> win-benchmark for non-debug-info benchmark binaries
-        Use win-profile explicitly when you want a symbol-rich frame-pointer build for
-        deeper follow-up analysis.
+    Build preset that contains the binaries to run. Defaults depend on mode:
+        - app   -> win-release, the preset release builds ship (.github/workflows/release.yml),
+                   so the profile measures the binary users run (#1186)
+        - bench -> win-benchmark for non-debug-info benchmark binaries
+    The preset and the compile flags its build tree was configured with are logged at the start
+    of the run and recorded in the manifest. Pass win-profile for a symbol-rich frame-pointer
+    build for deeper follow-up attribution, or win-optimized (LTO, -march=x86-64-v3,
+    -fomit-frame-pointer) to profile that opt-in build -- it is not what ships.
+.PARAMETER WarmupSeconds
+    app mode: after the app's main window appears (waiting up to -MainWindowTimeoutSeconds), wait
+    this many more seconds before starting the trace, so startup (font, theme, first process
+    enumeration) is not in the profile. Default 5. The app exiting during warm-up fails the run.
+.PARAMETER IncludeStartup
+    app mode: start the trace before launching the app, so startup is recorded deliberately (no
+    warm-up).
+.PARAMETER MainWindowTimeoutSeconds
+    app mode: how long warm-up waits for the main window before warning and continuing. Default 60.
+.PARAMETER SkipTrace
+    app mode: dry run of the launch/warm-up/monitor logic without WPR, the elevated collector or a
+    UAC prompt. Nothing is recorded; the manifest is written and the run fails or succeeds as a
+    capture would, printing DRY_RUN=ok instead of TRACE= on success. Used by
+    tools/test-profile-etw.ps1.
 .PARAMETER SkipBuild
     Skip configure/build and use the existing binaries.
 .PARAMETER DurationSeconds
     Mode=resize/Phase=Collect: bounded recording duration (15-600 seconds; default 180).
     Mode=app only: instead of waiting indefinitely for a human to exercise and close the
-    app, run it for this many seconds (idle - no interaction, so this captures background
-    refresh/render cost, not click/scroll/hover load) and then close it automatically. Lets
+    app, record for this many seconds after warm-up (idle - no interaction, so this captures
+    background refresh/render cost, not click/scroll/hover load), stop the trace and then close
+    the app automatically. The app must still be running at the end of the window. Lets
     an app-mode capture run unattended/scripted. Omit (0) to keep the default interactive
     behavior (wait for manual close, useful when you actually want to exercise the UI).
 .PARAMETER BenchmarkFilter
@@ -79,6 +100,10 @@
 .EXAMPLE
     pwsh tools/profile-etw.ps1 app -Preset win-profile
 .EXAMPLE
+    pwsh tools/profile-etw.ps1 app -DurationSeconds 45 -WarmupSeconds 15
+.EXAMPLE
+    pwsh tools/profile-etw.ps1 app -DurationSeconds 20 -IncludeStartup
+.EXAMPLE
     pwsh tools/profile-etw.ps1 app -DurationSeconds 45 -ElevatedTarget
 .EXAMPLE
     pwsh tools/profile-etw.ps1 resize -Phase Prepare -RunDirectory .\perf-data\resize-001 -Preset win-profile
@@ -112,6 +137,20 @@ param(
     [switch]$SkipBuild,
 
     [int]$DurationSeconds = 0,
+
+    [ValidateRange(0, 3600)]
+    [int]$WarmupSeconds = 5,
+
+    [switch]$IncludeStartup,
+
+    [ValidateRange(0, 3600)]
+    [int]$MainWindowTimeoutSeconds = 60,
+
+    [switch]$SkipTrace,
+
+    # Internal (tests): run this executable instead of the preset's TaskSmack.exe, with a hidden
+    # window.
+    [string]$TargetPath,
 
     [string]$BenchmarkFilter = 'BM_(ProcessProbe_Enumerate|ProcessModel_Refresh|SystemProbe_Sample|SystemModel_Refresh|GPUProbe_ReadCounters|GPUModel_Refresh|GPUModel_ProcessGpuCounters|PDHGPUProbe_ReadProcessGPUCounters|DiskProbe_Read|StorageModel_Sample|History_(Push|RandomAccess|SequentialAccess|CopyTo))$',
 
@@ -157,7 +196,12 @@ if ($Mode -eq 'resize') {
 $perfDir = Resolve-CaptureOutputDirectory -OutputDirectory $OutputDirectory -RepoRoot $repoRoot
 
 if ([string]::IsNullOrWhiteSpace($Preset)) {
-    $Preset = if ($Mode -eq 'app') { 'win-optimized' } else { 'win-benchmark' }
+    # win-release is what .github/workflows/release.yml builds and ships (#1186).
+    $Preset = if ($Mode -eq 'app') { 'win-release' } else { 'win-benchmark' }
+}
+if ($SkipTrace -and $Mode -ne 'app') { throw '-SkipTrace is supported in app mode only.' }
+if ($Mode -ne 'app' -and ($IncludeStartup -or $PSBoundParameters.ContainsKey('WarmupSeconds'))) {
+    throw '-WarmupSeconds and -IncludeStartup apply to app mode only.'
 }
 
 if (-not $Timestamp) {
@@ -174,7 +218,8 @@ $benchJsonPath = Join-Path $perfDir "$prefix-$Timestamp.json"
 $manifestPath = Join-Path $perfDir "$prefix-$Timestamp.manifest.json"
 
 $binaryName = if ($Mode -eq 'app') { 'TaskSmack.exe' } else { 'TaskSmackBenchmarks.exe' }
-$binaryPath = Join-Path $repoRoot "build/$Preset/bin/$binaryName"
+$buildDir = Join-Path $repoRoot "build/$Preset"
+$binaryPath = if ($TargetPath) { $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($TargetPath) } else { Join-Path $buildDir "bin/$binaryName" }
 
 # The collector waits at most this long for the stop request: a fixed-duration app run plus
 # slack, or else the 4-hour interactive allowance plus slack (a benchmark run can legitimately
@@ -232,6 +277,18 @@ function Get-HostExe {
 function Invoke-ProfileTarget {
     # Runs the app or benchmark workload from the current process's token and measures the
     # integrity level it actually got, rather than inferring it from the launcher (#872).
+    # StartTrace/StopTrace start and stop the recording: around the whole benchmark run, and in
+    # app mode after the warm-up (Invoke-AppCapture, #1186).
+    param(
+        [Parameter(Mandatory = $true)][scriptblock]$StartTrace,
+        [Parameter(Mandatory = $true)][scriptblock]$StopTrace
+    )
+    if ($Mode -eq 'app') {
+        $windowStyle = if ($TargetPath) { 'Hidden' } else { 'Normal' }
+        return Invoke-AppCapture -BinaryPath $binaryPath -StartTrace $StartTrace -StopTrace $StopTrace `
+            -DurationSeconds $DurationSeconds -WarmupSeconds $WarmupSeconds -IncludeStartup:$IncludeStartup `
+            -MainWindowTimeoutSeconds $MainWindowTimeoutSeconds -WindowStyle $windowStyle
+    }
     $result = [ordered]@{
         Binary         = $binaryPath
         Pid            = $null
@@ -241,38 +298,8 @@ function Invoke-ProfileTarget {
         StartUtc       = (Get-Date).ToUniversalTime().ToString('o')
         EndUtc         = $null
     }
-    if ($Mode -eq 'app') {
-        $proc = Start-Process -FilePath $binaryPath -PassThru
-        $null = $proc.Handle # keep a handle so ExitCode is available after exit
-        $result.Pid = $proc.Id
-        $result.IntegrityLevel = Get-ProcessIntegrityLevel -ProcessId $proc.Id
-        Write-Host "Launched app PID: $($proc.Id) (integrity: $($result.IntegrityLevel))"
-        if ($DurationSeconds -gt 0) {
-            Write-Host "Running for $DurationSeconds second(s), then closing automatically."
-            Start-Sleep -Seconds $DurationSeconds
-            if (-not $proc.HasExited) {
-                Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-                # Stop-Process returns before the process is gone; wait, so its status is final
-                # and the trace is not stopped while it is still terminating.
-                $null = $proc.WaitForExit(30000)
-                $result.EndReason = 'closed by the script after -DurationSeconds (the exit code is from that forced stop)'
-            }
-        }
-        else {
-            Write-Host 'Exercise the application, then close it to finish the trace.'
-            # Wait up to 4 hours; if the app crashes without exiting, this unblocks
-            # so the caller can still save the recording.
-            Wait-Process -Id $proc.Id -Timeout 14400 -ErrorAction SilentlyContinue
-        }
-        if ($proc.HasExited) {
-            $result.ExitCode = $proc.ExitCode
-            if (-not $result.EndReason) { $result.EndReason = 'exited' }
-        }
-        else {
-            $result.EndReason = Get-UnfinishedTargetReason -DurationSeconds $DurationSeconds
-        }
-    }
-    else {
+    & $StartTrace | Out-Host
+    try {
         $benchArgs = @("--benchmark_filter=$BenchmarkFilter", "--benchmark_repetitions=$BenchmarkRepetitions", "--benchmark_min_time=$BenchmarkMinTime", '--benchmark_report_aggregates_only=true', '--benchmark_display_aggregates_only=true', "--benchmark_out=$benchJsonPath", '--benchmark_out_format=json')
         $proc = Start-Process -FilePath $binaryPath -ArgumentList (ConvertTo-CommandLine $benchArgs) -NoNewWindow -PassThru
         $null = $proc.Handle
@@ -286,17 +313,25 @@ function Invoke-ProfileTarget {
         # integrity, exit code) once the trace is saved, and fails after that (Assert-TargetSucceeded).
         if ($proc.ExitCode -eq 0) { Write-Host "Benchmark JSON: $benchJsonPath" }
     }
+    finally {
+        & $StopTrace | Out-Host
+    }
     $result.EndUtc = (Get-Date).ToUniversalTime().ToString('o')
     return $result
 }
 
 function Assert-TargetSucceeded {
-    # After the manifest is written: a benchmark run that exited nonzero, or an app still running
-    # when the trace was stopped (see Get-UnfinishedTargetReason), fails the capture -- the
-    # trace ended before the workload did. (The app's exit code is not checked: -DurationSeconds
-    # ends it with a forced stop.)
+    # After the manifest is written: an app run that did not cover what was asked (Invoke-AppCapture's
+    # .Failure: it exited during warm-up or before the -DurationSeconds window ended, or was closed
+    # with a nonzero exit code), a benchmark run that exited nonzero, or an app still running
+    # when the trace was stopped (see Get-UnfinishedTargetReason), fails the capture. (After a
+    # full -DurationSeconds window the app's exit code is not checked: the script's forced stop
+    # sets it.)
     param($Target)
     if ($null -eq $Target) { return }
+    if ($Target.Contains('Failure') -and $Target.Failure) {
+        throw "Capture failed: $($Target.Failure) The manifest ($manifestPath) and any partial trace are kept for inspection; no trace is reported."
+    }
     if ($Mode -eq 'bench' -and $Target.ExitCode -ne 0) {
         throw "Benchmark binary failed with exit code $($Target.ExitCode): $binaryPath. The trace and manifest ($manifestPath) are kept for inspection."
     }
@@ -310,9 +345,10 @@ function Write-ProfileManifest {
     $manifest = [ordered]@{
         Mode              = $Mode
         Preset            = $Preset
+        BuildFlags        = Get-PresetBuildFlags -BuildDirectory $buildDir
         Timestamp         = $Timestamp
-        Trace             = $tracePath
-        Scenario          = if ($ElevatedTarget) { 'elevated-target (opt-in, -ElevatedTarget)' } else { 'normal-user target, elevated collector' }
+        Trace             = if ($SkipTrace) { $null } else { $tracePath }
+        Scenario          = if ($SkipTrace) { 'dry run (-SkipTrace): nothing recorded' } elseif ($ElevatedTarget) { 'elevated-target (opt-in, -ElevatedTarget)' } else { 'normal-user target, elevated collector' }
         CollectorElevated = $CollectorElevated
         Target            = $Target
     }
@@ -326,22 +362,29 @@ function Write-ProfileManifest {
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding utf8
 }
 
+function Start-WprRecording {
+    # A unique instance name, so an existing recording is never touched.
+    $script:wprInstanceName = "TaskSmack-$([guid]::NewGuid().ToString('N'))"
+    Invoke-Native wpr '-start' "$wprProfilePath!TaskSmackCPU" '-filemode' '-instancename' $script:wprInstanceName
+}
+
+function Stop-WprRecording {
+    Invoke-Native wpr '-stop' $tracePath '-instancename' $script:wprInstanceName
+}
+
 function Invoke-WprCapture {
     # Starts WPR, runs $Body, and always stops WPR again if it was started.
     param([Parameter(Mandatory = $true)][scriptblock]$Body)
-    $instanceName = "TaskSmack-$([guid]::NewGuid().ToString('N'))"
     $recordingStarted = $false
     try {
-        Invoke-Native wpr '-start' "$wprProfilePath!TaskSmackCPU" '-filemode' '-instancename' $instanceName
+        Start-WprRecording
         $recordingStarted = $true
         & $Body
-        Invoke-Native wpr '-stop' $tracePath '-instancename' $instanceName
         $recordingStarted = $false
+        Stop-WprRecording
     }
     finally {
-        if ($recordingStarted) {
-            Invoke-Native wpr '-stop' $tracePath '-instancename' $instanceName
-        }
+        if ($recordingStarted) { Stop-WprRecording }
     }
 }
 
@@ -410,12 +453,12 @@ if ($Role -eq 'ElevatedRun') {
         Write-Host "Trace: $tracePath"
         # Not $script:elevatedTarget: PowerShell variable names are case-insensitive, so that would
         # be the -ElevatedTarget switch.
-        Invoke-WprCapture { $script:capturedTarget = Invoke-ProfileTarget }
-        $target = $script:capturedTarget
+        $target = Invoke-ProfileTarget -StartTrace { Start-WprRecording } -StopTrace { Stop-WprRecording }
         $matchesForManifest = if ($Mode -eq 'bench') { Get-BenchmarkFilterMatches -BinaryPath $binaryPath -Filter $BenchmarkFilter } else { $null }
         Write-ProfileManifest -Target $target -BenchmarkMatches $matchesForManifest -CollectorElevated $true
-        Write-Host "ETW_TRACE=$tracePath"
+        # A failed run (e.g. the app crashed) throws here, before the trace is reported.
         Assert-TargetSucceeded $target
+        Write-Host "ETW_TRACE=$tracePath"
     }
     finally {
         Stop-Transcript | Out-Null
@@ -424,7 +467,7 @@ if ($Role -eq 'ElevatedRun') {
 }
 
 # ── Orchestrator: the normal entry point ─────────────────────────────────────────────────────
-if ((Test-IsAdministrator) -and -not $ElevatedTarget) {
+if ((Test-IsAdministrator) -and -not $ElevatedTarget -and -not $SkipTrace) {
     throw "Run this from a normal (non-elevated) terminal. Only the WPR collector needs elevation, and this script elevates it on its own; a target launched from an elevated terminal would run elevated too, which changes what it measures (#872). To capture an elevated target deliberately, pass -ElevatedTarget."
 }
 
@@ -433,10 +476,31 @@ if (-not $SkipBuild) {
     Invoke-Native cmake '--build' '--preset' $Preset
 }
 
+# Say which build is measured: the preset and the flags its tree was configured with (#1186).
+Write-Host (Format-PresetBuildFlags -Preset $Preset -Flags (Get-PresetBuildFlags -BuildDirectory $buildDir))
+Write-Host "Binary: $binaryPath"
+if ($Mode -eq 'app') {
+    if ($IncludeStartup) { Write-Host 'Startup: recorded (-IncludeStartup); the trace starts before the app is launched.' }
+    else { Write-Host "Startup: excluded; the trace starts once the main window exists plus $WarmupSeconds s of warm-up." }
+}
+
 # Validate everything before prompting for elevation so failures are immediate.
-$null = Ensure-Tool 'wpr'
+if (-not $SkipTrace) { $null = Ensure-Tool 'wpr' }
 Ensure-Binary $wprProfilePath
 Ensure-Binary $binaryPath
+
+# ── Dry run (-SkipTrace): the app lifecycle and its failure checks, with nothing recorded ────
+if ($SkipTrace) {
+    Write-Warning '-SkipTrace: dry run. No WPR session is started and nothing is recorded.'
+    $target = Invoke-ProfileTarget -StartTrace { Write-Host 'DRY RUN: the trace would start now.' } -StopTrace { Write-Host 'DRY RUN: the trace would stop now.' }
+    Write-ProfileManifest -Target $target -BenchmarkMatches $null -CollectorElevated $false
+    Assert-TargetSucceeded $target
+    Write-Host 'DRY_RUN=ok'
+    Write-Host "MANIFEST=$manifestPath"
+    Write-Host "TARGET_INTEGRITY=$($target.IntegrityLevel)"
+    Write-Host "PRESET=$Preset"
+    return
+}
 
 $benchmarkMatches = $null
 if ($Mode -eq 'bench') {
@@ -449,7 +513,12 @@ $hostExe = Get-HostExe
 $commonArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "$PSCommandPath", '-Mode', $Mode, '-Preset', $Preset, '-Timestamp', $Timestamp, '-BenchmarkFilter', $BenchmarkFilter, '-BenchmarkRepetitions', "$BenchmarkRepetitions", '-BenchmarkMinTime', $BenchmarkMinTime, '-DurationSeconds', "$DurationSeconds", '-OutputDirectory', $perfDir, '-SkipBuild')
 
 if ($ElevatedTarget) {
+    # The elevated child runs the app itself, so it needs the warm-up settings too.
     $argList = $commonArgs + @('-ElevatedTarget', '-Role', 'ElevatedRun')
+    if ($Mode -eq 'app') {
+        $argList += @('-WarmupSeconds', "$WarmupSeconds", '-MainWindowTimeoutSeconds', "$MainWindowTimeoutSeconds")
+        if ($IncludeStartup) { $argList += '-IncludeStartup' }
+    }
     "LAUNCH=$hostExe $($argList -join ' ')" | Set-Content -Path $launcherLogPath -Encoding utf8
     if (Test-IsAdministrator) {
         & $hostExe @argList
@@ -476,26 +545,49 @@ else {
     $argList = $commonArgs + @('-Role', 'Collector', '-ControlDirectory', $controlDir)
     "LAUNCH=$hostExe $($argList -join ' ')" | Set-Content -Path $launcherLogPath -Encoding utf8
 
-    $collector = Start-Process -FilePath $hostExe -Verb RunAs -ArgumentList (ConvertTo-CommandLine $argList) -WorkingDirectory $repoRoot -PassThru
-    $null = $collector.Handle
+    # The collector is started by Invoke-ProfileTarget: for an app capture only after the app has
+    # warmed up (#1186), and stopped as soon as the capture ends -- also when the app crashes.
+    $script:collector = $null
+    $script:collectorStopRequested = $false
+    $script:collectorExited = $true
+    $startCollector = {
+        if ($Mode -eq 'app') { Write-Host 'Starting the elevated ETW collector; approve the UAC prompt to begin recording.' }
+        $script:collector = Start-Process -FilePath $hostExe -Verb RunAs -ArgumentList (ConvertTo-CommandLine $argList) -WorkingDirectory $repoRoot -PassThru
+        $null = $script:collector.Handle
+        Wait-CollectorMarker -Path (Join-Path $controlDir 'collector-started.json') -TimeoutSeconds 120 -Collector $script:collector -What 'ETW collector'
+        Write-Host "ETW collector started; trace: $tracePath"
+    }
+    $stopCollector = {
+        # Once only; and only if it was launched.
+        if ($null -eq $script:collector -or $script:collectorStopRequested) { return }
+        $script:collectorStopRequested = $true
+        Set-Content -LiteralPath (Join-Path $controlDir 'stop-requested') -Value (Get-Date).ToUniversalTime().ToString('o') -Encoding utf8
+        $script:collectorExited = $script:collector.WaitForExit(600000)
+    }
     $target = $null
     $pendingError = $null
     try {
-        Wait-CollectorMarker -Path (Join-Path $controlDir 'collector-started.json') -TimeoutSeconds 120 -Collector $collector -What 'ETW collector'
-        Write-Host "ETW collector started; trace: $tracePath"
-        $target = Invoke-ProfileTarget
+        $target = Invoke-ProfileTarget -StartTrace $startCollector -StopTrace $stopCollector
     }
     catch {
         # Held until the collector's status is known, so a collector failure is reported with it.
         $pendingError = $_
     }
     finally {
-        # Always ask the collector to stop, so a failed target still leaves a saved trace.
-        Set-Content -LiteralPath (Join-Path $controlDir 'stop-requested') -Value (Get-Date).ToUniversalTime().ToString('o') -Encoding utf8
-        $collectorExited = $collector.WaitForExit(600000)
+        # Always ask a launched collector to stop, so a failed target still leaves a saved trace.
+        & $stopCollector
     }
+    $collector = $script:collector
+    $collectorExited = $script:collectorExited
     $collectorFailure = $null
-    if (-not $collectorExited) {
+    if ($null -eq $collector) {
+        # Never launched: the app failed during warm-up, before recording would have started.
+        "EXIT_CODE=collector not started" | Add-Content -Path $launcherLogPath -Encoding utf8
+        if ($null -ne $target) {
+            Write-ProfileManifest -Target $target -BenchmarkMatches $benchmarkMatches -CollectorElevated $false
+        }
+    }
+    elseif (-not $collectorExited) {
         # Its exit code is not available while it runs; say so rather than read a stale value.
         "EXIT_CODE=still running" | Add-Content -Path $launcherLogPath -Encoding utf8
         $collectorFailure = "The elevated ETW collector did not exit within 10 minutes of the stop request; the trace may not be saved. Check $childLogPath, and close the collector window when it finishes.$(Get-CollectorErrorDetail -ControlDirectory $controlDir)"
