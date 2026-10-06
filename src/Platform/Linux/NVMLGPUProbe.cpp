@@ -51,8 +51,9 @@ struct NVMLGPUProbe::Impl
         bool idIsUuid = false;
         // The sysfs name ("0000:01:00.0"), when known; how a deferred device is looked up.
         std::string pciAddress;
-        // A deferred device whose lookup failed while it was awake isn't retried until NVML restarts,
-        // so a lookup that keeps failing doesn't ask for a re-enumeration every sample.
+        // A deferred device whose lookup failed while it was awake isn't retried until the next full
+        // rescan clears this (or NVML restarts), so a lookup that keeps failing asks for one
+        // re-enumeration per full-rescan interval rather than one every sample.
         bool resolveFailed = false;
         // PCI identity from nvmlDeviceGetPciInfo, when the driver exports it (#1091, #1117).
         std::optional<PciLocation> pciLocation;
@@ -640,7 +641,7 @@ std::vector<GPUInfo> NVMLGPUProbe::enumerateGPUs()
         // awake (rescanGPUs() asks for this enumeration once it wakes, #1270).
         if (dev.handle == nullptr && !dev.resolveFailed && !Impl::asleep(dev))
         {
-            m_Impl->resolveDeferred(dev); // on failure it stays unread, and isn't retried until a restart
+            m_Impl->resolveDeferred(dev); // on failure it stays unread until the next full rescan retries it
         }
         nvmlDevice_t device = dev.handle;
 
@@ -894,6 +895,13 @@ bool NVMLGPUProbe::rescanGPUs(GPURescan depth)
             // change, so GPUModel keeps the known GPU list -- their readings are gaps meanwhile -- and
             // the next full rescan retries, instead of publishing an empty list.
             return isAvailable() || !PciDisplayDevices::anyBoundTo(m_Impl->pciDevicesSeen, PciDisplayDevices::DRIVER_NVIDIA);
+        }
+        // A deferred lookup that failed transiently (NVML_ERROR_UNKNOWN, say) without losing the GPU
+        // triggers no restart, so it is retried here, at the full-rescan cadence: the check below then
+        // asks for the re-enumeration that looks it up again.
+        for (auto& device : m_Impl->devices)
+        {
+            device.resolveFailed = false;
         }
     }
 
