@@ -373,7 +373,7 @@ TEST(WindowsSystemProbeMathTest, TotalCountsEveryInterfaceWhenAllAreVirtual)
     EXPECT_EQ(totals.txBytes, 70U);
 }
 
-// ---- #1284: removed adapters, Bluetooth PAN, secondary Wi-Fi instances ----
+// ---- #1284: removed adapters, Bluetooth PAN, secondary Wi-Fi ports ----
 
 namespace
 {
@@ -433,65 +433,88 @@ TEST(WindowsSystemProbeMathTest, TheHardwareFlagDecidesForEverythingElse)
     EXPECT_TRUE(isHardwareNetworkRow(true, IF_TYPE_WIFI, NDIS_PHYSICAL_MEDIUM_NATIVE_802_11));
 }
 
-TEST(WindowsSystemProbeMathTest, AdapterInstanceBaseStripsTheInstanceNumber)
-{
-    EXPECT_EQ(adapterInstanceBase("Intel(R) Wi-Fi 7 BE201 320MHz #3"), std::optional<std::string_view>{"Intel(R) Wi-Fi 7 BE201 320MHz"});
-    EXPECT_EQ(adapterInstanceBase("Adapter #12"), std::optional<std::string_view>{"Adapter"});
-    EXPECT_EQ(adapterInstanceBase("Intel(R) Wi-Fi 7 BE201 320MHz"), std::nullopt);
-    EXPECT_EQ(adapterInstanceBase("Adapter #"), std::nullopt);
-    EXPECT_EQ(adapterInstanceBase("Adapter #2a"), std::nullopt);
-    EXPECT_EQ(adapterInstanceBase(" #2"), std::nullopt);
-    EXPECT_EQ(adapterInstanceBase(""), std::nullopt);
-}
-
 namespace
 {
-constexpr std::string_view WIFI_ADAPTER = "Intel(R) Wi-Fi 7 BE201 320MHz";
+// What the report's Wi-Fi 7 laptop lists: every Wi-Fi port is the one PCI device.
+constexpr std::string_view WIFI_DEVICE = "PCI\\VEN_8086&DEV_7740&SUBSYS_40E08086&REV_00\\3&11583659&0&A3";
+constexpr std::string_view SECOND_WIFI_DEVICE = "PCI\\VEN_8086&DEV_7740&SUBSYS_40E08086&REV_00\\4&22222222&0&E0";
+constexpr std::string_view USB_ETHERNET_DEVICE = "USB\\VID_0BDA&PID_8156\\4013000001";
+// IfType 71 in the top 16 bits, the NetLuidIndex below: the station port is created first.
+constexpr std::uint64_t WIFI_LUID = 0x0047'0000'8000'0000ULL;
+constexpr std::uint64_t WIFI_2_LUID = 0x0047'0000'8001'0000ULL;
+constexpr std::uint64_t WIFI_3_LUID = 0x0047'0000'8002'0000ULL;
+constexpr std::uint64_t ETHERNET_LUID = 0x0006'0000'8003'0000ULL;
 } // namespace
 
-TEST(WindowsSystemProbeMathTest, SecondaryWifiInstancesAreFoundBesideTheirAdapter)
+TEST(WindowsSystemProbeMathTest, WifiPortsOfOneDeviceCountOnceThroughTheFirst)
 {
-    // The Wi-Fi 7 laptop from the report: "Wi-Fi" and "Wi-Fi 2" to "Wi-Fi 3" all report
-    // HardwareInterface; only "Wi-Fi" is the adapter's link.
-    const std::array<NetworkAdapterInstance, 4> rows{{
-        {.ifType = IF_TYPE_WIFI, .hardware = true, .description = WIFI_ADAPTER},
-        {.ifType = IF_TYPE_WIFI, .hardware = true, .description = "Intel(R) Wi-Fi 7 BE201 320MHz #2"},
-        {.ifType = IF_TYPE_WIFI, .hardware = true, .description = "Intel(R) Wi-Fi 7 BE201 320MHz #3"},
-        {.ifType = IF_TYPE_ETHERNET, .hardware = true, .description = "Realtek Gaming USB 2.5GbE Family Controller"},
+    const std::array<NetworkAdapterPort, 4> rows{{
+        {.ifType = IF_TYPE_WIFI, .interfaceLuid = WIFI_LUID, .hardware = true, .deviceInstanceId = WIFI_DEVICE},
+        {.ifType = IF_TYPE_WIFI, .interfaceLuid = WIFI_2_LUID, .hardware = true, .deviceInstanceId = WIFI_DEVICE},
+        {.ifType = IF_TYPE_WIFI, .interfaceLuid = WIFI_3_LUID, .hardware = true, .deviceInstanceId = WIFI_DEVICE},
+        {.ifType = IF_TYPE_ETHERNET, .interfaceLuid = ETHERNET_LUID, .hardware = true, .deviceInstanceId = USB_ETHERNET_DEVICE},
     }};
-    EXPECT_FALSE(isSecondaryWifiInstance(rows[0], rows));
-    EXPECT_TRUE(isSecondaryWifiInstance(rows[1], rows));
-    EXPECT_TRUE(isSecondaryWifiInstance(rows[2], rows));
-    EXPECT_FALSE(isSecondaryWifiInstance(rows[3], rows));
+    EXPECT_FALSE(isSecondaryWifiPort(rows[0], rows));
+    EXPECT_TRUE(isSecondaryWifiPort(rows[1], rows));
+    EXPECT_TRUE(isSecondaryWifiPort(rows[2], rows));
+    EXPECT_FALSE(isSecondaryWifiPort(rows[3], rows));
 }
 
-TEST(WindowsSystemProbeMathTest, ANumberedWifiAdapterWithoutItsPrimaryStillCounts)
+TEST(WindowsSystemProbeMathTest, ASecondCardOfTheSameModelIsADeviceOfItsOwn)
 {
-    // The primary is gone (not present, or another model): "#2" is then the only link of its adapter.
-    const std::array<NetworkAdapterInstance, 2> rows{{
-        {.ifType = IF_TYPE_WIFI, .hardware = true, .description = "Intel(R) Wi-Fi 7 BE201 320MHz #2"},
-        {.ifType = IF_TYPE_WIFI, .hardware = true, .description = "Realtek RTL8852BE WiFi 6 802.11ax PCIe Adapter"},
+    // Described "<model>" and "<model> #2", but two PCI devices: both carry traffic and both count.
+    const std::array<NetworkAdapterPort, 2> rows{{
+        {.ifType = IF_TYPE_WIFI, .interfaceLuid = WIFI_LUID, .hardware = true, .deviceInstanceId = WIFI_DEVICE},
+        {.ifType = IF_TYPE_WIFI, .interfaceLuid = WIFI_2_LUID, .hardware = true, .deviceInstanceId = SECOND_WIFI_DEVICE},
     }};
-    EXPECT_FALSE(isSecondaryWifiInstance(rows[0], rows));
-    EXPECT_FALSE(isSecondaryWifiInstance(rows[1], rows));
+    EXPECT_FALSE(isSecondaryWifiPort(rows[0], rows));
+    EXPECT_FALSE(isSecondaryWifiPort(rows[1], rows));
 }
 
-TEST(WindowsSystemProbeMathTest, OnlyHardwareWifiRowsAreSecondaryInstances)
+TEST(WindowsSystemProbeMathTest, DeviceInstanceIdsMatchIgnoringCase)
 {
-    // A dual-port wired adapter's second port is a link of its own, and a virtual row is already out.
-    const std::array<NetworkAdapterInstance, 4> rows{{
-        {.ifType = IF_TYPE_ETHERNET, .hardware = true, .description = "Intel(R) Ethernet Controller X550"},
-        {.ifType = IF_TYPE_ETHERNET, .hardware = true, .description = "Intel(R) Ethernet Controller X550 #2"},
-        {.ifType = IF_TYPE_WIFI, .hardware = false, .description = WIFI_ADAPTER},
-        {.ifType = IF_TYPE_WIFI, .hardware = true, .description = "Intel(R) Wi-Fi 7 BE201 320MHz #2"},
+    // The registry can hold an id with different case than the device tree.
+    const std::array<NetworkAdapterPort, 2> rows{{
+        {.ifType = IF_TYPE_WIFI, .interfaceLuid = WIFI_LUID, .hardware = true, .deviceInstanceId = "PCI\\VEN_8086&DEV_7740\\3&ABCDEF&0&A3"},
+        {.ifType = IF_TYPE_WIFI,
+         .interfaceLuid = WIFI_2_LUID,
+         .hardware = true,
+         .deviceInstanceId = "pci\\ven_8086&dev_7740\\3&abcdef&0&a3"},
     }};
-    EXPECT_FALSE(isSecondaryWifiInstance(rows[1], rows));
-    EXPECT_FALSE(isSecondaryWifiInstance(rows[3], rows)); // its base is not a hardware row
+    EXPECT_TRUE(isSecondaryWifiPort(rows[1], rows));
+    EXPECT_TRUE(equalsIgnoringAsciiCase("Abc", "aBC"));
+    EXPECT_FALSE(equalsIgnoringAsciiCase("abc", "abd"));
+    EXPECT_FALSE(equalsIgnoringAsciiCase("abc", "abcd"));
+}
+
+TEST(WindowsSystemProbeMathTest, AWifiPortWhoseDeviceIsUnknownIsNeverLeftOut)
+{
+    // Without a device id there is no proof the rows are one adapter: count both.
+    const std::array<NetworkAdapterPort, 2> rows{{
+        {.ifType = IF_TYPE_WIFI, .interfaceLuid = WIFI_LUID, .hardware = true, .deviceInstanceId = {}},
+        {.ifType = IF_TYPE_WIFI, .interfaceLuid = WIFI_2_LUID, .hardware = true, .deviceInstanceId = {}},
+    }};
+    EXPECT_FALSE(isSecondaryWifiPort(rows[0], rows));
+    EXPECT_FALSE(isSecondaryWifiPort(rows[1], rows));
+}
+
+TEST(WindowsSystemProbeMathTest, OnlyHardwareWifiRowsAreSecondaryPorts)
+{
+    // Ports of one wired or virtual device are not this case; nor is a Wi-Fi port whose first port
+    // is not a hardware row.
+    const std::array<NetworkAdapterPort, 4> rows{{
+        {.ifType = IF_TYPE_ETHERNET, .interfaceLuid = 1, .hardware = true, .deviceInstanceId = USB_ETHERNET_DEVICE},
+        {.ifType = IF_TYPE_ETHERNET, .interfaceLuid = 2, .hardware = true, .deviceInstanceId = USB_ETHERNET_DEVICE},
+        {.ifType = IF_TYPE_WIFI, .interfaceLuid = WIFI_LUID, .hardware = false, .deviceInstanceId = WIFI_DEVICE},
+        {.ifType = IF_TYPE_WIFI, .interfaceLuid = WIFI_2_LUID, .hardware = true, .deviceInstanceId = WIFI_DEVICE},
+    }};
+    EXPECT_FALSE(isSecondaryWifiPort(rows[1], rows));
+    EXPECT_FALSE(isSecondaryWifiPort(rows[3], rows));
 }
 
 TEST(WindowsSystemProbeMathTest, TotalCountsBluetoothPanAndTheWifiAdapterOnce)
 {
-    // Wi-Fi idle, a phone tethered over Bluetooth PAN, the Wi-Fi's secondary instances marked
+    // Wi-Fi idle, a phone tethered over Bluetooth PAN, the Wi-Fi's secondary ports marked
     // virtual: the Total is the PAN link's traffic plus Wi-Fi's, once.
     const std::vector<SystemCounters::InterfaceCounters> interfaces{
         makeInterface(1'000, 100, false), // Wi-Fi

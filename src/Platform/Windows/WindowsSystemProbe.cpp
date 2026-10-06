@@ -639,11 +639,13 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
         return;
     }
 
-    // Each listed row's type, hardware flag and description, in step with the interfaces appended to
-    // counters.networkInterfaces, for picking out secondary Wi-Fi instances once all are known (#1284).
+    // Each listed row's type, LUID and (for a hardware Wi-Fi row) adapter device instance id, in step
+    // with the interfaces appended to counters.networkInterfaces, for picking out secondary Wi-Fi
+    // ports once all are known (#1284).
     const std::size_t firstInterface = counters.networkInterfaces.size();
     std::vector<std::uint32_t> rowTypes;
-    std::vector<std::string> rowDescriptions;
+    std::vector<std::uint64_t> rowLuids;
+    std::vector<std::string> rowDeviceIds;
 
     for (ULONG i = 0; i < table->NumEntries; ++i)
     {
@@ -724,25 +726,29 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
 
         counters.networkInterfaces.push_back(std::move(ifaceCounters));
         rowTypes.push_back(row.Type);
-        rowDescriptions.push_back(description);
+        rowLuids.push_back(row.InterfaceLuid.Value);
+        rowDeviceIds.push_back(
+            row.Type == IF_TYPE_WIFI && hardware
+                ? WinString::wideToUtf8(adapterDeviceInstanceId(m_AdapterDeviceInstanceIds, row.InterfaceLuid.Value, row.InterfaceGuid))
+                : std::string{});
     }
 
     // Free the table allocated by GetIfTable2
     FreeMibTable(table);
 
-    // A Wi-Fi adapter's secondary instances ("Wi-Fi 2" to "Wi-Fi 5": Wi-Fi Direct and multi-link
-    // ports) report HardwareInterface too; the Total counts the adapter once (#1284).
+    // A Wi-Fi adapter's secondary ports ("Wi-Fi 2" to "Wi-Fi 5": Wi-Fi Direct and multi-link) report
+    // HardwareInterface too; the Total counts the adapter once (#1284).
     const std::span<SystemCounters::InterfaceCounters> listed = std::span(counters.networkInterfaces).subspan(firstInterface);
-    std::vector<NetworkAdapterInstance> instances;
-    instances.reserve(listed.size());
+    std::vector<NetworkAdapterPort> ports;
+    ports.reserve(listed.size());
     for (std::size_t i = 0; i < listed.size(); ++i)
     {
-        instances.push_back(
-            NetworkAdapterInstance{.ifType = rowTypes[i], .hardware = !listed[i].isVirtual, .description = rowDescriptions[i]});
+        ports.push_back(NetworkAdapterPort{
+            .ifType = rowTypes[i], .interfaceLuid = rowLuids[i], .hardware = !listed[i].isVirtual, .deviceInstanceId = rowDeviceIds[i]});
     }
     for (std::size_t i = 0; i < listed.size(); ++i)
     {
-        if (isSecondaryWifiInstance(instances[i], instances))
+        if (isSecondaryWifiPort(ports[i], ports))
         {
             listed[i].isVirtual = true;
         }
