@@ -50,7 +50,7 @@ class ShellLayer : public Core::Layer
     void renderTabBar();
     void renderStatusBar() const;
     void applyBaseMinimumWindowSize();
-    void applyContentMinimumWidth(float widthPx);
+    void applyContentMinimumSize(float widthPx, float heightPx);
 
     // Panels
     ProcessesPanel m_ProcessesPanel;
@@ -84,9 +84,10 @@ class ShellLayer : public Core::Layer
     // Display the minimum was last capped to the usable bounds of; re-applied on a move to another
     // display (#1207).
     SDL_DisplayID m_MinimumSizeDisplayId = 0;
-    // Width the panels need (#1207): handed to the title bar, or with native decorations part of the
-    // minimum applied here. Whole pixels, so it is re-applied only when it really changes.
+    // Size the panels need (#1207, #1278): handed to the title bar, or with native decorations part
+    // of the minimum applied here. Whole pixels, so it is re-applied only when it really changes.
     int m_ContentMinimumWidthPx = 0;
+    int m_ContentMinimumHeightPx = 0;
     TitleBarLayer* m_TitleBar = nullptr;
 
     // Render Metrics overlay (per-chart vertex count and CPU cost). Toggled with Ctrl+Shift+M.
