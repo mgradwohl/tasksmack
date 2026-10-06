@@ -149,7 +149,7 @@ computeFillPlotHeight(float emPx, float availableHeightPx, float nonPlotHeightPx
     }
 
     const float forPlots = availableHeightPx - std::max(nonPlotHeightPx, 0.0F) - HISTORY_PLOT_FILL_MARGIN_PX;
-    const float shares = static_cast<float>(plotCount + reservedShares);
+    const auto shares = static_cast<float>(plotCount + reservedShares);
     const float shareReserve = std::max(forPlots, 0.0F) * static_cast<float>(reservedShares) / shares;
     const float minReserve = (std::isfinite(reservedMinHeightPx) && reservedMinHeightPx > 0.0F) ? reservedMinHeightPx : 0.0F;
     // The reserved content is taken out of the region first; the charts share what is left. When
