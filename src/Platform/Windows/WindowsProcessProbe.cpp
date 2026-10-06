@@ -936,6 +936,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         counters.gdiObjectCount = cache.gdiObjectCount;
         counters.cpuAffinity = cache.cpuAffinity;
         counters.nice = cache.nice;
+        counters.priorityClass = cache.priorityClass;
     }
 
     const DetailRefreshPlan plan =
@@ -982,8 +983,12 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
     if (plan.priority)
     {
         // Mid-bucket nice values, so each class is labelled as itself (#1204).
-        counters.nice = priorityClassToNice(GetPriorityClass(hProcess));
+        // The class itself too: Realtime and High share a nice bucket (#1280).
+        const DWORD priorityClass = GetPriorityClass(hProcess);
+        counters.nice = priorityClassToNice(priorityClass);
+        counters.priorityClass = toPriorityClass(priorityClass);
         cache.nice = counters.nice;
+        cache.priorityClass = counters.priorityClass;
     }
 
     std::string imagePathUtf8; // Read with the heavy details, for classification

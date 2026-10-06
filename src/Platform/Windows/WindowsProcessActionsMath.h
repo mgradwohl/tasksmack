@@ -3,6 +3,7 @@
 #ifdef _WIN32
 
 #include "Domain/PriorityConfig.h"
+#include "Platform/ProcessTypes.h"
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -80,6 +81,30 @@ inline constexpr int32_t REALTIME_CLASS_NICE = Domain::Priority::MIN_NICE;
     case NORMAL_PRIORITY_CLASS:
     default:
         return NORMAL_CLASS_NICE;
+    }
+}
+
+/// The class a GetPriorityClass() result names (#1280), reported beside its nice value so the UI can
+/// tell Realtime from High, which share a nice bucket. An unknown class (or GetPriorityClass()
+/// failing with 0) is None: the nice value, Normal, then names it.
+[[nodiscard]] constexpr PriorityClass toPriorityClass(uint32_t priorityClass) noexcept
+{
+    switch (priorityClass)
+    {
+    case IDLE_PRIORITY_CLASS:
+        return PriorityClass::Idle;
+    case BELOW_NORMAL_PRIORITY_CLASS:
+        return PriorityClass::BelowNormal;
+    case NORMAL_PRIORITY_CLASS:
+        return PriorityClass::Normal;
+    case ABOVE_NORMAL_PRIORITY_CLASS:
+        return PriorityClass::AboveNormal;
+    case HIGH_PRIORITY_CLASS:
+        return PriorityClass::High;
+    case REALTIME_PRIORITY_CLASS:
+        return PriorityClass::Realtime;
+    default:
+        return PriorityClass::None;
     }
 }
 
