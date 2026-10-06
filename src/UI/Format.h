@@ -13,8 +13,10 @@
 #include <ctime>
 #include <format>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <locale>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -988,83 +990,63 @@ struct AlignedBytesParts
     return std::format(" ({} {})", logicalProcessors, noun);
 }
 
-[[nodiscard]] inline auto formatCpuAffinityMask(std::uint64_t mask) -> std::string
+/// The processors in a CPU affinity bitset (`words`: 64-bit words, processors 0-63 first), listed
+/// compactly in ascending order: runs of three or more as a range ("4-7"), pairs and singles by
+/// number ("0,1", "9"), e.g. "0-3,64-127,200". "-" when no processor is set (affinity unread).
+/// Any width: an affinity can include processors at 64 and above (#1247).
+[[nodiscard]] inline auto formatCpuAffinity(std::span<const std::uint64_t> words) -> std::string
 {
-    if (mask == 0)
+    constexpr std::size_t BITS_PER_WORD = 64;
+    const std::size_t bitCount = words.size() * BITS_PER_WORD;
+    const auto isSet = [words](std::size_t cpu) -> bool
     {
-        return "-";
-    }
+        return ((words[cpu / BITS_PER_WORD] >> (cpu % BITS_PER_WORD)) & 1U) != 0;
+    };
 
     std::string result;
-    result.reserve(64); // Reserve space for typical affinity string (avoid reallocations)
-    int rangeStart = -1;
-    int rangeEnd = -1;
-    bool hasAny = false;
-
-    for (int cpu = 0; cpu < 64; ++cpu)
+    std::size_t cpu = 0;
+    while (cpu < bitCount)
     {
-        const bool isSet = (mask & (1ULL << cpu)) != 0;
-
-        if (isSet)
+        if (cpu % BITS_PER_WORD == 0 && words[cpu / BITS_PER_WORD] == 0)
         {
-            if (rangeStart == -1)
-            {
-                rangeStart = cpu;
-                rangeEnd = cpu;
-            }
-            else
-            {
-                rangeEnd = cpu;
-            }
+            cpu += BITS_PER_WORD; // A whole word with no processor in it
+            continue;
         }
-        else if (rangeStart != -1)
+        if (!isSet(cpu))
         {
-            if (hasAny)
-            {
-                result += ',';
-            }
-            hasAny = true;
-
-            if (rangeStart == rangeEnd)
-            {
-                result += std::format("{}", rangeStart);
-            }
-            else if (rangeStart + 1 == rangeEnd)
-            {
-                result += std::format("{},{}", rangeStart, rangeEnd);
-            }
-            else
-            {
-                result += std::format("{}-{}", rangeStart, rangeEnd);
-            }
-
-            rangeStart = -1;
-            rangeEnd = -1;
+            ++cpu;
+            continue;
         }
-    }
-
-    if (rangeStart != -1)
-    {
-        if (hasAny)
+        const std::size_t first = cpu;
+        while (cpu < bitCount && isSet(cpu))
+        {
+            ++cpu;
+        }
+        const std::size_t last = cpu - 1;
+        if (!result.empty())
         {
             result += ',';
         }
-
-        if (rangeStart == rangeEnd)
+        if (first == last)
         {
-            result += std::format("{}", rangeStart);
+            std::format_to(std::back_inserter(result), "{}", first);
         }
-        else if (rangeStart + 1 == rangeEnd)
+        else if (first + 1 == last)
         {
-            result += std::format("{},{}", rangeStart, rangeEnd);
+            std::format_to(std::back_inserter(result), "{},{}", first, last);
         }
         else
         {
-            result += std::format("{}-{}", rangeStart, rangeEnd);
+            std::format_to(std::back_inserter(result), "{}-{}", first, last);
         }
     }
+    return result.empty() ? std::string("-") : result;
+}
 
-    return result;
+/// formatCpuAffinity() of a 64-bit mask, bit N = processor N.
+[[nodiscard]] inline auto formatCpuAffinityMask(std::uint64_t mask) -> std::string
+{
+    return formatCpuAffinity(std::span<const std::uint64_t>(&mask, 1));
 }
 
 // ============================================================================

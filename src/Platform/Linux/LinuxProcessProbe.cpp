@@ -6,6 +6,7 @@
 
 #include "CgroupFreezeStatus.h"
 #include "Domain/SamplingConfig.h"
+#include "Platform/CpuAffinity.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/PlatformConfig.h"
 #include "UserNameLookup.h"
@@ -46,7 +47,6 @@
 
 #include <fcntl.h>
 #include <pwd.h>
-#include <sched.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -257,10 +257,8 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         }
 
         parseProcessStatm(pid, counters);
-        parseProcessStatus(pid, counters, m_ProcRoot);
+        parseProcessStatus(pid, counters, m_ProcRoot); // Owner and CPU affinity
         parseProcessCmdline(pid, counters, m_ProcRoot);
-        // CPU affinity is always safe to query; failures zero the mask
-        parseProcessAffinity(pid, counters);
 
         // Count open file descriptors (may fail for some processes due to permissions)
         countProcessFds(pid, counters, m_ProcRoot);
@@ -330,7 +328,7 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasNice = true,       // From /proc/[pid]/stat
                                .hasPageFaults = true, // From /proc/[pid]/stat (minflt + majflt)
                                .hasPeakRss = false,
-                               .hasCpuAffinity = true,                    // From sched_getaffinity
+                               .hasCpuAffinity = true,                    // From status Cpus_allowed_list
                                .hasNetworkCounters = hasNetworkCounters,  // From Netlink INET_DIAG (if available)
                                .hasUdpNetworkCounters = false,            // sock_diag has no UDP byte counters (#1101)
                                .hasPowerUsage = m_HasPowerCap,            // Available if RAPL is detected
@@ -519,12 +517,17 @@ void LinuxProcessProbe::parseProcessStatm(int32_t pid, ProcessCounters& counters
 
 void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot)
 {
-    // Read /proc/[pid]/status for UID (owner) information
-    // Format is key:value pairs, one per line
-    // We need: Uid: <real> <effective> <saved> <filesystem>
+    // Read /proc/[pid]/status for the owner and the CPU affinity.
+    // Format is key:value pairs, one per line. We need:
+    //   Uid: <real> <effective> <saved> <filesystem>
+    //   Cpus_allowed_list: <kernel CPU list, e.g. 0-3,64-127>
+    // The affinity used to come from sched_getaffinity(), packed into a 64-bit mask that dropped every
+    // CPU from 64 up (#1247). The list here has no width limit, is already in the file this reads,
+    // and follows procRoot (sched_getaffinity() asked the real kernel about a test's fake pid).
 
     const std::string statusPath = (procRoot / std::to_string(pid) / "status").string();
-    constexpr std::size_t BUF_SIZE = 2048;
+    // Big enough for Cpus_allowed's hex mask on a many-CPU kernel, which comes before the list.
+    constexpr std::size_t BUF_SIZE = 8192;
     std::array<char, BUF_SIZE> buf{};
     const std::size_t len = readProcFile(statusPath.c_str(), buf.data(), BUF_SIZE);
     if (len == 0)
@@ -533,27 +536,33 @@ void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counter
     }
     if (len == BUF_SIZE)
     {
-        // readProcFile() truncates silently at BUF_SIZE. "Uid:" is well inside this on
-        // every kernel this project has seen, but if a future kernel adds/grows earlier
-        // fields (Groups:, Seccomp_filters:, ...) enough to push it past the buffer, this
-        // makes that regression diagnosable instead of a silently-empty counters.user.
-        spdlog::debug("LinuxProcessProbe: /proc/{}/status truncated at {} bytes; Uid: may have been missed", pid, BUF_SIZE);
+        // readProcFile() truncates silently at BUF_SIZE. "Uid:" is well inside this on every kernel
+        // this project has seen, but if a future kernel adds/grows earlier fields (Groups:,
+        // Seccomp_filters:, ...) enough to push it past the buffer, this makes that regression
+        // diagnosable instead of a silently-empty counters.user. A Cpus_allowed_list line cut off by
+        // the end of the buffer is ignored below rather than read in part.
+        spdlog::debug(
+            "LinuxProcessProbe: /proc/{}/status truncated at {} bytes; Uid:/Cpus_allowed_list: may have been missed", pid, BUF_SIZE);
     }
 
+    constexpr std::string_view UID_PREFIX = "Uid:";
+    constexpr std::string_view CPUS_ALLOWED_LIST_PREFIX = "Cpus_allowed_list:";
+    bool haveUid = false;
+    bool haveAffinity = false;
     const char* p = buf.data();
     const char* const end = buf.data() + len;
-    while (p < end)
+    while (p < end && !(haveUid && haveAffinity))
     {
         const char* lineEnd = p;
         while (lineEnd < end && *lineEnd != '\n')
         {
             ++lineEnd;
         }
+        const std::string_view line(p, static_cast<std::size_t>(lineEnd - p));
 
-        // Look for "Uid:" line
-        constexpr std::string_view UID_PREFIX = "Uid:";
-        if (static_cast<std::size_t>(lineEnd - p) > UID_PREFIX.size() && std::string_view(p, UID_PREFIX.size()) == UID_PREFIX)
+        if (!haveUid && line.size() > UID_PREFIX.size() && line.starts_with(UID_PREFIX))
         {
+            haveUid = true;
             // Skip "Uid:" and whitespace, parse first UID with from_chars (no alloc)
             const char* ptr = p + UID_PREFIX.size();
             while (ptr < lineEnd && (*ptr == ' ' || *ptr == '\t'))
@@ -565,7 +574,18 @@ void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counter
             {
                 counters.user = getUsername(realUid);
             }
-            break;
+        }
+        else if (!haveAffinity && line.starts_with(CPUS_ALLOWED_LIST_PREFIX))
+        {
+            haveAffinity = true;
+            // Only a whole line: one the buffer cut off could read "0-12" for "0-127".
+            if (lineEnd < end)
+            {
+                if (auto affinity = CpuAffinity::fromCpuList(line.substr(CPUS_ALLOWED_LIST_PREFIX.size())))
+                {
+                    counters.cpuAffinity = std::move(*affinity);
+                }
+            }
         }
 
         p = (lineEnd < end) ? lineEnd + 1 : end;
@@ -664,38 +684,6 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
     }
 
     counters.command = std::move(cmdline);
-}
-
-void LinuxProcessProbe::parseProcessAffinity(int32_t pid, ProcessCounters& counters)
-{
-    // Use sched_getaffinity to read CPU affinity mask for the process
-    // This returns which CPU cores the process is allowed to run on
-
-    // NOLINTNEXTLINE(misc-include-cleaner) - cpu_set_t is provided by <sched.h>
-    cpu_set_t cpuSet;
-    CPU_ZERO(&cpuSet);
-
-    // sched_getaffinity returns the affinity for the main thread of the process
-    if (sched_getaffinity(pid, sizeof(cpu_set_t), &cpuSet) == 0)
-    {
-        // Convert cpu_set_t to a bitmask that fits in uint64_t
-        // This limits us to 64 cores, which is reasonable for most systems
-        const int maxCpus = std::min(CPU_SETSIZE, 64);
-        std::uint64_t mask = 0;
-        for (int cpu = 0; cpu < maxCpus; ++cpu)
-        {
-            if (CPU_ISSET(static_cast<size_t>(cpu), &cpuSet) != 0)
-            {
-                mask |= (1ULL << cpu);
-            }
-        }
-        counters.cpuAffinityMask = mask;
-    }
-    else
-    {
-        // If sched_getaffinity fails (e.g., permission denied), set mask to 0
-        counters.cpuAffinityMask = 0;
-    }
 }
 
 void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot)

@@ -69,6 +69,26 @@ TEST(FormatTest, AffinityMaskHighCores)
     EXPECT_EQ(UI::Format::formatCpuAffinityMask(0xF000000000000000ULL), "60-63");
     EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x3000000000000000ULL), "60,61");
 }
+
+// #1247: affinities wider than 64 processors list exactly the processors allowed.
+TEST(FormatTest, AffinityBeyond64Cpus)
+{
+    using Words = std::vector<std::uint64_t>;
+    const auto format = [](const Words& words)
+    {
+        return UI::Format::formatCpuAffinity(words);
+    };
+    EXPECT_EQ(format(Words{}), "-");
+    EXPECT_EQ(format(Words{0, 1ULL << 6U}), "70");                         // taskset -c 70
+    EXPECT_EQ(format(Words{0xF, ~0ULL}), "0-3,64-127");                    // across the word boundary
+    EXPECT_EQ(format(Words{0xF, 1ULL << 6U}), "0-3,70");                   // the issue's example
+    EXPECT_EQ(format(Words{1ULL << 63U, 1}), "63,64");                     // a pair spanning two words
+    EXPECT_EQ(format(Words{0xFULL << 62U, 0x3}), "62-65");                 // a run spanning two words
+    EXPECT_EQ(format(Words{~0ULL, ~0ULL, ~0ULL, ~0ULL}), "0-255");         // all of a 256-CPU machine
+    EXPECT_EQ(format(Words{0x1, 0, 0, 1ULL << 8U}), "0,200");              // whole zero words skipped
+    EXPECT_EQ(format(Words{0, 0, 0}), "-");                                // no processor set
+    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0xF), format(Words{0xF})); // the 64-bit form agrees
+}
 // =============================================================================
 // Epoch Time Formatting Tests
 // =============================================================================

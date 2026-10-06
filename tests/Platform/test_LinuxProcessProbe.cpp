@@ -19,6 +19,7 @@
 
 #if TASKSMACK_HAS_UNISTD
 
+#include "Platform/CpuAffinity.h"
 #include "Platform/Linux/LinuxProcessProbe.h"
 #include "Platform/Linux/ProcPrivileges.h"
 #include "Platform/PlatformConfig.h"
@@ -40,6 +41,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -53,6 +55,7 @@
 #include <thread>
 #include <utility>
 
+#include <sched.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -988,6 +991,85 @@ TEST(LinuxProcessProbeTest, UnreadableFdAndIoAreReportedUnavailableNotZero)
     EXPECT_FALSE(unreadable->networkCountersAvailable);
 }
 
+TEST(LinuxProcessProbeTest, CpuAffinityIsReadFromCpusAllowedListWithoutA64CpuCap)
+{
+    // #1247: the affinity was a 64-bit mask, so a process allowed only CPUs from
+    // 64 up (taskset -c 70) showed none. It now comes from /proc/[pid]/status
+    // Cpus_allowed_list, under the probe's procRoot.
+    ScopedTempDir proc("ts_test_proc_cpus_allowed_list");
+    const auto writeProcess = [&proc](std::int32_t pid, const std::optional<std::string>& status)
+    {
+        writeFile(proc.path / std::to_string(pid) / "stat",
+                  std::format("{} (app) S 1 {} {} 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 "
+                              "0 "
+                              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n",
+                              pid,
+                              pid,
+                              pid));
+        if (status.has_value())
+        {
+            writeFile(proc.path / std::to_string(pid) / "status", *status);
+        }
+    };
+    const auto statusWith = [](std::string_view cpusAllowedList)
+    {
+        return std::format("Name:\tapp\nUid:\t0\t0\t0\t0\nCpus_allowed:\tffffffff,"
+                           "ffffffff,0000000f\n"
+                           "Cpus_allowed_list:\t{}\nMems_allowed_list:\t0\n",
+                           cpusAllowedList);
+    };
+    writeProcess(4242, statusWith("0-3,64-127"));
+    writeProcess(4343, statusWith("70"));
+    writeProcess(4444,
+                 statusWith("0-3,64-x")); // Malformed: rejected whole, not read as 0-3
+    writeProcess(4545, std::nullopt);     // No status file at all
+    // A list cut off by the end of the probe's 8 KiB read must not be read as the
+    // part that fit
+    // ("0-12" of "0-127"): pad an earlier line so the buffer ends right after
+    // "0-12".
+    constexpr std::size_t STATUS_READ_SIZE = 8192;
+    const std::string head = "Name:\tapp\nUid:\t0\t0\t0\t0\nGroups:\t";
+    const std::string tail = "\nCpus_allowed_list:\t0-12";
+    writeProcess(4646, head + std::string(STATUS_READ_SIZE - head.size() - tail.size(), '1') + tail + "7\nMems_allowed_list:\t0\n");
+
+    LinuxProcessProbe probe(proc.path);
+    EXPECT_TRUE(probe.capabilities().hasCpuAffinity);
+    const auto processes = probe.enumerate();
+    const auto affinityOf = [&processes](std::int32_t pid) -> CpuAffinity
+    {
+        const auto it = std::ranges::find(processes, pid, &ProcessCounters::pid);
+        EXPECT_NE(it, processes.end()) << pid;
+        return (it == processes.end()) ? CpuAffinity{} : it->cpuAffinity;
+    };
+
+    EXPECT_EQ(affinityOf(4242), *CpuAffinity::fromCpuList("0-3,64-127"));
+    EXPECT_EQ(affinityOf(4242).count(), 68U);
+    EXPECT_EQ(affinityOf(4343), *CpuAffinity::fromCpuList("70"));
+    EXPECT_TRUE(affinityOf(4343).test(70));
+    EXPECT_TRUE(affinityOf(4444).empty());
+    EXPECT_TRUE(affinityOf(4545).empty());
+    EXPECT_TRUE(affinityOf(4646).empty());
+}
+
+TEST(LinuxProcessProbeTest, OwnProcessAffinityMatchesSchedGetaffinity)
+{
+    // The real /proc: our own Cpus_allowed_list names the same CPUs the kernel's
+    // affinity call does.
+    cpu_set_t set; // NOLINT(misc-include-cleaner) - cpu_set_t is provided by <sched.h>
+    CPU_ZERO(&set);
+    ASSERT_EQ(sched_getaffinity(0, sizeof(set), &set), 0);
+
+    LinuxProcessProbe probe;
+    const auto processes = probe.enumerate();
+    const auto self = std::ranges::find(processes, static_cast<std::int32_t>(::getpid()), &ProcessCounters::pid);
+    ASSERT_NE(self, processes.end());
+    ASSERT_FALSE(self->cpuAffinity.empty());
+    EXPECT_EQ(self->cpuAffinity.count(), static_cast<std::size_t>(CPU_COUNT(&set)));
+    for (std::size_t cpu = 0; cpu < CPU_SETSIZE; ++cpu)
+    {
+        EXPECT_EQ(self->cpuAffinity.test(cpu), CPU_ISSET(cpu, &set) != 0) << cpu;
+    }
+}
 /// Restores a directory's permissions on scope exit, so ScopedTempDir can remove it.
 class RestoreDirPermissions
 {

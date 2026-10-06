@@ -984,7 +984,7 @@ TEST(ProcessModelTest, CpuAffinityIsPassedThrough)
 {
     auto probe = std::make_unique<MockProcessProbe>();
     Platform::ProcessCounters counter = makeCounter(100, "affinity_test", 'R', 1000, 500);
-    counter.cpuAffinityMask = 0x0F; // Cores 0-3
+    counter.cpuAffinity = Platform::CpuAffinity::fromMask(0x0F); // Cores 0-3
     probe->setCounters({counter});
     probe->setTotalCpuTime(100000);
 
@@ -993,14 +993,14 @@ TEST(ProcessModelTest, CpuAffinityIsPassedThrough)
 
     auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 1);
-    EXPECT_EQ(snaps[0].cpuAffinityMask, 0x0F);
+    EXPECT_EQ(snaps[0].cpuAffinity, Platform::CpuAffinity::fromMask(0x0F));
 }
 
-TEST(ProcessModelTest, CpuAffinityZeroWhenNotAvailable)
+TEST(ProcessModelTest, CpuAffinityEmptyWhenNotAvailable)
 {
     auto probe = std::make_unique<MockProcessProbe>();
     Platform::ProcessCounters counter = makeCounter(100, "no_affinity", 'R', 1000, 500);
-    counter.cpuAffinityMask = 0; // Not available
+    // cpuAffinity left empty: not available
     probe->setCounters({counter});
     probe->setTotalCpuTime(100000);
 
@@ -1009,14 +1009,14 @@ TEST(ProcessModelTest, CpuAffinityZeroWhenNotAvailable)
 
     auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 1);
-    EXPECT_EQ(snaps[0].cpuAffinityMask, 0);
+    EXPECT_TRUE(snaps[0].cpuAffinity.empty());
 }
 
 TEST(ProcessModelTest, CpuAffinityAllCores)
 {
     auto probe = std::make_unique<MockProcessProbe>();
     Platform::ProcessCounters counter = makeCounter(100, "all_cores", 'R', 1000, 500);
-    counter.cpuAffinityMask = 0xFFFFFFFFFFFFFFFF; // All 64 cores
+    counter.cpuAffinity = Platform::CpuAffinity::fromMask(0xFFFFFFFFFFFFFFFF); // All 64 cores
     probe->setCounters({counter});
     probe->setTotalCpuTime(100000);
 
@@ -1025,7 +1025,26 @@ TEST(ProcessModelTest, CpuAffinityAllCores)
 
     auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 1);
-    EXPECT_EQ(snaps[0].cpuAffinityMask, 0xFFFFFFFFFFFFFFFF);
+    EXPECT_EQ(snaps[0].cpuAffinity, Platform::CpuAffinity::fromMask(0xFFFFFFFFFFFFFFFF));
+}
+
+// #1247: processors at 64 and above reach the snapshot instead of being cut off at 64 bits.
+TEST(ProcessModelTest, CpuAffinityBeyond64CoresIsPassedThrough)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters counter = makeCounter(100, "pinned_high", 'R', 1000, 500);
+    counter.cpuAffinity = *Platform::CpuAffinity::fromCpuList("0-3,70,128-255");
+    probe->setCounters({counter});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].cpuAffinity, *Platform::CpuAffinity::fromCpuList("0-3,70,128-255"));
+    EXPECT_TRUE(snaps[0].cpuAffinity.test(70));
+    EXPECT_EQ(snaps[0].cpuAffinity.count(), 4U + 1U + 128U);
 }
 
 // =============================================================================

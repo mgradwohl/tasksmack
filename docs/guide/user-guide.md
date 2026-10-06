@@ -86,7 +86,7 @@ The process table is the primary view. It lists all running processes with these
 - **I/O rates** — read and write bytes per second
 - **Network rates** — sent and received bytes per second when attribution is available
 - **GPU %, GPU Mem, GPU Engine, GPU** — utilization, memory, engines, and which GPU, when the active backend supports per-process data
-- **Affinity** — allowed CPU cores
+- **Affinity** — the logical processors the process may run on, numbered from 0 as the operating system numbers them: ranges of three or more as `4-7`, others by number, e.g. `0-3,70`. On Linux this includes processors 64 and above; on Windows it shows the process's primary processor group only.
 
 Column visibility is toggled via the column header context menu and persisted across sessions.
 
