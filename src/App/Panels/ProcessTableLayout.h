@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <initializer_list>
 
 namespace App::ProcessTableLayout
 {
@@ -152,6 +153,39 @@ layoutUnitAlignedCell(float numberWidthPx, float unitWidthPx, float unitSlotWidt
     const float arrow = std::trunc((fontSizePx * IMGUI_SORT_ARROW_SCALE) + framePaddingXPx);
     const float reserve = arrow - cellPaddingXPx;
     return (std::isfinite(reserve) && reserve > 0.0F) ? reserve : 0.0F;
+}
+
+/// Where the toolbar's status text goes, right before its controls (#1209).
+struct ToolbarStatusLayout
+{
+    float x = 0.0F;       ///< Window-local left edge of the text
+    float width = 0.0F;   ///< Width it may take
+    bool clipped = false; ///< The text is wider: draw it ellipsized, with the full text as its tooltip
+};
+
+/// Lays out the toolbar's status text -- the process count, or for a few seconds a row action's
+/// result -- right-aligned against the controls after it, never wider than `maxWidthPx` nor than
+/// the room left, so the controls never move. A long platform error used to push the Columns button
+/// and the view-mode control off-screen. The text never starts left of `cursorX`.
+///
+/// @param cursorX        Where the text may start at the earliest (after the filter box).
+/// @param rightEdgeX     The row's right edge.
+/// @param controlsWidth  The controls after the text, spacing between them included.
+/// @param spacing        Spacing between the text and the controls.
+/// @param textWidthPx    Measured width of the text.
+/// @param maxWidthPx     Most the text may take: for an action's result, the count text's own width.
+[[nodiscard]] inline ToolbarStatusLayout
+layoutToolbarStatus(float cursorX, float rightEdgeX, float controlsWidth, float spacing, float textWidthPx, float maxWidthPx) noexcept
+{
+    const auto finiteOrZero = [](float value)
+    {
+        return std::isfinite(value) ? std::max(value, 0.0F) : 0.0F;
+    };
+    const float controlsLeft = rightEdgeX - finiteOrZero(controlsWidth) - finiteOrZero(spacing);
+    const float room = std::max(0.0F, controlsLeft - cursorX);
+    const float text = finiteOrZero(textWidthPx);
+    const float width = std::min({text, finiteOrZero(maxWidthPx), room});
+    return {.x = std::max(cursorX, controlsLeft - width), .width = width, .clipped = isCellTextClipped(text, width)};
 }
 
 /// Width of the filter box above the table, in ems: 200px at the reference em (32/3 px), which is

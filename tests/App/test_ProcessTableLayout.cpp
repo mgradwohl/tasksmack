@@ -247,6 +247,40 @@ TEST(ProcessTableLayoutTest, ToolbarMinimumSurvivesDegenerateInput)
     EXPECT_FLOAT_EQ(computeToolbarMinimumWidth(200.0F, 100.0F, -5.0F), 200.0F);
 }
 
+// ========== Toolbar status text (#1209) ==========
+
+TEST(ProcessTableLayoutTest, ToolbarStatusSitsRightBeforeTheControls)
+{
+    // Row 0..1000, controls 200 wide with 8 spacing: the text ends at 792.
+    const auto layout = ProcessTableLayout::layoutToolbarStatus(300.0F, 1000.0F, 200.0F, 8.0F, 150.0F, 150.0F);
+    EXPECT_FLOAT_EQ(layout.x, 642.0F);
+    EXPECT_FLOAT_EQ(layout.width, 150.0F);
+    EXPECT_FALSE(layout.clipped);
+}
+
+TEST(ProcessTableLayoutTest, LongActionResultIsBoundedToTheCountTextsWidth)
+{
+    // A long platform error gets no more room than the count text, so the controls do not move.
+    const auto layout = ProcessTableLayout::layoutToolbarStatus(300.0F, 1000.0F, 200.0F, 8.0F, /*text=*/900.0F, /*max=*/150.0F);
+    EXPECT_FLOAT_EQ(layout.width, 150.0F);
+    EXPECT_FLOAT_EQ(layout.x + layout.width, 792.0F); // Still ends where the controls begin
+    EXPECT_TRUE(layout.clipped);
+}
+
+TEST(ProcessTableLayoutTest, ToolbarStatusNeverStartsBeforeTheFilterOrOverlapsTheControls)
+{
+    // Only 100 left between the filter (cursor 692) and the controls: the text takes that, clipped.
+    const auto layout = ProcessTableLayout::layoutToolbarStatus(692.0F, 1000.0F, 200.0F, 8.0F, 150.0F, 150.0F);
+    EXPECT_FLOAT_EQ(layout.x, 692.0F);
+    EXPECT_FLOAT_EQ(layout.width, 100.0F);
+    EXPECT_TRUE(layout.clipped);
+
+    // No room at all: nothing drawn past the cursor.
+    const auto none = ProcessTableLayout::layoutToolbarStatus(900.0F, 1000.0F, 200.0F, 8.0F, 150.0F, 150.0F);
+    EXPECT_FLOAT_EQ(none.width, 0.0F);
+    EXPECT_FLOAT_EQ(none.x, 900.0F);
+}
+
 // ========== Header alignment (#1209) ==========
 
 TEST(ProcessTableLayoutTest, RightAlignedHeaderEndsAtTheCellsRightEdge)

@@ -208,6 +208,44 @@ void renderCellText(std::string_view text, float textWidth, bool rightAligned)
     }
 }
 
+/// Draws `text` (already measured as `textWidth`) at the cursor in at most `width`: as is when it
+/// fits, otherwise ellipsized with the full text as its tooltip, as a clipped table cell is. For the
+/// toolbar's status text, which must not grow past its slot (#1209).
+void renderBoundedText(std::string_view text, float textWidth, float width)
+{
+    const ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (window->SkipItems)
+    {
+        return;
+    }
+    const bool clipped = ProcessTableLayout::isCellTextClipped(textWidth, width);
+    const float itemWidth = clipped ? std::max(width, 0.0F) : textWidth;
+    const char* textBegin = text.data();
+    const char* textEnd = text.data() + text.size();
+    const ImVec2 textPos(window->DC.CursorPos.x, window->DC.CursorPos.y + window->DC.CurrLineTextBaseOffset);
+    const ImVec2 itemSize(itemWidth, ImGui::GetFontSize());
+    const ImRect bounds(textPos, ImVec2(textPos.x + itemSize.x, textPos.y + itemSize.y));
+    ImGui::ItemSize(itemSize, 0.0F);
+    if (!ImGui::ItemAdd(bounds, 0))
+    {
+        return;
+    }
+    if (!clipped)
+    {
+        ImGui::RenderText(textPos, textBegin, textEnd, false);
+        return;
+    }
+    const ImVec2 measuredSize(textWidth, itemSize.y);
+    ImGui::RenderTextEllipsis(window->DrawList, bounds.Min, bounds.Max, bounds.Max.x, textBegin, textEnd, &measuredSize);
+    if (ImGui::BeginItemTooltip())
+    {
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * CLIPPED_CELL_TOOLTIP_WRAP_EM);
+        ImGui::TextUnformatted(textBegin, textEnd);
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+    }
+}
+
 /// Renders `text` right-aligned within the remaining cell width, using an already-measured
 /// `textWidth` instead of calling ImGui::CalcTextSize() itself -- callers own measuring (and,
 /// for RowFormatCache-backed columns, caching) that width. See the AlignedCellText
@@ -1140,18 +1178,27 @@ void ProcessesPanel::renderContent()
     const float treeSegmentWidth = m_TextSizeCache.treeViewLabelWidth + (style.FramePadding.x * 2.0F);
     const float controlsWidth = columnsButtonWidth + style.ItemSpacing.x + listSegmentWidth + treeSegmentWidth;
 
+    // An action's result takes no more room than the count text it stands in for, ellipsized with
+    // the full text as its tooltip, so a long platform error cannot push the controls off-screen.
     const bool showActionResult = (m_RowActionResultSeconds > 0.0F) && !m_RowActionResult.empty();
     const std::string& statusText = showActionResult ? m_RowActionResult.text : m_CachedSummaryStr;
     const float rightEdgeX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
-    const float textW = ImGui::CalcTextSize(statusText.c_str(), statusText.c_str() + statusText.size()).x;
-    ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), rightEdgeX - textW - controlsWidth - style.ItemSpacing.x));
-    if (showActionResult)
+    const float summaryW = ImGui::CalcTextSize(m_CachedSummaryStr.c_str(), m_CachedSummaryStr.c_str() + m_CachedSummaryStr.size()).x;
+    const float textW = showActionResult ? ImGui::CalcTextSize(statusText.c_str(), statusText.c_str() + statusText.size()).x : summaryW;
+    const ProcessTableLayout::ToolbarStatusLayout statusLayout =
+        ProcessTableLayout::layoutToolbarStatus(ImGui::GetCursorPosX(), rightEdgeX, controlsWidth, style.ItemSpacing.x, textW, summaryW);
+    ImGui::SetCursorPosX(statusLayout.x);
     {
-        ImGui::TextColored(m_RowActionResult.ok ? theme.scheme().textSuccess : theme.scheme().textError, "%s", statusText.c_str());
-    }
-    else
-    {
-        ImGui::TextUnformatted(statusText.c_str(), statusText.c_str() + statusText.size());
+        const bool colored = showActionResult;
+        if (colored)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, m_RowActionResult.ok ? theme.scheme().textSuccess : theme.scheme().textError);
+        }
+        renderBoundedText(statusText, textW, statusLayout.width);
+        if (colored)
+        {
+            ImGui::PopStyleColor();
+        }
     }
 
     // Column chooser, beside ImGui's own header right-click menu (#1209)
