@@ -3,7 +3,9 @@
 #include "Platform/GPUTypes.h"
 #include "Platform/IGPUProbe.h"
 
+#include <chrono>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -18,8 +20,15 @@ class PDHGPUProbe;
 
 /// Composite Windows GPU probe that delegates to vendor-specific probes.
 /// - DXGI: Basic GPU enumeration (all vendors)
-/// - NVML: NVIDIA-specific metrics (temp, power, clocks, system utilization)
-/// - PDH: Per-process GPU utilization and memory via Performance Counters (all vendors)
+/// - NVML: NVIDIA-specific sensors (temp, power, clocks, fan) and VRAM
+/// - PDH: adapter and per-process GPU utilization, and memory, via Performance Counters (all
+///   vendors, NVIDIA included, so every adapter's % means what Task Manager's does, #1264)
+///
+/// rescanGPUs() picks up a changed adapter set: DXGI's full rescan replaces its factory once it is
+/// no longer current, and the re-enumeration that follows restarts NVML if the NVIDIA adapters
+/// changed, re-matches NVML devices to adapters by PCI location (#1241) and rebuilds the LUID maps
+/// PDH's figures are matched by. NVML itself restarts after a lost GPU, and a quick rescan reports a
+/// GPU asleep at enumeration that has woken, so it gets its own sensors (#1294).
 class WindowsGPUProbe : public IGPUProbe
 {
   public:
@@ -36,18 +45,28 @@ class WindowsGPUProbe : public IGPUProbe
     /// the DXGI→LUID mapping required for per-adapter PDH utilization merging.
     /// Without a prior call to enumerateGPUs(), the PDH per-adapter utilization
     /// merge is unavailable, so PDH-backed adapter utilization will be missing
-    /// (unread, a gap, unless another source populates it). NVML may still
-    /// provide utilizationPercent independently for supported NVIDIA adapters.
+    /// (unread, a gap). NVML supplies an NVIDIA adapter's utilizationPercent only
+    /// when PDH is unavailable altogether (#1264).
     /// A debug message may also be logged when PDH adapter utilization data is
     /// present but the DXGI→LUID mapping needed to merge that data is missing.
     [[nodiscard]] std::vector<GPUInfo> enumerateGPUs() override;
     [[nodiscard]] std::vector<GPUCounters> readGPUCounters() override;
     [[nodiscard]] std::vector<ProcessGPUCounters> readProcessGPUCounters() override;
     [[nodiscard]] GPUCapabilities capabilities() const override;
+    [[nodiscard]] bool rescanGPUs(GPURescan depth) override;
 
   private:
+    // Test-only: swaps in sub-probes backed by fakes (test_WindowsGPURescan.cpp).
+    friend struct WindowsGPUProbeTestAccessor;
+
+    /// Restart NVML when the NVIDIA adapters in @p dxgiGPUs differ from the last enumeration's,
+    /// unless a rescan restarted it since that enumeration.
+    void restartNVMLIfNVIDIAAdaptersChanged(const std::vector<GPUInfo>& dxgiGPUs);
+
     [[nodiscard]] std::unordered_set<std::string> mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounters,
-                                                                        std::unordered_set<std::string>& nvmlMemoryIds);
+                                                                        std::unordered_set<std::string>& nvmlMemoryIds,
+                                                                        bool takeUtilization,
+                                                                        const std::unordered_set<std::string>& idleDevices);
     void mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiCounters, const std::unordered_set<std::string>& nvmlSourcedIds);
 
     std::unique_ptr<DXGIGPUProbe> m_DXGIProbe;
@@ -76,6 +95,25 @@ class WindowsGPUProbe : public IGPUProbe
     // Map DXGI GPU id ("GPU0") to whether it is integrated, which decides whether its memory in
     // use is the shared or the dedicated segment. Built during enumerateGPUs().
     std::unordered_map<std::string, bool> m_DXGIIdIsIntegrated;
+
+    // The NVIDIA adapters at the last enumeration (nvidiaAdapterFingerprint()); unset before the
+    // first. A change (an NVIDIA GPU added or removed, re-created under a new LUID by a driver update
+    // or reset, or another card under a reused LUID) restarts NVML, whose device list is fixed when
+    // it starts (#1294).
+    std::optional<std::vector<std::string>> m_NVIDIAAdapters;
+
+    // NVML was restarted by a rescan since the last enumeration (after a lost GPU, or a retried
+    // start), so a changed NVIDIA LUID set at that enumeration -- the same driver reset, seen by
+    // DXGI -- doesn't restart it a second time.
+    bool m_NVMLRestartedSinceEnumeration{false};
+
+    // Each matched NVML device's adapter id, by device id, from the last enumeration.
+    std::unordered_map<std::string, std::string> m_NVMLAdapterIds;
+    // The last sample's PDH utilization per adapter id, where PDH read one, and when NVML last read
+    // each NVIDIA device: an adapter PDH saw idle isn't queried through NVML (#1265,
+    // nvmlDevicesToLeaveIdle()).
+    std::unordered_map<std::string, double> m_LastPDHUtilization;
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> m_NVMLLastRead;
 };
 
 } // namespace Platform

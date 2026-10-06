@@ -1,0 +1,533 @@
+/// @file test_WindowsGPURescan.cpp
+/// @brief Re-detecting GPUs on Windows while running (#1294): DXGIGPUProbe and WindowsGPUProbe
+/// rescans against a fake DXGI factory, fake D3DKMT calls and a fake NVML backend.
+///
+/// A real driver reset, eGPU hot-plug or hybrid dGPU wake can't be staged in a test, so these drive
+/// the same code paths through the fakes: a factory that stops being current, an NVML reading that
+/// reports the GPU lost, and a GPU whose PnP power state changes from asleep to awake.
+
+#ifdef _WIN32
+
+#include "Mocks/WindowsDXGIFake.h"
+#include "Mocks/WindowsNVMLFake.h"
+#include "Platform/GPUTypes.h"
+#include "Platform/NVMLTypes.h"
+#include "Platform/Windows/DXGIGPUProbe.h"
+#include "Platform/Windows/DXGIGPUProbeMath.h"
+#include "Platform/Windows/NVMLGPUProbe.h"
+#include "Platform/Windows/PDHGPUProbe.h" // IWYU pragma: keep - WindowsGPUProbeTestAccessor::dropPDH() deletes one
+#include "Platform/Windows/WindowsGPUProbe.h"
+
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <format>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace Platform
+{
+
+/// Test-only accessor (a friend of WindowsGPUProbe): reaches its sub-probes so a test can back them
+/// with fakes, and drops PDH, whose real counters would describe this machine's adapters.
+struct WindowsGPUProbeTestAccessor
+{
+    static DXGIGPUProbe& dxgi(WindowsGPUProbe& probe)
+    {
+        return *probe.m_DXGIProbe;
+    }
+    static NVMLGPUProbe& nvml(WindowsGPUProbe& probe)
+    {
+        return *probe.m_NVMLProbe;
+    }
+    static void dropPDH(WindowsGPUProbe& probe)
+    {
+        probe.m_PDHProbe.reset();
+        probe.m_PDHAdapterProbe.reset();
+    }
+};
+
+namespace
+{
+
+using namespace Platform::DXGIFake; // NOLINT(google-build-using-namespace)
+using namespace Platform::NVMLFake; // NOLINT(google-build-using-namespace)
+
+constexpr std::uint32_t VENDOR_NVIDIA = 0x10DE;
+constexpr std::uint32_t VENDOR_INTEL = 0x8086;
+constexpr std::uint32_t DEVICE_RTX = 0x2684;
+
+FakeAdapter intelIGPU()
+{
+    return makeAdapter(
+        L"Intel(R) UHD Graphics", VENDOR_INTEL, 0x9A49, 0x100, PciLocation{.bus = 0x00, .device = 0x02, .function = 0}, 128ULL << 20U);
+}
+
+FakeAdapter nvidiaGPU(std::uint32_t luidLowPart, std::uint32_t bus)
+{
+    return makeAdapter(
+        L"NVIDIA GeForce RTX 4090", VENDOR_NVIDIA, DEVICE_RTX, luidLowPart, PciLocation{.bus = bus, .device = 0x00, .function = 0});
+}
+
+/// NVML device @p index: the card at @p bus, with this UUID and temperature.
+void setNVMLDevice(unsigned int index, const std::string& uuid, unsigned int bus, unsigned int temperatureC)
+{
+    auto& device = deviceData(index);
+    device = FakeDeviceData{};
+    device.uuid = uuid;
+    device.pciBus = bus;
+    device.pciDeviceId = (DEVICE_RTX << 16U) | VENDOR_NVIDIA;
+    device.temperatureC = temperatureC;
+}
+
+const GPUInfo* findByLuid(const std::vector<GPUInfo>& gpus, std::uint32_t luidLowPart)
+{
+    const auto it = std::ranges::find_if(
+        gpus, [luidLowPart](const GPUInfo& gpu) { return gpu.luidId == std::format("GPU_0x00000000_0x{:08X}", luidLowPart); });
+    return it == gpus.end() ? nullptr : &*it;
+}
+
+class WindowsGPURescanTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        dxgiState() = FakeDXGIState{};
+        fakeState() = FakeNvmlState{};
+    }
+
+    /// A WindowsGPUProbe whose DXGI and NVML are the fakes (NVML started) and that has no PDH.
+    static void useFakes(WindowsGPUProbe& probe)
+    {
+        DXGIGPUProbeTestAccessor::useFakes(WindowsGPUProbeTestAccessor::dxgi(probe));
+        NVMLGPUProbeTestAccessor::inject(WindowsGPUProbeTestAccessor::nvml(probe), NVMLGPUProbeTestAccessor::fullFakeFunctions(), true);
+        WindowsGPUProbeTestAccessor::dropPDH(probe);
+    }
+};
+
+// =============================================================================
+// DXGIGPUProbe
+// =============================================================================
+
+// A factory lists the adapters present when it was made. A quick rescan never looks; a full one
+// with the factory still current reports nothing; once an adapter is added the factory is no longer
+// current, and a full rescan replaces it and reports a change, after which the new adapter is listed.
+TEST_F(WindowsGPURescanTest, ANonCurrentFactoryIsReplacedAndTheAddedAdapterListed)
+{
+    setAdapters({intelIGPU()});
+    DXGIGPUProbe probe;
+    DXGIGPUProbeTestAccessor::useFakes(probe);
+    ASSERT_EQ(probe.enumerateGPUs().size(), 1U);
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full)) << "The factory is current";
+
+    setAdapters({intelIGPU(), nvidiaGPU(0x200, 0x01)});
+    EXPECT_EQ(probe.enumerateGPUs().size(), 1U) << "The old factory still lists the old set";
+    EXPECT_EQ(probe.readGPUCounters().size(), 1U);
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick));
+    const int factoriesBefore = dxgiState().factoriesCreated;
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    EXPECT_EQ(dxgiState().factoriesCreated, factoriesBefore + 1);
+
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 2U);
+    const GPUInfo* nvidia = findByLuid(gpus, 0x200);
+    ASSERT_NE(nvidia, nullptr);
+    EXPECT_EQ(nvidia->vendor, "NVIDIA");
+    EXPECT_EQ(nvidia->pciLocation.value_or(PciLocation{}).bus, 0x01U);
+    EXPECT_EQ(probe.readGPUCounters().size(), 2U) << "Counters follow the new factory too";
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full)) << "The new factory is current";
+}
+
+// Removing an adapter is picked up the same way, and the per-LUID decisions (listed? integrated?)
+// are made afresh, since a driver reset can bring an adapter back under a LUID seen before (#1251,
+// #1263).
+TEST_F(WindowsGPURescanTest, ARemovedAdapterIsDroppedAndPerLuidDecisionsAreMadeAgain)
+{
+    setAdapters({intelIGPU(), nvidiaGPU(0x200, 0x01)});
+    DXGIGPUProbe probe;
+    DXGIGPUProbeTestAccessor::useFakes(probe);
+    ASSERT_EQ(probe.enumerateGPUs().size(), 2U);
+    const int opensAfterFirst = dxgiState().adapterOpens;
+    ASSERT_EQ(probe.enumerateGPUs().size(), 2U);
+    EXPECT_EQ(dxgiState().adapterOpens - opensAfterFirst, 2) << "Once decided, only each adapter's PCI location is queried";
+
+    setAdapters({intelIGPU()});
+    ASSERT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    const int opensBefore = dxgiState().adapterOpens;
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    EXPECT_EQ(gpus[0].vendor, "Intel");
+    EXPECT_TRUE(gpus[0].isIntegrated);
+    EXPECT_EQ(dxgiState().adapterOpens - opensBefore, 2) << "Its adapter type is queried again, as well as its location";
+}
+
+// A replacement factory that can't be made keeps the old one (its adapters beat none) and reports
+// no change; the next full rescan tries again.
+TEST_F(WindowsGPURescanTest, AFailedFactoryReplacementKeepsTheOldFactoryAndRetries)
+{
+    setAdapters({intelIGPU()});
+    DXGIGPUProbe probe;
+    DXGIGPUProbeTestAccessor::useFakes(probe);
+    setAdapters({intelIGPU(), nvidiaGPU(0x200, 0x01)});
+
+    dxgiState().failFactoryCreation = true;
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full));
+    EXPECT_EQ(probe.enumerateGPUs().size(), 1U);
+
+    dxgiState().failFactoryCreation = false;
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    EXPECT_EQ(probe.enumerateGPUs().size(), 2U);
+}
+
+// An adapter's id is its own, not its place in DXGI's list (#1317). Removing the adapter listed
+// first used to renumber the one after it ("GPU1" became "GPU0"), so its history and chart state
+// moved to the removed card's, and an adapter added later took the next free number. Now the
+// remaining adapter keeps its id, an added adapter in another slot gets one no adapter had before,
+// and the same card back under a new LUID (a driver reset) is still the same GPU. (The id names a
+// slot and model, so an identical card swapped into the same slot would continue the old history.)
+TEST_F(WindowsGPURescanTest, AnAdapterKeepsItsIdWhenOneListedBeforeItIsRemoved)
+{
+    setAdapters({intelIGPU(), nvidiaGPU(0x200, 0x01)});
+    DXGIGPUProbe probe;
+    DXGIGPUProbeTestAccessor::useFakes(probe);
+    const auto before = probe.enumerateGPUs();
+    ASSERT_EQ(before.size(), 2U);
+    const std::string intelId = findByLuid(before, 0x100)->id;
+    const std::string nvidiaId = findByLuid(before, 0x200)->id;
+    ASSERT_NE(intelId, nvidiaId);
+
+    // The first-listed adapter is removed (disabled in Device Manager, say).
+    setAdapters({nvidiaGPU(0x200, 0x01)});
+    ASSERT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    const auto removed = probe.enumerateGPUs();
+    ASSERT_EQ(removed.size(), 1U);
+    EXPECT_EQ(removed[0].id, nvidiaId) << "The remaining adapter keeps its id";
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_EQ(counters[0].gpuId, nvidiaId) << "Counters carry the same id enumeration reported";
+
+    // A new adapter is plugged in: it gets an id of its own, not the removed adapter's.
+    setAdapters({nvidiaGPU(0x200, 0x01), nvidiaGPU(0x300, 0x41)});
+    ASSERT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    const auto added = probe.enumerateGPUs();
+    ASSERT_EQ(added.size(), 2U);
+    const GPUInfo* newcomer = findByLuid(added, 0x300);
+    ASSERT_NE(newcomer, nullptr);
+    EXPECT_NE(newcomer->id, intelId);
+    EXPECT_NE(newcomer->id, nvidiaId);
+    EXPECT_EQ(findByLuid(added, 0x200)->id, nvidiaId);
+
+    // A driver reset brings the first NVIDIA card back under a new LUID, listed after the other.
+    setAdapters({nvidiaGPU(0x300, 0x41), nvidiaGPU(0x210, 0x01)});
+    ASSERT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    const auto reset = probe.enumerateGPUs();
+    ASSERT_EQ(reset.size(), 2U);
+    EXPECT_EQ(findByLuid(reset, 0x210)->id, nvidiaId) << "Same card, same PCI location: same GPU";
+    EXPECT_EQ(findByLuid(reset, 0x300)->id, newcomer->id);
+}
+
+// An adapter with no PCI location (a remote or virtual adapter) is named by its LUID, and two
+// adapters at one PCI location never share an id.
+TEST_F(WindowsGPURescanTest, AnAdapterWithoutAUniquePciLocationIsNamedByItsLuid)
+{
+    setAdapters(
+        {makeAdapter(L"Remote Adapter", VENDOR_INTEL, 0x1234, 0x400, std::nullopt), nvidiaGPU(0x200, 0x01), nvidiaGPU(0x500, 0x01)});
+    DXGIGPUProbe probe;
+    DXGIGPUProbeTestAccessor::useFakes(probe);
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 3U);
+    EXPECT_EQ(findByLuid(gpus, 0x400)->id, adapterLuidId(0, 0x400));
+    EXPECT_EQ(findByLuid(gpus, 0x200)->id,
+              adapterPciId(PciLocation{.bus = 0x01, .device = 0x00, .function = 0}, VENDOR_NVIDIA, DEVICE_RTX));
+    EXPECT_EQ(findByLuid(gpus, 0x500)->id, adapterLuidId(0, 0x500)) << "The PCI id is taken: the LUID names it";
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 3U);
+    for (std::size_t i = 0; i < gpus.size(); ++i)
+    {
+        EXPECT_EQ(counters[i].gpuId, gpus[i].id);
+    }
+}
+
+// =============================================================================
+// WindowsGPUProbe
+// =============================================================================
+
+// An NVIDIA GPU plugged in (an eGPU) makes the factory non-current: the full rescan reports a change,
+// and the re-enumeration lists the new adapter, restarts NVML (whose device list is fixed when it
+// starts) and matches the new NVML device to it by PCI location. Unplugging it is picked up the same
+// way.
+TEST_F(WindowsGPURescanTest, AnAddedOrRemovedNVIDIAAdapterIsListedAndRestartsNVML)
+{
+    setAdapters({intelIGPU(), nvidiaGPU(0x200, 0x01)});
+    fakeState().deviceCount = 1;
+    setNVMLDevice(0, "GPU-internal", 0x01, 50);
+
+    WindowsGPUProbe probe;
+    useFakes(probe);
+    const auto before = probe.enumerateGPUs();
+    ASSERT_EQ(before.size(), 2U);
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full));
+    EXPECT_EQ(fakeState().initCallCount, 0);
+
+    // Plugged in: a second NVIDIA adapter, and NVML lists it once restarted.
+    setAdapters({intelIGPU(), nvidiaGPU(0x200, 0x01), nvidiaGPU(0x300, 0x41)});
+    fakeState().deviceCount = 2;
+    setNVMLDevice(1, "GPU-external", 0x41, 70);
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick));
+    ASSERT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    const auto plugged = probe.enumerateGPUs();
+    EXPECT_EQ(fakeState().initCallCount, 1) << "NVML restarted for the new NVIDIA adapter";
+    ASSERT_EQ(plugged.size(), 3U);
+    const GPUInfo* external = findByLuid(plugged, 0x300);
+    ASSERT_NE(external, nullptr);
+    EXPECT_TRUE(external->sensorCapabilities.value_or(GPUCapabilities{}).hasTemperature) << "Matched to its NVML device";
+
+    const auto counters = probe.readGPUCounters();
+    const auto externalCounters = std::ranges::find(counters, external->id, &GPUCounters::gpuId);
+    ASSERT_NE(externalCounters, counters.end());
+    EXPECT_EQ(externalCounters->temperatureC, 70);
+
+    // Unplugged again.
+    setAdapters({intelIGPU(), nvidiaGPU(0x200, 0x01)});
+    fakeState().deviceCount = 1;
+    ASSERT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    const auto unplugged = probe.enumerateGPUs();
+    EXPECT_EQ(fakeState().initCallCount, 2);
+    ASSERT_EQ(unplugged.size(), 2U);
+    EXPECT_EQ(findByLuid(unplugged, 0x300), nullptr);
+}
+
+// An adapter set change that leaves the NVIDIA adapters alone (a dock's display adapter, say) doesn't
+// restart NVML, which could wake a sleeping dGPU.
+TEST_F(WindowsGPURescanTest, AChangeToOtherAdaptersLeavesNVMLRunning)
+{
+    setAdapters({nvidiaGPU(0x200, 0x01)});
+    fakeState().deviceCount = 1;
+    setNVMLDevice(0, "GPU-internal", 0x01, 50);
+
+    WindowsGPUProbe probe;
+    useFakes(probe);
+    ASSERT_EQ(probe.enumerateGPUs().size(), 1U);
+
+    setAdapters({intelIGPU(), nvidiaGPU(0x200, 0x01)});
+    ASSERT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    EXPECT_EQ(probe.enumerateGPUs().size(), 2U);
+    EXPECT_EQ(fakeState().initCallCount, 0);
+}
+
+// A reading that reports the GPU lost (a driver reset) re-initialises NVML at the next full rescan.
+// NVML may then number its devices differently; the re-enumeration matches them to the adapters by
+// PCI location again, so each adapter keeps its own card's sensors.
+TEST_F(WindowsGPURescanTest, AGpuLostErrorReinitialisesNVMLAndRematchesByPciLocation)
+{
+    setAdapters({nvidiaGPU(0x200, 0x01), nvidiaGPU(0x300, 0x41)});
+    fakeState().deviceCount = 2;
+    setNVMLDevice(0, "GPU-first", 0x01, 50);
+    setNVMLDevice(1, "GPU-second", 0x41, 70);
+
+    WindowsGPUProbe probe;
+    useFakes(probe);
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 2U);
+    const std::string firstId = findByLuid(gpus, 0x200)->id;
+    const std::string secondId = findByLuid(gpus, 0x300)->id;
+    const auto temperatureOf = [&probe](const std::string& id)
+    {
+        const auto counters = probe.readGPUCounters();
+        const auto it = std::ranges::find(counters, id, &GPUCounters::gpuId);
+        return it == counters.end() || !it->temperatureAvailable ? -1 : it->temperatureC;
+    };
+    EXPECT_EQ(temperatureOf(firstId), 50);
+    EXPECT_EQ(temperatureOf(secondId), 70);
+
+    fakeState().lostDevices.insert(0);
+    static_cast<void>(probe.readGPUCounters());
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick)) << "Re-initialising waits for a full rescan";
+
+    // After the reset NVML lists the cards the other way round.
+    fakeState().lostDevices.clear();
+    setNVMLDevice(0, "GPU-second", 0x41, 70);
+    setNVMLDevice(1, "GPU-first", 0x01, 50);
+    ASSERT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    EXPECT_EQ(fakeState().initCallCount, 1);
+    const auto after = probe.enumerateGPUs();
+    ASSERT_EQ(after.size(), 2U);
+    EXPECT_EQ(temperatureOf(firstId), 50);
+    EXPECT_EQ(temperatureOf(secondId), 70);
+}
+
+// A LUID can be reused: DXGI may list a different NVIDIA card under the LUID an old one had. The
+// LUIDs alone then compare equal, and NVML kept the old card's devices and handles. The adapter's
+// identity (its slot-and-model id and PCI ids) is compared too, so the replacement restarts NVML and
+// is matched to its own NVML device.
+TEST_F(WindowsGPURescanTest, AnotherNVIDIACardUnderAReusedLuidRestartsNVML)
+{
+    setAdapters({intelIGPU(), nvidiaGPU(0x200, 0x01)});
+    fakeState().deviceCount = 1;
+    setNVMLDevice(0, "GPU-old", 0x01, 50);
+
+    WindowsGPUProbe probe;
+    useFakes(probe);
+    const auto before = probe.enumerateGPUs();
+    ASSERT_EQ(before.size(), 2U);
+    const std::string oldId = findByLuid(before, 0x200)->id;
+
+    // Replaced by another model, listed under the same LUID.
+    constexpr std::uint32_t DEVICE_OTHER = 0x2782;
+    setAdapters(
+        {intelIGPU(),
+         makeAdapter(
+             L"NVIDIA GeForce RTX 4070 Ti", VENDOR_NVIDIA, DEVICE_OTHER, 0x200, PciLocation{.bus = 0x01, .device = 0x00, .function = 0})});
+    setNVMLDevice(0, "GPU-new", 0x01, 65);
+    deviceData(0).name = "NVIDIA GeForce RTX 4070 Ti";
+    deviceData(0).pciDeviceId = (DEVICE_OTHER << 16U) | VENDOR_NVIDIA;
+    ASSERT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    const auto after = probe.enumerateGPUs();
+    EXPECT_EQ(fakeState().initCallCount, 1) << "The replacement restarts NVML";
+    ASSERT_EQ(after.size(), 2U);
+    const GPUInfo* replacement = findByLuid(after, 0x200);
+    ASSERT_NE(replacement, nullptr);
+    EXPECT_NE(replacement->id, oldId);
+    EXPECT_TRUE(replacement->sensorCapabilities.value_or(GPUCapabilities{}).hasTemperature) << "Matched to the new NVML device";
+    const auto counters = probe.readGPUCounters();
+    const auto it = std::ranges::find(counters, replacement->id, &GPUCounters::gpuId);
+    ASSERT_NE(it, counters.end());
+    EXPECT_EQ(it->temperatureC, 65);
+}
+
+// A driver reset is seen by both probes in one full rescan: NVML restarts for the lost GPU, and
+// DXGI's factory is no longer current because the GPU came back under a new LUID. The
+// re-enumeration that follows sees the changed NVIDIA LUID set, but NVML, started after the reset,
+// already lists the GPU, so it isn't shut down and started a second time. A later change it hasn't
+// restarted for (an eGPU plugged in) still restarts it.
+TEST_F(WindowsGPURescanTest, ADriverResetSeenByBothProbesRestartsNVMLOnce)
+{
+    setAdapters({intelIGPU(), nvidiaGPU(0x200, 0x01)});
+    fakeState().deviceCount = 1;
+    setNVMLDevice(0, "GPU-internal", 0x01, 50);
+
+    WindowsGPUProbe probe;
+    useFakes(probe);
+    const auto before = probe.enumerateGPUs();
+    ASSERT_EQ(before.size(), 2U);
+    const std::string nvidiaId = findByLuid(before, 0x200)->id;
+
+    // The reset: readings report the GPU lost, and it comes back under a new LUID.
+    fakeState().lostDevices.insert(0);
+    static_cast<void>(probe.readGPUCounters());
+    fakeState().lostDevices.clear();
+    setAdapters({intelIGPU(), nvidiaGPU(0x210, 0x01)});
+    const int shutdownsBefore = fakeState().shutdownCallCount;
+    ASSERT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    const auto after = probe.enumerateGPUs();
+    EXPECT_EQ(fakeState().initCallCount, 1) << "One NVML restart for one driver reset";
+    EXPECT_EQ(fakeState().shutdownCallCount, shutdownsBefore + 1);
+    ASSERT_EQ(after.size(), 2U);
+    const GPUInfo* nvidia = findByLuid(after, 0x210);
+    ASSERT_NE(nvidia, nullptr);
+    EXPECT_EQ(nvidia->id, nvidiaId) << "Same card, same PCI location: same GPU";
+    EXPECT_TRUE(nvidia->sensorCapabilities.value_or(GPUCapabilities{}).hasTemperature) << "Still matched to its NVML device";
+
+    // A later NVIDIA change NVML hasn't restarted for restarts it as before.
+    setAdapters({intelIGPU(), nvidiaGPU(0x210, 0x01), nvidiaGPU(0x300, 0x41)});
+    fakeState().deviceCount = 2;
+    setNVMLDevice(1, "GPU-external", 0x41, 70);
+    ASSERT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    EXPECT_EQ(probe.enumerateGPUs().size(), 3U);
+    EXPECT_EQ(fakeState().initCallCount, 2);
+}
+
+// NVML that is installed but not running while an NVIDIA adapter is present (it failed to start, or
+// to restart after a reset) is tried again at each full rescan, and the GPUs are re-enumerated once
+// it starts.
+TEST_F(WindowsGPURescanTest, NVMLThatFailedToStartIsRetriedWhileAnNVIDIAAdapterIsPresent)
+{
+    setAdapters({nvidiaGPU(0x200, 0x01)});
+    fakeState().deviceCount = 1;
+    setNVMLDevice(0, "GPU-internal", 0x01, 50);
+
+    WindowsGPUProbe probe;
+    DXGIGPUProbeTestAccessor::useFakes(WindowsGPUProbeTestAccessor::dxgi(probe));
+    NVMLGPUProbeTestAccessor::inject(WindowsGPUProbeTestAccessor::nvml(probe), NVMLGPUProbeTestAccessor::fullFakeFunctions(), false);
+    WindowsGPUProbeTestAccessor::dropPDH(probe);
+    const auto without = probe.enumerateGPUs();
+    ASSERT_EQ(without.size(), 1U);
+    EXPECT_FALSE(without[0].sensorCapabilities.value_or(GPUCapabilities{}).hasTemperature);
+
+    fakeState().initResult = NVML_ERROR_DRIVER_NOT_LOADED;
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick));
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full));
+    EXPECT_EQ(fakeState().initCallCount, 1);
+
+    fakeState().initResult = NVML_SUCCESS;
+    ASSERT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    const auto with = probe.enumerateGPUs();
+    ASSERT_EQ(with.size(), 1U);
+    EXPECT_TRUE(with[0].sensorCapabilities.value_or(GPUCapabilities{}).hasTemperature);
+}
+
+// A GPU asleep at enumeration (a hybrid laptop's dGPU) gets the NVML probe's general sensor set, as
+// it isn't woken to find its own. Once its PnP power state says it is awake, a quick rescan -- which
+// asks only that -- reports a change, and the re-enumeration gives it its own sensors.
+TEST_F(WindowsGPURescanTest, AWokenAdapterGetsItsOwnSensorsOnAQuickRescan)
+{
+    setAdapters({intelIGPU(), nvidiaGPU(0x200, 0x01)});
+    fakeState().deviceCount = 1;
+    setNVMLDevice(0, "GPU-internal", 0x01, 50);
+    deviceData(0).fanOk = false; // A laptop dGPU: no fan reading
+
+    WindowsGPUProbe probe;
+    useFakes(probe);
+    bool asleep = true;
+    NVMLGPUProbeTestAccessor::setAsleep(WindowsGPUProbeTestAccessor::nvml(probe), [&asleep](const PciLocation&) { return asleep; });
+
+    const auto sleeping = probe.enumerateGPUs();
+    const GPUInfo* dGPU = findByLuid(sleeping, 0x200);
+    ASSERT_NE(dGPU, nullptr);
+    EXPECT_TRUE(dGPU->sensorCapabilities.value_or(GPUCapabilities{}).hasFanSpeed) << "The probe's general set while unknown";
+    fakeState().deviceQueries.clear();
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick));
+
+    asleep = false;
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Quick));
+    EXPECT_EQ(fakeState().deviceQueries[0], 0) << "Finding out it woke didn't ask the GPU";
+    const auto awake = probe.enumerateGPUs();
+    dGPU = findByLuid(awake, 0x200);
+    ASSERT_NE(dGPU, nullptr);
+    ASSERT_TRUE(dGPU->sensorCapabilities.has_value());
+    EXPECT_FALSE(dGPU->sensorCapabilities.value_or(GPUCapabilities{}).hasFanSpeed);
+    EXPECT_TRUE(dGPU->sensorCapabilities.value_or(GPUCapabilities{}).hasTemperature);
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick));
+}
+
+// NVML numbers its devices in its own order, not DXGI's (#1091), so its per-process counters used
+// to name a device "GPU{nvmlIndex}" -- the id of whichever DXGI adapter was listed at that position.
+// They now carry the id of the DXGI adapter the device is matched to by PCI location (#1317).
+TEST_F(WindowsGPURescanTest, NVMLPerProcessCountersCarryTheMatchedAdapterId)
+{
+    setAdapters({nvidiaGPU(0x200, 0x01), nvidiaGPU(0x300, 0x41)});
+    fakeState().deviceCount = 2;
+    setNVMLDevice(0, "GPU-second", 0x41, 70); // NVML lists the second DXGI adapter first
+    setNVMLDevice(1, "GPU-first", 0x01, 50);
+    fakeState().computeProcesses[0] =
+        makeProcessQuery({{.pid = 4242, .usedGpuMemory = 64ULL << 20U, .gpuInstanceId = 0, .computeInstanceId = 0}});
+
+    WindowsGPUProbe probe;
+    useFakes(probe);
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 2U);
+    const std::string secondId = findByLuid(gpus, 0x300)->id;
+
+    const auto processes = WindowsGPUProbeTestAccessor::nvml(probe).readProcessGPUCounters();
+    ASSERT_EQ(processes.size(), 1U);
+    EXPECT_EQ(processes[0].pid, 4242);
+    EXPECT_EQ(processes[0].gpuId, secondId);
+}
+
+} // namespace
+} // namespace Platform
+
+#endif // _WIN32

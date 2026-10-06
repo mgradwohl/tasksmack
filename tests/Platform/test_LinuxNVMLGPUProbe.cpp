@@ -19,6 +19,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -821,6 +822,19 @@ TEST(NVMLGPUProbeMathTest, SysfsPciAddressUsesTheKernelsFourDigitDomain)
     EXPECT_EQ(NVMLGPUProbeMath::sysfsPciAddress(pci), "10000:c1:1f.0");
 }
 
+// The function number nvmlPciInfo_t has no field for, read from busId's ".F" suffix (shared with the
+// Windows probe, which needs it to tell two functions of one device apart).
+TEST(NVMLGPUProbeMathTest, PciFunctionComesFromTheBusIdSuffix)
+{
+    NVML::nvmlPciInfo_t pci{};
+    std::strncpy(std::data(pci.busId), "00000000:01:00.3", std::size(pci.busId) - 1);
+    EXPECT_EQ(NVML::pciFunction(pci), std::optional<std::uint32_t>{3});
+    std::strncpy(std::data(pci.busId), "00000000:01:00.9", std::size(pci.busId) - 1);
+    EXPECT_FALSE(NVML::pciFunction(pci).has_value()) << "Not a PCI function digit";
+    pci.busId[0] = '\0';
+    EXPECT_FALSE(NVML::pciFunction(pci).has_value());
+}
+
 // =============================================================================
 // Per-device sensor capabilities (#1112) and runtime PM (#1117)
 // =============================================================================
@@ -1175,12 +1189,12 @@ TEST(LinuxNVMLGPUProbeTest, GpusAsleepAtLoadAreNotAddressed)
     ASSERT_EQ(gpus.size(), 2U);
     EXPECT_EQ(gpus[0].name, "Mock NVIDIA GPU 0"); // from procfs
     EXPECT_EQ(gpus[0].id, "mock-nvml-uuid-0");    // the UUID the driver cached: the id NVML will give
-    EXPECT_EQ(gpus[0].pciLocation, (PciLocation{.bus = 0x01, .device = 0}));
+    EXPECT_EQ(gpus[0].pciLocation, (PciLocation{.bus = 0x01, .device = 0, .function = 0}));
     EXPECT_EQ(gpus[0].pciDeviceId, 0x2684'10DEU); // NVML's encoding, from sysfs
     EXPECT_FALSE(gpus[0].sensorCapabilities.has_value());
     EXPECT_EQ(gpus[1].name, "NVIDIA GPU"); // no procfs entry: a generic name until it wakes
     EXPECT_EQ(gpus[1].id, "nvidia-0000:41:00.0");
-    EXPECT_EQ(gpus[1].pciLocation, (PciLocation{.bus = 0x41, .device = 0}));
+    EXPECT_EQ(gpus[1].pciLocation, (PciLocation{.bus = 0x41, .device = 0, .function = 0}));
     ASSERT_EQ(counters.size(), 2U);
     EXPECT_TRUE(counters[0].suspended);
     EXPECT_FALSE(counters[0].utilizationAvailable);
@@ -1589,8 +1603,8 @@ TEST(LinuxNVMLGPUProbeTest, AnAwakeGpuWhosePciInfoQueryFailsIsNotAddressedOnceIt
     const auto gpus = probe.enumerateGPUs();
     ASSERT_EQ(gpus.size(), 2U);
     EXPECT_EQ(gpus[0].id, "mock-nvml-uuid-0");
-    EXPECT_EQ(gpus[0].pciLocation, (PciLocation{.bus = 0x01, .device = 0})); // from the address it was found by
-    EXPECT_EQ(gpus[0].pciDeviceId, 0x2684'10DEU);                            // from sysfs
+    EXPECT_EQ(gpus[0].pciLocation, (PciLocation{.bus = 0x01, .device = 0, .function = 0})); // from the address it was found by
+    EXPECT_EQ(gpus[0].pciDeviceId, 0x2684'10DEU);                                           // from sysfs
     const auto awake = probe.readGPUCounters();
     ASSERT_EQ(awake.size(), 2U);
     EXPECT_FALSE(awake[0].suspended);

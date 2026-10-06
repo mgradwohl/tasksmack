@@ -168,6 +168,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsPDHGPUProbe.cpp
     Platform/test_WindowsGPUProbe.cpp
     Platform/test_WindowsDXGIGPUProbe.cpp
+    Platform/test_WindowsGPURescan.cpp
     Platform/test_WindowsProcAddress.cpp
     Platform/test_WinString.cpp
 )
@@ -391,6 +392,7 @@ if(WIN32)
         userenv
         dxgi
         gdi32
+        cfgmgr32 # DisplayDevicePower: a GPU's PnP power state (#1265)
         version
     )
 endif()

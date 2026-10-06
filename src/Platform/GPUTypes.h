@@ -34,24 +34,36 @@ enum class GPURescan : std::uint8_t
 
 /// Where an adapter sits on the PCI bus. DXGI and NVML enumerate adapters in different orders and
 /// name them differently, so on Windows this is what says which NVML device is which DXGI adapter
-/// (#1091). DXGI reports no PCI domain, so the domain is not part of the match.
+/// (#1091). DXGI reports no PCI domain, so the domain is not part of the match. The function number
+/// tells apart two functions of one multi-function device; it is nullopt where the source could not
+/// say (NVML's busId string unreadable), and samePciLocation() then matches on bus and device alone.
 struct PciLocation
 {
     std::uint32_t bus = 0;
     std::uint32_t device = 0;
+    std::optional<std::uint32_t> function;
     bool operator==(const PciLocation&) const = default;
 };
+
+/// Whether @p a and @p b name the same PCI function: the same bus and device, and the same function
+/// number unless either side doesn't know it. An unknown function is treated as a wildcard rather
+/// than as function 0, so a source that couldn't read it still matches the adapter at its bus and
+/// device; the stricter operator== is for comparing fully read locations.
+[[nodiscard]] constexpr bool samePciLocation(const PciLocation& a, const PciLocation& b) noexcept
+{
+    return a.bus == b.bus && a.device == b.device && (!a.function.has_value() || !b.function.has_value() || *a.function == *b.function);
+}
 
 // Identifies a physical GPU
 struct GPUInfo
 {
-    std::string id;     // Unique identifier (e.g., "GPU0", "GPU1")
+    std::string id;     // Stable identifier, unique among present GPUs (Windows: "PCI_01:00.0_10DE:2684", slot + model, #1317)
     std::string luidId; // LUID-based identifier for PDH matching (e.g., "GPU_0x00000000_0x0000F78E")
     std::string name;   // Human-readable name (e.g., "NVIDIA GeForce RTX 2080 Ti")
-    std::string vendor; // "NVIDIA", "AMD", "Intel", "Unknown"
+    std::string vendor; // "NVIDIA", "AMD", "Intel", "Qualcomm" (Windows), "Unknown"
     std::string driverVersion;
     bool isIntegrated = false;     // Integrated vs discrete
-    std::uint32_t deviceIndex = 0; // Vendor-specific index
+    std::uint32_t deviceIndex = 0; // Vendor-specific index (on Windows, DXGI's display order, not identity)
     /// Which memory segment the adapter's used/total figures count: true for its shared segment
     /// (system memory the GPU maps -- a Windows integrated GPU's memory), false for dedicated VRAM
     /// (every discrete GPU, and an APU's carve-out on Linux, where NVML/ROCm SMI/DRM have no shared
@@ -125,6 +137,8 @@ struct GPUCounters
     // wake it with sensor queries (#1117): every *Available flag above is then false. Linux reads
     // this from /sys/bus/pci/devices/<address>/power/runtime_status. memoryTotalBytes may still hold
     // the last total read while awake, so the adapter's VRAM size doesn't vanish while it sleeps.
+    // Windows reads the device power state the PnP manager records (#1265); there PDH's utilization
+    // and memory in use, the OS's own figures that never touch the GPU, may still be available.
     bool suspended = false;
 
     // Utilization (instantaneous snapshot, 0-100, provided by hardware/driver)

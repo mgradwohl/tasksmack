@@ -367,7 +367,7 @@ NVMLGPUProbe::Impl::Device NVMLGPUProbe::Impl::describe(nvmlDevice_t handle, std
     nvmlPciInfo_t pci{};
     if (nvmlDeviceGetPciInfo != nullptr && nvmlDeviceGetPciInfo(handle, &pci) == NVML_SUCCESS)
     {
-        device.pciLocation = PciLocation{.bus = pci.bus, .device = pci.device};
+        device.pciLocation = PciLocation{.bus = pci.bus, .device = pci.device, .function = NVML::pciFunction(pci)};
         device.pciDeviceId = pci.pciDeviceId;
         device.pciAddress = NVMLGPUProbeMath::sysfsPciAddress(pci);
         device.sysfsPath = pciDevicesRoot + "/" + device.pciAddress;
@@ -381,7 +381,7 @@ void NVMLGPUProbe::Impl::applySysfsPciIdentity(Device& device, const std::string
     device.sysfsPath = pciDevicesRoot + "/" + address;
     if (const auto fields = NVMLGPUProbeMath::parsePciAddress(address))
     {
-        device.pciLocation = PciLocation{.bus = fields->bus, .device = fields->device};
+        device.pciLocation = PciLocation{.bus = fields->bus, .device = fields->device, .function = fields->function};
     }
     // sysfs caches the PCI ids; NVML encodes pciDeviceId as (device id << 16) | vendor id.
     std::uint32_t deviceId = 0;
