@@ -64,13 +64,9 @@ namespace
 
 constexpr float INTERACTION_INTERVAL_HOLD_SECONDS = 0.40F;
 
-// Column-specific unit widths (based on longest unit that can appear)
-// Unit widths measured by longest unit string that column can display
-// using "W" as a wide character placeholder.
-constexpr std::string_view UNIT_PERCENT = "%";           // CPU %, MEM % (actual rendered unit)
-constexpr std::string_view UNIT_BYTES = " WW";           // VIRT, RES, PEAK, SHR (longest: " GB")
-constexpr std::string_view UNIT_BYTES_PER_SEC = " WW/W"; // I/O, Net (longest: " GB/s")
-constexpr std::string_view UNIT_POWER = " WW";           // Power (mW is wider than µW in most fonts)
+// The units the mixed-unit columns can show, exactly as their cells print them. Each column's unit
+// slot is as wide as the widest of its units, measured in the current font (#1201).
+constexpr std::array<std::string_view, 3> POWER_UNITS = {" W", " mW", " µW"};
 
 // Static UI labels (cached for text size measurements)
 constexpr std::string_view TREE_VIEW_LABEL = "Tree View";
@@ -191,6 +187,68 @@ void renderRightAlignedText(const AlignedCellText& cell)
     renderRightAlignedText(cell.text, cell.width);
 }
 
+/// Renders a cell of a mixed-unit column ("512.0 B", "1.5 KiB", "3.2 MiB") decimal-aligned (#1201):
+/// the unit in a slot `unitSlotWidth` wide at the cell's right edge, the number right-aligned
+/// against it, so the decimal points of every row line up (see
+/// ProcessTableLayout::layoutUnitAlignedCell()). A cell with no unit ("-", "N/A") is right-aligned;
+/// one too narrow for its number and the slot is drawn clipped, as renderRightAlignedText() does.
+/// Widths are measured once per cache entry, like renderRightAlignedText()'s.
+void renderUnitAlignedText(const AlignedCellText& cell, float unitSlotWidth)
+{
+    if (!cell.hasUnit())
+    {
+        renderRightAlignedText(cell);
+        return;
+    }
+    const std::string_view number = cell.number();
+    const std::string_view unit = cell.unit();
+    if (cell.width < 0.0F)
+    {
+        cell.width = ImGui::CalcTextSize(cell.text.c_str(), cell.text.c_str() + cell.text.size()).x;
+    }
+    if (cell.numberWidth < 0.0F)
+    {
+        cell.numberWidth = ImGui::CalcTextSize(number.data(), number.data() + number.size()).x;
+    }
+    const auto layout = ProcessTableLayout::layoutUnitAlignedCell(
+        cell.numberWidth, cell.width - cell.numberWidth, unitSlotWidth, ImGui::GetContentRegionAvail().x);
+    if (!layout.fits)
+    {
+        renderRightAlignedText(cell.text, cell.width);
+        return;
+    }
+
+    const ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (window->SkipItems)
+    {
+        return;
+    }
+    // The same item placement as renderCellText(): one item from the number's left edge to the
+    // unit's right edge, the cursor advanced past the alignment offset as well.
+    const ImVec2 origin(window->DC.CursorPos.x, window->DC.CursorPos.y + window->DC.CurrLineTextBaseOffset);
+    const ImVec2 numberPos(origin.x + layout.numberX, origin.y);
+    const ImVec2 itemSize(layout.itemWidth, ImGui::GetFontSize());
+    const ImRect bounds(numberPos, ImVec2(numberPos.x + itemSize.x, numberPos.y + itemSize.y));
+    ImGui::ItemSize(ImVec2(layout.numberX + itemSize.x, itemSize.y), 0.0F);
+    if (!ImGui::ItemAdd(bounds, 0))
+    {
+        return;
+    }
+    ImGui::RenderText(numberPos, number.data(), number.data() + number.size(), false);
+    ImGui::RenderText(ImVec2(origin.x + layout.unitX, origin.y), unit.data(), unit.data() + unit.size(), false);
+}
+
+/// Width of the widest of `units` in the current font.
+template<typename Units> [[nodiscard]] float widestTextWidth(const Units& units)
+{
+    float widest = 0.0F;
+    for (const std::string_view unit : units)
+    {
+        widest = std::max(widest, ImGui::CalcTextSize(unit.data(), unit.data() + unit.size()).x);
+    }
+    return widest;
+}
+
 /// The width of `text` as drawn in the current font, from `width` once it has been measured: measured
 /// here the first time the cell is drawn, then reused until its RowFormatCache entry is rebuilt for a
 /// new snapshot or font (#1141).
@@ -279,12 +337,17 @@ void ProcessesPanel::TextSizeCache::populate()
         columnHeaderWidths[toIndex(col)] = ImGui::CalcTextSize(info.name.data(), info.name.data() + info.name.size()).x;
     }
 
-    // Cache unit string widths
-    unitPercentWidth = ImGui::CalcTextSize(UNIT_PERCENT.data(), UNIT_PERCENT.data() + UNIT_PERCENT.size()).x;
-    unitBytesWidth = ImGui::CalcTextSize(UNIT_BYTES.data(), UNIT_BYTES.data() + UNIT_BYTES.size()).x;
-    unitBytesPerSecWidth = ImGui::CalcTextSize(UNIT_BYTES_PER_SEC.data(), UNIT_BYTES_PER_SEC.data() + UNIT_BYTES_PER_SEC.size()).x;
-    unitPowerWidth = ImGui::CalcTextSize(UNIT_POWER.data(), UNIT_POWER.data() + UNIT_POWER.size()).x;
-    singleDigitWidth = ImGui::CalcTextSize("0").x;
+    // The unit slot of each mixed-unit column: its widest unit, as the cells print them (#1201)
+    std::array<std::string_view, UI::Format::BYTE_UNITS.size()> byteUnits{};
+    std::array<std::string_view, UI::Format::BYTE_UNITS.size()> byteRateUnits{};
+    for (std::size_t i = 0; i < UI::Format::BYTE_UNITS.size(); ++i)
+    {
+        byteUnits[i] = UI::Format::cellUnitSuffix(*UI::Format::BYTE_UNITS[i], false);
+        byteRateUnits[i] = UI::Format::cellUnitSuffix(*UI::Format::BYTE_UNITS[i], true);
+    }
+    unitBytesWidth = widestTextWidth(byteUnits);
+    unitBytesPerSecWidth = widestTextWidth(byteRateUnits);
+    unitPowerWidth = widestTextWidth(POWER_UNITS);
 
     // Cache static label widths
     treeViewLabelWidth = ImGui::CalcTextSize(TREE_VIEW_LABEL.data(), TREE_VIEW_LABEL.data() + TREE_VIEW_LABEL.size()).x;
@@ -1144,19 +1207,19 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             break;
 
         case ProcessColumn::Virtual:
-            renderRightAlignedText(fmt.virtualMem);
+            renderUnitAlignedText(fmt.virtualMem, m_TextSizeCache.unitBytesWidth);
             break;
 
         case ProcessColumn::Resident:
-            renderRightAlignedText(fmt.resident);
+            renderUnitAlignedText(fmt.resident, m_TextSizeCache.unitBytesWidth);
             break;
 
         case ProcessColumn::PeakResident:
-            renderRightAlignedText(fmt.peakRss);
+            renderUnitAlignedText(fmt.peakRss, m_TextSizeCache.unitBytesWidth);
             break;
 
         case ProcessColumn::Shared:
-            renderRightAlignedText(fmt.shared);
+            renderUnitAlignedText(fmt.shared, m_TextSizeCache.unitBytesWidth);
             break;
 
         case ProcessColumn::CpuTime:
@@ -1340,23 +1403,23 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             break;
 
         case ProcessColumn::IoRead:
-            renderRightAlignedText(fmt.ioRead);
+            renderUnitAlignedText(fmt.ioRead, m_TextSizeCache.unitBytesPerSecWidth);
             break;
 
         case ProcessColumn::IoWrite:
-            renderRightAlignedText(fmt.ioWrite);
+            renderUnitAlignedText(fmt.ioWrite, m_TextSizeCache.unitBytesPerSecWidth);
             break;
 
         case ProcessColumn::NetSent:
-            renderRightAlignedText(fmt.netSent);
+            renderUnitAlignedText(fmt.netSent, m_TextSizeCache.unitBytesPerSecWidth);
             break;
 
         case ProcessColumn::NetReceived:
-            renderRightAlignedText(fmt.netRecv);
+            renderUnitAlignedText(fmt.netRecv, m_TextSizeCache.unitBytesPerSecWidth);
             break;
 
         case ProcessColumn::Power:
-            renderRightAlignedText(fmt.power);
+            renderUnitAlignedText(fmt.power, m_TextSizeCache.unitPowerWidth);
             break;
 
         case ProcessColumn::GpuPercent:
@@ -1364,7 +1427,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             break;
 
         case ProcessColumn::GpuMemory:
-            renderRightAlignedText(fmt.gpuMemory);
+            renderUnitAlignedText(fmt.gpuMemory, m_TextSizeCache.unitBytesWidth);
             break;
 
         case ProcessColumn::GpuEngine:

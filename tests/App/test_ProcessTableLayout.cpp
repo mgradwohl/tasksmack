@@ -71,6 +71,40 @@ TEST(ProcessTableLayoutTest, FitsVisibleWidthOnNonFiniteInput)
     EXPECT_FLOAT_EQ(computeInnerWidth(700.0F, 300.0F, inf), 0.0F);
 }
 
+// ========== Decimal-aligned cells (#1201) ==========
+
+using ProcessTableLayout::layoutUnitAlignedCell;
+
+TEST(ProcessTableLayoutTest, UnitAlignedCellsPutEveryUnitInTheSameSlot)
+{
+    // A 100px cell whose widest unit is 30px: every unit starts at 70, whatever its own width, so
+    // "512.0 B" and "3.2 MiB" end their numbers -- and so their decimal digits -- at the same x.
+    const auto bytes = layoutUnitAlignedCell(40.0F, 12.0F, 30.0F, 100.0F);
+    const auto mebibytes = layoutUnitAlignedCell(25.0F, 28.0F, 30.0F, 100.0F);
+    ASSERT_TRUE(bytes.fits);
+    ASSERT_TRUE(mebibytes.fits);
+    EXPECT_FLOAT_EQ(bytes.unitX, 70.0F);
+    EXPECT_FLOAT_EQ(mebibytes.unitX, 70.0F);
+    EXPECT_FLOAT_EQ(bytes.numberX, 30.0F);
+    EXPECT_FLOAT_EQ(mebibytes.numberX, 45.0F);
+    EXPECT_FLOAT_EQ(bytes.numberX + 40.0F, mebibytes.numberX + 25.0F); // Numbers end together
+    EXPECT_FLOAT_EQ(bytes.itemWidth, 52.0F);
+}
+
+TEST(ProcessTableLayoutTest, UnitAlignedCellWiderThanTheSlotWidensIt)
+{
+    const auto layout = layoutUnitAlignedCell(20.0F, 35.0F, 30.0F, 100.0F);
+    ASSERT_TRUE(layout.fits);
+    EXPECT_FLOAT_EQ(layout.unitX, 65.0F);
+}
+
+TEST(ProcessTableLayoutTest, UnitAlignedCellThatDoesNotFitFallsBack)
+{
+    EXPECT_FALSE(layoutUnitAlignedCell(80.0F, 20.0F, 30.0F, 100.0F).fits); // 80 + 30 > 100
+    EXPECT_TRUE(layoutUnitAlignedCell(70.0F, 20.0F, 30.0F, 100.0F).fits);  // Exactly fills it
+    EXPECT_FALSE(layoutUnitAlignedCell(std::numeric_limits<float>::quiet_NaN(), 20.0F, 30.0F, 100.0F).fits);
+}
+
 // ========== Clipped cell text (#914) ==========
 
 using ProcessTableLayout::CLIP_TOLERANCE_PX;

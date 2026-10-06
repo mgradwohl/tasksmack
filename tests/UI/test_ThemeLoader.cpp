@@ -616,6 +616,26 @@ TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_MetaWithoutName)
     EXPECT_EQ(theme->name, "Unknown");
 }
 
+// A theme without [buttons.danger] still gets red Terminate/Kill buttons; one with it gets its own (#1273).
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_DangerButtonsDefaultToRedAndCanBeThemed)
+{
+    createThemeFile("no-danger.toml", std::string("[meta]\nname = \"No Danger\"\n") + k_FullThemeTomlBody);
+    const auto plain = ThemeLoader::loadTheme(m_TempDir / "no-danger.toml");
+    ASSERT_TRUE(plain.has_value());
+    expectColorNear(plain.value().dangerButton, ImVec4(0.64F, 0.08F, 0.08F, 1.0F));
+    expectColorNear(plain.value().dangerButtonHovered, ImVec4(0.8F, 0.1F, 0.1F, 1.0F));
+    expectColorNear(plain.value().dangerButtonActive, ImVec4(0.9F, 0.2F, 0.2F, 1.0F));
+
+    createThemeFile("danger.toml",
+                    std::string("[meta]\nname = \"Danger\"\n") + k_FullThemeTomlBody +
+                        "\n[buttons.danger]\nnormal = \"#0000FF\"\nhovered = \"#00FF00\"\nactive = \"#FFFFFF\"\n");
+    const auto themed = ThemeLoader::loadTheme(m_TempDir / "danger.toml");
+    ASSERT_TRUE(themed.has_value());
+    expectColorNear(themed.value().dangerButton, ImVec4(0.0F, 0.0F, 1.0F, 1.0F));
+    expectColorNear(themed.value().dangerButtonHovered, ImVec4(0.0F, 1.0F, 0.0F, 1.0F));
+    expectColorNear(themed.value().dangerButtonActive, ImVec4(1.0F, 1.0F, 1.0F, 1.0F));
+}
+
 #ifndef _WIN32
 // An unreadable themes directory is skipped, not thrown out of UILayer::onAttach (#1127).
 TEST_F(ThemeLoaderDiscoveryTest, DiscoverThemes_UnreadableDirectoryIsEmpty)
