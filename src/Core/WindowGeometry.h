@@ -163,6 +163,37 @@ enum class MaximizeState : std::uint8_t
     System,
 };
 
+/// Whether a minimize from the shell should restore the window instead (#1279).
+///
+/// A client-side maximize has no OS maximized state: Windows sees a normal window that fills the work
+/// area, so Win+Down -- which restores a maximized window and minimizes a normal one -- minimized it,
+/// and it came back maximized. A native maximized window is restored by the first Win+Down and
+/// minimized by the second, so while the window is maximized client-side a minimize that arrives with
+/// Win+Down held is taken as that restore. Every other minimize (the taskbar button, the title-bar
+/// button, Win+M, a second Win+Down once the window is normal) is left alone, as is a System
+/// maximize, which the OS restores itself.
+///
+/// @param state        How the window is maximized (NormalGeometryTracker::state()).
+/// @param winKeyDown   Whether a Windows key (VK_LWIN or VK_RWIN) is held.
+/// @param downKeyDown  Whether the Down arrow key is held.
+[[nodiscard]] constexpr bool shellMinimizeRestores(MaximizeState state, bool winKeyDown, bool downKeyDown) noexcept
+{
+    return state == MaximizeState::ClientSide && winKeyDown && downKeyDown;
+}
+
+/// Whether a Win32 SetWindowLongPtr() call failed, from what it returned and the thread's last error
+/// read right after it, with the last error cleared to 0 right before it (#1279). The call returns
+/// the previous value, or 0 on failure -- but 0 is also a valid previous value, so only 0 together
+/// with a nonzero last error is a failure, as the Win32 documentation prescribes. Kept here, free of
+/// <windows.h>, so it is tested on every platform.
+///
+/// @param previous   SetWindowLongPtr()'s return value.
+/// @param lastError  GetLastError() right after the call.
+[[nodiscard]] constexpr bool windowLongPtrSetFailed(std::intptr_t previous, std::uint32_t lastError) noexcept
+{
+    return previous == 0 && lastError != 0;
+}
+
 /// Tracks the window's normal (restored) rectangle through every maximize and restore, whoever
 /// starts it (#1250).
 ///

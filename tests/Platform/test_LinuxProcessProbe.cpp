@@ -926,7 +926,9 @@ TEST(LinuxProcessProbeTest, VmHwmAndCpusAllowedListPastTheStackBufferComeFromOne
     const auto expectedAffinity = CpuAffinity::fromCpuList("0-3,64-127").value_or(CpuAffinity{});
     for (const auto* root : {&cutVmHwm.path, &cutAfterList.path})
     {
-        LinuxProcessProbe probe(*root);
+        // No CPU sysfs online list: the raw Cpus_allowed_list is used (#1384).
+        const auto absent = *root / "absent";
+        LinuxProcessProbe probe(*root, absent, absent, absent);
         const auto processes = probe.enumerate();
         ASSERT_EQ(processes.size(), 1U) << *root;
         EXPECT_EQ(processes[0].peakRssBytes, 123456789ULL * 1024ULL) << *root;
@@ -1182,7 +1184,9 @@ TEST(LinuxProcessProbeTest, CpuAffinityIsReadFromCpusAllowedListWithoutA64CpuCap
     // A file that really ends partway through the list line (no newline) is still not read in part.
     writeProcess(4949, "Name:\tapp\nUid:\t0\t0\t0\t0\nGroups:\t" + groups + "\nCpus_allowed_list:\t0-12");
 
-    LinuxProcessProbe probe(proc.path);
+    // No CPU sysfs online list, so the host's own online CPUs don't trim these lists (#1384).
+    const auto absent = proc.path / "absent";
+    LinuxProcessProbe probe(proc.path, absent, absent, absent);
     EXPECT_TRUE(probe.capabilities().hasCpuAffinity);
     const auto processes = probe.enumerate();
     const auto affinityOf = [&processes](std::int32_t pid) -> CpuAffinity
@@ -1207,11 +1211,112 @@ TEST(LinuxProcessProbeTest, CpuAffinityIsReadFromCpusAllowedListWithoutA64CpuCap
     EXPECT_TRUE(affinityOf(4949).empty());
 }
 
+/// Each process's affinity from a synthetic /proc with `Cpus_allowed_list` per pid, and a fake CPU
+/// sysfs root whose `online` file holds `online` (none at all when nullopt).
+[[nodiscard]] std::vector<std::pair<std::int32_t, CpuAffinity>>
+affinitiesWithOnline(const std::vector<std::pair<std::int32_t, std::string>>& lists, const std::optional<std::string>& online)
+{
+    ScopedTempDir proc("ts_test_proc_affinity_online");
+    ScopedTempDir cpuSysfs("ts_test_sys_cpu_online");
+    for (const auto& [pid, list] : lists)
+    {
+        writeFile(proc.path / std::to_string(pid) / "stat",
+                  std::format("{} (app) S 1 {} {} 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+                              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n",
+                              pid,
+                              pid,
+                              pid));
+        writeFile(proc.path / std::to_string(pid) / "status",
+                  std::format("Name:\tapp\nUid:\t0\t0\t0\t0\nCpus_allowed_list:\t{}\nMems_allowed_list:\t0\n", list));
+    }
+    if (online.has_value())
+    {
+        writeFile(cpuSysfs.path / "online", *online);
+    }
+    const auto absent = proc.path / "absent";
+    LinuxProcessProbe probe(proc.path, absent, absent, cpuSysfs.path);
+    std::vector<std::pair<std::int32_t, CpuAffinity>> result;
+    for (const auto& process : probe.enumerate())
+    {
+        result.emplace_back(process.pid, process.cpuAffinity);
+    }
+    std::ranges::sort(result, {}, &std::pair<std::int32_t, CpuAffinity>::first);
+    return result;
+}
+
+[[nodiscard]] CpuAffinity cpuList(std::string_view list)
+{
+    const auto affinity = CpuAffinity::fromCpuList(list);
+    EXPECT_TRUE(affinity.has_value()) << list;
+    return affinity.value_or(CpuAffinity{});
+}
+
+TEST(LinuxProcessProbeTest, CpuAffinityIsLimitedToOnlineCpus)
+{
+    // #1384: Cpus_allowed_list is the task's raw mask, which keeps possible-but-offline CPUs (a VM
+    // with hot-add slots: possible 0-63, online 0-7). sched_getaffinity() -- what the column showed
+    // before #1360 -- ANDs it with the active CPUs; so does the probe, with the sysfs online list.
+    const auto affinities = affinitiesWithOnline({{4242, "0-63"}, {4343, "4-127"}, {4444, "2"}}, "0-7\n");
+    ASSERT_EQ(affinities.size(), 3U);
+    EXPECT_EQ(affinities[0].second, cpuList("0-7"));
+    EXPECT_EQ(affinities[0].second.count(), 8U);
+    EXPECT_EQ(affinities[1].second, cpuList("4-7")); // A spilled list comes back inline
+    EXPECT_EQ(affinities[1].second.words().size(), 1U);
+    EXPECT_EQ(affinities[2].second, cpuList("2"));
+}
+
+TEST(LinuxProcessProbeTest, CpuAffinityFollowsASparseOnlineList)
+{
+    // CPUs 4 and 5 taken offline by hand (echo 0 > cpu4/online): online reads 0-3,6-7.
+    const auto affinities = affinitiesWithOnline({{4242, "0-63"}, {4343, "0-3,64-127"}}, "0-3,6-7\n");
+    ASSERT_EQ(affinities.size(), 2U);
+    EXPECT_EQ(affinities[0].second, cpuList("0-3,6-7"));
+    EXPECT_FALSE(affinities[0].second.test(4));
+    EXPECT_FALSE(affinities[0].second.test(5));
+    EXPECT_EQ(affinities[1].second, cpuList("0-3"));
+}
+
+TEST(LinuxProcessProbeTest, CpuAffinityIsTheRawListWhenOnlineCantBeUsed)
+{
+    // No online file, or one that doesn't parse: each process's list is used as it is.
+    for (const auto& online : {std::optional<std::string>{}, std::optional<std::string>{"garbage\n"}, std::optional<std::string>{""}})
+    {
+        const auto affinities = affinitiesWithOnline({{4242, "0-63"}, {4343, "0-3,64-127"}}, online);
+        ASSERT_EQ(affinities.size(), 2U) << online.value_or("<missing>");
+        EXPECT_EQ(affinities[0].second, cpuList("0-63")) << online.value_or("<missing>");
+        EXPECT_EQ(affinities[1].second, cpuList("0-3,64-127")) << online.value_or("<missing>");
+    }
+}
+
+TEST(LinuxProcessProbeTest, CpuAffinityWithNoOnlineCpuInCommonKeepsTheRawList)
+{
+    // A process pinned to a CPU that went offline between the two reads: the raw list, not "unknown".
+    const auto affinities = affinitiesWithOnline({{4242, "8-9"}}, "0-7\n");
+    ASSERT_EQ(affinities.size(), 1U);
+    EXPECT_EQ(affinities[0].second, cpuList("8-9"));
+}
+
+TEST(LinuxProcessProbeTest, CpuAffinityReadsAnOnlineListLongerThanItsStackBuffer)
+{
+    // Every even CPU up to 2046 online (over 4 KiB of list): read whole, not cut off partway.
+    std::string online;
+    for (std::size_t cpu = 0; cpu <= 2046; cpu += 2)
+    {
+        online += (cpu == 0 ? "" : ",") + std::to_string(cpu);
+    }
+    ASSERT_GT(online.size(), 4096U);
+    const auto affinities = affinitiesWithOnline({{4242, "0-2047"}}, online + "\n");
+    ASSERT_EQ(affinities.size(), 1U);
+    EXPECT_EQ(affinities[0].second.count(), 1024U);
+    EXPECT_TRUE(affinities[0].second.test(2046));
+    EXPECT_FALSE(affinities[0].second.test(2045));
+}
+
 TEST(LinuxProcessProbeTest, OwnProcessAffinityMatchesSchedGetaffinity)
 {
-    // The real /proc: our own Cpus_allowed_list names the same CPUs the kernel's
-    // affinity call does. The set is sized at run time (CPU_ALLOC), growing until the kernel's
-    // mask fits, so a machine with more than CPU_SETSIZE (1024) CPUs is checked in full.
+    // The real /proc: our own Cpus_allowed_list, limited to the online CPUs (#1384), names the same
+    // CPUs the kernel's affinity call does -- on hosts with possible-but-offline CPUs too. The set is sized at run time (CPU_ALLOC),
+    // growing until the kernel's mask fits, so a machine with more than CPU_SETSIZE (1024) CPUs is checked in full.
     struct CpuSetDeleter
     {
         void operator()(cpu_set_t* set) const noexcept // NOLINT(misc-include-cleaner) - <sched.h>

@@ -244,6 +244,66 @@ inline constexpr std::uint32_t IF_TYPE_WWAN_CDMA = 244; // Mobile broadband, CDM
            ifType == IF_TYPE_VIRTUAL || ifType == IF_TYPE_WWAN_GSM || ifType == IF_TYPE_WWAN_CDMA;
 }
 
+/// MIB_IF_ROW2 values spelled out, like the ifTypes above, to keep this header free of Windows includes.
+inline constexpr std::uint32_t NDIS_PHYSICAL_MEDIUM_BLUETOOTH = 10; // NdisPhysicalMediumBluetooth (#1284)
+inline constexpr std::uint32_t IF_OPER_STATUS_UP = 1;               // IfOperStatusUp (#1284)
+inline constexpr std::uint32_t IF_OPER_STATUS_NOT_PRESENT = 6;      // IfOperStatusNotPresent (#1284)
+
+/// Whether the PnP device behind a network interface is in the system, as the configuration manager
+/// reports it (#1284).
+enum class DevicePresence : std::uint8_t
+{
+    /// Not asked, or not known: the interface has no PnP device (Teredo, 6to4), or the query failed.
+    Unknown,
+    /// The device node exists -- whether it is started, disabled or failed.
+    Present,
+    /// No device node: the device was removed (a phantom in Device Manager).
+    Absent,
+};
+
+/// Whether the probe should ask whether a row's device is present: only for a row that is not up and
+/// not already reported IfOperStatusNotPresent (#1284). An up interface's device is plainly present,
+/// and every other row would cost a configuration-manager query each sample for nothing.
+///
+/// @param operStatus  MIB_IF_ROW2::OperStatus.
+[[nodiscard]] constexpr bool needsDevicePresence(std::uint32_t operStatus) noexcept
+{
+    return operStatus != IF_OPER_STATUS_UP && operStatus != IF_OPER_STATUS_NOT_PRESENT;
+}
+
+/// Whether a GetIfTable2 row is an adapter that is no longer in the system (#1284).
+///
+/// Windows keeps listing removed adapters -- a USB Ethernet dongle or dock unplugged long ago, an
+/// adapter whose driver was uninstalled. They carry no traffic and only cluttered the interface list,
+/// so the probe leaves them out. Most report OperStatus IfOperStatusNotPresent, which decides on its
+/// own. Some report IfOperStatusDown instead (a dock's USB Ethernet that Device Manager shows as a
+/// phantom); for those the device's own presence decides, since a down adapter that is present --
+/// unplugged cable, disabled in Windows, Wi-Fi with no network -- must stay listed.
+///
+/// @param operStatus  MIB_IF_ROW2::OperStatus.
+/// @param presence    Whether the adapter's PnP device is present (Unknown when not asked).
+[[nodiscard]] constexpr bool isNotPresentNetworkRow(std::uint32_t operStatus, DevicePresence presence) noexcept
+{
+    return operStatus == IF_OPER_STATUS_NOT_PRESENT || presence == DevicePresence::Absent;
+}
+
+/// Whether a counted GetIfTable2 row is a hardware link of its own rather than software whose traffic
+/// also crosses a hardware adapter (#1257, #1284).
+///
+/// MIB_IF_ROW2::InterfaceAndOperStatusFlags.HardwareInterface decides, except for a Bluetooth
+/// Personal Area Network adapter: Windows reports it as an Ethernet interface without the flag, yet a
+/// phone tethered over Bluetooth is a link of its own, and with any other hardware adapter listed
+/// (an idle Wi-Fi) its traffic was left out of the Total. It is recognised by its Bluetooth physical
+/// medium, which no software adapter reports.
+///
+/// @param hardwareInterface   MIB_IF_ROW2::InterfaceAndOperStatusFlags.HardwareInterface.
+/// @param ifType              MIB_IF_ROW2::Type.
+/// @param physicalMediumType  MIB_IF_ROW2::PhysicalMediumType.
+[[nodiscard]] constexpr bool isHardwareNetworkRow(bool hardwareInterface, std::uint32_t ifType, std::uint32_t physicalMediumType) noexcept
+{
+    return hardwareInterface || (ifType == IF_TYPE_ETHERNET && physicalMediumType == NDIS_PHYSICAL_MEDIUM_BLUETOOTH);
+}
+
 /// Cumulative bytes over the interfaces the network Total counts (#1257).
 struct NetworkTotals
 {
@@ -255,7 +315,10 @@ struct NetworkTotals
 ///
 /// Traffic over a VPN tunnel, a Hyper-V/WSL vEthernet adapter or a WAN Miniport also crosses a
 /// hardware adapter, so counting both doubled it. The probe marks a row virtual when
-/// MIB_IF_ROW2::InterfaceAndOperStatusFlags.HardwareInterface is clear. With no hardware interface
+/// MIB_IF_ROW2::InterfaceAndOperStatusFlags.HardwareInterface is clear, unless it is a Bluetooth PAN
+/// link (isHardwareNetworkRow(), #1284). A Wi-Fi adapter's extra ports ("Wi-Fi 2" to "Wi-Fi 5":
+/// Wi-Fi Direct, hotspot, multi-link) report HardwareInterface and are counted like any hardware
+/// link: their traffic is the machine's own radio traffic, and leaving it out would undercount. With no hardware interface
 /// at all every interface counts, so the Total isn't 0. Same rule as the Linux probe and
 /// SystemModel's Total rate (#1106); keep them in step.
 [[nodiscard]] inline NetworkTotals sumCountedInterfaces(std::span<const SystemCounters::InterfaceCounters> interfaces) noexcept
