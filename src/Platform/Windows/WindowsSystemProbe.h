@@ -4,8 +4,10 @@
 #include "Platform/Windows/WindowsSystemProbeMath.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace Platform
@@ -38,7 +40,7 @@ class WindowsSystemProbe : public ISystemProbe
     static void readUptime(SystemCounters& counters);
     void readStaticInfo(SystemCounters& counters) const;
     static void readCpuFreq(SystemCounters& counters);
-    static void readNetworkCounters(SystemCounters& counters);
+    void readNetworkCounters(SystemCounters& counters);
 
     std::size_t m_NumCores{0};
     // Each processor group's first coreId, fixed for the boot session (#1107)
@@ -48,6 +50,10 @@ class WindowsSystemProbe : public ISystemProbe
     // group query fails repeats it rather than switching Total to a one-group source, which the
     // model would compare against the all-group sum. Sampler thread only.
     mutable std::optional<CpuCounters> m_LastAllGroupTotal;
+
+    // The PnP device instance id of the adapter behind each network interface, by interface LUID:
+    // read from the registry once per interface (#1284). Sampler thread only.
+    std::unordered_map<std::uint64_t, std::wstring> m_AdapterDeviceInstanceIds;
 
     // Cached static info (read once)
     std::string m_Hostname;

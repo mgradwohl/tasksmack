@@ -249,31 +249,43 @@ inline constexpr std::uint32_t IF_TYPE_WWAN_CDMA = 244; // Mobile broadband, CDM
 inline constexpr std::uint32_t NDIS_PHYSICAL_MEDIUM_BLUETOOTH = 10; // NdisPhysicalMediumBluetooth (#1284)
 inline constexpr std::uint32_t IF_OPER_STATUS_UP = 1;               // IfOperStatusUp (#1284)
 inline constexpr std::uint32_t IF_OPER_STATUS_NOT_PRESENT = 6;      // IfOperStatusNotPresent (#1284)
-inline constexpr std::uint32_t MEDIA_CONNECT_STATE_UNKNOWN = 0;     // MediaConnectStateUnknown (#1284)
+
+/// Whether the PnP device behind a network interface is in the system, as the configuration manager
+/// reports it (#1284).
+enum class DevicePresence : std::uint8_t
+{
+    /// Not asked, or not known: the interface has no PnP device (Teredo, 6to4), or the query failed.
+    Unknown,
+    /// The device node exists -- whether it is started, disabled or failed.
+    Present,
+    /// No device node: the device was removed (a phantom in Device Manager).
+    Absent,
+};
+
+/// Whether the probe should ask whether a row's device is present: only for a row that is not up and
+/// not already reported IfOperStatusNotPresent (#1284). An up interface's device is plainly present,
+/// and every other row would cost a configuration-manager query each sample for nothing.
+///
+/// @param operStatus  MIB_IF_ROW2::OperStatus.
+[[nodiscard]] constexpr bool needsDevicePresence(std::uint32_t operStatus) noexcept
+{
+    return operStatus != IF_OPER_STATUS_UP && operStatus != IF_OPER_STATUS_NOT_PRESENT;
+}
 
 /// Whether a GetIfTable2 row is an adapter that is no longer in the system (#1284).
 ///
 /// Windows keeps listing removed adapters -- a USB Ethernet dongle or dock unplugged long ago, an
-/// adapter whose driver was uninstalled -- with MediaConnectState MediaConnectStateUnknown. They
-/// carry no traffic and only cluttered the interface list, so the probe leaves them out. Most report
-/// OperStatus IfOperStatusNotPresent; some removed hardware adapters (a dock's USB Ethernet, which
-/// Device Manager shows as a phantom) report IfOperStatusDown instead. A present hardware adapter's
-/// driver reports its media as connected or disconnected, so a hardware row that is not up with its
-/// media state unknown is taken as removed too (an adapter disabled in Windows may look the same; it
-/// carries nothing either). Software rows (WAN Miniports) commonly report an unknown media state
-/// while down, so for them only IfOperStatusNotPresent counts.
+/// adapter whose driver was uninstalled. They carry no traffic and only cluttered the interface list,
+/// so the probe leaves them out. Most report OperStatus IfOperStatusNotPresent, which decides on its
+/// own. Some report IfOperStatusDown instead (a dock's USB Ethernet that Device Manager shows as a
+/// phantom); for those the device's own presence decides, since a down adapter that is present --
+/// unplugged cable, disabled in Windows, Wi-Fi with no network -- must stay listed.
 ///
-/// @param operStatus         MIB_IF_ROW2::OperStatus.
-/// @param mediaConnectState  MIB_IF_ROW2::MediaConnectState.
-/// @param hardwareInterface  MIB_IF_ROW2::InterfaceAndOperStatusFlags.HardwareInterface.
-[[nodiscard]] constexpr bool
-isNotPresentNetworkRow(std::uint32_t operStatus, std::uint32_t mediaConnectState, bool hardwareInterface) noexcept
+/// @param operStatus  MIB_IF_ROW2::OperStatus.
+/// @param presence    Whether the adapter's PnP device is present (Unknown when not asked).
+[[nodiscard]] constexpr bool isNotPresentNetworkRow(std::uint32_t operStatus, DevicePresence presence) noexcept
 {
-    if (mediaConnectState != MEDIA_CONNECT_STATE_UNKNOWN)
-    {
-        return false;
-    }
-    return operStatus == IF_OPER_STATUS_NOT_PRESENT || (hardwareInterface && operStatus != IF_OPER_STATUS_UP);
+    return operStatus == IF_OPER_STATUS_NOT_PRESENT || presence == DevicePresence::Absent;
 }
 
 /// Whether a counted GetIfTable2 row is a hardware link of its own rather than software whose traffic

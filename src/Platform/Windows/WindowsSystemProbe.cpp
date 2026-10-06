@@ -22,6 +22,7 @@
 #include <windows.h>
 #include <winternl.h>
 #include <iphlpapi.h>    // Network interface APIs (includes netioapi.h)
+#include <cfgmgr32.h>    // CM_Locate_DevNodeW: whether an adapter's device is present (#1284)
 // clang-format on
 
 #undef max
@@ -34,9 +35,11 @@
 #include <array>
 #include <chrono>
 #include <concepts>
+#include <cwchar>
 #include <format>
 #include <span>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 #include <psapi.h> // GetPerformanceInfo (K32GetPerformanceInfo, in kernel32)
@@ -542,7 +545,86 @@ static_assert(IF_TYPE_WWAN_CDMA == IF_TYPE_WWANPP2);
 static_assert(NDIS_PHYSICAL_MEDIUM_BLUETOOTH == NdisPhysicalMediumBluetooth);
 static_assert(IF_OPER_STATUS_UP == IfOperStatusUp);
 static_assert(IF_OPER_STATUS_NOT_PRESENT == IfOperStatusNotPresent);
-static_assert(MEDIA_CONNECT_STATE_UNKNOWN == MediaConnectStateUnknown);
+
+namespace
+{
+// The Network class's per-interface keys: <class>\{interface GUID}\Connection holds PnPInstanceId,
+// the device instance id of the adapter behind the interface (#1284).
+constexpr const wchar_t* NETWORK_CLASS_KEY = L"SYSTEM\\CurrentControlSet\\Control\\Network\\{4D36E972-E325-11CE-BFC1-08002BE10318}\\";
+constexpr const wchar_t* PNP_INSTANCE_ID_VALUE = L"PnPInstanceId";
+
+[[nodiscard]] std::wstring guidText(const GUID& guid)
+{
+    return std::format(L"{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
+                       guid.Data1,
+                       guid.Data2,
+                       guid.Data3,
+                       guid.Data4[0],
+                       guid.Data4[1],
+                       guid.Data4[2],
+                       guid.Data4[3],
+                       guid.Data4[4],
+                       guid.Data4[5],
+                       guid.Data4[6],
+                       guid.Data4[7]);
+}
+
+// The adapter's PnP device instance id from the registry, or empty when the interface has none
+// (Teredo, 6to4) or it cannot be read.
+[[nodiscard]] std::wstring readAdapterDeviceInstanceId(const GUID& interfaceGuid)
+{
+    const std::wstring keyPath = std::wstring(NETWORK_CLASS_KEY) + guidText(interfaceGuid) + L"\\Connection";
+    DWORD bytes = 0;
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, keyPath.c_str(), PNP_INSTANCE_ID_VALUE, RRF_RT_REG_SZ, nullptr, nullptr, &bytes) !=
+            ERROR_SUCCESS ||
+        bytes < sizeof(wchar_t))
+    {
+        return {};
+    }
+    std::wstring id(bytes / sizeof(wchar_t), L'\0');
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, keyPath.c_str(), PNP_INSTANCE_ID_VALUE, RRF_RT_REG_SZ, nullptr, id.data(), &bytes) !=
+        ERROR_SUCCESS)
+    {
+        return {};
+    }
+    id.resize(std::wcslen(id.c_str())); // Drop the terminator RegGetValueW wrote
+    return id;
+}
+
+// Whether the device with this instance id is present: CM_LOCATE_DEVNODE_NORMAL finds only a device
+// node that is in the system (started, disabled or failed); a removed device's is not found.
+[[nodiscard]] DevicePresence devicePresence(const std::wstring& deviceInstanceId)
+{
+    if (deviceInstanceId.empty())
+    {
+        return DevicePresence::Unknown;
+    }
+    std::wstring id = deviceInstanceId; // CM_Locate_DevNodeW takes a non-const id
+    DEVINST devNode = 0;
+    switch (CM_Locate_DevNodeW(&devNode, id.data(), CM_LOCATE_DEVNODE_NORMAL))
+    {
+    case CR_SUCCESS:
+        return DevicePresence::Present;
+    case CR_NO_SUCH_DEVNODE:
+        return DevicePresence::Absent;
+    default:
+        return DevicePresence::Unknown;
+    }
+}
+
+// The adapter's device instance id, from @p cache or, the first time, the registry: an interface's
+// adapter never changes.
+[[nodiscard]] const std::wstring&
+adapterDeviceInstanceId(std::unordered_map<std::uint64_t, std::wstring>& cache, std::uint64_t interfaceLuid, const GUID& interfaceGuid)
+{
+    const auto found = cache.find(interfaceLuid);
+    if (found != cache.end())
+    {
+        return found->second;
+    }
+    return cache.emplace(interfaceLuid, readAdapterDeviceInstanceId(interfaceGuid)).first->second;
+}
+} // namespace
 
 void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
 {
@@ -573,8 +655,13 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
         {
             continue;
         }
-        // Adapters removed from the system stay listed; they carry nothing (#1284).
-        if (isNotPresentNetworkRow(row.OperStatus, row.MediaConnectState, row.InterfaceAndOperStatusFlags.HardwareInterface != 0))
+        // Adapters removed from the system stay listed; they carry nothing (#1284). A down row's
+        // device is looked up: down alone doesn't mean removed.
+        const DevicePresence presence =
+            needsDevicePresence(row.OperStatus)
+                ? devicePresence(adapterDeviceInstanceId(m_AdapterDeviceInstanceIds, row.InterfaceLuid.Value, row.InterfaceGuid))
+                : DevicePresence::Unknown;
+        if (isNotPresentNetworkRow(row.OperStatus, presence))
         {
             continue;
         }

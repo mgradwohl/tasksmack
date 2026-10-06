@@ -373,34 +373,45 @@ TEST(WindowsSystemProbeMathTest, TotalCountsEveryInterfaceWhenAllAreVirtual)
     EXPECT_EQ(totals.txBytes, 70U);
 }
 
-// ---- #1284: not-present adapters, Bluetooth PAN, secondary Wi-Fi instances ----
+// ---- #1284: removed adapters, Bluetooth PAN, secondary Wi-Fi instances ----
 
 namespace
 {
 constexpr std::uint32_t IF_OPER_STATUS_DOWN = 2;
-constexpr std::uint32_t MEDIA_CONNECT_STATE_CONNECTED = 1;
-constexpr std::uint32_t MEDIA_CONNECT_STATE_DISCONNECTED = 2;
+constexpr std::uint32_t IF_OPER_STATUS_DORMANT = 5;
 } // namespace
 
-TEST(WindowsSystemProbeMathTest, AdaptersNoLongerInTheSystemAreLeftOut)
+TEST(WindowsSystemProbeMathTest, NotPresentDecidesOnItsOwn)
 {
-    // A long-unplugged USB dongle, an unused Wi-Fi port, Teredo: NotPresent, media state unknown.
-    EXPECT_TRUE(isNotPresentNetworkRow(IF_OPER_STATUS_NOT_PRESENT, MEDIA_CONNECT_STATE_UNKNOWN, true));
-    EXPECT_TRUE(isNotPresentNetworkRow(IF_OPER_STATUS_NOT_PRESENT, MEDIA_CONNECT_STATE_UNKNOWN, false));
-    // An unplugged dock's "Ethernet 3", a phantom device that Windows reports as down rather than
-    // not present.
-    EXPECT_TRUE(isNotPresentNetworkRow(IF_OPER_STATUS_DOWN, MEDIA_CONNECT_STATE_UNKNOWN, true));
+    // A long-unplugged USB dongle, an unused Wi-Fi port, Teredo: whatever else is known about it.
+    for (const DevicePresence presence : {DevicePresence::Unknown, DevicePresence::Present, DevicePresence::Absent})
+    {
+        EXPECT_TRUE(isNotPresentNetworkRow(IF_OPER_STATUS_NOT_PRESENT, presence));
+    }
 }
 
-TEST(WindowsSystemProbeMathTest, PresentAdaptersAreListedWhateverTheirState)
+TEST(WindowsSystemProbeMathTest, ADownAdapterWhoseDeviceWasRemovedIsLeftOut)
 {
-    EXPECT_FALSE(isNotPresentNetworkRow(IF_OPER_STATUS_UP, MEDIA_CONNECT_STATE_CONNECTED, true));
-    EXPECT_FALSE(isNotPresentNetworkRow(IF_OPER_STATUS_DOWN, MEDIA_CONNECT_STATE_DISCONNECTED, true)); // Wi-Fi with no network
-    EXPECT_FALSE(isNotPresentNetworkRow(IF_OPER_STATUS_UP, MEDIA_CONNECT_STATE_UNKNOWN, true));
-    // A down WAN Miniport (PPPoE, SSTP) reports an unknown media state but is present.
-    EXPECT_FALSE(isNotPresentNetworkRow(IF_OPER_STATUS_DOWN, MEDIA_CONNECT_STATE_UNKNOWN, false));
-    // Not present but with a known media state: not the stale entry the probe drops.
-    EXPECT_FALSE(isNotPresentNetworkRow(IF_OPER_STATUS_NOT_PRESENT, MEDIA_CONNECT_STATE_DISCONNECTED, true));
+    // An unplugged dock's "Ethernet 3": reported down, its device a phantom.
+    EXPECT_TRUE(isNotPresentNetworkRow(IF_OPER_STATUS_DOWN, DevicePresence::Absent));
+}
+
+TEST(WindowsSystemProbeMathTest, ADownAdapterWhoseDeviceIsPresentStaysListed)
+{
+    // Disabled in Windows, cable unplugged, Wi-Fi with no network, dormant: present, so listed.
+    EXPECT_FALSE(isNotPresentNetworkRow(IF_OPER_STATUS_DOWN, DevicePresence::Present));
+    EXPECT_FALSE(isNotPresentNetworkRow(IF_OPER_STATUS_DORMANT, DevicePresence::Present));
+    // No device to ask about (Teredo, 6to4) or the query failed: kept rather than guessed away.
+    EXPECT_FALSE(isNotPresentNetworkRow(IF_OPER_STATUS_DOWN, DevicePresence::Unknown));
+    EXPECT_FALSE(isNotPresentNetworkRow(IF_OPER_STATUS_UP, DevicePresence::Unknown));
+}
+
+TEST(WindowsSystemProbeMathTest, OnlyRowsThatAreNeitherUpNorNotPresentAreLookedUp)
+{
+    EXPECT_FALSE(needsDevicePresence(IF_OPER_STATUS_UP));
+    EXPECT_FALSE(needsDevicePresence(IF_OPER_STATUS_NOT_PRESENT));
+    EXPECT_TRUE(needsDevicePresence(IF_OPER_STATUS_DOWN));
+    EXPECT_TRUE(needsDevicePresence(IF_OPER_STATUS_DORMANT));
 }
 
 TEST(WindowsSystemProbeMathTest, BluetoothPanIsAHardwareLink)
