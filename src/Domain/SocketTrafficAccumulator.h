@@ -118,6 +118,18 @@ class SocketTrafficAccumulator
         {
             publishTotals(processes);
         }
+        // A process with connections in the newest reading, none of which could be read, has no
+        // reading of its own this interval: unavailable rather than 0, with the bytes landing as a burst
+        // in the next one (#1304, as #1285/#1290 treat unreadable counters). ProcessModel measures an
+        // interval only between two available readings, so the interval after it is unavailable too,
+        // and the burst never shows.
+        for (auto& proc : processes)
+        {
+            if (m_UnreadablePids.contains(proc.pid))
+            {
+                proc.networkCountersAvailable = false;
+            }
+        }
     }
 
     /// Fold one complete reading of every connection into the per-process totals. The credited bytes
@@ -133,11 +145,17 @@ class SocketTrafficAccumulator
     {
         std::unordered_map<std::uint64_t, SocketState> next;
         next.reserve(sockets.size());
+        // Per owner: whether any of its connections in this reading could be read (#1304).
+        std::unordered_map<std::int32_t, bool> anyReadableByPid;
         for (const auto& sample : sockets)
         {
             if (sample.key == 0)
             {
                 continue;
+            }
+            if (sample.pid > 0)
+            {
+                anyReadableByPid[sample.pid] |= sample.readable;
             }
             const auto previous = m_Sockets.find(sample.key);
             if (!sample.readable)
@@ -216,6 +234,14 @@ class SocketTrafficAccumulator
         }
         m_Sockets = std::move(next);
         m_HasReading = true;
+        m_UnreadablePids.clear();
+        for (const auto& [pid, anyReadable] : anyReadableByPid)
+        {
+            if (!anyReadable)
+            {
+                m_UnreadablePids.insert(pid);
+            }
+        }
     }
 
     /// Write every process's current cumulative totals into its netReceivedBytes/netSentBytes without
@@ -278,6 +304,7 @@ class SocketTrafficAccumulator
         m_PendingByPid.clear();
         m_HandedOverByProcess.clear();
         m_Totals.clear();
+        m_UnreadablePids.clear();
         m_HasReading = false;
         m_LastReadingTimeNs = 0;
     }
@@ -418,6 +445,7 @@ class SocketTrafficAccumulator
 
     std::unordered_map<std::uint64_t, SocketState> m_Sockets; // last reading, by connection key
     std::unordered_map<std::int32_t, Totals> m_PendingByPid;  // credited since the last publish()
+    std::unordered_set<std::int32_t> m_UnreadablePids;        // owners none of whose connections the newest reading could read (#1304)
     // Held growth handed over by a repeated reading (reviseOwnership()), credited by the next
     // publish() only to the process with this PID and start time.
     std::unordered_map<ProcessKey, Totals, ProcessKeyHash> m_HandedOverByProcess;

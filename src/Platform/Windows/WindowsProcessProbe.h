@@ -144,6 +144,8 @@ class WindowsProcessProbe : public IProcessProbe
 
     /// Read total system CPU time
     [[nodiscard]] static uint64_t readTotalCpuTime();
+    // The highest total totalCpuTime() has returned, so it never steps backwards (#1303).
+    mutable std::atomic<std::uint64_t> m_HighestTotalCpuTime{0};
 
     /// Calculate detail cache TTLs based on total physical RAM
     static void calculateDetailTTLsFromTotalRAM(std::chrono::milliseconds& lightTTL, std::chrono::milliseconds& heavyTTL) noexcept;

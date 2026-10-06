@@ -34,6 +34,42 @@ void read(SocketTrafficAccumulator& accumulator, const std::vector<SocketTraffic
     accumulator.publish(processes);
 }
 
+TEST(SocketTrafficAccumulatorTest, AProcessNoneOfWhoseConnectionsCouldBeReadHasNoNetworkReading)
+{
+    // #1304: when every connection of a process failed its read in one sample, the process read 0 B/s
+    // for that interval and the bytes landed as a burst in the next. Its counters are now unavailable
+    // for that reading; one readable connection is enough for a reading.
+    SocketTrafficAccumulator accumulator;
+    std::vector processes{process(10), process(20)};
+    const auto apply = [&](std::uint64_t sampleTimeNs, std::vector<SocketTrafficSample> sockets)
+    {
+        for (auto& proc : processes)
+        {
+            proc.networkCountersAvailable = true; // as the probe lists them
+        }
+        accumulator.apply(SocketTrafficReading{.sockets = std::move(sockets), .sampleTimeNs = sampleTimeNs}, processes);
+    };
+
+    apply(1'000, {{.key = 1, .pid = 10, .bytesReceived = 1'000}, {.key = 2, .pid = 20, .bytesReceived = 1'000}});
+    EXPECT_TRUE(processes[0].networkCountersAvailable);
+    EXPECT_TRUE(processes[1].networkCountersAvailable);
+
+    apply(2'000, {{.key = 1, .pid = 10, .readable = false}, {.key = 2, .pid = 20, .bytesReceived = 2'000}});
+    EXPECT_FALSE(processes[0].networkCountersAvailable) << "no connection of process 10 could be read";
+    EXPECT_TRUE(processes[1].networkCountersAvailable);
+
+    apply(3'000,
+          {{.key = 1, .pid = 10, .readable = false},
+           {.key = 3, .pid = 10, .bytesReceived = 10},
+           {.key = 2, .pid = 20, .bytesReceived = 3'000}});
+    EXPECT_TRUE(processes[0].networkCountersAvailable) << "one readable connection is a reading";
+
+    // A repeat of the same reading (a probe that caches its query) keeps the newest reading's verdict.
+    apply(4'000, {{.key = 1, .pid = 10, .readable = false}});
+    apply(4'000, {{.key = 1, .pid = 10, .readable = false}});
+    EXPECT_FALSE(processes[0].networkCountersAvailable);
+}
+
 TEST(SocketTrafficAccumulatorTest, FirstReadingIsTheBaseline)
 {
     SocketTrafficAccumulator accumulator;
