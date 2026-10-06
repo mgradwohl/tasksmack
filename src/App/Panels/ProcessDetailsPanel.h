@@ -90,22 +90,6 @@ class ProcessDetailsPanel : public Panel
     /// Set once by ShellLayer at attach; the default (all false) hides those optional series.
     void setProcessCapabilities(const Platform::ProcessCapabilities& capabilities);
 
-    /// Whether per-process GPU usage can be observed on this system (ProcessesPanel::
-    /// hasPerProcessGpuMetrics()), so the GPU tab does not claim "no usage" where it cannot see any
-    /// (#1210). Set by ShellLayer every update; true until then.
-    void setPerProcessGpuSupported(bool supported)
-    {
-        m_PerProcessGpuSupported = supported;
-    }
-
-    /// Whether per-process GPU utilization can be observed (ProcessesPanel::gpuSupport().utilization):
-    /// where the GPU probe reports per-process memory but not utilization (NVML on Linux), the GPU tab
-    /// shows utilization as N/A and its chart as a gap rather than a measured 0% (#1210).
-    void setPerProcessGpuUtilizationSupported(bool supported)
-    {
-        m_PerProcessGpuUtilizationSupported = supported;
-    }
-
     /// Get currently displayed PID.
     [[nodiscard]] std::int32_t selectedPid() const
     {
@@ -251,8 +235,6 @@ class ProcessDetailsPanel : public Panel
     std::unique_ptr<Platform::IProcessActions> m_ProcessActions;
     Platform::ProcessActionCapabilities m_ActionCapabilities;
     Platform::ProcessCapabilities m_ProcessCapabilities;
-    bool m_PerProcessGpuSupported = true;
-    bool m_PerProcessGpuUtilizationSupported = true;
     // The GPU tab's "No GPU usage" explanation, naming the history window (#1210). Empty until built,
     // and cleared when the window changes so the next frame rebuilds it.
     std::string m_NoGpuUsageDetail;

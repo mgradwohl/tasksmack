@@ -3346,6 +3346,70 @@ TEST(ProcessModelTest, WatchedSamplesCarryTheirOwnGenerationsCounterSupport)
     EXPECT_TRUE(samples[1].ioCountersSupported);
 }
 
+TEST(ProcessModelTest, WatchedSamplesCarryTheirOwnGenerationsGpuSupport)
+{
+    // #1210: the GPU model can lose per-process utilization on re-enumeration, on its own sampler.
+    // A reader taking both generations in one batch must see the earlier one as supported, so its
+    // real utilization is kept, and the later one as not.
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "watched", 'R', 1000, 0, 5000)});
+    processProbe->setTotalCpuTime(100000);
+    auto* rawProcessProbe = processProbe.get();
+
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    caps.hasPerProcessUtilization = true;
+    gpuProbe->withCapabilities(caps);
+    gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor").withProcessGPU(100, "GPU0", 1024ULL * 1024);
+    auto* rawGpuProbe = gpuProbe.get();
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(processProbe), clock.now());
+    model.setGPUModel(gpuModel);
+    model.watchProcess(100);
+
+    gpuModel->refresh();
+    model.refresh();
+
+    // Re-enumeration finds the probe without per-process utilization (NVML only, say).
+    Platform::GPUCapabilities withoutUtilization = caps;
+    withoutUtilization.hasPerProcessUtilization = false;
+    rawGpuProbe->withCapabilities(withoutUtilization).withRescanReportingChange();
+    gpuModel->refresh();
+    ASSERT_TRUE(gpuModel->perProcessUtilizationKnownUnsupported());
+
+    clock.advance(std::chrono::milliseconds(100));
+    rawProcessProbe->setCounters({makeCounter(100, "watched", 'R', 1100, 0, 5000)});
+    model.refresh();
+
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(model.watchedSamplesSince(0, samples));
+    ASSERT_EQ(samples.size(), 2U);
+    EXPECT_TRUE(samples[0].gpuPerProcessSupported);
+    EXPECT_TRUE(samples[0].gpuUtilizationSupported);
+    EXPECT_TRUE(samples[1].gpuPerProcessSupported);
+    EXPECT_FALSE(samples[1].gpuUtilizationSupported);
+}
+
+TEST(ProcessModelTest, WatchedSamplesWithoutAGpuModelHaveNoGpuSupport)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({makeCounter(100, "watched", 'R', 1000, 0, 5000)});
+    probe->setTotalCpuTime(100000);
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
+    model.watchProcess(100);
+    model.refresh();
+
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(model.watchedSamplesSince(0, samples));
+    ASSERT_EQ(samples.size(), 1U);
+    EXPECT_FALSE(samples[0].gpuPerProcessSupported);
+    EXPECT_FALSE(samples[0].gpuUtilizationSupported);
+}
+
 TEST(ProcessModelTest, WatchProcessSeedSampleCarriesTheCurrentCounterSupport)
 {
     auto probe = std::make_unique<MockProcessProbe>();

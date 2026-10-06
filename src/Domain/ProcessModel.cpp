@@ -411,6 +411,13 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         }
     }
 
+    // What the GPU probe supplies per process for this generation (#1210): read here, with the
+    // generation, so a reader judges each sample by its own generation's support rather than the
+    // latest -- the GPU model can gain or lose it on re-enumeration, on its own sampler. Two atomic
+    // loads. No GPU model means no per-process GPU data.
+    const bool gpuPerProcessSupported = (gpuModel != nullptr) && !gpuModel->perProcessMetricsKnownUnsupported();
+    const bool gpuUtilizationSupported = gpuPerProcessSupported && !gpuModel->perProcessUtilizationKnownUnsupported();
+
     // GPU aggregation can be expensive (PDH queries/string work). Keep it outside
     // the ProcessModel write lock so UI readers are not blocked during resize.
     if (shouldMergeGpuData && (gpuModel != nullptr))
@@ -521,6 +528,8 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         ++m_SnapshotVersion;
         ++m_SystemHistoryVersion;
         m_PublishedCapabilities = m_Capabilities;
+        m_PublishedGpuPerProcessSupported = gpuPerProcessSupported;
+        m_PublishedGpuUtilizationSupported = gpuUtilizationSupported;
         m_SnapshotSampleTimeSeconds = sampleTimeSeconds;
 
         // Every generation published while a process is watched gets a sample, the process absent
@@ -532,12 +541,13 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
                 // watchProcess() ran between the copy above and this lock: rare, so copy again here.
                 watchedSnapshot = copyProcess(*m_Snapshots, pidNow);
             }
-            displacedSample =
-                pushWatchedSampleLocked(ProcessSample{.snapshot = std::move(watchedSnapshot),
-                                                      .version = m_SnapshotVersion,
-                                                      .sampleTimeSeconds = sampleTimeSeconds,
-                                                      .ioCountersSupported = m_PublishedCapabilities.hasIoCounters,
-                                                      .networkCountersSupported = m_PublishedCapabilities.hasNetworkCounters});
+            displacedSample = pushWatchedSampleLocked(ProcessSample{.snapshot = std::move(watchedSnapshot),
+                                                                    .version = m_SnapshotVersion,
+                                                                    .sampleTimeSeconds = sampleTimeSeconds,
+                                                                    .ioCountersSupported = m_PublishedCapabilities.hasIoCounters,
+                                                                    .networkCountersSupported = m_PublishedCapabilities.hasNetworkCounters,
+                                                                    .gpuPerProcessSupported = gpuPerProcessSupported,
+                                                                    .gpuUtilizationSupported = gpuUtilizationSupported});
         }
 
         m_PublishedSnapshotVersion.store(m_SnapshotVersion, std::memory_order_release);
@@ -621,6 +631,8 @@ void ProcessModel::watchProcess(std::int32_t pid)
     std::uint64_t currentVersion = 0;
     double currentSampleTime = 0.0;
     Platform::ProcessCapabilities currentCapabilities;
+    bool currentGpuPerProcessSupported = false;
+    bool currentGpuUtilizationSupported = false;
     {
         std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
         m_WatchedPid.store(watched, std::memory_order_release);
@@ -631,6 +643,8 @@ void ProcessModel::watchProcess(std::int32_t pid)
         currentVersion = m_SnapshotVersion;
         currentSampleTime = m_SnapshotSampleTimeSeconds;
         currentCapabilities = m_PublishedCapabilities;
+        currentGpuPerProcessSupported = m_PublishedGpuPerProcessSupported;
+        currentGpuUtilizationSupported = m_PublishedGpuUtilizationSupported;
     }
     if (watched == 0 || currentVersion == 0)
     {
@@ -648,7 +662,9 @@ void ProcessModel::watchProcess(std::int32_t pid)
                                                                 .version = currentVersion,
                                                                 .sampleTimeSeconds = currentSampleTime,
                                                                 .ioCountersSupported = currentCapabilities.hasIoCounters,
-                                                                .networkCountersSupported = currentCapabilities.hasNetworkCounters}));
+                                                                .networkCountersSupported = currentCapabilities.hasNetworkCounters,
+                                                                .gpuPerProcessSupported = currentGpuPerProcessSupported,
+                                                                .gpuUtilizationSupported = currentGpuUtilizationSupported}));
     }
 }
 

@@ -124,6 +124,11 @@ struct ProcessSample
     /// its own generation's state, not the latest: a reading taken while it was supported stays one.
     bool ioCountersSupported = true;
     bool networkCountersSupported = true;
+    /// Likewise for the GPU probe when that generation was produced (#1210): whether it supplied
+    /// per-process GPU data at all, and per-process utilization among it. The GPU model can gain or
+    /// lose either on re-enumeration, on its own sampler, so each sample carries its own.
+    bool gpuPerProcessSupported = true;
+    bool gpuUtilizationSupported = true;
 };
 
 } // namespace Domain

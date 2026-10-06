@@ -182,6 +182,10 @@ class ProcessModel : public ISamplable
     // m_SamplingMutex. m_PublishedCapabilities is the copy readers see, guarded by m_Mutex.
     Platform::ProcessCapabilities m_Capabilities;
     Platform::ProcessCapabilities m_PublishedCapabilities;
+    // What the GPU probe supplied per process for the published generation (ProcessSample, #1210),
+    // guarded by m_Mutex like m_PublishedCapabilities.
+    bool m_PublishedGpuPerProcessSupported = false;
+    bool m_PublishedGpuUtilizationSupported = false;
 
     // Per-process tracking state.  Consolidating previous counters and
     // peak-RSS into one struct reduces per-process map lookups

@@ -37,12 +37,15 @@ struct SampleRateReadings
 {
     bool io = false;
     bool network = false;
+    bool gpuPerProcess = false;  ///< The GPU probe supplied per-process GPU data for this sample
+    bool gpuUtilization = false; ///< ...and per-process utilization among it
 };
 
-/// A sample's I/O and network rates as readings or not, each judged by the probe's support as
-/// published with that sample's own generation (ProcessSample::ioCountersSupported /
-/// networkCountersSupported) -- not the latest: when a batch spans a generation in which the probe
-/// withdrew its network counters, the readings taken before it are still readings (#1210).
+/// A sample's I/O and network rates, and its GPU figures, as readings or not, each judged by the
+/// support published with that sample's own generation (ProcessSample::ioCountersSupported,
+/// networkCountersSupported, gpuPerProcessSupported, gpuUtilizationSupported) -- not the latest:
+/// when a batch spans a generation in which a probe withdrew or gained one, the samples before it
+/// keep what they were (#1210).
 [[nodiscard]] inline SampleRateReadings rateReadings(const Domain::ProcessSample& sample) noexcept
 {
     if (sample.snapshot == nullptr)
@@ -50,7 +53,9 @@ struct SampleRateReadings
         return {};
     }
     return {.io = rateIsReading(sample.ioCountersSupported, sample.snapshot->ioAvailable),
-            .network = rateIsReading(sample.networkCountersSupported, sample.snapshot->networkAvailable)};
+            .network = rateIsReading(sample.networkCountersSupported, sample.snapshot->networkAvailable),
+            .gpuPerProcess = sample.gpuPerProcessSupported,
+            .gpuUtilization = sample.gpuPerProcessSupported && sample.gpuUtilizationSupported};
 }
 
 /// Whether a history holds any actual reading rather than only gaps (NaN).
