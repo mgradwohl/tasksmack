@@ -21,6 +21,12 @@ TEST(ElevationNoticeTextTest, LinuxNoticeNamesEveryValueUnavailableForOtherUsers
     EXPECT_TRUE(LINUX.contains("network"));
     EXPECT_TRUE(LINUX.contains("other users"));
     EXPECT_TRUE(LINUX.contains("sudo TaskSmack"));
+    // Root with dropped capabilities also gets the notice, and sudo can't help it: the capabilities
+    // themselves must be named, and the text must not claim the process lacks elevation.
+    EXPECT_TRUE(LINUX.contains("CAP_DAC_READ_SEARCH"));
+    EXPECT_TRUE(LINUX.contains("CAP_SYS_PTRACE"));
+    EXPECT_TRUE(LINUX.contains("root alone isn't enough"));
+    EXPECT_FALSE(LINUX.contains("without elevated privileges"));
 }
 
 TEST(ElevationNoticeTextTest, WindowsNoticeNamesNetwork)

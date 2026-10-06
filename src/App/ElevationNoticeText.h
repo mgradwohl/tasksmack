@@ -15,13 +15,17 @@ namespace App::ElevationNoticeText
 /// (attributed through its fd links) read N/A (#1287). Root with those capabilities dropped (a
 /// container) gets the notice; CAP_DAC_READ_SEARCH alone restores only FD counts and still gets it
 /// (Platform::ProcPrivileges::hasReducedPrivileges).
+/// The remedy is worded for both causes: sudo alone can't restore capabilities removed from a root
+/// process's bounding set (a container or hardened service), so the capabilities themselves are named.
 /// Keep in step with docs/guide/faq.md ("Process I/O, FDs or network show N/A").
-inline constexpr std::string_view LINUX = "TaskSmack is running without elevated privileges.\n\n"
+inline constexpr std::string_view LINUX = "TaskSmack can't read other users' processes.\n\n"
                                           "File descriptor counts, I/O statistics and network\n"
                                           "usage are unavailable for processes owned by\n"
                                           "other users.\n\n"
-                                          "For complete data, run:\n"
-                                          "    sudo TaskSmack";
+                                          "For complete data, run it as root (sudo TaskSmack)\n"
+                                          "or grant it CAP_DAC_READ_SEARCH and CAP_SYS_PTRACE.\n"
+                                          "In a container or service that drops capabilities,\n"
+                                          "allow those two there; root alone isn't enough.";
 
 /// Windows, not Administrator: TCP EStats collection can't be enabled.
 inline constexpr std::string_view WINDOWS = "TaskSmack is running without Administrator privileges.\n\n"
