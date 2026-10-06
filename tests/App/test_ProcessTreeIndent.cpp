@@ -119,5 +119,25 @@ TEST(ProcessTreeIndentTest, LeavingTreeViewRestoresOnlyAWidthTheUserDidNotChange
     EXPECT_FALSE(ProcessTreeIndent::shouldRestoreNameWidth(0.0F, 120.0F));   // Tree view did not widen it
 }
 
+TEST(ProcessTreeIndentTest, AutomaticTreeNameWidthIsNotSavedAsTheListsWidth)
+{
+    // #1209: closing in tree view saved tree view's Name width, which the next launch -- in list view
+    // -- then restored. The list's width is saved instead while Name is still at tree view's width.
+    const auto saved =
+        ProcessTreeIndent::nameWidthToSave(/*treeView=*/true, /*widenedTo=*/360.0F, /*currentWidth=*/360.0F, /*widthBeforeTree=*/120.0F);
+    ASSERT_TRUE(saved.has_value());
+    EXPECT_FLOAT_EQ(saved.value(), 120.0F);
+}
+
+TEST(ProcessTreeIndentTest, UserChosenNameWidthIsSavedAsItIs)
+{
+    // Resized in tree view: the user's width, saved as it is.
+    EXPECT_FALSE(ProcessTreeIndent::nameWidthToSave(true, 360.0F, 420.0F, 120.0F).has_value());
+    // Tree view did not widen it (already wide enough).
+    EXPECT_FALSE(ProcessTreeIndent::nameWidthToSave(true, 0.0F, 500.0F, 500.0F).has_value());
+    // List view: whatever it is, it is the list's.
+    EXPECT_FALSE(ProcessTreeIndent::nameWidthToSave(false, 360.0F, 360.0F, 120.0F).has_value());
+}
+
 } // namespace
 } // namespace App

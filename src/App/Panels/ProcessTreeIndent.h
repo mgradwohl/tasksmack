@@ -8,6 +8,7 @@
 // live-context blocker to testing it.
 
 #include <algorithm>
+#include <optional>
 
 namespace App::ProcessTreeIndent
 {
@@ -75,6 +76,26 @@ inline constexpr float TREE_NAME_WIDTH_EM = 22.5F;
     constexpr float RESIZE_TOLERANCE_PX = 1.0F;
     const float change = currentWidth - widenedTo;
     return widenedTo > 0.0F && change <= RESIZE_TOLERANCE_PX && change >= -RESIZE_TOLERANCE_PX;
+}
+
+/// The Name width to save in place of the current one when the table layout is captured (#1209), or
+/// nullopt to save it as it is. View mode is not saved and the next launch opens in list view, so a
+/// layout captured in tree view with Name still at tree view's automatic width would make that the
+/// list's width. Then the list width it had before is saved instead; a width the user set in tree
+/// view (shouldRestoreNameWidth() false) is theirs, and is saved as it is.
+///
+/// @param treeView         Whether the table is in tree view.
+/// @param widenedTo        Width tree view set, or 0 if it left the column as it was.
+/// @param currentWidth     The column's width now.
+/// @param widthBeforeTree  Its width before tree view widened it.
+[[nodiscard]] constexpr std::optional<float>
+nameWidthToSave(bool treeView, float widenedTo, float currentWidth, float widthBeforeTree) noexcept
+{
+    if (!treeView || !shouldRestoreNameWidth(widenedTo, currentWidth) || widthBeforeTree <= 0.0F)
+    {
+        return std::nullopt;
+    }
+    return widthBeforeTree;
 }
 
 } // namespace App::ProcessTreeIndent

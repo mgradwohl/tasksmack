@@ -675,6 +675,21 @@ std::string ProcessesPanel::captureTableLayout() const
     {
         layout = ProcessTableSettings::carrySortForward(layout, m_SortBackupLayout);
     }
+    // Tree view's automatic Name width is not the list's: the next launch opens in list view, so save
+    // the width Name had before tree view widened it, unless the user has resized it since (#1209).
+    if (const ImGuiTable* table = ImGui::TableFindByID(m_TableId); table != nullptr)
+    {
+        const auto nameIdx = static_cast<int>(toIndex(ProcessColumn::Name));
+        if (nameIdx < table->ColumnsCount)
+        {
+            if (const std::optional<float> listWidth = ProcessTreeIndent::nameWidthToSave(
+                    m_TreeViewEnabled, m_NameWidthSetForTree, table->Columns[nameIdx].WidthRequest, m_NameWidthBeforeTree))
+            {
+                layout =
+                    ProcessTableSettings::withColumnWidth(layout, toIndex(ProcessColumn::Name), static_cast<int>(std::lround(*listWidth)));
+            }
+        }
+    }
     // Last, so a sort line carried into a section with no order lines gets them too (#1393).
     return ProcessTableSettings::withExplicitOrder(layout);
 }
