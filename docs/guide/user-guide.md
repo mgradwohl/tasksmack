@@ -161,7 +161,7 @@ TaskSmack combines operating-system GPU APIs with optional vendor libraries:
 - **Not read:** utilisation.
 - **Sleeping cards:** a card in runtime suspend isn't queried, so watching it doesn't wake it.
 
-**Per-process GPU utilisation** sums utilisation across all GPUs, so a process working across two GPUs can legitimately show GPU% > 100 %.
+**Per-process GPU figures** are counted the way the GPU tab counts each GPU. GPU% is the process's utilisation of the busiest GPU it uses (0–100 %). GPU memory counts dedicated memory on a discrete GPU and, on Windows, shared memory on an integrated one, added up across GPUs. Process Details also lists dedicated and shared memory separately when the process has shared memory, which only Windows reports.
 
 The UI shows only the metrics exposed by the available backend. If no backend discovers a usable GPU, GPU sections are hidden.
 

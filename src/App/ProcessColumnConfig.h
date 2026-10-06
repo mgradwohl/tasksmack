@@ -211,9 +211,9 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
 
         // === GPU ===
         // GPU Percent
-        {.name="GPU %", .menuName="GPU %", .configKey="gpu_percent", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="GPU utilization percentage (aggregated across all GPUs)"},
+        {.name="GPU %", .menuName="GPU %", .configKey="gpu_percent", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="GPU utilization on the busiest GPU the process uses (0-100%, as the GPU tab reports it)"},
         // GPU Memory
-        {.name="GPU Mem", .menuName="GPU Memory", .configKey="gpu_memory", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="GPU memory allocated (VRAM)"},
+        {.name="GPU Mem", .menuName="GPU Memory", .configKey="gpu_memory", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="GPU memory in use, counted as the GPU tab counts it: VRAM on a discrete GPU, shared memory on an integrated one (Windows)"},
         // GPU Engine
         {.name="GPU Engine", .menuName="GPU Engine", .configKey="gpu_engine", .defaultWidth=100.0F, .defaultVisible=false, .canHide=true, .description="Active GPU engines (3D, Compute, Video, etc.)"},
         // GPU Device

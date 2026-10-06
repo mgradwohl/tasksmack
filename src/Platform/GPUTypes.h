@@ -142,8 +142,12 @@ struct ProcessGPUCounters
     std::int32_t pid = 0;
     std::string gpuId; // Which GPU
 
-    // Memory allocated by process (bytes)
-    std::uint64_t gpuMemoryBytes = 0;
+    // Memory allocated by the process on this GPU (bytes), kept apart as the adapter's own figures
+    // are (#1164): dedicated is the GPU's own memory (VRAM; what NVML and ROCm SMI report per
+    // process), shared is system memory the GPU maps for it (Windows' shared segment). Domain
+    // compares each with the adapter's matching figure, so neither is summed into the other here.
+    std::uint64_t gpuMemoryBytes = 0;       // dedicated
+    std::uint64_t gpuSharedMemoryBytes = 0; // shared (0 where the platform has no such segment)
 
     // Utilization attributed to this process (0-100, instantaneous)
     double gpuUtilPercent = 0.0;

@@ -145,6 +145,13 @@ class MockGPUProbe : public Platform::IGPUProbe
         return *this;
     }
 
+    /// A per-process entry with every field chosen by the test (shared memory, utilization, ...).
+    MockGPUProbe& withProcessGPUCounters(Platform::ProcessGPUCounters counters)
+    {
+        m_ProcessCounters.push_back(std::move(counters));
+        return *this;
+    }
+
     MockGPUProbe& withCapabilities(Platform::GPUCapabilities caps)
     {
         m_Capabilities = caps;
