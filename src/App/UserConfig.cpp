@@ -593,6 +593,21 @@ void UserConfig::load()
     }
 }
 
+auto UserConfig::parseSettings(std::string_view tomlText, UserSettings& settings) -> bool
+{
+    try
+    {
+        const auto config = toml::parse(tomlText);
+        readSettings(config, settings);
+        return true;
+    }
+    catch (const toml::parse_error& err)
+    {
+        spdlog::debug("Config text is not valid TOML: {}", err.what());
+        return false;
+    }
+}
+
 void UserConfig::save()
 {
     // Ensure config directory exists

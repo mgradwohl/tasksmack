@@ -1671,5 +1671,53 @@ TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_AccentsInArrayColorFormat)
     EXPECT_NEAR(theme->accents[1].w, 0.8F, 0.02F);
 }
 
+// ========== loadThemeFromString (the string seam the theme fuzz target drives) ==========
+
+TEST_F(ThemeLoaderDiscoveryTest, LoadThemeFromString_MatchesLoadThemeOnTheSameText)
+{
+    const std::string toml = R"(
+[meta]
+name = "Same Either Way"
+
+[accents]
+colors = ["#0078D4", [0.0, 1.0, 0.0, 0.5]]
+
+[charts]
+cpu = "#336699"
+memory = [0.2, 0.4, 0.6]
+
+[ui.window]
+border = "#11223344"
+)";
+    createThemeFile("same.toml", toml);
+
+    const auto fromFile = ThemeLoader::loadTheme(m_TempDir / "same.toml");
+    const auto fromString = ThemeLoader::loadThemeFromString(toml, "same.toml");
+    ASSERT_TRUE(fromFile.has_value());
+    ASSERT_TRUE(fromString.has_value());
+
+    EXPECT_EQ(fromString->name, fromFile->name);
+    const auto expectSameColour = [](const ImVec4& a, const ImVec4& b)
+    {
+        EXPECT_FLOAT_EQ(a.x, b.x);
+        EXPECT_FLOAT_EQ(a.y, b.y);
+        EXPECT_FLOAT_EQ(a.z, b.z);
+        EXPECT_FLOAT_EQ(a.w, b.w);
+    };
+    expectSameColour(fromString->accents[0], fromFile->accents[0]);
+    expectSameColour(fromString->accents[1], fromFile->accents[1]);
+    expectSameColour(fromString->chartCpu, fromFile->chartCpu);
+    expectSameColour(fromString->chartMemory, fromFile->chartMemory);
+    // Fallbacks derived from other colours, and a missing required colour (error magenta).
+    expectSameColour(fromString->chartCpuFill, fromFile->chartCpuFill);
+    expectSameColour(fromString->plotGrid, fromFile->plotGrid);
+    expectSameColour(fromString->windowBg, fromFile->windowBg);
+}
+
+TEST(ThemeLoaderTest, LoadThemeFromString_InvalidTomlReturnsNullopt)
+{
+    EXPECT_FALSE(ThemeLoader::loadThemeFromString("[meta\nname = \"Broken\"\n").has_value());
+}
+
 } // namespace
 } // namespace UI
