@@ -692,6 +692,9 @@ enforces a `--min-coverage` floor (default 90%): a benchmark missing from the cu
 with no usable timing data on either side, counts against coverage instead of being silently
 ignored (see #871 -- this closed three concrete false-pass paths: a missing baseline benchmark,
 a non-finite/`NaN` timing, and comparing two different timing fields for the same benchmark).
+A slowdown also has to exceed an absolute noise floor, `--min-abs-delta-ns` (default 1.0ns), to
+count: a sub-nanosecond microbenchmark such as `BM_Numeric_ToDouble_Int` moving 0.4ns -> 0.6ns
+reads as +50% but is timer noise (#1322). Pass `--min-abs-delta-ns 0` to gate on percentage alone.
 
 This is a *separate* baseline from `perf-data/linux-baseline.json` above, deliberately: that one
 was recorded on a local developer machine (10 cores @ 3.7 GHz) for local `tools/bench.sh`
@@ -1420,7 +1423,7 @@ Clang-tidy configuration is curated for signal/noise; see `.clang-tidy` for the 
 
 ## Adding Dependencies
 
-Use CMake’s `FetchContent` for dependencies. Declare new dependencies in `cmake/Dependencies.cmake`, and always use `SYSTEM` to suppress third-party warnings:
+Use CMake’s `FetchContent` for dependencies. Declare new dependencies in `cmake/Dependencies.cmake`, always use `SYSTEM` to suppress third-party warnings, and always pass a per-preset `BINARY_DIR` (see "Shared FetchContent cache" below):
 
 ```cmake
 FetchContent_Declare(
@@ -1428,6 +1431,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/example/mylib.git
     GIT_TAG v1.0.0
     SYSTEM
+    BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/mylib-build"
 )
 FetchContent_MakeAvailable(mylib)
 
@@ -1437,6 +1441,12 @@ target_link_libraries(TaskSmack PRIVATE mylib)
 ### Shared FetchContent cache
 
 The shared FetchContent cache is **enabled by default** to reuse downloads across presets, reducing build times and bandwidth usage. The cache is stored at `.cache/fetchcontent/` in the project root.
+
+Only the downloads are shared: `.cache/fetchcontent/` holds each dependency's `<dep>-src` and
+`<dep>-subbuild`, while its `<dep>-build` tree lives in the preset's own `build/<preset>/_deps/`, so
+a sanitizer, coverage or LTO preset never reuses objects another preset compiled with different
+flags (#1308). Configuring fails if any added directory builds outside the preset's build tree --
+that is the check that a new `FetchContent_Declare()` without `BINARY_DIR` trips.
 
 To disable the cache:
 

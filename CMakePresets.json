@@ -622,7 +622,6 @@
                 "outputOnFailure": true
             },
             "execution": {
-                "jobs": 0,
                 "timeout": 120
             }
         },
@@ -633,7 +632,6 @@
                 "outputOnFailure": true
             },
             "execution": {
-                "jobs": 0,
                 "timeout": 60
             }
         },
@@ -644,7 +642,6 @@
                 "outputOnFailure": true
             },
             "execution": {
-                "jobs": 0,
                 "timeout": 60
             }
         }

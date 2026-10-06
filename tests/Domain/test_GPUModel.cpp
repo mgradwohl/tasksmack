@@ -2170,6 +2170,30 @@ TEST(GPUModelTest, ReEnumerationRefreshesTheCapabilities)
     EXPECT_EQ(model.readProcessGPUCounters().size(), 1U);
 }
 
+// The reverse: a probe that loses per-process support on a re-init stops being asked
+// for per-process counters, because readProcessGPUCounters()'s lock-free early exit
+// follows the re-read capabilities (#1322).
+TEST(GPUModelTest, ReEnumerationThatLosesPerProcessSupportSkipsTheProbe)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withCapabilities(caps).withProcessGPU(42, "GPU0", 1024);
+
+    Domain::GPUModel model(std::move(probe));
+    EXPECT_EQ(model.readProcessGPUCounters().size(), 1U);
+
+    caps.hasPerProcessMetrics = false;
+    rawProbe->withCapabilities(caps).withRescanReportingChange();
+    model.refresh();
+    const auto callsBefore = rawProbe->readProcessCountersCallCount();
+
+    EXPECT_FALSE(model.capabilities().hasPerProcessMetrics);
+    EXPECT_TRUE(model.readProcessGPUCounters().empty());
+    EXPECT_EQ(rawProbe->readProcessCountersCallCount(), callsBefore);
+}
+
 // A startup enumeration that failed is retried at the full-rescan rate, so one
 // failed query doesn't leave the tab saying "GPU monitoring is not available"
 // for the whole session.
