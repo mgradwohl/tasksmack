@@ -1433,19 +1433,43 @@ TEST(FormatTest, FormatMegahertzIsWholeMegahertz)
     EXPECT_EQ(UI::Format::formatMegahertz(std::numeric_limits<double>::quiet_NaN()), "N/A");
 }
 
-TEST(FormatTest, FormatLinkSpeedIsARateInTheRatesUnits)
+TEST(FormatTest, FormatLinkSpeedIsADecimalBitRate)
 {
-    // 1 Gbps = 125,000,000 bytes/s = 119.2 MiB/s
-    EXPECT_EQ(UI::Format::formatLinkSpeed(1000), "119.2 MiB/s");
-    EXPECT_EQ(UI::Format::formatLinkSpeed(100), "11.9 MiB/s");
-    EXPECT_EQ(UI::Format::formatLinkSpeed(1000), UI::Format::formatBytesPerSec(125'000'000.0));
+    // Link speeds are stored in Mbit/s (Linux sysfs speed; Windows TransmitLinkSpeed / 10^6) and
+    // shown in bits, as network hardware is rated (#1373).
+    EXPECT_EQ(UI::Format::formatLinkSpeed(10), "10 Mbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(100), "100 Mbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(866), "866 Mbit/s"); // A Wi-Fi rate
+    EXPECT_EQ(UI::Format::formatLinkSpeed(1000), "1 Gbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(2500), "2.5 Gbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(10'000), "10 Gbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(100'000), "100 Gbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(400'000), "400 Gbit/s");
 }
 
-TEST(FormatTest, FormatLinkSpeedNominalIsTheRatedSpeed)
+TEST(FormatTest, FormatLinkSpeedRoundsToATenthOfAGigabit)
 {
-    EXPECT_EQ(UI::Format::formatLinkSpeedNominal(100), "100 Mbps");
-    EXPECT_EQ(UI::Format::formatLinkSpeedNominal(1000), "1 Gbps");
-    EXPECT_EQ(UI::Format::formatLinkSpeedNominal(2500), "2.5 Gbps");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(999), "999 Mbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(1201), "1.2 Gbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(1250), "1.3 Gbit/s"); // Half rounds up
+    EXPECT_EQ(UI::Format::formatLinkSpeed(2402), "2.4 Gbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(1999), "2 Gbit/s"); // Not "2.0 Gbit/s"
+    EXPECT_EQ(UI::Format::formatLinkSpeed(10'049), "10 Gbit/s");
+}
+
+TEST(FormatTest, FormatLinkSpeedUnknownIsADash)
+{
+    // 0 is the probes' "unknown"; the Interface Status table shows "-" for it.
+    EXPECT_EQ(UI::Format::formatLinkSpeed(0), "-");
+}
+
+TEST(FormatTest, FormatLinkSpeedAsByteRateIsInTheRatesUnits)
+{
+    // 1 Gbit/s = 125,000,000 bytes/s = 119.2 MiB/s; 10 Gbit/s = 1.2 GiB/s
+    EXPECT_EQ(UI::Format::formatLinkSpeedAsByteRate(1000), "119.2 MiB/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeedAsByteRate(100), "11.9 MiB/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeedAsByteRate(10'000), "1.2 GiB/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeedAsByteRate(1000), UI::Format::formatBytesPerSec(125'000'000.0));
 }
 
 TEST(FormatTest, BytesAboveATebibyteUseTiB)
