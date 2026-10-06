@@ -110,6 +110,7 @@ set(COMMON_TEST_SOURCES
     UI/test_MonospaceFontPath.cpp
     UI/test_DpiScale.cpp
     UI/test_FontFileCache.cpp
+    UI/test_TabularDigits.cpp
     App/test_ProcessColumnConfig.cpp
     App/test_ProcessSortUtils.cpp
     App/test_AdaptiveIntervalUtils.cpp
@@ -278,6 +279,8 @@ add_executable(TaskSmackTests
     # a live ImGui/GL context to link, only to actually load a texture successfully (#771).
     ${CMAKE_SOURCE_DIR}/src/UI/IconLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/UI/MonospaceFontPath.cpp
+    # Measures font files with FreeType (linked below), no ImGui context needed (#1201)
+    ${CMAKE_SOURCE_DIR}/src/UI/TabularDigits.cpp
     # Stub: satisfies Theme symbols referenced by UserConfig.cpp without a live ImGui context
     ${CMAKE_CURRENT_SOURCE_DIR}/Mocks/ThemeStub.cpp
     ${PLATFORM_SRC_UNDER_TEST}
@@ -315,6 +318,9 @@ target_link_libraries(TaskSmackTests PRIVATE
     tomlplusplus::tomlplusplus
     SDL3::SDL3
     glad_gl_core_33
+    Freetype::Freetype  # For TabularDigits.cpp
+    # test_TabLabel.cpp checks labels against ImGui's own ImHashStr() (no ImGui context needed).
+    imgui_lib
 )
 tasksmack_apply_linux_toolchain(TaskSmackTests)
 

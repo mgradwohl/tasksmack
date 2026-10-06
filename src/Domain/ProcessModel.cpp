@@ -127,6 +127,7 @@ void ProcessModel::refresh()
     // between samples) can never apply an older sample after a newer one (#1093).
     std::scoped_lock const samplingLock(m_SamplingMutex);
 
+    const bool hadNetworkCounters = m_Probe->capabilities().hasNetworkCounters;
     auto currentCounters = m_Probe->enumerate();
     const std::uint64_t currentTotalCpuTime = m_Probe->totalCpuTime();
 
@@ -134,6 +135,18 @@ void ProcessModel::refresh()
     // being attributed late doesn't make a process's counter drop or jump (#1099). Probes that report
     // per-process network counters themselves return no reading, and theirs are used as-is.
     m_NetTraffic.apply(m_Probe->readSocketTraffic(), currentCounters);
+
+    // The probe may turn its per-process network counters off during that read: on Windows the first
+    // real EStats sample can prove them unusable (#1161). The counters enumerate() returned were
+    // marked with the availability it had before, so without this the sample would publish a held or
+    // zero rate as a reading for one interval, instead of unavailable (#1285).
+    if (hadNetworkCounters && !m_Probe->capabilities().hasNetworkCounters)
+    {
+        for (auto& counters : currentCounters)
+        {
+            counters.networkCountersAvailable = false;
+        }
+    }
 
     // Per-process power from a package energy counter: share each interval's energy by each
     // process's CPU time in that interval. Probes that report per-process energy themselves
@@ -302,11 +315,11 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         //    probe may cache its query across refreshes, and a delta over the refresh interval
         //    would then read 0 for the cached refreshes and several intervals' bytes for the next.
         //  - While the probe returns the same cached read, the last rate is held, not zeroed.
-        //  - From a probe that reports per-connection readings (Linux) the counters are monotonic:
-        //    refresh() accumulates each connection's own growth (SocketTrafficAccumulator), so a
-        //    connection closing or being attributed late no longer makes them drop or jump (#1099).
-        //    Windows still reports the sum over the process's *live* connections, which drops when
-        //    one closes: counterRate reports 0 for that interval rather than a wrapped or negative rate.
+        //  - Both platforms report per-connection readings, so the counters are monotonic: refresh()
+        //    accumulates each connection's own growth (SocketTrafficAccumulator), so a connection
+        //    closing or being attributed late no longer makes them drop or jump (#1099, Windows #1256).
+        //    Should a counter still drop, counterRate reports 0 for that interval rather than a
+        //    wrapped or negative rate.
         //  - A rate above the sanity ceiling ([metrics] max_sane_rate_bps, 100 Gbps by default,
         //    #1123) -- e.g. a connection appearing with traffic from before it was first
         //    attributed, on Windows -- is dropped to 0 too.

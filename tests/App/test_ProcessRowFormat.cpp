@@ -16,7 +16,10 @@ namespace
 {
 
 using Domain::ProcessSnapshot;
+using ProcessRowFormat::alignedBytesCell;
+using ProcessRowFormat::alignedBytesPerSecCell;
 using ProcessRowFormat::AlignedCellText;
+using ProcessRowFormat::alignedPowerCell;
 using ProcessRowFormat::buildRowFormatCache;
 using ProcessRowFormat::formatAlignedBytesPerSecString;
 using ProcessRowFormat::formatAlignedBytesString;
@@ -124,16 +127,16 @@ class ScopedCommaDecimalLocale
 };
 
 // #1202: the table's aligned cells and the shared value formatters (tooltips, Process Details, chart
-// axes) print the same decimal separator in a comma-decimal locale, not "1.5 MB" beside "1,5 MB".
+// axes) print the same decimal separator in a comma-decimal locale, not "1.5 MiB" beside "1,5 MiB".
 TEST(ProcessRowFormatTest, TableCellsUseTheLocaleDecimalPointLikeTheValueFormatters)
 {
     const ScopedCommaDecimalLocale commaLocale;
     const double bytes = 1.5 * 1024.0 * 1024.0;
 
-    EXPECT_EQ(formatAlignedBytesString(bytes, UI::Format::BYTE_UNIT_MB), "1,5 MB");
-    EXPECT_EQ(UI::Format::formatBytes(bytes), "1,5 MB");
-    EXPECT_EQ(formatAlignedBytesPerSecString(bytes, UI::Format::BYTE_UNIT_MB), "1,5 MB/s");
-    EXPECT_EQ(UI::Format::formatBytesPerSec(bytes), "1,5 MB/s");
+    EXPECT_EQ(formatAlignedBytesString(bytes, UI::Format::BYTE_UNIT_MB), "1,5 MiB");
+    EXPECT_EQ(UI::Format::formatBytes(bytes), "1,5 MiB");
+    EXPECT_EQ(formatAlignedBytesPerSecString(bytes, UI::Format::BYTE_UNIT_MB), "1,5 MiB/s");
+    EXPECT_EQ(UI::Format::formatBytesPerSec(bytes), "1,5 MiB/s");
 
     EXPECT_EQ(formatAlignedPercentString(0.6), "0,6%");
     EXPECT_EQ(UI::Format::formatPercent(0.6), "0,6%");
@@ -146,7 +149,7 @@ TEST(ProcessRowFormatTest, TableCellsUseTheLocaleDecimalPointLikeTheValueFormatt
 
     // The allocating slow path agrees with the per-cell fast path.
     const auto slow = UI::Format::splitBytesForAlignment(bytes, UI::Format::BYTE_UNIT_MB);
-    EXPECT_EQ(slow.wholePart + slow.decimalPart + slow.unitPart, "1,5 MB");
+    EXPECT_EQ(slow.wholePart + slow.decimalPart + slow.unitPart, "1,5 MiB");
 
     for (int hundredths = 0; hundredths <= 10'000; hundredths += 5)
     {
@@ -160,14 +163,14 @@ TEST(ProcessRowFormatTest, FormatAlignedBytesStringUsesGivenUnit)
     const auto formatted =
         formatAlignedBytesString(static_cast<double>(1024ULL * 1024 * 1024), UI::Format::unitForTotalBytes(1024ULL * 1024 * 1024));
 
-    EXPECT_EQ(formatted, "1.0 GB");
+    EXPECT_EQ(formatted, "1.0 GiB");
 }
 
 TEST(ProcessRowFormatTest, FormatAlignedBytesPerSecStringUsesGivenUnit)
 {
     const auto formatted = formatAlignedBytesPerSecString(1024.0 * 1024.0, UI::Format::unitForBytesPerSecond(1024.0 * 1024.0));
 
-    EXPECT_EQ(formatted, "1.0 MB/s");
+    EXPECT_EQ(formatted, "1.0 MiB/s");
 }
 
 TEST(ProcessRowFormatTest, FormatAlignedPowerStringConcatenatesPartsInOrder)
@@ -185,20 +188,20 @@ TEST(ProcessRowFormatTest, BuildRowFormatCacheFormatsEveryField)
 
     EXPECT_EQ(fmt.ppid.text, UI::Format::formatId(4));
     EXPECT_EQ(fmt.startTime.text, UI::Format::formatEpochDateTimeShort(1'700'000'000));
-    EXPECT_EQ(fmt.cpuTime.text, UI::Format::formatCpuTimeCompact(12.5));
+    EXPECT_EQ(fmt.cpuTime.text, UI::Format::formatDuration(12.5));
     EXPECT_EQ(fmt.cpuPercent.text, "25.0%");
     EXPECT_EQ(fmt.memPercent.text, "10.0%");
-    EXPECT_EQ(fmt.virtualMem.text, "1.0 GB");
-    EXPECT_EQ(fmt.resident.text, "512.0 MB");
-    EXPECT_EQ(fmt.peakRss.text, "768.0 MB");
-    EXPECT_EQ(fmt.shared.text, "64.0 MB");
-    EXPECT_EQ(fmt.ioRead.text, "1.0 MB/s");
-    EXPECT_EQ(fmt.ioWrite.text, "2.0 MB/s");
+    EXPECT_EQ(fmt.virtualMem.text, "1.0 GiB");
+    EXPECT_EQ(fmt.resident.text, "512.0 MiB");
+    EXPECT_EQ(fmt.peakRss.text, "768.0 MiB");
+    EXPECT_EQ(fmt.shared.text, "64.0 MiB");
+    EXPECT_EQ(fmt.ioRead.text, "1.0 MiB/s");
+    EXPECT_EQ(fmt.ioWrite.text, "2.0 MiB/s");
     EXPECT_EQ(fmt.netSent.text, "512.0 B/s");
-    EXPECT_EQ(fmt.netRecv.text, "4.0 KB/s");
+    EXPECT_EQ(fmt.netRecv.text, "4.0 KiB/s");
     EXPECT_EQ(fmt.power.text, "5.5 W");
     EXPECT_EQ(fmt.gpuPercent.text, "15.0%");
-    EXPECT_EQ(fmt.gpuMemory.text, "256.0 MB");
+    EXPECT_EQ(fmt.gpuMemory.text, "256.0 MiB");
     EXPECT_EQ(fmt.gpuEngines, "3D, Compute");
     EXPECT_EQ(fmt.threads.text, UI::Format::formatIntLocalized(7));
     EXPECT_EQ(fmt.handles.text, UI::Format::formatIntLocalized(42));
@@ -215,14 +218,14 @@ TEST(ProcessRowFormatTest, FieldsThePlatformDoesNotFillReadAsDash)
     const RowFormatCache unfilled = buildRowFormatCache(makeSnapshot(), {.hasPowerUsage = false, .hasSharedMemory = false});
 
     EXPECT_EQ(filled.power.text, "5.5 W");
-    EXPECT_EQ(filled.shared.text, "64.0 MB");
+    EXPECT_EQ(filled.shared.text, "64.0 MiB");
     EXPECT_EQ(unfilled.power.text, "-");
     EXPECT_EQ(unfilled.shared.text, "-");
 
     std::unordered_map<std::uint64_t, RowFormatCache> cache;
     const RowFormatCache& entry = getOrBuildRowFormatCache(cache, makeSnapshot(), 1, 1, {.hasPowerUsage = false, .hasSharedMemory = true});
     EXPECT_EQ(entry.power.text, "-");
-    EXPECT_EQ(entry.shared.text, "64.0 MB");
+    EXPECT_EQ(entry.shared.text, "64.0 MiB");
 }
 
 TEST(ProcessRowFormatTest, BuildRowFormatCacheUsesDashForZeroRateAndOptionalFields)
@@ -424,6 +427,50 @@ TEST(ProcessRowFormatTest, FreeTextWidthsAreMeasuredAgainForANewGenerationOrFont
     {
         EXPECT_FLOAT_EQ(width->width, ProcessRowFormat::LazyTextWidth::UNMEASURED_WIDTH);
     }
+}
+
+// ========== Decimal-aligned cells (#1201) ==========
+
+TEST(ProcessRowFormatTest, ByteCellsMarkWhereTheUnitStarts)
+{
+    const AlignedCellText cell = alignedBytesCell(512.0 * 1024.0 * 1024.0, UI::Format::BYTE_UNIT_MB);
+    EXPECT_EQ(cell.text, "512.0 MiB");
+    ASSERT_TRUE(cell.hasUnit());
+    EXPECT_EQ(cell.number(), "512.0");
+    EXPECT_EQ(cell.unit(), " MiB");
+    EXPECT_FLOAT_EQ(cell.numberWidth, AlignedCellText::UNMEASURED_WIDTH);
+
+    const AlignedCellText rate = alignedBytesPerSecCell(1536.0, UI::Format::BYTE_UNIT_KB);
+    EXPECT_EQ(rate.number(), "1.5");
+    EXPECT_EQ(rate.unit(), " KiB/s");
+}
+
+TEST(ProcessRowFormatTest, PowerCellsSplitNumberFromUnit)
+{
+    const AlignedCellText watts = alignedPowerCell(1.25);
+    EXPECT_EQ(watts.number(), "1.3"); // Halves round away from zero, as everywhere else
+    EXPECT_EQ(watts.unit(), " W");
+    const AlignedCellText milliwatts = alignedPowerCell(0.35);
+    EXPECT_EQ(milliwatts.number(), "350.0");
+    EXPECT_EQ(milliwatts.unit(), " mW");
+}
+
+TEST(ProcessRowFormatTest, CellsWithoutAUnitAreNotUnitAligned)
+{
+    const AlignedCellText dash = makeAlignedCellText("-");
+    EXPECT_FALSE(dash.hasUnit());
+    EXPECT_EQ(dash.number(), "-");
+    EXPECT_TRUE(dash.unit().empty());
+
+    // The row builder keeps the split for real values and leaves "-" / "N/A" plain.
+    ProcessSnapshot snap;
+    snap.memoryBytes = 3ULL * 1024 * 1024;
+    snap.ioAvailable = false;
+    const RowFormatCache fmt = buildRowFormatCache(snap);
+    EXPECT_TRUE(fmt.resident.hasUnit());
+    EXPECT_EQ(fmt.resident.unit(), " MiB");
+    EXPECT_FALSE(fmt.ioRead.hasUnit());
+    EXPECT_EQ(fmt.ioRead.text, UNAVAILABLE_CELL_TEXT);
 }
 
 } // namespace

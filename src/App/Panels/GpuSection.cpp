@@ -9,6 +9,7 @@
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/InlineText.h"
+#include "UI/RateAxis.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -389,7 +390,14 @@ void renderGpuSection(RenderContext& ctx)
         // first seen mid-run) or be pruned on its own, so the global timestamps could mismatch.
         const auto axisConfig = makeTimeAxisConfig(perGpuTimestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
 
-        const float maxClockMHz = gpuClockReferenceMHz(clockData, snap.gpuClockMHz);
+        // Only the clocks the window shows set the scale: not the trim anchor left of it, nor older
+        // samples when scrolled back (#1324). The NowBar's smoothed clock counts too, so the bar never
+        // exceeds the scale while it eases down from a peak that has left the window.
+        const float maxClockMHz = gpuClockReferenceMHz(timeData,
+                                                       axisConfig.xMin,
+                                                       clockData,
+                                                       snap.gpuClockMHz,
+                                                       UI::Widgets::currentIfAvailable(smoothed.clockInitialized, smoothed.clockMHz));
 
         // ========================================
         // Chart 1: Core + Video (all percentages)
@@ -428,7 +436,7 @@ void renderGpuSection(RenderContext& ctx)
                                seriesStyle(SeriesRole::Secondary, 0));
                 }
 
-                // Plot clock as a percentage of gpuClockReferenceMHz(): the history's peak, or the floor
+                // Plot clock as a percentage of gpuClockReferenceMHz(): the window's peak, or the floor
                 // when every clock is below it. The label stays fixed; the reference itself is in the
                 // tooltip.
                 if (caps.hasClockSpeeds && !clockData.empty())
@@ -481,20 +489,24 @@ void renderGpuSection(RenderContext& ctx)
                         std::vector<UI::Widgets::TooltipRow> rows;
                         if (*idxVal < utilData.size())
                         {
-                            rows.push_back({.label = UTIL_LABEL,
-                                            .color = theme.scheme().gpuUtilization,
-                                            .value = UI::Format::percentCompact(utilData[*idxVal])});
+                            rows.push_back({
+                                .label = UTIL_LABEL,
+                                .color = theme.scheme().gpuUtilization,
+                                .value = UI::Format::formatPercent(utilData[*idxVal]),
+                            });
                         }
                         if (*idxVal < memData.size())
                         {
                             const auto pct = static_cast<double>(memData[*idxVal]);
                             const bool haveBytes =
                                 *idxVal < memUsedBytesData.size() && *idxVal < memTotalBytesData.size() && memTotalBytesData[*idxVal] > 0;
-                            rows.push_back({.label = MEMORY_LABEL,
-                                            .color = theme.scheme().gpuMemory,
-                                            .value = haveBytes ? UI::Format::bytesUsedTotalPercentCompact(
-                                                                     memUsedBytesData[*idxVal], memTotalBytesData[*idxVal], pct)
-                                                               : UI::Format::percentCompact(pct)});
+                            rows.push_back({
+                                .label = MEMORY_LABEL,
+                                .color = theme.scheme().gpuMemory,
+                                .value = haveBytes ? UI::Format::bytesUsedTotalPercentCompact(
+                                                         memUsedBytesData[*idxVal], memTotalBytesData[*idxVal], pct)
+                                                   : UI::Format::formatPercent(pct),
+                            });
                         }
                         // A series that may be shorter than the time axis (it ends at the same newest
                         // sample): its value at the hovered index, if it has one there.
@@ -520,7 +532,7 @@ void renderGpuSection(RenderContext& ctx)
                                                         return std::format(
                                                             "{:.0f} MHz ({} of {:.0f} MHz)",
                                                             mhz,
-                                                            UI::Format::percentCompact((mhz / static_cast<double>(maxClockMHz)) * 100.0),
+                                                            UI::Format::formatPercent((mhz / static_cast<double>(maxClockMHz)) * 100.0),
                                                             static_cast<double>(maxClockMHz));
                                                     })});
                             }
@@ -529,18 +541,22 @@ void renderGpuSection(RenderContext& ctx)
                         {
                             if (const auto encoder = valueAt(encoderData))
                             {
-                                rows.push_back({.label = ENCODER_LABEL,
-                                                .color = theme.scheme().gpuEncoder,
-                                                .value = UI::Format::percentCompact(*encoder)});
+                                rows.push_back({
+                                    .label = ENCODER_LABEL,
+                                    .color = theme.scheme().gpuEncoder,
+                                    .value = UI::Format::formatPercent(*encoder),
+                                });
                             }
                         }
                         if (caps.hasEncoderDecoder && !decoderData.empty())
                         {
                             if (const auto decoder = valueAt(decoderData))
                             {
-                                rows.push_back({.label = DECODER_LABEL,
-                                                .color = theme.scheme().gpuDecoder,
-                                                .value = UI::Format::percentCompact(*decoder)});
+                                rows.push_back({
+                                    .label = DECODER_LABEL,
+                                    .color = theme.scheme().gpuDecoder,
+                                    .value = UI::Format::formatPercent(*decoder),
+                                });
                             }
                         }
                         UI::Widgets::renderHistoryTooltip(timeData[*idxVal], rows);
@@ -561,7 +577,7 @@ void renderGpuSection(RenderContext& ctx)
                           .color = theme.scheme().textMuted};
         };
         NowBarList gpuCoreBars;
-        gpuCoreBars.push_back(smoothed.utilizationInitialized ? NowBar{.valueText = UI::Format::percentCompact(smoothed.utilizationPercent),
+        gpuCoreBars.push_back(smoothed.utilizationInitialized ? NowBar{.valueText = UI::Format::formatPercent(smoothed.utilizationPercent),
                                                                        .label = UTIL_LABEL,
                                                                        .tooltipText = {},
                                                                        .value01 = UI::Format::percent01(smoothed.utilizationPercent),
@@ -577,11 +593,11 @@ void renderGpuSection(RenderContext& ctx)
             // and byte figures always come from the same sample and cannot show an
             // impossible combination (e.g. 50% with 8 GiB / 8 GiB).
             gpuCoreBars.push_back(
-                {.valueText = UI::Format::percentCompact(smoothed.memoryPercent),
+                {.valueText = UI::Format::formatPercent(smoothed.memoryPercent),
                  .label = MEMORY_LABEL,
                  .tooltipText = UI::InlineText::format("{}: {} ({} / {})",
                                                        MEMORY_LABEL,
-                                                       UI::Format::percentCompact(snap.memoryUsedPercent),
+                                                       UI::Format::formatPercent(snap.memoryUsedPercent),
                                                        UI::Format::formatBytes(static_cast<double>(snap.memoryUsedBytes)),
                                                        UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes))),
                  .value01 = UI::Format::percent01(smoothed.memoryPercent),
@@ -590,9 +606,9 @@ void renderGpuSection(RenderContext& ctx)
         else
         {
             gpuCoreBars.push_back(
-                {.valueText = UI::Format::percentCompact(smoothed.memoryPercent),
+                {.valueText = UI::Format::formatPercent(smoothed.memoryPercent),
                  .label = MEMORY_LABEL,
-                 .tooltipText = UI::Widgets::tooltipRowText(MEMORY_LABEL, UI::Format::percentCompact(smoothed.memoryPercent)),
+                 .tooltipText = UI::Widgets::tooltipRowText(MEMORY_LABEL, UI::Format::formatPercent(smoothed.memoryPercent)),
                  .value01 = UI::Format::percent01(smoothed.memoryPercent),
                  .color = theme.scheme().gpuMemory});
         }
@@ -607,7 +623,7 @@ void renderGpuSection(RenderContext& ctx)
                                                .tooltipText = UI::InlineText::format("{}: {:.0f} MHz ({} of {:.0f} MHz)",
                                                                                      CLOCK_LABEL,
                                                                                      smoothed.clockMHz,
-                                                                                     UI::Format::percentCompact(clockPercent),
+                                                                                     UI::Format::formatPercent(clockPercent),
                                                                                      static_cast<double>(maxClockMHz)),
                                                .value01 = UI::Format::percent01(clockPercent),
                                                .color = theme.scheme().gpuClock}
@@ -619,12 +635,12 @@ void renderGpuSection(RenderContext& ctx)
         }
         if (caps.hasEncoderDecoder)
         {
-            gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.encoderPercent),
+            gpuCoreBars.push_back({.valueText = UI::Format::formatPercent(smoothed.encoderPercent),
                                    .label = ENCODER_LABEL,
                                    .tooltipText = {},
                                    .value01 = UI::Format::percent01(smoothed.encoderPercent),
                                    .color = theme.scheme().gpuEncoder});
-            gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.decoderPercent),
+            gpuCoreBars.push_back({.valueText = UI::Format::formatPercent(smoothed.decoderPercent),
                                    .label = DECODER_LABEL,
                                    .tooltipText = {},
                                    .value01 = UI::Format::percent01(smoothed.decoderPercent),
@@ -638,24 +654,22 @@ void renderGpuSection(RenderContext& ctx)
         if (caps.hasTemperature)
         {
             const double tempPercent = (smoothed.temperatureC / static_cast<double>(maxTempC)) * 100.0;
-            gpuThermalBars.push_back(smoothed.temperatureInitialized
-                                         ? NowBar{.valueText = std::format("{}°C", static_cast<int>(smoothed.temperatureC)),
-                                                  .label = TEMP_LABEL,
-                                                  .tooltipText = {},
-                                                  .value01 = UI::Format::percent01(tempPercent),
-                                                  .color = theme.scheme().gpuTemperature}
-                                         : unavailableBar(TEMP_LABEL));
+            gpuThermalBars.push_back(smoothed.temperatureInitialized ? NowBar{.valueText = UI::Format::formatCelsius(smoothed.temperatureC),
+                                                                              .label = TEMP_LABEL,
+                                                                              .tooltipText = {},
+                                                                              .value01 = UI::Format::percent01(tempPercent),
+                                                                              .color = theme.scheme().gpuTemperature,}
+                                                                     : unavailableBar(TEMP_LABEL));
         }
         if (caps.hasPowerMetrics)
         {
             const double powerPercent = (smoothed.powerWatts / static_cast<double>(maxPowerW)) * 100.0;
-            gpuThermalBars.push_back(smoothed.powerInitialized
-                                         ? NowBar{.valueText = std::format("{:.1f}W", smoothed.powerWatts),
-                                                  .label = POWER_LABEL,
-                                                  .tooltipText = UI::InlineText::format("{}: {:.2Lf} W", POWER_LABEL, smoothed.powerWatts),
-                                                  .value01 = UI::Format::percent01(powerPercent),
-                                                  .color = theme.scheme().gpuPower}
-                                         : unavailableBar(POWER_LABEL));
+            gpuThermalBars.push_back(smoothed.powerInitialized ? NowBar{.valueText = UI::Format::formatWatts(smoothed.powerWatts),
+                                                                        .label = POWER_LABEL,
+                                                                        .tooltipText = {},
+                                                                        .value01 = UI::Format::percent01(powerPercent),
+                                                                        .color = theme.scheme().gpuPower}
+                                                               : unavailableBar(POWER_LABEL));
         }
         // Keep pushing a bar (stable column count) whenever the capability is present, so the
         // now-bar layout doesn't jitter frame-to-frame as fanSpeedAvailable flips on a transient
@@ -663,7 +677,7 @@ void renderGpuSection(RenderContext& ctx)
         // failed to read the sensor (see fanSpeedAvailable's comment in GPUSnapshot.h).
         if (caps.hasFanSpeed)
         {
-            gpuThermalBars.push_back(snap.fanSpeedAvailable ? NowBar{.valueText = std::format("{:.0f}%", smoothed.fanPercent),
+            gpuThermalBars.push_back(snap.fanSpeedAvailable ? NowBar{.valueText = UI::Format::formatPercent(smoothed.fanPercent),
                                                                      .label = FAN_LABEL,
                                                                      .tooltipText = {},
                                                                      .value01 = UI::Format::percent01(smoothed.fanPercent),
@@ -777,18 +791,19 @@ void renderGpuSection(RenderContext& ctx)
                                 return static_cast<double>(series[*idxVal - aligned.offset]);
                             };
                             // "N/A" for a sample with no reading, such as while the GPU was missing (#1146).
-                            const auto ofReference = [](double value, double reference, std::string_view unit, std::string_view note)
+                            // The reading and its reference are written by the value strip's own
+                            // formatter, so the tooltip, the strip and the axis agree (#1202).
+                            const auto ofReference =
+                                [](double value, double reference, std::string (*format)(double), std::string_view note)
                             {
                                 return UI::Widgets::formatSampleOrNA(value,
                                                                      [&](double reading)
                                                                      {
                                                                          return std::format(
-                                                                             "{:.0f}{} ({} of {:.0f}{}{})",
-                                                                             reading,
-                                                                             unit,
-                                                                             UI::Format::percentCompact((reading / reference) * 100.0),
-                                                                             reference,
-                                                                             unit,
+                                                                             "{} ({} of {}{})",
+                                                                             format(reading),
+                                                                             UI::Format::formatPercent((reading / reference) * 100.0),
+                                                                             format(reference),
                                                                              note);
                                                                      });
                             };
@@ -797,9 +812,11 @@ void renderGpuSection(RenderContext& ctx)
                             {
                                 if (const auto temp = valueAt(tempData))
                                 {
-                                    rows.push_back({.label = TEMP_LABEL,
-                                                    .color = theme.scheme().gpuTemperature,
-                                                    .value = ofReference(*temp, static_cast<double>(maxTempC), "°C", "")});
+                                    rows.push_back({
+                                        .label = TEMP_LABEL,
+                                        .color = theme.scheme().gpuTemperature,
+                                        .value = ofReference(*temp, static_cast<double>(maxTempC), &UI::Format::formatCelsius, ""),
+                                    });
                                 }
                             }
                             if (caps.hasPowerMetrics && !powerData.empty())
@@ -811,7 +828,7 @@ void renderGpuSection(RenderContext& ctx)
                                                     .color = theme.scheme().gpuPower,
                                                     .value = ofReference(*power,
                                                                          static_cast<double>(maxPowerW),
-                                                                         " W",
+                                                                         &UI::Format::formatWatts,
                                                                          snap.powerLimitWatts > 0.0 ? "" : ", assumed limit")});
                                 }
                             }
@@ -820,13 +837,14 @@ void renderGpuSection(RenderContext& ctx)
                                 if (const auto fan = valueAt(fanData))
                                 {
                                     // NaN marks a sample where the fan couldn't be read (see GPUModel::publish()).
-                                    // The float is formatted directly: fanSpeedPercent is left unclamped (see
-                                    // GPUModel::computeSnapshot), and casting an out-of-range float to an integer
-                                    // is undefined behaviour.
-                                    rows.push_back(
-                                        {.label = FAN_LABEL,
-                                         .color = std::isnan(*fan) ? theme.scheme().textMuted : theme.scheme().gpuFan,
-                                         .value = UI::Widgets::formatSampleOrNA(*fan, [](double v) { return std::format("{:.0f}%", v); })});
+                                    // formatPercent() takes the double as it is: fanSpeedPercent is left unclamped
+                                    // (see GPUModel::computeSnapshot), and casting an out-of-range float to an
+                                    // integer is undefined behaviour.
+                                    rows.push_back({
+                                        .label = FAN_LABEL,
+                                        .color = std::isnan(*fan) ? theme.scheme().textMuted : theme.scheme().gpuFan,
+                                        .value = UI::Format::formatPercent(*fan),
+                                    });
                                 }
                             }
                             UI::Widgets::renderHistoryTooltip(timeData[*idxVal], rows);

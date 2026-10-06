@@ -3231,6 +3231,35 @@ TEST(ProcessModelTest, IoRateNeedsBothReadingsToBeAvailable)
     EXPECT_DOUBLE_EQ(model.snapshots().at(0).ioReadBytesPerSec, 4096.0);
 }
 
+TEST(ProcessModelTest, NetworkCountersTurnedOffDuringTheSampleAreUnavailableInThatSample)
+{
+    // #1302 review: the Windows probe can find its per-process network counters unusable during the
+    // socket-traffic read that follows enumerate() (#1161). The counters enumerate() had returned were
+    // already marked available, so that sample published a rate as a reading instead of unavailable.
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+    Platform::ProcessCapabilities withNetwork;
+    withNetwork.hasNetworkCounters = true;
+    rawProbe->setCapabilities(withNetwork);
+    auto proc = makeCounter(100, "proc", 'R', 1000, 0, 5000);
+    rawProbe->setCounters({proc});
+    rawProbe->setTotalCpuTime(100000);
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
+    model.refresh();
+    ASSERT_TRUE(model.snapshots().at(0).networkAvailable);
+
+    clock.advance(std::chrono::seconds(1));
+    proc.netSentBytes = 2000;
+    rawProbe->setCounters({proc});
+    Platform::ProcessCapabilities revoked = withNetwork;
+    revoked.hasNetworkCounters = false;
+    rawProbe->switchCapabilitiesOnNextSocketRead(revoked);
+    model.refresh();
+    EXPECT_FALSE(model.snapshots().at(0).networkAvailable);
+    EXPECT_DOUBLE_EQ(model.snapshots().at(0).netSentBytesPerSec, 0.0);
+}
+
 TEST(ProcessModelTest, UnattributableNetworkCountersAreUnavailableAndLeftOutOfTheTotal)
 {
     // #1110: a process whose connections can't be attributed to it (another

@@ -230,13 +230,11 @@ class ProcessesPanel : public Panel
         // Column header widths (indexed by ProcessColumn enum)
         std::array<float, processColumnCount()> columnHeaderWidths{};
 
-        // Unit string widths for decimal-aligned rendering
-        // (measured from actual rendered unit strings for accurate alignment)
-        float unitPercentWidth = 0.0F;     // "%"
-        float unitBytesWidth = 0.0F;       // " MB", " GB", etc.
-        float unitBytesPerSecWidth = 0.0F; // " MB/s", " GB/s", etc.
-        float unitPowerWidth = 0.0F;       // " W", " mW", etc.
-        float singleDigitWidth = 0.0F;     // "0" for decimal part
+        // Unit slot widths of the decimal-aligned columns (#1201): the widest unit each can show,
+        // measured from the strings the cells print (renderUnitAlignedText())
+        float unitBytesWidth = 0.0F;       // " MiB", " GiB", etc.
+        float unitBytesPerSecWidth = 0.0F; // " MiB/s", " GiB/s", etc.
+        float unitPowerWidth = 0.0F;       // " W", " mW", " µW"
 
         // Static label widths
         float treeViewLabelWidth = 0.0F;
