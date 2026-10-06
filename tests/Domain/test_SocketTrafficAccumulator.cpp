@@ -451,6 +451,28 @@ TEST(SocketTrafficAccumulatorTest, ARepeatedReadingLeavesAConnectionWhoseOwnerIs
     EXPECT_EQ(processes[0].netReceivedBytes, 350U) << "the held 300 plus this interval's 50";
 }
 
+TEST(SocketTrafficAccumulatorTest, AFreshAttributionToAnUnlistedOwnerKeepsHolding)
+{
+    // #1327 review: ProcessModel enumerates processes before reading sockets, so a process started in
+    // between can own a connection in this reading but be missing from this refresh's list. Its held
+    // bytes (and this interval's) must survive to the refresh that lists it, not be queued for a PID
+    // publish() finds nothing for.
+    SocketTrafficAccumulator accumulator;
+    std::vector<ProcessCounters> processes; // the new owner isn't listed yet
+    constexpr std::uint64_t SECOND = 1'000'000'000ULL;
+    accumulator.apply({.sockets = {}, .sampleTimeNs = 10 * SECOND}, processes);
+    accumulator.apply({.sockets = {{.key = 2, .pid = 0, .bytesReceived = 100}}, .sampleTimeNs = 11 * SECOND}, processes);
+    accumulator.apply({.sockets = {{.key = 2, .pid = 0, .bytesReceived = 400}}, .sampleTimeNs = 12 * SECOND}, processes);
+    accumulator.apply({.sockets = {{.key = 2, .pid = 10, .bytesReceived = 600}}, .sampleTimeNs = 13 * SECOND}, processes);
+
+    processes = {process(10)};
+    accumulator.apply({.sockets = {{.key = 2, .pid = 10, .bytesReceived = 650}}, .sampleTimeNs = 14 * SECOND}, processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 550U) << "held 300, the unlisted interval's 200, and this interval's 50";
+
+    accumulator.apply({.sockets = {{.key = 2, .pid = 10, .bytesReceived = 650}}, .sampleTimeNs = 15 * SECOND}, processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 550U) << "once";
+}
+
 TEST(SocketTrafficAccumulatorTest, ARepeatedReadingDoesNotRecountItsCounters)
 {
     // Only ownership is taken from a repeat: an owned connection's counters, a new connection, and an

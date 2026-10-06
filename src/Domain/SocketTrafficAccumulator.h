@@ -9,6 +9,7 @@
 #include <limits>
 #include <span>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -85,7 +86,16 @@ class SocketTrafficAccumulator
         const bool folded = reading.sampleTimeNs != 0 && reading.sampleTimeNs > m_LastReadingTimeNs;
         if (folded)
         {
-            addReading(reading.sockets, reading.sampleTimeNs);
+            // The owners this refresh lists: a connection attributed to a process that isn't listed yet
+            // (it started between the process enumeration and the socket read) keeps holding rather
+            // than having its bytes queued for a PID publish() would find nothing for (#1327 review).
+            std::unordered_set<std::int32_t> listed;
+            listed.reserve(processes.size());
+            for (const auto& proc : processes)
+            {
+                listed.insert(proc.pid);
+            }
+            addReading(reading.sockets, reading.sampleTimeNs, &listed);
             m_LastReadingTimeNs = reading.sampleTimeNs;
         }
         else if (reading.sampleTimeNs != 0 && reading.sampleTimeNs == m_LastReadingTimeNs)
@@ -114,7 +124,12 @@ class SocketTrafficAccumulator
     /// are held until the next publish(). `sampleTimeNs` is the reading's time (steady_clock ns): it
     /// bounds how long an unowned connection holds its growth (Sampling::UNATTRIBUTED_SOCKET_HOLD_MS);
     /// 0 (unknown) never ends a hold.
-    void addReading(std::span<const Platform::SocketTrafficSample> sockets, std::uint64_t sampleTimeNs = 0)
+    /// `listedOwners`, when given, is the set of PIDs the same refresh lists: an attribution to a PID not
+    /// in it is treated as still unowned for this reading, so its held bytes survive to a reading whose
+    /// process list includes the owner.
+    void addReading(std::span<const Platform::SocketTrafficSample> sockets,
+                    std::uint64_t sampleTimeNs = 0,
+                    const std::unordered_set<std::int32_t>* listedOwners = nullptr)
     {
         std::unordered_map<std::uint64_t, SocketState> next;
         next.reserve(sockets.size());
@@ -164,7 +179,8 @@ class SocketTrafficAccumulator
                 credit.sent = sample.bytesSent;
             }
 
-            if (sample.pid > 0)
+            const bool ownerListed = sample.pid > 0 && (listedOwners == nullptr || listedOwners->contains(sample.pid));
+            if (ownerListed)
             {
                 // Attributed: its owner gets this interval's bytes and whatever it held while unowned
                 // (#1259), which ends its unowned run. The hold is judged at this reading's time: a
@@ -185,6 +201,12 @@ class SocketTrafficAccumulator
                     m_PendingByPid[sample.pid].add(credit);
                 }
                 state = SocketState{.bytesReceived = sample.bytesReceived, .bytesSent = sample.bytesSent};
+            }
+            else if (sample.pid > 0)
+            {
+                // Attributed to a process this refresh doesn't list yet: hold this interval's bytes too
+                // (a new connection's included), so they reach the owner once a refresh lists it.
+                holdUnownedGrowth(state, credit, sampleTimeNs);
             }
             else
             {
