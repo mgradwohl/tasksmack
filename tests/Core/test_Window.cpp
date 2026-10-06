@@ -7,13 +7,17 @@
 #include <SDL3/SDL.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdlib>
 #include <exception>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace
 {
@@ -454,20 +458,39 @@ TEST_F(WindowTest, ApplySavedGeometryKeepsAnOffScreenPositionOnADisplay)
             SDL_free(displays);
             GTEST_SKIP() << "No display bounds available";
         }
-        const auto [x, y] = window.getPosition();
-        const SDL_Point topLeft{.x = x, .y = y};
-        bool onADisplay = false;
-        for (int i = 0; i < displayCount; ++i)
+        std::vector<SDL_Rect> displayBounds;
+        for (const SDL_DisplayID id : std::span<const SDL_DisplayID>(displays, static_cast<std::size_t>(displayCount)))
         {
             SDL_Rect bounds{};
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) - SDL returns a C array
-            if (SDL_GetDisplayBounds(displays[i], &bounds) && SDL_PointInRect(&topLeft, &bounds))
+            if (SDL_GetDisplayBounds(id, &bounds))
             {
-                onADisplay = true;
+                displayBounds.push_back(bounds);
             }
         }
         SDL_free(displays);
-        EXPECT_TRUE(onADisplay) << "window top-left at (" << x << ", " << y << ")";
+        const auto onADisplay = [&displayBounds](std::pair<int, int> position)
+        {
+            const SDL_Point topLeft{.x = position.first, .y = position.second};
+            return std::ranges::any_of(displayBounds, [&topLeft](const SDL_Rect& bounds) { return SDL_PointInRect(&topLeft, &bounds); });
+        };
+
+        // On X11 the move is only a request until the window manager answers, and setPosition()
+        // doesn't wait for it (#1363), so the position read straight away can still be the creation
+        // position -- which may itself be on a display, hiding a move that went off-screen. Wait for
+        // every pending request to be applied before checking: SDL_SyncWindow() waits a bounded time
+        // (100ms on X11) and returns false if it timed out, so retry it until it succeeds or the
+        // deadline passes, and fail if it never does.
+        constexpr auto SYNC_TIMEOUT = std::chrono::seconds{5};
+        const auto deadline = std::chrono::steady_clock::now() + SYNC_TIMEOUT;
+        bool synced = SDL_SyncWindow(window.getHandle());
+        while (!synced && std::chrono::steady_clock::now() < deadline)
+        {
+            SDL_PumpEvents();
+            synced = SDL_SyncWindow(window.getHandle());
+        }
+        ASSERT_TRUE(synced) << "the saved-geometry move was not applied within " << SYNC_TIMEOUT.count() << " s";
+        const auto [x, y] = window.getPosition();
+        EXPECT_TRUE(onADisplay({x, y})) << "window top-left at (" << x << ", " << y << ")";
     }
     catch (const std::exception& e)
     {
