@@ -392,76 +392,80 @@ void typeCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, co
     }
 }
 
-/// The renderer for every column but PID and Name, indexed by toIndex(column).
-[[nodiscard]] consteval auto makeCellRenderers() -> std::array<ProcessCellRenderer, processColumnCount()>
+/// One CELL_RENDERERS entry: the column it draws (checked against its index
+/// below) and its renderer, or nullptr for a column renderProcessRow() draws.
+struct ProcessCellEntry
 {
-    using Snapshot = Domain::ProcessSnapshot;
-    using Widths = ProcessCellWidths;
-    std::array<ProcessCellRenderer, processColumnCount()> renderers{};
-    const auto set = [&renderers](ProcessColumn col, ProcessCellRenderer renderer)
-    {
-        renderers[toIndex(col)] = renderer;
-    };
+    ProcessColumn column;
+    ProcessCellRenderer render;
+};
 
+/// The renderer for every column but PID and Name, indexed by toIndex(column).
+/// Initialised directly, not by a consteval builder, so static analysers
+/// (CodeQL cpp/unused-static-function, #1403) see every renderer referenced.
+constexpr std::array<ProcessCellEntry, processColumnCount()> CELL_RENDERERS = {{
+    {.column = ProcessColumn::PID, .render = nullptr},  // drawn by renderProcessRow() (the selectable)
+    {.column = ProcessColumn::Name, .render = nullptr}, // drawn by renderProcessRow() (tree indent and expander)
     // Identity
-    set(ProcessColumn::User, &leftAlignedCell<&Snapshot::user, &RowFormatCache::userWidth>);
-    set(ProcessColumn::PPID, &rightAlignedCell<&RowFormatCache::ppid>);
-    set(ProcessColumn::Publisher, &leftAlignedOrDashCell<&Snapshot::publisher, &RowFormatCache::publisherWidth>);
+    {.column = ProcessColumn::User, .render = &leftAlignedCell<&Domain::ProcessSnapshot::user, &RowFormatCache::userWidth>},
+    {.column = ProcessColumn::PPID, .render = &rightAlignedCell<&RowFormatCache::ppid>},
+    {.column = ProcessColumn::Publisher,
+     .render = &leftAlignedOrDashCell<&Domain::ProcessSnapshot::publisher, &RowFormatCache::publisherWidth>},
     // State
-    set(ProcessColumn::State, &stateCell);
-    set(ProcessColumn::Status, &leftAlignedOrDashCell<&Snapshot::status, &RowFormatCache::statusWidth>);
-    set(ProcessColumn::Type, &typeCell);
+    {.column = ProcessColumn::State, .render = &stateCell},
+    {.column = ProcessColumn::Status, .render = &leftAlignedOrDashCell<&Domain::ProcessSnapshot::status, &RowFormatCache::statusWidth>},
+    {.column = ProcessColumn::Type, .render = &typeCell},
     // Resources
-    set(ProcessColumn::CpuPercent, &rightAlignedCell<&RowFormatCache::cpuPercent>);
-    set(ProcessColumn::MemPercent, &rightAlignedCell<&RowFormatCache::memPercent>);
-    set(ProcessColumn::Resident, &unitAlignedCell<&RowFormatCache::resident, &Widths::unitBytes>);
-    set(ProcessColumn::Virtual, &unitAlignedCell<&RowFormatCache::virtualMem, &Widths::unitBytes>);
-    set(ProcessColumn::Shared, &unitAlignedCell<&RowFormatCache::shared, &Widths::unitBytes>);
-    set(ProcessColumn::PeakResident, &unitAlignedCell<&RowFormatCache::peakRss, &Widths::unitBytes>);
+    {.column = ProcessColumn::CpuPercent, .render = &rightAlignedCell<&RowFormatCache::cpuPercent>},
+    {.column = ProcessColumn::MemPercent, .render = &rightAlignedCell<&RowFormatCache::memPercent>},
+    {.column = ProcessColumn::Resident, .render = &unitAlignedCell<&RowFormatCache::resident, &ProcessCellWidths::unitBytes>},
+    {.column = ProcessColumn::Virtual, .render = &unitAlignedCell<&RowFormatCache::virtualMem, &ProcessCellWidths::unitBytes>},
+    {.column = ProcessColumn::Shared, .render = &unitAlignedCell<&RowFormatCache::shared, &ProcessCellWidths::unitBytes>},
+    {.column = ProcessColumn::PeakResident, .render = &unitAlignedCell<&RowFormatCache::peakRss, &ProcessCellWidths::unitBytes>},
     // Scheduling
-    set(ProcessColumn::Priority, &priorityCell);
-    set(ProcessColumn::Affinity, &rightAlignedCell<&RowFormatCache::affinity>);
-    set(ProcessColumn::Threads, &rightAlignedCell<&RowFormatCache::threads>);
-    set(ProcessColumn::Handles, &rightAlignedCell<&RowFormatCache::handles>);
+    {.column = ProcessColumn::Priority, .render = &priorityCell},
+    {.column = ProcessColumn::Affinity, .render = &rightAlignedCell<&RowFormatCache::affinity>},
+    {.column = ProcessColumn::Threads, .render = &rightAlignedCell<&RowFormatCache::threads>},
+    {.column = ProcessColumn::Handles, .render = &rightAlignedCell<&RowFormatCache::handles>},
     // "-" only when the probe could not read the count (process not accessible).
     // A count of 0 is a valid result for non-GUI background processes and is
     // shown as "0".
-    set(ProcessColumn::GdiObjects, &rightAlignedCell<&RowFormatCache::gdiObjects>);
+    {.column = ProcessColumn::GdiObjects, .render = &rightAlignedCell<&RowFormatCache::gdiObjects>},
     // Time
-    set(ProcessColumn::CpuTime, &rightAlignedCell<&RowFormatCache::cpuTime>);
-    set(ProcessColumn::StartTime, &rightAlignedCell<&RowFormatCache::startTime>);
+    {.column = ProcessColumn::CpuTime, .render = &rightAlignedCell<&RowFormatCache::cpuTime>},
+    {.column = ProcessColumn::StartTime, .render = &rightAlignedCell<&RowFormatCache::startTime>},
     // I/O
-    set(ProcessColumn::IoRead, &unitAlignedCell<&RowFormatCache::ioRead, &Widths::unitBytesPerSec>);
-    set(ProcessColumn::IoWrite, &unitAlignedCell<&RowFormatCache::ioWrite, &Widths::unitBytesPerSec>);
-    set(ProcessColumn::PageFaults, &rightAlignedCell<&RowFormatCache::pageFaults>);
+    {.column = ProcessColumn::IoRead, .render = &unitAlignedCell<&RowFormatCache::ioRead, &ProcessCellWidths::unitBytesPerSec>},
+    {.column = ProcessColumn::IoWrite, .render = &unitAlignedCell<&RowFormatCache::ioWrite, &ProcessCellWidths::unitBytesPerSec>},
+    {.column = ProcessColumn::PageFaults, .render = &rightAlignedCell<&RowFormatCache::pageFaults>},
     // Network
-    set(ProcessColumn::NetSent, &unitAlignedCell<&RowFormatCache::netSent, &Widths::unitBytesPerSec>);
-    set(ProcessColumn::NetReceived, &unitAlignedCell<&RowFormatCache::netRecv, &Widths::unitBytesPerSec>);
+    {.column = ProcessColumn::NetSent, .render = &unitAlignedCell<&RowFormatCache::netSent, &ProcessCellWidths::unitBytesPerSec>},
+    {.column = ProcessColumn::NetReceived, .render = &unitAlignedCell<&RowFormatCache::netRecv, &ProcessCellWidths::unitBytesPerSec>},
     // Power
-    set(ProcessColumn::Power, &unitAlignedCell<&RowFormatCache::power, &Widths::unitPower>);
+    {.column = ProcessColumn::Power, .render = &unitAlignedCell<&RowFormatCache::power, &ProcessCellWidths::unitPower>},
     // GPU
-    set(ProcessColumn::GpuPercent, &rightAlignedCell<&RowFormatCache::gpuPercent>);
-    set(ProcessColumn::GpuMemory, &unitAlignedCell<&RowFormatCache::gpuMemory, &Widths::unitBytes>);
-    set(ProcessColumn::GpuEngine, &gpuEngineCell);
-    set(ProcessColumn::GpuDevice, &leftAlignedOrDashCell<&Snapshot::gpuDevices, &RowFormatCache::gpuDevicesWidth>);
+    {.column = ProcessColumn::GpuPercent, .render = &rightAlignedCell<&RowFormatCache::gpuPercent>},
+    {.column = ProcessColumn::GpuMemory, .render = &unitAlignedCell<&RowFormatCache::gpuMemory, &ProcessCellWidths::unitBytes>},
+    {.column = ProcessColumn::GpuEngine, .render = &gpuEngineCell},
+    {.column = ProcessColumn::GpuDevice,
+     .render = &leftAlignedOrDashCell<&Domain::ProcessSnapshot::gpuDevices, &RowFormatCache::gpuDevicesWidth>},
     // Command
-    set(ProcessColumn::Command, &commandCell);
-    return renderers;
-}
+    {.column = ProcessColumn::Command, .render = &commandCell},
+}};
 
-constexpr std::array<ProcessCellRenderer, processColumnCount()> CELL_RENDERERS = makeCellRenderers();
-
-// Every column but PID and Name has a renderer, and those two have none: a
-// column added to ProcessColumn without one fails to compile here instead of
-// drawing an empty cell.
+// Every entry sits at its column's index, every column but PID and Name has a
+// renderer, and those two have none: a column added to ProcessColumn without
+// an entry, or an entry out of order, fails to compile here instead of drawing
+// the wrong cell or an empty one.
 static_assert(std::ranges::all_of(allProcessColumns(),
                                   [](ProcessColumn col)
                                   {
+                                      const ProcessCellEntry& entry = CELL_RENDERERS[toIndex(col)];
                                       const bool drawnByRow = (col == ProcessColumn::PID) || (col == ProcessColumn::Name);
-                                      return (CELL_RENDERERS[toIndex(col)] != nullptr) != drawnByRow;
+                                      return (entry.column == col) && ((entry.render != nullptr) != drawnByRow);
                                   }),
-              "every Processes column but PID and Name needs a cell renderer "
-              "in makeCellRenderers()");
+              "CELL_RENDERERS needs one entry per Processes column, in ProcessColumn "
+              "order, with a renderer for every column but PID and Name");
 
 } // namespace
 
@@ -1345,7 +1349,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             renderNameCell(proc, fmt, depth, hasChildren, isExpanded);
             continue;
         }
-        CELL_RENDERERS[toIndex(col)](proc, fmt, m_TextSizeCache.cells);
+        CELL_RENDERERS[toIndex(col)].render(proc, fmt, m_TextSizeCache.cells);
     }
 }
 
