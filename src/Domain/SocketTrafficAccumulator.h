@@ -42,13 +42,18 @@ namespace Domain
 ///    opened within this interval, so all of them were sent within it. On the first reading every
 ///    connection is new and only sets the baseline.
 ///  - A connection whose counters couldn't be read this time (SocketTrafficSample::readable false,
-///    #1256) is still open: it keeps its previous baseline unchanged, credits nothing, and the next
-///    readable sample credits all the growth since the last readable one. One first seen unreadable
-///    is recorded as seen with no baseline, so its first readable sample only sets the baseline:
-///    crediting it as new would land the lifetime bytes of a connection that may have been open for
-///    hours in one interval. The cost is the bytes a connection that really did open while unreadable
-///    moved before its first readable sample, the same as for one attributed late. An unreadable
-///    sample's owner is not used: bytes are credited to the owner reported with them.
+///    #1256) is still open, not closed, and credits nothing. Its next readable sample only
+///    re-baselines it: the growth since its last readable sample spans the unreadable ones, and
+///    crediting it to the interval it is read back in would be a burst -- a process with another
+///    connection that stayed readable has a reading for each of those intervals, so the burst would
+///    show (#1346 review). The cost is that connection's bytes over the unreadable samples and the
+///    interval after them; growth it held while unowned is kept (it was measured between readable
+///    samples). One first seen unreadable is recorded as seen with no baseline, so its first
+///    readable sample only sets the baseline: crediting it as new would land the lifetime bytes of a
+///    connection that may have been open for hours in one interval. The cost is the bytes a
+///    connection that really did open while unreadable moved before its first readable sample, the
+///    same as for one attributed late. An unreadable sample's owner is not used: bytes are credited
+///    to the owner reported with them.
 ///  - Credit goes to a process identified by PID and start time (ProcessKey) whenever both start
 ///    times are known (#1336); with either unknown it falls back to the PID, as described below. A
 ///    connection's owner is reported with its start time (SocketTrafficSample::ownerStartTimeTicks);
@@ -138,10 +143,9 @@ class SocketTrafficAccumulator
             publishTotals(processes);
         }
         // A process with connections in the newest reading, none of which could be read, has no
-        // reading of its own this interval: unavailable rather than 0, with the bytes landing as a burst
-        // in the next one (#1304, as #1285/#1290 treat unreadable counters). ProcessModel measures an
-        // interval only between two available readings, so the interval after it is unavailable too,
-        // and the burst never shows.
+        // reading of its own this interval: unavailable rather than 0 (#1304, as #1285/#1290 treat
+        // unreadable counters). Its connections re-baseline when read again, so no later interval
+        // takes their growth from across the unreadable samples as a burst (#1346 review).
         for (auto& proc : processes)
         {
             if (m_UnreadablePids.contains(proc.pid))
@@ -180,9 +184,12 @@ class SocketTrafficAccumulator
             const auto previous = m_Sockets.find(sample.key);
             if (!sample.readable)
             {
-                // Still open, counters unknown this time: keep the baseline (or the "seen, no
-                // baseline" mark) and any held growth as they were, credit nothing (#1256).
-                next.insert_or_assign(sample.key, (previous != m_Sockets.end()) ? previous->second : SocketState{.hasBaseline = false});
+                // Still open, counters unknown this time: keep the "seen, no baseline" mark and any
+                // held growth as they were, credit nothing (#1256), and mark the baseline as one the
+                // next readable sample must not measure growth from (#1346 review).
+                SocketState unread = (previous != m_Sockets.end()) ? previous->second : SocketState{.hasBaseline = false};
+                unread.staleBaseline = true;
+                next.insert_or_assign(sample.key, unread);
                 continue;
             }
             SocketState state{.bytesReceived = sample.bytesReceived, .bytesSent = sample.bytesSent};
@@ -194,20 +201,26 @@ class SocketTrafficAccumulator
             if (previous != m_Sockets.end())
             {
                 // First readable sample of a connection first seen unreadable: its bytes may predate
-                // this interval, so it only sets the baseline (#1256). Otherwise a counter that went
-                // backwards in either direction means a different connection is reusing the key:
-                // nothing is credited for it this interval in either direction (its other counter
-                // isn't comparable with the old connection's either); both are the new baseline.
+                // this interval, so it only sets the baseline (#1256). Likewise the first readable
+                // sample after unreadable ones: its growth spans them, so it only re-baselines, keeping
+                // any held growth (#1346 review). Otherwise a counter that went backwards in either
+                // direction means a different connection is reusing the key: nothing is credited for
+                // it this interval in either direction (its other counter isn't comparable with the
+                // old connection's either); both are the new baseline.
                 const SocketState& prev = previous->second;
                 const bool reused = sample.bytesReceived < prev.bytesReceived || sample.bytesSent < prev.bytesSent;
                 if (prev.hasBaseline && !reused)
                 {
-                    credit.received = sample.bytesReceived - prev.bytesReceived;
-                    credit.sent = sample.bytesSent - prev.bytesSent;
+                    if (!prev.staleBaseline)
+                    {
+                        credit.received = sample.bytesReceived - prev.bytesReceived;
+                        credit.sent = sample.bytesSent - prev.bytesSent;
+                    }
                     creditIsGrowth = true;
                     state = prev; // keeps an unowned run's held growth
                     state.bytesReceived = sample.bytesReceived;
                     state.bytesSent = sample.bytesSent;
+                    state.staleBaseline = false;
                 }
             }
             else if (m_HasReading)
@@ -381,7 +394,10 @@ class SocketTrafficAccumulator
             {
                 m_PendingByProcess[*owner].add(state.held);
             }
-            state = SocketState{.bytesReceived = state.bytesReceived, .bytesSent = state.bytesSent, .hasBaseline = state.hasBaseline};
+            state = SocketState{.bytesReceived = state.bytesReceived,
+                                .bytesSent = state.bytesSent,
+                                .hasBaseline = state.hasBaseline,
+                                .staleBaseline = state.staleBaseline};
         }
     }
 
@@ -402,6 +418,9 @@ class SocketTrafficAccumulator
         std::uint64_t bytesReceived = 0;
         std::uint64_t bytesSent = 0;
         bool hasBaseline = true; // False: seen only unreadable so far; the byte fields mean nothing (#1256)
+        // True: unreadable since the baseline was taken, so growth from it spans unreadable samples and
+        // the next readable one only re-baselines (#1346 review).
+        bool staleBaseline = false;
         // Growth seen while unowned, held for the owner it gets later (#1259). `unowned` marks a run
         // of unowned readings that began at `unownedSinceNs` (0: time unknown); once the run outlasts
         // UNATTRIBUTED_SOCKET_HOLD_MS, `holdExpired` drops the held bytes and stops holding until the
