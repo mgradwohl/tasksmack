@@ -11,6 +11,7 @@
 #include "Core/Window.h"
 #include "Core/WindowEventRouting.h"
 #include "Core/WindowEvents.h"
+#include "Platform/ThreadName.h"
 #include "version.h"
 
 #include <SDL3/SDL.h>
@@ -484,6 +485,9 @@ void Application::detachAllLayers()
 void Application::run()
 {
     m_Running = true;
+    // The UI thread is whichever thread runs the loop. A no-op on Linux, where the main thread's
+    // name is the process name (see Platform::setMainThreadName).
+    Platform::setMainThreadName(Platform::UI_THREAD_NAME);
 
     double lastTime = getTime();
 

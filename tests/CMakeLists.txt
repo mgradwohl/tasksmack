@@ -141,6 +141,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_ProcessIdentity.cpp
     Platform/test_ProcessName.cpp
     Platform/test_CpuAffinity.cpp
+    Platform/test_ThreadName.cpp
     App/test_FpsCounter.cpp
     App/test_Panel.cpp
     App/test_ProcessesPanel.cpp
@@ -300,6 +301,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp
     # UI source files under test (Note: Theme.cpp excluded - requires ImGui/ImPlot runtime context)
     ${CMAKE_SOURCE_DIR}/src/UI/ThemeLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/UI/AssetPath.cpp
