@@ -64,6 +64,12 @@ class SocketTrafficAccumulator
     ///  - A probe caches its query, so the same reading can come back for several refreshes; it is
     ///    folded once. An older one is never folded: it would rewind the connection baselines and
     ///    count the traffic in between twice.
+    ///  - A repeat of the last reading can still bring new ownership: the Linux probe may rebuild its
+    ///    inode-to-PID map early on a cached socket query (#1327 review). Its counters are ignored --
+    ///    they were folded already -- but a connection that was unowned and now has an owner hands
+    ///    that owner its held growth (reviseOwnership()). The bytes are credited with the next reading
+    ///    folded, so they land in a measured interval rather than in a refresh that holds the rate, and
+    ///    are kept even if the connection closes before then.
     ///  - A failed reading (sampleTimeNs 0) is not folded either -- a connection missing from it would
     ///    look closed and then, back in the next reading, new. Like a repeated one, it republishes the
     ///    last reading's totals and time, so the model holds the last rate instead of measuring a 0
@@ -79,6 +85,10 @@ class SocketTrafficAccumulator
         {
             addReading(reading.sockets, reading.sampleTimeNs);
             m_LastReadingTimeNs = reading.sampleTimeNs;
+        }
+        else if (reading.sampleTimeNs != 0 && reading.sampleTimeNs == m_LastReadingTimeNs)
+        {
+            reviseOwnership(reading.sockets, reading.sampleTimeNs);
         }
         if (m_LastReadingTimeNs == 0)
         {
@@ -242,6 +252,34 @@ class SocketTrafficAccumulator
     }
 
   private:
+    /// Apply a repeat of the last folded reading (same time, so the same counters) for the ownership
+    /// it may add: a connection that was in an unowned run and now has an owner moves its held growth
+    /// to that owner's pending bytes, credited by the next publish(), and its run ends -- so the held
+    /// bytes are moved exactly once. Counters are not compared and nothing else changes: an unreadable
+    /// sample's owner is not used, an owned connection keeps its owner until the next fresh reading,
+    /// and a connection missing from the last reading waits for the next fresh one.
+    void reviseOwnership(std::span<const Platform::SocketTrafficSample> sockets, std::uint64_t sampleTimeNs)
+    {
+        for (const auto& sample : sockets)
+        {
+            if (sample.key == 0 || sample.pid <= 0 || !sample.readable)
+            {
+                continue;
+            }
+            const auto existing = m_Sockets.find(sample.key);
+            if (existing == m_Sockets.end() || !existing->second.unowned)
+            {
+                continue;
+            }
+            SocketState& state = existing->second;
+            if (!holdOutlasted(state, sampleTimeNs) && (state.held.received != 0 || state.held.sent != 0))
+            {
+                m_PendingByPid[sample.pid].add(state.held);
+            }
+            state = SocketState{.bytesReceived = state.bytesReceived, .bytesSent = state.bytesSent, .hasBaseline = state.hasBaseline};
+        }
+    }
+
     struct Totals
     {
         std::uint64_t received = 0;

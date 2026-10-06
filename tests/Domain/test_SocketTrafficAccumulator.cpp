@@ -359,6 +359,70 @@ TEST(SocketTrafficAccumulatorTest, ApplyHoldsGrowthOnTheReadingClock)
     EXPECT_EQ(processes[0].netReceivedBytes, 400U);
 }
 
+TEST(SocketTrafficAccumulatorTest, ARepeatedReadingThatAttributesAConnectionCreditsItsHeldGrowthOnce)
+{
+    // #1327 review: the Linux probe can rebuild its inode-to-PID map early on a cached socket query,
+    // so a connection gets its owner in a reading with the same time as the last one. That reading
+    // used to be skipped as a repeat: the held growth waited for the next fresh one, and was lost if
+    // the connection closed first. Now its new ownership is applied -- and its counters are not.
+    SocketTrafficAccumulator accumulator;
+    std::vector processes{process(10)};
+    constexpr std::uint64_t SECOND = 1'000'000'000ULL;
+    accumulator.apply({.sockets = {}, .sampleTimeNs = 10 * SECOND}, processes);
+    accumulator.apply({.sockets = {{.key = 2, .pid = 0, .bytesReceived = 100, .bytesSent = 1}}, .sampleTimeNs = 11 * SECOND}, processes);
+    accumulator.apply({.sockets = {{.key = 2, .pid = 0, .bytesReceived = 400, .bytesSent = 9}}, .sampleTimeNs = 12 * SECOND}, processes);
+
+    const SocketTrafficReading attributed{.sockets = {{.key = 2, .pid = 10, .bytesReceived = 400, .bytesSent = 9}},
+                                          .sampleTimeNs = 12 * SECOND};
+    accumulator.apply(attributed, processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 0U) << "credited with the next fresh reading, a measured interval";
+    EXPECT_EQ(processes[0].netSampleTimeNs, 12 * SECOND);
+    accumulator.apply(attributed, processes); // the same cached reading again
+    EXPECT_EQ(processes[0].netReceivedBytes, 0U);
+
+    accumulator.apply({.sockets = {{.key = 2, .pid = 10, .bytesReceived = 450, .bytesSent = 9}}, .sampleTimeNs = 13 * SECOND}, processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 350U) << "the held 300 once, plus this interval's 50";
+    EXPECT_EQ(processes[0].netSentBytes, 8U);
+
+    accumulator.apply({.sockets = {{.key = 2, .pid = 10, .bytesReceived = 450, .bytesSent = 9}}, .sampleTimeNs = 14 * SECOND}, processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 350U) << "nothing is credited twice";
+}
+
+TEST(SocketTrafficAccumulatorTest, HeldGrowthHandedOverOnARepeatedReadingSurvivesTheConnectionClosing)
+{
+    SocketTrafficAccumulator accumulator;
+    std::vector processes{process(10)};
+    constexpr std::uint64_t SECOND = 1'000'000'000ULL;
+    accumulator.apply({.sockets = {}, .sampleTimeNs = 10 * SECOND}, processes);
+    accumulator.apply({.sockets = {{.key = 2, .pid = 0, .bytesReceived = 100}}, .sampleTimeNs = 11 * SECOND}, processes);
+    accumulator.apply({.sockets = {{.key = 2, .pid = 0, .bytesReceived = 400}}, .sampleTimeNs = 12 * SECOND}, processes);
+    accumulator.apply({.sockets = {{.key = 2, .pid = 10, .bytesReceived = 400}}, .sampleTimeNs = 12 * SECOND}, processes);
+
+    accumulator.apply({.sockets = {}, .sampleTimeNs = 13 * SECOND}, processes); // closed before the next fresh reading
+    EXPECT_EQ(processes[0].netReceivedBytes, 300U);
+}
+
+TEST(SocketTrafficAccumulatorTest, ARepeatedReadingDoesNotRecountItsCounters)
+{
+    // Only ownership is taken from a repeat: an owned connection's counters, a new connection, and an
+    // unowned connection's growth in it are not credited (they would be counted again, or as new).
+    SocketTrafficAccumulator accumulator;
+    std::vector processes{process(10), process(20)};
+    accumulator.apply(
+        {.sockets = {{.key = 1, .pid = 10, .bytesReceived = 100}, {.key = 2, .pid = 0, .bytesReceived = 50}}, .sampleTimeNs = 1'000},
+        processes);
+    accumulator.apply({.sockets = {{.key = 1, .pid = 20, .bytesReceived = 900},
+                                   {.key = 2, .pid = 10, .bytesReceived = 800},
+                                   {.key = 3, .pid = 10, .bytesReceived = 7'000}},
+                       .sampleTimeNs = 1'000},
+                      processes);
+    accumulator.apply(
+        {.sockets = {{.key = 1, .pid = 10, .bytesReceived = 100}, {.key = 2, .pid = 10, .bytesReceived = 50}}, .sampleTimeNs = 2'000},
+        processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 0U) << "no held growth existed, and the repeat's counters are ignored";
+    EXPECT_EQ(processes[1].netReceivedBytes, 0U) << "an owned connection's owner doesn't change on a repeat";
+}
+
 TEST(SocketTrafficAccumulatorTest, TotalsSaturateInsteadOfWrapping)
 {
     constexpr auto MAX_BYTES = std::numeric_limits<std::uint64_t>::max();

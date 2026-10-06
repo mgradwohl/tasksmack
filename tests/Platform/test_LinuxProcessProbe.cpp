@@ -26,6 +26,7 @@
 #include "Platform/ScopedTempDir.h"
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+#include "Domain/SocketTrafficAccumulator.h"
 #include "Platform/Linux/NetlinkSocketStats.h"
 #include "Platform/NetlinkTestUtils.h"
 
@@ -1168,6 +1169,85 @@ TEST(LinuxProcessProbeTest, AnEmptyInodeMapIsRescannedAtMostOncePerEarlyInterval
     std::this_thread::sleep_for(EARLY_INTERVAL + std::chrono::milliseconds{100});
     (void) probe.readSocketTraffic();
     EXPECT_EQ(scans, 2) << "once the interval has passed, one more scan -- not a retry plus an early rebuild";
+}
+
+TEST(LinuxProcessProbeTest, AConnectionAttributedOnACachedSocketQueryKeepsItsHeldBytes)
+{
+    // #1327 review: a rate-limited early rebuild can run on a cached socket query, so a connection
+    // gets its owner in a reading with the same sampleTimeNs as the last. Domain used to skip that
+    // reading as a repeat, and the bytes the connection moved while unowned were lost if it closed
+    // before the next fresh query. End to end, through SocketTrafficAccumulator, they are credited.
+    ScopedTempDir proc("ts_test_proc_net_cached_rebuild");
+    writeFile(proc.path / "4242" / "stat",
+              "4242 (app) S 1 4242 4242 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+    writeFile(proc.path / "stat", "cpu  100 0 100 800 0 0 0 0 0 0\n");
+    const auto fdDir = proc.path / "4242" / "fd";
+    std::filesystem::create_directories(fdDir);
+    std::filesystem::create_symlink("socket:[11]", fdDir / "3");
+
+    using Platform::TestSupport::FakeSocket;
+    using Platform::TestSupport::ScriptedNetlinkTransport;
+    std::vector<FakeSocket> current{{.inode = 11, .bytesReceived = 10}};
+    auto transport = std::make_unique<ScriptedNetlinkTransport>();
+    auto* script = transport.get();
+    // Cached until invalidated, so a reading is fresh only when the test says so.
+    auto stats = std::make_shared<Platform::NetlinkSocketStats>(std::move(transport), std::chrono::hours{1});
+    script->onRequest = [&](const ScriptedNetlinkTransport::Request& request) -> ScriptedNetlinkTransport::Reply
+    {
+        return Platform::TestSupport::completeDump(request, request.family == AF_INET ? current : std::vector<FakeSocket>{});
+    };
+
+    constexpr auto EARLY_INTERVAL = std::chrono::milliseconds{500};
+    LinuxProcessProbe probe(proc.path);
+    probe.setSocketStatsForTesting(stats);
+    probe.setInodeMapEarlyRebuildIntervalForTesting(EARLY_INTERVAL);
+    ASSERT_TRUE(probe.capabilities().hasNetworkCounters);
+
+    Domain::SocketTrafficAccumulator accumulator;
+    Platform::ProcessCounters owner;
+    owner.pid = 4242;
+    owner.startTimeTicks = 12345;
+    std::vector processes{owner};
+    const auto ownerOf = [](const Platform::SocketTrafficReading& traffic, std::uint64_t inode)
+    {
+        const auto it = std::ranges::find(traffic.sockets, inode, &Platform::SocketTrafficSample::key);
+        return it != traffic.sockets.end() ? it->pid : -1;
+    };
+
+    const auto start = std::chrono::steady_clock::now();
+    accumulator.apply(probe.readSocketTraffic(), processes); // builds the map
+
+    // 12 opens with no fd visible yet; the early rebuild it asks for is rate-limited.
+    current.push_back({.inode = 12, .bytesReceived = 100});
+    stats->invalidateCache();
+    const auto unowned = probe.readSocketTraffic();
+    ASSERT_EQ(ownerOf(unowned, 12), 0);
+    accumulator.apply(unowned, processes);
+
+    current.back().bytesReceived = 600; // 500 held for its future owner
+    stats->invalidateCache();
+    const auto held = probe.readSocketTraffic();
+    ASSERT_EQ(ownerOf(held, 12), 0);
+    accumulator.apply(held, processes);
+    if (std::chrono::steady_clock::now() - start >= EARLY_INTERVAL)
+    {
+        GTEST_SKIP() << "the readings took longer than the early interval";
+    }
+
+    // Its fd appears; once the interval passes, the next read rebuilds on the cached query.
+    std::filesystem::create_symlink("socket:[12]", fdDir / "4");
+    std::this_thread::sleep_for(EARLY_INTERVAL + std::chrono::milliseconds{100});
+    const auto attributed = probe.readSocketTraffic();
+    ASSERT_EQ(attributed.sampleTimeNs, held.sampleTimeNs) << "the cached query, not a fresh one";
+    ASSERT_EQ(ownerOf(attributed, 12), 4242);
+    accumulator.apply(attributed, processes);
+
+    // 12 closes before the next fresh query.
+    current.pop_back();
+    stats->invalidateCache();
+    accumulator.apply(probe.readSocketTraffic(), processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 500U) << "the bytes 12 moved while unowned";
 }
 #endif
 

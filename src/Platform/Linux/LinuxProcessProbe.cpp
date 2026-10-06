@@ -1147,6 +1147,8 @@ SocketTrafficReading LinuxProcessProbe::readSocketTraffic() const
         // connection is attributed in the reading it first appears in, rather than up to a TTL later
         // with its first bytes, or all of a short one's, never credited (#1259). Sockets held by
         // processes we can't read stay unowned through the rebuild and so don't trigger another.
+        // The rebuild may land on a cached socket query (same sampledAt): the reading then differs
+        // from the last only in ownership, which Domain still applies (SocketTrafficAccumulator).
         unownedSinceBuild = std::ranges::any_of(sockets,
                                                 [&](const SocketStats& socket)
                                                 {
