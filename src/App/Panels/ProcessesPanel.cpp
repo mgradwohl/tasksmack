@@ -477,8 +477,10 @@ void ProcessesPanel::restoreTableLayout(std::string_view stored)
     }
 
     // Filtered before ImGui sees it: the text comes from a user-editable file, and only a single
-    // table section may be passed on -- never a window position or a docking layout.
-    const std::string layout = ProcessTableSettings::sanitize(stored);
+    // table section may be passed on -- never a window position or a docking layout. The default
+    // column order is made explicit, or a layout saved with only a sort line -- by this version or an
+    // older one -- would come back with the sorted column first (#1393).
+    const std::string layout = ProcessTableSettings::withExplicitOrder(stored);
     if (!layout.empty())
     {
         ImGui::LoadIniSettingsFromMemory(layout.data(), layout.size());
@@ -506,7 +508,8 @@ std::string ProcessesPanel::captureTableLayout() const
     {
         layout = ProcessTableSettings::carrySortForward(layout, m_SortBackupLayout);
     }
-    return layout;
+    // Last, so a sort line carried into a section with no order lines gets them too (#1393).
+    return ProcessTableSettings::withExplicitOrder(layout);
 }
 
 // ============================================================================
