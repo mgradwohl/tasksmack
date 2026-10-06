@@ -314,7 +314,7 @@ TEST(ChartWidgetsStackTest, UserSystemStackMatchesTheLoopsItReplaced)
             continue;
         }
         // Overview: yUserTop = double(user); ySystemTop = yUserTop + double(system)
-        const double overviewUser = static_cast<double>(userF[i]);
+        const auto overviewUser = static_cast<double>(userF[i]);
         EXPECT_DOUBLE_EQ(overview.userTop[k], overviewUser);
         EXPECT_DOUBLE_EQ(overview.systemTop[k], overviewUser + static_cast<double>(systemF[i]));
         // Process Details: yUserTop = user; ySystemTop = user + system
