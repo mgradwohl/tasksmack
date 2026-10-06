@@ -171,14 +171,14 @@ TEST(ProcessColumnAvailabilityTest, WithdrawnCapabilityHidesOnlyUnchosenColumns)
     after.hasNetworkCounters = false;
     const auto changed = ProcessColumnAvailability::capabilityDefaultChanges(settings, after);
     ASSERT_TRUE(changed.has_value());
-    EXPECT_FALSE(changed.value().isVisible(ProcessColumn::NetSent));    // Not chosen: follows the system
-    EXPECT_TRUE(changed.value().isVisible(ProcessColumn::NetReceived)); // Chosen: left alone
-    EXPECT_FALSE(changed.value().isChosen(ProcessColumn::NetSent));     // Still the system's default, not a choice
+    EXPECT_FALSE(changed.value_or(ProcessColumnSettings{}).isVisible(ProcessColumn::NetSent));    // Not chosen: follows the system
+    EXPECT_TRUE(changed.value_or(ProcessColumnSettings{}).isVisible(ProcessColumn::NetReceived)); // Chosen: left alone
+    EXPECT_FALSE(changed.value_or(ProcessColumnSettings{}).isChosen(ProcessColumn::NetSent)); // Still the system's default, not a choice
     for (const ProcessColumn col : allProcessColumns())
     {
         if (col != ProcessColumn::NetSent)
         {
-            EXPECT_EQ(changed.value().isVisible(col), settings.isVisible(col)) << getColumnInfo(col).configKey;
+            EXPECT_EQ(changed.value_or(ProcessColumnSettings{}).isVisible(col), settings.isVisible(col)) << getColumnInfo(col).configKey;
         }
     }
 }
@@ -193,7 +193,7 @@ TEST(ProcessColumnAvailabilityTest, RegainedCapabilityRestoresAnUnchosenColumnsD
     with.hasPowerUsage = true;
     const auto changed = ProcessColumnAvailability::capabilityDefaultChanges(settings, with);
     ASSERT_TRUE(changed.has_value());
-    EXPECT_TRUE(changed.value().isVisible(ProcessColumn::Power));
+    EXPECT_TRUE(changed.value_or(ProcessColumnSettings{}).isVisible(ProcessColumn::Power));
 }
 
 TEST(ProcessColumnAvailabilityTest, CapabilityChangeThatMovesNoColumnQueuesNothing)
@@ -272,15 +272,15 @@ TEST(ProcessColumnAvailabilityTest, GpuColumnsShownByTheUserAreHiddenOnlyIfUncho
 
     const auto changed = ProcessColumnAvailability::capabilityDefaultChanges(settings, caps, NO_PER_PROCESS_GPU);
     ASSERT_TRUE(changed.has_value());
-    EXPECT_FALSE(changed.value().isVisible(ProcessColumn::GpuPercent));
-    EXPECT_TRUE(changed.value().isVisible(ProcessColumn::GpuMemory));
+    EXPECT_FALSE(changed.value_or(ProcessColumnSettings{}).isVisible(ProcessColumn::GpuPercent));
+    EXPECT_TRUE(changed.value_or(ProcessColumnSettings{}).isVisible(ProcessColumn::GpuMemory));
     EXPECT_FALSE(ProcessColumnAvailability::defaultColumns(caps, NO_PER_PROCESS_GPU).isVisible(ProcessColumn::GpuPercent));
 
     // Losing only utilization hides only GPU %, unless chosen.
     const auto utilOnly = ProcessColumnAvailability::capabilityDefaultChanges(settings, caps, NO_PER_PROCESS_GPU_UTILIZATION);
     ASSERT_TRUE(utilOnly.has_value());
-    EXPECT_FALSE(utilOnly.value().isVisible(ProcessColumn::GpuPercent));
-    EXPECT_TRUE(utilOnly.value().isVisible(ProcessColumn::GpuMemory));
+    EXPECT_FALSE(utilOnly.value_or(ProcessColumnSettings{}).isVisible(ProcessColumn::GpuPercent));
+    EXPECT_TRUE(utilOnly.value_or(ProcessColumnSettings{}).isVisible(ProcessColumn::GpuMemory));
 }
 
 TEST(ProcessColumnAvailabilityTest, EmptyTextInASupportedColumnIsBlankNotUnavailable)

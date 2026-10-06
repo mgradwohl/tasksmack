@@ -126,7 +126,7 @@ TEST(ProcessTreeIndentTest, AutomaticTreeNameWidthIsNotSavedAsTheListsWidth)
     const auto saved =
         ProcessTreeIndent::nameWidthToSave(/*treeView=*/true, /*widenedTo=*/360.0F, /*currentWidth=*/360.0F, /*widthBeforeTree=*/120.0F);
     ASSERT_TRUE(saved.has_value());
-    EXPECT_FLOAT_EQ(saved.value(), 120.0F);
+    EXPECT_FLOAT_EQ(saved.value_or(-1.0F), 120.0F); // value_or: ASSERT above has checked it
 }
 
 TEST(ProcessTreeIndentTest, UserChosenNameWidthIsSavedAsItIs)
