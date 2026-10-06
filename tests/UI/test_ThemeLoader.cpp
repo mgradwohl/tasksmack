@@ -1,11 +1,18 @@
 #include "UI/ThemeLoader.h"
 
 #include <gtest/gtest.h>
+#include <spdlog/logger.h>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
 
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <ios>
+#include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -670,6 +677,96 @@ name = "Broken"
 
     auto info = ThemeLoader::loadThemeInfo(m_TempDir / "invalid.toml");
     EXPECT_FALSE(info.has_value());
+}
+
+// Malformed theme files the fuzzers found that crashed inside toml++ instead of throwing
+// toml::parse_error: a debug assert (abort) and, with NDEBUG, __builtin_assume/__builtin_unreachable
+// (UB). Every theme load path must log the parse failure and skip the file, in debug and release alike.
+class ThemeLoaderMalformedTomlTest : public ThemeLoaderDiscoveryTest
+{
+  protected:
+    struct MalformedTheme
+    {
+        const char* name;
+        std::string_view content;
+    };
+
+    // Each input crashed toml++ before #1387/#1388/#1389 were fixed.
+    static constexpr std::array<MalformedTheme, 6> kTomlppCrashInputs = {{
+        {.name = "TableHeaderThenNewline", .content = "[\n"}, // #1387
+        {.name = "TableHeaderThenEquals", .content = "[="},   // #1387
+        {.name = "ArrayClosedWithBrace", .content = "m=[}"},  // #1388
+        {.name = "CommaThenBrace", .content = "m=[1,}"},      // #1388
+        {.name = "CodePointFEBF", .content = "\xEF\xBA\xBF"}, // #1389
+        {.name = "CodePointFEFB", .content = "\xEF\xBB\xBB"}, // #1389
+    }};
+
+    void SetUp() override
+    {
+        ThemeLoaderDiscoveryTest::SetUp();
+        m_PreviousLogger = spdlog::default_logger();
+        spdlog::set_default_logger(
+            std::make_shared<spdlog::logger>("malformed-theme-test", std::make_shared<spdlog::sinks::ostream_sink_st>(m_Log)));
+    }
+
+    void TearDown() override
+    {
+        spdlog::set_default_logger(m_PreviousLogger);
+        ThemeLoaderDiscoveryTest::TearDown();
+    }
+
+    /// Writes the input to broken.toml and clears the captured log, so each input's checks see only its own output.
+    [[nodiscard]] auto writeMalformedTheme(const MalformedTheme& input) -> std::filesystem::path
+    {
+        m_Log.str({});
+        m_Log.clear();
+        auto path = m_TempDir / "broken.toml";
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        file << input.content;
+        return path;
+    }
+
+    std::ostringstream m_Log;
+
+  private:
+    std::shared_ptr<spdlog::logger> m_PreviousLogger;
+};
+
+TEST_F(ThemeLoaderMalformedTomlTest, LoadThemeInfoLogsParseFailureForTomlppCrashInputs)
+{
+    for (const auto& input : kTomlppCrashInputs)
+    {
+        SCOPED_TRACE(input.name);
+        const auto path = writeMalformedTheme(input);
+        EXPECT_FALSE(ThemeLoader::loadThemeInfo(path).has_value()) << input.name;
+        EXPECT_NE(m_Log.str().find("Failed to parse theme"), std::string::npos) << input.name << ": " << m_Log.str();
+    }
+}
+
+TEST_F(ThemeLoaderMalformedTomlTest, LoadThemeLogsParseFailureForTomlppCrashInputs)
+{
+    for (const auto& input : kTomlppCrashInputs)
+    {
+        SCOPED_TRACE(input.name);
+        const auto path = writeMalformedTheme(input);
+        EXPECT_FALSE(ThemeLoader::loadTheme(path).has_value()) << input.name;
+        EXPECT_NE(m_Log.str().find("Failed to parse theme"), std::string::npos) << input.name << ": " << m_Log.str();
+    }
+}
+
+TEST_F(ThemeLoaderMalformedTomlTest, DiscoverThemesSkipsMalformedFileAndKeepsTheRestForTomlppCrashInputs)
+{
+    createThemeFile("good.toml", "[meta]\nname = \"Good\"\n");
+    for (const auto& input : kTomlppCrashInputs)
+    {
+        SCOPED_TRACE(input.name);
+        static_cast<void>(writeMalformedTheme(input));
+
+        const auto themes = ThemeLoader::discoverThemes(m_TempDir);
+        ASSERT_EQ(themes.size(), 1U) << input.name;
+        EXPECT_EQ(themes[0].id, "good") << input.name;
+        EXPECT_NE(m_Log.str().find("Failed to parse theme"), std::string::npos) << input.name << ": " << m_Log.str();
+    }
 }
 
 // ========== loadTheme Tests ==========

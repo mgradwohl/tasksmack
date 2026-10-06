@@ -96,10 +96,29 @@ if(TARGET spdlog)
 endif()
 
 # toml++ for configuration files
+#
+# Pinned to an untagged master commit (2026-07-21, 50 commits past v3.4.0) rather than v3.4.0:
+# v3.4.0 hits a TOML_ASSERT_ASSUME in parse_key() on '[' then a newline (#1387, fixed upstream in
+# e4bcc15) and TOML_UNREACHABLE in is_non_ascii_horizontal_whitespace() on U+FB26..U+FEFE (#1389,
+# fixed upstream in 1e8829b). Both are UB in release builds. Move back to a release tag once one
+# includes them (v3.5.0+).
+#
+# The patch fixes #1388 ('m=[}' hits a TOML_ASSERT_ASSUME in parse_value()), which is not fixed
+# upstream yet. ApplyPatch.cmake skips it when already applied, since the source tree under
+# FETCHCONTENT_BASE_DIR is shared by every preset. Re-check the patch whenever GIT_TAG moves, and
+# give an edited patch a new file name: FetchContent only re-runs the patch step when this
+# declaration changes, and CI's FetchContent cache is keyed on this file, not on the patch.
+# The fuzz build (.clusterfuzzlite/fetch-deps.sh, #1390) reads the GIT_TAG on the line after
+# GIT_REPOSITORY, so keep them adjacent. Renovate only tracks this pin while its comment reads
+# "# vX.Y.Z" (see .github/renovate.json5), so it leaves this untagged pin alone.
+find_package(Git REQUIRED)
 FetchContent_Declare(
     tomlplusplus
     GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
-    GIT_TAG 30172438cee64926dc41fdd9c11fb3ba5b2ba9de  # v3.4.0 - pinned to SHA for supply chain security
+    GIT_TAG 1e8829b793b66ad17011732a146b8077d379b011  # master after v3.4.0 - pinned to SHA for supply chain security
+    PATCH_COMMAND "${CMAKE_COMMAND}" "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
+                  "-DPATCH_FILE=${CMAKE_CURRENT_LIST_DIR}/patches/tomlplusplus-parse-value-terminator.patch"
+                  -P "${CMAKE_CURRENT_LIST_DIR}/patches/ApplyPatch.cmake"
     SYSTEM  # Treat as system headers to suppress warnings
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/tomlplusplus-build"  # per-preset build tree (#1308)
 )
