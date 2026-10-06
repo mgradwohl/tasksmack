@@ -658,6 +658,37 @@ TEST_F(NVMLGPUProbeFakeTest, AGpuLostDuringTheSensorProbeLeavesTheSensorsUnknown
 
 // NVML_ERROR_UNINITIALIZED from a running-process query is a reset too: NVML restarts at the next
 // full rescan, as it does after a counter read's.
+// A device whose UUID can't be read is named by its NVML index, which a restart can give to another
+// card. What was learnt under such an id isn't carried over: after the restart each device's sensor
+// set is its own, found again (#1338 review).
+TEST_F(NVMLGPUProbeFakeTest, NothingLearntUnderAnIndexIdIsCarriedOverARestart)
+{
+    fakeState().deviceCount = 2;
+    deviceData(0).uuidOk = false;
+    deviceData(1).uuidOk = false;
+    deviceData(0).fanOk = false;
+    deviceData(1).fanOk = true;
+
+    NVMLGPUProbe probe;
+    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
+    const auto before = probe.enumerateGPUs();
+    ASSERT_EQ(before.size(), 2U);
+    ASSERT_EQ(before[0].id, "NVML_GPU0");
+    ASSERT_TRUE(before[0].sensorCapabilities.has_value());
+    EXPECT_FALSE(before[0].sensorCapabilities->hasFanSpeed);
+
+    // NVML renumbers its devices: the card with a fan is index 0 now.
+    deviceData(0).fanOk = true;
+    deviceData(1).fanOk = false;
+    ASSERT_TRUE(probe.restart());
+    const auto after = probe.enumerateGPUs();
+    ASSERT_EQ(after.size(), 2U);
+    ASSERT_TRUE(after[0].sensorCapabilities.has_value());
+    ASSERT_TRUE(after[1].sensorCapabilities.has_value());
+    EXPECT_TRUE(after[0].sensorCapabilities->hasFanSpeed);
+    EXPECT_FALSE(after[1].sensorCapabilities->hasFanSpeed);
+}
+
 TEST_F(NVMLGPUProbeFakeTest, AResetReportedByAProcessQueryRestartsNVMLAtTheNextFullRescan)
 {
     fakeState().deviceCount = 1;

@@ -1603,8 +1603,8 @@ TEST(LinuxNVMLGPUProbeTest, AnAwakeGpuWhosePciInfoQueryFailsIsNotAddressedOnceIt
     const auto gpus = probe.enumerateGPUs();
     ASSERT_EQ(gpus.size(), 2U);
     EXPECT_EQ(gpus[0].id, "mock-nvml-uuid-0");
-    EXPECT_EQ(gpus[0].pciLocation, (PciLocation{.bus = 0x01, .device = 0})); // from the address it was found by
-    EXPECT_EQ(gpus[0].pciDeviceId, 0x2684'10DEU);                            // from sysfs
+    EXPECT_EQ(gpus[0].pciLocation, (PciLocation{.bus = 0x01, .device = 0, .function = 0})); // from the address it was found by
+    EXPECT_EQ(gpus[0].pciDeviceId, 0x2684'10DEU);                                           // from sysfs
     const auto awake = probe.readGPUCounters();
     ASSERT_EQ(awake.size(), 2U);
     EXPECT_FALSE(awake[0].suspended);

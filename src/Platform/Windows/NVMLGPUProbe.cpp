@@ -36,6 +36,12 @@ using namespace Platform::NVML;
 namespace Platform
 {
 
+namespace
+{
+/// The id of a device whose UUID couldn't be read: "NVML_GPU{index}", its place in NVML's numbering.
+constexpr std::string_view INDEX_ID_PREFIX = "NVML_GPU";
+} // namespace
+
 NVMLGPUProbe::NVMLGPUProbe()
     : m_Initialized(loadNVML() && initializeNVML()),
       m_DevicePower(std::make_shared<DisplayDevicePower>()),
@@ -241,8 +247,14 @@ nvmlReturn_t NVMLGPUProbe::noteResult(nvmlReturn_t result)
 bool NVMLGPUProbe::restart()
 {
     // What each device learnt while it was known, by id: one asleep now can't be asked again (#1265).
+    // Only a UUID names the same card across the restart: an index-based "NVML_GPU{n}" id can belong
+    // to another card once NVML renumbers its devices, so what was learnt under it is not kept.
     for (const auto& [index, id] : m_DeviceIds)
     {
+        if (id.starts_with(INDEX_ID_PREFIX))
+        {
+            continue;
+        }
         Remembered remembered;
         if (const auto total = m_LastMemoryTotals.find(index); total != m_LastMemoryTotals.end())
         {
@@ -512,7 +524,7 @@ bool NVMLGPUProbe::readDeviceIdentity(uint32_t index)
     // Get device UUID (unique identifier); fall back to an index-based id
     std::array<char, NVML_DEVICE_UUID_BUFFER_SIZE> uuid{};
     result = noted(m_NVML.DeviceGetUUID(device, uuid.data(), NVML_DEVICE_UUID_BUFFER_SIZE));
-    std::string id = result == NVML_SUCCESS ? std::string(uuid.data()) : std::format("NVML_GPU{}", index);
+    std::string id = result == NVML_SUCCESS ? std::string(uuid.data()) : std::format("{}{}", INDEX_ID_PREFIX, index);
 
     // PCI identity, read once: it matches the device to its DXGI adapter (#1091) and says where to
     // ask whether it is asleep (#1265).
@@ -565,7 +577,7 @@ std::string NVMLGPUProbe::deviceId(std::uint32_t index, nvmlDevice_t device) con
     std::array<char, NVML_DEVICE_UUID_BUFFER_SIZE> uuid{};
     const nvmlReturn_t result = m_NVML.DeviceGetUUID != nullptr ? m_NVML.DeviceGetUUID(device, uuid.data(), NVML_DEVICE_UUID_BUFFER_SIZE)
                                                                 : NVML_ERROR_NOT_SUPPORTED;
-    return result == NVML_SUCCESS ? std::string(uuid.data()) : std::format("NVML_GPU{}", index);
+    return result == NVML_SUCCESS ? std::string(uuid.data()) : std::format("{}{}", INDEX_ID_PREFIX, index);
 }
 
 std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
@@ -787,7 +799,7 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
         // recorded with its handle at enumeration. Not "GPU{index}": NVML's numbering is not DXGI's,
         // so that named another adapter (#1317). Nothing is asked of the device to name it here.
         const auto knownId = m_DeviceIds.find(index);
-        std::string gpuId = knownId != m_DeviceIds.end() ? knownId->second : std::format("NVML_GPU{}", index);
+        std::string gpuId = knownId != m_DeviceIds.end() ? knownId->second : std::format("{}{}", INDEX_ID_PREFIX, index);
         if (const auto adapterId = m_ProcessGpuIds.find(gpuId); adapterId != m_ProcessGpuIds.end())
         {
             gpuId = adapterId->second;
