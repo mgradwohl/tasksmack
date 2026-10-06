@@ -974,45 +974,92 @@ void DRMGPUProbe::discoverDrmClients()
     m_ClientScanReliable = !procErr && anyFdDirRead;
     for (std::size_t i = 0; i < m_Cards.size(); ++i)
     {
-        m_Cards[i].clientFdinfoPaths = std::move(found[i]);
+        // Each path its own client until a read gives its drm-client-id: telling dup'd and inherited
+        // fds apart needs their fdinfo, which xe can't report without waking the card (#1117), so the
+        // first awake sample reads each once and readEngineClients() merges those sharing an id (#1356).
+        std::vector<DrmClientFds> clients;
+        clients.reserve(found[i].size());
+        for (auto& path : found[i])
+        {
+            clients.push_back(DrmClientFds{.clientId = std::nullopt, .fdinfoPaths = {std::move(path)}});
+        }
+        m_Cards[i].clients = std::move(clients);
     }
 }
 
-void DRMGPUProbe::readEngineClients(DRMCard& card, GPUCounters& counter) const
+std::optional<DRMGPUProbe::DrmFdinfo> DRMGPUProbe::readClientFdinfo(const std::string& path, const DRMCard& card)
 {
-    // drm-pdev can be checked only against a card whose id is its PCI address.
-    const bool idIsPciAddress = pciBusFromAddress(card.gpuId).has_value();
-    bool anyEngineStats = false;
-    std::vector<std::string> stillOpen;
-    stillOpen.reserve(card.clientFdinfoPaths.size());
-    for (auto& path : card.clientFdinfoPaths)
+    ++m_FdinfoReads;
+    std::ifstream file(path);
+    if (!file.is_open())
     {
-        std::ifstream file(path);
-        if (!file.is_open())
+        return std::nullopt; // The fd was closed or its process exited
+    }
+    const std::string text{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+    auto info = parseFdinfo(text, m_Clock());
+    // drm-pdev can be checked only against a card whose id is its PCI address.
+    if (!info.has_value() || (pciBusFromAddress(card.gpuId).has_value() && !info->pdev.empty() && info->pdev != card.gpuId))
+    {
+        return std::nullopt; // The fd number now names another file
+    }
+    return info;
+}
+
+void DRMGPUProbe::readEngineClients(DRMCard& card, GPUCounters& counter)
+{
+    bool anyEngineStats = false;
+    std::vector<DrmClientFds> kept;
+    kept.reserve(card.clients.size());
+    // Files read as client `info`'s: joined to the client already kept under its id -- dup'd and
+    // inherited fds share one DRM file, and so one client id, which counts once -- or kept as a new one.
+    const auto keep = [&](std::vector<std::string> paths, const DrmFdinfo& info)
+    {
+        anyEngineStats = anyEngineStats || info.hasEngineStats;
+        const auto same = std::ranges::find(kept, std::optional<std::uint64_t>(info.client.clientId), &DrmClientFds::clientId);
+        if (same != kept.end())
         {
-            continue; // The fd was closed or its process exited
+            same->fdinfoPaths.insert(same->fdinfoPaths.end(), std::make_move_iterator(paths.begin()), std::make_move_iterator(paths.end()));
+            return;
         }
-        const std::string text{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
-        const auto info = parseFdinfo(text, m_Clock());
-        if (!info.has_value() || (idIsPciAddress && !info->pdev.empty() && info->pdev != card.gpuId))
+        kept.push_back(DrmClientFds{.clientId = info.client.clientId, .fdinfoPaths = std::move(paths)});
+        if (info.hasEngineStats)
         {
-            continue; // The fd number now names another file
+            counter.engineClients.push_back(info.client);
         }
-        stillOpen.push_back(std::move(path));
-        anyEngineStats = anyEngineStats || info->hasEngineStats;
-        // Dup'd and inherited fds share one DRM file, and so one client id: it counts once.
-        if (info->hasEngineStats && std::ranges::find(counter.engineClients, info->client.clientId, &GPUEngineClientCounters::clientId) ==
-                                        counter.engineClients.end())
+    };
+    for (auto& client : card.clients)
+    {
+        // The first path that still reads as a DRM file of this card is the client's this sample:
+        // normally the first one; an alias only once the paths before it have closed (#1356).
+        auto& paths = client.fdinfoPaths;
+        std::size_t next = 0;
+        while (next < paths.size())
         {
-            counter.engineClients.push_back(info->client);
+            const auto info = readClientFdinfo(paths[next], card);
+            if (!info.has_value())
+            {
+                ++next; // Closed, or no longer this card's DRM file: dropped
+                continue;
+            }
+            if (client.clientId.has_value() && client.clientId != info->client.clientId)
+            {
+                // The fd number was reused for another DRM file: it is that client's now, while the
+                // rest of the paths may still name this one.
+                keep({std::move(paths[next])}, *info);
+                ++next;
+                continue;
+            }
+            paths.erase(paths.begin(), paths.begin() + static_cast<std::ptrdiff_t>(next)); // next < size()
+            keep(std::move(paths), *info);
+            break;
         }
     }
-    card.clientFdinfoPaths = std::move(stillOpen);
+    card.clients = std::move(kept);
     // Unread when the card has clients and none reports any busyness: a kernel without fdinfo engine
     // stats (i915 before Linux 5.19). A card with no clients at all is idle. Either needs a /proc walk
     // that could see every client: an unlistable /proc, a walk cut short, or every process's fds denied
     // leaves the client set partial, so neither idle nor the busyness of the clients found is published.
-    counter.engineBusyAvailable = m_ClientScanReliable && (anyEngineStats || card.clientFdinfoPaths.empty());
+    counter.engineBusyAvailable = m_ClientScanReliable && (anyEngineStats || card.clients.empty());
 }
 
 bool DRMGPUProbe::detectIsIntegrated(

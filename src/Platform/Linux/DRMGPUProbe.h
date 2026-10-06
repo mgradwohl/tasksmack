@@ -91,6 +91,18 @@ class DRMGPUProbe : public IGPUProbe
     // Lets tests build a GPUInfo for a card the Intel-only discovery would skip (an amdgpu card, #1344).
     friend struct DRMGPUProbeTestAccessor;
 
+    /// One DRM file open on a card, and the fds that name it. Dup'd and inherited fds share the file
+    /// and so its drm-client-id and engine counters: reading any one of them reads the client (#1356).
+    struct DrmClientFds
+    {
+        // The client's drm-client-id, once one of its fdinfo files has been read; nullopt for a path
+        // discoverDrmClients() has found but no sample has read yet.
+        std::optional<std::uint64_t> clientId;
+        // The client's fdinfo paths, never empty: the first is the one read each sample, the rest are
+        // aliases, read in turn only once the first has closed or names another file.
+        std::vector<std::string> fdinfoPaths;
+    };
+
     struct DRMCard
     {
         std::string cardPath;     // e.g., /sys/class/drm/card0
@@ -120,10 +132,11 @@ class DRMGPUProbe : public IGPUProbe
         bool vramQueried{false};
         uint64_t queriedVramTotalBytes{0};
         std::optional<uint64_t> queriedVramUsedBytes;
-        // The fdinfo files (/proc/<pid>/fdinfo/<fd>) of the fds open on this card's DRM nodes, found by
-        // discoverDrmClients() and re-read each awake sample for engine busyness (#1267). A file that
-        // can no longer be read, or is no longer this card's DRM file, is dropped until rediscovered.
-        std::vector<std::string> clientFdinfoPaths;
+        // The card's DRM clients: the fdinfo files (/proc/<pid>/fdinfo/<fd>) of the fds open on its DRM
+        // nodes, found by discoverDrmClients() and grouped by drm-client-id as they are read (#1267).
+        // Each awake sample reads one file per client for its engine busyness (#1356). A file that can
+        // no longer be read, or is no longer this card's DRM file, is dropped until rediscovered.
+        std::vector<DrmClientFds> clients;
     };
 
     bool initialize();
@@ -170,7 +183,11 @@ class DRMGPUProbe : public IGPUProbe
     void discoverDrmClients();
     /// Reads the card's clients' fdinfo into `counter`'s engine fields. Only for an awake card: xe takes
     /// a runtime-PM reference to report its cycles (#1117).
-    void readEngineClients(DRMCard& card, GPUCounters& counter) const;
+    /// One fdinfo file is read per client: a client's aliases only once the file read for it has
+    /// closed or names another file. Clients found to share a drm-client-id are merged (#1356).
+    void readEngineClients(DRMCard& card, GPUCounters& counter);
+    /// The fdinfo at `path` if it is still a DRM file of `card`'s device; nullopt otherwise.
+    [[nodiscard]] std::optional<DrmFdinfo> readClientFdinfo(const std::string& path, const DRMCard& card);
 
     bool m_Available{false};
     // Set when a card's GPUInfo would differ from the last enumerateGPUs() -- its queried VRAM total
@@ -189,6 +206,8 @@ class DRMGPUProbe : public IGPUProbe
     // at least one process's fd directory was readable. Without that, "no clients found" says
     // nothing about the card, and its engine busyness is left unread (N/A) rather than idle (#1267).
     bool m_ClientScanReliable{false};
+    // How many client fdinfo files readEngineClients() has opened or tried to, for the tests (#1356).
+    std::uint64_t m_FdinfoReads{0};
 };
 
 } // namespace Platform
