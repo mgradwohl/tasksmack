@@ -316,12 +316,13 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     // description, of any length, so the labels fit it to one row of the value strip (fitSeriesName();
     // both labels cut at the longer suffix's budget, so they name it alike); the picker and the plot
     // title keep it whole. The strip is as wide as the chart, so the Now column of
-    // renderHistoryWithNowBars() below comes off the budget. Rebuilt only when the name or that budget
-    // changes, not every frame (#1171).
+    // renderHistoryWithNowBars() below comes off the budget. Rebuilt only when the name changes or the
+    // budget moves by half a pixel or more -- a resize or font change -- not every frame (#1171).
     constexpr std::size_t NET_BAR_COUNT = 2; // Sent and Received, as NETWORK_NOW_BAR_COLUMNS below
+    constexpr float LABEL_BUDGET_REFIT_PX = 0.5F;
     const float labelBudget =
         UI::Widgets::seriesNameBudget(" Received", UI::Widgets::nowBarsReservedWidth(NET_BAR_COUNT, NET_BAR_COUNT, false));
-    if (!cache.labelsBuilt || cache.labelsName != ifaceDisplayName || cache.labelsBudget != labelBudget)
+    if (!cache.labelsBuilt || cache.labelsName != ifaceDisplayName || std::abs(cache.labelsBudget - labelBudget) >= LABEL_BUDGET_REFIT_PX)
     {
         cache.labelsBuilt = false;
         const std::string fittedName =

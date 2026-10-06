@@ -2755,6 +2755,10 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
         ImPlotMarker marker = ImPlotMarker_None;
         float slotWidth = 0.0F;
         std::string_view seriesLabel;
+        // The short form an entry falls back to when it is wider than the strip's row: a bar's own
+        // "label: valueText", where head/tail may hold its richer tooltipText.
+        std::string_view compactHead;
+        std::string_view compactTail;
     };
     static std::vector<Entry> entries; // UI thread only; reused
     entries.clear();
@@ -2777,16 +2781,61 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
                 tail.remove_prefix(1);
             }
         }
-        entries.push_back({.head = head, .tail = tail, .color = bar.color, .marker = bar.marker, .seriesLabel = bar.label});
+        entries.push_back({.head = head,
+                           .tail = tail,
+                           .color = bar.color,
+                           .marker = bar.marker,
+                           .seriesLabel = bar.label,
+                           .compactHead = bar.label,
+                           .compactTail = bar.valueText});
     }
     for (const ValueStripEntry& entry : extras)
     {
-        entries.push_back({.head = entry.label, .tail = entry.value, .color = entry.color, .seriesLabel = entry.label});
+        entries.push_back({.head = entry.label,
+                           .tail = entry.value,
+                           .color = entry.color,
+                           .seriesLabel = entry.label,
+                           .compactHead = entry.label,
+                           .compactTail = entry.value});
     }
     if (entries.empty())
     {
         return;
     }
+
+    // The row the strip lays out in: the content width, or with chartReservedRight the chart's.
+    const float lineStartX = ImGui::GetCursorPosX();
+    const float contentRight = lineStartX + ImGui::GetContentRegionAvail().x;
+    const float chartRight = (wrap && chartReservedRight >= 0.0F) ? contentRight - chartReservedRight : contentRight;
+    const float rowWidth = std::max(0.0F, chartRight - lineStartX);
+
+    // An entry wider than the row on its own would run past it -- the strip wraps only between
+    // entries -- and be clipped, and the strip is the chart's only key. Such an entry shows its short
+    // "label: valueText" (the rich text stays in the bar's hover tooltip), and one still too wide has
+    // its value cut short with an ellipsis (fitSeriesName()). Rare, so the cut copies are owned here.
+    static std::vector<std::string> fittedTails; // UI thread only; reserved so the views below stay valid
+    fittedTails.clear();
+    fittedTails.reserve(entries.size());
+    const auto textWidth = [](std::string_view text)
+    {
+        return ImGui::CalcTextSize(text.data(), text.data() + text.size()).x;
+    };
+    for (Entry& entry : entries)
+    {
+        if (Detail::valueStripEntryWidth(entry.head, entry.tail) <= rowWidth)
+        {
+            continue;
+        }
+        entry.head = entry.compactHead;
+        entry.tail = entry.compactTail;
+        if (const float natural = Detail::valueStripEntryWidth(entry.head, entry.tail); natural > rowWidth)
+        {
+            const float tailBudget = rowWidth - (natural - textWidth(entry.tail));
+            fittedTails.push_back(fitSeriesName(entry.tail, tailBudget, textWidth));
+            entry.tail = fittedTails.back();
+        }
+    }
+
     // Each entry's slot: its width, held for a while when its value narrows (settleStripSlot()), so
     // the strip -- right-aligned, where every entry moves with the ones after it -- stays still.
     // A strip with no layout to remember slots by uses each entry's own width.
@@ -2807,19 +2856,19 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
     for (std::size_t i = 0; i < entries.size(); ++i)
     {
         const float natural = Detail::valueStripEntryWidth(entries[i].head, entries[i].tail);
-        entries[i].slotWidth = (slots != nullptr)
-                                 ? Detail::settleStripSlot((*slots)[i], natural, now, Detail::VALUE_STRIP_SLOT_SHRINK_DELAY_SECONDS)
-                                 : natural;
+        // Never wider than the row: a slot held from a wider value must not push the entry past it.
+        entries[i].slotWidth =
+            std::min(rowWidth,
+                     (slots != nullptr) ? Detail::settleStripSlot((*slots)[i], natural, now, Detail::VALUE_STRIP_SLOT_SHRINK_DELAY_SECONDS)
+                                        : natural);
     }
 
     const ImGuiStyle& style = ImGui::GetStyle();
     const float entryGap = style.ItemSpacing.x * 2.0F;
-    float rowRight = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+    float rowRight = contentRight;
     bool rowWraps = wrap;
     if (wrap && chartReservedRight >= 0.0F)
     {
-        const float lineStartX = ImGui::GetCursorPosX();
-        const float chartRight = rowRight - chartReservedRight;
         float stripWidth = 0.0F;
         for (std::size_t i = 0; i < entries.size(); ++i)
         {
