@@ -20,6 +20,7 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/BackgroundSampler.h"
+#include "Domain/GPUModel.h"
 #include "Domain/Numeric.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessModel.h"
@@ -602,7 +603,9 @@ void ProcessesPanel::onAttach()
     // A column this system cannot fill is hidden by default, unless its visibility was chosen (#1210).
     // Before the table is first drawn, since its default visibility is set from these settings.
     m_ColumnDefaultsCapabilities = processCapabilities();
-    ProcessColumnAvailability::applyCapabilityDefaults(m_ColumnSettings, m_ColumnDefaultsCapabilities);
+    m_PerProcessGpu = hasPerProcessGpuMetrics();
+    m_ColumnDefaultsPerProcessGpu = m_PerProcessGpu;
+    ProcessColumnAvailability::applyCapabilityDefaults(m_ColumnSettings, m_ColumnDefaultsCapabilities, m_PerProcessGpu);
     // Handed to the table on its first frame, as a Columns menu request is: ShellLayer restores the
     // saved ImGui layout after this, and its visibility would otherwise win over DefaultHide.
     m_RequestedColumns = m_ColumnSettings;
@@ -795,10 +798,15 @@ void ProcessesPanel::renderContent()
 
     // The probe's capabilities can change mid-run (#1254): columns whose visibility was not chosen
     // follow them, through the same request path as the Columns menu (#1210).
-    if (const Platform::ProcessCapabilities caps = processCapabilities(); caps != m_ColumnDefaultsCapabilities)
+    // Per-process GPU support comes from the GPU probe, known only once it has started (#1210).
+    m_PerProcessGpu = hasPerProcessGpuMetrics();
+    if (const Platform::ProcessCapabilities caps = processCapabilities();
+        caps != m_ColumnDefaultsCapabilities || m_PerProcessGpu != m_ColumnDefaultsPerProcessGpu)
     {
         m_ColumnDefaultsCapabilities = caps;
-        if (auto changed = ProcessColumnAvailability::capabilityDefaultChanges(m_RequestedColumns.value_or(m_ColumnSettings), caps))
+        m_ColumnDefaultsPerProcessGpu = m_PerProcessGpu;
+        if (auto changed =
+                ProcessColumnAvailability::capabilityDefaultChanges(m_RequestedColumns.value_or(m_ColumnSettings), caps, m_PerProcessGpu))
         {
             m_RequestedColumns = *changed;
         }
@@ -1112,7 +1120,7 @@ void ProcessesPanel::renderContent()
                                                                                                 m_TextSizeCache.getHeaderWidth(col),
                                                                                                 showsSortArrow ? sortArrowReserve : 0.0F));
             // A column this system cannot fill is headed muted, like its cells (#1210).
-            const bool columnSupported = ProcessColumnAvailability::isSupported(col, headerCaps);
+            const bool columnSupported = ProcessColumnAvailability::isSupported(col, headerCaps, m_PerProcessGpu);
             {
                 const MutedCellScope muted(!columnSupported);
                 // info.name is a constexpr string literal in ProcessColumnConfig.h.
@@ -1139,7 +1147,7 @@ void ProcessesPanel::renderContent()
                 {
                     line(columnCapabilityNote(col, headerCaps.hasUdpNetworkCounters));
                 }
-                line(ProcessColumnAvailability::unavailableValuesNote(col, headerCaps));
+                line(ProcessColumnAvailability::unavailableValuesNote(col, headerCaps, m_PerProcessGpu));
                 ImGui::PopTextWrapPos();
                 ImGui::EndTooltip();
             }
@@ -1258,6 +1266,18 @@ bool ProcessesPanel::hasReducedPrivileges() const
     return processCapabilities().hasReducedPrivileges;
 }
 
+void ProcessesPanel::setGpuModel(const std::shared_ptr<const Domain::GPUModel>& gpuModel)
+{
+    m_GpuModel = gpuModel;
+}
+
+bool ProcessesPanel::hasPerProcessGpuMetrics() const
+{
+    const std::shared_ptr<const Domain::GPUModel> gpuModel = m_GpuModel.lock();
+    return ProcessColumnAvailability::perProcessGpuSupported(gpuModel != nullptr,
+                                                             gpuModel != nullptr && gpuModel->perProcessMetricsKnownUnsupported());
+}
+
 Platform::ProcessCapabilities ProcessesPanel::processCapabilities() const
 {
     if (!m_ProcessModel)
@@ -1319,8 +1339,11 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
     // long-lived cache map (see #904). The stamp changes on every TextSizeCache::populate(), not
     // with the font's address, which a rebuilt font atlas can reuse (#943).
     const Platform::ProcessCapabilities caps = processCapabilities();
-    RowFormatCache& fmt = ProcessRowFormat::getOrBuildRowFormatCache(
-        m_RowFormatCache, proc, m_CachedSnapshotVersion, m_TextSizeCache.stamp, ProcessColumnAvailability::rowFormatOptions(caps));
+    RowFormatCache& fmt = ProcessRowFormat::getOrBuildRowFormatCache(m_RowFormatCache,
+                                                                     proc,
+                                                                     m_CachedSnapshotVersion,
+                                                                     m_TextSizeCache.stamp,
+                                                                     ProcessColumnAvailability::rowFormatOptions(caps, m_PerProcessGpu));
 
     // Render all columns
     int colIdx = 0;
@@ -1622,22 +1645,21 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             renderUnitAlignedText(fmt.gpuMemory, m_TextSizeCache.unitBytesWidth);
             break;
 
-        // A process using no GPU has no engine or device: blank, like a measured nothing (#1210).
+        // A process using no GPU has no engine or device: blank, like a measured nothing. Where the GPU
+        // probe has no per-process metrics, unavailable instead (#1210).
         case ProcessColumn::GpuEngine:
-            if (!fmt.gpuEngines.empty())
-            {
-                renderLeftAlignedText(fmt.gpuEngines, fmt.gpuEnginesWidth);
-            }
+            renderTextCell(ProcessColumnAvailability::textCell(m_PerProcessGpu, !fmt.gpuEngines.empty()),
+                           fmt.gpuEngines,
+                           fmt.gpuEnginesWidth,
+                           m_TextSizeCache.unavailableTextWidth);
             break;
 
         case ProcessColumn::GpuDevice:
-        {
-            if (!proc.gpuDevices.empty())
-            {
-                renderLeftAlignedText(proc.gpuDevices, fmt.gpuDevicesWidth);
-            }
+            renderTextCell(ProcessColumnAvailability::textCell(m_PerProcessGpu, !proc.gpuDevices.empty()),
+                           proc.gpuDevices,
+                           fmt.gpuDevicesWidth,
+                           m_TextSizeCache.unavailableTextWidth);
             break;
-        }
 
         case ProcessColumn::Publisher:
         {
@@ -1751,7 +1773,7 @@ void ProcessesPanel::renderColumnsMenu()
             m_RequestedColumns = next;
         }
         ImGui::EndDisabled();
-        if (!ProcessColumnAvailability::isSupported(col, caps))
+        if (!ProcessColumnAvailability::isSupported(col, caps, m_PerProcessGpu))
         {
             const std::string_view note = ProcessColumnAvailability::UNSUPPORTED_COLUMN_NOTE;
             ImGui::SetItemTooltip("%.*s", static_cast<int>(note.size()), note.data());
@@ -1760,11 +1782,11 @@ void ProcessesPanel::renderColumnsMenu()
     ImGui::PopItemFlag();
 
     ImGui::Separator();
-    const bool canReset = !ProcessColumnAvailability::hasDefaultColumns(shown, caps) || !m_TableHasDefaultOrder;
+    const bool canReset = !ProcessColumnAvailability::hasDefaultColumns(shown, caps, m_PerProcessGpu) || !m_TableHasDefaultOrder;
     if (ImGui::MenuItem(ICON_FA_ROTATE_LEFT " Reset columns", nullptr, false, canReset))
     {
         // This system's defaults: a column it cannot fill is hidden (#1210)
-        m_RequestedColumns = ProcessColumnAvailability::defaultColumns(caps);
+        m_RequestedColumns = ProcessColumnAvailability::defaultColumns(caps, m_PerProcessGpu);
         m_ResetColumnOrderRequested = true;
     }
     ImGui::SetItemTooltip("Show the default columns, in their default order");

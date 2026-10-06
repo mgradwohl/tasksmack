@@ -417,6 +417,24 @@ TEST(ProcessRowFormatTest, UnsupportedTakesPrecedenceOverUnreadable)
     expectUnavailable(fmt.ioRead, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
 }
 
+TEST(ProcessRowFormatTest, GpuCellsAreUnavailableWithoutPerProcessGpuMetrics)
+{
+    // #1210: without per-process GPU metrics every process carries 0; that must not read as measured.
+    ProcessSnapshot snap = makeSnapshot();
+    snap.gpuUtilPercent = 0.0;
+    snap.gpuMemoryBytes = 0;
+    ProcessRowFormat::RowFormatOptions noGpu;
+    noGpu.hasPerProcessGpu = false;
+    const RowFormatCache fmt = buildRowFormatCache(snap, noGpu);
+    expectUnavailable(fmt.gpuPercent, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
+    expectUnavailable(fmt.gpuMemory, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
+
+    // With them, a 0 is a measured zero.
+    const RowFormatCache measured = buildRowFormatCache(snap);
+    expectMeasuredZero(measured.gpuPercent);
+    expectMeasuredZero(measured.gpuMemory);
+}
+
 TEST(ProcessRowFormatTest, BuildRowFormatCacheStampsFreshAlignedCellTextAsUnmeasured)
 {
     // A freshly built entry's widths must all still be UNMEASURED_WIDTH -- the caller (renderProcessRow)

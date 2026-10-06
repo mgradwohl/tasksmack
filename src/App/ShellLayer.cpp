@@ -94,6 +94,8 @@ void ShellLayer::onAttach()
         if (auto gpuModel = m_SystemMetricsPanel.gpuModel(); gpuModel != nullptr)
         {
             processModel->setGPUModel(gpuModel);
+            // Its probe also decides whether the GPU columns can be filled at all (#1210).
+            m_ProcessesPanel.setGpuModel(gpuModel);
         }
     }
 

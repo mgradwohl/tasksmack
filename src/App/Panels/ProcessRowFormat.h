@@ -135,6 +135,7 @@ struct RowFormatOptions
     bool hasPageFaults = true;
     bool hasCpuAffinity = true;
     bool hasGdiObjects = true;
+    bool hasPerProcessGpu = true; ///< Platform::GPUCapabilities::hasPerProcessMetrics, from the GPU probe (#1210)
 };
 
 /// A cell with no value: UNAVAILABLE_CELL_TEXT, with `reason` (a string literal) as its tooltip.
@@ -340,9 +341,19 @@ struct RowFormatCache
     fmt.power = options.hasPowerUsage
                   ? withZeroTone(alignedPowerCell(proc.powerWatts), readsAsZeroAtOneDecimal(proc.powerWatts * MICROWATTS_PER_WATT))
                   : unavailableCell(UNSUPPORTED_CELL_REASON);
-    fmt.gpuPercent =
-        withZeroTone(makeAlignedCellText(formatAlignedPercentString(proc.gpuUtilPercent)), readsAsZeroAtOneDecimal(proc.gpuUtilPercent));
-    fmt.gpuMemory = bytesCell(proc.gpuMemoryBytes);
+    // Where the GPU probe has no per-process metrics (DRM- or ROCm-only Linux), every process reads 0:
+    // that is no measurement (#1210).
+    if (options.hasPerProcessGpu)
+    {
+        fmt.gpuPercent = withZeroTone(makeAlignedCellText(formatAlignedPercentString(proc.gpuUtilPercent)),
+                                      readsAsZeroAtOneDecimal(proc.gpuUtilPercent));
+        fmt.gpuMemory = bytesCell(proc.gpuMemoryBytes);
+    }
+    else
+    {
+        fmt.gpuPercent = unavailableCell(UNSUPPORTED_CELL_REASON);
+        fmt.gpuMemory = unavailableCell(UNSUPPORTED_CELL_REASON);
+    }
     // No engine in use is a fact rather than a gap, so it is left blank rather than marked unavailable.
     for (std::size_t i = 0; i < proc.gpuEngines.size(); ++i)
     {

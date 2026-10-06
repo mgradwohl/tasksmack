@@ -16,15 +16,30 @@
 namespace App::ProcessColumnAvailability
 {
 
+/// Whether per-process GPU usage can be observed on this system (#1210): there is a GPU model, and
+/// its probe has not been found to lack per-process metrics (Platform::GPUCapabilities::
+/// hasPerProcessMetrics is false on DRM- or ROCm-only Linux and with DXGI alone). Unknown counts as
+/// supported, so the GPU columns do not flicker away while the probe is still starting.
+[[nodiscard]] constexpr bool perProcessGpuSupported(bool hasGpuModel, bool perProcessKnownUnsupported) noexcept
+{
+    return hasGpuModel && !perProcessKnownUnsupported;
+}
+
 /// Whether the process probe can fill `col` at all on this system. A column it cannot shows
-/// ProcessRowFormat::UNAVAILABLE_CELL_TEXT on every row, and its header says why.
+/// ProcessRowFormat::UNAVAILABLE_CELL_TEXT on every row, and its header says why. The GPU columns
+/// depend on the GPU probe instead: `perProcessGpu` is perProcessGpuSupported().
 ///
 /// Peak Memory is not gated on ProcessCapabilities::hasPeakRss: where the OS reports no peak, the
 /// process model tracks one itself.
-[[nodiscard]] constexpr bool isSupported(ProcessColumn col, const Platform::ProcessCapabilities& caps) noexcept
+[[nodiscard]] constexpr bool isSupported(ProcessColumn col, const Platform::ProcessCapabilities& caps, bool perProcessGpu = true) noexcept
 {
     switch (col)
     {
+    case ProcessColumn::GpuPercent:
+    case ProcessColumn::GpuMemory:
+    case ProcessColumn::GpuEngine:
+    case ProcessColumn::GpuDevice:
+        return perProcessGpu;
     case ProcessColumn::Shared:
         return caps.hasSharedMemory;
     case ProcessColumn::Power:
@@ -60,12 +75,12 @@ namespace App::ProcessColumnAvailability
 /// cannot fill, so no column shown by default is all dashes -- Power without RAPL on Linux, say. It is
 /// what "Reset columns" restores. A hidden column can still be shown from the Columns menu, where it
 /// says it is not available on this system.
-[[nodiscard]] inline ProcessColumnSettings defaultColumns(const Platform::ProcessCapabilities& caps)
+[[nodiscard]] inline ProcessColumnSettings defaultColumns(const Platform::ProcessCapabilities& caps, bool perProcessGpu = true)
 {
     ProcessColumnSettings settings;
     for (const ProcessColumn col : allProcessColumns())
     {
-        if (!isSupported(col, caps))
+        if (!isSupported(col, caps, perProcessGpu))
         {
             settings.setDefaultVisible(col, false);
         }
@@ -75,9 +90,9 @@ namespace App::ProcessColumnAvailability
 
 /// Gives every column whose visibility was not chosen -- by the user, or in the config file -- this
 /// system's default (defaultColumns()). A chosen one is left as it is.
-inline void applyCapabilityDefaults(ProcessColumnSettings& settings, const Platform::ProcessCapabilities& caps)
+inline void applyCapabilityDefaults(ProcessColumnSettings& settings, const Platform::ProcessCapabilities& caps, bool perProcessGpu = true)
 {
-    const ProcessColumnSettings defaults = defaultColumns(caps);
+    const ProcessColumnSettings defaults = defaultColumns(caps, perProcessGpu);
     for (const ProcessColumn col : allProcessColumns())
     {
         settings.setDefaultVisible(col, defaults.isVisible(col));
@@ -88,11 +103,11 @@ inline void applyCapabilityDefaults(ProcessColumnSettings& settings, const Platf
 /// mid-run (Windows' network counters after the first EStats sample, #1254), or gain one. Every
 /// column whose visibility was not chosen takes the new default; a chosen one is left alone. Empty
 /// when no column's visibility would change, so the caller queues nothing.
-[[nodiscard]] inline std::optional<ProcessColumnSettings> capabilityDefaultChanges(const ProcessColumnSettings& settings,
-                                                                                   const Platform::ProcessCapabilities& caps)
+[[nodiscard]] inline std::optional<ProcessColumnSettings>
+capabilityDefaultChanges(const ProcessColumnSettings& settings, const Platform::ProcessCapabilities& caps, bool perProcessGpu = true)
 {
     ProcessColumnSettings updated = settings;
-    applyCapabilityDefaults(updated, caps);
+    applyCapabilityDefaults(updated, caps, perProcessGpu);
     if (updated.visible == settings.visible)
     {
         return std::nullopt;
@@ -102,9 +117,10 @@ inline void applyCapabilityDefaults(ProcessColumnSettings& settings, const Platf
 
 /// Whether `settings` shows exactly this system's default columns, i.e. "Reset columns" would change
 /// no column's visibility.
-[[nodiscard]] inline bool hasDefaultColumns(const ProcessColumnSettings& settings, const Platform::ProcessCapabilities& caps)
+[[nodiscard]] inline bool
+hasDefaultColumns(const ProcessColumnSettings& settings, const Platform::ProcessCapabilities& caps, bool perProcessGpu = true)
 {
-    return settings.visible == defaultColumns(caps).visible;
+    return settings.visible == defaultColumns(caps, perProcessGpu).visible;
 }
 
 /// What a free-text cell (Status, Publisher) shows.
@@ -129,7 +145,8 @@ enum class TextCell : std::uint8_t
 }
 
 /// The row formatter's view of the same capabilities.
-[[nodiscard]] constexpr ProcessRowFormat::RowFormatOptions rowFormatOptions(const Platform::ProcessCapabilities& caps) noexcept
+[[nodiscard]] constexpr ProcessRowFormat::RowFormatOptions rowFormatOptions(const Platform::ProcessCapabilities& caps,
+                                                                            bool perProcessGpu = true) noexcept
 {
     ProcessRowFormat::RowFormatOptions options;
     options.hasPowerUsage = caps.hasPowerUsage;
@@ -141,6 +158,7 @@ enum class TextCell : std::uint8_t
     options.hasPageFaults = caps.hasPageFaults;
     options.hasCpuAffinity = caps.hasCpuAffinity;
     options.hasGdiObjects = caps.hasGdiObjects;
+    options.hasPerProcessGpu = perProcessGpu;
     return options;
 }
 
@@ -155,9 +173,10 @@ inline constexpr std::string_view UNREADABLE_VALUES_NOTE =
 /// What a column's header tooltip adds about the values it does not have, or empty: that the system
 /// cannot fill it at all, or that "—" marks a value unreadable for one process -- distinct from a
 /// measured 0 (#1210).
-[[nodiscard]] constexpr std::string_view unavailableValuesNote(ProcessColumn col, const Platform::ProcessCapabilities& caps) noexcept
+[[nodiscard]] constexpr std::string_view
+unavailableValuesNote(ProcessColumn col, const Platform::ProcessCapabilities& caps, bool perProcessGpu = true) noexcept
 {
-    if (!isSupported(col, caps))
+    if (!isSupported(col, caps, perProcessGpu))
     {
         return UNSUPPORTED_COLUMN_NOTE;
     }

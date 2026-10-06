@@ -216,6 +216,41 @@ TEST(ProcessColumnAvailabilityTest, CapabilityChangeThatMovesNoColumnQueuesNothi
     EXPECT_FALSE(ProcessColumnAvailability::capabilityDefaultChanges(chosen, noNetwork).has_value());
 }
 
+TEST(ProcessColumnAvailabilityTest, GpuColumnsNeedPerProcessGpuMetrics)
+{
+    // #1210: DRM- or ROCm-only Linux (and no usable GPU probe) has no per-process GPU metrics, and
+    // every process read a measured-looking 0.
+    using ProcessColumnAvailability::perProcessGpuSupported;
+    EXPECT_TRUE(perProcessGpuSupported(/*hasGpuModel=*/true, /*perProcessKnownUnsupported=*/false));
+    EXPECT_FALSE(perProcessGpuSupported(true, true));
+    EXPECT_FALSE(perProcessGpuSupported(false, false)); // No GPU model at all
+
+    const Platform::ProcessCapabilities caps = linuxWithoutRaplCapabilities();
+    for (const ProcessColumn col :
+         {ProcessColumn::GpuPercent, ProcessColumn::GpuMemory, ProcessColumn::GpuEngine, ProcessColumn::GpuDevice})
+    {
+        EXPECT_TRUE(isSupported(col, caps, /*perProcessGpu=*/true)) << getColumnInfo(col).configKey;
+        EXPECT_FALSE(isSupported(col, caps, /*perProcessGpu=*/false)) << getColumnInfo(col).configKey;
+        EXPECT_EQ(unavailableValuesNote(col, caps, false), ProcessColumnAvailability::UNSUPPORTED_COLUMN_NOTE);
+    }
+    EXPECT_FALSE(rowFormatOptions(caps, false).hasPerProcessGpu);
+    EXPECT_TRUE(rowFormatOptions(caps).hasPerProcessGpu);
+}
+
+TEST(ProcessColumnAvailabilityTest, GpuColumnsShownByTheUserAreHiddenOnlyIfUnchosen)
+{
+    const Platform::ProcessCapabilities caps = windowsLikeCapabilities();
+    ProcessColumnSettings settings = ProcessColumnAvailability::defaultColumns(caps, /*perProcessGpu=*/true);
+    settings.setDefaultVisible(ProcessColumn::GpuPercent, true); // An unchosen column that is shown
+    settings.setVisible(ProcessColumn::GpuMemory, true);         // The user's choice
+
+    const auto changed = ProcessColumnAvailability::capabilityDefaultChanges(settings, caps, /*perProcessGpu=*/false);
+    ASSERT_TRUE(changed.has_value());
+    EXPECT_FALSE(changed.value().isVisible(ProcessColumn::GpuPercent));
+    EXPECT_TRUE(changed.value().isVisible(ProcessColumn::GpuMemory));
+    EXPECT_FALSE(ProcessColumnAvailability::defaultColumns(caps, false).isVisible(ProcessColumn::GpuPercent));
+}
+
 TEST(ProcessColumnAvailabilityTest, EmptyTextInASupportedColumnIsBlankNotUnavailable)
 {
     using ProcessColumnAvailability::TextCell;

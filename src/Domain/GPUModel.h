@@ -156,6 +156,15 @@ class GPUModel : public ISamplable
 
     // Capabilities (re-read along with the GPU info)
     [[nodiscard]] Platform::GPUCapabilities capabilities() const;
+
+    /// True once the probe's capabilities are known and say it has no per-process GPU metrics (DRM-
+    /// or ROCm-only systems, DXGI alone): per-process GPU usage cannot be observed here. False while
+    /// they are unknown. A single atomic load, for per-frame readers (#1210).
+    [[nodiscard]] bool perProcessMetricsKnownUnsupported() const noexcept
+    {
+        return m_PerProcessKnownUnsupported.load(std::memory_order_acquire);
+    }
+
     [[nodiscard]] std::shared_ptr<const GPUPublication> publication() const noexcept;
     [[nodiscard]] std::uint64_t publicationVersion() const noexcept;
 

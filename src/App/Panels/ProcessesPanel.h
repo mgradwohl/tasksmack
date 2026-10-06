@@ -28,6 +28,11 @@
 
 struct ImFont; // Forward declaration for TextSizeCache
 
+namespace Domain
+{
+class GPUModel;
+} // namespace Domain
+
 namespace App
 {
 
@@ -157,6 +162,14 @@ class ProcessesPanel : public Panel
     /// (#1254). UI thread; takes no lock once a generation is cached.
     [[nodiscard]] Platform::ProcessCapabilities processCapabilities() const;
 
+    /// The GPU model whose probe decides whether per-process GPU usage can be observed (#1210). Set
+    /// by ShellLayer, which shares it with the process model; kept weakly.
+    void setGpuModel(const std::shared_ptr<const Domain::GPUModel>& gpuModel);
+
+    /// Whether per-process GPU usage can be observed on this system: a GPU model is set and its probe
+    /// has not been found to lack per-process metrics (ProcessColumnAvailability::perProcessGpuSupported()).
+    [[nodiscard]] bool hasPerProcessGpuMetrics() const;
+
   private:
     // shared_ptr (not unique_ptr): BackgroundSampler observes this model via a weak_ptr rather
     // than a raw pointer, so the sampler thread can never outlive-dereference it regardless of
@@ -194,6 +207,10 @@ class ProcessesPanel : public Panel
     // The capabilities the columns' defaults were last applied for: when the probe's change, the
     // columns whose visibility was not chosen follow them (#1210).
     Platform::ProcessCapabilities m_ColumnDefaultsCapabilities;
+    bool m_ColumnDefaultsPerProcessGpu = true; // hasPerProcessGpuMetrics() when they were last applied
+    // hasPerProcessGpuMetrics(), read once a frame for the GPU columns (#1210)
+    bool m_PerProcessGpu = true;
+    std::weak_ptr<const Domain::GPUModel> m_GpuModel;
     // Whether the table has been drawn with m_ColumnSettings: from then on, a column ImGui shows or
     // hides differently is the user's toggle in its header menu; before, it is a restored layout.
     bool m_TableShowsColumnSettings = false;
