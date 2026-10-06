@@ -3,6 +3,7 @@
 #include "App/Panel.h"
 #include "App/Panels/AdaptiveIntervalUtils.h"
 #include "App/Panels/ProcessDetailsLayout.h"
+#include "App/Panels/ProcessDisplayFreeze.h"
 #include "App/Panels/ProcessFilterCache.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessSortUtils.h"
@@ -77,6 +78,27 @@ constexpr std::array<std::string_view, 3> POWER_UNITS = {" W", " mW", " µW"};
 constexpr std::string_view TREE_VIEW_LABEL = "Tree View";
 constexpr std::string_view LIST_VIEW_LABEL = "List View";
 constexpr const char* FILTER_HINT = "Filter by name...";
+// Shown beside the process count while a held Ctrl freezes the pane (#928).
+constexpr const char* FROZEN_LABEL = ICON_FA_PAUSE " Paused (Ctrl)";
+
+/// True when any keyboard key other than a modifier is held: Ctrl with one of these is a shortcut
+/// (Ctrl+C, Ctrl+=), not the freeze gesture (#928). Only the keyboard block of ImGuiKey is walked;
+/// the gamepad and mouse keys follow ImGuiKey_Oem102.
+[[nodiscard]] bool anyNonModifierKeyDown()
+{
+    for (int k = ImGuiKey_Tab; k <= ImGuiKey_Oem102; ++k)
+    {
+        if (k >= ImGuiKey_LeftCtrl && k <= ImGuiKey_RightSuper)
+        {
+            continue;
+        }
+        if (ImGui::IsKeyDown(static_cast<ImGuiKey>(k)))
+        {
+            return true;
+        }
+    }
+    return false;
+}
 
 [[nodiscard]] auto lowerAscii(char ch) -> int
 {
@@ -708,6 +730,8 @@ void ProcessesPanel::onEvent(Core::Event& event)
             const bool wasShown = m_ProcessDataShown;
             m_IsActiveTab = (e.tabName() == "Processes");
             m_ProcessDataShown = AdaptiveIntervalUtils::showsProcessData(e.tabName());
+            // A freeze belongs to the pane being looked at; leaving it must not leave it frozen (#928).
+            m_DisplayFreeze.reset();
             if (!wasShown && m_ProcessDataShown)
             {
                 // Catch up straight away when coming back from a tab that showed no process data,
@@ -779,12 +803,37 @@ void ProcessesPanel::onUpdate(float deltaTime)
 
 void ProcessesPanel::adoptNewerSnapshots()
 {
+    // Held Ctrl (#928): keep the adopted generation, so the filter, sort and row caches keyed on it
+    // stay as they are. The model keeps sampling; releasing Ctrl adopts its latest generation.
+    if (m_DisplayFreeze.frozen() && m_CachedSnapshotVersion != std::numeric_limits<std::uint64_t>::max())
+    {
+        return;
+    }
     // Detect and copy new data in a single lock acquisition. tryCopySnapshotsIfNewer() checks the
     // published version lock-free first, so a call with nothing new costs one atomic load.
     std::uint64_t newVersion = m_CachedSnapshotVersion;
     if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion, &m_CachedCapabilities))
     {
         m_CachedSnapshotVersion = newVersion;
+    }
+}
+
+void ProcessesPanel::updateDisplayFreeze()
+{
+    const ImGuiIO& io = ImGui::GetIO();
+    const ProcessDisplayFreeze::Inputs inputs{
+        .appFocused = !io.AppFocusLost,
+        .ctrlHeld = io.KeyCtrl,
+        .otherModifierHeld = io.KeyShift || io.KeyAlt || io.KeySuper,
+        .otherKeyHeld = anyNonModifierKeyDown(),
+        .textInputActive = io.WantTextInput,
+        .panelHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows),
+        .panelFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows),
+    };
+    const bool wasFrozen = m_DisplayFreeze.frozen();
+    if (m_DisplayFreeze.update(inputs, Core::Application::getTime()) != wasFrozen)
+    {
+        spdlog::debug("ProcessesPanel: display {} (Ctrl)", wasFrozen ? "resumed" : "frozen");
     }
 }
 
@@ -831,6 +880,9 @@ void ProcessesPanel::renderContent()
 
     // Ensure text size cache is valid for current font (called once per frame)
     ensureTextSizeCacheValid();
+
+    // Decide the Ctrl freeze before adopting, so a frozen frame keeps the generation it shows (#928).
+    updateDisplayFreeze();
 
     // Get thread-safe copy of snapshots — only when data has actually changed (version-cached).
     // ProcessModel updates at 1Hz but render runs at 60fps; skip 59/60 redundant deep copies.
@@ -974,8 +1026,20 @@ void ProcessesPanel::renderContent()
     const float buttonWidthPx = maxLabelWidth + (style.FramePadding.x * 2.0F);
 
     const float rightEdgeX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+    const bool frozen = m_DisplayFreeze.frozen();
+    // The paused label sits left of the count, so the count and the button keep their places (#928).
+    const float frozenW = frozen ? ImGui::CalcTextSize(FROZEN_LABEL).x + style.ItemSpacing.x : 0.0F;
     const float textW = ImGui::CalcTextSize(m_CachedSummaryStr.c_str()).x;
-    ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), rightEdgeX - textW - buttonWidthPx - style.ItemSpacing.x));
+    ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), rightEdgeX - frozenW - textW - buttonWidthPx - style.ItemSpacing.x));
+    if (frozen)
+    {
+        ImGui::TextColored(theme.scheme().textWarning, "%s", FROZEN_LABEL);
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip("Updates are paused while Ctrl is held.\nSampling continues; release Ctrl to resume.");
+        }
+        ImGui::SameLine();
+    }
     ImGui::TextUnformatted(m_CachedSummaryStr.c_str());
 
     // Tree view toggle button
