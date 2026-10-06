@@ -834,6 +834,94 @@ TEST(SystemModelTest, ImplausibleCoreIdIsDropped)
     EXPECT_EQ(snap.coreCount, 1); // the dropped id isn't counted as a core either
 }
 
+namespace
+{
+
+/// Sets a sample whose per-core list reports exactly `onlineIds`, each core 10% busy per 1000 ticks.
+void setCoreSample(MockSystemProbe& probe, std::uint64_t sample, const std::vector<std::size_t>& onlineIds)
+{
+    auto counters = makeSystemCounters(makeCpuCounters(0, 0, 0, 1000 * sample), makeMemoryCounters(1024, 512));
+    for (const std::size_t id : onlineIds)
+    {
+        auto core = makeCpuCounters(100 * sample, 0, 0, 900 * sample);
+        core.coreId = id;
+        counters.cpuPerCore.push_back(core);
+    }
+    probe.setCounters(counters);
+}
+
+} // namespace
+
+TEST(SystemModelTest, SeenCoreIdsListOnlyTheIdsTheProbeReported)
+{
+    // Ids 4 and 5 are never reported (a Windows group's reserved hot-add capacity, or Linux CPUs
+    // never online). The per-core slots run to the highest id, but only the seven reported ids are
+    // published as seen, so the CPU Cores grid charts seven cores, not nine (#1262).
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+    const std::vector<std::size_t> reported{0, 1, 2, 3, 6, 7, 8};
+
+    setCoreSample(*rawProbe, 0, reported);
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+    setCoreSample(*rawProbe, 1, reported);
+    model.refresh();
+
+    const auto publication = model.publication();
+    ASSERT_NE(publication, nullptr);
+    EXPECT_EQ(publication->snapshot.seenCoreIds, reported);
+    EXPECT_EQ(publication->snapshot.cpuPerCore.size(), 9U); // slots still indexed by id (#1229)
+    EXPECT_EQ(publication->snapshot.coreCount, 7);
+    EXPECT_EQ(model.snapshot().seenCoreIds, reported);
+}
+
+TEST(SystemModelTest, SeenCoreIdsAreKnownFromTheFirstSample)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+    setCoreSample(*rawProbe, 0, {2, 0, 1}); // listed out of order: published ascending
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+
+    EXPECT_EQ(model.snapshot().seenCoreIds, (std::vector<std::size_t>{0, 1, 2}));
+}
+
+TEST(SystemModelTest, ACoreSeenThenOfflineStaysInSeenCoreIds)
+{
+    // A CPU that goes offline keeps its chart, with a gap (#1229): its id stays seen, both for an
+    // interior CPU and for the highest one, whose slot the snapshot no longer needs.
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    setCoreSample(*rawProbe, 0, {0, 1, 2, 3});
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+    setCoreSample(*rawProbe, 1, {0, 1, 2, 3});
+    model.refresh();
+    setCoreSample(*rawProbe, 2, {0, 1, 3}); // cpu2 offline
+    model.refresh();
+    EXPECT_EQ(model.snapshot().seenCoreIds, (std::vector<std::size_t>{0, 1, 2, 3}));
+    EXPECT_TRUE(std::isnan(model.snapshot().cpuPerCore[2].totalPercent));
+
+    setCoreSample(*rawProbe, 3, {0, 1}); // cpu3 offline too
+    model.refresh();
+    setCoreSample(*rawProbe, 4, {0, 1});
+    model.refresh();
+    EXPECT_EQ(model.snapshot().seenCoreIds, (std::vector<std::size_t>{0, 1, 2, 3}));
+    EXPECT_EQ(model.perCoreHistory().size(), 4U); // history keeps their slots for the charts
+}
+
+TEST(SystemModelTest, ImplausibleCoreIdIsNotSeen)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+    setCoreSample(*rawProbe, 0, {0, std::numeric_limits<std::size_t>::max()});
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+
+    EXPECT_EQ(model.snapshot().seenCoreIds, (std::vector<std::size_t>{0}));
+}
+
 TEST(SystemModelTest, HotAddedCoreIsBackfilledWithGaps)
 {
     // A core that appears mid-run gets NaN for the samples before it existed (a gap, not a fake

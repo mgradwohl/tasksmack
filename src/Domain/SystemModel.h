@@ -155,6 +155,7 @@ class SystemModel : public ISamplable
     std::unordered_map<std::string, double> m_InterfaceLastSeenSeconds;
     HistoryBuffer<double> m_Timestamps;
     std::vector<HistoryBuffer<float>> m_PerCoreHistory; // Indexed by core id, not probe list position (#1229)
+    std::vector<std::size_t> m_SeenCoreIds;             // Every core id reported this session, ascending (#1262)
 
     double m_MaxHistorySeconds = Domain::Sampling::HISTORY_SECONDS_DEFAULT; // Default 5 minutes
     std::atomic<double> m_MaxSaneNetworkRateBps{Sampling::MAX_SANE_RATE_BPS_DEFAULT};

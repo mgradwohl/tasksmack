@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -57,6 +58,11 @@ struct SystemSnapshot
     // come online with no previous sample to diff against -- holds NaN in every field, a gap
     // rather than a fake 0% or another core's load (#1229).
     std::vector<CpuUsage> cpuPerCore;
+    // Every core id the probe has reported this session, ascending. cpuPerCore is sized by the
+    // highest id, so it also has slots for ids never reported -- a Windows group's reserved hot-add
+    // capacity, a Linux cpuN never online -- and the CPU Cores grid shows only these (#1262). An id
+    // stays listed after its CPU goes offline, so that CPU keeps its chart and shows a gap (#1229).
+    std::vector<std::size_t> seenCoreIds;
 
     // Memory (bytes)
     std::uint64_t memoryTotalBytes = 0;
