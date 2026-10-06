@@ -1072,14 +1072,14 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
 
 ProcessCapabilities WindowsProcessProbe::capabilities() const
 {
-    // Reduced privileges: EStats-based network counters require Administrator. The token's
-    // elevation is queried once at construction (it is constant for the process lifetime).
-    const bool reducedPrivileges = !m_IsElevated;
-
     // The network flags can flip after construction (#1161: the first real sample may prove
     // EStats unusable), so they are atomics read here, possibly from another thread.
     const bool hasNetworkCounters = m_HasNetworkCounters.load(std::memory_order_relaxed);
     const bool networkAccessDenied = m_NetworkCountersAccessDenied.load(std::memory_order_relaxed);
+    // EStats-based network counters require Administrator. A denial is reduced privileges when not
+    // elevated, and blocked on this system when elevated (#1358). The token's elevation is queried
+    // once at construction (it is constant for the process lifetime).
+    const NetworkCounterDenial denial = classifyNetworkCounterDenial(m_IsElevated, hasNetworkCounters, networkAccessDenied);
 
     return ProcessCapabilities{
         .hasIoCounters = true,
@@ -1106,7 +1106,10 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasGdiObjects = true,  // From GetGuiResources(GR_GDIOBJECTS)
         // Non-admin + EStats access-denied: network data unavailable due to privilege. Never true
         // together with hasNetworkCounters: a non-elevated process never uses EStats.
-        .hasReducedPrivileges = reducedPrivileges && networkAccessDenied,
+        .hasReducedPrivileges = denial.reducedPrivileges,
+        // Elevated + EStats access-denied: blocked by policy or a driver; elevating can't help (#1358).
+        .networkCountersBlocked = denial.blocked,
+        .hasSharedMemory = false,
         .pageFaultCountBits = 32, // SYSTEM_PROCESS_INFORMATION::PageFaultCount is a ULONG (#1184)
     };
 }
@@ -1417,7 +1420,8 @@ bool WindowsProcessProbe::verifyEStats(const EStatsSampleCounts& counts) const
                          counts.readFailedOther,
                          counts.accessDenied);
             // Only reached when elevated (non-elevated never uses EStats), so capabilities() keeps
-            // hasReducedPrivileges false here: the two flags still never hold together.
+            // hasReducedPrivileges false here and, for an access denial, reports the counters as
+            // blocked on this system instead (networkCountersBlocked, #1358).
             if (counts.accessDenied > 0)
             {
                 m_NetworkCountersAccessDenied.store(true, std::memory_order_relaxed);

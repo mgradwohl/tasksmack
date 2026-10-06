@@ -134,7 +134,7 @@ The Interface Status table's Sent and Received columns show the rate over the la
 
 Per-process network rates are the bytes the process's TCP connections transferred between two readings, divided by the time between them. On Linux the readings are cached (`socket_stats_cache_ttl_ms`, 500 ms by default), and a refresh that reuses one shows the last rate (see the FAQ). UDP traffic, including QUIC/HTTP3, video calls, games, and DNS, is not attributed to processes on either platform. A browser streaming over HTTP/3 can show close to 0 B/s while the interface is busy.
 
-Linux per-process attribution uses Netlink and requires Linux 4.2 or later. Windows per-process attribution uses TCP EStats and requires administrator privileges to enable collection. System-wide and interface metrics remain available when process attribution is unavailable.
+Linux per-process attribution uses Netlink and requires Linux 4.2 or later. Windows per-process attribution uses TCP EStats and requires administrator privileges to enable collection. If Windows denies TCP EStats even to TaskSmack running as administrator (a policy or a driver can), the per-process network columns are hidden and a network icon in the status bar says so; running elevated can't bring them back on that system. System-wide and interface metrics remain available when process attribution is unavailable.
 
 ### Battery / Power Monitoring
 

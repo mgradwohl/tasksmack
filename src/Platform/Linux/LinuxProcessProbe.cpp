@@ -384,6 +384,7 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasPowerUsage = m_HasPowerCap,            // Available if RAPL is detected
                                .hasStatus = true,                         // From cgroup freezer state
                                .hasReducedPrivileges = reducedPrivileges, // Incomplete FD/IO/network data
+                               .networkCountersBlocked = false,           // Linux gaps are privilege gaps (#1358)
                                .hasSharedMemory = true};                  // From /proc/[pid]/statm
 }
 

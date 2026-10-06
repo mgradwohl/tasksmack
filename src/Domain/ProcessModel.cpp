@@ -146,9 +146,10 @@ void ProcessModel::refresh()
     // one withdrawn now reaches the UI rather than the startup set staying in force (#1254).
     if (Platform::ProcessCapabilities capabilities = m_Probe->capabilities(); capabilities != m_Capabilities)
     {
-        spdlog::info("ProcessModel: probe capabilities changed (networkCounters={}, reducedPrivileges={})",
+        spdlog::info("ProcessModel: probe capabilities changed (networkCounters={}, reducedPrivileges={}, networkCountersBlocked={})",
                      capabilities.hasNetworkCounters,
-                     capabilities.hasReducedPrivileges);
+                     capabilities.hasReducedPrivileges,
+                     capabilities.networkCountersBlocked);
         m_Capabilities = capabilities;
     }
     if (hadNetworkCounters && !m_Capabilities.hasNetworkCounters)
