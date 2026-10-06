@@ -478,7 +478,8 @@ name = true
     EXPECT_EQ(settings.chartTauMsMin, Domain::Sampling::CHART_TAU_MS_MIN_BOUND);
     EXPECT_EQ(settings.chartTauMsMax, Domain::Sampling::CHART_TAU_MS_MAX_MAX);
     EXPECT_FALSE(settings.showPrivilegeNotice);
-    EXPECT_FALSE(settings.processColumns.isVisible(ProcessColumn::PID));
+    // "pid = false" is not honoured: PID cannot be hidden, and the table would be told to hide it (#1209).
+    EXPECT_TRUE(settings.processColumns.isVisible(ProcessColumn::PID));
     EXPECT_TRUE(settings.processColumns.isVisible(ProcessColumn::Name));
     // A saved column is the user's choice, which this system's defaults must not override (#1210);
     // one the file does not name is left at its default.

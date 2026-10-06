@@ -309,6 +309,9 @@ void readSettings(const toml::table& config, UserSettings& settings)
                 }
             }
         }
+        // "pid = false" or "name = false" in the file is not honoured: those columns cannot be hidden
+        // (#1209), and the table would otherwise be told to hide them.
+        settings.processColumns.keepUnhideableColumnsVisible();
     }
 
     // Note: imgui_layout is no longer used (removed in favor of tabbed UI)

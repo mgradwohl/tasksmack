@@ -362,6 +362,27 @@ TEST(ProcessColumnSettingsTest, TableStateIsAChoiceOnlyWhenTheUserMadeIt)
     EXPECT_FALSE(settings.isChosen(ProcessColumn::Threads));
 }
 
+TEST(ProcessColumnSettingsTest, KeepUnhideableColumnsVisibleShowsPidAndNameWhateverWasAsked)
+{
+    // #1209: a config may say "pid = false", and TableSetColumnEnabled(false) ignores the column's
+    // NoHide flag, so loaded and requested visibility is normalized first.
+    ProcessColumnSettings settings;
+    settings.setVisible(ProcessColumn::PID, false);
+    settings.setVisible(ProcessColumn::Name, false);
+    settings.setVisible(ProcessColumn::User, false);
+    settings.keepUnhideableColumnsVisible();
+    EXPECT_TRUE(settings.isVisible(ProcessColumn::PID));
+    EXPECT_TRUE(settings.isVisible(ProcessColumn::Name));
+    EXPECT_FALSE(settings.isVisible(ProcessColumn::User)); // A hideable column keeps its choice
+    for (const ProcessColumn col : allProcessColumns())
+    {
+        if (!getColumnInfo(col).canHide)
+        {
+            EXPECT_TRUE(settings.isVisible(col)) << getColumnInfo(col).configKey;
+        }
+    }
+}
+
 TEST(ProcessColumnSettingsTest, RequestVisibleKeepsUnhideableColumnsShown)
 {
     ProcessColumnSettings settings;

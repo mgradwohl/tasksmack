@@ -156,6 +156,7 @@ class ProcessesPanel : public Panel
     void setColumnSettings(const ProcessColumnSettings& settings)
     {
         m_ColumnSettings = settings;
+        m_ColumnSettings.keepUnhideableColumnsVisible(); // PID and Name cannot be hidden (#1209)
     }
 
     /// Set the refresh interval (applied by onUpdate cadence checks).

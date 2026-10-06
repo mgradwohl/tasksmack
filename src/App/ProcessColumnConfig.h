@@ -376,6 +376,21 @@ struct ProcessColumnSettings
         setVisible(col, vis || !getColumnInfo(col).canHide);
     }
 
+    /// Shows every column that cannot be hidden (PID, Name: getColumnInfo().canHide), whatever was
+    /// asked for (#1209). A config file may say "pid = false", and the table's
+    /// TableSetColumnEnabled(false) ignores ImGui's NoHide flag, so loaded and requested visibility
+    /// is passed through this before it reaches the table.
+    void keepUnhideableColumnsVisible()
+    {
+        for (const auto col : allProcessColumns())
+        {
+            if (!getColumnInfo(col).canHide)
+            {
+                visible[toIndex(col)] = true;
+            }
+        }
+    }
+
     /// The default column set regardless of what the system can fill; see
     /// ProcessColumnAvailability::defaultColumns() for what "Reset columns" restores (#1209, #1210).
     [[nodiscard]] static ProcessColumnSettings defaults()

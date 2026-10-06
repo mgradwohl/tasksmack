@@ -813,6 +813,7 @@ void ProcessesPanel::onAttach()
 {
     // Load column settings from user config
     m_ColumnSettings = UserConfig::get().settings().processColumns;
+    m_ColumnSettings.keepUnhideableColumnsVisible(); // Whatever the settings were given (#1209)
 
     // m_RefreshInterval starts at the SamplingConfig default, and the model at its built-in history
     // length; ShellLayer raises the configured values as events on its first update (#1079).
@@ -1923,6 +1924,9 @@ bool ProcessesPanel::applyColumnRequests()
     {
         return false;
     }
+    // TableSetColumnEnabled(false) ignores a column's NoHide flag, so PID and Name are kept shown
+    // here whatever the request says (#1209).
+    m_RequestedColumns->keepUnhideableColumnsVisible();
     int idx = 0;
     for (const ProcessColumn col : allProcessColumns())
     {
