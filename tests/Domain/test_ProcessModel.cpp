@@ -3228,6 +3228,61 @@ TEST(ProcessModelTest, WatchedSamplesKeepEveryGenerationPublishedBetweenPolls)
     EXPECT_LT(samples[1].sampleTimeSeconds, samples[2].sampleTimeSeconds);
 }
 
+TEST(ProcessModelTest, WatchedSamplesCarryTheirOwnGenerationsCounterSupport)
+{
+    // #1210: when the probe withdraws its network counters between two generations a reader takes in
+    // one batch, the earlier sample must still say they were supported, so its reading is kept.
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+    Platform::ProcessCapabilities caps;
+    caps.hasIoCounters = true;
+    caps.hasNetworkCounters = true;
+    rawProbe->setCapabilities(caps);
+    rawProbe->setCounters({makeCounter(100, "watched", 'R', 1000, 0, 5000)});
+    rawProbe->setTotalCpuTime(100000);
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
+    model.watchProcess(100);
+
+    model.refresh();
+    clock.advance(std::chrono::milliseconds(100));
+    Platform::ProcessCapabilities withdrawn = caps;
+    withdrawn.hasNetworkCounters = false;
+    rawProbe->switchCapabilitiesOnNextSocketRead(withdrawn);
+    rawProbe->setCounters({makeCounter(100, "watched", 'R', 1100, 0, 5000)});
+    model.refresh();
+
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(model.watchedSamplesSince(0, samples));
+    ASSERT_EQ(samples.size(), 2U);
+    EXPECT_TRUE(samples[0].networkCountersSupported);
+    EXPECT_FALSE(samples[1].networkCountersSupported);
+    EXPECT_TRUE(samples[0].ioCountersSupported);
+    EXPECT_TRUE(samples[1].ioCountersSupported);
+}
+
+TEST(ProcessModelTest, WatchProcessSeedSampleCarriesTheCurrentCounterSupport)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+    Platform::ProcessCapabilities caps;
+    caps.hasIoCounters = true;
+    caps.hasNetworkCounters = false; // e.g. Windows without EStats
+    rawProbe->setCapabilities(caps);
+    rawProbe->setCounters({makeCounter(100, "watched", 'R', 1000, 0, 5000)});
+    rawProbe->setTotalCpuTime(100000);
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
+    model.refresh();
+    model.watchProcess(100); // Seeded from the generation already published
+
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(model.watchedSamplesSince(0, samples));
+    ASSERT_EQ(samples.size(), 1U);
+    EXPECT_TRUE(samples[0].ioCountersSupported);
+    EXPECT_FALSE(samples[0].networkCountersSupported);
+}
+
 TEST(ProcessModelTest, WatchedSamplesSinceCopiesNothingWhenNothingNewWasPublished)
 {
     // #1172: the selected process was looked up and deep-copied twice every

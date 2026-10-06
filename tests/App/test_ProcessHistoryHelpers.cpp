@@ -31,7 +31,11 @@ struct Recorded
     Domain::ProcessSnapshot snapshot;
     snapshot.pid = pid;
     snapshot.uniqueKey = key;
-    return {.snapshot = std::make_shared<const Domain::ProcessSnapshot>(snapshot), .version = version, .sampleTimeSeconds = timeSeconds};
+    return {.snapshot = std::make_shared<const Domain::ProcessSnapshot>(snapshot),
+            .version = version,
+            .sampleTimeSeconds = timeSeconds,
+            .ioCountersSupported = true,
+            .networkCountersSupported = true};
 }
 
 [[nodiscard]] std::vector<Recorded>
@@ -119,7 +123,12 @@ TEST(ProcessHistoryHelpersTest, AGenerationWithoutTheProcessClearsPresent)
     SampleIntake intake;
     static_cast<void>(take({makeSample(1, 1.0, 42, 7)}, 42, key, intake));
     ASSERT_TRUE(intake.present);
-    const auto recorded = take({Domain::ProcessSample{.snapshot = nullptr, .version = 2, .sampleTimeSeconds = 2.0}}, 42, key, intake);
+    const auto recorded = take(
+        {Domain::ProcessSample{
+            .snapshot = nullptr, .version = 2, .sampleTimeSeconds = 2.0, .ioCountersSupported = true, .networkCountersSupported = true}},
+        42,
+        key,
+        intake);
     EXPECT_TRUE(recorded.empty());
     EXPECT_FALSE(intake.present);
 }
@@ -140,6 +149,37 @@ TEST(ProcessHistoryHelpersTest, ARateIsAReadingOnlyWhereTheProbeSupportsIt)
     EXPECT_FALSE(rateIsReading(false, true));
     EXPECT_FALSE(rateIsReading(true, false));
     EXPECT_TRUE(std::isnan(readingOrGap(rateIsReading(false, true), 0.0)));
+}
+
+TEST(ProcessHistoryHelpersTest, EachSampleIsJudgedByItsOwnGenerationsSupport)
+{
+    // #1210: a batch spanning the generation where the probe withdrew its network counters. The
+    // earlier sample's network reading stays a reading; the later one is a gap.
+    auto snapshot = std::make_shared<Domain::ProcessSnapshot>();
+    snapshot->ioAvailable = true;
+    snapshot->networkAvailable = true;
+
+    const Domain::ProcessSample before{
+        .snapshot = snapshot, .version = 1, .sampleTimeSeconds = 1.0, .ioCountersSupported = true, .networkCountersSupported = true};
+    const Domain::ProcessSample after{
+        .snapshot = snapshot, .version = 2, .sampleTimeSeconds = 2.0, .ioCountersSupported = true, .networkCountersSupported = false};
+
+    EXPECT_TRUE(rateReadings(before).network);
+    EXPECT_TRUE(rateReadings(before).io);
+    EXPECT_FALSE(rateReadings(after).network);
+    EXPECT_TRUE(rateReadings(after).io);
+
+    // An unreadable rate is no reading whatever the support; no snapshot, no readings.
+    auto unread = std::make_shared<Domain::ProcessSnapshot>();
+    unread->ioAvailable = false;
+    unread->networkAvailable = false;
+    const Domain::ProcessSample unreadSample{
+        .snapshot = unread, .version = 3, .sampleTimeSeconds = 3.0, .ioCountersSupported = true, .networkCountersSupported = true};
+    EXPECT_FALSE(rateReadings(unreadSample).io);
+    EXPECT_FALSE(rateReadings(unreadSample).network);
+    const Domain::ProcessSample absent{
+        .snapshot = nullptr, .version = 4, .sampleTimeSeconds = 4.0, .ioCountersSupported = true, .networkCountersSupported = true};
+    EXPECT_FALSE(rateReadings(absent).io);
 }
 
 TEST(ProcessHistoryHelpersTest, HistoriesOfOnlyGapsAreNoData)

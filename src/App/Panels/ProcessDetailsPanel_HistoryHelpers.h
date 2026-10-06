@@ -32,6 +32,27 @@ namespace App::Detail
     return probeSupports && readThisSample;
 }
 
+/// Which of a sample's rates are readings (rateIsReading()).
+struct SampleRateReadings
+{
+    bool io = false;
+    bool network = false;
+};
+
+/// A sample's I/O and network rates as readings or not, each judged by the probe's support as
+/// published with that sample's own generation (ProcessSample::ioCountersSupported /
+/// networkCountersSupported) -- not the latest: when a batch spans a generation in which the probe
+/// withdrew its network counters, the readings taken before it are still readings (#1210).
+[[nodiscard]] inline SampleRateReadings rateReadings(const Domain::ProcessSample& sample) noexcept
+{
+    if (sample.snapshot == nullptr)
+    {
+        return {};
+    }
+    return {.io = rateIsReading(sample.ioCountersSupported, sample.snapshot->ioAvailable),
+            .network = rateIsReading(sample.networkCountersSupported, sample.snapshot->networkAvailable)};
+}
+
 /// Whether a history holds any actual reading rather than only gaps (NaN).
 [[nodiscard]] inline bool hasAnyReading(std::span<const double> history) noexcept
 {

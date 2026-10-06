@@ -142,8 +142,12 @@ class ProcessDetailsPanel : public Panel
     static void drawPriorityScaleLabels(const PrioritySliderContext& ctx);
     void updateSmoothedUsage(const Domain::ProcessSnapshot& snapshot, float deltaTimeSeconds);
     /// Appends one history point for @p snapshot at @p sampleTimeSeconds, after a gap point when
-    /// @p gapBefore (see Detail::takeSamples()).
-    void recordHistoryPoint(const Domain::ProcessSnapshot& snapshot, double sampleTimeSeconds, bool gapBefore);
+    /// @p gapBefore (see Detail::takeSamples()). @p rateReadings says which of its I/O and network rates
+    /// are readings, by the sample's own generation (Detail::rateReadings()); the others are gaps.
+    void recordHistoryPoint(const Domain::ProcessSnapshot& snapshot,
+                            double sampleTimeSeconds,
+                            bool gapBefore,
+                            Detail::SampleRateReadings rateReadings);
     /// The displayed snapshot, or an empty one before the first: for code that draws it unconditionally.
     [[nodiscard]] const Domain::ProcessSnapshot& cachedSnapshot() const;
 
@@ -199,6 +203,8 @@ class ProcessDetailsPanel : public Panel
     // The selected process as last sampled, shared with ProcessModel's sample rather than copied
     // every frame (#1172); null before the first sample.
     std::shared_ptr<const Domain::ProcessSnapshot> m_CachedSnapshot;
+    // Which of m_CachedSnapshot's I/O and network rates are readings, by its own generation (#1210).
+    Detail::SampleRateReadings m_CachedRateReadings;
 
     // render()'s window title, rebuilt only when the selected process's name changes rather than
     // every frame (#1326).

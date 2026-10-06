@@ -523,8 +523,12 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
                 // watchProcess() ran between the copy above and this lock: rare, so copy again here.
                 watchedSnapshot = copyProcess(*m_Snapshots, pidNow);
             }
-            displacedSample = pushWatchedSampleLocked(ProcessSample{
-                .snapshot = std::move(watchedSnapshot), .version = m_SnapshotVersion, .sampleTimeSeconds = sampleTimeSeconds});
+            displacedSample =
+                pushWatchedSampleLocked(ProcessSample{.snapshot = std::move(watchedSnapshot),
+                                                      .version = m_SnapshotVersion,
+                                                      .sampleTimeSeconds = sampleTimeSeconds,
+                                                      .ioCountersSupported = m_PublishedCapabilities.hasIoCounters,
+                                                      .networkCountersSupported = m_PublishedCapabilities.hasNetworkCounters});
         }
 
         m_PublishedSnapshotVersion.store(m_SnapshotVersion, std::memory_order_release);
@@ -607,6 +611,7 @@ void ProcessModel::watchProcess(std::int32_t pid)
     std::shared_ptr<const std::vector<ProcessSnapshot>> current;
     std::uint64_t currentVersion = 0;
     double currentSampleTime = 0.0;
+    Platform::ProcessCapabilities currentCapabilities;
     {
         std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
         m_WatchedPid.store(watched, std::memory_order_release);
@@ -616,6 +621,7 @@ void ProcessModel::watchProcess(std::int32_t pid)
         current = m_Snapshots;
         currentVersion = m_SnapshotVersion;
         currentSampleTime = m_SnapshotSampleTimeSeconds;
+        currentCapabilities = m_PublishedCapabilities;
     }
     if (watched == 0 || currentVersion == 0)
     {
@@ -629,8 +635,11 @@ void ProcessModel::watchProcess(std::int32_t pid)
     std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     if (m_WatchedPid.load(std::memory_order_relaxed) == watched && m_WatchedSampleCount == 0)
     {
-        static_cast<void>(pushWatchedSampleLocked(
-            ProcessSample{.snapshot = std::move(seed), .version = currentVersion, .sampleTimeSeconds = currentSampleTime}));
+        static_cast<void>(pushWatchedSampleLocked(ProcessSample{.snapshot = std::move(seed),
+                                                                .version = currentVersion,
+                                                                .sampleTimeSeconds = currentSampleTime,
+                                                                .ioCountersSupported = currentCapabilities.hasIoCounters,
+                                                                .networkCountersSupported = currentCapabilities.hasNetworkCounters}));
     }
 }
 

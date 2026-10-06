@@ -116,6 +116,12 @@ struct ProcessSample
     /// When that generation was sampled, as std::chrono::steady_clock seconds since its epoch -- the
     /// timebase of ProcessModel::historyTimestamps() -- not when a reader happened to see it.
     double sampleTimeSeconds = 0.0;
+    /// Whether the probe could supply per-process I/O and network counters at all when that generation
+    /// was published (Platform::ProcessCapabilities::hasIoCounters / hasNetworkCounters, as published
+    /// with it). A probe can withdraw one between generations (#1254), so a reader judges each sample by
+    /// its own generation's state, not the latest: a reading taken while it was supported stays one.
+    bool ioCountersSupported = true;
+    bool networkCountersSupported = true;
 };
 
 } // namespace Domain

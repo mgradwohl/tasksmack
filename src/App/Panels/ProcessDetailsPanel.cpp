@@ -223,7 +223,9 @@ void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSampl
                         [this, &recorded](const Domain::ProcessSample& sample, bool gapBefore)
                         {
                             m_CachedSnapshot = sample.snapshot; // shared, not copied (#1172)
-                            recordHistoryPoint(*sample.snapshot, sample.sampleTimeSeconds, gapBefore);
+                            // Each sample's rates judged by its own generation's probe support (#1210)
+                            m_CachedRateReadings = Detail::rateReadings(sample);
+                            recordHistoryPoint(*sample.snapshot, sample.sampleTimeSeconds, gapBefore, m_CachedRateReadings);
                             recorded = true;
                         });
     if (recorded)
@@ -256,7 +258,10 @@ void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSampl
     }
 }
 
-void ProcessDetailsPanel::recordHistoryPoint(const Domain::ProcessSnapshot& snapshot, double sampleTimeSeconds, bool gapBefore)
+void ProcessDetailsPanel::recordHistoryPoint(const Domain::ProcessSnapshot& snapshot,
+                                             double sampleTimeSeconds,
+                                             bool gapBefore,
+                                             Detail::SampleRateReadings rateReadings)
 {
     using Domain::Numeric::toDouble;
 
@@ -292,8 +297,8 @@ void ProcessDetailsPanel::recordHistoryPoint(const Domain::ProcessSnapshot& snap
         }
     }
 
-    const bool ioReading = Detail::rateIsReading(m_ProcessCapabilities.hasIoCounters, snapshot.ioAvailable);
-    const bool networkReading = Detail::rateIsReading(m_ProcessCapabilities.hasNetworkCounters, snapshot.networkAvailable);
+    const bool ioReading = rateReadings.io;
+    const bool networkReading = rateReadings.network;
 
     // Stored as double to avoid narrowing; converted only at the ImPlot boundary.
     // In the order of `histories` above. A value the probe could not read is NaN,
@@ -600,6 +605,7 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t uniqueK
     m_ShowConfirmDialog = false;
     m_LastActionResult = {};
     m_SmoothedUsage = {};
+    m_CachedRateReadings = {};
     m_PeakMemoryBytes = 0.0;
     m_PriorityChanged = false;
     m_PriorityNiceValue = 0;
@@ -653,9 +659,10 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
                   snapshot.handleCountAvailable,
                   Domain::Numeric::toDouble(snapshot.handleCount));
     m_SmoothedUsage.handleCountAvailable = snapshot.handleCountAvailable;
-    // A rate the probe cannot supply on this system at all is not a reading either (#1210).
-    const bool ioReading = Detail::rateIsReading(m_ProcessCapabilities.hasIoCounters, snapshot.ioAvailable);
-    const bool networkReading = Detail::rateIsReading(m_ProcessCapabilities.hasNetworkCounters, snapshot.networkAvailable);
+    // A rate the probe could not supply at all when the shown sample was taken is not a reading
+    // either (#1210); judged with that sample's own generation, as its history point was.
+    const bool ioReading = m_CachedRateReadings.io;
+    const bool networkReading = m_CachedRateReadings.network;
     smoothReading(m_SmoothedUsage.ioReadBytesPerSec, m_SmoothedUsage.ioAvailable, ioReading, snapshot.ioReadBytesPerSec);
     smoothReading(m_SmoothedUsage.ioWriteBytesPerSec, m_SmoothedUsage.ioAvailable, ioReading, snapshot.ioWriteBytesPerSec);
     m_SmoothedUsage.ioAvailable = ioReading;
