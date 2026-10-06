@@ -3,6 +3,8 @@
 // Helpers for the process details Resources chart's optional series (GDI objects on Windows),
 // extracted from ProcessDetailsPanel so they are unit-testable without a live ImGui context.
 
+#include "UI/TailAlignedSeries.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -17,7 +19,7 @@ namespace App::Detail
 /// must be drawn from this offset, not from the first timestamp (#1001).
 [[nodiscard]] constexpr std::size_t seriesTimeOffset(std::size_t alignedCount, std::size_t seriesCount) noexcept
 {
-    return alignedCount - std::min(seriesCount, alignedCount);
+    return UI::Widgets::tailAlignedOffset(alignedCount, seriesCount);
 }
 
 /// The sample of a tail-aligned series at chart index @p chartIndex, or nullopt when the series
@@ -25,12 +27,8 @@ namespace App::Detail
 /// llround() showed -9,223,372,036,854,775,808 in the tooltip (#1000).
 [[nodiscard]] inline std::optional<double> seriesValueAt(std::span<const double> series, std::size_t offset, std::size_t chartIndex)
 {
-    if (chartIndex < offset || chartIndex - offset >= series.size())
-    {
-        return std::nullopt;
-    }
-    const double value = series[chartIndex - offset];
-    if (std::isnan(value))
+    const std::optional<double> value = UI::Widgets::tailAlignedSampleAt(series, offset, chartIndex);
+    if (!value.has_value() || std::isnan(*value))
     {
         return std::nullopt;
     }

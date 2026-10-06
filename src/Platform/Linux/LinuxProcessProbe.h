@@ -37,6 +37,10 @@ class LinuxProcessProbe : public IProcessProbe
     /// so power detection can be exercised against fixture files.
     LinuxProcessProbe(std::filesystem::path procRoot, std::filesystem::path powercapRoot);
 
+    /// Testability constructor that also takes the cgroup filesystem root (normally /sys/fs/cgroup),
+    /// where a process's freeze state is read for its "Suspended" status (#1183).
+    LinuxProcessProbe(std::filesystem::path procRoot, std::filesystem::path powercapRoot, std::filesystem::path cgroupRoot);
+
     ~LinuxProcessProbe() override = default;
 
     LinuxProcessProbe(const LinuxProcessProbe&) = delete;
@@ -95,6 +99,7 @@ class LinuxProcessProbe : public IProcessProbe
   private:
     std::filesystem::path m_ProcRoot;
     std::filesystem::path m_PowercapRoot;
+    std::filesystem::path m_CgroupRoot;
     long m_TicksPerSecond;
     uint64_t m_PageSize;
     uint64_t m_BootTimeEpoch = 0;                            // System boot time (Unix epoch seconds)
@@ -180,7 +185,8 @@ class LinuxProcessProbe : public IProcessProbe
     [[nodiscard]] static bool checkIoCountersAvailability(const std::filesystem::path& procRoot);
 
     /// Get process status from cgroups (Suspended state detection)
-    [[nodiscard]] static std::string getProcessStatus(int32_t pid, const std::filesystem::path& procRoot);
+    [[nodiscard]] static std::string
+    getProcessStatus(int32_t pid, const std::filesystem::path& procRoot, const std::filesystem::path& cgroupRoot);
 
     /// Read total CPU time from /proc/stat
     [[nodiscard]] uint64_t readTotalCpuTime() const;
