@@ -2283,8 +2283,10 @@ TEST_F(DRMGPUProbeEngineTest, AReusedFdLeavesItsAliasWithItsClient)
 }
 
 // #1356: a full rescan keeps the client groups the samples have learned. One client open through three
-// fds is still read once per sample after a rescan, not once per fd again; a path closed before the
-// rescan is dropped from its group, and a newly opened fd of another client is read and grouped.
+// fds is still read through the same file after a rescan, and once per sample in steady state; the
+// sample after a rescan reads each alias once more, as it may have been reused for another client. A
+// path closed before the rescan is dropped from its group, and a newly opened fd of another client is
+// read and grouped.
 TEST_F(DRMGPUProbeEngineTest, AFullRescanKeepsTheClientsGrouped)
 {
     const std::array<std::filesystem::path, 3> fdinfos{
@@ -2323,9 +2325,14 @@ TEST_F(DRMGPUProbeEngineTest, AFullRescanKeepsTheClientsGrouped)
     ASSERT_TRUE(readFor7.has_value());
     const auto first = *readFor7;
 
-    // A rescan finds the same three fds: the next sample still reads one file, the same one.
+    // A rescan finds the same three fds: the next sample reads the same file for the client, and each
+    // alias once to confirm it still names client 7; the samples after it read one file again.
     EXPECT_FALSE(probe->rescanGPUs(GPURescan::Full));
     auto before = reads();
+    EXPECT_EQ(sample(), (std::vector<std::uint64_t>{7}));
+    EXPECT_EQ(reads(), before + 3U);
+    EXPECT_EQ(readFor7, first);
+    before = reads();
     EXPECT_EQ(sample(), (std::vector<std::uint64_t>{7}));
     EXPECT_EQ(reads(), before + 1U);
     EXPECT_EQ(readFor7, first);
@@ -2335,24 +2342,64 @@ TEST_F(DRMGPUProbeEngineTest, AFullRescanKeepsTheClientsGrouped)
     std::filesystem::remove(first.parent_path().parent_path() / "fd" / first.filename());
     makeFd(m_ProcRoot, 300, 6, "/dev/dri/renderD129", xeFdinfo(8, 50, 100));
     EXPECT_FALSE(probe->rescanGPUs(GPURescan::Full));
-    // The closed path is gone from client 7's group, so it isn't tried: one read for client 7 (an
-    // alias) and one for the new path.
+    // The closed path is gone from client 7's group, so it isn't tried: an alias is read for client 7,
+    // the other alias once, and the new path.
     before = reads();
     EXPECT_EQ(sample(), (std::vector<std::uint64_t>{7, 8}));
-    EXPECT_EQ(reads(), before + 2U);
+    EXPECT_EQ(reads(), before + 3U);
     ASSERT_TRUE(readFor7.has_value());
     EXPECT_NE(readFor7, first);
     const auto second = *readFor7;
 
-    // Grouped now: one read per client, through rescans too.
+    // Grouped now: one read per client in steady state, through rescans too.
     for (int i = 0; i < 2; ++i)
     {
         EXPECT_FALSE(probe->rescanGPUs(GPURescan::Full));
         before = reads();
         EXPECT_EQ(sample(), (std::vector<std::uint64_t>{7, 8}));
+        EXPECT_EQ(reads(), before + 3U); // Client 7's file and its alias, and client 8's
+        EXPECT_EQ(readFor7, second);
+        before = reads();
+        EXPECT_EQ(sample(), (std::vector<std::uint64_t>{7, 8}));
         EXPECT_EQ(reads(), before + 2U);
         EXPECT_EQ(readFor7, second);
     }
+}
+
+// #1356: an alias is unread while its client's file is, so its fd number could be closed and reused for
+// another client's DRM file of the same card -- the same /dev/dri link -- unnoticed by the walk. A full
+// rescan ungroups the aliases, so the next sample reads it and finds the new client.
+TEST_F(DRMGPUProbeEngineTest, AnAliasReusedForAnotherClientIsFoundAfterAFullRescan)
+{
+    const std::array<std::filesystem::path, 2> fdinfos{m_ProcRoot / "100" / "fdinfo" / "4", m_ProcRoot / "100" / "fdinfo" / "5"};
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", xeFdinfo(7, 10, 100));
+    makeFd(m_ProcRoot, 100, 5, "/dev/dri/renderD129", xeFdinfo(7, 20, 100)); // dup'd
+    const auto probe = makeProbe();
+    const auto clientIds = [&probe]
+    {
+        std::vector<std::uint64_t> ids;
+        for (const auto& client : probe->readGPUCounters()[0].engineClients)
+        {
+            ids.push_back(client.clientId);
+        }
+        std::ranges::sort(ids);
+        return ids;
+    };
+    std::ignore = probe->readGPUCounters(); // Learns they are one client
+    const auto counters = probe->readGPUCounters();
+    ASSERT_EQ(counters[0].engineClients.size(), 1U);
+    const bool firstIsRead = counters[0].engineClients[0].engines.at(RENDER).busy == 10U;
+    const auto& alias = fdinfos.at(firstIsRead ? 1 : 0);
+
+    // The alias closes and its number is reused for client 9; its link is the same render node.
+    std::ofstream(alias) << xeFdinfo(9, 40, 100);
+    EXPECT_EQ(clientIds(), (std::vector<std::uint64_t>{7})); // Unread, so not yet seen
+
+    EXPECT_FALSE(probe->rescanGPUs(GPURescan::Full));
+    EXPECT_EQ(clientIds(), (std::vector<std::uint64_t>{7, 9}));
+    const auto before = DRMGPUProbeTestAccessor::fdinfoReads(*probe);
+    EXPECT_EQ(clientIds(), (std::vector<std::uint64_t>{7, 9}));
+    EXPECT_EQ(DRMGPUProbeTestAccessor::fdinfoReads(*probe), before + 2U); // One file per client
 }
 
 } // namespace

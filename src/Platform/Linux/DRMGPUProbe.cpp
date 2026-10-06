@@ -977,10 +977,15 @@ void DRMGPUProbe::discoverDrmClients()
     {
         // Reconciled with the clients the samples so far have grouped, rather than replacing them: a
         // full rescan every few seconds would otherwise make the next sample read every dup'd and
-        // inherited fd again (#1356). A path still found keeps its client and place; a path no longer
-        // found is dropped, and with it a client left with none. A new path is its own client until a
+        // inherited fd again (#1356). A path no longer found is dropped, and with it a client left with
+        // none. A client's first path still found keeps its client id: it is the file read for the
+        // client, which readEngineClients() checks against that id each sample. Its aliases are unread
+        // from one sample to the next, so one could have closed and its number been reused for another
+        // client's DRM file of the same card -- the same /dev/dri link -- unnoticed; each goes back to
+        // being unknown, read once by the next sample and regrouped by its drm-client-id. That is one
+        // read per alias per full rescan, not per sample. A new path is likewise its own client until a
         // read gives its drm-client-id: telling dup'd and inherited fds apart needs their fdinfo, which
-        // xe can't report without waking the card (#1117), so the next awake sample reads each new path
+        // xe can't report without waking the card (#1117), so the next awake sample reads each such path
         // once and readEngineClients() merges those sharing an id with a client already known.
         auto& clients = m_Cards[i].clients;
         // Everything that allocates comes first, so that an exception leaves this card's clients as
@@ -999,17 +1004,40 @@ void DRMGPUProbe::discoverDrmClients()
                 added.push_back(DrmClientFds{.clientId = std::nullopt, .fdinfoPaths = {path}});
             }
         }
+        // Each kept client's aliases, as clients of their own: after the kept clients, so that an alias
+        // read as its old client joins that client rather than the other way round.
+        std::vector<DrmClientFds> aliases;
+        for (const auto& client : clients)
+        {
+            const auto first =
+                std::ranges::find_if(client.fdinfoPaths, [&foundPaths](const std::string& path) { return foundPaths.contains(path); });
+            if (first == client.fdinfoPaths.end())
+            {
+                continue;
+            }
+            for (auto alias = std::next(first); alias != client.fdinfoPaths.end(); ++alias)
+            {
+                if (foundPaths.contains(*alias))
+                {
+                    aliases.push_back(DrmClientFds{.clientId = std::nullopt, .fdinfoPaths = {*alias}});
+                }
+            }
+        }
         std::vector<DrmClientFds> reconciled;
-        reconciled.reserve(clients.size() + added.size());
+        reconciled.reserve(clients.size() + aliases.size() + added.size());
 
         for (auto& client : clients)
         {
-            std::erase_if(client.fdinfoPaths, [&foundPaths](const std::string& path) { return !foundPaths.contains(path); });
-            if (!client.fdinfoPaths.empty())
+            auto& paths = client.fdinfoPaths;
+            const auto first = std::ranges::find_if(paths, [&foundPaths](const std::string& path) { return foundPaths.contains(path); });
+            if (first != paths.end())
             {
+                paths.erase(std::next(first), paths.end()); // Its aliases, copied to `aliases` above
+                paths.erase(paths.begin(), first);          // Paths no longer found
                 reconciled.push_back(std::move(client));
             }
         }
+        std::ranges::move(aliases, std::back_inserter(reconciled));
         std::ranges::move(added, std::back_inserter(reconciled));
         clients = std::move(reconciled);
     }
