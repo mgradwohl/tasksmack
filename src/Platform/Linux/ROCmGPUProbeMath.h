@@ -6,6 +6,7 @@
 
 #include "Platform/Linux/PciRuntimePm.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -198,6 +199,96 @@ using DeviceIdLookupFn = std::uint32_t (*)(std::uint32_t, std::uint64_t*);
                                     static_cast<std::uint32_t>((bdfId >> BUS_SHIFT) & BUS_MASK),
                                     static_cast<std::uint32_t>((bdfId >> DEVICE_SHIFT) & DEVICE_MASK),
                                     static_cast<std::uint32_t>(bdfId & FUNCTION_MASK));
+}
+
+/// A graphics-core (GC) IP version, as amdgpu publishes it under
+/// <pci device>/ip_discovery/die/0/GC/0/{major,minor,revision} on ASICs it sets up from the IP
+/// discovery table (Linux 5.17+).
+struct GcIpVersion
+{
+    std::uint32_t major = 0;
+    std::uint32_t minor = 0;
+    std::uint32_t revision = 0;
+
+    friend constexpr bool operator==(const GcIpVersion&, const GcIpVersion&) = default;
+};
+
+/// The GC IP versions amdgpu itself flags AMD_IS_APU for (amdgpu_discovery_set_ip_blocks()): Raven,
+/// Raven2/Picasso, Renoir/Cezanne, Cyan Skillfish, Van Gogh, Rembrandt, Raphael, Mendocino,
+/// Phoenix/Hawk Point, Phoenix2, Strix Point, Strix Halo, Krackan Point and GC 11.5.3. A newer APU
+/// generation needs adding here (until then it reads as discrete, as every AMD GPU did before #1266).
+inline constexpr std::array<GcIpVersion, 15> APU_GC_IP_VERSIONS{{
+    {.major = 9, .minor = 1, .revision = 0},
+    {.major = 9, .minor = 2, .revision = 2},
+    {.major = 9, .minor = 3, .revision = 0},
+    {.major = 10, .minor = 1, .revision = 3},
+    {.major = 10, .minor = 1, .revision = 4},
+    {.major = 10, .minor = 3, .revision = 1},
+    {.major = 10, .minor = 3, .revision = 3},
+    {.major = 10, .minor = 3, .revision = 6},
+    {.major = 10, .minor = 3, .revision = 7},
+    {.major = 11, .minor = 0, .revision = 1},
+    {.major = 11, .minor = 0, .revision = 4},
+    {.major = 11, .minor = 5, .revision = 0},
+    {.major = 11, .minor = 5, .revision = 1},
+    {.major = 11, .minor = 5, .revision = 2},
+    {.major = 11, .minor = 5, .revision = 3},
+}};
+
+/// An inclusive range of AMD PCI device ids.
+struct PciDeviceIdRange
+{
+    std::uint16_t first = 0;
+    std::uint16_t last = 0;
+};
+
+/// AMD APU PCI device ids, for a kernel that doesn't publish ip_discovery (older kernels, and the
+/// pre-IP-discovery ASICs amdgpu flags AMD_IS_APU by device id in its pciidlist: Kaveri, Kabini,
+/// Mullins, Carrizo, Stoney, Raven, Renoir, Van Gogh, Yellow Carp, Cyan Skillfish), plus the
+/// IP-discovery APUs' ids (Raphael, Mendocino, Phoenix, Phoenix2, Strix Point, Strix Halo, Krackan).
+inline constexpr std::array<PciDeviceIdRange, 23> APU_PCI_DEVICE_IDS{{
+    {.first = 0x1304, .last = 0x131D}, // Kaveri
+    {.first = 0x9830, .last = 0x983F}, // Kabini
+    {.first = 0x9850, .last = 0x985F}, // Mullins
+    {.first = 0x9870, .last = 0x9870}, // Carrizo
+    {.first = 0x9874, .last = 0x9877}, // Carrizo
+    {.first = 0x98E4, .last = 0x98E4}, // Stoney
+    {.first = 0x15D8, .last = 0x15D8}, // Picasso / Raven2
+    {.first = 0x15DD, .last = 0x15DD}, // Raven
+    {.first = 0x15E7, .last = 0x15E7}, // Barcelo
+    {.first = 0x1636, .last = 0x1636}, // Renoir
+    {.first = 0x1638, .last = 0x1638}, // Cezanne
+    {.first = 0x164C, .last = 0x164C}, // Lucienne
+    {.first = 0x163F, .last = 0x163F}, // Van Gogh
+    {.first = 0x164D, .last = 0x164D}, // Yellow Carp
+    {.first = 0x1681, .last = 0x1681}, // Rembrandt
+    {.first = 0x13FE, .last = 0x13FE}, // Cyan Skillfish
+    {.first = 0x143F, .last = 0x143F}, // Cyan Skillfish
+    {.first = 0x164E, .last = 0x164E}, // Raphael
+    {.first = 0x1506, .last = 0x1506}, // Mendocino
+    {.first = 0x15BF, .last = 0x15BF}, // Phoenix
+    {.first = 0x15C8, .last = 0x15C8}, // Phoenix2
+    {.first = 0x150E, .last = 0x150E}, // Strix Point
+    {.first = 0x1586, .last = 0x1586}, // Strix Halo
+}};
+
+/// Whether an AMD GPU is an APU's integrated graphics (#1266). The GC IP version decides when
+/// amdgpu publishes it, since that is the signal the kernel's own AMD_IS_APU flag comes from; a
+/// discrete GC version is discrete whatever the device id. Without it the PCI device id decides.
+/// With neither, the GPU is taken as discrete, as ROCm SMI's devices are most often.
+[[nodiscard]] constexpr bool isAmdApu(std::optional<GcIpVersion> gcVersion, std::optional<std::uint16_t> pciDeviceId) noexcept
+{
+    if (gcVersion.has_value())
+    {
+        return std::ranges::find(APU_GC_IP_VERSIONS, *gcVersion) != APU_GC_IP_VERSIONS.end();
+    }
+    if (pciDeviceId.has_value())
+    {
+        const std::uint16_t id = *pciDeviceId;
+        return std::ranges::any_of(APU_PCI_DEVICE_IDS,
+                                   [id](const PciDeviceIdRange& range) { return id >= range.first && id <= range.last; });
+    }
+    return false;
 }
 
 } // namespace Platform::ROCmGPUProbeMath
