@@ -1119,17 +1119,28 @@ void ProcessesPanel::renderContent()
             const auto info = getColumnInfo(col);
             // ImGui draws the sort arrow at the sorted header's right edge; tree view is not sortable.
             const bool showsSortArrow = !m_TreeViewEnabled && (ImGui::TableGetColumnFlags(headerIdx) & ImGuiTableColumnFlags_IsSorted) != 0;
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ProcessTableLayout::headerLabelOffset(columnAlignment(col),
-                                                                                                ImGui::GetContentRegionAvail().x,
-                                                                                                m_TextSizeCache.getHeaderWidth(col),
-                                                                                                showsSortArrow ? sortArrowReserve : 0.0F));
+            // The header item keeps the whole cell as its sort and right-click target: it is submitted
+            // at the cell's start with a hidden label, and the name is drawn at its aligned position
+            // over it. Moving the cursor before TableHeader() moved the item's start too, so an
+            // aligned header lost its blank left part as a click target (#1365 review).
+            const ImVec2 cellStart = ImGui::GetCursorScreenPos();
+            const float labelOffset = ProcessTableLayout::headerLabelOffset(columnAlignment(col),
+                                                                            ImGui::GetContentRegionAvail().x,
+                                                                            m_TextSizeCache.getHeaderWidth(col),
+                                                                            showsSortArrow ? sortArrowReserve : 0.0F);
             // A column this system cannot fill is headed muted, like its cells (#1210).
             const bool columnSupported = ProcessColumnAvailability::isSupported(col, headerCaps, m_PerProcessGpu);
             {
                 const MutedCellScope muted(!columnSupported);
-                // info.name is a constexpr string literal in ProcessColumnConfig.h.
-                // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - literals are null-terminated
-                ImGui::TableHeader(info.name.data());
+                ImGui::PushID(static_cast<int>(col));
+                ImGui::TableHeader("##header");
+                ImGui::PopID();
+                // TableHeader() draws its label at the cell's cursor position; this draws ours there,
+                // shifted by the alignment offset, in the (possibly muted) text colour.
+                ImGui::GetWindowDrawList()->AddText(ImVec2(cellStart.x + labelOffset, cellStart.y),
+                                                    ImGui::GetColorU32(ImGuiCol_Text),
+                                                    info.name.data(),
+                                                    info.name.data() + info.name.size());
             }
 
             // Show tooltip with full column name and description on hover, and what the column's
