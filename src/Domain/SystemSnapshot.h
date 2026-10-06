@@ -95,13 +95,14 @@ struct SystemSnapshot
     /// Per-interface network rates (computed from counter deltas).
     struct InterfaceSnapshot
     {
-        std::string name;           // System name: "eth0", "Ethernet"
-        std::string displayName;    // Friendly name for UI
-        double rxBytesPerSec = 0.0; // Receive rate
-        double txBytesPerSec = 0.0; // Transmit rate
-        bool isUp = false;          // Interface operational status
-        uint64_t linkSpeedMbps = 0; // Link speed (0 if unknown)
-        bool isVirtual = false;     // Software interface left out of the Total (see Platform InterfaceCounters)
+        std::string name;            // System name: "eth0", "Ethernet"
+        std::string displayName;     // Friendly name for UI
+        double rxBytesPerSec = 0.0;  // Receive rate
+        double txBytesPerSec = 0.0;  // Transmit rate
+        bool isUp = false;           // Interface operational status
+        uint64_t linkSpeedMbps = 0;  // Link speed (0 if unknown)
+        bool isVirtual = false;      // Software interface left out of the Total (see Platform InterfaceCounters)
+        bool isVirtualKnown = false; // The platform classified it, so isVirtual is authoritative (#1260)
     };
     std::vector<InterfaceSnapshot> networkInterfaces;
 

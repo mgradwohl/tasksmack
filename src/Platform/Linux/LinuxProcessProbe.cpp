@@ -16,6 +16,7 @@
 
 #include "Platform/ProcessTypes.h"
 #include "ProcParsing.h"
+#include "ProcPrivileges.h"
 #include "ProcessName.h"
 
 #include <spdlog/spdlog.h>
@@ -145,6 +146,9 @@ LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot, std::filesy
       m_PageSize(toU64PositiveOr(sysconf(_SC_PAGESIZE), 4096ULL)),
       m_BootTimeEpoch(readBootTime(m_ProcRoot))
 {
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+    m_InodeMapEarlyRebuildInterval = std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_EARLY_REBUILD_MS};
+#endif
     if (m_TicksPerSecond <= 0)
     {
         // /proc process times are typically reported in user-space clock ticks (USER_HZ),
@@ -307,13 +311,18 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
     const bool hasNetworkCounters = false;
 #endif
 
-    // Reduced privileges: FD counts (/proc/[pid]/fd) and I/O counters (/proc/[pid]/io)
-    // for processes owned by other users are unavailable unless running as root.
-    const bool reducedPrivileges = (geteuid() != 0);
+    // Reduced privileges: FD counts (/proc/[pid]/fd), I/O counters (/proc/[pid]/io) and network
+    // attribution for processes owned by other users need CAP_DAC_READ_SEARCH and CAP_SYS_PTRACE in
+    // the effective set -- root with its normal capabilities has them, but root alone isn't enough
+    // where capabilities are dropped (docs/guide/faq.md's setcap line).
+    const std::vector<char> selfStatus = readProcFileFull((m_ProcRoot / "self" / "status").c_str());
+    const bool reducedPrivileges = ProcPrivileges::hasReducedPrivileges(
+        geteuid() == 0,
+        ProcPrivileges::parseCapEff(selfStatus.empty() ? std::string_view{} : std::string_view(selfStatus.data(), selfStatus.size())));
 
     return ProcessCapabilities{.hasIoCounters = m_IoCountersAvailable.load(std::memory_order_acquire),
                                .hasThreadCount = true,
-                               .hasHandleCount = true, // Can count FDs in /proc/[pid]/fd (own processes only when non-root)
+                               .hasHandleCount = true, // Can count FDs in /proc/[pid]/fd (others' need CAP_DAC_READ_SEARCH)
                                .hasUserSystemTime = true,
                                .hasStartTime = true,
                                .hasUser = true,       // From /proc/[pid]/status Uid field
@@ -326,7 +335,7 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasUdpNetworkCounters = false,            // sock_diag has no UDP byte counters (#1101)
                                .hasPowerUsage = m_HasPowerCap,            // Available if RAPL is detected
                                .hasStatus = true,                         // From cgroup freezer state
-                               .hasReducedPrivileges = reducedPrivileges, // Non-root: incomplete FD/IO data
+                               .hasReducedPrivileges = reducedPrivileges, // Incomplete FD/IO/network data
                                .hasSharedMemory = true};                  // From /proc/[pid]/statm
 }
 
@@ -701,10 +710,11 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters, c
     // write_bytes: <bytes> <- actual I/O to storage layer
     // cancelled_write_bytes: <bytes>
     //
-    // Note: This file requires CAP_DAC_READ_SEARCH capability or running as root,
-    // or being the owner of the process. If we can't read it -- typically another user's
-    // process without root -- the counters are marked unavailable rather than left at a
-    // 0 that reads as "no I/O" (#1110).
+    // Note: for another user's process this file needs CAP_DAC_READ_SEARCH (to open the owner-only
+    // file) plus CAP_SYS_PTRACE (the read checks PTRACE_MODE_READ_FSCREDS) in the effective set --
+    // root with its normal capabilities has them, but root alone isn't enough where capabilities are
+    // dropped. If we can't read it -- typically another user's process without those capabilities --
+    // the counters are marked unavailable rather than left at a 0 that reads as "no I/O" (#1110).
 
     const std::string ioPath = (procRoot / std::to_string(pid) / "io").string();
     constexpr std::size_t BUF_SIZE = 512;
@@ -793,7 +803,7 @@ void LinuxProcessProbe::countProcessFds(int32_t pid, ProcessCounters& counters, 
     }
     catch (const std::exception& ex)
     {
-        // Permission errors (another user's process without root) and other exceptional situations:
+        // Permission errors (another user's process, without CAP_DAC_READ_SEARCH) and other exceptional situations:
         // the count is unknown, not 0 (#1110). The process's connections can't be attributed to it
         // either -- the socket inode-to-PID map is built from these same fd directories -- so its
         // network counters are unknown too, not "no traffic".
@@ -807,8 +817,8 @@ void LinuxProcessProbe::countProcessFds(int32_t pid, ProcessCounters& counters, 
 bool LinuxProcessProbe::checkIoCountersAvailability(const std::filesystem::path& procRoot)
 {
     // Check if procRoot/self/io is readable to determine I/O counter availability.
-    // This file requires CAP_DAC_READ_SEARCH capability or root privileges,
-    // or being the owner of the target process.
+    // Our own io file is always readable unless procfs is restricted; another user's needs
+    // CAP_DAC_READ_SEARCH plus CAP_SYS_PTRACE (root with its normal capabilities; see parseProcessIo()).
     const std::string selfIoPath = (procRoot / "self" / "io").string();
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — POSIX open() is variadic
     const int fd = ::open(selfIoPath.c_str(), O_RDONLY | O_CLOEXEC);
@@ -1112,76 +1122,141 @@ SocketTrafficReading LinuxProcessProbe::readSocketTraffic() const
         static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(sampledAt.time_since_epoch()).count());
     if (sockets.empty())
     {
-        return reading; // a complete reading with no sockets: every connection closed
+        // A complete reading with no sockets: every connection closed, so none is unowned any more.
+        // Forget them: a later connection reusing one of their inodes would otherwise inherit its
+        // first-seen time, look older than the map, and not trigger the early rebuild (#1327 review).
+        // A failed reading (returned above) leaves them alone: its sockets are unknown, not closed.
+        const std::scoped_lock lock{m_UnownedSocketsMutex};
+        m_UnownedSocketsFirstSeen.clear();
+        return reading;
     }
 
     // Attribute each socket to the process holding it (socket inode -> PID, from /proc/[pid]/fd).
     // A socket not in the map (opened since its last rebuild, or held by a process we can't read)
     // is still reported, unattributed, so Domain tracks its counters from now on.
-    const auto inodeToPid = currentInodeToPidMap();
-    reading.sockets.reserve(sockets.size());
-    for (const auto& socket : sockets)
+    const auto ownerOf = [](const InodeToPidMap* inodeToPid, std::uint64_t inode) -> std::int32_t
     {
-        std::int32_t pid = 0;
-        if (inodeToPid)
+        if (inodeToPid != nullptr)
         {
-            if (const auto it = inodeToPid->find(socket.inode); it != inodeToPid->end())
+            if (const auto it = inodeToPid->find(inode); it != inodeToPid->end())
             {
-                pid = it->second;
+                return it->second;
             }
         }
-        reading.sockets.push_back(
-            SocketTrafficSample{.key = socket.inode, .pid = pid, .bytesReceived = socket.bytesReceived, .bytesSent = socket.bytesSent});
+        return 0;
+    };
+    auto snapshot = currentInodeToPidMap(std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_TTL_MS});
+
+    bool unownedSinceBuild = false;
+    {
+        const std::scoped_lock lock{m_UnownedSocketsMutex};
+        // A socket with no owner that wasn't already unowned in a reading taken before the map was
+        // built may have been opened since the build: rebuild early (rate-limited) so a new
+        // connection is attributed in the reading it first appears in, rather than up to a TTL later
+        // with its first bytes, or all of a short one's, never credited (#1259). Sockets held by
+        // processes we can't read stay unowned through the rebuild and so don't trigger another.
+        // The rebuild may land on a cached socket query (same sampledAt): the reading then differs
+        // from the last only in ownership, which Domain still applies (SocketTrafficAccumulator).
+        unownedSinceBuild = std::ranges::any_of(sockets,
+                                                [&](const SocketStats& socket)
+                                                {
+                                                    if (ownerOf(snapshot.map.get(), socket.inode) != 0)
+                                                    {
+                                                        return false;
+                                                    }
+                                                    const auto seen = m_UnownedSocketsFirstSeen.find(socket.inode);
+                                                    const auto firstSeen =
+                                                        (seen != m_UnownedSocketsFirstSeen.end()) ? seen->second : sampledAt;
+                                                    return firstSeen > snapshot.builtAt;
+                                                });
+    }
+    // The early rebuild may scan every /proc/[pid]/fd: do it without holding m_UnownedSocketsMutex.
+    if (unownedSinceBuild)
+    {
+        snapshot = currentInodeToPidMap(m_InodeMapEarlyRebuildInterval);
+    }
+
+    {
+        const std::scoped_lock lock{m_UnownedSocketsMutex};
+        std::unordered_map<std::uint64_t, std::chrono::steady_clock::time_point> unowned;
+        reading.sockets.reserve(sockets.size());
+        for (const auto& socket : sockets)
+        {
+            const std::int32_t pid = ownerOf(snapshot.map.get(), socket.inode);
+            if (pid == 0)
+            {
+                const auto seen = m_UnownedSocketsFirstSeen.find(socket.inode);
+                unowned.insert_or_assign(socket.inode, (seen != m_UnownedSocketsFirstSeen.end()) ? seen->second : sampledAt);
+            }
+            reading.sockets.push_back(
+                SocketTrafficSample{.key = socket.inode, .pid = pid, .bytesReceived = socket.bytesReceived, .bytesSent = socket.bytesSent});
+        }
+        m_UnownedSocketsFirstSeen = std::move(unowned);
     }
     return reading;
 }
 
-std::shared_ptr<const std::unordered_map<std::uint64_t, std::int32_t>> LinuxProcessProbe::currentInodeToPidMap() const
+LinuxProcessProbe::InodeToPidSnapshot LinuxProcessProbe::currentInodeToPidMap(std::chrono::milliseconds maxAge) const
 {
     // Refresh inode-to-PID map on a TTL basis to avoid scanning /proc/[pid]/fd/* every
     // enumerate(). The rebuild slot is claimed by advancing m_InodeToPidCacheTime under
     // the initial lock, so only one thread rebuilds per TTL window while all others
     // continue using the previous shared_ptr snapshot (see #460).
-    std::shared_ptr<const std::unordered_map<std::uint64_t, std::int32_t>> inodeToPidPtr;
+    InodeToPidSnapshot snapshot;
     bool needsRebuild = false;
+    std::chrono::steady_clock::time_point scanStart;
     {
         const std::scoped_lock lock{m_InodePidCacheMutex};
         const auto now = std::chrono::steady_clock::now();
-        const auto cacheAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_InodeToPidCacheTime).count();
-        needsRebuild = (cacheAgeMs >= Domain::Sampling::INODE_PID_CACHE_TTL_MS);
+        // However the map got stale, never scan more often than the early-rebuild interval: an empty
+        // scan backdates m_InodeToPidCacheTime for a quick retry, and that retry must not combine
+        // with an early rebuild into two scans per reading.
+        needsRebuild = (now - m_InodeToPidCacheTime) >= maxAge && (now - m_InodeToPidLastAttempt) >= m_InodeMapEarlyRebuildInterval;
         if (needsRebuild)
         {
-            // Claim the rebuild slot: advance the timestamp now so any other thread that
+            // Claim the rebuild slot: advance the timestamps now so any other thread that
             // checks while we are scanning /proc sees a fresh time and skips rebuilding.
             m_InodeToPidCacheTime = now;
+            m_InodeToPidLastAttempt = now;
+            scanStart = now;
         }
-        inodeToPidPtr = m_InodeToPidCache; // snapshot current (possibly stale) pointer
+        snapshot = {.map = m_InodeToPidCache, .builtAt = m_InodeToPidBuiltAt}; // current (possibly stale) snapshot
     }
     if (needsRebuild)
     {
         // Build the map outside the lock; concurrent threads keep using the old snapshot.
-        auto rebuilt = std::make_shared<const std::unordered_map<std::uint64_t, std::int32_t>>(buildInodeToPidMap(m_ProcRoot));
+        if (m_InodeMapScanHook)
+        {
+            m_InodeMapScanHook();
+        }
+        auto rebuilt = std::make_shared<const InodeToPidMap>(buildInodeToPidMap(m_ProcRoot));
         {
             const std::scoped_lock lock{m_InodePidCacheMutex};
             if (!rebuilt->empty())
             {
                 m_InodeToPidCache = std::move(rebuilt);
                 m_InodeToPidCacheTime = std::chrono::steady_clock::now();
-                inodeToPidPtr = m_InodeToPidCache;
+                m_InodeToPidBuiltAt = scanStart;
+                snapshot = {.map = m_InodeToPidCache, .builtAt = m_InodeToPidBuiltAt};
             }
             else
             {
                 // Preserve the previous snapshot when procfs enumeration transiently
-                // produces no entries; allow a quick retry instead of waiting the full TTL.
+                // produces no entries; allow a quick retry instead of waiting the full TTL
+                // (still no sooner than m_InodeMapEarlyRebuildInterval after this attempt).
                 constexpr auto EMPTY_REBUILD_RETRY_MS = std::chrono::milliseconds{100};
                 const auto ttl = std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_TTL_MS};
                 const auto retryDelay = std::min(EMPTY_REBUILD_RETRY_MS, ttl);
                 m_InodeToPidCacheTime = std::chrono::steady_clock::now() - (ttl - retryDelay);
-                // inodeToPidPtr already holds the previous (possibly non-empty) snapshot
+                // The scan still tried to resolve every socket unowned before it: advance builtAt so
+                // those sockets don't count as opened since the build and trigger an early rebuild
+                // every interval (#1259).
+                m_InodeToPidBuiltAt = scanStart;
+                snapshot = {.map = m_InodeToPidCache, .builtAt = m_InodeToPidBuiltAt};
             }
         }
     }
-    return inodeToPidPtr;
+    return snapshot;
 }
 #endif // TASKSMACK_HAS_NETLINK_SOCKET_STATS
 

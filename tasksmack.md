@@ -38,7 +38,7 @@ flowchart TD
 - OpenGL usage is confined to Core/UI (SDL3 + ImGui backends).
 - CPU percentage uses process CPU delta divided by total system CPU delta.
 - Disk I/O and page-fault rates use consecutive sample deltas.
-- Per-process network rates use deltas between consecutive network readings. Where a probe reports raw per-connection byte counters (Linux), `ProcessModel` accumulates each connection's growth into monotonic per-process counters, so a connection closing or being attributed late doesn't make a rate drop or spike.
+- Per-process network rates use deltas between consecutive network readings. Where a probe reports raw per-connection byte counters (Linux), `ProcessModel` accumulates each connection's growth into monotonic per-process counters, so a connection closing doesn't make a rate drop and a connection attributed late never delivers its lifetime bytes as a spike. The growth a connection shows before it is attributed is held and credited to its owner once it is, so that recent growth (at most `UNATTRIBUTED_SOCKET_HOLD_MS` of it; a hold that outlasts the deadline is dropped) can still be concentrated into the interval in which the connection is attributed, and the Linux probe rebuilds its inode-to-PID map early (rate-limited by `INODE_PID_CACHE_EARLY_REBUILD_MS`) when a socket appears unowned after the last rebuild.
 - System and interface network rates use consecutive sample deltas.
 - GPU data is merged into process snapshots when the platform can attribute usage.
 
@@ -115,7 +115,7 @@ The default interval is 1 second and can be configured from 100 ms to 5 seconds.
 
 Process state is keyed by PID plus start time so PID reuse creates a fresh baseline. Domain models guard against counter rollback and implausible rates.
 
-A per-process value the probe could not read (on Linux without root: another user's `/proc/[pid]/fd` and `/proc/[pid]/io`, and so its FD count, I/O and network attribution) is flagged unavailable in `ProcessCounters`/`ProcessSnapshot` (`handleCountAvailable`, `ioAvailable`, `networkAvailable`). A rate needs both readings it is taken between. Unavailable values are shown as N/A and as gaps in the charts, and they are left out of the system totals rather than counted as 0.
+A per-process value the probe could not read (on Linux, for another user's process: its FD count without `CAP_DAC_READ_SEARCH`, which lists `/proc/[pid]/fd`; its I/O and network attribution without `CAP_SYS_PTRACE` as well, which `/proc/[pid]/io` and the fd links need -- root has both unless they are dropped; known exception, #1328: with `CAP_DAC_READ_SEARCH` alone, listing the fd directory succeeds but reading its links fails, so `networkCountersAvailable` stays true and the network value is a 0, not N/A) is flagged unavailable in `ProcessCounters`/`ProcessSnapshot` (`handleCountAvailable`, `ioAvailable`, `networkAvailable`). A rate needs both readings it is taken between. Unavailable values are shown as N/A and as gaps in the charts, and they are left out of the system totals rather than counted as 0.
 
 ## Dependency Direction
 
@@ -214,7 +214,7 @@ Capability absence is not an error. A supported platform may still omit metrics 
 | GPU | NVML for NVIDIA, ROCm SMI for AMD, DRM/sysfs for Intel and generic discovery |
 | Process actions | POSIX signals, `setpriority`, affinity APIs |
 
-Per-process I/O may require root or `CAP_DAC_READ_SEARCH`. Per-process network attribution requires Linux 4.2+ Netlink support.
+For other users' processes, per-process I/O and network attribution need `CAP_DAC_READ_SEARCH` plus `CAP_SYS_PTRACE` in the effective set (reading `/proc/[pid]/io` and the `/proc/[pid]/fd/*` links is checked with `PTRACE_MODE_READ_FSCREDS`) — root with its normal capabilities has them, but root alone isn't enough where capabilities are dropped (a container or hardened service); FD counts need only `CAP_DAC_READ_SEARCH` (listing `/proc/[pid]/fd` is a plain permission check). Per-process network attribution requires Linux 4.2+ Netlink support.
 
 ### Windows
 
