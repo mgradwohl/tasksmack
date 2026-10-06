@@ -318,7 +318,7 @@ void ShellLayer::onUpdate(float deltaTime)
     const ImGuiIO& io = ImGui::GetIO();
     if (io.KeyCtrl && !io.KeyShift && !io.KeyAlt)
     {
-        // Theme steps to the next preset; changeFontSize() then saves it and raises the event (#1076).
+        // Theme steps to the next preset; changeFontSize() then saves it (#1076).
         auto& theme = UI::Theme::get();
         const bool grow = ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd);
         const bool shrink = ImGui::IsKeyPressed(ImGuiKey_Minus) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract);

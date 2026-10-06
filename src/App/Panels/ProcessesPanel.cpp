@@ -482,21 +482,9 @@ void ProcessesPanel::onEvent(Core::Event& event)
             }
             return false;
         });
-    dispatcher.dispatch<Core::ThemeChangedEvent>(
-        [this](Core::ThemeChangedEvent&)
-        {
-            // Invalidate text cache and request refresh
-            m_TextSizeCache.fontPtr = nullptr;
-            m_ForceRefresh = true;
-            return false;
-        });
-    dispatcher.dispatch<Core::FontSizeChangedEvent>(
-        [this](Core::FontSizeChangedEvent&)
-        {
-            m_TextSizeCache.fontPtr = nullptr;
-            m_ForceRefresh = true;
-            return false;
-        });
+    // A theme or font-size change needs no handling here (#1178): TextSizeCache::isValid() notices a
+    // new font (or a rebuilt atlas) on the next frame and remeasures, which also restamps the row
+    // format cache, and colours are read from the theme every frame. Neither needs new process data.
 }
 
 void ProcessesPanel::onUpdate(float deltaTime)
