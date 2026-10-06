@@ -405,18 +405,31 @@ void ShellLayer::onRender()
         const float contentPaddingH = ShellMetrics::CONTENT_PADDING_H * styleScale;
         const float contentPaddingV = ShellMetrics::CONTENT_PADDING_V * styleScale;
 
+        // Add padding by using a child window with border that provides internal padding
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(contentPaddingH, contentPaddingV));
+
+        // Let ImGui own child sizing so each panel can consume full available height without
+        // shell-level scrollbar reservations that affect non-process tabs.
+        if (ImGui::BeginChild("##ContentArea", ImVec2(0.0F, 0.0F), ImGuiChildFlags_AlwaysUseWindowPadding))
+        {
+            m_Tabs.renderContent();
+        }
+        ImGui::EndChild();
+        ImGui::PopStyleVar();
+
         // The window may not be narrower than the panels' content: the Processes toolbar row, or the
         // Overview's NowBar column beside MIN_PLOT_WIDTH_EM of plot (#1207). Nor shorter than the
         // title bar, the tab strips, one chart at its minimum height and the status bar (#1278).
-        // Measured with the body font, here, where the panels will draw with it; a few text
-        // measurements a frame.
+        // Measured with the body font, after the panels have drawn with it -- so the tab on show has
+        // measured its first chart at this frame's width (#1370 review); a few text measurements a frame.
         const ImGuiStyle& style = ImGui::GetStyle();
         const float fontSize = ImGui::GetFontSize();
         const float plotMinHeight = std::floor(UI::Widgets::historyPlotMinHeight(fontSize, UI::chartEmPx()));
         // The tallest tab's lead-in and first chart, at its floor (UI/HistoryPlotHeight.h): estimated
         // from the style -- the tab bodies draw with the theme's FramePadding (TabContentScope), which
         // is what is pushed here, outside the tab bars -- or as the tabs last measured it, which also
-        // counts a value strip wrapped onto extra rows at this width (#1370 review).
+        // counts a value strip wrapped onto extra rows at this width. Only measurements taken at this
+        // window width and font size count: a hidden tab's goes stale when either changes (#1370 review).
         const float firstChartBudget = computeFirstChartBudget(computeTallestFirstChartBlock({
                                                                    .textLineWithSpacingPx = ImGui::GetTextLineHeightWithSpacing(),
                                                                    .frameHeightWithSpacingPx = ImGui::GetFrameHeightWithSpacing(),
@@ -424,7 +437,7 @@ void ShellLayer::onRender()
                                                                    .cellPaddingYPx = style.CellPadding.y,
                                                                    .plotMinHeightPx = plotMinHeight,
                                                                }),
-                                                               m_SystemMetricsPanel.firstChartNonPlotHeight(),
+                                                               m_SystemMetricsPanel.firstChartNonPlotHeight(viewport->Size.x, fontSize),
                                                                plotMinHeight);
         applyContentMinimumSize(computeContentMinimumWidth(ProcessesPanel::measureToolbarMinimumWidth(),
                                                            m_SystemMetricsPanel.overviewNowBarColumnWidth(),
@@ -439,18 +452,6 @@ void ShellLayer::onRender()
                                     .statusBarPx = statusBarHeight,
                                     .chromePx = contentPaddingV * 2.0F,
                                 }));
-
-        // Add padding by using a child window with border that provides internal padding
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(contentPaddingH, contentPaddingV));
-
-        // Let ImGui own child sizing so each panel can consume full available height without
-        // shell-level scrollbar reservations that affect non-process tabs.
-        if (ImGui::BeginChild("##ContentArea", ImVec2(0.0F, 0.0F), ImGuiChildFlags_AlwaysUseWindowPadding))
-        {
-            m_Tabs.renderContent();
-        }
-        ImGui::EndChild();
-        ImGui::PopStyleVar();
     }
     else
     {

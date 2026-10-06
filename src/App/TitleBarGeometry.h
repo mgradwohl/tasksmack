@@ -269,7 +269,7 @@ inline constexpr ChartBlockLead NETWORK_FIRST_CHART_LEAD{.textLines = 1, .frameR
 
 /// The first-chart part of the minimum window height: the estimated tallest block
 /// (computeTallestFirstChartBlock()), or what the tabs measured around and above their first chart
-/// (UI::Widgets::PlotFillState::firstPlotNonPlotHeight) plus the plot at its minimum, whichever is
+/// (UI::Widgets::currentFirstPlotNonPlotHeight()) plus the plot at its minimum, whichever is
 /// taller. The estimate covers a tab that has not been shown yet; the measurement covers what an
 /// estimate cannot know -- a value strip wrapped onto extra rows in a narrow window (#1370 review).
 ///

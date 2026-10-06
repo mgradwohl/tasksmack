@@ -1,6 +1,6 @@
 /// @file test_FillPlotLayout.cpp
 /// @brief Tests for UI::Widgets::FillPlotLayout's measurement of what a tab spends around its first
-/// chart (PlotFillState::firstPlotNonPlotHeight), under a live ImGui context, and for the minimum
+/// chart (PlotFillState::firstPlot), under a live ImGui context, and for the minimum
 /// window height's first-chart budget built from it (#1370 review).
 
 #include "App/TitleBarGeometry.h"
@@ -11,8 +11,10 @@
 #include <gtest/gtest.h>
 #include <imgui.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <string_view>
 
 namespace UI::Widgets
@@ -61,6 +63,8 @@ class FillPlotLayoutTest : public ::testing::Test
     /// chart, then a second chart.
     static void renderGpuLikeTab(float width, PlotFillState& state)
     {
+        // The window is the whole viewport, as the app's is: its width is what a measurement records.
+        ImGui::GetIO().DisplaySize.x = width;
         ImGui::NewFrame();
         ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
         ImGui::SetNextWindowSize(ImVec2(width, 1400.0F));
@@ -106,7 +110,7 @@ TEST_F(FillPlotLayoutTest, MeasuresEverythingAroundTheFirstChartButItsPlot)
     const float line = ImGui::GetTextLineHeight();
     const float spacing = style.ItemSpacing.y;
     // title + Spacing() + heading + strip row, then the spacing after the plot
-    EXPECT_FLOAT_EQ(state.firstPlotNonPlotHeight, (3.0F * (line + spacing)) + spacing + spacing);
+    EXPECT_FLOAT_EQ(state.firstPlot.nonPlotHeight, (3.0F * (line + spacing)) + spacing + spacing);
     EXPECT_EQ(state.plotCount, 2U);
 }
 
@@ -126,7 +130,7 @@ TEST_F(FillPlotLayoutTest, WrappedValueStripRowsReachTheMinimumHeightBudget)
     const ImGuiStyle& style = ImGui::GetStyle();
     const float lineWithSpacing = ImGui::GetTextLineHeight() + style.ItemSpacing.y;
     // At 260px the five entries take at least three rows where the wide tab used one.
-    EXPECT_GE(narrow.firstPlotNonPlotHeight, wide.firstPlotNonPlotHeight + (2.0F * lineWithSpacing));
+    EXPECT_GE(narrow.firstPlot.nonPlotHeight, wide.firstPlot.nonPlotHeight + (2.0F * lineWithSpacing));
 
     const float plotMin = std::floor(historyPlotMinHeight(ImGui::GetFontSize()));
     const float estimate = App::computeTallestFirstChartBlock({
@@ -136,16 +140,16 @@ TEST_F(FillPlotLayoutTest, WrappedValueStripRowsReachTheMinimumHeightBudget)
         .cellPaddingYPx = style.CellPadding.y,
         .plotMinHeightPx = plotMin,
     });
-    const float budget = App::computeFirstChartBudget(estimate, narrow.firstPlotNonPlotHeight, plotMin);
+    const float budget = App::computeFirstChartBudget(estimate, narrow.firstPlot.nonPlotHeight, plotMin);
     EXPECT_GT(budget, estimate);
-    EXPECT_FLOAT_EQ(budget, narrow.firstPlotNonPlotHeight + plotMin);
+    EXPECT_FLOAT_EQ(budget, narrow.firstPlot.nonPlotHeight + plotMin);
 }
 
 // A tab that drew no chart this frame measures nothing, and the budget falls back to the estimate.
 TEST_F(FillPlotLayoutTest, NoChartMeasuresNothing)
 {
     PlotFillState state;
-    state.firstPlotNonPlotHeight = 123.0F;
+    state.firstPlot.nonPlotHeight = 123.0F;
     ImGui::NewFrame();
     ImGui::Begin("Empty", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
     {
@@ -154,8 +158,62 @@ TEST_F(FillPlotLayoutTest, NoChartMeasuresNothing)
     }
     ImGui::End();
     ImGui::EndFrame();
-    EXPECT_FLOAT_EQ(state.firstPlotNonPlotHeight, 0.0F);
-    EXPECT_FLOAT_EQ(App::computeFirstChartBudget(250.0F, state.firstPlotNonPlotHeight, 120.0F), 250.0F);
+    EXPECT_FLOAT_EQ(state.firstPlot.nonPlotHeight, 0.0F);
+    EXPECT_FLOAT_EQ(App::computeFirstChartBudget(250.0F, state.firstPlot.nonPlotHeight, 120.0F), 250.0F);
+}
+
+// Copilot on #1370: a tab measures only while it is shown, so its figure must not outlive the layout
+// it was taken under. Measure the GPU tab with its strip wrapped in a narrow window, then -- with
+// that tab hidden -- widen the window or change the font: the old, taller figure no longer counts,
+// and the budget falls back to the estimate (or the shown tab's own current measurement).
+TEST_F(FillPlotLayoutTest, HiddenTabsMeasurementGoesStaleWhenTheLayoutChanges)
+{
+    PlotFillState gpu;
+    renderGpuLikeTab(260.0F, gpu);
+    renderGpuLikeTab(260.0F, gpu);
+    const float fontSize = ImGui::GetFontSize();
+    const float wrapped = gpu.firstPlot.nonPlotHeight;
+    ASSERT_GT(wrapped, 0.0F);
+    EXPECT_FLOAT_EQ(gpu.firstPlot.windowWidth, 260.0F);
+    EXPECT_FLOAT_EQ(gpu.firstPlot.fontSize, fontSize);
+
+    // Still the layout it was measured in: it counts.
+    EXPECT_FLOAT_EQ(currentFirstPlotNonPlotHeight(gpu.firstPlot, 260.0F, fontSize), wrapped);
+
+    // Another tab is shown while the window is widened; the GPU tab is not drawn again.
+    PlotFillState overview;
+    renderGpuLikeTab(2000.0F, overview);
+    renderGpuLikeTab(2000.0F, overview);
+    EXPECT_FLOAT_EQ(gpu.firstPlot.windowWidth, 260.0F); // untouched while hidden
+    EXPECT_FLOAT_EQ(currentFirstPlotNonPlotHeight(gpu.firstPlot, 2000.0F, fontSize), 0.0F);
+    EXPECT_FLOAT_EQ(currentFirstPlotNonPlotHeight(overview.firstPlot, 2000.0F, fontSize), overview.firstPlot.nonPlotHeight);
+
+    // The budget at the new width is the shown tab's, not the stale wrapped GPU figure.
+    const float shownMax = std::max(currentFirstPlotNonPlotHeight(gpu.firstPlot, 2000.0F, fontSize),
+                                    currentFirstPlotNonPlotHeight(overview.firstPlot, 2000.0F, fontSize));
+    EXPECT_LT(shownMax, wrapped);
+    EXPECT_FLOAT_EQ(App::computeFirstChartBudget(150.0F, shownMax, 120.0F), std::max(150.0F, shownMax + 120.0F));
+
+    // Narrower than it was measured at also no longer describes it (the strip may wrap further).
+    EXPECT_FLOAT_EQ(currentFirstPlotNonPlotHeight(gpu.firstPlot, 240.0F, fontSize), 0.0F);
+    // A font change at the same width, likewise.
+    EXPECT_FLOAT_EQ(currentFirstPlotNonPlotHeight(gpu.firstPlot, 260.0F, fontSize + 2.0F), 0.0F);
+}
+
+TEST(FirstPlotMeasurementTest, OnlyAMeasurementOfTheCurrentLayoutCounts)
+{
+    const FirstPlotMeasurement measured{.nonPlotHeight = 90.0F, .windowWidth = 748.0F, .fontSize = 13.0F};
+    EXPECT_FLOAT_EQ(currentFirstPlotNonPlotHeight(measured, 748.0F, 13.0F), 90.0F);
+    EXPECT_FLOAT_EQ(currentFirstPlotNonPlotHeight(measured, 748.4F, 13.0F), 90.0F); // within tolerance
+    EXPECT_FLOAT_EQ(currentFirstPlotNonPlotHeight(measured, 749.0F, 13.0F), 0.0F);
+    EXPECT_FLOAT_EQ(currentFirstPlotNonPlotHeight(measured, 747.0F, 13.0F), 0.0F);
+    EXPECT_FLOAT_EQ(currentFirstPlotNonPlotHeight(measured, 748.0F, 16.0F), 0.0F);
+
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FLOAT_EQ(currentFirstPlotNonPlotHeight(measured, nan, 13.0F), 0.0F);
+    EXPECT_FLOAT_EQ(currentFirstPlotNonPlotHeight(measured, 748.0F, nan), 0.0F);
+    // Never measured: nothing, even at the default (0, 0) layout.
+    EXPECT_FLOAT_EQ(currentFirstPlotNonPlotHeight(FirstPlotMeasurement{}, 0.0F, 0.0F), 0.0F);
 }
 
 } // namespace
