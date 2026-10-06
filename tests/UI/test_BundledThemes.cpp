@@ -38,7 +38,7 @@ constexpr float CPU_USER_VS_TOTAL_MIN_DL = 15.0F; // CIELAB L* between CPU User 
 constexpr float PRIMARY_TEXT_MIN = 7.0F;          // primary text on the window and plot (#1167)
 constexpr float GRID_MIN = 1.3F;                  // grid lines on the plot: visible...
 constexpr float GRID_MAX = 1.8F;                  // ...but quieter than any series (#1191)
-constexpr float SERIES_MIN = 3.0F;                // a series colour (line, NowBar, legend swatch) on its background
+constexpr float SERIES_MIN = 3.0F;                // a series colour (line, NowBar, strip swatch) on its background
 constexpr double SAME_CHART_MIN_DE = 12.0;        // CIEDE2000 between series drawn together (#1197)...
 constexpr double SAME_CHART_MIN_DE_CVD = 8.0;     // ...and as a protanope or deuteranope sees them
 
@@ -175,7 +175,7 @@ TEST(BundledThemesTest, TooltipTextIsReadable)
     }
 }
 
-TEST(BundledThemesTest, CpuBandColoursAreVisibleOnThePlotAndInTheLegend)
+TEST(BundledThemesTest, CpuBandColoursAreVisibleOnThePlotAndInTheValueStrip)
 {
     for (const auto& path : bundledThemes())
     {
@@ -187,16 +187,16 @@ TEST(BundledThemesTest, CpuBandColoursAreVisibleOnThePlotAndInTheLegend)
         }
         const auto name = path.stem().string();
 
-        // ImPlot fills the plot area with PlotBg (childBg) over FrameBg, and the legend with
-        // LegendBg (popupBg) over the plot. The bands' edge lines and legend swatches use the
+        // ImPlot fills the plot area with PlotBg (childBg) over FrameBg; the value strip, the chart's
+        // key (#1198), sits on the window above it. The bands' edge lines and strip swatches use the
         // opaque series colour (#1192).
         const ImVec4 plot = flattenOver(scheme->childBg, flattenOver(scheme->frameBg, scheme->windowBg));
-        const ImVec4 legend = flattenOver(scheme->popupBg, plot);
+        const ImVec4 strip = scheme->windowBg;
         for (const auto& [label, color] :
              {std::pair{"user", scheme->cpuUser}, std::pair{"system", scheme->cpuSystem}, std::pair{"iowait", scheme->cpuIowait}})
         {
             EXPECT_GE(contrastRatio(color, plot), SERIES_MIN) << name << " cpu_breakdown." << label << " on the plot";
-            EXPECT_GE(contrastRatio(color, legend), SERIES_MIN) << name << " cpu_breakdown." << label << " in the legend";
+            EXPECT_GE(contrastRatio(color, strip), SERIES_MIN) << name << " cpu_breakdown." << label << " in the value strip";
         }
     }
 }
@@ -228,7 +228,7 @@ auto backgroundsOf(const ColorScheme& scheme) -> Backgrounds
     return b;
 }
 
-// #1191: every series colour -- lines, NowBars, legend swatches -- is at least 3:1 on the plot and on
+// #1191: every series colour -- lines, NowBars, strip swatches -- is at least 3:1 on the plot and on
 // the NowBar track (WCAG 1.4.11). A bar that fades into its track reads as zero.
 TEST(BundledThemesTest, EverySeriesIsVisibleOnThePlotAndTheNowBarTrack)
 {

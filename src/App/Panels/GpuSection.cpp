@@ -40,15 +40,16 @@ using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
 using UI::Widgets::NowBarList;
-using UI::Widgets::plotLineWithFill;
+using UI::Widgets::plotSeries;
 using UI::Widgets::renderHistoryWithNowBars;
+using UI::Widgets::SeriesRole;
+using UI::Widgets::seriesStyle;
 using UI::Widgets::tailAlignedSpan;
 
-// One label per series, shared by its legend entry, tooltip row and NowBar (#1008). The bars and
+// One label per series, shared by its value-strip entry, tooltip row and NowBar (#1008). The bars and
 // tooltips used to say "GPU Utilization", "GPU Temperature", "GPU Fan Speed" for series the legend
 // called "Utilization", "Temp (% of 100°C)" and "Fan". The scale a normalised series is drawn
-// against belongs in its value ("65°C (65% of 100°C)"), not its name, which must stay fixed for the
-// legend to keep its show/hide state (#994).
+// against belongs in its value ("65°C (65% of 100°C)"), not its name, which stays fixed (#994).
 constexpr const char* UTIL_LABEL = "Utilization";
 constexpr const char* MEMORY_LABEL = "Memory";
 constexpr const char* CLOCK_LABEL = "Clock";
@@ -407,76 +408,66 @@ void renderGpuSection(RenderContext& ctx)
                 UI::Widgets::drawCollectingHint(alignedCount); // The same "no data yet" state on every chart (#1013)
                 if (!utilData.empty())
                 {
-                    plotLineWithFill(UTIL_LABEL,
-                                     timeData.data(),
-                                     utilData.data(),
-                                     UI::Format::checkedCount(utilData.size()),
-                                     theme.scheme().gpuUtilization,
-                                     theme.scheme().gpuUtilizationFill,
-                                     2.0F,
-                                     true,
-                                     UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                    plotSeries(UTIL_LABEL,
+                               timeData.data(),
+                               utilData.data(),
+                               UI::Format::checkedCount(utilData.size()),
+                               theme.scheme().gpuUtilization,
+                               theme.scheme().gpuUtilizationFill,
+                               seriesStyle(SeriesRole::Primary));
                 }
 
                 if (!memData.empty())
                 {
-                    plotLineWithFill(MEMORY_LABEL,
-                                     timeData.data(),
-                                     memData.data(),
-                                     UI::Format::checkedCount(memData.size()),
-                                     theme.scheme().gpuMemory,
-                                     theme.scheme().gpuMemoryFill,
-                                     2.0F,
-                                     true,
-                                     UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                    plotSeries(MEMORY_LABEL,
+                               timeData.data(),
+                               memData.data(),
+                               UI::Format::checkedCount(memData.size()),
+                               theme.scheme().gpuMemory,
+                               theme.scheme().gpuMemoryFill,
+                               seriesStyle(SeriesRole::Secondary, 0));
                 }
 
                 // Plot clock as a percentage of gpuClockReferenceMHz(): the history's peak, or the floor
-                // when every clock is below it. The label stays fixed, so the legend keeps its show/hide
-                // state; the reference itself is in the tooltip.
+                // when every clock is below it. The label stays fixed; the reference itself is in the
+                // tooltip.
                 if (caps.hasClockSpeeds && !clockData.empty())
                 {
                     normalizeToPercent(clockData, maxClockMHz, clockPercentBuf);
                     const auto clockTimeData = tailAlignedSpan(timeData, clockPercentBuf.size());
-                    plotLineWithFill(CLOCK_LABEL,
-                                     clockTimeData.values.data(),
-                                     clockPercentBuf.data(),
-                                     UI::Format::checkedCount(clockTimeData.values.size()),
-                                     theme.scheme().gpuClock,
-                                     theme.scheme().gpuClockFill,
-                                     2.0F,
-                                     true,
-                                     UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                    plotSeries(CLOCK_LABEL,
+                               clockTimeData.values.data(),
+                               clockPercentBuf.data(),
+                               UI::Format::checkedCount(clockTimeData.values.size()),
+                               theme.scheme().gpuClock,
+                               theme.scheme().gpuClockFill,
+                               seriesStyle(SeriesRole::Secondary, 1));
                 }
 
                 // Encoder utilization
                 if (caps.hasEncoderDecoder && !encoderData.empty())
                 {
                     const auto encoderTimeData = tailAlignedSpan(timeData, encoderData.size());
-                    plotLineWithFill(ENCODER_LABEL,
-                                     encoderTimeData.values.data(),
-                                     encoderData.data(),
-                                     UI::Format::checkedCount(encoderTimeData.values.size()),
-                                     theme.scheme().gpuEncoder,
-                                     std::nullopt,
-                                     2.0F,
-                                     true,
-                                     UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                    plotSeries(ENCODER_LABEL,
+                               encoderTimeData.values.data(),
+                               encoderData.data(),
+                               UI::Format::checkedCount(encoderTimeData.values.size()),
+                               theme.scheme().gpuEncoder,
+                               std::nullopt,
+                               seriesStyle(SeriesRole::Secondary, 2));
                 }
 
                 // Decoder utilization
                 if (caps.hasEncoderDecoder && !decoderData.empty())
                 {
                     const auto decoderTimeData = tailAlignedSpan(timeData, decoderData.size());
-                    plotLineWithFill(DECODER_LABEL,
-                                     decoderTimeData.values.data(),
-                                     decoderData.data(),
-                                     UI::Format::checkedCount(decoderTimeData.values.size()),
-                                     theme.scheme().gpuDecoder,
-                                     std::nullopt,
-                                     2.0F,
-                                     true,
-                                     UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                    plotSeries(DECODER_LABEL,
+                               decoderTimeData.values.data(),
+                               decoderData.data(),
+                               UI::Format::checkedCount(decoderTimeData.values.size()),
+                               theme.scheme().gpuDecoder,
+                               std::nullopt,
+                               seriesStyle(SeriesRole::Secondary, 3));
                 }
 
                 // Tooltip on hover
@@ -734,15 +725,13 @@ void renderGpuSection(RenderContext& ctx)
                     {
                         normalizeToPercent(tempData, maxTempC, tempPercentBuf);
                         const auto tempTimeData = tailAlignedSpan(timeData, tempPercentBuf.size());
-                        plotLineWithFill(TEMP_LABEL,
-                                         tempTimeData.values.data(),
-                                         tempPercentBuf.data(),
-                                         UI::Format::checkedCount(tempTimeData.values.size()),
-                                         theme.scheme().gpuTemperature,
-                                         std::nullopt,
-                                         2.0F,
-                                         true,
-                                         UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                        plotSeries(TEMP_LABEL,
+                                   tempTimeData.values.data(),
+                                   tempPercentBuf.data(),
+                                   UI::Format::checkedCount(tempTimeData.values.size()),
+                                   theme.scheme().gpuTemperature,
+                                   std::nullopt,
+                                   seriesStyle(SeriesRole::Primary));
                     }
 
                     // Power (normalized to actual reference watts; includes fallback note when limit is unavailable)
@@ -750,30 +739,26 @@ void renderGpuSection(RenderContext& ctx)
                     {
                         normalizeToPercent(powerData, maxPowerW, powerPercentBuf);
                         const auto powerTimeData = tailAlignedSpan(timeData, powerPercentBuf.size());
-                        plotLineWithFill(POWER_LABEL,
-                                         powerTimeData.values.data(),
-                                         powerPercentBuf.data(),
-                                         UI::Format::checkedCount(powerTimeData.values.size()),
-                                         theme.scheme().gpuPower,
-                                         std::nullopt,
-                                         2.0F,
-                                         true,
-                                         UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                        plotSeries(POWER_LABEL,
+                                   powerTimeData.values.data(),
+                                   powerPercentBuf.data(),
+                                   UI::Format::checkedCount(powerTimeData.values.size()),
+                                   theme.scheme().gpuPower,
+                                   std::nullopt,
+                                   seriesStyle(SeriesRole::Secondary, 0));
                     }
 
                     // Fan speed (already a percentage)
                     if (caps.hasFanSpeed && !fanData.empty())
                     {
                         const auto fanTimeData = tailAlignedSpan(timeData, fanData.size());
-                        plotLineWithFill(FAN_LABEL,
-                                         fanTimeData.values.data(),
-                                         fanData.data(),
-                                         UI::Format::checkedCount(fanTimeData.values.size()),
-                                         theme.scheme().gpuFan,
-                                         std::nullopt,
-                                         2.0F,
-                                         true,
-                                         UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                        plotSeries(FAN_LABEL,
+                                   fanTimeData.values.data(),
+                                   fanData.data(),
+                                   UI::Format::checkedCount(fanTimeData.values.size()),
+                                   theme.scheme().gpuFan,
+                                   std::nullopt,
+                                   seriesStyle(SeriesRole::Secondary, 1));
                     }
 
                     // Tooltip on hover
