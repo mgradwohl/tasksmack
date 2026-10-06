@@ -9,11 +9,14 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
-#include "Core/VideoBackend.h"
 #include "UI/DialogMetrics.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
+
+#ifndef _WIN32
+#include "Core/VideoBackend.h" // Wayland checks; the custom title bar toggle is Linux-only
+#endif
 
 #include <imgui.h>
 #include <spdlog/spdlog.h>

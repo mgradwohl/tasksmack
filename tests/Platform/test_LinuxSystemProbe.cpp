@@ -652,7 +652,67 @@ TEST(LinuxSystemProbeTest, NetworkTotalCountsHardwareInterfacesOnly)
     {
         const bool expectVirtual = iface.name == "wg0" || iface.name == "docker0" || iface.name == "veth1a2b";
         EXPECT_EQ(iface.isVirtual, expectVirtual) << iface.name;
+        EXPECT_TRUE(iface.isVirtualKnown) << iface.name << ": in sysfs, so classified (#1260)";
     }
+}
+
+TEST(LinuxSystemProbeTest, AnInterfaceMissingFromSysfsIsUnclassified)
+{
+    // #1260: with no sysfs entry the probe can't tell, so the flag isn't authoritative: it counts as
+    // hardware for the Total and the UI falls back to the interface's name.
+    ScopedTempDir proc("ts_test_sys_net_unclassified");
+    ScopedTempDir sys("ts_test_sys_class_net_unclassified");
+    std::filesystem::create_directories(proc.path / "net");
+    std::ofstream(proc.path / "net" / "dev") << NET_DEV_HEADER << netDevLine("eth0", 5000, 700) << netDevLine("veth9", 300, 30);
+    addSysfsInterface(sys.path, "eth0", true);
+
+    LinuxSystemProbe probe(proc.path, sys.path);
+    const auto counters = probe.read();
+    ASSERT_EQ(counters.networkInterfaces.size(), 2U);
+    const auto& veth = counters.networkInterfaces[1];
+    EXPECT_EQ(veth.name, "veth9");
+    EXPECT_FALSE(veth.isVirtual);
+    EXPECT_FALSE(veth.isVirtualKnown);
+    EXPECT_TRUE(counters.networkInterfaces[0].isVirtualKnown);
+}
+
+TEST(LinuxSystemProbeTest, ADanglingDeviceLinkStillMeansHardware)
+{
+    // #1260: the `device` link itself decides, not whether its target resolves.
+    ScopedTempDir proc("ts_test_sys_net_dangling");
+    ScopedTempDir sys("ts_test_sys_class_net_dangling");
+    std::filesystem::create_directories(proc.path / "net");
+    std::ofstream(proc.path / "net" / "dev") << NET_DEV_HEADER << netDevLine("eth0", 5000, 700);
+    std::filesystem::create_directories(sys.path / "eth0");
+    std::filesystem::create_directory_symlink(sys.path / "devices" / "gone", sys.path / "eth0" / "device");
+
+    LinuxSystemProbe probe(proc.path, sys.path);
+    const auto counters = probe.read();
+    ASSERT_EQ(counters.networkInterfaces.size(), 1U);
+    EXPECT_FALSE(counters.networkInterfaces[0].isVirtual);
+    EXPECT_TRUE(counters.networkInterfaces[0].isVirtualKnown);
+}
+
+TEST(LinuxSystemProbeTest, AnUnreadableInterfaceDirectoryIsUnclassified)
+{
+    // #1260: a permission error looking up `device` is "can't tell", not "virtual".
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root bypasses directory permissions";
+    }
+    ScopedTempDir proc("ts_test_sys_net_unreadable");
+    ScopedTempDir sys("ts_test_sys_class_net_unreadable");
+    std::filesystem::create_directories(proc.path / "net");
+    std::ofstream(proc.path / "net" / "dev") << NET_DEV_HEADER << netDevLine("eth0", 5000, 700);
+    addSysfsInterface(sys.path, "eth0", true);
+    std::filesystem::permissions(sys.path / "eth0", std::filesystem::perms::none);
+
+    LinuxSystemProbe probe(proc.path, sys.path);
+    const auto counters = probe.read();
+    std::filesystem::permissions(sys.path / "eth0", std::filesystem::perms::owner_all); // let cleanup remove it
+    ASSERT_EQ(counters.networkInterfaces.size(), 1U);
+    EXPECT_FALSE(counters.networkInterfaces[0].isVirtual);
+    EXPECT_FALSE(counters.networkInterfaces[0].isVirtualKnown);
 }
 
 TEST(LinuxSystemProbeTest, NetworkTotalCountsEveryInterfaceWhenNoneIsHardware)

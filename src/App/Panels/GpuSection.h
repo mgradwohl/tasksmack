@@ -5,6 +5,7 @@
 #include "Platform/GPUTypes.h"
 #include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
+#include "UI/RateAxis.h"
 
 #include <algorithm>
 #include <chrono>
@@ -128,9 +129,12 @@ struct GpuDrawEntry
 /// enumeration failed), in the published order. A GPU missing from one read keeps its slot and its
 /// UI state instead of vanishing and shifting the GPUs after it, whose state used to be keyed by
 /// position (#1163).
-[[nodiscard]] inline std::vector<GpuDrawEntry> gpuDrawList(const Domain::GPUPublication& publication)
+///
+/// Written into @p entries, replacing what it held but keeping its capacity, so the tab can rebuild the
+/// list every frame without allocating (#1171).
+inline void gpuDrawList(const Domain::GPUPublication& publication, std::vector<GpuDrawEntry>& entries)
 {
-    std::vector<GpuDrawEntry> entries;
+    entries.clear();
     entries.reserve(publication.gpuInfo.size() + publication.snapshots.size());
     const auto listed = [&entries](std::string_view gpuId)
     {
@@ -157,6 +161,13 @@ struct GpuDrawEntry
             entries.push_back({.gpuId = snapshot.gpuId, .info = nullptr, .snapshot = &snapshot});
         }
     }
+}
+
+/// gpuDrawList() into a new vector.
+[[nodiscard]] inline std::vector<GpuDrawEntry> gpuDrawList(const Domain::GPUPublication& publication)
+{
+    std::vector<GpuDrawEntry> entries;
+    gpuDrawList(publication, entries);
     return entries;
 }
 
@@ -217,6 +228,50 @@ inline constexpr float GPU_CLOCK_REFERENCE_FLOOR_MHZ = 2000.0F;
     return reference;
 }
 
+/// gpuClockReferenceMHz() over only the clock samples the chart's window shows: those at x >= @p xMin
+/// on @p timeAxis, to whose tail @p clockHistory is aligned (UI::Widgets::maxOfSeriesSince()).
+///
+/// The history holds the trim anchor just left of the window (#1016) and, when the chart is scrolled
+/// back, older samples too. Neither is drawn, so neither may set the 100 % mark: a boost spike that had
+/// just scrolled out kept the idle clock line drawn low against it (#1324), as #1145 fixed for the rate
+/// axes. The current clock still counts, and so does @p shownClockMHz, the smoothed clock the NowBar
+/// shows (UI::Widgets::currentIfAvailable(): NaN when the bar shows N/A, which is ignored). Easing down
+/// from a peak that has just left the window, the bar's value can stay above every visible sample and
+/// the current clock; without it the tooltip read over 100 % and the bar clamped full, as
+/// UI::Widgets::withCurrentValues() prevents on the other windowed axes (#1003). It is folded in rounded
+/// up to a whole MHz, which a float holds exactly, so the narrowed reference is never below it.
+[[nodiscard]] inline float gpuClockReferenceMHz(std::span<const double> timeAxis,
+                                                double xMin,
+                                                std::span<const float> clockHistory,
+                                                std::uint32_t currentClockMHz,
+                                                double shownClockMHz) noexcept
+{
+    // The result is one of the float samples, the floor or current clock, or a whole MHz, so narrowing
+    // it back to float is exact.
+    return static_cast<float>(
+        UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeAxis, xMin, clockHistory),
+                                       {static_cast<double>(gpuClockReferenceMHz({}, currentClockMHz)), std::ceil(shownClockMHz)}));
+}
+
+/// What the GPU tab keeps from frame to frame, so that once warmed up drawing it allocates nothing
+/// (#1171): its scratch buffers and draw list, reused, and the strings built from a publication --
+/// header labels and chart layout IDs, one per draw-list entry -- rebuilt only when a new publication
+/// arrives. Owned by the panel; one per GPU tab. UI thread only.
+struct FrameCache
+{
+    std::vector<GpuDrawEntry> drawList;
+    std::vector<float> clockPercent;
+    std::vector<float> temperaturePercent;
+    std::vector<float> powerPercent;
+
+    /// Per draw-list entry, built from the publication named below.
+    std::vector<std::string> headerLabels;
+    std::vector<std::string> coreLayoutIds;
+    std::vector<std::string> thermalLayoutIds;
+    const Domain::GPUPublication* labelsPublication = nullptr;
+    std::uint64_t labelsVersion = 0;
+};
+
 /// Context struct containing all state needed to render the GPU section.
 /// This allows the render function to be extracted from SystemMetricsPanel
 /// without requiring access to private members.
@@ -242,6 +297,10 @@ struct RenderContext
     // Shares the tab's height among every expanded GPU's charts, as the other tabs' charts do
     // (#959). Null keeps the fixed default height.
     UI::Widgets::FillPlotLayout* fill = nullptr;
+
+    // Kept across frames by the caller so drawing allocates nothing (#1171). Null: a fresh one for the
+    // frame, which draws the same but rebuilds everything.
+    FrameCache* cache = nullptr;
 };
 
 /// Render the GPU section with utilization, memory, thermal, and power charts.

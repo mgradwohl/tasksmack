@@ -13,7 +13,6 @@
 #include <spdlog/spdlog.h>
 #include <toml++/toml.hpp>
 
-#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -26,7 +25,6 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
-#include <vector>
 
 #ifdef _WIN32
 // clang-format off
@@ -44,6 +42,8 @@
 // clang-format on
 #else
 #include <array>
+#include <cerrno>
+#include <vector>
 
 #include <fcntl.h>
 #include <pwd.h>
@@ -701,8 +701,9 @@ void UserConfig::save()
     text << "#   [sampling] interval_ms: refresh cadence (100-5000ms); affects all samplers\n";
     text << "#   [sampling] history_max_seconds: timeline history window (10-1800s)\n";
     text << "#   [sampling] socket_stats_cache_ttl_ms: Linux only; per-process network stat cache TTL (0-5000ms)\n";
-    text << "#   [metrics] max_sane_rate_bps: per-process network rate ceiling (1e9-1e11 bytes/sec); a higher rate is "
-            "taken for a bad reading and shown as 0; read at startup\n";
+    text << "#   [metrics] max_sane_rate_bps: network rate ceiling for process and interface rates "
+            "(1e9-1e11 bytes/sec); a higher rate is taken for a bad reading and shown as 0 (an interface's is also "
+            "a gap in its chart); read at startup\n";
     text << "#   [ui] chart_smooth_factor: how slowly live values and the bars beside charts follow each sample (0.0-0.95), "
             "as a fraction of the refresh interval; read at startup\n";
     text << "#   [ui] chart_tau_ms_min/max: the shortest (5-100ms) and longest (100-2000ms) that easing may take; read at startup\n";

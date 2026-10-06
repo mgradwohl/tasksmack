@@ -7,7 +7,6 @@
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
 #include "UI/HistoryPlotHeight.h"
-#include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -17,6 +16,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <format>
 #include <limits>
 #include <optional>
@@ -79,9 +79,19 @@ void renderCpuCoresSection(RenderContext& ctx)
     auto& theme = UI::Theme::get();
 
     // CPU model header
-    // The count is of logical processors, not cores (#1203).
-    const std::string coreInfo =
-        UI::Format::formatLogicalProcessorSummary(snap.coreCount, (snap.cpuFreqMHz > 0) ? Domain::Numeric::toDouble(snap.cpuFreqMHz) : 0.0);
+    // The count is of logical processors, not cores (#1203). Formatted when its inputs change, not
+    // every frame (#1171). UI thread only. The text is built before the keys are committed: a render
+    // exception is caught and the app carries on, so a failed rebuild must be retried next frame.
+    static std::string coreInfo;
+    static int coreInfoCount = -1;
+    static std::uint64_t coreInfoFreqMHz = 0;
+    if (snap.coreCount != coreInfoCount || snap.cpuFreqMHz != coreInfoFreqMHz)
+    {
+        coreInfo = UI::Format::formatLogicalProcessorSummary(snap.coreCount,
+                                                             (snap.cpuFreqMHz > 0) ? Domain::Numeric::toDouble(snap.cpuFreqMHz) : 0.0);
+        coreInfoCount = snap.coreCount;
+        coreInfoFreqMHz = snap.cpuFreqMHz;
+    }
     ImGui::TextUnformatted(snap.cpuModel.c_str());
     ImGui::SameLine(0, 0);
     ImGui::TextUnformatted(coreInfo.c_str());
@@ -112,17 +122,20 @@ void renderCpuCoresSection(RenderContext& ctx)
     }
     static const std::vector<float> noSamples;
 
-    // Each core's heading ("<icon> Core N") and series name ("Core N"), built once per core count
-    // rather than with two std::format calls per core every frame (#1018). UI thread only.
-    static std::vector<std::string> coreLabels;
+    // Every core's samples share these timestamps, so one time axis serves them all: each core takes
+    // the tail of it its samples cover, rather than rebuilding an identical axis per core per frame --
+    // O(cores x history) work, and one pooled buffer per core held at its peak size (#1173).
+    const auto sharedTimeData = frameTimeAxis(timestamps, timestamps.size(), nowSeconds);
+
+    // Each core's name ("Core N"), its cell heading and series name, built once per core count rather
+    // than with std::format per core every frame (#1018). UI thread only. The heading had the tab's
+    // microchip icon in front, repeated in every cell (#1206).
     static std::vector<std::string> coreNames;
     if (coreNames.size() != coreCount)
     {
-        coreLabels.clear();
         coreNames.clear();
         for (size_t i = 0; i < coreCount; ++i)
         {
-            coreLabels.push_back(std::format(ICON_FA_MICROCHIP " Core {}", i));
             coreNames.push_back(std::format("Core {}", i));
         }
     }
@@ -151,8 +164,9 @@ void renderCpuCoresSection(RenderContext& ctx)
         // rows/scrolling (#823 review).
         const float approxLabelOverhead = (ImGui::GetStyle().WindowPadding.y * 2.0F) + ImGui::GetTextLineHeight() +
                                           (ImGui::GetStyle().ItemSpacing.y * 2.0F) + (ImGui::GetStyle().CellPadding.y * 2.0F);
-        const float barColumnAllowance =
-            UI::Widgets::nowBarWidth(ImGui::GetFontSize()); // extra width renderHistoryWithNowBars reserves for the NowBar column
+        // The width renderHistoryWithNowBars takes beside the plot: the one-bar column and the cell
+        // padding that separates it from the plot.
+        const float barColumnAllowance = UI::Widgets::nowBarsReservedWidth(1, 0, false);
 
         const ImVec2 avail = ImGui::GetContentRegionAvail();
         const ChartGridConfig gridConfig{
@@ -236,7 +250,7 @@ void renderCpuCoresSection(RenderContext& ctx)
                             // hovering (#1193). The value strip renderHistoryWithNowBars() draws above
                             // other charts would add a line the grid's fixed cell height has no room for.
                             const float cellContentTop = ImGui::GetCursorPosY();
-                            const std::string& coreLabel = coreLabels[coreIdx];
+                            const std::string& coreLabel = coreName;
                             const float availableWidth = ImGui::GetContentRegionAvail().x;
                             const float valueGap = ImGui::GetStyle().ItemSpacing.x;
                             const float labelWidth =
@@ -258,7 +272,7 @@ void renderCpuCoresSection(RenderContext& ctx)
                             }
                             const float measuredOverhead = *cachedOverhead;
 
-                            const auto timeData = frameTimeAxis(timestamps, samples.size(), nowSeconds);
+                            const auto timeData = tailAlignedSpan(sharedTimeData, samples.size()).values;
                             const float plotHeight = std::max(minCorePlotHeight(), cellHeight - measuredOverhead);
 
                             // timeData holds the newest min(samples, timestamps) entries; take the same
@@ -277,7 +291,8 @@ void renderCpuCoresSection(RenderContext& ctx)
                             // to add one (#823 review).
                             auto coreCfg = UI::Widgets::percentHistoryConfig(coreLabel.c_str(), axisConfig.xMin, axisConfig.xMax);
                             coreCfg.flags |= ImPlotFlags_NoTitle;
-                            coreCfg.showLegend = false;
+                            // No "Time (s)" or time tick labels in each of the cells (#1206).
+                            coreCfg.timeAxisLabels = false;
                             coreCfg.height = plotHeight;
                             // Every core's history comes from the one publication, so each chart keeps
                             // its reduced points until the next one (#1139).
@@ -324,7 +339,9 @@ void renderCpuCoresSection(RenderContext& ctx)
                             // unlike the per-cell PushID scaffolding in ChartGrid.h, there's no
                             // allocation to avoid, and a per-core id keeps RenderMetrics entries
                             // from collapsing all cores into one (#823 review).
-                            renderHistoryWithNowBars(coreLabel.c_str(), plotHeight, plotFn, bars, false, 0, true, NowBarValues::None);
+                            // Not compactSpacing: the bar keeps the same gap from its chart as on every
+                            // other tab, rather than touching the plot's edge.
+                            renderHistoryWithNowBars(coreLabel.c_str(), plotHeight, plotFn, bars, false, 0, false, NowBarValues::None);
                         });
     }
 }

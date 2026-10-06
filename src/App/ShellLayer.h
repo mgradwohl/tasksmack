@@ -7,6 +7,7 @@
 #include "Panels/ProcessDetailsPanel.h"
 #include "Panels/ProcessesPanel.h"
 #include "Panels/SystemMetricsPanel.h"
+#include "TabLabel.h"
 
 #include <SDL3/SDL_video.h>
 
@@ -99,9 +100,8 @@ class ShellLayer : public Core::Layer
     // Avoids per-frame heap allocations from string concatenation in renderTabBar().
     // Both carry a fixed "###" ID suffix (TabLabel.h), so a new name never changes which tab ImGui
     // thinks is selected (#1140).
-    std::string m_CachedSystemTabLabel;  // ICON + hostname: rebuilt in onAttach()
-    std::string m_CachedDetailsTabLabel; // ICON + process name: rebuilt when the name changes
-    std::string m_CachedLabelText;       // The panel's label text m_CachedDetailsTabLabel was built from
+    std::string m_CachedSystemTabLabel;      // ICON + hostname: rebuilt in onAttach()
+    TabLabel::CachedLabel m_DetailsTabLabel; // ICON + process name: rebuilt when the name changes
 
     // Declared last so panels and cached labels outlive the non-owning registry.
     PanelTabs m_Tabs;

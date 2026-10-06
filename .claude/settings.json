@@ -20,7 +20,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "jq -r '.tool_input.file_path // .tool_response.filePath // empty' | { read -r f; if [ -n \"$f\" ] && printf '%s' \"$f\" | grep -qE '\\.(cpp|h|hpp|cc|cxx)$'; then if command -v clang-format >/dev/null 2>&1; then clang-format -i \"$f\"; else echo \"Warning: clang-format not found; skipped formatting $f\" >&2; fi; fi; } 2>/dev/null || true"
+            "command": "if ! command -v jq >/dev/null 2>&1; then echo 'Warning: jq not found; clang-format hook skipped' >&2; exit 0; fi; jq -r '.tool_input.file_path // .tool_response.filePath // empty' | tr -d '\\r' | { read -r f; if [ -n \"$f\" ] && printf '%s' \"$f\" | grep -qE '\\.(cpp|h|hpp|cc|cxx)$'; then if command -v clang-format >/dev/null 2>&1; then clang-format -i \"$f\"; else echo \"Warning: clang-format not found; skipped formatting $f\" >&2; fi; fi; } || true"
           }
         ]
       }

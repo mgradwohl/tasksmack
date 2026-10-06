@@ -107,7 +107,7 @@ std::vector<GPUSnapshot> orderSnapshotsByEnumeration(std::span<const Platform::G
 }
 
 GPUModel::GPUModel(std::unique_ptr<Platform::IGPUProbe> probe)
-    : m_Probe(std::move(probe)), m_PrevSampleTime(std::chrono::steady_clock::now())
+    : m_Probe(std::move(probe)), m_PrevSampleTime(std::chrono::steady_clock::now()), m_LastFullRescan(m_PrevSampleTime)
 {
     if (!m_Probe)
     {
@@ -119,13 +119,14 @@ GPUModel::GPUModel(std::unique_ptr<Platform::IGPUProbe> probe)
     {
         m_Capabilities = m_Probe->capabilities();
         m_CapabilitiesKnown = true;
+        m_PerProcessKnownUnsupported.store(!m_Capabilities.hasPerProcessMetrics, std::memory_order_release);
     }
     catch (const std::exception& e)
     {
         spdlog::error("GPUModel: Failed to read capabilities: {}", e.what());
     }
 
-    // Enumerate GPUs once at construction
+    // Enumerate GPUs at construction; refreshAt() re-enumerates when the probe reports a change.
     try
     {
         m_GPUInfo = m_Probe->enumerateGPUs();
@@ -162,6 +163,8 @@ void GPUModel::refreshAt(std::chrono::steady_clock::time_point now)
         std::vector<Platform::GPUCounters> currentCounters;
         {
             const std::scoped_lock probeLock(m_ProbeMutex);
+            // Before the read, so a rebuilt device list and the GPU info describing it arrive together.
+            rescanGPUs(now);
             currentCounters = m_Probe->readGPUCounters();
         }
         const auto currentTime = now;
@@ -235,6 +238,76 @@ void GPUModel::refreshAt(std::chrono::steady_clock::time_point now)
     }
 }
 
+void GPUModel::rescanGPUs(std::chrono::steady_clock::time_point now)
+{
+    const bool full = (now - m_LastFullRescan) >= std::chrono::seconds(Sampling::GPU_RESCAN_INTERVAL_SECONDS);
+    if (full)
+    {
+        m_LastFullRescan = now;
+    }
+
+    bool reenumerate = false;
+    try
+    {
+        reenumerate = m_Probe->rescanGPUs(full ? Platform::GPURescan::Full : Platform::GPURescan::Quick);
+    }
+    catch (const std::exception& e)
+    {
+        spdlog::warn("GPUModel: GPU rescan failed: {}", e.what());
+    }
+    // A startup enumeration or capabilities query that failed is retried, at the full-rescan rate.
+    // m_GPUInfoKnown and m_CapabilitiesKnown are only written on this thread, so need no lock to read.
+    if (full && (!m_GPUInfoKnown || !m_CapabilitiesKnown))
+    {
+        reenumerate = true;
+    }
+    if (!reenumerate)
+    {
+        return;
+    }
+
+    std::optional<Platform::GPUCapabilities> capabilities;
+    try
+    {
+        capabilities = m_Probe->capabilities();
+    }
+    catch (const std::exception& e)
+    {
+        spdlog::warn("GPUModel: Failed to re-read capabilities: {}", e.what());
+    }
+    std::optional<std::vector<Platform::GPUInfo>> gpuInfo;
+    try
+    {
+        gpuInfo = m_Probe->enumerateGPUs();
+    }
+    catch (const std::exception& e)
+    {
+        // Keep the GPU info we had: the GPUs it lists that still report counters keep being sampled.
+        spdlog::warn("GPUModel: Failed to re-enumerate GPUs: {}", e.what());
+    }
+
+    const std::unique_lock lock(m_Mutex);
+    if (capabilities.has_value())
+    {
+        m_Capabilities = *capabilities;
+        m_CapabilitiesKnown = true;
+        m_PerProcessKnownUnsupported.store(!m_Capabilities.hasPerProcessMetrics, std::memory_order_release);
+    }
+    if (gpuInfo.has_value())
+    {
+        const auto sameIds = std::ranges::equal(m_GPUInfo, *gpuInfo, [](const auto& lhs, const auto& rhs) { return lhs.id == rhs.id; });
+        if (!sameIds || !m_GPUInfoKnown)
+        {
+            spdlog::info("GPUModel: GPU set changed, now {} GPU(s)", gpuInfo->size());
+        }
+        // A GPU that persists keeps its id, and so its history. A new one gets a history on its first
+        // sample; one that is gone stops reporting counters, so its history records gaps until it
+        // leaves the window (trimHistory()).
+        m_GPUInfo = std::move(*gpuInfo);
+        m_GPUInfoKnown = true;
+    }
+}
+
 void GPUModel::setMaxHistorySeconds(double seconds)
 {
     const std::unique_lock lock(m_Mutex);
@@ -243,6 +316,12 @@ void GPUModel::setMaxHistorySeconds(double seconds)
     if (!m_HistoryTimestamps.empty())
     {
         trimHistory(m_HistoryTimestamps.back());
+    }
+    // Republish the trimmed history now rather than at the next sample (#1145); see
+    // SystemModel::setMaxHistorySeconds(). Nothing is published before the first refresh.
+    if (m_PublicationVersion != 0)
+    {
+        publish();
     }
 }
 
@@ -420,14 +499,17 @@ std::vector<Platform::GPUInfo> GPUModel::gpuInfo() const
 
 Platform::GPUCapabilities GPUModel::capabilities() const
 {
+    const std::shared_lock lock(m_Mutex);
     return m_Capabilities;
 }
 
 std::vector<Platform::ProcessGPUCounters> GPUModel::readProcessGPUCounters() const
 {
-    // m_Capabilities and m_CapabilitiesKnown are set once at construction and never mutated
-    // afterward, so this read needs no lock (same reasoning as capabilities() above).
-    // Checking m_CapabilitiesKnown first matters: if the constructor's capabilities() query
+    // m_Capabilities and m_CapabilitiesKnown can be re-read by the sampler thread (rescanGPUs()),
+    // so this reads m_PerProcessKnownUnsupported, the atomic flag written alongside them -- not
+    // the fields under a shared m_Mutex, which cost this hot early exit ~60% (#1322), nor the
+    // probe lock, which a slow probe read holds.
+    // The flag folds in m_CapabilitiesKnown deliberately: if the capabilities() query
     // threw, m_Capabilities is left at its default (all-false) values, and treating that as
     // "confirmed unsupported" would permanently and silently suppress a probe that might
     // genuinely support per-process data, just because of a one-time query failure. Only
@@ -439,7 +521,7 @@ std::vector<Platform::ProcessGPUCounters> GPUModel::readProcessGPUCounters() con
     {
         return {};
     }
-    if (m_CapabilitiesKnown && !m_Capabilities.hasPerProcessMetrics)
+    if (m_PerProcessKnownUnsupported.load(std::memory_order_acquire))
     {
         return {};
     }
@@ -484,6 +566,20 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
     snapshot.computeUtilPercent = current.computeUtilPercent;
     snapshot.encoderUtilPercent = current.encoderUtilPercent;
     snapshot.decoderUtilPercent = current.decoderUtilPercent;
+
+    // Power from a cumulative energy counter (#1269): its change over the sample interval. Without
+    // a readable previous counter, or when it went backwards (a driver reload), power is unread.
+    if (current.energyAvailable)
+    {
+        const bool haveDelta = previous != nullptr && previous->energyAvailable && timeDeltaSeconds > 0.0 &&
+                               current.energyMicroJoules >= previous->energyMicroJoules;
+        constexpr double MICROJOULES_PER_JOULE = 1'000'000.0;
+        snapshot.powerAvailable = haveDelta;
+        snapshot.powerDrawWatts =
+            haveDelta
+                ? Numeric::counterRate(current.energyMicroJoules, previous->energyMicroJoules, timeDeltaSeconds) / MICROJOULES_PER_JOULE
+                : 0.0;
+    }
 
     // Compute derived values
     if (current.memoryTotalBytes > 0)

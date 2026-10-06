@@ -7,12 +7,54 @@
 #include "UI/FillPlotLayout.h"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace App::NetworkSection
 {
+
+/// What the Network tab keeps from frame to frame, so that drawing it allocates nothing once warmed up
+/// (#1171): the strings and lists built from a publication, rebuilt only when it -- or whatever else
+/// each depends on -- changes, rather than every frame. Owned by the panel. UI thread only.
+struct FrameCache
+{
+    /// The publication everything below was built from.
+    const Domain::SystemPublication* publication = nullptr;
+    std::uint64_t version = 0;
+
+    /// The interface selector's entries (NetInterfaceUtils::interfaceSelectorLabels()), and the
+    /// widest of them at dropdownFontSize.
+    std::vector<std::string> interfaceNames;
+    float dropdownFontSize = -1.0F;
+    float dropdownTextWidth = 0.0F;
+
+    /// The selected interface's series labels, "<name> Sent" and "<name> Received", and the chart
+    /// title naming it when its history is unavailable, built for labelsName: keyed on the display name
+    /// the labels are made from (and the width it was fitted to), not the selection index, so a selection that changes this frame or an
+    /// index that now names another interface can't keep stale labels.
+    bool labelsBuilt = false;
+    std::string labelsName;
+    /// The width the interface name was fitted to (seriesNameBudget()); a resize or font change refits it.
+    float labelsBudget = -1.0F;
+    std::string interfaceSentLabel;
+    std::string interfaceRecvLabel;
+    std::string unavailableTitle;
+
+    /// The selected interface's "Link: <rate> (<nominal>)" text, built for linkTextMbps (0: not built).
+    std::uint64_t linkTextMbps = 0;
+    std::string linkText;
+
+    /// The Interface Status table's rows (NetInterfaceUtils::getInterfaceStatusRows()) and hidden
+    /// count, for rowsShowAll and rowsSeenTraffic interfaces seen moving traffic (a set that only grows).
+    bool rowsValid = false;
+    bool rowsShowAll = false;
+    std::size_t rowsSeenTraffic = 0;
+    std::vector<Domain::SystemSnapshot::InterfaceSnapshot> statusRows;
+    std::size_t hiddenCount = 0;
+};
 
 /// Context struct containing all state needed to render network/disk sections.
 /// This allows the render functions to be extracted from SystemMetricsPanel
@@ -60,6 +102,10 @@ struct RenderContext
 
     // Set by renderNetworkSection() while the tab's fill scope is open; not for callers.
     UI::Widgets::FillPlotLayout* fill = nullptr;
+
+    // Kept across frames by the caller so drawing allocates nothing (#1171). Null: a fresh one for the
+    // frame, which draws the same but rebuilds everything.
+    FrameCache* cache = nullptr;
 };
 
 /// Render the Disk I/O section with history chart.

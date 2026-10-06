@@ -8,6 +8,7 @@
 #include "UI/Format.h"
 #include "UI/HistoryPlotHeight.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/InlineText.h"
 #include "UI/RateAxis.h"
 #include "UI/Theme.h"
 
@@ -46,14 +47,16 @@ using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::normalizeToUnitInterval;
 using UI::Widgets::NowBar;
 using UI::Widgets::NowBarValues;
-using UI::Widgets::plotLineWithFill;
+using UI::Widgets::plotSeries;
 using UI::Widgets::renderChartGrid;
 using UI::Widgets::renderHistoryWithNowBars;
+using UI::Widgets::SeriesRole;
+using UI::Widgets::seriesStyle;
 using UI::Widgets::tailAlignedSpan;
 
 constexpr size_t STORAGE_NOW_BAR_COLUMNS = 2; // Read, Write
 
-// One label per series, shared by its legend entry, tooltip row and NowBar (#1008).
+// One label per series, shared by its value-strip entry, tooltip row and NowBar (#1008).
 constexpr const char* READ_LABEL = "Read";
 constexpr const char* WRITE_LABEL = "Write";
 
@@ -97,29 +100,38 @@ void renderDiskCell(const std::string& deviceName,
     // One upper bound for the chart's Y axis and its bars, so a bar and its line show a value at the
     // same height (#1003). A per-disk series holds NaN for samples where the disk was absent, and
     // currentRead/Write are NaN when it is absent from the latest sample (#1015): maxOfSeries skips
-    // them, and the bars show N/A rather than a false 0 B/s, as the GPU fan bar does.
+    // them, and the bars show N/A rather than a false 0 B/s, as the GPU fan bar does. Only the
+    // samples in the window count, not the one trimming keeps left of it (#1145), plus the bars'
+    // current values, so a bar easing down from a peak that has just left the window is not clamped.
     const double diskAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-        "##DiskAxis", UI::Widgets::maxOfSeries(readData, writeData), UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
+        "##DiskAxis",
+        UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, readData, writeData),
+                                       {currentRead, currentWrite}),
+        UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
 
-    const auto makeBar = [&](const char* label, double current, const ImVec4& color)
+    // The cell has no legend, so its value strip is the chart's key: each bar carries its series'
+    // marker, so Read (the filled primary) and Write (a secondary's marker) differ by more than colour.
+    const auto makeBar = [&](const char* label, double current, const ImVec4& color, ImPlotMarker marker)
     {
         if (!std::isfinite(current))
         {
             return NowBar{.valueText = "N/A",
                           .label = label,
-                          .tooltipText = std::format("{}: not reported this sample", label),
+                          .tooltipText = UI::InlineText::format("{}: not reported this sample", label),
                           .value01 = 0.0,
-                          .color = theme.scheme().textMuted};
+                          .color = theme.scheme().textMuted,
+                          .marker = marker};
         }
         return NowBar{.valueText = UI::Format::formatBytesPerSec(current),
                       .label = label,
                       .tooltipText = {},
                       .value01 = normalizeToUnitInterval(current, diskAxisUpper),
-                      .color = color};
+                      .color = color,
+                      .marker = marker};
     };
     const std::array diskBars{
-        makeBar(READ_LABEL, currentRead, theme.scheme().chartIo),
-        makeBar(WRITE_LABEL, currentWrite, theme.scheme().chartIoWrite),
+        makeBar(READ_LABEL, currentRead, theme.scheme().chartIo, seriesStyle(SeriesRole::Primary).marker),
+        makeBar(WRITE_LABEL, currentWrite, theme.scheme().chartIoWrite, seriesStyle(SeriesRole::Secondary, 0).marker),
     };
 
     const float cellContentTop = ImGui::GetCursorPosY();
@@ -152,30 +164,29 @@ void renderDiskCell(const std::string& deviceName,
         auto diskCfg = UI::Widgets::rateHistoryConfigWithUpper(
             deviceName.c_str(), axisConfig.xMin, axisConfig.xMax, formatAxisBytesPerSec, diskAxisUpper);
         diskCfg.flags |= ImPlotFlags_NoTitle;
+        // No "Time (s)" or time tick labels in each of the cells (#1206); like every chart, no legend
+        // (#1198): the cell's value strip above names Read and Write.
+        diskCfg.timeAxisLabels = false;
         diskCfg.height = plotHeight;
         const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(diskCfg, dataGeneration));
         if (chart.active())
         {
             UI::Widgets::drawCollectingHint(timeData.size()); // The same "no data yet" state on every chart (#1013)
             const int count = UI::Format::checkedCount(timeData.size());
-            plotLineWithFill(READ_LABEL,
-                             timeData.data(),
-                             readData.data(),
-                             count,
-                             theme.scheme().chartIo,
-                             theme.scheme().chartIoFill,
-                             2.0F,
-                             true,
-                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
-            plotLineWithFill(WRITE_LABEL,
-                             timeData.data(),
-                             writeData.data(),
-                             count,
-                             theme.scheme().chartIoWrite,
-                             theme.scheme().chartIoWriteFill,
-                             2.0F,
-                             true,
-                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+            plotSeries(READ_LABEL,
+                       timeData.data(),
+                       readData.data(),
+                       count,
+                       theme.scheme().chartIo,
+                       theme.scheme().chartIoFill,
+                       seriesStyle(SeriesRole::Primary));
+            plotSeries(WRITE_LABEL,
+                       timeData.data(),
+                       writeData.data(),
+                       count,
+                       theme.scheme().chartIoWrite,
+                       theme.scheme().chartIoWriteFill,
+                       seriesStyle(SeriesRole::Secondary, 0));
 
             if (ImPlot::IsPlotHovered() && !timeData.empty())
             {
@@ -264,7 +275,6 @@ void renderStorageSection(RenderContext& ctx)
         ImGui::TextColored(
             theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  Disk I/O by Device (%zu disks, %zu samples)", diskCount, historySize);
 
-        // Pre-build device name → snapshot lookup to avoid O(n²) linear scans in the cell loop.
         const double diskAlpha = computeAlpha(ctx.lastDeltaSeconds, ctx.refreshInterval);
         if (ctx.smoothedPerDisk != nullptr)
         {
@@ -273,12 +283,6 @@ void renderStorageSection(RenderContext& ctx)
             std::erase_if(*ctx.smoothedPerDisk,
                           [&](const auto& entry)
                           { return std::ranges::none_of(perDisk, [&](const auto& disk) { return disk.deviceName == entry.first; }); });
-        }
-        std::unordered_map<std::string, const Domain::DiskSnapshot*> diskLookup;
-        diskLookup.reserve(diskSnap.disks.size());
-        for (const auto& d : diskSnap.disks)
-        {
-            diskLookup.emplace(d.deviceName, &d);
         }
 
         // Approximate overhead used only as a floor for the grid's minimum cell height; the real
@@ -356,14 +360,27 @@ void renderStorageSection(RenderContext& ctx)
                 const auto readData = tailAlignedSpan(disk.readBytesPerSec, alignedCount).values;
                 const auto writeData = tailAlignedSpan(disk.writeBytesPerSec, alignedCount).values;
 
-                // Per-disk snapshot values for NowBars (O(1) lookup via pre-built map).
-                // NaN if the disk is missing from the latest sample: renderDiskCell shows N/A, not 0.
+                // Per-disk snapshot values for NowBars. NaN if the disk is missing from the latest sample:
+                // renderDiskCell shows N/A, not 0. The latest sample normally lists the disks in the
+                // history's order, so the same index is checked first; a scan of its few disks covers a
+                // disk added or removed since. A name -> snapshot map rebuilt every frame cost a heap
+                // allocation per disk per frame for keys copied from strings already there (#1171).
                 double diskRead = std::numeric_limits<double>::quiet_NaN();
                 double diskWrite = std::numeric_limits<double>::quiet_NaN();
-                if (const auto it = diskLookup.find(disk.deviceName); it != diskLookup.end())
+                const Domain::DiskSnapshot* latestDisk = nullptr;
+                if (diskIdx < diskSnap.disks.size() && diskSnap.disks[diskIdx].deviceName == disk.deviceName)
                 {
-                    diskRead = it->second->readBytesPerSec;
-                    diskWrite = it->second->writeBytesPerSec;
+                    latestDisk = &diskSnap.disks[diskIdx];
+                }
+                else if (const auto it = std::ranges::find(diskSnap.disks, disk.deviceName, &Domain::DiskSnapshot::deviceName);
+                         it != diskSnap.disks.end())
+                {
+                    latestDisk = &*it;
+                }
+                if (latestDisk != nullptr)
+                {
+                    diskRead = latestDisk->readBytesPerSec;
+                    diskWrite = latestDisk->writeBytesPerSec;
                 }
                 if (ctx.smoothedPerDisk != nullptr)
                 {
@@ -415,9 +432,13 @@ void renderStorageSection(RenderContext& ctx)
         const auto readData = tailAlignedSpan(diskReadHist, alignedDisk).values;
         const auto writeData = tailAlignedSpan(diskWriteHist, alignedDisk).values;
 
-        // One upper bound for the chart's Y axis and its bars (#1003).
+        // One upper bound for the chart's Y axis and its bars (#1003), from the samples in the window
+        // (#1145) and the bars' smoothed values, which can lag a peak that has just left it.
         const double diskAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-            "##SystemDiskHistory", UI::Widgets::maxOfSeries(readData, writeData), UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
+            "##SystemDiskHistory",
+            UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(aggregateTimes, diskAxis.xMin, readData, writeData),
+                                           {smoothedRead, smoothedWrite}),
+            UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
 
         const NowBar readBar{.valueText = UI::Format::formatBytesPerSec(smoothedRead),
                              .label = READ_LABEL,
@@ -443,24 +464,20 @@ void renderStorageSection(RenderContext& ctx)
             {
                 UI::Widgets::drawCollectingHint(alignedDisk); // The same "no data yet" state on every chart (#1013)
                 const int count = UI::Format::checkedCount(alignedDisk);
-                plotLineWithFill(READ_LABEL,
-                                 aggregateTimes.data(),
-                                 readData.data(),
-                                 count,
-                                 theme.scheme().chartIo,
-                                 theme.scheme().chartIoFill,
-                                 2.0F,
-                                 true,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
-                plotLineWithFill(WRITE_LABEL,
-                                 aggregateTimes.data(),
-                                 writeData.data(),
-                                 count,
-                                 theme.scheme().chartIoWrite,
-                                 theme.scheme().chartIoWriteFill,
-                                 2.0F,
-                                 true,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotSeries(READ_LABEL,
+                           aggregateTimes.data(),
+                           readData.data(),
+                           count,
+                           theme.scheme().chartIo,
+                           theme.scheme().chartIoFill,
+                           seriesStyle(SeriesRole::Primary));
+                plotSeries(WRITE_LABEL,
+                           aggregateTimes.data(),
+                           writeData.data(),
+                           count,
+                           theme.scheme().chartIoWrite,
+                           theme.scheme().chartIoWriteFill,
+                           seriesStyle(SeriesRole::Secondary, 0));
 
                 if (ImPlot::IsPlotHovered())
                 {

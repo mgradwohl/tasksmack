@@ -6,6 +6,7 @@
 #include "Core/ResizePerfOperation.h"
 #include "Core/WindowEvents.h"
 #include "UI/AssetPath.h"
+#include "UI/ChartWidgets.h"
 #include "UI/DpiScale.h"
 #include "UI/FontFileCache.h"
 #include "UI/IconsFontAwesome6.h"
@@ -620,6 +621,8 @@ void UILayer::beginFrame()
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
+    // Let frame-keyed chart caches age and free memory even on frames that draw no charts (#1173).
+    UI::Widgets::trimFrameCaches();
 
     // Push the current font - store pointer so endFrame() can pop without a
     // second Theme lookup.

@@ -119,6 +119,18 @@ TEST(SamplingConfigTest, ClampHistorySecondsAboveMax)
     EXPECT_EQ(clampHistorySeconds(10000), HISTORY_SECONDS_MAX);
 }
 
+TEST(SamplingConfigTest, ClampHistorySecondsNonFinite)
+{
+    // NaN must not pass through std::clamp: it would make every trim cutoff NaN (#1325). It maps to the
+    // minimum, matching historyCapacityForSeconds(), and infinities clamp to the nearer bound.
+    constexpr double nan = std::numeric_limits<double>::quiet_NaN();
+    constexpr double inf = std::numeric_limits<double>::infinity();
+    EXPECT_DOUBLE_EQ(clampHistorySeconds(nan), static_cast<double>(HISTORY_SECONDS_MIN));
+    EXPECT_DOUBLE_EQ(clampHistorySeconds(inf), static_cast<double>(HISTORY_SECONDS_MAX));
+    EXPECT_DOUBLE_EQ(clampHistorySeconds(-inf), static_cast<double>(HISTORY_SECONDS_MIN));
+    EXPECT_FLOAT_EQ(clampHistorySeconds(std::numeric_limits<float>::quiet_NaN()), static_cast<float>(HISTORY_SECONDS_MIN));
+}
+
 TEST(SamplingConfigTest, ClampHistorySecondsWithDifferentTypes)
 {
     // Test with different integer types

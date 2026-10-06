@@ -478,10 +478,13 @@ pwsh tools/clang-tidy.ps1 debug    # Windows
 Note: the build uses precompiled headers (PCH). The clang-tidy helper strips PCH flags from the compile commands to avoid version mismatch issues.
 
 `.clang-tidy` sets `WarningsAsErrors: '*'`, so any clang-tidy finding fails the run, locally and in CI's
-blocking Linux job. Fix the finding, or suppress it with a `NOLINT(check-name)` comment that says why. Before
-this, clang-tidy exited 0 on warnings, so the CI job could never fail on one (#1089). The blocking job
-covers what `tools/clang-tidy.sh` analyses, which excludes `src/Platform/Windows/**`; Windows-only code is
-checked only by the advisory Windows job on pushes to `main` until #1233 adds a blocking gate.
+blocking jobs. Fix the finding, or suppress it with a `NOLINT(check-name)` comment that says why. Before
+this, clang-tidy exited 0 on warnings, so the CI job could never fail on one (#1089). CI runs clang-tidy
+twice, both blocking: on Linux over what `tools/clang-tidy.sh` analyses (which excludes
+`src/Platform/Windows/**`), and on Windows over what `tools/clang-tidy.ps1` analyses (everything but
+`src/Platform/Linux/**`, so the Windows platform code and the `_WIN32` branches of shared files) (#1233).
+Run the Windows script before pushing a change to Windows-only code. The Windows script skips one check,
+`clang-analyzer-optin.core.EnumCastOutOfRange`, for an MSVC STL false positive it can't suppress in our code.
 
 ### Include-What-You-Use (IWYU)
 
@@ -535,6 +538,11 @@ Coverage reports are written to `coverage/` (gitignored).
 
 CI heavy checks also publish a coverage summary and may emit a warning if coverage is below the configured threshold.
 
+The report counts all of `src/`, not just the files linked into `TaskSmackTests`: the coverage
+scripts pass the instrumented app binary (`build/<preset>/bin/TaskSmack`) to `llvm-cov` as an extra
+`-object`, so every file the tests never execute (the ImGui panels and layers, `Theme.cpp`,
+`main.cpp`, ...) shows up at 0% instead of silently dropping out of the denominator (#1131).
+
 ```bash
 # Linux
 ./tools/coverage.sh
@@ -553,6 +561,12 @@ pwsh tools/coverage.ps1 -Preset win-coverage   # optional; defaults to "win-cove
 > `tools/coverage.sh` exports it before the direct binary run.  If you run the test binary
 > directly (e.g. `./build/debug/tests/TaskSmackTests`) without setting `LD_LIBRARY_PATH`,
 > the GPU mock tests will be skipped automatically via `GTEST_SKIP()`.
+
+> **Note (display-dependent tests):** The `ApplicationTest`, `WindowTest`, `IconLoaderGLTest` and
+> `AssetPathTest.FindAssetsDirIsStableAcrossCalls` tests need a GL 3.3 core context. They skip only
+> when the up-front display probe finds none; once it passes, a construction exception fails the
+> test. Linux CI runs `ctest` under `xvfb-run` with Mesa and sets `TASKSMACK_REQUIRE_DISPLAY=1`,
+> which turns a failed probe into a failure too, so a broken CI display can't hide as skips (#1132).
 
 ## Sanitizers (Linux only)
 
@@ -678,6 +692,9 @@ enforces a `--min-coverage` floor (default 90%): a benchmark missing from the cu
 with no usable timing data on either side, counts against coverage instead of being silently
 ignored (see #871 -- this closed three concrete false-pass paths: a missing baseline benchmark,
 a non-finite/`NaN` timing, and comparing two different timing fields for the same benchmark).
+A slowdown also has to exceed an absolute noise floor, `--min-abs-delta-ns` (default 1.0ns), to
+count: a sub-nanosecond microbenchmark such as `BM_Numeric_ToDouble_Int` moving 0.4ns -> 0.6ns
+reads as +50% but is timer noise (#1322). Pass `--min-abs-delta-ns 0` to gate on percentage alone.
 
 This is a *separate* baseline from `perf-data/linux-baseline.json` above, deliberately: that one
 was recorded on a local developer machine (10 cores @ 3.7 GHz) for local `tools/bench.sh`
@@ -1406,7 +1423,7 @@ Clang-tidy configuration is curated for signal/noise; see `.clang-tidy` for the 
 
 ## Adding Dependencies
 
-Use CMake’s `FetchContent` for dependencies. Declare new dependencies in `cmake/Dependencies.cmake`, and always use `SYSTEM` to suppress third-party warnings:
+Use CMake’s `FetchContent` for dependencies. Declare new dependencies in `cmake/Dependencies.cmake`, always use `SYSTEM` to suppress third-party warnings, and always pass a per-preset `BINARY_DIR` (see "Shared FetchContent cache" below):
 
 ```cmake
 FetchContent_Declare(
@@ -1414,6 +1431,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/example/mylib.git
     GIT_TAG v1.0.0
     SYSTEM
+    BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/mylib-build"
 )
 FetchContent_MakeAvailable(mylib)
 
@@ -1423,6 +1441,12 @@ target_link_libraries(TaskSmack PRIVATE mylib)
 ### Shared FetchContent cache
 
 The shared FetchContent cache is **enabled by default** to reuse downloads across presets, reducing build times and bandwidth usage. The cache is stored at `.cache/fetchcontent/` in the project root.
+
+Only the downloads are shared: `.cache/fetchcontent/` holds each dependency's `<dep>-src` and
+`<dep>-subbuild`, while its `<dep>-build` tree lives in the preset's own `build/<preset>/_deps/`, so
+a sanitizer, coverage or LTO preset never reuses objects another preset compiled with different
+flags (#1308). Configuring fails if any added directory builds outside the preset's build tree --
+that is the check that a new `FetchContent_Declare()` without `BINARY_DIR` trips.
 
 To disable the cache:
 
@@ -1438,7 +1462,7 @@ Override the cache dir with `TASKSMACK_FETCHCONTENT_CACHE_DIR` or `FETCHCONTENT_
 We use GitHub Actions for our CI workflows. They are categorized as follows:
 
 ### Core Build & Test
-- **`ci.yml`**: The primary hub. Runs on pushes to `main`/`dev/**`, all PRs, merge-queue merge groups, weekly, and via manual dispatch. It detects docs-only changes (for both pull requests and merge groups -- `dorny/paths-filter` supports `merge_group` natively) to skip C++ builds and `clang-tidy`. It runs Linux and Windows Debug builds on push/PR/merge-group, Release builds on schedule/dispatch, checks markdown links, runs `clang-tidy` (blocking) on PRs/merge groups/schedule/dispatch (skipped on docs-only PRs and merge groups, and on plain pushes to `main`, which `static-analysis.yml` already covers), runs IWYU (include analysis) only via manual dispatch, and runs a non-blocking advisory Address/Undefined Behavior sanitizer on PRs. It outputs a `ci-success` gate job used for branch protection.
+- **`ci.yml`**: The primary hub. Runs on pushes to `main`/`dev/**`, all PRs, merge-queue merge groups, weekly, and via manual dispatch. It detects docs-only changes (for both pull requests and merge groups -- `dorny/paths-filter` supports `merge_group` natively) to skip C++ builds and `clang-tidy`. It runs Linux and Windows Debug builds on push/PR/merge-group, Release builds on schedule/dispatch, checks markdown links, runs `clang-tidy` (blocking) on Linux and on Windows on PRs/merge groups/schedule/dispatch (skipped on docs-only PRs and merge groups, and on plain pushes to `main`, which `static-analysis.yml` already covers; the Windows job is also skipped when every change is Linux-only), runs IWYU (include analysis) only via manual dispatch, and runs a non-blocking advisory Address/Undefined Behavior sanitizer on PRs. It outputs a `ci-success` gate job used for branch protection.
 - **`reusable-build-test.yml`**: Contains the actual matrix steps for setting up LLVM, Python, `ccache`, configuring CMake, building, and running CTest tests. Called by other workflows.
 - **`manual-build.yml`**: Manual dispatch entry point to trigger a specific OS and build type build from the GitHub UI without opening a PR.
 
@@ -1453,7 +1477,7 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
 
 ### Code Quality & Hygiene
 - **`pre-commit.yml`**: Runs the `pre-commit` framework (via Python) across all files to enforce syntax hygiene, formatting, and file-level rules configured in `.pre-commit-config.yaml` (pushes to main, PRs).
-- **`static-analysis.yml`**: Dedicated workflow for running `clang-tidy` against the codebase (pushes to main, manual dispatch).
+- **`static-analysis.yml`**: Dedicated workflow for running `clang-tidy` against the codebase on Linux and on Windows, both blocking (pushes to main, manual dispatch).
 - **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (pushes to main, schedule).
 
 ### Release & Operations

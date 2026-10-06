@@ -80,12 +80,20 @@ class SystemModel : public ISamplable
     /// What the underlying probe supports.
     [[nodiscard]] const Platform::SystemCapabilities& capabilities() const;
 
-    /// Configure maximum retained history duration (seconds).
+    /// Configure maximum retained history duration (seconds), clamped to SamplingConfig's range.
+    /// Trims the history to the new window and republishes it at once, once anything has been
+    /// published, rather than leaving the old window on show until the next sample (#1145).
     void setMaxHistorySeconds(double seconds);
     [[nodiscard]] double maxHistorySeconds() const
     {
         return m_MaxHistorySeconds;
     }
+
+    /// The network rate ceiling, bytes/s ([metrics] max_sane_rate_bps, shared with ProcessModel, #1291).
+    /// An interface rate (or the aggregate fallback rate) above it is taken for a counter glitch: it
+    /// reads 0 in the snapshot and is a gap in the history. Clamped to SamplingConfig's range.
+    /// Thread-safe; takes effect from the next sample.
+    void setMaxSaneNetworkRate(double bytesPerSecond) noexcept;
 
     // History access (read-only copies)
 
@@ -151,6 +159,7 @@ class SystemModel : public ISamplable
     std::vector<HistoryBuffer<float>> m_PerCoreHistory; // Indexed by core id, not probe list position (#1229)
 
     double m_MaxHistorySeconds = Domain::Sampling::HISTORY_SECONDS_DEFAULT; // Default 5 minutes
+    std::atomic<double> m_MaxSaneNetworkRateBps{Sampling::MAX_SANE_RATE_BPS_DEFAULT};
 
     std::shared_ptr<const SystemPublication> m_Publication = std::make_shared<const SystemPublication>();
     std::uint64_t m_PublicationVersion = 0;

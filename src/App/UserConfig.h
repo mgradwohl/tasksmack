@@ -44,9 +44,10 @@ struct UserSettings
     int socketStatsCacheTtlMs = Domain::Sampling::SOCKET_STATS_CACHE_TTL_MS_DEFAULT;
 
     // Metrics Calculation Parameters
-    // Per-process network rate ceiling (bytes per second), [metrics] max_sane_rate_bps. A rate above
-    // it is taken for a bad reading and shown as 0. Config-file only; applied to the ProcessModel
-    // when the Processes panel attaches (#1123).
+    // Network rate ceiling (bytes per second), [metrics] max_sane_rate_bps. A per-process or
+    // per-interface rate above it is taken for a bad reading and shown as 0 (an interface's is also
+    // a gap in its chart). Config-file only; applied to the ProcessModel when the Processes panel
+    // attaches (#1123) and to the SystemModel when the System panel attaches (#1291).
     double maxSaneRateBps = Domain::Sampling::MAX_SANE_RATE_BPS_DEFAULT;
 
     // UI Behavior Parameters

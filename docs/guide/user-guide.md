@@ -90,7 +90,7 @@ The process table is the primary view. It lists all running processes with these
 
 Column visibility is toggled via the column header context menu and persisted across sessions.
 
-A cell reading **-** is a value of 0 (or one that doesn't apply). A cell reading **N/A** is a value TaskSmack could not read for that process: on Linux, without root, the FD count, I/O rates and network rates of other users' processes. Process Details shows the same values as N/A, with a gap in their charts, and the system totals leave them out. Sorting puts N/A below every reading.
+A cell reading **-** is a value of 0 (or one that doesn't apply). A cell reading **N/A** is a value TaskSmack could not read for that process: on Linux, for other users' processes, the FD count without `CAP_DAC_READ_SEARCH`, and the I/O and network rates without both `CAP_DAC_READ_SEARCH` and `CAP_SYS_PTRACE` (root with its normal capabilities has both; see the FAQ). One known exception: with `CAP_DAC_READ_SEARCH` but not `CAP_SYS_PTRACE`, another user's network rate currently reads 0 rather than N/A, because its fd list is readable but its fd links are not (#1328). Process Details shows the same values as N/A, with a gap in their charts, and the system totals leave them out. Sorting puts N/A below every reading.
 
 **Sorting** is available on any column with a single click. Click again to reverse order.
 
@@ -109,7 +109,7 @@ The System Metrics panel displays real-time and historical charts for:
 - **Swap** — swap usage percentage history
 - **Storage** — aggregate and per-device throughput
 - **Network** — aggregate and per-interface throughput, totals, status, and link speed
-- **GPU** — device utilization, memory, temperature, power, clocks, and engine data when available. Each GPU shows only the sensors it reports, so an integrated GPU beside a discrete one doesn't get the discrete GPU's power or fan charts. On Linux, a GPU that has gone to sleep to save power (common for the discrete GPU on hybrid laptops) is labelled **(Sleeping)** and is not sampled until it wakes, so TaskSmack's periodic updates don't keep it awake; its readings show N/A meanwhile. Detecting GPUs at startup can still wake it once. A GPU that is asleep when TaskSmack starts shows the sensor charts its driver supports in general, rather than only its own, for the rest of the session. The Overview header's **VRAM** figure counts discrete GPUs only, since an integrated GPU's memory is system RAM
+- **GPU** — device utilization, memory, temperature, power, clocks, and engine data when available. Each GPU shows only the sensors it reports, so an integrated GPU beside a discrete one doesn't get the discrete GPU's power or fan charts. On Linux, a GPU that has gone to sleep to save power (common for the discrete GPU on hybrid laptops) is labelled **(Sleeping)** and is not sampled until it wakes, so TaskSmack's periodic updates don't keep it awake; its readings show N/A meanwhile. Detecting GPUs at startup can still wake it once. A GPU that is asleep when TaskSmack starts shows the sensor charts its driver supports in general until it first wakes, then only its own. The Overview header's **VRAM** figure counts discrete GPUs only, since an integrated GPU's memory is system RAM
 - **Battery** — charge, power flow, remaining time, and health when present
 - **Load average** (Linux only) — 1, 5, and 15-minute load averages
 - **I/O wait** (Linux only) — percentage of CPU time spent waiting for I/O
@@ -153,9 +153,19 @@ TaskSmack combines operating-system GPU APIs with optional vendor libraries:
 | AMD | ROCm SMI (`librocm_smi64.so`) | DXGI/PDH capability-dependent data |
 | Intel/generic | DRM/sysfs | DXGI/PDH |
 
+**Intel GPUs on Linux** (i915 and xe drivers) report what the kernel exposes for each card:
+
+- **Clock:** i915's `gt_cur_freq_mhz`, or xe's `tile0/gt0/freq0/cur_freq`.
+- **Temperature and power:** from the card's hwmon, which only discrete cards (Arc) have. Temperature is read from hwmon's first channel (`temp1_input`); xe cards report their package temperature as `temp2_input` instead, so they may show no temperature until [#1314](https://github.com/mgradwohl/tasksmack/issues/1314) is fixed. Power is worked out from hwmon's energy counter, so it appears from the second sample on.
+- **VRAM:** comes from the DRM memory-region query on the card's render node (`/dev/dri/renderD*`), made only while the card is awake. The capacity is remembered after the first answer, and also tells a discrete card from an integrated one. Used VRAM appears only when the kernel reports it (i915 needs `CAP_PERFMON` for that); when it does, the query is repeated each sample to keep the figure current, otherwise it isn't made again.
+- **Not read:** utilisation.
+- **Sleeping cards:** a card in runtime suspend isn't queried, so watching it doesn't wake it.
+
 **Per-process GPU utilisation** sums utilisation across all GPUs, so a process working across two GPUs can legitimately show GPU% > 100 %.
 
 The UI shows only the metrics exposed by the available backend. If no backend discovers a usable GPU, GPU sections are hidden.
+
+On Linux, TaskSmack checks for GPU changes every 10 seconds without waking a sleeping GPU: a GPU that is hot-plugged (an eGPU) appears, and one that is removed, or lost after a driver reset or reload, is re-detected once it is back. A GPU that stays in the list keeps its chart history; one that is removed disappears from the GPU tab. On Windows the GPU list is still fixed at startup.
 
 ### Numbers and units
 
@@ -209,8 +219,8 @@ The following table summarises capabilities that differ between Windows and Linu
 | CPU utilisation (total + per-core) | ✅ | ✅ |
 | Memory metrics | ✅ | ✅ |
 | System uptime | ✅ | ✅ |
-| Process I/O counters | ✅ (requires root / `CAP_DAC_READ_SEARCH`) | ✅ (no elevated privileges needed) |
-| Per-process network (TCP only) | ✅ (Linux 4.2+ Netlink) | ✅ (TCP EStats; administrator required) |
+| Process I/O counters | ✅ (other users' processes: `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE`, which root has with its normal capabilities; root alone isn't enough where capabilities are dropped) | ✅ (no elevated privileges needed) |
+| Per-process network (TCP only) | ✅ (Linux 4.2+ Netlink; other users' processes: `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE`, which root has with its normal capabilities; root alone isn't enough where capabilities are dropped) | ✅ (TCP EStats; administrator required) |
 | Thread count per process | ✅ | ✅ |
 | Process priority (nice) | ✅ | ✅ (mapped −20 … +19) |
 | Process terminate / kill | ✅ | ✅ |
@@ -239,7 +249,7 @@ TaskSmack persists settings in several places:
 
 ### Window size and position
 
-TaskSmack reopens at the size and position it had when it was closed, and maximized if it was maximized. Closing it while maximized keeps the size and position it had before it was maximized, so Restore returns there on the next launch. (Native Wayland does not let apps position their windows, so there only the size and maximized state are restored.)
+TaskSmack reopens at the size and position it had when it was closed, and maximized if it was maximized. Closing it while maximized keeps the size and position it had before it was maximized -- whether it was maximized with the title-bar button or by the window manager or compositor (a keyboard shortcut, a window menu, snapping) -- so Restore returns there on the next launch. (Native Wayland does not let apps position their windows, so there only the size and maximized state are restored.)
 
 If the saved position is no longer on any connected display (a monitor was unplugged, say), TaskSmack opens centered on the primary display instead, and a saved size larger than the display is shrunk to fit it.
 
@@ -263,7 +273,7 @@ These settings aren't in the Settings dialog. Edit them in `config.toml` while T
 
 | Key | Default | Range | Effect |
 |-----|---------|-------|--------|
-| `[metrics] max_sane_rate_bps` | 12500000000 (100 Gbps) | 1e9–1e11 bytes/s | A per-process network rate above this is taken for a bad reading and shown as 0. Raise it for links faster than 100 Gbps. |
+| `[metrics] max_sane_rate_bps` | 12500000000 (100 Gbps) | 1e9–1e11 bytes/s | A network rate above this is taken for a bad reading (such as a counter reset). An interface's rate is shown as 0 and is a gap in the system network chart (and in the all-interfaces total). A process's rate is shown as 0 and recorded as 0 in its charts and in the all-processes network totals, not as a gap. Raise it for links faster than 100 Gbps. Disk rates have their own fixed ceiling of 1 TB/s. |
 | `[ui] chart_smooth_factor` | 0.5 | 0.0–0.95 | How slowly live values and the bars beside the charts follow each new sample, as a fraction of the refresh interval. Lower follows changes faster; 0 barely eases. |
 | `[ui] chart_tau_ms_min` | 20 | 5–100 ms | The shortest easing time, used at fast refresh intervals. |
 | `[ui] chart_tau_ms_max` | 400 | 100–2000 ms | The longest easing time, used at slow refresh intervals. |

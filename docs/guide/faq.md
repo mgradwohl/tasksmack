@@ -26,13 +26,21 @@ cmake --preset win-release-compatible  # Windows, x86-64-v2 (2009+ CPUs)
 sudo ./TaskSmack
 ```
 
-**Fix (option 2 — grant capability):**
+**Fix (option 2 — grant capabilities):**
 
 ```bash
-sudo setcap cap_dac_read_search+ep /path/to/TaskSmack
+sudo setcap cap_dac_read_search,cap_sys_ptrace+ep /path/to/TaskSmack
 ```
 
-`CAP_DAC_READ_SEARCH` grants access to `/proc/[pid]/io` without requiring full root. Re-apply the capability after each update.
+Each value needs a different kernel check, so one capability alone doesn't restore all of them:
+
+| Value | Kernel check for another user's process | Capability needed |
+|-------|------------------------------------------|-------------------|
+| FD count | Listing `/proc/[pid]/fd` (a directory only its owner can read) | `CAP_DAC_READ_SEARCH` |
+| I/O | Opening `/proc/[pid]/io` (owner-only) **and** ptrace read access to the process | `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE` |
+| Network | Reading the `/proc/[pid]/fd/*` links, which needs ptrace read access to the process | `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE` |
+
+With `CAP_DAC_READ_SEARCH` alone, only FD counts come back. `CAP_SYS_PTRACE` lets TaskSmack inspect any process on the system, so grant it only if you are comfortable with that; running as root (with its normal capabilities) is the alternative, but root alone isn't enough in a container or hardened service that drops capabilities — allow those two there. Re-apply the capabilities after each update.
 
 > On Windows, I/O counters are always available — they come from the bulk `SystemProcessInformation` snapshot, so no elevated privileges are needed.
 
@@ -95,7 +103,7 @@ Only TCP traffic is counted. The kernel (Linux) and TCP EStats (Windows) report 
 
 Each connection's own growth between two readings is credited to the process that owns it, so a connection closing doesn't erase the traffic on the others. A few bytes go uncounted:
 
-- On Linux, a connection that is first seen before TaskSmack knows which process owns it is counted from the reading in which it is attributed. The socket-to-process map is rebuilt every 3 seconds.
+- On Linux, the socket-to-process map is rebuilt every 3 seconds, and early (at most once a second) when a connection appears that it doesn't know, so a new connection is normally attributed in the reading it first appears in. When the early rebuild is held back, the bytes the connection moved up to that first reading are not counted; what it moves after that is credited to its process once it is attributed, as long as that happens within 8 seconds (`UNATTRIBUTED_SOCKET_HOLD_MS`: the 3-second map lifetime plus the 5-second longest refresh interval) of the connection first being seen. A connection that stays unattributed longer than that, such as one owned by a process TaskSmack can't read, stops holding: what it moved until then is dropped. If it is attributed later, the growth since the reading just before is counted, as for any connection; only when the attributing reading is itself the first one past the 8 seconds (after a suspend, say) is that interval dropped too, since it can't be split at the deadline. A connection that opens and closes before it is attributed is not counted.
 - Bytes sent between a connection's last reading and its close are not counted.
 
 On Linux, a socket shared by several processes, for example one inherited across `fork()`, is counted for the lowest PID.

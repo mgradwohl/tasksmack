@@ -12,10 +12,12 @@
 #include <cstdint>
 #include <format>
 #include <limits>
+#include <optional>
 #include <ranges>
 #include <span>
 #include <string>
 #include <tuple>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -316,6 +318,118 @@ TEST(TimeAxisPoolTest, EarlierBuffersSurviveThePoolGrowingInTheSameFrame)
     ASSERT_EQ(held.size(), 2U);
     EXPECT_DOUBLE_EQ(held[0], -10.0);
     EXPECT_DOUBLE_EQ(held[1], 0.0);
+}
+
+TEST(TimeAxisPoolTest, ReleasesTheBuffersOfABurstOnceTheyGoUnused)
+{
+    // #1173: one frame of 64 long axes (CPU Cores on a 64-core machine) used to pin 64 buffers at
+    // their peak size forever, long after the tab was left.
+    TimeAxisPool pool;
+    const std::vector<double> timestamps(18000, 1.0); // 30 min at 100 ms
+    for (int i = 0; i < 64; ++i)
+    {
+        fillTimeAxis(pool.acquire(1), timestamps, timestamps.size(), 2.0);
+    }
+    ASSERT_EQ(pool.bufferCount(), 64U);
+
+    // From then on, two short charts a frame.
+    int frame = 2;
+    for (; frame <= 1 + TimeAxisPool::RELEASE_AFTER_FRAMES; ++frame)
+    {
+        fillTimeAxis(pool.acquire(frame), timestamps, 10, 2.0);
+        fillTimeAxis(pool.acquire(frame), timestamps, 10, 2.0);
+    }
+    // Still within the grace period of the burst's last use: nothing is freed yet, so switching
+    // back to the tab does not reallocate.
+    EXPECT_EQ(pool.bufferCount(), 64U);
+
+    static_cast<void>(pool.acquire(frame));
+    EXPECT_EQ(pool.bufferCount(), 2U);
+    // The two buffers still in use keep their capacity; the 62 others' is gone.
+    EXPECT_LE(pool.retainedCapacity(), 2U * timestamps.size());
+}
+
+TEST(TimeAxisPoolTest, FramesThatAskForNoAxisStillReleaseUnusedBuffers)
+{
+    // #1173: after leaving the chart tabs (the Processes tab asks for no time axis), buffers must
+    // still go once unused; beginFrame() is called every frame, acquire() only by charts.
+    TimeAxisPool pool;
+    const std::vector<double> timestamps(18000, 1.0);
+    for (int i = 0; i < 8; ++i)
+    {
+        fillTimeAxis(pool.acquire(1), timestamps, timestamps.size(), 2.0);
+    }
+    ASSERT_EQ(pool.bufferCount(), 8U);
+
+    int frame = 2;
+    for (; frame <= 1 + TimeAxisPool::RELEASE_AFTER_FRAMES; ++frame)
+    {
+        pool.beginFrame(frame);
+    }
+    EXPECT_EQ(pool.bufferCount(), 8U); // still within the grace period
+    pool.beginFrame(frame);
+    EXPECT_EQ(pool.bufferCount(), 0U);
+    EXPECT_EQ(pool.retainedCapacity(), 0U);
+}
+
+TEST(TimeAxisPoolTest, BeginFrameTwiceInAFrameKeepsBuffersAlreadyHandedOut)
+{
+    // trimFrameCaches() and the frame's first acquire() both call beginFrame(); a repeat in the same
+    // frame must not reset the hand-out index, or the next acquire() would reuse a buffer in use.
+    TimeAxisPool pool;
+    auto& first = pool.acquire(5);
+    first.assign(3, 1.0);
+    // A span into the heap buffer, not a reference to the Slot: acquiring again may grow the pool and
+    // move the Slot, but its buffer stays put (see EarlierBuffersSurviveThePoolGrowingInTheSameFrame).
+    const std::span<const double> held(first);
+    pool.beginFrame(5);
+    auto& second = pool.acquire(5);
+    second.assign(3, 2.0);
+    EXPECT_EQ(pool.bufferCount(), 2U);
+    ASSERT_EQ(held.size(), 3U);
+    for (const double value : held)
+    {
+        EXPECT_DOUBLE_EQ(value, 1.0);
+    }
+}
+
+TEST(TimeAxisPoolTest, KeepsBuffersThatAreStillAskedFor)
+{
+    TimeAxisPool pool;
+    for (int frame = 1; frame <= 3 * TimeAxisPool::RELEASE_AFTER_FRAMES; ++frame)
+    {
+        static_cast<void>(pool.acquire(frame));
+        static_cast<void>(pool.acquire(frame));
+        static_cast<void>(pool.acquire(frame));
+    }
+    EXPECT_EQ(pool.bufferCount(), 3U);
+}
+
+TEST(TimeAxisPoolTest, AFrameCountThatGoesBackwardsReleasesTheOldBuffers)
+{
+    // A new ImGui context restarts the frame count; the old context's buffers are not kept forever.
+    TimeAxisPool pool;
+    for (int i = 0; i < 8; ++i)
+    {
+        static_cast<void>(pool.acquire(5000));
+    }
+    static_cast<void>(pool.acquire(1));
+    EXPECT_EQ(pool.bufferCount(), 1U);
+}
+
+// ========== Frame-keyed caches (#1181) ==========
+
+TEST(FrameScopeDeathTest, AFrameKeyedCacheUsedOutsideAFrameAssertsInDebugBuilds)
+{
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    // Release builds compile the check out, so the statement then simply runs.
+    EXPECT_DEBUG_DEATH(Detail::requireWithinImGuiFrame(false), "outside an ImGui frame");
+}
+
+TEST(FrameScopeTest, AFrameKeyedCacheUsedInsideAFrameDoesNotAssert)
+{
+    Detail::requireWithinImGuiFrame(true);
+    SUCCEED();
 }
 
 TEST(ChartWidgetsReduceTest, BucketWidthIsAPowerOfTwoThatHoldsAsTheSpanDrifts)
@@ -1087,6 +1201,18 @@ TEST(ChartWidgetsTest, TooltipRowIsLabelColonValue)
     EXPECT_EQ(formatTooltipRow("Page Faults/s", "12/s"), "Page Faults/s: 12/s");
 }
 
+TEST(ChartWidgetsTest, NowBarTooltipRowReadsLikeTheTooltipRow)
+{
+    // #1171: a NowBar's tooltip is held in place; it must say exactly what the std::string row did.
+    EXPECT_EQ(tooltipRowText("Read", "1.5 MB/s").view(), formatTooltipRow("Read", "1.5 MB/s"));
+    const NowBar bar{.valueText = "45%",
+                     .label = "Memory",
+                     .tooltipText = tooltipRowText("Memory", "45% (3.6 GB / 8.0 GB)"),
+                     .value01 = 0.45,
+                     .color = {}};
+    EXPECT_EQ(selectNowBarTooltip(bar), "Memory: 45% (3.6 GB / 8.0 GB)");
+}
+
 TEST(ChartWidgetsTest, SampleWithNoReadingFormatsAsNA)
 {
     const auto percent = [](double v)
@@ -1362,7 +1488,6 @@ TEST(HistoryChartConfigTest, PercentConfigLocksZeroToHundred)
     EXPECT_DOUBLE_EQ(cfg.yLimits->first, 0.0);
     EXPECT_DOUBLE_EQ(cfg.yLimits->second, 100.0);
     EXPECT_EQ(cfg.yFormatter, &formatAxisPercent);
-    EXPECT_TRUE(cfg.showLegend);
     EXPECT_FLOAT_EQ(cfg.height, HISTORY_PLOT_HEIGHT_DEFAULT);
 }
 
@@ -1410,8 +1535,7 @@ TEST(HistoryChartConfigTest, YAxisFlagsLockWithFixedLimitsAutoFitOtherwise)
     EXPECT_EQ(historyChartYAxisFlags(false), ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
 }
 
-// ========== historyChartBeginPlotFlags (perf-plan #843 phase 1: showLegend=false must
-// actually suppress the legend, not just skip customizing it) ==========
+// ========== historyChartBeginPlotFlags (#1198: the value strip is every chart's only key) ==========
 
 TEST(ChartWidgetsTest, DefaultPlotFlagsHideImPlotsMouseReadout)
 {
@@ -1460,22 +1584,16 @@ TEST(NowBarMotionTest, SettledBarsStopAskingForFrames)
     EXPECT_DOUBLE_EQ(nowBarMotionPixelsPerSecond(0.3, 0.6, 0.0, 0.016), 0.0);
 }
 
-TEST(HistoryChartConfigTest, BeginPlotFlagsUnchangedWhenLegendShown)
+TEST(HistoryChartConfigTest, BeginPlotFlagsNeverShowImPlotsLegend)
 {
-    EXPECT_EQ(historyChartBeginPlotFlags(PLOT_FLAGS_DEFAULT, true), PLOT_FLAGS_DEFAULT);
+    // The value strip above every chart is its only key (#1198).
+    EXPECT_EQ(historyChartBeginPlotFlags(PLOT_FLAGS_DEFAULT), PLOT_FLAGS_DEFAULT | ImPlotFlags_NoLegend);
 }
 
-TEST(HistoryChartConfigTest, BeginPlotFlagsAddsNoLegendWhenLegendHidden)
-{
-    const ImPlotFlags result = historyChartBeginPlotFlags(PLOT_FLAGS_DEFAULT, false);
-    EXPECT_EQ(result, PLOT_FLAGS_DEFAULT | ImPlotFlags_NoLegend);
-    EXPECT_TRUE(result & ImPlotFlags_NoLegend);
-}
-
-TEST(HistoryChartConfigTest, BeginPlotFlagsPreservesOtherConfiguredBitsWhenLegendHidden)
+TEST(HistoryChartConfigTest, BeginPlotFlagsPreserveOtherConfiguredBits)
 {
     const ImPlotFlags configured = PLOT_FLAGS_DEFAULT | ImPlotFlags_NoTitle;
-    const ImPlotFlags result = historyChartBeginPlotFlags(configured, false);
+    const ImPlotFlags result = historyChartBeginPlotFlags(configured);
     EXPECT_TRUE(result & ImPlotFlags_NoTitle);
     EXPECT_TRUE(result & ImPlotFlags_NoMenus);
     EXPECT_TRUE(result & ImPlotFlags_NoLegend);
@@ -1603,6 +1721,296 @@ TEST(ChartWidgetsTest, NowBarWidthSurvivesDegenerateInput)
         EXPECT_TRUE(std::isfinite(width));
         EXPECT_GE(width, 1.0F);
     }
+}
+
+// ========== Series encoding (#1198) ==========
+
+TEST(SeriesStyleTest, OnlyThePrimaryFills)
+{
+    EXPECT_TRUE(seriesStyle(SeriesRole::Primary).fill);
+    EXPECT_FALSE(seriesStyle(SeriesRole::Reference).fill);
+    for (std::size_t i = 0; i < 6; ++i)
+    {
+        EXPECT_FALSE(seriesStyle(SeriesRole::Secondary, i).fill) << i;
+    }
+}
+
+TEST(SeriesStyleTest, RolesDifferByWeightNotJustColour)
+{
+    const SeriesStyle primary = seriesStyle(SeriesRole::Primary);
+    const SeriesStyle secondary = seriesStyle(SeriesRole::Secondary);
+    const SeriesStyle reference = seriesStyle(SeriesRole::Reference);
+    EXPECT_GT(primary.lineWeightPx, secondary.lineWeightPx);
+    EXPECT_GT(secondary.lineWeightPx, reference.lineWeightPx);
+    EXPECT_EQ(primary.marker, ImPlotMarker_None);
+}
+
+// #1301 review: the two Network totals are both references; they must differ by more than colour.
+TEST(SeriesStyleTest, EachReferenceHasItsOwnMarkerUnlikeAnySecondaries)
+{
+    const SeriesStyle sent = seriesStyle(SeriesRole::Reference, 0);
+    const SeriesStyle received = seriesStyle(SeriesRole::Reference, 1);
+    EXPECT_NE(sent.marker, ImPlotMarker_None);
+    EXPECT_NE(received.marker, ImPlotMarker_None);
+    EXPECT_NE(sent.marker, received.marker);
+    EXPECT_NE(sent.markerPhase, received.markerPhase);
+    for (std::size_t i = 0; i < SECONDARY_SERIES_MARKERS.size(); ++i)
+    {
+        const SeriesStyle secondary = seriesStyle(SeriesRole::Secondary, i);
+        EXPECT_NE(sent.marker, secondary.marker) << i;
+        EXPECT_NE(received.marker, secondary.marker) << i;
+        EXPECT_NE(sent.markerPhase, secondary.markerPhase) << i;
+        EXPECT_NE(received.markerPhase, secondary.markerPhase) << i;
+    }
+}
+
+TEST(SeriesStyleTest, EachSecondaryOfAChartHasItsOwnMarkerAndPhase)
+{
+    for (std::size_t i = 0; i < SECONDARY_SERIES_MARKERS.size(); ++i)
+    {
+        const SeriesStyle a = seriesStyle(SeriesRole::Secondary, i);
+        EXPECT_NE(a.marker, ImPlotMarker_None);
+        EXPECT_GE(a.markerPhase, 0.0);
+        EXPECT_LT(a.markerPhase, 1.0);
+        for (std::size_t j = i + 1; j < SECONDARY_SERIES_MARKERS.size(); ++j)
+        {
+            const SeriesStyle b = seriesStyle(SeriesRole::Secondary, j);
+            EXPECT_NE(a.marker, b.marker) << i << " vs " << j;
+            EXPECT_NE(a.markerPhase, b.markerPhase) << i << " vs " << j;
+        }
+    }
+}
+
+namespace
+{
+std::vector<int> markerSamples(std::span<const double> x, std::span<const double> y, double anchor, double interval, double phase)
+{
+    std::vector<int> out;
+    forEachMarkerSample(x.data(), y.data(), UI::Format::checkedCount(x.size()), anchor, interval, phase, [&](int i) { out.push_back(i); });
+    return out;
+}
+} // namespace
+
+TEST(ForEachMarkerSampleTest, MarksTheFirstSampleAfterEachBoundaryButNotTheOldestBucket)
+{
+    // One sample a second from -10 s to 0 s; boundaries every 4 s of absolute time (anchor 100).
+    std::vector<double> x;
+    for (int s = -10; s <= 0; ++s)
+    {
+        x.push_back(static_cast<double>(s));
+    }
+    const std::vector<double> y(x.size(), 1.0);
+    // Absolute times 90..100: boundaries at 92, 96 and 100 -> indices 2, 6 and 10.
+    EXPECT_EQ(markerSamples(x, y, 100.0, 4.0, 0.0), (std::vector<int>{2, 6, 10}));
+}
+
+TEST(ForEachMarkerSampleTest, StaysOnTheSameSamplesAsTheChartScrolls)
+{
+    // The same absolute samples seen one frame later: x shifts by -0.5 s, the anchor by +0.5 s.
+    const std::vector<double> x0{-6.0, -5.0, -4.0, -3.0, -2.0, -1.0, 0.0};
+    std::vector<double> x1;
+    x1.reserve(x0.size());
+    for (const double v : x0)
+    {
+        x1.push_back(v - 0.5);
+    }
+    const std::vector<double> y(x0.size(), 1.0);
+    EXPECT_EQ(markerSamples(x0, y, 50.0, 3.0, 0.25), markerSamples(x1, y, 50.5, 3.0, 0.25));
+}
+
+TEST(ForEachMarkerSampleTest, PhaseShiftsTheGrid)
+{
+    const std::vector<double> x{0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0};
+    const std::vector<double> y(x.size(), 1.0);
+    EXPECT_EQ(markerSamples(x, y, 0.0, 4.0, 0.0), (std::vector<int>{4}));
+    // A phase of a half moves the boundaries to 2 and 6.
+    EXPECT_EQ(markerSamples(x, y, 0.0, 4.0, 0.5), (std::vector<int>{2, 6}));
+}
+
+TEST(ForEachMarkerSampleTest, SkipsGapsAndDegenerateIntervals)
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const std::vector<double> x{0.0, 1.0, 2.0, 3.0, 4.0, 5.0};
+    const std::vector<double> y{1.0, 1.0, nan, 1.0, 1.0, 1.0};
+    // The boundary at 2 falls on a gap: the next finite sample takes the marker.
+    EXPECT_EQ(markerSamples(x, y, 0.0, 2.0, 0.0), (std::vector<int>{3, 4}));
+    EXPECT_TRUE(markerSamples(x, y, 0.0, 0.0, 0.0).empty());
+    EXPECT_TRUE(markerSamples(x, y, 0.0, nan, 0.0).empty());
+    EXPECT_TRUE(markerSamples({}, {}, 0.0, 2.0, 0.0).empty());
+    const std::vector<double> allGaps(x.size(), nan);
+    EXPECT_TRUE(markerSamples(x, allGaps, 0.0, 2.0, 0.0).empty());
+}
+
+// #1301 review: a history that has not crossed a boundary yet still gets one marker, on its oldest
+// finite sample, so a new chart's secondaries are told apart from their first samples.
+TEST(ForEachMarkerSampleTest, AHistoryWithinOneBucketPlacesNoneButHasAFallbackSample)
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const std::vector<double> x{0.0, 1.0, 2.0, 3.0};
+    const std::vector<double> y{nan, 1.0, 1.0, 1.0};
+    EXPECT_TRUE(markerSamples(x, y, 0.0, 30.0, 0.0).empty());
+    EXPECT_EQ(fallbackMarkerSample(y.data(), UI::Format::checkedCount(y.size())), 1);
+    const std::vector<double> allGaps(x.size(), nan);
+    EXPECT_EQ(fallbackMarkerSample(allGaps.data(), UI::Format::checkedCount(allGaps.size())), -1);
+    EXPECT_EQ(fallbackMarkerSample(y.data(), 0), -1);
+}
+
+// #1301 review: the boundaries are found by binary search instead of a walk of the whole history.
+// The marked samples are those of the walk: the first finite sample whose bucket differs from the
+// previous finite sample's.
+TEST(ForEachMarkerSampleTest, MatchesAWalkOfEverySample)
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    std::vector<double> x;
+    std::vector<double> y;
+    for (int i = 0; i < 2000; ++i)
+    {
+        x.push_back((static_cast<double>(i) * 0.1) - 200.0);
+        // Gaps of varying length, some spanning a boundary.
+        y.push_back(((i % 97) < 13 || (i % 211) < 40) ? nan : 1.0);
+    }
+    for (const double phase : {0.0, 0.25, 0.7})
+    {
+        for (const double interval : {0.05, 1.0, 7.3, 30.0, 500.0})
+        {
+            std::vector<int> walk;
+            std::optional<std::int64_t> last;
+            for (int i = 0; i < static_cast<int>(x.size()); ++i)
+            {
+                const auto index = static_cast<std::size_t>(i);
+                if (!std::isfinite(y[index]))
+                {
+                    continue;
+                }
+                const auto bucket = static_cast<std::int64_t>(std::floor(((x[index] + 1234.5) / interval) + phase));
+                if (last.has_value() && bucket != *last)
+                {
+                    walk.push_back(i);
+                }
+                last = bucket;
+            }
+            EXPECT_EQ(markerSamples(x, y, 1234.5, interval, phase), walk) << "interval " << interval << " phase " << phase;
+        }
+    }
+}
+
+// ========== Legend layout (#1275) ==========
+
+// #1301 review: one entry built from an OS adapter description can be wider than the frame on its
+// own, so such names are fitted to the chart width for series labels.
+namespace
+{
+// 10 px per code point, like a monospace font.
+float tenPerCodePoint(std::string_view text)
+{
+    std::size_t codePoints = 0;
+    for (const char c : text)
+    {
+        codePoints += ((static_cast<unsigned char>(c) & 0xC0U) != 0x80U) ? 1U : 0U;
+    }
+    return 10.0F * static_cast<float>(codePoints);
+}
+} // namespace
+
+// #1301: the value strip is the chart's only key, so each swatch shows its series' marker shape,
+// looked up by label among the markers the chart recorded this frame.
+TEST(StripMarkersTest, ASeriesMarkerIsFoundByLabel)
+{
+    const std::array markers{Detail::SeriesMarker{.label = "User", .marker = ImPlotMarker_Circle},
+                             Detail::SeriesMarker{.label = "System", .marker = ImPlotMarker_Square}};
+    EXPECT_EQ(Detail::markerForLabel(markers, "User"), ImPlotMarker_Circle);
+    EXPECT_EQ(Detail::markerForLabel(markers, "System"), ImPlotMarker_Square);
+    // A series without a marker (the chart's primary), or one the chart did not draw.
+    EXPECT_EQ(Detail::markerForLabel(markers, "Total"), ImPlotMarker_None);
+    EXPECT_EQ(Detail::markerForLabel({}, "User"), ImPlotMarker_None);
+}
+
+TEST(StripSlotsTest, StaleLayoutsAreDroppedOnlyOnceThereAreMany)
+{
+    std::unordered_map<ImGuiID, Detail::StripSlots> byLayout;
+    for (ImGuiID id = 1; id <= Detail::STRIP_SLOTS_PRUNE_ABOVE; ++id)
+    {
+        byLayout[id].lastUsed = 0.0;
+    }
+    // At the limit nothing is dropped, however old.
+    Detail::pruneStaleStripSlots(byLayout, 1000.0);
+    EXPECT_EQ(byLayout.size(), Detail::STRIP_SLOTS_PRUNE_ABOVE);
+    // Past it, layouts unused for longer than the stale time go; recently used ones stay.
+    byLayout[1000].lastUsed = 1000.0;
+    byLayout[1001].lastUsed = 1000.0 - Detail::STRIP_SLOTS_STALE_SECONDS + 1.0;
+    Detail::pruneStaleStripSlots(byLayout, 1000.0);
+    EXPECT_EQ(byLayout.size(), 2U);
+    EXPECT_TRUE(byLayout.contains(1000));
+    EXPECT_TRUE(byLayout.contains(1001));
+}
+
+// #1301: a right-aligned strip moved every time a value's text changed width.
+TEST(StripSlotTest, AWiderValueWidensItsSlotAtOnce)
+{
+    Detail::StripSlot slot;
+    EXPECT_FLOAT_EQ(Detail::settleStripSlot(slot, 80.0F, 0.0, 3.0), 80.0F);
+    EXPECT_FLOAT_EQ(Detail::settleStripSlot(slot, 95.0F, 0.1, 3.0), 95.0F);
+}
+
+TEST(StripSlotTest, ANarrowerValueKeepsItsSlotUntilTheDelayHasPassed)
+{
+    Detail::StripSlot slot;
+    static_cast<void>(Detail::settleStripSlot(slot, 95.0F, 0.0, 3.0));
+    EXPECT_FLOAT_EQ(Detail::settleStripSlot(slot, 80.0F, 1.0, 3.0), 95.0F);
+    EXPECT_FLOAT_EQ(Detail::settleStripSlot(slot, 80.0F, 3.9, 3.0), 95.0F);
+    EXPECT_FLOAT_EQ(Detail::settleStripSlot(slot, 80.0F, 4.0, 3.0), 80.0F);
+}
+
+TEST(StripSlotTest, AValueThatWidensAgainRestartsTheDelay)
+{
+    Detail::StripSlot slot;
+    static_cast<void>(Detail::settleStripSlot(slot, 95.0F, 0.0, 3.0));
+    static_cast<void>(Detail::settleStripSlot(slot, 80.0F, 1.0, 3.0));      // narrower from 1 s
+    static_cast<void>(Detail::settleStripSlot(slot, 95.0F, 2.0, 3.0));      // back to full width
+    EXPECT_FLOAT_EQ(Detail::settleStripSlot(slot, 80.0F, 3.0, 3.0), 95.0F); // narrower again from 3 s
+    EXPECT_FLOAT_EQ(Detail::settleStripSlot(slot, 80.0F, 5.0, 3.0), 95.0F);
+    EXPECT_FLOAT_EQ(Detail::settleStripSlot(slot, 80.0F, 6.0, 3.0), 80.0F);
+}
+
+TEST(FitSeriesNameTest, ANameThatFitsIsKeptWhole)
+{
+    EXPECT_EQ(fitSeriesName("Wi-Fi", 50.0F, tenPerCodePoint), "Wi-Fi");
+    EXPECT_EQ(fitSeriesName("", 0.0F, tenPerCodePoint), "");
+}
+
+TEST(FitSeriesNameTest, AWiderNameIsCutToTheWidestPrefixThatFitsWithItsEllipsis)
+{
+    // 60 px for "abcdefgh" (80 px): "abcde…" is 60 px.
+    EXPECT_EQ(fitSeriesName("abcdefgh", 60.0F, tenPerCodePoint), "abcde\u2026");
+    EXPECT_EQ(fitSeriesName("abcdefgh", 65.0F, tenPerCodePoint), "abcde\u2026");
+    EXPECT_EQ(fitSeriesName("abcdefgh", 79.0F, tenPerCodePoint), "abcdef\u2026");
+    EXPECT_EQ(fitSeriesName("abcdefgh", 80.0F, tenPerCodePoint), "abcdefgh");
+    // Room for nothing but the ellipsis, or not even that.
+    EXPECT_EQ(fitSeriesName("abcdefgh", 15.0F, tenPerCodePoint), "\u2026");
+    EXPECT_EQ(fitSeriesName("abcdefgh", -5.0F, tenPerCodePoint), "\u2026");
+}
+
+TEST(FitSeriesNameTest, CutsOnlyAtCodePointBoundaries)
+{
+    EXPECT_EQ(fitSeriesName("\u00e9\u00e9\u00e9\u00e9\u00e9", 30.0F, tenPerCodePoint), "\u00e9\u00e9\u2026");
+    EXPECT_EQ(fitSeriesName("\u00e9\u00e9\u00e9", 30.0F, tenPerCodePoint), "\u00e9\u00e9\u00e9");
+}
+
+// ========== Grid cells' time axis (#1206) ==========
+
+TEST(HistoryChartXAxisFlagsTest, GridCellsDropTheTimeTickLabelsOnly)
+{
+    EXPECT_EQ(historyChartXAxisFlags(true), X_AXIS_FLAGS_DEFAULT);
+    const ImPlotAxisFlags cell = historyChartXAxisFlags(false);
+    EXPECT_NE(cell & ImPlotAxisFlags_NoTickLabels, 0);
+    // Gridlines and tick marks stay, so a cell's samples can still be placed in time.
+    EXPECT_EQ(cell & (ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoTickMarks), 0);
+    EXPECT_EQ(cell & ~ImPlotAxisFlags_NoTickLabels, X_AXIS_FLAGS_DEFAULT);
+}
+
+TEST(HistoryChartConfigTest, ChartsLabelTheirTimeAxisByDefault)
+{
+    EXPECT_TRUE(HistoryChartConfig{}.timeAxisLabels);
 }
 } // namespace
 } // namespace UI::Widgets

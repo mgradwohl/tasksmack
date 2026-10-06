@@ -11,6 +11,7 @@
 // NOLINTBEGIN(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
 
 #include "App/Panels/NetInterfaceUtils.h"
+#include "UI/IconsFontAwesome6.h"
 
 #include <gtest/gtest.h>
 
@@ -159,6 +160,35 @@ TEST(NetInterfaceUtilsTest, IsVirtualReturnsFalseForRealInterfaces)
     EXPECT_FALSE(isVirtualInterface(wlp2s0));
     EXPECT_FALSE(isVirtualInterface(winEth));
     EXPECT_FALSE(isVirtualInterface(winWifi));
+}
+
+// #1260: where the platform classified the interface, its isVirtual flag decides -- the same flag the
+// network Total uses -- and the name heuristic is only a fallback for interfaces it couldn't classify.
+TEST(NetInterfaceUtilsTest, IsVirtualFollowsThePlatformFlagOverAHardwareLookingName)
+{
+    auto wg = makeInterface("eth-tunnel0");
+    wg.isVirtual = true;
+    wg.isVirtualKnown = true;
+    EXPECT_TRUE(isVirtualInterface(wg));
+    EXPECT_TRUE(isAlwaysHidden(wg));
+}
+
+TEST(NetInterfaceUtilsTest, IsVirtualFollowsThePlatformFlagOverAVirtualLookingName)
+{
+    auto nic = makeInterface("veth0"); // a NIC renamed veth0: the platform found its backing device
+    nic.isVirtual = false;
+    nic.isVirtualKnown = true;
+    EXPECT_FALSE(isVirtualInterface(nic));
+    EXPECT_FALSE(isAlwaysHidden(nic));
+    EXPECT_STREQ(getInterfaceTypeIcon(nic), ICON_FA_ETHERNET);
+    EXPECT_EQ(getSortedFilteredInterfaces({nic}, /*showVirtualInterfaces=*/false).size(), 1U);
+}
+
+TEST(NetInterfaceUtilsTest, IsVirtualFallsBackToTheNameWhenThePlatformCouldNotClassify)
+{
+    auto unclassified = makeInterface("veth0"); // isVirtualKnown false: e.g. no sysfs entry
+    EXPECT_TRUE(isVirtualInterface(unclassified));
+    EXPECT_FALSE(isVirtualInterface(makeInterface("eth0")));
 }
 
 // =============================================================================

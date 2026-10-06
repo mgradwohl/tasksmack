@@ -29,11 +29,14 @@ namespace Domain
 namespace
 {
 /// A system-wide rate for the history: NaN when no disk had measured rates in that sample (the
-/// seed transition), so the chart shows a gap rather than a false 0 B/s (#1102).
+/// seed transition), so the chart shows a gap rather than a false 0 B/s (#1102), and when any disk's
+/// sample was thrown out as a counter glitch (#1291), whose missing share would otherwise plot a
+/// false dip in the Total.
 [[nodiscard]] double totalRateOrNaN(const StorageSnapshot& snapshot, double StorageSnapshot::* total)
 {
     const bool anyRates = std::ranges::any_of(snapshot.disks, &DiskSnapshot::hasRates);
-    return anyRates ? snapshot.*total : std::numeric_limits<double>::quiet_NaN();
+    const bool anyRejected = std::ranges::any_of(snapshot.disks, &DiskSnapshot::ratesRejected);
+    return (anyRates && !anyRejected) ? snapshot.*total : std::numeric_limits<double>::quiet_NaN();
 }
 } // namespace
 
@@ -313,9 +316,19 @@ StorageModel::computeDiskSnapshot(const Platform::DiskCounters& current, DiskSta
     const std::uint64_t deltaIoTime = Numeric::counterDelta(current.ioTimeMs, state.prevCounters.ioTimeMs);
 
     // Compute rates
+    const double readBytesPerSec = (Numeric::toDouble(deltaReadSectors) * Numeric::toDouble(current.sectorSize)) / deltaSeconds;
+    const double writeBytesPerSec = (Numeric::toDouble(deltaWriteSectors) * Numeric::toDouble(current.sectorSize)) / deltaSeconds;
+    if (readBytesPerSec > Sampling::MAX_SANE_DISK_RATE_BPS || writeBytesPerSec > Sampling::MAX_SANE_DISK_RATE_BPS)
+    {
+        // A counter glitch (a reinitialised or re-registered device counter), not I/O: the sample
+        // has no rates, so it reads 0 and its history records a gap instead of a spike that would
+        // blow out the chart's scale (#1291). Flagged so the system Total is a gap too.
+        snap.ratesRejected = true;
+        return snap;
+    }
     snap.hasRates = true;
-    snap.readBytesPerSec = static_cast<double>(deltaReadSectors * current.sectorSize) / deltaSeconds;
-    snap.writeBytesPerSec = static_cast<double>(deltaWriteSectors * current.sectorSize) / deltaSeconds;
+    snap.readBytesPerSec = readBytesPerSec;
+    snap.writeBytesPerSec = writeBytesPerSec;
     snap.readOpsPerSec = Numeric::toDouble(deltaReadOps) / deltaSeconds;
     snap.writeOpsPerSec = Numeric::toDouble(deltaWriteOps) / deltaSeconds;
 
@@ -423,12 +436,19 @@ std::vector<double> StorageModel::historyTimestamps() const
 void StorageModel::setMaxHistorySeconds(double seconds)
 {
     std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    m_MaxHistorySeconds = std::max(0.0, seconds);
+    // The same guardrail as SystemModel and GPUModel, so every model keeps the same window (#1145).
+    m_MaxHistorySeconds = Sampling::clampHistorySeconds(seconds);
     applyHistoryCapacity();
 
     if (!m_Timestamps.empty())
     {
         trimHistory(m_Timestamps.latest());
+    }
+    // Republish the trimmed history now rather than at the next sample (#1145); see
+    // SystemModel::setMaxHistorySeconds(). Nothing is published before the first sample.
+    if (m_PublicationVersion != 0)
+    {
+        publish();
     }
 }
 
