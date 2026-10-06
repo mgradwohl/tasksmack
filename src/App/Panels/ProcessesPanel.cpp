@@ -350,14 +350,15 @@ void stateCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& /*fmt*
     ImGui::PopStyleColor();
 }
 
-/// The priority label for the nice value, right-aligned.
+/// The priority label, right-aligned: the platform's class name where it has one (Windows:
+/// Realtime is not High, #1280), else the nice value's label.
 void priorityCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& /*fmt*/, const ProcessCellWidths& widths)
 {
-    // getPriorityLabel returns string_view into static storage — no allocation
-    // needed. Not RowFormatCache-backed (it's a direct nice-value lookup, not a
-    // per-row formatted string), so its width comes from ProcessCellWidths' small
-    // fixed-label width cache instead of an AlignedCellText.
-    const std::string_view priorityLabel = Domain::Priority::getPriorityLabel(proc.nice);
+    // getProcessPriorityLabel returns string_view into static storage — no allocation
+    // needed. Not RowFormatCache-backed (it's a direct lookup, not a per-row formatted
+    // string), so its width comes from ProcessCellWidths' small fixed-label width cache
+    // instead of an AlignedCellText.
+    const std::string_view priorityLabel = Domain::Priority::getProcessPriorityLabel(proc.priorityClass, proc.nice);
     renderRightAlignedText(priorityLabel, widths.priorityLabelWidth(priorityLabel));
 }
 
@@ -558,12 +559,13 @@ void ProcessesPanel::TextSizeCache::populate()
     treeViewLabelWidth = ImGui::CalcTextSize(TREE_VIEW_LABEL.data(), TREE_VIEW_LABEL.data() + TREE_VIEW_LABEL.size()).x;
     listViewLabelWidth = ImGui::CalcTextSize(LIST_VIEW_LABEL.data(), LIST_VIEW_LABEL.data() + LIST_VIEW_LABEL.size()).x;
 
-    // Cache Domain::Priority::getPriorityLabel()'s fixed label widths
+    // Cache Domain::Priority::getProcessPriorityLabel()'s fixed label widths
     for (std::size_t i = 0; i < PRIORITY_LABELS.size(); ++i)
     {
         const auto& label = PRIORITY_LABELS[i];
         cells.priorityLabels[i] = ImGui::CalcTextSize(label.data(), label.data() + label.size()).x;
     }
+    cells.widestPriorityLabel = std::ranges::max(cells.priorityLabels);
 }
 
 float ProcessesPanel::measureToolbarMinimumWidth()
@@ -1077,7 +1079,12 @@ void ProcessesPanel::renderContent()
                 // Use menuName for TableSetupColumn (shown in context menu)
                 // We render custom headers with info.name below
                 // The default is authored at the reference font; scale it to the current one (#913).
-                ImGui::TableSetupColumn(std::string(info.menuName).c_str(), flags, scaledDefaultWidth(info, emPx), toImGuiId(col));
+                // Priority starts wide enough for its longest label, measured in the current font (#1280).
+                const float defaultWidth =
+                    (col == ProcessColumn::Priority)
+                        ? contentFittedWidth(scaledDefaultWidth(info, emPx), m_TextSizeCache.cells.widestPriorityLabel, emPx)
+                        : scaledDefaultWidth(info, emPx);
+                ImGui::TableSetupColumn(std::string(info.menuName).c_str(), flags, defaultWidth, toImGuiId(col));
             }
             else
             {
