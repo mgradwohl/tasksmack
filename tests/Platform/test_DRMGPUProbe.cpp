@@ -2007,8 +2007,8 @@ TEST_F(DRMGPUProbeEngineTest, ReadableProcWithNoClientsIsIdle)
     makeFd(m_ProcRoot, 100, 3, "/dev/null", "pos:\t0\n");
     EXPECT_TRUE(makeProbe()->readGPUCounters()[0].engineBusyAvailable);
     const auto utilization = utilizationAfterTwoSamples(makeProbe());
-    ASSERT_TRUE(utilization.has_value());
-    EXPECT_DOUBLE_EQ(*utilization, 0.0);
+    EXPECT_TRUE(utilization.has_value());
+    EXPECT_DOUBLE_EQ(utilization.value_or(-1.0), 0.0);
 }
 
 // No /proc to walk: finding no clients there says nothing about the card, so N/A, not 0%.

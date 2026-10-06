@@ -155,7 +155,8 @@ struct GPUCounters
     // (Intel i915/xe, from each DRM client's fdinfo, #1267). When engineBusyAvailable, Domain derives
     // utilizationPercent from the clients in both this and the previous sample: per engine class, the
     // sum of their busy shares over the class's capacity, the busiest class being the GPU's
-    // utilization; no clients means idle. Without a previous sample, utilization is unread.
+    // utilization; no clients means idle. A probe that couldn't look for clients at all (an unreadable
+    // /proc) leaves engineBusyAvailable false. Without a previous sample, utilization is unread.
     bool engineBusyAvailable = false;
     std::vector<GPUEngineClientCounters> engineClients;
 
