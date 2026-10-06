@@ -167,6 +167,67 @@ TEST(ChartWidgetsTest, TailAlignedSpanWithEmptyDataReturnsEmptySpan)
     EXPECT_TRUE(span.values.empty());
 }
 
+// ========== tailAlignedOffset / tailAlignedSampleAt (#1180) ==========
+
+TEST(ChartWidgetsTest, TailAlignedOffsetPutsAShortSeriesAtTheEndOfTheAxis)
+{
+    EXPECT_EQ(tailAlignedOffset(5, 3), 2U);
+    EXPECT_EQ(tailAlignedOffset(5, 5), 0U);
+    EXPECT_EQ(tailAlignedOffset(5, 0), 5U);
+    EXPECT_EQ(tailAlignedOffset(5, 8), 0U); // longer than the axis
+    // The same offset tailAlignedSpan() takes the newest entries from.
+    const std::vector<double> axis{1.0, 2.0, 3.0, 4.0, 5.0};
+    EXPECT_EQ(tailAlignedSpan(axis, 3).offset, tailAlignedOffset(axis.size(), 3));
+}
+
+TEST(ChartWidgetsTest, TailAlignedSampleAtReadsTheSampleUnderAnAxisIndex)
+{
+    // Three float samples on a five-entry axis: indices 0 and 1 have none.
+    const std::vector<float> series{10.0F, std::numeric_limits<float>::quiet_NaN(), 30.0F};
+    const std::size_t offset = tailAlignedOffset(5, series.size());
+    EXPECT_FALSE(tailAlignedSampleAt<float>(series, offset, 0).has_value());
+    EXPECT_FALSE(tailAlignedSampleAt<float>(series, offset, 1).has_value());
+    EXPECT_DOUBLE_EQ(tailAlignedSampleAt<float>(series, offset, 2).value_or(-1.0), 10.0);
+    // A gap is a sample, returned as NaN for the caller to show as N/A.
+    const auto gap = tailAlignedSampleAt<float>(series, offset, 3);
+    ASSERT_TRUE(gap.has_value());
+    EXPECT_TRUE(std::isnan(gap.value_or(0.0)));
+    EXPECT_DOUBLE_EQ(tailAlignedSampleAt<float>(series, offset, 4).value_or(-1.0), 30.0);
+    EXPECT_FALSE(tailAlignedSampleAt<float>(series, offset, 5).has_value()); // past the axis
+}
+
+// ========== holdLastValuesToNow (#1016, #1180) ==========
+
+TEST(ChartWidgetsTest, HoldLastValuesToNowExtendsBandsAndLinesToNow)
+{
+    std::vector<double> x{-3.0, -1.5};
+    std::vector<double> band{10.0, 20.0};
+    std::vector<double> line{1.0, std::numeric_limits<double>::quiet_NaN()};
+    holdLastValuesToNow(x, {&band, &line}, 4.0);
+    ASSERT_EQ(x.size(), 3U);
+    EXPECT_DOUBLE_EQ(x.back(), 0.0);
+    ASSERT_EQ(band.size(), 3U);
+    EXPECT_DOUBLE_EQ(band.back(), 20.0);
+    // A trailing gap is held too, so every series stays the axis's length.
+    ASSERT_EQ(line.size(), 3U);
+    EXPECT_TRUE(std::isnan(line.back()));
+}
+
+TEST(ChartWidgetsTest, HoldLastValuesToNowLeavesAnAxisAlreadyAtNowAlone)
+{
+    std::vector<double> atNow{-1.0, 0.0};
+    std::vector<double> values{1.0, 2.0};
+    holdLastValuesToNow(atNow, {&values}, 4.0);
+    EXPECT_EQ(atNow.size(), 2U);
+    EXPECT_EQ(values.size(), 2U);
+
+    std::vector<double> empty;
+    std::vector<double> none;
+    holdLastValuesToNow(empty, {&none}, 4.0);
+    EXPECT_TRUE(empty.empty());
+    EXPECT_TRUE(none.empty());
+}
+
 // ========== NowBar ==========
 
 TEST(NowBarListTest, HoldsBarsInOrderAndViewsThemAsASpan)
@@ -781,7 +842,7 @@ TEST(ChartWidgetsReduceTest, MinMaxReductionNeverBridgesAGapWhateverItsLayoutInO
 
 TEST(ChartWidgetsReduceTest, ReductionOfABuiltTimeAxisIsStableAsNowAdvances)
 {
-    // The production path: buildTimeAxis(timestamps, n, now) then a reduction anchored at the same
+    // The production path: fillTimeAxis(axis, timestamps, n, now) then a reduction anchored at the same
     // now. With a float axis, x + now did not recover the timestamp exactly and the error changed as
     // now advanced, so a sample this close to a bucket boundary could change bucket between frames
     // (#1051 review). Timestamps are large, like steady_clock seconds on a long-running machine.
@@ -802,7 +863,8 @@ TEST(ChartWidgetsReduceTest, ReductionOfABuiltTimeAxisIsStableAsNowAdvances)
     for (const double elapsed : {0.0, 0.0161, 0.0334, 0.0517, 0.0833, 0.1})
     {
         const double now = timestamps.back() + 0.04 + elapsed;
-        const auto x = buildTimeAxis(timestamps, COUNT, now);
+        std::vector<double> x;
+        fillTimeAxis(x, timestamps, COUNT, now);
         std::vector<double> outX(LINE_PLOT_MAX_POINTS_DENSE);
         std::vector<double> outY(LINE_PLOT_MAX_POINTS_DENSE);
         const int written =
@@ -1645,27 +1707,30 @@ TEST(ChartWidgetsTimeAxisTest, MakeTimeAxisConfigClampsNegativeOffsetToZero)
     EXPECT_DOUBLE_EQ(cfg.xMax, 0.0);
 }
 
-TEST(ChartWidgetsTimeAxisTest, BuildTimeAxisReturnsRelativeTimes)
+TEST(ChartWidgetsTimeAxisTest, FillTimeAxisReturnsRelativeTimes)
 {
     const std::vector<double> timestamps{10.0, 20.0, 30.0};
-    const auto axis = buildTimeAxis(timestamps, 2, 30.0);
+    std::vector<double> axis;
+    fillTimeAxis(axis, timestamps, 2, 30.0);
 
     ASSERT_EQ(axis.size(), 2U);
-    EXPECT_FLOAT_EQ(axis[0], -10.0F);
-    EXPECT_FLOAT_EQ(axis[1], 0.0F);
+    EXPECT_DOUBLE_EQ(axis[0], -10.0);
+    EXPECT_DOUBLE_EQ(axis[1], 0.0);
 }
 
-TEST(ChartWidgetsTimeAxisTest, BuildTimeAxisReturnsEmptyWhenInputEmpty)
+TEST(ChartWidgetsTimeAxisTest, FillTimeAxisReturnsEmptyWhenInputEmpty)
 {
     const std::vector<double> timestamps{};
-    const auto axis = buildTimeAxis(timestamps, 5, 30.0);
+    std::vector<double> axis{1.0, 2.0}; // reused buffer: cleared, not appended to
+    fillTimeAxis(axis, timestamps, 5, 30.0);
     EXPECT_TRUE(axis.empty());
 }
 
-TEST(ChartWidgetsTimeAxisTest, BuildTimeAxisDoublesReturnsRelativeTimes)
+TEST(ChartWidgetsTimeAxisTest, FillTimeAxisDoublesReturnsRelativeTimes)
 {
     const std::vector<double> timestamps{10.0, 20.0, 30.0};
-    const auto axis = buildTimeAxis(timestamps, 3, 25.0);
+    std::vector<double> axis;
+    fillTimeAxis(axis, timestamps, 3, 25.0);
 
     ASSERT_EQ(axis.size(), 3U);
     EXPECT_DOUBLE_EQ(axis[0], -15.0);
@@ -1673,10 +1738,11 @@ TEST(ChartWidgetsTimeAxisTest, BuildTimeAxisDoublesReturnsRelativeTimes)
     EXPECT_DOUBLE_EQ(axis[2], 5.0);
 }
 
-TEST(ChartWidgetsTimeAxisTest, BuildTimeAxisDoublesRespectsDesiredCount)
+TEST(ChartWidgetsTimeAxisTest, FillTimeAxisDoublesRespectsDesiredCount)
 {
     const std::vector<double> timestamps{1.0, 3.0, 7.0, 9.0};
-    const auto axis = buildTimeAxis(timestamps, 2, 10.0);
+    std::vector<double> axis;
+    fillTimeAxis(axis, timestamps, 2, 10.0);
 
     ASSERT_EQ(axis.size(), 2U);
     EXPECT_DOUBLE_EQ(axis[0], -3.0);
@@ -1685,18 +1751,13 @@ TEST(ChartWidgetsTimeAxisTest, BuildTimeAxisDoublesRespectsDesiredCount)
 
 TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXHandlesBoundsAndMiddle)
 {
-    const std::vector<float> axisF{-10.0F, -5.0F, 0.0F};
-    const auto resF_lo = hoveredIndexFromPlotX(axisF, -99.0);
-    ASSERT_TRUE(resF_lo.has_value());
-    EXPECT_EQ(resF_lo.value(), 0U);
-    const auto resF_hi = hoveredIndexFromPlotX(axisF, 99.0);
-    ASSERT_TRUE(resF_hi.has_value());
-    EXPECT_EQ(resF_hi.value(), 2U);
-    const auto resF_mid = hoveredIndexFromPlotX(axisF, -4.2);
-    ASSERT_TRUE(resF_mid.has_value());
-    EXPECT_EQ(resF_mid.value(), 1U);
-
     const std::vector<double> axisD{-10.0, -5.0, 0.0};
+    const auto resD_out_lo = hoveredIndexFromPlotX(axisD, -99.0);
+    ASSERT_TRUE(resD_out_lo.has_value());
+    EXPECT_EQ(resD_out_lo.value(), 0U);
+    const auto resD_hi = hoveredIndexFromPlotX(axisD, 99.0);
+    ASSERT_TRUE(resD_hi.has_value());
+    EXPECT_EQ(resD_hi.value(), 2U);
     const auto resD_lo = hoveredIndexFromPlotX(axisD, -9.9);
     ASSERT_TRUE(resD_lo.has_value());
     EXPECT_EQ(resD_lo.value(), 0U);
@@ -1707,11 +1768,6 @@ TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXHandlesBoundsAndMiddle)
 
 TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXTieSelectsLowerNeighbor)
 {
-    const std::vector<float> axisF{-10.0F, -5.0F};
-    const auto resFTie = hoveredIndexFromPlotX(axisF, -7.5);
-    ASSERT_TRUE(resFTie.has_value());
-    EXPECT_EQ(resFTie.value(), 0U);
-
     const std::vector<double> axisD{-10.0, -5.0};
     const auto resDTie = hoveredIndexFromPlotX(axisD, -7.5);
     ASSERT_TRUE(resDTie.has_value());
@@ -1720,9 +1776,7 @@ TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXTieSelectsLowerNeighbor)
 
 TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXReturnsNulloptForEmptyInput)
 {
-    const std::vector<float> axisF{};
     const std::vector<double> axisD{};
-    EXPECT_FALSE(hoveredIndexFromPlotX(axisF, 0.0).has_value());
     EXPECT_FALSE(hoveredIndexFromPlotX(axisD, 0.0).has_value());
 }
 
@@ -1741,17 +1795,10 @@ TEST(HistoryChartConfigTest, PercentConfigLocksZeroToHundred)
     EXPECT_FLOAT_EQ(cfg.height, HISTORY_PLOT_HEIGHT_DEFAULT);
 }
 
-TEST(HistoryChartConfigTest, AutoFitConfigHasNoYLimits)
-{
-    const auto cfg = autoFitHistoryConfig("##Net", -30.0, 0.0, formatAxisBytesPerSec);
-    EXPECT_STREQ(cfg.id, "##Net");
-    EXPECT_FALSE(cfg.yLimits.has_value());
-    EXPECT_EQ(cfg.yFormatter, &formatAxisBytesPerSec);
-}
-
 TEST(HistoryChartConfigTest, RateConfigPinsZeroAndSizesTheTopFromTheData)
 {
-    const auto cfg = rateHistoryConfig("##Disk", -300.0, 0.0, formatAxisBytesPerSec, 10'000.0, RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
+    const auto cfg = rateHistoryConfigWithUpper(
+        "##Disk", -300.0, 0.0, formatAxisBytesPerSec, rateAxisUpperBound(10'000.0, RATE_AXIS_MIN_SPAN_BYTES_PER_SEC));
     EXPECT_STREQ(cfg.id, "##Disk");
     EXPECT_DOUBLE_EQ(cfg.xMin, -300.0);
     EXPECT_DOUBLE_EQ(cfg.xMax, 0.0);
@@ -1763,10 +1810,11 @@ TEST(HistoryChartConfigTest, RateConfigPinsZeroAndSizesTheTopFromTheData)
 
 TEST(HistoryChartConfigTest, RateConfigStillSetsLimitsForAnAllZeroSeries)
 {
-    // The regression that matters: if rateHistoryConfig() ever stopped assigning yLimits, the axis
+    // The regression that matters: if rateHistoryConfigWithUpper() ever stopped assigning yLimits, the axis
     // would fall back to ImPlot's auto-fit and reproduce #920 exactly -- a +/-0.5 sliver with a
     // negative tick. The RateAxis unit tests would not notice, because they only cover the maths.
-    const auto cfg = rateHistoryConfig("##Idle", -300.0, 0.0, formatAxisBytesPerSec, 0.0, RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
+    const auto cfg =
+        rateHistoryConfigWithUpper("##Idle", -300.0, 0.0, formatAxisBytesPerSec, rateAxisUpperBound(0.0, RATE_AXIS_MIN_SPAN_BYTES_PER_SEC));
     ASSERT_TRUE(cfg.yLimits.has_value());
     EXPECT_DOUBLE_EQ(cfg.yLimits->first, 0.0);
     EXPECT_DOUBLE_EQ(cfg.yLimits->second, RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
@@ -1775,7 +1823,7 @@ TEST(HistoryChartConfigTest, RateConfigStillSetsLimitsForAnAllZeroSeries)
 
 TEST(HistoryChartConfigTest, RateConfigTakesTheLockedAxisPathNotAutoFit)
 {
-    const auto cfg = rateHistoryConfig("##Watts", -60.0, 0.0, formatAxisWatts, 0.0, RATE_AXIS_MIN_SPAN_WATTS);
+    const auto cfg = rateHistoryConfigWithUpper("##Watts", -60.0, 0.0, formatAxisWatts, rateAxisUpperBound(0.0, RATE_AXIS_MIN_SPAN_WATTS));
     EXPECT_EQ(historyChartYAxisFlags(cfg.yLimits.has_value()), ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
 }
 
