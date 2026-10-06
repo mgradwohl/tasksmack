@@ -1544,6 +1544,67 @@ TEST(LinuxNVMLGPUProbeTest, AnAwakeGpuWhoseLookupFailsAtTheStartIsRetriedAtTheNe
     EXPECT_TRUE(counters[1].suspended);
 }
 
+// #1270 review: a replacement GPU asleep through a restart, with no UUID in procfs, can only take the
+// identity known at its PCI address. Once it wakes and NVML names a different GPU, it gets nothing of
+// the old one's: its own sensor set is found (here it has the power reading the old GPU lacked).
+TEST(LinuxNVMLGPUProbeTest, AReplacementGpuWhoseUuidIsLearntOnWakeFindsItsOwnSensors)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const NvmlMockControls controls;
+    ASSERT_TRUE(controls.controlsDeviceSet());
+    ASSERT_TRUE(controls.controlsPreviousOccupant());
+    const TestSupport::ScopedTempDir pciRoot("tasksmack_nvml_replaced_on_wake");
+    const TestSupport::ScopedTempDir procRoot("tasksmack_nvml_replaced_on_wake_proc");
+    makePciDevice(pciRoot.path, "0000:01:00.0", "0x10de", "nvidia");
+    makePciDevice(pciRoot.path, "0000:41:00.0", "0x10de", "nvidia");
+
+    // The GPU first in slot 0000:01:00.0 has another UUID and no power reading.
+    controls.setPreviousOccupant(true);
+    NVMLGPUProbe probe(pciRoot.path.string(), procRoot.path.string());
+    ASSERT_TRUE(probe.isAvailable());
+    const auto before = probe.enumerateGPUs();
+    ASSERT_EQ(before.size(), 2U);
+    ASSERT_EQ(before[0].id, "mock-nvml-previous-uuid");
+    ASSERT_TRUE(before[0].sensorCapabilities.has_value());
+    ASSERT_FALSE(before[0].sensorCapabilities.value_or(GPUCapabilities{}).hasPowerMetrics);
+    ASSERT_EQ(probe.readGPUCounters().size(), 2U);
+
+    // Replaced by a GPU that is asleep through a restart, with no procfs UUID: it can only take the
+    // identity known at its address.
+    controls.setPreviousOccupant(false);
+    setRuntimeStatus(pciRoot.path, "0000:01:00.0", "suspended");
+    controls.setLostDevice(1);
+    [[maybe_unused]] const auto lost = probe.readGPUCounters(); // device 1 reports itself lost
+    controls.setLostDevice(NvmlMockControls::NO_FAILING_HANDLE);
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Full)); // re-initialises NVML
+    const auto asleep = probe.enumerateGPUs();
+    ASSERT_EQ(asleep.size(), 2U);
+    EXPECT_EQ(asleep[0].id, "mock-nvml-previous-uuid");
+
+    // Awake: NVML names the replacement, whose own sensor set is found.
+    setRuntimeStatus(pciRoot.path, "0000:01:00.0", "active");
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Quick));
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 2U);
+    EXPECT_EQ(gpus[0].id, "mock-nvml-uuid-0");
+    EXPECT_EQ(gpus[0].name, "Mock NVIDIA GPU 0");
+    ASSERT_TRUE(gpus[0].sensorCapabilities.has_value());
+    const auto sensors = gpus[0].sensorCapabilities.value_or(GPUCapabilities{});
+    EXPECT_TRUE(sensors.hasPowerMetrics);
+    EXPECT_TRUE(sensors.hasFanSpeed);
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick)); // nothing left to find
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 2U);
+    EXPECT_EQ(counters[0].gpuId, "mock-nvml-uuid-0");
+    EXPECT_TRUE(counters[0].powerAvailable);
+    EXPECT_DOUBLE_EQ(counters[0].powerDrawWatts, 125.0);
+    EXPECT_EQ(counters[0].memoryTotalBytes, 8ULL * 1024ULL * 1024ULL * 1024ULL);
+}
+
 // #1270 review: whether a device rebuilt by a restart takes the id remembered for its PCI address.
 TEST(NVMLGPUProbeMathTest, ARestartKeepsTheRememberedIdOnlyWhenNoUuidIsReported)
 {

@@ -213,6 +213,17 @@ unsigned int g_InitCalls = 0;
 // How many of the next nvmlInit_v2 calls fail with NVML_ERROR_DRIVER_NOT_LOADED, as during a driver
 // reload (#1116). Set through tasksmackNvmlMockFailInits().
 unsigned int g_FailingInits = 0;
+// #1270 review: while set, mock device 0 presents as the GPU that held its slot before a replacement --
+// another UUID, and no power reading -- so a test can tell that GPU's remembered state from the
+// replacement's own. Set through tasksmackNvmlMockSetPreviousOccupant().
+bool g_PreviousOccupant = false; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - mock test control
+constexpr const char* PREVIOUS_OCCUPANT_UUID = "mock-nvml-previous-uuid";
+
+/// Whether `dev` currently presents as the previous occupant of device 0's slot.
+[[nodiscard]] bool isPreviousOccupant(const MockDevice* dev)
+{
+    return g_PreviousOccupant && dev == MOCK_DEVICES.data();
+}
 
 /// Whether `dev` is the device the test marked lost (#1116). Doesn't count as a device query.
 [[nodiscard]] bool isLost(const MockDevice* dev)
@@ -326,6 +337,11 @@ extern "C"
         {
             return NVML::NVML_ERROR_UNKNOWN;
         }
+        if (isPreviousOccupant(dev))
+        {
+            writeString(PREVIOUS_OCCUPANT_UUID, uuid, length);
+            return NVML::NVML_SUCCESS;
+        }
         if (!dev->hasUuid)
         {
             return NVML::NVML_ERROR_NOT_FOUND;
@@ -405,7 +421,7 @@ extern "C"
         {
             return NVML::NVML_ERROR_GPU_IS_LOST;
         }
-        if (!dev->hasPower)
+        if (!dev->hasPower || isPreviousOccupant(dev))
         {
             return NVML::NVML_ERROR_NOT_SUPPORTED;
         }
@@ -572,6 +588,13 @@ extern "C"
     unsigned int tasksmackNvmlMockQueriesForDevice(unsigned int index)
     {
         return index < g_QueriesPerDevice.size() ? g_QueriesPerDevice.at(index) : 0U;
+    }
+
+    // Test control (#1270 review): while `enabled`, device 0 presents as the GPU that held its slot
+    // before (see g_PreviousOccupant).
+    void tasksmackNvmlMockSetPreviousOccupant(int enabled)
+    {
+        g_PreviousOccupant = (enabled != 0);
     }
 
     const char* nvmlErrorString(NVML::nvmlReturn_t /*result*/)

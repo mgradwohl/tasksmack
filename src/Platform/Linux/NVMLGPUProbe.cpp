@@ -475,6 +475,17 @@ bool NVMLGPUProbe::Impl::resolveDeferred(Device& device)
         resolved.id = device.id; // NVML couldn't report the UUID the driver already gave
         resolved.idIsUuid = true;
     }
+    // What was remembered belongs to the GPU it was learnt from. A GPU asleep through a restart with
+    // no UUID in procfs took the identity known at its address; if NVML now names another GPU there, a
+    // replacement, its sensors are found afresh and its memory total read anew (#1270 review).
+    const bool sameGpu = resolved.id == device.id;
+    if (!sameGpu)
+    {
+        spdlog::info("NVMLGPUProbe: the GPU at {} is {} now it is awake, not {}; not carrying over what was known of that one",
+                     device.pciAddress,
+                     resolved.id,
+                     device.id);
+    }
     if (resolved.name.empty())
     {
         resolved.name = device.name;
@@ -486,8 +497,11 @@ bool NVMLGPUProbe::Impl::resolveDeferred(Device& device)
         resolved.pciLocation = device.pciLocation;
         resolved.pciDeviceId = device.pciDeviceId;
     }
-    resolved.lastMemoryTotalBytes = device.lastMemoryTotalBytes;
-    resolved.sensors = device.sensors;
+    if (sameGpu)
+    {
+        resolved.lastMemoryTotalBytes = device.lastMemoryTotalBytes;
+        resolved.sensors = device.sensors;
+    }
     device = std::move(resolved);
     return true;
 }
