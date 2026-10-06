@@ -1112,6 +1112,65 @@ TEST(TitleBarGeometryTest, MinimumWidthCoversThePanelContent)
     EXPECT_EQ(computeMinimumWindowSize(1.0F, 300.0F, std::numeric_limits<float>::quiet_NaN()).width, 300);
 }
 
+// ========== Content-derived minimum height (#1278) ==========
+
+// The height floor is the sum of what a tab has to show at its shortest.
+TEST(TitleBarGeometryTest, ContentMinimumHeightSumsTheParts)
+{
+    const ContentMinimumHeightParts parts{
+        .titleBarPx = 45.0F,
+        .mainTabsPx = 58.0F,
+        .subTabsPx = 46.0F,
+        .chartPx = 210.0F,
+        .statusBarPx = 34.0F,
+        .chromePx = 12.0F,
+    };
+    EXPECT_FLOAT_EQ(computeContentMinimumHeight(parts), 405.0F);
+}
+
+TEST(TitleBarGeometryTest, ContentMinimumHeightIgnoresUnusableParts)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    const ContentMinimumHeightParts parts{
+        .titleBarPx = 0.0F, // native decorations: the title bar is outside the client area
+        .mainTabsPx = nan,
+        .subTabsPx = -5.0F,
+        .chartPx = 200.0F,
+        .statusBarPx = inf,
+        .chromePx = 10.0F,
+    };
+    EXPECT_FLOAT_EQ(computeContentMinimumHeight(parts), 210.0F);
+}
+
+// The reported case: at 150% the minimum height was the scaled base, 300px, which does not hold
+// the tab strips, one chart at its minimum and the status bar. The content now sets it.
+TEST(TitleBarGeometryTest, MinimumHeightCoversThePanelContent)
+{
+    const auto minimum = computeMinimumWindowSize(1.5F, 0.0F, 0.0F, 404.3F);
+    EXPECT_EQ(minimum.height, 405); // rounded up, as the width is
+    EXPECT_EQ(minimum.width, 300);
+}
+
+// Content shorter than the scaled base, or not known yet, leaves the base minimum.
+TEST(TitleBarGeometryTest, MinimumHeightIsNeverBelowTheScaledBase)
+{
+    EXPECT_EQ(computeMinimumWindowSize(2.0F, 0.0F, 0.0F, 250.0F).height, 400);
+    EXPECT_EQ(computeMinimumWindowSize(1.0F, 0.0F, 0.0F, 0.0F).height, MIN);
+    EXPECT_EQ(computeMinimumWindowSize(1.0F, 0.0F, 0.0F, std::numeric_limits<float>::quiet_NaN()).height, MIN);
+    EXPECT_EQ(computeMinimumWindowSize(1.0F, 0.0F, 0.0F, -50.0F).height, MIN);
+    // Absurdly tall content is held to the maximum dimension.
+    EXPECT_EQ(computeMinimumWindowSize(1.0F, 0.0F, 0.0F, 1.0e9F).height, MAX);
+}
+
+// A content-derived height taller than the display's work area is capped to it like the width.
+TEST(TitleBarGeometryTest, ContentMinimumHeightIsCappedToTheDisplay)
+{
+    const auto minimum = computeMinimumWindowSize(1.0F, 0.0F, 0.0F, 1500.0F);
+    EXPECT_EQ(minimum.height, 1500);
+    EXPECT_EQ(capMinimumToUsable(minimum, 1920, 1040).height, 1040);
+}
+
 // The status bar's FPS readout was drawn over "Ready" in a narrow window; it is left out instead.
 TEST(TitleBarGeometryTest, MinimumIsCappedToTheDisplaysUsableBounds)
 {

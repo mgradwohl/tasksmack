@@ -197,21 +197,49 @@ inline constexpr float MIN_PLOT_WIDTH_EM = 15.0F;
     return std::max(atLeastZero(processesToolbarWidthPx), chartRow) + atLeastZero(horizontalChromePx);
 }
 
+/// The vertical pieces the window has to show at its shortest (#1278), in pixels.
+struct ContentMinimumHeightParts
+{
+    float titleBarPx;  ///< The custom title bar; 0 with native decorations (outside the client area).
+    float mainTabsPx;  ///< The main tab strip, with the padding above and below it.
+    float subTabsPx;   ///< A panel's sub-tab strip (Overview / CPU Cores / ...) and the gap below it.
+    float chartPx;     ///< One history chart at its minimum height, with the heading line above it.
+    float statusBarPx; ///< The status bar.
+    float chromePx;    ///< Padding above and below the content area.
+};
+
+/// Shortest content the window has to show without clipping it, in pixels (#1278): the title bar,
+/// the tab strips, one history chart at its minimum height (UI::Widgets::historyPlotMinHeight())
+/// and the status bar. Below that a tab cannot show even one whole chart, so the window may not be
+/// made shorter -- the height counterpart of computeContentMinimumWidth(). Unusable parts count as 0.
+[[nodiscard]] inline auto computeContentMinimumHeight(const ContentMinimumHeightParts& parts) -> float
+{
+    const auto atLeastZero = [](const float value)
+    {
+        return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
+    };
+    return atLeastZero(parts.titleBarPx) + atLeastZero(parts.mainTabsPx) + atLeastZero(parts.subTabsPx) + atLeastZero(parts.chartPx) +
+           atLeastZero(parts.statusBarPx) + atLeastZero(parts.chromePx);
+}
+
 /// Smallest size the window may take: the base minimum at the display's scale, and never narrower
-/// than the title bar's own content or the panels' content.
+/// than the title bar's own content or the panels' content, nor shorter than the panels' content.
 ///
 /// The base minimum was 200 units at every scale, but the title bar is display-scaled: its five
 /// buttons alone need about 197px at 100% and about 393px at 200%. So the window could be dragged
 /// narrower than its own title bar, and the buttons were drawn over the wordmark (#970). The panels
 /// are font-scaled too: at 200 units the Processes toolbar collided and the Overview's plots were
-/// about 50px wide (#1207).
+/// about 50px wide (#1207). The height stayed the scaled base (300px at 150%), which at the larger
+/// fonts did not hold the tab strips, one chart at its minimum and the status bar (#1278).
 ///
 /// @param displayScale             UI scale in window units (UI::windowUnitScale); 1.0 at 96 DPI.
 /// @param titleBarContentWidthPx   From computeTitleBarContentWidth(); 0 if not yet known.
 /// @param contentMinimumWidthPx    From computeContentMinimumWidth(); 0 if not yet known.
+/// @param contentMinimumHeightPx   From computeContentMinimumHeight(); 0 if not yet known (#1278).
 [[nodiscard]] inline auto computeMinimumWindowSize(const float displayScale,
                                                    const float titleBarContentWidthPx,
-                                                   const float contentMinimumWidthPx = 0.0F) -> WindowMinimumSize
+                                                   const float contentMinimumWidthPx = 0.0F,
+                                                   const float contentMinimumHeightPx = 0.0F) -> WindowMinimumSize
 {
     const float scale = (std::isfinite(displayScale) && displayScale > 1.0F) ? displayScale : 1.0F;
     const auto atLeastZero = [](const float value)
@@ -224,7 +252,7 @@ inline constexpr float MIN_PLOT_WIDTH_EM = 15.0F;
     const auto maxDimension = static_cast<float>(Core::WINDOW_MAX_DIMENSION);
     // Narrowing: both operands are clamped to [WINDOW_MIN_DIMENSION, WINDOW_MAX_DIMENSION] first.
     return {.width = static_cast<int>(std::min(std::max(base, std::ceil(content)), maxDimension)),
-            .height = static_cast<int>(std::min(base, maxDimension))};
+            .height = static_cast<int>(std::min(std::max(base, std::ceil(atLeastZero(contentMinimumHeightPx))), maxDimension))};
 }
 
 /// The minimum window size held inside the usable bounds of the display the window is on (#1207).
