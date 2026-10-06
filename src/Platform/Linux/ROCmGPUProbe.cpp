@@ -7,11 +7,16 @@
 
 #include <spdlog/spdlog.h>
 
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -132,6 +137,49 @@ struct rsmi_frequencies_t;
     return reinterpret_cast<rsmi_frequencies_t*>(buffer.bytes.data());
 }
 
+/// Reads a sysfs decimal attribute ("11\n"); nullopt if it can't be read or isn't a number.
+[[nodiscard]] std::optional<std::uint32_t> readDecimalAttribute(const std::filesystem::path& path)
+{
+    std::ifstream file(path);
+    std::string text;
+    if (!file.is_open() || !std::getline(file, text))
+    {
+        return std::nullopt;
+    }
+    std::string_view digits(text);
+    while (!digits.empty() && (digits.back() == '\r' || digits.back() == ' '))
+    {
+        digits.remove_suffix(1);
+    }
+    std::uint32_t value = 0;
+    const auto [end, error] = std::from_chars(digits.data(), digits.data() + digits.size(), value);
+    if (error != std::errc{} || end != digits.data() + digits.size() || digits.empty())
+    {
+        return std::nullopt;
+    }
+    return value;
+}
+
+/// The graphics core's IP version from amdgpu's ip_discovery sysfs tree under the PCI device
+/// directory `devicePath` (#1266). The IP is listed both by name (GC) and by hardware id (11);
+/// nullopt on kernels or ASICs without the tree. These are attributes amdgpu cached at probe time,
+/// so reading them never wakes a runtime-suspended GPU (#1117).
+[[nodiscard]] std::optional<Platform::ROCmGPUProbeMath::GcIpVersion> readGcIpVersion(const std::string& devicePath)
+{
+    for (const char* gcDir : {"/ip_discovery/die/0/GC/0", "/ip_discovery/die/0/11/0"})
+    {
+        const std::filesystem::path dir = devicePath + gcDir;
+        const auto major = readDecimalAttribute(dir / "major");
+        const auto minor = readDecimalAttribute(dir / "minor");
+        const auto revision = readDecimalAttribute(dir / "revision");
+        if (major.has_value() && minor.has_value() && revision.has_value())
+        {
+            return Platform::ROCmGPUProbeMath::GcIpVersion{.major = *major, .minor = *minor, .revision = *revision};
+        }
+    }
+    return std::nullopt;
+}
+
 } // anonymous namespace
 
 namespace Platform
@@ -153,6 +201,9 @@ struct ROCmGPUProbe::Impl
     std::vector<std::uint64_t> lastMemoryTotalBytes;
     // Each device's name, read at load, so a repeat enumerateGPUs() needn't ask again.
     std::vector<std::string> names;
+    // Whether each device is an APU's integrated GPU (#1266), decided at load from amdgpu's sysfs
+    // (ROCmGPUProbeMath::isAmdApu), parallel to devices.
+    std::vector<bool> integrated;
     // Which sensors each device reports, found by the first enumerateGPUs() that sees it awake
     // (#1112). Unset while it has only been seen asleep: it isn't woken to find out (#1117), and
     // rescanGPUs() asks for a re-enumeration once it is awake (#1289).
@@ -378,6 +429,28 @@ bool ROCmGPUProbe::Impl::startROCmSMI()
             (rsmi_dev_name_get(i, nameBuf, sizeof(nameBuf)) == RSMI_STATUS_SUCCESS) ? std::string(nameBuf) : "AMD GPU " + std::to_string(i);
     }
     sensors.assign(deviceCount, std::nullopt);
+    // ROCm SMI has no APU flag, so ask amdgpu (#1266): the graphics core's IP version, the signal its
+    // own AMD_IS_APU flag comes from, or else the PCI device id. Both are cached sysfs attributes
+    // (rsmi_dev_id_get reads the same file), so this never wakes a sleeping GPU (#1117).
+    integrated.assign(deviceCount, false);
+    for (std::uint32_t i = 0; i < deviceCount; ++i)
+    {
+        std::optional<ROCmGPUProbeMath::GcIpVersion> gcVersion;
+        std::optional<std::uint16_t> pciDeviceId;
+        if (!sysfsPaths[i].empty())
+        {
+            gcVersion = readGcIpVersion(sysfsPaths[i]);
+            if (std::uint32_t id = 0; PciDisplayDevices::readHexAttribute(sysfsPaths[i] + "/device", id) && id != 0 && id <= 0xFFFFU)
+            {
+                pciDeviceId = static_cast<std::uint16_t>(id);
+            }
+        }
+        if (std::uint16_t id = 0; !pciDeviceId.has_value() && rsmi_dev_id_get(i, &id) == RSMI_STATUS_SUCCESS && id != 0)
+        {
+            pciDeviceId = id;
+        }
+        integrated[i] = ROCmGPUProbeMath::isAmdApu(gcVersion, pciDeviceId);
+    }
 
     initialized = true;
     reinitNeeded = false;
@@ -413,6 +486,7 @@ void ROCmGPUProbe::Impl::restartROCmSMI()
     lastMemoryTotalBytes.clear();
     names.clear();
     sensors.clear();
+    integrated.clear();
     // Retried at the next full rescan if it fails while an amdgpu-bound GPU is present (a driver
     // mid-reload).
     reinitNeeded = !loadROCmSMI() && loadFailureIsRetryable();
@@ -442,6 +516,7 @@ void ROCmGPUProbe::Impl::unloadROCmSMI()
     lastMemoryTotalBytes.clear();
     names.clear();
     sensors.clear();
+    integrated.clear();
 }
 
 std::string ROCmGPUProbe::Impl::getROCmError(rsmi_status_t result) const
@@ -499,8 +574,8 @@ std::vector<GPUInfo> ROCmGPUProbe::enumerateGPUs()
         GPUInfo info{};
         info.deviceIndex = deviceIdx;
         info.vendor = "AMD";
-        info.isIntegrated = false;            // ROCm typically monitors discrete AMD GPUs
-        info.name = m_Impl->names[deviceIdx]; // Read at load ("AMD GPU N" if ROCm SMI has none)
+        info.isIntegrated = m_Impl->integrated[deviceIdx]; // An APU's GPU, decided at load (#1266)
+        info.name = m_Impl->names[deviceIdx];              // Read at load ("AMD GPU N" if ROCm SMI has none)
 
         // The id resolved once at load (uniqueId → pciId → "amd_N", #1162); readGPUCounters() uses
         // the same cached value, so GPUInfo::id and GPUCounters::gpuId always match.

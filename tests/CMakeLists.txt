@@ -261,6 +261,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Core/PathService.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/VideoBackend.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/Window.cpp
+    ${CMAKE_SOURCE_DIR}/src/Core/X11WindowManager.cpp
     # App layer
     ${CMAKE_SOURCE_DIR}/src/App/UserConfig.cpp
     ${CMAKE_SOURCE_DIR}/src/App/InstanceLock.cpp

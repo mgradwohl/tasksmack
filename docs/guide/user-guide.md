@@ -161,6 +161,8 @@ TaskSmack combines operating-system GPU APIs with optional vendor libraries:
 - **Not read:** utilisation.
 - **Sleeping cards:** a card in runtime suspend isn't queried, so watching it doesn't wake it.
 
+**AMD GPUs on Linux** (ROCm SMI): an APU's integrated GPU is recognised from the graphics-core version amdgpu publishes in sysfs (`ip_discovery`), or from its PCI device ID on kernels without it, so it is labelled integrated and its shared memory isn't counted as VRAM. An APU generation newer than TaskSmack's list still shows as discrete.
+
 **Per-process GPU utilisation** sums utilisation across all GPUs, so a process working across two GPUs can legitimately show GPU% > 100 %.
 
 The UI shows only the metrics exposed by the available backend. If no backend discovers a usable GPU, GPU sections are hidden.
@@ -249,7 +251,7 @@ TaskSmack persists settings in several places:
 
 ### Window size and position
 
-TaskSmack reopens at the size and position it had when it was closed, and maximized if it was maximized. Closing it while maximized keeps the size and position it had before it was maximized -- whether it was maximized with the title-bar button or by the window manager or compositor (a keyboard shortcut, a window menu, snapping) -- so Restore returns there on the next launch. (Native Wayland does not let apps position their windows, so there only the size and maximized state are restored.)
+TaskSmack reopens at the size and position it had when it was closed, and maximized if it was maximized. Closing it while maximized keeps the size and position it had before it was maximized -- whether it was maximized with the title-bar button or by the window manager or compositor (a keyboard shortcut, a window menu, snapping) -- so Restore returns there on the next launch. (Native Wayland does not let apps position their windows, so there only the size and maximized state are restored.) On X11 and XWayland, the title-bar Maximize button asks the window manager to maximize the window when it supports that, so the window fills the same area as the window manager's own maximize and stops at the taskbar or panel.
 
 If the saved position is no longer on any connected display (a monitor was unplugged, say), TaskSmack opens centered on the primary display instead, and a saved size larger than the display is shrunk to fit it.
 
@@ -280,7 +282,7 @@ These settings aren't in the Settings dialog. Edit them in `config.toml` while T
 | `[ui] chart_anti_aliasing` | true | true/false | Smooth chart line edges. Turn it off to save CPU/GPU time on integrated graphics. |
 | `[sampling] socket_stats_cache_ttl_ms` | 500 | 0–5000 ms | Linux only. How long per-process network readings are cached. |
 
-Older versions also wrote `[metrics] min_time_for_rate_seconds`, `[metrics] integrated_gpu_vram_threshold_mb`, `[ui] progress_color_low_threshold` and `[ui] progress_color_high_threshold`. None of them ever had an effect, and TaskSmack now removes them from `config.toml` the next time it saves. Network rates are measured over each interval, so no start-up delay is needed. Integrated and discrete GPUs are told apart by vendor (Windows) or PCI bus (Linux), not by a VRAM threshold. TaskSmack has no threshold-coloured progress bars.
+Older versions also wrote `[metrics] min_time_for_rate_seconds`, `[metrics] integrated_gpu_vram_threshold_mb`, `[ui] progress_color_low_threshold` and `[ui] progress_color_high_threshold`. None of them ever had an effect, and TaskSmack now removes them from `config.toml` the next time it saves. Network rates are measured over each interval, so no start-up delay is needed. Integrated and discrete GPUs are told apart by vendor (Windows) or by PCI bus and, for AMD, graphics-core version (Linux), not by a VRAM threshold. TaskSmack has no threshold-coloured progress bars.
 
 ### Running TaskSmack twice
 

@@ -6,6 +6,7 @@
 
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
+#include "Core/X11WindowManager.h"
 
 #include <gtest/gtest.h>
 
@@ -83,6 +84,54 @@ TEST(WindowGeometryTest, AStaleOsMaximizeNotificationIsNotAdopted)
     EXPECT_FALSE(shouldAdoptSystemMaximize(true, true, true, true, true));   // minimized since
     EXPECT_FALSE(shouldAdoptSystemMaximize(true, true, true, false, true));
     EXPECT_TRUE(shouldAdoptSystemMaximize(true, true, true, true, false)); // still maximized
+}
+
+// ---- chooseBorderlessMaximize (#1339) ----
+
+TEST(WindowGeometryTest, AnX11WindowManagerWithEwmhMaximizeSizesTheWindow)
+{
+    // WSLg's XWayland has no _NET_WORKAREA, so SDL_GetDisplayUsableBounds() is the whole display and
+    // the client-side maximize covered the taskbar; its window manager's own maximize does not.
+    EXPECT_EQ(chooseBorderlessMaximize(true, true, true), BorderlessMaximize::WindowManager);
+}
+
+TEST(WindowGeometryTest, AnX11WindowManagerWithoutEwmhMaximizeKeepsTheClientSideMaximize)
+{
+    EXPECT_EQ(chooseBorderlessMaximize(true, true, false), BorderlessMaximize::ClientSide);
+}
+
+TEST(WindowGeometryTest, WindowsKeepsTheClientSideMaximize)
+{
+    // The OS maximize of a borderless window is wrong on Windows (#1208, #1282): the EWMH answer,
+    // which is never asked there, can't change that.
+    EXPECT_EQ(chooseBorderlessMaximize(true, false, false), BorderlessMaximize::ClientSide);
+    EXPECT_EQ(chooseBorderlessMaximize(true, false, true), BorderlessMaximize::ClientSide);
+}
+
+TEST(WindowGeometryTest, NativeWaylandAlwaysLeavesTheMaximizeToTheCompositor)
+{
+    EXPECT_EQ(chooseBorderlessMaximize(false, false, false), BorderlessMaximize::WindowManager);
+    EXPECT_EQ(chooseBorderlessMaximize(false, false, true), BorderlessMaximize::WindowManager);
+}
+
+TEST(X11WindowManagerTest, EwmhMaximizeNeedsBothMaximizedStatesListed)
+{
+    constexpr unsigned long VERT = 301;
+    constexpr unsigned long HORZ = 302;
+    constexpr std::array<unsigned long, 4> BOTH{100, HORZ, 200, VERT};
+    constexpr std::array<unsigned long, 2> VERT_ONLY{100, VERT};
+    constexpr std::array<unsigned long, 0> NONE{};
+    EXPECT_TRUE(X11WindowManager::supportedListHasMaximize(BOTH, VERT, HORZ));
+    EXPECT_FALSE(X11WindowManager::supportedListHasMaximize(VERT_ONLY, VERT, HORZ));
+    EXPECT_FALSE(X11WindowManager::supportedListHasMaximize(NONE, VERT, HORZ));
+    // Atom 0 (None) means the atom was never interned, so no window manager lists it.
+    constexpr std::array<unsigned long, 3> WITH_ZERO{0, HORZ, VERT};
+    EXPECT_FALSE(X11WindowManager::supportedListHasMaximize(WITH_ZERO, 0, HORZ));
+}
+
+TEST(X11WindowManagerTest, NoWindowMeansNoEwmhMaximize)
+{
+    EXPECT_FALSE(X11WindowManager::supportsEwmhMaximize(nullptr));
 }
 
 // ---- spanOverlap / isReachableOn ----
@@ -425,6 +474,27 @@ TEST(NormalGeometryTrackerTest, MaximizeOfAWindowAlreadyMaximizedFromOutsideUses
     tracker.observe(NORMAL_B, 1.0F, true);
     tracker.maximizing(MAXIMIZED, 1.0F, false, MaximizeState::System);
     EXPECT_EQ(tracker.restoreTarget(), NORMAL_B);
+}
+
+TEST(NormalGeometryTrackerTest, AWindowManagerSizedMaximizeRestoresToTheRectangleItLeft)
+{
+    // #1339: on X11 with EWMH maximize, Window::maximize() asks the window manager and tracks a System
+    // maximize. Its resize to the work area, the MAXIMIZED event that follows and a second click
+    // must keep the rectangle the window left; a window-manager restore then ends the maximize.
+    NormalGeometryTracker tracker;
+    tracker.observe(NORMAL_A, 1.0F, true);
+    tracker.maximizing(NORMAL_A, 1.0F, true, MaximizeState::System);
+    tracker.observe(MAXIMIZED, 1.0F, false); // the window manager's resize, drained while maximized
+    tracker.systemMaximized(true, false);    // its MAXIMIZED event
+    tracker.maximizing(MAXIMIZED, 1.0F, false, MaximizeState::System);
+    EXPECT_EQ(tracker.state(), MaximizeState::System);
+    EXPECT_EQ(tracker.restoreTarget(), NORMAL_A);
+    EXPECT_EQ(savedNormal(tracker, true, MAXIMIZED), NORMAL_A);
+
+    tracker.systemRestored(false, false); // restored from the window manager's shortcut or menu
+    EXPECT_FALSE(tracker.isMaximized());
+    tracker.observe(NORMAL_B, 1.0F, true);
+    EXPECT_EQ(savedNormal(tracker, false, NORMAL_B), NORMAL_B);
 }
 
 TEST(NormalGeometryTrackerTest, AnOsRestoreDoesNotEndAClientSideMaximize)
