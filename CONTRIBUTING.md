@@ -802,11 +802,27 @@ write artifacts under `perf-data/` and emit `KEY=value` lines at exit for script
 ### Linux — CPU profiling (perf)
 
 Use `tools/profile-perf.sh` to capture and `tools/analyze-perf.sh` to analyze.
-Default preset is `profile` for app mode and `benchmark` for bench mode.
+Default preset is `profile` for app mode and `benchmark` for bench mode. Every run prints, and
+writes to its log, the preset, build directory, build type, compiler and C++ flags it profiled.
+
+App mode profiles steady state, not startup (#1371). It launches TaskSmack, waits for it to log
+`Entering main loop` (up to 30 s) plus a warm-up (`--warmup`, default 5 s), and only then attaches
+`perf record -p`. It records until you close TaskSmack, or for `--duration` seconds and then closes
+it. Ctrl+C also stops the capture and closes TaskSmack. `--include-startup` keeps the old behavior:
+TaskSmack runs under perf from launch. The run fails if TaskSmack exits before recording starts,
+exits before `--duration` elapses, or exits with a non-zero code. TaskSmack's own output goes to
+`perf-data/perf-app-<timestamp>-app.log`. The `profile` preset keeps frame pointers for better stacks;
+pass `--preset release` to profile the shipped build's code generation.
 
 ```bash
-# App trace — exercise the app, then close it
+# App trace — steady state after a 5 s warm-up; exercise the app, then close it
 ./tools/profile-perf.sh app
+
+# Unattended app trace — 10 s warm-up, record 30 s, then close automatically
+./tools/profile-perf.sh app --warmup 10 --duration 30
+
+# Include startup (fonts, themes, first enumeration) in the profile
+./tools/profile-perf.sh app --include-startup
 
 # Benchmark trace — targeted hot-path capture
 ./tools/profile-perf.sh bench
