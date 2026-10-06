@@ -130,25 +130,25 @@ class NVMLGPUProbe : public IGPUProbe
     // NVML function pointers (dynamically loaded)
     struct NVMLFunctions
     {
-        NVML::nvmlReturn_t (*Init)();
-        NVML::nvmlReturn_t (*Shutdown)();
-        NVML::nvmlReturn_t (*DeviceGetCount)(unsigned int*);
-        NVML::nvmlReturn_t (*DeviceGetHandleByIndex)(unsigned int, NVML::nvmlDevice_t*);
-        NVML::nvmlReturn_t (*DeviceGetName)(NVML::nvmlDevice_t, char*, unsigned int);
-        NVML::nvmlReturn_t (*DeviceGetUUID)(NVML::nvmlDevice_t, char*, unsigned int);
-        NVML::nvmlReturn_t (*DeviceGetMemoryInfo)(NVML::nvmlDevice_t, void*);
-        NVML::nvmlReturn_t (*DeviceGetTemperature)(NVML::nvmlDevice_t, int, unsigned int*);
-        NVML::nvmlReturn_t (*DeviceGetPowerUsage)(NVML::nvmlDevice_t, unsigned int*);
-        NVML::nvmlReturn_t (*DeviceGetPowerManagementLimit)(NVML::nvmlDevice_t, unsigned int*);
-        NVML::nvmlReturn_t (*DeviceGetClockInfo)(NVML::nvmlDevice_t, int, unsigned int*);
-        NVML::nvmlReturn_t (*DeviceGetMaxClockInfo)(NVML::nvmlDevice_t, int, unsigned int*);
-        NVML::nvmlReturn_t (*DeviceGetUtilizationRates)(NVML::nvmlDevice_t, void*);
-        NVML::nvmlReturn_t (*DeviceGetPcieThroughput)(NVML::nvmlDevice_t, int, unsigned int*);
-        NVML::nvmlReturn_t (*SystemGetDriverVersion)(char*, unsigned int);
-        NVML::nvmlReturn_t (*DeviceGetVbiosVersion)(NVML::nvmlDevice_t, char*, unsigned int);
-        NVML::nvmlReturn_t (*DeviceGetFanSpeed)(NVML::nvmlDevice_t, unsigned int*);
+        NVML::nvmlReturn_t (*Init)() = nullptr;
+        NVML::nvmlReturn_t (*Shutdown)() = nullptr;
+        NVML::nvmlReturn_t (*DeviceGetCount)(unsigned int*) = nullptr;
+        NVML::nvmlReturn_t (*DeviceGetHandleByIndex)(unsigned int, NVML::nvmlDevice_t*) = nullptr;
+        NVML::nvmlReturn_t (*DeviceGetName)(NVML::nvmlDevice_t, char*, unsigned int) = nullptr;
+        NVML::nvmlReturn_t (*DeviceGetUUID)(NVML::nvmlDevice_t, char*, unsigned int) = nullptr;
+        NVML::nvmlReturn_t (*DeviceGetMemoryInfo)(NVML::nvmlDevice_t, void*) = nullptr;
+        NVML::nvmlReturn_t (*DeviceGetTemperature)(NVML::nvmlDevice_t, int, unsigned int*) = nullptr;
+        NVML::nvmlReturn_t (*DeviceGetPowerUsage)(NVML::nvmlDevice_t, unsigned int*) = nullptr;
+        NVML::nvmlReturn_t (*DeviceGetPowerManagementLimit)(NVML::nvmlDevice_t, unsigned int*) = nullptr;
+        NVML::nvmlReturn_t (*DeviceGetClockInfo)(NVML::nvmlDevice_t, int, unsigned int*) = nullptr;
+        NVML::nvmlReturn_t (*DeviceGetMaxClockInfo)(NVML::nvmlDevice_t, int, unsigned int*) = nullptr;
+        NVML::nvmlReturn_t (*DeviceGetUtilizationRates)(NVML::nvmlDevice_t, void*) = nullptr;
+        NVML::nvmlReturn_t (*DeviceGetPcieThroughput)(NVML::nvmlDevice_t, int, unsigned int*) = nullptr;
+        NVML::nvmlReturn_t (*SystemGetDriverVersion)(char*, unsigned int) = nullptr;
+        NVML::nvmlReturn_t (*DeviceGetVbiosVersion)(NVML::nvmlDevice_t, char*, unsigned int) = nullptr;
+        NVML::nvmlReturn_t (*DeviceGetFanSpeed)(NVML::nvmlDevice_t, unsigned int*) = nullptr;
         // PCI identity, to match NVML devices to DXGI adapters (#1091); optional
-        NVML::nvmlReturn_t (*DeviceGetPciInfo)(NVML::nvmlDevice_t, NVML::nvmlPciInfo_t*);
+        NVML::nvmlReturn_t (*DeviceGetPciInfo)(NVML::nvmlDevice_t, NVML::nvmlPciInfo_t*) = nullptr;
         // Per-process GPU functions, each the newest variant nvml.dll exports (#1313)
         RunningProcessesQuery DeviceGetComputeRunningProcesses;
         RunningProcessesQuery DeviceGetGraphicsRunningProcesses;
