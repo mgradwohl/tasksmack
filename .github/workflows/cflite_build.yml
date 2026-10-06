@@ -6,6 +6,7 @@ on:
     paths:
       - '.clusterfuzzlite/**'
       - '.github/workflows/cflite_*.yml'
+      - 'assets/themes/**'
       - 'cmake/Dependencies.cmake'
       - 'cmake/patches/**'
       - 'src/App/ProcessColumnConfig.h'
@@ -16,6 +17,7 @@ on:
       - 'src/UI/Theme.h'
       - 'src/UI/ThemeLoader.cpp'
       - 'src/UI/ThemeLoader.h'
+      - 'tests/Mocks/ThemeStub.cpp'
       - 'tests/fuzz/**'
   workflow_dispatch:
 

@@ -645,8 +645,9 @@ ClusterFuzzLite continuously exercises three parsers with libFuzzer and AddressS
 
 Pull requests that change `tests/fuzz/**`, `.clusterfuzzlite/**`, the `cflite_*.yml` workflows,
 any fuzzed parser (`ProcParsing.h`, `UserConfig.{cpp,h}`, `UserConfigHelpers.h`,
-`ThemeLoader.{cpp,h}`, and the types they fill, `Theme.h` and `ProcessColumnConfig.h`) or the
-dependency pins and patches (`cmake/Dependencies.cmake`, `cmake/patches/**`) run a short
+`ThemeLoader.{cpp,h}`, and the types they fill, `Theme.h` and `ProcessColumnConfig.h`) , the fuzz build's other inputs
+(`assets/themes/**`, the theme seed corpus, and `tests/Mocks/ThemeStub.cpp`), or the dependency
+pins and patches (`cmake/Dependencies.cmake`, `cmake/patches/**`) run a short
 code-change fuzzing job (`cflite_pr.yml`'s path filter); pushes to `main` touching the same paths
 refresh the baseline build (`cflite_build.yml`). Separate weekly jobs perform a longer batch run and prune the resulting corpus.
 `.clusterfuzzlite/build.sh` builds every target (ClusterFuzzLite runs each binary it leaves in
