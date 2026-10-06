@@ -48,13 +48,12 @@ namespace Domain
 ///    hours in one interval. The cost is the bytes a connection that really did open while unreadable
 ///    moved before its first readable sample, the same as for one attributed late. An unreadable
 ///    sample's owner is not used: bytes are credited to the owner reported with them.
-///  - Credit goes to a process identified by PID and start time (ProcessKey), never by PID alone
-///    (#1336). A connection's owner is reported with its start time (SocketTrafficSample::
-///    ownerStartTimeTicks); a listed process with the same PID but another start time is a different
-///    process -- the owner exited and its PID was reused, or the owner reused the PID of a process
-///    that exited -- so it gets none of the connection's bytes, which are held as for an owner the
-///    refresh doesn't list yet. An owner start time of 0 (unknown: Windows, whose TCP tables report
-///    only the owning PID) matches the listed process with that PID, whatever its start time.
+///  - Credit goes to a process identified by PID and start time (ProcessKey) whenever both start times
+///    are known (#1336); with either unknown it falls back to the PID, as described below. A connection's owner is reported with its start
+///    time (SocketTrafficSample:: ownerStartTimeTicks); a listed process with the same PID but another start time is a different process --
+///    the owner exited and its PID was reused, or the owner reused the PID of a process that exited -- so it gets none of the connection's
+///    bytes, which are held as for an owner the refresh doesn't list yet. An owner start time of 0 (unknown: Windows, whose TCP tables
+///    report only the owning PID) matches the listed process with that PID, whatever its start time.
 /// Bytes a connection moves between the last reading and its close are not counted, nor are any of a
 /// connection that closes before it gets an owner. Feed only complete readings: a connection missing
 /// from a partial one would come back as "new" and credit its lifetime bytes.
