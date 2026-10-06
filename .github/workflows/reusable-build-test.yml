@@ -21,6 +21,13 @@ on:
         required: false
         type: string
         default: '22.1.7'
+      build_benchmarks:
+        description: >-
+          Linux only: after the tests, reconfigure with TASKSMACK_BUILD_BENCHMARKS=ON and build
+          the TaskSmackBenchmarks target (compile/link only, no timing run)
+        required: false
+        type: boolean
+        default: false
 
 # Deny all permissions by default; each job must explicitly declare what it needs.
 permissions: {}
@@ -106,6 +113,17 @@ jobs:
           # skip if it goes missing or construction throws (tests/Core/HeadlessVideoDriverTestUtils.h).
           TASKSMACK_REQUIRE_DISPLAY: '1'
         run: xvfb-run -a -s "-screen 0 1920x1080x24 -noreset" ctest --preset ${{ inputs.build_type }} -j "$(nproc)" --schedule-random --output-on-failure --timeout 60 --output-junit test-results.xml
+
+      # Build-only check that the benchmark target still compiles and links (#1348: a PR removed
+      # a function bench_Format.cpp still used, and nothing on the PR built benchmarks). The
+      # timing run and regression gate stay in heavy-checks.yml. Runs after the tests so a
+      # benchmark-only break doesn't hide test results; reconfiguring the same tree only adds the
+      # benchmarks subdirectory, so the targets already built stay up to date.
+      - name: Build benchmarks (Linux)
+        if: runner.os == 'Linux' && inputs.build_benchmarks
+        run: |
+          cmake --preset ${{ inputs.build_type }} -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_BUILD_BENCHMARKS=ON
+          cmake --build --preset ${{ inputs.build_type }} --target TaskSmackBenchmarks
 
       - name: Test (Windows)
         if: runner.os == 'Windows'
