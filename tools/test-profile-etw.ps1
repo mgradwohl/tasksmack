@@ -284,6 +284,8 @@ try {
             '@echo off'
             'echo %*>>"%WPR_STUB_LOG%"'
             'if /i "%~1"=="-start" exit /b %WPR_STUB_START_EXIT%'
+            # WPR_STUB_STOP_FAIL_ONCE names a flag file: while it exists, -stop deletes it and fails.
+            'if /i "%~1"=="-stop" if defined WPR_STUB_STOP_FAIL_ONCE if exist "%WPR_STUB_STOP_FAIL_ONCE%" (del "%WPR_STUB_STOP_FAIL_ONCE%" & exit /b 7)'
             'if /i "%~1"=="-stop" echo stub-trace> "%~2"'
             'exit /b 0'
         )
@@ -335,10 +337,59 @@ try {
             Assert-True ($late.Process.ExitCode -ne 0) 'A deadline must fail the capture'
             Assert-True ((Get-CollectorErrorDetail -ControlDirectory $late.Control) -like '*truncated*') "Recorded error: $(Get-CollectorErrorDetail -ControlDirectory $late.Control)"
             Assert-True (Test-Path -LiteralPath $late.Trace) 'The trace must still be saved at the deadline'
+
+            # The first wpr -stop fails: the session is not left recording -- the stop is retried
+            # once for the same instance, and the capture still fails.
+            $failFlag = Join-Path $root 'stop-fail-once'
+            $env:WPR_STUB_STOP_FAIL_ONCE = $failFlag
+            function Assert-StopRetried([string]$What) {
+                $calls = Get-StubCalls
+                $starts = @($calls | Where-Object { $_ -like '-start *' })
+                $stops = @($calls | Where-Object { $_ -like '-stop *' })
+                Assert-True ($starts.Count -eq 1 -and $stops.Count -eq 2) "${What}: expected one start and a retried stop: $($calls -join ' | ')"
+                Assert-True ((@($stops | ForEach-Object { ($_ -split ' ')[-1] }) | Select-Object -Unique) -eq ($starts[0] -split ' ')[-1]) "${What}: the retry must stop the same instance"
+                Assert-True (-not (Test-Path -LiteralPath $failFlag)) "${What}: the failing stop was never attempted"
+            }
+            Remove-Item -LiteralPath $stubLog -ErrorAction SilentlyContinue
+            Set-Content -LiteralPath $failFlag -Value 'fail'
+            $env:WPR_STUB_START_EXIT = '0'
+            $retried = Start-StubCollector -Name 'stopfail' -TimeoutSeconds 120 -StartExit 0
+            Wait-CollectorMarker -Path (Join-Path $retried.Control 'collector-started.json') -TimeoutSeconds 60 -Collector $retried.Process
+            Set-Content -LiteralPath (Join-Path $retried.Control 'stop-requested') -Value 'now'
+            Assert-True ($retried.Process.WaitForExit(60000)) 'Collector hung after a failed stop'
+            Assert-True ($retried.Process.ExitCode -ne 0) 'A failed wpr -stop must fail the collector'
+            Assert-StopRetried 'collector'
+            Assert-True (Test-Path -LiteralPath $retried.Trace) 'The retried stop must save the trace'
+
+            # The -ElevatedTarget child (ElevatedRun role) starts WPR through the app/bench
+            # callbacks, after the warm-up, and has the same guarded final stop.
+            function Invoke-ElevatedRun([string]$Mode, [string]$App, [string]$Name) {
+                $appArgs = if ($Mode -eq 'app') { @('-DurationSeconds', '2', '-WarmupSeconds', '0', '-MainWindowTimeoutSeconds', '0') } else { @() }
+                $out = & $hostExe -NoProfile -File $profileScript -Mode $Mode -Role ElevatedRun -ElevatedTarget -SkipBuild -TargetPath $App `
+                    -OutputDirectory (Join-Path $root 'elevated') -Timestamp $Name @appArgs *>&1 | Out-String
+                return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $out }
+            }
+            Remove-Item -LiteralPath $stubLog -ErrorAction SilentlyContinue
+            $ok = Invoke-ElevatedRun -Mode app -App $runForever -Name 'er-ok'
+            Assert-True ($ok.ExitCode -eq 0 -and $ok.Output -match 'ETW_TRACE=') "Elevated app run: $($ok.Output)"
+            $okCalls = @(Get-StubCalls)
+            Assert-True (@($okCalls | Where-Object { $_ -like '-start *' }).Count -eq 1 -and @($okCalls | Where-Object { $_ -like '-stop *' }).Count -eq 1) "Elevated app run calls: $($okCalls -join ' | ')"
+            $okManifest = Get-Content -LiteralPath (Join-Path $root 'elevated\etw-app-elevated-er-ok.manifest.json') -Raw | ConvertFrom-Json
+            Assert-True ([datetime]$okManifest.Target.TraceStartUtc -gt [datetime]$okManifest.Target.StartUtc) 'The elevated run must start the trace after launching the app'
+
+            foreach ($case in @(@{ Mode = 'app'; App = $runForever }, @{ Mode = 'bench'; App = $exitNow0 })) {
+                Remove-Item -LiteralPath $stubLog -ErrorAction SilentlyContinue
+                Set-Content -LiteralPath $failFlag -Value 'fail'
+                $run = Invoke-ElevatedRun -Mode $case.Mode -App $case.App -Name "er-stopfail-$($case.Mode)"
+                Assert-True ($run.ExitCode -ne 0 -and $run.Output -like '*exit code 7*') "Elevated $($case.Mode) run with a failed stop must fail: $($run.Output)"
+                Assert-True ($run.Output -notmatch 'ETW_TRACE=') "Elevated $($case.Mode) run with a failed stop must not report a trace"
+                Assert-StopRetried "elevated $($case.Mode)"
+            }
+            Assert-True (-not (Test-StubRunning 'run-forever.cmd')) 'The elevated run left the app running'
         }
         finally {
             $env:PATH = $savedPath
-            Remove-Item Env:WPR_STUB_LOG, Env:WPR_STUB_START_EXIT -ErrorAction SilentlyContinue
+            Remove-Item Env:WPR_STUB_LOG, Env:WPR_STUB_START_EXIT, Env:WPR_STUB_STOP_FAIL_ONCE -ErrorAction SilentlyContinue
         }
 
         # From an elevated terminal the orchestrator refuses, before building or prompting.

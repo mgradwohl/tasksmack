@@ -362,29 +362,41 @@ function Write-ProfileManifest {
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding utf8
 }
 
+$script:wprRecording = $false
+$script:wprInstanceName = $null
+
 function Start-WprRecording {
     # A unique instance name, so an existing recording is never touched.
     $script:wprInstanceName = "TaskSmack-$([guid]::NewGuid().ToString('N'))"
     Invoke-Native wpr '-start' "$wprProfilePath!TaskSmackCPU" '-filemode' '-instancename' $script:wprInstanceName
+    $script:wprRecording = $true
 }
 
 function Stop-WprRecording {
+    # The recording counts as stopped only once wpr -stop succeeds, so a failed stop is retried by
+    # Complete-WprRecording rather than leaving the session running.
     Invoke-Native wpr '-stop' $tracePath '-instancename' $script:wprInstanceName
+    $script:wprRecording = $false
+}
+
+function Complete-WprRecording {
+    # Final guard, from a finally block: stops this run's WPR session if it is still recording --
+    # the body failed before stopping it, or the first wpr -stop failed (it is retried once here).
+    if (-not $script:wprRecording) { return }
+    Write-Warning "WPR instance $script:wprInstanceName is still recording; stopping it."
+    Stop-WprRecording
 }
 
 function Invoke-WprCapture {
     # Starts WPR, runs $Body, and always stops WPR again if it was started.
     param([Parameter(Mandatory = $true)][scriptblock]$Body)
-    $recordingStarted = $false
     try {
         Start-WprRecording
-        $recordingStarted = $true
         & $Body
-        $recordingStarted = $false
         Stop-WprRecording
     }
     finally {
-        if ($recordingStarted) { Stop-WprRecording }
+        Complete-WprRecording
     }
 }
 
@@ -461,7 +473,10 @@ if ($Role -eq 'ElevatedRun') {
         Write-Host "ETW_TRACE=$tracePath"
     }
     finally {
-        Stop-Transcript | Out-Null
+        # The callbacks above start WPR only after the app's warm-up; this is the same guarded
+        # final stop as Invoke-WprCapture's, so a failed wpr -stop never leaves it recording.
+        try { Complete-WprRecording }
+        finally { Stop-Transcript | Out-Null }
     }
     return
 }
