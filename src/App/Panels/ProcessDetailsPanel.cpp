@@ -112,7 +112,10 @@ constexpr const char* MEM_SHARED_LABEL = "Shared";
 // A series on a chart's right-hand axis ends in " →", pointing at it (setupSecondaryRateAxis(), #1206); in
 // its value-strip entry and tooltip rows the mark follows the value (SECONDARY_AXIS_MARK, #1300).
 constexpr const char* MEM_VIRTUAL_LABEL = "Virtual →";
-constexpr const char* MEM_PEAK_LABEL = "Peak Mem";
+// A peak is named "Peak " plus the series it tracks: this chart's series is "Memory", as the
+// System chart's "Peak Used" tracks "Used" (#1342). The Processes table keeps its short "Peak Mem"
+// header for width, as it does "Mem %".
+constexpr const char* MEM_PEAK_LABEL = "Peak Memory";
 constexpr const char* THREADS_LABEL = "Threads";
 constexpr const char* FAULTS_LABEL = "Page Faults →"; // Its values carry the "/s" ("12.0/s"), #1202
 #ifdef _WIN32
@@ -1329,7 +1332,7 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
 
             ImGui::Spacing();
             ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MEMORY "  Memory (%zu samples)", alignedCount);
-            // Peak Mem is a line with a tooltip row but no bar; list it in the value strip too (#1193).
+            // Peak Memory is a line with a tooltip row but no bar; list it in the value strip too (#1193).
             const std::array peakEntry{UI::Widgets::ValueStripEntry{
                 .label = MEM_PEAK_LABEL,
                 .value = UI::Format::formatBytes(m_PeakMemoryBytes),
