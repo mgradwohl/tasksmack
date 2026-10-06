@@ -52,6 +52,10 @@ enum class Action : std::uint8_t
     /// run() hands it to Window::handleSystemRestored(), which ends an OS maximize the window manager
     /// or compositor undid (#1250).
     SystemRestored,
+    /// SDL_EVENT_WINDOW_MINIMIZED: the window was minimized, whoever did it. run() hands it to
+    /// Window::restoreForShellMinimize(), which turns the shell's Win+Down on a client-side maximized
+    /// window into a restore, should that minimize not have come through WM_SYSCOMMAND (#1279).
+    Minimized,
     /// SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED: the window's content scale changed in place (a display
     /// scaling setting, or a move SDL reports without a MOVED). run() hands it to
     /// Window::handleGeometryChanged() so the normal geometry a later outside maximize saves carries
@@ -84,6 +88,8 @@ enum class Action : std::uint8_t
         return Action::SystemMaximized;
     case SDL_EVENT_WINDOW_RESTORED:
         return Action::SystemRestored;
+    case SDL_EVENT_WINDOW_MINIMIZED:
+        return Action::Minimized;
     case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
         return Action::DisplayScaleChanged;
     default:

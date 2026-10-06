@@ -53,6 +53,23 @@ constexpr float PIXEL_DENSITY_EPSILON = 1e-3F;
     const auto* chars = reinterpret_cast<const char*>(bytes); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
     return {chars};
 }
+
+/// Whether {a Windows key, the Down arrow} are held right now: the shell's Win+Down (#1279). Never
+/// both off Windows, where Win+Down is not a shell gesture.
+[[nodiscard]] auto shellRestoreKeysHeld() noexcept -> std::pair<bool, bool>
+{
+#ifdef _WIN32
+    const auto isKeyHeld = [](int virtualKey)
+    {
+        // GetAsyncKeyState's most significant bit: the key is down right now.
+        constexpr unsigned KEY_DOWN_BIT = 0x8000U;
+        return (static_cast<unsigned>(static_cast<unsigned short>(GetAsyncKeyState(virtualKey))) & KEY_DOWN_BIT) != 0U;
+    };
+    return {isKeyHeld(VK_LWIN) || isKeyHeld(VK_RWIN), isKeyHeld(VK_DOWN)};
+#else
+    return {false, false};
+#endif
+}
 } // namespace
 
 #ifdef _WIN32
@@ -139,6 +156,101 @@ void setWindowIcon(HWND hwnd, WPARAM iconType, HANDLE icon)
     }
 
     return {hIconSmall, hIconBig};
+}
+
+// Window properties on the borderless window's HWND: the Window its subclass procedure reports a shell
+// minimize to, and the window procedure SDL installed, which it passes every message on to (#1279).
+constexpr const wchar_t* WINDOW_PROP = L"TaskSmack.Core.Window";
+constexpr const wchar_t* SDL_WINDOW_PROC_PROP = L"TaskSmack.Core.SdlWindowProc";
+// WM_SYSCOMMAND's low four bits are used internally by Windows; mask them off before comparing.
+constexpr WPARAM SYSCOMMAND_MASK = 0xFFF0U;
+
+[[nodiscard]] HWND nativeWindowHandle(SDL_Window* window)
+{
+    // SDL returns HWND as void* per its property API contract
+    return static_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+}
+
+// The borderless window's subclass procedure (#1279). The shell asks the window to minimize with
+// WM_SYSCOMMAND SC_MINIMIZE; when that is Win+Down on a client-side maximized window,
+// Window::restoreForShellMinimize() restores it instead and the minimize is dropped. Everything else
+// goes to SDL's procedure unchanged.
+LRESULT CALLBACK shellCommandWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    if (message == WM_SYSCOMMAND && (wParam & SYSCOMMAND_MASK) == SC_MINIMIZE)
+    {
+        if (auto* window = static_cast<Window*>(GetPropW(hwnd, WINDOW_PROP)); window != nullptr)
+        {
+            bool restored = false;
+            try
+            {
+                restored = window->restoreForShellMinimize();
+            }
+            catch (...)
+            {
+                // No exception may cross back into the OS; let the minimize through instead.
+                restored = false;
+            }
+            if (restored)
+            {
+                return 0;
+            }
+        }
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - the window procedure is stored as an opaque window property
+    const auto sdlWindowProc = reinterpret_cast<WNDPROC>(GetPropW(hwnd, SDL_WINDOW_PROC_PROP));
+    if (sdlWindowProc == nullptr)
+    {
+        return DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+    return CallWindowProcW(sdlWindowProc, hwnd, message, wParam, lParam);
+}
+
+// Put shellCommandWindowProc() in front of SDL's window procedure. SDL only replaces the procedure of
+// a window it did not create, so the subclass stays in place until unhookShellCommands().
+void hookShellCommands(SDL_Window* sdlWindow, Window* window)
+{
+    HWND hwnd = nativeWindowHandle(sdlWindow);
+    if (hwnd == nullptr)
+    {
+        spdlog::warn("Failed to get Win32 window handle; Win+Down will minimize the maximized window (#1279)");
+        return;
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr) - GWLP_WNDPROC holds the window procedure as LONG_PTR
+    auto* const sdlWindowProc = reinterpret_cast<void*>(GetWindowLongPtrW(hwnd, GWLP_WNDPROC));
+    // Both properties are in place before the procedure is, so it never runs without them.
+    if (sdlWindowProc == nullptr || SetPropW(hwnd, SDL_WINDOW_PROC_PROP, sdlWindowProc) == 0 || SetPropW(hwnd, WINDOW_PROP, window) == 0)
+    {
+        spdlog::warn("Failed to subclass the window; Win+Down will minimize the maximized window (#1279)");
+        RemovePropW(hwnd, SDL_WINDOW_PROC_PROP);
+        RemovePropW(hwnd, WINDOW_PROP);
+        return;
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - SetWindowLongPtr takes the window procedure as LONG_PTR
+    SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&shellCommandWindowProc));
+}
+
+// Undo hookShellCommands() before SDL destroys the window.
+void unhookShellCommands(SDL_Window* sdlWindow)
+{
+    HWND hwnd = nativeWindowHandle(sdlWindow);
+    if (hwnd == nullptr)
+    {
+        return;
+    }
+    // The Window is going away: stop reporting to it, whatever happens below.
+    RemovePropW(hwnd, WINDOW_PROP);
+    HANDLE sdlWindowProc = GetPropW(hwnd, SDL_WINDOW_PROC_PROP);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - GWLP_WNDPROC holds the window procedure as LONG_PTR
+    if (sdlWindowProc == nullptr || GetWindowLongPtrW(hwnd, GWLP_WNDPROC) != reinterpret_cast<LONG_PTR>(&shellCommandWindowProc))
+    {
+        // Not hooked, or something subclassed the window after us and still calls our procedure,
+        // which keeps forwarding to SDL's.
+        return;
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - SetWindowLongPtr takes the window procedure as LONG_PTR
+    SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(sdlWindowProc));
+    RemovePropW(hwnd, SDL_WINDOW_PROC_PROP);
 }
 } // namespace
 #endif
@@ -234,12 +346,23 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
     const auto [iconSmall, iconBig] = setWindowIconFromResource(m_Handle);
     m_IconSmall = iconSmall;
     m_IconBig = iconBig;
+
+    // The custom title bar's maximize is client-side, which the shell does not know about: catch its
+    // Win+Down minimize so it restores the window like a native maximized one (#1279).
+    if (m_Spec.Borderless)
+    {
+        hookShellCommands(m_Handle, this);
+    }
 #endif
 }
 
 Window::~Window()
 {
 #ifdef _WIN32
+    if (m_Handle != nullptr)
+    {
+        unhookShellCommands(m_Handle);
+    }
     if (m_IconSmall != nullptr)
     {
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - HANDLE and HICON are both opaque Win32 handle types
@@ -762,6 +885,28 @@ void Window::handleSystemRestored()
     }
     const SDL_WindowFlags flags = SDL_GetWindowFlags(m_Handle);
     m_Geometry.systemRestored((flags & SDL_WINDOW_MAXIMIZED) != 0, (flags & SDL_WINDOW_MINIMIZED) != 0);
+}
+
+bool Window::restoreForShellMinimize()
+{
+    if (m_Handle == nullptr)
+    {
+        return false;
+    }
+    const auto [winKeyDown, downKeyDown] = shellRestoreKeysHeld();
+    if (!WindowGeometry::shellMinimizeRestores(m_Geometry.state(), winKeyDown, downKeyDown))
+    {
+        return false;
+    }
+    spdlog::debug("Window::restoreForShellMinimize: Win+Down on the client-side maximized window; restoring it (#1279)");
+    if (isMinimized())
+    {
+        // The minimize happened without passing through WM_SYSCOMMAND: bring the window back first,
+        // still maximized client-side, then restore it to its normal rectangle.
+        SDL_RestoreWindow(m_Handle);
+    }
+    restore();
+    return true;
 }
 
 void Window::restore()

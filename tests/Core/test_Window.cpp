@@ -19,6 +19,13 @@
 #include <utility>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 namespace
 {
 
@@ -501,6 +508,39 @@ TEST_F(WindowTest, ApplySavedGeometryKeepsAnOffScreenPositionOnADisplay)
         FAIL() << "Window creation failed unexpectedly: " << e.what();
     }
 }
+
+#ifdef _WIN32
+// #1279: the borderless window's subclass procedure turns only Win+Down into a restore. Every other
+// shell minimize of the client-side maximized window -- the taskbar button, here, with no key held --
+// still reaches SDL and minimizes it, and the window comes back maximized, as a native one does.
+TEST_F(WindowTest, ShellMinimizeWithoutWinDownStillMinimizesTheMaximizedWindow)
+{
+    try
+    {
+        Window window(WindowSpecification{.Title = "ShellMinimizeTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        window.maximize();
+        if (!window.isMaximized())
+        {
+            GTEST_SKIP() << "Maximize unavailable on this display (headless environment)";
+        }
+        auto* const hwnd = static_cast<HWND>(
+            SDL_GetPointerProperty(SDL_GetWindowProperties(window.getHandle()), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+        ASSERT_NE(hwnd, nullptr);
+
+        SendMessageW(hwnd, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+        SDL_PumpEvents();
+
+        EXPECT_TRUE(window.isMinimized());
+        EXPECT_TRUE(window.isMaximized());
+        EXPECT_FALSE(window.restoreForShellMinimize()); // Win+Down is not held
+        EXPECT_TRUE(window.isMinimized());
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
+#endif
 
 TEST_F(WindowTest, SetHitTestCallbackDoesNotThrow)
 {

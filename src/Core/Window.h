@@ -150,6 +150,14 @@ class Window
     /// while the window is normal (not maximized, minimized or fullscreen), as the restore target for
     /// a maximize from outside the app (#1250). A few cached SDL queries, cheap enough per event.
     void handleGeometryChanged();
+    /// A minimize from the shell reached the window (#1279): Win32 WM_SYSCOMMAND SC_MINIMIZE, before
+    /// it is carried out, or SDL_EVENT_WINDOW_MINIMIZED, for a minimize that did not come that way.
+    /// When WindowGeometry::shellMinimizeRestores() says it is Win+Down on a client-side maximized
+    /// window, restores the window to its normal rectangle -- un-minimizing it first if the minimize
+    /// already happened -- as the first Win+Down does for a natively maximized window. Reads the
+    /// keyboard state on Windows; does nothing elsewhere.
+    /// @return Whether the window was restored, so a minimize not yet carried out should be dropped.
+    bool restoreForShellMinimize();
     void restore();
     void minimize() const;
 

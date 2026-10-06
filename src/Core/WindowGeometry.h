@@ -163,6 +163,24 @@ enum class MaximizeState : std::uint8_t
     System,
 };
 
+/// Whether a minimize from the shell should restore the window instead (#1279).
+///
+/// A client-side maximize has no OS maximized state: Windows sees a normal window that fills the work
+/// area, so Win+Down -- which restores a maximized window and minimizes a normal one -- minimized it,
+/// and it came back maximized. A native maximized window is restored by the first Win+Down and
+/// minimized by the second, so while the window is maximized client-side a minimize that arrives with
+/// Win+Down held is taken as that restore. Every other minimize (the taskbar button, the title-bar
+/// button, Win+M, a second Win+Down once the window is normal) is left alone, as is a System
+/// maximize, which the OS restores itself.
+///
+/// @param state        How the window is maximized (NormalGeometryTracker::state()).
+/// @param winKeyDown   Whether a Windows key (VK_LWIN or VK_RWIN) is held.
+/// @param downKeyDown  Whether the Down arrow key is held.
+[[nodiscard]] constexpr bool shellMinimizeRestores(MaximizeState state, bool winKeyDown, bool downKeyDown) noexcept
+{
+    return state == MaximizeState::ClientSide && winKeyDown && downKeyDown;
+}
+
 /// Tracks the window's normal (restored) rectangle through every maximize and restore, whoever
 /// starts it (#1250).
 ///
