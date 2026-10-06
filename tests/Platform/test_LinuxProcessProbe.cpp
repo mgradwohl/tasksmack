@@ -48,6 +48,7 @@
 #include <format>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -1023,14 +1024,32 @@ TEST(LinuxProcessProbeTest, CpuAffinityIsReadFromCpusAllowedListWithoutA64CpuCap
     writeProcess(4444,
                  statusWith("0-3,64-x")); // Malformed: rejected whole, not read as 0-3
     writeProcess(4545, std::nullopt);     // No status file at all
-    // A list cut off by the end of the probe's 8 KiB read must not be read as the
-    // part that fit
-    // ("0-12" of "0-127"): pad an earlier line so the buffer ends right after
-    // "0-12".
+    // A list the probe's 8 KiB stack read cuts off ("0-12" of "0-127") is not read as the part that
+    // fit: the probe reads the whole file and gets all of it. Pad an earlier line so the buffer ends
+    // right after "0-12".
     constexpr std::size_t STATUS_READ_SIZE = 8192;
     const std::string head = "Name:\tapp\nUid:\t0\t0\t0\t0\nGroups:\t";
     const std::string tail = "\nCpus_allowed_list:\t0-12";
     writeProcess(4646, head + std::string(STATUS_READ_SIZE - head.size() - tail.size(), '1') + tail + "7\nMems_allowed_list:\t0\n");
+    // A sparse list, every even CPU up to 8190, is about 20 KiB on its own -- longer than the stack
+    // read -- and is still read whole.
+    std::string sparseList;
+    for (std::size_t cpu = 0; cpu <= 8190; cpu += 2)
+    {
+        sparseList += (cpu == 0 ? "" : ",") + std::to_string(cpu);
+    }
+    ASSERT_GT(sparseList.size(), 2 * STATUS_READ_SIZE);
+    writeProcess(4747, statusWith(sparseList));
+    // A long Groups: line (many supplementary groups) pushes the list past the stack read.
+    std::string groups;
+    for (int gid = 100000; gid < 102000; ++gid)
+    {
+        groups += std::to_string(gid) + ' ';
+    }
+    ASSERT_GT(groups.size(), STATUS_READ_SIZE);
+    writeProcess(4848, "Name:\tapp\nUid:\t0\t0\t0\t0\nGroups:\t" + groups + "\nCpus_allowed_list:\t0-3,64-127\nMems_allowed_list:\t0\n");
+    // A file that really ends partway through the list line (no newline) is still not read in part.
+    writeProcess(4949, "Name:\tapp\nUid:\t0\t0\t0\t0\nGroups:\t" + groups + "\nCpus_allowed_list:\t0-12");
 
     LinuxProcessProbe probe(proc.path);
     EXPECT_TRUE(probe.capabilities().hasCpuAffinity);
@@ -1042,32 +1061,60 @@ TEST(LinuxProcessProbeTest, CpuAffinityIsReadFromCpusAllowedListWithoutA64CpuCap
         return (it == processes.end()) ? CpuAffinity{} : it->cpuAffinity;
     };
 
-    EXPECT_EQ(affinityOf(4242), *CpuAffinity::fromCpuList("0-3,64-127"));
+    EXPECT_EQ(affinityOf(4242), CpuAffinity::fromCpuList("0-3,64-127").value_or(CpuAffinity{}));
     EXPECT_EQ(affinityOf(4242).count(), 68U);
-    EXPECT_EQ(affinityOf(4343), *CpuAffinity::fromCpuList("70"));
+    EXPECT_EQ(affinityOf(4343), CpuAffinity::fromCpuList("70").value_or(CpuAffinity{}));
     EXPECT_TRUE(affinityOf(4343).test(70));
     EXPECT_TRUE(affinityOf(4444).empty());
     EXPECT_TRUE(affinityOf(4545).empty());
-    EXPECT_TRUE(affinityOf(4646).empty());
+    EXPECT_EQ(affinityOf(4646), CpuAffinity::fromCpuList("0-127").value_or(CpuAffinity{}));
+    EXPECT_EQ(affinityOf(4747).count(), 4096U);
+    EXPECT_TRUE(affinityOf(4747).test(0));
+    EXPECT_TRUE(affinityOf(4747).test(8190));
+    EXPECT_FALSE(affinityOf(4747).test(8189));
+    EXPECT_EQ(affinityOf(4848), CpuAffinity::fromCpuList("0-3,64-127").value_or(CpuAffinity{}));
+    EXPECT_TRUE(affinityOf(4949).empty());
 }
 
 TEST(LinuxProcessProbeTest, OwnProcessAffinityMatchesSchedGetaffinity)
 {
     // The real /proc: our own Cpus_allowed_list names the same CPUs the kernel's
-    // affinity call does.
-    cpu_set_t set; // NOLINT(misc-include-cleaner) - cpu_set_t is provided by <sched.h>
-    CPU_ZERO(&set);
-    ASSERT_EQ(sched_getaffinity(0, sizeof(set), &set), 0);
+    // affinity call does. The set is sized at run time (CPU_ALLOC), growing until the kernel's
+    // mask fits, so a machine with more than CPU_SETSIZE (1024) CPUs is checked in full.
+    struct CpuSetDeleter
+    {
+        void operator()(cpu_set_t* set) const noexcept // NOLINT(misc-include-cleaner) - <sched.h>
+        {
+            CPU_FREE(set);
+        }
+    };
+    std::size_t cpuCapacity = CPU_SETSIZE;
+    std::unique_ptr<cpu_set_t, CpuSetDeleter> set;
+    std::size_t setSize = 0;
+    for (;;)
+    {
+        set.reset(CPU_ALLOC(cpuCapacity));
+        ASSERT_NE(set, nullptr);
+        setSize = CPU_ALLOC_SIZE(cpuCapacity);
+        CPU_ZERO_S(setSize, set.get());
+        if (sched_getaffinity(0, setSize, set.get()) == 0)
+        {
+            break;
+        }
+        ASSERT_EQ(errno, EINVAL);
+        ASSERT_LT(cpuCapacity, CpuAffinity::MAX_CPUS) << "kernel affinity mask larger than CpuAffinity supports";
+        cpuCapacity *= 2;
+    }
 
     LinuxProcessProbe probe;
     const auto processes = probe.enumerate();
     const auto self = std::ranges::find(processes, static_cast<std::int32_t>(::getpid()), &ProcessCounters::pid);
     ASSERT_NE(self, processes.end());
     ASSERT_FALSE(self->cpuAffinity.empty());
-    EXPECT_EQ(self->cpuAffinity.count(), static_cast<std::size_t>(CPU_COUNT(&set)));
-    for (std::size_t cpu = 0; cpu < CPU_SETSIZE; ++cpu)
+    EXPECT_EQ(self->cpuAffinity.count(), static_cast<std::size_t>(CPU_COUNT_S(setSize, set.get())));
+    for (std::size_t cpu = 0; cpu < cpuCapacity; ++cpu)
     {
-        EXPECT_EQ(self->cpuAffinity.test(cpu), CPU_ISSET(cpu, &set) != 0) << cpu;
+        EXPECT_EQ(self->cpuAffinity.test(cpu), CPU_ISSET_S(cpu, setSize, set.get()) != 0) << cpu;
     }
 }
 /// Restores a directory's permissions on scope exit, so ScopedTempDir can remove it.

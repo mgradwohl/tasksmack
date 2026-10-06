@@ -98,6 +98,38 @@ using ProcParsing::readProcFile;
 using ProcParsing::readProcFileFull;
 using ProcParsing::skipSpaces;
 
+/// Read a whole /proc file of up to maxBytes, for the rare one that overflows a caller's stack buffer.
+/// Each try re-reads from the start into a buffer twice the last one's size, so the text comes from a
+/// single read. Returns the bytes read -- a file longer than maxBytes comes back cut off at maxBytes
+/// -- or an empty vector on failure.
+[[nodiscard]] std::vector<char> readProcFileBounded(const std::string& path, std::size_t initialSize, std::size_t maxBytes)
+{
+    std::vector<char> buf;
+    for (std::size_t size = std::min(initialSize, maxBytes);; size = std::min(size * 2, maxBytes))
+    {
+        buf.resize(size);
+        const std::size_t len = readProcFile(path.c_str(), buf.data(), buf.size());
+        if (len < size || size == maxBytes)
+        {
+            buf.resize(len);
+            return buf;
+        }
+    }
+}
+
+/// Whether text has a line starting with prefix that ends in a newline (not cut off by a short read).
+[[nodiscard]] bool hasCompleteLine(std::string_view text, std::string_view prefix) noexcept
+{
+    for (std::size_t pos = text.find(prefix); pos != std::string_view::npos; pos = text.find(prefix, pos + 1))
+    {
+        if (pos == 0 || text[pos - 1] == '\n')
+        {
+            return text.find('\n', pos) != std::string_view::npos;
+        }
+    }
+    return false;
+}
+
 /// Cache UID to username mappings to avoid repeated getpwuid calls
 std::unordered_map<uid_t, std::string>& getUsernameCache()
 {
@@ -526,7 +558,7 @@ void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counter
     // and follows procRoot (sched_getaffinity() asked the real kernel about a test's fake pid).
 
     const std::string statusPath = (procRoot / std::to_string(pid) / "status").string();
-    // Big enough for Cpus_allowed's hex mask on a many-CPU kernel, which comes before the list.
+    // Big enough for the usual file, Cpus_allowed's hex mask on a many-CPU kernel included, without allocating.
     constexpr std::size_t BUF_SIZE = 8192;
     std::array<char, BUF_SIZE> buf{};
     const std::size_t len = readProcFile(statusPath.c_str(), buf.data(), BUF_SIZE);
@@ -534,23 +566,34 @@ void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counter
     {
         return;
     }
-    if (len == BUF_SIZE)
-    {
-        // readProcFile() truncates silently at BUF_SIZE. "Uid:" is well inside this on every kernel
-        // this project has seen, but if a future kernel adds/grows earlier fields (Groups:,
-        // Seccomp_filters:, ...) enough to push it past the buffer, this makes that regression
-        // diagnosable instead of a silently-empty counters.user. A Cpus_allowed_list line cut off by
-        // the end of the buffer is ignored below rather than read in part.
-        spdlog::debug(
-            "LinuxProcessProbe: /proc/{}/status truncated at {} bytes; Uid:/Cpus_allowed_list: may have been missed", pid, BUF_SIZE);
-    }
-
     constexpr std::string_view UID_PREFIX = "Uid:";
     constexpr std::string_view CPUS_ALLOWED_LIST_PREFIX = "Cpus_allowed_list:";
+    std::string_view text(buf.data(), len);
+    std::vector<char> fullStatus;
+    if (len == BUF_SIZE && !hasCompleteLine(text, CPUS_ALLOWED_LIST_PREFIX))
+    {
+        // readProcFile() truncates silently at BUF_SIZE: a sparse Cpus_allowed_list (0,2,...,8190 is
+        // about 20 KiB) or a long Groups: line before it runs past the buffer. Read the whole file
+        // instead, bounded well above any real status file; if that fails (the process just exited),
+        // fall back to the prefix. Either way a Cpus_allowed_list line cut off by the end of what was
+        // read is ignored below rather than read in part.
+        constexpr std::size_t MAX_STATUS_SIZE = std::size_t{1} << 20U; // 1 MiB
+        fullStatus = readProcFileBounded(statusPath, 4 * BUF_SIZE, MAX_STATUS_SIZE);
+        if (!fullStatus.empty())
+        {
+            text = std::string_view(fullStatus.data(), fullStatus.size());
+        }
+        else
+        {
+            spdlog::debug(
+                "LinuxProcessProbe: /proc/{}/status truncated at {} bytes; Uid:/Cpus_allowed_list: may have been missed", pid, BUF_SIZE);
+        }
+    }
+
     bool haveUid = false;
     bool haveAffinity = false;
-    const char* p = buf.data();
-    const char* const end = buf.data() + len;
+    const char* p = text.data();
+    const char* const end = text.data() + text.size();
     while (p < end && !(haveUid && haveAffinity))
     {
         const char* lineEnd = p;
