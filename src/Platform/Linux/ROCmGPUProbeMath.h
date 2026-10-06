@@ -242,7 +242,7 @@ struct PciDeviceIdRange
 /// IP-discovery APUs' ids (Raphael, Mendocino, Phoenix, Phoenix2, Strix Point, Strix Halo, Krackan).
 /// The pre-IP-discovery entries mirror the AMD_IS_APU rows of the kernel's amdgpu_drv.c pciidlist
 /// (checked against torvalds/linux master, 2026-10-06); Kaveri's ids have gaps, so it is listed in runs.
-inline constexpr std::array<PciDeviceIdRange, 28> APU_PCI_DEVICE_IDS{{
+inline constexpr std::array<PciDeviceIdRange, 34> APU_PCI_DEVICE_IDS{{
     {.first = 0x1304, .last = 0x1307}, // Kaveri
     {.first = 0x1309, .last = 0x1313}, // Kaveri
     {.first = 0x1315, .last = 0x1318}, // Kaveri
@@ -271,6 +271,13 @@ inline constexpr std::array<PciDeviceIdRange, 28> APU_PCI_DEVICE_IDS{{
     {.first = 0x15C8, .last = 0x15C8}, // Phoenix2
     {.first = 0x150E, .last = 0x150E}, // Strix Point
     {.first = 0x1586, .last = 0x1586}, // Strix Halo
+    // IP-discovery APUs the kernel identifies by GC version rather than a pciidlist row; ids checked
+    // against the PCI ID Repository (pci-ids.ucw.cz, 2026-10-06).
+    {.first = 0x1435, .last = 0x1435}, // Sephiroth (Van Gogh, Steam Deck OLED)
+    {.first = 0x13C0, .last = 0x13C0}, // Granite Ridge
+    {.first = 0x1900, .last = 0x1901}, // Hawk Point 1 / 2
+    {.first = 0x1114, .last = 0x1114}, // Krackan
+    {.first = 0x1902, .last = 0x1902}, // Krackan 2
 }};
 
 /// Whether an AMD GPU is an APU's integrated graphics (#1266). The GC IP version decides when

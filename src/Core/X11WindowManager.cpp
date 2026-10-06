@@ -2,22 +2,23 @@
 
 #include <SDL3/SDL.h>
 
+#if defined(__linux__)
 #include <cstddef>
 #include <span>
 
-#if defined(__linux__)
 #include <dlfcn.h>
+
+// Xlib's Display, declared at global scope like <X11/Xlib.h> does (`typedef struct _XDisplay Display`),
+// so the function-pointer types below match Xlib's exported functions exactly: calling through an
+// incompatible function-pointer type is undefined behavior and fails indirect-call CFI. It must be
+// outside every namespace to be the same type as Xlib's ::_XDisplay.
+struct _XDisplay; // NOLINT(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp) -- Xlib's own name
 #endif
 
 namespace Core::X11WindowManager
 {
 
 #if defined(__linux__)
-
-// Xlib's Display, declared at global scope like <X11/Xlib.h> does (`typedef struct _XDisplay Display`),
-// so the function-pointer types below match Xlib's exported functions exactly: calling through an
-// incompatible function-pointer type is undefined behavior and fails indirect-call CFI.
-struct _XDisplay; // NOLINT(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp) -- Xlib's own name
 
 namespace
 {
@@ -35,10 +36,10 @@ constexpr int FORMAT_32 = 32;
 // More atoms than any window manager lists (GNOME's Mutter lists about 70).
 constexpr long MAX_SUPPORTED_ATOMS = 4096;
 
-using XInternAtomFn = XAtom (*)(_XDisplay* display, const char* name, int onlyIfExists);
-using XDefaultRootWindowFn = XWindowId (*)(_XDisplay* display);
-using XRootWindowFn = XWindowId (*)(_XDisplay* display, int screenNumber);
-using XGetWindowPropertyFn = int (*)(_XDisplay* display,
+using XInternAtomFn = XAtom (*)(::_XDisplay* display, const char* name, int onlyIfExists);
+using XDefaultRootWindowFn = XWindowId (*)(::_XDisplay* display);
+using XRootWindowFn = XWindowId (*)(::_XDisplay* display, int screenNumber);
+using XGetWindowPropertyFn = int (*)(::_XDisplay* display,
                                      XWindowId window,
                                      XAtom property,
                                      long offset,
@@ -68,7 +69,7 @@ bool supportsEwmhMaximize(SDL_Window* window) noexcept
         return false;
     }
     const SDL_PropertiesID props = SDL_GetWindowProperties(window);
-    auto* display = static_cast<_XDisplay*>(SDL_GetPointerProperty(props, SDL_PROP_WINDOW_X11_DISPLAY_POINTER, nullptr));
+    auto* display = static_cast<::_XDisplay*>(SDL_GetPointerProperty(props, SDL_PROP_WINDOW_X11_DISPLAY_POINTER, nullptr));
     if (display == nullptr)
     {
         return false; // Not an X11 window

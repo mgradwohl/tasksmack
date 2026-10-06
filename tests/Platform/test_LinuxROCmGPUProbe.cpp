@@ -467,6 +467,16 @@ TEST(ROCmGPUProbeMathTest, WithoutAGraphicsCoreVersionTheDeviceIdDecides)
     {
         EXPECT_FALSE(ROCmGPUProbeMath::isAmdApu(std::nullopt, gap)) << std::hex << gap;
     }
+    // IP-discovery APUs' ids, for a kernel without ip_discovery (#1343 review, ids from pci.ids).
+    for (const std::uint16_t id : {std::uint16_t{0x1435},
+                                   std::uint16_t{0x13C0},
+                                   std::uint16_t{0x1900},
+                                   std::uint16_t{0x1901},
+                                   std::uint16_t{0x1114},
+                                   std::uint16_t{0x1902}})
+    {
+        EXPECT_TRUE(ROCmGPUProbeMath::isAmdApu(std::nullopt, id)) << std::hex << id;
+    }
     // Every Cyan Skillfish id the kernel flags AMD_IS_APU (#1343 review).
     for (const std::uint16_t id : {std::uint16_t{0x13DB},
                                    std::uint16_t{0x13F9},
