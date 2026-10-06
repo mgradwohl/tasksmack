@@ -1552,7 +1552,9 @@ inline constexpr int AXIS_LABEL_MIN_WIDTH = 8;
 
 namespace Detail
 {
-/// Copy `str` into ImPlot's label buffer; 0 (no label) if it does not fit.
+/// Copy `str` into ImPlot's label buffer; 0 and an empty label if it does not fit. The buffer is
+/// always left terminated when it has room for a byte: ImPlot ignores the return value and reads the
+/// buffer as a C string, so an untouched buffer would show stale text (#1345).
 inline int copyAxisLabel(const std::string& str, char* buff, int size)
 {
     const int len = static_cast<int>(str.size());
@@ -1561,6 +1563,10 @@ inline int copyAxisLabel(const std::string& str, char* buff, int size)
         std::ranges::copy(str, buff);
         buff[len] = '\0';
         return len;
+    }
+    if (size > 0)
+    {
+        buff[0] = '\0';
     }
     return 0;
 }

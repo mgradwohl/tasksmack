@@ -32,6 +32,7 @@ constexpr long MAX_SUPPORTED_ATOMS = 4096;
 
 using XInternAtomFn = XAtom (*)(void* display, const char* name, int onlyIfExists);
 using XDefaultRootWindowFn = XWindowId (*)(void* display);
+using XRootWindowFn = XWindowId (*)(void* display, int screenNumber);
 using XGetWindowPropertyFn = int (*)(void* display,
                                      XWindowId window,
                                      XAtom property,
@@ -61,11 +62,15 @@ bool supportsEwmhMaximize(SDL_Window* window) noexcept
     {
         return false;
     }
-    void* display = SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_X11_DISPLAY_POINTER, nullptr);
+    const SDL_PropertiesID props = SDL_GetWindowProperties(window);
+    void* display = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_X11_DISPLAY_POINTER, nullptr);
     if (display == nullptr)
     {
         return false; // Not an X11 window
     }
+    // EWMH root properties are per screen: read the root of the screen this window is on, the one SDL
+    // sends its maximize request to, not the display's default screen.
+    const auto screenNumber = static_cast<int>(SDL_GetNumberProperty(props, SDL_PROP_WINDOW_X11_SCREEN_NUMBER, -1));
 
     // RTLD_NOLOAD: only the copy SDL loaded (or was linked against); never load a second one.
     void* library = dlopen("libX11.so.6", RTLD_LAZY | RTLD_NOLOAD);
@@ -77,6 +82,7 @@ bool supportsEwmhMaximize(SDL_Window* window) noexcept
     bool supported = false;
     const auto internAtom = lookup<XInternAtomFn>(library, "XInternAtom");
     const auto defaultRootWindow = lookup<XDefaultRootWindowFn>(library, "XDefaultRootWindow");
+    const auto rootWindow = lookup<XRootWindowFn>(library, "XRootWindow");
     const auto getWindowProperty = lookup<XGetWindowPropertyFn>(library, "XGetWindowProperty");
     const auto xFree = lookup<XFreeFn>(library, "XFree");
     if (internAtom != nullptr && defaultRootWindow != nullptr && getWindowProperty != nullptr && xFree != nullptr)
@@ -90,9 +96,11 @@ bool supportsEwmhMaximize(SDL_Window* window) noexcept
         unsigned long itemCount = 0;
         unsigned long bytesAfter = 0;
         unsigned char* data = nullptr;
+        const XWindowId root =
+            (screenNumber >= 0 && rootWindow != nullptr) ? rootWindow(display, screenNumber) : defaultRootWindow(display);
         if (netSupported != 0 &&
             getWindowProperty(display,
-                              defaultRootWindow(display),
+                              root,
                               netSupported,
                               0,
                               MAX_SUPPORTED_ATOMS,

@@ -26,6 +26,38 @@ namespace UI::Widgets
 namespace
 {
 
+// ========== Axis label buffers (#1345) ==========
+
+TEST(ChartWidgetsTest, AnAxisLabelThatDoesNotFitLeavesAnEmptyTerminatedBuffer)
+{
+    // ImPlot ignores a formatter's return value and reads the buffer as a C string: a label that
+    // doesn't fit must leave it empty, not holding whatever was there before.
+    std::array<char, 4> buff{'x', 'y', 'z', 'w'};
+    EXPECT_EQ(UI::Widgets::Detail::copyAxisLabel("too long", buff.data(), static_cast<int>(buff.size())), 0);
+    EXPECT_EQ(buff[0], '\0');
+
+    std::array<char, 1> oneByte{'x'};
+    EXPECT_EQ(UI::Widgets::Detail::copyAxisLabel("1", oneByte.data(), 1), 0);
+    EXPECT_EQ(oneByte[0], '\0');
+
+    std::array<char, 8> fits{};
+    EXPECT_EQ(UI::Widgets::Detail::copyAxisLabel("12 W", fits.data(), static_cast<int>(fits.size())), 4);
+    EXPECT_STREQ(fits.data(), "12 W");
+}
+
+TEST(ChartWidgetsTest, AxisFormattersTerminateAOneByteBuffer)
+{
+    char one = 'x';
+    UI::Widgets::formatAxisLocalized(1234.0, &one, 1, nullptr);
+    EXPECT_EQ(one, '\0');
+    one = 'x';
+    UI::Widgets::formatAxisWatts(12.5, &one, 1, nullptr);
+    EXPECT_EQ(one, '\0');
+    one = 'x';
+    UI::Widgets::formatAxisPercent(50.0, &one, 1, nullptr);
+    EXPECT_EQ(one, '\0');
+}
+
 TEST(ChartWidgetsTest, ComputeAlphaClampsTauMin)
 {
     const auto interval = std::chrono::milliseconds(10);
