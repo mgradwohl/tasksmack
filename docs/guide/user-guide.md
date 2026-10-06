@@ -73,7 +73,7 @@ See [CONTRIBUTING.md](../../CONTRIBUTING.md#cpu-compatibility) for build instruc
 
 The process table is the primary view. It lists all running processes with these columns:
 
-- **State** — what the process is doing (Running, Sleeping, and so on)
+- **State** — what the process is doing (Running, Sleeping, and so on). Windows has no process state of its own, so there it comes from the process's threads: Running if any thread is running or ready to run, Stopped if every thread is suspended (a suspended app), otherwise Sleeping. The System Idle Process is Idle, and a process with no threads to judge by (Secure System) is Unknown.
 - **CPU %** — percentage of total CPU time consumed since the last sample
 - **Mem %** — percentage of physical RAM used
 - **Memory / Virtual / Shared / Peak Mem** — resident, virtual, shared, and peak resident memory sizes
@@ -82,7 +82,7 @@ The process table is the primary view. It lists all running processes with these
 - **Priority** — scheduling priority (from the nice value)
 - **Threads** — thread count per process
 - **Page Faults** — cumulative page faults
-- **Command** — full command line
+- **Command** — full command line. On Windows, a process whose command line can't be read (System, Registry, isolated processes such as LsaIso.exe) shows its executable's path, or its name in brackets.
 - **I/O rates** — read and write bytes per second
 - **Network rates** — sent and received bytes per second when attribution is available
 - **GPU %, GPU Mem, GPU Engine, GPU** — utilization, memory, engines, and which GPU, when the active backend supports per-process data
@@ -90,7 +90,7 @@ The process table is the primary view. It lists all running processes with these
 
 Column visibility is toggled via the column header context menu and persisted across sessions.
 
-A cell reading **-** is a value of 0 (or one that doesn't apply). A cell reading **N/A** is a value TaskSmack could not read for that process: on Linux, for other users' processes, the FD count without `CAP_DAC_READ_SEARCH`, and the I/O and network rates without both `CAP_DAC_READ_SEARCH` and `CAP_SYS_PTRACE` (root with its normal capabilities has both; see the FAQ). One known exception: with `CAP_DAC_READ_SEARCH` but not `CAP_SYS_PTRACE`, another user's network rate currently reads 0 rather than N/A, because its fd list is readable but its fd links are not (#1328). Process Details shows the same values as N/A, with a gap in their charts, and the system totals leave them out. Sorting puts N/A below every reading.
+A cell reading **-** is a value of 0 (or one that doesn't apply). A cell reading **N/A** is a value TaskSmack could not read for that process: on Linux, for other users' processes, the FD count without `CAP_DAC_READ_SEARCH`, and the I/O and network rates without both `CAP_DAC_READ_SEARCH` and `CAP_SYS_PTRACE` (root with its normal capabilities has both; see the FAQ); on Windows, without administrator rights, every process's network rates (handle counts and I/O rates are read for every process). One known exception: on Linux, with `CAP_DAC_READ_SEARCH` but not `CAP_SYS_PTRACE`, another user's network rate currently reads 0 rather than N/A, because its fd list is readable but its fd links are not (#1328). Process Details shows the same values as N/A, with a gap in their charts, and the system totals leave them out. Sorting puts N/A below every reading.
 
 **Sorting** is available on any column with a single click. Click again to reverse order.
 

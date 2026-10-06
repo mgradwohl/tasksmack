@@ -42,7 +42,7 @@ Each value needs a different kernel check, so one capability alone doesn't resto
 
 With `CAP_DAC_READ_SEARCH` alone, only FD counts come back. `CAP_SYS_PTRACE` lets TaskSmack inspect any process on the system, so grant it only if you are comfortable with that; running as root (with its normal capabilities) is the alternative, but root alone isn't enough in a container or hardened service that drops capabilities — allow those two there. Re-apply the capabilities after each update.
 
-> On Windows, I/O counters are always available — they come from the bulk `SystemProcessInformation` snapshot, so no elevated privileges are needed.
+> On Windows, I/O counters and handle counts are always available — they come from the bulk `SystemProcessInformation` snapshot, so no elevated privileges are needed. Network rates need administrator rights; without them every process's network rates read N/A (see *Why are per-process network rates missing?* below).
 
 ---
 
@@ -118,7 +118,7 @@ The Total counts hardware interfaces only. On Linux these are network cards, Wi-
 
 ## Why are per-process network rates missing?
 
-TaskSmack hides per-process network data when the platform cannot attribute traffic.
+Per-process network rates read N/A when the platform cannot attribute traffic.
 
 - **Linux:** requires Linux 4.2 or later with Netlink `INET_DIAG` support.
 - **Windows:** TCP EStats collection requires administrator privileges.

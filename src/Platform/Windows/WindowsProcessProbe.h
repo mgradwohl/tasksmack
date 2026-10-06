@@ -44,8 +44,9 @@ namespace Platform
 
 /// Windows implementation of IProcessProbe.
 /// Uses a single bulk NtQuerySystemInformation(SystemProcessInformation) snapshot per sample
-/// (PIDs, names, CPU times, memory, I/O, handle/thread counts), plus TTL-cached per-process
-/// details (owner, command line, publisher, classification) refreshed via short-lived handles.
+/// (PIDs, names, CPU times, memory, I/O, handle/thread counts, thread states), plus TTL-cached
+/// per-process details (owner, command line, publisher, classification, priority) refreshed via
+/// short-lived handles.
 class WindowsProcessProbe : public IProcessProbe
 {
   public:
@@ -125,19 +126,21 @@ class WindowsProcessProbe : public IProcessProbe
         std::string status;
         std::string publisher;
         std::string processType;
-        std::optional<std::int32_t> gdiObjectCount;
+        std::optional<std::int32_t> gdiObjectCount; // GetGuiResources (light TTL, #1156)
         // Slow-changing fields cached with light/heavy TTL to avoid redundant Win32 calls.
         std::uint64_t cpuAffinityMask = 0; // GetProcessAffinityMask (heavy TTL)
-        std::int32_t nice = 0;             // GetPriorityClass → nice value (heavy TTL)
-        char state = '\0';                 // GetExitCodeProcess → R/Z/? (light TTL); '\0' = not yet populated
+        std::int32_t nice = 0;             // GetPriorityClass → nice value (heavy TTL, or when the base priority changes)
+        std::int32_t basePriority = 0;     // Snapshot base priority last seen; a change re-reads the class (#1156)
         std::chrono::steady_clock::time_point nextLightRefresh;
         std::chrono::steady_clock::time_point nextHeavyRefresh;
         std::uint64_t generation = 0;
     };
 
-    /// Refresh TTL-cached details for a single process (opens a handle only when a TTL expired).
+    /// Refresh TTL-cached details for a single process (opens a handle only when a TTL expired, or
+    /// the base priority changed: planDetailRefresh()).
     /// @param imageName Wide image name from the system snapshot (may be empty for pseudo-processes)
-    [[nodiscard]] bool getProcessDetails(uint32_t pid, ProcessCounters& counters, std::wstring_view imageName);
+    /// @param basePriority The process's base priority from the system snapshot
+    [[nodiscard]] bool getProcessDetails(uint32_t pid, ProcessCounters& counters, std::wstring_view imageName, std::int32_t basePriority);
 
     /// Read total system CPU time
     [[nodiscard]] static uint64_t readTotalCpuTime();

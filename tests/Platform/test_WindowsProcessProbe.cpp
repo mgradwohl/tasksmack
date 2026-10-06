@@ -3,6 +3,8 @@
 
 #include "Domain/SocketTrafficAccumulator.h"
 #include "Platform/ProcessTypes.h"
+#include "Platform/Windows/WinString.h"
+#include "Platform/Windows/WindowsProcessActionsMath.h"
 #include "Platform/Windows/WindowsProcessProbe.h"
 #include "Platform/Windows/WindowsProcessProbeMath.h"
 #include "Platform/Windows/WindowsTcpRows.h"
@@ -16,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
 #include <optional>
 #include <string>
 #include <thread>
@@ -148,6 +151,72 @@ TEST(WindowsProcessProbeTest, NonElevatedNeverClaimsNetworkCounters)
     const auto caps = probe.capabilities();
     EXPECT_FALSE(caps.hasNetworkCounters);
     EXPECT_TRUE(caps.hasReducedPrivileges);
+
+    // ...and those 0 B are not readings (#1285): every process's network bytes are unavailable.
+    for (const auto& proc : probe.enumerate())
+    {
+        EXPECT_FALSE(proc.networkCountersAvailable) << proc.name;
+    }
+}
+
+TEST(WindowsProcessProbeTest, NetworkCountersAreUnavailableForEveryProcessExactlyWhenTheyAreOff)
+{
+    // #1285: per-process network bytes are read for every process (EStats on, elevated) or for none;
+    // the per-process flag follows the capability, whichever way this machine and token go.
+    WindowsProcessProbe probe;
+    for (int sample = 0; sample < 3; ++sample)
+    {
+        (void) probe.enumerate();
+        (void) probe.readSocketTraffic(); // may revoke EStats (#1161); the next enumerate() follows
+    }
+    const auto processes = probe.enumerate();
+    const bool hasNetworkCounters = probe.capabilities().hasNetworkCounters;
+    ASSERT_FALSE(processes.empty());
+    for (const auto& proc : processes)
+    {
+        EXPECT_EQ(proc.networkCountersAvailable, hasNetworkCounters) << proc.name << " (PID " << proc.pid << ")";
+    }
+}
+
+TEST(WindowsProcessProbeTest, HandlesAndIoAreReadEvenForProcessesItCannotOpen)
+{
+    // #1285: handle counts and I/O bytes come from the SystemProcessInformation snapshot, which needs
+    // no access to the process, so a process the probe can't open (protected, or another user's
+    // without elevation) still has real readings -- the System process always owns handles.
+    WindowsProcessProbe probe;
+    const auto processes = probe.enumerate();
+
+    bool sawSystem = false;
+    int unopenableWithHandles = 0;
+    for (const auto& proc : processes)
+    {
+        EXPECT_TRUE(proc.handleCountAvailable) << proc.name;
+        EXPECT_TRUE(proc.ioCountersAvailable) << proc.name;
+        if (proc.pid == 4)
+        {
+            sawSystem = true;
+            EXPECT_GT(proc.handleCount, 0) << "System process";
+        }
+        if (proc.pid <= 4)
+        {
+            continue; // Idle has no handle table; System is checked above
+        }
+        HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, static_cast<DWORD>(proc.pid));
+        if (hProcess != nullptr)
+        {
+            CloseHandle(hProcess);
+            continue;
+        }
+        // Minimal processes (Secure System, Registry, Memory Compression) really own no handles.
+        if (proc.handleCount > 0)
+        {
+            ++unopenableWithHandles;
+        }
+    }
+    EXPECT_TRUE(sawSystem);
+    // Protected processes (csrss.exe, smss.exe, ...) refuse PROCESS_QUERY_INFORMATION even elevated,
+    // and still report their handles.
+    EXPECT_GT(unopenableWithHandles, 0) << "expected a protected process with a real handle count";
 }
 
 TEST(WindowsProcessProbeTest, NetworkFlagsStayConsistentAfterSampling)
@@ -356,25 +425,67 @@ TEST(WindowsProcessProbeTest, ThreadCountsArePositive)
     EXPECT_GT(processesWithThreads, 0) << "At least some processes should have thread counts";
 }
 
-TEST(WindowsProcessProbeTest, StateIsValid)
+TEST(WindowsProcessProbeTest, StateComesFromThreadStates)
 {
+    // #1156: every live process used to read "R". The state now comes from the snapshot's thread
+    // states, for every process: the one enumerating runs (R) and the System Idle Process is Idle
+    // (I). Windows never reports Z. How many of the rest wait depends on the host's load, so the
+    // R/S/T mapping itself is tested on fixed tallies (DeriveProcessStateTest).
     WindowsProcessProbe probe;
     const auto processes = probe.enumerate();
+    ASSERT_FALSE(processes.empty());
 
-    // Valid Windows process states: R (Running), Z (Zombie/exiting), ? (Unknown)
-    const std::string validStates = "RZ?";
-
-    // Most processes should have valid states
-    int processesWithValidState = 0;
+    const std::string validStates = "RSTI?";
+    const auto ourPid = static_cast<std::int32_t>(GetCurrentProcessId());
     for (const auto& proc : processes)
     {
-        const char state = proc.state;
-        if (validStates.find(state) != std::string::npos)
+        EXPECT_NE(validStates.find(proc.state), std::string::npos) << proc.name << " has state '" << proc.state << "'";
+        if (proc.pid == 0)
         {
-            ++processesWithValidState;
+            EXPECT_EQ(proc.state, 'I') << "System Idle Process";
+        }
+        if (proc.pid == ourPid)
+        {
+            EXPECT_EQ(proc.state, 'R') << "this thread was running while it enumerated";
         }
     }
-    EXPECT_GT(processesWithValidState, 0) << "At least some processes should have valid states";
+}
+
+TEST(WindowsProcessProbeTest, OurCommandIsTheCommandLineNotTheImagePath)
+{
+    // #1156: Command was the image path, so filtering by arguments worked only on Linux.
+    WindowsProcessProbe probe;
+    const auto processes = probe.enumerate();
+    const auto ourPid = static_cast<std::int32_t>(GetCurrentProcessId());
+    const auto it = std::ranges::find_if(processes, [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+    ASSERT_NE(it, processes.end());
+    EXPECT_EQ(it->command, WinString::wideToUtf8(GetCommandLineW()));
+}
+
+TEST(WindowsProcessProbeTest, PriorityChangeShowsOnTheNextSample)
+{
+    // #1156: the priority class was read on the heavy TTL (4-15 s), so the badge kept the old class
+    // for seconds after Set Priority. A base-priority change in the snapshot now re-reads it at once.
+    WindowsProcessProbe probe;
+    const auto ourPid = static_cast<std::int32_t>(GetCurrentProcessId());
+    const auto ourNice = [&probe, ourPid] -> std::optional<std::int32_t>
+    {
+        const auto processes = probe.enumerate();
+        const auto it = std::ranges::find_if(processes, [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+        return it != processes.end() ? std::optional<std::int32_t>(it->nice) : std::nullopt;
+    };
+
+    const DWORD originalClass = GetPriorityClass(GetCurrentProcess());
+    ASSERT_NE(originalClass, 0U);
+    const DWORD otherClass = (originalClass == BELOW_NORMAL_PRIORITY_CLASS) ? NORMAL_PRIORITY_CLASS : BELOW_NORMAL_PRIORITY_CLASS;
+
+    EXPECT_EQ(ourNice(), priorityClassToNice(originalClass)); // First sample: cached for a heavy TTL
+    ASSERT_NE(SetPriorityClass(GetCurrentProcess(), otherClass), FALSE);
+    const auto changed = ourNice();
+    const BOOL restored = SetPriorityClass(GetCurrentProcess(), originalClass);
+    EXPECT_EQ(changed, priorityClassToNice(otherClass));
+    ASSERT_NE(restored, FALSE);
+    EXPECT_EQ(ourNice(), priorityClassToNice(originalClass));
 }
 
 // =============================================================================
@@ -759,10 +870,9 @@ TEST(WindowsProcessProbeTest, OurProcessHasNonNegativeGdiCount)
 
     ASSERT_NE(it, processes.end());
 
-    // The test process can always be opened with PROCESS_QUERY_INFORMATION (it is our own handle),
-    // so the probe must return a value (not nullopt).
-    ASSERT_TRUE(it->gdiObjectCount.has_value())
-        << "GDI count should be readable for our own process (opened with PROCESS_QUERY_INFORMATION)";
+    // The test process can always be opened (it is our own process), so the probe must return a
+    // value (not nullopt).
+    ASSERT_TRUE(it->gdiObjectCount.has_value()) << "GDI count should be readable for our own process";
 
     // Compare the probe result directly against the Win32 API for our own process.
     SetLastError(0);
@@ -837,6 +947,125 @@ TEST(CalculateDetailTTLsFromTotalRAMBytesTest, ZeroBytesFallsIntoLowestTier)
 // ---------------------------------------------------------------------------
 // classifyEStatsRow (#1100): the per-row decision shared by the IPv4 and IPv6 EStats walks
 // ---------------------------------------------------------------------------
+
+TEST(MarkWindowsReadAvailabilityTest, WithoutPerProcessNetworkCountersNetworkIsUnavailableNotZero)
+{
+    // #1285: non-elevated, no process's network bytes are read; they must not pass for a 0 B/s reading.
+    ProcessCounters counters{};
+    markWindowsReadAvailability(counters, false);
+    EXPECT_FALSE(counters.networkCountersAvailable);
+    EXPECT_TRUE(counters.handleCountAvailable); // From the bulk snapshot, for every process
+    EXPECT_TRUE(counters.ioCountersAvailable);
+}
+
+TEST(MarkWindowsReadAvailabilityTest, WithPerProcessNetworkCountersEveryReadingIsAvailable)
+{
+    ProcessCounters counters{};
+    counters.handleCountAvailable = false;
+    counters.ioCountersAvailable = false;
+    counters.networkCountersAvailable = false;
+    markWindowsReadAvailability(counters, true);
+    EXPECT_TRUE(counters.networkCountersAvailable);
+    EXPECT_TRUE(counters.handleCountAvailable);
+    EXPECT_TRUE(counters.ioCountersAvailable);
+}
+
+namespace
+{
+[[nodiscard]] ProcessThreadTally tallyOf(std::initializer_list<std::pair<std::uint32_t, std::uint32_t>> threads)
+{
+    ProcessThreadTally tally;
+    for (const auto& [state, waitReason] : threads)
+    {
+        tally.add(state, waitReason);
+    }
+    return tally;
+}
+constexpr std::uint32_t WAIT_REASON_USER_REQUEST = 6; // An ordinary wait (WaitForSingleObject and the like)
+constexpr std::uint32_t THREAD_STATE_INITIALIZED = 0;
+constexpr std::uint32_t THREAD_STATE_TERMINATED = 4;
+} // namespace
+
+TEST(DeriveProcessStateTest, AnyRunningOrReadyThreadIsRunning)
+{
+    // #1156: Linux 'R' is running or runnable.
+    for (const std::uint32_t runnable :
+         {THREAD_STATE_READY, THREAD_STATE_RUNNING, THREAD_STATE_STANDBY, THREAD_STATE_TRANSITION, THREAD_STATE_DEFERRED_READY})
+    {
+        EXPECT_EQ(deriveProcessState(tallyOf({{THREAD_STATE_WAITING, WAIT_REASON_USER_REQUEST}, {runnable, 0}}), false), 'R') << runnable;
+    }
+    // A running thread beside suspended ones: the process is not stopped.
+    EXPECT_EQ(deriveProcessState(tallyOf({{THREAD_STATE_WAITING, WAIT_REASON_SUSPENDED}, {THREAD_STATE_RUNNING, 0}}), false), 'R');
+}
+
+TEST(DeriveProcessStateTest, EveryThreadWaitingIsSleeping)
+{
+    EXPECT_EQ(deriveProcessState(tallyOf({{THREAD_STATE_WAITING, WAIT_REASON_USER_REQUEST},
+                                          {THREAD_STATE_GATE_WAIT, 0},
+                                          {THREAD_STATE_WAITING_FOR_PROCESS_IN_SWAP, 0}}),
+                                 false),
+              'S');
+    // Some threads suspended, others in ordinary waits: still sleeping, not stopped.
+    EXPECT_EQ(deriveProcessState(tallyOf({{THREAD_STATE_WAITING, WAIT_REASON_SUSPENDED}, {THREAD_STATE_WAITING, WAIT_REASON_USER_REQUEST}}),
+                                 false),
+              'S');
+}
+
+TEST(DeriveProcessStateTest, EveryThreadSuspendedIsStopped)
+{
+    // A suspended or frozen process, or one stopped in a debugger: Linux 'T'.
+    EXPECT_EQ(deriveProcessState(tallyOf({{THREAD_STATE_WAITING, WAIT_REASON_SUSPENDED}, {THREAD_STATE_WAITING, WAIT_REASON_WR_SUSPENDED}}),
+                                 false),
+              'T');
+    // Initialized/terminated threads neither run nor wait, so they don't stop it reading as stopped.
+    EXPECT_EQ(deriveProcessState(tallyOf({{THREAD_STATE_WAITING, WAIT_REASON_SUSPENDED}, {THREAD_STATE_TERMINATED, 0}}), false), 'T');
+}
+
+TEST(DeriveProcessStateTest, NoThreadToJudgeByIsUnknownNeverZombie)
+{
+    // Minimal processes (Secure System) list no threads; Windows has no zombie state to report.
+    EXPECT_EQ(deriveProcessState(ProcessThreadTally{}, false), '?');
+    EXPECT_EQ(deriveProcessState(tallyOf({{THREAD_STATE_INITIALIZED, 0}, {THREAD_STATE_TERMINATED, 0}}), false), '?');
+}
+
+TEST(DeriveProcessStateTest, SystemIdleProcessIsIdle)
+{
+    // Its threads run whenever a CPU is idle; that is not load.
+    EXPECT_EQ(deriveProcessState(tallyOf({{THREAD_STATE_RUNNING, 0}, {THREAD_STATE_RUNNING, 0}}), true), 'I');
+}
+
+TEST(PlanDetailRefreshTest, FirstSampleRefreshesEverything)
+{
+    const auto plan = planDetailRefresh(true, false, false, false);
+    EXPECT_TRUE(plan.light);
+    EXPECT_TRUE(plan.heavy);
+    EXPECT_TRUE(plan.priority);
+}
+
+TEST(PlanDetailRefreshTest, NothingDueAndNoPriorityChangeNeedsNoHandle)
+{
+    EXPECT_FALSE(planDetailRefresh(false, false, false, false).any());
+}
+
+TEST(PlanDetailRefreshTest, BasePriorityChangeRereadsOnlyThePriorityClass)
+{
+    // #1156: a Set Priority shows on the next sample, not up to a heavy TTL later.
+    const auto plan = planDetailRefresh(false, false, false, true);
+    EXPECT_TRUE(plan.priority);
+    EXPECT_FALSE(plan.light);
+    EXPECT_FALSE(plan.heavy);
+}
+
+TEST(PlanDetailRefreshTest, PriorityIsAlsoReadWithTheHeavyDetails)
+{
+    const auto heavy = planDetailRefresh(false, false, true, false);
+    EXPECT_TRUE(heavy.heavy);
+    EXPECT_TRUE(heavy.priority);
+    const auto light = planDetailRefresh(false, true, false, false);
+    EXPECT_TRUE(light.light);
+    EXPECT_FALSE(light.heavy);
+    EXPECT_FALSE(light.priority);
+}
 
 TEST(ClassifyEStatsRowTest, SaneEstablishedReadsAreReported)
 {
