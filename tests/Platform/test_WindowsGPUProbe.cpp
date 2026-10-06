@@ -7,8 +7,10 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -108,7 +110,8 @@ TEST(MergeNVMLIntoDXGICountersTest, FailedNVMLUtilizationReadLeavesThePDHFallbac
 {
     // #1111: NVML's utilization read failed (timeout, TDR). The GPU must not be marked NVML-sourced
     // with a real-looking 0%, which suppressed the valid PDH utilization; the read validity of the
-    // other fields comes along so they publish as gaps.
+    // other fields comes along so they publish as gaps. (NVML's utilization is taken only without
+    // PDH, #1264.)
     std::vector<GPUCounters> dxgi(1);
     dxgi[0].gpuId = "GPU0";
     dxgi[0].utilizationPercent = 37.0; // a later PDH merge fills this in
@@ -121,7 +124,7 @@ TEST(MergeNVMLIntoDXGICountersTest, FailedNVMLUtilizationReadLeavesThePDHFallbac
     nvml[0].powerAvailable = true;
     nvml[0].powerDrawWatts = 80.0;
 
-    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0, 0}});
+    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0, 0}}, nullptr, /*takeUtilization=*/true);
 
     EXPECT_FALSE(sourced.contains("GPU0"));
     EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 37.0);
@@ -145,7 +148,7 @@ TEST(MergeNVMLIntoDXGICountersTest, NVMLReadingsMakeDXGIsUnreadFieldsAvailable)
     nvml[0].memoryTotalBytes = 8ULL << 30U;
     nvml[0].memoryUsedBytes = 1ULL << 30U;
 
-    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0, 0}});
+    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0, 0}}, nullptr, /*takeUtilization=*/true);
 
     EXPECT_TRUE(sourced.contains("GPU0"));
     EXPECT_TRUE(dxgi[0].utilizationAvailable);
@@ -204,7 +207,7 @@ TEST(MergeNVMLIntoDXGICountersTest, MergesMappedGPUAndReportsIdAsSourced)
     nvml[0].memoryUsedBytes = 222;
     nvml[0].memoryTotalBytes = 8ULL * 1024 * 1024 * 1024;
 
-    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0, 0}});
+    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0, 0}}, nullptr, /*takeUtilization=*/true);
 
     EXPECT_TRUE(sourced.contains("GPU0"));
     EXPECT_EQ(dxgi[0].temperatureC, 65);
@@ -236,6 +239,67 @@ TEST(MergeNVMLIntoDXGICountersTest, ZeroNVMLMemoryTotalKeepsDXGIMemoryValues)
 
     EXPECT_EQ(dxgi[0].memoryUsedBytes, 111U);
     EXPECT_EQ(dxgi[0].memoryTotalBytes, 999U);
+}
+
+// #1264: an NVIDIA adapter's utilization is PDH's, like every other adapter's and every process's,
+// not NVML's util.gpu, which disagreed with Task Manager and the per-process sum. The NVML merge
+// leaves it alone and claims no GPU, so the PDH merge assigns it.
+TEST(MergeNVMLIntoDXGICountersTest, PDHUtilizationWinsForAnNVMLCoveredAdapter)
+{
+    std::vector<GPUCounters> dxgi(1);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[0].utilizationAvailable = false; // DXGI's counter starts unread (#1245)
+    std::vector<GPUCounters> nvml(1);
+    nvml[0].gpuId = "uuid-0";
+    nvml[0].utilizationPercent = 97.0; // NVML: "a kernel ran" in its last window
+    nvml[0].temperatureC = 70;
+
+    std::unordered_set<std::string> memoryIds;
+    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0, 0}}, &memoryIds);
+    EXPECT_TRUE(sourced.empty());
+    EXPECT_EQ(dxgi[0].temperatureC, 70); // Sensors still come from NVML
+
+    const std::unordered_map<std::string, double> byLuid = {{"GPU_0xLUID0", 41.5}};
+    const std::unordered_map<std::string, std::string> idToLuid = {{"GPU0", "GPU_0xLUID0"}};
+    assignPDHUtilizationToDXGICounters(dxgi, byLuid, idToLuid, sourced, /*absentMeansIdle=*/true);
+
+    EXPECT_TRUE(dxgi[0].utilizationAvailable);
+    EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 41.5);
+}
+
+// #1265: NVML left a sleeping GPU alone. The merged counter says so ("(Sleeping)" in the header)
+// and keeps NVML's last VRAM total, but its memory in use isn't NVML's: PDH's adapter-wide figure,
+// read without touching the GPU, fills it in.
+TEST(MergeNVMLIntoDXGICountersTest, ASleepingGpuIsSuspendedAndTakesPDHMemory)
+{
+    std::vector<GPUCounters> dxgi(1);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[0].memoryTotalBytes = 7ULL << 30U; // DXGI's dedicated figure
+    dxgi[0].memoryAvailable = false;
+    std::vector<GPUCounters> nvml(1);
+    nvml[0].gpuId = "uuid-0";
+    nvml[0].suspended = true;
+    nvml[0].utilizationAvailable = false;
+    nvml[0].temperatureAvailable = false;
+    nvml[0].powerAvailable = false;
+    nvml[0].gpuClockAvailable = false;
+    nvml[0].memoryAvailable = false;
+    nvml[0].memoryTotalBytes = 8ULL << 30U; // Last read while awake
+
+    std::unordered_set<std::string> memoryIds;
+    [[maybe_unused]] const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0, 0}}, &memoryIds);
+
+    EXPECT_TRUE(dxgi[0].suspended);
+    EXPECT_FALSE(dxgi[0].temperatureAvailable);
+    EXPECT_EQ(dxgi[0].memoryTotalBytes, 8ULL << 30U);
+    EXPECT_TRUE(memoryIds.empty());
+
+    AdapterMemoryUsage usage{};
+    usage.dedicatedBytes = 300ULL << 20U;
+    usage.dedicatedRead = true;
+    assignPDHMemoryToDXGICounters(dxgi, {{"GPU_0xLUID0", usage}}, {{"GPU0", "GPU_0xLUID0"}}, {{"GPU0", false}}, memoryIds);
+    EXPECT_TRUE(dxgi[0].memoryAvailable);
+    EXPECT_EQ(dxgi[0].memoryUsedBytes, 300ULL << 20U);
 }
 
 TEST(AllGPUsHaveNVMLUtilizationTest, EmptyDXGICountersIsFalse)
@@ -381,7 +445,7 @@ GPUInfo makeInfo(const std::string& name, const std::string& vendor)
 GPUInfo makeLocatedInfo(const std::string& name, std::uint32_t bus, std::uint32_t pciDeviceId = 0)
 {
     GPUInfo info = makeInfo(name, "NVIDIA");
-    info.pciLocation = PciLocation{.bus = bus, .device = 0};
+    info.pciLocation = PciLocation{.bus = bus, .device = 0, .function = std::nullopt};
     info.pciDeviceId = pciDeviceId;
     return info;
 }
@@ -397,6 +461,27 @@ TEST(MapDXGIToNVMLTest, IdenticalCardsMapByPciLocationWhateverTheOrder)
     ASSERT_EQ(mapping.size(), 2U);
     EXPECT_EQ(mapping.at(0), 1U);
     EXPECT_EQ(mapping.at(1), 0U);
+}
+
+// #1317: each mapped NVML device is named by its DXGI adapter's id, found through the mapping, not
+// by its own position in NVML's order; an unmapped device has no entry.
+TEST(NVMLDeviceAdapterIdsTest, EachMappedDeviceTakesItsAdaptersId)
+{
+    std::vector<GPUInfo> dxgi = {makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x02), makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x01)};
+    dxgi[0].id = "PCI_02:00.0_10DE:2684";
+    dxgi[1].id = "PCI_01:00.0_10DE:2684";
+    std::vector<GPUInfo> nvml = {makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x01),
+                                 makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x02),
+                                 makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x03)};
+    nvml[0].id = "GPU-aaaa";
+    nvml[1].id = "GPU-bbbb";
+    nvml[2].id = "GPU-cccc";
+
+    const auto ids = nvmlDeviceAdapterIds(dxgi, nvml, mapDXGIToNVML(dxgi, nvml));
+    ASSERT_EQ(ids.size(), 2U);
+    EXPECT_EQ(ids.at("GPU-aaaa"), "PCI_01:00.0_10DE:2684");
+    EXPECT_EQ(ids.at("GPU-bbbb"), "PCI_02:00.0_10DE:2684");
+    EXPECT_FALSE(ids.contains("GPU-cccc"));
 }
 
 // #1091: without a location, identical cards cannot be told apart. They stay unmapped rather than
@@ -464,6 +549,49 @@ TEST(MapDXGIToNVMLTest, SubstringMatchNeedsAKnownEqualPciDeviceId)
     const auto mapping = mapDXGIToNVML({laptopAdapter}, {knownDevice});
     ASSERT_EQ(mapping.size(), 1U);
     EXPECT_EQ(mapping.at(0), 0U);
+}
+
+// Two functions of one multi-function device at the same bus and device: the function number pairs
+// each adapter with its own NVML device. Where NVML's busId couldn't be read the function is unknown,
+// and a device still matches the one adapter at its bus and device.
+TEST(MapDXGIToNVMLTest, TheFunctionNumberPairsFunctionsAtOneBusAndDevice)
+{
+    const auto atFunction = [](std::optional<std::uint32_t> function)
+    {
+        GPUInfo info = makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x01);
+        info.pciLocation->function = function;
+        return info;
+    };
+    const std::vector<GPUInfo> dxgi = {atFunction(1), atFunction(0)};
+    const std::vector<GPUInfo> nvml = {atFunction(0), atFunction(1)};
+    const auto mapping = mapDXGIToNVML(dxgi, nvml);
+    ASSERT_EQ(mapping.size(), 2U);
+    EXPECT_EQ(mapping.at(0), 1U);
+    EXPECT_EQ(mapping.at(1), 0U);
+
+    const auto unknownFunction = mapDXGIToNVML({atFunction(0)}, {atFunction(std::nullopt)});
+    ASSERT_EQ(unknownFunction.size(), 1U);
+    EXPECT_EQ(unknownFunction.at(0), 0U);
+
+    EXPECT_TRUE(mapDXGIToNVML({atFunction(1)}, {atFunction(0)}).empty()) << "Different functions are different devices";
+}
+
+// An exact bus/device/function match is made before any unknown-function one, so the unknown device
+// can't make it ambiguous: function 1 takes its own device, and function 0 then takes the one left.
+TEST(MapDXGIToNVMLTest, AnExactFunctionMatchIsMadeBeforeAnUnknownFunctionOne)
+{
+    const auto atFunction = [](std::optional<std::uint32_t> function)
+    {
+        GPUInfo info = makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x01);
+        info.pciLocation->function = function;
+        return info;
+    };
+    const std::vector<GPUInfo> dxgi = {atFunction(0), atFunction(1)};
+    const std::vector<GPUInfo> nvml = {atFunction(1), atFunction(std::nullopt)};
+    const auto mapping = mapDXGIToNVML(dxgi, nvml);
+    ASSERT_EQ(mapping.size(), 2U);
+    EXPECT_EQ(mapping.at(1), 0U);
+    EXPECT_EQ(mapping.at(0), 1U);
 }
 
 // Different PCI locations are different cards, even when the names match exactly.
@@ -587,7 +715,7 @@ TEST(MergeNVMLIntoDXGICountersTest, MemoryIdsListOnlyGPUsWhoseNVMLMemoryReadSucc
     nvml[1].memoryAvailable = false;
 
     std::unordered_set<std::string> memoryIds;
-    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0U, 0U}, {1U, 1U}}, &memoryIds);
+    const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0U, 0U}, {1U, 1U}}, &memoryIds, /*takeUtilization=*/true);
 
     EXPECT_EQ(sourced.size(), 2U);
     EXPECT_EQ(memoryIds, (std::unordered_set<std::string>{"GPU0"}));
@@ -797,6 +925,156 @@ TEST(WindowsGPUProbeTest, ReadGPUCountersAfterEnumerateIsConsistent)
     // GPUs should remain enumerated
     auto gpus2 = probe.enumerateGPUs();
     EXPECT_EQ(gpus.size(), gpus2.size()) << "GPU count should not change";
+}
+
+// =============================================================================
+// nvmlDevicesToLeaveIdle: NVML queries skipped for an NVIDIA adapter PDH saw idle (#1265)
+// =============================================================================
+
+namespace
+{
+using std::chrono::seconds;
+using std::chrono::steady_clock;
+} // namespace
+
+// A device PDH saw idle last interval, and that NVML read recently, is left alone; one with any
+// engine activity is read.
+TEST(NVMLDevicesToLeaveIdleTest, AnAdapterIdleByPDHIsLeftAloneAndABusyOneIsRead)
+{
+    const std::unordered_map<std::string, std::string> adapters = {{"GPU-idle", "PCI_01:00.0_10DE:2684"},
+                                                                   {"GPU-busy", "PCI_41:00.0_10DE:2684"}};
+    const std::unordered_map<std::string, double> pdh = {{"PCI_01:00.0_10DE:2684", 0.0}, {"PCI_41:00.0_10DE:2684", 3.0}};
+    const steady_clock::time_point start{};
+    std::unordered_map<std::string, steady_clock::time_point> lastRead = {{"GPU-idle", start}, {"GPU-busy", start}};
+
+    const auto idle = nvmlDevicesToLeaveIdle(adapters, pdh, lastRead, start + seconds{1});
+    EXPECT_EQ(idle, (std::unordered_set<std::string>{"GPU-idle"}));
+    EXPECT_EQ(lastRead.at("GPU-idle"), start) << "Not read, so its last read stands";
+    EXPECT_EQ(lastRead.at("GPU-busy"), start) << "Recorded by recordNVMLReads() once actually read";
+}
+
+// The threshold is "no engine activity": a reading at it counts as activity.
+TEST(NVMLDevicesToLeaveIdleTest, AReadingAtTheThresholdIsActivity)
+{
+    const std::unordered_map<std::string, std::string> adapters = {{"GPU-a", "A"}};
+    std::unordered_map<std::string, steady_clock::time_point> lastRead = {{"GPU-a", steady_clock::time_point{}}};
+    EXPECT_TRUE(nvmlDevicesToLeaveIdle(adapters, {{"A", NVML_IDLE_PDH_UTILIZATION_PERCENT}}, lastRead, steady_clock::time_point{}).empty());
+    EXPECT_FALSE(
+        nvmlDevicesToLeaveIdle(adapters, {{"A", NVML_IDLE_PDH_UTILIZATION_PERCENT / 2}}, lastRead, steady_clock::time_point{}).empty());
+}
+
+// Without a PDH reading for the adapter (PDH unavailable, warming up, a failed collect), or without
+// a matched adapter, the device is read as before; so is one NVML hasn't read yet, so its readings
+// exist before they are repeated.
+TEST(NVMLDevicesToLeaveIdleTest, NoPDHReadingOrNoEarlierReadMeansRead)
+{
+    const std::unordered_map<std::string, std::string> adapters = {{"GPU-a", "A"}, {"GPU-b", "B"}};
+    const steady_clock::time_point now{};
+    std::unordered_map<std::string, steady_clock::time_point> lastRead = {{"GPU-a", now}};
+    EXPECT_TRUE(nvmlDevicesToLeaveIdle(adapters, {{"B", 0.0}}, lastRead, now).empty());
+    GPUCounters read;
+    read.gpuId = "GPU-b";
+    recordNVMLReads(lastRead, {read}, {}, now);
+    EXPECT_TRUE(lastRead.contains("GPU-b")) << "Read now, so it can be left alone from the next sample";
+    EXPECT_EQ(nvmlDevicesToLeaveIdle(adapters, {{"B", 0.0}}, lastRead, now), (std::unordered_set<std::string>{"GPU-b"}));
+}
+
+// An adapter that stays idle is still read once NVML's readings reach NVML_IDLE_MAX_READING_AGE, so
+// they are never older than that, and then left alone again.
+TEST(NVMLDevicesToLeaveIdleTest, IdleReadingsAreRefreshedAtTheMaximumAge)
+{
+    const std::unordered_map<std::string, std::string> adapters = {{"GPU-a", "A"}};
+    const std::unordered_map<std::string, double> pdh = {{"A", 0.0}};
+    const steady_clock::time_point start{};
+    std::unordered_map<std::string, steady_clock::time_point> lastRead = {{"GPU-a", start}};
+
+    EXPECT_FALSE(nvmlDevicesToLeaveIdle(adapters, pdh, lastRead, start + NVML_IDLE_MAX_READING_AGE - seconds{1}).empty());
+    EXPECT_TRUE(nvmlDevicesToLeaveIdle(adapters, pdh, lastRead, start + NVML_IDLE_MAX_READING_AGE).empty());
+    GPUCounters read;
+    read.gpuId = "GPU-a";
+    recordNVMLReads(lastRead, {read}, {}, start + NVML_IDLE_MAX_READING_AGE);
+    EXPECT_FALSE(nvmlDevicesToLeaveIdle(adapters, pdh, lastRead, start + NVML_IDLE_MAX_READING_AGE + seconds{1}).empty());
+}
+
+// Only a real read restarts the maximum age: a device found asleep (not queried), one whose reads
+// all failed, and one left idle keep their last read, so a GPU that slept through its refresh is
+// read as soon as it wakes rather than replaying readings from before its sleep (#1338 review).
+TEST(NVMLDevicesToLeaveIdleTest, OnlyARealReadIsRecorded)
+{
+    const steady_clock::time_point start{};
+    const steady_clock::time_point now = start + NVML_IDLE_MAX_READING_AGE;
+    std::unordered_map<std::string, steady_clock::time_point> lastRead = {
+        {"GPU-asleep", start}, {"GPU-failed", start}, {"GPU-idle", start}, {"GPU-read", start}};
+
+    GPUCounters failed;
+    failed.gpuId = "GPU-failed";
+    failed.utilizationAvailable = false;
+    failed.temperatureAvailable = false;
+    failed.powerAvailable = false;
+    failed.gpuClockAvailable = false;
+    failed.memoryAvailable = false;
+    GPUCounters asleep = failed;
+    asleep.gpuId = "GPU-asleep";
+    asleep.suspended = true;
+    GPUCounters idle;
+    idle.gpuId = "GPU-idle";
+    GPUCounters read;
+    read.gpuId = "GPU-read";
+    read.temperatureAvailable = false; // One failed read among successful ones is still a read
+
+    recordNVMLReads(lastRead, {asleep, failed, idle, read}, {"GPU-idle"}, now);
+    EXPECT_EQ(lastRead.at("GPU-asleep"), start);
+    EXPECT_EQ(lastRead.at("GPU-failed"), start);
+    EXPECT_EQ(lastRead.at("GPU-idle"), start);
+    EXPECT_EQ(lastRead.at("GPU-read"), now);
+}
+
+// A device no longer matched (removed, or re-enumerated under another id) is forgotten.
+TEST(NVMLDevicesToLeaveIdleTest, AnUnmatchedDevicesLastReadIsForgotten)
+{
+    std::unordered_map<std::string, steady_clock::time_point> lastRead = {{"GPU-gone", steady_clock::time_point{}}};
+    EXPECT_TRUE(nvmlDevicesToLeaveIdle({}, {}, lastRead, steady_clock::time_point{}).empty());
+    EXPECT_TRUE(lastRead.empty());
+}
+
+// An idle NVIDIA adapter's NVML counters are its last reading repeated, still marked available. Its
+// memory in use must come from PDH's current collect, not the repeated NVML figure, while the NVML
+// total and sensors are kept (#1265).
+TEST(ExcludeIdleNVMLMemoryTest, AnIdleAdaptersMemoryInUseIsPDHsCurrentFigure)
+{
+    std::vector<GPUCounters> dxgi(2);
+    dxgi[0].gpuId = "PCI_01:00.0_10DE:2684";
+    dxgi[1].gpuId = "PCI_41:00.0_10DE:2684";
+    std::vector<GPUCounters> nvml(2);
+    for (std::size_t i = 0; i < nvml.size(); ++i)
+    {
+        nvml[i].gpuId = i == 0 ? "GPU-idle" : "GPU-busy";
+        nvml[i].memoryUsedBytes = 1'000'000'000; // The idle one's is a repeated, stale reading
+        nvml[i].memoryTotalBytes = 24'000'000'000;
+        nvml[i].temperatureC = 40;
+    }
+    std::unordered_set<std::string> memoryIds;
+    static_cast<void>(mergeNVMLIntoDXGICounters(dxgi, nvml, {{0U, 0U}, {1U, 1U}}, &memoryIds));
+    ASSERT_EQ(memoryIds.size(), 2U);
+
+    const std::unordered_map<std::string, std::string> adapters = {{"GPU-idle", "PCI_01:00.0_10DE:2684"},
+                                                                   {"GPU-busy", "PCI_41:00.0_10DE:2684"}};
+    excludeIdleNVMLMemory(memoryIds, {"GPU-idle"}, adapters);
+    EXPECT_EQ(memoryIds, (std::unordered_set<std::string>{"PCI_41:00.0_10DE:2684"}));
+
+    const std::unordered_map<std::string, AdapterMemoryUsage> pdhMemory = {
+        {"GPU_0x0_0x1", {.dedicatedBytes = 300'000'000, .sharedBytes = 0, .dedicatedRead = true, .sharedRead = true}},
+        {"GPU_0x0_0x2", {.dedicatedBytes = 5'000'000'000, .sharedBytes = 0, .dedicatedRead = true, .sharedRead = true}},
+    };
+    const std::unordered_map<std::string, std::string> idToLuid = {{"PCI_01:00.0_10DE:2684", "GPU_0x0_0x1"},
+                                                                   {"PCI_41:00.0_10DE:2684", "GPU_0x0_0x2"}};
+    assignPDHMemoryToDXGICounters(dxgi, pdhMemory, idToLuid, {}, memoryIds);
+
+    EXPECT_TRUE(dxgi[0].memoryAvailable);
+    EXPECT_EQ(dxgi[0].memoryUsedBytes, 300'000'000U) << "PDH's current figure, not the repeated NVML one";
+    EXPECT_EQ(dxgi[0].memoryTotalBytes, 24'000'000'000U) << "NVML's total is kept";
+    EXPECT_EQ(dxgi[0].temperatureC, 40) << "And its sensors";
+    EXPECT_EQ(dxgi[1].memoryUsedBytes, 1'000'000'000U) << "A device read this sample keeps NVML's memory";
 }
 
 // ==========================================================================

@@ -5,11 +5,15 @@
 #include "DXGIGPUProbeMath.h"
 #include "Platform/GPUTypes.h"
 #include "WinString.h"
+#include "WindowsProcAddress.h"
 
 #include <spdlog/spdlog.h>
 
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -26,6 +30,7 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wlanguage-extension-token"
 #include <dxgi1_4.h>
+#include <dxcore_interface.h>
 #pragma clang diagnostic pop
 // clang-format on
 
@@ -35,22 +40,102 @@
 namespace Platform
 {
 
-DXGIGPUProbe::DXGIGPUProbe() : m_Initialized(initialize())
-{}
+namespace
+{
 
-DXGIGPUProbe::~DXGIGPUProbe() = default;
+/// dxcore.dll's DXCoreCreateAdapterFactory, resolved at run time rather than linked, so TaskSmack
+/// still starts on a Windows 10 that has no DXCore (#1263).
+using DXCoreCreateAdapterFactoryFn = HRESULT(WINAPI*)(REFIID, void**);
+
+[[nodiscard]] std::uint64_t luidKey(std::int32_t luidHighPart, std::uint32_t luidLowPart)
+{
+    return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(luidHighPart)) << 32U) | luidLowPart;
+}
+
+/// A DXGI factory from CreateDXGIFactory1(), or null if it can't be created.
+[[nodiscard]] ComPtr<IDXGIFactory1> createSystemDXGIFactory()
+{
+    ComPtr<IDXGIFactory1> factory;
+    // __uuidof is a Microsoft extension, suppress warning
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wlanguage-extension-token"
+    const HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(factory.releaseAndGetAddressOf()));
+#pragma clang diagnostic pop
+    if (FAILED(hr))
+    {
+        spdlog::debug("DXGIGPUProbe: CreateDXGIFactory1 failed (HRESULT: 0x{:08X})", static_cast<uint32_t>(hr));
+        return {};
+    }
+    return factory;
+}
+
+} // namespace
+
+// DXCore says whether an adapter is integrated (#1263); load it from System32 only, like nvml.dll.
+DXGIGPUProbe::DXGIGPUProbe()
+    : m_CreateFactory(createSystemDXGIFactory),
+      m_D3DKMT(std::make_unique<D3DKMTAdapterFunctions>()),
+      m_Initialized(initialize()),
+      m_DXCoreModule(LoadLibraryExW(L"dxcore.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32))
+{
+    if (m_DXCoreModule == nullptr)
+    {
+        spdlog::debug("DXGIGPUProbe: dxcore.dll not available; classifying adapters by their descriptor");
+        return;
+    }
+    if (!createDXCoreFactory())
+    {
+        spdlog::debug("DXGIGPUProbe: DXCore adapter factory unavailable; classifying adapters by their descriptor");
+        unloadDXCore();
+    }
+}
+
+DXGIGPUProbe::~DXGIGPUProbe()
+{
+    unloadDXCore();
+}
+
+void DXGIGPUProbe::unloadDXCore()
+{
+    // The factory's code lives in dxcore.dll: release it before unloading the module.
+    m_DXCoreFactory.reset();
+    if (m_DXCoreModule != nullptr)
+    {
+        FreeLibrary(static_cast<HMODULE>(m_DXCoreModule));
+        m_DXCoreModule = nullptr;
+    }
+}
+
+bool DXGIGPUProbe::createDXCoreFactory()
+{
+    m_DXCoreFactory.reset();
+    if (m_DXCoreModule == nullptr)
+    {
+        return false;
+    }
+    const auto createFactory =
+        Windows::getProcAddress<DXCoreCreateAdapterFactoryFn>(static_cast<HMODULE>(m_DXCoreModule), "DXCoreCreateAdapterFactory");
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wlanguage-extension-token"
+    const bool created =
+        createFactory != nullptr &&
+        SUCCEEDED(createFactory(__uuidof(IDXCoreAdapterFactory), reinterpret_cast<void**>(m_DXCoreFactory.releaseAndGetAddressOf()))) &&
+        m_DXCoreFactory;
+#pragma clang diagnostic pop
+    if (!created)
+    {
+        m_DXCoreFactory.reset();
+    }
+    return created;
+}
 
 bool DXGIGPUProbe::initialize()
 {
     // Create DXGI factory for GPU enumeration
-    // __uuidof is a Microsoft extension, suppress warning
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wlanguage-extension-token"
-    HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(m_Factory.releaseAndGetAddressOf()));
-#pragma clang diagnostic pop
-    if (FAILED(hr) || !m_Factory)
+    m_Factory = m_CreateFactory ? m_CreateFactory() : ComPtr<IDXGIFactory1>{};
+    if (!m_Factory)
     {
-        spdlog::warn("DXGIGPUProbe: Failed to create DXGI factory (HRESULT: 0x{:08X})", static_cast<uint32_t>(hr));
+        spdlog::warn("DXGIGPUProbe: Failed to create DXGI factory");
         return false;
     }
 
@@ -58,26 +143,90 @@ bool DXGIGPUProbe::initialize()
     return true;
 }
 
-bool DXGIGPUProbe::isIntegratedGPU(IDXGIAdapter1* adapter)
+bool DXGIGPUProbe::rescanGPUs(GPURescan depth)
 {
-    if (adapter == nullptr)
+    // DXGI adapters don't sleep, so a quick rescan has nothing to find.
+    if (depth != GPURescan::Full)
     {
         return false;
     }
-
-    DXGI_ADAPTER_DESC1 desc{};
-    if (FAILED(adapter->GetDesc1(&desc)))
+    // A factory lists the adapters present when it was made; IsCurrent() turns false once one is
+    // added or removed, or a driver is updated or reset (#1294).
+    if (m_Factory && m_Factory->IsCurrent() != FALSE)
     {
         return false;
     }
+    auto factory = m_CreateFactory ? m_CreateFactory() : ComPtr<IDXGIFactory1>{};
+    if (!factory)
+    {
+        // Keep the factory we had: the adapters it lists are better than none. Retried next time.
+        spdlog::debug("DXGIGPUProbe: Could not create a new DXGI factory; retrying at the next full rescan");
+        return false;
+    }
+    spdlog::info("DXGIGPUProbe: {}; re-enumerating adapters",
+                 m_Factory ? "The adapter set changed (DXGI factory no longer current)" : "DXGI factory created");
+    m_Factory = std::move(factory);
+    m_Initialized = true;
+    // A driver update or reset brings an adapter back under a new LUID, and a LUID can be reused, so
+    // what was decided per LUID is decided again as adapters are seen (#1251, #1263). DXCore's
+    // factory is made afresh alongside, so it knows the new adapters too.
+    m_ListedByLuid.clear();
+    m_IntegratedByLuid.clear();
+    m_IdByLuid.clear();
+    if (m_DXCoreModule != nullptr && !createDXCoreFactory())
+    {
+        spdlog::debug("DXGIGPUProbe: DXCore adapter factory unavailable; classifying adapters by their descriptor");
+    }
+    return true;
+}
 
-    return isIntegratedGPUFromDesc(desc.VendorId, desc.Flags, desc.DedicatedVideoMemory);
+std::optional<bool> DXGIGPUProbe::dxcoreIsIntegrated(std::int32_t luidHighPart, std::uint32_t luidLowPart)
+{
+    if (!m_DXCoreFactory)
+    {
+        return std::nullopt;
+    }
+    const LUID luid{.LowPart = luidLowPart, .HighPart = luidHighPart};
+    ComPtr<IDXCoreAdapter> adapter;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wlanguage-extension-token"
+    const HRESULT hr =
+        m_DXCoreFactory->GetAdapterByLuid(luid, __uuidof(IDXCoreAdapter), reinterpret_cast<void**>(adapter.releaseAndGetAddressOf()));
+#pragma clang diagnostic pop
+    if (FAILED(hr) || !adapter || !adapter->IsPropertySupported(DXCoreAdapterProperty::IsIntegrated))
+    {
+        return std::nullopt;
+    }
+    bool integrated = false;
+    if (FAILED(adapter->GetProperty(DXCoreAdapterProperty::IsIntegrated, sizeof(integrated), &integrated)))
+    {
+        return std::nullopt;
+    }
+    return integrated;
+}
+
+bool DXGIGPUProbe::isIntegratedAdapter(
+    std::uint32_t vendorId, std::uint32_t flags, std::uint64_t dedicatedVideoMemory, std::int32_t luidHighPart, std::uint32_t luidLowPart)
+{
+    const std::uint64_t key = luidKey(luidHighPart, luidLowPart);
+    if (const auto it = m_IntegratedByLuid.find(key); it != m_IntegratedByLuid.end())
+    {
+        return it->second;
+    }
+    const std::optional<bool> dxcore = dxcoreIsIntegrated(luidHighPart, luidLowPart);
+    const bool integrated = classifyIntegrated(dxcore, vendorId, flags, dedicatedVideoMemory);
+    spdlog::debug("DXGIGPUProbe: Adapter LUID {} is {} (by {})",
+                  luidToPdhFormat(static_cast<std::uint32_t>(luidHighPart), luidLowPart),
+                  integrated ? "integrated" : "discrete",
+                  dxcore.has_value() ? "DXCore" : "descriptor heuristic");
+    m_IntegratedByLuid.emplace(key, integrated);
+    return integrated;
 }
 
 bool DXGIGPUProbe::isListedAdapter(std::uint32_t flags, std::int32_t luidHighPart, std::uint32_t luidLowPart)
 {
-    const std::uint64_t luidKey = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(luidHighPart)) << 32U) | luidLowPart;
-    if (const auto it = m_ListedByLuid.find(luidKey); it != m_ListedByLuid.end())
+    const std::uint64_t key = luidKey(luidHighPart, luidLowPart);
+    if (const auto it = m_ListedByLuid.find(key); it != m_ListedByLuid.end())
     {
         return it->second;
     }
@@ -87,7 +236,7 @@ bool DXGIGPUProbe::isListedAdapter(std::uint32_t flags, std::int32_t luidHighPar
     if (!softwareFlag)
     {
         const LUID luid{.LowPart = luidLowPart, .HighPart = luidHighPart};
-        if (const auto kind = adapterKind(luid))
+        if (const auto kind = adapterKind(luid, *m_D3DKMT))
         {
             typeBits = adapterTypeBits(*kind);
         }
@@ -100,8 +249,30 @@ bool DXGIGPUProbe::isListedAdapter(std::uint32_t flags, std::int32_t luidHighPar
                       softwareFlag || (typeBits.has_value() && typeBits->softwareDevice),
                       typeBits.has_value() && typeBits->indirectDisplayDevice);
     }
-    m_ListedByLuid.emplace(luidKey, listed);
+    m_ListedByLuid.emplace(key, listed);
     return listed;
+}
+
+std::string DXGIGPUProbe::adapterId(std::uint32_t vendorId,
+                                    std::uint32_t deviceId,
+                                    std::int32_t luidHighPart,
+                                    std::uint32_t luidLowPart,
+                                    const std::function<std::optional<PciLocation>()>& pciLocation)
+{
+    const std::uint64_t key = luidKey(luidHighPart, luidLowPart);
+    if (const auto it = m_IdByLuid.find(key); it != m_IdByLuid.end())
+    {
+        return it->second;
+    }
+    std::unordered_set<std::string> taken;
+    for (const auto& entry : m_IdByLuid)
+    {
+        taken.insert(entry.second);
+    }
+    std::string id = stableAdapterId(pciLocation(), vendorId, deviceId, static_cast<std::uint32_t>(luidHighPart), luidLowPart, taken);
+    spdlog::debug("DXGIGPUProbe: Adapter LUID {} has id {}", luidToPdhFormat(static_cast<std::uint32_t>(luidHighPart), luidLowPart), id);
+    m_IdByLuid.emplace(key, id);
+    return id;
 }
 
 std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
@@ -135,8 +306,17 @@ std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
             {
                 GPUInfo info{};
 
-                // Generate unique ID from adapter index
-                info.id = std::format("GPU{}", adapterIndex);
+                // PCI identity, in NVML's pciDeviceId encoding, for matching to NVML (#1091)
+                info.pciDeviceId = (static_cast<std::uint32_t>(desc.DeviceId) << 16U) | (desc.VendorId & 0xFFFFU);
+                info.pciLocation = adapterPciLocation(desc.AdapterLuid, *m_D3DKMT);
+
+                // The adapter's own id -- its PCI location, or its LUID without one -- not its place
+                // in this list, which shifts when an adapter before it is removed (#1317)
+                info.id = adapterId(desc.VendorId,
+                                    desc.DeviceId,
+                                    static_cast<std::int32_t>(desc.AdapterLuid.HighPart),
+                                    static_cast<std::uint32_t>(desc.AdapterLuid.LowPart),
+                                    [&info] { return info.pciLocation; });
 
                 // Generate LUID-based ID for PDH counter matching
                 // PDH GPU counters use LUID format: GPU_0x{HighPart}_0x{LowPart}
@@ -152,23 +332,27 @@ std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
                 // Driver version not available in DXGI_ADAPTER_DESC1
                 info.driverVersion = "Unknown";
 
-                // Determine if integrated
-                info.isIntegrated = isIntegratedGPU(adapter.get());
+                // Integrated or discrete: DXCore's answer where it has one (#1263)
+                info.isIntegrated = isIntegratedAdapter(desc.VendorId,
+                                                        desc.Flags,
+                                                        desc.DedicatedVideoMemory,
+                                                        static_cast<std::int32_t>(desc.AdapterLuid.HighPart),
+                                                        static_cast<std::uint32_t>(desc.AdapterLuid.LowPart));
                 info.memoryIsShared = adapterMemoryIsShared(info.isIntegrated); // What its used figure counts (#1164)
 
-                // Device index
+                // Position in DXGI's list: display order only, never identity (#1317)
                 info.deviceIndex = adapterIndex;
 
-                // PCI identity, in NVML's pciDeviceId encoding, for matching to NVML (#1091)
-                info.pciDeviceId = (static_cast<std::uint32_t>(desc.DeviceId) << 16U) | (desc.VendorId & 0xFFFFU);
-                info.pciLocation = adapterPciLocation(desc.AdapterLuid);
-
-                spdlog::debug("DXGIGPUProbe: Enumerated GPU {}: {} ({}) - LUID: {}, PCI: {}, Integrated: {}",
+                spdlog::debug("DXGIGPUProbe: Enumerated GPU {} ({}): {} ({}) - LUID: {}, PCI: {}, Integrated: {}",
                               adapterIndex,
+                              info.id,
                               info.name,
                               info.vendor,
                               info.luidId,
-                              info.pciLocation ? std::format("{:02x}:{:02x}", info.pciLocation->bus, info.pciLocation->device)
+                              info.pciLocation ? std::format("{:02x}:{:02x}.{}",
+                                                             info.pciLocation->bus,
+                                                             info.pciLocation->device,
+                                                             info.pciLocation->function.value_or(0))
                                                : std::string("unknown"),
                               info.isIntegrated);
 
@@ -208,7 +392,7 @@ std::vector<GPUCounters> DXGIGPUProbe::readGPUCounters()
 
         if (SUCCEEDED(hrDesc))
         {
-            // Skip the same adapters enumerateGPUs() does, so the "GPU{index}" ids match (#1251)
+            // Skip the same adapters enumerateGPUs() does (#1251)
             if (isListedAdapter(
                     desc.Flags, static_cast<std::int32_t>(desc.AdapterLuid.HighPart), static_cast<std::uint32_t>(desc.AdapterLuid.LowPart)))
             {
@@ -217,10 +401,21 @@ std::vector<GPUCounters> DXGIGPUProbe::readGPUCounters()
                 // used to chart TaskSmack's own few MB as the GPU's memory (#1029). WindowsGPUProbe
                 // fills memoryUsedBytes from PDH's adapter-wide counters (or NVML); until then
                 // utilization and memory are unread, not a real 0 (#1245).
-                const bool integrated = isIntegratedGPUFromDesc(desc.VendorId, desc.Flags, desc.DedicatedVideoMemory);
-                counters.push_back(
-                    makeDXGIAdapterCounters(std::format("GPU{}", adapterIndex),
-                                            adapterMemoryTotalBytes(integrated, desc.DedicatedVideoMemory, desc.SharedSystemMemory)));
+                // The classification enumerateGPUs() reported, so the pool matches the label (#1263)
+                const bool integrated = isIntegratedAdapter(desc.VendorId,
+                                                            desc.Flags,
+                                                            desc.DedicatedVideoMemory,
+                                                            static_cast<std::int32_t>(desc.AdapterLuid.HighPart),
+                                                            static_cast<std::uint32_t>(desc.AdapterLuid.LowPart));
+                // The id enumerateGPUs() gave this adapter, so counters and history agree (#1317)
+                const LUID luid = desc.AdapterLuid;
+                std::string id = adapterId(desc.VendorId,
+                                           desc.DeviceId,
+                                           static_cast<std::int32_t>(luid.HighPart),
+                                           static_cast<std::uint32_t>(luid.LowPart),
+                                           [this, &luid] { return adapterPciLocation(luid, *m_D3DKMT); });
+                counters.push_back(makeDXGIAdapterCounters(
+                    std::move(id), adapterMemoryTotalBytes(integrated, desc.DedicatedVideoMemory, desc.SharedSystemMemory)));
             }
         }
 

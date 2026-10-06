@@ -138,8 +138,9 @@ class ProcessesPanel : public Panel
         return m_ProcessModel;
     }
 
-    /// Returns true if the process probe reported reduced privileges at startup.
-    /// Convenience accessor so ShellLayer does not need to include Domain/ProcessModel.h.
+    /// Returns true if the process probe reports reduced privileges, as of the latest snapshot
+    /// generation this panel has fetched (#1254). Convenience accessor so ShellLayer does not need to
+    /// include Domain/ProcessModel.h. UI thread; takes no lock once a generation is cached.
     [[nodiscard]] bool hasReducedPrivileges() const;
 
     /// Narrowest the toolbar row (filter, clear button, process count, tree-view toggle) can be
@@ -148,8 +149,9 @@ class ProcessesPanel : public Panel
     /// Needs a frame.
     [[nodiscard]] static float measureToolbarMinimumWidth();
 
-    /// What the process probe can report (all false without a model). Fixed for the probe's
-    /// lifetime, so safe to read from the UI thread at any time.
+    /// What the process probe can report (all false without a model), as of the latest snapshot
+    /// generation this panel has fetched: a probe can withdraw a capability after the first sample
+    /// (#1254). UI thread; takes no lock once a generation is cached.
     [[nodiscard]] Platform::ProcessCapabilities processCapabilities() const;
 
   private:
@@ -206,6 +208,8 @@ class ProcessesPanel : public Panel
     std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> m_CachedRenderSnapshots =
         std::make_shared<const std::vector<Domain::ProcessSnapshot>>();
     std::uint64_t m_CachedSnapshotVersion = std::numeric_limits<std::uint64_t>::max();
+    // The probe's capabilities published with m_CachedRenderSnapshots' generation (#1254).
+    Platform::ProcessCapabilities m_CachedCapabilities;
 
     // Per-frame filter cache: filtered indices, running count, and summary string are rebuilt
     // only when the snapshot version or search term changes (O(1) skip in 59/60 frames).
