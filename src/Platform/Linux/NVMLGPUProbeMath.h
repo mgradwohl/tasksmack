@@ -333,4 +333,20 @@ struct NvidiaProcGpuInfo
     return info;
 }
 
+/// Whether a device rebuilt by an NVML restart takes the id remembered for its PCI address (#1270).
+/// A UUID reported now -- NVML's, or the driver's procfs one for a deferred device -- is
+/// authoritative: one that differs from the remembered id is a different GPU in that slot, which
+/// keeps its own id (and so gets none of the old GPU's sensors or memory total). With no UUID
+/// reported, a remembered UUID is reused, whether the device is deferred or awake with NVML's UUID
+/// query failing, rather than an index-based id breaking its history; a deferred device keeps its
+/// remembered fallback id too, as it has nothing better.
+[[nodiscard]] constexpr bool keepsRememberedId(bool reportsUuid, bool hasHandle, bool rememberedIsUuid)
+{
+    if (reportsUuid)
+    {
+        return false;
+    }
+    return rememberedIsUuid || !hasHandle;
+}
+
 } // namespace Platform::NVMLGPUProbeMath

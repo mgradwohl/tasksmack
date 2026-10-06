@@ -183,8 +183,9 @@ struct NVMLGPUProbe::Impl
     bool startNVML();
     /// Re-initialise NVML and rebuild the device list (#1116), keeping each surviving device's
     /// last-known memory total and the sensor set already found for it, so one asleep through the
-    /// restart doesn't lose it (it isn't woken to find it again, #1117). NVML is left unavailable if
-    /// the re-init fails.
+    /// restart doesn't lose it (it isn't woken to find it again, #1117). A device reporting no UUID
+    /// keeps the one known at its PCI address; one reporting a different UUID is a different GPU and
+    /// inherits nothing (#1270). NVML is left unavailable if the re-init fails.
     void restartNVML();
     [[nodiscard]] RunningProcessesQuery loadRunningProcessesQuery(const std::string& baseName) const;
     void unloadNVML();
@@ -491,8 +492,9 @@ void NVMLGPUProbe::Impl::restartNVML()
         std::optional<GPUCapabilities> sensors;
     };
     std::unordered_map<std::string, Remembered> remembered;
-    // A GPU asleep through the restart is deferred, described without NVML (#1270): it keeps the
-    // identity it had, found by PCI address, so its id -- and so its history -- carries on.
+    // The identity each PCI address had, so a rebuilt device that reports no UUID -- deferred
+    // without one in procfs (#1270), or awake with NVML's UUID query failing -- keeps its id, and so
+    // its history, rather than taking an index- or address-based one.
     std::unordered_map<std::string, Device> rememberedByAddress;
     for (const auto& device : devices)
     {
@@ -522,14 +524,31 @@ void NVMLGPUProbe::Impl::restartNVML()
     loadRetryPending = false;
     for (auto& device : devices)
     {
-        if (const auto known = rememberedByAddress.find(device.pciAddress); device.handle == nullptr && known != rememberedByAddress.end())
+        if (const auto known = rememberedByAddress.find(device.pciAddress); known != rememberedByAddress.end())
         {
-            device.id = known->second.id;
-            device.idIsUuid = known->second.idIsUuid;
-            device.name = known->second.name;
-            device.index = known->second.index;
-            device.pciDeviceId = known->second.pciDeviceId;
+            const Device& prior = known->second;
+            if (NVMLGPUProbeMath::keepsRememberedId(device.idIsUuid, device.handle != nullptr, prior.idIsUuid))
+            {
+                device.id = prior.id;
+                device.idIsUuid = prior.idIsUuid;
+            }
+            else if (device.idIsUuid && prior.idIsUuid && device.id != prior.id)
+            {
+                spdlog::info("NVMLGPUProbe: a different GPU ({}) is now at {}; not carrying over what was known of {}",
+                             device.id,
+                             device.pciAddress,
+                             prior.id);
+            }
+            // A deferred device that is the same GPU keeps the NVML description it had over the
+            // provisional one from sysfs and procfs.
+            if (device.handle == nullptr && device.id == prior.id)
+            {
+                device.name = prior.name;
+                device.index = prior.index;
+                device.pciDeviceId = prior.pciDeviceId;
+            }
         }
+        // By id: a different GPU at a known address (a new UUID) gets nothing of the old one's.
         if (const auto it = remembered.find(device.id); it != remembered.end())
         {
             device.lastMemoryTotalBytes = it->second.lastMemoryTotalBytes;
