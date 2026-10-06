@@ -3,6 +3,7 @@
 #include "App/Panel.h"
 #include "App/Panels/AdaptiveIntervalUtils.h"
 #include "App/Panels/ProcessDetailsLayout.h"
+#include "App/Panels/ProcessDisplayFreeze.h"
 #include "App/Panels/ProcessFilterCache.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessSortUtils.h"
@@ -77,6 +78,29 @@ constexpr std::array<std::string_view, 3> POWER_UNITS = {" W", " mW", " µW"};
 constexpr std::string_view TREE_VIEW_LABEL = "Tree View";
 constexpr std::string_view LIST_VIEW_LABEL = "List View";
 constexpr const char* FILTER_HINT = "Filter by name...";
+// Shown beside the process count while a held Ctrl freezes the pane (#928).
+constexpr const char* FROZEN_LABEL = ICON_FA_PAUSE " Paused (Ctrl)";
+// The narrow-window form: measureToolbarMinimumWidth() reserves room for this one.
+constexpr const char* FROZEN_ICON = ICON_FA_PAUSE;
+
+/// True when any keyboard key other than a modifier is held: Ctrl with one of these is a shortcut
+/// (Ctrl+C, Ctrl+=), not the freeze gesture (#928). Only the keyboard block of ImGuiKey is walked;
+/// the gamepad and mouse keys follow ImGuiKey_Oem102.
+[[nodiscard]] bool anyNonModifierKeyDown()
+{
+    for (int k = ImGuiKey_Tab; k <= ImGuiKey_Oem102; ++k)
+    {
+        if (k >= ImGuiKey_LeftCtrl && k <= ImGuiKey_RightSuper)
+        {
+            continue;
+        }
+        if (ImGui::IsKeyDown(static_cast<ImGuiKey>(k)))
+        {
+            return true;
+        }
+    }
+    return false;
+}
 
 [[nodiscard]] auto lowerAscii(char ch) -> int
 {
@@ -350,14 +374,15 @@ void stateCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& /*fmt*
     ImGui::PopStyleColor();
 }
 
-/// The priority label for the nice value, right-aligned.
+/// The priority label, right-aligned: the platform's class name where it has one (Windows:
+/// Realtime is not High, #1280), else the nice value's label.
 void priorityCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& /*fmt*/, const ProcessCellWidths& widths)
 {
-    // getPriorityLabel returns string_view into static storage — no allocation
-    // needed. Not RowFormatCache-backed (it's a direct nice-value lookup, not a
-    // per-row formatted string), so its width comes from ProcessCellWidths' small
-    // fixed-label width cache instead of an AlignedCellText.
-    const std::string_view priorityLabel = Domain::Priority::getPriorityLabel(proc.nice);
+    // getProcessPriorityLabel returns string_view into static storage — no allocation
+    // needed. Not RowFormatCache-backed (it's a direct lookup, not a per-row formatted
+    // string), so its width comes from ProcessCellWidths' small fixed-label width cache
+    // instead of an AlignedCellText.
+    const std::string_view priorityLabel = Domain::Priority::getProcessPriorityLabel(proc.priorityClass, proc.nice);
     renderRightAlignedText(priorityLabel, widths.priorityLabelWidth(priorityLabel));
 }
 
@@ -558,12 +583,13 @@ void ProcessesPanel::TextSizeCache::populate()
     treeViewLabelWidth = ImGui::CalcTextSize(TREE_VIEW_LABEL.data(), TREE_VIEW_LABEL.data() + TREE_VIEW_LABEL.size()).x;
     listViewLabelWidth = ImGui::CalcTextSize(LIST_VIEW_LABEL.data(), LIST_VIEW_LABEL.data() + LIST_VIEW_LABEL.size()).x;
 
-    // Cache Domain::Priority::getPriorityLabel()'s fixed label widths
+    // Cache Domain::Priority::getProcessPriorityLabel()'s fixed label widths
     for (std::size_t i = 0; i < PRIORITY_LABELS.size(); ++i)
     {
         const auto& label = PRIORITY_LABELS[i];
         cells.priorityLabels[i] = ImGui::CalcTextSize(label.data(), label.data() + label.size()).x;
     }
+    cells.widestPriorityLabel = std::ranges::max(cells.priorityLabels);
 }
 
 float ProcessesPanel::measureToolbarMinimumWidth()
@@ -583,7 +609,11 @@ float ProcessesPanel::measureToolbarMinimumWidth()
     const float toggleButton = std::max(ImGui::CalcTextSize(TREE_VIEW_LABEL.data(), TREE_VIEW_LABEL.data() + TREE_VIEW_LABEL.size()).x,
                                         ImGui::CalcTextSize(LIST_VIEW_LABEL.data(), LIST_VIEW_LABEL.data() + LIST_VIEW_LABEL.size()).x) +
                                (style.FramePadding.x * 2.0F);
-    const float rest = (style.ItemSpacing.x * 3.0F) + clearButton + count + toggleButton;
+    // While Ctrl freezes the pane the paused indicator joins the row (#928). Only its icon-only form
+    // is reserved: the full label shows when the real count leaves room, which the worst-case count
+    // above nearly always does (ProcessTableLayout::choosePausedLabelForm()).
+    const float pausedIcon = ImGui::CalcTextSize(FROZEN_ICON).x;
+    const float rest = (style.ItemSpacing.x * 4.0F) + clearButton + pausedIcon + count + toggleButton;
     return ProcessTableLayout::computeToolbarMinimumWidth(filterWanted, filterForHint, rest);
 }
 
@@ -708,6 +738,8 @@ void ProcessesPanel::onEvent(Core::Event& event)
             const bool wasShown = m_ProcessDataShown;
             m_IsActiveTab = (e.tabName() == "Processes");
             m_ProcessDataShown = AdaptiveIntervalUtils::showsProcessData(e.tabName());
+            // A freeze belongs to the pane being looked at; leaving it must not leave it frozen (#928).
+            m_DisplayFreeze.reset();
             if (!wasShown && m_ProcessDataShown)
             {
                 // Catch up straight away when coming back from a tab that showed no process data,
@@ -779,12 +811,37 @@ void ProcessesPanel::onUpdate(float deltaTime)
 
 void ProcessesPanel::adoptNewerSnapshots()
 {
+    // Held Ctrl (#928): keep the adopted generation, so the filter, sort and row caches keyed on it
+    // stay as they are. The model keeps sampling; releasing Ctrl adopts its latest generation.
+    if (m_DisplayFreeze.frozen() && m_CachedSnapshotVersion != std::numeric_limits<std::uint64_t>::max())
+    {
+        return;
+    }
     // Detect and copy new data in a single lock acquisition. tryCopySnapshotsIfNewer() checks the
     // published version lock-free first, so a call with nothing new costs one atomic load.
     std::uint64_t newVersion = m_CachedSnapshotVersion;
     if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion, &m_CachedCapabilities))
     {
         m_CachedSnapshotVersion = newVersion;
+    }
+}
+
+void ProcessesPanel::updateDisplayFreeze()
+{
+    const ImGuiIO& io = ImGui::GetIO();
+    const ProcessDisplayFreeze::Inputs inputs{
+        .appFocused = !io.AppFocusLost,
+        .ctrlHeld = io.KeyCtrl,
+        .otherModifierHeld = io.KeyShift || io.KeyAlt || io.KeySuper,
+        .otherKeyHeld = anyNonModifierKeyDown(),
+        .textInputActive = io.WantTextInput,
+        .panelHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows),
+        .panelFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows),
+    };
+    const bool wasFrozen = m_DisplayFreeze.frozen();
+    if (m_DisplayFreeze.update(inputs, Core::Application::getTime()) != wasFrozen)
+    {
+        spdlog::debug("ProcessesPanel: display {} (Ctrl)", wasFrozen ? "resumed" : "frozen");
     }
 }
 
@@ -831,6 +888,9 @@ void ProcessesPanel::renderContent()
 
     // Ensure text size cache is valid for current font (called once per frame)
     ensureTextSizeCacheValid();
+
+    // Decide the Ctrl freeze before adopting, so a frozen frame keeps the generation it shows (#928).
+    updateDisplayFreeze();
 
     // Get thread-safe copy of snapshots — only when data has actually changed (version-cached).
     // ProcessModel updates at 1Hz but render runs at 60fps; skip 59/60 redundant deep copies.
@@ -975,7 +1035,36 @@ void ProcessesPanel::renderContent()
 
     const float rightEdgeX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
     const float textW = ImGui::CalcTextSize(m_CachedSummaryStr.c_str()).x;
-    ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), rightEdgeX - textW - buttonWidthPx - style.ItemSpacing.x));
+    const float countAndToggleW = textW + style.ItemSpacing.x + buttonWidthPx;
+    // The paused label sits left of the count, so the count and the button keep their places. On a
+    // row too narrow for the full label it shrinks to its icon (#928).
+    auto pausedForm = ProcessTableLayout::PausedLabelForm::Hidden;
+    if (m_DisplayFreeze.frozen())
+    {
+        pausedForm = ProcessTableLayout::choosePausedLabelForm(rightEdgeX - ImGui::GetCursorPosX() - countAndToggleW,
+                                                               ImGui::CalcTextSize(FROZEN_LABEL).x + style.ItemSpacing.x,
+                                                               ImGui::CalcTextSize(FROZEN_ICON).x + style.ItemSpacing.x);
+    }
+    const char* pausedText = nullptr;
+    if (pausedForm == ProcessTableLayout::PausedLabelForm::Full)
+    {
+        pausedText = FROZEN_LABEL;
+    }
+    else if (pausedForm == ProcessTableLayout::PausedLabelForm::IconOnly)
+    {
+        pausedText = FROZEN_ICON;
+    }
+    const float pausedW = (pausedText != nullptr) ? ImGui::CalcTextSize(pausedText).x + style.ItemSpacing.x : 0.0F;
+    ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), rightEdgeX - pausedW - countAndToggleW));
+    if (pausedText != nullptr)
+    {
+        ImGui::TextColored(theme.scheme().textWarning, "%s", pausedText);
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip("Updates are paused while Ctrl is held.\nSampling continues; release Ctrl to resume.");
+        }
+        ImGui::SameLine();
+    }
     ImGui::TextUnformatted(m_CachedSummaryStr.c_str());
 
     // Tree view toggle button
@@ -1077,7 +1166,12 @@ void ProcessesPanel::renderContent()
                 // Use menuName for TableSetupColumn (shown in context menu)
                 // We render custom headers with info.name below
                 // The default is authored at the reference font; scale it to the current one (#913).
-                ImGui::TableSetupColumn(std::string(info.menuName).c_str(), flags, scaledDefaultWidth(info, emPx), toImGuiId(col));
+                // Priority starts wide enough for its longest label, measured in the current font (#1280).
+                const float defaultWidth =
+                    (col == ProcessColumn::Priority)
+                        ? contentFittedWidth(scaledDefaultWidth(info, emPx), m_TextSizeCache.cells.widestPriorityLabel, emPx)
+                        : scaledDefaultWidth(info, emPx);
+                ImGui::TableSetupColumn(std::string(info.menuName).c_str(), flags, defaultWidth, toImGuiId(col));
             }
             else
             {

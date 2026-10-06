@@ -75,6 +75,15 @@ indent_style = space
 indent_size = 2
 
 # ------------------------------------------------------------
+# Patches (cmake/patches/): keep them byte-for-byte; a blank
+# context line is a single space, and the patched code uses tabs
+# ------------------------------------------------------------
+[*.patch]
+trim_trailing_whitespace = false
+indent_style = unset
+indent_size = unset
+
+# ------------------------------------------------------------
 # Makefiles MUST use tabs
 # ------------------------------------------------------------
 [Makefile]

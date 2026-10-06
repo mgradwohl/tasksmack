@@ -3,7 +3,11 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
+#include <string_view>
+#include <utility>
 
 namespace Domain::Priority
 {
@@ -163,6 +167,156 @@ TEST(PriorityConfigTest, ConstantsRelationship)
     EXPECT_LT(NORMAL_NICE, BELOW_NORMAL_THRESHOLD);
     EXPECT_LT(BELOW_NORMAL_THRESHOLD, IDLE_THRESHOLD);
     EXPECT_LT(IDLE_THRESHOLD, MAX_NICE);
+}
+
+// ========== Priority classes (#1280) ==========
+
+TEST(PriorityClassTest, ClassLabelsMatchTheNiceLabelsAndNameRealtime)
+{
+    EXPECT_EQ(getPriorityClassLabel(PriorityClass::Idle), getPriorityLabel(MAX_NICE));
+    EXPECT_EQ(getPriorityClassLabel(PriorityClass::BelowNormal), getPriorityLabel(BELOW_NORMAL_THRESHOLD));
+    EXPECT_EQ(getPriorityClassLabel(PriorityClass::Normal), getPriorityLabel(NORMAL_NICE));
+    EXPECT_EQ(getPriorityClassLabel(PriorityClass::AboveNormal), getPriorityLabel(HIGH_THRESHOLD));
+    EXPECT_EQ(getPriorityClassLabel(PriorityClass::High), getPriorityLabel(MIN_NICE));
+    EXPECT_EQ(getPriorityClassLabel(PriorityClass::Realtime), "Realtime");
+    EXPECT_TRUE(getPriorityClassLabel(PriorityClass::None).empty());
+}
+
+TEST(PriorityClassTest, ProcessLabelUsesTheClassWhereThereIsOne)
+{
+    // Windows reports Realtime at MIN_NICE, which the nice scale calls High.
+    EXPECT_EQ(getProcessPriorityLabel(PriorityClass::Realtime, MIN_NICE), "Realtime");
+    EXPECT_EQ(getProcessPriorityLabel(PriorityClass::High, -15), "High");
+    EXPECT_EQ(getProcessPriorityLabel(PriorityClass::AboveNormal, -7), "Above Normal");
+}
+
+TEST(PriorityClassTest, ProcessLabelFallsBackToNiceWithoutAClass)
+{
+    for (int32_t nice = MIN_NICE; nice <= MAX_NICE; ++nice)
+    {
+        EXPECT_EQ(getProcessPriorityLabel(PriorityClass::None, nice), getPriorityLabel(nice)) << nice;
+    }
+}
+
+TEST(PriorityClassTest, EveryProcessLabelIsListed)
+{
+    const auto listed = [](std::string_view label)
+    {
+        return std::ranges::find(PROCESS_PRIORITY_LABELS, label) != PROCESS_PRIORITY_LABELS.end();
+    };
+    for (int32_t nice = MIN_NICE; nice <= MAX_NICE; ++nice)
+    {
+        EXPECT_TRUE(listed(getProcessPriorityLabel(PriorityClass::None, nice))) << nice;
+    }
+    for (const auto priorityClass : {PriorityClass::Idle,
+                                     PriorityClass::BelowNormal,
+                                     PriorityClass::Normal,
+                                     PriorityClass::AboveNormal,
+                                     PriorityClass::High,
+                                     PriorityClass::Realtime})
+    {
+        EXPECT_TRUE(listed(getProcessPriorityLabel(priorityClass, NORMAL_NICE))) << getPriorityClassLabel(priorityClass);
+    }
+}
+
+TEST(PriorityClassTest, SortKeyOrdersHigherClassesFirst)
+{
+    // Smaller key = higher priority, as with nice. Realtime comes before High even at equal nice.
+    EXPECT_LT(prioritySortKey(PriorityClass::Realtime, MIN_NICE), prioritySortKey(PriorityClass::High, -15));
+    EXPECT_LT(prioritySortKey(PriorityClass::Realtime, -15), prioritySortKey(PriorityClass::High, -15));
+    EXPECT_LT(prioritySortKey(PriorityClass::High, -15), prioritySortKey(PriorityClass::AboveNormal, -7));
+    EXPECT_LT(prioritySortKey(PriorityClass::AboveNormal, -7), prioritySortKey(PriorityClass::Normal, 0));
+    EXPECT_LT(prioritySortKey(PriorityClass::Normal, 0), prioritySortKey(PriorityClass::BelowNormal, 10));
+    EXPECT_LT(prioritySortKey(PriorityClass::BelowNormal, 10), prioritySortKey(PriorityClass::Idle, MAX_NICE));
+}
+
+TEST(PriorityClassTest, SortKeyWithoutAClassIsNiceOrder)
+{
+    // Linux: every process has no class, so the key must order exactly as nice does.
+    for (int32_t a = MIN_NICE; a <= MAX_NICE; ++a)
+    {
+        for (int32_t b = MIN_NICE; b <= MAX_NICE; ++b)
+        {
+            EXPECT_EQ(prioritySortKey(PriorityClass::None, a) < prioritySortKey(PriorityClass::None, b), a < b) << a << " vs " << b;
+        }
+    }
+}
+
+TEST(PriorityClassTest, ForNiceMatchesTheLabelBucket)
+{
+    for (int32_t nice = MIN_NICE; nice <= MAX_NICE; ++nice)
+    {
+        EXPECT_EQ(getPriorityClassLabel(priorityClassForNice(nice)), getPriorityLabel(nice)) << nice;
+    }
+}
+
+TEST(PriorityClassTest, SortKeyPutsAnUnreadClassWithTheClassItsLabelNames)
+{
+    // The Windows probe's fallback for a class it could not read: no class, nice 0, shown "Normal".
+    // It must sort with Normal -- above Below Normal and Idle, below Above Normal, High and Realtime --
+    // not below Idle.
+    const auto unread = prioritySortKey(PriorityClass::None, NORMAL_NICE);
+    EXPECT_EQ(getProcessPriorityLabel(PriorityClass::None, NORMAL_NICE), "Normal");
+    EXPECT_EQ(unread, prioritySortKey(PriorityClass::Normal, NORMAL_NICE));
+
+    // Each class at the nice value the Windows probe reports for it.
+    const std::array<std::pair<PriorityClass, int32_t>, 6> classes{{
+        {PriorityClass::Realtime, MIN_NICE},
+        {PriorityClass::High, -15},
+        {PriorityClass::AboveNormal, -7},
+        {PriorityClass::Normal, NORMAL_NICE},
+        {PriorityClass::BelowNormal, 10},
+        {PriorityClass::Idle, MAX_NICE},
+    }};
+    for (const auto& [priorityClass, nice] : classes)
+    {
+        const auto key = prioritySortKey(priorityClass, nice);
+        const std::string_view name = getPriorityClassLabel(priorityClass);
+        if (priorityClass > PriorityClass::Normal)
+        {
+            EXPECT_LT(key, unread) << name; // Higher priority sorts first ascending...
+            EXPECT_GT(unread, key) << name; // ...and last descending.
+        }
+        else if (priorityClass < PriorityClass::Normal)
+        {
+            EXPECT_GT(key, unread) << name;
+            EXPECT_LT(unread, key) << name;
+        }
+        else
+        {
+            EXPECT_EQ(key, unread) << name;
+        }
+    }
+}
+
+TEST(PriorityClassTest, SortKeyPutsAnyClasslessNiceInItsLabelsClass)
+{
+    // A classless row sorts among the class whose label it shows, against every class.
+    const std::array<std::pair<PriorityClass, int32_t>, 6> classes{{
+        {PriorityClass::Realtime, MIN_NICE},
+        {PriorityClass::High, -15},
+        {PriorityClass::AboveNormal, -7},
+        {PriorityClass::Normal, NORMAL_NICE},
+        {PriorityClass::BelowNormal, 10},
+        {PriorityClass::Idle, MAX_NICE},
+    }};
+    for (int32_t nice = MIN_NICE; nice <= MAX_NICE; ++nice)
+    {
+        const PriorityClass bucket = priorityClassForNice(nice);
+        const auto classless = prioritySortKey(PriorityClass::None, nice);
+        for (const auto& [priorityClass, classNice] : classes)
+        {
+            const auto key = prioritySortKey(priorityClass, classNice);
+            if (priorityClass > bucket)
+            {
+                EXPECT_LT(key, classless) << nice << " vs " << getPriorityClassLabel(priorityClass);
+            }
+            else if (priorityClass < bucket)
+            {
+                EXPECT_GT(key, classless) << nice << " vs " << getPriorityClassLabel(priorityClass);
+            }
+        }
+    }
 }
 
 } // namespace
