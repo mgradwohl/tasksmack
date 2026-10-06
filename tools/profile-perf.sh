@@ -115,6 +115,9 @@ if [[ "${MODE}" != "app" && -n "${APP_OPTION_GIVEN}" ]]; then
 fi
 [[ "${WARMUP_SECONDS}" =~ ^[0-9]+$ ]]   || { echo "ERROR: --warmup must be a whole number of seconds" >&2; exit 1; }
 [[ "${DURATION_SECONDS}" =~ ^[0-9]+$ ]] || { echo "ERROR: --duration must be a whole number of seconds" >&2; exit 1; }
+# Base 10: Bash reads a leading zero as octal in -gt and $(( )), so "08" would abort.
+WARMUP_SECONDS=$((10#${WARMUP_SECONDS}))
+DURATION_SECONDS=$((10#${DURATION_SECONDS}))
 if [[ "${INCLUDE_STARTUP}" -eq 1 && "${DURATION_SECONDS}" -gt 0 ]]; then
     echo "ERROR: --duration cannot be combined with --include-startup (close TaskSmack to end that capture)" >&2
     exit 1
