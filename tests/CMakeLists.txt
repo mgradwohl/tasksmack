@@ -122,6 +122,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessTableSettings.cpp
     App/test_ProcessDetailsLayout.cpp
     App/test_GpuClockReference.cpp
+    App/test_GpuSeriesScale.cpp
     App/test_GpuSectionEmptyState.cpp
     App/test_GpuSectionDrawList.cpp
     App/test_ProcessRowFormat.cpp
