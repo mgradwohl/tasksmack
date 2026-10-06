@@ -149,6 +149,8 @@ struct ProcessCapabilities
                                         //          Remains false when EStats is simply unsupported, because
                                         //          running as Administrator would not restore those counters.
     bool hasSharedMemory = false;       // Whether ProcessCounters::sharedBytes is filled (Linux: statm; not on Windows)
+
+    friend bool operator==(const ProcessCapabilities&, const ProcessCapabilities&) = default;
 };
 
 } // namespace Platform

@@ -2,6 +2,7 @@
 
 #include "App/Panel.h"
 #include "App/Panels/AdaptiveIntervalUtils.h"
+#include "App/Panels/CpuCoreGridIds.h"
 #include "App/Panels/CpuCoresSection.h"
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/MemorySection.h"
@@ -373,6 +374,7 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
             m_ProcessPageFaultsHistory = std::move(histories.pageFaults);
             m_ProcessThreadCountHistory = std::move(histories.threadCount);
             m_ProcessHandleCountHistory = std::move(histories.handleCount);
+            m_ProcessCapabilities = histories.capabilities; // current, not the startup set (#1254)
             m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
         }
     }
@@ -447,7 +449,7 @@ void SystemMetricsPanel::renderContent()
             ImGui::EndTabItem();
         }
 
-        if (snap.coreCount > 1)
+        if (CpuCoresSection::showCpuCoresTab(snap.seenCoreIds, static_cast<std::size_t>(snap.coreCount)))
         {
             if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  CPU Cores"))
             {
@@ -893,7 +895,7 @@ void SystemMetricsPanel::renderOverview()
     // Power & Battery history chart (combines per-process power aggregation with battery charge %).
     // Power is drawn only where the process probe actually measures it: on Windows it does not, and
     // used to show a fabricated figure (#1028). Without it the chart is a plain Battery chart.
-    const bool hasProcessPower = (processModel != nullptr) && processModel->capabilities().hasPowerUsage;
+    const bool hasProcessPower = (processModel != nullptr) && m_ProcessCapabilities.hasPowerUsage;
     if (hasProcessPower || snap.power.hasBattery)
     {
         // Get power history from ProcessModel (aggregated per-process power)

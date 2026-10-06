@@ -1112,7 +1112,16 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
 
 uint64_t WindowsProcessProbe::totalCpuTime() const
 {
-    return readTotalCpuTime();
+    // GetSystemTimes sums per-processor times that aren't updated atomically, so under load a read
+    // can come back lower than the one before (#1303: ~0.94 s lower, 10 ms apart). The total is a
+    // cumulative counter, so it never goes backwards: a lower read returns the highest seen. Callers
+    // (ProcessModel) already treat a total that didn't grow as "no delta this sample".
+    const std::uint64_t reading = readTotalCpuTime();
+    std::uint64_t highest = m_HighestTotalCpuTime.load(std::memory_order_relaxed);
+    while (reading > highest && !m_HighestTotalCpuTime.compare_exchange_weak(highest, reading, std::memory_order_relaxed))
+    {
+    }
+    return std::max(reading, highest);
 }
 
 uint64_t WindowsProcessProbe::readTotalCpuTime()

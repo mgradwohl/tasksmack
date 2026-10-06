@@ -177,6 +177,72 @@ TEST(ProcessModelTest, WhenProbeReportsFullPrivileges_ThenReducedPrivilegesIsFal
     EXPECT_FALSE(model.capabilities().hasReducedPrivileges);
 }
 
+// #1254: capabilities were copied once at construction, so one the probe withdrew later (Windows'
+// EStats check after the first real sample, #1161) never reached the UI. They are re-read every
+// sample and published with that generation, through every reader path.
+TEST(ProcessModelTest, ACapabilityWithdrawnAfterTheFirstSampleIsPublished)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+    Platform::ProcessCapabilities caps;
+    caps.hasNetworkCounters = true;
+    caps.hasReducedPrivileges = false;
+    rawProbe->setCapabilities(caps);
+    probe->setCounters({makeCounter(1, "test", 'R', 0, 0)});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+    EXPECT_TRUE(model.capabilities().hasNetworkCounters);
+    EXPECT_FALSE(model.capabilities().hasReducedPrivileges);
+
+    Platform::ProcessCapabilities withdrawn = caps;
+    withdrawn.hasNetworkCounters = false;
+    withdrawn.hasReducedPrivileges = true;
+    rawProbe->setCapabilities(withdrawn);
+    EXPECT_TRUE(model.capabilities().hasNetworkCounters); // published with a sample, not before it
+
+    model.refresh();
+    EXPECT_EQ(model.capabilities(), withdrawn);
+
+    std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> snapshots;
+    std::uint64_t version = 0;
+    Platform::ProcessCapabilities published = caps;
+    ASSERT_TRUE(model.tryCopySnapshotsIfNewer(0, snapshots, version, &published));
+    EXPECT_EQ(published, withdrawn);
+
+    Domain::ProcessSystemHistories histories;
+    ASSERT_TRUE(model.tryCopySystemHistoriesIfNewer(0, histories));
+    EXPECT_EQ(histories.capabilities, withdrawn);
+}
+
+// #1254: a capability the probe withdraws during the sample itself (the Windows probe does so in
+// readSocketTraffic(), #1161) is published with that same generation.
+TEST(ProcessModelTest, ACapabilityWithdrawnDuringASampleIsPublishedWithThatSample)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+    Platform::ProcessCapabilities caps;
+    caps.hasNetworkCounters = true;
+    rawProbe->setCapabilities(caps);
+    probe->setCounters({makeCounter(1, "test", 'R', 0, 0)});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    Platform::ProcessCapabilities withdrawn = caps;
+    withdrawn.hasNetworkCounters = false;
+    rawProbe->switchCapabilitiesOnNextSocketRead(withdrawn);
+    model.refresh();
+
+    std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> snapshots;
+    std::uint64_t version = 0;
+    Platform::ProcessCapabilities published = caps;
+    ASSERT_TRUE(model.tryCopySnapshotsIfNewer(0, snapshots, version, &published));
+    EXPECT_FALSE(published.hasNetworkCounters);
+    ASSERT_EQ(snapshots->size(), 1U);
+    EXPECT_FALSE((*snapshots)[0].networkAvailable);
+}
+
 // =============================================================================
 // ISamplable Tests
 // =============================================================================

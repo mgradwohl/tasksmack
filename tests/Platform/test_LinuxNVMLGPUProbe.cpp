@@ -19,6 +19,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -460,6 +461,7 @@ class NvmlMockControls
             m_FailInits = reinterpret_cast<SetIndexFn>(dlsym(m_Library, "tasksmackNvmlMockFailInits"));
             m_QueriesForDevice = reinterpret_cast<QueriesForDeviceFn>(dlsym(m_Library, "tasksmackNvmlMockQueriesForDevice"));
             m_SetPreviousOccupant = reinterpret_cast<FailSensorReadsFn>(dlsym(m_Library, "tasksmackNvmlMockSetPreviousOccupant"));
+            m_SetFailingPciInfo = reinterpret_cast<SetIndexFn>(dlsym(m_Library, "tasksmackNvmlMockSetFailingPciInfoDevice"));
             // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
         }
     }
@@ -489,6 +491,10 @@ class NvmlMockControls
         if (m_SetPreviousOccupant != nullptr)
         {
             m_SetPreviousOccupant(0);
+        }
+        if (m_SetFailingPciInfo != nullptr)
+        {
+            m_SetFailingPciInfo(NO_FAILING_HANDLE);
         }
         if (m_Library != nullptr)
         {
@@ -577,6 +583,7 @@ class NvmlMockControls
     UuidCallsFn m_InitCalls = nullptr;
     SetIndexFn m_FailInits = nullptr;
     FailSensorReadsFn m_SetPreviousOccupant = nullptr;
+    SetIndexFn m_SetFailingPciInfo = nullptr;
 
   public:
     /// Calls that have addressed a device so far (NVML mock's tasksmackNvmlMockDeviceQueries).
@@ -611,6 +618,18 @@ class NvmlMockControls
     void setPreviousOccupant(bool enabled) const
     {
         m_SetPreviousOccupant(enabled ? 1 : 0);
+    }
+
+    /// Whether the mock can fail one device's PCI-info query (#1353).
+    [[nodiscard]] bool controlsPciInfo() const
+    {
+        return m_SetFailingPciInfo != nullptr;
+    }
+
+    /// Mock device `index`'s nvmlDeviceGetPciInfo fails (NO_FAILING_HANDLE: none).
+    void setFailingPciInfoDevice(unsigned int index) const
+    {
+        m_SetFailingPciInfo(index);
     }
 };
 
@@ -801,6 +820,19 @@ TEST(NVMLGPUProbeMathTest, SysfsPciAddressUsesTheKernelsFourDigitDomain)
 
     pci.busId[0] = '\0'; // no busId: function 0
     EXPECT_EQ(NVMLGPUProbeMath::sysfsPciAddress(pci), "10000:c1:1f.0");
+}
+
+// The function number nvmlPciInfo_t has no field for, read from busId's ".F" suffix (shared with the
+// Windows probe, which needs it to tell two functions of one device apart).
+TEST(NVMLGPUProbeMathTest, PciFunctionComesFromTheBusIdSuffix)
+{
+    NVML::nvmlPciInfo_t pci{};
+    std::strncpy(std::data(pci.busId), "00000000:01:00.3", std::size(pci.busId) - 1);
+    EXPECT_EQ(NVML::pciFunction(pci), std::optional<std::uint32_t>{3});
+    std::strncpy(std::data(pci.busId), "00000000:01:00.9", std::size(pci.busId) - 1);
+    EXPECT_FALSE(NVML::pciFunction(pci).has_value()) << "Not a PCI function digit";
+    pci.busId[0] = '\0';
+    EXPECT_FALSE(NVML::pciFunction(pci).has_value());
 }
 
 // =============================================================================
@@ -1157,12 +1189,12 @@ TEST(LinuxNVMLGPUProbeTest, GpusAsleepAtLoadAreNotAddressed)
     ASSERT_EQ(gpus.size(), 2U);
     EXPECT_EQ(gpus[0].name, "Mock NVIDIA GPU 0"); // from procfs
     EXPECT_EQ(gpus[0].id, "mock-nvml-uuid-0");    // the UUID the driver cached: the id NVML will give
-    EXPECT_EQ(gpus[0].pciLocation, (PciLocation{.bus = 0x01, .device = 0}));
+    EXPECT_EQ(gpus[0].pciLocation, (PciLocation{.bus = 0x01, .device = 0, .function = 0}));
     EXPECT_EQ(gpus[0].pciDeviceId, 0x2684'10DEU); // NVML's encoding, from sysfs
     EXPECT_FALSE(gpus[0].sensorCapabilities.has_value());
     EXPECT_EQ(gpus[1].name, "NVIDIA GPU"); // no procfs entry: a generic name until it wakes
     EXPECT_EQ(gpus[1].id, "nvidia-0000:41:00.0");
-    EXPECT_EQ(gpus[1].pciLocation, (PciLocation{.bus = 0x41, .device = 0}));
+    EXPECT_EQ(gpus[1].pciLocation, (PciLocation{.bus = 0x41, .device = 0, .function = 0}));
     ASSERT_EQ(counters.size(), 2U);
     EXPECT_TRUE(counters[0].suspended);
     EXPECT_FALSE(counters[0].utilizationAvailable);
@@ -1542,6 +1574,55 @@ TEST(LinuxNVMLGPUProbeTest, AnAwakeGpuWhoseLookupFailsAtTheStartIsRetriedAtTheNe
     EXPECT_TRUE(counters[0].utilizationAvailable);
     EXPECT_DOUBLE_EQ(counters[0].utilizationPercent, 75.0);
     EXPECT_TRUE(counters[1].suspended);
+}
+
+// #1353: an awake GPU looked up by PCI address alongside a sleeping one keeps the sysfs identity it was
+// found by when its optional PCI-info query fails. Without it the sleep check never fired for that GPU,
+// so once it suspended, sampling kept addressing it through NVML -- what #1270 prevents.
+TEST(LinuxNVMLGPUProbeTest, AnAwakeGpuWhosePciInfoQueryFailsIsNotAddressedOnceItSuspends)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const NvmlMockControls controls;
+    ASSERT_TRUE(controls.countsQueriesPerDevice());
+    ASSERT_TRUE(controls.controlsPciInfo());
+    const TestSupport::ScopedTempDir pciRoot("tasksmack_nvml_pciinfo_fail");
+    const TestSupport::ScopedTempDir procRoot("tasksmack_nvml_pciinfo_fail_proc");
+    makePciDevice(pciRoot.path, "0000:01:00.0", "0x10de", "nvidia");
+    makePciDevice(pciRoot.path, "0000:41:00.0", "0x10de", "nvidia", "suspended");
+    std::ofstream(pciRoot.path / "0000:01:00.0" / "device") << "0x2684\n";
+    makeProcGpuInformation(procRoot.path, "0000:41:00.0", "Mock NVIDIA GPU 1 (procfs)", "GPU-proc-uuid-1");
+
+    // The awake GPU (mock device 0, at 0000:01:00.0) answers everything but its PCI-info query.
+    controls.setFailingPciInfoDevice(0);
+    NVMLGPUProbe probe(pciRoot.path.string(), procRoot.path.string());
+    ASSERT_TRUE(probe.isAvailable());
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 2U);
+    EXPECT_EQ(gpus[0].id, "mock-nvml-uuid-0");
+    EXPECT_EQ(gpus[0].pciLocation, (PciLocation{.bus = 0x01, .device = 0, .function = 0})); // from the address it was found by
+    EXPECT_EQ(gpus[0].pciDeviceId, 0x2684'10DEU);                                           // from sysfs
+    const auto awake = probe.readGPUCounters();
+    ASSERT_EQ(awake.size(), 2U);
+    EXPECT_FALSE(awake[0].suspended);
+    EXPECT_TRUE(awake[0].utilizationAvailable);
+
+    // It runtime-suspends: adapter sampling, per-process sampling and rescans leave it alone.
+    setRuntimeStatus(pciRoot.path, "0000:01:00.0", "suspended");
+    const unsigned int device0Before = controls.queriesForDevice(0);
+    const auto asleep = probe.readGPUCounters();
+    const auto processes = probe.readProcessGPUCounters();
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick));
+    const auto enumerated = probe.enumerateGPUs();
+    EXPECT_EQ(controls.queriesForDevice(0), device0Before);
+    ASSERT_EQ(asleep.size(), 2U);
+    EXPECT_TRUE(asleep[0].suspended);
+    EXPECT_TRUE(asleep[1].suspended);
+    EXPECT_TRUE(processes.empty());
+    EXPECT_EQ(enumerated.size(), 2U);
 }
 
 // #1270 review: a replacement GPU asleep through a restart, with no UUID in procfs, can only take the

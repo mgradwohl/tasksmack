@@ -69,10 +69,6 @@ class ShellLayer : public Core::Layer
     std::int32_t m_WatchedPid = -1;
     std::vector<Domain::ProcessSample> m_PendingSamples;
 
-    // Cached privilege status: populated in onAttach() from ProcessModel capabilities.
-    // Used by renderStatusBar() to show a persistent lock indicator.
-    bool m_HasReducedPrivileges = false;
-
     // Deferred startup settings: the first onUpdate() raises RefreshRateChangedEvent and
     // HistoryDurationChangedEvent with the loaded config, so panels get their starting values the
     // same way they get later changes (#1079).
