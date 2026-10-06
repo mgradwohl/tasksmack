@@ -643,10 +643,12 @@ ClusterFuzzLite continuously exercises three parsers with libFuzzer and AddressS
 | `fuzz_user_config` | `App::UserConfig::parseSettings`: toml++ plus the `config.toml` schema, as `load()` reads it | `tests/fuzz/corpus/fuzz_user_config/` |
 | `fuzz_theme_loader` | `UI::ThemeLoader::loadThemeFromString`: toml++ plus every theme colour lookup, as `loadTheme()` reads a file | `assets/themes/*.toml` and `tests/fuzz/corpus/fuzz_theme_loader/` |
 
-Pull requests that change `tests/fuzz/**`, `.clusterfuzzlite/**`, the `cflite_*.yml` workflows or
-`ProcParsing.h` run a short code-change fuzzing job (`cflite_pr.yml`'s path filter; a change to
-`UserConfig.cpp` or `ThemeLoader.cpp` alone doesn't trigger it yet); `main` also produces a
-baseline build. Separate weekly jobs perform a longer batch run and prune the resulting corpus.
+Pull requests that change `tests/fuzz/**`, `.clusterfuzzlite/**`, the `cflite_*.yml` workflows,
+any fuzzed parser (`ProcParsing.h`, `UserConfig.{cpp,h}`, `UserConfigHelpers.h`,
+`ThemeLoader.{cpp,h}`, and the types they fill, `Theme.h` and `ProcessColumnConfig.h`) or the
+dependency pins and patches (`cmake/Dependencies.cmake`, `cmake/patches/**`) run a short
+code-change fuzzing job (`cflite_pr.yml`'s path filter); pushes to `main` touching the same paths
+refresh the baseline build (`cflite_build.yml`). Separate weekly jobs perform a longer batch run and prune the resulting corpus.
 `.clusterfuzzlite/build.sh` builds every target (ClusterFuzzLite runs each binary it leaves in
 `$OUT`), so a new target is a `tests/fuzz/fuzz_<name>.cpp` plus one `build_fuzzer` line there. The
 targets compile against the header-only toml++, spdlog, Dear ImGui and ImPlot at the commits
