@@ -91,11 +91,11 @@ constexpr float MIN_DISK_CELL_WIDTH_EM = 30.0F;
 /// with a hand-picked constant -- see #823 review) so the chart fills exactly what's left in the
 /// cell.
 ///
-/// cachedOverhead is measured once per frame (on the first disk) and reused for the rest, and
-/// cached across frames too until the style metrics it's built from change: every cell gets the
-/// same cellHeight (ImGuiTableFlags_SizingStretchSame) and renders an identically-shaped
-/// single-line label row, so the resulting vertical overhead is the same across all disks and
-/// doesn't change frame to frame on its own.
+/// The overhead is measured on the first disk and reused for the rest, and cached across frames too
+/// until the style metrics it's built from change (UI::Widgets::CellOverheadCache): every cell gets
+/// the same cellHeight (ImGuiTableFlags_SizingStretchSame) and renders an identically-shaped label
+/// row, so the resulting vertical overhead is the same across all disks and doesn't change frame to
+/// frame on its own.
 ///
 /// diskAxisUpper is the grid's shared Y upper bound (sharedAxisUpperBound(), #1299), for the chart's
 /// axis and its bars alike, so a bar and its line show a value at the same height (#1003).
@@ -109,7 +109,8 @@ void renderDiskCell(const std::string& deviceName,
                     const UI::Widgets::TimeAxisConfig& axisConfig,
                     const UI::Theme& theme,
                     float cellHeight,
-                    std::optional<float>& cachedOverhead,
+                    UI::Widgets::CellOverheadCache& overheadCache,
+                    const UI::Widgets::CellStyleMetrics& styleMetrics,
                     std::uint64_t dataGeneration)
 {
     // The cell has no legend, so its value strip is the chart's key: each bar carries its series'
@@ -144,15 +145,20 @@ void renderDiskCell(const std::string& deviceName,
     // is measured once and the grid budgets one strip line per cell, and the longer "not reported
     // this sample" tooltip text would not fit a minimum-width cell. Hovering a bar still shows it.
     UI::Widgets::renderNowBarValueStrip(diskBars, {}, UI::Widgets::ValueStripLayout::Compact);
-    if (!cachedOverhead.has_value())
+    float measuredOverhead = 0.0F;
+    if (const auto cached = overheadCache.get(styleMetrics))
+    {
+        measuredOverhead = *cached;
+    }
+    else
     {
         // renderHistoryWithNowBars wraps the chart+bars in its own table, whose CellPadding.y
         // (top+bottom) adds a little more height beyond the label -- account for it here rather
         // than clipping the chart against it (#823 review: residual scrollbar after the cell's own
         // WindowPadding was already corrected for).
-        cachedOverhead = (ImGui::GetCursorPosY() - cellContentTop) + (ImGui::GetStyle().CellPadding.y * 2.0F);
+        measuredOverhead = (ImGui::GetCursorPosY() - cellContentTop) + (ImGui::GetStyle().CellPadding.y * 2.0F);
+        overheadCache.store(styleMetrics, measuredOverhead);
     }
-    const float measuredOverhead = *cachedOverhead;
     const float plotHeight = std::max(minDiskPlotHeight(), cellHeight - measuredOverhead);
 
     auto diskPlotFn = [&]()
@@ -302,35 +308,14 @@ void renderStorageSection(RenderContext& ctx)
         const float approxLabelOverhead = (ImGui::GetStyle().WindowPadding.y * 2.0F) + (ImGui::GetTextLineHeight() * 2.0F) +
                                           (ImGui::GetStyle().ItemSpacing.y * 2.0F) + (ImGui::GetStyle().CellPadding.y * 2.0F);
 
-        // Measured once (by renderDiskCell, on the first disk) and reused for the rest -- see
-        // renderDiskCell's doc comment. Cached across frames too, not just across disks within
-        // one frame: remeasure only when the style values it's built from actually change.
-        //
-        // Keyed on the actual style values (text line height, ItemSpacing.y, CellPadding.y)
-        // rather than theme.currentFontSize() alone: today's theme switches happen to leave
-        // those metrics untouched (Theme::applyImGuiStyle sets them to fixed values independent
-        // of the color scheme), but that's a property of the current theme implementation, not
-        // something this cache should have to assume stays true (#823 review).
-        static std::optional<float> cachedOverhead;
-        static float cachedTextLineHeight = -1.0F;
-        static float cachedItemSpacingY = -1.0F;
-        static float cachedCellPaddingY = -1.0F;
-        // Epsilon rather than `==`/`!=` on floats (CodeQL cpp/equality-on-floats): these are
-        // stored style values, not accumulated arithmetic, so exact comparison would actually be
-        // safe here, but a tolerance costs nothing and avoids relying on that.
-        constexpr float STYLE_METRIC_EPSILON = 1e-4F;
-        if (const float textLineHeight = ImGui::GetTextLineHeight(),
-            itemSpacingY = ImGui::GetStyle().ItemSpacing.y,
-            cellPaddingY = ImGui::GetStyle().CellPadding.y;
-            std::abs(cachedTextLineHeight - textLineHeight) > STYLE_METRIC_EPSILON ||
-            std::abs(cachedItemSpacingY - itemSpacingY) > STYLE_METRIC_EPSILON ||
-            std::abs(cachedCellPaddingY - cellPaddingY) > STYLE_METRIC_EPSILON)
-        {
-            cachedOverhead.reset();
-            cachedTextLineHeight = textLineHeight;
-            cachedItemSpacingY = itemSpacingY;
-            cachedCellPaddingY = cellPaddingY;
-        }
+        // Measured once (by renderDiskCell, on the first disk) and reused for the rest, and across
+        // frames until the style metrics it's built from change -- see renderDiskCell's doc comment.
+        static UI::Widgets::CellOverheadCache overheadCache;
+        const UI::Widgets::CellStyleMetrics styleMetrics{
+            .textLineHeight = ImGui::GetTextLineHeight(),
+            .itemSpacingY = ImGui::GetStyle().ItemSpacing.y,
+            .cellPaddingY = ImGui::GetStyle().CellPadding.y,
+        };
 
         const ImVec2 avail = ImGui::GetContentRegionAvail();
         const ChartGridConfig gridConfig{
@@ -445,7 +430,8 @@ void renderStorageSection(RenderContext& ctx)
                                diskAxis,
                                theme,
                                cellHeight,
-                               cachedOverhead,
+                               overheadCache,
+                               styleMetrics,
                                ctx.chartDataGeneration);
             },
             // Disks can be unplugged mid-session, shifting later indices in perDisk -- key each

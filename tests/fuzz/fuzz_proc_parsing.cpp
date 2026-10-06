@@ -2,6 +2,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <string_view>
 
 namespace
 {
@@ -41,6 +43,25 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     if (Platform::ProcParsing::parseDouble(cursor, end, value))
     {
         g_DoubleSink = value;
+    }
+
+    // The /proc/[pid]/stat parser: comm is attacker-chosen, so a crafted line must never misparse (#1183).
+    const std::string_view statLine(begin, size);
+    const auto fields = Platform::ProcParsing::parseStatFields(statLine);
+    const auto startTime = Platform::ProcParsing::parseStatStartTime(statLine);
+    if (fields)
+    {
+        g_UnsignedSink = fields->startTime;
+        // Both entry points count fields and token boundaries the same way: a line the full parser
+        // accepts has exactly that start time for the identity check too.
+        if (!startTime || *startTime != fields->startTime)
+        {
+            std::abort();
+        }
+    }
+    if (startTime)
+    {
+        g_UnsignedSink = *startTime;
     }
 
     return 0;

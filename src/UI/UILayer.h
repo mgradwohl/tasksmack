@@ -24,7 +24,6 @@ class UILayer : public Core::Layer
 
     void onAttach() override;
     void onDetach() override;
-    void onUpdate(float deltaTime) override;
     void onRender() override;
     void onPostRender() override;
     void onEvent(Core::Event& event) override;
