@@ -1096,10 +1096,16 @@ void DRMGPUProbe::readEngineClients(DRMCard& card, GPUCounters& counter)
         if (same != kept.end())
         {
             same->fdinfoPaths.insert(same->fdinfoPaths.end(), std::make_move_iterator(paths.begin()), std::make_move_iterator(paths.end()));
-            return;
         }
-        kept.push_back(DrmClientFds{.clientId = info.client.clientId, .fdinfoPaths = std::move(paths)});
-        if (info.hasEngineStats)
+        else
+        {
+            kept.push_back(DrmClientFds{.clientId = info.client.clientId, .fdinfoPaths = std::move(paths)});
+        }
+        // The client's first reading with engine stats counts, even when it is an alias read after a
+        // reading without them (the client began reporting between the two reads): otherwise
+        // engineBusyAvailable would be published with no counters behind it, which reads as idle.
+        if (info.hasEngineStats && std::ranges::find(counter.engineClients, info.client.clientId, &GPUEngineClientCounters::clientId) ==
+                                       counter.engineClients.end())
         {
             counter.engineClients.push_back(info.client);
         }

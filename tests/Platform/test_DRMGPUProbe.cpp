@@ -2402,6 +2402,29 @@ TEST_F(DRMGPUProbeEngineTest, AnAliasReusedForAnotherClientIsFoundAfterAFullResc
     EXPECT_EQ(DRMGPUProbeTestAccessor::fdinfoReads(*probe), before + 2U); // One file per client
 }
 
+// A client that begins reporting engine stats between the reads of two of its fds: the reading with
+// stats counts even when it is read second, under an id already kept from the reading without them.
+// Otherwise the card publishes engineBusyAvailable with no counters, which reads as idle.
+TEST_F(DRMGPUProbeEngineTest, AnAliasReadWithStatsAfterOneWithoutThemCounts)
+{
+    // Which of the two fds is read first is up to the directory listing, so cover both ways round:
+    // one of them reads the stats-less file first.
+    for (const int statsFd : {4, 5})
+    {
+        SCOPED_TRACE(statsFd);
+        const auto procRoot = m_ProcRoot / std::format("stats-on-{}", statsFd);
+        const std::string noStats = "drm-driver:\txe\ndrm-pdev:\t0000:03:00.0\ndrm-client-id:\t7\n";
+        makeFd(procRoot, 100, 4, "/dev/dri/renderD129", statsFd == 4 ? xeFdinfo(7, 10, 100) : noStats);
+        makeFd(procRoot, 100, 5, "/dev/dri/renderD129", statsFd == 5 ? xeFdinfo(7, 10, 100) : noStats);
+        const ScriptedVramQuery query; // No VRAM reply: keeps the real ioctl out of these tests
+        const auto probe = std::make_unique<DRMGPUProbe>(m_SysRoot.string(), query.fn(), procRoot.string());
+        const auto counters = probe->readGPUCounters();
+        EXPECT_TRUE(counters[0].engineBusyAvailable);
+        ASSERT_EQ(counters[0].engineClients.size(), 1U);
+        EXPECT_EQ(counters[0].engineClients[0].clientId, 7U);
+    }
+}
+
 } // namespace
 } // namespace Platform
 
