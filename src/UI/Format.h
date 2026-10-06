@@ -1145,28 +1145,37 @@ template<std::integral T> [[nodiscard]] inline auto formatPercent(T percent) -> 
     return std::format("{:.0f} MHz", rounded == 0.0 ? 0.0 : rounded); // No "-0 MHz"
 }
 
-/// A link speed in the same unit family as the rates beside it (#1202): "119.2 MiB/s" for a
-/// 1 Gbps link, so it can be compared with the interface's "12.5 MiB/s" at a glance. Link speeds
-/// are reported in megabits per second (10^6 bits/s), 125,000 bytes/s each.
+/// A link speed as NICs, switches and the OS describe it: a decimal bit rate, "100 Mbit/s",
+/// "1 Gbit/s", "2.5 Gbit/s", "10 Gbit/s" (#1373). Whole megabits below 1 Gbit/s; from there,
+/// gigabits to one decimal, dropped when it is zero. "-" for 0, the probes' "unknown". Link speeds
+/// are reported in megabits per second (10^6 bits/s). Rates stay in bytes (formatBytesPerSec());
+/// formatLinkSpeedAsByteRate() gives the link's byte-rate equivalent to compare with them.
 [[nodiscard]] inline auto formatLinkSpeed(std::uint64_t megabitsPerSecond) -> std::string
+{
+    constexpr std::uint64_t MBIT_PER_GBIT = 1000;
+    constexpr std::uint64_t MBIT_PER_TENTH_GBIT = MBIT_PER_GBIT / 10;
+    if (megabitsPerSecond == 0)
+    {
+        return "-";
+    }
+    if (megabitsPerSecond < MBIT_PER_GBIT)
+    {
+        return formatFixedLocalized(static_cast<double>(megabitsPerSecond), 0, " Mbit/s");
+    }
+    // Tenths of a gigabit, rounded half up in integers, so 1999 Mbit/s reads "2 Gbit/s", not "2.0".
+    const std::uint64_t tenths =
+        (megabitsPerSecond / MBIT_PER_TENTH_GBIT) + ((megabitsPerSecond % MBIT_PER_TENTH_GBIT) >= MBIT_PER_TENTH_GBIT / 2 ? 1 : 0);
+    const int decimals = (tenths % 10 == 0) ? 0 : 1;
+    return formatFixedLocalized(static_cast<double>(tenths) / 10.0, decimals, " Gbit/s");
+}
+
+/// A link speed as the byte rate it carries at most, in the unit family of the Sent/Received rates
+/// beside it: "119.2 MiB/s" for a 1 Gbit/s link (125,000,000 bytes/s). Shown on hover beside
+/// formatLinkSpeed()'s bit rate, not instead of it (#1373).
+[[nodiscard]] inline auto formatLinkSpeedAsByteRate(std::uint64_t megabitsPerSecond) -> std::string
 {
     constexpr double BYTES_PER_SECOND_PER_MBPS = 1'000'000.0 / 8.0;
     return formatBytesPerSec(static_cast<double>(megabitsPerSecond) * BYTES_PER_SECOND_PER_MBPS);
-}
-
-/// A link speed as the adapter is rated: "1 Gbps", "2.5 Gbps", "100 Mbps" (decimal bits, as
-/// network hardware is sold). Shown beside formatLinkSpeed()'s rate, not instead of it.
-[[nodiscard]] inline auto formatLinkSpeedNominal(std::uint64_t megabitsPerSecond) -> std::string
-{
-    if (megabitsPerSecond >= 1000)
-    {
-        if (megabitsPerSecond % 1000 == 0)
-        {
-            return std::format("{} Gbps", megabitsPerSecond / 1000);
-        }
-        return std::format("{:.1Lf} Gbps", static_cast<double>(megabitsPerSecond) / 1000.0);
-    }
-    return std::format("{} Mbps", megabitsPerSecond);
 }
 
 // ============================================================================
