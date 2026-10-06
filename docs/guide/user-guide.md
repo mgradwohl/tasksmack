@@ -73,7 +73,7 @@ See [CONTRIBUTING.md](../../CONTRIBUTING.md#cpu-compatibility) for build instruc
 
 The process table is the primary view. It lists all running processes with these columns:
 
-- **State** — what the process is doing (Running, Sleeping, and so on). Windows has no process state of its own, so there it comes from the process's threads: Running if any thread is running or ready to run, Stopped if every thread is suspended (a suspended app), otherwise Sleeping. The System Idle Process is Idle, and a process with no threads to judge by (Secure System) is Unknown.
+- **State** — what the process is doing (Running, Sleeping, and so on). Windows has no process state of its own, so there it comes from the process's threads: Running if any thread is running or ready to run, Stopped if every thread is suspended (a suspended app), otherwise Sleeping. The System Idle Process is Idle, and a process with no threads to judge by (Secure System) is Unknown. The column shows the state's one-letter code, as `ps` and `top` do: **R** Running, **S** Sleeping, **D** Disk Sleep (waiting on I/O), **Z** Zombie, **T** Stopped, **t** Tracing, **X** Dead, **I** Idle, **?** Unknown. Process Details spells the state out, in the same colour.
 - **CPU %** — percentage of total CPU time consumed since the last sample
 - **Mem %** — percentage of physical RAM used
 - **Memory / Virtual / Shared / Peak Mem** — resident, virtual, shared, and peak resident memory sizes. Peak Mem is the larger of the OS's high-water mark (Linux: `VmHWM`; Windows: peak working set) and the highest peak TaskSmack has seen for the process, so it can reach back before TaskSmack started. On Linux `VmHWM` resets when a process runs a new program (`exec`); TaskSmack keeps the higher peak it saw before the reset, but a peak from before an `exec` that happened before monitoring began is lost.
@@ -86,7 +86,7 @@ The process table is the primary view. It lists all running processes with these
 - **I/O rates** — read and write bytes per second
 - **Network rates** — sent and received bytes per second when attribution is available
 - **GPU %, GPU Mem, GPU Engine, GPU** — utilization, memory, engines, and which GPU, when the active backend supports per-process data
-- **Affinity** — allowed CPU cores
+- **Affinity** — the logical processors the process may run on, numbered from 0 as the operating system numbers them: ranges of three or more as `4-7`, others by number, e.g. `0-3,70`. On Linux this includes processors 64 and above; on Windows it shows the process's primary processor group only.
 
 Column visibility is toggled via the column header context menu and persisted across sessions.
 
@@ -104,17 +104,19 @@ Process rows are color-coded by state (running, sleeping, stopped, zombie).
 
 The System Metrics panel displays real-time and historical charts for:
 
-- **CPU utilisation** — system-wide and per-core breakdowns
+- **CPU utilisation** — system-wide and per-core breakdowns. The CPU Cores tab has a chart for each CPU reported since TaskSmack started, so a CPU that never comes online (reserved hot-add capacity, a CPU offline since boot) gets none, and one that goes offline keeps its chart, with a gap while it's offline.
 - **Memory** — used and cached RAM displayed as percentage history, with current availability derived from the latest system snapshot
 - **Swap** — swap usage percentage history
 - **Storage** — aggregate and per-device throughput
 - **Network** — aggregate and per-interface throughput, totals, status, and link speed
-- **GPU** — device utilization, memory, temperature, power, clocks, and engine data when available. Each GPU shows only the sensors it reports, so an integrated GPU beside a discrete one doesn't get the discrete GPU's power or fan charts. On Linux, a GPU that has gone to sleep to save power (common for the discrete GPU on hybrid laptops) is labelled **(Sleeping)** and is not sampled until it wakes, so TaskSmack's periodic updates don't keep it awake; its readings show N/A meanwhile. Detecting GPUs at startup can still wake it once. A GPU that is asleep when TaskSmack starts shows the sensor charts its driver supports in general until it first wakes, then only its own. The Overview header's **VRAM** figure counts discrete GPUs only, since an integrated GPU's memory is system RAM
+- **GPU** — device utilization, memory, temperature, power, clocks, and engine data when available. Each GPU shows only the sensors it reports, so an integrated GPU beside a discrete one doesn't get the discrete GPU's power or fan charts. A GPU that has gone to sleep to save power (common for the discrete GPU on hybrid laptops) is labelled **(Sleeping)** and its sensors are not read until it wakes, so TaskSmack's periodic updates don't keep it awake; its readings show N/A meanwhile. (On Windows its utilization and memory in use still show, since Windows reports them without waking the GPU.) On Windows an NVIDIA GPU that is awake but had no activity in the last update is not asked for its sensors either, so they don't stop it going to sleep: its temperature, power, clock and fan readings hold their last values, refreshed at least once a minute, until it is busy again. On Linux, detecting an NVIDIA GPU at startup doesn't wake it either: until it first wakes it is listed under the model name its driver reports (or "NVIDIA GPU"), and TaskSmack asks NVML about it only once it is awake. On Windows, on WSL, in a container that hides the PCI devices, or with an NVIDIA driver too old to look a GPU up by PCI address, startup detection can still wake it once. A GPU that is asleep when TaskSmack starts shows the sensor charts its driver supports in general until it first wakes, then only its own. The Overview header's **VRAM** figure counts discrete GPUs only, since an integrated GPU's memory is system RAM
 - **Battery** — charge, power flow, remaining time, and health when present
 - **Load average** (Linux only) — 1, 5, and 15-minute load averages
 - **I/O wait** (Linux only) — percentage of CPU time spent waiting for I/O
 
 All charts retain a bounded scrolling history window. Depending on the metric, TaskSmack uses fixed-capacity ring buffers or time-trimmed history containers so memory usage stays bounded regardless of how long the app runs.
+
+A chart with several series has a value strip on its heading line as its key: a swatch and the current value of each series. (Grid cells such as the CPU core charts show their one value in the cell instead.) A series drawn against the chart's right-hand axis has **→** after its value ("Page Faults: 3.2K/s →"), in the colour of that axis's labels; its chart tooltip rows read the same way.
 
 ### Network Monitoring
 
@@ -158,14 +160,16 @@ TaskSmack combines operating-system GPU APIs with optional vendor libraries:
 - **Clock:** i915's `gt_cur_freq_mhz`, or xe's `tile0/gt0/freq0/cur_freq`.
 - **Temperature and power:** from the card's hwmon, which only discrete cards (Arc) have. Temperature is the package sensor: the hwmon channel labelled `pkg` (xe: `temp2_input`), or else the lowest-numbered temperature input (i915: `temp1_input`). Power is worked out from hwmon's energy counter, so it appears from the second sample on.
 - **VRAM:** comes from the DRM memory-region query on the card's render node (`/dev/dri/renderD*`), made only while the card is awake. The capacity is remembered after the first answer, and also tells a discrete card from an integrated one. Used VRAM appears only when the kernel reports it (i915 needs `CAP_PERFMON` for that); when it does, the query is repeated each sample to keep the figure current, otherwise it isn't made again.
-- **Not read:** utilisation.
+- **Utilisation:** worked out from the engine busy time the kernel reports for each program that has the card open (`/proc/<pid>/fdinfo`, Linux 5.19+ for i915). The busiest engine class (render, copy, video, video enhance or compute) is shown, so it appears from the second sample on. TaskSmack looks for programs using the card on the first refresh after every 10 seconds, and a newly found program counts from the refresh after that (its busy time needs two readings), so a program that has just started can take up to 10 seconds plus two refreshes to be counted. Without root, TaskSmack can only see your own programs, so GPU work by other users' programs (or a display server running as root) isn't counted. On a kernel that doesn't report engine busy time (i915 before Linux 5.19) while any program you can see has the card open, or where TaskSmack can't look into `/proc` at all (a sandbox that hides it, or denies every program's open files), utilisation shows N/A rather than 0%.
 - **Sleeping cards:** a card in runtime suspend isn't queried, so watching it doesn't wake it.
 
-**Per-process GPU utilisation** sums utilisation across all GPUs, so a process working across two GPUs can legitimately show GPU% > 100 %.
+**AMD GPUs on Linux** (ROCm SMI): an APU's integrated GPU is recognised from the graphics-core version amdgpu publishes in sysfs (`ip_discovery`), or from its PCI device ID on kernels without it, so it is labelled integrated and its shared memory isn't counted as VRAM. An APU generation newer than TaskSmack's list still shows as discrete.
+
+**Per-process GPU figures** are counted the way the GPU tab counts each GPU. GPU% is the process's utilisation of the busiest GPU it uses (0–100 %). GPU memory counts dedicated memory on a discrete GPU and, on Windows, shared memory on an integrated one, added up across GPUs. Process Details also lists dedicated and shared memory separately when the process has shared memory, which only Windows reports.
 
 The UI shows only the metrics exposed by the available backend. If no backend discovers a usable GPU, GPU sections are hidden.
 
-On Linux, TaskSmack checks for GPU changes every 10 seconds without waking a sleeping GPU: a GPU that is hot-plugged (an eGPU) appears, and one that is removed, or lost after a driver reset or reload, is re-detected once it is back. A GPU that stays in the list keeps its chart history; one that is removed disappears from the GPU tab. On Windows the GPU list is still fixed at startup.
+TaskSmack checks for GPU changes every 10 seconds without waking a sleeping GPU: a GPU that is hot-plugged (an eGPU) appears, and one that is removed, or lost after a driver reset, reload or update, is re-detected once it is back. A GPU that stays in the list keeps its chart history, whatever is added or removed around it, and a newly added GPU doesn't take over a GPU that is still present; one that is removed disappears from the GPU tab. On Windows a GPU is known by where it sits on the PCI bus and by its model rather than by its place in the list, so the same card coming back after a driver reset is still the same GPU. That also means an identical card swapped into the same slot continues the old card's history, as if it had reconnected; a different model, or a card in a different slot, starts its own. On Windows, a change to the NVIDIA GPUs restarts NVIDIA's monitoring library (NVML), which can wake a sleeping NVIDIA GPU once, as starting TaskSmack can.
 
 ### Numbers and units
 
@@ -249,7 +253,7 @@ TaskSmack persists settings in several places:
 
 ### Window size and position
 
-TaskSmack reopens at the size and position it had when it was closed, and maximized if it was maximized. Closing it while maximized keeps the size and position it had before it was maximized -- whether it was maximized with the title-bar button or by the window manager or compositor (a keyboard shortcut, a window menu, snapping) -- so Restore returns there on the next launch. (Native Wayland does not let apps position their windows, so there only the size and maximized state are restored.)
+TaskSmack reopens at the size and position it had when it was closed, and maximized if it was maximized. Closing it while maximized keeps the size and position it had before it was maximized -- whether it was maximized with the title-bar button or by the window manager or compositor (a keyboard shortcut, a window menu, snapping) -- so Restore returns there on the next launch. (Native Wayland does not let apps position their windows, so there only the size and maximized state are restored.) On X11 and XWayland, the title-bar Maximize button asks the window manager to maximize the window when it supports that, so the window fills the same area as the window manager's own maximize and stops at the taskbar or panel.
 
 If the saved position is no longer on any connected display (a monitor was unplugged, say), TaskSmack opens centered on the primary display instead, and a saved size larger than the display is shrunk to fit it.
 
@@ -280,7 +284,7 @@ These settings aren't in the Settings dialog. Edit them in `config.toml` while T
 | `[ui] chart_anti_aliasing` | true | true/false | Smooth chart line edges. Turn it off to save CPU/GPU time on integrated graphics. |
 | `[sampling] socket_stats_cache_ttl_ms` | 500 | 0–5000 ms | Linux only. How long per-process network readings are cached. |
 
-Older versions also wrote `[metrics] min_time_for_rate_seconds`, `[metrics] integrated_gpu_vram_threshold_mb`, `[ui] progress_color_low_threshold` and `[ui] progress_color_high_threshold`. None of them ever had an effect, and TaskSmack now removes them from `config.toml` the next time it saves. Network rates are measured over each interval, so no start-up delay is needed. Integrated and discrete GPUs are told apart by vendor (Windows) or PCI bus (Linux), not by a VRAM threshold. TaskSmack has no threshold-coloured progress bars.
+Older versions also wrote `[metrics] min_time_for_rate_seconds`, `[metrics] integrated_gpu_vram_threshold_mb`, `[ui] progress_color_low_threshold` and `[ui] progress_color_high_threshold`. None of them ever had an effect, and TaskSmack now removes them from `config.toml` the next time it saves. Network rates are measured over each interval, so no start-up delay is needed. The old configurable VRAM threshold is unused. On Windows, integrated and discrete GPUs are told apart by the driver's own report (DXCore); only where DXCore can't answer does TaskSmack guess from the vendor and the adapter's dedicated memory (an Intel GPU with under 512 MiB or an AMD GPU with under 1 GiB counts as integrated, a Qualcomm GPU always does, an NVIDIA GPU never does). On Linux they are told apart by PCI bus and, for AMD, graphics-core version. TaskSmack has no threshold-coloured progress bars.
 
 ### Running TaskSmack twice
 

@@ -91,6 +91,16 @@ class MockGPUProbe : public Platform::IGPUProbe
         return *this;
     }
 
+    /// An integrated GPU whose memory figures count its shared segment, as on Windows (#1164).
+    MockGPUProbe& withSharedMemoryGPU(const std::string& id, const std::string& name, const std::string& vendor = "Test")
+    {
+        auto info = makeGPUInfo(id, name, vendor, true);
+        info.memoryIsShared = true;
+        m_GPUInfo.push_back(std::move(info));
+        m_Counters.push_back(makeGPUCounters(id));
+        return *this;
+    }
+
     MockGPUProbe& withGPUCounters(const std::string& gpuId, Platform::GPUCounters counters)
     {
         for (auto& existing : m_Counters)
@@ -142,6 +152,13 @@ class MockGPUProbe : public Platform::IGPUProbe
     MockGPUProbe& withProcessGPU(std::int32_t pid, const std::string& gpuId, std::uint64_t memoryBytes)
     {
         m_ProcessCounters.push_back(makeProcessGPUCounters(pid, gpuId, memoryBytes));
+        return *this;
+    }
+
+    /// A per-process entry with every field chosen by the test (shared memory, utilization, ...).
+    MockGPUProbe& withProcessGPUCounters(Platform::ProcessGPUCounters counters)
+    {
+        m_ProcessCounters.push_back(std::move(counters));
         return *this;
     }
 

@@ -155,6 +155,12 @@ void SystemModel::trimHistory(double nowSeconds)
     }
 }
 
+double SystemModel::maxHistorySeconds() const
+{
+    const std::shared_lock lock(m_Mutex);
+    return m_MaxHistorySeconds;
+}
+
 void SystemModel::setMaxHistorySeconds(double seconds)
 {
     std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
@@ -415,6 +421,21 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
     // drops, so the UI never shows a core that has no slot (#1229).
     snap.coreCount = static_cast<int>(
         std::ranges::count_if(counters.cpuPerCore, [](const Platform::CpuCounters& core) { return core.coreId < MAX_CORE_SLOTS; }));
+
+    // The core ids seen this session: only these get a chart, not every slot up to the highest id
+    // (#1262). Never pruned, so a CPU that goes offline keeps its chart, with a gap (#1229).
+    for (const auto& core : counters.cpuPerCore)
+    {
+        if (core.coreId >= MAX_CORE_SLOTS)
+        {
+            continue;
+        }
+        if (const auto at = std::ranges::lower_bound(m_SeenCoreIds, core.coreId); at == m_SeenCoreIds.end() || *at != core.coreId)
+        {
+            m_SeenCoreIds.insert(at, core.coreId);
+        }
+    }
+    snap.seenCoreIds = m_SeenCoreIds;
 
     // Memory (always available)
     snap.memoryTotalBytes = counters.memory.totalBytes;

@@ -29,6 +29,16 @@ template<std::unsigned_integral T> [[nodiscard]] constexpr auto counterRate(T cu
     return toDouble(counterDelta(current, previous)) / elapsedSeconds;
 }
 
+/// A percentage clamped to [0, 100]; NaN, which std::clamp would pass through, reads 0.
+[[nodiscard]] constexpr auto clampPercent(double percent) noexcept -> double
+{
+    if (!(percent > 0.0))
+    {
+        return 0.0;
+    }
+    return std::min(percent, 100.0);
+}
+
 [[nodiscard]] inline auto clampPercentToFloat(double percent) noexcept -> float
 {
     const double clamped = std::clamp(percent, 0.0, 100.0);

@@ -34,6 +34,9 @@ struct ProcessSystemHistories
     std::vector<double> pageFaults;
     std::vector<double> threadCount;
     std::vector<double> handleCount;
+    // The probe's capabilities as of the latest published generation (#1254): a probe can withdraw
+    // one after the first sample (Windows' EStats check, #1161), so they aren't fixed at startup.
+    Platform::ProcessCapabilities capabilities;
 };
 
 /// Owns a process probe, caches previous counters, and computes CPU% deltas.
@@ -97,10 +100,12 @@ class ProcessModel : public ISamplable
     /// vector is immutable once published, so readers can share it directly instead of each
     /// duplicating every process's data under the lock. Returns true and updates outSnapshots
     /// when a newer generation is available; otherwise returns false and leaves outSnapshots
-    /// untouched.
+    /// untouched. With @p outCapabilities, the probe's capabilities published with that generation
+    /// are copied into it under the same lock (#1254), so a reader keeps them current at no extra cost.
     [[nodiscard]] bool tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
                                                std::shared_ptr<const std::vector<ProcessSnapshot>>& outSnapshots,
-                                               std::uint64_t& outVersion) const;
+                                               std::uint64_t& outVersion,
+                                               Platform::ProcessCapabilities* outCapabilities = nullptr) const;
 
     /// How many of the watched process's samples are kept for watchedSamplesSince(): every generation
     /// for 6.4 s at the fastest refresh interval, so a reader that polls once per UI frame -- 200 ms
@@ -155,8 +160,11 @@ class ProcessModel : public ISamplable
     /// Number of processes in latest snapshot.
     [[nodiscard]] std::size_t processCount() const;
 
-    /// What the underlying probe supports.
-    [[nodiscard]] const Platform::ProcessCapabilities& capabilities() const;
+    /// What the underlying probe supports, as of the latest published generation. Re-read from the
+    /// probe every sample: a probe can withdraw a capability after the first one (#1254). Takes the
+    /// shared lock, so a per-frame reader should take them from tryCopySnapshotsIfNewer() or
+    /// tryCopySystemHistoriesIfNewer() instead.
+    [[nodiscard]] Platform::ProcessCapabilities capabilities() const;
 
     /// Set GPU model for per-process GPU data.
     /// When set, refresh() automatically queries GPU counters and merges them.
@@ -170,7 +178,10 @@ class ProcessModel : public ISamplable
     std::unique_ptr<Platform::IProcessProbe> m_Probe;
     NowFunction m_Now;
     std::shared_ptr<GPUModel> m_GPUModel; // For per-process GPU data
+    // The probe's capabilities as of the sample being computed: sampling thread only, under
+    // m_SamplingMutex. m_PublishedCapabilities is the copy readers see, guarded by m_Mutex.
     Platform::ProcessCapabilities m_Capabilities;
+    Platform::ProcessCapabilities m_PublishedCapabilities;
 
     // Per-process tracking state.  Consolidating previous counters and
     // peak-RSS into one struct reduces per-process map lookups

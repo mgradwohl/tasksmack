@@ -200,4 +200,6 @@ using DeviceIdLookupFn = std::uint32_t (*)(std::uint32_t, std::uint64_t*);
                                     static_cast<std::uint32_t>(bdfId & FUNCTION_MASK));
 }
 
+// The APU classification (isAmdApu and its tables) lives in AmdApu.h, shared with DRMGPUProbe (#1344).
+
 } // namespace Platform::ROCmGPUProbeMath

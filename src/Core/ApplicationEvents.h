@@ -102,51 +102,11 @@ class HistoryDurationChangedEvent : public Event
     bool m_Initial;
 };
 
-/// Theme changed event - emitted when user selects a different UI theme
-class ThemeChangedEvent : public Event
-{
-  public:
-    explicit ThemeChangedEvent(std::string themeId) : m_ThemeId(std::move(themeId))
-    {}
-
-    [[nodiscard]] auto themeId() const -> const std::string&
-    {
-        return m_ThemeId;
-    }
-
-    [[nodiscard]] auto toString() const -> std::string override
-    {
-        return std::format("ThemeChangedEvent: {}", m_ThemeId);
-    }
-
-    EVENT_CLASS_TYPE(ThemeChanged)
-
-  private:
-    std::string m_ThemeId;
-};
-
-/// Font size changed event - emitted when user adjusts UI font size
-class FontSizeChangedEvent : public Event
-{
-  public:
-    explicit FontSizeChangedEvent(int size) : m_Size(size)
-    {}
-
-    [[nodiscard]] auto size() const -> int
-    {
-        return m_Size;
-    }
-
-    [[nodiscard]] auto toString() const -> std::string override
-    {
-        return std::format("FontSizeChangedEvent: {}", m_Size);
-    }
-
-    EVENT_CLASS_TYPE(FontSizeChanged)
-
-  private:
-    int m_Size;
-};
+// There is deliberately no theme-changed or font-size-changed event (#1178). Rendering is immediate
+// mode and reads UI::Theme every frame, so a new theme shows on the next frame, and font-dependent
+// caches already invalidate themselves by comparing the font and UI::Theme::fontGeneration().
+// Such an event only ever made ProcessesPanel run an extra process enumeration for a purely visual
+// change.
 
 /// Active tab changed event - emitted when the main tab selection changes
 class ActiveTabChangedEvent : public Event

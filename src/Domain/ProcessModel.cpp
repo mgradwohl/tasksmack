@@ -7,6 +7,7 @@
 #include "Platform/IProcessProbe.h"
 #include "Platform/ProcessTypes.h"
 #include "ProcessSnapshot.h"
+#include "ProcessState.h"
 #include "SamplingConfig.h"
 #include "SingleLineText.h"
 
@@ -93,6 +94,7 @@ ProcessModel::ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe, NowFu
     if (m_Probe)
     {
         m_Capabilities = m_Probe->capabilities();
+        m_PublishedCapabilities = m_Capabilities;
         m_TicksPerSecond = m_Probe->ticksPerSecond();
         m_SystemTotalMemory = m_Probe->systemTotalMemory();
         spdlog::info("ProcessModel initialized with probe capabilities: hasIoCounters={}, hasThreadCount={}, "
@@ -140,7 +142,16 @@ void ProcessModel::refresh()
     // real EStats sample can prove them unusable (#1161). The counters enumerate() returned were
     // marked with the availability it had before, so without this the sample would publish a held or
     // zero rate as a reading for one interval, instead of unavailable (#1285).
-    if (hadNetworkCounters && !m_Probe->capabilities().hasNetworkCounters)
+    // Capabilities are re-read every sample, after that read, and published with this generation:
+    // one withdrawn now reaches the UI rather than the startup set staying in force (#1254).
+    if (Platform::ProcessCapabilities capabilities = m_Probe->capabilities(); capabilities != m_Capabilities)
+    {
+        spdlog::info("ProcessModel: probe capabilities changed (networkCounters={}, reducedPrivileges={})",
+                     capabilities.hasNetworkCounters,
+                     capabilities.hasReducedPrivileges);
+        m_Capabilities = capabilities;
+    }
+    if (hadNetworkCounters && !m_Capabilities.hasNetworkCounters)
     {
         for (auto& counters : currentCounters)
         {
@@ -172,6 +183,8 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     {
         double gpuUtilPercent = 0.0;
         std::uint64_t gpuMemoryBytes = 0;
+        std::uint64_t gpuDedicatedMemoryBytes = 0;
+        std::uint64_t gpuSharedMemoryBytes = 0;
         double gpuEncoderUtil = 0.0;
         double gpuDecoderUtil = 0.0;
         std::vector<std::string> gpuEngines;
@@ -206,8 +219,9 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         cachedGpuByUniqueKey.reserve(previousSnapshots->size());
         for (const auto& previousSnapshot : *previousSnapshots)
         {
-            if ((previousSnapshot.gpuMemoryBytes == 0) && (previousSnapshot.gpuUtilPercent <= 0.0) && previousSnapshot.gpuDevices.empty() &&
-                previousSnapshot.perGpuUsage.empty())
+            if ((previousSnapshot.gpuMemoryBytes == 0) && (previousSnapshot.gpuDedicatedMemoryBytes == 0) &&
+                (previousSnapshot.gpuSharedMemoryBytes == 0) && (previousSnapshot.gpuUtilPercent <= 0.0) &&
+                previousSnapshot.gpuDevices.empty() && previousSnapshot.perGpuUsage.empty())
             {
                 continue;
             }
@@ -215,6 +229,8 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
             cachedGpuByUniqueKey.emplace(previousSnapshot.uniqueKey,
                                          CachedGpuSnapshotFields{.gpuUtilPercent = previousSnapshot.gpuUtilPercent,
                                                                  .gpuMemoryBytes = previousSnapshot.gpuMemoryBytes,
+                                                                 .gpuDedicatedMemoryBytes = previousSnapshot.gpuDedicatedMemoryBytes,
+                                                                 .gpuSharedMemoryBytes = previousSnapshot.gpuSharedMemoryBytes,
                                                                  .gpuEncoderUtil = previousSnapshot.gpuEncoderUtil,
                                                                  .gpuDecoderUtil = previousSnapshot.gpuDecoderUtil,
                                                                  .gpuEngines = previousSnapshot.gpuEngines,
@@ -413,6 +429,8 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
             const CachedGpuSnapshotFields& cached = it->second;
             snapshot.gpuUtilPercent = cached.gpuUtilPercent;
             snapshot.gpuMemoryBytes = cached.gpuMemoryBytes;
+            snapshot.gpuDedicatedMemoryBytes = cached.gpuDedicatedMemoryBytes;
+            snapshot.gpuSharedMemoryBytes = cached.gpuSharedMemoryBytes;
             snapshot.gpuEncoderUtil = cached.gpuEncoderUtil;
             snapshot.gpuDecoderUtil = cached.gpuDecoderUtil;
             snapshot.gpuEngines = cached.gpuEngines;
@@ -502,6 +520,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         m_Snapshots = std::move(newSnapshotsPublication); // pointer swap only, no allocation or destruction
         ++m_SnapshotVersion;
         ++m_SystemHistoryVersion;
+        m_PublishedCapabilities = m_Capabilities;
         m_SnapshotSampleTimeSeconds = sampleTimeSeconds;
 
         // Every generation published while a process is watched gets a sample, the process absent
@@ -670,12 +689,14 @@ bool ProcessModel::tryCopySystemHistoriesIfNewer(std::uint64_t lastSeenVersion, 
     outHistories.pageFaults = HistoryUtils::toVector(m_SystemPageFaultsHistory);
     outHistories.threadCount = HistoryUtils::toVector(m_SystemThreadCountHistory);
     outHistories.handleCount = HistoryUtils::toVector(m_SystemHandleCountHistory);
+    outHistories.capabilities = m_PublishedCapabilities;
     return true;
 }
 
 bool ProcessModel::tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
                                            std::shared_ptr<const std::vector<ProcessSnapshot>>& outSnapshots,
-                                           std::uint64_t& outVersion) const
+                                           std::uint64_t& outVersion,
+                                           Platform::ProcessCapabilities* outCapabilities) const
 {
     // Fast path: avoid the shared lock on the common case where no new snapshot exists.
     // m_PublishedSnapshotVersion is always equal to m_SnapshotVersion (written together
@@ -702,6 +723,10 @@ bool ProcessModel::tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
         }
         newSnapshots = m_Snapshots; // refcount bump only -- newSnapshots is a fresh local, nothing to destroy
         newVersion = m_SnapshotVersion;
+        if (outCapabilities != nullptr)
+        {
+            *outCapabilities = m_PublishedCapabilities;
+        }
     }
 
     // The caller's previous generation, if this assignment drops its last reference, is
@@ -781,9 +806,10 @@ std::size_t ProcessModel::processCount() const
     return m_Snapshots->size();
 }
 
-const Platform::ProcessCapabilities& ProcessModel::capabilities() const
+Platform::ProcessCapabilities ProcessModel::capabilities() const
 {
-    return m_Capabilities;
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    return m_PublishedCapabilities;
 }
 
 void ProcessModel::setGPUModel(std::shared_ptr<GPUModel> gpuModel)
@@ -822,13 +848,14 @@ void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const s
     {
         std::string name;
         bool isIntegrated = false;
+        bool memoryIsShared = false;
     };
     std::unordered_map<std::string, GpuIdentity> gpuIdToIdentity;
     auto gpuSnaps = gpuModel->snapshots();
     for (const auto& gpuSnap : gpuSnaps)
     {
         // Map both ID formats to the same adapter
-        const GpuIdentity identity{.name = gpuSnap.name, .isIntegrated = gpuSnap.isIntegrated};
+        const GpuIdentity identity{.name = gpuSnap.name, .isIntegrated = gpuSnap.isIntegrated, .memoryIsShared = gpuSnap.memoryIsShared};
         gpuIdToIdentity[gpuSnap.gpuId] = identity;
         if (!gpuSnap.luidId.empty())
         {
@@ -838,12 +865,20 @@ void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const s
 
     // Build a lookup map: PID -> GPU counters (aggregated across GPUs)
     // A process may use multiple GPUs, so we aggregate
+    // One rule with the adapter figures beside them on the GPU tab (#1164): utilization is the
+    // busiest GPU's (an adapter's is 0-100; a sum passed 100% while Process Details clamped it), and
+    // memory counts, per GPU, the segment that GPU's "used" figure counts, as the platform says
+    // (GPUSnapshot::memoryIsShared: shared on a Windows integrated GPU, dedicated elsewhere) -- never
+    // inferred from the reading, so a 0 shared reading stays a shared 0 -- and a process never shows
+    // more than its adapters use. The dedicated and shared amounts are kept apart as well.
     struct AggregatedGPU
     {
-        double totalUtilPercent = 0.0;
+        double maxUtilPercent = 0.0;
         std::uint64_t totalMemoryBytes = 0;
-        double totalEncoderUtil = 0.0;
-        double totalDecoderUtil = 0.0;
+        std::uint64_t totalDedicatedMemoryBytes = 0;
+        std::uint64_t totalSharedMemoryBytes = 0;
+        double maxEncoderUtil = 0.0;
+        double maxDecoderUtil = 0.0;
         std::vector<ProcessSnapshot::PerGPUUsage> perGpuBreakdown;
         std::vector<std::string> allEngines;
         std::vector<std::string> gpuNames; // Friendly names instead of UUIDs
@@ -857,10 +892,12 @@ void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const s
         // Look up friendly name for this GPU
         std::string gpuName = gc.gpuId; // Default to ID if name not found
         bool isIntegrated = false;      // Unknown adapter: keep the default rather than guess
+        bool memoryIsShared = false;
         if (const auto identityIt = gpuIdToIdentity.find(gc.gpuId); identityIt != gpuIdToIdentity.end())
         {
             gpuName = identityIt->second.name;
             isIntegrated = identityIt->second.isIntegrated;
+            memoryIsShared = identityIt->second.memoryIsShared;
         }
 
         // Add per-GPU breakdown
@@ -868,16 +905,24 @@ void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const s
         perGpu.gpuId = gc.gpuId;
         perGpu.gpuName = gpuName; // Store friendly name
         perGpu.isIntegrated = isIntegrated;
-        perGpu.memoryBytes = gc.gpuMemoryBytes;
-        perGpu.utilPercent = gc.gpuUtilPercent;
+        perGpu.dedicatedMemoryBytes = gc.gpuMemoryBytes;
+        perGpu.sharedMemoryBytes = gc.gpuSharedMemoryBytes;
+        // Where the platform has no shared segment (Linux: NVML, ROCm SMI) the adapter's used figure
+        // is its dedicated memory -- an APU's carve-out included -- so that is what counts. The
+        // choice follows the adapter's segment, not the value: shared usage crossing 0 on a Windows
+        // iGPU doesn't switch "GPU memory" to dedicated and back.
+        perGpu.memoryBytes = memoryIsShared ? gc.gpuSharedMemoryBytes : gc.gpuMemoryBytes;
+        perGpu.utilPercent = Numeric::clampPercent(gc.gpuUtilPercent);
         perGpu.engines = gc.activeEngines;
-        agg.perGpuBreakdown.push_back(std::move(perGpu));
 
-        // Aggregate totals
-        agg.totalUtilPercent += gc.gpuUtilPercent;
-        agg.totalMemoryBytes += gc.gpuMemoryBytes;
-        agg.totalEncoderUtil += gc.encoderUtilPercent;
-        agg.totalDecoderUtil += gc.decoderUtilPercent;
+        // Aggregate across GPUs
+        agg.maxUtilPercent = std::max(agg.maxUtilPercent, perGpu.utilPercent);
+        agg.totalMemoryBytes += perGpu.memoryBytes;
+        agg.totalDedicatedMemoryBytes += gc.gpuMemoryBytes;
+        agg.totalSharedMemoryBytes += gc.gpuSharedMemoryBytes;
+        agg.maxEncoderUtil = std::max(agg.maxEncoderUtil, Numeric::clampPercent(gc.encoderUtilPercent));
+        agg.maxDecoderUtil = std::max(agg.maxDecoderUtil, Numeric::clampPercent(gc.decoderUtilPercent));
+        agg.perGpuBreakdown.push_back(std::move(perGpu));
 
         // Collect unique GPU names (not IDs)
         if (std::ranges::find(agg.gpuNames, gpuName) == agg.gpuNames.end())
@@ -904,12 +949,12 @@ void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const s
         {
             ++mergedCount;
             const auto& agg = it->second;
-            // Multi-GPU utilization is summed (can exceed 100% if process uses multiple GPUs).
-            // This is intentional: 150% means full utilization of 1.5 GPUs worth of compute.
-            snapshot.gpuUtilPercent = agg.totalUtilPercent;
+            snapshot.gpuUtilPercent = agg.maxUtilPercent;
             snapshot.gpuMemoryBytes = agg.totalMemoryBytes;
-            snapshot.gpuEncoderUtil = agg.totalEncoderUtil;
-            snapshot.gpuDecoderUtil = agg.totalDecoderUtil;
+            snapshot.gpuDedicatedMemoryBytes = agg.totalDedicatedMemoryBytes;
+            snapshot.gpuSharedMemoryBytes = agg.totalSharedMemoryBytes;
+            snapshot.gpuEncoderUtil = agg.maxEncoderUtil;
+            snapshot.gpuDecoderUtil = agg.maxDecoderUtil;
             snapshot.gpuEngines = agg.allEngines;
             snapshot.perGpuUsage = agg.perGpuBreakdown;
 
@@ -968,6 +1013,8 @@ void ProcessModel::mergeGPUDataContained(std::vector<ProcessSnapshot>& snapshots
         {
             snapshot.gpuUtilPercent = 0.0;
             snapshot.gpuMemoryBytes = 0;
+            snapshot.gpuDedicatedMemoryBytes = 0;
+            snapshot.gpuSharedMemoryBytes = 0;
             snapshot.gpuEncoderUtil = 0.0;
             snapshot.gpuDecoderUtil = 0.0;
             snapshot.gpuEngines.clear();
@@ -1012,7 +1059,7 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     snapshot.ioAvailable = current.ioCountersAvailable && (previous == nullptr || previous->ioCountersAvailable);
     snapshot.nice = current.nice;
     snapshot.pageFaults = current.pageFaultCount;
-    snapshot.cpuAffinityMask = current.cpuAffinityMask;
+    snapshot.cpuAffinity = current.cpuAffinity;
     snapshot.startTimeEpoch = current.startTimeEpoch;
     snapshot.startTimeTicks = current.startTimeTicks;
     snapshot.uniqueKey = makeUniqueKey(current.pid, current.startTimeTicks);
@@ -1127,27 +1174,7 @@ void ProcessModel::applyHistoryCapacity()
 
 std::string ProcessModel::translateState(char rawState)
 {
-    switch (rawState)
-    {
-    case 'R':
-        return "Running";
-    case 'S':
-        return "Sleeping";
-    case 'D':
-        return "Disk Sleep";
-    case 'Z':
-        return "Zombie";
-    case 'T':
-        return "Stopped";
-    case 't':
-        return "Tracing";
-    case 'X':
-        return "Dead";
-    case 'I':
-        return "Idle";
-    default:
-        return "Unknown";
-    }
+    return std::string(processStateName(rawState));
 }
 
 } // namespace Domain

@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <optional>
 #include <span>
 #include <string>
@@ -253,6 +254,97 @@ inline constexpr float GPU_CLOCK_REFERENCE_FLOOR_MHZ = 2000.0F;
                                        {static_cast<double>(gpuClockReferenceMHz({}, currentClockMHz)), std::ceil(shownClockMHz)}));
 }
 
+/// Step the clock's 100 % mark is rounded up to (gpuClockScaleMHz()).
+inline constexpr float GPU_CLOCK_SCALE_STEP_MHZ = 100.0F;
+
+/// The clock the GPU clock line and bar are drawn as a percentage of, and that their label names
+/// (#1205): gpuClockReferenceMHz() rounded up to a whole GPU_CLOCK_SCALE_STEP_MHZ, so the label reads
+/// "% of 2100 MHz" rather than "% of 2087 MHz" and changes only when the peak crosses a step, not with
+/// every MHz the smoothed clock eases by. Never below the reference, so no sample exceeds 100 %. A
+/// non-finite or non-positive reference gets the floor.
+[[nodiscard]] inline float gpuClockScaleMHz(float referenceMHz) noexcept
+{
+    if (!std::isfinite(referenceMHz) || referenceMHz <= 0.0F)
+    {
+        return GPU_CLOCK_REFERENCE_FLOOR_MHZ;
+    }
+    return std::ceil(referenceMHz / GPU_CLOCK_SCALE_STEP_MHZ) * GPU_CLOCK_SCALE_STEP_MHZ;
+}
+
+/// The temperature the GPU temperature line and bar are drawn as a percentage of.
+inline constexpr double GPU_TEMPERATURE_SCALE_C = 100.0;
+
+/// The power limit assumed when a GPU reports none, for drawing its power as a percentage.
+inline constexpr double GPU_ASSUMED_POWER_LIMIT_WATTS = 300.0;
+
+/// The power the GPU power line and bar are drawn as a percentage of: the GPU's reported limit, or
+/// GPU_ASSUMED_POWER_LIMIT_WATTS -- and saying so (#1205) -- when it reports none.
+struct GpuPowerScale
+{
+    double watts = GPU_ASSUMED_POWER_LIMIT_WATTS;
+    bool assumed = true;
+    bool operator==(const GpuPowerScale&) const = default;
+};
+
+[[nodiscard]] inline GpuPowerScale gpuPowerScale(double powerLimitWatts) noexcept
+{
+    if (std::isfinite(powerLimitWatts) && powerLimitWatts > 0.0)
+    {
+        return {.watts = powerLimitWatts, .assumed = false};
+    }
+    return {};
+}
+
+// The labels of the GPU series drawn on a percent axis in another unit (#1205). Each names what 100 %
+// is, so the axis can be read; the value beside it is the reading in its own unit. One label per series
+// is shared by its value-strip entry, tooltip row and chart line (#1008), so the basis is stated
+// wherever the series is named, the strip's compact "label: value" form included.
+
+/// "Clock (% of 2100 MHz)", for gpuClockScaleMHz().
+[[nodiscard]] inline std::string gpuClockSeriesLabel(float scaleMHz)
+{
+    return std::format("Clock (% of {})", UI::Format::formatMegahertz(static_cast<double>(scaleMHz)));
+}
+
+/// "Temperature (% of 100°C)".
+[[nodiscard]] inline std::string gpuTemperatureSeriesLabel()
+{
+    return std::format("Temperature (% of {})", UI::Format::formatCelsius(GPU_TEMPERATURE_SCALE_C));
+}
+
+/// "Power (% of 250.0 W limit)", or "Power (% of 300.0 W, assumed)" for a GPU that reports no limit.
+[[nodiscard]] inline std::string gpuPowerSeriesLabel(GpuPowerScale scale)
+{
+    return std::format("Power (% of {}{})", UI::Format::formatWatts(scale.watts), scale.assumed ? ", assumed" : " limit");
+}
+
+/// One GPU's labels that name a scale that can change (gpuClockSeriesLabel(), gpuPowerSeriesLabel()),
+/// kept with the scale they were built for and rebuilt only when it changes: they are shown every
+/// frame (#1171).
+struct GpuScaledLabels
+{
+    std::string clock;
+    float clockScaleMHz = -1.0F;
+    std::string power;
+    std::optional<GpuPowerScale> powerScale;
+
+    /// Rebuilds each label whose scale differs from the one it was built for.
+    void update(float newClockScaleMHz, GpuPowerScale newPowerScale)
+    {
+        // Any change at all must rebuild the label naming the scale, so no tolerance.
+        if (clock.empty() || std::abs(clockScaleMHz - newClockScaleMHz) > 0.0F)
+        {
+            clock = gpuClockSeriesLabel(newClockScaleMHz);
+            clockScaleMHz = newClockScaleMHz;
+        }
+        if (!powerScale.has_value() || *powerScale != newPowerScale)
+        {
+            power = gpuPowerSeriesLabel(newPowerScale);
+            powerScale = newPowerScale;
+        }
+    }
+};
+
 /// What the GPU tab keeps from frame to frame, so that once warmed up drawing it allocates nothing
 /// (#1171): its scratch buffers and draw list, reused, and the strings built from a publication --
 /// header labels and chart layout IDs, one per draw-list entry -- rebuilt only when a new publication
@@ -268,6 +360,8 @@ struct FrameCache
     std::vector<std::string> headerLabels;
     std::vector<std::string> coreLayoutIds;
     std::vector<std::string> thermalLayoutIds;
+    /// Per draw-list entry, rebuilt when the scale a label names changes (GpuScaledLabels::update()).
+    std::vector<GpuScaledLabels> scaledLabels;
     const Domain::GPUPublication* labelsPublication = nullptr;
     std::uint64_t labelsVersion = 0;
 };

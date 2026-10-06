@@ -177,6 +177,72 @@ TEST(ProcessModelTest, WhenProbeReportsFullPrivileges_ThenReducedPrivilegesIsFal
     EXPECT_FALSE(model.capabilities().hasReducedPrivileges);
 }
 
+// #1254: capabilities were copied once at construction, so one the probe withdrew later (Windows'
+// EStats check after the first real sample, #1161) never reached the UI. They are re-read every
+// sample and published with that generation, through every reader path.
+TEST(ProcessModelTest, ACapabilityWithdrawnAfterTheFirstSampleIsPublished)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+    Platform::ProcessCapabilities caps;
+    caps.hasNetworkCounters = true;
+    caps.hasReducedPrivileges = false;
+    rawProbe->setCapabilities(caps);
+    probe->setCounters({makeCounter(1, "test", 'R', 0, 0)});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+    EXPECT_TRUE(model.capabilities().hasNetworkCounters);
+    EXPECT_FALSE(model.capabilities().hasReducedPrivileges);
+
+    Platform::ProcessCapabilities withdrawn = caps;
+    withdrawn.hasNetworkCounters = false;
+    withdrawn.hasReducedPrivileges = true;
+    rawProbe->setCapabilities(withdrawn);
+    EXPECT_TRUE(model.capabilities().hasNetworkCounters); // published with a sample, not before it
+
+    model.refresh();
+    EXPECT_EQ(model.capabilities(), withdrawn);
+
+    std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> snapshots;
+    std::uint64_t version = 0;
+    Platform::ProcessCapabilities published = caps;
+    ASSERT_TRUE(model.tryCopySnapshotsIfNewer(0, snapshots, version, &published));
+    EXPECT_EQ(published, withdrawn);
+
+    Domain::ProcessSystemHistories histories;
+    ASSERT_TRUE(model.tryCopySystemHistoriesIfNewer(0, histories));
+    EXPECT_EQ(histories.capabilities, withdrawn);
+}
+
+// #1254: a capability the probe withdraws during the sample itself (the Windows probe does so in
+// readSocketTraffic(), #1161) is published with that same generation.
+TEST(ProcessModelTest, ACapabilityWithdrawnDuringASampleIsPublishedWithThatSample)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+    Platform::ProcessCapabilities caps;
+    caps.hasNetworkCounters = true;
+    rawProbe->setCapabilities(caps);
+    probe->setCounters({makeCounter(1, "test", 'R', 0, 0)});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    Platform::ProcessCapabilities withdrawn = caps;
+    withdrawn.hasNetworkCounters = false;
+    rawProbe->switchCapabilitiesOnNextSocketRead(withdrawn);
+    model.refresh();
+
+    std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> snapshots;
+    std::uint64_t version = 0;
+    Platform::ProcessCapabilities published = caps;
+    ASSERT_TRUE(model.tryCopySnapshotsIfNewer(0, snapshots, version, &published));
+    EXPECT_FALSE(published.hasNetworkCounters);
+    ASSERT_EQ(snapshots->size(), 1U);
+    EXPECT_FALSE((*snapshots)[0].networkAvailable);
+}
+
 // =============================================================================
 // ISamplable Tests
 // =============================================================================
@@ -984,7 +1050,7 @@ TEST(ProcessModelTest, CpuAffinityIsPassedThrough)
 {
     auto probe = std::make_unique<MockProcessProbe>();
     Platform::ProcessCounters counter = makeCounter(100, "affinity_test", 'R', 1000, 500);
-    counter.cpuAffinityMask = 0x0F; // Cores 0-3
+    counter.cpuAffinity = Platform::CpuAffinity::fromMask(0x0F); // Cores 0-3
     probe->setCounters({counter});
     probe->setTotalCpuTime(100000);
 
@@ -993,14 +1059,14 @@ TEST(ProcessModelTest, CpuAffinityIsPassedThrough)
 
     auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 1);
-    EXPECT_EQ(snaps[0].cpuAffinityMask, 0x0F);
+    EXPECT_EQ(snaps[0].cpuAffinity, Platform::CpuAffinity::fromMask(0x0F));
 }
 
-TEST(ProcessModelTest, CpuAffinityZeroWhenNotAvailable)
+TEST(ProcessModelTest, CpuAffinityEmptyWhenNotAvailable)
 {
     auto probe = std::make_unique<MockProcessProbe>();
     Platform::ProcessCounters counter = makeCounter(100, "no_affinity", 'R', 1000, 500);
-    counter.cpuAffinityMask = 0; // Not available
+    // cpuAffinity left empty: not available
     probe->setCounters({counter});
     probe->setTotalCpuTime(100000);
 
@@ -1009,14 +1075,14 @@ TEST(ProcessModelTest, CpuAffinityZeroWhenNotAvailable)
 
     auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 1);
-    EXPECT_EQ(snaps[0].cpuAffinityMask, 0);
+    EXPECT_TRUE(snaps[0].cpuAffinity.empty());
 }
 
 TEST(ProcessModelTest, CpuAffinityAllCores)
 {
     auto probe = std::make_unique<MockProcessProbe>();
     Platform::ProcessCounters counter = makeCounter(100, "all_cores", 'R', 1000, 500);
-    counter.cpuAffinityMask = 0xFFFFFFFFFFFFFFFF; // All 64 cores
+    counter.cpuAffinity = Platform::CpuAffinity::fromMask(0xFFFFFFFFFFFFFFFF); // All 64 cores
     probe->setCounters({counter});
     probe->setTotalCpuTime(100000);
 
@@ -1025,7 +1091,26 @@ TEST(ProcessModelTest, CpuAffinityAllCores)
 
     auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 1);
-    EXPECT_EQ(snaps[0].cpuAffinityMask, 0xFFFFFFFFFFFFFFFF);
+    EXPECT_EQ(snaps[0].cpuAffinity, Platform::CpuAffinity::fromMask(0xFFFFFFFFFFFFFFFF));
+}
+
+// #1247: processors at 64 and above reach the snapshot instead of being cut off at 64 bits.
+TEST(ProcessModelTest, CpuAffinityBeyond64CoresIsPassedThrough)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters counter = makeCounter(100, "pinned_high", 'R', 1000, 500);
+    counter.cpuAffinity = *Platform::CpuAffinity::fromCpuList("0-3,70,128-255");
+    probe->setCounters({counter});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].cpuAffinity, *Platform::CpuAffinity::fromCpuList("0-3,70,128-255"));
+    EXPECT_TRUE(snaps[0].cpuAffinity.test(70));
+    EXPECT_EQ(snaps[0].cpuAffinity.count(), 4U + 1U + 128U);
 }
 
 // =============================================================================
@@ -2432,6 +2517,169 @@ TEST(ProcessModelTest, MergeGPUDataAggregatesMultiGPU)
 
     // Memory should be summed across GPUs
     EXPECT_EQ(snaps[0].gpuMemoryBytes, (256 + 512) * 1024ULL * 1024);
+}
+
+namespace
+{
+
+Platform::ProcessGPUCounters
+makeProcessGpuUsage(std::int32_t pid, const std::string& gpuId, double utilPercent, std::uint64_t dedicatedBytes, std::uint64_t sharedBytes)
+{
+    Platform::ProcessGPUCounters counters;
+    counters.pid = pid;
+    counters.gpuId = gpuId;
+    counters.gpuUtilPercent = utilPercent;
+    counters.gpuMemoryBytes = dedicatedBytes;
+    counters.gpuSharedMemoryBytes = sharedBytes;
+    counters.activeEngines = {"3D"};
+    return counters;
+}
+
+/// One refresh of a process model sharing a GPU model built from `gpuProbe`; the snapshots.
+std::vector<Domain::ProcessSnapshot> mergeOnce(std::unique_ptr<MockGPUProbe> gpuProbe)
+{
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "gpu_proc", 'R', 1000, 500)});
+    processProbe->setTotalCpuTime(100000);
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    gpuProbe->withCapabilities(caps);
+
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    Domain::ProcessModel processModel(std::move(processProbe));
+    processModel.setGPUModel(gpuModel);
+    gpuModel->refresh();
+    processModel.refresh();
+    return processModel.snapshots();
+}
+
+} // namespace
+
+// #1164: a process's GPU utilization is the busiest GPU's, 0-100 like an adapter's, not a sum across
+// GPUs (which passed 100% in the table while Process Details clamped it). Encoder/decoder likewise.
+TEST(ProcessModelTest, MergeGPUDataTakesTheBusiestGpusUtilization)
+{
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    auto onGpu0 = makeProcessGpuUsage(100, "GPU0", 60.0, 0, 0);
+    onGpu0.encoderUtilPercent = 30.0;
+    auto onGpu1 = makeProcessGpuUsage(100, "GPU1", 70.0, 0, 0);
+    onGpu1.decoderUtilPercent = 20.0;
+    gpuProbe->withGPU("GPU0", "GPU 0").withGPU("GPU1", "GPU 1").withProcessGPUCounters(onGpu0).withProcessGPUCounters(onGpu1);
+
+    const auto snaps = mergeOnce(std::move(gpuProbe));
+    ASSERT_EQ(snaps.size(), 1U);
+    EXPECT_DOUBLE_EQ(snaps[0].gpuUtilPercent, 70.0);
+    EXPECT_DOUBLE_EQ(snaps[0].gpuEncoderUtil, 30.0);
+    EXPECT_DOUBLE_EQ(snaps[0].gpuDecoderUtil, 20.0);
+    ASSERT_EQ(snaps[0].perGpuUsage.size(), 2U);
+    EXPECT_DOUBLE_EQ(snaps[0].perGpuUsage[0].utilPercent, 60.0);
+    EXPECT_DOUBLE_EQ(snaps[0].perGpuUsage[1].utilPercent, 70.0);
+}
+
+// #1164: a per-GPU reading past 100% (or NaN) is clamped like an adapter's, so the table and Process
+// Details agree.
+TEST(ProcessModelTest, MergeGPUDataClampsUtilizationToAPercentage)
+{
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    gpuProbe->withGPU("GPU0", "GPU 0")
+        .withGPU("GPU1", "GPU 1")
+        .withProcessGPUCounters(makeProcessGpuUsage(100, "GPU0", 130.0, 0, 0))
+        .withProcessGPUCounters(makeProcessGpuUsage(100, "GPU1", std::numeric_limits<double>::quiet_NaN(), 0, 0));
+
+    const auto snaps = mergeOnce(std::move(gpuProbe));
+    ASSERT_EQ(snaps.size(), 1U);
+    EXPECT_DOUBLE_EQ(snaps[0].gpuUtilPercent, 100.0);
+    ASSERT_EQ(snaps[0].perGpuUsage.size(), 2U);
+    EXPECT_DOUBLE_EQ(snaps[0].perGpuUsage[0].utilPercent, 100.0);
+    EXPECT_DOUBLE_EQ(snaps[0].perGpuUsage[1].utilPercent, 0.0);
+}
+
+// #1164: dedicated and shared GPU memory are kept apart, and "GPU memory" counts on each GPU what
+// that GPU's used figure on the GPU tab counts -- dedicated on a discrete GPU, shared on a Windows
+// integrated one -- so it can't exceed what the adapters show in use (a game's shared memory on a
+// dGPU used to be added to its VRAM).
+TEST(ProcessModelTest, MergeGPUDataKeepsDedicatedAndSharedMemoryApart)
+{
+    constexpr std::uint64_t MIB = 1024ULL * 1024ULL;
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    gpuProbe->withGPU("GPU0", "Discrete GPU", "Vendor", false)
+        .withSharedMemoryGPU("GPU1", "Integrated GPU", "Vendor")
+        .withProcessGPUCounters(makeProcessGpuUsage(100, "GPU0", 50.0, 300 * MIB, 200 * MIB))
+        .withProcessGPUCounters(makeProcessGpuUsage(100, "GPU1", 10.0, 10 * MIB, 400 * MIB));
+
+    const auto snaps = mergeOnce(std::move(gpuProbe));
+    ASSERT_EQ(snaps.size(), 1U);
+    EXPECT_EQ(snaps[0].gpuMemoryBytes, (300 + 400) * MIB); // the discrete GPU's VRAM, the integrated GPU's shared
+    EXPECT_EQ(snaps[0].gpuDedicatedMemoryBytes, (300 + 10) * MIB);
+    EXPECT_EQ(snaps[0].gpuSharedMemoryBytes, (200 + 400) * MIB);
+    ASSERT_EQ(snaps[0].perGpuUsage.size(), 2U);
+    EXPECT_EQ(snaps[0].perGpuUsage[0].memoryBytes, 300 * MIB);
+    EXPECT_EQ(snaps[0].perGpuUsage[0].dedicatedMemoryBytes, 300 * MIB);
+    EXPECT_EQ(snaps[0].perGpuUsage[0].sharedMemoryBytes, 200 * MIB);
+    EXPECT_EQ(snaps[0].perGpuUsage[1].memoryBytes, 400 * MIB);
+    EXPECT_EQ(snaps[0].perGpuUsage[1].dedicatedMemoryBytes, 10 * MIB);
+    EXPECT_EQ(snaps[0].perGpuUsage[1].sharedMemoryBytes, 400 * MIB);
+}
+
+// #1164: a platform with no shared segment (NVML, ROCm SMI) reports dedicated memory only, which is
+// then the GPU memory figure on a discrete GPU, as before.
+TEST(ProcessModelTest, MergeGPUDataWithDedicatedMemoryOnly)
+{
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    gpuProbe->withGPU("GPU0", "Discrete GPU").withProcessGPUCounters(makeProcessGpuUsage(100, "GPU0", 40.0, 4096, 0));
+
+    const auto snaps = mergeOnce(std::move(gpuProbe));
+    ASSERT_EQ(snaps.size(), 1U);
+    EXPECT_EQ(snaps[0].gpuMemoryBytes, 4096U);
+    EXPECT_EQ(snaps[0].gpuDedicatedMemoryBytes, 4096U);
+    EXPECT_EQ(snaps[0].gpuSharedMemoryBytes, 0U);
+}
+
+// #1164: an integrated GPU on a platform with no shared segment (an AMD APU under ROCm SMI, whose
+// used figure is its VRAM carve-out) counts its dedicated memory, not a shared 0.
+TEST(ProcessModelTest, MergeGPUDataIntegratedGpuWithoutSharedMemoryCountsDedicated)
+{
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    gpuProbe->withGPU("GPU0", "APU", "AMD", true).withProcessGPUCounters(makeProcessGpuUsage(100, "GPU0", 40.0, 2048, 0));
+
+    const auto snaps = mergeOnce(std::move(gpuProbe));
+    ASSERT_EQ(snaps.size(), 1U);
+    EXPECT_EQ(snaps[0].gpuMemoryBytes, 2048U);
+    ASSERT_EQ(snaps[0].perGpuUsage.size(), 1U);
+    EXPECT_EQ(snaps[0].perGpuUsage[0].memoryBytes, 2048U);
+}
+
+// #1164: which segment counts is the adapter's (GPUInfo::memoryIsShared), not inferred from the
+// reading: a Windows integrated GPU's process with dedicated bytes but 0 shared bytes shows a
+// shared 0, as the adapter's used figure is its shared segment, 0 included -- "GPU memory" doesn't
+// switch to dedicated and back as shared usage crosses 0.
+TEST(ProcessModelTest, MergeGPUDataSharedSegmentGpuWithZeroSharedUsageCountsShared)
+{
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    gpuProbe->withSharedMemoryGPU("GPU0", "Integrated GPU", "Intel")
+        .withProcessGPUCounters(makeProcessGpuUsage(100, "GPU0", 25.0, 4096, 0));
+
+    const auto snaps = mergeOnce(std::move(gpuProbe));
+    ASSERT_EQ(snaps.size(), 1U);
+    EXPECT_EQ(snaps[0].gpuMemoryBytes, 0U);
+    EXPECT_EQ(snaps[0].gpuDedicatedMemoryBytes, 4096U);
+    EXPECT_EQ(snaps[0].gpuSharedMemoryBytes, 0U);
+    ASSERT_EQ(snaps[0].perGpuUsage.size(), 1U);
+    EXPECT_EQ(snaps[0].perGpuUsage[0].memoryBytes, 0U);
+    EXPECT_EQ(snaps[0].perGpuUsage[0].dedicatedMemoryBytes, 4096U);
+}
+
+// #1164: and an integrated GPU whose figures count dedicated memory (Linux) counts dedicated even
+// with a shared amount reported beside it.
+TEST(ProcessModelTest, MergeGPUDataDedicatedSegmentIntegratedGpuIgnoresSharedReading)
+{
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    gpuProbe->withGPU("GPU0", "APU", "AMD", true).withProcessGPUCounters(makeProcessGpuUsage(100, "GPU0", 40.0, 2048, 512));
+
+    const auto snaps = mergeOnce(std::move(gpuProbe));
+    ASSERT_EQ(snaps.size(), 1U);
+    EXPECT_EQ(snaps[0].gpuMemoryBytes, 2048U);
+    EXPECT_EQ(snaps[0].gpuSharedMemoryBytes, 512U);
 }
 
 TEST(ProcessModelTest, MergeGPUDataWithNoGPUModel)

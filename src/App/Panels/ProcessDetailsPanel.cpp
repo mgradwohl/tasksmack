@@ -1,6 +1,7 @@
 #include "ProcessDetailsPanel.h"
 
 #include "App/Panel.h"
+#include "App/Panels/ProcessStateColor.h"
 #include "App/ShellMetrics.h"
 #include "App/TabLabel.h"
 #include "Core/ApplicationEvents.h"
@@ -40,6 +41,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -109,7 +111,8 @@ constexpr const char* CPU_SYSTEM_LABEL = "System";
 // call one quantity by one name (#1273).
 constexpr const char* MEM_USED_LABEL = "Memory";
 constexpr const char* MEM_SHARED_LABEL = "Shared";
-// A series on a chart's right-hand axis ends in " →", pointing at it (setupSecondaryRateAxis(), #1206).
+// A series on a chart's right-hand axis ends in " →", pointing at it (setupSecondaryRateAxis(), #1206); in
+// its value-strip entry and tooltip rows the mark follows the value (SECONDARY_AXIS_MARK, #1300).
 constexpr const char* MEM_VIRTUAL_LABEL = "Virtual →";
 constexpr const char* MEM_PEAK_LABEL = "Peak Mem";
 constexpr const char* THREADS_LABEL = "Threads";
@@ -735,35 +738,6 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         ImGui::PopStyleColor();
     };
 
-    const auto statusColorFor = [&theme](std::string_view state) -> ImVec4
-    {
-        if (state == "Running")
-        {
-            return theme.scheme().statusRunning;
-        }
-        if (state == "Sleeping")
-        {
-            return theme.scheme().statusSleeping;
-        }
-        if (state == "Disk Sleep")
-        {
-            return theme.scheme().statusDiskSleep;
-        }
-        if (state == "Zombie")
-        {
-            return theme.scheme().statusZombie;
-        }
-        if (state == "Stopped" || state == "Tracing")
-        {
-            return theme.scheme().statusStopped;
-        }
-        if (state == "Idle")
-        {
-            return theme.scheme().statusIdle;
-        }
-        return theme.scheme().textInfo;
-    };
-
     // One label/value row of the two tables. Views: the values are the snapshot's own strings or the
     // text built from it below, both alive for the frame, so building the rows allocates nothing.
     struct InfoRow
@@ -870,7 +844,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     // Build runtime rows (conditionally include Type if available)
     InfoRows runtimeRows;
     // Same name as the table's State column (#1203)
-    runtimeRows.add({.label = "State", .value = proc.displayState, .color = statusColorFor(proc.displayState)});
+    runtimeRows.add({.label = "State", .value = proc.displayState, .color = processStateColor(proc.displayState, theme.scheme())});
     runtimeRows.add({.label = "Threads", .value = text.threads, .color = theme.scheme().textPrimary});
     runtimeRows.add({.label = handleLabel, .value = text.handles, .color = theme.scheme().textPrimary});
     runtimeRows.add({.label = "CPU Time", .value = text.cpuTime, .color = theme.scheme().textPrimary});
@@ -1060,36 +1034,36 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
                 }
 
                 // Bands and lines reach "now" like every plotLineWithFill series: the last sample
-                // held to x = 0 (#1016). Built in their own buffers, so the tooltip's lookup over
-                // cpuTimeData still finds real samples only.
-                UI::Widgets::holdLastSamplesToNow(m_CpuPlotX,
-                                                  {&y0, &yUserTop, &ySystemTop, &m_CpuPlotTotal, &m_CpuPlotUser, &m_CpuPlotSystem});
+                // held to x = 0 (#1016), unless it is too old to pass for current (#1147). Built in
+                // their own buffers, so the tooltip's lookup over cpuTimeData still finds real samples only.
+                UI::Widgets::holdLastValuesToNow(m_CpuPlotX,
+                                                 {&y0, &yUserTop, &ySystemTop, &m_CpuPlotTotal, &m_CpuPlotUser, &m_CpuPlotSystem},
+                                                 UI::Widgets::maxHoldSecondsForAxis(cpuTimeData));
                 const int drawCount = UI::Format::checkedCount(m_CpuPlotX.size());
 
                 // The bands share their labels with the User and System lines below, so ImPlot
                 // treats each band and its line as one item.
                 // ImPlot's shaded renderer doesn't break at NaN, so the bands are filled run by run over
                 // the finite points: a gap (a missing sample, or a UI stall that overran the sample ring,
-                // #1098) is drawn as a gap rather than as fill triangles through NaN. A gap point is NaN
-                // in every band, so the system top's runs serve both.
-                UI::Widgets::forEachFiniteRun(ySystemTop.data(),
-                                              drawCount,
-                                              [&](int runStart, int runLength)
-                                              {
-                                                  const auto at = static_cast<std::size_t>(runStart);
-                                                  ImPlot::PlotShaded(CPU_USER_LABEL,
-                                                                     &m_CpuPlotX[at],
-                                                                     &y0[at],
-                                                                     &yUserTop[at],
-                                                                     runLength,
-                                                                     {ImPlotProp_FillColor, theme.scheme().cpuUserFill});
-                                                  ImPlot::PlotShaded(CPU_SYSTEM_LABEL,
-                                                                     &m_CpuPlotX[at],
-                                                                     &yUserTop[at],
-                                                                     &ySystemTop[at],
-                                                                     runLength,
-                                                                     {ImPlotProp_FillColor, theme.scheme().cpuSystemFill});
-                                              });
+                // #1098) is drawn as a gap rather than as fill triangles through NaN. Each band uses the
+                // runs over which both of its own edges are finite, so a reading missing from one band
+                // alone can't feed NaN to the other (#1149).
+                const auto shadeBand =
+                    [&](const char* label, const std::vector<double>& lower, const std::vector<double>& upper, const ImVec4& fillColor)
+                {
+                    UI::Widgets::forEachJointFiniteRun(
+                        lower.data(),
+                        upper.data(),
+                        drawCount,
+                        [&](int runStart, int runLength)
+                        {
+                            const auto at = static_cast<std::size_t>(runStart);
+                            ImPlot::PlotShaded(
+                                label, &m_CpuPlotX[at], &lower[at], &upper[at], runLength, {ImPlotProp_FillColor, fillColor});
+                        });
+                };
+                shadeBand(CPU_USER_LABEL, y0, yUserTop, theme.scheme().cpuUserFill);
+                shadeBand(CPU_SYSTEM_LABEL, yUserTop, ySystemTop, theme.scheme().cpuSystemFill);
 
                 // Total at the primary series' weight; it has no fill of its own, the bands above are
                 // the fill. User and System are secondaries: lighter lines, each with its own marker
@@ -1924,12 +1898,14 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
     // repeating the strings.
     constexpr const char* LABEL_UTILIZATION = "GPU Utilization:";
     constexpr const char* LABEL_MEMORY = "GPU Memory:";
+    constexpr const char* LABEL_DEDICATED = "  Dedicated:";
+    constexpr const char* LABEL_SHARED = "  Shared:";
     constexpr const char* LABEL_DEVICES = "GPU Device(s):";
     constexpr const char* LABEL_ENGINES = "Active Engines:";
     constexpr const char* LABEL_ENCODER = "Video Encoder:";
     constexpr const char* LABEL_DECODER = "Video Decoder:";
-    constexpr auto LABELS =
-        std::to_array<const char*>({LABEL_UTILIZATION, LABEL_MEMORY, LABEL_DEVICES, LABEL_ENGINES, LABEL_ENCODER, LABEL_DECODER});
+    constexpr auto LABELS = std::to_array<const char*>(
+        {LABEL_UTILIZATION, LABEL_MEMORY, LABEL_DEDICATED, LABEL_SHARED, LABEL_DEVICES, LABEL_ENGINES, LABEL_ENCODER, LABEL_DECODER});
 
     // Current GPU metrics
     if (ImGui::BeginTable("GPUCurrentMetrics", 2, ImGuiTableFlags_SizingStretchProp))
@@ -1953,6 +1929,23 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
         const ImVec4 gpuMemColor = theme.scheme().gpuMemory;
         const std::string memStr = UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes);
         ImGui::TextColored(gpuMemColor, "%s", memStr.c_str());
+
+        // GPU Memory counts what each GPU's "used" figure on the GPU tab counts (#1164). Both kinds are
+        // listed beneath it whenever that total doesn't already show them: shared memory is mapped, or
+        // the dedicated bytes aren't what was counted (a shared-segment GPU with no shared use yet).
+        if (proc.gpuSharedMemoryBytes > 0 || proc.gpuDedicatedMemoryBytes != proc.gpuMemoryBytes)
+        {
+            for (const auto& [label, bytes] :
+                 {std::pair{LABEL_DEDICATED, proc.gpuDedicatedMemoryBytes}, std::pair{LABEL_SHARED, proc.gpuSharedMemoryBytes}})
+            {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(label);
+                ImGui::TableNextColumn();
+                const std::string bytesStr = UI::Format::formatBytes(Domain::Numeric::toDouble(bytes));
+                ImGui::TextColored(gpuMemColor, "%s", bytesStr.c_str());
+            }
+        }
 
         // GPU Device(s)
         if (!proc.gpuDevices.empty())
@@ -2027,8 +2020,10 @@ void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& p
         // As in renderGpuCurrentMetricsTable(): the label column is measured from these (#966).
         constexpr const char* LABEL_UTILIZATION = "Utilization:";
         constexpr const char* LABEL_MEMORY = "Memory:";
+        constexpr const char* LABEL_DEDICATED = "  Dedicated:";
+        constexpr const char* LABEL_SHARED = "  Shared:";
         constexpr const char* LABEL_ENGINES = "Engines:";
-        constexpr auto LABELS = std::to_array<const char*>({LABEL_UTILIZATION, LABEL_MEMORY, LABEL_ENGINES});
+        constexpr auto LABELS = std::to_array<const char*>({LABEL_UTILIZATION, LABEL_MEMORY, LABEL_DEDICATED, LABEL_SHARED, LABEL_ENGINES});
         const float labelColumnWidth = UI::Widgets::measureLabelColumnWidth(LABELS);
 
         for (const auto& gpuUsage : proc.perGpuUsage)
@@ -2059,6 +2054,21 @@ void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& p
                     ImGui::TableNextColumn();
                     const std::string memoryStr = UI::Format::formatBytes(static_cast<double>(gpuUsage.memoryBytes));
                     ImGui::TextColored(gpuMemColor, "%s", memoryStr.c_str());
+
+                    // As in renderGpuCurrentMetricsTable(): both kinds whenever the total doesn't show them (#1164).
+                    if (gpuUsage.sharedMemoryBytes > 0 || gpuUsage.dedicatedMemoryBytes != gpuUsage.memoryBytes)
+                    {
+                        for (const auto& [label, bytes] : {std::pair{LABEL_DEDICATED, gpuUsage.dedicatedMemoryBytes},
+                                                           std::pair{LABEL_SHARED, gpuUsage.sharedMemoryBytes}})
+                        {
+                            ImGui::TableNextRow();
+                            ImGui::TableNextColumn();
+                            ImGui::TextUnformatted(label);
+                            ImGui::TableNextColumn();
+                            const std::string bytesStr = UI::Format::formatBytes(Domain::Numeric::toDouble(bytes));
+                            ImGui::TextColored(gpuMemColor, "%s", bytesStr.c_str());
+                        }
+                    }
 
                     if (!gpuUsage.engines.empty())
                     {
@@ -2097,7 +2107,9 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
     // GPU history graphs: drawn from the start, with the collecting hint until samples arrive, like
     // every other chart (#1013); this was a line of text until there was history.
     {
-        const size_t alignedCount = std::min(m_GpuUtilHistory.size(), m_Timestamps.size());
+        // Every series drawn counts, so a history that falls out of lockstep can't be read past its
+        // end (#1149).
+        const size_t alignedCount = std::min({m_GpuUtilHistory.size(), m_GpuMemHistory.size(), m_Timestamps.size()});
         const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
 
         // Extract only what we need for the graphs

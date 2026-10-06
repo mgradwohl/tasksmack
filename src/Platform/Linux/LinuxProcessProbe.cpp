@@ -6,6 +6,7 @@
 
 #include "CgroupFreezeStatus.h"
 #include "Domain/SamplingConfig.h"
+#include "Platform/CpuAffinity.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/PlatformConfig.h"
 #include "UserNameLookup.h"
@@ -47,7 +48,6 @@
 
 #include <fcntl.h>
 #include <pwd.h>
-#include <sched.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -97,6 +97,38 @@ using Posix::FdGuard;
 using ProcParsing::parseNum;
 using ProcParsing::readProcFile;
 using ProcParsing::readProcFileFull;
+
+/// Read a whole /proc file of up to maxBytes, for the rare one that overflows a caller's stack buffer.
+/// Each try re-reads from the start into a buffer twice the last one's size, so the text comes from a
+/// single read. Returns the bytes read -- a file longer than maxBytes comes back cut off at maxBytes
+/// -- or an empty vector on failure.
+[[nodiscard]] std::vector<char> readProcFileBounded(const std::string& path, std::size_t initialSize, std::size_t maxBytes)
+{
+    std::vector<char> buf;
+    for (std::size_t size = std::min(initialSize, maxBytes);; size = std::min(size * 2, maxBytes))
+    {
+        buf.resize(size);
+        const std::size_t len = readProcFile(path.c_str(), buf.data(), buf.size());
+        if (len < size || size == maxBytes)
+        {
+            buf.resize(len);
+            return buf;
+        }
+    }
+}
+
+/// Whether text has a line starting with prefix that ends in a newline (not cut off by a short read).
+[[nodiscard]] bool hasCompleteLine(std::string_view text, std::string_view prefix) noexcept
+{
+    for (std::size_t pos = text.find(prefix); pos != std::string_view::npos; pos = text.find(prefix, pos + 1))
+    {
+        if (pos == 0 || text[pos - 1] == '\n')
+        {
+            return text.find('\n', pos) != std::string_view::npos;
+        }
+    }
+    return false;
+}
 
 /// Cache UID to username mappings to avoid repeated getpwuid calls
 std::unordered_map<uid_t, std::string>& getUsernameCache()
@@ -262,10 +294,8 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         }
 
         parseProcessStatm(pid, counters);
-        parseProcessStatus(pid, counters, m_ProcRoot);
+        parseProcessStatus(pid, counters, m_ProcRoot); // Owner, peak RSS (after statm) and CPU affinity
         parseProcessCmdline(pid, counters, m_ProcRoot);
-        // CPU affinity is always safe to query; failures zero the mask
-        parseProcessAffinity(pid, counters);
 
         // Count open file descriptors (may fail for some processes due to permissions)
         countProcessFds(pid, counters, m_ProcRoot);
@@ -335,7 +365,7 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasNice = true,                           // From /proc/[pid]/stat
                                .hasPageFaults = true,                     // From /proc/[pid]/stat (minflt + majflt)
                                .hasPeakRss = true,                        // From /proc/[pid]/status VmHWM (kernel threads have none)
-                               .hasCpuAffinity = true,                    // From sched_getaffinity
+                               .hasCpuAffinity = true,                    // From status Cpus_allowed_list
                                .hasNetworkCounters = hasNetworkCounters,  // From Netlink INET_DIAG (if available)
                                .hasUdpNetworkCounters = false,            // sock_diag has no UDP byte counters (#1101)
                                .hasPowerUsage = m_HasPowerCap,            // Available if RAPL is detected
@@ -452,45 +482,61 @@ void LinuxProcessProbe::parseProcessStatm(int32_t pid, ProcessCounters& counters
 void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot)
 {
     // Read /proc/[pid]/status, key:value pairs one per line, for:
-    //   Uid:   <real> <effective> <saved> <filesystem>  -- the owner
-    //   VmHWM: <n> kB                                    -- peak resident set size (#1184)
-    // VmHWM comes after Uid; a kernel thread has no Vm* lines at all.
+    //   Uid:               <real> <effective> <saved> <filesystem>  -- the owner
+    //   VmHWM:             <n> kB                                    -- peak resident set size (#1184)
+    //   Cpus_allowed_list: <kernel CPU list, e.g. 0-3,64-127>        -- the CPU affinity
+    // A kernel thread has no Vm* lines at all. The affinity used to come from sched_getaffinity(),
+    // packed into a 64-bit mask that dropped every CPU from 64 up (#1247). The list here has no width
+    // limit, is already in the file this reads, and follows procRoot (sched_getaffinity() asked the
+    // real kernel about a test's fake pid).
 
     const std::string statusPath = (procRoot / std::to_string(pid) / "status").string();
-    // A status file is about 1.5 KiB; VmHWM sits in its first half, after Groups:, which grows with
-    // the owner's supplementary groups. The stack buffer covers the usual file without allocating.
-    constexpr std::size_t BUF_SIZE = 4096;
+    // A status file is about 1.5 KiB. Big enough for the usual file, Cpus_allowed's hex mask on a
+    // many-CPU kernel included, without allocating.
+    constexpr std::size_t BUF_SIZE = 8192;
     std::array<char, BUF_SIZE> buf{};
     const std::size_t len = readProcFile(statusPath.c_str(), buf.data(), BUF_SIZE);
     if (len == 0)
     {
         return;
     }
+    constexpr std::string_view UID_PREFIX = "Uid:";
+    constexpr std::string_view VM_HWM_PREFIX = "VmHWM:";
+    constexpr std::string_view CPUS_ALLOWED_LIST_PREFIX = "Cpus_allowed_list:";
+    constexpr std::uint64_t BYTES_PER_KIB = 1024;
+
     std::string_view text(buf.data(), len);
     std::vector<char> fullStatus;
-    if (len == BUF_SIZE)
+    // A file that filled the buffer was cut off there. Uid: comes first, so the read is only redone
+    // when a VmHWM: or Cpus_allowed_list: line did not make it in whole (a kernel thread's missing
+    // VmHWM: counts too, but its file -- no Vm* lines -- only fills the buffer with a long CPU list).
+    if (len == BUF_SIZE && (!hasCompleteLine(text, VM_HWM_PREFIX) || !hasCompleteLine(text, CPUS_ALLOWED_LIST_PREFIX)))
     {
-        // readProcFile() truncates silently at BUF_SIZE: a long Groups: list can push VmHWM past it.
-        // Read the whole file instead; if that fails (the process just exited), fall back to the
-        // prefix, where a VmHWM line cut off by the buffer is ignored below.
-        fullStatus = readProcFileFull(statusPath.c_str());
+        // readProcFile() truncates silently at BUF_SIZE: a long Groups: line can push VmHWM past it,
+        // and a sparse Cpus_allowed_list (0,2,...,8190 is about 20 KiB) runs past it too. Read the
+        // whole file once instead, bounded well above any real status file; if that fails (the
+        // process just exited), fall back to the prefix. Either way a VmHWM: or Cpus_allowed_list:
+        // line cut off by the end of what was read is ignored below rather than read in part.
+        constexpr std::size_t MAX_STATUS_SIZE = std::size_t{1} << 20U; // 1 MiB
+        fullStatus = readProcFileBounded(statusPath, 4 * BUF_SIZE, MAX_STATUS_SIZE);
         if (!fullStatus.empty())
         {
             text = std::string_view(fullStatus.data(), fullStatus.size());
         }
         else
         {
-            spdlog::debug("LinuxProcessProbe: /proc/{}/status truncated at {} bytes; Uid:/VmHWM: may have been missed", pid, BUF_SIZE);
+            spdlog::debug("LinuxProcessProbe: /proc/{}/status truncated at {} bytes; Uid:/VmHWM:/Cpus_allowed_list: may have been missed",
+                          pid,
+                          BUF_SIZE);
         }
     }
 
-    constexpr std::string_view UID_PREFIX = "Uid:";
-    constexpr std::string_view VM_HWM_PREFIX = "VmHWM:";
-    constexpr std::uint64_t BYTES_PER_KIB = 1024;
-
+    bool haveUid = false;
+    bool havePeakRss = false;
+    bool haveAffinity = false;
     const char* p = text.data();
     const char* const end = text.data() + text.size();
-    while (p < end)
+    while (p < end && !(haveUid && havePeakRss && haveAffinity))
     {
         const char* lineEnd = p;
         while (lineEnd < end && *lineEnd != '\n')
@@ -499,8 +545,9 @@ void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counter
         }
         const std::string_view line(p, static_cast<std::size_t>(lineEnd - p));
 
-        if (line.size() > UID_PREFIX.size() && line.starts_with(UID_PREFIX))
+        if (!haveUid && line.size() > UID_PREFIX.size() && line.starts_with(UID_PREFIX))
         {
+            haveUid = true;
             // Skip "Uid:" and whitespace, parse first UID with from_chars (no alloc)
             const char* ptr = ProcParsing::skipSpaces(p + UID_PREFIX.size(), lineEnd);
             uid_t realUid = 0;
@@ -509,8 +556,9 @@ void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counter
                 counters.user = getUsername(realUid);
             }
         }
-        else if (line.starts_with(VM_HWM_PREFIX))
+        else if (!havePeakRss && line.starts_with(VM_HWM_PREFIX))
         {
+            havePeakRss = true;
             // Only a whole line (newline-terminated): a line cut off by the read could hold a
             // truncated number.
             const char* ptr = p + VM_HWM_PREFIX.size();
@@ -521,7 +569,18 @@ void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counter
                 // are batched per CPU, so the two reads can disagree by a little.
                 counters.peakRssBytes = std::max(peakKib * BYTES_PER_KIB, counters.rssBytes);
             }
-            break; // Nothing needed after VmHWM
+        }
+        else if (!haveAffinity && line.starts_with(CPUS_ALLOWED_LIST_PREFIX))
+        {
+            haveAffinity = true;
+            // Only a whole line: one the buffer cut off could read "0-12" for "0-127".
+            if (lineEnd < end)
+            {
+                if (auto affinity = CpuAffinity::fromCpuList(line.substr(CPUS_ALLOWED_LIST_PREFIX.size())))
+                {
+                    counters.cpuAffinity = std::move(*affinity);
+                }
+            }
         }
 
         p = (lineEnd < end) ? lineEnd + 1 : end;
@@ -620,38 +679,6 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
     }
 
     counters.command = std::move(cmdline);
-}
-
-void LinuxProcessProbe::parseProcessAffinity(int32_t pid, ProcessCounters& counters)
-{
-    // Use sched_getaffinity to read CPU affinity mask for the process
-    // This returns which CPU cores the process is allowed to run on
-
-    // NOLINTNEXTLINE(misc-include-cleaner) - cpu_set_t is provided by <sched.h>
-    cpu_set_t cpuSet;
-    CPU_ZERO(&cpuSet);
-
-    // sched_getaffinity returns the affinity for the main thread of the process
-    if (sched_getaffinity(pid, sizeof(cpu_set_t), &cpuSet) == 0)
-    {
-        // Convert cpu_set_t to a bitmask that fits in uint64_t
-        // This limits us to 64 cores, which is reasonable for most systems
-        const int maxCpus = std::min(CPU_SETSIZE, 64);
-        std::uint64_t mask = 0;
-        for (int cpu = 0; cpu < maxCpus; ++cpu)
-        {
-            if (CPU_ISSET(static_cast<size_t>(cpu), &cpuSet) != 0)
-            {
-                mask |= (1ULL << cpu);
-            }
-        }
-        counters.cpuAffinityMask = mask;
-    }
-    else
-    {
-        // If sched_getaffinity fails (e.g., permission denied), set mask to 0
-        counters.cpuAffinityMask = 0;
-    }
 }
 
 void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot)

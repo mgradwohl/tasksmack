@@ -90,6 +90,22 @@ inline constexpr unsigned PCI_BASE_CLASS_SHIFT = 16U;
     return devices;
 }
 
+/// The addresses ("0000:01:00.0") of those `devices` (entries from list(), so sorted) bound to
+/// `driver`.
+[[nodiscard]] inline std::vector<std::string> addressesBoundTo(const std::vector<std::string>& devices, std::string_view driver)
+{
+    std::vector<std::string> addresses;
+    for (const auto& device : devices)
+    {
+        const auto separator = device.rfind('=');
+        if (separator != std::string::npos && std::string_view(device).substr(separator + 1) == driver)
+        {
+            addresses.push_back(device.substr(0, separator));
+        }
+    }
+    return addresses;
+}
+
 /// Whether any of `devices` (entries from list()) is bound to `driver`.
 [[nodiscard]] inline bool anyBoundTo(const std::vector<std::string>& devices, std::string_view driver)
 {

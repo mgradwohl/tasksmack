@@ -165,14 +165,11 @@ class LinuxProcessProbe : public IProcessProbe
     /// Parse /proc/[pid]/statm for memory info
     void parseProcessStatm(int32_t pid, ProcessCounters& counters) const;
 
-    /// Parse /proc/[pid]/status for owner (UID) info
+    /// Parse /proc/[pid]/status for owner (UID) info and CPU affinity (Cpus_allowed_list)
     static void parseProcessStatus(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot);
 
     /// Parse /proc/[pid]/cmdline for full command line
     static void parseProcessCmdline(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot);
-
-    /// Parse CPU affinity mask for a process using sched_getaffinity
-    static void parseProcessAffinity(int32_t pid, ProcessCounters& counters);
 
     /// Parse /proc/[pid]/io for I/O counters (requires permissions); unreadable sets ioCountersAvailable = false
     static void parseProcessIo(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot);

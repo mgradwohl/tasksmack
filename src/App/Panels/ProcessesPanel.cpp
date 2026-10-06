@@ -5,6 +5,7 @@
 #include "App/Panels/ProcessDetailsLayout.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessSortUtils.h"
+#include "App/Panels/ProcessStateColor.h"
 #include "App/Panels/ProcessTableFlags.h"
 #include "App/Panels/ProcessTableLayout.h"
 #include "App/Panels/ProcessTableSettings.h"
@@ -20,6 +21,7 @@
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
+#include "Domain/ProcessState.h"
 #include "Platform/Factory.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
@@ -40,6 +42,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -465,7 +468,7 @@ void ProcessesPanel::onAttach()
     // Ensure the initial seed snapshots are loaded into the render cache so the UI
     // isn't empty before the first background sample arrives.
     std::uint64_t newVersion = m_CachedSnapshotVersion;
-    if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion))
+    if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion, &m_CachedCapabilities))
     {
         m_CachedSnapshotVersion = newVersion;
     }
@@ -545,21 +548,9 @@ void ProcessesPanel::onEvent(Core::Event& event)
             }
             return false;
         });
-    dispatcher.dispatch<Core::ThemeChangedEvent>(
-        [this](Core::ThemeChangedEvent&)
-        {
-            // Invalidate text cache and request refresh
-            m_TextSizeCache.fontPtr = nullptr;
-            m_ForceRefresh = true;
-            return false;
-        });
-    dispatcher.dispatch<Core::FontSizeChangedEvent>(
-        [this](Core::FontSizeChangedEvent&)
-        {
-            m_TextSizeCache.fontPtr = nullptr;
-            m_ForceRefresh = true;
-            return false;
-        });
+    // A theme or font-size change needs no handling here (#1178): TextSizeCache::isValid() notices a
+    // new font (or a rebuilt atlas) on the next frame and remeasures, which also restamps the row
+    // format cache, and colours are read from the theme every frame. Neither needs new process data.
 }
 
 void ProcessesPanel::onUpdate(float deltaTime)
@@ -599,7 +590,7 @@ void ProcessesPanel::onUpdate(float deltaTime)
 
     // Detect and copy new data in a single lock acquisition.
     std::uint64_t newVersion = m_CachedSnapshotVersion;
-    if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion))
+    if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion, &m_CachedCapabilities))
     {
         m_CachedSnapshotVersion = newVersion;
     }
@@ -655,7 +646,7 @@ void ProcessesPanel::renderContent()
     if (currentVersion != m_CachedSnapshotVersion)
     {
         std::uint64_t copiedVersion = m_CachedSnapshotVersion;
-        if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, copiedVersion))
+        if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, copiedVersion, &m_CachedCapabilities))
         {
             m_CachedSnapshotVersion = copiedVersion;
         }
@@ -1053,12 +1044,23 @@ size_t ProcessesPanel::processCount() const
 
 bool ProcessesPanel::hasReducedPrivileges() const
 {
-    return m_ProcessModel && m_ProcessModel->capabilities().hasReducedPrivileges;
+    return processCapabilities().hasReducedPrivileges;
 }
 
 Platform::ProcessCapabilities ProcessesPanel::processCapabilities() const
 {
-    return m_ProcessModel ? m_ProcessModel->capabilities() : Platform::ProcessCapabilities{};
+    if (!m_ProcessModel)
+    {
+        return Platform::ProcessCapabilities{};
+    }
+    // The capabilities published with the cached snapshot generation, copied with it under the same
+    // lock (#1254), so a per-frame reader takes no lock. Before the first generation is cached, the
+    // model's own (current) copy.
+    if (m_CachedSnapshotVersion == std::numeric_limits<std::uint64_t>::max())
+    {
+        return m_ProcessModel->capabilities();
+    }
+    return m_CachedCapabilities;
 }
 
 std::optional<Domain::ProcessSnapshot> ProcessesPanel::findSnapshot(std::int32_t pid) const
@@ -1232,36 +1234,9 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
 
         case ProcessColumn::State:
         {
-            const char stateChar = proc.displayState.empty() ? '?' : proc.displayState[0];
-            const auto& scheme = UI::Theme::get().scheme();
-
-            // Color based on process state
-            ImVec4 stateColor;
-            switch (stateChar)
-            {
-            case 'R': // Running
-                stateColor = scheme.statusRunning;
-                break;
-            case 'S': // Sleeping (interruptible)
-                stateColor = scheme.statusSleeping;
-                break;
-            case 'D': // Disk sleep (uninterruptible)
-                stateColor = scheme.statusDiskSleep;
-                break;
-            case 'Z': // Zombie
-                stateColor = scheme.statusZombie;
-                break;
-            case 'T': // Stopped/Traced
-            case 't': // Tracing stop
-                stateColor = scheme.statusStopped;
-                break;
-            case 'I': // Idle kernel thread
-                stateColor = scheme.statusIdle;
-                break;
-            default:
-                stateColor = scheme.statusSleeping; // Default to muted
-                break;
-            }
+            // The kernel-style code, not the name's first letter: Stopped is T, Dead is X (#1352).
+            const char stateChar = Domain::processStateCode(proc.displayState);
+            const ImVec4 stateColor = processStateColor(stateChar, UI::Theme::get().scheme());
 
             // Center the state character in the column
             const std::array<char, 2> stateStr = {stateChar, '\0'};

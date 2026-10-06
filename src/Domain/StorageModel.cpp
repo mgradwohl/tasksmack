@@ -34,9 +34,7 @@ namespace
 /// false dip in the Total.
 [[nodiscard]] double totalRateOrNaN(const StorageSnapshot& snapshot, double StorageSnapshot::* total)
 {
-    const bool anyRates = std::ranges::any_of(snapshot.disks, &DiskSnapshot::hasRates);
-    const bool anyRejected = std::ranges::any_of(snapshot.disks, &DiskSnapshot::ratesRejected);
-    return (anyRates && !anyRejected) ? snapshot.*total : std::numeric_limits<double>::quiet_NaN();
+    return snapshot.totalsMeasured ? snapshot.*total : std::numeric_limits<double>::quiet_NaN();
 }
 } // namespace
 
@@ -110,14 +108,19 @@ void StorageModel::sampleAt(const std::chrono::steady_clock::time_point now)
         state.hasPrev = true;
     }
 
-    // Compute system-wide totals
+    // Compute system-wide totals, and whether they are a measurement (see totalRateOrNaN()).
+    bool anyRates = false;
+    bool anyRejected = false;
     for (const auto& disk : snapshot.disks)
     {
         snapshot.totalReadBytesPerSec += disk.readBytesPerSec;
         snapshot.totalWriteBytesPerSec += disk.writeBytesPerSec;
         snapshot.totalReadOpsPerSec += disk.readOpsPerSec;
         snapshot.totalWriteOpsPerSec += disk.writeOpsPerSec;
+        anyRates = anyRates || disk.hasRates;
+        anyRejected = anyRejected || disk.ratesRejected;
     }
+    snapshot.totalsMeasured = anyRates && !anyRejected;
 
     // Update shared state
     {

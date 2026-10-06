@@ -1,5 +1,6 @@
 #include "DRMGPUProbe.h"
 
+#include "AmdApu.h"
 #include "PciRuntimePm.h"
 #include "Platform/GPUTypes.h"
 #include "PosixGuards.h"
@@ -7,19 +8,24 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <iterator>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -97,6 +103,58 @@ constexpr uint32_t PCI_VENDOR_AMD = 0x1002U;
     return target.filename().string();
 }
 
+/// `text` without leading and trailing spaces, tabs and CRs.
+[[nodiscard]] std::string_view trimmed(std::string_view text)
+{
+    constexpr std::string_view SPACE = " \t\r";
+    const auto first = text.find_first_not_of(SPACE);
+    if (first == std::string_view::npos)
+    {
+        return {};
+    }
+    return text.substr(first, text.find_last_not_of(SPACE) - first + 1);
+}
+
+/// The leading unsigned number of an fdinfo value (" 1234 ns" -> 1234), or nullopt if it has none or
+/// the number runs straight into other text.
+[[nodiscard]] std::optional<std::uint64_t> leadingUint64(std::string_view value)
+{
+    value = trimmed(value);
+    std::uint64_t number = 0;
+    const auto [ptr, ec] = std::from_chars(value.data(), value.data() + value.size(), number);
+    if (ec != std::errc{} || ptr == value.data() || (ptr != value.data() + value.size() && *ptr != ' ' && *ptr != '\t'))
+    {
+        return std::nullopt;
+    }
+    return number;
+}
+
+/// The index (GPUEngineClass) of the engine class an fdinfo key names after its prefix: i915's
+/// render/copy/video/video-enhance/compute or xe's rcs/bcs/vcs/vecs/ccs (#1267).
+[[nodiscard]] std::optional<std::size_t> engineClassIndex(std::string_view name)
+{
+    struct EngineName
+    {
+        std::string_view i915;
+        std::string_view xe;
+        GPUEngineClass engineClass;
+    };
+    static constexpr std::array<EngineName, GPU_ENGINE_CLASS_COUNT> NAMES{{
+        {.i915 = "render", .xe = "rcs", .engineClass = GPUEngineClass::Render},
+        {.i915 = "copy", .xe = "bcs", .engineClass = GPUEngineClass::Copy},
+        {.i915 = "video", .xe = "vcs", .engineClass = GPUEngineClass::Video},
+        {.i915 = "video-enhance", .xe = "vecs", .engineClass = GPUEngineClass::VideoEnhance},
+        {.i915 = "compute", .xe = "ccs", .engineClass = GPUEngineClass::Compute},
+    }};
+    const auto* const match =
+        std::ranges::find_if(NAMES, [name](const EngineName& entry) { return name == entry.i915 || name == entry.xe; });
+    if (match == NAMES.end())
+    {
+        return std::nullopt;
+    }
+    return static_cast<std::size_t>(match->engineClass);
+}
+
 #if TASKSMACK_HAS_DRM_QUERY_UAPI
 /// An ioctl retried on EINTR/EAGAIN, as libdrm's drmIoctl() does.
 [[nodiscard]] int drmIoctl(int fd, unsigned long request, void* arg)
@@ -134,12 +192,20 @@ template<typename T> [[nodiscard]] T readAt(std::span<const std::byte> bytes, st
 #endif
 } // namespace
 
-DRMGPUProbe::DRMGPUProbe(std::string drmBasePath, VramQuery vramQuery)
-    : m_DrmBasePath(std::move(drmBasePath)), m_VramQuery(std::move(vramQuery))
+DRMGPUProbe::DRMGPUProbe(std::string drmBasePath, VramQuery vramQuery, std::string procRoot, MonotonicClock clock)
+    : m_DrmBasePath(std::move(drmBasePath)), m_VramQuery(std::move(vramQuery)), m_ProcRoot(std::move(procRoot)), m_Clock(std::move(clock))
 {
     if (!m_VramQuery)
     {
         m_VramQuery = &DRMGPUProbe::queryVramByIoctl;
+    }
+    if (!m_Clock)
+    {
+        m_Clock = []
+        {
+            const auto sinceEpoch = std::chrono::steady_clock::now().time_since_epoch();
+            return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(sinceEpoch).count());
+        };
     }
 
     // Must call initialize() in the body, not the initializer list,
@@ -202,6 +268,7 @@ bool DRMGPUProbe::rescanGPUs(GPURescan depth)
     };
     if (std::ranges::equal(cards, m_Cards, sameCard))
     {
+        discoverDrmClients(); // New DRM clients are found at the full-rescan rate (#1267)
         return infoStale;
     }
 
@@ -234,6 +301,7 @@ bool DRMGPUProbe::rescanGPUs(GPURescan depth)
     spdlog::info("DRMGPUProbe: Intel DRM cards changed, now {}", cards.size());
     m_Cards = std::move(cards);
     m_Available = !m_Cards.empty();
+    discoverDrmClients();
     return true;
 }
 
@@ -715,10 +783,364 @@ void DRMGPUProbe::refreshQueriedVram(DRMCard& card)
     card.queriedVramUsedBytes = info->usedBytes;
 }
 
-bool DRMGPUProbe::detectIsIntegrated(const std::string& vendorId, uint32_t pciClass, uint64_t vramTotal, std::optional<uint32_t> pciBus)
+std::optional<DRMGPUProbe::DrmFdinfo> DRMGPUProbe::parseFdinfo(std::string_view text, std::uint64_t monotonicNs)
+{
+    constexpr std::string_view CAPACITY_PREFIX = "drm-engine-capacity-";
+    constexpr std::string_view ENGINE_PREFIX = "drm-engine-";             // i915: busy nanoseconds ("123 ns")
+    constexpr std::string_view CYCLES_PREFIX = "drm-cycles-";             // xe: busy GPU-timestamp cycles
+    constexpr std::string_view TOTAL_CYCLES_PREFIX = "drm-total-cycles-"; // xe: the GPU timestamp itself
+
+    DrmFdinfo info;
+    bool haveClientId = false;
+    std::array<std::optional<std::uint64_t>, GPU_ENGINE_CLASS_COUNT> busyNs{};
+    std::array<std::optional<std::uint64_t>, GPU_ENGINE_CLASS_COUNT> cycles{};
+    std::array<std::optional<std::uint64_t>, GPU_ENGINE_CLASS_COUNT> totalCycles{};
+    std::array<std::uint32_t, GPU_ENGINE_CLASS_COUNT> capacity{};
+    capacity.fill(1);
+
+    // "key:\tvalue" lines; the value's leading number is what's wanted, units ("ns") aside.
+    const auto perClass = [](std::string_view key, std::string_view prefix, std::string_view value) -> std::optional<std::size_t>
+    {
+        const auto index = engineClassIndex(key.substr(prefix.size()));
+        return (index.has_value() && leadingUint64(value).has_value()) ? index : std::nullopt;
+    };
+    while (!text.empty())
+    {
+        const auto eol = text.find('\n');
+        const std::string_view line = text.substr(0, eol);
+        text = (eol == std::string_view::npos) ? std::string_view{} : text.substr(eol + 1);
+        const auto colon = line.find(':');
+        if (colon == std::string_view::npos)
+        {
+            continue;
+        }
+        const std::string_view key = line.substr(0, colon);
+        const std::string_view value = line.substr(colon + 1);
+        if (key == "drm-client-id")
+        {
+            if (const auto id = leadingUint64(value))
+            {
+                info.client.clientId = *id;
+                haveClientId = true;
+            }
+        }
+        else if (key == "drm-pdev")
+        {
+            info.pdev = std::string(trimmed(value));
+        }
+        else if (key.starts_with(CAPACITY_PREFIX))
+        {
+            const auto index = perClass(key, CAPACITY_PREFIX, value);
+            const auto engines = leadingUint64(value);
+            if (index.has_value() && engines.has_value() && *engines > 0 && *engines <= std::numeric_limits<std::uint32_t>::max())
+            {
+                capacity.at(*index) = static_cast<std::uint32_t>(*engines); // Range-checked just above
+            }
+        }
+        else if (key.starts_with(TOTAL_CYCLES_PREFIX))
+        {
+            if (const auto index = perClass(key, TOTAL_CYCLES_PREFIX, value))
+            {
+                totalCycles.at(*index) = leadingUint64(value);
+            }
+        }
+        else if (key.starts_with(CYCLES_PREFIX))
+        {
+            if (const auto index = perClass(key, CYCLES_PREFIX, value))
+            {
+                cycles.at(*index) = leadingUint64(value);
+            }
+        }
+        else if (key.starts_with(ENGINE_PREFIX))
+        {
+            if (const auto index = perClass(key, ENGINE_PREFIX, value))
+            {
+                busyNs.at(*index) = leadingUint64(value);
+            }
+        }
+    }
+    if (!haveClientId)
+    {
+        return std::nullopt;
+    }
+    for (std::size_t i = 0; i < GPU_ENGINE_CLASS_COUNT; ++i)
+    {
+        auto& engine = info.client.engines.at(i);
+        engine.capacity = capacity.at(i);
+        if (cycles.at(i).has_value() && totalCycles.at(i).has_value())
+        {
+            engine.available = true;
+            engine.busy = *cycles.at(i);
+            engine.total = *totalCycles.at(i);
+        }
+        else if (busyNs.at(i).has_value())
+        {
+            engine.available = true;
+            engine.busy = *busyNs.at(i);
+            engine.total = monotonicNs;
+        }
+        info.hasEngineStats = info.hasEngineStats || engine.available;
+    }
+    return info;
+}
+
+void DRMGPUProbe::discoverDrmClients()
+{
+    m_ClientsDiscovered = true;
+    if (m_Cards.empty())
+    {
+        return;
+    }
+
+    // Each card's DRM nodes as an fd link names them, and the card they belong to.
+    std::vector<std::pair<std::string, std::size_t>> nodes;
+    for (std::size_t i = 0; i < m_Cards.size(); ++i)
+    {
+        nodes.emplace_back(std::format("/dev/dri/card{}", m_Cards[i].cardIndex), i);
+        if (!m_Cards[i].renderNodePath.empty())
+        {
+            nodes.emplace_back(m_Cards[i].renderNodePath, i);
+        }
+    }
+
+    // Built whole, then committed: a walk cut short by an exception leaves the last lists in place.
+    std::vector<std::vector<std::string>> found(m_Cards.size());
+    // Whether the walk could see clients at all, apart from whether it found any: an empty list
+    // from a /proc that can't be listed, or whose every process's fds are denied (a sandbox), is
+    // no evidence the card is idle, so its busyness stays unread (N/A) rather than 0% (#1267).
+    bool anyFdDirRead = false;
+    std::error_code procErr;
+    Fs::directory_iterator procIt(m_ProcRoot, procErr);
+    for (const Fs::directory_iterator procEnd; !procErr && procIt != procEnd; procIt.increment(procErr))
+    {
+        const Fs::path procEntry = procIt->path();
+        const std::string pid = procEntry.filename().string();
+        if (pid.empty() || !std::ranges::all_of(pid, [](char c) { return c >= '0' && c <= '9'; }))
+        {
+            continue;
+        }
+        // Another user's process can't be looked into (EACCES) without privileges, and a process can
+        // exit mid-walk: either just has no fds here. Iterated directly, not with listDirectory(), so
+        // that every unreadable process isn't logged.
+        std::error_code fsErr;
+        Fs::directory_iterator fds(procEntry / "fd", fsErr);
+        anyFdDirRead = anyFdDirRead || !fsErr;
+        for (const Fs::directory_iterator end; !fsErr && fds != end; fds.increment(fsErr))
+        {
+            std::error_code linkErr;
+            const auto target = Fs::read_symlink(fds->path(), linkErr);
+            if (linkErr || !target.native().starts_with("/dev/dri/"))
+            {
+                continue;
+            }
+            const auto node = std::ranges::find(nodes, target.native(), &std::pair<std::string, std::size_t>::first);
+            if (node != nodes.end())
+            {
+                found[node->second].push_back((procEntry / "fdinfo" / fds->path().filename()).string());
+            }
+        }
+    }
+    if (procErr)
+    {
+        // Unlisted, or cut short mid-walk: either way, the clients found may not be all of them.
+        spdlog::debug("DRMGPUProbe: failed to list {}: {}", m_ProcRoot, procErr.message());
+    }
+    m_ClientScanReliable = !procErr && anyFdDirRead;
+    for (std::size_t i = 0; i < m_Cards.size(); ++i)
+    {
+        // Reconciled with the clients the samples so far have grouped, rather than replacing them: a
+        // full rescan every few seconds would otherwise make the next sample read every dup'd and
+        // inherited fd again (#1356). A path no longer found is dropped, and with it a client left with
+        // none. A client's first path still found keeps its client id: it is the file read for the
+        // client, which readEngineClients() checks against that id each sample. Its aliases are unread
+        // from one sample to the next, so one could have closed and its number been reused for another
+        // client's DRM file of the same card -- the same /dev/dri link -- unnoticed; each goes back to
+        // being unknown, read once by the next sample and regrouped by its drm-client-id. That is one
+        // read per alias per full rescan, not per sample. A new path is likewise its own client until a
+        // read gives its drm-client-id: telling dup'd and inherited fds apart needs their fdinfo, which
+        // xe can't report without waking the card (#1117), so the next awake sample reads each such path
+        // once and readEngineClients() merges those sharing an id with a client already known.
+        auto& clients = m_Cards[i].clients;
+        // Everything that allocates comes first, so that an exception leaves this card's clients as
+        // they were; the reconciliation below only moves and erases.
+        const std::unordered_set<std::string_view> foundPaths(found[i].begin(), found[i].end());
+        std::unordered_set<std::string_view> knownPaths;
+        for (const auto& client : clients)
+        {
+            knownPaths.insert(client.fdinfoPaths.begin(), client.fdinfoPaths.end());
+        }
+        std::vector<DrmClientFds> added;
+        for (const auto& path : found[i])
+        {
+            if (!knownPaths.contains(path))
+            {
+                added.push_back(DrmClientFds{.clientId = std::nullopt, .fdinfoPaths = {path}});
+            }
+        }
+        // Each kept client's aliases, as clients of their own: after the kept clients, so that an alias
+        // read as its old client joins that client rather than the other way round.
+        std::vector<DrmClientFds> aliases;
+        for (const auto& client : clients)
+        {
+            const auto first =
+                std::ranges::find_if(client.fdinfoPaths, [&foundPaths](const std::string& path) { return foundPaths.contains(path); });
+            if (first == client.fdinfoPaths.end())
+            {
+                continue;
+            }
+            for (auto alias = std::next(first); alias != client.fdinfoPaths.end(); ++alias)
+            {
+                if (foundPaths.contains(*alias))
+                {
+                    aliases.push_back(DrmClientFds{.clientId = std::nullopt, .fdinfoPaths = {*alias}});
+                }
+            }
+        }
+        std::vector<DrmClientFds> reconciled;
+        reconciled.reserve(clients.size() + aliases.size() + added.size());
+
+        for (auto& client : clients)
+        {
+            auto& paths = client.fdinfoPaths;
+            const auto first = std::ranges::find_if(paths, [&foundPaths](const std::string& path) { return foundPaths.contains(path); });
+            if (first != paths.end())
+            {
+                paths.erase(std::next(first), paths.end()); // Its aliases, copied to `aliases` above
+                paths.erase(paths.begin(), first);          // Paths no longer found
+                reconciled.push_back(std::move(client));
+            }
+        }
+        std::ranges::move(aliases, std::back_inserter(reconciled));
+        std::ranges::move(added, std::back_inserter(reconciled));
+        clients = std::move(reconciled);
+    }
+}
+
+DRMGPUProbe::ClientFdinfoRead DRMGPUProbe::readClientFdinfo(const std::string& path, const DRMCard& card)
+{
+    using Kind = ClientFdinfoRead::Kind;
+    ++m_FdinfoReads;
+    std::ifstream file(path);
+    if (!file.is_open())
+    {
+        return {}; // The fd was closed or its process exited
+    }
+    const std::string text{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+    auto info = parseFdinfo(text, m_Clock());
+    if (!info.has_value())
+    {
+        // No drm-client-id: the fd number now names another file, or this is a DRM file on a kernel
+        // that prints no drm-* keys at all (i915 before Linux 5.19, whose fdinfo is only pos, flags,
+        // mnt_id and ino). Only the fd's link tells them apart (#1361).
+        return fdLinksToCard(path, card) ? ClientFdinfoRead{.kind = Kind::WithoutClientId, .info = {}} : ClientFdinfoRead{};
+    }
+    // drm-pdev can be checked only against a card whose id is its PCI address.
+    if (pciBusFromAddress(card.gpuId).has_value() && !info->pdev.empty() && info->pdev != card.gpuId)
+    {
+        return {}; // The fd number now names another device's DRM file
+    }
+    return {.kind = Kind::Client, .info = std::move(*info)};
+}
+
+bool DRMGPUProbe::fdLinksToCard(const std::string& fdinfoPath, const DRMCard& card)
+{
+    const Fs::path fdinfo(fdinfoPath);
+    std::error_code linkErr;
+    const auto target = Fs::read_symlink(fdinfo.parent_path().parent_path() / "fd" / fdinfo.filename(), linkErr);
+    if (linkErr)
+    {
+        return false; // Closed since its fdinfo was read, or its process exited
+    }
+    const std::string& node = target.native();
+    return node == std::format("/dev/dri/card{}", card.cardIndex) || (!card.renderNodePath.empty() && node == card.renderNodePath);
+}
+
+void DRMGPUProbe::readEngineClients(DRMCard& card, GPUCounters& counter)
+{
+    bool anyEngineStats = false;
+    std::vector<DrmClientFds> kept;
+    kept.reserve(card.clients.size());
+    // Files read as client `info`'s: joined to the client already kept under its id -- dup'd and
+    // inherited fds share one DRM file, and so one client id, which counts once -- or kept as a new one.
+    const auto keep = [&](std::vector<std::string> paths, const DrmFdinfo& info)
+    {
+        anyEngineStats = anyEngineStats || info.hasEngineStats;
+        const auto same = std::ranges::find(kept, std::optional<std::uint64_t>(info.client.clientId), &DrmClientFds::clientId);
+        if (same != kept.end())
+        {
+            same->fdinfoPaths.insert(same->fdinfoPaths.end(), std::make_move_iterator(paths.begin()), std::make_move_iterator(paths.end()));
+        }
+        else
+        {
+            kept.push_back(DrmClientFds{.clientId = info.client.clientId, .fdinfoPaths = std::move(paths)});
+        }
+        // The client's first reading with engine stats counts, even when it is an alias read after a
+        // reading without them (the client began reporting between the two reads): otherwise
+        // engineBusyAvailable would be published with no counters behind it, which reads as idle.
+        if (info.hasEngineStats && std::ranges::find(counter.engineClients, info.client.clientId, &GPUEngineClientCounters::clientId) ==
+                                       counter.engineClients.end())
+        {
+            counter.engineClients.push_back(info.client);
+        }
+    };
+    for (auto& client : card.clients)
+    {
+        // The first path that still reads as a DRM file of this card is the client's this sample:
+        // normally the first one; an alias only once the paths before it have closed (#1356).
+        auto& paths = client.fdinfoPaths;
+        std::size_t next = 0;
+        while (next < paths.size())
+        {
+            const auto read = readClientFdinfo(paths[next], card);
+            if (read.kind == ClientFdinfoRead::Kind::Gone)
+            {
+                ++next; // Closed, or no longer this card's DRM file: dropped
+                continue;
+            }
+            if (read.kind == ClientFdinfoRead::Kind::WithoutClientId)
+            {
+                // A client without usage stats (#1361): without an id it can't be matched to its aliases,
+                // so each such path is kept as a client of its own, and the rest of the paths read on.
+                kept.push_back(DrmClientFds{.clientId = std::nullopt, .fdinfoPaths = {std::move(paths[next])}});
+                ++next;
+                continue;
+            }
+            const auto& info = read.info;
+            if (client.clientId.has_value() && client.clientId != info.client.clientId)
+            {
+                // The fd number was reused for another DRM file: it is that client's now, while the
+                // rest of the paths may still name this one.
+                keep({std::move(paths[next])}, info);
+                ++next;
+                continue;
+            }
+            paths.erase(paths.begin(), paths.begin() + static_cast<std::ptrdiff_t>(next)); // next < size()
+            keep(std::move(paths), info);
+            break;
+        }
+    }
+    card.clients = std::move(kept);
+    // Unread when the card has clients and none reports any busyness: a kernel without fdinfo engine
+    // stats (i915 before Linux 5.19, whose clients are kept without an id). A card with no clients at
+    // all is idle. Either needs a /proc walk that could see every client: an unlistable /proc, a walk
+    // cut short, or every process's fds denied leaves the client set partial, so neither idle nor the
+    // busyness of the clients found is published.
+    counter.engineBusyAvailable = m_ClientScanReliable && (anyEngineStats || card.clients.empty());
+}
+
+bool DRMGPUProbe::detectIsIntegrated(
+    const std::string& vendorId, uint32_t pciClass, uint64_t vramTotal, std::optional<uint32_t> pciBus, bool amdApu)
 {
     const uint32_t classSubclass = (pciClass & PCI_CLASS_SUBCLASS_MASK);
     const uint32_t vendor = parseHexUint32(vendorId);
+
+    // AMD by the rule the ROCm probe uses (AmdApu::isAmdApu, #1344), before the VRAM test below: an
+    // APU reports its BIOS carve-out (512 MiB-2 GiB of system RAM) as mem_info_vram_total, and is a
+    // VGA controller like any Radeon card, so neither VRAM nor class tells it from a discrete GPU.
+    if (vendor == PCI_VENDOR_AMD)
+    {
+        return amdApu;
+    }
 
     // Dedicated memory means a discrete GPU, whatever its class or bus.
     if (vramTotal > 0)
@@ -743,7 +1165,7 @@ bool DRMGPUProbe::detectIsIntegrated(const std::string& vendorId, uint32_t pciCl
 
     // VGA-compatible controllers have display output.
     // Intel VGA GPUs are integrated unless they carry dedicated VRAM (e.g., Arc discrete).
-    // Non-Intel VGA controllers (NVIDIA/AMD) are discrete.
+    // Other vendors' VGA controllers (NVIDIA) are discrete; AMD was decided above.
     // If the vendor is unknown (e.g., /vendor file missing), fall back conservatively to
     // VRAM presence rather than incorrectly classifying as discrete.
     if (classSubclass == PCI_CLASS_VGA_COMPATIBLE)
@@ -753,7 +1175,7 @@ bool DRMGPUProbe::detectIsIntegrated(const std::string& vendorId, uint32_t pciCl
             // Intel iGPU (or unknown vendor — conservative): integrated unless VRAM is present.
             return vramTotal == 0;
         }
-        return false; // NVIDIA/AMD VGA controllers are discrete
+        return false; // NVIDIA VGA controllers are discrete
     }
 
     // Display controllers that are not VGA-compatible (e.g., Intel Arc on some platforms).
@@ -821,7 +1243,10 @@ GPUInfo DRMGPUProbe::cardToGPUInfo(const DRMCard& card) const
     const std::string pciClassStr = readSysfsString(pciClassPath);
     const uint32_t pciClass = parseHexUint32(pciClassStr);
 
-    info.isIntegrated = detectIsIntegrated(vendorId, pciClass, vramTotal, pciBusFromAddress(card.gpuId));
+    // An AMD GPU's APU signals (ip_discovery GC version, PCI device id) are cached sysfs attributes,
+    // read only for AMD: they never wake a sleeping card (#1117).
+    const bool amdApu = parseHexUint32(vendorId) == PCI_VENDOR_AMD && AmdApu::isAmdApuDevice(card.devicePath);
+    info.isIntegrated = detectIsIntegrated(vendorId, pciClass, vramTotal, pciBusFromAddress(card.gpuId), amdApu);
 
     // Which sensors this card has (#1112). The probe-wide capabilities are OR'd with NVML's and
     // ROCm's on Linux, so without this an Intel iGPU beside an NVIDIA dGPU drew NVML's Power and Fan
@@ -852,6 +1277,12 @@ std::vector<GPUInfo> DRMGPUProbe::enumerateGPUs()
 std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
 {
     std::vector<GPUCounters> counters;
+
+    // The first read finds the cards' DRM clients; later ones are found at each full rescan (#1267).
+    if (!m_ClientsDiscovered)
+    {
+        discoverDrmClients();
+    }
 
     for (auto& card : m_Cards)
     {
@@ -937,10 +1368,10 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
             counter.memoryAvailable = false;
         }
 
-        // GPU utilization: Not directly available via sysfs for Intel
-        // Would require reading i915_gem_objects debugfs or using IGT tools (future enhancement, #1115).
-        // Never read, so it publishes as a gap / N/A rather than a real-looking 0% (#1111).
+        // GPU utilization: i915/xe report none of their own, so utilizationPercent is never read; Domain
+        // derives it from the engine busyness of the card's DRM clients (#1267), read only while it's awake.
         counter.utilizationAvailable = false;
+        readEngineClients(card, counter);
 
         counters.push_back(counter);
     }
@@ -950,9 +1381,8 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
 
 std::vector<ProcessGPUCounters> DRMGPUProbe::readProcessGPUCounters()
 {
-    // Per-process GPU metrics are not exposed via DRM sysfs for Intel
-    // Would require fdinfo parsing or DRM client stats (kernel 5.19+)
-    // Not in scope for Phase 5
+    // The DRM clients' fdinfo is read for the card's utilization (#1267), but not yet attributed to
+    // processes: per-process GPU metrics stay unsupported here.
     return {};
 }
 

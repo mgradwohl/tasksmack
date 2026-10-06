@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#include <string_view>
 #include <utility>
 
 namespace
@@ -85,6 +86,12 @@ constexpr std::size_t INVALID_DEVICE_INDEX = std::numeric_limits<std::size_t>::m
 // can prove a runtime-suspended GPU wasn't touched (#1117). Read via tasksmackNvmlMockDeviceQueries().
 unsigned int g_DeviceQueries = 0; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - mock call counter
 
+// Per mock device, every call that addressed it, handle lookups (by index or PCI bus id) included:
+// getting a handle is what makes real NVML initialise -- and so wake -- a GPU (#1270). Read via
+// tasksmackNvmlMockQueriesForDevice().
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - mock call counters
+std::array<unsigned int, MOCK_DEVICES.size()> g_QueriesPerDevice{};
+
 [[nodiscard]] auto deviceIndex(NVML::nvmlDevice_t device) -> std::size_t
 {
     ++g_DeviceQueries;
@@ -92,6 +99,7 @@ unsigned int g_DeviceQueries = 0; // NOLINT(cppcoreguidelines-avoid-non-const-gl
     {
         if (device == &MOCK_HANDLES[i])
         {
+            ++g_QueriesPerDevice.at(i);
             return i;
         }
     }
@@ -205,6 +213,20 @@ unsigned int g_InitCalls = 0;
 // How many of the next nvmlInit_v2 calls fail with NVML_ERROR_DRIVER_NOT_LOADED, as during a driver
 // reload (#1116). Set through tasksmackNvmlMockFailInits().
 unsigned int g_FailingInits = 0;
+// #1270 review: while set, mock device 0 presents as the GPU that held its slot before a replacement --
+// another UUID, and no power reading -- so a test can tell that GPU's remembered state from the
+// replacement's own. Set through tasksmackNvmlMockSetPreviousOccupant().
+bool g_PreviousOccupant = false; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - mock test control
+constexpr const char* PREVIOUS_OCCUPANT_UUID = "mock-nvml-previous-uuid";
+// #1353: which mock device's nvmlDeviceGetPciInfo_v3 fails (NO_FAILING_HANDLE: none). Set through
+// tasksmackNvmlMockSetFailingPciInfoDevice().
+unsigned int g_FailingPciInfoIndex = NO_FAILING_HANDLE; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - mock test control
+
+/// Whether `dev` currently presents as the previous occupant of device 0's slot.
+[[nodiscard]] bool isPreviousOccupant(const MockDevice* dev)
+{
+    return g_PreviousOccupant && dev == MOCK_DEVICES.data();
+}
 
 /// Whether `dev` is the device the test marked lost (#1116). Doesn't count as a device query.
 [[nodiscard]] bool isLost(const MockDevice* dev)
@@ -245,11 +267,53 @@ extern "C"
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
         }
+        ++g_QueriesPerDevice.at(index);
         if (index == g_FailingHandleIndex)
         {
             return NVML::NVML_ERROR_UNKNOWN;
         }
         *device = &MOCK_HANDLES[index];
+        return NVML::NVML_SUCCESS;
+    }
+
+    // Matches "bus:device.function" after the domain, so the kernel's four-digit domain ("0000:01:00.0")
+    // and NVML's eight-digit one ("00000000:01:00.0") both find a device, as with real NVML.
+    // NOLINTNEXTLINE(readability-identifier-naming) - the exported NVML symbol name
+    NVML::nvmlReturn_t nvmlDeviceGetHandleByPciBusId_v2(const char* pciBusId, NVML::nvmlDevice_t* device)
+    {
+        if (pciBusId == nullptr)
+        {
+            return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        const std::string_view wanted(pciBusId);
+        const auto afterDomain = [](std::string_view busId)
+        {
+            return busId.substr(busId.find(':') + 1);
+        };
+        for (unsigned int index = 0; index < g_DeviceCount && index < MOCK_DEVICES.size(); ++index)
+        {
+            if (wanted.contains(':') && afterDomain(wanted) == afterDomain(MOCK_DEVICES.at(index).busId))
+            {
+                ++g_QueriesPerDevice.at(index);
+                if (index == g_FailingHandleIndex)
+                {
+                    return NVML::NVML_ERROR_UNKNOWN;
+                }
+                *device = &MOCK_HANDLES.at(index);
+                return NVML::NVML_SUCCESS;
+            }
+        }
+        return NVML::NVML_ERROR_NOT_FOUND;
+    }
+
+    NVML::nvmlReturn_t nvmlDeviceGetIndex(NVML::nvmlDevice_t device, unsigned int* index)
+    {
+        const auto idx = deviceIndex(device);
+        if (idx == INVALID_DEVICE_INDEX)
+        {
+            return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        *index = static_cast<unsigned int>(idx);
         return NVML::NVML_SUCCESS;
     }
 
@@ -275,6 +339,11 @@ extern "C"
         if (g_UuidCallsBeforeFailure >= 0 && std::cmp_greater(g_UuidCalls, g_UuidCallsBeforeFailure))
         {
             return NVML::NVML_ERROR_UNKNOWN;
+        }
+        if (isPreviousOccupant(dev))
+        {
+            writeString(PREVIOUS_OCCUPANT_UUID, uuid, length);
+            return NVML::NVML_SUCCESS;
         }
         if (!dev->hasUuid)
         {
@@ -355,7 +424,7 @@ extern "C"
         {
             return NVML::NVML_ERROR_GPU_IS_LOST;
         }
-        if (!dev->hasPower)
+        if (!dev->hasPower || isPreviousOccupant(dev))
         {
             return NVML::NVML_ERROR_NOT_SUPPORTED;
         }
@@ -419,6 +488,10 @@ extern "C"
         if (dev == nullptr)
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        if (g_FailingPciInfoIndex < MOCK_DEVICES.size() && dev == &MOCK_DEVICES[g_FailingPciInfoIndex])
+        {
+            return NVML::NVML_ERROR_UNKNOWN;
         }
         *pci = NVML::nvmlPciInfo_t{};
         pci->domain = 0;
@@ -515,6 +588,26 @@ extern "C"
     unsigned int tasksmackNvmlMockDeviceQueries()
     {
         return g_DeviceQueries;
+    }
+
+    // Test control (#1270): how many calls have addressed mock device `index`, handle lookups included
+    // (see g_QueriesPerDevice); 0 for an index the mock doesn't have.
+    unsigned int tasksmackNvmlMockQueriesForDevice(unsigned int index)
+    {
+        return index < g_QueriesPerDevice.size() ? g_QueriesPerDevice.at(index) : 0U;
+    }
+
+    // Test control (#1270 review): while `enabled`, device 0 presents as the GPU that held its slot
+    // before (see g_PreviousOccupant).
+    void tasksmackNvmlMockSetPreviousOccupant(int enabled)
+    {
+        g_PreviousOccupant = (enabled != 0);
+    }
+
+    // Test control (#1353): mock device `index`'s PCI-info query fails (see g_FailingPciInfoIndex).
+    void tasksmackNvmlMockSetFailingPciInfoDevice(unsigned int index)
+    {
+        g_FailingPciInfoIndex = index;
     }
 
     const char* nvmlErrorString(NVML::nvmlReturn_t /*result*/)

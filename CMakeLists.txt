@@ -102,6 +102,7 @@ set(TASKSMACK_SOURCES
     src/Core/PathService.cpp
     src/Core/VideoBackend.cpp
     src/Core/Window.cpp
+    src/Core/X11WindowManager.cpp
     src/UI/AssetPath.cpp
     src/UI/ChartLegend.cpp
     src/UI/MonospaceFontPath.cpp
@@ -369,6 +370,7 @@ if(WIN32)
         ws2_32
         dxgi
         gdi32
+        cfgmgr32 # DisplayDevicePower: a GPU's PnP power state (#1265)
         version
     )
 

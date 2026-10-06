@@ -192,6 +192,39 @@ TEST(RateAxisTest, CurrentIfAvailableIsNaNForAnUnavailableReading)
     EXPECT_DOUBLE_EQ(withCurrentValues(5.0, {currentIfAvailable(false, 1000.0)}), 5.0);
 }
 
+// ========== sharedAxisUpperBound (#1299) ==========
+
+TEST(RateAxisTest, GridCellsShareTheLargestCellsBound)
+{
+    // A busy disk at 50 MB/s and an idle one at its 1 KiB/s floor: both cells draw to the busy
+    // disk's bound, so the idle one's noise is not scaled up to fill its cell.
+    const std::array<double, 3> bounds{BYTES, 50.0e6, 2.0e6};
+    EXPECT_DOUBLE_EQ(sharedAxisUpperBound(bounds, BYTES), 50.0e6);
+}
+
+TEST(RateAxisTest, SharedBoundOfOneCellIsThatCellsBound)
+{
+    const std::array<double, 1> bounds{3.0e6};
+    EXPECT_DOUBLE_EQ(sharedAxisUpperBound(bounds, BYTES), 3.0e6);
+}
+
+TEST(RateAxisTest, SharedBoundIgnoresNonFiniteAndNonPositiveBounds)
+{
+    constexpr double NaN = std::numeric_limits<double>::quiet_NaN();
+    constexpr double INF = std::numeric_limits<double>::infinity();
+    const std::array<double, 5> bounds{NaN, INF, -5.0, 0.0, 4096.0};
+    EXPECT_DOUBLE_EQ(sharedAxisUpperBound(bounds, BYTES), 4096.0);
+}
+
+TEST(RateAxisTest, SharedBoundFallsBackToTheMinimumSpan)
+{
+    EXPECT_DOUBLE_EQ(sharedAxisUpperBound(std::span<const double>{}, BYTES), BYTES);
+    const std::array<double, 2> tiny{12.0, 500.0};
+    EXPECT_DOUBLE_EQ(sharedAxisUpperBound(tiny, BYTES), BYTES);
+    // A nonsensical minimum span counts as 1, as in rateAxisUpperBound().
+    EXPECT_DOUBLE_EQ(sharedAxisUpperBound(std::span<const double>{}, -1.0), 1.0);
+}
+
 // ========== easeAxisUpperBound (#1011) ==========
 
 TEST(RateAxisTest, EasingMovesPartWayTowardTheTargetEachFrame)

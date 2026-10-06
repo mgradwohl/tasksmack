@@ -2,6 +2,7 @@
 
 #include "App/Panel.h"
 #include "App/Panels/AdaptiveIntervalUtils.h"
+#include "App/Panels/CpuCoreGridIds.h"
 #include "App/Panels/CpuCoresSection.h"
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/MemorySection.h"
@@ -23,7 +24,6 @@
 #include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
-#include "UI/InlineText.h"
 #include "UI/LineLayout.h"
 #include "UI/RateAxis.h"
 #include "UI/TabContent.h"
@@ -92,7 +92,8 @@ constexpr const char* CPU_IOWAIT_LABEL = "I/O Wait";
 constexpr const char* CPU_IDLE_LABEL = "Idle";
 constexpr const char* POWER_LABEL = "Power";
 constexpr const char* BATTERY_LABEL = "Battery";
-// A series on a chart's right-hand axis ends in " →", pointing at it (setupSecondaryRateAxis(), #1206).
+// A series on a chart's right-hand axis ends in " →", pointing at it (setupSecondaryRateAxis(), #1206); in
+// its value-strip entry and tooltip rows the mark follows the value (SECONDARY_AXIS_MARK, #1300).
 constexpr const char* BATTERY_Y2_LABEL = "Battery →"; // Beside Power, on its own 0-100 % axis
 constexpr const char* THREADS_LABEL = "Threads";
 constexpr const char* FAULTS_LABEL = "Page Faults →"; // Right-hand axis; its values carry the "/s" ("12.0/s"), #1202
@@ -225,6 +226,7 @@ void SystemMetricsPanel::onAttach()
 void SystemMetricsPanel::onDetach()
 {
     m_Sampler.reset();
+    m_ProcessModel.reset();
     m_GPUPublication.reset();
     m_StoragePublication.reset();
     m_SystemPublication.reset();
@@ -361,10 +363,10 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
         m_GPUPublication = m_GPUModel->publication();
         m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
     }
-    if (m_ProcessModel != nullptr)
+    if (const auto processModel = m_ProcessModel.lock(); processModel != nullptr)
     {
         Domain::ProcessSystemHistories histories;
-        if (m_ProcessModel->tryCopySystemHistoriesIfNewer(m_ProcessHistoryVersion, histories))
+        if (processModel->tryCopySystemHistoriesIfNewer(m_ProcessHistoryVersion, histories))
         {
             m_ProcessHistoryVersion = histories.version;
             m_ProcessHistoryTimestamps = std::move(histories.timestamps);
@@ -372,6 +374,7 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
             m_ProcessPageFaultsHistory = std::move(histories.pageFaults);
             m_ProcessThreadCountHistory = std::move(histories.threadCount);
             m_ProcessHandleCountHistory = std::move(histories.handleCount);
+            m_ProcessCapabilities = histories.capabilities; // current, not the startup set (#1254)
             m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
         }
     }
@@ -446,7 +449,7 @@ void SystemMetricsPanel::renderContent()
             ImGui::EndTabItem();
         }
 
-        if (snap.coreCount > 1)
+        if (CpuCoresSection::showCpuCoresTab(snap.seenCoreIds, static_cast<std::size_t>(snap.coreCount)))
         {
             if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  CPU Cores"))
             {
@@ -539,6 +542,8 @@ void SystemMetricsPanel::renderContent()
 void SystemMetricsPanel::renderOverview()
 {
     const auto& snap = m_CachedSnapshot; // See renderContent() (#1017)
+    // Held for the frame: ProcessesPanel owns the model and may already have released it (#1176).
+    const std::shared_ptr<Domain::ProcessModel> processModel = m_ProcessModel.lock();
 
     // Every chart on this tab shares the height available, between a font-relative minimum and
     // maximum (UI/HistoryPlotHeight.h), instead of a fixed 180px that left up to a third of a tall
@@ -555,11 +560,11 @@ void SystemMetricsPanel::renderOverview()
 
     // Header line: CPU Model | Cores | Freq | Uptime (right-aligned). Its strings come from the
     // publications and the process count, so they are rebuilt only when one of those changes (#1171).
-    const std::size_t processCount = (m_ProcessModel != nullptr) ? m_ProcessModel->processCount() : 0;
+    const std::size_t processCount = (processModel != nullptr) ? processModel->processCount() : 0;
     const std::uint64_t systemVersion = m_SystemPublication ? m_SystemPublication->version : 0;
     const std::uint64_t gpuVersion = m_GPUPublication ? m_GPUPublication->version : 0;
     if (!m_OverviewHeader.valid || m_OverviewHeader.systemVersion != systemVersion || m_OverviewHeader.gpuVersion != gpuVersion ||
-        m_OverviewHeader.processCount != processCount || m_OverviewHeader.hasProcessModel != (m_ProcessModel != nullptr))
+        m_OverviewHeader.processCount != processCount || m_OverviewHeader.hasProcessModel != (processModel != nullptr))
     {
         // Built in a fresh OverviewHeaderText and moved in whole, validity last: a render exception is
         // caught and the app carries on, so a rebuild that throws part-way must leave the cache stale.
@@ -572,7 +577,7 @@ void SystemMetricsPanel::renderOverview()
             snap.coreCount, (snap.cpuFreqMHz > 0) ? Domain::Numeric::toDouble(snap.cpuFreqMHz) : 0.0);
 
         fresh.processes =
-            (m_ProcessModel != nullptr) ? std::format("Processes: {}", UI::Format::formatIntLocalized(processCount)) : std::string{};
+            (processModel != nullptr) ? std::format("Processes: {}", UI::Format::formatIntLocalized(processCount)) : std::string{};
 
         // Total dedicated VRAM: discrete GPUs only, an integrated GPU's "memory" being system RAM (#1114).
         const std::uint64_t totalVramBytes = m_GPUPublication ? GpuSection::totalDedicatedVramBytes(m_GPUPublication->snapshots) : 0;
@@ -584,7 +589,7 @@ void SystemMetricsPanel::renderOverview()
         fresh.systemVersion = systemVersion;
         fresh.gpuVersion = gpuVersion;
         fresh.processCount = processCount;
-        fresh.hasProcessModel = (m_ProcessModel != nullptr);
+        fresh.hasProcessModel = (processModel != nullptr);
         fresh.valid = true;
         m_OverviewHeader = std::move(fresh);
     }
@@ -744,39 +749,34 @@ void SystemMetricsPanel::renderOverview()
                 }
 
                 // The bands reach "now" like every plotLineWithFill series: the last sample held to
-                // x = 0 (UI::Widgets::holdLastValueToNow, #1016).
-                if (!m_CpuStackX.empty() && m_CpuStackX.back() < 0.0)
-                {
-                    m_CpuStackX.push_back(0.0);
-                    for (auto* band : {&y0, &yUserTop, &ySystemTop, &yIowaitTop, &yBusyTop})
-                    {
-                        band->push_back(band->back());
-                    }
-                }
+                // x = 0 (#1016), unless it is too old to pass for current (#1147).
+                UI::Widgets::holdLastValuesToNow(m_CpuStackX,
+                                                 {&y0, &yUserTop, &ySystemTop, &yIowaitTop, &yBusyTop},
+                                                 UI::Widgets::maxHoldSecondsForAxis(breakdownTimeData));
                 const int stackCount = UI::Format::checkedCount(m_CpuStackX.size());
 
-                ImPlot::PlotShaded(CPU_USER_LABEL,
-                                   m_CpuStackX.data(),
-                                   y0.data(),
-                                   yUserTop.data(),
-                                   stackCount,
-                                   {ImPlotProp_FillColor, theme.scheme().cpuUserFill});
-
-                ImPlot::PlotShaded(CPU_SYSTEM_LABEL,
-                                   m_CpuStackX.data(),
-                                   yUserTop.data(),
-                                   ySystemTop.data(),
-                                   stackCount,
-                                   {ImPlotProp_FillColor, theme.scheme().cpuSystemFill});
-
+                // ImPlot's shaded renderer has no NaN handling, so each band is filled run by run over
+                // the points where both of its edges have a reading: a gap point (a missed sample) or
+                // a band with no reading is drawn as a gap, not as triangles through NaN (#1149).
+                const auto shadeBand =
+                    [&](const char* label, const std::vector<double>& lower, const std::vector<double>& upper, const ImVec4& fillColor)
+                {
+                    UI::Widgets::forEachJointFiniteRun(
+                        lower.data(),
+                        upper.data(),
+                        stackCount,
+                        [&](int runStart, int runLength)
+                        {
+                            const auto at = static_cast<std::size_t>(runStart);
+                            ImPlot::PlotShaded(
+                                label, &m_CpuStackX[at], &lower[at], &upper[at], runLength, {ImPlotProp_FillColor, fillColor});
+                        });
+                };
+                shadeBand(CPU_USER_LABEL, y0, yUserTop, theme.scheme().cpuUserFill);
+                shadeBand(CPU_SYSTEM_LABEL, yUserTop, ySystemTop, theme.scheme().cpuSystemFill);
                 if (showIowait)
                 {
-                    ImPlot::PlotShaded(CPU_IOWAIT_LABEL,
-                                       m_CpuStackX.data(),
-                                       yBusyTop.data(),
-                                       yIowaitTop.data(),
-                                       stackCount,
-                                       {ImPlotProp_FillColor, theme.scheme().cpuIowaitFill});
+                    shadeBand(CPU_IOWAIT_LABEL, yBusyTop, yIowaitTop, theme.scheme().cpuIowaitFill);
                 }
 
                 // An edge along the top of each band, under the band's own label, in its opaque
@@ -890,7 +890,7 @@ void SystemMetricsPanel::renderOverview()
     // Power & Battery history chart (combines per-process power aggregation with battery charge %).
     // Power is drawn only where the process probe actually measures it: on Windows it does not, and
     // used to show a fabricated figure (#1028). Without it the chart is a plain Battery chart.
-    const bool hasProcessPower = (m_ProcessModel != nullptr) && m_ProcessModel->capabilities().hasPowerUsage;
+    const bool hasProcessPower = (processModel != nullptr) && m_ProcessCapabilities.hasPowerUsage;
     if (hasProcessPower || snap.power.hasBattery)
     {
         // Get power history from ProcessModel (aggregated per-process power)
@@ -971,8 +971,10 @@ void SystemMetricsPanel::renderOverview()
                 // chart's value strip; it was a separate right-aligned status there.
                 bars.push_back({.valueText = UI::Format::formatPercent(m_SmoothedPower.batteryChargePercent),
                                 .label = batteryLabel,
-                                .tooltipText = UI::InlineText::format("{}: {}", batteryLabel, Detail::batteryHeaderStatus(snap.power)),
-                                .value01 = UI::Format::percent01(m_SmoothedPower.batteryChargePercent),
+                                .tooltipText = UI::Widgets::tooltipRowText(batteryLabel, Detail::batteryHeaderStatus(snap.power)),
+                                // Scaled to the battery axis's top, headroom included, so the bar meets the line.
+                                .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedPower.batteryChargePercent,
+                                                                                UI::Widgets::PERCENT_AXIS_UPPER_WITH_HEADROOM),
                                 .color = theme.scheme().chartMemory});
             }
 
@@ -982,21 +984,25 @@ void SystemMetricsPanel::renderOverview()
                 // power, Battery is the only series and takes the primary axis as a percentage, so no
                 // Watts axis is left labelling nothing.
                 const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
-                    UI::Widgets::withHeight(hasProcessPower
-                                                ? UI::Widgets::rateHistoryConfigWithUpper(
-                                                      "##PowerBatteryHistory", axis.xMin, axis.xMax, formatAxisWatts, powerAxisUpper)
-                                                : UI::Widgets::percentHistoryConfig("##PowerBatteryHistory", axis.xMin, axis.xMax),
-                                            plotHeight),
+                    UI::Widgets::withHeight(
+                        hasProcessPower ? UI::Widgets::rateHistoryConfigWithUpper(
+                                              "##PowerBatteryHistory", axis.xMin, axis.xMax, formatAxisWatts, powerAxisUpper)
+                                        : UI::Widgets::percentHistoryConfigWithHeadroom("##PowerBatteryHistory", axis.xMin, axis.xMax),
+                        plotHeight),
                     m_ChartDataGeneration));
                 if (chart.active())
                 {
                     // Secondary Y-axis: Battery % (0-100), labelled like any second axis (#1206). Its
                     // ticks were hidden to keep the time axis aligned with the charts above, which left
                     // the battery line reading against a Watts axis; the stack is aligned by
-                    // AlignedChartStack now instead.
+                    // AlignedChartStack now instead. Drawn a little past 100 % with ticks up to 100, so a full
+                    // battery's line sits below the top edge instead of on it (#1300).
                     if (hasProcessPower && snap.power.hasBattery && !batteryHist.empty())
                     {
-                        UI::Widgets::setupSecondaryRateAxis(100.0, UI::Widgets::formatAxisPercent, theme.scheme().chartMemory);
+                        UI::Widgets::setupSecondaryRateAxis(UI::Widgets::PERCENT_AXIS_UPPER_WITH_HEADROOM,
+                                                            UI::Widgets::formatAxisPercent,
+                                                            theme.scheme().chartMemory,
+                                                            100.0);
                     }
                     // After all axis setup: the hint reads the plot's geometry, which locks setup (#1013).
                     UI::Widgets::drawCollectingHint(alignedCount);
@@ -1113,7 +1119,7 @@ void SystemMetricsPanel::renderOverview()
     }
 
     // Threads, Page Faults, and Handles/FDs combined (aggregated from processes)
-    if (m_ProcessModel != nullptr)
+    if (processModel != nullptr)
     {
         const auto& procTimestamps = m_ProcessHistoryTimestamps;
         const auto& pageFaultHist = m_ProcessPageFaultsHistory;

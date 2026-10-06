@@ -1,6 +1,7 @@
 #include "WindowsProcessProbe.h"
 
 #include "Domain/Numeric.h"
+#include "Platform/CpuAffinity.h"
 #include "WindowsProcessActionsMath.h"
 #include "WindowsProcessProbeMath.h"
 
@@ -933,7 +934,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         counters.publisher = cache.publisher;
         counters.processType = cache.processType;
         counters.gdiObjectCount = cache.gdiObjectCount;
-        counters.cpuAffinityMask = cache.cpuAffinityMask;
+        counters.cpuAffinity = cache.cpuAffinity;
         counters.nice = cache.nice;
     }
 
@@ -1009,11 +1010,13 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         if (GetProcessAffinityMask(hProcess, &processAffinityMask, &systemAffinityMask) != 0)
         {
             // Safe: DWORD_PTR is pointer-sized (64-bit on x64); uint64_t can hold all values.
-            counters.cpuAffinityMask = static_cast<std::uint64_t>(processAffinityMask);
+            // Still the primary processor group's mask only, bit N = processor N of that group:
+            // mapping every group to global indices is #1247's Windows half.
+            counters.cpuAffinity = CpuAffinity::fromMask(static_cast<std::uint64_t>(processAffinityMask));
         }
         else
         {
-            counters.cpuAffinityMask = 0;
+            counters.cpuAffinity = CpuAffinity{};
         }
     }
     fallBackToName();
@@ -1057,7 +1060,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         cache.command = counters.command;
         cache.publisher = counters.publisher;
         cache.processType = counters.processType;
-        cache.cpuAffinityMask = counters.cpuAffinityMask;
+        cache.cpuAffinity = counters.cpuAffinity;
         if (canCache)
         {
             cache.nextHeavyRefresh = now + m_HeavyDetailTTL;
@@ -1110,7 +1113,16 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
 
 uint64_t WindowsProcessProbe::totalCpuTime() const
 {
-    return readTotalCpuTime();
+    // GetSystemTimes sums per-processor times that aren't updated atomically, so under load a read
+    // can come back lower than the one before (#1303: ~0.94 s lower, 10 ms apart). The total is a
+    // cumulative counter, so it never goes backwards: a lower read returns the highest seen. Callers
+    // (ProcessModel) already treat a total that didn't grow as "no delta this sample".
+    const std::uint64_t reading = readTotalCpuTime();
+    std::uint64_t highest = m_HighestTotalCpuTime.load(std::memory_order_relaxed);
+    while (reading > highest && !m_HighestTotalCpuTime.compare_exchange_weak(highest, reading, std::memory_order_relaxed))
+    {
+    }
+    return std::max(reading, highest);
 }
 
 uint64_t WindowsProcessProbe::readTotalCpuTime()

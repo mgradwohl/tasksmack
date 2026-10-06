@@ -84,10 +84,8 @@ class SystemModel : public ISamplable
     /// Trims the history to the new window and republishes it at once, once anything has been
     /// published, rather than leaving the old window on show until the next sample (#1145).
     void setMaxHistorySeconds(double seconds);
-    [[nodiscard]] double maxHistorySeconds() const
-    {
-        return m_MaxHistorySeconds;
-    }
+    /// Thread-safe: read under m_Mutex, which setMaxHistorySeconds() writes it under (#1176).
+    [[nodiscard]] double maxHistorySeconds() const;
 
     /// The network rate ceiling, bytes/s ([metrics] max_sane_rate_bps, shared with ProcessModel, #1291).
     /// An interface rate (or the aggregate fallback rate) above it is taken for a counter glitch: it
@@ -157,6 +155,7 @@ class SystemModel : public ISamplable
     std::unordered_map<std::string, double> m_InterfaceLastSeenSeconds;
     HistoryBuffer<double> m_Timestamps;
     std::vector<HistoryBuffer<float>> m_PerCoreHistory; // Indexed by core id, not probe list position (#1229)
+    std::vector<std::size_t> m_SeenCoreIds;             // Every core id reported this session, ascending (#1262)
 
     double m_MaxHistorySeconds = Domain::Sampling::HISTORY_SECONDS_DEFAULT; // Default 5 minutes
     std::atomic<double> m_MaxSaneNetworkRateBps{Sampling::MAX_SANE_RATE_BPS_DEFAULT};

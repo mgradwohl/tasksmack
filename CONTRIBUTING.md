@@ -404,6 +404,12 @@ the untested logic needs OS handles or not:
    `clampNonNegativeQuadPart`). Writing tests against `parsePowerStatus` this way is what caught
    a real bug: `BATTERY_FLAG_UNKNOWN` (0xFF) also has the `BATTERY_FLAG_NO_BATTERY` bit (0x80)
    set, so the original bitmask-first check order made the `Unknown` battery state unreachable.
+   Test a header that reaches no Windows header (directly or through its includes) in
+   `tests/Platform/WindowsMath/test_<Header>.cpp`, listed in `WINDOWS_MATH_TEST_SOURCES`: those
+   files are built on every platform, so Linux CI runs the Windows probes' arithmetic under its
+   sanitizers and coverage as well (#1133). Such a test file must not include `windows.h` or use
+   SDK macros (`NO_ERROR`, `ERROR_*`, `BATTERY_FLAG_*`); use the header's own constants. Tests that
+   need a probe, Windows types or fakes of Windows APIs stay in `tests/Platform/test_Windows*.cpp`.
 2. **Logic that must stay behind real OS handles/dynamically-loaded function pointers (e.g.
    NVML's `nvmlDevice_t`/function table): use a friend test-accessor struct**, declared as a
    single `friend struct FooTestAccessor;` line in the production class and defined only in the

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Platform/CpuAffinity.h"
 #include "Platform/IProcessProbe.h"
 #include "WindowsProcessProbeMath.h"
 
@@ -128,9 +129,9 @@ class WindowsProcessProbe : public IProcessProbe
         std::string processType;
         std::optional<std::int32_t> gdiObjectCount; // GetGuiResources (light TTL, #1156)
         // Slow-changing fields cached with light/heavy TTL to avoid redundant Win32 calls.
-        std::uint64_t cpuAffinityMask = 0; // GetProcessAffinityMask (heavy TTL)
-        std::int32_t nice = 0;             // GetPriorityClass → nice value (heavy TTL, or when the base priority changes)
-        std::int32_t basePriority = 0;     // Snapshot base priority last seen; a change re-reads the class (#1156)
+        CpuAffinity cpuAffinity;       // GetProcessAffinityMask (heavy TTL)
+        std::int32_t nice = 0;         // GetPriorityClass → nice value (heavy TTL, or when the base priority changes)
+        std::int32_t basePriority = 0; // Snapshot base priority last seen; a change re-reads the class (#1156)
         std::chrono::steady_clock::time_point nextLightRefresh;
         std::chrono::steady_clock::time_point nextHeavyRefresh;
         std::uint64_t generation = 0;
@@ -144,6 +145,8 @@ class WindowsProcessProbe : public IProcessProbe
 
     /// Read total system CPU time
     [[nodiscard]] static uint64_t readTotalCpuTime();
+    // The highest total totalCpuTime() has returned, so it never steps backwards (#1303).
+    mutable std::atomic<std::uint64_t> m_HighestTotalCpuTime{0};
 
     /// Calculate detail cache TTLs based on total physical RAM
     static void calculateDetailTTLsFromTotalRAM(std::chrono::milliseconds& lightTTL, std::chrono::milliseconds& heavyTTL) noexcept;

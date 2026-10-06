@@ -18,6 +18,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -833,6 +834,94 @@ TEST(SystemModelTest, ImplausibleCoreIdIsDropped)
     EXPECT_EQ(snap.coreCount, 1); // the dropped id isn't counted as a core either
 }
 
+namespace
+{
+
+/// Sets a sample whose per-core list reports exactly `onlineIds`, each core 10% busy per 1000 ticks.
+void setCoreSample(MockSystemProbe& probe, std::uint64_t sample, const std::vector<std::size_t>& onlineIds)
+{
+    auto counters = makeSystemCounters(makeCpuCounters(0, 0, 0, 1000 * sample), makeMemoryCounters(1024, 512));
+    for (const std::size_t id : onlineIds)
+    {
+        auto core = makeCpuCounters(100 * sample, 0, 0, 900 * sample);
+        core.coreId = id;
+        counters.cpuPerCore.push_back(core);
+    }
+    probe.setCounters(counters);
+}
+
+} // namespace
+
+TEST(SystemModelTest, SeenCoreIdsListOnlyTheIdsTheProbeReported)
+{
+    // Ids 4 and 5 are never reported (a Windows group's reserved hot-add capacity, or Linux CPUs
+    // never online). The per-core slots run to the highest id, but only the seven reported ids are
+    // published as seen, so the CPU Cores grid charts seven cores, not nine (#1262).
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+    const std::vector<std::size_t> reported{0, 1, 2, 3, 6, 7, 8};
+
+    setCoreSample(*rawProbe, 0, reported);
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+    setCoreSample(*rawProbe, 1, reported);
+    model.refresh();
+
+    const auto publication = model.publication();
+    ASSERT_NE(publication, nullptr);
+    EXPECT_EQ(publication->snapshot.seenCoreIds, reported);
+    EXPECT_EQ(publication->snapshot.cpuPerCore.size(), 9U); // slots still indexed by id (#1229)
+    EXPECT_EQ(publication->snapshot.coreCount, 7);
+    EXPECT_EQ(model.snapshot().seenCoreIds, reported);
+}
+
+TEST(SystemModelTest, SeenCoreIdsAreKnownFromTheFirstSample)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+    setCoreSample(*rawProbe, 0, {2, 0, 1}); // listed out of order: published ascending
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+
+    EXPECT_EQ(model.snapshot().seenCoreIds, (std::vector<std::size_t>{0, 1, 2}));
+}
+
+TEST(SystemModelTest, ACoreSeenThenOfflineStaysInSeenCoreIds)
+{
+    // A CPU that goes offline keeps its chart, with a gap (#1229): its id stays seen, both for an
+    // interior CPU and for the highest one, whose slot the snapshot no longer needs.
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    setCoreSample(*rawProbe, 0, {0, 1, 2, 3});
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+    setCoreSample(*rawProbe, 1, {0, 1, 2, 3});
+    model.refresh();
+    setCoreSample(*rawProbe, 2, {0, 1, 3}); // cpu2 offline
+    model.refresh();
+    EXPECT_EQ(model.snapshot().seenCoreIds, (std::vector<std::size_t>{0, 1, 2, 3}));
+    EXPECT_TRUE(std::isnan(model.snapshot().cpuPerCore[2].totalPercent));
+
+    setCoreSample(*rawProbe, 3, {0, 1}); // cpu3 offline too
+    model.refresh();
+    setCoreSample(*rawProbe, 4, {0, 1});
+    model.refresh();
+    EXPECT_EQ(model.snapshot().seenCoreIds, (std::vector<std::size_t>{0, 1, 2, 3}));
+    EXPECT_EQ(model.perCoreHistory().size(), 4U); // history keeps their slots for the charts
+}
+
+TEST(SystemModelTest, ImplausibleCoreIdIsNotSeen)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+    setCoreSample(*rawProbe, 0, {0, std::numeric_limits<std::size_t>::max()});
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+
+    EXPECT_EQ(model.snapshot().seenCoreIds, (std::vector<std::size_t>{0}));
+}
+
 TEST(SystemModelTest, HotAddedCoreIsBackfilledWithGaps)
 {
     // A core that appears mid-run gets NaN for the samples before it existed (a gap, not a fake
@@ -1122,6 +1211,44 @@ TEST(SystemModelTest, MaxHistorySecondsClamped)
     // NaN maps to the minimum instead of passing through the clamp (#1325)
     model.setMaxHistorySeconds(std::numeric_limits<double>::quiet_NaN());
     EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), Domain::Sampling::HISTORY_SECONDS_MIN);
+}
+
+// #1176: maxHistorySeconds() reads under the lock setMaxHistorySeconds() writes under, so reading it
+// while another thread changes it (and samples) is no data race. Run under the tsan preset to check;
+// elsewhere it checks every value read is one of those written.
+TEST(SystemModelTest, MaxHistorySecondsIsSafeToReadWhileItChanges)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    probe->setCounters(makeSystemCounters(makeCpuCounters(100, 0, 50, 500), makeMemoryCounters(1024, 512)));
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+
+    constexpr double SHORT_WINDOW = 60.0;
+    constexpr double LONG_WINDOW = 600.0;
+    constexpr int ITERATIONS = 500;
+    std::atomic<bool> done{false};
+    std::thread writer(
+        [&model, &done]()
+        {
+            for (int i = 0; i < ITERATIONS; ++i)
+            {
+                model.setMaxHistorySeconds((i % 2 == 0) ? SHORT_WINDOW : LONG_WINDOW);
+                model.refresh();
+            }
+            done = true;
+        });
+
+    bool onlyWrittenValues = true;
+    while (!done)
+    {
+        const double seconds = model.maxHistorySeconds();
+        onlyWrittenValues = onlyWrittenValues &&
+                            (seconds == SHORT_WINDOW || seconds == LONG_WINDOW || seconds == Domain::Sampling::HISTORY_SECONDS_DEFAULT);
+    }
+    writer.join();
+
+    EXPECT_TRUE(onlyWrittenValues);
+    EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), LONG_WINDOW); // the last write
 }
 
 // #1145: a window change republishes the trimmed history at once instead of leaving the old window's
@@ -1610,6 +1737,53 @@ TEST(SystemModelTest, TheConfiguredNetworkCeilingAppliesToInterfaceRates)
     EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].rxBytesPerSec, 0.0);
     EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].txBytesPerSec, Domain::Sampling::MAX_SANE_RATE_BPS_MIN) << "at the ceiling is kept";
     EXPECT_TRUE(std::isnan(model.netRxHistoryForInterface("eth0")[0]));
+}
+
+TEST(SystemModelTest, TheNetworkCeilingAppliesToTheAggregateCounterFallback)
+{
+    // #1337: a probe with no per-interface counters falls back to the summed netRxBytes/netTxBytes.
+    // That branch applies the same ceiling (#1291): above it the snapshot reads 0 and the history
+    // has a NaN gap; exactly at it the rate is kept.
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    model.setMaxSaneNetworkRate(Domain::Sampling::MAX_SANE_RATE_BPS_MIN);
+    const auto ceiling = static_cast<uint64_t>(Domain::Sampling::MAX_SANE_RATE_BPS_MIN);
+    const auto cpu = makeCpuCounters(100, 0, 50, 850);
+    const auto memory = makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024);
+    const auto sampleAggregate = [&](uint64_t rx, uint64_t tx, double nowSeconds)
+    {
+        model.updateFromCounters(makeSystemCounters(cpu, memory, 0, {}, rx, tx, {}), nowSeconds);
+    };
+
+    sampleAggregate(0, 0, 1.0);
+    sampleAggregate(ceiling + 1, ceiling, 2.0); // rx 1 B/s over the ceiling, tx exactly at it
+
+    auto snap = model.snapshot();
+    ASSERT_TRUE(snap.networkInterfaces.empty()) << "the fallback branch needs a probe with no interfaces";
+    EXPECT_DOUBLE_EQ(snap.netRxBytesPerSec, 0.0) << "over the ceiling is a glitch, not traffic";
+    EXPECT_DOUBLE_EQ(snap.netTxBytesPerSec, Domain::Sampling::MAX_SANE_RATE_BPS_MIN) << "at the ceiling is kept";
+
+    auto rxHistory = model.netRxHistory();
+    auto txHistory = model.netTxHistory();
+    ASSERT_EQ(rxHistory.size(), 1U);
+    ASSERT_EQ(txHistory.size(), 1U);
+    EXPECT_TRUE(std::isnan(rxHistory[0])) << "a gap, not a spike or a false 0";
+    EXPECT_FLOAT_EQ(txHistory[0], static_cast<float>(Domain::Sampling::MAX_SANE_RATE_BPS_MIN));
+
+    // The other way round on the next sample, and an ordinary rate after the glitch is measured again.
+    sampleAggregate((2 * ceiling) + 1, (3 * ceiling) + 1, 3.0);
+    sampleAggregate((2 * ceiling) + 1'001, (3 * ceiling) + 501, 4.0);
+
+    snap = model.snapshot();
+    EXPECT_DOUBLE_EQ(snap.netRxBytesPerSec, 1'000.0);
+    EXPECT_DOUBLE_EQ(snap.netTxBytesPerSec, 500.0);
+    rxHistory = model.netRxHistory();
+    txHistory = model.netTxHistory();
+    ASSERT_EQ(rxHistory.size(), 3U);
+    ASSERT_EQ(txHistory.size(), 3U);
+    EXPECT_FLOAT_EQ(rxHistory[1], static_cast<float>(Domain::Sampling::MAX_SANE_RATE_BPS_MIN));
+    EXPECT_TRUE(std::isnan(txHistory[1]));
+    EXPECT_FLOAT_EQ(rxHistory[2], 1'000.0F);
+    EXPECT_FLOAT_EQ(txHistory[2], 500.0F);
 }
 
 TEST(SystemModelTest, InterfaceSnapshotsSayWhetherThePlatformClassifiedThem)

@@ -80,6 +80,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_SocketTrafficAccumulator.cpp
     Domain/test_GPUModel.cpp
     Domain/test_ProcessStatus.cpp
+    Domain/test_ProcessState.cpp
     Domain/test_SystemModel.cpp
     Domain/test_StorageModel.cpp
     Domain/test_BackgroundSampler.cpp
@@ -121,12 +122,16 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessTableSettings.cpp
     App/test_ProcessDetailsLayout.cpp
     App/test_GpuClockReference.cpp
+    App/test_GpuSeriesScale.cpp
     App/test_GpuSectionEmptyState.cpp
     App/test_GpuSectionDrawList.cpp
     App/test_ProcessRowFormat.cpp
+    App/test_ProcessStateColor.cpp
+    App/test_CpuCoreGridIds.cpp
     Platform/test_CgroupFreezerPath.cpp
     Platform/test_ProcessIdentity.cpp
     Platform/test_ProcessName.cpp
+    Platform/test_CpuAffinity.cpp
     App/test_FpsCounter.cpp
     App/test_Panel.cpp
     App/test_ProcessesPanel.cpp
@@ -147,7 +152,21 @@ set(COMMON_TEST_SOURCES
     App/test_NetInterfaceUtils.cpp
     App/test_PowerStatusText.cpp
     App/test_ElevationNoticeText.cpp
+    App/test_FontSizeChange.cpp
 )
+# The Windows probes' pure *Math.h helpers include no Windows header, so their tests are built on
+# every platform: Linux CI runs them under its sanitizers and coverage too (#1133). Tests that need
+# a probe, Windows types or fakes of Windows APIs stay in WINDOWS_PLATFORM_TEST_SOURCES.
+set(WINDOWS_MATH_TEST_SOURCES
+    Platform/WindowsMath/test_DXGIGPUProbeMath.cpp
+    Platform/WindowsMath/test_WindowsDiskProbeMath.cpp
+    Platform/WindowsMath/test_WindowsGPUProbeMath.cpp
+    Platform/WindowsMath/test_WindowsPathProviderMath.cpp
+    Platform/WindowsMath/test_WindowsPowerProbeMath.cpp
+    Platform/WindowsMath/test_WindowsProcessProbeMath.cpp
+    Platform/WindowsMath/test_WindowsSystemProbeMath.cpp
+)
+list(APPEND COMMON_TEST_SOURCES ${WINDOWS_MATH_TEST_SOURCES})
 set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_ProcessProbeContract.cpp
     Platform/test_SystemProbeContract.cpp
@@ -164,6 +183,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsPDHGPUProbe.cpp
     Platform/test_WindowsGPUProbe.cpp
     Platform/test_WindowsDXGIGPUProbe.cpp
+    Platform/test_WindowsGPURescan.cpp
     Platform/test_WindowsProcAddress.cpp
     Platform/test_WinString.cpp
 )
@@ -261,6 +281,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Core/PathService.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/VideoBackend.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/Window.cpp
+    ${CMAKE_SOURCE_DIR}/src/Core/X11WindowManager.cpp
     # App layer
     ${CMAKE_SOURCE_DIR}/src/App/UserConfig.cpp
     ${CMAKE_SOURCE_DIR}/src/App/InstanceLock.cpp
@@ -386,6 +407,7 @@ if(WIN32)
         userenv
         dxgi
         gdi32
+        cfgmgr32 # DisplayDevicePower: a GPU's PnP power state (#1265)
         version
     )
 endif()
