@@ -12,6 +12,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <ios>
 #include <optional>
 #include <string>
 #include <vector>
@@ -429,7 +430,11 @@ TEST(ROCmGPUProbeMathTest, AnApuGraphicsCoreVersionIsIntegrated)
                                  GcIpVersion{.major = 10, .minor = 3, .revision = 3},
                                  GcIpVersion{.major = 11, .minor = 0, .revision = 1},
                                  GcIpVersion{.major = 11, .minor = 5, .revision = 0},
-                                 GcIpVersion{.major = 11, .minor = 5, .revision = 1}})
+                                 GcIpVersion{.major = 11, .minor = 5, .revision = 1},
+                                 GcIpVersion{.major = 11, .minor = 5, .revision = 4},
+                                 GcIpVersion{.major = 11, .minor = 5, .revision = 6},
+                                 GcIpVersion{.major = 11, .minor = 7, .revision = 0},
+                                 GcIpVersion{.major = 11, .minor = 7, .revision = 1}})
     {
         EXPECT_TRUE(ROCmGPUProbeMath::isAmdApu(gc, std::nullopt)) << gc.major << "." << gc.minor << "." << gc.revision;
     }
@@ -457,6 +462,22 @@ TEST(ROCmGPUProbeMathTest, WithoutAGraphicsCoreVersionTheDeviceIdDecides)
     EXPECT_TRUE(ROCmGPUProbeMath::isAmdApu(std::nullopt, std::uint16_t{0x131D}));  // Kaveri, last of its range
     EXPECT_TRUE(ROCmGPUProbeMath::isAmdApu(std::nullopt, std::uint16_t{0x1586}));  // Strix Halo
     EXPECT_FALSE(ROCmGPUProbeMath::isAmdApu(std::nullopt, std::uint16_t{0x131E})); // just past Kaveri
+    // Gaps in Kaveri's ids that the kernel's pciidlist doesn't flag AMD_IS_APU (#1343 review).
+    for (const std::uint16_t gap : {std::uint16_t{0x1308}, std::uint16_t{0x1314}, std::uint16_t{0x1319}, std::uint16_t{0x131A}})
+    {
+        EXPECT_FALSE(ROCmGPUProbeMath::isAmdApu(std::nullopt, gap)) << std::hex << gap;
+    }
+    // Every Cyan Skillfish id the kernel flags AMD_IS_APU (#1343 review).
+    for (const std::uint16_t id : {std::uint16_t{0x13DB},
+                                   std::uint16_t{0x13F9},
+                                   std::uint16_t{0x13FA},
+                                   std::uint16_t{0x13FB},
+                                   std::uint16_t{0x13FC},
+                                   std::uint16_t{0x13FE},
+                                   std::uint16_t{0x143F}})
+    {
+        EXPECT_TRUE(ROCmGPUProbeMath::isAmdApu(std::nullopt, id)) << std::hex << id;
+    }
     EXPECT_FALSE(ROCmGPUProbeMath::isAmdApu(std::nullopt, std::uint16_t{0x73BF})); // Navi 21
     EXPECT_FALSE(ROCmGPUProbeMath::isAmdApu(std::nullopt, std::uint16_t{0x744C})); // Navi 31
     EXPECT_FALSE(ROCmGPUProbeMath::isAmdApu(std::nullopt, std::nullopt)) << "no signal: discrete, as before #1266";
