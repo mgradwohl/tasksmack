@@ -127,6 +127,34 @@ TEST(GPUModelTest, PerProcessSupportFlagsFollowTheProbesCapabilities)
     EXPECT_TRUE(drmLike->perProcessUtilizationKnownUnsupported());
 }
 
+TEST(GPUModelTest, ProcessGpuDataComesWithTheSupportItWasReadUnder)
+{
+    // #1210: the counters and the flags from one operation, so a generation is never stamped
+    // supported while the read short-circuited empty, or the reverse.
+    auto probe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    caps.hasPerProcessUtilization = false; // NVML-like
+    probe->withCapabilities(caps);
+    probe->withProcessGPU(100, "GPU0", 1024 * 1024);
+    auto* rawProbe = probe.get();
+    Domain::GPUModel model(std::move(probe));
+
+    const auto reading = model.readProcessGPUData();
+    EXPECT_TRUE(reading.perProcessSupported);
+    EXPECT_FALSE(reading.utilizationSupported);
+    EXPECT_EQ(reading.counters.size(), 1U);
+
+    // Lost on re-enumeration: no read, and the reading says so.
+    Platform::GPUCapabilities none;
+    rawProbe->withCapabilities(none).withRescanReportingChange();
+    model.refresh();
+    const auto after = model.readProcessGPUData();
+    EXPECT_FALSE(after.perProcessSupported);
+    EXPECT_FALSE(after.utilizationSupported);
+    EXPECT_TRUE(after.counters.empty());
+}
+
 TEST(GPUModelTest, ReadProcessGPUCountersSkipsProbeWhenCapabilityUnsupported)
 {
     // Regression test for #843 Phase 3b: backends that can never return per-process data

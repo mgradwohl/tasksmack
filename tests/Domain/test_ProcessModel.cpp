@@ -2765,6 +2765,53 @@ TEST(ProcessModelTest, InteractionModeReusesCachedGpuDataBetweenMerges)
 
     EXPECT_EQ(rawGpuProbe->readProcessCountersCallCount(), initialProcessGpuQueryCount + 1);
 }
+// #1210: a generation that reuses the previous one's GPU fields (the throttled interaction path) is
+// stamped with the support those fields were read under, not the GPU model's current flags.
+TEST(ProcessModelTest, CachedGpuDataKeepsTheSupportItWasReadWith)
+{
+    auto currentTime = Domain::ProcessModel::Clock::time_point{};
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    auto* rawProcessProbe = processProbe.get();
+    rawProcessProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1000, 500)});
+    rawProcessProbe->setTotalCpuTime(100000);
+
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    auto* rawGpuProbe = gpuProbe.get();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    caps.hasPerProcessUtilization = true;
+    gpuProbe->withCapabilities(caps);
+    gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor").withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024);
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+
+    Domain::ProcessModel processModel(std::move(processProbe), [&currentTime] { return currentTime; });
+    processModel.setGPUModel(gpuModel);
+    processModel.watchProcess(100);
+    gpuModel->refresh();
+    processModel.refresh(); // Merged: supported
+
+    // The GPU model loses per-process utilization; the next generation reuses the cached fields.
+    Platform::GPUCapabilities withoutUtilization = caps;
+    withoutUtilization.hasPerProcessUtilization = false;
+    rawGpuProbe->withCapabilities(withoutUtilization).withRescanReportingChange();
+    gpuModel->refresh();
+    ASSERT_TRUE(gpuModel->perProcessUtilizationKnownUnsupported());
+
+    processModel.setInteractionActive(true);
+    currentTime += std::chrono::milliseconds(500);
+    rawProcessProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1100, 500)});
+    rawProcessProbe->setTotalCpuTime(200000);
+    processModel.refresh(); // Throttled: cached GPU fields, not read again
+
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(processModel.watchedSamplesSince(0, samples));
+    ASSERT_EQ(samples.size(), 2U);
+    EXPECT_TRUE(samples[0].gpuUtilizationSupported);
+    EXPECT_TRUE(samples[1].gpuUtilizationSupported); // Read under the earlier support
+    ASSERT_NE(samples[1].snapshot, nullptr);
+    EXPECT_EQ(samples[1].snapshot->gpuMemoryBytes, 512ULL * 1024 * 1024);
+}
+
 // Edge case: GPU counters with empty list (no GPUs found)
 TEST(ProcessModelTest, MergeGPUDataWithEmptyCounters)
 {

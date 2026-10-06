@@ -587,16 +587,32 @@ std::vector<Platform::ProcessGPUCounters> GPUModel::readProcessGPUCounters() con
     // e.g. Linux Intel DRM, which always returns empty here. When discovery failed, fall
     // through to the lock-and-call path unconditionally, matching this method's behavior
     // before this capability check existed.
+    return readProcessGPUData().counters;
+}
+
+GPUModel::ProcessGPUReading GPUModel::readProcessGPUData() const
+{
     if (!m_Probe)
     {
         return {};
     }
+    // The hot early exit described above: unsupported, and nothing read, from the same load.
     if (m_PerProcessKnownUnsupported.load(std::memory_order_acquire))
     {
         return {};
     }
     const std::scoped_lock probeLock(m_ProbeMutex);
-    return m_Probe->readProcessGPUCounters();
+    // Re-read under the probe lock: rescanGPUs(), which can change the flags, runs holding it, so
+    // these are the flags the read below happens under (#1210).
+    ProcessGPUReading reading;
+    reading.perProcessSupported = !m_PerProcessKnownUnsupported.load(std::memory_order_acquire);
+    if (!reading.perProcessSupported)
+    {
+        return reading;
+    }
+    reading.utilizationSupported = !m_PerProcessUtilizationKnownUnsupported.load(std::memory_order_acquire);
+    reading.counters = m_Probe->readProcessGPUCounters();
+    return reading;
 }
 
 GPUSnapshot

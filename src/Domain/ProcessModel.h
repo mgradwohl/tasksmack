@@ -282,11 +282,20 @@ class ProcessModel : public ISamplable
     /// Requires m_SamplingMutex held.
     void computeSnapshotsLocked(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime);
 
-    static void mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel);
+    /// What the GPU probe supplied per process for a merge (#1210): the support the per-process GPU
+    /// counters were read under, so the generation is stamped with exactly that.
+    struct GpuMergeSupport
+    {
+        bool perProcess = false;
+        bool utilization = false;
+    };
+
+    static GpuMergeSupport mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel);
 
     /// mergeGPUData(), contained: a throwing GPU merge must not stop process publication (#1142).
-    /// On a throw the snapshots are published without GPU fields. Requires m_SamplingMutex held.
-    void mergeGPUDataContained(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel);
+    /// On a throw the snapshots are published without GPU fields, as unsupported. Requires
+    /// m_SamplingMutex held.
+    GpuMergeSupport mergeGPUDataContained(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel);
 
     /// Records @p sample as the newest watched sample, returning the one it displaced from the ring
     /// (for the caller to destroy after releasing the lock). Requires m_Mutex held exclusively.

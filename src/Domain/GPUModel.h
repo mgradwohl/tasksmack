@@ -179,6 +179,20 @@ class GPUModel : public ISamplable
     // Per-process GPU counters (called by ProcessModel to enrich process snapshots)
     [[nodiscard]] std::vector<Platform::ProcessGPUCounters> readProcessGPUCounters() const;
 
+    /// Per-process GPU counters together with the per-process support they were read under (#1210).
+    struct ProcessGPUReading
+    {
+        std::vector<Platform::ProcessGPUCounters> counters;
+        bool perProcessSupported = false;  ///< Not known to lack per-process metrics
+        bool utilizationSupported = false; ///< ...nor per-process utilization among them
+    };
+
+    /// readProcessGPUCounters() and the support it was read under, from one operation: the flags are
+    /// read under the probe lock, which a re-enumeration that changes them holds, so the counters
+    /// and the flags always agree. Reading the flags separately could stamp a generation supported
+    /// while the read short-circuited empty, or the reverse (#1210).
+    [[nodiscard]] ProcessGPUReading readProcessGPUData() const;
+
   private:
     std::unique_ptr<Platform::IGPUProbe> m_Probe;
     mutable std::mutex m_ProbeMutex;
