@@ -576,6 +576,24 @@ TEST(MapDXGIToNVMLTest, TheFunctionNumberPairsFunctionsAtOneBusAndDevice)
     EXPECT_TRUE(mapDXGIToNVML({atFunction(1)}, {atFunction(0)}).empty()) << "Different functions are different devices";
 }
 
+// An exact bus/device/function match is made before any unknown-function one, so the unknown device
+// can't make it ambiguous: function 1 takes its own device, and function 0 then takes the one left.
+TEST(MapDXGIToNVMLTest, AnExactFunctionMatchIsMadeBeforeAnUnknownFunctionOne)
+{
+    const auto atFunction = [](std::optional<std::uint32_t> function)
+    {
+        GPUInfo info = makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x01);
+        info.pciLocation->function = function;
+        return info;
+    };
+    const std::vector<GPUInfo> dxgi = {atFunction(0), atFunction(1)};
+    const std::vector<GPUInfo> nvml = {atFunction(1), atFunction(std::nullopt)};
+    const auto mapping = mapDXGIToNVML(dxgi, nvml);
+    ASSERT_EQ(mapping.size(), 2U);
+    EXPECT_EQ(mapping.at(1), 0U);
+    EXPECT_EQ(mapping.at(0), 1U);
+}
+
 // Different PCI locations are different cards, even when the names match exactly.
 TEST(MapDXGIToNVMLTest, DifferentPciLocationsNeverMatchByName)
 {

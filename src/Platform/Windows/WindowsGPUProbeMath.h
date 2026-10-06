@@ -183,7 +183,21 @@ namespace Platform
         claimed[*found] = true;
     };
 
-    // 1. PCI bus location.
+    // 1. PCI bus location: first the locations both sides know in full (bus, device and function), then
+    // -- for what is left -- bus and device where either side's function is unknown. Exact matches go
+    // first so an unknown function can't make an exact one ambiguous and leave both unmapped.
+    for (std::size_t dxgiIdx = 0; dxgiIdx < dxgiGPUs.size(); ++dxgiIdx)
+    {
+        if (unmappedNVIDIA(dxgiIdx) && dxgiGPUs[dxgiIdx].pciLocation.has_value())
+        {
+            claimUnique(dxgiIdx,
+                        [](const GPUInfo& dxgi, const GPUInfo& nvml)
+                        {
+                            return dxgi.pciLocation.has_value() && nvml.pciLocation.has_value() && dxgi.pciLocation->function.has_value() &&
+                                   nvml.pciLocation->function.has_value() && *dxgi.pciLocation == *nvml.pciLocation;
+                        });
+        }
+    }
     for (std::size_t dxgiIdx = 0; dxgiIdx < dxgiGPUs.size(); ++dxgiIdx)
     {
         if (unmappedNVIDIA(dxgiIdx) && dxgiGPUs[dxgiIdx].pciLocation.has_value())
