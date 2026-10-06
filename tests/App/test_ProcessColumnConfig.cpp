@@ -73,6 +73,30 @@ TEST(ProcessColumnConfigTest, EveryColumnHasAPositiveDefaultWidth)
     }
 }
 
+// ========== Content-fitted width (#1280) ==========
+
+TEST(ProcessColumnConfigTest, ContentFittedWidthFitsTheWidestLabelWithAMargin)
+{
+    const float em = REFERENCE_EM_PX;
+    // A label wider than the default: the column grows to it plus the margin.
+    EXPECT_FLOAT_EQ(contentFittedWidth(85.0F, 90.0F, em), 90.0F + (COLUMN_CONTENT_MARGIN_EM * em));
+    // A narrow label leaves the authored default alone.
+    EXPECT_FLOAT_EQ(contentFittedWidth(85.0F, 20.0F, em), 85.0F);
+    // Always at least one em of room around the widest label.
+    for (const float widest : {10.0F, 60.0F, 75.0F, 84.0F, 200.0F})
+    {
+        EXPECT_GE(contentFittedWidth(85.0F, widest, em), widest + em) << widest;
+    }
+}
+
+TEST(ProcessColumnConfigTest, ContentFittedWidthFallsBackWhenNotMeasured)
+{
+    EXPECT_FLOAT_EQ(contentFittedWidth(85.0F, 0.0F, REFERENCE_EM_PX), 85.0F);
+    EXPECT_FLOAT_EQ(contentFittedWidth(85.0F, std::numeric_limits<float>::quiet_NaN(), REFERENCE_EM_PX), 85.0F);
+    EXPECT_FLOAT_EQ(contentFittedWidth(85.0F, 90.0F, 0.0F), 85.0F);
+    EXPECT_FLOAT_EQ(contentFittedWidth(85.0F, 90.0F, std::numeric_limits<float>::infinity()), 85.0F);
+}
+
 // ========== Header Wording (#1203) ==========
 
 // Headers are plain words: no htop-style single letters ("S") or "+" suffixes ("TIME+").

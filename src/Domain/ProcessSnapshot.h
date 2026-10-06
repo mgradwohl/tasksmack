@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/CpuAffinity.h"
+#include "PriorityConfig.h"
 
 #include <cstdint>
 #include <memory>
@@ -22,6 +23,9 @@ struct ProcessSnapshot
     std::int32_t nice = 0;        // Nice value
     std::int32_t threadCount = 0; // Optional (0 if not supported)
     std::int32_t handleCount = 0; // Handle count (Windows) / FD count (Linux)
+    // The platform's priority class (Windows), which names the priority where nice can't (Realtime
+    // and High share a nice bucket, #1280); None on Linux. See Priority::getProcessPriorityLabel().
+    Priority::PriorityClass priorityClass = Priority::PriorityClass::None;
 
     double cpuPercent = 0.0;     // Computed from deltas
     double memoryPercent = 0.0;  // RSS as % of total system memory

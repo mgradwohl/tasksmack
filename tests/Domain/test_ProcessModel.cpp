@@ -9,6 +9,7 @@
 /// - Thread-safe operations
 
 #include "Domain/GPUModel.h"
+#include "Domain/PriorityConfig.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
@@ -20,6 +21,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -3043,6 +3045,57 @@ TEST(ProcessModelTest, WhenRefreshedMultipleTimes_ThenSnapshotVersionMonotonical
 
     EXPECT_LT(versionBefore, versionAfterFirst);
     EXPECT_LT(versionAfterFirst, versionAfterSecond);
+}
+
+// =============================================================================
+// Priority class passthrough (#1280)
+// =============================================================================
+
+TEST(ProcessModelTest, EveryPlatformPriorityClassReachesTheSnapshot)
+{
+    const std::array<std::pair<Platform::PriorityClass, Domain::Priority::PriorityClass>, 7> cases{{
+        {Platform::PriorityClass::None, Domain::Priority::PriorityClass::None},
+        {Platform::PriorityClass::Idle, Domain::Priority::PriorityClass::Idle},
+        {Platform::PriorityClass::BelowNormal, Domain::Priority::PriorityClass::BelowNormal},
+        {Platform::PriorityClass::Normal, Domain::Priority::PriorityClass::Normal},
+        {Platform::PriorityClass::AboveNormal, Domain::Priority::PriorityClass::AboveNormal},
+        {Platform::PriorityClass::High, Domain::Priority::PriorityClass::High},
+        {Platform::PriorityClass::Realtime, Domain::Priority::PriorityClass::Realtime},
+    }};
+    for (const auto& [platformClass, domainClass] : cases)
+    {
+        auto probe = std::make_unique<MockProcessProbe>();
+        Platform::ProcessCounters counter = makeCounter(100, "app", 'R', 1000, 500);
+        counter.nice = Domain::Priority::MIN_NICE;
+        counter.priorityClass = platformClass;
+        probe->setCounters({counter});
+        probe->setTotalCpuTime(100000);
+
+        Domain::ProcessModel model(std::move(probe));
+        model.refresh();
+
+        const auto snaps = model.snapshots();
+        ASSERT_EQ(snaps.size(), 1);
+        EXPECT_EQ(snaps[0].priorityClass, domainClass) << static_cast<int>(platformClass);
+        EXPECT_EQ(snaps[0].nice, Domain::Priority::MIN_NICE);
+    }
+}
+
+TEST(ProcessModelTest, RealtimeIsLabelledRealtimeNotHigh)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters counter = makeCounter(100, "app", 'R', 1000, 500);
+    counter.nice = Domain::Priority::MIN_NICE; // What the Windows probe reports for Realtime
+    counter.priorityClass = Platform::PriorityClass::Realtime;
+    probe->setCounters({counter});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(Domain::Priority::getProcessPriorityLabel(snaps[0].priorityClass, snaps[0].nice), "Realtime");
 }
 
 // =============================================================================
