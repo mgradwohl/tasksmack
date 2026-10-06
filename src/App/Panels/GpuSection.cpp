@@ -532,14 +532,10 @@ void renderGpuSection(RenderContext& ctx)
                         }
                         // A series that may be shorter than the time axis (it ends at the same newest
                         // sample): its value at the hovered index, if it has one there.
-                        const auto valueAt = [&](std::span<const float> series) -> std::optional<double>
+                        const auto valueAt = [&](std::span<const float> series)
                         {
-                            const auto aligned = tailAlignedSpan(timeData, series.size());
-                            if (*idxVal < aligned.offset)
-                            {
-                                return std::nullopt;
-                            }
-                            return static_cast<double>(series[*idxVal - aligned.offset]);
+                            return UI::Widgets::tailAlignedSampleAt(
+                                series, UI::Widgets::tailAlignedOffset(timeData.size(), series.size()), *idxVal);
                         };
                         if (caps.hasClockSpeeds && !clockData.empty())
                         {
@@ -796,14 +792,10 @@ void renderGpuSection(RenderContext& ctx)
                         const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
                         if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
                         {
-                            const auto valueAt = [&](std::span<const float> series) -> std::optional<double>
+                            const auto valueAt = [&](std::span<const float> series)
                             {
-                                const auto aligned = tailAlignedSpan(timeData, series.size());
-                                if (*idxVal < aligned.offset)
-                                {
-                                    return std::nullopt;
-                                }
-                                return static_cast<double>(series[*idxVal - aligned.offset]);
+                                return UI::Widgets::tailAlignedSampleAt(
+                                    series, UI::Widgets::tailAlignedOffset(timeData.size(), series.size()), *idxVal);
                             };
                             // "N/A" for a sample with no reading, such as while the GPU was missing (#1146).
                             // The reading is written by the value strip's own formatter, so the tooltip,

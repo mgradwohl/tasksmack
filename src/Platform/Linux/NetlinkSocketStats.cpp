@@ -3,6 +3,7 @@
 
 #include "NetlinkSocketStats.h"
 
+#include "PosixGuards.h"
 #include "ProcParsing.h"
 
 #include <spdlog/spdlog.h>
@@ -307,43 +308,12 @@ void drainQueuedReplies(INetlinkTransport& transport, std::span<std::byte> buffe
     }
 }
 
-/// RAII guard for a POSIX DIR* stream. Ensures closedir() runs on all paths, including
-/// exception paths (e.g. std::unordered_map insertion can throw on OOM), mirroring
-/// ProcParsing::FdGuard for regular file descriptors (#772).
-class DirGuard
-{
-  public:
-    explicit DirGuard(DIR* dir) noexcept : m_Dir(dir)
-    {}
-
-    ~DirGuard() noexcept
-    {
-        if (m_Dir != nullptr)
-        {
-            closedir(m_Dir);
-        }
-    }
-
-    DirGuard(const DirGuard&) = delete;
-    DirGuard& operator=(const DirGuard&) = delete;
-    DirGuard(DirGuard&&) = delete;
-    DirGuard& operator=(DirGuard&&) = delete;
-
-    [[nodiscard]] DIR* get() const noexcept
-    {
-        return m_Dir;
-    }
-
-  private:
-    DIR* m_Dir;
-};
-
 /// The start time from the stat file in the /proc/[pid] directory `pidDirFd` is open on; 0 if it
 /// can't be read (the process exited, or a synthetic /proc without one).
 [[nodiscard]] std::uint64_t readStartTimeTicks(int pidDirFd) noexcept
 {
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
-    const ProcParsing::FdGuard statFd(::openat(pidDirFd, "stat", O_RDONLY | O_CLOEXEC));
+    const Posix::FdGuard statFd(::openat(pidDirFd, "stat", O_RDONLY | O_CLOEXEC));
     if (statFd.get() == -1)
     {
         return 0;
@@ -697,14 +667,14 @@ std::unordered_map<std::uint64_t, SocketOwner> buildInodeToPidMap(const std::fil
         // stays bound to this process, so if the process exits and its PID is reused mid-scan the
         // reads fail rather than mixing the two processes (#1336).
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
-        const ProcParsing::FdGuard pidDirFd(::open(procEntry.path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+        const Posix::FdGuard pidDirFd(::open(procEntry.path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
         if (pidDirFd.get() == -1)
         {
             continue; // Process exited
         }
 
         // Scan /proc/[pid]/fd/ for socket symlinks. Use opendir/readdir for efficiency (avoid
-        // exception overhead). The DIR* itself is still wrapped in DirGuard so it can't leak if
+        // exception overhead). The DIR* itself is still wrapped in Posix::DirGuard so it can't leak if
         // the map insertion below throws (e.g. std::bad_alloc on a rehash) -- the "avoid exception
         // overhead" choice only opted out of std::filesystem::directory_iterator, not out of
         // exception *safety* (#772). fdopendir() takes ownership of the descriptor on success only.
@@ -714,7 +684,7 @@ std::unordered_map<std::uint64_t, SocketOwner> buildInodeToPidMap(const std::fil
         {
             continue; // Permission denied or process exited
         }
-        const DirGuard fdDirGuard(fdopendir(fdDirFd));
+        const Posix::DirGuard fdDirGuard(fdopendir(fdDirFd));
         if (fdDirGuard.get() == nullptr)
         {
             ::close(fdDirFd);
