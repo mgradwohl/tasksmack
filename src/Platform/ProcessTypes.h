@@ -71,13 +71,15 @@ struct ProcessCounters
     // Whether the probe could read these for this process (#1110). A probe sets one false when the
     // read failed -- typically for lack of rights, and the value beside it is then a placeholder 0, not a measurement. On Linux, for
     // another user's process: listing /proc/[pid]/fd (handleCount) needs CAP_DAC_READ_SEARCH; /proc/[pid]/io (I/O) and reading the
-    // fd links that network attribution uses also need CAP_SYS_PTRACE (root has both unless they are dropped). The
-    // defaults suit a probe that reads every process it lists; a field the probe never fills at all is reported by ProcessCapabilities
-    // instead.
+    // fd links that network attribution uses also need CAP_SYS_PTRACE (root has both unless they are dropped). Windows (#1285) reads
+    // handles and I/O for every process from its bulk snapshot, and network bytes for every process or, without per-process network
+    // counters (not elevated), for none. The defaults suit a probe that reads every process it lists; a field the probe never fills
+    // at all is reported by ProcessCapabilities instead.
     bool handleCountAvailable = true;     // handleCount
     bool ioCountersAvailable = true;      // readBytes / writeBytes
     bool networkCountersAvailable = true; // netSentBytes / netReceivedBytes: the process's connections
-                                          // could be attributed to it (Linux: from its /proc/[pid]/fd)
+                                          // could be attributed to it (Linux: from its /proc/[pid]/fd;
+                                          // Windows: per-process network counters are on)
 };
 
 /// One connection's cumulative byte counters as the OS reports them, and the process it belongs to.
