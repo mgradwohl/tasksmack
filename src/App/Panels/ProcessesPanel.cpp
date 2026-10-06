@@ -600,7 +600,8 @@ void ProcessesPanel::onAttach()
 
     // A column this system cannot fill is hidden by default, unless its visibility was chosen (#1210).
     // Before the table is first drawn, since its default visibility is set from these settings.
-    ProcessColumnAvailability::applyCapabilityDefaults(m_ColumnSettings, processCapabilities());
+    m_ColumnDefaultsCapabilities = processCapabilities();
+    ProcessColumnAvailability::applyCapabilityDefaults(m_ColumnSettings, m_ColumnDefaultsCapabilities);
 
     spdlog::info("ProcessesPanel: initialized with background sampler ({}ms interval)", m_AppliedSamplerInterval.count());
 }
@@ -786,6 +787,17 @@ void ProcessesPanel::renderContent()
         }
     }
     const auto& currentSnapshots = *m_CachedRenderSnapshots;
+
+    // The probe's capabilities can change mid-run (#1254): columns whose visibility was not chosen
+    // follow them, through the same request path as the Columns menu (#1210).
+    if (const Platform::ProcessCapabilities caps = processCapabilities(); caps != m_ColumnDefaultsCapabilities)
+    {
+        m_ColumnDefaultsCapabilities = caps;
+        if (auto changed = ProcessColumnAvailability::capabilityDefaultChanges(m_RequestedColumns.value_or(m_ColumnSettings), caps))
+        {
+            m_RequestedColumns = *changed;
+        }
+    }
 
     // Prune row format cache entries for processes no longer present, once per new snapshot
     // generation (not per frame). Entries themselves are built lazily, on demand, by

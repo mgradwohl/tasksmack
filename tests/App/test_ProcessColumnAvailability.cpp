@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <initializer_list>
+#include <optional>
 
 namespace App
 {
@@ -155,6 +156,64 @@ TEST(ProcessColumnAvailabilityTest, CapabilityDefaultsLeaveAChosenColumnAlone)
     // The Columns menu can still show it.
     fresh.requestVisible(ProcessColumn::Power, true);
     EXPECT_TRUE(fresh.isVisible(ProcessColumn::Power));
+}
+
+TEST(ProcessColumnAvailabilityTest, WithdrawnCapabilityHidesOnlyUnchosenColumns)
+{
+    // #1210: Windows can withdraw its per-process network counters after the first EStats sample.
+    Platform::ProcessCapabilities before = windowsLikeCapabilities();
+    ProcessColumnSettings settings = ProcessColumnAvailability::defaultColumns(before);
+    ASSERT_TRUE(settings.isVisible(ProcessColumn::NetSent));
+    ASSERT_TRUE(settings.isVisible(ProcessColumn::NetReceived));
+    settings.setVisible(ProcessColumn::NetReceived, true); // The user chose this one
+
+    Platform::ProcessCapabilities after = before;
+    after.hasNetworkCounters = false;
+    const auto changed = ProcessColumnAvailability::capabilityDefaultChanges(settings, after);
+    ASSERT_TRUE(changed.has_value());
+    EXPECT_FALSE(changed.value().isVisible(ProcessColumn::NetSent));    // Not chosen: follows the system
+    EXPECT_TRUE(changed.value().isVisible(ProcessColumn::NetReceived)); // Chosen: left alone
+    EXPECT_FALSE(changed.value().isChosen(ProcessColumn::NetSent));     // Still the system's default, not a choice
+    for (const ProcessColumn col : allProcessColumns())
+    {
+        if (col != ProcessColumn::NetSent)
+        {
+            EXPECT_EQ(changed.value().isVisible(col), settings.isVisible(col)) << getColumnInfo(col).configKey;
+        }
+    }
+}
+
+TEST(ProcessColumnAvailabilityTest, RegainedCapabilityRestoresAnUnchosenColumnsDefault)
+{
+    Platform::ProcessCapabilities without = linuxWithoutRaplCapabilities();
+    ProcessColumnSettings settings = ProcessColumnAvailability::defaultColumns(without);
+    ASSERT_FALSE(settings.isVisible(ProcessColumn::Power));
+
+    Platform::ProcessCapabilities with = without;
+    with.hasPowerUsage = true;
+    const auto changed = ProcessColumnAvailability::capabilityDefaultChanges(settings, with);
+    ASSERT_TRUE(changed.has_value());
+    EXPECT_TRUE(changed.value().isVisible(ProcessColumn::Power));
+}
+
+TEST(ProcessColumnAvailabilityTest, CapabilityChangeThatMovesNoColumnQueuesNothing)
+{
+    const Platform::ProcessCapabilities caps = windowsLikeCapabilities();
+    const ProcessColumnSettings settings = ProcessColumnAvailability::defaultColumns(caps);
+
+    // Same capabilities, or a change no column depends on (reduced privileges).
+    EXPECT_FALSE(ProcessColumnAvailability::capabilityDefaultChanges(settings, caps).has_value());
+    Platform::ProcessCapabilities reduced = caps;
+    reduced.hasReducedPrivileges = true;
+    EXPECT_FALSE(ProcessColumnAvailability::capabilityDefaultChanges(settings, reduced).has_value());
+
+    // A withdrawn capability whose columns were all chosen moves nothing either.
+    ProcessColumnSettings chosen = settings;
+    chosen.setVisible(ProcessColumn::NetSent, true);
+    chosen.setVisible(ProcessColumn::NetReceived, true);
+    Platform::ProcessCapabilities noNetwork = caps;
+    noNetwork.hasNetworkCounters = false;
+    EXPECT_FALSE(ProcessColumnAvailability::capabilityDefaultChanges(chosen, noNetwork).has_value());
 }
 
 TEST(ProcessColumnAvailabilityTest, EmptyTextInASupportedColumnIsBlankNotUnavailable)

@@ -191,6 +191,9 @@ class ProcessesPanel : public Panel
     std::optional<ProcessColumnSettings> m_RequestedColumns;
     bool m_ResetColumnOrderRequested = false; // "Reset columns" also restores the default order
     bool m_TableHasDefaultOrder = true;       // As of the last frame, for enabling "Reset columns"
+    // The capabilities the columns' defaults were last applied for: when the probe's change, the
+    // columns whose visibility was not chosen follow them (#1210).
+    Platform::ProcessCapabilities m_ColumnDefaultsCapabilities;
 
     // Tree view gives the Name column room (#1209): adjusted once when the view mode changes. The
     // width it had before, and the width tree view set (0 when it left it alone), so leaving tree

@@ -10,6 +10,7 @@
 #include "Platform/ProcessTypes.h"
 
 #include <cstdint>
+#include <optional>
 #include <string_view>
 
 namespace App::ProcessColumnAvailability
@@ -81,6 +82,22 @@ inline void applyCapabilityDefaults(ProcessColumnSettings& settings, const Platf
     {
         settings.setDefaultVisible(col, defaults.isVisible(col));
     }
+}
+
+/// The columns after the probe's capabilities change to `caps` (#1210): a probe can withdraw one
+/// mid-run (Windows' network counters after the first EStats sample, #1254), or gain one. Every
+/// column whose visibility was not chosen takes the new default; a chosen one is left alone. Empty
+/// when no column's visibility would change, so the caller queues nothing.
+[[nodiscard]] inline std::optional<ProcessColumnSettings> capabilityDefaultChanges(const ProcessColumnSettings& settings,
+                                                                                   const Platform::ProcessCapabilities& caps)
+{
+    ProcessColumnSettings updated = settings;
+    applyCapabilityDefaults(updated, caps);
+    if (updated.visible == settings.visible)
+    {
+        return std::nullopt;
+    }
+    return updated;
 }
 
 /// Whether `settings` shows exactly this system's default columns, i.e. "Reset columns" would change
