@@ -5,12 +5,19 @@
 #include "UI/Theme.h"
 
 #include <gtest/gtest.h>
+#include <spdlog/logger.h>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
 #include <toml++/toml.hpp>
 
 #include <filesystem>
 #include <fstream>
+#include <ios>
+#include <memory>
 #include <random>
+#include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -358,6 +365,48 @@ TEST_F(UserConfigLoadSaveTest, LoadHandlesTomlParseError)
     UserConfig::get().load(); // should not throw
     EXPECT_EQ(UserConfig::get().settings().refreshIntervalMs, Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS);
 }
+
+// Malformed config.toml inputs the fuzzers found that crashed inside toml++ instead of throwing
+// toml::parse_error: a debug assert (abort) and, with NDEBUG, __builtin_assume/__builtin_unreachable
+// (UB). load() must log the parse failure and keep the defaults, in debug and release alike.
+struct MalformedToml
+{
+    const char* name;
+    std::string_view content;
+};
+
+class UserConfigMalformedTomlTest : public UserConfigLoadSaveTest, public ::testing::WithParamInterface<MalformedToml>
+{};
+
+TEST_P(UserConfigMalformedTomlTest, LoadLogsParseFailureAndKeepsDefaults)
+{
+    {
+        std::ofstream f(m_ConfigPath, std::ios::binary);
+        f << GetParam().content;
+    }
+
+    std::ostringstream log;
+    const auto previousLogger = spdlog::default_logger();
+    spdlog::set_default_logger(
+        std::make_shared<spdlog::logger>("malformed-config-test", std::make_shared<spdlog::sinks::ostream_sink_st>(log)));
+    UserConfig::get().load();
+    spdlog::set_default_logger(previousLogger);
+
+    EXPECT_NE(log.str().find("Failed to parse config file"), std::string::npos) << log.str();
+    const UserSettings defaults;
+    EXPECT_EQ(UserConfig::get().settings().refreshIntervalMs, defaults.refreshIntervalMs);
+    EXPECT_EQ(UserConfig::get().settings().themeId, defaults.themeId);
+}
+
+INSTANTIATE_TEST_SUITE_P(TomlppCrashInputs,
+                         UserConfigMalformedTomlTest,
+                         ::testing::Values(MalformedToml{"TableHeaderThenNewline", "[\n"},  // #1387
+                                           MalformedToml{"TableHeaderThenEquals", "[="},    // #1387
+                                           MalformedToml{"ArrayClosedWithBrace", "m=[}"},   // #1388
+                                           MalformedToml{"CommaThenBrace", "m=[1,}"},       // #1388
+                                           MalformedToml{"CodePointFEBF", "\xEF\xBA\xBF"},  // #1389
+                                           MalformedToml{"CodePointFEFB", "\xEF\xBB\xBB"}), // #1389
+                         [](const ::testing::TestParamInfo<MalformedToml>& info) { return std::string(info.param.name); });
 
 TEST_F(UserConfigLoadSaveTest, LoadParsesAllFontSizes)
 {
