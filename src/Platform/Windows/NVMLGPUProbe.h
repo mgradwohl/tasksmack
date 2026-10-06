@@ -4,11 +4,13 @@
 #include "Platform/IGPUProbe.h"
 #include "Platform/NVMLTypes.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -93,6 +95,23 @@ class NVMLGPUProbe : public IGPUProbe
 
     [[nodiscard]] static std::string getNVMLErrorString(NVML::nvmlReturn_t result);
 
+    // A running-process entry point and the size of the entries it writes (#1313): the legacy
+    // unversioned export writes 16-byte nvmlProcessInfo_v1_t entries, _v2/_v3 write 24-byte
+    // nvmlProcessInfo_v2_t ones, so the struct is opaque here and the entries are parsed by size
+    // (NVMLRunningProcesses). The third parameter is the shared NVML::nvmlProcessInfoEntries, which
+    // the test fake's definitions also take, so the call matches the callee's own function type.
+    using RunningProcessesFn = NVML::nvmlReturn_t (*)(NVML::nvmlDevice_t, unsigned int*, NVML::nvmlProcessInfoEntries*);
+    struct RunningProcessesQuery
+    {
+        RunningProcessesFn fn = nullptr;
+        std::size_t entrySize = 0;
+    };
+
+    /// The newest of `baseName`'s _v3, _v2 and unversioned exports that `resolve(name)` finds
+    /// (nullptr when it isn't exported), with its entry size; an empty query if none is (#1313).
+    [[nodiscard]] static RunningProcessesQuery loadRunningProcessesQuery(std::string_view baseName,
+                                                                         const std::function<void*(const std::string&)>& resolve);
+
     // NVML function pointers (dynamically loaded)
     struct NVMLFunctions
     {
@@ -115,9 +134,9 @@ class NVMLGPUProbe : public IGPUProbe
         NVML::nvmlReturn_t (*DeviceGetFanSpeed)(NVML::nvmlDevice_t, unsigned int*);
         // PCI identity, to match NVML devices to DXGI adapters (#1091); optional
         NVML::nvmlReturn_t (*DeviceGetPciInfo)(NVML::nvmlDevice_t, NVML::nvmlPciInfo_t*);
-        // Per-process GPU functions
-        NVML::nvmlReturn_t (*DeviceGetComputeRunningProcesses)(NVML::nvmlDevice_t, unsigned int*, void*);
-        NVML::nvmlReturn_t (*DeviceGetGraphicsRunningProcesses)(NVML::nvmlDevice_t, unsigned int*, void*);
+        // Per-process GPU functions, each the newest variant nvml.dll exports (#1313)
+        RunningProcessesQuery DeviceGetComputeRunningProcesses;
+        RunningProcessesQuery DeviceGetGraphicsRunningProcesses;
     };
 
     void* m_NVMLHandle{nullptr};

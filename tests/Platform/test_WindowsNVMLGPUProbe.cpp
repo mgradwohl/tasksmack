@@ -660,8 +660,8 @@ TEST_F(NVMLGPUProbeFakeTest, ProcessCountersEmptyWhenNoPerProcessFunctionsAvaila
 {
     NVMLGPUProbe probe;
     auto fns = NVMLGPUProbeTestAccessor::fullFakeFunctions();
-    fns.DeviceGetComputeRunningProcesses = nullptr;
-    fns.DeviceGetGraphicsRunningProcesses = nullptr;
+    fns.DeviceGetComputeRunningProcesses = {};
+    fns.DeviceGetGraphicsRunningProcesses = {};
     NVMLGPUProbeTestAccessor::inject(probe, fns, /*initialized=*/true);
     NVMLGPUProbeTestAccessor::addDevice(probe, 0, deviceHandleFor(0));
 
@@ -785,6 +785,65 @@ TEST_F(NVMLGPUProbeFakeTest, UnexpectedFirstCallErrorYieldsNoProcesses)
     EXPECT_TRUE(probe.readProcessGPUCounters().empty());
 }
 
+// Running-process entry points (#1313): the loader takes the newest variant nvml.dll exports, and
+// the entries are read at that variant's size (16 bytes for the unversioned v1 export, 24 for _v3).
+
+TEST_F(NVMLGPUProbeFakeTest, LegacyV1RunningProcessesReadsEverySixteenByteEntry)
+{
+    // Before #1313 the probe read the v1 export's 16-byte entries as 24-byte ones, so every entry
+    // after the first came from the wrong offset (the second PID read as the first's memory).
+    fakeState().computeProcesses[0] = makeProcessQuery({{.pid = 111, .usedGpuMemory = 1000}, {.pid = 222, .usedGpuMemory = 2000}});
+    fakeState().graphicsProcesses[0] = makeProcessQuery({{.pid = 333, .usedGpuMemory = 3000}, {.pid = 444, .usedGpuMemory = 4000}});
+
+    NVMLGPUProbe probe;
+    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
+    NVMLGPUProbeTestAccessor::loadRunningProcesses(probe, runningProcessExports(/*withV1=*/true, /*withV3=*/false));
+    NVMLGPUProbeTestAccessor::addDevice(probe, 0, deviceHandleFor(0));
+    EXPECT_EQ(NVMLGPUProbeTestAccessor::computeEntrySize(probe), FAKE_PROCESS_INFO_V1_SIZE);
+
+    const auto counters = probe.readProcessGPUCounters();
+    ASSERT_EQ(counters.size(), 4U);
+    EXPECT_EQ(counters[0].pid, 111);
+    EXPECT_EQ(counters[0].gpuMemoryBytes, 1000U);
+    EXPECT_EQ(counters[1].pid, 222);
+    EXPECT_EQ(counters[1].gpuMemoryBytes, 2000U);
+    EXPECT_EQ(counters[2].pid, 333);
+    EXPECT_EQ(counters[2].gpuMemoryBytes, 3000U);
+    EXPECT_EQ(counters[3].pid, 444);
+    EXPECT_EQ(counters[3].gpuMemoryBytes, 4000U);
+    EXPECT_TRUE(probe.capabilities().hasPerProcessMetrics);
+}
+
+TEST_F(NVMLGPUProbeFakeTest, V3RunningProcessesIsPreferredAndReadsTwentyFourByteEntries)
+{
+    fakeState().computeProcesses[0] = makeProcessQuery({{.pid = 111, .usedGpuMemory = 1000, .gpuInstanceId = 1, .computeInstanceId = 2},
+                                                        {.pid = 222, .usedGpuMemory = 2000, .gpuInstanceId = 3, .computeInstanceId = 4}});
+
+    NVMLGPUProbe probe;
+    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
+    NVMLGPUProbeTestAccessor::loadRunningProcesses(probe, runningProcessExports(/*withV1=*/true, /*withV3=*/true));
+    NVMLGPUProbeTestAccessor::addDevice(probe, 0, deviceHandleFor(0));
+    EXPECT_EQ(NVMLGPUProbeTestAccessor::computeEntrySize(probe), FAKE_PROCESS_INFO_V2_SIZE) << "the _v3 export is preferred over v1";
+
+    const auto counters = probe.readProcessGPUCounters();
+    ASSERT_EQ(counters.size(), 2U);
+    EXPECT_EQ(counters[0].pid, 111);
+    EXPECT_EQ(counters[0].gpuMemoryBytes, 1000U);
+    EXPECT_EQ(counters[1].pid, 222);
+    EXPECT_EQ(counters[1].gpuMemoryBytes, 2000U);
+}
+
+TEST_F(NVMLGPUProbeFakeTest, NoRunningProcessesExportMeansNoPerProcessMetrics)
+{
+    NVMLGPUProbe probe;
+    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
+    NVMLGPUProbeTestAccessor::loadRunningProcesses(probe, runningProcessExports(/*withV1=*/false, /*withV3=*/false));
+    NVMLGPUProbeTestAccessor::addDevice(probe, 0, deviceHandleFor(0));
+
+    EXPECT_FALSE(probe.capabilities().hasPerProcessMetrics);
+    EXPECT_TRUE(probe.readProcessGPUCounters().empty());
+}
+
 // ==========================================================================
 // capabilities
 // ==========================================================================
@@ -793,7 +852,7 @@ TEST_F(NVMLGPUProbeFakeTest, CapabilitiesReportsPerProcessMetricsWhenEitherFunct
 {
     NVMLGPUProbe probe;
     auto fns = NVMLGPUProbeTestAccessor::fullFakeFunctions();
-    fns.DeviceGetGraphicsRunningProcesses = nullptr; // only compute available
+    fns.DeviceGetGraphicsRunningProcesses = {}; // only compute available
     NVMLGPUProbeTestAccessor::inject(probe, fns, /*initialized=*/true);
 
     EXPECT_TRUE(probe.capabilities().hasPerProcessMetrics);
@@ -803,8 +862,8 @@ TEST_F(NVMLGPUProbeFakeTest, CapabilitiesReportsNoPerProcessMetricsWhenNeitherAv
 {
     NVMLGPUProbe probe;
     auto fns = NVMLGPUProbeTestAccessor::fullFakeFunctions();
-    fns.DeviceGetComputeRunningProcesses = nullptr;
-    fns.DeviceGetGraphicsRunningProcesses = nullptr;
+    fns.DeviceGetComputeRunningProcesses = {};
+    fns.DeviceGetGraphicsRunningProcesses = {};
     NVMLGPUProbeTestAccessor::inject(probe, fns, /*initialized=*/true);
 
     EXPECT_FALSE(probe.capabilities().hasPerProcessMetrics);
