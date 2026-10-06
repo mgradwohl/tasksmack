@@ -80,6 +80,8 @@ constexpr std::string_view LIST_VIEW_LABEL = "List View";
 constexpr const char* FILTER_HINT = "Filter by name...";
 // Shown beside the process count while a held Ctrl freezes the pane (#928).
 constexpr const char* FROZEN_LABEL = ICON_FA_PAUSE " Paused (Ctrl)";
+// The narrow-window form: measureToolbarMinimumWidth() reserves room for this one.
+constexpr const char* FROZEN_ICON = ICON_FA_PAUSE;
 
 /// True when any keyboard key other than a modifier is held: Ctrl with one of these is a shortcut
 /// (Ctrl+C, Ctrl+=), not the freeze gesture (#928). Only the keyboard block of ImGuiKey is walked;
@@ -605,7 +607,11 @@ float ProcessesPanel::measureToolbarMinimumWidth()
     const float toggleButton = std::max(ImGui::CalcTextSize(TREE_VIEW_LABEL.data(), TREE_VIEW_LABEL.data() + TREE_VIEW_LABEL.size()).x,
                                         ImGui::CalcTextSize(LIST_VIEW_LABEL.data(), LIST_VIEW_LABEL.data() + LIST_VIEW_LABEL.size()).x) +
                                (style.FramePadding.x * 2.0F);
-    const float rest = (style.ItemSpacing.x * 3.0F) + clearButton + count + toggleButton;
+    // While Ctrl freezes the pane the paused indicator joins the row (#928). Only its icon-only form
+    // is reserved: the full label shows when the real count leaves room, which the worst-case count
+    // above nearly always does (ProcessTableLayout::choosePausedLabelForm()).
+    const float pausedIcon = ImGui::CalcTextSize(FROZEN_ICON).x;
+    const float rest = (style.ItemSpacing.x * 4.0F) + clearButton + pausedIcon + count + toggleButton;
     return ProcessTableLayout::computeToolbarMinimumWidth(filterWanted, filterForHint, rest);
 }
 
@@ -1026,14 +1032,31 @@ void ProcessesPanel::renderContent()
     const float buttonWidthPx = maxLabelWidth + (style.FramePadding.x * 2.0F);
 
     const float rightEdgeX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
-    const bool frozen = m_DisplayFreeze.frozen();
-    // The paused label sits left of the count, so the count and the button keep their places (#928).
-    const float frozenW = frozen ? ImGui::CalcTextSize(FROZEN_LABEL).x + style.ItemSpacing.x : 0.0F;
     const float textW = ImGui::CalcTextSize(m_CachedSummaryStr.c_str()).x;
-    ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), rightEdgeX - frozenW - textW - buttonWidthPx - style.ItemSpacing.x));
-    if (frozen)
+    const float countAndToggleW = textW + style.ItemSpacing.x + buttonWidthPx;
+    // The paused label sits left of the count, so the count and the button keep their places. On a
+    // row too narrow for the full label it shrinks to its icon (#928).
+    auto pausedForm = ProcessTableLayout::PausedLabelForm::Hidden;
+    if (m_DisplayFreeze.frozen())
     {
-        ImGui::TextColored(theme.scheme().textWarning, "%s", FROZEN_LABEL);
+        pausedForm = ProcessTableLayout::choosePausedLabelForm(rightEdgeX - ImGui::GetCursorPosX() - countAndToggleW,
+                                                               ImGui::CalcTextSize(FROZEN_LABEL).x + style.ItemSpacing.x,
+                                                               ImGui::CalcTextSize(FROZEN_ICON).x + style.ItemSpacing.x);
+    }
+    const char* pausedText = nullptr;
+    if (pausedForm == ProcessTableLayout::PausedLabelForm::Full)
+    {
+        pausedText = FROZEN_LABEL;
+    }
+    else if (pausedForm == ProcessTableLayout::PausedLabelForm::IconOnly)
+    {
+        pausedText = FROZEN_ICON;
+    }
+    const float pausedW = (pausedText != nullptr) ? ImGui::CalcTextSize(pausedText).x + style.ItemSpacing.x : 0.0F;
+    ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), rightEdgeX - pausedW - countAndToggleW));
+    if (pausedText != nullptr)
+    {
+        ImGui::TextColored(theme.scheme().textWarning, "%s", pausedText);
         if (ImGui::IsItemHovered())
         {
             ImGui::SetTooltip("Updates are paused while Ctrl is held.\nSampling continues; release Ctrl to resume.");

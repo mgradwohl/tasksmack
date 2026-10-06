@@ -98,7 +98,7 @@ A cell reading **-** is a value of 0 (or one that doesn't apply). A cell reading
 
 **Tree view** shows the parent–child process hierarchy when enabled.
 
-**Hold Ctrl to freeze** the table, as in Windows Task Manager. With the pointer over the process table (or after clicking in it), hold **Ctrl** and the rows stop updating and stop re-sorting, so the process you are aiming at stays under the pointer while you click it. A **Paused (Ctrl)** label appears beside the process count, and releasing Ctrl resumes live updates at once. The freeze applies only to what the table shows: sampling carries on underneath, so charts and Process Details have no gaps, and the values shown while frozen are the last ones adopted, not live readings. Selecting a process, opening Process Details and process actions all work while frozen; an action on a process that has exited in the meantime fails just as it would without the freeze. Ctrl does not freeze while you are typing in the filter box, while TaskSmack's window is not focused, or when it is part of a shortcut such as Ctrl+= or Ctrl+Shift+M.
+**Hold Ctrl to freeze** the table, as in Windows Task Manager. With the pointer over the process table (or after clicking in it), hold **Ctrl** and the rows stop updating and stop re-sorting, so the process you are aiming at stays under the pointer while you click it. A **Paused (Ctrl)** label appears beside the process count (just a pause icon when the window is too narrow for the words; hover it for the explanation), and releasing Ctrl resumes live updates at once. The freeze applies only to what the table shows: sampling carries on underneath, so charts and Process Details have no gaps, and the values shown while frozen are the last ones adopted, not live readings. Selecting a process, opening Process Details and process actions all work while frozen; an action on a process that has exited in the meantime fails just as it would without the freeze. Ctrl does not freeze while you are typing in the filter box, while TaskSmack's window is not focused, or when it is part of a shortcut such as Ctrl+= or Ctrl+Shift+M.
 
 Process rows are color-coded by state (running, sleeping, stopped, zombie).
 
@@ -107,7 +107,7 @@ Process rows are color-coded by state (running, sleeping, stopped, zombie).
 | Shortcut | Action |
 |----------|--------|
 | Hold **Ctrl** (over the process table) | Freeze the process table while held |
-| **Ctrl+=** / **Ctrl+-** (or keypad **+** / **-**) | Increase / decrease the font size |
+| **Ctrl+=** / **Ctrl+-** (or **Ctrl+keypad +** / **Ctrl+keypad -**) | Increase / decrease the font size |
 | **Ctrl+Shift+M** | Toggle the Render Metrics overlay |
 
 ### System Metrics

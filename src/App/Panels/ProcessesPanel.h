@@ -176,7 +176,8 @@ class ProcessesPanel : public Panel
     /// include Domain/ProcessModel.h. UI thread; takes no lock once a generation is cached.
     [[nodiscard]] bool hasReducedPrivileges() const;
 
-    /// Narrowest the toolbar row (filter, clear button, process count, tree-view toggle) can be
+    /// Narrowest the toolbar row (filter, clear button, the paused indicator's icon-only form (#928),
+    /// process count, tree-view toggle) can be
     /// without overlapping, at the current font and style, for the window's content minimum (#1207).
     /// Measured with a worst-case process count so it does not change as processes come and go.
     /// Needs a frame.
