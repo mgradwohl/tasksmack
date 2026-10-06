@@ -228,6 +228,118 @@ TEST(ChartWidgetsTest, HoldLastValuesToNowLeavesAnAxisAlreadyAtNowAlone)
     EXPECT_TRUE(none.empty());
 }
 
+// ========== Stacked User/System CPU bands (#1180) ==========
+
+TEST(ChartWidgetsStackTest, GatherReducedValuesCopiesKeptSamplesAndGapsAsNaN)
+{
+    const std::vector<float> values{1.5F, 2.5F, 3.5F, 4.5F};
+    const std::vector<ReducedPoint> points{{.index = 0, .gap = false}, {.index = 2, .gap = true}, {.index = 3, .gap = false}};
+    std::vector<double> out{99.0, 99.0, 99.0, 99.0, 99.0}; // Reused buffer, longer than needed
+    gatherReducedValues<float>(points, values, out);
+    ASSERT_EQ(out.size(), 3U);
+    EXPECT_DOUBLE_EQ(out[0], 1.5);
+    EXPECT_TRUE(std::isnan(out[1]));
+    EXPECT_DOUBLE_EQ(out[2], 4.5);
+
+    gatherReducedValues<float>({}, values, out);
+    EXPECT_TRUE(out.empty());
+}
+
+TEST(ChartWidgetsStackTest, UserSystemStackBuildsCumulativeTops)
+{
+    const std::vector<double> time{-3.0, -2.0, -1.0};
+    const std::vector<double> user{10.0, 20.0, 30.0};
+    const std::vector<double> system{5.0, 6.0, 7.0};
+    const std::vector<ReducedPoint> points{{.index = 0, .gap = false}, {.index = 1, .gap = false}, {.index = 2, .gap = false}};
+    UserSystemStack stack;
+    buildUserSystemStack<double>(points, time, user, system, stack);
+
+    ASSERT_EQ(stack.x.size(), 3U);
+    ASSERT_EQ(stack.base.size(), 3U);
+    ASSERT_EQ(stack.userTop.size(), 3U);
+    ASSERT_EQ(stack.systemTop.size(), 3U);
+    for (std::size_t k = 0; k < 3; ++k)
+    {
+        EXPECT_DOUBLE_EQ(stack.x[k], time[k]);
+        EXPECT_DOUBLE_EQ(stack.base[k], 0.0);
+        EXPECT_DOUBLE_EQ(stack.userTop[k], user[k]);
+        EXPECT_DOUBLE_EQ(stack.systemTop[k], user[k] + system[k]);
+    }
+}
+
+TEST(ChartWidgetsStackTest, UserSystemStackGapIsNaNInEveryEdgeButTheBase)
+{
+    const std::vector<double> time{-2.0, -1.0};
+    const std::vector<float> user{10.0F, 20.0F};
+    const std::vector<float> system{5.0F, 6.0F};
+    const std::vector<ReducedPoint> points{{.index = 0, .gap = true}, {.index = 1, .gap = false}};
+    UserSystemStack stack;
+    buildUserSystemStack<float>(points, time, user, system, stack);
+
+    ASSERT_EQ(stack.x.size(), 2U);
+    EXPECT_DOUBLE_EQ(stack.x[0], -2.0); // A gap keeps its time: the gap is drawn there
+    EXPECT_DOUBLE_EQ(stack.base[0], 0.0);
+    EXPECT_TRUE(std::isnan(stack.userTop[0]));
+    EXPECT_TRUE(std::isnan(stack.systemTop[0]));
+    EXPECT_DOUBLE_EQ(stack.userTop[1], 20.0);
+    EXPECT_DOUBLE_EQ(stack.systemTop[1], 26.0);
+}
+
+TEST(ChartWidgetsStackTest, UserSystemStackMatchesTheLoopsItReplaced)
+{
+    // The loops the Overview (float series) and Process Details (double series) each ran before
+    // #1180, over a reduction with a skipped sample and a gap.
+    const std::vector<double> time{-5.0, -4.0, -3.0, -2.0, -1.0};
+    const std::vector<float> userF{1.25F, 2.5F, 3.75F, 5.0F, 6.25F};
+    const std::vector<float> systemF{0.5F, 0.25F, 0.125F, 1.0F, 2.0F};
+    const std::vector<double> userD(userF.begin(), userF.end());
+    const std::vector<double> systemD(systemF.begin(), systemF.end());
+    const std::vector<ReducedPoint> points{
+        {.index = 0, .gap = false}, {.index = 2, .gap = true}, {.index = 3, .gap = false}, {.index = 4, .gap = false}};
+
+    UserSystemStack overview;
+    buildUserSystemStack<float>(points, time, userF, systemF, overview);
+    UserSystemStack details;
+    buildUserSystemStack<double>(points, time, userD, systemD, details);
+
+    for (std::size_t k = 0; k < points.size(); ++k)
+    {
+        const auto i = static_cast<std::size_t>(points[k].index);
+        EXPECT_DOUBLE_EQ(overview.x[k], time[i]);
+        EXPECT_DOUBLE_EQ(details.x[k], time[i]);
+        if (points[k].gap)
+        {
+            EXPECT_TRUE(std::isnan(overview.userTop[k]) && std::isnan(overview.systemTop[k]));
+            EXPECT_TRUE(std::isnan(details.userTop[k]) && std::isnan(details.systemTop[k]));
+            continue;
+        }
+        // Overview: yUserTop = double(user); ySystemTop = yUserTop + double(system)
+        const auto overviewUser = static_cast<double>(userF[i]);
+        EXPECT_DOUBLE_EQ(overview.userTop[k], overviewUser);
+        EXPECT_DOUBLE_EQ(overview.systemTop[k], overviewUser + static_cast<double>(systemF[i]));
+        // Process Details: yUserTop = user; ySystemTop = user + system
+        EXPECT_DOUBLE_EQ(details.userTop[k], userD[i]);
+        EXPECT_DOUBLE_EQ(details.systemTop[k], userD[i] + systemD[i]);
+    }
+}
+
+TEST(ChartWidgetsStackTest, UserSystemStackReusesItsBuffersAcrossCalls)
+{
+    const std::vector<double> time{-2.0, -1.0};
+    const std::vector<double> values{1.0, 2.0};
+    UserSystemStack stack;
+    buildUserSystemStack<double>(
+        std::vector<ReducedPoint>{{.index = 0, .gap = false}, {.index = 1, .gap = false}}, time, values, values, stack);
+    ASSERT_EQ(stack.x.size(), 2U);
+    // Fewer points next time: every edge shrinks to match, and the base is reset to 0.
+    stack.base[0] = 42.0;
+    buildUserSystemStack<double>(std::vector<ReducedPoint>{{.index = 1, .gap = false}}, time, values, values, stack);
+    ASSERT_EQ(stack.x.size(), 1U);
+    ASSERT_EQ(stack.base.size(), 1U);
+    EXPECT_DOUBLE_EQ(stack.base[0], 0.0);
+    EXPECT_DOUBLE_EQ(stack.systemTop[0], 4.0);
+}
+
 // ========== NowBar ==========
 
 TEST(NowBarListTest, HoldsBarsInOrderAndViewsThemAsASpan)

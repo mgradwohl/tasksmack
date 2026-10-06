@@ -1,7 +1,7 @@
 #include "CpuCoresSection.h"
 
 #include "App/Panels/CpuCoreGridIds.h"
-#include "Domain/Numeric.h"
+#include "App/Panels/CpuSummaryText.h"
 #include "Domain/SystemSnapshot.h"
 #include "UI/ChartGrid.h"
 #include "UI/ChartGridLayout.h"
@@ -17,7 +17,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
-#include <cstdint>
 #include <format>
 #include <limits>
 #include <optional>
@@ -81,19 +80,10 @@ void renderCpuCoresSection(RenderContext& ctx)
     auto& theme = UI::Theme::get();
 
     // CPU model header
-    // The count is of logical processors, not cores (#1203). Formatted when its inputs change, not
-    // every frame (#1171). UI thread only. The text is built before the keys are committed: a render
-    // exception is caught and the app carries on, so a failed rebuild must be retried next frame.
-    static std::string coreInfo;
-    static int coreInfoCount = -1;
-    static std::uint64_t coreInfoFreqMHz = 0;
-    if (snap.coreCount != coreInfoCount || snap.cpuFreqMHz != coreInfoFreqMHz)
-    {
-        coreInfo = UI::Format::formatLogicalProcessorSummary(snap.coreCount,
-                                                             (snap.cpuFreqMHz > 0) ? Domain::Numeric::toDouble(snap.cpuFreqMHz) : 0.0);
-        coreInfoCount = snap.coreCount;
-        coreInfoFreqMHz = snap.cpuFreqMHz;
-    }
+    // The same summary as the Overview header (Detail::cpuCoreSummary(), #1180), formatted when its
+    // inputs change rather than every frame (#1171). UI thread only.
+    static Detail::CpuCoreSummaryCache coreSummary;
+    const std::string& coreInfo = coreSummary.get(snap.coreCount, snap.cpuFreqMHz);
     ImGui::TextUnformatted(snap.cpuModel.c_str());
     ImGui::SameLine(0, 0);
     ImGui::TextUnformatted(coreInfo.c_str());
