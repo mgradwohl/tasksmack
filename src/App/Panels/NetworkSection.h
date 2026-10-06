@@ -43,7 +43,7 @@ struct FrameCache
     std::string interfaceRecvLabel;
     std::string unavailableTitle;
 
-    /// The selected interface's "Link: <rate> (<nominal>)" text, built for linkTextMbps (0: not built).
+    /// The selected interface's "Link: 10 Gbit/s" text, built for linkTextMbps (0: not built).
     std::uint64_t linkTextMbps = 0;
     std::string linkText;
 
