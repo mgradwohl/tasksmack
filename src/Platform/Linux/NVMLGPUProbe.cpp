@@ -51,7 +51,8 @@ struct NVMLGPUProbe::Impl
         bool idIsUuid = false;
         // The sysfs name ("0000:01:00.0"), when known; how a deferred device is looked up.
         std::string pciAddress;
-        // A deferred device whose lookup failed while it was awake isn't retried until the next full
+        // A deferred device whose lookup failed while it was awake -- once it woke, or at the start
+        // itself for an awake GPU listed alongside a sleeping one -- isn't retried until the next full
         // rescan clears this (or NVML restarts), so a lookup that keeps failing asks for one
         // re-enumeration per full-rescan interval rather than one every sample.
         bool resolveFailed = false;
@@ -433,7 +434,14 @@ bool NVMLGPUProbe::Impl::buildDeviceListDeferringSleepers()
         const auto result = nvmlDeviceGetHandleByPciBusId_v2(address.c_str(), &handle);
         if (result != NVML_SUCCESS || handle == nullptr)
         {
-            spdlog::warn("NVMLGPUProbe: Failed to get handle for GPU at {} - {}", address, getNVMLError(result));
+            // Kept, handle-less, as a failed deferred lookup rather than dropped: this path returns
+            // success, so nothing else enumerates it, and with no PCI change or lost GPU no restart
+            // follows either. The next full rescan retries the lookup (#1270 review).
+            spdlog::warn(
+                "NVMLGPUProbe: Failed to get handle for GPU at {} - {}; retrying at the next full rescan", address, getNVMLError(result));
+            Device device = describeDeferred(address, position);
+            device.resolveFailed = true;
+            devices.push_back(std::move(device));
             continue;
         }
         unsigned int index = position;

@@ -459,6 +459,7 @@ class NvmlMockControls
             m_InitCalls = reinterpret_cast<UuidCallsFn>(dlsym(m_Library, "tasksmackNvmlMockInitCalls"));
             m_FailInits = reinterpret_cast<SetIndexFn>(dlsym(m_Library, "tasksmackNvmlMockFailInits"));
             m_QueriesForDevice = reinterpret_cast<QueriesForDeviceFn>(dlsym(m_Library, "tasksmackNvmlMockQueriesForDevice"));
+            m_SetPreviousOccupant = reinterpret_cast<FailSensorReadsFn>(dlsym(m_Library, "tasksmackNvmlMockSetPreviousOccupant"));
             // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
         }
     }
@@ -484,6 +485,10 @@ class NvmlMockControls
         if (m_FailInits != nullptr)
         {
             m_FailInits(0);
+        }
+        if (m_SetPreviousOccupant != nullptr)
+        {
+            m_SetPreviousOccupant(0);
         }
         if (m_Library != nullptr)
         {
@@ -571,6 +576,7 @@ class NvmlMockControls
     SetIndexFn m_SetLostDevice = nullptr;
     UuidCallsFn m_InitCalls = nullptr;
     SetIndexFn m_FailInits = nullptr;
+    FailSensorReadsFn m_SetPreviousOccupant = nullptr;
 
   public:
     /// Calls that have addressed a device so far (NVML mock's tasksmackNvmlMockDeviceQueries).
@@ -593,6 +599,18 @@ class NvmlMockControls
     [[nodiscard]] bool countsQueriesPerDevice() const
     {
         return m_QueriesForDevice != nullptr;
+    }
+
+    /// Whether the mock can stand device 0 in for the GPU that held its slot before (#1270 review).
+    [[nodiscard]] bool controlsPreviousOccupant() const
+    {
+        return m_SetPreviousOccupant != nullptr;
+    }
+
+    /// While set, device 0 reports another UUID ("mock-nvml-previous-uuid") and no power reading.
+    void setPreviousOccupant(bool enabled) const
+    {
+        m_SetPreviousOccupant(enabled ? 1 : 0);
     }
 };
 
@@ -1467,6 +1485,63 @@ TEST(LinuxNVMLGPUProbeTest, AFailedDeferredLookupIsRetriedAtTheNextFullRescan)
     ASSERT_EQ(counters.size(), 2U);
     EXPECT_TRUE(counters[1].utilizationAvailable);
     EXPECT_DOUBLE_EQ(counters[1].utilizationPercent, 25.0);
+}
+
+// #1270 review: an awake GPU whose PCI-address lookup fails transiently at the start, while another
+// GPU is asleep, is kept as a failed deferred lookup rather than dropped. Nothing else would ever look
+// for it -- the start succeeded, so index enumeration is skipped, and with no PCI change or lost GPU no
+// restart follows -- so the next full rescan retries it, and it then appears with its readings.
+TEST(LinuxNVMLGPUProbeTest, AnAwakeGpuWhoseLookupFailsAtTheStartIsRetriedAtTheNextFullRescan)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const NvmlMockControls controls;
+    ASSERT_TRUE(controls.available());
+    ASSERT_TRUE(controls.controlsDeviceSet());
+    const TestSupport::ScopedTempDir pciRoot("tasksmack_nvml_start_lookup_retry");
+    const TestSupport::ScopedTempDir procRoot("tasksmack_nvml_start_lookup_retry_proc");
+    makePciDevice(pciRoot.path, "0000:01:00.0", "0x10de", "nvidia");
+    makePciDevice(pciRoot.path, "0000:41:00.0", "0x10de", "nvidia", "suspended");
+    makeProcGpuInformation(procRoot.path, "0000:01:00.0", "Mock NVIDIA GPU 0", "mock-nvml-uuid-0");
+    makeProcGpuInformation(procRoot.path, "0000:41:00.0", "Mock NVIDIA GPU 1 (procfs)", "GPU-proc-uuid-1");
+
+    // NVML won't return the awake GPU's handle at the start.
+    controls.configure(0, -1);
+    NVMLGPUProbe probe(pciRoot.path.string(), procRoot.path.string());
+    ASSERT_TRUE(probe.isAvailable());
+    const auto atStart = probe.enumerateGPUs();
+    ASSERT_EQ(atStart.size(), 2U); // kept, not dropped
+    EXPECT_EQ(atStart[0].id, "mock-nvml-uuid-0");
+    EXPECT_FALSE(atStart[0].sensorCapabilities.has_value());
+    const auto unread = probe.readGPUCounters();
+    ASSERT_EQ(unread.size(), 2U);
+    EXPECT_FALSE(unread[0].suspended);
+    EXPECT_FALSE(unread[0].utilizationAvailable);
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick)); // not retried every sample
+
+    // NVML recovers: the full rescan retries the lookup without re-initialising NVML.
+    controls.configure(NvmlMockControls::NO_FAILING_HANDLE, -1);
+    const unsigned int initsBefore = controls.initCalls();
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick));
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    EXPECT_EQ(controls.initCalls(), initsBefore);
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 2U);
+    EXPECT_EQ(gpus[0].id, "mock-nvml-uuid-0");
+    EXPECT_EQ(gpus[0].name, "Mock NVIDIA GPU 0");
+    EXPECT_EQ(gpus[0].deviceIndex, 0U);
+    EXPECT_TRUE(gpus[0].sensorCapabilities.has_value());
+    EXPECT_EQ(gpus[1].id, "GPU-proc-uuid-1");        // still asleep, still deferred
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full)); // nothing left to find
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 2U);
+    EXPECT_EQ(counters[0].gpuId, "mock-nvml-uuid-0");
+    EXPECT_TRUE(counters[0].utilizationAvailable);
+    EXPECT_DOUBLE_EQ(counters[0].utilizationPercent, 75.0);
+    EXPECT_TRUE(counters[1].suspended);
 }
 
 // #1270 review: whether a device rebuilt by a restart takes the id remembered for its PCI address.
