@@ -3,6 +3,7 @@
 #include "App/Panel.h"
 #include "App/Panels/AdaptiveIntervalUtils.h"
 #include "App/Panels/ProcessDetailsLayout.h"
+#include "App/Panels/ProcessFilterCache.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessSortUtils.h"
 #include "App/Panels/ProcessStateColor.h"
@@ -827,9 +828,11 @@ void ProcessesPanel::renderContent()
     // Get thread-safe copy of snapshots — only when data has actually changed (version-cached).
     // ProcessModel updates at 1Hz but render runs at 60fps; skip 59/60 redundant deep copies.
     // onUpdate() adopts too, but onUpdate() is skipped without a sampler and a generation can be
-    // published between the two; with nothing new this is one atomic load.
-    const auto currentVersion = m_ProcessModel->snapshotVersion();
+    // published between the two; with nothing new this is one atomic load. Everything below is keyed
+    // on m_CachedSnapshotVersion, the generation adopted with the vector, not on a version read
+    // before adopting (#1394).
     adoptNewerSnapshots();
+    const std::uint64_t adoptedVersion = m_CachedSnapshotVersion;
     const auto& currentSnapshots = *m_CachedRenderSnapshots;
 
     // Prune row format cache entries for processes no longer present, once per new snapshot
@@ -877,7 +880,7 @@ void ProcessesPanel::renderContent()
     // Filtered indices, running count, and summary string are only recomputed when snapshot
     // version or search term changes (typically once per second at the 1Hz refresh rate).
     const std::string_view searchTerm(m_SearchBuffer);
-    const bool filterDirty = (currentVersion != m_CachedFilterVersion || searchTerm != m_CachedSearchTerm);
+    const bool filterDirty = ProcessFilterCache::isStale(adoptedVersion, m_CachedFilterVersion, searchTerm, m_CachedSearchTerm);
     if (filterDirty)
     {
         m_CachedFilteredIndices.clear();
@@ -943,7 +946,7 @@ void ProcessesPanel::renderContent()
                                              static_cast<long long>(currentSnapshots.size()));
         }
 
-        m_CachedFilterVersion = currentVersion;
+        m_CachedFilterVersion = adoptedVersion;
         m_CachedSearchTerm = std::string(searchTerm);
         ++m_FilterGeneration; // The tree's rows are rebuilt from the new indices (#1138)
 
@@ -1187,8 +1190,14 @@ void ProcessesPanel::renderContent()
             {
                 for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
                 {
-                    const auto& proc = currentSnapshots[m_CachedSortedIndices[static_cast<size_t>(i)]];
-                    renderProcessRow(proc, 0, false, false);
+                    // The indices are rebuilt for every adopted generation, so they always fit the
+                    // vector; checked anyway, so a keying mistake can't read past its end (#1394).
+                    const std::size_t procIdx = m_CachedSortedIndices[static_cast<size_t>(i)];
+                    if (procIdx >= currentSnapshots.size())
+                    {
+                        continue;
+                    }
+                    renderProcessRow(currentSnapshots[procIdx], 0, false, false);
                 }
             }
         }
