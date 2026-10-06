@@ -623,8 +623,8 @@ TEST_F(NVMLGPUProbeFakeTest, AGpuLostDuringTheSensorProbeLeavesTheSensorsUnknown
     const auto back = probe.enumerateGPUs();
     ASSERT_EQ(back.size(), 1U);
     ASSERT_TRUE(back[0].sensorCapabilities.has_value());
-    EXPECT_TRUE(back[0].sensorCapabilities->hasTemperature);
-    EXPECT_TRUE(back[0].sensorCapabilities->hasFanSpeed);
+    EXPECT_TRUE(back[0].sensorCapabilities.value_or(GPUCapabilities{}).hasTemperature);
+    EXPECT_TRUE(back[0].sensorCapabilities.value_or(GPUCapabilities{}).hasFanSpeed);
 }
 
 // NVML_ERROR_UNINITIALIZED from a running-process query is a reset too: NVML restarts at the next
