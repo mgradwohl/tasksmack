@@ -159,11 +159,14 @@ BENCHMARK(BM_Numeric_NarrowOr_InRange);
 // Benchmark narrowOr<int, int64_t> with out-of-range values (overflow path)
 static void BM_Numeric_NarrowOr_Overflow(benchmark::State& state)
 {
-    // Always overflow – worst case (branch misprediction cost)
-    const std::int64_t largeValue = static_cast<std::int64_t>(std::numeric_limits<int>::max()) + 1000LL;
+    // Always overflow – the out-of-range path. The input is re-laundered through DoNotOptimize on every
+    // iteration so the compiler cannot see it is a constant: a compile-time-known overflowing value would let
+    // narrowOr() fold to the constant fallback, timing an empty loop (#877).
+    std::int64_t largeValue = static_cast<std::int64_t>(std::numeric_limits<int>::max()) + 1000LL;
 
     for (auto _ : state)
     {
+        benchmark::DoNotOptimize(largeValue);
         benchmark::DoNotOptimize(Domain::Numeric::narrowOr<int>(largeValue, -1));
     }
 }
@@ -226,12 +229,14 @@ static void BM_Numeric_ProcessSnapshotOperations(benchmark::State& state)
         ++idx;
 
         // Typical operations in computeSnapshot
-        const auto cpuF = Domain::Numeric::clampPercentToFloat(cpuPercents[i]);
-        const auto memF = Domain::Numeric::clampPercentToFloat(memPercents[i]);
-        const auto userD = Domain::Numeric::toDouble(userTimes[i]);
-        const auto sysD = Domain::Numeric::toDouble(sysTimes[i]);
-        const auto rssD = Domain::Numeric::toDouble(rssValues[i]);
-        const auto pidI = Domain::Numeric::narrowOr<std::int32_t>(pids[i], -1);
+        // Non-const so DoNotOptimize binds its read-write overload; the const-ref overload is deprecated
+        // upstream because it lets the compiler keep optimizing around the value.
+        auto cpuF = Domain::Numeric::clampPercentToFloat(cpuPercents[i]);
+        auto memF = Domain::Numeric::clampPercentToFloat(memPercents[i]);
+        auto userD = Domain::Numeric::toDouble(userTimes[i]);
+        auto sysD = Domain::Numeric::toDouble(sysTimes[i]);
+        auto rssD = Domain::Numeric::toDouble(rssValues[i]);
+        auto pidI = Domain::Numeric::narrowOr<std::int32_t>(pids[i], -1);
 
         benchmark::DoNotOptimize(cpuF);
         benchmark::DoNotOptimize(memF);
