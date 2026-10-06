@@ -26,6 +26,7 @@
 #include <string_view>
 #include <system_error>
 #include <type_traits>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -516,13 +517,24 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
             ifaceCounters.txBytes = txBytes;
             ifaceCounters.isUp = readInterfaceOperState(ifaceName);
             ifaceCounters.linkSpeedMbps = getInterfaceLinkSpeed(ifaceName, ifaceCounters.isUp);
-            const auto isVirtual = isVirtualInterface(m_SysClassNetRoot, ifaceName);
-            ifaceCounters.isVirtual = isVirtual.value_or(false);
-            ifaceCounters.isVirtualKnown = isVirtual.has_value();
             counters.networkInterfaces.push_back(std::move(ifaceCounters));
         }
 
         p = (lineEnd < end) ? lineEnd + 1 : end;
+    }
+
+    std::vector<std::string> currentInterfaces;
+    currentInterfaces.reserve(counters.networkInterfaces.size());
+    for (const auto& iface : counters.networkInterfaces)
+    {
+        currentInterfaces.push_back(iface.name);
+    }
+    std::vector<std::optional<bool>> isVirtual;
+    const bool interfaceSetChanged = classifyInterfaces(currentInterfaces, isVirtual);
+    for (std::size_t i = 0; i < counters.networkInterfaces.size(); ++i)
+    {
+        counters.networkInterfaces[i].isVirtual = isVirtual[i].value_or(false);
+        counters.networkInterfaces[i].isVirtualKnown = isVirtual[i].has_value();
     }
 
     // The totals count hardware interfaces only: traffic over a bridge, veth, VPN tunnel or VLAN
@@ -543,15 +555,75 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
     counters.netRxBytes = totalRxBytes;
     counters.netTxBytes = totalTxBytes;
 
-    // Clean up cache entries for interfaces that no longer exist
-    // (e.g., USB network adapters unplugged, VMs/containers destroyed)
-    std::vector<std::string> currentInterfaces;
-    currentInterfaces.reserve(counters.networkInterfaces.size());
-    for (const auto& iface : counters.networkInterfaces)
+    // Clean up cache entries for interfaces that no longer exist (e.g., USB network adapters
+    // unplugged, VMs/containers destroyed). Entries are only ever added for listed interfaces, so
+    // there can be stale ones only after the interface set changed.
+    if (interfaceSetChanged)
     {
-        currentInterfaces.push_back(iface.name);
+        cleanupStaleInterfaceCacheEntries(currentInterfaces);
     }
-    cleanupStaleInterfaceCacheEntries(currentInterfaces);
+}
+
+bool LinuxSystemProbe::classifyInterfaces(const std::vector<std::string>& names, std::vector<std::optional<bool>>& isVirtual)
+{
+    isVirtual.assign(names.size(), std::nullopt);
+    std::vector<std::size_t> toLookUp;
+    bool setChanged = false;
+    {
+        const std::scoped_lock lock(m_InterfaceCacheMutex);
+        setChanged = (names != m_ClassifiedInterfaces);
+        for (std::size_t i = 0; i < names.size(); ++i)
+        {
+            const auto cached = setChanged ? m_InterfaceIsVirtual.end() : m_InterfaceIsVirtual.find(names[i]);
+            if (cached != m_InterfaceIsVirtual.end())
+            {
+                isVirtual[i] = cached->second;
+            }
+            else
+            {
+                toLookUp.push_back(i);
+            }
+        }
+    }
+    if (toLookUp.empty() && !setChanged)
+    {
+        return false;
+    }
+
+    // The sysfs lookups run without the lock, like the link-speed reads.
+    for (const std::size_t i : toLookUp)
+    {
+        isVirtual[i] = isVirtualInterface(m_SysClassNetRoot, names[i]);
+    }
+
+    // Build the cache's entries first and commit its key (the interface set) last, so a cache
+    // that says it is valid for a set always holds entries looked up for that set.
+    const std::scoped_lock lock(m_InterfaceCacheMutex);
+    if (setChanged)
+    {
+        std::unordered_map<std::string, bool> rebuilt;
+        rebuilt.reserve(names.size());
+        for (std::size_t i = 0; i < names.size(); ++i)
+        {
+            if (const std::optional<bool> known = isVirtual[i]; known.has_value())
+            {
+                rebuilt.insert_or_assign(names[i], *known);
+            }
+        }
+        m_InterfaceIsVirtual = std::move(rebuilt);
+        m_ClassifiedInterfaces = names;
+    }
+    else if (names == m_ClassifiedInterfaces) // unless another read() changed the set meanwhile
+    {
+        for (const std::size_t i : toLookUp)
+        {
+            if (const std::optional<bool> known = isVirtual[i]; known.has_value())
+            {
+                m_InterfaceIsVirtual.insert_or_assign(names[i], *known);
+            }
+        }
+    }
+    return setChanged;
 }
 
 void LinuxSystemProbe::cleanupStaleInterfaceCacheEntries(const std::vector<std::string>& currentInterfaces)
