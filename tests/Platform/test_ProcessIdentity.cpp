@@ -105,7 +105,7 @@ TEST(ProcStatFieldsTest, ReadsEveryFieldTheProbeUses)
 {
     const auto parsed = ProcParsing::parseStatFields(FULL_STAT_LINE);
     ASSERT_TRUE(parsed.has_value());
-    const ProcParsing::StatFields& fields = parsed.value();
+    const ProcParsing::StatFields fields = parsed.value_or(ProcParsing::StatFields{});
     EXPECT_EQ(fields.comm, "my (odd) name"); // first '(' to last ')'
     EXPECT_EQ(fields.state, 'S');
     EXPECT_EQ(fields.parentPid, 1);
@@ -128,7 +128,7 @@ TEST(ProcStatFieldsTest, StartTimeAgreesWithTheStartTimeParser)
         SCOPED_TRACE(line);
         const auto fields = ProcParsing::parseStatFields(line);
         ASSERT_TRUE(fields.has_value());
-        EXPECT_EQ(ProcParsing::parseStatStartTime(line), fields.value().startTime);
+        EXPECT_EQ(ProcParsing::parseStatStartTime(line), fields.value_or(ProcParsing::StatFields{}).startTime);
     }
 }
 
