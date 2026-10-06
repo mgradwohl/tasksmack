@@ -188,6 +188,42 @@ struct ChartGridDimensions
     return {.columns = bestColumns, .rows = bestRows, .cellWidth = finalCellWidth, .cellHeight = finalCellHeight};
 }
 
+/// Shortest the grid computeChartGridLayout() lays out for @p config can be without overflowing:
+/// every row at minCellHeight (plus rowOverhead), with as many columns as fit the width at
+/// minCellWidth. That is the shape computeChartGridLayout() falls back to when the height is tight
+/// -- fewer columns would only add rows. 0 for no items.
+///
+/// A caller that shares a region between this grid and other content (the Network and I/O tab's
+/// network chart above its per-disk grid) reserves this much for the grid, so the content above
+/// cannot take the height the grid needs and push it into scrolling (#1370 review).
+[[nodiscard]] inline auto computeChartGridMinimumHeight(const ChartGridConfig& config) -> float
+{
+    if (config.itemCount == 0)
+    {
+        return 0.0F;
+    }
+    const auto atLeastZero = [](const float value)
+    {
+        return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
+    };
+    const float minCellWidth = atLeastZero(config.minCellWidth);
+    const float columnOverhead = atLeastZero(config.columnOverhead);
+    const float safeWidth = std::max(atLeastZero(config.availableWidth), minCellWidth);
+    // The same fit test, and tolerance, as computeChartGridLayout()'s widthFits.
+    constexpr float FIT_TOLERANCE = 1e-3F;
+    size_t columns = 1;
+    for (size_t candidate = 2; candidate <= config.itemCount; ++candidate)
+    {
+        if ((minCellWidth + columnOverhead) * static_cast<float>(candidate) > safeWidth * (1.0F + FIT_TOLERANCE))
+        {
+            break;
+        }
+        columns = candidate;
+    }
+    const size_t rows = (config.itemCount + columns - 1) / columns;
+    return static_cast<float>(rows) * (atLeastZero(config.minCellHeight) + atLeastZero(config.rowOverhead));
+}
+
 /// The style metrics a grid cell's measured vertical overhead (its label rows and padding) depends on.
 /// Keyed on these rather than on the font preset alone: today's theme switches leave them untouched
 /// (Theme::applyImGuiStyle sets them independently of the colour scheme), but that is a property of

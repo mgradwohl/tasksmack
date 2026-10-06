@@ -937,8 +937,15 @@ scripts build before prompting for elevation. For resize diagnosis, use the `res
 procedure below.
 
 ```powershell
-# App trace — exercise the app, then close it (defaults to win-optimized)
+# App trace — exercise the app, then close it (defaults to win-release, the preset releases ship)
 pwsh tools/profile-etw.ps1 app
+
+# Longer warm-up before recording, or record startup deliberately
+pwsh tools/profile-etw.ps1 app -DurationSeconds 45 -WarmupSeconds 15
+pwsh tools/profile-etw.ps1 app -DurationSeconds 20 -IncludeStartup
+
+# Dry run of the launch/warm-up/crash checks, with no WPR session and no UAC prompt
+pwsh tools/profile-etw.ps1 app -DurationSeconds 10 -SkipTrace
 
 # Benchmark trace
 pwsh tools/profile-etw.ps1 bench
@@ -974,8 +981,19 @@ Notes:
 - ETW recording requires elevation. By default `profile-etw.ps1` elevates only a separate WPR collector, not the target, and validates all output artifacts before returning; `-ElevatedTarget` is the explicit opt-in that runs the target elevated too. From an elevated terminal the script refuses unless `-ElevatedTarget` is passed, since the target would inherit the elevation.
 - Captures use unique WPR instance names and never cancel an existing recording. If
   another recorder prevents startup, leave it alone and coordinate with its owner.
-- Prefer `win-optimized` for real-world timing; use `win-profile` when you need function-level symbol attribution.
-- Function decoding against `win-optimized` binaries may be limited (no debug info); `analyze-etw.ps1` degrades gracefully with an explanatory message.
+- App mode defaults to `win-release`, the preset `.github/workflows/release.yml` builds and ships, so
+  the profile measures the binary users run. The preset and the compile flags its build tree was
+  configured with (from its `CMakeCache.txt`) are logged at the start and recorded in the manifest.
+  Use `win-profile` when you need function-level symbol attribution; `-Preset win-optimized`
+  (LTO, `-march=x86-64-v3`) profiles that opt-in build, which is not what ships.
+- App mode excludes startup: it launches the app, waits for its main window plus `-WarmupSeconds`
+  (default 5), and only then starts the trace (prompting for UAC at that point). With
+  `-DurationSeconds` the trace is stopped before the script closes the app. `-IncludeStartup`
+  starts the trace before the launch instead.
+- A crashed run fails (#1186): the app exiting during warm-up, exiting before a `-DurationSeconds`
+  window ends, or being closed with a nonzero exit code stops the trace, writes the manifest (with
+  the exit code and reason), exits nonzero and prints no `TRACE=` line.
+- Function decoding against `win-release`/`win-optimized` binaries may be limited (no debug info); `analyze-etw.ps1` degrades gracefully with an explanatory message.
 - `analyze-etw.ps1` judges every trace before you rely on it (#873) and prints, and writes to
   `<trace>-analysis.json`, a **Valid / Degraded / Invalid** verdict with reasons:
   - **Lost events and buffers**, as a count and a share of all events. More than 1% lost, or
