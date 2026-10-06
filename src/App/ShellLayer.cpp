@@ -104,18 +104,17 @@ void ShellLayer::onAttach()
     m_CachedSystemTabLabel = TabLabel::make(ICON_FA_COMPUTER, m_SystemMetricsPanel.hostname(), TabLabel::SYSTEM_TAB_ID);
     m_DetailsTabLabel.get(m_ProcessDetailsPanel.tabLabel(), makeDetailsTabLabel);
 
-    // Cache privilege status and trigger the startup notice if needed.
-    // Elevation state is constant for process lifetime; cache once at startup.
+    // Trigger the startup notice if needed. The status bar's lock icon reads the live value instead
+    // (#1254); the notice itself is a one-off at startup.
     // NOTE: The event is NOT dispatched here — ElevationNoticeLayer hasn't been pushed yet.
     // m_PendingPrivilegeNotice is dispatched in the first onUpdate() call, after all layers are stacked.
-    m_HasReducedPrivileges = m_ProcessesPanel.hasReducedPrivileges();
-    if (m_HasReducedPrivileges && UserConfig::get().settings().showPrivilegeNotice)
+    if (m_ProcessesPanel.hasReducedPrivileges() && UserConfig::get().settings().showPrivilegeNotice)
     {
         m_PendingPrivilegeNotice = true;
     }
 
-    // The details pane draws only the series the process probe can fill (#1028, #1035). The
-    // capabilities are fixed for the probe's lifetime, so once is enough.
+    // The details pane draws only the series the process probe can fill (#1028, #1035). Refreshed
+    // every update too, since a probe can withdraw a capability after the first sample (#1254).
     m_ProcessDetailsPanel.setProcessCapabilities(m_ProcessesPanel.processCapabilities());
 }
 
@@ -260,6 +259,10 @@ void ShellLayer::onUpdate(float deltaTime)
 
     // Update panels
     m_Tabs.onUpdate(deltaTime);
+
+    // The details pane follows the capabilities published with the latest generation (#1254): a
+    // plain copy of what ProcessesPanel fetched with its snapshots, so no lock is taken here.
+    m_ProcessDetailsPanel.setProcessCapabilities(m_ProcessesPanel.processCapabilities());
 
     // Hand Process Details the selected process's new samples: one per generation the sampler
     // published since its last frame, each with its own sample time (#1098). The model keeps them for
@@ -506,7 +509,9 @@ void ShellLayer::renderStatusBar() const
     if (ImGui::Begin("##StatusBar", nullptr, windowFlags))
     {
         // Show a persistent lock icon when running without elevated privileges
-        if (m_HasReducedPrivileges)
+        // Live, not a startup copy: a probe can withdraw a capability after the first sample (#1254).
+        // ProcessesPanel keeps it with its cached snapshot generation, so reading it takes no lock.
+        if (m_ProcessesPanel.hasReducedPrivileges())
         {
             ImGui::TextColored(theme.scheme().textWarning, ICON_FA_LOCK);
             if (ImGui::IsItemHovered())
