@@ -52,7 +52,7 @@ struct UseIndexAsId
 /// tall -- see #823 review (reported as a visible scrollbar on every chart cell).
 ///
 /// Cell IDs default to ImGui::PushID(index) (no heap allocation) -- correct as long as index
-/// *is* the item's identity and never reorders (true for CPU cores). For a collection whose
+/// *is* the item's identity and never reorders. For a collection whose
 /// membership/order can change at runtime (e.g. disks, which can be unplugged mid-session,
 /// shifting later indices), pass cellId so ImGui/ImPlot per-widget state (pan/zoom, RenderMetrics
 /// entries) stays attached to the same logical item instead of "jumping" to whatever now

@@ -152,6 +152,10 @@ struct NVMLGPUProbe::Impl
     /// A device asleep when NVML started, described without NVML (#1270): the PCI location from its
     /// address, the device id from sysfs, the model and UUID from the driver's procfs.
     [[nodiscard]] Device describeDeferred(const std::string& address, std::uint32_t provisionalIndex) const;
+    /// Fills `device`'s PCI identity from sysfs -- its address, the sysfs path whose
+    /// power/runtime_status says whether it is asleep, the PCI location and the device id -- without
+    /// any NVML call.
+    void applySysfsPciIdentity(Device& device, const std::string& address) const;
     /// Builds the device list. Defers the devices asleep now when that is possible: the PCI bus-id
     /// lookup is available and sysfs lists exactly as many nvidia-bound devices as NVML counts, so
     /// every NVML device can be found by address. Returns false, building nothing, otherwise.
@@ -371,10 +375,8 @@ NVMLGPUProbe::Impl::Device NVMLGPUProbe::Impl::describe(nvmlDevice_t handle, std
     return device;
 }
 
-NVMLGPUProbe::Impl::Device NVMLGPUProbe::Impl::describeDeferred(const std::string& address, std::uint32_t provisionalIndex) const
+void NVMLGPUProbe::Impl::applySysfsPciIdentity(Device& device, const std::string& address) const
 {
-    Device device;
-    device.index = provisionalIndex;
     device.pciAddress = address;
     device.sysfsPath = pciDevicesRoot + "/" + address;
     if (const auto fields = NVMLGPUProbeMath::parsePciAddress(address))
@@ -388,6 +390,13 @@ NVMLGPUProbe::Impl::Device NVMLGPUProbe::Impl::describeDeferred(const std::strin
         constexpr unsigned DEVICE_ID_SHIFT = 16U;
         device.pciDeviceId = (deviceId << DEVICE_ID_SHIFT) | PciDisplayDevices::PCI_VENDOR_NVIDIA;
     }
+}
+
+NVMLGPUProbe::Impl::Device NVMLGPUProbe::Impl::describeDeferred(const std::string& address, std::uint32_t provisionalIndex) const
+{
+    Device device;
+    device.index = provisionalIndex;
+    applySysfsPciIdentity(device, address);
 
     NVMLGPUProbeMath::NvidiaProcGpuInfo procInfo;
     if (std::ifstream file(nvidiaProcRoot + "/" + address + "/information"); file.is_open())
@@ -449,7 +458,15 @@ bool NVMLGPUProbe::Impl::buildDeviceListDeferringSleepers()
         {
             index = position;
         }
-        devices.push_back(describe(handle, index));
+        Device device = describe(handle, index);
+        if (device.sysfsPath.empty())
+        {
+            // The optional PCI-info query failed, but the address it was looked up by is known: keep
+            // its sysfs identity, or the sleep check could never fire for it and NVML would keep
+            // addressing it, so waking it, once it suspends (#1353).
+            applySysfsPciIdentity(device, address);
+        }
+        devices.push_back(std::move(device));
     }
     return true;
 }
