@@ -16,12 +16,12 @@
 //   - above the maximum the extra height shows nothing more -- the data has no more detail to give --
 //     and the space is better left to the other sections on the tab.
 //
-// The maximum gives way when a tab has so few charts that keeping to it would leave most of a tall
-// window empty: the system GPU tab with one GPU and only its core chart left well over half of a
-// maximized window blank below that one chart (#1278). The charts then grow until they take at
-// least HISTORY_PLOT_MIN_FILL_SHARE of the height they share, so no more than a quarter of it is
-// left empty. Where the maximum already left less than that empty -- every tab with enough charts
-// to fill most of the window -- nothing changes.
+// On a fill tab the maximum gives way to the space the charts share: the system GPU tab with one
+// GPU and only its core chart left well over half of a maximized window blank below that one chart
+// (#1278), and stopping part-way (a three-quarter share) still left a visible empty band. Fill tabs
+// therefore fill their region, as the Overview always has; a tall chart with a flat line reads as
+// "idle", as in Task Manager, while empty space reads as unfinished. The maximum still bounds
+// layouts that don't fill (the per-disk grid's cells, StorageSection).
 //
 // The pure arithmetic lives here so it is unit-testable without a live ImGui context, following
 // CONTRIBUTING.md's "extract the pure decision logic into a small header" pattern.
@@ -53,11 +53,10 @@ inline constexpr float HISTORY_PLOT_MIN_HEIGHT_CHART_EM = 11.25F;
 /// these charts used to be fixed at. Yields to HISTORY_PLOT_MIN_FILL_SHARE on a tab with few charts.
 inline constexpr float HISTORY_PLOT_MAX_HEIGHT_EM = 33.75F;
 
-/// Least share of the height available to the charts that they take together, even when that makes
-/// each taller than HISTORY_PLOT_MAX_HEIGHT_EM (#1278). With few charts in a tall window the maximum
-/// alone left most of it empty; three quarters keeps the empty band below the charts to at most a
-/// quarter of the space while still leaving them shorter than a pure fill would.
-inline constexpr float HISTORY_PLOT_MIN_FILL_SHARE = 0.75F;
+/// Share of the height available to the charts that they take together on a fill tab, even when
+/// that makes each taller than HISTORY_PLOT_MAX_HEIGHT_EM (#1278): all of it. A three-quarter share
+/// was tried first and left an empty band under a single chart that looked unfinished.
+inline constexpr float HISTORY_PLOT_MIN_FILL_SHARE = 1.0F;
 
 /// Height kept back from the fill so the charts never sum to a hair more than the space they were
 /// measured against, which would summon a scrollbar the layout was specifically sized to avoid.
