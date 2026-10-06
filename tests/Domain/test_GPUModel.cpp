@@ -1945,6 +1945,41 @@ TEST(GPUModelTest, ShrinkingTheHistoryWindowTrimsExistingHistory)
     EXPECT_EQ(model.historyTimestamps().size(), 12U);
 }
 
+// #1145: the trimmed history is published at once, not at the next sample, which can be seconds away.
+TEST(GPUModelTest, ShrinkingTheHistoryWindowRepublishesTheTrimmedHistory)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    model.setMaxHistorySeconds(60.0);
+
+    const auto start = std::chrono::ceil<std::chrono::seconds>(std::chrono::steady_clock::now());
+    for (int i = 0; i <= 30; ++i)
+    {
+        model.refreshAt(start + std::chrono::seconds(i));
+    }
+    const std::uint64_t versionBefore = model.publicationVersion();
+    ASSERT_EQ(model.publication()->histories.at("GPU0").timestamps.size(), 31U);
+
+    model.setMaxHistorySeconds(10.0);
+
+    EXPECT_GT(model.publicationVersion(), versionBefore);
+    const auto publication = model.publication();
+    EXPECT_EQ(publication->version, model.publicationVersion());
+    // t = 20..30, plus t = 19 kept before the cutoff (#1016).
+    EXPECT_EQ(publication->histories.at("GPU0").timestamps.size(), 12U);
+    EXPECT_EQ(publication->histories.at("GPU0").utilization.size(), 12U);
+}
+
+TEST(GPUModelTest, ChangingTheHistoryWindowBeforeAnyRefreshPublishesNothing)
+{
+    Domain::GPUModel model(std::make_unique<MockGPUProbe>());
+    model.setMaxHistorySeconds(60.0);
+    EXPECT_EQ(model.publicationVersion(), 0U);
+}
+
 TEST(GPUModelTest, MaxHistorySecondsIsClampedToTheSupportedRange)
 {
     Domain::GPUModel model(std::make_unique<MockGPUProbe>());

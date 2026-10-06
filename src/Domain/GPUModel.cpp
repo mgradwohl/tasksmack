@@ -315,6 +315,12 @@ void GPUModel::setMaxHistorySeconds(double seconds)
     {
         trimHistory(m_HistoryTimestamps.back());
     }
+    // Republish the trimmed history now rather than at the next sample (#1145); see
+    // SystemModel::setMaxHistorySeconds(). Nothing is published before the first refresh.
+    if (m_PublicationVersion != 0)
+    {
+        publish();
+    }
 }
 
 double GPUModel::maxHistorySeconds() const

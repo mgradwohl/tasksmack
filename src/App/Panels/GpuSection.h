@@ -128,9 +128,12 @@ struct GpuDrawEntry
 /// enumeration failed), in the published order. A GPU missing from one read keeps its slot and its
 /// UI state instead of vanishing and shifting the GPUs after it, whose state used to be keyed by
 /// position (#1163).
-[[nodiscard]] inline std::vector<GpuDrawEntry> gpuDrawList(const Domain::GPUPublication& publication)
+///
+/// Written into @p entries, replacing what it held but keeping its capacity, so the tab can rebuild the
+/// list every frame without allocating (#1171).
+inline void gpuDrawList(const Domain::GPUPublication& publication, std::vector<GpuDrawEntry>& entries)
 {
-    std::vector<GpuDrawEntry> entries;
+    entries.clear();
     entries.reserve(publication.gpuInfo.size() + publication.snapshots.size());
     const auto listed = [&entries](std::string_view gpuId)
     {
@@ -157,6 +160,13 @@ struct GpuDrawEntry
             entries.push_back({.gpuId = snapshot.gpuId, .info = nullptr, .snapshot = &snapshot});
         }
     }
+}
+
+/// gpuDrawList() into a new vector.
+[[nodiscard]] inline std::vector<GpuDrawEntry> gpuDrawList(const Domain::GPUPublication& publication)
+{
+    std::vector<GpuDrawEntry> entries;
+    gpuDrawList(publication, entries);
     return entries;
 }
 
@@ -217,6 +227,25 @@ inline constexpr float GPU_CLOCK_REFERENCE_FLOOR_MHZ = 2000.0F;
     return reference;
 }
 
+/// What the GPU tab keeps from frame to frame, so that once warmed up drawing it allocates nothing
+/// (#1171): its scratch buffers and draw list, reused, and the strings built from a publication --
+/// header labels and chart layout IDs, one per draw-list entry -- rebuilt only when a new publication
+/// arrives. Owned by the panel; one per GPU tab. UI thread only.
+struct FrameCache
+{
+    std::vector<GpuDrawEntry> drawList;
+    std::vector<float> clockPercent;
+    std::vector<float> temperaturePercent;
+    std::vector<float> powerPercent;
+
+    /// Per draw-list entry, built from the publication named below.
+    std::vector<std::string> headerLabels;
+    std::vector<std::string> coreLayoutIds;
+    std::vector<std::string> thermalLayoutIds;
+    const Domain::GPUPublication* labelsPublication = nullptr;
+    std::uint64_t labelsVersion = 0;
+};
+
 /// Context struct containing all state needed to render the GPU section.
 /// This allows the render function to be extracted from SystemMetricsPanel
 /// without requiring access to private members.
@@ -242,6 +271,10 @@ struct RenderContext
     // Shares the tab's height among every expanded GPU's charts, as the other tabs' charts do
     // (#959). Null keeps the fixed default height.
     UI::Widgets::FillPlotLayout* fill = nullptr;
+
+    // Kept across frames by the caller so drawing allocates nothing (#1171). Null: a fresh one for the
+    // frame, which draws the same but rebuilds everything.
+    FrameCache* cache = nullptr;
 };
 
 /// Render the GPU section with utilization, memory, thermal, and power charts.

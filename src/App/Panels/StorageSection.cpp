@@ -8,6 +8,7 @@
 #include "UI/Format.h"
 #include "UI/HistoryPlotHeight.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/InlineText.h"
 #include "UI/RateAxis.h"
 #include "UI/Theme.h"
 
@@ -99,9 +100,14 @@ void renderDiskCell(const std::string& deviceName,
     // One upper bound for the chart's Y axis and its bars, so a bar and its line show a value at the
     // same height (#1003). A per-disk series holds NaN for samples where the disk was absent, and
     // currentRead/Write are NaN when it is absent from the latest sample (#1015): maxOfSeries skips
-    // them, and the bars show N/A rather than a false 0 B/s, as the GPU fan bar does.
+    // them, and the bars show N/A rather than a false 0 B/s, as the GPU fan bar does. Only the
+    // samples in the window count, not the one trimming keeps left of it (#1145), plus the bars'
+    // current values, so a bar easing down from a peak that has just left the window is not clamped.
     const double diskAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-        "##DiskAxis", UI::Widgets::maxOfSeries(readData, writeData), UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
+        "##DiskAxis",
+        UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, readData, writeData),
+                                       {currentRead, currentWrite}),
+        UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
 
     // The cell has no legend, so its value strip is the chart's key: each bar carries its series'
     // marker, so Read (the filled primary) and Write (a secondary's marker) differ by more than colour.
@@ -111,7 +117,7 @@ void renderDiskCell(const std::string& deviceName,
         {
             return NowBar{.valueText = "N/A",
                           .label = label,
-                          .tooltipText = std::format("{}: not reported this sample", label),
+                          .tooltipText = UI::InlineText::format("{}: not reported this sample", label),
                           .value01 = 0.0,
                           .color = theme.scheme().textMuted,
                           .marker = marker};
@@ -269,7 +275,6 @@ void renderStorageSection(RenderContext& ctx)
         ImGui::TextColored(
             theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  Disk I/O by Device (%zu disks, %zu samples)", diskCount, historySize);
 
-        // Pre-build device name → snapshot lookup to avoid O(n²) linear scans in the cell loop.
         const double diskAlpha = computeAlpha(ctx.lastDeltaSeconds, ctx.refreshInterval);
         if (ctx.smoothedPerDisk != nullptr)
         {
@@ -278,12 +283,6 @@ void renderStorageSection(RenderContext& ctx)
             std::erase_if(*ctx.smoothedPerDisk,
                           [&](const auto& entry)
                           { return std::ranges::none_of(perDisk, [&](const auto& disk) { return disk.deviceName == entry.first; }); });
-        }
-        std::unordered_map<std::string, const Domain::DiskSnapshot*> diskLookup;
-        diskLookup.reserve(diskSnap.disks.size());
-        for (const auto& d : diskSnap.disks)
-        {
-            diskLookup.emplace(d.deviceName, &d);
         }
 
         // Approximate overhead used only as a floor for the grid's minimum cell height; the real
@@ -361,14 +360,27 @@ void renderStorageSection(RenderContext& ctx)
                 const auto readData = tailAlignedSpan(disk.readBytesPerSec, alignedCount).values;
                 const auto writeData = tailAlignedSpan(disk.writeBytesPerSec, alignedCount).values;
 
-                // Per-disk snapshot values for NowBars (O(1) lookup via pre-built map).
-                // NaN if the disk is missing from the latest sample: renderDiskCell shows N/A, not 0.
+                // Per-disk snapshot values for NowBars. NaN if the disk is missing from the latest sample:
+                // renderDiskCell shows N/A, not 0. The latest sample normally lists the disks in the
+                // history's order, so the same index is checked first; a scan of its few disks covers a
+                // disk added or removed since. A name -> snapshot map rebuilt every frame cost a heap
+                // allocation per disk per frame for keys copied from strings already there (#1171).
                 double diskRead = std::numeric_limits<double>::quiet_NaN();
                 double diskWrite = std::numeric_limits<double>::quiet_NaN();
-                if (const auto it = diskLookup.find(disk.deviceName); it != diskLookup.end())
+                const Domain::DiskSnapshot* latestDisk = nullptr;
+                if (diskIdx < diskSnap.disks.size() && diskSnap.disks[diskIdx].deviceName == disk.deviceName)
                 {
-                    diskRead = it->second->readBytesPerSec;
-                    diskWrite = it->second->writeBytesPerSec;
+                    latestDisk = &diskSnap.disks[diskIdx];
+                }
+                else if (const auto it = std::ranges::find(diskSnap.disks, disk.deviceName, &Domain::DiskSnapshot::deviceName);
+                         it != diskSnap.disks.end())
+                {
+                    latestDisk = &*it;
+                }
+                if (latestDisk != nullptr)
+                {
+                    diskRead = latestDisk->readBytesPerSec;
+                    diskWrite = latestDisk->writeBytesPerSec;
                 }
                 if (ctx.smoothedPerDisk != nullptr)
                 {
@@ -420,9 +432,13 @@ void renderStorageSection(RenderContext& ctx)
         const auto readData = tailAlignedSpan(diskReadHist, alignedDisk).values;
         const auto writeData = tailAlignedSpan(diskWriteHist, alignedDisk).values;
 
-        // One upper bound for the chart's Y axis and its bars (#1003).
+        // One upper bound for the chart's Y axis and its bars (#1003), from the samples in the window
+        // (#1145) and the bars' smoothed values, which can lag a peak that has just left it.
         const double diskAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-            "##SystemDiskHistory", UI::Widgets::maxOfSeries(readData, writeData), UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
+            "##SystemDiskHistory",
+            UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(aggregateTimes, diskAxis.xMin, readData, writeData),
+                                           {smoothedRead, smoothedWrite}),
+            UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
 
         const NowBar readBar{.valueText = UI::Format::formatBytesPerSec(smoothedRead),
                              .label = READ_LABEL,

@@ -5,6 +5,7 @@
 // rates and maintains history for charting.
 // Memory tracking is included to catch allocation regressions.
 
+#include "Domain/SamplingConfig.h"
 #include "Domain/StorageModel.h"
 #include "MemoryTracker.h"
 #include "Platform/Factory.h"
@@ -201,8 +202,9 @@ static void BM_StorageModel_HistoryCopyOverhead(benchmark::State& state)
     auto probe = Platform::makeDiskProbe();
     Domain::StorageModel model(std::move(probe));
 
-    // Keep all samples for the full duration of this benchmark
-    model.setMaxHistorySeconds(3600.0);
+    // Keep all samples for the full duration of this benchmark: the longest window the model accepts
+    // (it clamps to SamplingConfig's range, #1145), far longer than the pre-seeding takes.
+    model.setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_MAX);
 
     // Pre-seed the desired number of snapshots
     for (int i = 0; i < sampleCount; ++i)
