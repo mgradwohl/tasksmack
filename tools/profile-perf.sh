@@ -30,8 +30,15 @@
 #
 # The run fails if TaskSmack exits before recording starts, before --duration elapses, or with a
 # non-zero exit code. When the script closes TaskSmack (after --duration or Ctrl+C), a clean exit
-# after SIGTERM (code 0) passes; needing SIGKILL after 10 s, or any other exit code, fails. The preset, its build directory, build type and compiler flags are printed and
-# written to the log, so every profile says what it measured. The default app preset, profile, is an
+# after SIGTERM (code 0) passes; needing SIGKILL after 10 s, or any other exit code, fails.
+#
+# The preset, its build directory, build type, compiler and CMAKE_CXX_FLAGS* entries are printed and
+# written to the log, so every profile says what it measured. So are the real compile flags of one of
+# the profiled binary's src/ files (src/main.cpp for the app), read from the build's
+# compile_commands.json, which include add_compile_options() flags such as a TASKSMACK_MARCH -march,
+# -stdlib=libc++ and the release hardening flags; the log also has that file's full compile command.
+# Without compile_commands.json or python3 the script notes that and logs the cache entries only.
+# The default app preset, profile, is an
 # -O2 build with frame pointers kept for better stacks; pass --preset release to profile the
 # shipped build's code generation instead.
 #
@@ -222,6 +229,73 @@ if [[ -n "${BUILD_TYPE_UPPER}" ]]; then
 fi
 CXX_COMPILER="$(cmake_cache_value CMAKE_CXX_COMPILER)"
 
+# The CMAKE_CXX_FLAGS* cache entries miss everything added with add_compile_options() or
+# target_compile_options(): a TASKSMACK_MARCH override's -march, -stdlib=libc++, the release
+# hardening flags. So also log the real compile command of one of the profiled binary's own src/
+# translation units, from compile_commands.json (every preset sets CMAKE_EXPORT_COMPILE_COMMANDS).
+# COMPILE_FLAGS is that command without the compiler, include paths and per-file arguments.
+COMPILE_DB="${BUILD_DIR}/compile_commands.json"
+COMPILE_TU=""
+COMPILE_COMMAND=""
+COMPILE_FLAGS=""
+COMPILE_NOTE=""
+if [[ ! -f "${COMPILE_DB}" ]]; then
+    COMPILE_NOTE="no ${COMPILE_DB}; reconfigure the preset to get the full compile command"
+elif ! command -v python3 &>/dev/null; then
+    COMPILE_NOTE="python3 not found; compile command not read from ${COMPILE_DB}"
+else
+    # Prints three lines: the translation unit, its full command, and the filtered flags.
+    COMPILE_INFO="$(python3 - "${COMPILE_DB}" "${REPO_ROOT}/src/" "$(basename "${BINARY}")" <<'PY' || true
+import json, shlex, sys
+
+db_path, src_root, target = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(db_path, encoding="utf-8") as f:
+    entries = json.load(f)
+
+def is_src(e):
+    return e.get("file", "").startswith(src_root)
+
+def from_target(e):
+    return f"/{target}.dir/" in e.get("output", "")
+
+def rank(e):
+    # The binary's own main.cpp first, then any of its src/ files, then any src/ file.
+    if from_target(e) and e["file"].endswith("/src/main.cpp"):
+        return 0
+    return 1 if from_target(e) else 2
+
+candidates = sorted((e for e in entries if is_src(e)), key=rank)
+if not candidates:
+    sys.exit(1)
+entry = candidates[0]
+args = entry.get("arguments") or shlex.split(entry["command"])
+flags, i = [], 1
+while i < len(args):
+    arg = args[i]
+    nxt = args[i + 1] if i + 1 < len(args) else ""
+    if arg == "-Xclang" and nxt in ("-include-pch", "-include"):
+        i += 4  # -Xclang -include-pch -Xclang <path>: the precompiled header
+        continue
+    if arg in ("-o", "-c", "-MF", "-MT", "-MQ", "-isystem", "-I", "-include"):
+        i += 2
+        continue
+    if not (arg.startswith(("-I", "-isystem", "@")) or arg in ("-MD", "-Winvalid-pch", entry["file"])):
+        flags.append(arg)
+    i += 1
+print(entry["file"])
+print(shlex.join(args))
+print(" ".join(flags))
+PY
+)"
+    if [[ -n "${COMPILE_INFO}" ]]; then
+        COMPILE_TU="$(sed -n 1p <<<"${COMPILE_INFO}")"
+        COMPILE_COMMAND="$(sed -n 2p <<<"${COMPILE_INFO}")"
+        COMPILE_FLAGS="$(sed -n 3p <<<"${COMPILE_INFO}")"
+    else
+        COMPILE_NOTE="no src/ translation unit found in ${COMPILE_DB}"
+    fi
+fi
+
 # In bench mode, warn if the filter matches multiple benchmarks. Google Benchmark scales
 # iteration count (not time) to fill --benchmark_min_time per benchmark, so a cheap
 # per-call benchmark gets looped far more times than an expensive one to fill the same
@@ -259,8 +333,15 @@ print_step "Starting perf capture (mode=${MODE}, preset=${PRESET})"
 info "Preset:     ${PRESET}"
 info "Build dir:  ${BUILD_DIR}"
 info "Build type: ${BUILD_TYPE:-<unknown: no CMakeCache.txt>}"
-info "CXX flags:  ${CXX_FLAGS:-<unknown>}"
+info "CXX flags:  ${CXX_FLAGS:-<unknown>} (CMAKE_CXX_FLAGS* cache entries only)"
 info "Compiler:   ${CXX_COMPILER:-<unknown>}"
+if [[ -n "${COMPILE_FLAGS}" ]]; then
+    info "Compiled:   ${COMPILE_FLAGS}"
+    info "            (from ${COMPILE_TU#"${REPO_ROOT}/"}; full command in the log)"
+else
+    echo "NOTE: ${COMPILE_NOTE}; only the CMAKE_CXX_FLAGS* cache entries above are known, which miss" >&2
+    echo "      add_compile_options()/target_compile_options() flags such as -march or -stdlib." >&2
+fi
 info "Binary:     ${BINARY}"
 info "Data:       ${DATA_FILE}"
 info "Log:        ${LOG_FILE}"
@@ -272,6 +353,13 @@ info "Log:        ${LOG_FILE}"
     echo "BUILD_TYPE=${BUILD_TYPE}"
     echo "CXX_FLAGS=${CXX_FLAGS}"
     echo "CXX_COMPILER=${CXX_COMPILER}"
+    if [[ -n "${COMPILE_FLAGS}" ]]; then
+        echo "COMPILE_TU=${COMPILE_TU}"
+        echo "COMPILE_FLAGS=${COMPILE_FLAGS}"
+        echo "COMPILE_COMMAND=${COMPILE_COMMAND}"
+    else
+        echo "COMPILE_NOTE=${COMPILE_NOTE}"
+    fi
     echo "BINARY=${BINARY}"
     echo "DATA_FILE=${DATA_FILE}"
     echo "TIMESTAMP=${TIMESTAMP}"

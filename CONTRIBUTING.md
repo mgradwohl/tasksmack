@@ -807,7 +807,13 @@ write artifacts under `perf-data/` and emit `KEY=value` lines at exit for script
 
 Use `tools/profile-perf.sh` to capture and `tools/analyze-perf.sh` to analyze.
 Default preset is `profile` for app mode and `benchmark` for bench mode. Every run prints, and
-writes to its log, the preset, build directory, build type, compiler and C++ flags it profiled.
+writes to its log, the preset, build directory, build type, compiler and `CMAKE_CXX_FLAGS*` entries
+it profiled. Those cache entries miss `add_compile_options()`/`target_compile_options()` flags such as
+a `TASKSMACK_MARCH` `-march`, `-stdlib=libc++` and the release hardening flags. So each run also
+prints the real compile flags of one of the profiled binary's `src/` files (`src/main.cpp` for the
+app), read from the build's `compile_commands.json` with `python3`, and logs that file's full
+compile command. Every preset exports `compile_commands.json`. If the file or `python3` is missing,
+the run says so and logs the cache entries alone.
 
 App mode profiles steady state, not startup (#1371). It launches TaskSmack, waits for it to log
 `Entering main loop` (up to 30 s) plus a warm-up (`--warmup`, default 5 s), and only then attaches
