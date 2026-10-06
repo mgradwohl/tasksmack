@@ -1101,6 +1101,8 @@ TEST(LinuxProcessProbeTest, ReadSocketTrafficReportsRawAttributedSocketCounters)
     ASSERT_NE(socket12, first.sockets.end());
     ASSERT_NE(socket99, first.sockets.end());
     EXPECT_EQ(socket11->pid, 4242);
+    EXPECT_EQ(socket11->ownerStartTimeTicks, processes[0].startTimeTicks) << "the owner's start time, as enumerate() reads it (#1336)";
+    EXPECT_EQ(socket11->ownerStartTimeTicks, 12345U);
     EXPECT_EQ(socket11->bytesReceived, 1'000U);
     EXPECT_EQ(socket11->bytesSent, 10U);
     EXPECT_EQ(socket12->pid, 4242);

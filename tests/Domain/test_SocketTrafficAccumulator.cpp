@@ -232,6 +232,82 @@ TEST(SocketTrafficAccumulatorTest, AReusedPidStartsFromZero)
     EXPECT_EQ(newProcess[0].netReceivedBytes, 30U);
 }
 
+// #1336: a connection's owner comes with its start time; a listed process with the same PID and
+// another start time is a different process and gets none of the connection's bytes.
+
+TEST(SocketTrafficAccumulatorTest, ANewProcessThatReusedAListedPidIsNotCreditedToTheListedOne)
+{
+    // The listed process 10 (start 1000) exited after the enumeration, and a new process took PID 10
+    // (start 2000) and opened a connection before the socket read.
+    constexpr std::uint64_t SECOND = 1'000'000'000ULL;
+    SocketTrafficAccumulator accumulator;
+    std::vector processes{process(10, 1000)};
+    accumulator.apply({.sockets = {}, .sampleTimeNs = 10 * SECOND}, processes);
+    accumulator.apply({.sockets = {{.key = 2, .pid = 10, .ownerStartTimeTicks = 2000, .bytesReceived = 500, .bytesSent = 5}},
+                       .sampleTimeNs = 11 * SECOND},
+                      processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 0U) << "the exited process gets none of the new one's traffic";
+    EXPECT_EQ(processes[0].netSentBytes, 0U);
+
+    processes = {process(10, 2000)}; // the next refresh lists the new process
+    accumulator.apply({.sockets = {{.key = 2, .pid = 10, .ownerStartTimeTicks = 2000, .bytesReceived = 600, .bytesSent = 5}},
+                       .sampleTimeNs = 12 * SECOND},
+                      processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 600U) << "its connection's held 500 plus this interval's 100";
+    EXPECT_EQ(processes[0].netSentBytes, 5U);
+}
+
+TEST(SocketTrafficAccumulatorTest, AnExitedOwnerIsNotCreditedToTheProcessThatReusedItsPid)
+{
+    // The reverse: the listed process 10 (start 2000) reused the PID of the connection's owner (start
+    // 1000), which the inode-to-PID map still names.
+    constexpr std::uint64_t SECOND = 1'000'000'000ULL;
+    SocketTrafficAccumulator accumulator;
+    std::vector processes{process(10, 2000)};
+    accumulator.apply({.sockets = {{.key = 1, .pid = 10, .ownerStartTimeTicks = 1000, .bytesReceived = 100}}, .sampleTimeNs = 10 * SECOND},
+                      processes);
+    accumulator.apply({.sockets = {{.key = 1, .pid = 10, .ownerStartTimeTicks = 1000, .bytesReceived = 900}}, .sampleTimeNs = 11 * SECOND},
+                      processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 0U);
+
+    // A repeated reading that names the old owner hands nothing over to the new process either.
+    accumulator.apply({.sockets = {{.key = 1, .pid = 10, .ownerStartTimeTicks = 1000, .bytesReceived = 900}}, .sampleTimeNs = 11 * SECOND},
+                      processes);
+    accumulator.apply({.sockets = {}, .sampleTimeNs = 12 * SECOND}, processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 0U);
+
+    // Without a process list (addReading() + publish()), the reported owner is matched exactly too.
+    SocketTrafficAccumulator direct;
+    std::vector reused{process(10, 2000)};
+    read(direct, {}, reused);
+    read(direct, {{.key = 1, .pid = 10, .ownerStartTimeTicks = 1000, .bytesReceived = 700}}, reused);
+    EXPECT_EQ(reused[0].netReceivedBytes, 0U);
+}
+
+TEST(SocketTrafficAccumulatorTest, AnOwnerWithTheSameStartTimeIsCredited)
+{
+    constexpr std::uint64_t SECOND = 1'000'000'000ULL;
+    SocketTrafficAccumulator accumulator;
+    std::vector processes{process(10, 1000)};
+    accumulator.apply({.sockets = {{.key = 1, .pid = 10, .ownerStartTimeTicks = 1000, .bytesReceived = 100}}, .sampleTimeNs = 10 * SECOND},
+                      processes);
+    accumulator.apply({.sockets = {{.key = 1, .pid = 10, .ownerStartTimeTicks = 1000, .bytesReceived = 900}}, .sampleTimeNs = 11 * SECOND},
+                      processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 800U);
+}
+
+TEST(SocketTrafficAccumulatorTest, AnUnknownOwnerStartTimeMatchesByPid)
+{
+    // Windows reports no owner start time (0): the connection goes to the listed process with its PID,
+    // as before #1336.
+    constexpr std::uint64_t SECOND = 1'000'000'000ULL;
+    SocketTrafficAccumulator accumulator;
+    std::vector processes{process(10, 2000)};
+    accumulator.apply({.sockets = {{.key = 1, .pid = 10, .bytesReceived = 100}}, .sampleTimeNs = 10 * SECOND}, processes);
+    accumulator.apply({.sockets = {{.key = 1, .pid = 10, .bytesReceived = 900}}, .sampleTimeNs = 11 * SECOND}, processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 800U);
+}
+
 TEST(SocketTrafficAccumulatorTest, UnattributedTrafficIsNotCredited)
 {
     SocketTrafficAccumulator accumulator;

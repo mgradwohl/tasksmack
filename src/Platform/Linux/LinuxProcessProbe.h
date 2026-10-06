@@ -132,7 +132,7 @@ class LinuxProcessProbe : public IProcessProbe
     // m_InodePidCacheMutex guards publication of both cache members; necessary
     // because enumerate() may be called concurrently from multiple threads.
     mutable std::mutex m_InodePidCacheMutex;
-    mutable std::shared_ptr<const std::unordered_map<std::uint64_t, std::int32_t>> m_InodeToPidCache;
+    mutable std::shared_ptr<const std::unordered_map<std::uint64_t, SocketOwner>> m_InodeToPidCache;
     mutable std::chrono::steady_clock::time_point m_InodeToPidCacheTime;
     // When the last completed scan started, whether it replaced m_InodeToPidCache or came back empty:
     // a socket first seen unowned after this may have been opened since, so readSocketTraffic()
@@ -208,7 +208,7 @@ class LinuxProcessProbe : public IProcessProbe
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 
-    using InodeToPidMap = std::unordered_map<std::uint64_t, std::int32_t>;
+    using InodeToPidMap = std::unordered_map<std::uint64_t, SocketOwner>;
 
     /// The inode-to-PID map, and when the last completed scan started (m_InodeToPidBuiltAt).
     struct InodeToPidSnapshot

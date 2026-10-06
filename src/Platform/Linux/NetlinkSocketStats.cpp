@@ -3,6 +3,8 @@
 
 #include "NetlinkSocketStats.h"
 
+#include "ProcParsing.h"
+
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -18,6 +20,7 @@
 #include <format>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -29,6 +32,7 @@
 
 // NOLINTBEGIN(misc-include-cleaner) - POSIX/Linux headers: include-cleaner lacks mappings for ssize_t, strerror_r, IPPROTO_*
 #include <dirent.h>
+#include <fcntl.h>
 #include <linux/inet_diag.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
@@ -334,6 +338,35 @@ class DirGuard
     DIR* m_Dir;
 };
 
+/// The start time from the stat file in the /proc/[pid] directory `pidDirFd` is open on; 0 if it
+/// can't be read (the process exited, or a synthetic /proc without one).
+[[nodiscard]] std::uint64_t readStartTimeTicks(int pidDirFd) noexcept
+{
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
+    const ProcParsing::FdGuard statFd(::openat(pidDirFd, "stat", O_RDONLY | O_CLOEXEC));
+    if (statFd.get() == -1)
+    {
+        return 0;
+    }
+    // Ample: comm is kernel-capped at 15 chars, and the start time is field 22.
+    std::array<char, 1024> buf{};
+    std::size_t len = 0;
+    while (len < buf.size())
+    {
+        const ssize_t got = ::read(statFd.get(), buf.data() + len, buf.size() - len);
+        if (got < 0 && errno == EINTR)
+        {
+            continue;
+        }
+        if (got <= 0)
+        {
+            break;
+        }
+        len += static_cast<std::size_t>(got); // got > 0 here
+    }
+    return ProcParsing::parseStatStartTime(std::string_view(buf.data(), len)).value_or(0);
+}
+
 } // namespace
 
 NetlinkSocketStats::NetlinkSocketStats() : NetlinkSocketStats(DEFAULT_SOCKET_STATS_CACHE_TTL)
@@ -636,9 +669,9 @@ void NetlinkSocketStats::parseSocketMessage(const void* msg, std::size_t len, st
     parseSocketMessageImpl(msg, len, results);
 }
 
-std::unordered_map<std::uint64_t, std::int32_t> buildInodeToPidMap(const std::filesystem::path& procRoot)
+std::unordered_map<std::uint64_t, SocketOwner> buildInodeToPidMap(const std::filesystem::path& procRoot)
 {
-    std::unordered_map<std::uint64_t, std::int32_t> inodeToPid;
+    std::unordered_map<std::uint64_t, SocketOwner> inodeToPid;
     inodeToPid.reserve(1024); // Pre-allocate for typical system
 
     const std::filesystem::path& procPath = procRoot;
@@ -660,20 +693,36 @@ std::unordered_map<std::uint64_t, std::int32_t> buildInodeToPidMap(const std::fi
             continue;
         }
 
-        // Scan /proc/[pid]/fd/ for socket symlinks
-        const std::filesystem::path fdPath = procEntry.path() / "fd";
+        // Open /proc/[pid] once and read both its fd links and its stat through that handle: it
+        // stays bound to this process, so if the process exits and its PID is reused mid-scan the
+        // reads fail rather than mixing the two processes (#1336).
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+        const ProcParsing::FdGuard pidDirFd(::open(procEntry.path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+        if (pidDirFd.get() == -1)
+        {
+            continue; // Process exited
+        }
 
-        // Use opendir/readdir for efficiency (avoid exception overhead). The DIR* itself is
-        // still wrapped in DirGuard so it can't leak if inodeToPid[inode] below throws (e.g.
-        // std::bad_alloc on a rehash) -- the "avoid exception overhead" choice only opted out
-        // of std::filesystem::directory_iterator, not out of exception *safety* (#772).
-        const DirGuard fdDirGuard(opendir(fdPath.c_str()));
-        if (fdDirGuard.get() == nullptr)
+        // Scan /proc/[pid]/fd/ for socket symlinks. Use opendir/readdir for efficiency (avoid
+        // exception overhead). The DIR* itself is still wrapped in DirGuard so it can't leak if
+        // the map insertion below throws (e.g. std::bad_alloc on a rehash) -- the "avoid exception
+        // overhead" choice only opted out of std::filesystem::directory_iterator, not out of
+        // exception *safety* (#772). fdopendir() takes ownership of the descriptor on success only.
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
+        const int fdDirFd = ::openat(pidDirFd.get(), "fd", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (fdDirFd == -1)
         {
             continue; // Permission denied or process exited
         }
+        const DirGuard fdDirGuard(fdopendir(fdDirFd));
+        if (fdDirGuard.get() == nullptr)
+        {
+            ::close(fdDirFd);
+            continue;
+        }
 
         std::array<char, 256> linkTarget{};
+        std::optional<std::uint64_t> startTimeTicks; // read once, on the process's first socket
 
         // NOLINTNEXTLINE(concurrency-mt-unsafe) - readdir is safe here: single DIR* per thread
         while (const struct dirent* entry = readdir(fdDirGuard.get()))
@@ -684,10 +733,8 @@ std::unordered_map<std::uint64_t, std::int32_t> buildInodeToPidMap(const std::fi
                 continue;
             }
 
-            // Read the symlink target
-            // Use std::filesystem::path operator/ for efficient path construction
-            const std::filesystem::path fdFilePath = fdPath / entry->d_name;
-            const ssize_t linkLen = readlink(fdFilePath.c_str(), linkTarget.data(), linkTarget.size() - 1);
+            // Read the symlink target relative to the fd directory (no path building per entry)
+            const ssize_t linkLen = readlinkat(dirfd(fdDirGuard.get()), entry->d_name, linkTarget.data(), linkTarget.size() - 1);
             if (linkLen <= 0)
             {
                 continue;
@@ -715,10 +762,15 @@ std::unordered_map<std::uint64_t, std::int32_t> buildInodeToPidMap(const std::fi
             {
                 // Shared socket: the lowest PID keeps it, whatever order readdir() lists /proc in,
                 // so the owner is the same on every rebuild (#1099).
-                const auto [it, inserted] = inodeToPid.try_emplace(inode, pid);
-                if (!inserted)
+                if (!startTimeTicks.has_value())
                 {
-                    it->second = std::min(it->second, pid);
+                    startTimeTicks = readStartTimeTicks(pidDirFd.get());
+                }
+                const SocketOwner owner{.pid = pid, .startTimeTicks = *startTimeTicks};
+                const auto [it, inserted] = inodeToPid.try_emplace(inode, owner);
+                if (!inserted && pid < it->second.pid)
+                {
+                    it->second = owner;
                 }
             }
         }

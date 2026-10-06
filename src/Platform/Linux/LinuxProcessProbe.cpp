@@ -1163,7 +1163,8 @@ SocketTrafficReading LinuxProcessProbe::readSocketTraffic() const
     // Attribute each socket to the process holding it (socket inode -> PID, from /proc/[pid]/fd).
     // A socket not in the map (opened since its last rebuild, or held by a process we can't read)
     // is still reported, unattributed, so Domain tracks its counters from now on.
-    const auto ownerOf = [](const InodeToPidMap* inodeToPid, std::uint64_t inode) -> std::int32_t
+    // The owner comes with its start time, so Domain can tell it from a process that reused its PID (#1336).
+    const auto ownerOf = [](const InodeToPidMap* inodeToPid, std::uint64_t inode) -> SocketOwner
     {
         if (inodeToPid != nullptr)
         {
@@ -1172,7 +1173,7 @@ SocketTrafficReading LinuxProcessProbe::readSocketTraffic() const
                 return it->second;
             }
         }
-        return 0;
+        return {};
     };
     auto snapshot = currentInodeToPidMap(std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_TTL_MS});
 
@@ -1189,7 +1190,7 @@ SocketTrafficReading LinuxProcessProbe::readSocketTraffic() const
         unownedSinceBuild = std::ranges::any_of(sockets,
                                                 [&](const SocketStats& socket)
                                                 {
-                                                    if (ownerOf(snapshot.map.get(), socket.inode) != 0)
+                                                    if (ownerOf(snapshot.map.get(), socket.inode).pid != 0)
                                                     {
                                                         return false;
                                                     }
@@ -1211,14 +1212,17 @@ SocketTrafficReading LinuxProcessProbe::readSocketTraffic() const
         reading.sockets.reserve(sockets.size());
         for (const auto& socket : sockets)
         {
-            const std::int32_t pid = ownerOf(snapshot.map.get(), socket.inode);
-            if (pid == 0)
+            const SocketOwner owner = ownerOf(snapshot.map.get(), socket.inode);
+            if (owner.pid == 0)
             {
                 const auto seen = m_UnownedSocketsFirstSeen.find(socket.inode);
                 unowned.insert_or_assign(socket.inode, (seen != m_UnownedSocketsFirstSeen.end()) ? seen->second : sampledAt);
             }
-            reading.sockets.push_back(
-                SocketTrafficSample{.key = socket.inode, .pid = pid, .bytesReceived = socket.bytesReceived, .bytesSent = socket.bytesSent});
+            reading.sockets.push_back(SocketTrafficSample{.key = socket.inode,
+                                                          .pid = owner.pid,
+                                                          .ownerStartTimeTicks = owner.startTimeTicks,
+                                                          .bytesReceived = socket.bytesReceived,
+                                                          .bytesSent = socket.bytesSent});
         }
         m_UnownedSocketsFirstSeen = std::move(unowned);
     }

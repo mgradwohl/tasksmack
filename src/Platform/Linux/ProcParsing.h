@@ -3,6 +3,9 @@
 #include <charconv>
 #include <concepts>
 #include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <string_view>
 #include <system_error>
 
 #if defined(__linux__) && __has_include(<unistd.h>)
@@ -181,6 +184,40 @@ inline bool parseDouble(const char*& p, const char* end, double& out) noexcept
     }
     p = ptr;
     return true;
+}
+
+/// The start time (field 22, clock ticks since boot) from the contents of a /proc/[pid]/stat file,
+/// or nullopt if it can't be parsed. The comm field (2) is in parentheses and may itself contain
+/// spaces and parentheses, so fields are counted from the last ')'.
+[[nodiscard]] inline std::optional<std::uint64_t> parseStatStartTime(std::string_view stat) noexcept
+{
+    const std::size_t commEnd = stat.rfind(')');
+    if (commEnd == std::string_view::npos)
+    {
+        return std::nullopt;
+    }
+    const char* p = stat.data() + commEnd + 1;
+    const char* const end = stat.data() + stat.size();
+    // Fields 3 (state) to 21 precede the start time: skip 19 space-separated fields.
+    constexpr int FIELDS_BEFORE_START_TIME = 19;
+    for (int field = 0; field < FIELDS_BEFORE_START_TIME; ++field)
+    {
+        p = skipSpaces(p, end);
+        if (p >= end)
+        {
+            return std::nullopt;
+        }
+        while (p < end && *p != ' ' && *p != '\t')
+        {
+            ++p;
+        }
+    }
+    std::uint64_t startTime = 0;
+    if (!parseNum(p, end, startTime))
+    {
+        return std::nullopt;
+    }
+    return startTime;
 }
 
 } // namespace Platform::ProcParsing

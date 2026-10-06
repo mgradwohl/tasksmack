@@ -7,9 +7,9 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <span>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -48,6 +48,13 @@ namespace Domain
 ///    hours in one interval. The cost is the bytes a connection that really did open while unreadable
 ///    moved before its first readable sample, the same as for one attributed late. An unreadable
 ///    sample's owner is not used: bytes are credited to the owner reported with them.
+///  - Credit goes to a process identified by PID and start time (ProcessKey), never by PID alone
+///    (#1336). A connection's owner is reported with its start time (SocketTrafficSample::
+///    ownerStartTimeTicks); a listed process with the same PID but another start time is a different
+///    process -- the owner exited and its PID was reused, or the owner reused the PID of a process
+///    that exited -- so it gets none of the connection's bytes, which are held as for an owner the
+///    refresh doesn't list yet. An owner start time of 0 (unknown: Windows, whose TCP tables report
+///    only the owning PID) matches the listed process with that PID, whatever its start time.
 /// Bytes a connection moves between the last reading and its close are not counted, nor are any of a
 /// connection that closes before it gets an owner. Feed only complete readings: a connection missing
 /// from a partial one would come back as "new" and credit its lifetime bytes.
@@ -58,6 +65,9 @@ namespace Domain
 class SocketTrafficAccumulator
 {
   public:
+    /// The processes one refresh lists, by PID: each one's start time (ProcessCounters::startTimeTicks).
+    using ListedProcesses = std::unordered_map<std::int32_t, std::uint64_t>;
+
     /// Fold `reading` in if it was taken strictly after the last one folded, then write every
     /// process's cumulative totals into its netReceivedBytes/netSentBytes and the time of the reading
     /// they come from into its netSampleTimeNs -- processes with connections or not, so ProcessModel
@@ -70,9 +80,9 @@ class SocketTrafficAccumulator
     ///    they were folded already -- but a connection that was unowned and now has an owner hands
     ///    that owner its held growth (reviseOwnership()). The bytes are credited with the next reading
     ///    folded, so they land in a measured interval rather than in a refresh that holds the rate, and
-    ///    are kept even if the connection closes before then. They are bound to the owner's stable
-    ///    identity (PID and start time, from `processes`): if that process exits and its PID is reused
-    ///    before then, the replacement gets none of them (#1327 review).
+    ///    are kept even if the connection closes before then. Like all credit they are bound to the
+    ///    owner's stable identity (PID and start time): if that process exits and its PID is reused
+    ///    before then, the replacement gets none of them (#1327 review, #1336).
     ///  - A failed reading (sampleTimeNs 0) is not folded either -- a connection missing from it would
     ///    look closed and then, back in the next reading, new. Like a repeated one, it republishes the
     ///    last reading's totals and time, so the model holds the last rate instead of measuring a 0
@@ -84,23 +94,28 @@ class SocketTrafficAccumulator
     void apply(const Platform::SocketTrafficReading& reading, std::vector<Platform::ProcessCounters>& processes)
     {
         const bool folded = reading.sampleTimeNs != 0 && reading.sampleTimeNs > m_LastReadingTimeNs;
-        if (folded)
+        const bool repeated = reading.sampleTimeNs != 0 && reading.sampleTimeNs == m_LastReadingTimeNs;
+        if (folded || repeated)
         {
-            // The owners this refresh lists: a connection attributed to a process that isn't listed yet
-            // (it started between the process enumeration and the socket read) keeps holding rather
-            // than having its bytes queued for a PID publish() would find nothing for (#1327 review).
-            std::unordered_set<std::int32_t> listed;
+            // The processes this refresh lists: a connection attributed to a process that isn't listed
+            // (it started between the process enumeration and the socket read, or it is another
+            // process with a listed PID, #1336) keeps holding rather than having its bytes queued for
+            // a process publish() would find nothing for (#1327 review).
+            ListedProcesses listed;
             listed.reserve(processes.size());
             for (const auto& proc : processes)
             {
-                listed.insert(proc.pid);
+                listed.insert_or_assign(proc.pid, proc.startTimeTicks);
             }
-            addReading(reading.sockets, reading.sampleTimeNs, &listed);
-            m_LastReadingTimeNs = reading.sampleTimeNs;
-        }
-        else if (reading.sampleTimeNs != 0 && reading.sampleTimeNs == m_LastReadingTimeNs)
-        {
-            reviseOwnership(reading.sockets, reading.sampleTimeNs, processes);
+            if (folded)
+            {
+                addReading(reading.sockets, reading.sampleTimeNs, &listed);
+                m_LastReadingTimeNs = reading.sampleTimeNs;
+            }
+            else
+            {
+                reviseOwnership(reading.sockets, reading.sampleTimeNs, listed);
+            }
         }
         if (m_LastReadingTimeNs == 0)
         {
@@ -124,12 +139,13 @@ class SocketTrafficAccumulator
     /// are held until the next publish(). `sampleTimeNs` is the reading's time (steady_clock ns): it
     /// bounds how long an unowned connection holds its growth (Sampling::UNATTRIBUTED_SOCKET_HOLD_MS);
     /// 0 (unknown) never ends a hold.
-    /// `listedOwners`, when given, is the set of PIDs the same refresh lists: an attribution to a PID not
-    /// in it is treated as still unowned for this reading, so its held bytes survive to a reading whose
-    /// process list includes the owner.
+    /// `listedOwners`, when given, is the processes the same refresh lists: an attribution to an owner
+    /// not among them (see listedOwner()) is treated as still unowned for this reading, so its held
+    /// bytes survive to a reading whose process list includes the owner. Without it, bytes are
+    /// queued for the owner as reported (PID and start time) and publish() credits them to it.
     void addReading(std::span<const Platform::SocketTrafficSample> sockets,
                     std::uint64_t sampleTimeNs = 0,
-                    const std::unordered_set<std::int32_t>* listedOwners = nullptr)
+                    const ListedProcesses* listedOwners = nullptr)
     {
         std::unordered_map<std::uint64_t, SocketState> next;
         next.reserve(sockets.size());
@@ -179,8 +195,8 @@ class SocketTrafficAccumulator
                 credit.sent = sample.bytesSent;
             }
 
-            const bool ownerListed = sample.pid > 0 && (listedOwners == nullptr || listedOwners->contains(sample.pid));
-            if (ownerListed)
+            const std::optional<ProcessKey> owner = listedOwner(sample, listedOwners);
+            if (owner.has_value())
             {
                 // Attributed: its owner gets this interval's bytes and whatever it held while unowned
                 // (#1259), which ends its unowned run. The hold is judged at this reading's time: a
@@ -198,14 +214,15 @@ class SocketTrafficAccumulator
                 }
                 if (credit.received != 0 || credit.sent != 0)
                 {
-                    m_PendingByPid[sample.pid].add(credit);
+                    m_PendingByProcess[*owner].add(credit);
                 }
                 state = SocketState{.bytesReceived = sample.bytesReceived, .bytesSent = sample.bytesSent};
             }
             else if (sample.pid > 0)
             {
-                // Attributed to a process this refresh doesn't list yet: hold this interval's bytes too
-                // (a new connection's included), so they reach the owner once a refresh lists it.
+                // Attributed to a process this refresh doesn't list (yet), or to another process with a
+                // listed PID (#1336): hold this interval's bytes too (a new connection's included), so
+                // they reach the owner once a refresh lists it, and never the other process.
                 holdUnownedGrowth(state, credit, sampleTimeNs);
             }
             else
@@ -237,8 +254,9 @@ class SocketTrafficAccumulator
     /// Credit the bytes held since the last publish() to the processes they belong to, write every
     /// process's cumulative totals into its netReceivedBytes/netSentBytes, and forget the totals of
     /// processes that are gone. A process is identified by PID and start time, so a reused PID starts
-    /// again from 0; bytes held for a PID that isn't in `processes` are dropped, and so are bytes handed
-    /// over by a repeated reading to a process that isn't in `processes` with the same start time.
+    /// again from 0, and bytes queued for a process that isn't in `processes` with the same PID and
+    /// start time are dropped. Bytes queued with an unknown start time (0) go to the process with
+    /// that PID.
     void publish(std::vector<Platform::ProcessCounters>& processes)
     {
         std::unordered_map<ProcessKey, Totals, ProcessKeyHash> live;
@@ -251,13 +269,17 @@ class SocketTrafficAccumulator
             {
                 totals = existing->second;
             }
-            if (const auto pending = m_PendingByPid.find(proc.pid); pending != m_PendingByPid.end())
+            if (const auto pending = m_PendingByProcess.find(key); pending != m_PendingByProcess.end())
             {
                 totals.add(pending->second);
             }
-            if (const auto handedOver = m_HandedOverByProcess.find(key); handedOver != m_HandedOverByProcess.end())
+            if (key.startTimeTicks != 0)
             {
-                totals.add(handedOver->second);
+                // Queued for this PID with no known start time: matched by PID alone.
+                if (const auto pending = m_PendingByProcess.find(ProcessKey{.pid = proc.pid}); pending != m_PendingByProcess.end())
+                {
+                    totals.add(pending->second);
+                }
             }
             proc.netReceivedBytes = totals.received;
             proc.netSentBytes = totals.sent;
@@ -267,16 +289,14 @@ class SocketTrafficAccumulator
             }
         }
         m_Totals = std::move(live);
-        m_PendingByPid.clear();
-        m_HandedOverByProcess.clear();
+        m_PendingByProcess.clear();
     }
 
     /// Forget every connection and total, as if no reading had been taken.
     void reset()
     {
         m_Sockets.clear();
-        m_PendingByPid.clear();
-        m_HandedOverByProcess.clear();
+        m_PendingByProcess.clear();
         m_Totals.clear();
         m_HasReading = false;
         m_LastReadingTimeNs = 0;
@@ -287,17 +307,14 @@ class SocketTrafficAccumulator
     /// it may add: a connection that was in an unowned run and now has an owner moves its held growth
     /// to that owner, credited by the next publish(), and its run ends -- so the held bytes are moved
     /// exactly once. The next publish() comes with a later refresh's process list, so the bytes are
-    /// bound to the owner's PID and start time as `processes` reports them now, not to its PID alone:
-    /// a PID reused in between gets none of them. An owner that isn't in `processes` can't be
-    /// identified, so its connection is left as it was, for the next fresh reading. Counters are not
+    /// bound to the owner's PID and start time (listedOwner()), not to its PID alone: a PID reused in
+    /// between gets none of them. An owner that isn't in `listed` can't be identified, so its
+    /// connection is left as it was, for the next fresh reading. Counters are not
     /// compared and nothing else changes: an unreadable sample's owner is not used, an owned
     /// connection keeps its owner until the next fresh reading, and a connection missing from the
     /// last reading waits for the next fresh one.
-    void reviseOwnership(std::span<const Platform::SocketTrafficSample> sockets,
-                         std::uint64_t sampleTimeNs,
-                         std::span<const Platform::ProcessCounters> processes)
+    void reviseOwnership(std::span<const Platform::SocketTrafficSample> sockets, std::uint64_t sampleTimeNs, const ListedProcesses& listed)
     {
-        std::unordered_map<std::int32_t, std::uint64_t> startTimeByPid;
         for (const auto& sample : sockets)
         {
             if (sample.key == 0 || sample.pid <= 0 || !sample.readable)
@@ -309,23 +326,15 @@ class SocketTrafficAccumulator
             {
                 continue;
             }
-            if (startTimeByPid.empty())
-            {
-                startTimeByPid.reserve(processes.size());
-                for (const auto& proc : processes)
-                {
-                    startTimeByPid.emplace(proc.pid, proc.startTimeTicks);
-                }
-            }
-            const auto owner = startTimeByPid.find(sample.pid);
-            if (owner == startTimeByPid.end())
+            const std::optional<ProcessKey> owner = listedOwner(sample, &listed);
+            if (!owner.has_value())
             {
                 continue;
             }
             SocketState& state = existing->second;
             if (!holdOutlasted(state, sampleTimeNs) && (state.held.received != 0 || state.held.sent != 0))
             {
-                m_HandedOverByProcess[ProcessKey{.pid = sample.pid, .startTimeTicks = owner->second}].add(state.held);
+                m_PendingByProcess[*owner].add(state.held);
             }
             state = SocketState{.bytesReceived = state.bytesReceived, .bytesSent = state.bytesSent, .hasBaseline = state.hasBaseline};
         }
@@ -410,6 +419,32 @@ class SocketTrafficAccumulator
         }
     };
 
+    /// The process `sample`'s bytes are credited to, or nullopt if it has no owner among `listed`.
+    /// The owner is the listed process with its PID, unless both start times are known and differ:
+    /// that is another process that had, or took, the same PID (#1336). Without `listed`, the owner
+    /// as the sample reports it (publish() matches an unknown start time by PID alone).
+    [[nodiscard]] static std::optional<ProcessKey> listedOwner(const Platform::SocketTrafficSample& sample, const ListedProcesses* listed)
+    {
+        if (sample.pid <= 0)
+        {
+            return std::nullopt;
+        }
+        if (listed == nullptr)
+        {
+            return ProcessKey{.pid = sample.pid, .startTimeTicks = sample.ownerStartTimeTicks};
+        }
+        const auto it = listed->find(sample.pid);
+        if (it == listed->end())
+        {
+            return std::nullopt;
+        }
+        if (sample.ownerStartTimeTicks != 0 && it->second != 0 && sample.ownerStartTimeTicks != it->second)
+        {
+            return std::nullopt;
+        }
+        return ProcessKey{.pid = sample.pid, .startTimeTicks = it->second};
+    }
+
     [[nodiscard]] static constexpr std::uint64_t saturatingAdd(std::uint64_t a, std::uint64_t b) noexcept
     {
         constexpr auto MAX_BYTES = std::numeric_limits<std::uint64_t>::max();
@@ -417,10 +452,10 @@ class SocketTrafficAccumulator
     }
 
     std::unordered_map<std::uint64_t, SocketState> m_Sockets; // last reading, by connection key
-    std::unordered_map<std::int32_t, Totals> m_PendingByPid;  // credited since the last publish()
-    // Held growth handed over by a repeated reading (reviseOwnership()), credited by the next
-    // publish() only to the process with this PID and start time.
-    std::unordered_map<ProcessKey, Totals, ProcessKeyHash> m_HandedOverByProcess;
+    // Credited since the last publish() -- by a fresh reading, or held growth handed over by a repeated
+    // one (reviseOwnership()) -- for the process with this PID and start time (start time 0: unknown,
+    // matched by PID alone).
+    std::unordered_map<ProcessKey, Totals, ProcessKeyHash> m_PendingByProcess;
     std::unordered_map<ProcessKey, Totals, ProcessKeyHash> m_Totals; // cumulative bytes per live process
     bool m_HasReading = false;
     std::uint64_t m_LastReadingTimeNs = 0; // sampleTimeNs of the last reading apply() folded; 0 = none
