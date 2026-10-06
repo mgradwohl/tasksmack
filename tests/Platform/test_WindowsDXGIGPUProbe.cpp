@@ -16,10 +16,12 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 namespace Platform
 {
@@ -479,6 +481,24 @@ TEST(DisplayDevicePowerTest, PciAddressCarriesTheDeviceInItsHighWordAndTheFuncti
     EXPECT_EQ(pciLocationFromDevNode(0x01, 0x00000000), (PciLocation{.bus = 0x01, .device = 0x00, .function = 0}));
     EXPECT_EQ(pciLocationFromDevNode(0x00, 0x00020000), (PciLocation{.bus = 0x00, .device = 0x02, .function = 0}));
     EXPECT_EQ(pciLocationFromDevNode(0x41, 0x001F0003), (PciLocation{.bus = 0x41, .device = 0x1F, .function = 3}));
+}
+
+// The devnode for a location: the exact function where it is known; where it isn't (NVML's busId
+// unreadable), only a function unique at the bus and device, since on a multi-function device the
+// first match could be another function, whose power state isn't this adapter's.
+TEST(DisplayDevicePowerTest, AnUnknownFunctionMatchesOnlyAUniqueDevNode)
+{
+    const std::vector<PciLocation> multiFunction = {PciLocation{.bus = 0x00, .device = 0x02, .function = 0},
+                                                    PciLocation{.bus = 0x01, .device = 0x00, .function = 0},
+                                                    PciLocation{.bus = 0x01, .device = 0x00, .function = 1}};
+    EXPECT_EQ(matchingDevNode(multiFunction, PciLocation{.bus = 0x01, .device = 0x00, .function = 1}), std::optional<std::size_t>{2});
+    EXPECT_EQ(matchingDevNode(multiFunction, PciLocation{.bus = 0x01, .device = 0x00, .function = 0}), std::optional<std::size_t>{1});
+    EXPECT_FALSE(matchingDevNode(multiFunction, PciLocation{.bus = 0x01, .device = 0x00, .function = std::nullopt}).has_value())
+        << "Two functions fit: unknown, so the GPU counts as awake";
+    EXPECT_EQ(matchingDevNode(multiFunction, PciLocation{.bus = 0x00, .device = 0x02, .function = std::nullopt}),
+              std::optional<std::size_t>{0})
+        << "One function fits";
+    EXPECT_FALSE(matchingDevNode(multiFunction, PciLocation{.bus = 0x41, .device = 0x00, .function = std::nullopt}).has_value());
 }
 
 TEST(DisplayDevicePowerTest, AnUnknownLocationIsAwake)

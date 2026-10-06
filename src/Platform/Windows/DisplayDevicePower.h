@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -40,13 +41,41 @@ namespace Platform
     return PciLocation{.bus = busNumber, .device = address >> 16U, .function = address & 0xFFFFU};
 }
 
+/// Which of the display devnodes at @p candidates is the adapter at @p wanted, by position. With the
+/// function number known, the one at that exact location. Without it (NVML's busId couldn't be
+/// read), any function at the bus and device matches, so only a unique match counts: on a
+/// multi-function device the first match could be another function, whose power state isn't this
+/// adapter's. nullopt when none, or several, fit.
+[[nodiscard]] inline std::optional<std::size_t> matchingDevNode(const std::vector<PciLocation>& candidates, const PciLocation& wanted)
+{
+    std::optional<std::size_t> found;
+    for (std::size_t i = 0; i < candidates.size(); ++i)
+    {
+        if (!samePciLocation(candidates[i], wanted))
+        {
+            continue;
+        }
+        if (wanted.function.has_value())
+        {
+            return i;
+        }
+        if (found.has_value())
+        {
+            return std::nullopt; // Several functions at this bus and device: ambiguous
+        }
+        found = i;
+    }
+    return found;
+}
+
 /// Whether a display adapter is asleep (in a low device power state), read from the PnP manager's
 /// record of the device's power state rather than from the GPU, so asking never wakes it. This is
 /// Windows' counterpart of Linux's PCI power/runtime_status: NVML queries can wake a hybrid
 /// laptop's runtime-suspended (RTD3/D3cold) NVIDIA dGPU, so the NVML probe asks this first and
 /// leaves a sleeping GPU alone (#1265). The display-class devnode for each PCI location is looked
 /// up once and cached; anything that can't be read counts as awake, so a GPU is never left
-/// unmonitored by mistake.
+/// unmonitored by mistake. That includes a location without a function number that several display
+/// functions share (see matchingDevNode()).
 class DisplayDevicePower
 {
   public:
@@ -143,6 +172,8 @@ class DisplayDevicePower
             return std::nullopt;
         }
         // A list of NUL-terminated device instance ids, ended by an empty one.
+        std::vector<DEVINST> devNodes;
+        std::vector<PciLocation> locations;
         std::size_t start = 0;
         while (start < ids.size() && ids[start] != L'\0')
         {
@@ -157,12 +188,14 @@ class DisplayDevicePower
             }
             const auto bus = readUInt32(devNode, BUS_NUMBER_KEY);
             const auto address = readUInt32(devNode, ADDRESS_KEY);
-            if (bus.has_value() && address.has_value() && samePciLocation(pciLocationFromDevNode(*bus, *address), location))
+            if (bus.has_value() && address.has_value())
             {
-                return devNode;
+                devNodes.push_back(devNode);
+                locations.push_back(pciLocationFromDevNode(*bus, *address));
             }
         }
-        return std::nullopt;
+        const std::optional<std::size_t> match = matchingDevNode(locations, location);
+        return match.has_value() ? std::optional<DEVINST>(devNodes[*match]) : std::nullopt;
     }
 
     std::unordered_map<std::uint64_t, std::optional<DEVINST>> m_DevNodes;
