@@ -9,6 +9,7 @@
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/InlineText.h"
+#include "UI/RateAxis.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -389,7 +390,14 @@ void renderGpuSection(RenderContext& ctx)
         // first seen mid-run) or be pruned on its own, so the global timestamps could mismatch.
         const auto axisConfig = makeTimeAxisConfig(perGpuTimestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
 
-        const float maxClockMHz = gpuClockReferenceMHz(clockData, snap.gpuClockMHz);
+        // Only the clocks the window shows set the scale: not the trim anchor left of it, nor older
+        // samples when scrolled back (#1324). The NowBar's smoothed clock counts too, so the bar never
+        // exceeds the scale while it eases down from a peak that has left the window.
+        const float maxClockMHz = gpuClockReferenceMHz(timeData,
+                                                       axisConfig.xMin,
+                                                       clockData,
+                                                       snap.gpuClockMHz,
+                                                       UI::Widgets::currentIfAvailable(smoothed.clockInitialized, smoothed.clockMHz));
 
         // ========================================
         // Chart 1: Core + Video (all percentages)
@@ -428,7 +436,7 @@ void renderGpuSection(RenderContext& ctx)
                                seriesStyle(SeriesRole::Secondary, 0));
                 }
 
-                // Plot clock as a percentage of gpuClockReferenceMHz(): the history's peak, or the floor
+                // Plot clock as a percentage of gpuClockReferenceMHz(): the window's peak, or the floor
                 // when every clock is below it. The label stays fixed; the reference itself is in the
                 // tooltip.
                 if (caps.hasClockSpeeds && !clockData.empty())

@@ -2,6 +2,7 @@
 
 #include "App/Panel.h"
 #include "App/ShellMetrics.h"
+#include "App/TabLabel.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/History.h"
@@ -335,16 +336,12 @@ const Domain::ProcessSnapshot& ProcessDetailsPanel::cachedSnapshot() const
 
 void ProcessDetailsPanel::render(bool* open)
 {
-    std::string windowLabel;
-    if (m_HasSnapshot && (m_SelectedPid != -1) && !cachedSnapshot().name.empty())
-    {
-        windowLabel = std::string(ICON_FA_CIRCLE_INFO) + " " + cachedSnapshot().name;
-        windowLabel += "###ProcessDetails";
-    }
-    else
-    {
-        windowLabel = ICON_FA_CIRCLE_INFO " Process Details###ProcessDetails";
-    }
+    // Keyed on the name shown (empty for none): the label is rebuilt only when it changes (#1326), and
+    // shows all of the name, "#"s included, under the fixed ID "###ProcessDetails" (#1244).
+    const std::string_view processName =
+        (m_HasSnapshot && (m_SelectedPid != -1)) ? std::string_view{cachedSnapshot().name} : std::string_view{};
+    const std::string& windowLabel = m_WindowLabel.get(
+        processName, [](std::string_view name) { return TabLabel::makeProcessDetailsWindowLabel(ICON_FA_CIRCLE_INFO, name); });
 
     if (!ImGui::Begin(windowLabel.c_str(), open))
     {

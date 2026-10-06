@@ -95,6 +95,13 @@ constexpr int MINIMIZED_FRAME_SLEEP_MS = 200;
 // window after each relevant window event so the framebuffer stays responsive
 // without forcing continuous high-rate rendering when idle.
 constexpr double INTERACTION_REDRAW_GRACE_SECONDS = 0.35;
+// Whether an OS maximize of the borderless window is replaced by the client-side one
+// (Window::adoptSystemMaximize(), #1208): on Windows only; see the SystemMaximized case in run().
+#ifdef _WIN32
+constexpr bool ADOPT_SYSTEM_MAXIMIZE = true;
+#else
+constexpr bool ADOPT_SYSTEM_MAXIMIZE = false;
+#endif
 constexpr const char* RESIZE_PERF_TRACE_ENV = "TASKSMACK_TRACE_RESIZE_PERF";
 constexpr double RESIZE_PERF_TRACE_LOG_INTERVAL_SECONDS = 0.5;
 // Idle/steady-state frames are logged on a much longer cadence than interaction frames: an
@@ -629,6 +636,8 @@ void Application::run()
                 handleResize({sdlEvent.window.data1, sdlEvent.window.data2});
                 break;
             case WindowEventRouting::Action::Resized:
+                // The normal size a later maximize from outside the app restores to (#1250).
+                m_Window->handleGeometryChanged();
                 handleResize(m_Window->getSizeInPixels());
                 break;
             case WindowEventRouting::Action::Exposed:
@@ -642,6 +651,7 @@ void Application::run()
                 }
                 break;
             case WindowEventRouting::Action::Moved:
+                m_Window->handleGeometryChanged(); // As for Resized (#1250)
                 ++resizeEventCount;
                 m_InteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
                 break;
@@ -649,15 +659,24 @@ void Application::run()
                 refreshDisplayRate();
                 break;
             case WindowEventRouting::Action::SystemMaximized:
-#ifdef _WIN32
-                // Win+Up, snap to the top edge or ShowWindow(SW_MAXIMIZE) on the borderless window:
-                // replaced by the title-bar button's maximize, whose resize events follow (#1208).
-                // Windows only: the quarter-screen maximize is SDL's Win32 WM_GETMINMAXINFO sizing.
-                // X11/XWayland window managers size a maximized borderless window themselves, and
-                // their asynchronous restore/maximize round trip is untested, so Linux is unchanged.
-                m_Window->adoptSystemMaximize();
+                // On Windows, Win+Up, snap to the top edge or ShowWindow(SW_MAXIMIZE) on the
+                // borderless window is replaced by the title-bar button's maximize, whose resize
+                // events follow (#1208): the quarter-screen maximize is SDL's Win32
+                // WM_GETMINMAXINFO sizing. X11/XWayland window managers and Wayland compositors size
+                // a maximized window themselves, and the asynchronous restore/maximize round trip is
+                // untested there, so on Linux the maximize is kept as it is -- but tracked, so the
+                // rectangle saved as the normal size is the one from before it, not the maximized
+                // one (#1250).
+                m_Window->handleSystemMaximized(ADOPT_SYSTEM_MAXIMIZE);
                 break;
-#endif
+            case WindowEventRouting::Action::SystemRestored:
+                // A window-manager or compositor restore of an OS maximize (#1250).
+                m_Window->handleSystemRestored();
+                break;
+            case WindowEventRouting::Action::DisplayScaleChanged:
+                // Refresh the normal geometry's scale, as a move or resize would (#1250).
+                m_Window->handleGeometryChanged();
+                break;
             case WindowEventRouting::Action::None:
                 break;
             }

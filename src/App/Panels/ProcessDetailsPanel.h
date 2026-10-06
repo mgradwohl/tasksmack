@@ -1,6 +1,7 @@
 #pragma once
 
 #include "App/Panel.h"
+#include "App/TabLabel.h"
 #include "Domain/Numeric.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
@@ -198,6 +199,10 @@ class ProcessDetailsPanel : public Panel
     // The selected process as last sampled, shared with ProcessModel's sample rather than copied
     // every frame (#1172); null before the first sample.
     std::shared_ptr<const Domain::ProcessSnapshot> m_CachedSnapshot;
+
+    // render()'s window title, rebuilt only when the selected process's name changes rather than
+    // every frame (#1326).
+    TabLabel::CachedLabel m_WindowLabel;
 
     // The Overview's Identity/Runtime values formatted from one snapshot, kept until a different one
     // is shown, so the block is not reformatted every frame (#1171). keepAlive holds that snapshot,
