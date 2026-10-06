@@ -218,6 +218,11 @@ class ProcessesPanel : public Panel
     bool m_ShowRowActionConfirm = false;
     Detail::ActionResultMessage m_RowActionResult; // Shown in the toolbar for a few seconds
     float m_RowActionResultSeconds = 0.0F;
+    // The process the row menu was opened on, copied on the same right-press that selected it: the
+    // table re-sorts every sample, so by the button's release another row can be under the pointer
+    // and the menu would act on a process other than the highlighted one (#1365).
+    std::optional<Domain::ProcessSnapshot> m_RowMenuTarget;
+    unsigned int m_RowMenuPopupId = 0; // ImGuiID of ROW_MENU_POPUP_ID at the panel's ID stack
 
     // Search/filter state - using std::string for dynamic sizing
     std::string m_SearchBuffer;

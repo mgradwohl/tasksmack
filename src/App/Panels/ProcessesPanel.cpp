@@ -84,6 +84,7 @@ constexpr std::string_view LIST_VIEW_LABEL = ICON_FA_LIST " List";
 constexpr std::string_view TREE_VIEW_LABEL = ICON_FA_SITEMAP " Tree";
 constexpr std::string_view COLUMNS_LABEL = ICON_FA_TABLE_COLUMNS " Columns";
 constexpr const char* COLUMNS_POPUP_ID = "##ColumnsMenu";
+constexpr const char* ROW_MENU_POPUP_ID = "##ProcessRowMenu";
 constexpr const char* FILTER_HINT = "Filter by name...";
 
 // How long a row-menu action's result stays in the toolbar, like the Actions tab's (#1209).
@@ -957,6 +958,9 @@ void ProcessesPanel::renderContent()
         ImGui::OpenPopup(COLUMNS_POPUP_ID);
     }
     ImGui::SetItemTooltip("Show, hide or reset columns (also on a column header's right-click menu)");
+    // Opens below the button, right edges aligned, rather than at the pointer, where it covered the
+    // button that opened it.
+    ImGui::SetNextWindowPos(ImVec2(ImGui::GetItemRectMax().x, ImGui::GetItemRectMax().y), ImGuiCond_Appearing, ImVec2(1.0F, 0.0F));
     if (ImGui::BeginPopup(COLUMNS_POPUP_ID))
     {
         renderColumnsMenu();
@@ -979,6 +983,22 @@ void ProcessesPanel::renderContent()
 
     // A row menu's Suspend, Resume, Terminate or Kill, confirmed as in the Actions tab (#1209)
     renderRowActionConfirm();
+
+    // The row menu (#1209), for the process m_RowMenuTarget holds. One popup at panel level rather
+    // than one per row, opened by ID from the row (m_RowMenuPopupId, this same ID stack).
+    m_RowMenuPopupId = ImGui::GetID(ROW_MENU_POPUP_ID);
+    if (ImGui::BeginPopup(ROW_MENU_POPUP_ID))
+    {
+        if (m_RowMenuTarget.has_value())
+        {
+            renderRowContextMenu(*m_RowMenuTarget);
+        }
+        ImGui::EndPopup();
+    }
+    else
+    {
+        m_RowMenuTarget.reset();
+    }
 
     // Always create all columns with stable IDs (using enum value as ID)
     // Hidden columns use ImGuiTableColumnFlags_Disabled
@@ -1359,16 +1379,18 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             {
                 ImGui::PopStyleColor();
             }
-            // A right-click selects the row too, so the menu it opens acts on the highlighted row.
-            if (clicked || (!isSelected && ImGui::IsItemClicked(ImGuiMouseButton_Right)))
+            if (clicked)
             {
                 selectProcess(proc);
             }
-            // The row's menu (#1209), keyed on the selectable, whose ID is unique to this process.
-            if (ImGui::BeginPopupContextItem())
+            // A right-press selects the row and opens its menu for that same process, in the same
+            // frame. ImGui's context-item popup opens on the release instead, by which time the
+            // table may have re-sorted and put another process under the pointer (#1365).
+            if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
             {
-                renderRowContextMenu(proc);
-                ImGui::EndPopup();
+                selectProcess(proc);
+                m_RowMenuTarget = proc;
+                ImGui::OpenPopup(m_RowMenuPopupId);
             }
             if (!columnVisible)
             {
