@@ -75,7 +75,7 @@ With `CAP_DAC_READ_SEARCH` alone, only FD counts come back. `CAP_SYS_PTRACE` let
 They are counted the way the GPU tab counts each GPU, so the two can be compared:
 
 - **GPU %** is the process's utilisation of the busiest GPU it uses, from 0 to 100 %. It is not summed across GPUs, so it never goes past 100 %.
-- **GPU Mem** counts, on each GPU, the memory the GPU tab reports as used there: dedicated memory (VRAM) on a discrete GPU, shared system memory on an integrated one where Windows reports it. It is added up across the GPUs the process uses, so it is never more than those GPUs show in use. Process Details also lists the dedicated and shared amounts separately when the process has shared GPU memory, which Windows reports and Linux does not.
+- **GPU Mem** counts, on each GPU, the memory the GPU tab reports as used there: dedicated memory (VRAM) on a discrete GPU, shared system memory on an integrated GPU on Windows, even while the process uses none of it. It is added up across the GPUs the process uses, so it is never more than those GPUs show in use. Process Details also lists the dedicated and shared amounts separately when the process has shared GPU memory, which Windows reports and Linux does not.
 
 ---
 

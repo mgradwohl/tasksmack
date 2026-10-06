@@ -820,13 +820,14 @@ void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const s
     {
         std::string name;
         bool isIntegrated = false;
+        bool memoryIsShared = false;
     };
     std::unordered_map<std::string, GpuIdentity> gpuIdToIdentity;
     auto gpuSnaps = gpuModel->snapshots();
     for (const auto& gpuSnap : gpuSnaps)
     {
         // Map both ID formats to the same adapter
-        const GpuIdentity identity{.name = gpuSnap.name, .isIntegrated = gpuSnap.isIntegrated};
+        const GpuIdentity identity{.name = gpuSnap.name, .isIntegrated = gpuSnap.isIntegrated, .memoryIsShared = gpuSnap.memoryIsShared};
         gpuIdToIdentity[gpuSnap.gpuId] = identity;
         if (!gpuSnap.luidId.empty())
         {
@@ -838,10 +839,10 @@ void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const s
     // A process may use multiple GPUs, so we aggregate
     // One rule with the adapter figures beside them on the GPU tab (#1164): utilization is the
     // busiest GPU's (an adapter's is 0-100; a sum passed 100% while Process Details clamped it), and
-    // memory counts, per GPU, the segment that GPU's "used" figure counts -- shared on an integrated
-    // GPU where the platform reports it (Windows), otherwise dedicated -- so a process never shows
-    // more than its adapters use. The
-    // dedicated and shared amounts are kept apart as well.
+    // memory counts, per GPU, the segment that GPU's "used" figure counts, as the platform says
+    // (GPUSnapshot::memoryIsShared: shared on a Windows integrated GPU, dedicated elsewhere) -- never
+    // inferred from the reading, so a 0 shared reading stays a shared 0 -- and a process never shows
+    // more than its adapters use. The dedicated and shared amounts are kept apart as well.
     struct AggregatedGPU
     {
         double maxUtilPercent = 0.0;
@@ -863,10 +864,12 @@ void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const s
         // Look up friendly name for this GPU
         std::string gpuName = gc.gpuId; // Default to ID if name not found
         bool isIntegrated = false;      // Unknown adapter: keep the default rather than guess
+        bool memoryIsShared = false;
         if (const auto identityIt = gpuIdToIdentity.find(gc.gpuId); identityIt != gpuIdToIdentity.end())
         {
             gpuName = identityIt->second.name;
             isIntegrated = identityIt->second.isIntegrated;
+            memoryIsShared = identityIt->second.memoryIsShared;
         }
 
         // Add per-GPU breakdown
@@ -877,8 +880,10 @@ void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const s
         perGpu.dedicatedMemoryBytes = gc.gpuMemoryBytes;
         perGpu.sharedMemoryBytes = gc.gpuSharedMemoryBytes;
         // Where the platform has no shared segment (Linux: NVML, ROCm SMI) the adapter's used figure
-        // is its dedicated memory -- an APU's carve-out included -- so that is what counts.
-        perGpu.memoryBytes = (isIntegrated && gc.gpuSharedMemoryBytes > 0) ? gc.gpuSharedMemoryBytes : gc.gpuMemoryBytes;
+        // is its dedicated memory -- an APU's carve-out included -- so that is what counts. The
+        // choice follows the adapter's segment, not the value: shared usage crossing 0 on a Windows
+        // iGPU doesn't switch "GPU memory" to dedicated and back.
+        perGpu.memoryBytes = memoryIsShared ? gc.gpuSharedMemoryBytes : gc.gpuMemoryBytes;
         perGpu.utilPercent = Numeric::clampPercent(gc.gpuUtilPercent);
         perGpu.engines = gc.activeEngines;
 

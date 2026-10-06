@@ -50,6 +50,12 @@ struct GPUInfo
     std::string driverVersion;
     bool isIntegrated = false;     // Integrated vs discrete
     std::uint32_t deviceIndex = 0; // Vendor-specific index
+    /// Which memory segment the adapter's used/total figures count: true for its shared segment
+    /// (system memory the GPU maps -- a Windows integrated GPU's memory), false for dedicated VRAM
+    /// (every discrete GPU, and an APU's carve-out on Linux, where NVML/ROCm SMI/DRM have no shared
+    /// segment). Set by the probe that reads the figure, so per-process memory is counted against
+    /// the same segment whatever its value -- a 0 shared reading is a reading, not "no segment" (#1164).
+    bool memoryIsShared = false;
     /// The sensor metrics this particular adapter reports (temperature, hotspot, power, clocks,
     /// fan, PCIe, encoder/decoder); the other fields are not used. GPUCapabilities from a probe
     /// describes the probe as a whole, so on a hybrid Windows laptop NVML's capabilities applied to
