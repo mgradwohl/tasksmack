@@ -63,8 +63,10 @@ class WindowsGPUProbe : public IGPUProbe
     /// unless a rescan restarted it since that enumeration.
     void restartNVMLIfNVIDIAAdaptersChanged(const std::vector<GPUInfo>& dxgiGPUs);
 
-    [[nodiscard]] std::unordered_set<std::string>
-    mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounters, std::unordered_set<std::string>& nvmlMemoryIds, bool takeUtilization);
+    [[nodiscard]] std::unordered_set<std::string> mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounters,
+                                                                        std::unordered_set<std::string>& nvmlMemoryIds,
+                                                                        bool takeUtilization,
+                                                                        const std::unordered_set<std::string>& idleDevices);
     void mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiCounters, const std::unordered_set<std::string>& nvmlSourcedIds);
 
     std::unique_ptr<DXGIGPUProbe> m_DXGIProbe;

@@ -950,7 +950,7 @@ TEST(NVMLDevicesToLeaveIdleTest, AnAdapterIdleByPDHIsLeftAloneAndABusyOneIsRead)
     const auto idle = nvmlDevicesToLeaveIdle(adapters, pdh, lastRead, start + seconds{1});
     EXPECT_EQ(idle, (std::unordered_set<std::string>{"GPU-idle"}));
     EXPECT_EQ(lastRead.at("GPU-idle"), start) << "Not read, so its last read stands";
-    EXPECT_EQ(lastRead.at("GPU-busy"), start + seconds{1});
+    EXPECT_EQ(lastRead.at("GPU-busy"), start) << "Recorded by recordNVMLReads() once actually read";
 }
 
 // The threshold is "no engine activity": a reading at it counts as activity.
@@ -972,6 +972,9 @@ TEST(NVMLDevicesToLeaveIdleTest, NoPDHReadingOrNoEarlierReadMeansRead)
     const steady_clock::time_point now{};
     std::unordered_map<std::string, steady_clock::time_point> lastRead = {{"GPU-a", now}};
     EXPECT_TRUE(nvmlDevicesToLeaveIdle(adapters, {{"B", 0.0}}, lastRead, now).empty());
+    GPUCounters read;
+    read.gpuId = "GPU-b";
+    recordNVMLReads(lastRead, {read}, {}, now);
     EXPECT_TRUE(lastRead.contains("GPU-b")) << "Read now, so it can be left alone from the next sample";
     EXPECT_EQ(nvmlDevicesToLeaveIdle(adapters, {{"B", 0.0}}, lastRead, now), (std::unordered_set<std::string>{"GPU-b"}));
 }
@@ -987,7 +990,43 @@ TEST(NVMLDevicesToLeaveIdleTest, IdleReadingsAreRefreshedAtTheMaximumAge)
 
     EXPECT_FALSE(nvmlDevicesToLeaveIdle(adapters, pdh, lastRead, start + NVML_IDLE_MAX_READING_AGE - seconds{1}).empty());
     EXPECT_TRUE(nvmlDevicesToLeaveIdle(adapters, pdh, lastRead, start + NVML_IDLE_MAX_READING_AGE).empty());
+    GPUCounters read;
+    read.gpuId = "GPU-a";
+    recordNVMLReads(lastRead, {read}, {}, start + NVML_IDLE_MAX_READING_AGE);
     EXPECT_FALSE(nvmlDevicesToLeaveIdle(adapters, pdh, lastRead, start + NVML_IDLE_MAX_READING_AGE + seconds{1}).empty());
+}
+
+// Only a real read restarts the maximum age: a device found asleep (not queried), one whose reads
+// all failed, and one left idle keep their last read, so a GPU that slept through its refresh is
+// read as soon as it wakes rather than replaying readings from before its sleep (#1338 review).
+TEST(NVMLDevicesToLeaveIdleTest, OnlyARealReadIsRecorded)
+{
+    const steady_clock::time_point start{};
+    const steady_clock::time_point now = start + NVML_IDLE_MAX_READING_AGE;
+    std::unordered_map<std::string, steady_clock::time_point> lastRead = {
+        {"GPU-asleep", start}, {"GPU-failed", start}, {"GPU-idle", start}, {"GPU-read", start}};
+
+    GPUCounters failed;
+    failed.gpuId = "GPU-failed";
+    failed.utilizationAvailable = false;
+    failed.temperatureAvailable = false;
+    failed.powerAvailable = false;
+    failed.gpuClockAvailable = false;
+    failed.memoryAvailable = false;
+    GPUCounters asleep = failed;
+    asleep.gpuId = "GPU-asleep";
+    asleep.suspended = true;
+    GPUCounters idle;
+    idle.gpuId = "GPU-idle";
+    GPUCounters read;
+    read.gpuId = "GPU-read";
+    read.temperatureAvailable = false; // One failed read among successful ones is still a read
+
+    recordNVMLReads(lastRead, {asleep, failed, idle, read}, {"GPU-idle"}, now);
+    EXPECT_EQ(lastRead.at("GPU-asleep"), start);
+    EXPECT_EQ(lastRead.at("GPU-failed"), start);
+    EXPECT_EQ(lastRead.at("GPU-idle"), start);
+    EXPECT_EQ(lastRead.at("GPU-read"), now);
 }
 
 // A device no longer matched (removed, or re-enumerated under another id) is forgotten.

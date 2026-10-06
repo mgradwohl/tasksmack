@@ -193,7 +193,7 @@ std::vector<GPUCounters> WindowsGPUProbe::readGPUCounters()
             pdhAvailable ? nvmlDevicesToLeaveIdle(m_NVMLAdapterIds, m_LastPDHUtilization, m_NVMLLastRead, std::chrono::steady_clock::now())
                          : std::unordered_set<std::string>{};
         m_NVMLProbe->setIdleDevices(idleDevices);
-        nvmlSourcedIds = mergeNVMLEnhancements(counters, nvmlMemoryIds, /*takeUtilization=*/!pdhAvailable);
+        nvmlSourcedIds = mergeNVMLEnhancements(counters, nvmlMemoryIds, /*takeUtilization=*/!pdhAvailable, idleDevices);
         // Their memory in use is PDH's current figure, not the repeated NVML one.
         excludeIdleNVMLMemory(nvmlMemoryIds, idleDevices, m_NVMLAdapterIds);
     }
@@ -225,7 +225,8 @@ std::vector<GPUCounters> WindowsGPUProbe::readGPUCounters()
 
 std::unordered_set<std::string> WindowsGPUProbe::mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounters,
                                                                        std::unordered_set<std::string>& nvmlMemoryIds,
-                                                                       bool takeUtilization)
+                                                                       bool takeUtilization,
+                                                                       const std::unordered_set<std::string>& idleDevices)
 {
     if (!m_NVMLProbe || !m_NVMLProbe->isAvailable())
     {
@@ -235,6 +236,8 @@ std::unordered_set<std::string> WindowsGPUProbe::mergeNVMLEnhancements(std::vect
 
     // Get NVML counters
     auto nvmlCounters = m_NVMLProbe->readGPUCounters();
+    // Only a real read restarts the idle gate's maximum age (#1265).
+    recordNVMLReads(m_NVMLLastRead, nvmlCounters, idleDevices, std::chrono::steady_clock::now());
     if (nvmlCounters.empty())
     {
         spdlog::debug("WindowsGPUProbe::mergeNVMLEnhancements: NVML returned no counters");

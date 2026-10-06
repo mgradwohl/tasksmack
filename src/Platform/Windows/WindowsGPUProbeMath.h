@@ -535,7 +535,8 @@ inline constexpr std::chrono::seconds NVML_IDLE_MAX_READING_AGE{60};
 /// up, or a failed collect), is read as before.
 /// @param adapterIdByDeviceId The matched DXGI adapter's id per NVML device id (nvmlDeviceAdapterIds())
 /// @param lastPDHUtilizationByAdapterId Last sample's PDH utilization, by adapter id, where read
-/// @param lastReadByDeviceId When NVML last read each device; updated for each device read now
+/// @param lastReadByDeviceId When NVML last read each device (recordNVMLReads()); a device no longer
+///        matched is dropped from it
 /// @param now The current time
 [[nodiscard]] inline std::unordered_set<std::string>
 nvmlDevicesToLeaveIdle(const std::unordered_map<std::string, std::string>& adapterIdByDeviceId,
@@ -554,13 +555,34 @@ nvmlDevicesToLeaveIdle(const std::unordered_map<std::string, std::string>& adapt
         {
             idle.insert(deviceId);
         }
-        else
-        {
-            lastReadByDeviceId[deviceId] = now;
-        }
     }
     std::erase_if(lastReadByDeviceId, [&adapterIdByDeviceId](const auto& entry) { return !adapterIdByDeviceId.contains(entry.first); });
     return idle;
+}
+
+/// Record when NVML actually read each device this sample, for nvmlDevicesToLeaveIdle()'s maximum
+/// age: a device left idle, one found asleep (suspended, so not queried) or one whose reads all failed
+/// wasn't read, so its time stands. Recording the time when the device was merely due to be read let
+/// a GPU that slept through it replay readings from before its sleep for another
+/// NVML_IDLE_MAX_READING_AGE after it woke (#1338 review).
+/// @param lastReadByDeviceId When NVML last read each device, by device id
+/// @param nvmlCounters This sample's NVML counters
+/// @param idleDeviceIds The NVML device ids left idle this sample (their counters are repeats)
+/// @param now The current time
+inline void recordNVMLReads(std::unordered_map<std::string, std::chrono::steady_clock::time_point>& lastReadByDeviceId,
+                            const std::vector<GPUCounters>& nvmlCounters,
+                            const std::unordered_set<std::string>& idleDeviceIds,
+                            std::chrono::steady_clock::time_point now)
+{
+    for (const auto& counter : nvmlCounters)
+    {
+        const bool anyReading = counter.utilizationAvailable || counter.temperatureAvailable || counter.powerAvailable ||
+                                counter.gpuClockAvailable || counter.memoryAvailable;
+        if (!counter.suspended && anyReading && !idleDeviceIds.contains(counter.gpuId))
+        {
+            lastReadByDeviceId[counter.gpuId] = now;
+        }
+    }
 }
 
 /// Take the adapters of the NVML devices left idle this sample (nvmlDevicesToLeaveIdle()) out of
