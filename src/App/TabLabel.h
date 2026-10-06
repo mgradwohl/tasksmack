@@ -75,10 +75,12 @@ inline void appendDisplayText(std::string& label, std::string_view text)
     return make(icon, processName.empty() ? std::string_view{"Process Details"} : processName, PROCESS_DETAILS_WINDOW_ID);
 }
 
-/// The part of `label` ImGui's ID hash depends on. Mirrors ImHashStr(): scanning left to right, each
-/// "###" restarts the hash and is skipped whole, so the ID is what follows the last restart, or the
-/// whole label when there is none. That is not always the text after the last "###": in "a####b"
-/// the restart is at the first "#", and the ID is "#b".
+/// The part of `label` ImGui's ID hash depends on. Mirrors ImHashStr() in the pinned ImGui (1.92.9b):
+/// scanning left to right, a "#" followed by "##" resets the CRC to the seed and the scan resumes after
+/// all three, so the "###" itself is not hashed (ImGui commit fc89c61; older versions reset without
+/// skipping it). The ID is what follows the last restart, or the whole label when there is none. That
+/// is not always the text after the last "###": in "a####b" the restart is at the first "#", and the
+/// ID is "#b". test_TabLabel.cpp checks this against ImHashStr() itself.
 [[nodiscard]] constexpr std::string_view idPart(std::string_view label) noexcept
 {
     std::size_t start = 0;

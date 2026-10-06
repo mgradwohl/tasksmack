@@ -4,8 +4,11 @@
 #include "App/TabLabel.h"
 
 #include <gtest/gtest.h>
+#include <imgui.h>
+#include <imgui_internal.h>
 
 #include <cstddef>
+#include <initializer_list>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -74,6 +77,75 @@ TEST(TabLabelTest, IdPartMirrorsImGuisHashRestarts)
     EXPECT_EQ(TabLabel::idPart("a###b###c"), "c");
     EXPECT_EQ(TabLabel::idPart("a######b"), "b");
     EXPECT_EQ(TabLabel::idPart("a###"), "");
+}
+
+/// The ID ImGui gives `label`, hashed by ImGui's own ImHashStr() with an explicit length.
+ImGuiID imguiHash(std::string_view label)
+{
+    return ImHashStr(label.data(), label.size());
+}
+
+/// The same, through ImHashStr()'s NUL-terminated path, which ImGui::GetID(label) and window names use.
+ImGuiID imguiHashCString(const std::string& label)
+{
+    return ImHashStr(label.c_str());
+}
+
+/// Names whose "#"s could move or hide ImGui's "###" restart if put in a label unescaped (#1244).
+constexpr std::initializer_list<std::string_view> TRICKY_NAMES{
+    "",        "bash",   "sleep",   "#",        "##",        "###", "####",     "#####",      "#lead",  "##lead",
+    "###lead", "trail#", "trail##", "trail###", "trail####", "a#b", "foo##bar", "odd###name", "a####b", "#x#"};
+
+TEST(TabLabelTest, ImGuisHashOfALabelDependsOnlyOnItsStableId)
+{
+    // The real check behind #1140 and #1244: whatever the name, ImHashStr() of the label is that of the
+    // plain "###<stableId>" suffix, so the tab and the Process Details window keep their IDs.
+    const ImGuiID tabId = imguiHash("###ProcessDetailsTab");
+    const ImGuiID windowId = imguiHash("###ProcessDetails");
+    for (const std::string_view name : TRICKY_NAMES)
+    {
+        const std::string tab = TabLabel::make("[i]", name, TabLabel::PROCESS_DETAILS_TAB_ID);
+        EXPECT_EQ(imguiHash(tab), tabId) << "name: " << name;
+        EXPECT_EQ(imguiHashCString(tab), tabId) << "name: " << name;
+
+        const std::string window = TabLabel::makeProcessDetailsWindowLabel("[i]", name);
+        EXPECT_EQ(imguiHash(window), windowId) << "name: " << name;
+        EXPECT_EQ(imguiHashCString(window), windowId) << "name: " << name;
+    }
+}
+
+TEST(TabLabelTest, LabelsWithDifferentTextAndTheSameStableIdHashAlike)
+{
+    EXPECT_EQ(imguiHash(TabLabel::make("[i]", "bash", TabLabel::PROCESS_DETAILS_TAB_ID)),
+              imguiHash(TabLabel::make("[x]", "trail#", TabLabel::PROCESS_DETAILS_TAB_ID)));
+    EXPECT_NE(imguiHash(TabLabel::make("[i]", "bash", TabLabel::SYSTEM_TAB_ID)),
+              imguiHash(TabLabel::make("[i]", "bash", TabLabel::PROCESS_DETAILS_TAB_ID)));
+}
+
+TEST(TabLabelTest, WithoutTheEscapeATrailingHashWouldChangeImGuisId)
+{
+    // What appendDisplayText()'s zero-width space prevents: "trail#" + "###ProcessDetailsTab" restarts at
+    // the name's "#" and hashes "#ProcessDetailsTab".
+    const std::string unescaped = "[i]  trail####ProcessDetailsTab";
+    EXPECT_NE(imguiHash(unescaped), imguiHash("###ProcessDetailsTab"));
+    EXPECT_EQ(imguiHash(unescaped), imguiHash("#ProcessDetailsTab"));
+}
+
+TEST(TabLabelTest, IdPartHashesLikeTheWholeLabel)
+{
+    // idPart() models ImHashStr(): the "###" that restarts the hash is skipped, not hashed, and the scan
+    // resumes after it, so "a####b" hashes as "#b" -- not as "b", nor with the separator kept.
+    for (const std::string_view label : {"a####b", "a###b###c", "a######b", "a#######b", "a###", "Processes", "#####x", "x#", "##x"})
+    {
+        EXPECT_EQ(imguiHash(label), imguiHash(TabLabel::idPart(label))) << "label: " << label;
+    }
+    for (const std::string_view name : TRICKY_NAMES)
+    {
+        const std::string label = TabLabel::make("[i]", name, TabLabel::PROCESS_DETAILS_TAB_ID);
+        EXPECT_EQ(imguiHash(label), imguiHash(TabLabel::idPart(label))) << "name: " << name;
+    }
+    EXPECT_EQ(imguiHash("a####b"), imguiHash("#b"));
+    EXPECT_NE(imguiHash("a####b"), imguiHash("b"));
 }
 
 TEST(TabLabelTest, VisiblePartEndsAtTheFirstDoubleHash)

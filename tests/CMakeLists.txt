@@ -307,6 +307,8 @@ target_link_libraries(TaskSmackTests PRIVATE
     tomlplusplus::tomlplusplus
     SDL3::SDL3
     glad_gl_core_33
+    # test_TabLabel.cpp checks labels against ImGui's own ImHashStr() (no ImGui context needed).
+    imgui_lib
 )
 tasksmack_apply_linux_toolchain(TaskSmackTests)
 
