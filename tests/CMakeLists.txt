@@ -123,6 +123,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessTableFlags.cpp
     App/test_ProcessTableLayout.cpp
     App/test_ProcessTableSettings.cpp
+    App/test_ProcessTableSettingsRoundTrip.cpp
     App/test_ProcessDetailsLayout.cpp
     App/test_GpuClockReference.cpp
     App/test_GpuSeriesScale.cpp
@@ -347,7 +348,8 @@ target_link_libraries(TaskSmackTests PRIVATE
     SDL3::SDL3
     glad_gl_core_33
     Freetype::Freetype  # For TabularDigits.cpp
-    # test_TabLabel.cpp checks labels against ImGui's own ImHashStr() (no ImGui context needed).
+    # test_TabLabel.cpp checks labels against ImGui's own ImHashStr() (no ImGui context needed);
+    # test_ProcessTableSettingsRoundTrip.cpp runs headless ImGui frames to load saved table layouts.
     imgui_lib
 )
 tasksmack_apply_linux_toolchain(TaskSmackTests)
