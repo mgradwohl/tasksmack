@@ -650,7 +650,7 @@ baseline build. Separate weekly jobs perform a longer batch run and prune the re
 `.clusterfuzzlite/build.sh` builds every target (ClusterFuzzLite runs each binary it leaves in
 `$OUT`), so a new target is a `tests/fuzz/fuzz_<name>.cpp` plus one `build_fuzzer` line there. The
 targets compile against the header-only toml++, spdlog, Dear ImGui and ImPlot at the commits
-`cmake/Dependencies.cmake` pins (`.clusterfuzzlite/fetch-deps.sh`).
+`cmake/Dependencies.cmake` pins, with the same `cmake/patches/` applied (`.clusterfuzzlite/fetch-deps.sh`).
 
 To build and run the targets locally with Clang, from the repo root:
 
