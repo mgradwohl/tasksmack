@@ -47,6 +47,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <initializer_list>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -1727,6 +1728,195 @@ TEST(LinuxProcessProbeTest, ACompleteEmptyReadingForgetsUnownedSocketsAndAFailed
     EXPECT_EQ(ownerOfReused(true), 0) << "a failed reading says nothing about the sockets: 99 is still unowned from before the build";
 }
 #endif
+
+// =============================================================================
+// #1425: command lines cached by process identity
+// =============================================================================
+
+/// NUL-separated, NUL-terminated arguments, as /proc/[pid]/cmdline holds them.
+[[nodiscard]] std::string cmdlineOf(std::initializer_list<std::string_view> args)
+{
+    std::string text;
+    for (const std::string_view arg : args)
+    {
+        text += arg;
+        text.push_back('\0');
+    }
+    return text;
+}
+
+/// A synthetic process: its stat (comm, state, start time) and, unless nullopt,
+/// its cmdline.
+void writeCmdlineProcess(const std::filesystem::path& procRoot,
+                         std::int32_t pid,
+                         std::string_view comm,
+                         char state,
+                         std::uint64_t startTime,
+                         const std::optional<std::string>& cmdline)
+{
+    const auto dir = procRoot / std::to_string(pid);
+    writeFile(dir / "stat",
+              std::format("{} ({}) {} 1 {} {} 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 {} 0 0 "
+                          "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n",
+                          pid,
+                          comm,
+                          state,
+                          pid,
+                          pid,
+                          startTime));
+    std::error_code ignored;
+    std::filesystem::remove(dir / "cmdline", ignored);
+    if (cmdline.has_value())
+    {
+        writeFile(dir / "cmdline", *cmdline);
+    }
+}
+
+/// The process `pid` as one enumerate() sees it (pid 0 if it isn't listed).
+[[nodiscard]] ProcessCounters enumerateOne(LinuxProcessProbe& probe, std::int32_t pid)
+{
+    const auto processes = probe.enumerate();
+    const auto it = std::ranges::find(processes, pid, &ProcessCounters::pid);
+    return it != processes.end() ? *it : ProcessCounters{};
+}
+
+constexpr auto NEVER_EXPIRES = std::chrono::hours{1};
+
+TEST(LinuxProcessProbeTest, ACommandLineIsReadOnceAndReusedWhileFresh)
+{
+    // #1425: /proc/[pid]/cmdline used to be opened and read for every process on
+    // every sample, though a command line is set at exec. It is now kept per
+    // process and reused: a change to the file within the TTL isn't read -- which
+    // is how this test can see the cache at all.
+    ScopedTempDir proc("ts_test_proc_cmdline_cached");
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, cmdlineOf({"/usr/bin/app", "--first"}));
+    // A comm the kernel cut at 15 characters: the full name comes from the
+    // command line, and must come back with the cached command too (#951).
+    writeCmdlineProcess(proc.path, 4343, "systemd-journal", 'S', 100, cmdlineOf({"/usr/lib/systemd/systemd-journald"}));
+
+    LinuxProcessProbe probe(proc.path);
+    probe.setCmdlineCacheTtlForTesting(NEVER_EXPIRES);
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "/usr/bin/app --first");
+    EXPECT_EQ(enumerateOne(probe, 4343).name, "systemd-journald");
+
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, cmdlineOf({"/usr/bin/app", "--second"}));
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "/usr/bin/app --first") << "same process, within the TTL: the cached command";
+    const auto journald = enumerateOne(probe, 4343);
+    EXPECT_EQ(journald.name, "systemd-journald") << "the full name is cached with the command";
+    EXPECT_EQ(journald.command, "/usr/lib/systemd/systemd-journald");
+}
+
+TEST(LinuxProcessProbeTest, ACachedCommandLineIsReadAgainOnceItExpires)
+{
+    // #1425: a process can rewrite its argv (a process title: postgres, sshd), so
+    // a cached command line is read again after at most the TTL.
+    ScopedTempDir proc("ts_test_proc_cmdline_ttl");
+    writeCmdlineProcess(proc.path, 4242, "postgres", 'S', 100, cmdlineOf({"postgres: idle"}));
+
+    constexpr auto TTL = std::chrono::milliseconds{200};
+    LinuxProcessProbe probe(proc.path);
+    probe.setCmdlineCacheTtlForTesting(TTL);
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "postgres: idle");
+
+    writeCmdlineProcess(proc.path, 4242, "postgres", 'S', 100, cmdlineOf({"postgres: SELECT"}));
+    std::this_thread::sleep_for(TTL + std::chrono::milliseconds{50});
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "postgres: SELECT") << "past the TTL: read again";
+
+    // With no TTL nothing is reused.
+    LinuxProcessProbe uncached(proc.path);
+    uncached.setCmdlineCacheTtlForTesting(std::chrono::milliseconds{0});
+    EXPECT_EQ(enumerateOne(uncached, 4242).command, "postgres: SELECT");
+    writeCmdlineProcess(proc.path, 4242, "postgres", 'S', 100, cmdlineOf({"postgres: COMMIT"}));
+    EXPECT_EQ(enumerateOne(uncached, 4242).command, "postgres: COMMIT");
+}
+
+TEST(LinuxProcessProbeTest, AReusedPidGetsItsOwnCommandLine)
+{
+    // #1425: the cache is keyed on the process, not the PID: a process that
+    // reuses the PID has a different start time, and is read, not shown the
+    // exited process's command.
+    ScopedTempDir proc("ts_test_proc_cmdline_pid_reuse");
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, cmdlineOf({"app", "--old"}));
+
+    LinuxProcessProbe probe(proc.path);
+    probe.setCmdlineCacheTtlForTesting(NEVER_EXPIRES);
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "app --old");
+
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 200, cmdlineOf({"app", "--new"}));
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "app --new") << "same PID and comm, another start time: another process";
+}
+
+TEST(LinuxProcessProbeTest, AnExecGetsItsNewCommandLine)
+{
+    // #1425: exec keeps the PID and the start time but replaces the command line
+    // -- a shell's child is "bash" until it execs "ls". Exec also sets a new
+    // comm, and a changed comm is read again.
+    ScopedTempDir proc("ts_test_proc_cmdline_exec");
+    writeCmdlineProcess(proc.path, 4242, "bash", 'S', 100, cmdlineOf({"bash"}));
+
+    LinuxProcessProbe probe(proc.path);
+    probe.setCmdlineCacheTtlForTesting(NEVER_EXPIRES);
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "bash");
+
+    writeCmdlineProcess(proc.path, 4242, "ls", 'R', 100, cmdlineOf({"ls", "-la"}));
+    const auto exec = enumerateOne(probe, 4242);
+    EXPECT_EQ(exec.name, "ls");
+    EXPECT_EQ(exec.command, "ls -la");
+}
+
+TEST(LinuxProcessProbeTest, AnExitedProcessLeavesTheCommandLineCache)
+{
+    // #1425: an entry lasts only while its process is listed: the pass that no
+    // longer sees it drops it, so the cache holds no more than the live
+    // processes. Seen here by bringing back a process with the very same
+    // identity, which a kept entry would have answered.
+    ScopedTempDir proc("ts_test_proc_cmdline_evict");
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, cmdlineOf({"app", "--first"}));
+    writeCmdlineProcess(proc.path, 4343, "other", 'S', 100, cmdlineOf({"other"}));
+
+    LinuxProcessProbe probe(proc.path);
+    probe.setCmdlineCacheTtlForTesting(NEVER_EXPIRES);
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "app --first");
+
+    std::filesystem::remove_all(proc.path / "4242");
+    EXPECT_EQ(enumerateOne(probe, 4242).pid, 0) << "exited";
+
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, cmdlineOf({"app", "--second"}));
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "app --second") << "its entry went when it exited";
+    EXPECT_EQ(enumerateOne(probe, 4343).command, "other");
+}
+
+TEST(LinuxProcessProbeTest, ACachedProcessThatBecomesAZombieIsDefunct)
+{
+    // #1155 with #1425: the <defunct> label is decided from stat's state each
+    // sample, before the cache, so a process whose command was cached while it
+    // ran is still shown as defunct.
+    ScopedTempDir proc("ts_test_proc_cmdline_zombie");
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, cmdlineOf({"app", "--serve"}));
+
+    LinuxProcessProbe probe(proc.path);
+    probe.setCmdlineCacheTtlForTesting(NEVER_EXPIRES);
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "app --serve");
+
+    writeCmdlineProcess(proc.path, 4242, "app", 'Z', 100, std::string{}); // a zombie's cmdline reads empty
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "app <defunct>");
+}
+
+TEST(LinuxProcessProbeTest, AnUnreadableCommandLineIsTriedAgainNextSample)
+{
+    // #1425: a command line that can't be read (another user's process under
+    // hidepid, or one exiting) leaves the command empty and is not cached: the
+    // next sample tries again.
+    ScopedTempDir proc("ts_test_proc_cmdline_unreadable");
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, std::nullopt);
+
+    LinuxProcessProbe probe(proc.path);
+    probe.setCmdlineCacheTtlForTesting(NEVER_EXPIRES);
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "");
+
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, cmdlineOf({"app"}));
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "app");
+}
 
 TEST(LinuxProcessProbeTest, EmptyProcDirReturnsNoProcesses)
 {

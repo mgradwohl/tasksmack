@@ -764,6 +764,7 @@ deliberate, reviewed performance change that the gate should treat as the new no
 | `BM_ProcessModel_*` | Process enumeration and snapshot computation |
 | `BM_ProcessModel_MemoryGrowth` | Memory growth over repeated refresh cycles |
 | `BM_ProcessProbe_Enumerate` | Raw OS API performance |
+| `BM_ProcessProbe_EnumerateSynthetic*` | `LinuxProcessProbe::enumerate()` over a synthetic 5,000-process /proc (Linux only), so runs compare like for like (steady state) |
 | `BM_SystemModel_*` | System metric sampling and history accessor performance |
 | `BM_SystemModel_MemoryGrowth` | Memory growth over repeated `refresh()` calls exercising the full probe read, delta computation, and history append path |
 | `BM_SystemProbe_Sample` | Raw OS system probe API performance |

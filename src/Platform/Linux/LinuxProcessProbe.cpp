@@ -46,6 +46,7 @@
 #include <utility>
 #include <vector>
 
+#include <dirent.h>
 #include <fcntl.h>
 #include <pwd.h>
 #include <sys/types.h>
@@ -96,19 +97,44 @@ template<std::integral T> [[nodiscard]] constexpr auto toU64PositiveOr(T value, 
 using Posix::FdGuard;
 using ProcParsing::parseNum;
 using ProcParsing::readProcFile;
+using ProcParsing::readProcFileAt;
 using ProcParsing::readProcFileFull;
+using ProcParsing::readProcFileOnceAt;
+
+/// The longest command line kept in the command-line cache (#1425); a longer one (a JVM's classpath
+/// can run to hundreds of KiB) is read every sample, as before. Together with the one-entry-per-live-
+/// process eviction this bounds the cache's memory, beyond what the published snapshot already holds.
+constexpr std::size_t MAX_CACHED_CMDLINE_BYTES = std::size_t{64} * 1024;
+
+/// How long a command line read now is reused: half the TTL, plus a share of the other half that
+/// varies by PID (a multiplicative hash, so consecutive PIDs spread out). The processes first cached
+/// on one sample -- every one of them, on the first -- then expire over several later samples
+/// instead of all being re-read on the same one. Never longer than the TTL.
+[[nodiscard]] std::chrono::milliseconds cmdlineCacheLifetime(std::int32_t pid, std::chrono::milliseconds ttl) noexcept
+{
+    constexpr std::uint32_t MULTIPLICATIVE_HASH = 2654435761U; // Knuth: 2^32 / golden ratio
+    const auto half = ttl / 2;
+    if (half.count() <= 0)
+    {
+        return ttl;
+    }
+    const std::uint64_t hash = static_cast<std::uint32_t>(static_cast<std::uint32_t>(pid) * MULTIPLICATIVE_HASH); // wraps mod 2^32
+    const std::uint64_t share = hash % (static_cast<std::uint64_t>(half.count()) + 1);
+    return (ttl - half) + std::chrono::milliseconds{static_cast<std::chrono::milliseconds::rep>(share)};
+}
 
 /// Read a whole /proc file of up to maxBytes, for the rare one that overflows a caller's stack buffer.
 /// Each try re-reads from the start into a buffer twice the last one's size, so the text comes from a
-/// single read. Returns the bytes read -- a file longer than maxBytes comes back cut off at maxBytes
-/// -- or an empty vector on failure.
-[[nodiscard]] std::vector<char> readProcFileBounded(const std::string& path, std::size_t initialSize, std::size_t maxBytes)
+/// single read. `path` is resolved as readProcFileAt() does (under `dirFd`, or AT_FDCWD for an
+/// ordinary path). Returns the bytes read -- a file longer than maxBytes comes back cut off at
+/// maxBytes -- or an empty vector on failure.
+[[nodiscard]] std::vector<char> readProcFileBounded(int dirFd, const char* path, std::size_t initialSize, std::size_t maxBytes)
 {
     std::vector<char> buf;
     for (std::size_t size = std::min(initialSize, maxBytes);; size = std::min(size * 2, maxBytes))
     {
         buf.resize(size);
-        const std::size_t len = readProcFile(path.c_str(), buf.data(), buf.size());
+        const std::size_t len = readProcFileAt(dirFd, path, buf.data(), buf.size());
         if (len < size || size == maxBytes)
         {
             buf.resize(len);
@@ -190,7 +216,8 @@ LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot,
       m_CpuSysfsRoot(std::move(cpuSysfsRoot)),
       m_TicksPerSecond(sysconf(_SC_CLK_TCK)),
       m_PageSize(toU64PositiveOr(sysconf(_SC_PAGESIZE), 4096ULL)),
-      m_BootTimeEpoch(readBootTime(m_ProcRoot))
+      m_BootTimeEpoch(readBootTime(m_ProcRoot)),
+      m_CmdlineCacheTtl(Domain::Sampling::PROCESS_CMDLINE_CACHE_TTL_MS)
 {
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     m_InodeMapEarlyRebuildInterval = std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_EARLY_REBUILD_MS};
@@ -275,40 +302,67 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
     // Reserving a fixed constant (e.g. 500) wastes memory on light systems
     // and still reallocates on busy ones. Let the allocator manage growth.
 
-    const std::filesystem::path& procPath = m_ProcRoot;
-    std::error_code errorCode;
+    const auto now = std::chrono::steady_clock::now();
 
     // Once per sample: Cpus_allowed_list is the task's raw mask, which still names CPUs that are
     // possible but offline; the sched_getaffinity() it replaced ANDed it with the active CPUs (#1384).
     const std::optional<CpuAffinity> onlineCpus = readOnlineCpus(m_CpuSysfsRoot);
 
-    for (const auto& entry : std::filesystem::directory_iterator(procPath, errorCode))
+    // This pass's command lines (#1425): the entries of processes it sees move from `previousCmdlines`
+    // to `seenCmdlines`, which replaces the cache at the end; the rest (exited processes) are dropped.
+    CmdlineCache previousCmdlines;
     {
-        if (!entry.is_directory())
+        const std::scoped_lock lock(m_CmdlineCacheMutex);
+        previousCmdlines = std::exchange(m_CmdlineCache, {});
+    }
+    CmdlineCache seenCmdlines;
+    seenCmdlines.reserve(previousCmdlines.size());
+
+    // Freeze states by /proc/[pid]/cgroup contents, for this pass only (see getProcessStatus()).
+    FrozenByCgroup frozenByCgroup;
+
+    // Every read of a process goes through one handle on its /proc/[pid] directory: one path lookup per
+    // file rather than a walk from the root, and all of a process's fields come from that process even
+    // if it exits and its PID is reused mid-pass (as the inode-to-PID map's reads already did, #1336).
+    const Posix::DirGuard procDir(::opendir(m_ProcRoot.c_str()));
+    const int procDirFd = (procDir.get() != nullptr) ? ::dirfd(procDir.get()) : -1;
+    int iterationError = (procDir.get() != nullptr) ? 0 : errno;
+    while (procDir.get() != nullptr)
+    {
+        errno = 0;
+        // NOLINTNEXTLINE(concurrency-mt-unsafe) - readdir is safe here: one DIR* per call
+        const dirent* entry = ::readdir(procDir.get());
+        if (entry == nullptr)
+        {
+            iterationError = errno; // 0 at the end of the listing
+            break;
+        }
+
+        // Only directories named by a number (a process ID)
+        const std::string_view filename(static_cast<const char*>(entry->d_name));
+        int32_t pid = 0;
+        const auto result = std::from_chars(filename.data(), filename.data() + filename.size(), pid);
+        if (result.ec != std::errc{} || result.ptr != filename.data() + filename.size() || pid <= 0)
         {
             continue;
         }
-
-        const auto& filename = entry.path().filename().string();
-        int32_t pid = 0;
-
-        // Check if directory name is a number (process ID)
-        auto result = std::from_chars(filename.data(), filename.data() + filename.size(), pid);
-        if (result.ec != std::errc{} || pid <= 0)
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
+        const FdGuard pidDirFd(::openat(procDirFd, entry->d_name, O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+        if (pidDirFd.get() == -1)
         {
-            continue;
+            continue; // Exited since the listing (or not a directory)
         }
 
         ProcessCounters counters{};
-        if (!parseProcessStat(pid, counters))
+        if (!parseProcessStat(pidDirFd.get(), pid, counters))
         {
-            spdlog::debug("Failed to parse {}", (procPath / std::to_string(pid) / "stat").string());
+            spdlog::debug("Failed to parse {}", (m_ProcRoot / filename / "stat").string());
             continue;
         }
 
-        parseProcessStatm(pid, counters);
-        parseProcessStatus(pid, counters, m_ProcRoot, onlineCpus); // Owner, peak RSS (after statm) and CPU affinity
-        parseProcessCmdline(pid, counters, m_ProcRoot);
+        parseProcessStatm(pidDirFd.get(), counters);
+        parseProcessStatus(pidDirFd.get(), pid, counters, onlineCpus); // Owner, peak RSS (after statm) and CPU affinity
+        readProcessCommand(pidDirFd.get(), counters, previousCmdlines, seenCmdlines, now);
 
         // Count open file descriptors (may fail for some processes due to permissions)
         countProcessFds(pid, counters, m_ProcRoot);
@@ -319,19 +373,24 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
                        [this]() { m_IoCountersAvailable.store(checkIoCountersAvailability(m_ProcRoot), std::memory_order_relaxed); });
         if (m_IoCountersAvailable.load(std::memory_order_relaxed))
         {
-            parseProcessIo(pid, counters, m_ProcRoot);
+            parseProcessIo(pidDirFd.get(), counters);
         }
         else
         {
             counters.ioCountersAvailable = false; // not read at all (capabilities() reports hasIoCounters = false)
         }
-        counters.status = getProcessStatus(pid, m_ProcRoot, m_CgroupRoot); // Get cgroup freezer status
+        counters.status = getProcessStatus(pidDirFd.get(), m_CgroupRoot, frozenByCgroup); // Get cgroup freezer status
         processes.push_back(std::move(counters));
     }
 
-    if (errorCode)
+    if (iterationError != 0)
     {
-        spdlog::warn("Error iterating {}: {}", procPath.string(), errorCode.message());
+        spdlog::warn("Error iterating {}: {}", m_ProcRoot.string(), std::system_category().message(iterationError));
+    }
+
+    {
+        const std::scoped_lock lock(m_CmdlineCacheMutex);
+        m_CmdlineCache = std::move(seenCmdlines);
     }
 
     // The system total that the processes' CPU deltas are divided by, taken now -- right after
@@ -404,19 +463,17 @@ long LinuxProcessProbe::ticksPerSecond() const
     return m_TicksPerSecond;
 }
 
-bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters) const
+bool LinuxProcessProbe::parseProcessStat(int pidDirFd, int32_t pid, ProcessCounters& counters) const
 {
     // Format: /proc/[pid]/stat — single line
     // Fields: pid (comm) state ppid pgrp session tty_nr tpgid flags
     //         minflt cminflt majflt cmajflt utime stime cutime cstime
     //         priority nice num_threads itrealvalue starttime vsize rss ...
 
-    const std::string statPath = (m_ProcRoot / std::to_string(pid) / "stat").string();
-
     // 1 KiB is ample: comm is kernel-capped at 15 chars, and the remaining
     // ~22 numeric fields are at most ~462 bytes total.
     std::array<char, 1024> buf{};
-    const std::size_t len = readProcFile(statPath.c_str(), buf.data(), buf.size());
+    const std::size_t len = readProcFileOnceAt(pidDirFd, "stat", buf.data(), buf.size());
     if (len == 0)
     {
         return false;
@@ -466,14 +523,13 @@ bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters)
     return true;
 }
 
-void LinuxProcessProbe::parseProcessStatm(int32_t pid, ProcessCounters& counters) const
+void LinuxProcessProbe::parseProcessStatm(int pidDirFd, ProcessCounters& counters) const
 {
     // Format: /proc/[pid]/statm
     // Fields: size resident shared text lib data dt (all in pages)
 
-    const std::string statmPath = (m_ProcRoot / std::to_string(pid) / "statm").string();
     std::array<char, 128> buf{};
-    const std::size_t len = readProcFile(statmPath.c_str(), buf.data(), buf.size());
+    const std::size_t len = readProcFileOnceAt(pidDirFd, "statm", buf.data(), buf.size());
     if (len == 0)
     {
         return;
@@ -509,7 +565,7 @@ std::optional<CpuAffinity> LinuxProcessProbe::readOnlineCpus(const std::filesyst
         return CpuAffinity::fromCpuList(std::string_view(buf.data(), len));
     }
     constexpr std::size_t MAX_ONLINE_SIZE = std::size_t{1} << 20U; // 1 MiB, far above any real list
-    const std::vector<char> full = readProcFileBounded(onlinePath, 4 * BUF_SIZE, MAX_ONLINE_SIZE);
+    const std::vector<char> full = readProcFileBounded(AT_FDCWD, onlinePath.c_str(), 4 * BUF_SIZE, MAX_ONLINE_SIZE);
     if (full.empty() || full.size() == MAX_ONLINE_SIZE)
     {
         return std::nullopt; // Unreadable now, or possibly cut off
@@ -517,9 +573,9 @@ std::optional<CpuAffinity> LinuxProcessProbe::readOnlineCpus(const std::filesyst
     return CpuAffinity::fromCpuList(std::string_view(full.data(), full.size()));
 }
 
-void LinuxProcessProbe::parseProcessStatus(int32_t pid,
+void LinuxProcessProbe::parseProcessStatus(int pidDirFd,
+                                           int32_t pid,
                                            ProcessCounters& counters,
-                                           const std::filesystem::path& procRoot,
                                            const std::optional<CpuAffinity>& onlineCpus)
 {
     // Read /proc/[pid]/status, key:value pairs one per line, for:
@@ -533,12 +589,11 @@ void LinuxProcessProbe::parseProcessStatus(int32_t pid,
     // are possible but offline (a VM's hot-add slots, SMT turned off); sched_getaffinity() ANDed it
     // with the active CPUs, and this ANDs it with the online list (#1384).
 
-    const std::string statusPath = (procRoot / std::to_string(pid) / "status").string();
     // A status file is about 1.5 KiB. Big enough for the usual file, Cpus_allowed's hex mask on a
     // many-CPU kernel included, without allocating.
     constexpr std::size_t BUF_SIZE = 8192;
     std::array<char, BUF_SIZE> buf{};
-    const std::size_t len = readProcFile(statusPath.c_str(), buf.data(), BUF_SIZE);
+    const std::size_t len = readProcFileOnceAt(pidDirFd, "status", buf.data(), BUF_SIZE);
     if (len == 0)
     {
         return;
@@ -561,7 +616,7 @@ void LinuxProcessProbe::parseProcessStatus(int32_t pid,
         // process just exited), fall back to the prefix. Either way a VmHWM: or Cpus_allowed_list:
         // line cut off by the end of what was read is ignored below rather than read in part.
         constexpr std::size_t MAX_STATUS_SIZE = std::size_t{1} << 20U; // 1 MiB
-        fullStatus = readProcFileBounded(statusPath, 4 * BUF_SIZE, MAX_STATUS_SIZE);
+        fullStatus = readProcFileBounded(pidDirFd, "status", 4 * BUF_SIZE, MAX_STATUS_SIZE);
         if (!fullStatus.empty())
         {
             text = std::string_view(fullStatus.data(), fullStatus.size());
@@ -642,31 +697,81 @@ void LinuxProcessProbe::parseProcessStatus(int32_t pid,
     }
 }
 
-void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot)
+void LinuxProcessProbe::readProcessCommand(
+    int pidDirFd, ProcessCounters& counters, CmdlineCache& previous, CmdlineCache& seen, std::chrono::steady_clock::time_point now) const
 {
-    // Format: /proc/[pid]/cmdline
-    // Arguments are separated by NUL bytes
-
     // A zombie has no command line left, and /proc/<pid>/cmdline may also be unreadable for another
     // user's process even though stat showed state Z. Either way it must not get the kernel-thread
-    // label: mark it <defunct>, as ps does (#1155).
+    // label: mark it <defunct>, as ps does (#1155). Checked before the cache, so a process cached
+    // while alive is still labelled once it dies; its entry is dropped.
     if (counters.state == 'Z')
     {
         counters.command = counters.name + " <defunct>";
         return;
     }
 
-    const std::string cmdlinePath = (procRoot / std::to_string(pid) / "cmdline").string();
+    // The command line read on an earlier sample, if it is this process's (same start time: not a
+    // later process that reused the PID; same comm: not replaced by an exec) and still fresh (#1425).
+    auto node = previous.extract(counters.pid);
+    if (!node.empty())
+    {
+        const CmdlineCacheEntry& cached = node.mapped();
+        if (cached.startTimeTicks == counters.startTimeTicks && cached.comm == counters.name && now < cached.expiresAt)
+        {
+            if (!cached.name.empty())
+            {
+                counters.name = cached.name;
+            }
+            counters.command = cached.command;
+            seen.insert(std::move(node));
+            return;
+        }
+    }
+
+    const std::optional<std::vector<char>> rawCmdline = readCmdline(pidDirFd);
+    if (!rawCmdline.has_value())
+    {
+        // Cannot read the file: leave command unchanged rather than incorrectly labelling a non-kernel
+        // process as a kernel thread, and cache nothing, so the next sample tries again.
+        return;
+    }
+
+    std::string comm = counters.name;
+    applyCmdline(counters, *rawCmdline);
+    if (rawCmdline->size() > MAX_CACHED_CMDLINE_BYTES)
+    {
+        return; // Too long to keep: read every sample, as before the cache
+    }
+
+    std::string resolvedName = (counters.name != comm) ? counters.name : std::string{};
+    CmdlineCacheEntry entry{.startTimeTicks = counters.startTimeTicks,
+                            .comm = std::move(comm),
+                            .name = std::move(resolvedName),
+                            .command = counters.command,
+                            .expiresAt = now + cmdlineCacheLifetime(counters.pid, m_CmdlineCacheTtl)};
+    if (!node.empty())
+    {
+        node.mapped() = std::move(entry); // Reuse the stale entry's node: no allocation
+        seen.insert(std::move(node));
+    }
+    else
+    {
+        seen.insert_or_assign(counters.pid, std::move(entry));
+    }
+}
+
+std::optional<std::vector<char>> LinuxProcessProbe::readCmdline(int pidDirFd)
+{
+    // Format: /proc/[pid]/cmdline
+    // Arguments are separated by NUL bytes
 
     // Open once: distinguishes "unreadable" (permission denied, hidepid) from
     // "readable but empty" (kernel threads), avoiding a second open() call.
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — POSIX open() is variadic
-    const int fd = ::open(cmdlinePath.c_str(), O_RDONLY | O_CLOEXEC);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — POSIX openat() is variadic
+    const int fd = ::openat(pidDirFd, "cmdline", O_RDONLY | O_CLOEXEC);
     if (fd == -1)
     {
-        // Cannot read the file — leave command unchanged rather than
-        // incorrectly labelling a non-kernel process as a kernel thread.
-        return;
+        return std::nullopt;
     }
 
     const FdGuard guard{fd}; // ensures fd is closed on all paths, including exception paths
@@ -676,7 +781,6 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
     std::vector<char> buf;
     buf.reserve(4096);
     std::array<char, 4096> chunk{};
-    bool readError = false;
     for (;;)
     {
         const auto n = ::read(fd, chunk.data(), chunk.size());
@@ -690,22 +794,20 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
             {
                 continue; // interrupted by signal — retry
             }
-            readError = true;
-            break; // I/O error
+            // Treat a read error the same as open() failure: leave command unchanged
+            // rather than incorrectly labelling the process as a kernel thread.
+            return std::nullopt;
         }
         buf.insert(buf.end(), chunk.data(), chunk.data() + static_cast<std::size_t>(n));
     }
+    return buf;
+}
 
-    if (readError)
+void LinuxProcessProbe::applyCmdline(ProcessCounters& counters, const std::vector<char>& rawCmdline)
+{
+    if (rawCmdline.empty())
     {
-        // Treat a read error the same as open() failure: leave command unchanged
-        // rather than incorrectly labelling the process as a kernel thread.
-        return;
-    }
-
-    if (buf.empty())
-    {
-        // File opened and fully read but empty: a kernel thread (zombies were handled above).
+        // File opened and fully read but empty: a kernel thread (zombies are handled before this).
         counters.command = "[" + counters.name + "]";
         return;
     }
@@ -713,14 +815,15 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
     // The kernel caps the name in /proc/[pid]/stat at 15 characters. Where it has been cut, the
     // full name is usually recoverable from the arguments, which are still NUL-separated at this
     // point -- so this costs no extra read. See ProcessName.h for when the result is trusted (#951).
-    if (const std::string_view fullName = ProcessName::resolveFullName(counters.name, std::string_view(buf.data(), buf.size()));
+    if (const std::string_view fullName =
+            ProcessName::resolveFullName(counters.name, std::string_view(rawCmdline.data(), rawCmdline.size()));
         fullName.size() != counters.name.size())
     {
         counters.name = std::string(fullName);
     }
 
     // Replace NUL argument separators with spaces, then trim trailing space.
-    std::string cmdline(buf.data(), buf.size());
+    std::string cmdline(rawCmdline.data(), rawCmdline.size());
     for (auto& c : cmdline)
     {
         if (c == '\0')
@@ -736,7 +839,7 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
     counters.command = std::move(cmdline);
 }
 
-void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot)
+void LinuxProcessProbe::parseProcessIo(int pidDirFd, ProcessCounters& counters)
 {
     // Format: /proc/[pid]/io
     // Key-value pairs, one per line:
@@ -754,10 +857,9 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters, c
     // dropped. If we can't read it -- typically another user's process without those capabilities --
     // the counters are marked unavailable rather than left at a 0 that reads as "no I/O" (#1110).
 
-    const std::string ioPath = (procRoot / std::to_string(pid) / "io").string();
     constexpr std::size_t BUF_SIZE = 512;
     std::array<char, BUF_SIZE> buf{};
-    const std::size_t len = readProcFile(ioPath.c_str(), buf.data(), BUF_SIZE);
+    const std::size_t len = readProcFileOnceAt(pidDirFd, "io", buf.data(), BUF_SIZE);
     if (len == 0)
     {
         // Common case: insufficient permissions
@@ -897,21 +999,35 @@ bool LinuxProcessProbe::checkIoCountersAvailability(const std::filesystem::path&
     return true;
 }
 
-std::string LinuxProcessProbe::getProcessStatus(int32_t pid, const std::filesystem::path& procRoot, const std::filesystem::path& cgroupRoot)
+std::string LinuxProcessProbe::getProcessStatus(int pidDirFd, const std::filesystem::path& cgroupRoot, FrozenByCgroup& frozenByCgroup)
 {
     // /proc/<pid>/cgroup names the process's cgroups: the v2 "0::<path>" line and/or v1 lines,
     // including the freezer controller's. isCgroupFrozen() checks the matching freeze state.
     // Read to EOF: a cgroup path can approach PATH_MAX, and a truncated one would point the check
     // at the wrong cgroup.events (#1228 review).
-    const auto cgroupPath = (procRoot / std::to_string(pid) / "cgroup").string();
-    const std::vector<char> cgroupContents = ProcParsing::readProcFileFull(cgroupPath.c_str());
-    if (!cgroupContents.empty() && CgroupPath::isCgroupFrozen(std::string_view(cgroupContents.data(), cgroupContents.size()), cgroupRoot))
+    // The usual file (one v2 line, or a dozen v1 ones) fits on the stack; one that fills it is read
+    // again whole.
+    constexpr std::size_t BUF_SIZE = 1024;
+    std::array<char, BUF_SIZE> buf{};
+    std::vector<char> fullContents;
+    std::string_view cgroups(buf.data(), readProcFileOnceAt(pidDirFd, "cgroup", buf.data(), BUF_SIZE));
+    if (cgroups.size() == BUF_SIZE)
     {
-        return "Suspended";
+        fullContents = ProcParsing::readProcFileFullAt(pidDirFd, "cgroup");
+        cgroups = std::string_view(fullContents.data(), fullContents.size());
     }
-
-    // No special status
-    return {};
+    if (cgroups.empty())
+    {
+        return {};
+    }
+    // Processes in the same cgroups share one freeze-state read per pass: the state is a property of
+    // the cgroup, and the answer for the first of them is the one a read microseconds later gives.
+    auto known = frozenByCgroup.find(cgroups);
+    if (known == frozenByCgroup.end())
+    {
+        known = frozenByCgroup.emplace(std::string(cgroups), CgroupPath::isCgroupFrozen(cgroups, cgroupRoot)).first;
+    }
+    return known->second ? std::string("Suspended") : std::string{}; // No special status unless frozen
 }
 uint64_t LinuxProcessProbe::readTotalCpuTime() const
 {
