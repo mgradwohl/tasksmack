@@ -1107,6 +1107,7 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         // Non-admin + EStats access-denied: network data unavailable due to privilege. Never true
         // together with hasNetworkCounters: a non-elevated process never uses EStats.
         .hasReducedPrivileges = reducedPrivileges && networkAccessDenied,
+        .pageFaultCountBits = 32, // SYSTEM_PROCESS_INFORMATION::PageFaultCount is a ULONG (#1184)
     };
 }
 

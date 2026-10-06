@@ -417,7 +417,8 @@ void UILayer::onAttach()
         ImGuiIO& imguiIO = ImGui::GetIO();
         imguiIO.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         imguiIO.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-        // imguiIO.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable; // Multi-viewport (optional)
+        // ImGuiConfigFlags_ViewportsEnable (multi-viewport) is never set, so there are no platform
+        // windows to style or render.
 
         // Disable ImGui's default INI file - we store layout state in TOML config
         imguiIO.IniFilename = nullptr;
@@ -459,15 +460,6 @@ void UILayer::onAttach()
 
         // Apply default/fallback theme colors (user config will override later)
         Theme::get().applyImGuiStyle();
-
-        // When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones
-        // NOTE: This alpha override is required by ImGui for multi-viewport support - not a theme color
-        ImGuiStyle& style = ImGui::GetStyle();
-        if ((imguiIO.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0)
-        {
-            style.WindowRounding = 0.0F;
-            style.Colors[ImGuiCol_WindowBg].w = 1.0F; // NOLINT: Required by ImGui viewports
-        }
 
         // Setup Platform/Renderer backends
         SDL_Window* window = Core::Application::get().getWindow().getHandle();
@@ -513,11 +505,6 @@ void UILayer::onDetach()
     ImGui_ImplSDL3_Shutdown();
     ImPlot::DestroyContext();
     ImGui::DestroyContext();
-}
-
-void UILayer::onUpdate([[maybe_unused]] float deltaTime)
-{
-    // No font rebuild needed - fonts are pre-baked at all sizes
 }
 
 void UILayer::onRender()
@@ -675,17 +662,6 @@ void UILayer::endFrame()
             drawCalls += cmdList->CmdBuffer.Size;
         }
         RenderMetrics::get().recordFrameDrawData(drawCalls, drawData->CmdListsCount);
-    }
-
-    // Handle multi-viewport
-    const ImGuiIO& imguiIO = ImGui::GetIO();
-    if ((imguiIO.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0)
-    {
-        SDL_Window* backupWindow = SDL_GL_GetCurrentWindow();
-        SDL_GLContext backupContext = SDL_GL_GetCurrentContext();
-        ImGui::UpdatePlatformWindows();
-        ImGui::RenderPlatformWindowsDefault();
-        SDL_GL_MakeCurrent(backupWindow, backupContext);
     }
 }
 
