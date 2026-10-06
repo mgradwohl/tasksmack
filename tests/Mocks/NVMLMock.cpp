@@ -218,6 +218,9 @@ unsigned int g_FailingInits = 0;
 // replacement's own. Set through tasksmackNvmlMockSetPreviousOccupant().
 bool g_PreviousOccupant = false; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - mock test control
 constexpr const char* PREVIOUS_OCCUPANT_UUID = "mock-nvml-previous-uuid";
+// #1353: which mock device's nvmlDeviceGetPciInfo_v3 fails (NO_FAILING_HANDLE: none). Set through
+// tasksmackNvmlMockSetFailingPciInfoDevice().
+unsigned int g_FailingPciInfoIndex = NO_FAILING_HANDLE; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - mock test control
 
 /// Whether `dev` currently presents as the previous occupant of device 0's slot.
 [[nodiscard]] bool isPreviousOccupant(const MockDevice* dev)
@@ -486,6 +489,10 @@ extern "C"
         {
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
         }
+        if (g_FailingPciInfoIndex < MOCK_DEVICES.size() && dev == &MOCK_DEVICES[g_FailingPciInfoIndex])
+        {
+            return NVML::NVML_ERROR_UNKNOWN;
+        }
         *pci = NVML::nvmlPciInfo_t{};
         pci->domain = 0;
         pci->bus = dev->pciBus;
@@ -595,6 +602,12 @@ extern "C"
     void tasksmackNvmlMockSetPreviousOccupant(int enabled)
     {
         g_PreviousOccupant = (enabled != 0);
+    }
+
+    // Test control (#1353): mock device `index`'s PCI-info query fails (see g_FailingPciInfoIndex).
+    void tasksmackNvmlMockSetFailingPciInfoDevice(unsigned int index)
+    {
+        g_FailingPciInfoIndex = index;
     }
 
     const char* nvmlErrorString(NVML::nvmlReturn_t /*result*/)

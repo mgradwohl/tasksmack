@@ -8,6 +8,10 @@
 /// Both Linux and Windows NVMLGPUProbe implementations use these types.
 
 #include <cstdint>
+#include <cstring>
+#include <iterator>
+#include <optional>
+#include <string_view>
 
 namespace Platform::NVML
 {
@@ -99,26 +103,15 @@ struct nvmlUtilization_t
     unsigned int memory;
 };
 
-/// NVML process information structure
-/// Using the v3 structure with MIG fields for compatibility with newer drivers.
-/// Older drivers may not fill gpuInstanceId/computeInstanceId but the structure
-/// size remains compatible.
-struct nvmlProcessInfo_t
-{
-    unsigned int pid;
-    std::uint64_t usedGpuMemory;
-    unsigned int gpuInstanceId;     // For MIG (Multi-Instance GPU) support
-    unsigned int computeInstanceId; // For MIG support
-};
-
 /// Opaque element type of the array nvmlDevice{Compute,Graphics}RunningProcesses{,_v2,_v3}
 /// write (#1306). Which struct each entry is depends on the symbol: the legacy unversioned export
 /// writes 16-byte nvmlProcessInfo_v1_t entries, _v2/_v3 write 24-byte nvmlProcessInfo_v2_t ones
-/// (#1092). The library declares the parameter as a pointer to that struct; any object pointer has
-/// the same ABI, so callers that size the entries at run time pass their byte buffer through this
-/// one incomplete type. Every definition of these entry points that the probe may call (the test
-/// mock included) must declare its third parameter as nvmlProcessInfoEntries*, so the call matches
-/// the callee's declared type (UBSan -fsanitize=function checks it).
+/// (#1092, #1313), parsed by size in NVMLRunningProcesses.h. The library declares the parameter as
+/// a pointer to that struct; any object pointer has the same ABI, so callers that size the entries
+/// at run time pass their byte buffer through this one incomplete type. Every definition of these
+/// entry points that a probe may call (the test mock and Windows fake included) must declare its
+/// third parameter as nvmlProcessInfoEntries*, so the call matches the callee's declared type
+/// (UBSan -fsanitize=function checks it).
 struct nvmlProcessInfoEntries;
 
 /// NVML PCI information (nvmlDeviceGetPciInfo_v3 / _v2): the device's PCI location and ids.
@@ -134,5 +127,24 @@ struct nvmlPciInfo_t
 };
 
 // NOLINTEND(readability-identifier-naming)
+
+/// The PCI function number of the device @p pci describes. nvmlPciInfo_t has no field for it, so it
+/// comes from busId's ".F" suffix ("00000000:01:00.0"); nullopt when busId is empty or doesn't end in
+/// a function digit (0-7).
+[[nodiscard]] inline std::optional<std::uint32_t> pciFunction(const nvmlPciInfo_t& pci)
+{
+    const std::string_view busId(std::data(pci.busId), ::strnlen(std::data(pci.busId), std::size(pci.busId)));
+    const auto dot = busId.rfind('.');
+    if (dot == std::string_view::npos || dot + 2 != busId.size())
+    {
+        return std::nullopt;
+    }
+    const char digit = busId[dot + 1];
+    if (digit < '0' || digit > '7')
+    {
+        return std::nullopt;
+    }
+    return static_cast<std::uint32_t>(digit - '0');
+}
 
 } // namespace Platform::NVML

@@ -30,7 +30,7 @@ struct D3DKMTAdapterFunctions
 };
 
 /// The adapter's PCI bus location, read from the kernel graphics adapter its LUID names, so the
-/// Windows probe can match it to its NVML device exactly (#1091): DXGI_ADAPTER_DESC1 has no PCI
+/// Windows probe can match it to its NVML device exactly (#1091), function number included: DXGI_ADAPTER_DESC1 has no PCI
 /// location, and DXGI and NVML enumerate in different orders. nullopt when the adapter cannot be
 /// opened or reports no address (e.g. a software or remote adapter). An opened adapter is always
 /// closed.
@@ -56,7 +56,7 @@ struct D3DKMTAdapterFunctions
     {
         return std::nullopt;
     }
-    return PciLocation{.bus = address.BusNumber, .device = address.DeviceNumber};
+    return PciLocation{.bus = address.BusNumber, .device = address.DeviceNumber, .function = address.FunctionNumber};
 }
 
 // D3DKMT_ADAPTERTYPE::IndirectDisplayDevice exists only from the WDDM 1.3 interface on (#1251).

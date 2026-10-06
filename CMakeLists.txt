@@ -370,6 +370,7 @@ if(WIN32)
         ws2_32
         dxgi
         gdi32
+        cfgmgr32 # DisplayDevicePower: a GPU's PnP power state (#1265)
         version
     )
 
