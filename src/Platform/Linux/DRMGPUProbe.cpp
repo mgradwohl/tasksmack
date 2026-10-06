@@ -1,5 +1,6 @@
 #include "DRMGPUProbe.h"
 
+#include "AmdApu.h"
 #include "PciRuntimePm.h"
 #include "Platform/GPUTypes.h"
 
@@ -742,10 +743,19 @@ void DRMGPUProbe::refreshQueriedVram(DRMCard& card)
     card.queriedVramUsedBytes = info->usedBytes;
 }
 
-bool DRMGPUProbe::detectIsIntegrated(const std::string& vendorId, uint32_t pciClass, uint64_t vramTotal, std::optional<uint32_t> pciBus)
+bool DRMGPUProbe::detectIsIntegrated(
+    const std::string& vendorId, uint32_t pciClass, uint64_t vramTotal, std::optional<uint32_t> pciBus, bool amdApu)
 {
     const uint32_t classSubclass = (pciClass & PCI_CLASS_SUBCLASS_MASK);
     const uint32_t vendor = parseHexUint32(vendorId);
+
+    // AMD by the rule the ROCm probe uses (AmdApu::isAmdApu, #1344), before the VRAM test below: an
+    // APU reports its BIOS carve-out (512 MiB-2 GiB of system RAM) as mem_info_vram_total, and is a
+    // VGA controller like any Radeon card, so neither VRAM nor class tells it from a discrete GPU.
+    if (vendor == PCI_VENDOR_AMD)
+    {
+        return amdApu;
+    }
 
     // Dedicated memory means a discrete GPU, whatever its class or bus.
     if (vramTotal > 0)
@@ -770,7 +780,7 @@ bool DRMGPUProbe::detectIsIntegrated(const std::string& vendorId, uint32_t pciCl
 
     // VGA-compatible controllers have display output.
     // Intel VGA GPUs are integrated unless they carry dedicated VRAM (e.g., Arc discrete).
-    // Non-Intel VGA controllers (NVIDIA/AMD) are discrete.
+    // Other vendors' VGA controllers (NVIDIA) are discrete; AMD was decided above.
     // If the vendor is unknown (e.g., /vendor file missing), fall back conservatively to
     // VRAM presence rather than incorrectly classifying as discrete.
     if (classSubclass == PCI_CLASS_VGA_COMPATIBLE)
@@ -780,7 +790,7 @@ bool DRMGPUProbe::detectIsIntegrated(const std::string& vendorId, uint32_t pciCl
             // Intel iGPU (or unknown vendor — conservative): integrated unless VRAM is present.
             return vramTotal == 0;
         }
-        return false; // NVIDIA/AMD VGA controllers are discrete
+        return false; // NVIDIA VGA controllers are discrete
     }
 
     // Display controllers that are not VGA-compatible (e.g., Intel Arc on some platforms).
@@ -848,7 +858,10 @@ GPUInfo DRMGPUProbe::cardToGPUInfo(const DRMCard& card) const
     const std::string pciClassStr = readSysfsString(pciClassPath);
     const uint32_t pciClass = parseHexUint32(pciClassStr);
 
-    info.isIntegrated = detectIsIntegrated(vendorId, pciClass, vramTotal, pciBusFromAddress(card.gpuId));
+    // An AMD GPU's APU signals (ip_discovery GC version, PCI device id) are cached sysfs attributes,
+    // read only for AMD: they never wake a sleeping card (#1117).
+    const bool amdApu = parseHexUint32(vendorId) == PCI_VENDOR_AMD && AmdApu::isAmdApuDevice(card.devicePath);
+    info.isIntegrated = detectIsIntegrated(vendorId, pciClass, vramTotal, pciBusFromAddress(card.gpuId), amdApu);
 
     // Which sensors this card has (#1112). The probe-wide capabilities are OR'd with NVML's and
     // ROCm's on Linux, so without this an Intel iGPU beside an NVIDIA dGPU drew NVML's Power and Fan

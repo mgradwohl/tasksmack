@@ -40,6 +40,24 @@
 
 namespace Platform
 {
+
+/// Builds a GPUInfo for a card from its sysfs device directory, as enumeration would. Discovery keeps
+/// only Intel (i915/xe) cards, so this is how an AMD card's classification is reached (#1344). Defined
+/// outside the anonymous namespace so it matches DRMGPUProbe's `friend struct DRMGPUProbeTestAccessor`.
+struct DRMGPUProbeTestAccessor
+{
+    [[nodiscard]] static GPUInfo
+    gpuInfoFor(const DRMGPUProbe& probe, const std::filesystem::path& deviceDir, const std::string& gpuId, const std::string& driver)
+    {
+        DRMGPUProbe::DRMCard card;
+        card.cardPath = deviceDir.parent_path().string();
+        card.devicePath = deviceDir.string();
+        card.driver = driver;
+        card.gpuId = gpuId;
+        return probe.cardToGPUInfo(card);
+    }
+};
+
 namespace
 {
 
@@ -952,6 +970,84 @@ TEST_F(DRMGPUProbeUnitTest, IntelDisplayController_OnBusZero_IsIntegrated)
     const auto gpus = probe.enumerateGPUs();
     ASSERT_EQ(gpus.size(), 1U);
     EXPECT_TRUE(gpus[0].isIntegrated);
+}
+
+// =============================================================================
+// AMD APUs (#1344): the shared AmdApu rule, not the carve-out or the VGA class
+// =============================================================================
+
+constexpr uint64_t MIB = 1024ULL * 1024ULL;
+
+/// An amdgpu PCI device directory with `vendor`, `class`, `device` and `mem_info_vram_total`, and an
+/// ip_discovery GC entry when `gc` is given ({11, 0, 1} for GC 11.0.1).
+[[nodiscard]] std::filesystem::path makeAmdDevice(const std::filesystem::path& root,
+                                                  const std::string& pciAddress,
+                                                  const std::string& deviceId,
+                                                  uint64_t vramTotalBytes,
+                                                  std::optional<std::tuple<int, int, int>> gc)
+{
+    const auto dir = root / "pci" / pciAddress;
+    std::filesystem::create_directories(dir);
+    const auto write = [](const std::filesystem::path& path, const std::string& text)
+    {
+        std::ofstream file(path);
+        file << text << '\n';
+    };
+    write(dir / "vendor", "0x1002");
+    write(dir / "class", "0x030000"); // VGA compatible, as both APUs and Radeon cards are
+    write(dir / "device", deviceId);
+    write(dir / "mem_info_vram_total", std::to_string(vramTotalBytes));
+    if (gc.has_value())
+    {
+        const auto gcDir = dir / "ip_discovery" / "die" / "0" / "GC" / "0";
+        std::filesystem::create_directories(gcDir);
+        write(gcDir / "major", std::to_string(std::get<0>(*gc)));
+        write(gcDir / "minor", std::to_string(std::get<1>(*gc)));
+        write(gcDir / "revision", std::to_string(std::get<2>(*gc)));
+    }
+    return dir;
+}
+
+// The bug: a 512 MiB carve-out in mem_info_vram_total read as dedicated VRAM, and any non-Intel VGA
+// controller as discrete, so a Phoenix APU was "Discrete" and its carve-out joined the Overview's
+// VRAM total (#1114, which counts discrete GPUs only).
+TEST_F(DRMGPUProbeUnitTest, AmdApu_CarveOutAndApuGraphicsCoreVersion_IsIntegrated)
+{
+    const auto dir = makeAmdDevice(m_SysRoot, "0000:c4:00.0", "0x15bf", 512 * MIB, std::tuple{11, 0, 1}); // Phoenix
+
+    const DRMGPUProbe probe(m_SysRoot.string());
+    const auto info = DRMGPUProbeTestAccessor::gpuInfoFor(probe, dir, "0000:c4:00.0", "amdgpu");
+    EXPECT_EQ(info.vendor, "AMD");
+    EXPECT_TRUE(info.isIntegrated);
+}
+
+// A kernel without ip_discovery: the PCI device id decides, as in the ROCm probe.
+TEST_F(DRMGPUProbeUnitTest, AmdApu_WithoutIpDiscovery_DeviceIdDecides)
+{
+    const auto renoir = makeAmdDevice(m_SysRoot, "0000:05:00.0", "0x1636", 2048 * MIB, std::nullopt);
+
+    const DRMGPUProbe probe(m_SysRoot.string());
+    EXPECT_TRUE(DRMGPUProbeTestAccessor::gpuInfoFor(probe, renoir, "0000:05:00.0", "amdgpu").isIntegrated);
+}
+
+TEST_F(DRMGPUProbeUnitTest, AmdDiscreteNavi_IsDiscrete)
+{
+    // Navi 21 (GC 10.3.0) with 16 GiB of real VRAM.
+    const auto navi = makeAmdDevice(m_SysRoot, "0000:03:00.0", "0x73bf", 16 * 1024 * MIB, std::tuple{10, 3, 0});
+
+    const DRMGPUProbe probe(m_SysRoot.string());
+    EXPECT_FALSE(DRMGPUProbeTestAccessor::gpuInfoFor(probe, navi, "0000:03:00.0", "amdgpu").isIntegrated);
+}
+
+// A discrete GC version is discrete even with an APU-looking device id, and no signal at all is discrete.
+TEST_F(DRMGPUProbeUnitTest, AmdWithDiscreteGraphicsCoreOrNoSignal_IsDiscrete)
+{
+    const auto discreteGc = makeAmdDevice(m_SysRoot, "0000:03:00.0", "0x15bf", 8 * 1024 * MIB, std::tuple{11, 0, 0});
+    const auto noSignal = makeAmdDevice(m_SysRoot, "0000:04:00.0", "garbage", 8 * 1024 * MIB, std::nullopt);
+
+    const DRMGPUProbe probe(m_SysRoot.string());
+    EXPECT_FALSE(DRMGPUProbeTestAccessor::gpuInfoFor(probe, discreteGc, "0000:03:00.0", "amdgpu").isIntegrated);
+    EXPECT_FALSE(DRMGPUProbeTestAccessor::gpuInfoFor(probe, noSignal, "0000:04:00.0", "amdgpu").isIntegrated);
 }
 
 // =============================================================================
