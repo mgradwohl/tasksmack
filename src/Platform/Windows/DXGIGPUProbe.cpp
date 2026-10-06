@@ -10,8 +10,10 @@
 #include <spdlog/spdlog.h>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -170,6 +172,7 @@ bool DXGIGPUProbe::rescanGPUs(GPURescan depth)
     // factory is made afresh alongside, so it knows the new adapters too.
     m_ListedByLuid.clear();
     m_IntegratedByLuid.clear();
+    m_IdByLuid.clear();
     if (m_DXCoreModule != nullptr && !createDXCoreFactory())
     {
         spdlog::debug("DXGIGPUProbe: DXCore adapter factory unavailable; classifying adapters by their descriptor");
@@ -250,6 +253,28 @@ bool DXGIGPUProbe::isListedAdapter(std::uint32_t flags, std::int32_t luidHighPar
     return listed;
 }
 
+std::string DXGIGPUProbe::adapterId(std::uint32_t vendorId,
+                                    std::uint32_t deviceId,
+                                    std::int32_t luidHighPart,
+                                    std::uint32_t luidLowPart,
+                                    const std::function<std::optional<PciLocation>()>& pciLocation)
+{
+    const std::uint64_t key = luidKey(luidHighPart, luidLowPart);
+    if (const auto it = m_IdByLuid.find(key); it != m_IdByLuid.end())
+    {
+        return it->second;
+    }
+    std::unordered_set<std::string> taken;
+    for (const auto& entry : m_IdByLuid)
+    {
+        taken.insert(entry.second);
+    }
+    std::string id = stableAdapterId(pciLocation(), vendorId, deviceId, static_cast<std::uint32_t>(luidHighPart), luidLowPart, taken);
+    spdlog::debug("DXGIGPUProbe: Adapter LUID {} has id {}", luidToPdhFormat(static_cast<std::uint32_t>(luidHighPart), luidLowPart), id);
+    m_IdByLuid.emplace(key, id);
+    return id;
+}
+
 std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
 {
     std::vector<GPUInfo> gpus;
@@ -281,8 +306,17 @@ std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
             {
                 GPUInfo info{};
 
-                // Generate unique ID from adapter index
-                info.id = std::format("GPU{}", adapterIndex);
+                // PCI identity, in NVML's pciDeviceId encoding, for matching to NVML (#1091)
+                info.pciDeviceId = (static_cast<std::uint32_t>(desc.DeviceId) << 16U) | (desc.VendorId & 0xFFFFU);
+                info.pciLocation = adapterPciLocation(desc.AdapterLuid, *m_D3DKMT);
+
+                // The adapter's own id -- its PCI location, or its LUID without one -- not its place
+                // in this list, which shifts when an adapter before it is removed (#1317)
+                info.id = adapterId(desc.VendorId,
+                                    desc.DeviceId,
+                                    static_cast<std::int32_t>(desc.AdapterLuid.HighPart),
+                                    static_cast<std::uint32_t>(desc.AdapterLuid.LowPart),
+                                    [&info] { return info.pciLocation; });
 
                 // Generate LUID-based ID for PDH counter matching
                 // PDH GPU counters use LUID format: GPU_0x{HighPart}_0x{LowPart}
@@ -305,15 +339,12 @@ std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
                                                         static_cast<std::int32_t>(desc.AdapterLuid.HighPart),
                                                         static_cast<std::uint32_t>(desc.AdapterLuid.LowPart));
 
-                // Device index
+                // Position in DXGI's list: display order only, never identity (#1317)
                 info.deviceIndex = adapterIndex;
 
-                // PCI identity, in NVML's pciDeviceId encoding, for matching to NVML (#1091)
-                info.pciDeviceId = (static_cast<std::uint32_t>(desc.DeviceId) << 16U) | (desc.VendorId & 0xFFFFU);
-                info.pciLocation = adapterPciLocation(desc.AdapterLuid, *m_D3DKMT);
-
-                spdlog::debug("DXGIGPUProbe: Enumerated GPU {}: {} ({}) - LUID: {}, PCI: {}, Integrated: {}",
+                spdlog::debug("DXGIGPUProbe: Enumerated GPU {} ({}): {} ({}) - LUID: {}, PCI: {}, Integrated: {}",
                               adapterIndex,
+                              info.id,
                               info.name,
                               info.vendor,
                               info.luidId,
@@ -357,7 +388,7 @@ std::vector<GPUCounters> DXGIGPUProbe::readGPUCounters()
 
         if (SUCCEEDED(hrDesc))
         {
-            // Skip the same adapters enumerateGPUs() does, so the "GPU{index}" ids match (#1251)
+            // Skip the same adapters enumerateGPUs() does (#1251)
             if (isListedAdapter(
                     desc.Flags, static_cast<std::int32_t>(desc.AdapterLuid.HighPart), static_cast<std::uint32_t>(desc.AdapterLuid.LowPart)))
             {
@@ -372,9 +403,15 @@ std::vector<GPUCounters> DXGIGPUProbe::readGPUCounters()
                                                             desc.DedicatedVideoMemory,
                                                             static_cast<std::int32_t>(desc.AdapterLuid.HighPart),
                                                             static_cast<std::uint32_t>(desc.AdapterLuid.LowPart));
-                counters.push_back(
-                    makeDXGIAdapterCounters(std::format("GPU{}", adapterIndex),
-                                            adapterMemoryTotalBytes(integrated, desc.DedicatedVideoMemory, desc.SharedSystemMemory)));
+                // The id enumerateGPUs() gave this adapter, so counters and history agree (#1317)
+                const LUID luid = desc.AdapterLuid;
+                std::string id = adapterId(desc.VendorId,
+                                           desc.DeviceId,
+                                           static_cast<std::int32_t>(luid.HighPart),
+                                           static_cast<std::uint32_t>(luid.LowPart),
+                                           [this, &luid] { return adapterPciLocation(luid, *m_D3DKMT); });
+                counters.push_back(makeDXGIAdapterCounters(
+                    std::move(id), adapterMemoryTotalBytes(integrated, desc.DedicatedVideoMemory, desc.SharedSystemMemory)));
             }
         }
 

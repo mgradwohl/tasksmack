@@ -281,6 +281,38 @@ TEST(MakeDXGIAdapterCountersTest, UtilizationAndMemoryInUseStartUnread)
     EXPECT_FALSE(counter.memoryAvailable);
 }
 
+// #1317: an adapter's id is its PCI location, with its vendor and device ids, in hex.
+TEST(StableAdapterIdTest, AnAdapterWithAPciLocationIsNamedByIt)
+{
+    EXPECT_EQ(adapterPciId(PciLocation{.bus = 0x01, .device = 0x00}, 0x10DE, 0x2684), "PCI_01:00_10DE:2684");
+    EXPECT_EQ(stableAdapterId(PciLocation{.bus = 0xC1, .device = 0x1F}, 0x8086, 0x9A49, 0, 0x100, {}), "PCI_C1:1F_8086:9A49");
+}
+
+// #1317: the LUID names an adapter that reports no PCI location (a remote or virtual adapter).
+TEST(StableAdapterIdTest, AnAdapterWithoutAPciLocationIsNamedByItsLuid)
+{
+    EXPECT_EQ(adapterLuidId(0x1, 0xD3A0), "LUID_0x00000001_0x0000D3A0");
+    EXPECT_EQ(stableAdapterId(std::nullopt, 0x1414, 0x8C, 0, 0xD3A0, {}), "LUID_0x00000000_0x0000D3A0");
+}
+
+// #1317: two adapters never share an id: a second adapter at a location already named gets its LUID.
+TEST(StableAdapterIdTest, ASecondAdapterAtATakenLocationIsNamedByItsLuid)
+{
+    const PciLocation location{.bus = 0x01, .device = 0x00};
+    const std::unordered_set<std::string> taken = {adapterPciId(location, 0x10DE, 0x2684)};
+    EXPECT_EQ(stableAdapterId(location, 0x10DE, 0x2684, 0, 0x500, taken), "LUID_0x00000000_0x00000500");
+    EXPECT_EQ(stableAdapterId(PciLocation{.bus = 0x41, .device = 0x00}, 0x10DE, 0x2684, 0, 0x600, taken), "PCI_41:00_10DE:2684");
+}
+
+// #1317: the id depends on the adapter, not on where DXGI lists it or the LUID it has now.
+TEST(StableAdapterIdTest, TheIdIgnoresTheLuidWhenThereIsAPciLocation)
+{
+    const PciLocation location{.bus = 0x01, .device = 0x00};
+    EXPECT_EQ(stableAdapterId(location, 0x10DE, 0x2684, 0, 0x200, {}), stableAdapterId(location, 0x10DE, 0x2684, 0, 0x210, {}));
+    EXPECT_NE(stableAdapterId(location, 0x10DE, 0x2684, 0, 0x200, {}), stableAdapterId(location, 0x10DE, 0x2782, 0, 0x200, {}))
+        << "A different card later fitted at the same location is a different GPU";
+}
+
 TEST(VendorIdToNameTest, KnownVendorIdsMapCorrectly)
 {
     EXPECT_EQ(vendorIdToName(0x10DE), "NVIDIA");

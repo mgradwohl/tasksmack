@@ -461,6 +461,27 @@ TEST(MapDXGIToNVMLTest, IdenticalCardsMapByPciLocationWhateverTheOrder)
     EXPECT_EQ(mapping.at(1), 0U);
 }
 
+// #1317: each mapped NVML device is named by its DXGI adapter's id, found through the mapping, not
+// by its own position in NVML's order; an unmapped device has no entry.
+TEST(NVMLDeviceAdapterIdsTest, EachMappedDeviceTakesItsAdaptersId)
+{
+    std::vector<GPUInfo> dxgi = {makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x02), makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x01)};
+    dxgi[0].id = "PCI_02:00_10DE:2684";
+    dxgi[1].id = "PCI_01:00_10DE:2684";
+    std::vector<GPUInfo> nvml = {makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x01),
+                                 makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x02),
+                                 makeLocatedInfo("NVIDIA GeForce RTX 4090", 0x03)};
+    nvml[0].id = "GPU-aaaa";
+    nvml[1].id = "GPU-bbbb";
+    nvml[2].id = "GPU-cccc";
+
+    const auto ids = nvmlDeviceAdapterIds(dxgi, nvml, mapDXGIToNVML(dxgi, nvml));
+    ASSERT_EQ(ids.size(), 2U);
+    EXPECT_EQ(ids.at("GPU-aaaa"), "PCI_01:00_10DE:2684");
+    EXPECT_EQ(ids.at("GPU-bbbb"), "PCI_02:00_10DE:2684");
+    EXPECT_FALSE(ids.contains("GPU-cccc"));
+}
+
 // #1091: without a location, identical cards cannot be told apart. They stay unmapped rather than
 // being paired by enumeration order, which showed one card's sensors as the other's.
 TEST(MapDXGIToNVMLTest, IdenticalCardsWithoutLocationStayUnmapped)

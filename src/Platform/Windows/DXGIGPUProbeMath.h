@@ -6,6 +6,7 @@
 #include <format>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <utility>
 
 namespace Platform
@@ -38,6 +39,53 @@ namespace Platform
 [[nodiscard]] inline std::string luidToPdhFormat(uint32_t luidHighPart, uint32_t luidLowPart)
 {
     return std::format("GPU_0x{:08X}_0x{:08X}", luidHighPart, luidLowPart);
+}
+
+/// The id of an adapter at this PCI location: "PCI_{bus}:{device}_{vendor id}:{device id}", in hex.
+/// Where the adapter sits on the bus doesn't change while it is present, or across a driver reset
+/// that gives it a new LUID; the vendor and device ids keep a different card later fitted at the same
+/// location from taking this one's id (#1317).
+[[nodiscard]] inline std::string adapterPciId(const PciLocation& location, uint32_t vendorId, uint32_t deviceId)
+{
+    return std::format("PCI_{:02X}:{:02X}_{:04X}:{:04X}", location.bus, location.device, vendorId & 0xFFFFU, deviceId & 0xFFFFU);
+}
+
+/// The id of an adapter named by its LUID alone: "LUID_0x{HighPart}_0x{LowPart}". Unique among the
+/// adapters present, but a driver reset gives the adapter a new LUID, so this is the fallback.
+[[nodiscard]] inline std::string adapterLuidId(uint32_t luidHighPart, uint32_t luidLowPart)
+{
+    return std::format("LUID_0x{:08X}_0x{:08X}", luidHighPart, luidLowPart);
+}
+
+/// The id DXGIGPUProbe gives an adapter, which keys its history, its GPU tab state and its counters
+/// (#1317). It used to be the adapter's position in DXGI's list ("GPU{index}"), so removing an
+/// adapter renumbered every one listed after it -- moving their history to the wrong card -- and a
+/// later adapter took a removed one's number. Now it is the adapter's PCI location (see
+/// adapterPciId()) where it reports one, and its LUID otherwise (see adapterLuidId()): an adapter
+/// with no bus address, or a second adapter at a location whose id is already in @p takenIds, so two
+/// adapters never share one. Enumeration order is kept only as display order.
+/// @param location The adapter's PCI location, or nullopt when it reports none
+/// @param vendorId DXGI_ADAPTER_DESC1::VendorId
+/// @param deviceId DXGI_ADAPTER_DESC1::DeviceId
+/// @param luidHighPart DXGI_ADAPTER_DESC1::AdapterLuid.HighPart, as unsigned
+/// @param luidLowPart DXGI_ADAPTER_DESC1::AdapterLuid.LowPart
+/// @param takenIds The ids other adapters already have
+[[nodiscard]] inline std::string stableAdapterId(const std::optional<PciLocation>& location,
+                                                 uint32_t vendorId,
+                                                 uint32_t deviceId,
+                                                 uint32_t luidHighPart,
+                                                 uint32_t luidLowPart,
+                                                 const std::unordered_set<std::string>& takenIds)
+{
+    if (location.has_value())
+    {
+        std::string pciId = adapterPciId(*location, vendorId, deviceId);
+        if (!takenIds.contains(pciId))
+        {
+            return pciId;
+        }
+    }
+    return adapterLuidId(luidHighPart, luidLowPart);
 }
 
 /// The descriptor heuristic classifyIntegrated() falls back on when DXCore can't say, taking the

@@ -368,6 +368,7 @@ struct DXGIGPUProbeTestAccessor
         };
         probe.m_ListedByLuid.clear();
         probe.m_IntegratedByLuid.clear();
+        probe.m_IdByLuid.clear();
         probe.m_Initialized = probe.initialize();
     }
 };

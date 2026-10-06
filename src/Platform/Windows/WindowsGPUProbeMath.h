@@ -215,6 +215,26 @@ namespace Platform
     return mapping;
 }
 
+/// The id of the DXGI adapter each mapped NVML device is, keyed by the NVML device's own id (its
+/// UUID), from a mapDXGIToNVML() mapping. NVML's per-process counters carry it, so they name the
+/// same GPU as the DXGI adapter matched to the device by PCI location -- not "GPU{nvmlIndex}", which
+/// in NVML's numbering could be another adapter's id (#1091, #1317). An unmapped device has no entry.
+[[nodiscard]] inline std::unordered_map<std::string, std::string>
+nvmlDeviceAdapterIds(const std::vector<GPUInfo>& dxgiGPUs,
+                     const std::vector<GPUInfo>& nvmlGPUs,
+                     const std::unordered_map<std::uint32_t, std::uint32_t>& dxgiToNvml)
+{
+    std::unordered_map<std::string, std::string> adapterIds;
+    for (const auto& [dxgiIndex, nvmlIndex] : dxgiToNvml)
+    {
+        if (dxgiIndex < dxgiGPUs.size() && nvmlIndex < nvmlGPUs.size())
+        {
+            adapterIds[nvmlGPUs[nvmlIndex].id] = dxgiGPUs[dxgiIndex].id;
+        }
+    }
+    return adapterIds;
+}
+
 /// Set each DXGI adapter's sensorCapabilities: sensor metrics come only from NVML on Windows, so a
 /// mapped adapter takes its own NVML device's set (or @p nvmlProbeCaps if the device has none), and
 /// an adapter NVML does not cover -- e.g. a hybrid laptop's Intel iGPU -- has no sensors (#1040).

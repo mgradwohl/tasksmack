@@ -43,13 +43,13 @@ struct PciLocation
 // Identifies a physical GPU
 struct GPUInfo
 {
-    std::string id;     // Unique identifier (e.g., "GPU0", "GPU1")
+    std::string id;     // Stable identifier, never reused for another GPU (Windows: "PCI_01:00_10DE:2684", #1317)
     std::string luidId; // LUID-based identifier for PDH matching (e.g., "GPU_0x00000000_0x0000F78E")
     std::string name;   // Human-readable name (e.g., "NVIDIA GeForce RTX 2080 Ti")
     std::string vendor; // "NVIDIA", "AMD", "Intel", "Qualcomm" (Windows), "Unknown"
     std::string driverVersion;
     bool isIntegrated = false;     // Integrated vs discrete
-    std::uint32_t deviceIndex = 0; // Vendor-specific index
+    std::uint32_t deviceIndex = 0; // Vendor-specific index (on Windows, DXGI's display order, not identity)
     /// The sensor metrics this particular adapter reports (temperature, hotspot, power, clocks,
     /// fan, PCIe, encoder/decoder); the other fields are not used. GPUCapabilities from a probe
     /// describes the probe as a whole, so on a hybrid Windows laptop NVML's capabilities applied to

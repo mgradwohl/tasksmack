@@ -13,6 +13,7 @@
 #include "Platform/GPUTypes.h"
 #include "Platform/NVMLTypes.h"
 #include "Platform/Windows/DXGIGPUProbe.h"
+#include "Platform/Windows/DXGIGPUProbeMath.h"
 #include "Platform/Windows/NVMLGPUProbe.h"
 #include "Platform/Windows/PDHGPUProbe.h" // IWYU pragma: keep - WindowsGPUProbeTestAccessor::dropPDH() deletes one
 #include "Platform/Windows/WindowsGPUProbe.h"
@@ -20,8 +21,10 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <format>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -175,6 +178,73 @@ TEST_F(WindowsGPURescanTest, AFailedFactoryReplacementKeepsTheOldFactoryAndRetri
     dxgiState().failFactoryCreation = false;
     EXPECT_TRUE(probe.rescanGPUs(GPURescan::Full));
     EXPECT_EQ(probe.enumerateGPUs().size(), 2U);
+}
+
+// An adapter's id is its own, not its place in DXGI's list (#1317). Removing the adapter listed
+// first used to renumber the one after it ("GPU1" became "GPU0"), so its history and chart state
+// moved to the removed card's, and an adapter added later took the next free number. Now the
+// remaining adapter keeps its id, an added adapter gets one no adapter had before, and the same
+// card back under a new LUID (a driver reset) is still the same GPU.
+TEST_F(WindowsGPURescanTest, AnAdapterKeepsItsIdWhenOneListedBeforeItIsRemoved)
+{
+    setAdapters({intelIGPU(), nvidiaGPU(0x200, 0x01)});
+    DXGIGPUProbe probe;
+    DXGIGPUProbeTestAccessor::useFakes(probe);
+    const auto before = probe.enumerateGPUs();
+    ASSERT_EQ(before.size(), 2U);
+    const std::string intelId = findByLuid(before, 0x100)->id;
+    const std::string nvidiaId = findByLuid(before, 0x200)->id;
+    ASSERT_NE(intelId, nvidiaId);
+
+    // The first-listed adapter is removed (disabled in Device Manager, say).
+    setAdapters({nvidiaGPU(0x200, 0x01)});
+    ASSERT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    const auto removed = probe.enumerateGPUs();
+    ASSERT_EQ(removed.size(), 1U);
+    EXPECT_EQ(removed[0].id, nvidiaId) << "The remaining adapter keeps its id";
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_EQ(counters[0].gpuId, nvidiaId) << "Counters carry the same id enumeration reported";
+
+    // A new adapter is plugged in: it gets an id of its own, not the removed adapter's.
+    setAdapters({nvidiaGPU(0x200, 0x01), nvidiaGPU(0x300, 0x41)});
+    ASSERT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    const auto added = probe.enumerateGPUs();
+    ASSERT_EQ(added.size(), 2U);
+    const GPUInfo* newcomer = findByLuid(added, 0x300);
+    ASSERT_NE(newcomer, nullptr);
+    EXPECT_NE(newcomer->id, intelId);
+    EXPECT_NE(newcomer->id, nvidiaId);
+    EXPECT_EQ(findByLuid(added, 0x200)->id, nvidiaId);
+
+    // A driver reset brings the first NVIDIA card back under a new LUID, listed after the other.
+    setAdapters({nvidiaGPU(0x300, 0x41), nvidiaGPU(0x210, 0x01)});
+    ASSERT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    const auto reset = probe.enumerateGPUs();
+    ASSERT_EQ(reset.size(), 2U);
+    EXPECT_EQ(findByLuid(reset, 0x210)->id, nvidiaId) << "Same card, same PCI location: same GPU";
+    EXPECT_EQ(findByLuid(reset, 0x300)->id, newcomer->id);
+}
+
+// An adapter with no PCI location (a remote or virtual adapter) is named by its LUID, and two
+// adapters at one PCI location never share an id.
+TEST_F(WindowsGPURescanTest, AnAdapterWithoutAUniquePciLocationIsNamedByItsLuid)
+{
+    setAdapters(
+        {makeAdapter(L"Remote Adapter", VENDOR_INTEL, 0x1234, 0x400, std::nullopt), nvidiaGPU(0x200, 0x01), nvidiaGPU(0x500, 0x01)});
+    DXGIGPUProbe probe;
+    DXGIGPUProbeTestAccessor::useFakes(probe);
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 3U);
+    EXPECT_EQ(findByLuid(gpus, 0x400)->id, adapterLuidId(0, 0x400));
+    EXPECT_EQ(findByLuid(gpus, 0x200)->id, adapterPciId(PciLocation{.bus = 0x01, .device = 0x00}, VENDOR_NVIDIA, DEVICE_RTX));
+    EXPECT_EQ(findByLuid(gpus, 0x500)->id, adapterLuidId(0, 0x500)) << "The PCI id is taken: the LUID names it";
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 3U);
+    for (std::size_t i = 0; i < gpus.size(); ++i)
+    {
+        EXPECT_EQ(counters[i].gpuId, gpus[i].id);
+    }
 }
 
 // =============================================================================
@@ -346,6 +416,30 @@ TEST_F(WindowsGPURescanTest, AWokenAdapterGetsItsOwnSensorsOnAQuickRescan)
     EXPECT_FALSE(dGPU->sensorCapabilities.value_or(GPUCapabilities{}).hasFanSpeed);
     EXPECT_TRUE(dGPU->sensorCapabilities.value_or(GPUCapabilities{}).hasTemperature);
     EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick));
+}
+
+// NVML numbers its devices in its own order, not DXGI's (#1091), so its per-process counters used
+// to name a device "GPU{nvmlIndex}" -- the id of whichever DXGI adapter was listed at that position.
+// They now carry the id of the DXGI adapter the device is matched to by PCI location (#1317).
+TEST_F(WindowsGPURescanTest, NVMLPerProcessCountersCarryTheMatchedAdapterId)
+{
+    setAdapters({nvidiaGPU(0x200, 0x01), nvidiaGPU(0x300, 0x41)});
+    fakeState().deviceCount = 2;
+    setNVMLDevice(0, "GPU-second", 0x41, 70); // NVML lists the second DXGI adapter first
+    setNVMLDevice(1, "GPU-first", 0x01, 50);
+    fakeState().computeProcesses[0] =
+        makeProcessQuery({{.pid = 4242, .usedGpuMemory = 64ULL << 20U, .gpuInstanceId = 0, .computeInstanceId = 0}});
+
+    WindowsGPUProbe probe;
+    useFakes(probe);
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 2U);
+    const std::string secondId = findByLuid(gpus, 0x300)->id;
+
+    const auto processes = WindowsGPUProbeTestAccessor::nvml(probe).readProcessGPUCounters();
+    ASSERT_EQ(processes.size(), 1U);
+    EXPECT_EQ(processes[0].pid, 4242);
+    EXPECT_EQ(processes[0].gpuId, secondId);
 }
 
 } // namespace

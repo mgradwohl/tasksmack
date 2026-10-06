@@ -79,8 +79,17 @@ class DXGIGPUProbe : public IGPUProbe
 
     /// Whether the adapter with these DXGI_ADAPTER_DESC1 flags and LUID is listed as a GPU (see
     /// shouldListAdapter()). enumerateGPUs() and readGPUCounters() both ask, so they skip the same
-    /// adapters and the "GPU{index}" ids agree (#1251).
+    /// adapters (#1251).
     [[nodiscard]] bool isListedAdapter(std::uint32_t flags, std::int32_t luidHighPart, std::uint32_t luidLowPart);
+
+    /// The id of the adapter with this LUID (see stableAdapterId()): its PCI location, read through
+    /// @p pciLocation, or its LUID. Decided once per LUID, so enumerateGPUs() and readGPUCounters()
+    /// always agree, and no two adapters get the same one (#1317).
+    [[nodiscard]] std::string adapterId(std::uint32_t vendorId,
+                                        std::uint32_t deviceId,
+                                        std::int32_t luidHighPart,
+                                        std::uint32_t luidLowPart,
+                                        const std::function<std::optional<PciLocation>()>& pciLocation);
 
     FactoryCreator m_CreateFactory;
     /// The kernel-mode adapter calls behind the PCI location and adapter-type queries (gdi32's, or
@@ -93,6 +102,8 @@ class DXGIGPUProbe : public IGPUProbe
     std::unordered_map<std::uint64_t, bool> m_ListedByLuid;
     /// isIntegratedAdapter()'s decision per adapter LUID (#1263).
     std::unordered_map<std::uint64_t, bool> m_IntegratedByLuid;
+    /// adapterId()'s id per adapter LUID (#1317).
+    std::unordered_map<std::uint64_t, std::string> m_IdByLuid;
     /// dxcore.dll and its adapter factory: the module is loaded once at construction, and the factory
     /// created then and again whenever the DXGI factory is replaced (#1294); null when unavailable.
     /// The module stays loaded while the factory lives (#1263).

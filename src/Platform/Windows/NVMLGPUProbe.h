@@ -12,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace Platform
@@ -61,6 +62,16 @@ class NVMLGPUProbe : public IGPUProbe
     /// found for it, since one asleep now isn't woken to find them again. Returns isAvailable().
     bool restart();
 
+    /// The id each device's per-process counters carry, by the device's own id (its UUID): the id of
+    /// the DXGI adapter WindowsGPUProbe matched it to by PCI location, so a process is attributed to
+    /// the same GPU the GPU tab shows. NVML numbers its devices in its own order, not DXGI's, so the
+    /// "GPU{nvmlIndex}" these used to carry could name another adapter (#1091, #1317). A device with
+    /// no entry keeps its own id. Replaces the previous set.
+    void setProcessGpuIds(std::unordered_map<std::string, std::string> adapterIdByDeviceId)
+    {
+        m_ProcessGpuIds = std::move(adapterIdByDeviceId);
+    }
+
     /// Check if NVML is available and initialized
     [[nodiscard]] bool isAvailable() const
     {
@@ -94,6 +105,10 @@ class NVMLGPUProbe : public IGPUProbe
     NVML::nvmlReturn_t noteResult(NVML::nvmlReturn_t result);
 
     [[nodiscard]] static std::string getNVMLErrorString(NVML::nvmlReturn_t result);
+
+    /// The id enumeration reported for the device at @p index, so every reading agrees with it; the
+    /// UUID is queried only for a device enumeration did not record ("NVML_GPU{index}" without one).
+    [[nodiscard]] std::string deviceId(std::uint32_t index, NVML::nvmlDevice_t device) const;
 
     // A running-process entry point and the size of the entries it writes (#1313): the legacy
     // unversioned export writes 16-byte nvmlProcessInfo_v1_t entries, _v2/_v3 write 24-byte
@@ -149,6 +164,8 @@ class NVMLGPUProbe : public IGPUProbe
     // failed). Counter reads reuse it rather than querying the UUID again: a second, independently
     // fallible query could give a device a different id and lose its NVML metrics (#1040).
     std::unordered_map<uint32_t, std::string> m_DeviceIds;
+    // setProcessGpuIds(): per-process counters' gpuId by device id (#1317).
+    std::unordered_map<std::string, std::string> m_ProcessGpuIds;
 
     /// Read device @p index's handle, name, UUID and PCI identity into the per-device maps, restoring
     /// what a restart() remembered for its id. False if NVML gives no handle for it (#1294).

@@ -499,6 +499,18 @@ bool NVMLGPUProbe::readDeviceIdentity(uint32_t index)
     return true;
 }
 
+std::string NVMLGPUProbe::deviceId(std::uint32_t index, nvmlDevice_t device) const
+{
+    if (const auto knownId = m_DeviceIds.find(index); knownId != m_DeviceIds.end())
+    {
+        return knownId->second;
+    }
+    std::array<char, NVML_DEVICE_UUID_BUFFER_SIZE> uuid{};
+    const nvmlReturn_t result = m_NVML.DeviceGetUUID != nullptr ? m_NVML.DeviceGetUUID(device, uuid.data(), NVML_DEVICE_UUID_BUFFER_SIZE)
+                                                                : NVML_ERROR_NOT_SUPPORTED;
+    return result == NVML_SUCCESS ? std::string(uuid.data()) : std::format("NVML_GPU{}", index);
+}
+
 std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
 {
     std::vector<GPUCounters> counters;
@@ -512,19 +524,8 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
     {
         GPUCounters counter{};
 
-        // The id enumeration reported for this device, so the two always agree; the UUID is
-        // queried only for a device enumeration did not record.
-        nvmlReturn_t result = NVML_SUCCESS;
-        if (const auto knownId = m_DeviceIds.find(index); knownId != m_DeviceIds.end())
-        {
-            counter.gpuId = knownId->second;
-        }
-        else
-        {
-            std::array<char, NVML_DEVICE_UUID_BUFFER_SIZE> uuid{};
-            result = m_NVML.DeviceGetUUID(device, uuid.data(), NVML_DEVICE_UUID_BUFFER_SIZE);
-            counter.gpuId = result == NVML_SUCCESS ? std::string(uuid.data()) : std::format("NVML_GPU{}", index);
-        }
+        // The id enumeration reported for this device, so the two always agree.
+        counter.gpuId = deviceId(index, device);
 
         // A sleeping GPU gets no NVML query at all, which could wake it (#1265): every reading is
         // unavailable this sample, and the VRAM total is the last one read while it was awake.
@@ -546,7 +547,7 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
 
         // Memory info (raw counters only)
         nvmlMemory_t memInfo{};
-        result = noteResult(m_NVML.DeviceGetMemoryInfo(device, &memInfo));
+        nvmlReturn_t result = noteResult(m_NVML.DeviceGetMemoryInfo(device, &memInfo));
         if (result == NVML_SUCCESS)
         {
             counter.memoryUsedBytes = memInfo.used;
@@ -701,10 +702,15 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
             continue; // Not queried while asleep, which could wake it (#1265)
         }
 
-        // Use index-based GPU ID to match WindowsGPUProbe (DXGI) format
-        // The NVML UUID is different from the DXGI LUID-based ID, so we use
-        // a consistent index-based format that aligns with the merged snapshots
-        const std::string gpuId = std::format("GPU{}", index);
+        // The id of the DXGI adapter this device is (see setProcessGpuIds()), or the device's own,
+        // recorded with its handle at enumeration. Not "GPU{index}": NVML's numbering is not DXGI's,
+        // so that named another adapter (#1317). Nothing is asked of the device to name it here.
+        const auto knownId = m_DeviceIds.find(index);
+        std::string gpuId = knownId != m_DeviceIds.end() ? knownId->second : std::format("NVML_GPU{}", index);
+        if (const auto adapterId = m_ProcessGpuIds.find(gpuId); adapterId != m_ProcessGpuIds.end())
+        {
+            gpuId = adapterId->second;
+        }
 
         // Compute processes (CUDA, OpenCL) and graphics processes (DirectX, OpenGL, Vulkan), one
         // row per process: the larger figure where both lists report one allocation, MIG instances

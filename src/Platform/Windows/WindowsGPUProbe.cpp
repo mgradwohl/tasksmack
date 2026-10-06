@@ -62,6 +62,8 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
             // Map NVIDIA DXGI adapters to NVML devices by name, each NVML device claimed once so
             // identical cards do not all map to the first (#1040).
             m_DXGIToNVMLMap = mapDXGIToNVML(gpus, nvmlGPUs);
+            // NVML's per-process counters name each device by its matched adapter's id (#1317).
+            m_NVMLProbe->setProcessGpuIds(nvmlDeviceAdapterIds(gpus, nvmlGPUs, m_DXGIToNVMLMap));
             // The mapping holds enumeration positions; counter reads are reordered to match by id.
             m_NVMLEnumeratedIds.clear();
             for (const auto& nvmlGPU : nvmlGPUs)
@@ -85,7 +87,7 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
         // Build DXGI id → LUID map for PDH per-GPU utilization matching.
         // PDH process counters use "GPU_0x{High}_0x{Low}" as their gpuId; DXGI
         // stores the same value in GPUInfo::luidId. We need to look up a counter's
-        // LUID from its index-based gpuId ("GPU0", "GPU1", …) to match PDH data.
+        // LUID from its gpuId (its PCI location, "PCI_01:00_10DE:2684", or LUID) to match PDH data.
         // Clear before rebuilding because enumerateGPUs() may be called multiple times
         // (e.g., on device change) and the adapter list can change between calls.
         m_DXGIIdToLuidId.clear();
@@ -251,7 +253,7 @@ void WindowsGPUProbe::mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiC
 
     // Assign per-GPU utilization by matching each DXGI counter's LUID-based id
     // to the corresponding PDH bucket. m_DXGIIdToLuidId is populated in
-    // enumerateGPUs() and maps "GPU0" → "GPU_0x00000000_0x0000D3A0".
+    // enumerateGPUs() and maps each adapter's id to its LUID ("GPU_0x00000000_0x0000D3A0").
     assignPDHUtilizationToDXGICounters(dxgiCounters,
                                        utilizationByLuid,
                                        m_DXGIIdToLuidId,

@@ -165,7 +165,7 @@ TaskSmack combines operating-system GPU APIs with optional vendor libraries:
 
 The UI shows only the metrics exposed by the available backend. If no backend discovers a usable GPU, GPU sections are hidden.
 
-TaskSmack checks for GPU changes every 10 seconds without waking a sleeping GPU: a GPU that is hot-plugged (an eGPU) appears, and one that is removed, or lost after a driver reset, reload or update, is re-detected once it is back. A GPU that stays in the list keeps its chart history (on Windows, as long as no GPU listed before it was removed); one that is removed disappears from the GPU tab. On Windows, a change to the NVIDIA GPUs restarts NVIDIA's monitoring library (NVML), which can wake a sleeping NVIDIA GPU once, as starting TaskSmack can.
+TaskSmack checks for GPU changes every 10 seconds without waking a sleeping GPU: a GPU that is hot-plugged (an eGPU) appears, and one that is removed, or lost after a driver reset, reload or update, is re-detected once it is back. A GPU that stays in the list keeps its chart history, whatever is added or removed around it, and a newly added GPU never takes over another's; one that is removed disappears from the GPU tab. On Windows a GPU is known by where it sits on the PCI bus rather than by its place in the list, so the same card coming back after a driver reset is still the same GPU. On Windows, a change to the NVIDIA GPUs restarts NVIDIA's monitoring library (NVML), which can wake a sleeping NVIDIA GPU once, as starting TaskSmack can.
 
 ### Process Actions
 
