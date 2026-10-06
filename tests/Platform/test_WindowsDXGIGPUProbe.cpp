@@ -268,6 +268,16 @@ TEST(AdapterMemoryTotalBytesTest, IntegratedUsesSharedSystemMemoryDiscreteUsesDe
     EXPECT_EQ(adapterMemoryTotalBytes(false, DEDICATED, SHARED), DEDICATED);
 }
 
+TEST(AdapterMemoryIsSharedTest, IntegratedCountsTheSharedSegmentDiscreteDedicated)
+{
+    // Published as GPUInfo::memoryIsShared so per-process memory counts the adapter's segment, a 0
+    // shared reading included (#1164); the size and PDH used bytes follow the same choice.
+    static_assert(adapterMemoryIsShared(true));
+    static_assert(!adapterMemoryIsShared(false));
+    EXPECT_TRUE(adapterMemoryIsShared(true));
+    EXPECT_FALSE(adapterMemoryIsShared(false));
+}
+
 TEST(MakeDXGIAdapterCountersTest, UtilizationAndMemoryInUseStartUnread)
 {
     // DXGI reads neither: with PDH warming up or unavailable, its placeholder 0% and 0 B published

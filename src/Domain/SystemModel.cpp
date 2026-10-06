@@ -155,6 +155,12 @@ void SystemModel::trimHistory(double nowSeconds)
     }
 }
 
+double SystemModel::maxHistorySeconds() const
+{
+    const std::shared_lock lock(m_Mutex);
+    return m_MaxHistorySeconds;
+}
+
 void SystemModel::setMaxHistorySeconds(double seconds)
 {
     std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern

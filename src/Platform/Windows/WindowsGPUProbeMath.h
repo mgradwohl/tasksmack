@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/GPUTypes.h"
+#include "Platform/Windows/DXGIGPUProbeMath.h"
 #include "Platform/Windows/PDHGPUProbe.h"
 
 #include <algorithm>
@@ -270,14 +271,16 @@ inline void assignPDHMemoryToDXGICounters(std::vector<GPUCounters>& dxgiCounters
         }
         const auto integratedIt = dxgiIdIsIntegrated.find(counter.gpuId);
         const bool integrated = (integratedIt != dxgiIdIsIntegrated.end()) && integratedIt->second;
+        // The segment GPUInfo::memoryIsShared says this figure counts, per-process memory too (#1164)
+        const bool shared = adapterMemoryIsShared(integrated);
         const AdapterMemoryUsage& usage = memIt->second;
         // The entry may exist because only the other segment was read: then this one is unread, a
         // gap (#1111). A segment that was read is a reading, 0 bytes included (#1246).
-        if (!(integrated ? usage.sharedRead : usage.dedicatedRead))
+        if (!(shared ? usage.sharedRead : usage.dedicatedRead))
         {
             continue;
         }
-        counter.memoryUsedBytes = integrated ? usage.sharedBytes : usage.dedicatedBytes;
+        counter.memoryUsedBytes = shared ? usage.sharedBytes : usage.dedicatedBytes;
         counter.memoryAvailable = true; // A real reading, even after a failed NVML read (#1111)
     }
 }
