@@ -1,5 +1,6 @@
 /// @file test_WindowsSystemProbeMath.cpp
-/// @brief Unit tests for WindowsSystemProbeMath.h's pure page-file, CPU-time and network-total math
+/// @brief Unit tests for WindowsSystemProbeMath.h's pure page-file, CPU-time and network-total math,
+/// and its network-interface classification (#1284)
 ///
 /// WindowsSystemProbeMath.h includes no Windows header, so these tests build and run on every
 /// platform, including Linux CI's sanitizer and coverage jobs (#1133). Tests that need the real
@@ -369,6 +370,90 @@ TEST(WindowsSystemProbeMathTest, TotalCountsEveryInterfaceWhenAllAreVirtual)
     const auto totals = sumCountedInterfaces(interfaces);
     EXPECT_EQ(totals.rxBytes, 700U);
     EXPECT_EQ(totals.txBytes, 70U);
+}
+
+// ---- #1284: removed adapters, Bluetooth PAN, Wi-Fi ports ----
+
+namespace
+{
+constexpr std::uint32_t IF_OPER_STATUS_DOWN = 2;
+constexpr std::uint32_t IF_OPER_STATUS_DORMANT = 5;
+} // namespace
+
+TEST(WindowsSystemProbeMathTest, NotPresentDecidesOnItsOwn)
+{
+    // A long-unplugged USB dongle, an unused Wi-Fi port, Teredo: whatever else is known about it.
+    for (const DevicePresence presence : {DevicePresence::Unknown, DevicePresence::Present, DevicePresence::Absent})
+    {
+        EXPECT_TRUE(isNotPresentNetworkRow(IF_OPER_STATUS_NOT_PRESENT, presence));
+    }
+}
+
+TEST(WindowsSystemProbeMathTest, ADownAdapterWhoseDeviceWasRemovedIsLeftOut)
+{
+    // An unplugged dock's "Ethernet 3": reported down, its device a phantom.
+    EXPECT_TRUE(isNotPresentNetworkRow(IF_OPER_STATUS_DOWN, DevicePresence::Absent));
+}
+
+TEST(WindowsSystemProbeMathTest, ADownAdapterWhoseDeviceIsPresentStaysListed)
+{
+    // Disabled in Windows, cable unplugged, Wi-Fi with no network, dormant: present, so listed.
+    EXPECT_FALSE(isNotPresentNetworkRow(IF_OPER_STATUS_DOWN, DevicePresence::Present));
+    EXPECT_FALSE(isNotPresentNetworkRow(IF_OPER_STATUS_DORMANT, DevicePresence::Present));
+    // No device to ask about (Teredo, 6to4) or the query failed: kept rather than guessed away.
+    EXPECT_FALSE(isNotPresentNetworkRow(IF_OPER_STATUS_DOWN, DevicePresence::Unknown));
+    EXPECT_FALSE(isNotPresentNetworkRow(IF_OPER_STATUS_UP, DevicePresence::Unknown));
+}
+
+TEST(WindowsSystemProbeMathTest, OnlyRowsThatAreNeitherUpNorNotPresentAreLookedUp)
+{
+    EXPECT_FALSE(needsDevicePresence(IF_OPER_STATUS_UP));
+    EXPECT_FALSE(needsDevicePresence(IF_OPER_STATUS_NOT_PRESENT));
+    EXPECT_TRUE(needsDevicePresence(IF_OPER_STATUS_DOWN));
+    EXPECT_TRUE(needsDevicePresence(IF_OPER_STATUS_DORMANT));
+}
+
+TEST(WindowsSystemProbeMathTest, BluetoothPanIsAHardwareLink)
+{
+    // Windows reports the Bluetooth PAN adapter as Ethernet without HardwareInterface; a phone
+    // tethered over it is the machine's own link, so it counts beside an idle Wi-Fi.
+    EXPECT_TRUE(isHardwareNetworkRow(false, IF_TYPE_ETHERNET, NDIS_PHYSICAL_MEDIUM_BLUETOOTH));
+}
+
+TEST(WindowsSystemProbeMathTest, TheHardwareFlagDecidesForEverythingElse)
+{
+    constexpr std::uint32_t NDIS_PHYSICAL_MEDIUM_UNSPECIFIED = 0;
+    constexpr std::uint32_t NDIS_PHYSICAL_MEDIUM_802_3 = 14;
+    constexpr std::uint32_t NDIS_PHYSICAL_MEDIUM_NATIVE_802_11 = 9;
+    EXPECT_FALSE(isHardwareNetworkRow(false, IF_TYPE_ETHERNET, NDIS_PHYSICAL_MEDIUM_UNSPECIFIED)); // vEthernet, WAN Miniport
+    EXPECT_FALSE(isHardwareNetworkRow(false, IF_TYPE_ETHERNET, NDIS_PHYSICAL_MEDIUM_802_3));       // Kernel Debug adapter
+    EXPECT_FALSE(isHardwareNetworkRow(false, IF_TYPE_TUNNEL_LINK, NDIS_PHYSICAL_MEDIUM_BLUETOOTH));
+    EXPECT_TRUE(isHardwareNetworkRow(true, IF_TYPE_ETHERNET, NDIS_PHYSICAL_MEDIUM_802_3));
+    EXPECT_TRUE(isHardwareNetworkRow(true, IF_TYPE_WIFI, NDIS_PHYSICAL_MEDIUM_NATIVE_802_11));
+}
+
+TEST(WindowsSystemProbeMathTest, AWifiAdaptersExtraPortsAreHardwareLinks)
+{
+    // "Wi-Fi 2" to "Wi-Fi 5" (Wi-Fi Direct, hotspot, multi-link ports of the same adapter) report
+    // HardwareInterface: they are counted, so their radio traffic is in the Total (#1284).
+    constexpr std::uint32_t NDIS_PHYSICAL_MEDIUM_NATIVE_802_11 = 9;
+    EXPECT_TRUE(isHardwareNetworkRow(true, IF_TYPE_WIFI, NDIS_PHYSICAL_MEDIUM_NATIVE_802_11));
+}
+
+TEST(WindowsSystemProbeMathTest, TotalCountsBluetoothPanAndEveryWifiPort)
+{
+    // Wi-Fi with a Wi-Fi Direct port beside it, a phone tethered over Bluetooth PAN, and the WSL
+    // vEthernet adapter: every hardware link counts, including the secondary Wi-Fi port; the
+    // virtual adapter does not.
+    const std::vector<SystemCounters::InterfaceCounters> interfaces{
+        makeInterface(1'000, 100, false), // Wi-Fi
+        makeInterface(200, 20, false),    // Wi-Fi 2: Wi-Fi Direct to a casting receiver
+        makeInterface(5'000, 500, false), // Bluetooth Network Connection
+        makeInterface(4'000, 400, true),  // vEthernet (WSL)
+    };
+    const auto totals = sumCountedInterfaces(interfaces);
+    EXPECT_EQ(totals.rxBytes, 6'200U);
+    EXPECT_EQ(totals.txBytes, 620U);
 }
 
 TEST(WindowsSystemProbeMathTest, TotalOfNoInterfacesIsZero)
