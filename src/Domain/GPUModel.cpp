@@ -83,6 +83,32 @@ template<typename T> [[nodiscard]] float readingOrNaN(const GPUSnapshot& sample,
     return std::clamp(busiest, 0.0, 100.0);
 }
 
+/// Keeps each DRM client's engine busy counter at its high-water mark in the counters stored as the
+/// next sample's baseline. The DRM usage-stats contract lets drm-engine-* / drm-cycles-* go briefly
+/// backwards and asks userspace to keep the previous, larger value until the counter catches up; a
+/// lower baseline would make the next rise, still below the old value, count as real busy time
+/// (#1350 review).
+void carryBusyHighWater(Platform::GPUCounters& current, const Platform::GPUCounters& previous)
+{
+    for (auto& client : current.engineClients)
+    {
+        const auto before = std::ranges::find(previous.engineClients, client.clientId, &Platform::GPUEngineClientCounters::clientId);
+        if (before == previous.engineClients.end())
+        {
+            continue;
+        }
+        for (std::size_t engineClass = 0; engineClass < Platform::GPU_ENGINE_CLASS_COUNT; ++engineClass)
+        {
+            auto& now = client.engines.at(engineClass);
+            const auto& then = before->engines.at(engineClass);
+            if (now.available && then.available && now.busy < then.busy)
+            {
+                now.busy = then.busy;
+            }
+        }
+    }
+}
+
 /// The GPU clock: NaN when the read failed or returned 0 MHz. A 0 is the probes' "couldn't read it"
 /// (DRM, and NVML on a suspended GPU), and the Clock NowBar already shows N/A for it (#995), so the
 /// line has a gap there too rather than diving to 0 (#1111).
@@ -259,11 +285,17 @@ void GPUModel::refreshAt(std::chrono::steady_clock::time_point now)
             trimHistory(nowSec);
             publish();
 
-            m_PrevCounters.clear();
+            CounterMap nextPrevious;
             for (const auto& counter : currentCounters)
             {
-                m_PrevCounters[counter.gpuId] = counter;
+                auto stored = counter;
+                if (const auto before = m_PrevCounters.find(counter.gpuId); before != m_PrevCounters.end())
+                {
+                    carryBusyHighWater(stored, before->second);
+                }
+                nextPrevious[counter.gpuId] = std::move(stored);
             }
+            m_PrevCounters = std::move(nextPrevious);
 
             m_PrevSampleTime = currentTime;
         }

@@ -834,6 +834,31 @@ TEST(GPUModelTest, EngineUtilizationIgnoresClientsSeenOnceAndCountersThatWentBac
     EXPECT_FALSE(model.snapshots()[0].utilizationAvailable);
 }
 
+TEST(GPUModelTest, EngineUtilizationKeepsABusyCounterAtItsHighWaterMarkUntilItCatchesUp)
+{
+    // #1350 review: the DRM usage-stats contract lets a busy counter dip briefly and asks userspace
+    // to keep the larger value until it catches up. The dip itself counts nothing, and a rise that is
+    // still below the old value must count nothing either -- only busyness past it is new.
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "Intel").withGPUCounters("GPU0", engineCounters({engineClient(7, RENDER_CLASS, 800, 1000)}));
+    Domain::GPUModel model(std::move(probe));
+    const auto start = std::chrono::steady_clock::now();
+    model.refreshAt(start);
+
+    rawProbe->withGPUCounters("GPU0", engineCounters({engineClient(7, RENDER_CLASS, 600, 2000)})); // dipped
+    model.refreshAt(start + std::chrono::seconds(1));
+    EXPECT_DOUBLE_EQ(model.snapshots()[0].utilizationPercent, 0.0);
+
+    rawProbe->withGPUCounters("GPU0", engineCounters({engineClient(7, RENDER_CLASS, 750, 3000)})); // still below 800
+    model.refreshAt(start + std::chrono::seconds(2));
+    EXPECT_DOUBLE_EQ(model.snapshots()[0].utilizationPercent, 0.0) << "a rise below the high-water mark is not new busyness";
+
+    rawProbe->withGPUCounters("GPU0", engineCounters({engineClient(7, RENDER_CLASS, 1'000, 4000)})); // 200 past 800
+    model.refreshAt(start + std::chrono::seconds(3));
+    EXPECT_DOUBLE_EQ(model.snapshots()[0].utilizationPercent, 20.0);
+}
+
 TEST(GPUModelTest, EngineUtilizationIsCappedAtOneHundredPercent)
 {
     auto probe = std::make_unique<MockGPUProbe>();
