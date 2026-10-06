@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <utility>
 #include <vector>
 
 namespace Domain
@@ -67,6 +68,42 @@ TEST(SocketTrafficAccumulatorTest, AProcessNoneOfWhoseConnectionsCouldBeReadHasN
     // A repeat of the same reading (a probe that caches its query) keeps the newest reading's verdict.
     apply(4'000, {{.key = 1, .pid = 10, .readable = false}});
     apply(4'000, {{.key = 1, .pid = 10, .readable = false}});
+    EXPECT_FALSE(processes[0].networkCountersAvailable);
+}
+
+TEST(SocketTrafficAccumulatorTest, AnUnreadableVerdictIsNotInheritedByAProcessThatReusedThePid)
+{
+    // #1346 review: the "no connection could be read" verdict was kept by PID alone, so a process
+    // that reused the PID of one with that verdict, listed while a failed or repeated reading
+    // republishes the last one, came up unavailable too. It is kept by PID and start time, as the
+    // byte totals are; an unknown start time matches by PID.
+    SocketTrafficAccumulator accumulator;
+    std::vector processes{process(10, 1000)};
+    const auto apply = [&](std::uint64_t sampleTimeNs, std::vector<SocketTrafficSample> sockets)
+    {
+        for (auto& proc : processes)
+        {
+            proc.networkCountersAvailable = true; // as the probe lists them
+        }
+        accumulator.apply(SocketTrafficReading{.sockets = std::move(sockets), .sampleTimeNs = sampleTimeNs}, processes);
+    };
+    // Windows reports socket owners without a start time: the verdict is the listed process's.
+    const std::vector<SocketTrafficSample> unreadable{{.key = 1, .pid = 10, .readable = false}};
+
+    apply(1'000, {{.key = 1, .pid = 10, .bytesReceived = 100}});
+    apply(2'000, unreadable);
+    EXPECT_FALSE(processes[0].networkCountersAvailable);
+    apply(0, {}); // failed reading: republishes the last one
+    EXPECT_FALSE(processes[0].networkCountersAvailable) << "the same process keeps its verdict";
+
+    processes = {process(10, 2000)}; // PID 10 exited and was reused
+    apply(0, {});
+    EXPECT_TRUE(processes[0].networkCountersAvailable) << "failed reading: the replacement has no verdict of its own";
+    apply(2'000, unreadable);
+    EXPECT_TRUE(processes[0].networkCountersAvailable) << "repeated reading: the replacement has no verdict of its own";
+
+    processes = {process(10, 0)}; // start time unknown: matched by PID
+    apply(0, {});
     EXPECT_FALSE(processes[0].networkCountersAvailable);
 }
 

@@ -10,7 +10,6 @@
 #include <optional>
 #include <span>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -145,10 +144,13 @@ class SocketTrafficAccumulator
         // A process with connections in the newest reading, none of which could be read, has no
         // reading of its own this interval: unavailable rather than 0 (#1304, as #1285/#1290 treat
         // unreadable counters). Its connections re-baseline when read again, so no later interval
-        // takes their growth from across the unreadable samples as a burst (#1346 review).
+        // takes their growth from across the unreadable samples as a burst (#1346 review). The verdict
+        // is the newest folded reading's, republished by a repeated or failed one, and belongs to the
+        // process it was reached for (PID and start time, as the totals): a process that reused the PID
+        // since doesn't inherit it (#1346 review).
         for (auto& proc : processes)
         {
-            if (m_UnreadablePids.contains(proc.pid))
+            if (unreadableOwner(proc))
             {
                 proc.networkCountersAvailable = false;
             }
@@ -169,17 +171,18 @@ class SocketTrafficAccumulator
     {
         std::unordered_map<std::uint64_t, SocketState> next;
         next.reserve(sockets.size());
-        // Per owner: whether any of its connections in this reading could be read (#1304).
-        std::unordered_map<std::int32_t, bool> anyReadableByPid;
+        // Per owner (listedOwner(), as the bytes are credited): whether any of its connections in this
+        // reading could be read (#1304).
+        std::unordered_map<ProcessKey, bool, ProcessKeyHash> anyReadableByOwner;
         for (const auto& sample : sockets)
         {
             if (sample.key == 0)
             {
                 continue;
             }
-            if (sample.pid > 0)
+            if (const std::optional<ProcessKey> verdictOwner = listedOwner(sample, listedOwners); verdictOwner.has_value())
             {
-                anyReadableByPid[sample.pid] |= sample.readable;
+                anyReadableByOwner[*verdictOwner] |= sample.readable;
             }
             const auto previous = m_Sockets.find(sample.key);
             if (!sample.readable)
@@ -268,12 +271,12 @@ class SocketTrafficAccumulator
         }
         m_Sockets = std::move(next);
         m_HasReading = true;
-        m_UnreadablePids.clear();
-        for (const auto& [pid, anyReadable] : anyReadableByPid)
+        m_UnreadableOwners.clear();
+        for (const auto& [owner, anyReadable] : anyReadableByOwner)
         {
             if (!anyReadable)
             {
-                m_UnreadablePids.insert(pid);
+                m_UnreadableOwners.emplace(owner.pid, owner.startTimeTicks);
             }
         }
     }
@@ -355,7 +358,7 @@ class SocketTrafficAccumulator
         m_Sockets.clear();
         m_PendingByProcess.clear();
         m_Totals.clear();
-        m_UnreadablePids.clear();
+        m_UnreadableOwners.clear();
         m_HasReading = false;
         m_LastReadingTimeNs = 0;
     }
@@ -509,6 +512,22 @@ class SocketTrafficAccumulator
         return ProcessKey{.pid = sample.pid, .startTimeTicks = it->second};
     }
 
+    /// Whether `proc` is an owner none of whose connections the newest folded reading could read: the
+    /// one the verdict was reached for, by PID and start time, or with either start time unknown (0)
+    /// by PID alone -- the matching publish() applies to pending bytes.
+    [[nodiscard]] bool unreadableOwner(const Platform::ProcessCounters& proc) const
+    {
+        const auto [first, last] = m_UnreadableOwners.equal_range(proc.pid);
+        for (auto it = first; it != last; ++it)
+        {
+            if (it->second == 0 || proc.startTimeTicks == 0 || it->second == proc.startTimeTicks)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     [[nodiscard]] static constexpr std::uint64_t saturatingAdd(std::uint64_t a, std::uint64_t b) noexcept
     {
         constexpr auto MAX_BYTES = std::numeric_limits<std::uint64_t>::max();
@@ -520,7 +539,9 @@ class SocketTrafficAccumulator
     // one (reviseOwnership()) -- for the process with this PID and start time (start time 0: unknown,
     // matched by PID alone).
     std::unordered_map<ProcessKey, Totals, ProcessKeyHash> m_PendingByProcess;
-    std::unordered_set<std::int32_t> m_UnreadablePids; // owners none of whose connections the newest reading could read (#1304)
+    // Owners none of whose connections the newest folded reading could read (#1304), as PID -> start
+    // time (0: unknown, matched by PID alone).
+    std::unordered_multimap<std::int32_t, std::uint64_t> m_UnreadableOwners;
     std::unordered_map<ProcessKey, Totals, ProcessKeyHash> m_Totals; // cumulative bytes per live process
     bool m_HasReading = false;
     std::uint64_t m_LastReadingTimeNs = 0; // sampleTimeNs of the last reading apply() folded; 0 = none
