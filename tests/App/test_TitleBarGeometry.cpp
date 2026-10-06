@@ -1213,6 +1213,22 @@ TEST(TitleBarGeometryTest, ChartBlockIgnoresUnusableInputs)
     EXPECT_FLOAT_EQ(computeChartBlockHeight(broken, ChartBlockLead{.textLines = -2, .frameRows = 1, .spacings = 1}), 104.0F);
 }
 
+// The minimum height's first-chart part: the estimate, or the tabs' measurement plus the plot at its
+// minimum, whichever is taller (#1370 review: a wrapped value strip the estimate cannot count).
+TEST(TitleBarGeometryTest, FirstChartBudgetTakesTheTallerOfEstimateAndMeasurement)
+{
+    // Nothing measured yet: the estimate.
+    EXPECT_FLOAT_EQ(computeFirstChartBudget(265.5F, 0.0F, 180.0F), 265.5F);
+    // Measured less than the estimate (a wide window): the estimate still holds.
+    EXPECT_FLOAT_EQ(computeFirstChartBudget(265.5F, 70.0F, 180.0F), 265.5F);
+    // Measured with the GPU strip wrapped onto two extra rows: the measurement wins.
+    EXPECT_FLOAT_EQ(computeFirstChartBudget(265.5F, 126.5F, 180.0F), 306.5F);
+    // Unusable inputs count as nothing.
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FLOAT_EQ(computeFirstChartBudget(265.5F, nan, 180.0F), 265.5F);
+    EXPECT_FLOAT_EQ(computeFirstChartBudget(nan, 100.0F, -5.0F), 100.0F);
+}
+
 // The reported case: at 150% the minimum height was the scaled base, 300px, which does not hold
 // the tab strips, one chart at its minimum and the status bar. The content now sets it.
 TEST(TitleBarGeometryTest, MinimumHeightCoversThePanelContent)

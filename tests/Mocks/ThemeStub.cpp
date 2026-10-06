@@ -41,6 +41,14 @@ auto Theme::currentThemeId() const -> const std::string&
     return k_Empty;
 }
 
+// Referenced by ChartWidgets.h's value-strip drawing, which test_FillPlotLayout.cpp runs under a
+// live ImGui context. No scheme is loaded here, so it is the default one.
+auto Theme::scheme() const -> const ColorScheme&
+{
+    static const ColorScheme k_Default{};
+    return k_Default;
+}
+
 void Theme::setThemeById(std::string_view /*id*/)
 {}
 

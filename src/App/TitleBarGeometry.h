@@ -267,6 +267,27 @@ inline constexpr ChartBlockLead NETWORK_FIRST_CHART_LEAD{.textLines = 1, .frameR
                      computeChartBlockHeight(style, NETWORK_FIRST_CHART_LEAD)});
 }
 
+/// The first-chart part of the minimum window height: the estimated tallest block
+/// (computeTallestFirstChartBlock()), or what the tabs measured around and above their first chart
+/// (UI::Widgets::PlotFillState::firstPlotNonPlotHeight) plus the plot at its minimum, whichever is
+/// taller. The estimate covers a tab that has not been shown yet; the measurement covers what an
+/// estimate cannot know -- a value strip wrapped onto extra rows in a narrow window (#1370 review).
+///
+/// @param estimatedBlockPx   From computeTallestFirstChartBlock().
+/// @param measuredNonPlotPx  The tallest measured non-plot height; 0 (or unusable) when none yet.
+/// @param plotMinHeightPx    The plot at UI::Widgets::historyPlotMinHeight(), whole pixels.
+[[nodiscard]] inline auto computeFirstChartBudget(const float estimatedBlockPx, const float measuredNonPlotPx, const float plotMinHeightPx)
+    -> float
+{
+    const auto atLeastZero = [](const float value)
+    {
+        return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
+    };
+    const float measured = atLeastZero(measuredNonPlotPx);
+    const float measuredBlock = (measured > 0.0F) ? measured + atLeastZero(plotMinHeightPx) : 0.0F;
+    return std::max(atLeastZero(estimatedBlockPx), measuredBlock);
+}
+
 /// Shortest content the window has to show without clipping it, in pixels (#1278): the title bar,
 /// the tab strips, one history chart at its minimum height (UI::Widgets::historyPlotMinHeight())
 /// and the status bar. Below that a tab cannot show even one whole chart, so the window may not be

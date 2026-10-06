@@ -412,6 +412,20 @@ void ShellLayer::onRender()
         // measurements a frame.
         const ImGuiStyle& style = ImGui::GetStyle();
         const float fontSize = ImGui::GetFontSize();
+        const float plotMinHeight = std::floor(UI::Widgets::historyPlotMinHeight(fontSize, UI::chartEmPx()));
+        // The tallest tab's lead-in and first chart, at its floor (UI/HistoryPlotHeight.h): estimated
+        // from the style -- the tab bodies draw with the theme's FramePadding (TabContentScope), which
+        // is what is pushed here, outside the tab bars -- or as the tabs last measured it, which also
+        // counts a value strip wrapped onto extra rows at this width (#1370 review).
+        const float firstChartBudget = computeFirstChartBudget(computeTallestFirstChartBlock({
+                                                                   .textLineWithSpacingPx = ImGui::GetTextLineHeightWithSpacing(),
+                                                                   .frameHeightWithSpacingPx = ImGui::GetFrameHeightWithSpacing(),
+                                                                   .itemSpacingYPx = style.ItemSpacing.y,
+                                                                   .cellPaddingYPx = style.CellPadding.y,
+                                                                   .plotMinHeightPx = plotMinHeight,
+                                                               }),
+                                                               m_SystemMetricsPanel.firstChartNonPlotHeight(),
+                                                               plotMinHeight);
         applyContentMinimumSize(computeContentMinimumWidth(ProcessesPanel::measureToolbarMinimumWidth(),
                                                            m_SystemMetricsPanel.overviewNowBarColumnWidth(),
                                                            fontSize,
@@ -421,16 +435,7 @@ void ShellLayer::onRender()
                                     .mainTabsPx = mainTabsHeight,
                                     // As the panels draw them: a tab bar at SUB_TAB_PADDING_Y, then the item spacing below it.
                                     .subTabsPx = fontSize + (ShellMetrics::SUB_TAB_PADDING_Y * styleScale * 2.0F) + style.ItemSpacing.y,
-                                    // The tallest tab's lead-in and first chart, at its floor (UI/HistoryPlotHeight.h). The
-                                    // tab bodies draw with the theme's FramePadding (TabContentScope), which is what is
-                                    // pushed here, outside the tab bars.
-                                    .chartPx = computeTallestFirstChartBlock({
-                                        .textLineWithSpacingPx = ImGui::GetTextLineHeightWithSpacing(),
-                                        .frameHeightWithSpacingPx = ImGui::GetFrameHeightWithSpacing(),
-                                        .itemSpacingYPx = style.ItemSpacing.y,
-                                        .cellPaddingYPx = style.CellPadding.y,
-                                        .plotMinHeightPx = std::floor(UI::Widgets::historyPlotMinHeight(fontSize, UI::chartEmPx())),
-                                    }),
+                                    .chartPx = firstChartBudget,
                                     .statusBarPx = statusBarHeight,
                                     .chromePx = contentPaddingV * 2.0F,
                                 }));

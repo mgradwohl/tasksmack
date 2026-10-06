@@ -12,6 +12,7 @@
 
 #include <imgui.h>
 
+#include <algorithm>
 #include <cstddef>
 
 namespace UI::Widgets
@@ -23,6 +24,11 @@ struct PlotFillState
 {
     float nonPlotHeight = 0.0F; ///< Height the tab spent on everything that is not a plot.
     std::size_t plotCount = 0;  ///< Charts rendered; 0 until the tab has rendered once.
+    /// Height the tab spent, from its top to the end of its first chart, on everything but that
+    /// chart's plot: whatever is above it, its heading, its value strip on however many rows it
+    /// wrapped to, the table's padding and the spacing after it. Measured, so it is right at any
+    /// width; the window's minimum height is built from it (#1370 review). 0 until a chart rendered.
+    float firstPlotNonPlotHeight = 0.0F;
 };
 
 /// Scope for one frame of a tab whose charts share its height.
@@ -65,6 +71,7 @@ class FillPlotLayout
         const float used = ImGui::GetCursorPosY() - m_Top;
         m_State.nonPlotHeight = used - (static_cast<float>(m_PlotCount) * m_PlotHeight);
         m_State.plotCount = m_PlotCount;
+        m_State.firstPlotNonPlotHeight = (m_PlotCount > 0) ? std::max(m_FirstPlotEnd - m_PlotHeight, 0.0F) : 0.0F;
     }
 
     FillPlotLayout(const FillPlotLayout&) = delete;
@@ -78,9 +85,14 @@ class FillPlotLayout
         return m_PlotHeight;
     }
 
-    /// Record that a chart of plotHeight() was rendered.
+    /// Record that a chart of plotHeight() was rendered. Call it straight after the chart, so the
+    /// first call can note where the first chart ends (PlotFillState::firstPlotNonPlotHeight).
     void addPlot() noexcept
     {
+        if (m_PlotCount == 0)
+        {
+            m_FirstPlotEnd = ImGui::GetCursorPosY() - m_Top;
+        }
         ++m_PlotCount;
     }
 
@@ -89,6 +101,7 @@ class FillPlotLayout
     float m_Top;
     float m_PlotHeight;
     std::size_t m_PlotCount = 0;
+    float m_FirstPlotEnd = 0.0F; ///< Where the first chart ended, from m_Top.
 };
 
 } // namespace UI::Widgets
