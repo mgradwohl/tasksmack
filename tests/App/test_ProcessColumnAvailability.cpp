@@ -88,6 +88,19 @@ TEST(ProcessColumnAvailabilityTest, UnsupportedNoteWinsOverThePerProcessNote)
     EXPECT_EQ(unavailableValuesNote(ProcessColumn::NetSent, caps), ProcessColumnAvailability::UNSUPPORTED_COLUMN_NOTE);
 }
 
+TEST(ProcessColumnAvailabilityTest, EmptyTextInASupportedColumnIsBlankNotUnavailable)
+{
+    using ProcessColumnAvailability::TextCell;
+    using ProcessColumnAvailability::textCell;
+    // Windows' publisher lookup returns empty both for an executable without a CompanyName and for
+    // one it could not read, so an empty publisher is not claimed to be unavailable.
+    EXPECT_EQ(textCell(/*columnSupported=*/true, /*hasValue=*/false), TextCell::Blank);
+    EXPECT_EQ(textCell(true, true), TextCell::Text);
+    // Only a column the system cannot fill at all shows the dash, whatever the value.
+    EXPECT_EQ(textCell(false, false), TextCell::Unavailable);
+    EXPECT_EQ(textCell(false, true), TextCell::Unavailable);
+}
+
 TEST(ProcessColumnAvailabilityTest, RowFormatOptionsMirrorTheCapabilities)
 {
     const Platform::ProcessCapabilities caps = windowsLikeCapabilities();

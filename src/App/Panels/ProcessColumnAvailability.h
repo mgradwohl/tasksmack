@@ -9,6 +9,7 @@
 #include "App/ProcessColumnConfig.h"
 #include "Platform/ProcessTypes.h"
 
+#include <cstdint>
 #include <string_view>
 
 namespace App::ProcessColumnAvailability
@@ -52,6 +53,27 @@ namespace App::ProcessColumnAvailability
     default:
         return true;
     }
+}
+
+/// What a free-text cell (Status, Publisher) shows.
+enum class TextCell : std::uint8_t
+{
+    Text,        ///< The value
+    Blank,       ///< Nothing: the column is filled on this system, and this process has no value
+    Unavailable, ///< ProcessRowFormat::UNAVAILABLE_CELL_TEXT: this system cannot fill the column
+};
+
+/// A free-text cell's content. An empty value in a supported column is blank, not unavailable: the
+/// probe reports no separate "could not read" for these (Windows' publisher lookup returns empty both
+/// for an executable without a CompanyName and for one it could not read), so the dash would claim
+/// more than is known (#1210).
+[[nodiscard]] constexpr TextCell textCell(bool columnSupported, bool hasValue) noexcept
+{
+    if (!columnSupported)
+    {
+        return TextCell::Unavailable;
+    }
+    return hasValue ? TextCell::Text : TextCell::Blank;
 }
 
 /// The row formatter's view of the same capabilities.

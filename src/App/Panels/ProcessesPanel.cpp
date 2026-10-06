@@ -144,10 +144,6 @@ bool viewModeSegment(std::string_view label, bool selected, float width)
 /// instead of one line running off the screen.
 constexpr float CLIPPED_CELL_TOOLTIP_WRAP_EM = 60.0F;
 
-/// Tooltip of a Publisher cell with no publisher on a system that reads them (#1210).
-constexpr const char* NO_PUBLISHER_REASON =
-    "Not available: the executable names no publisher in its version information, or it could not be read.";
-
 /// Column header tooltips wrap at this many ems.
 constexpr float HEADER_TOOLTIP_WRAP_EM = 32.0F;
 
@@ -338,6 +334,28 @@ void renderUnavailableTextCell(const char* reason, float dashWidth)
         renderCellText(ProcessRowFormat::UNAVAILABLE_CELL_TEXT, dashWidth, /*rightAligned=*/false);
     }
     setUnavailableReasonTooltip(reason);
+}
+
+void renderLeftAlignedText(std::string_view text, const ProcessRowFormat::LazyTextWidth& width);
+
+/// A free-text cell as ProcessColumnAvailability::textCell() decided: the text, nothing, or the
+/// "not available on this system" dash.
+void renderTextCell(ProcessColumnAvailability::TextCell content,
+                    std::string_view text,
+                    const ProcessRowFormat::LazyTextWidth& width,
+                    float dashWidth)
+{
+    switch (content)
+    {
+    case ProcessColumnAvailability::TextCell::Text:
+        renderLeftAlignedText(text, width);
+        break;
+    case ProcessColumnAvailability::TextCell::Unavailable:
+        renderUnavailableTextCell(ProcessRowFormat::UNSUPPORTED_CELL_REASON, dashWidth);
+        break;
+    case ProcessColumnAvailability::TextCell::Blank:
+        break;
+    }
 }
 
 /// Width of the widest of `units` in the current font.
@@ -1403,14 +1421,10 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
 
         case ProcessColumn::Status:
             // No status is a process in neither of the states the column names, so it is blank.
-            if (!caps.hasStatus)
-            {
-                renderUnavailableTextCell(ProcessRowFormat::UNSUPPORTED_CELL_REASON, m_TextSizeCache.unavailableTextWidth);
-            }
-            else if (!proc.status.empty())
-            {
-                renderLeftAlignedText(proc.status, fmt.statusWidth);
-            }
+            renderTextCell(ProcessColumnAvailability::textCell(caps.hasStatus, !proc.status.empty()),
+                           proc.status,
+                           fmt.statusWidth,
+                           m_TextSizeCache.unavailableTextWidth);
             break;
 
         case ProcessColumn::Name:
@@ -1586,18 +1600,12 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
 
         case ProcessColumn::Publisher:
         {
-            if (!caps.hasPublisher)
-            {
-                renderUnavailableTextCell(ProcessRowFormat::UNSUPPORTED_CELL_REASON, m_TextSizeCache.unavailableTextWidth);
-            }
-            else if (!proc.publisher.empty())
-            {
-                renderLeftAlignedText(proc.publisher, fmt.publisherWidth);
-            }
-            else
-            {
-                renderUnavailableTextCell(NO_PUBLISHER_REASON, m_TextSizeCache.unavailableTextWidth);
-            }
+            // An executable without a publisher and one that could not be read look alike (both
+            // empty), so an empty publisher is blank rather than claimed unavailable.
+            renderTextCell(ProcessColumnAvailability::textCell(caps.hasPublisher, !proc.publisher.empty()),
+                           proc.publisher,
+                           fmt.publisherWidth,
+                           m_TextSizeCache.unavailableTextWidth);
             break;
         }
 
