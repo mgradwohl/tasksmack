@@ -1575,14 +1575,16 @@ TEST(EStatsSocketTrafficTest, Ipv4AndIpv6ConnectionsOfOneProcessAddUp)
 TEST(EStatsSocketTrafficTest, AFailedRowReadDoesNotSpike)
 {
     // A connection whose EStats read fails for one sample (or reads garbage) is reported unreadable
-    // and keeps its baseline in Domain. Left out, it would look closed and then new: its 10'000
-    // lifetime bytes would land in one interval.
+    // and stays open in Domain. Left out, it would look closed and then new: its 10'000 lifetime
+    // bytes would land in one interval. Read again, it re-baselines rather than crediting the growth
+    // from across the failed sample (#1346 review), then counts its growth as before.
     for (const EStatsRowOutcome outcome : {EStatsRowOutcome::ReadFailed, EStatsRowOutcome::Garbage})
     {
         EStatsTrafficHarness h;
         (void) h.sample({EStatsTrafficHarness::good(1, 10'000, 5'000)}); // baseline
         EXPECT_EQ(h.sample({EStatsTrafficHarness::failed(1, outcome)}), std::make_pair(std::uint64_t{0}, std::uint64_t{0}));
-        EXPECT_EQ(h.sample({EStatsTrafficHarness::good(1, 10'300, 5'030)}), std::make_pair(std::uint64_t{300}, std::uint64_t{30}));
+        EXPECT_EQ(h.sample({EStatsTrafficHarness::good(1, 10'300, 5'030)}), std::make_pair(std::uint64_t{0}, std::uint64_t{0}));
+        EXPECT_EQ(h.sample({EStatsTrafficHarness::good(1, 10'500, 5'050)}), std::make_pair(std::uint64_t{200}, std::uint64_t{20}));
     }
 }
 

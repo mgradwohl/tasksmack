@@ -41,13 +41,18 @@ namespace Domain
 ///    opened within this interval, so all of them were sent within it. On the first reading every
 ///    connection is new and only sets the baseline.
 ///  - A connection whose counters couldn't be read this time (SocketTrafficSample::readable false,
-///    #1256) is still open: it keeps its previous baseline unchanged, credits nothing, and the next
-///    readable sample credits all the growth since the last readable one. One first seen unreadable
-///    is recorded as seen with no baseline, so its first readable sample only sets the baseline:
-///    crediting it as new would land the lifetime bytes of a connection that may have been open for
-///    hours in one interval. The cost is the bytes a connection that really did open while unreadable
-///    moved before its first readable sample, the same as for one attributed late. An unreadable
-///    sample's owner is not used: bytes are credited to the owner reported with them.
+///    #1256) is still open, not closed, and credits nothing. Its next readable sample only
+///    re-baselines it: the growth since its last readable sample spans the unreadable ones, and
+///    crediting it to the interval it is read back in would be a burst -- a process with another
+///    connection that stayed readable has a reading for each of those intervals, so the burst would
+///    show (#1346 review). The cost is that connection's bytes over the unreadable samples and the
+///    interval after them; growth it held while unowned is kept (it was measured between readable
+///    samples). One first seen unreadable is recorded as seen with no baseline, so its first
+///    readable sample only sets the baseline: crediting it as new would land the lifetime bytes of a
+///    connection that may have been open for hours in one interval. The cost is the bytes a
+///    connection that really did open while unreadable moved before its first readable sample, the
+///    same as for one attributed late. An unreadable sample's owner is not used: bytes are credited
+///    to the owner reported with them.
 ///  - Credit goes to a process identified by PID and start time (ProcessKey) whenever both start
 ///    times are known (#1336); with either unknown it falls back to the PID, as described below. A
 ///    connection's owner is reported with its start time (SocketTrafficSample::ownerStartTimeTicks);
@@ -136,6 +141,20 @@ class SocketTrafficAccumulator
         {
             publishTotals(processes);
         }
+        // A process with connections in the newest reading, none of which could be read, has no
+        // reading of its own this interval: unavailable rather than 0 (#1304, as #1285/#1290 treat
+        // unreadable counters). Its connections re-baseline when read again, so no later interval
+        // takes their growth from across the unreadable samples as a burst (#1346 review). The verdict
+        // is the newest folded reading's, republished by a repeated or failed one, and belongs to the
+        // process it was reached for (PID and start time, as the totals): a process that reused the PID
+        // since doesn't inherit it (#1346 review).
+        for (auto& proc : processes)
+        {
+            if (unreadableOwner(proc))
+            {
+                proc.networkCountersAvailable = false;
+            }
+        }
     }
 
     /// Fold one complete reading of every connection into the per-process totals. The credited bytes
@@ -152,18 +171,28 @@ class SocketTrafficAccumulator
     {
         std::unordered_map<std::uint64_t, SocketState> next;
         next.reserve(sockets.size());
+        // Per owner (listedOwner(), as the bytes are credited): whether any of its connections in this
+        // reading could be read (#1304).
+        std::unordered_map<ProcessKey, bool, ProcessKeyHash> anyReadableByOwner;
         for (const auto& sample : sockets)
         {
             if (sample.key == 0)
             {
                 continue;
             }
+            if (const std::optional<ProcessKey> verdictOwner = listedOwner(sample, listedOwners); verdictOwner.has_value())
+            {
+                anyReadableByOwner[*verdictOwner] |= sample.readable;
+            }
             const auto previous = m_Sockets.find(sample.key);
             if (!sample.readable)
             {
-                // Still open, counters unknown this time: keep the baseline (or the "seen, no
-                // baseline" mark) and any held growth as they were, credit nothing (#1256).
-                next.insert_or_assign(sample.key, (previous != m_Sockets.end()) ? previous->second : SocketState{.hasBaseline = false});
+                // Still open, counters unknown this time: keep the "seen, no baseline" mark and any
+                // held growth as they were, credit nothing (#1256), and mark the baseline as one the
+                // next readable sample must not measure growth from (#1346 review).
+                SocketState unread = (previous != m_Sockets.end()) ? previous->second : SocketState{.hasBaseline = false};
+                unread.staleBaseline = true;
+                next.insert_or_assign(sample.key, unread);
                 continue;
             }
             SocketState state{.bytesReceived = sample.bytesReceived, .bytesSent = sample.bytesSent};
@@ -175,20 +204,26 @@ class SocketTrafficAccumulator
             if (previous != m_Sockets.end())
             {
                 // First readable sample of a connection first seen unreadable: its bytes may predate
-                // this interval, so it only sets the baseline (#1256). Otherwise a counter that went
-                // backwards in either direction means a different connection is reusing the key:
-                // nothing is credited for it this interval in either direction (its other counter
-                // isn't comparable with the old connection's either); both are the new baseline.
+                // this interval, so it only sets the baseline (#1256). Likewise the first readable
+                // sample after unreadable ones: its growth spans them, so it only re-baselines, keeping
+                // any held growth (#1346 review). Otherwise a counter that went backwards in either
+                // direction means a different connection is reusing the key: nothing is credited for
+                // it this interval in either direction (its other counter isn't comparable with the
+                // old connection's either); both are the new baseline.
                 const SocketState& prev = previous->second;
                 const bool reused = sample.bytesReceived < prev.bytesReceived || sample.bytesSent < prev.bytesSent;
                 if (prev.hasBaseline && !reused)
                 {
-                    credit.received = sample.bytesReceived - prev.bytesReceived;
-                    credit.sent = sample.bytesSent - prev.bytesSent;
+                    if (!prev.staleBaseline)
+                    {
+                        credit.received = sample.bytesReceived - prev.bytesReceived;
+                        credit.sent = sample.bytesSent - prev.bytesSent;
+                    }
                     creditIsGrowth = true;
                     state = prev; // keeps an unowned run's held growth
                     state.bytesReceived = sample.bytesReceived;
                     state.bytesSent = sample.bytesSent;
+                    state.staleBaseline = false;
                 }
             }
             else if (m_HasReading)
@@ -236,6 +271,14 @@ class SocketTrafficAccumulator
         }
         m_Sockets = std::move(next);
         m_HasReading = true;
+        m_UnreadableOwners.clear();
+        for (const auto& [owner, anyReadable] : anyReadableByOwner)
+        {
+            if (!anyReadable)
+            {
+                m_UnreadableOwners.emplace(owner.pid, owner.startTimeTicks);
+            }
+        }
     }
 
     /// Write every process's current cumulative totals into its netReceivedBytes/netSentBytes without
@@ -315,6 +358,7 @@ class SocketTrafficAccumulator
         m_Sockets.clear();
         m_PendingByProcess.clear();
         m_Totals.clear();
+        m_UnreadableOwners.clear();
         m_HasReading = false;
         m_LastReadingTimeNs = 0;
     }
@@ -353,7 +397,10 @@ class SocketTrafficAccumulator
             {
                 m_PendingByProcess[*owner].add(state.held);
             }
-            state = SocketState{.bytesReceived = state.bytesReceived, .bytesSent = state.bytesSent, .hasBaseline = state.hasBaseline};
+            state = SocketState{.bytesReceived = state.bytesReceived,
+                                .bytesSent = state.bytesSent,
+                                .hasBaseline = state.hasBaseline,
+                                .staleBaseline = state.staleBaseline};
         }
     }
 
@@ -374,6 +421,9 @@ class SocketTrafficAccumulator
         std::uint64_t bytesReceived = 0;
         std::uint64_t bytesSent = 0;
         bool hasBaseline = true; // False: seen only unreadable so far; the byte fields mean nothing (#1256)
+        // True: unreadable since the baseline was taken, so growth from it spans unreadable samples and
+        // the next readable one only re-baselines (#1346 review).
+        bool staleBaseline = false;
         // Growth seen while unowned, held for the owner it gets later (#1259). `unowned` marks a run
         // of unowned readings that began at `unownedSinceNs` (0: time unknown); once the run outlasts
         // UNATTRIBUTED_SOCKET_HOLD_MS, `holdExpired` drops the held bytes and stops holding until the
@@ -462,6 +512,22 @@ class SocketTrafficAccumulator
         return ProcessKey{.pid = sample.pid, .startTimeTicks = it->second};
     }
 
+    /// Whether `proc` is an owner none of whose connections the newest folded reading could read: the
+    /// one the verdict was reached for, by PID and start time, or with either start time unknown (0)
+    /// by PID alone -- the matching publish() applies to pending bytes.
+    [[nodiscard]] bool unreadableOwner(const Platform::ProcessCounters& proc) const
+    {
+        const auto [first, last] = m_UnreadableOwners.equal_range(proc.pid);
+        for (auto it = first; it != last; ++it)
+        {
+            if (it->second == 0 || proc.startTimeTicks == 0 || it->second == proc.startTimeTicks)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     [[nodiscard]] static constexpr std::uint64_t saturatingAdd(std::uint64_t a, std::uint64_t b) noexcept
     {
         constexpr auto MAX_BYTES = std::numeric_limits<std::uint64_t>::max();
@@ -473,6 +539,9 @@ class SocketTrafficAccumulator
     // one (reviseOwnership()) -- for the process with this PID and start time (start time 0: unknown,
     // matched by PID alone).
     std::unordered_map<ProcessKey, Totals, ProcessKeyHash> m_PendingByProcess;
+    // Owners none of whose connections the newest folded reading could read (#1304), as PID -> start
+    // time (0: unknown, matched by PID alone).
+    std::unordered_multimap<std::int32_t, std::uint64_t> m_UnreadableOwners;
     std::unordered_map<ProcessKey, Totals, ProcessKeyHash> m_Totals; // cumulative bytes per live process
     bool m_HasReading = false;
     std::uint64_t m_LastReadingTimeNs = 0; // sampleTimeNs of the last reading apply() folded; 0 = none
