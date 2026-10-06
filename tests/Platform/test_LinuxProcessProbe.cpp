@@ -938,7 +938,7 @@ TEST(LinuxProcessProbeTest, AFailedPreTailTotalReadIsReturnedNotRetriedAfterTheT
 
 TEST(LinuxProcessProbeTest, UnreadableFdAndIoAreReportedUnavailableNotZero)
 {
-    // #1110: without root, another user's /proc/[pid]/fd and /proc/[pid]/io can't be read. Their
+    // #1110: without the needed capabilities, another user's /proc/[pid]/fd and /proc/[pid]/io can't be read. Their
     // values used to be left at 0, which the table showed as "0 FDs" / "no I/O" and the totals
     // counted. They are now marked unavailable -- and so are the process's network counters, whose
     // attribution needs that same fd directory. Here the fd "directory" is a plain file and there is

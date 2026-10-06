@@ -115,7 +115,7 @@ The default interval is 1 second and can be configured from 100 ms to 5 seconds.
 
 Process state is keyed by PID plus start time so PID reuse creates a fresh baseline. Domain models guard against counter rollback and implausible rates.
 
-A per-process value the probe could not read (on Linux without root: another user's `/proc/[pid]/fd` and `/proc/[pid]/io`, and so its FD count, I/O and network attribution) is flagged unavailable in `ProcessCounters`/`ProcessSnapshot` (`handleCountAvailable`, `ioAvailable`, `networkAvailable`). A rate needs both readings it is taken between. Unavailable values are shown as N/A and as gaps in the charts, and they are left out of the system totals rather than counted as 0.
+A per-process value the probe could not read (on Linux without `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE` in the effective set -- which root has unless they are dropped: another user's `/proc/[pid]/fd` and `/proc/[pid]/io`, and so its FD count, I/O and network attribution) is flagged unavailable in `ProcessCounters`/`ProcessSnapshot` (`handleCountAvailable`, `ioAvailable`, `networkAvailable`). A rate needs both readings it is taken between. Unavailable values are shown as N/A and as gaps in the charts, and they are left out of the system totals rather than counted as 0.
 
 ## Dependency Direction
 

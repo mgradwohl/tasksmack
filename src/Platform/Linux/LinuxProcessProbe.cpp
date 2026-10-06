@@ -803,7 +803,7 @@ void LinuxProcessProbe::countProcessFds(int32_t pid, ProcessCounters& counters, 
     }
     catch (const std::exception& ex)
     {
-        // Permission errors (another user's process without root) and other exceptional situations:
+        // Permission errors (another user's process, without CAP_DAC_READ_SEARCH) and other exceptional situations:
         // the count is unknown, not 0 (#1110). The process's connections can't be attributed to it
         // either -- the socket inode-to-PID map is built from these same fd directories -- so its
         // network counters are unknown too, not "no traffic".

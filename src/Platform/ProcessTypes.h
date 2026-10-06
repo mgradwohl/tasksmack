@@ -69,10 +69,10 @@ struct ProcessCounters
     std::optional<std::int32_t> gdiObjectCount;
 
     // Whether the probe could read these for this process (#1110). A probe sets one false when the
-    // read failed -- typically for lack of rights: without root, Linux cannot read another user's
-    // /proc/[pid]/fd or /proc/[pid]/io -- and the value beside it is then a placeholder 0, not a
-    // measurement. The defaults suit a probe that reads every process it lists; a field the probe
-    // never fills at all is reported by ProcessCapabilities instead.
+    // read failed -- typically for lack of rights: without CAP_DAC_READ_SEARCH/CAP_SYS_PTRACE (root has them unless dropped), Linux cannot
+    // read another user's /proc/[pid]/fd or /proc/[pid]/io -- and the value beside it is then a placeholder 0, not a measurement. The
+    // defaults suit a probe that reads every process it lists; a field the probe never fills at all is reported by ProcessCapabilities
+    // instead.
     bool handleCountAvailable = true;     // handleCount
     bool ioCountersAvailable = true;      // readBytes / writeBytes
     bool networkCountersAvailable = true; // netSentBytes / netReceivedBytes: the process's connections
