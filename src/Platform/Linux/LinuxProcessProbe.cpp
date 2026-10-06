@@ -6,6 +6,7 @@
 
 #include "CgroupFreezeStatus.h"
 #include "Domain/SamplingConfig.h"
+#include "Platform/CpuAffinity.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/PlatformConfig.h"
 #include "UserNameLookup.h"
@@ -15,6 +16,7 @@
 #endif
 
 #include "Platform/ProcessTypes.h"
+#include "PosixGuards.h"
 #include "ProcParsing.h"
 #include "ProcPrivileges.h"
 #include "ProcessName.h"
@@ -46,7 +48,6 @@
 
 #include <fcntl.h>
 #include <pwd.h>
-#include <sched.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -92,11 +93,42 @@ template<std::integral T> [[nodiscard]] constexpr auto toU64PositiveOr(T value, 
     return static_cast<uint64_t>(value);
 }
 
-using ProcParsing::FdGuard;
+using Posix::FdGuard;
 using ProcParsing::parseNum;
 using ProcParsing::readProcFile;
 using ProcParsing::readProcFileFull;
-using ProcParsing::skipSpaces;
+
+/// Read a whole /proc file of up to maxBytes, for the rare one that overflows a caller's stack buffer.
+/// Each try re-reads from the start into a buffer twice the last one's size, so the text comes from a
+/// single read. Returns the bytes read -- a file longer than maxBytes comes back cut off at maxBytes
+/// -- or an empty vector on failure.
+[[nodiscard]] std::vector<char> readProcFileBounded(const std::string& path, std::size_t initialSize, std::size_t maxBytes)
+{
+    std::vector<char> buf;
+    for (std::size_t size = std::min(initialSize, maxBytes);; size = std::min(size * 2, maxBytes))
+    {
+        buf.resize(size);
+        const std::size_t len = readProcFile(path.c_str(), buf.data(), buf.size());
+        if (len < size || size == maxBytes)
+        {
+            buf.resize(len);
+            return buf;
+        }
+    }
+}
+
+/// Whether text has a line starting with prefix that ends in a newline (not cut off by a short read).
+[[nodiscard]] bool hasCompleteLine(std::string_view text, std::string_view prefix) noexcept
+{
+    for (std::size_t pos = text.find(prefix); pos != std::string_view::npos; pos = text.find(prefix, pos + 1))
+    {
+        if (pos == 0 || text[pos - 1] == '\n')
+        {
+            return text.find('\n', pos) != std::string_view::npos;
+        }
+    }
+    return false;
+}
 
 /// Cache UID to username mappings to avoid repeated getpwuid calls
 std::unordered_map<uid_t, std::string>& getUsernameCache()
@@ -140,8 +172,22 @@ LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot)
 {}
 
 LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot, std::filesystem::path powercapRoot)
+    : LinuxProcessProbe(std::move(procRoot), std::move(powercapRoot), std::filesystem::path("/sys/fs/cgroup"))
+{}
+
+LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot, std::filesystem::path powercapRoot, std::filesystem::path cgroupRoot)
+    : LinuxProcessProbe(
+          std::move(procRoot), std::move(powercapRoot), std::move(cgroupRoot), std::filesystem::path("/sys/devices/system/cpu"))
+{}
+
+LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot,
+                                     std::filesystem::path powercapRoot,
+                                     std::filesystem::path cgroupRoot,
+                                     std::filesystem::path cpuSysfsRoot)
     : m_ProcRoot(std::move(procRoot)),
       m_PowercapRoot(std::move(powercapRoot)),
+      m_CgroupRoot(std::move(cgroupRoot)),
+      m_CpuSysfsRoot(std::move(cpuSysfsRoot)),
       m_TicksPerSecond(sysconf(_SC_CLK_TCK)),
       m_PageSize(toU64PositiveOr(sysconf(_SC_PAGESIZE), 4096ULL)),
       m_BootTimeEpoch(readBootTime(m_ProcRoot))
@@ -232,6 +278,10 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
     const std::filesystem::path& procPath = m_ProcRoot;
     std::error_code errorCode;
 
+    // Once per sample: Cpus_allowed_list is the task's raw mask, which still names CPUs that are
+    // possible but offline; the sched_getaffinity() it replaced ANDed it with the active CPUs (#1384).
+    const std::optional<CpuAffinity> onlineCpus = readOnlineCpus(m_CpuSysfsRoot);
+
     for (const auto& entry : std::filesystem::directory_iterator(procPath, errorCode))
     {
         if (!entry.is_directory())
@@ -257,10 +307,8 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         }
 
         parseProcessStatm(pid, counters);
-        parseProcessStatus(pid, counters, m_ProcRoot);
+        parseProcessStatus(pid, counters, m_ProcRoot, onlineCpus); // Owner, peak RSS (after statm) and CPU affinity
         parseProcessCmdline(pid, counters, m_ProcRoot);
-        // CPU affinity is always safe to query; failures zero the mask
-        parseProcessAffinity(pid, counters);
 
         // Count open file descriptors (may fail for some processes due to permissions)
         countProcessFds(pid, counters, m_ProcRoot);
@@ -277,7 +325,7 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         {
             counters.ioCountersAvailable = false; // not read at all (capabilities() reports hasIoCounters = false)
         }
-        counters.status = getProcessStatus(pid, m_ProcRoot); // Get cgroup freezer status
+        counters.status = getProcessStatus(pid, m_ProcRoot, m_CgroupRoot); // Get cgroup freezer status
         processes.push_back(std::move(counters));
     }
 
@@ -325,12 +373,12 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasHandleCount = true, // Can count FDs in /proc/[pid]/fd (others' need CAP_DAC_READ_SEARCH)
                                .hasUserSystemTime = true,
                                .hasStartTime = true,
-                               .hasUser = true,       // From /proc/[pid]/status Uid field
-                               .hasCommand = true,    // From /proc/[pid]/cmdline
-                               .hasNice = true,       // From /proc/[pid]/stat
-                               .hasPageFaults = true, // From /proc/[pid]/stat (minflt + majflt)
-                               .hasPeakRss = false,
-                               .hasCpuAffinity = true,                    // From sched_getaffinity
+                               .hasUser = true,                           // From /proc/[pid]/status Uid field
+                               .hasCommand = true,                        // From /proc/[pid]/cmdline
+                               .hasNice = true,                           // From /proc/[pid]/stat
+                               .hasPageFaults = true,                     // From /proc/[pid]/stat (minflt + majflt)
+                               .hasPeakRss = true,                        // From /proc/[pid]/status VmHWM (kernel threads have none)
+                               .hasCpuAffinity = true,                    // From status Cpus_allowed_list
                                .hasNetworkCounters = hasNetworkCounters,  // From Netlink INET_DIAG (if available)
                                .hasUdpNetworkCounters = false,            // sock_diag has no UDP byte counters (#1101)
                                .hasPowerUsage = m_HasPowerCap,            // Available if RAPL is detected
@@ -374,101 +422,28 @@ bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters)
         return false;
     }
 
-    const char* const beg = buf.data();
-    const char* const end = buf.data() + len;
-
-    // Process name is in parentheses; find first '(' and last ')' to handle
-    // names that themselves contain parentheses (e.g. "process (name)").
-    const char* nameStart = beg;
-    while (nameStart < end && *nameStart != '(')
-    {
-        ++nameStart;
-    }
-    if (nameStart >= end)
-    {
-        return false;
-    }
-
-    const char* nameEnd = end - 1;
-    while (nameEnd > nameStart && *nameEnd != ')')
-    {
-        --nameEnd;
-    }
-    if (nameEnd <= nameStart)
+    // One parser for the format (#1183): the start time read here is the one the identity check
+    // before a process action (#973) and socket attribution (#1336) read.
+    const auto fields = ProcParsing::parseStatFields(std::string_view(buf.data(), len));
+    if (!fields.has_value())
     {
         return false;
     }
 
     counters.pid = pid;
-    counters.name = std::string(nameStart + 1, static_cast<std::size_t>(nameEnd - nameStart - 1));
-
-    // Fields follow the closing ')': ") state ppid pgrp ..."
-    const char* q = nameEnd + 1;
-    if (q < end && *q == ' ')
-    {
-        ++q;
-    }
-
-    char stateChar = '?';
-    int32_t parentPid = 0;
-    int32_t pgrp = 0;
-    int32_t session = 0;
-    int32_t ttyNr = 0;
-    int32_t tpgid = 0;
-    uint32_t flags = 0;
-    uint64_t minflt = 0;
-    uint64_t cminflt = 0;
-    uint64_t majflt = 0;
-    uint64_t cmajflt = 0;
-    uint64_t utime = 0;
-    uint64_t stime = 0;
-    int64_t cutime = 0;
-    int64_t cstime = 0;
-    int64_t priority = 0;
-    int64_t nice = 0;
-    int64_t numThreads = 0;
-    int64_t itrealvalue = 0;
-    uint64_t starttime = 0;
-    uint64_t vsize = 0;
-    int64_t rss = 0;
-
-    // State is a single character; skip leading whitespace then read it.
-    q = skipSpaces(q, end);
-    if (q >= end)
-    {
-        return false;
-    }
-    stateChar = *q++;
-
-    // clang-format off
-    if (!parseNum(q, end, parentPid)  || !parseNum(q, end, pgrp)        ||
-        !parseNum(q, end, session)    || !parseNum(q, end, ttyNr)       ||
-        !parseNum(q, end, tpgid)      || !parseNum(q, end, flags)       ||
-        !parseNum(q, end, minflt)     || !parseNum(q, end, cminflt)     ||
-        !parseNum(q, end, majflt)     || !parseNum(q, end, cmajflt)     ||
-        !parseNum(q, end, utime)      || !parseNum(q, end, stime)       ||
-        !parseNum(q, end, cutime)     || !parseNum(q, end, cstime)      ||
-        !parseNum(q, end, priority)   || !parseNum(q, end, nice)        ||
-        !parseNum(q, end, numThreads) || !parseNum(q, end, itrealvalue) ||
-        !parseNum(q, end, starttime)  || !parseNum(q, end, vsize)       ||
-        !parseNum(q, end, rss))
-    // clang-format on
-    {
-        return false;
-    }
-
-    counters.state = stateChar;
-    counters.parentPid = parentPid;
-    counters.userTime = utime;
-    counters.systemTime = stime;
-    counters.threadCount = clampToI32((numThreads > 0) ? numThreads : 1);
-    counters.startTimeTicks = starttime;
+    counters.name = std::string(fields->comm);
+    counters.state = fields->state;
+    counters.parentPid = fields->parentPid;
+    counters.userTime = fields->userTime;
+    counters.systemTime = fields->systemTime;
+    counters.threadCount = clampToI32((fields->numThreads > 0) ? fields->numThreads : 1);
+    counters.startTimeTicks = fields->startTime;
 
     // Convert start time from jiffies since boot to Unix epoch seconds
     // startTimeTicks is in clock ticks (jiffies), m_BootTimeEpoch is Unix epoch seconds
     if (m_BootTimeEpoch > 0 && m_TicksPerSecond > 0)
     {
-        const auto secondsSinceBoot = starttime / static_cast<uint64_t>(m_TicksPerSecond);
+        const auto secondsSinceBoot = fields->startTime / static_cast<uint64_t>(m_TicksPerSecond);
         constexpr auto maxEpoch = std::numeric_limits<uint64_t>::max();
 
         // Overflow protection: ensure addition won't wrap
@@ -483,10 +458,10 @@ bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters)
         }
     }
 
-    counters.virtualBytes = vsize;
-    counters.rssBytes = toU64PositiveOr(rss, 0ULL) * m_PageSize;
-    counters.nice = clampToI32(nice);
-    counters.pageFaultCount = minflt + majflt; // Total page faults (minor + major)
+    counters.virtualBytes = fields->virtualBytes;
+    counters.rssBytes = toU64PositiveOr(fields->rssPages, 0ULL) * m_PageSize;
+    counters.nice = clampToI32(fields->nice);
+    counters.pageFaultCount = fields->minorFaults + fields->majorFaults; // Total page faults (minor + major)
 
     return true;
 }
@@ -517,55 +492,150 @@ void LinuxProcessProbe::parseProcessStatm(int32_t pid, ProcessCounters& counters
     }
 }
 
-void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot)
+std::optional<CpuAffinity> LinuxProcessProbe::readOnlineCpus(const std::filesystem::path& cpuSysfsRoot)
 {
-    // Read /proc/[pid]/status for UID (owner) information
-    // Format is key:value pairs, one per line
-    // We need: Uid: <real> <effective> <saved> <filesystem>
+    // <cpuSysfsRoot>/online is a kernel CPU list ("0-7", "0-3,6-7"), a few bytes on any real machine.
+    // A list that fills the buffer may be cut off, so it is then read whole instead (bounded).
+    const std::string onlinePath = (cpuSysfsRoot / "online").string();
+    constexpr std::size_t BUF_SIZE = 256;
+    std::array<char, BUF_SIZE> buf{};
+    const std::size_t len = readProcFile(onlinePath.c_str(), buf.data(), BUF_SIZE);
+    if (len == 0)
+    {
+        return std::nullopt;
+    }
+    if (len < BUF_SIZE)
+    {
+        return CpuAffinity::fromCpuList(std::string_view(buf.data(), len));
+    }
+    constexpr std::size_t MAX_ONLINE_SIZE = std::size_t{1} << 20U; // 1 MiB, far above any real list
+    const std::vector<char> full = readProcFileBounded(onlinePath, 4 * BUF_SIZE, MAX_ONLINE_SIZE);
+    if (full.empty() || full.size() == MAX_ONLINE_SIZE)
+    {
+        return std::nullopt; // Unreadable now, or possibly cut off
+    }
+    return CpuAffinity::fromCpuList(std::string_view(full.data(), full.size()));
+}
+
+void LinuxProcessProbe::parseProcessStatus(int32_t pid,
+                                           ProcessCounters& counters,
+                                           const std::filesystem::path& procRoot,
+                                           const std::optional<CpuAffinity>& onlineCpus)
+{
+    // Read /proc/[pid]/status, key:value pairs one per line, for:
+    //   Uid:               <real> <effective> <saved> <filesystem>  -- the owner
+    //   VmHWM:             <n> kB                                    -- peak resident set size (#1184)
+    //   Cpus_allowed_list: <kernel CPU list, e.g. 0-3,64-127>        -- the CPU affinity
+    // A kernel thread has no Vm* lines at all. The affinity used to come from sched_getaffinity(),
+    // packed into a 64-bit mask that dropped every CPU from 64 up (#1247). The list here has no width
+    // limit, is already in the file this reads, and follows procRoot (sched_getaffinity() asked the
+    // real kernel about a test's fake pid). It is the task's raw mask, though, which keeps CPUs that
+    // are possible but offline (a VM's hot-add slots, SMT turned off); sched_getaffinity() ANDed it
+    // with the active CPUs, and this ANDs it with the online list (#1384).
 
     const std::string statusPath = (procRoot / std::to_string(pid) / "status").string();
-    constexpr std::size_t BUF_SIZE = 2048;
+    // A status file is about 1.5 KiB. Big enough for the usual file, Cpus_allowed's hex mask on a
+    // many-CPU kernel included, without allocating.
+    constexpr std::size_t BUF_SIZE = 8192;
     std::array<char, BUF_SIZE> buf{};
     const std::size_t len = readProcFile(statusPath.c_str(), buf.data(), BUF_SIZE);
     if (len == 0)
     {
         return;
     }
-    if (len == BUF_SIZE)
+    constexpr std::string_view UID_PREFIX = "Uid:";
+    constexpr std::string_view VM_HWM_PREFIX = "VmHWM:";
+    constexpr std::string_view CPUS_ALLOWED_LIST_PREFIX = "Cpus_allowed_list:";
+    constexpr std::uint64_t BYTES_PER_KIB = 1024;
+
+    std::string_view text(buf.data(), len);
+    std::vector<char> fullStatus;
+    // A file that filled the buffer was cut off there. Uid: comes first, so the read is only redone
+    // when a VmHWM: or Cpus_allowed_list: line did not make it in whole (a kernel thread's missing
+    // VmHWM: counts too, but its file -- no Vm* lines -- only fills the buffer with a long CPU list).
+    if (len == BUF_SIZE && (!hasCompleteLine(text, VM_HWM_PREFIX) || !hasCompleteLine(text, CPUS_ALLOWED_LIST_PREFIX)))
     {
-        // readProcFile() truncates silently at BUF_SIZE. "Uid:" is well inside this on
-        // every kernel this project has seen, but if a future kernel adds/grows earlier
-        // fields (Groups:, Seccomp_filters:, ...) enough to push it past the buffer, this
-        // makes that regression diagnosable instead of a silently-empty counters.user.
-        spdlog::debug("LinuxProcessProbe: /proc/{}/status truncated at {} bytes; Uid: may have been missed", pid, BUF_SIZE);
+        // readProcFile() truncates silently at BUF_SIZE: a long Groups: line can push VmHWM past it,
+        // and a sparse Cpus_allowed_list (0,2,...,8190 is about 20 KiB) runs past it too. Read the
+        // whole file once instead, bounded well above any real status file; if that fails (the
+        // process just exited), fall back to the prefix. Either way a VmHWM: or Cpus_allowed_list:
+        // line cut off by the end of what was read is ignored below rather than read in part.
+        constexpr std::size_t MAX_STATUS_SIZE = std::size_t{1} << 20U; // 1 MiB
+        fullStatus = readProcFileBounded(statusPath, 4 * BUF_SIZE, MAX_STATUS_SIZE);
+        if (!fullStatus.empty())
+        {
+            text = std::string_view(fullStatus.data(), fullStatus.size());
+        }
+        else
+        {
+            spdlog::debug("LinuxProcessProbe: /proc/{}/status truncated at {} bytes; Uid:/VmHWM:/Cpus_allowed_list: may have been missed",
+                          pid,
+                          BUF_SIZE);
+        }
     }
 
-    const char* p = buf.data();
-    const char* const end = buf.data() + len;
-    while (p < end)
+    bool haveUid = false;
+    bool havePeakRss = false;
+    bool haveAffinity = false;
+    const char* p = text.data();
+    const char* const end = text.data() + text.size();
+    while (p < end && !(haveUid && havePeakRss && haveAffinity))
     {
         const char* lineEnd = p;
         while (lineEnd < end && *lineEnd != '\n')
         {
             ++lineEnd;
         }
+        const std::string_view line(p, static_cast<std::size_t>(lineEnd - p));
 
-        // Look for "Uid:" line
-        constexpr std::string_view UID_PREFIX = "Uid:";
-        if (static_cast<std::size_t>(lineEnd - p) > UID_PREFIX.size() && std::string_view(p, UID_PREFIX.size()) == UID_PREFIX)
+        if (!haveUid && line.size() > UID_PREFIX.size() && line.starts_with(UID_PREFIX))
         {
+            haveUid = true;
             // Skip "Uid:" and whitespace, parse first UID with from_chars (no alloc)
-            const char* ptr = p + UID_PREFIX.size();
-            while (ptr < lineEnd && (*ptr == ' ' || *ptr == '\t'))
-            {
-                ++ptr;
-            }
+            const char* ptr = ProcParsing::skipSpaces(p + UID_PREFIX.size(), lineEnd);
             uid_t realUid = 0;
             if (std::from_chars(ptr, lineEnd, realUid).ec == std::errc{})
             {
                 counters.user = getUsername(realUid);
             }
-            break;
+        }
+        else if (!havePeakRss && line.starts_with(VM_HWM_PREFIX))
+        {
+            havePeakRss = true;
+            // Only a whole line (newline-terminated): a line cut off by the read could hold a
+            // truncated number.
+            const char* ptr = p + VM_HWM_PREFIX.size();
+            std::uint64_t peakKib = 0;
+            if (lineEnd < end && parseNum(ptr, lineEnd, peakKib) && peakKib <= (std::numeric_limits<std::uint64_t>::max() / BYTES_PER_KIB))
+            {
+                // Never below the resident size statm gave a moment ago: the kernel's RSS counters
+                // are batched per CPU, so the two reads can disagree by a little.
+                counters.peakRssBytes = std::max(peakKib * BYTES_PER_KIB, counters.rssBytes);
+            }
+        }
+        else if (!haveAffinity && line.starts_with(CPUS_ALLOWED_LIST_PREFIX))
+        {
+            haveAffinity = true;
+            // Only a whole line: one the buffer cut off could read "0-12" for "0-127".
+            if (lineEnd < end)
+            {
+                const std::string_view list = line.substr(CPUS_ALLOWED_LIST_PREFIX.size());
+                if (auto affinity = CpuAffinity::fromCpuList(list))
+                {
+                    if (onlineCpus.has_value())
+                    {
+                        affinity->intersectWith(*onlineCpus);
+                        if (affinity->empty())
+                        {
+                            // None of its CPUs online (a hotplug racing this sample): keep the raw
+                            // list rather than report the affinity as unreadable. Rare, so re-parse
+                            // instead of copying every process's list up front.
+                            affinity = CpuAffinity::fromCpuList(list);
+                        }
+                    }
+                    counters.cpuAffinity = std::move(affinity).value_or(CpuAffinity{});
+                }
+            }
         }
 
         p = (lineEnd < end) ? lineEnd + 1 : end;
@@ -664,38 +734,6 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
     }
 
     counters.command = std::move(cmdline);
-}
-
-void LinuxProcessProbe::parseProcessAffinity(int32_t pid, ProcessCounters& counters)
-{
-    // Use sched_getaffinity to read CPU affinity mask for the process
-    // This returns which CPU cores the process is allowed to run on
-
-    // NOLINTNEXTLINE(misc-include-cleaner) - cpu_set_t is provided by <sched.h>
-    cpu_set_t cpuSet;
-    CPU_ZERO(&cpuSet);
-
-    // sched_getaffinity returns the affinity for the main thread of the process
-    if (sched_getaffinity(pid, sizeof(cpu_set_t), &cpuSet) == 0)
-    {
-        // Convert cpu_set_t to a bitmask that fits in uint64_t
-        // This limits us to 64 cores, which is reasonable for most systems
-        const int maxCpus = std::min(CPU_SETSIZE, 64);
-        std::uint64_t mask = 0;
-        for (int cpu = 0; cpu < maxCpus; ++cpu)
-        {
-            if (CPU_ISSET(static_cast<size_t>(cpu), &cpuSet) != 0)
-            {
-                mask |= (1ULL << cpu);
-            }
-        }
-        counters.cpuAffinityMask = mask;
-    }
-    else
-    {
-        // If sched_getaffinity fails (e.g., permission denied), set mask to 0
-        counters.cpuAffinityMask = 0;
-    }
 }
 
 void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot)
@@ -859,7 +897,7 @@ bool LinuxProcessProbe::checkIoCountersAvailability(const std::filesystem::path&
     return true;
 }
 
-std::string LinuxProcessProbe::getProcessStatus(int32_t pid, const std::filesystem::path& procRoot)
+std::string LinuxProcessProbe::getProcessStatus(int32_t pid, const std::filesystem::path& procRoot, const std::filesystem::path& cgroupRoot)
 {
     // /proc/<pid>/cgroup names the process's cgroups: the v2 "0::<path>" line and/or v1 lines,
     // including the freezer controller's. isCgroupFrozen() checks the matching freeze state.
@@ -867,8 +905,7 @@ std::string LinuxProcessProbe::getProcessStatus(int32_t pid, const std::filesyst
     // at the wrong cgroup.events (#1228 review).
     const auto cgroupPath = (procRoot / std::to_string(pid) / "cgroup").string();
     const std::vector<char> cgroupContents = ProcParsing::readProcFileFull(cgroupPath.c_str());
-    if (!cgroupContents.empty() &&
-        CgroupPath::isCgroupFrozen(std::string_view(cgroupContents.data(), cgroupContents.size()), std::filesystem::path("/sys/fs/cgroup")))
+    if (!cgroupContents.empty() && CgroupPath::isCgroupFrozen(std::string_view(cgroupContents.data(), cgroupContents.size()), cgroupRoot))
     {
         return "Suspended";
     }

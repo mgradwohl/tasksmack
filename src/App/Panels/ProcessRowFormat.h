@@ -270,7 +270,7 @@ struct RowFormatCache
     AlignedCellText threads;    // countCell(threadCount), or unavailable
     AlignedCellText handles;    // countCell(handleCount), or unavailable
     AlignedCellText pageFaults; // countCell(pageFaults), or unavailable
-    AlignedCellText affinity;   // formatCpuAffinityMask         — rarely changes
+    AlignedCellText affinity;   // formatCpuAffinity             — rarely changes
     AlignedCellText gdiObjects; // countCell(*gdiObjectCount), or unavailable
 
     // Widths of the cells drawn straight from the snapshot's own text (#1141); see LazyTextWidth.
@@ -371,15 +371,15 @@ struct RowFormatCache
             (proc.handleCountAvailable && proc.handleCount >= 0) ? countCell(proc.handleCount) : unavailableCell(UNREADABLE_CELL_REASON);
     }
     fmt.pageFaults = options.hasPageFaults ? countCell(proc.pageFaults) : unavailableCell(UNSUPPORTED_CELL_REASON);
-    // A mask of 0 is one that was not read (ProcessSnapshot::cpuAffinityMask): a process can always run somewhere.
+    // An empty affinity is one that was not read (ProcessSnapshot::cpuAffinity): a process can always run somewhere.
     if (!options.hasCpuAffinity)
     {
         fmt.affinity = unavailableCell(UNSUPPORTED_CELL_REASON);
     }
     else
     {
-        fmt.affinity = (proc.cpuAffinityMask != 0) ? makeAlignedCellText(UI::Format::formatCpuAffinityMask(proc.cpuAffinityMask))
-                                                   : unavailableCell(UNREADABLE_CELL_REASON);
+        fmt.affinity = !proc.cpuAffinity.empty() ? makeAlignedCellText(UI::Format::formatCpuAffinity(proc.cpuAffinity.words()))
+                                                 : unavailableCell(UNREADABLE_CELL_REASON);
     }
     // No GDI count means the process could not be opened; 0 is a background process that owns none.
     if (!options.hasGdiObjects)

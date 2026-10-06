@@ -6,8 +6,10 @@
 
 #include <gtest/gtest.h>
 
+#include <bit>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 
 namespace UI::Widgets
@@ -140,7 +142,9 @@ TEST(HistoryPlotHeightTest, FeedbackSettlesAndStaysPut)
     for (int frame = 0; frame < 12; ++frame)
     {
         const float height = computeFillPlotHeight(em, available, nonPlot, measuredCount, chartEm);
-        if (frame >= 2 && height != previous)
+        // Exact frame-to-frame stability is the property under test: even a sub-ulp change would
+        // move the plots by a fraction of a pixel and shimmer. Compare bit patterns, not values (#1381).
+        if (frame >= 2 && std::bit_cast<std::uint32_t>(height) != std::bit_cast<std::uint32_t>(previous))
         {
             ++changesAfterSettling;
         }

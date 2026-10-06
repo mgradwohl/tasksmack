@@ -1050,7 +1050,7 @@ TEST(ProcessModelTest, CpuAffinityIsPassedThrough)
 {
     auto probe = std::make_unique<MockProcessProbe>();
     Platform::ProcessCounters counter = makeCounter(100, "affinity_test", 'R', 1000, 500);
-    counter.cpuAffinityMask = 0x0F; // Cores 0-3
+    counter.cpuAffinity = Platform::CpuAffinity::fromMask(0x0F); // Cores 0-3
     probe->setCounters({counter});
     probe->setTotalCpuTime(100000);
 
@@ -1059,14 +1059,14 @@ TEST(ProcessModelTest, CpuAffinityIsPassedThrough)
 
     auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 1);
-    EXPECT_EQ(snaps[0].cpuAffinityMask, 0x0F);
+    EXPECT_EQ(snaps[0].cpuAffinity, Platform::CpuAffinity::fromMask(0x0F));
 }
 
-TEST(ProcessModelTest, CpuAffinityZeroWhenNotAvailable)
+TEST(ProcessModelTest, CpuAffinityEmptyWhenNotAvailable)
 {
     auto probe = std::make_unique<MockProcessProbe>();
     Platform::ProcessCounters counter = makeCounter(100, "no_affinity", 'R', 1000, 500);
-    counter.cpuAffinityMask = 0; // Not available
+    // cpuAffinity left empty: not available
     probe->setCounters({counter});
     probe->setTotalCpuTime(100000);
 
@@ -1075,14 +1075,14 @@ TEST(ProcessModelTest, CpuAffinityZeroWhenNotAvailable)
 
     auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 1);
-    EXPECT_EQ(snaps[0].cpuAffinityMask, 0);
+    EXPECT_TRUE(snaps[0].cpuAffinity.empty());
 }
 
 TEST(ProcessModelTest, CpuAffinityAllCores)
 {
     auto probe = std::make_unique<MockProcessProbe>();
     Platform::ProcessCounters counter = makeCounter(100, "all_cores", 'R', 1000, 500);
-    counter.cpuAffinityMask = 0xFFFFFFFFFFFFFFFF; // All 64 cores
+    counter.cpuAffinity = Platform::CpuAffinity::fromMask(0xFFFFFFFFFFFFFFFF); // All 64 cores
     probe->setCounters({counter});
     probe->setTotalCpuTime(100000);
 
@@ -1091,7 +1091,26 @@ TEST(ProcessModelTest, CpuAffinityAllCores)
 
     auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 1);
-    EXPECT_EQ(snaps[0].cpuAffinityMask, 0xFFFFFFFFFFFFFFFF);
+    EXPECT_EQ(snaps[0].cpuAffinity, Platform::CpuAffinity::fromMask(0xFFFFFFFFFFFFFFFF));
+}
+
+// #1247: processors at 64 and above reach the snapshot instead of being cut off at 64 bits.
+TEST(ProcessModelTest, CpuAffinityBeyond64CoresIsPassedThrough)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters counter = makeCounter(100, "pinned_high", 'R', 1000, 500);
+    counter.cpuAffinity = *Platform::CpuAffinity::fromCpuList("0-3,70,128-255");
+    probe->setCounters({counter});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].cpuAffinity, *Platform::CpuAffinity::fromCpuList("0-3,70,128-255"));
+    EXPECT_TRUE(snaps[0].cpuAffinity.test(70));
+    EXPECT_EQ(snaps[0].cpuAffinity.count(), 4U + 1U + 128U);
 }
 
 // =============================================================================
@@ -2255,6 +2274,39 @@ TEST(ProcessModelTest, ShrinkingTheHistoryWindowPublishesTheTrimmedSystemHistori
 // Peak RSS Tracking Tests
 // =============================================================================
 
+TEST(ProcessModelTest, AnOsPeakThatDecreasesKeepsTheHighestPeakSeen)
+{
+    // #1351 review: with hasPeakRss the OS peak (Linux VmHWM) is used, but VmHWM resets on exec while
+    // the PID and start time stay the same; Peak Mem must not drop below a peak already observed.
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setTotalCpuTime(100000);
+    Platform::ProcessCapabilities caps = probe->capabilities();
+    caps.hasPeakRss = true;
+    probe->setCapabilities(caps);
+    auto* rawProbe = probe.get();
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
+
+    auto counter = makeCounter(100, "proc1", 'R', 1000, 500, 1000, 10 * 1024 * 1024);
+    counter.peakRssBytes = 50 * 1024 * 1024;
+    rawProbe->setCounters({counter});
+    model.refresh();
+    ASSERT_EQ(model.snapshots().size(), 1U);
+    EXPECT_EQ(model.snapshots()[0].peakMemoryBytes, 50U * 1024 * 1024);
+
+    clock.advance(std::chrono::milliseconds(10));
+    counter.peakRssBytes = 12 * 1024 * 1024; // exec reset VmHWM; same PID and start time
+    rawProbe->setCounters({counter});
+    model.refresh();
+    EXPECT_EQ(model.snapshots()[0].peakMemoryBytes, 50U * 1024 * 1024) << "an observed peak is kept";
+
+    clock.advance(std::chrono::milliseconds(10));
+    counter.peakRssBytes = 80 * 1024 * 1024;
+    rawProbe->setCounters({counter});
+    model.refresh();
+    EXPECT_EQ(model.snapshots()[0].peakMemoryBytes, 80U * 1024 * 1024);
+}
+
 TEST(ProcessModelTest, PeakRssTracksMaximumMemory)
 {
     auto probe = std::make_unique<MockProcessProbe>();
@@ -2302,6 +2354,39 @@ TEST(ProcessModelTest, PeakRssTracksMaximumMemory)
     auto peak3 = snaps3[0].peakMemoryBytes;
 
     EXPECT_EQ(peak3, 20 * 1024 * 1024); // Peak should not decrease
+}
+
+TEST(ProcessModelTest, PageFaultRateCountsThroughTheProbesCounterWidth)
+{
+    // #1184: Windows keeps the page-fault count in a 32-bit ULONG. A wrap between samples is that
+    // interval's faults, not a 0 rate; a 64-bit counter that goes down is still a reset.
+    constexpr std::uint64_t MAX32 = 0xFFFF'FFFFULL;
+    for (const std::uint8_t bits : {std::uint8_t{32}, std::uint8_t{64}})
+    {
+        SCOPED_TRACE(static_cast<int>(bits));
+        auto probe = std::make_unique<MockProcessProbe>();
+        probe->setTotalCpuTime(100000);
+        probe->setCapabilities(Platform::ProcessCapabilities{.hasPageFaults = true, .pageFaultCountBits = bits});
+        auto* rawProbe = probe.get();
+        ManualClock clock;
+        Domain::ProcessModel model(std::move(probe), clock.now());
+
+        auto counter = makeCounter(100, "proc1", 'R', 1000, 500, 1000, 1024);
+        counter.pageFaultCount = MAX32 - 99;
+        rawProbe->setCounters({counter});
+        model.refresh();
+
+        clock.advance(std::chrono::seconds(1));
+        counter.pageFaultCount = 100; // 200 faults later, past the 32-bit top
+        counter.userTime += 100;
+        rawProbe->setCounters({counter});
+        rawProbe->setTotalCpuTime(200000);
+        model.refresh();
+
+        const auto snaps = model.snapshots();
+        ASSERT_EQ(snaps.size(), 1U);
+        EXPECT_DOUBLE_EQ(snaps[0].pageFaultsPerSec, bits == 32 ? 200.0 : 0.0);
+    }
 }
 
 TEST(ProcessModelTest, PeakRssResetForNewProcess)

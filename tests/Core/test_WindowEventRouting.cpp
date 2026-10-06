@@ -62,6 +62,13 @@ TEST(WindowEventRoutingTest, OsRestoreIsRouted)
     EXPECT_EQ(classify(SDL_EVENT_WINDOW_RESTORED), Action::SystemRestored);
 }
 
+TEST(WindowEventRoutingTest, MinimizeIsRouted)
+{
+    // A minimize must reach Window::restoreForShellMinimize(): Win+Down on the client-side maximized
+    // window minimized it instead of restoring it (#1279).
+    EXPECT_EQ(classify(SDL_EVENT_WINDOW_MINIMIZED), Action::Minimized);
+}
+
 TEST(WindowEventRoutingTest, DisplayScaleChangeIsRouted)
 {
     // An in-place scale change must refresh the normal geometry's scale: otherwise a later outside
@@ -75,7 +82,7 @@ TEST(WindowEventRoutingTest, OtherEventsNeedNoRouting)
     EXPECT_EQ(classify(SDL_EVENT_KEY_DOWN), Action::None);
     EXPECT_EQ(classify(SDL_EVENT_MOUSE_MOTION), Action::None);
     EXPECT_EQ(classify(SDL_EVENT_WINDOW_FOCUS_GAINED), Action::None);
-    EXPECT_EQ(classify(SDL_EVENT_WINDOW_MINIMIZED), Action::None);
+    EXPECT_EQ(classify(SDL_EVENT_WINDOW_HIDDEN), Action::None);
 }
 
 TEST(WindowEventRoutingTest, ExposeAtTheSameSizeIsNotAResize)

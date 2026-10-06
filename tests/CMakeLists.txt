@@ -132,6 +132,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_CgroupFreezerPath.cpp
     Platform/test_ProcessIdentity.cpp
     Platform/test_ProcessName.cpp
+    Platform/test_CpuAffinity.cpp
     App/test_FpsCounter.cpp
     App/test_Panel.cpp
     App/test_ProcessesPanel.cpp

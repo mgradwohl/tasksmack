@@ -210,17 +210,21 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         const auto& selectedIface = interfaces[static_cast<size_t>(selectedInterface)];
         if (selectedIface.linkSpeedMbps > 0)
         {
-            // In the rates' own unit, so it compares with them at a glance, then as the adapter is
-            // rated (#1202). Built once per link speed, not every frame (#1171).
+            // In bits, as the adapter is rated ("10 Gbit/s"); its byte-rate equivalent, which
+            // compares with the rates, on hover (#1373). Built once per link speed, not every
+            // frame (#1171).
             if (cache.linkTextMbps != selectedIface.linkSpeedMbps)
             {
-                auto text = std::format("Link: {} ({})",
-                                        UI::Format::formatLinkSpeed(selectedIface.linkSpeedMbps),
-                                        UI::Format::formatLinkSpeedNominal(selectedIface.linkSpeedMbps));
+                auto text = std::format("Link: {}", UI::Format::formatLinkSpeed(selectedIface.linkSpeedMbps));
                 cache.linkText = std::move(text);
                 cache.linkTextMbps = selectedIface.linkSpeedMbps;
             }
             ImGui::TextColored(theme.scheme().textMuted, "%s", cache.linkText.c_str());
+            if (ImGui::IsItemHovered())
+            {
+                const std::string byteRate = UI::Format::formatLinkSpeedAsByteRate(selectedIface.linkSpeedMbps);
+                ImGui::SetTooltip("Up to %s", byteRate.c_str());
+            }
         }
         else
         {
@@ -608,7 +612,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
             ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, typeColumnWidth);
             ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_None, 2.5F);
             ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_None, 0.8F);
-            ImGui::TableSetupColumn("Speed", ImGuiTableColumnFlags_None, 1.2F); // A rate, like Sent and Received (#1202)
+            ImGui::TableSetupColumn("Speed", ImGuiTableColumnFlags_None, 1.2F); // The link speed, in bits (#1373)
             // Sent/Received, the words the charts and the process table use (#1203)
             ImGui::TableSetupColumn("Sent", ImGuiTableColumnFlags_None, 1.2F);
             ImGui::TableSetupColumn("Received", ImGuiTableColumnFlags_None, 1.2F);
@@ -663,14 +667,14 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                 ImGui::TableNextColumn();
                 if (iface.linkSpeedMbps > 0)
                 {
-                    // The same unit as the Sent and Received columns beside it; the rated speed
-                    // ("1 Gbps") on hover (#1202).
+                    // In bits, as the adapter is rated ("10 Gbit/s"); the byte rate it carries at
+                    // most, in the Sent and Received columns' unit, on hover (#1373).
                     const std::string speedText = UI::Format::formatLinkSpeed(iface.linkSpeedMbps);
                     ImGui::TextUnformatted(speedText.c_str());
                     if (ImGui::IsItemHovered())
                     {
-                        const std::string rated = UI::Format::formatLinkSpeedNominal(iface.linkSpeedMbps);
-                        ImGui::SetTooltip("Rated %s", rated.c_str());
+                        const std::string byteRate = UI::Format::formatLinkSpeedAsByteRate(iface.linkSpeedMbps);
+                        ImGui::SetTooltip("Up to %s", byteRate.c_str());
                     }
                 }
                 else

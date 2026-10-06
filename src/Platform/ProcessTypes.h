@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Platform/CpuAffinity.h"
+
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -30,7 +32,8 @@ struct ProcessCounters
 
     // Memory (bytes)
     std::uint64_t rssBytes = 0;
-    std::uint64_t peakRssBytes = 0; // Peak working set (OS-provided on Windows, computed on Linux)
+    std::uint64_t peakRssBytes = 0; // OS-reported peak resident size, 0 = unknown (Linux: VmHWM, which resets on
+                                    // exec; Windows: PeakWorkingSetSize). Domain keeps the highest peak it observed.
     std::uint64_t virtualBytes = 0;
     std::uint64_t sharedBytes = 0; // Shared memory (from statm on Linux)
 
@@ -38,9 +41,9 @@ struct ProcessCounters
     std::uint64_t readBytes = 0;
     std::uint64_t writeBytes = 0;
     std::int32_t threadCount = 0;
-    std::int32_t handleCount = 0;      // Open handles (Windows) or file descriptors (Linux)
-    std::uint64_t pageFaultCount = 0;  // Total page faults (minor + major on Linux)
-    std::uint64_t cpuAffinityMask = 0; // Bitmask of allowed CPU cores (0 = not available)
+    std::int32_t handleCount = 0;     // Open handles (Windows) or file descriptors (Linux)
+    std::uint64_t pageFaultCount = 0; // Total page faults (minor + major on Linux)
+    CpuAffinity cpuAffinity;          // Logical processors it may run on (empty = not available)
 
     // Network counters (cumulative bytes). A probe that reports per-connection readings instead
     // (IProcessProbe::readSocketTraffic()) leaves these 0; Domain fills them from the readings.
@@ -147,6 +150,10 @@ struct ProcessCapabilities
                                         //          Remains false when EStats is simply unsupported, because
                                         //          running as Administrator would not restore those counters.
     bool hasSharedMemory = false;       // Whether ProcessCounters::sharedBytes is filled (Linux: statm; not on Windows)
+    // How many bits ProcessCounters::pageFaultCount is kept in by the OS before it wraps to 0 (#1184).
+    // Linux: 64 (minflt + majflt, unsigned long). Windows: 32 (SYSTEM_PROCESS_INFORMATION's ULONG
+    // PageFaultCount, which a long-lived process can pass). Domain takes deltas modulo 2^bits.
+    std::uint8_t pageFaultCountBits = 64;
 
     friend bool operator==(const ProcessCapabilities&, const ProcessCapabilities&) = default;
 };

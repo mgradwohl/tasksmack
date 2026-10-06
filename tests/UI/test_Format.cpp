@@ -69,6 +69,26 @@ TEST(FormatTest, AffinityMaskHighCores)
     EXPECT_EQ(UI::Format::formatCpuAffinityMask(0xF000000000000000ULL), "60-63");
     EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x3000000000000000ULL), "60,61");
 }
+
+// #1247: affinities wider than 64 processors list exactly the processors allowed.
+TEST(FormatTest, AffinityBeyond64Cpus)
+{
+    using Words = std::vector<std::uint64_t>;
+    const auto format = [](const Words& words)
+    {
+        return UI::Format::formatCpuAffinity(words);
+    };
+    EXPECT_EQ(format(Words{}), "-");
+    EXPECT_EQ(format(Words{0, 1ULL << 6U}), "70");                         // taskset -c 70
+    EXPECT_EQ(format(Words{0xF, ~0ULL}), "0-3,64-127");                    // across the word boundary
+    EXPECT_EQ(format(Words{0xF, 1ULL << 6U}), "0-3,70");                   // the issue's example
+    EXPECT_EQ(format(Words{1ULL << 63U, 1}), "63,64");                     // a pair spanning two words
+    EXPECT_EQ(format(Words{0xFULL << 62U, 0x3}), "62-65");                 // a run spanning two words
+    EXPECT_EQ(format(Words{~0ULL, ~0ULL, ~0ULL, ~0ULL}), "0-255");         // all of a 256-CPU machine
+    EXPECT_EQ(format(Words{0x1, 0, 0, 1ULL << 8U}), "0,200");              // whole zero words skipped
+    EXPECT_EQ(format(Words{0, 0, 0}), "-");                                // no processor set
+    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0xF), format(Words{0xF})); // the 64-bit form agrees
+}
 // =============================================================================
 // Epoch Time Formatting Tests
 // =============================================================================
@@ -1433,19 +1453,43 @@ TEST(FormatTest, FormatMegahertzIsWholeMegahertz)
     EXPECT_EQ(UI::Format::formatMegahertz(std::numeric_limits<double>::quiet_NaN()), "N/A");
 }
 
-TEST(FormatTest, FormatLinkSpeedIsARateInTheRatesUnits)
+TEST(FormatTest, FormatLinkSpeedIsADecimalBitRate)
 {
-    // 1 Gbps = 125,000,000 bytes/s = 119.2 MiB/s
-    EXPECT_EQ(UI::Format::formatLinkSpeed(1000), "119.2 MiB/s");
-    EXPECT_EQ(UI::Format::formatLinkSpeed(100), "11.9 MiB/s");
-    EXPECT_EQ(UI::Format::formatLinkSpeed(1000), UI::Format::formatBytesPerSec(125'000'000.0));
+    // Link speeds are stored in Mbit/s (Linux sysfs speed; Windows TransmitLinkSpeed / 10^6) and
+    // shown in bits, as network hardware is rated (#1373).
+    EXPECT_EQ(UI::Format::formatLinkSpeed(10), "10 Mbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(100), "100 Mbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(866), "866 Mbit/s"); // A Wi-Fi rate
+    EXPECT_EQ(UI::Format::formatLinkSpeed(1000), "1 Gbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(2500), "2.5 Gbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(10'000), "10 Gbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(100'000), "100 Gbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(400'000), "400 Gbit/s");
 }
 
-TEST(FormatTest, FormatLinkSpeedNominalIsTheRatedSpeed)
+TEST(FormatTest, FormatLinkSpeedRoundsToATenthOfAGigabit)
 {
-    EXPECT_EQ(UI::Format::formatLinkSpeedNominal(100), "100 Mbps");
-    EXPECT_EQ(UI::Format::formatLinkSpeedNominal(1000), "1 Gbps");
-    EXPECT_EQ(UI::Format::formatLinkSpeedNominal(2500), "2.5 Gbps");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(999), "999 Mbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(1201), "1.2 Gbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(1250), "1.3 Gbit/s"); // Half rounds up
+    EXPECT_EQ(UI::Format::formatLinkSpeed(2402), "2.4 Gbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(1999), "2 Gbit/s"); // Not "2.0 Gbit/s"
+    EXPECT_EQ(UI::Format::formatLinkSpeed(10'049), "10 Gbit/s");
+}
+
+TEST(FormatTest, FormatLinkSpeedUnknownIsADash)
+{
+    // 0 is the probes' "unknown"; the Interface Status table shows "-" for it.
+    EXPECT_EQ(UI::Format::formatLinkSpeed(0), "-");
+}
+
+TEST(FormatTest, FormatLinkSpeedAsByteRateIsInTheRatesUnits)
+{
+    // 1 Gbit/s = 125,000,000 bytes/s = 119.2 MiB/s; 10 Gbit/s = 1.2 GiB/s
+    EXPECT_EQ(UI::Format::formatLinkSpeedAsByteRate(1000), "119.2 MiB/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeedAsByteRate(100), "11.9 MiB/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeedAsByteRate(10'000), "1.2 GiB/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeedAsByteRate(1000), UI::Format::formatBytesPerSec(125'000'000.0));
 }
 
 TEST(FormatTest, BytesAboveATebibyteUseTiB)
@@ -1838,4 +1882,34 @@ TEST(FormatFixedLocalizedTest, ByteFormattersMatchTheirStdFormatDefinition)
             EXPECT_EQ(UI::Format::formatBytesPerSecWithUnit(bytes, *unit), expected + "/s") << bytes;
         }
     }
+}
+
+// #1366: splitBytesForAlignmentFast() took its thousands separator from a per-thread cache that was
+// filled on first use and never refreshed, so a thread that formatted under the "C" locale kept
+// printing "8658." after a grouping locale was made global, while the slow path printed "8,658.".
+TEST(FormatFixedLocalizedTest, FastByteAlignmentFollowsAGlobalLocaleChange)
+{
+    const UI::Format::ByteUnit bytesUnit{.suffix = "B", .scale = 1.0, .decimals = 1};
+    constexpr double BYTES = 8658.36;
+    {
+        // Format under "C" first on this thread, as an earlier test or early startup code would.
+        const ScopedTestNumpunct classic('.', ',', "");
+        EXPECT_EQ(UI::Format::splitBytesForAlignmentFast(BYTES, bytesUnit).wholePart(), "8658.");
+        EXPECT_TRUE(compareBytesAlignment(BYTES, bytesUnit));
+    }
+    {
+        const ScopedTestNumpunct enUs('.', ',', "\3");
+        EXPECT_EQ(UI::Format::splitBytesForAlignmentFast(BYTES, bytesUnit).wholePart(), "8,658.");
+        EXPECT_TRUE(compareBytesAlignment(BYTES, bytesUnit));
+        EXPECT_TRUE(compareBytesAlignment(1234567.0, bytesUnit));
+    }
+    {
+        const ScopedTestNumpunct deDe(',', '.', "\3");
+        EXPECT_EQ(UI::Format::splitBytesForAlignmentFast(BYTES, bytesUnit).wholePart(), "8.658,");
+        EXPECT_TRUE(compareBytesAlignment(BYTES, bytesUnit));
+    }
+    // And back to no grouping: the separator goes away again.
+    const ScopedTestNumpunct classic('.', ',', "");
+    EXPECT_EQ(UI::Format::splitBytesForAlignmentFast(BYTES, bytesUnit).wholePart(), "8658.");
+    EXPECT_TRUE(compareBytesAlignment(BYTES, bytesUnit));
 }
