@@ -24,44 +24,6 @@
 namespace UI::Format
 {
 
-// ============================================================================
-// Locale caching for thousand separator
-// ============================================================================
-
-/// Get the locale's thousand separator character, cached per-thread for performance.
-/// Uses the default C++ locale (which respects LC_* environment variables when imbued).
-/// Returns '\0' if the locale has no thousand separator (C locale has empty grouping).
-///
-/// @note The separator is cached on first access per thread and will NOT update if the
-///       global locale changes at runtime. This is acceptable since TaskSmack sets the
-///       locale once at startup and does not change it afterwards.
-[[nodiscard]] inline auto getLocaleThousandSep() noexcept -> char
-{
-    // thread_local for thread safety, lazy-init via lambda for efficiency
-    // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables,misc-const-correctness)
-    thread_local char cachedSep = []
-    {
-        try
-        {
-            // Use std::locale() (the global C++ locale) rather than std::locale("")
-            // which can crash on some libc++ configurations
-            const auto& facet = std::use_facet<std::numpunct<char>>(std::locale());
-            // Check if grouping is enabled - if empty, no separators should be inserted
-            // This is how std::format("{:L}", ...) determines whether to use separators
-            if (facet.grouping().empty())
-            {
-                return '\0'; // No grouping in this locale
-            }
-            return facet.thousands_sep();
-        }
-        catch (...)
-        {
-            return '\0'; // Fallback: no separator on error
-        }
-    }();
-    return cachedSep;
-}
-
 /// The global locale's decimal point, the one std::format's "L" specs print, so the table's aligned
 /// cells read "1,5 MB" beside a tooltip's "1,5 MB" in a comma-decimal locale (#1202); '.' in the
 /// "C" locale. Not cached: read once per call from std::locale() (a reference-count bump, no
@@ -118,6 +80,17 @@ struct NumericPunctuation
     {
         return cached; // The last punctuation read (the "C" locale's until one is read successfully)
     }
+}
+
+/// The global locale's thousands separator as std::format("{:L}") inserts it, or '\0' when the locale
+/// has no grouping (the "C" locale), so none is inserted. Reads the per-thread punctuation cache above,
+/// so it follows the current global locale: a thread that formatted before the locale was set, or a
+/// locale change at run time, no longer leaves the fast byte-alignment path on a stale separator
+/// (#1366). Once the cache is warm this costs one std::locale() copy and a pointer compare.
+[[nodiscard]] inline auto getLocaleThousandSep() noexcept -> char
+{
+    const NumericPunctuation& punct = numericPunctuation();
+    return punct.grouping.empty() ? '\0' : punct.thousandsSep;
 }
 
 /// Writes `value` with `decimals` fraction digits into [out, out + capacity), exactly as

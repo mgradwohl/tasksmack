@@ -1859,3 +1859,33 @@ TEST(FormatFixedLocalizedTest, ByteFormattersMatchTheirStdFormatDefinition)
         }
     }
 }
+
+// #1366: splitBytesForAlignmentFast() took its thousands separator from a per-thread cache that was
+// filled on first use and never refreshed, so a thread that formatted under the "C" locale kept
+// printing "8658." after a grouping locale was made global, while the slow path printed "8,658.".
+TEST(FormatFixedLocalizedTest, FastByteAlignmentFollowsAGlobalLocaleChange)
+{
+    const UI::Format::ByteUnit bytesUnit{.suffix = "B", .scale = 1.0, .decimals = 1};
+    constexpr double BYTES = 8658.36;
+    {
+        // Format under "C" first on this thread, as an earlier test or early startup code would.
+        const ScopedTestNumpunct classic('.', ',', "");
+        EXPECT_EQ(UI::Format::splitBytesForAlignmentFast(BYTES, bytesUnit).wholePart(), "8658.");
+        EXPECT_TRUE(compareBytesAlignment(BYTES, bytesUnit));
+    }
+    {
+        const ScopedTestNumpunct enUs('.', ',', "\3");
+        EXPECT_EQ(UI::Format::splitBytesForAlignmentFast(BYTES, bytesUnit).wholePart(), "8,658.");
+        EXPECT_TRUE(compareBytesAlignment(BYTES, bytesUnit));
+        EXPECT_TRUE(compareBytesAlignment(1234567.0, bytesUnit));
+    }
+    {
+        const ScopedTestNumpunct deDe(',', '.', "\3");
+        EXPECT_EQ(UI::Format::splitBytesForAlignmentFast(BYTES, bytesUnit).wholePart(), "8.658,");
+        EXPECT_TRUE(compareBytesAlignment(BYTES, bytesUnit));
+    }
+    // And back to no grouping: the separator goes away again.
+    const ScopedTestNumpunct classic('.', ',', "");
+    EXPECT_EQ(UI::Format::splitBytesForAlignmentFast(BYTES, bytesUnit).wholePart(), "8658.");
+    EXPECT_TRUE(compareBytesAlignment(BYTES, bytesUnit));
+}
