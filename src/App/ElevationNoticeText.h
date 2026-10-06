@@ -18,7 +18,7 @@ namespace App::ElevationNoticeText
 /// The remedy is worded for both causes: sudo alone can't restore capabilities removed from a root
 /// process's bounding set (a container or hardened service), so the capabilities themselves are named.
 /// Keep in step with docs/guide/faq.md ("Process I/O, FDs or network show N/A").
-inline constexpr std::string_view LINUX = "TaskSmack can't read other users' processes.\n\n"
+inline constexpr std::string_view LINUX = "TaskSmack can't read complete data for other users'\nprocesses.\n\n"
                                           "File descriptor counts, I/O statistics and/or\n"
                                           "network usage may be unavailable for processes\n"
                                           "owned by other users.\n\n"

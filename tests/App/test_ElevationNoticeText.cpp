@@ -30,6 +30,8 @@ TEST(ElevationNoticeTextTest, LinuxNoticeNamesEveryValueUnavailableForOtherUsers
     EXPECT_TRUE(LINUX.contains("CAP_SYS_PTRACE"));
     EXPECT_TRUE(LINUX.contains("root alone isn't enough"));
     EXPECT_FALSE(LINUX.contains("without elevated privileges"));
+    // Other users' processes are still listed with their basic fields; only complete data is missing.
+    EXPECT_TRUE(LINUX.contains("complete data"));
 }
 
 TEST(ElevationNoticeTextTest, WindowsNoticeNamesNetwork)

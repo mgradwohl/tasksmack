@@ -128,7 +128,9 @@ struct ProcessCapabilities
     bool hasPublisher = false;          // Whether publisher/vendor string is available (Windows PE version info)
     bool hasProcessType = false;        // Whether process type classification is available (Windows: App/Background/Windows)
     bool hasGdiObjects = false;         // Whether GDI object count is available (Windows-only via GetGuiResources)
-    bool hasReducedPrivileges = false;  // True when elevation would restore currently unavailable data.
+    bool hasReducedPrivileges = false;  // True when the process lacks the privileges to read some data (not
+                                        // necessarily curable by elevation: sudo can't restore capabilities a
+                                        // container or service dropped).
                                         // Linux: the effective set (CapEff), for root too, lacks CAP_SYS_PTRACE
                                         //        or has neither CAP_DAC_READ_SEARCH nor CAP_DAC_OVERRIDE; when
                                         //        it can't be read, not root. FD counts, I/O and network for other

@@ -506,7 +506,7 @@ void ShellLayer::renderStatusBar() const
             ImGui::TextColored(theme.scheme().textWarning, ICON_FA_LOCK);
             if (ImGui::IsItemHovered())
             {
-                ImGui::SetTooltip("Limited data: missing the privileges to read other users' processes");
+                ImGui::SetTooltip("Limited data: some details of other users' processes are unavailable");
             }
             ImGui::SameLine();
         }
