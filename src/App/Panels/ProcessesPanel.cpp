@@ -1363,10 +1363,9 @@ void ProcessesPanel::renderContent()
             // over it. Moving the cursor before TableHeader() moved the item's start too, so an
             // aligned header lost its blank left part as a click target (#1365 review).
             const ImVec2 cellStart = ImGui::GetCursorScreenPos();
-            const float labelOffset = ProcessTableLayout::headerLabelOffset(columnAlignment(col),
-                                                                            ImGui::GetContentRegionAvail().x,
-                                                                            m_TextSizeCache.getHeaderWidth(col),
-                                                                            showsSortArrow ? sortArrowReserve : 0.0F);
+            const float cellWidth = ImGui::GetContentRegionAvail().x;
+            const float labelOffset = ProcessTableLayout::headerLabelOffset(
+                columnAlignment(col), cellWidth, m_TextSizeCache.getHeaderWidth(col), showsSortArrow ? sortArrowReserve : 0.0F);
             // A column this system cannot fill is headed muted, like its cells (#1210).
             const bool columnSupported = ProcessColumnAvailability::isSupported(col, headerCaps, m_PerProcessGpu);
             {
@@ -1375,11 +1374,17 @@ void ProcessesPanel::renderContent()
                 ImGui::TableHeader("##header");
                 ImGui::PopID();
                 // TableHeader() draws its label at the cell's cursor position; this draws ours there,
-                // shifted by the alignment offset, in the (possibly muted) text colour.
-                ImGui::GetWindowDrawList()->AddText(ImVec2(cellStart.x + labelOffset, cellStart.y),
-                                                    ImGui::GetColorU32(ImGuiCol_Text),
-                                                    info.name.data(),
-                                                    info.name.data() + info.name.size());
+                // shifted by the alignment offset, in the (possibly muted) text colour. Ellipsized,
+                // as TableHeader()'s own label is, short of the sort arrow it draws at the right
+                // edge, so a narrow sorted column's name never covers its arrow (#1365 review).
+                const float labelRight = cellStart.x + std::max(0.0F, cellWidth - (showsSortArrow ? sortArrowReserve : 0.0F));
+                ImGui::RenderTextEllipsis(ImGui::GetWindowDrawList(),
+                                          ImVec2(cellStart.x + labelOffset, cellStart.y),
+                                          ImVec2(labelRight, cellStart.y + ImGui::GetTextLineHeight()),
+                                          labelRight,
+                                          info.name.data(),
+                                          info.name.data() + info.name.size(),
+                                          nullptr);
             }
 
             // Show tooltip with full column name and description on hover, and what the column's
