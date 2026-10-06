@@ -4,6 +4,7 @@
 #include "App/Panels/AdaptiveIntervalUtils.h"
 #include "App/Panels/CpuCoreGridIds.h"
 #include "App/Panels/CpuCoresSection.h"
+#include "App/Panels/CpuSummaryText.h"
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/MemorySection.h"
 #include "App/Panels/NetworkSection.h"
@@ -572,9 +573,8 @@ void SystemMetricsPanel::renderOverview()
         fresh.uptime = UI::Format::formatUptimeShort(snap.uptimeSeconds);
 
         // Display: "CPU Model (N logical processors @ X.XX GHz)     Uptime: Xd Yh Zm"
-        // The count is of logical processors, not cores (#1203).
-        fresh.coreInfo = UI::Format::formatLogicalProcessorSummary(
-            snap.coreCount, (snap.cpuFreqMHz > 0) ? Domain::Numeric::toDouble(snap.cpuFreqMHz) : 0.0);
+        // The same summary as the CPU Cores header (#1180).
+        fresh.coreInfo = Detail::cpuCoreSummary(snap.coreCount, snap.cpuFreqMHz);
 
         fresh.processes =
             (processModel != nullptr) ? std::format("Processes: {}", UI::Format::formatIntLocalized(processCount)) : std::string{};
