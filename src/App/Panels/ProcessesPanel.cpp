@@ -803,6 +803,10 @@ void ProcessesPanel::renderContent()
     if (const Platform::ProcessCapabilities caps = processCapabilities();
         caps != m_ColumnDefaultsCapabilities || m_PerProcessGpu != m_ColumnDefaultsPerProcessGpu)
     {
+        // The cached cell texts were formatted for the old capabilities (a GPU cell as a measured
+        // value or as "not available"), and a cache entry is otherwise rebuilt only for a new process
+        // generation; GPU support comes from another model, so it can change between generations.
+        m_RowFormatCache.clear();
         m_ColumnDefaultsCapabilities = caps;
         m_ColumnDefaultsPerProcessGpu = m_PerProcessGpu;
         if (auto changed =
