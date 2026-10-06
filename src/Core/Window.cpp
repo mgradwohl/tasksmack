@@ -630,11 +630,14 @@ void Window::maximize()
     }
 
     // The rectangle being left, taken before anything moves the window. It becomes the restore
-    // target only when the window is not already maximized: a second maximize() must not replace the
-    // normal rectangle with the maximized one (NormalGeometryTracker::maximizing()).
+    // target only when the window is normal right now: a second maximize() must not replace the
+    // normal rectangle with the maximized one (NormalGeometryTracker::maximizing()). isNormalNow()
+    // also reads SDL's live flags: on a client-side backend isMaximized() reads only the tracker,
+    // which hasn't yet heard of a window-manager maximize whose event is still queued, and the live
+    // rectangle would then be the maximized one.
     const WindowGeometry::Rect live = liveRect();
     const float liveScale = getUnitScale();
-    const bool normalNow = !isMaximized();
+    const bool normalNow = isNormalNow();
 
     // For borderless windows, use backend-gated behavior.
     // On native Wayland, prefer compositor maximize (avoids client-side geometry issues).
