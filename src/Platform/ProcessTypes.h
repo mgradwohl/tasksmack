@@ -69,10 +69,11 @@ struct ProcessCounters
     std::optional<std::int32_t> gdiObjectCount;
 
     // Whether the probe could read these for this process (#1110). A probe sets one false when the
-    // read failed -- typically for lack of rights: without root, Linux cannot read another user's
-    // /proc/[pid]/fd or /proc/[pid]/io -- and the value beside it is then a placeholder 0, not a
-    // measurement. The defaults suit a probe that reads every process it lists; a field the probe
-    // never fills at all is reported by ProcessCapabilities instead.
+    // read failed -- typically for lack of rights, and the value beside it is then a placeholder 0, not a measurement. On Linux, for
+    // another user's process: listing /proc/[pid]/fd (handleCount) needs CAP_DAC_READ_SEARCH; /proc/[pid]/io (I/O) and reading the
+    // fd links that network attribution uses also need CAP_SYS_PTRACE (root has both unless they are dropped). The
+    // defaults suit a probe that reads every process it lists; a field the probe never fills at all is reported by ProcessCapabilities
+    // instead.
     bool handleCountAvailable = true;     // handleCount
     bool ioCountersAvailable = true;      // readBytes / writeBytes
     bool networkCountersAvailable = true; // netSentBytes / netReceivedBytes: the process's connections
@@ -128,9 +129,13 @@ struct ProcessCapabilities
     bool hasPublisher = false;          // Whether publisher/vendor string is available (Windows PE version info)
     bool hasProcessType = false;        // Whether process type classification is available (Windows: App/Background/Windows)
     bool hasGdiObjects = false;         // Whether GDI object count is available (Windows-only via GetGuiResources)
-    bool hasReducedPrivileges = false;  // True when elevation would restore currently unavailable data.
-                                        // Linux: non-root (geteuid() != 0); FD counts (/proc/[pid]/fd) and I/O
-                                        //        stats for processes owned by other users are unavailable.
+    bool hasReducedPrivileges = false;  // True when the process lacks the privileges to read some data (not
+                                        // necessarily curable by elevation: sudo can't restore capabilities a
+                                        // container or service dropped).
+                                        // Linux: the effective set (CapEff), for root too, lacks CAP_SYS_PTRACE
+                                        //        or has neither CAP_DAC_READ_SEARCH nor CAP_DAC_OVERRIDE; when
+                                        //        it can't be read, not root. FD counts, I/O and network for other
+                                        //        users' processes are then (partly) unavailable (ProcPrivileges.h).
                                         // Windows: non-admin AND EStats was specifically denied (ERROR_ACCESS_DENIED).
                                         //          Remains false when EStats is simply unsupported, because
                                         //          running as Administrator would not restore those counters.

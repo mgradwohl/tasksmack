@@ -6,6 +6,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/google/googletest.git
     GIT_TAG 063de7e9578f82b369302001269680b4b1553359  # v1.18.0 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from gtest
+    BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/googletest-build"  # per-preset build tree (#1308)
 )
 
 # For Windows: Prevent overriding the parent project's compiler/linker settings
@@ -50,6 +51,11 @@ if(WIN32)
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-analyze-etw.ps1)
     endif()
 endif()
+
+# tools/check-benchmark-regression.py gates CI on benchmark regressions; Python3_EXECUTABLE is
+# already required (GLAD generation, cmake/Dependencies.cmake).
+add_test(NAME BenchmarkRegressionGateScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_benchmark_regression.py)
 
 # Test sources. Every list is defined on every platform, so the registration check below can see
 # all of them; the platform branch then picks its own.
@@ -139,6 +145,7 @@ set(COMMON_TEST_SOURCES
     App/test_SettingsLayerDetail.cpp
     App/test_NetInterfaceUtils.cpp
     App/test_PowerStatusText.cpp
+    App/test_ElevationNoticeText.cpp
 )
 set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_ProcessProbeContract.cpp

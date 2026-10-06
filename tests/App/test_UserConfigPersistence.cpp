@@ -1169,6 +1169,18 @@ TEST_F(UserConfigSaveLoadFixture, SaveRemovesRetiredKeysAndKeepsTheRest)
     }
 }
 
+TEST_F(UserConfigSaveLoadFixture, HeaderDescribesTheRateCeilingAsCoveringInterfacesToo)
+{
+    // #1291 extended [metrics] max_sane_rate_bps from per-process rates to interface rates; the
+    // header save() writes into every config.toml must not still call it a per-process ceiling.
+    UserConfig::get().save();
+
+    std::ifstream in(m_TempDir / "config.toml");
+    const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    EXPECT_TRUE(text.contains("max_sane_rate_bps: network rate ceiling for process and interface rates"));
+    EXPECT_FALSE(text.contains("per-process network rate ceiling"));
+}
+
 // ========== Load/Save: Process Columns Round-Trip ==========
 
 TEST_F(UserConfigSaveLoadFixture, ProcessColumnsRoundTrip)
