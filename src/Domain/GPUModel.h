@@ -165,6 +165,14 @@ class GPUModel : public ISamplable
         return m_PerProcessKnownUnsupported.load(std::memory_order_acquire);
     }
 
+    /// True once the probe's capabilities are known and say it reports no per-process utilization,
+    /// though it may report per-process memory and engines (NVML's running-process lists): GPU %
+    /// would read 0 for every process (#1210). False while they are unknown. A single atomic load.
+    [[nodiscard]] bool perProcessUtilizationKnownUnsupported() const noexcept
+    {
+        return m_PerProcessUtilizationKnownUnsupported.load(std::memory_order_acquire);
+    }
+
     [[nodiscard]] std::shared_ptr<const GPUPublication> publication() const noexcept;
     [[nodiscard]] std::uint64_t publicationVersion() const noexcept;
 
@@ -192,6 +200,8 @@ class GPUModel : public ISamplable
     // returns straight away: reading this flag instead of taking m_Mutex shared for the two
     // fields keeps that early exit to a single atomic load (#1322).
     std::atomic<bool> m_PerProcessKnownUnsupported{false};
+    // m_CapabilitiesKnown && !m_Capabilities.hasPerProcessUtilization, kept in step the same way (#1210)
+    std::atomic<bool> m_PerProcessUtilizationKnownUnsupported{false};
 
     // Current snapshots per GPU
     using SnapshotMap = GPUSnapshotMap;

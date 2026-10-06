@@ -182,6 +182,7 @@ GPUModel::GPUModel(std::unique_ptr<Platform::IGPUProbe> probe)
         m_Capabilities = m_Probe->capabilities();
         m_CapabilitiesKnown = true;
         m_PerProcessKnownUnsupported.store(!m_Capabilities.hasPerProcessMetrics, std::memory_order_release);
+        m_PerProcessUtilizationKnownUnsupported.store(!m_Capabilities.hasPerProcessUtilization, std::memory_order_release);
     }
     catch (const std::exception& e)
     {
@@ -360,6 +361,7 @@ void GPUModel::rescanGPUs(std::chrono::steady_clock::time_point now)
         m_Capabilities = *capabilities;
         m_CapabilitiesKnown = true;
         m_PerProcessKnownUnsupported.store(!m_Capabilities.hasPerProcessMetrics, std::memory_order_release);
+        m_PerProcessUtilizationKnownUnsupported.store(!m_Capabilities.hasPerProcessUtilization, std::memory_order_release);
     }
     if (gpuInfo.has_value())
     {

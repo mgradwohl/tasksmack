@@ -99,6 +99,34 @@ TEST(GPUModelTest, CapabilitiesAreExposedFromProbe)
     EXPECT_TRUE(modelCaps.hasPerProcessMetrics);
 }
 
+TEST(GPUModelTest, PerProcessSupportFlagsFollowTheProbesCapabilities)
+{
+    // #1210: what the Processes table reads, once a frame, to tell which GPU columns it can fill.
+    const auto modelWith = [](bool perProcess, bool utilization)
+    {
+        auto probe = std::make_unique<MockGPUProbe>();
+        Platform::GPUCapabilities caps;
+        caps.hasPerProcessMetrics = perProcess;
+        caps.hasPerProcessUtilization = utilization;
+        probe->withCapabilities(caps);
+        return std::make_unique<Domain::GPUModel>(std::move(probe));
+    };
+
+    const auto pdhLike = modelWith(true, true);
+    EXPECT_FALSE(pdhLike->perProcessMetricsKnownUnsupported());
+    EXPECT_FALSE(pdhLike->perProcessUtilizationKnownUnsupported());
+
+    // NVML: per-process memory and engines, no utilization.
+    const auto nvmlLike = modelWith(true, false);
+    EXPECT_FALSE(nvmlLike->perProcessMetricsKnownUnsupported());
+    EXPECT_TRUE(nvmlLike->perProcessUtilizationKnownUnsupported());
+
+    // DRM / ROCm: nothing per process.
+    const auto drmLike = modelWith(false, false);
+    EXPECT_TRUE(drmLike->perProcessMetricsKnownUnsupported());
+    EXPECT_TRUE(drmLike->perProcessUtilizationKnownUnsupported());
+}
+
 TEST(GPUModelTest, ReadProcessGPUCountersSkipsProbeWhenCapabilityUnsupported)
 {
     // Regression test for #843 Phase 3b: backends that can never return per-process data

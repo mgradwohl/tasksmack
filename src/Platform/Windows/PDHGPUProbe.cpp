@@ -397,6 +397,7 @@ GPUCapabilities PDHGPUProbe::capabilities() const
     if (m_Impl && m_Impl->initialized)
     {
         caps.hasPerProcessMetrics = true;
+        caps.hasPerProcessUtilization = true; // GPU Engine counters: the busiest engine per process
         caps.hasEngineUtilization = true;
         caps.supportsMultiGPU = true;
     }

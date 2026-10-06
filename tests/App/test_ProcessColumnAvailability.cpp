@@ -216,39 +216,71 @@ TEST(ProcessColumnAvailabilityTest, CapabilityChangeThatMovesNoColumnQueuesNothi
     EXPECT_FALSE(ProcessColumnAvailability::capabilityDefaultChanges(chosen, noNetwork).has_value());
 }
 
+/// No per-process GPU data at all: DRM- or ROCm-only Linux, or no usable GPU probe.
+constexpr ProcessColumnAvailability::GpuSupport NO_PER_PROCESS_GPU{.perProcess = false, .utilization = false};
+/// Per-process memory, devices and engines, but no utilization: NVML's running-process lists.
+constexpr ProcessColumnAvailability::GpuSupport NO_PER_PROCESS_GPU_UTILIZATION{.perProcess = true, .utilization = false};
+
+TEST(ProcessColumnAvailabilityTest, GpuSupportComesFromTheGpuModelsFlags)
+{
+    using ProcessColumnAvailability::gpuSupport;
+    EXPECT_EQ(gpuSupport(/*hasGpuModel=*/true, /*perProcessKnownUnsupported=*/false, /*perProcessUtilizationKnownUnsupported=*/false),
+              (ProcessColumnAvailability::GpuSupport{.perProcess = true, .utilization = true}));
+    EXPECT_EQ(gpuSupport(true, false, true), NO_PER_PROCESS_GPU_UTILIZATION);
+    EXPECT_EQ(gpuSupport(true, true, false), NO_PER_PROCESS_GPU);   // No metrics means no utilization either
+    EXPECT_EQ(gpuSupport(false, false, false), NO_PER_PROCESS_GPU); // No GPU model at all
+}
+
 TEST(ProcessColumnAvailabilityTest, GpuColumnsNeedPerProcessGpuMetrics)
 {
     // #1210: DRM- or ROCm-only Linux (and no usable GPU probe) has no per-process GPU metrics, and
     // every process read a measured-looking 0.
-    using ProcessColumnAvailability::perProcessGpuSupported;
-    EXPECT_TRUE(perProcessGpuSupported(/*hasGpuModel=*/true, /*perProcessKnownUnsupported=*/false));
-    EXPECT_FALSE(perProcessGpuSupported(true, true));
-    EXPECT_FALSE(perProcessGpuSupported(false, false)); // No GPU model at all
-
     const Platform::ProcessCapabilities caps = linuxWithoutRaplCapabilities();
     for (const ProcessColumn col :
          {ProcessColumn::GpuPercent, ProcessColumn::GpuMemory, ProcessColumn::GpuEngine, ProcessColumn::GpuDevice})
     {
-        EXPECT_TRUE(isSupported(col, caps, /*perProcessGpu=*/true)) << getColumnInfo(col).configKey;
-        EXPECT_FALSE(isSupported(col, caps, /*perProcessGpu=*/false)) << getColumnInfo(col).configKey;
-        EXPECT_EQ(unavailableValuesNote(col, caps, false), ProcessColumnAvailability::UNSUPPORTED_COLUMN_NOTE);
+        EXPECT_TRUE(isSupported(col, caps)) << getColumnInfo(col).configKey;
+        EXPECT_FALSE(isSupported(col, caps, NO_PER_PROCESS_GPU)) << getColumnInfo(col).configKey;
+        EXPECT_EQ(unavailableValuesNote(col, caps, NO_PER_PROCESS_GPU), ProcessColumnAvailability::UNSUPPORTED_COLUMN_NOTE);
     }
-    EXPECT_FALSE(rowFormatOptions(caps, false).hasPerProcessGpu);
+    EXPECT_FALSE(rowFormatOptions(caps, NO_PER_PROCESS_GPU).hasPerProcessGpu);
     EXPECT_TRUE(rowFormatOptions(caps).hasPerProcessGpu);
+}
+
+TEST(ProcessColumnAvailabilityTest, GpuPercentNeedsPerProcessUtilization)
+{
+    // #1210: Linux NVML reports each process's GPU memory and engines but not its utilization, so
+    // GPU % read a measured 0.0% for every process while the other GPU columns were real.
+    const Platform::ProcessCapabilities caps = linuxWithoutRaplCapabilities();
+    EXPECT_FALSE(isSupported(ProcessColumn::GpuPercent, caps, NO_PER_PROCESS_GPU_UTILIZATION));
+    for (const ProcessColumn col : {ProcessColumn::GpuMemory, ProcessColumn::GpuEngine, ProcessColumn::GpuDevice})
+    {
+        EXPECT_TRUE(isSupported(col, caps, NO_PER_PROCESS_GPU_UTILIZATION)) << getColumnInfo(col).configKey;
+    }
+    const ProcessRowFormat::RowFormatOptions options = rowFormatOptions(caps, NO_PER_PROCESS_GPU_UTILIZATION);
+    EXPECT_TRUE(options.hasPerProcessGpu);
+    EXPECT_FALSE(options.hasPerProcessGpuUtilization);
+    EXPECT_TRUE(rowFormatOptions(caps).hasPerProcessGpuUtilization);
 }
 
 TEST(ProcessColumnAvailabilityTest, GpuColumnsShownByTheUserAreHiddenOnlyIfUnchosen)
 {
     const Platform::ProcessCapabilities caps = windowsLikeCapabilities();
-    ProcessColumnSettings settings = ProcessColumnAvailability::defaultColumns(caps, /*perProcessGpu=*/true);
+    ProcessColumnSettings settings = ProcessColumnAvailability::defaultColumns(caps);
     settings.setDefaultVisible(ProcessColumn::GpuPercent, true); // An unchosen column that is shown
     settings.setVisible(ProcessColumn::GpuMemory, true);         // The user's choice
 
-    const auto changed = ProcessColumnAvailability::capabilityDefaultChanges(settings, caps, /*perProcessGpu=*/false);
+    const auto changed = ProcessColumnAvailability::capabilityDefaultChanges(settings, caps, NO_PER_PROCESS_GPU);
     ASSERT_TRUE(changed.has_value());
     EXPECT_FALSE(changed.value().isVisible(ProcessColumn::GpuPercent));
     EXPECT_TRUE(changed.value().isVisible(ProcessColumn::GpuMemory));
-    EXPECT_FALSE(ProcessColumnAvailability::defaultColumns(caps, false).isVisible(ProcessColumn::GpuPercent));
+    EXPECT_FALSE(ProcessColumnAvailability::defaultColumns(caps, NO_PER_PROCESS_GPU).isVisible(ProcessColumn::GpuPercent));
+
+    // Losing only utilization hides only GPU %, unless chosen.
+    const auto utilOnly = ProcessColumnAvailability::capabilityDefaultChanges(settings, caps, NO_PER_PROCESS_GPU_UTILIZATION);
+    ASSERT_TRUE(utilOnly.has_value());
+    EXPECT_FALSE(utilOnly.value().isVisible(ProcessColumn::GpuPercent));
+    EXPECT_TRUE(utilOnly.value().isVisible(ProcessColumn::GpuMemory));
 }
 
 TEST(ProcessColumnAvailabilityTest, EmptyTextInASupportedColumnIsBlankNotUnavailable)

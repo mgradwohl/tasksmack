@@ -435,6 +435,19 @@ TEST(ProcessRowFormatTest, GpuCellsAreUnavailableWithoutPerProcessGpuMetrics)
     expectMeasuredZero(measured.gpuMemory);
 }
 
+TEST(ProcessRowFormatTest, GpuPercentIsUnavailableWithoutPerProcessUtilization)
+{
+    // #1210: Linux NVML gives each process's GPU memory but not its utilization; GPU % read 0.0%.
+    ProcessSnapshot snap = makeSnapshot();
+    snap.gpuUtilPercent = 0.0;
+    ProcessRowFormat::RowFormatOptions memoryOnly;
+    memoryOnly.hasPerProcessGpuUtilization = false;
+    const RowFormatCache fmt = buildRowFormatCache(snap, memoryOnly);
+    expectUnavailable(fmt.gpuPercent, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
+    EXPECT_EQ(fmt.gpuMemory.text, "256.0 MiB"); // Memory is still a reading
+    EXPECT_EQ(fmt.gpuMemory.tone, CellTone::Value);
+}
+
 TEST(ProcessRowFormatTest, FreeTextColumnSupportTravelsWithTheEntry)
 {
     // The per-column cell renderers (#1382) draw Status, Publisher, Type and the GPU text columns

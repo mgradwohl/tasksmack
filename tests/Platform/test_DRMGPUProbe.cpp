@@ -536,6 +536,7 @@ TEST_F(DRMGPUProbeUnitTest, Capabilities_AvailableProbe_ReportsBasicSupport)
     EXPECT_TRUE(caps.hasClockSpeeds);
     // Per-process and encode/decode metrics not supported via DRM sysfs
     EXPECT_FALSE(caps.hasPerProcessMetrics);
+    EXPECT_FALSE(caps.hasPerProcessUtilization); // #1210
     EXPECT_FALSE(caps.hasEncoderDecoder);
 }
 

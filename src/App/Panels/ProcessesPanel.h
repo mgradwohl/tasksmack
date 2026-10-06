@@ -1,6 +1,7 @@
 #pragma once
 
 #include "App/Panel.h"
+#include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessTreeFlatten.h"
@@ -203,6 +204,9 @@ class ProcessesPanel : public Panel
     /// has not been found to lack per-process metrics (ProcessColumnAvailability::perProcessGpuSupported()).
     [[nodiscard]] bool hasPerProcessGpuMetrics() const;
 
+    /// What per-process GPU data can be observed: metrics at all, and utilization among them (#1210).
+    [[nodiscard]] ProcessColumnAvailability::GpuSupport gpuSupport() const;
+
   private:
     // shared_ptr (not unique_ptr): BackgroundSampler observes this model via a weak_ptr rather
     // than a raw pointer, so the sampler thread can never outlive-dereference it regardless of
@@ -240,9 +244,9 @@ class ProcessesPanel : public Panel
     // The capabilities the columns' defaults were last applied for: when the probe's change, the
     // columns whose visibility was not chosen follow them (#1210).
     Platform::ProcessCapabilities m_ColumnDefaultsCapabilities;
-    bool m_ColumnDefaultsPerProcessGpu = true; // hasPerProcessGpuMetrics() when they were last applied
-    // hasPerProcessGpuMetrics(), read once a frame for the GPU columns (#1210)
-    bool m_PerProcessGpu = true;
+    ProcessColumnAvailability::GpuSupport m_ColumnDefaultsGpuSupport; // gpuSupport() when they were last applied
+    // gpuSupport(), read once a frame for the GPU columns (#1210)
+    ProcessColumnAvailability::GpuSupport m_GpuSupport;
     std::weak_ptr<const Domain::GPUModel> m_GpuModel;
     // Whether the table has been drawn with m_ColumnSettings: from then on, a column ImGui shows or
     // hides differently is the user's toggle in its header menu; before, it is a restored layout.

@@ -135,7 +135,8 @@ struct RowFormatOptions
     bool hasPageFaults = true;
     bool hasCpuAffinity = true;
     bool hasGdiObjects = true;
-    bool hasPerProcessGpu = true; ///< Platform::GPUCapabilities::hasPerProcessMetrics, from the GPU probe (#1210)
+    bool hasPerProcessGpu = true;            ///< Platform::GPUCapabilities::hasPerProcessMetrics, from the GPU probe (#1210)
+    bool hasPerProcessGpuUtilization = true; ///< Platform::GPUCapabilities::hasPerProcessUtilization (#1210)
     bool hasStatus = true;
     bool hasPublisher = true;
     bool hasProcessType = true;
@@ -357,18 +358,12 @@ struct RowFormatCache
                   ? withZeroTone(alignedPowerCell(proc.powerWatts), readsAsZeroAtOneDecimal(proc.powerWatts * MICROWATTS_PER_WATT))
                   : unavailableCell(UNSUPPORTED_CELL_REASON);
     // Where the GPU probe has no per-process metrics (DRM- or ROCm-only Linux), every process reads 0:
-    // that is no measurement (#1210).
-    if (options.hasPerProcessGpu)
-    {
-        fmt.gpuPercent = withZeroTone(makeAlignedCellText(formatAlignedPercentString(proc.gpuUtilPercent)),
-                                      readsAsZeroAtOneDecimal(proc.gpuUtilPercent));
-        fmt.gpuMemory = bytesCell(proc.gpuMemoryBytes);
-    }
-    else
-    {
-        fmt.gpuPercent = unavailableCell(UNSUPPORTED_CELL_REASON);
-        fmt.gpuMemory = unavailableCell(UNSUPPORTED_CELL_REASON);
-    }
+    // that is no measurement (#1210). Nor is GPU % where it has memory but not utilization (NVML).
+    fmt.gpuPercent = (options.hasPerProcessGpu && options.hasPerProcessGpuUtilization)
+                       ? withZeroTone(makeAlignedCellText(formatAlignedPercentString(proc.gpuUtilPercent)),
+                                      readsAsZeroAtOneDecimal(proc.gpuUtilPercent))
+                       : unavailableCell(UNSUPPORTED_CELL_REASON);
+    fmt.gpuMemory = options.hasPerProcessGpu ? bytesCell(proc.gpuMemoryBytes) : unavailableCell(UNSUPPORTED_CELL_REASON);
     // No engine in use is a fact rather than a gap, so it is left blank rather than marked unavailable.
     for (std::size_t i = 0; i < proc.gpuEngines.size(); ++i)
     {
