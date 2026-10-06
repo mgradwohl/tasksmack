@@ -134,10 +134,7 @@ class SystemMetricsPanel : public Panel
 
     // Render scratch buffers for stacked CPU breakdown chart (reused across frames to avoid per-frame heap allocation)
     // double, to match the double time axis ImPlot pairs them with (UI::Widgets::fillTimeAxis)
-    std::vector<double> m_CpuStackX;
-    std::vector<double> m_CpuStackY0;
-    std::vector<double> m_CpuStackYUser;
-    std::vector<double> m_CpuStackYSystem;
+    UI::Widgets::UserSystemStack m_CpuStack; // The User and System bands, shared with Process Details (#1180)
     std::vector<double> m_CpuStackYIowait;
     // The stacked bands' reduced points (#1022), kept until the next publication (#1139)
     UI::Widgets::ReducedPointsCache m_CpuStackReduction;

@@ -717,63 +717,44 @@ void SystemMetricsPanel::renderOverview()
                                                                                            out);
                                                });
 
-                auto& y0 = m_CpuStackY0;
-                auto& yUserTop = m_CpuStackYUser;
-                auto& ySystemTop = m_CpuStackYSystem;
+                // The User and System bands' edges (shared with Process Details, #1180). A gap point is
+                // NaN in every band (see UI::Widgets::reduceAlignedSeries).
+                auto& stack = m_CpuStack;
+                UI::Widgets::buildUserSystemStack<float>(points, breakdownTimeData, cpuUserData, cpuSystemData, stack);
                 auto& yIowaitTop = m_CpuStackYIowait;
                 auto& yBusyTop = m_CpuStackYBusy;
-                m_CpuStackX.resize(points.size());
-                y0.assign(points.size(), 0.0);
-                yUserTop.resize(points.size());
-                ySystemTop.resize(points.size());
                 yIowaitTop.resize(points.size());
                 yBusyTop.resize(points.size());
                 for (std::size_t k = 0; k < points.size(); ++k)
                 {
-                    // A gap point is NaN in every band (see UI::Widgets::reduceAlignedSeries).
-                    const auto i = static_cast<std::size_t>(points[k].index);
-                    m_CpuStackX[k] = breakdownTimeData[i];
                     if (points[k].gap)
                     {
-                        yUserTop[k] = ySystemTop[k] = yIowaitTop[k] = yBusyTop[k] = std::numeric_limits<double>::quiet_NaN();
+                        yIowaitTop[k] = yBusyTop[k] = std::numeric_limits<double>::quiet_NaN();
                         continue;
                     }
-                    // PlotShaded fills between two Y series, so the stack needs cumulative tops.
-                    yUserTop[k] = static_cast<double>(cpuUserData[i]);
-                    ySystemTop[k] = yUserTop[k] + static_cast<double>(cpuSystemData[i]);
                     // I/O Wait is idle time, not busy (#1157): its band sits on the busy total
                     // (100 - idle - iowait, which the Total line follows) rather than on System, so
                     // the Total line runs along its bottom edge instead of through it.
+                    const auto i = static_cast<std::size_t>(points[k].index);
                     yIowaitTop[k] = 100.0 - static_cast<double>(cpuIdleData[i]);
                     yBusyTop[k] = yIowaitTop[k] - static_cast<double>(cpuIowaitData[i]);
                 }
 
                 // The bands reach "now" like every plotLineWithFill series: the last sample held to
                 // x = 0 (#1016), unless it is too old to pass for current (#1147).
-                UI::Widgets::holdLastValuesToNow(m_CpuStackX,
-                                                 {&y0, &yUserTop, &ySystemTop, &yIowaitTop, &yBusyTop},
+                UI::Widgets::holdLastValuesToNow(stack.x,
+                                                 {&stack.base, &stack.userTop, &stack.systemTop, &yIowaitTop, &yBusyTop},
                                                  UI::Widgets::maxHoldSecondsForAxis(breakdownTimeData));
-                const int stackCount = UI::Format::checkedCount(m_CpuStackX.size());
+                const int stackCount = UI::Format::checkedCount(stack.x.size());
 
-                // ImPlot's shaded renderer has no NaN handling, so each band is filled run by run over
-                // the points where both of its edges have a reading: a gap point (a missed sample) or
-                // a band with no reading is drawn as a gap, not as triangles through NaN (#1149).
+                // Each band is filled only where both of its edges have a reading (#1149).
                 const auto shadeBand =
                     [&](const char* label, const std::vector<double>& lower, const std::vector<double>& upper, const ImVec4& fillColor)
                 {
-                    UI::Widgets::forEachJointFiniteRun(
-                        lower.data(),
-                        upper.data(),
-                        stackCount,
-                        [&](int runStart, int runLength)
-                        {
-                            const auto at = static_cast<std::size_t>(runStart);
-                            ImPlot::PlotShaded(
-                                label, &m_CpuStackX[at], &lower[at], &upper[at], runLength, {ImPlotProp_FillColor, fillColor});
-                        });
+                    UI::Widgets::plotShadedBand(label, stack.x.data(), lower.data(), upper.data(), stackCount, fillColor);
                 };
-                shadeBand(CPU_USER_LABEL, y0, yUserTop, theme.scheme().cpuUserFill);
-                shadeBand(CPU_SYSTEM_LABEL, yUserTop, ySystemTop, theme.scheme().cpuSystemFill);
+                shadeBand(CPU_USER_LABEL, stack.base, stack.userTop, theme.scheme().cpuUserFill);
+                shadeBand(CPU_SYSTEM_LABEL, stack.userTop, stack.systemTop, theme.scheme().cpuSystemFill);
                 if (showIowait)
                 {
                     shadeBand(CPU_IOWAIT_LABEL, yBusyTop, yIowaitTop, theme.scheme().cpuIowaitFill);
@@ -785,16 +766,11 @@ void SystemMetricsPanel::renderOverview()
                 // differ by more than colour (#1198).
                 const auto bandEdge = [&](const char* label, const std::vector<double>& top, const ImVec4& color, std::size_t slot)
                 {
-                    const UI::Widgets::SeriesStyle style = seriesStyle(SeriesRole::Secondary, slot);
-                    ImPlot::PlotLine(label,
-                                     m_CpuStackX.data(),
-                                     top.data(),
-                                     stackCount,
-                                     {ImPlotProp_LineColor, color, ImPlotProp_LineWeight, UI::Widgets::lineWeight(style.lineWeightPx)});
-                    UI::Widgets::plotSeriesMarkers(label, m_CpuStackX.data(), top.data(), stackCount, color, style);
+                    UI::Widgets::plotStyledLine(
+                        label, stack.x.data(), top.data(), stackCount, color, seriesStyle(SeriesRole::Secondary, slot));
                 };
-                bandEdge(CPU_USER_LABEL, yUserTop, theme.scheme().cpuUser, 0);
-                bandEdge(CPU_SYSTEM_LABEL, ySystemTop, theme.scheme().cpuSystem, 1);
+                bandEdge(CPU_USER_LABEL, stack.userTop, theme.scheme().cpuUser, 0);
+                bandEdge(CPU_SYSTEM_LABEL, stack.systemTop, theme.scheme().cpuSystem, 1);
                 if (showIowait)
                 {
                     bandEdge(CPU_IOWAIT_LABEL, yIowaitTop, theme.scheme().cpuIowait, 2);

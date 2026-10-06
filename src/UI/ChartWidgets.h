@@ -1211,6 +1211,62 @@ template<typename T> inline void holdLastValuesToNow(std::vector<T>& x, std::ini
     }
 }
 
+/// `values` at each of a reduction's kept `points`, in `out` (resized to match): the sample at the
+/// point's source index, or NaN at a gap point (see reduceAlignedSeries()). For a series drawn with
+/// ImPlot directly from a ReducedPointsCache's points (#1139).
+template<typename T>
+inline void gatherReducedValues(std::span<const ReducedPoint> points, std::span<const T> values, std::vector<double>& out)
+{
+    out.resize(points.size());
+    for (std::size_t k = 0; k < points.size(); ++k)
+    {
+        out[k] = points[k].gap ? std::numeric_limits<double>::quiet_NaN()
+                               : static_cast<double>(values[static_cast<std::size_t>(points[k].index)]);
+    }
+}
+
+/// The x axis and band edges of a stacked User/System CPU chart, which the Overview and Process
+/// Details both draw (#1180). PlotShaded fills between two Y series, so the stack needs cumulative
+/// tops: the User band from `base` (0) to `userTop` (User), the System band from `userTop` to
+/// `systemTop` (User + System).
+struct UserSystemStack
+{
+    std::vector<double> x;         // The kept points' times, held to now by the caller (#1016)
+    std::vector<double> base;      // 0: the User band's bottom
+    std::vector<double> userTop;   // User
+    std::vector<double> systemTop; // User + System
+};
+
+/// Builds `out` from a reduction's kept `points` over `time` and the User and System series: a gap
+/// point is NaN in every edge but `base` (see reduceAlignedSeries()). Every series must be as long
+/// as `time`. Buffers are resized in place, so a chart reusing one UserSystemStack across frames
+/// allocates only when it draws more points than before.
+template<typename T>
+inline void buildUserSystemStack(std::span<const ReducedPoint> points,
+                                 std::span<const double> time,
+                                 std::span<const T> user,
+                                 std::span<const T> system,
+                                 UserSystemStack& out)
+{
+    const std::size_t pointCount = points.size();
+    out.x.resize(pointCount);
+    out.base.assign(pointCount, 0.0);
+    out.userTop.resize(pointCount);
+    out.systemTop.resize(pointCount);
+    for (std::size_t k = 0; k < pointCount; ++k)
+    {
+        const auto i = static_cast<std::size_t>(points[k].index);
+        out.x[k] = time[i];
+        if (points[k].gap)
+        {
+            out.userTop[k] = out.systemTop[k] = std::numeric_limits<double>::quiet_NaN();
+            continue;
+        }
+        out.userTop[k] = static_cast<double>(user[i]);
+        out.systemTop[k] = out.userTop[k] + static_cast<double>(system[i]);
+    }
+}
+
 /// The data generation of the HistoryChart being drawn (HistoryChartConfig::dataGeneration) and the
 /// ID of its plot. HistoryChart sets it for its lifetime, so plotLineWithFill() can cache its series'
 /// reductions (#1139) without every call site passing a key of its own.
@@ -1733,6 +1789,34 @@ inline void plotSeries(const char* label,
 {
     plotLineWithFill(label, xData, yData, count, lineColor, fillColor, style.lineWeightPx, style.fill, LINE_PLOT_MAX_POINTS_DENSE);
     plotSeriesMarkers(label, xData, yData, count, lineColor, style);
+}
+
+/// A band filled between `lower` and `upper` (ImPlot::PlotShaded with two Y arrays), as the stacked
+/// CPU charts draw theirs, filled run by run over the points where both edges have a reading.
+/// ImPlot's shaded renderer has no NaN handling, so a gap point (a missed sample, or a UI stall that
+/// overran the sample ring, #1098) or a band with no reading is drawn as a gap rather than as
+/// triangles through NaN (#1149). Call between BeginPlot and EndPlot.
+inline void
+plotShadedBand(const char* label, const double* xData, const double* lower, const double* upper, int count, const ImVec4& fillColor)
+{
+    forEachJointFiniteRun(lower,
+                          upper,
+                          count,
+                          [&](int runStart, int runLength)
+                          {
+                              const auto at = static_cast<std::size_t>(runStart);
+                              ImPlot::PlotShaded(label, &xData[at], &lower[at], &upper[at], runLength, {ImPlotProp_FillColor, fillColor});
+                          });
+}
+
+/// A line drawn with ImPlot directly at `style`'s weight, with its markers (plotSeriesMarkers()): the
+/// stacked CPU charts' band edges and User/System lines, whose fill the bands already are, so they
+/// cannot go through plotSeries() (#1192, #1198). Call between BeginPlot and EndPlot.
+inline void
+plotStyledLine(const char* label, const double* xData, const double* yData, int count, const ImVec4& color, const SeriesStyle& style)
+{
+    ImPlot::PlotLine(label, xData, yData, count, {ImPlotProp_LineColor, color, ImPlotProp_LineWeight, lineWeight(style.lineWeightPx)});
+    plotSeriesMarkers(label, xData, yData, count, color, style);
 }
 
 // ============================================================================
