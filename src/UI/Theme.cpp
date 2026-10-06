@@ -463,7 +463,7 @@ void Theme::applyImGuiStyle() const
     style.TabBorderSize = 0.0F;
 
     style.WindowPadding = ImVec2(8.0F * scale, 8.0F * scale);
-    style.FramePadding = ImVec2(4.0F * scale, 3.0F * scale);
+    style.FramePadding = ImVec2(FRAME_PADDING_X * scale, FRAME_PADDING_Y * scale);
     style.ItemSpacing = ImVec2(8.0F * scale, 4.0F * scale);
     style.ItemInnerSpacing = ImVec2(4.0F * scale, 4.0F * scale);
     // Authored here rather than left at ImGui's default, which is this same ImVec2(4, 2) -- so the

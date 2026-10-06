@@ -62,9 +62,26 @@ using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
 using UI::Widgets::NowBarList;
 using UI::Widgets::plotLineWithFill;
+using UI::Widgets::plotSeries;
 using UI::Widgets::renderHistoryWithNowBars;
+using UI::Widgets::SeriesRole;
+using UI::Widgets::seriesStyle;
 
-constexpr size_t PROCESS_NOW_BAR_COLUMNS = 3;
+// The NowBar columns each Process Details tab's charts reserve: the most bars any chart on that tab
+// has, so charts stacked on one tab are the same width and their time axes line up (#1206), without
+// a tab of one- or two-bar charts keeping empty columns for another tab's widest chart.
+//
+// Overview (CPU, Memory, Power, Resources): Resources has four on Windows (with GDI Objects); with a
+// column of its own it was narrower than the CPU and Memory charts above it, and its time axis shorter.
+#ifdef _WIN32
+constexpr size_t PROCESS_OVERVIEW_NOW_BAR_COLUMNS = 4;
+#else
+constexpr size_t PROCESS_OVERVIEW_NOW_BAR_COLUMNS = 3;
+#endif
+// Network and I/O: Read and Write, Sent and Received.
+constexpr size_t PROCESS_NETWORK_IO_NOW_BAR_COLUMNS = 2;
+// GPU: Utilization, and Memory, one bar each.
+constexpr size_t PROCESS_GPU_NOW_BAR_COLUMNS = 1;
 
 // Floor on the Confirm Action dialog's Yes/No buttons, in ems: 120px at the reference em.
 constexpr float CONFIRM_BUTTON_MIN_EM = 11.25F;
@@ -83,16 +100,17 @@ void dropOldest(std::vector<double>& data, std::size_t count)
 
 // ImPlot series counts are int; keep conversion explicit + checked.
 
-// One label per series, shared by its legend entry, tooltip row and NowBar (#1008).
+// One label per series, shared by its value-strip entry, tooltip row and NowBar (#1008).
 constexpr const char* CPU_TOTAL_LABEL = "Total";
 constexpr const char* CPU_USER_LABEL = "User";
 constexpr const char* CPU_SYSTEM_LABEL = "System";
 constexpr const char* MEM_USED_LABEL = "Used";
 constexpr const char* MEM_SHARED_LABEL = "Shared";
-constexpr const char* MEM_VIRTUAL_LABEL = "Virtual";
+// A series on a chart's right-hand axis ends in " →", pointing at it (setupSecondaryRateAxis(), #1206).
+constexpr const char* MEM_VIRTUAL_LABEL = "Virtual →";
 constexpr const char* MEM_PEAK_LABEL = "Peak Used";
 constexpr const char* THREADS_LABEL = "Threads";
-constexpr const char* FAULTS_LABEL = "Page Faults/s";
+constexpr const char* FAULTS_LABEL = "Page Faults/s →";
 #ifdef _WIN32
 constexpr const char* GDI_LABEL = "GDI Objects";
 #endif
@@ -401,6 +419,8 @@ void ProcessDetailsPanel::renderContent()
                 // The charts on this tab share its height (#959). The Identity/Runtime block above
                 // them is inside the scope, so it is counted as non-plot height.
                 UI::Widgets::FillPlotLayout fill(m_OverviewFill);
+                // Its charts share their plot edges, with or without a right-hand axis (#1206).
+                const UI::Widgets::AlignedChartStack alignedCharts("##ProcOverviewCharts");
                 renderBasicInfo(cachedSnapshot());
                 ImGui::Separator();
                 renderResourceUsage(cachedSnapshot(), fill);
@@ -433,6 +453,7 @@ void ProcessDetailsPanel::renderContent()
                     // The two history charts share the tab's height, like the other tabs' charts
                     // (#959). The metrics table and per-GPU breakdown above them count as non-plot.
                     UI::Widgets::FillPlotLayout fill(m_GpuFill);
+                    const UI::Widgets::AlignedChartStack alignedCharts("##ProcGpuCharts"); // #1206
                     renderGpuUsage(cachedSnapshot(), fill);
                 }
             }
@@ -452,6 +473,7 @@ void ProcessDetailsPanel::renderContent()
                     {
                         const UI::Widgets::TabContentScope content("##NetworkContent");
                         UI::Widgets::FillPlotLayout fill(m_NetworkFill);
+                        const UI::Widgets::AlignedChartStack alignedCharts("##ProcNetworkCharts"); // #1206
                         // Render I/O stats first (at the top)
                         renderIoStats(fill);
                         ImGui::Separator();
@@ -1045,8 +1067,7 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
                 const int drawCount = UI::Format::checkedCount(m_CpuPlotX.size());
 
                 // The bands share their labels with the User and System lines below, so ImPlot
-                // treats each band and its line as one legend item: hiding "User" hides both.
-                // With separate hidden labels the band stayed on screen after its line was hidden.
+                // treats each band and its line as one item.
                 // ImPlot's shaded renderer doesn't break at NaN, so the bands are filled run by run over
                 // the finite points: a gap (a missing sample, or a UI stall that overran the sample ring,
                 // #1098) is drawn as a gap rather than as fill triangles through NaN. A gap point is NaN
@@ -1070,23 +1091,30 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
                                                                      {ImPlotProp_FillColor, theme.scheme().cpuSystemFill});
                                               });
 
+                // Total at the primary series' weight; it has no fill of its own, the bands above are
+                // the fill. User and System are secondaries: lighter lines, each with its own marker
+                // shape (shown on its value-strip swatch too), so they differ by more than colour (#1198).
                 ImPlot::PlotLine(CPU_TOTAL_LABEL,
                                  m_CpuPlotX.data(),
                                  m_CpuPlotTotal.data(),
                                  drawCount,
-                                 {ImPlotProp_LineColor, theme.scheme().chartCpu, ImPlotProp_LineWeight, UI::Widgets::lineWeight(2.0F)});
+                                 {ImPlotProp_LineColor,
+                                  theme.scheme().chartCpu,
+                                  ImPlotProp_LineWeight,
+                                  UI::Widgets::lineWeight(UI::Widgets::PRIMARY_SERIES_WEIGHT)});
 
-                ImPlot::PlotLine(CPU_USER_LABEL,
-                                 m_CpuPlotX.data(),
-                                 m_CpuPlotUser.data(),
-                                 drawCount,
-                                 {ImPlotProp_LineColor, theme.scheme().cpuUser, ImPlotProp_LineWeight, UI::Widgets::lineWeight(2.0F)});
-
-                ImPlot::PlotLine(CPU_SYSTEM_LABEL,
-                                 m_CpuPlotX.data(),
-                                 m_CpuPlotSystem.data(),
-                                 drawCount,
-                                 {ImPlotProp_LineColor, theme.scheme().cpuSystem, ImPlotProp_LineWeight, UI::Widgets::lineWeight(2.0F)});
+                const auto secondaryLine = [&](const char* label, const std::vector<double>& values, const ImVec4& color, std::size_t slot)
+                {
+                    const UI::Widgets::SeriesStyle style = seriesStyle(SeriesRole::Secondary, slot);
+                    ImPlot::PlotLine(label,
+                                     m_CpuPlotX.data(),
+                                     values.data(),
+                                     drawCount,
+                                     {ImPlotProp_LineColor, color, ImPlotProp_LineWeight, UI::Widgets::lineWeight(style.lineWeightPx)});
+                    UI::Widgets::plotSeriesMarkers(label, m_CpuPlotX.data(), values.data(), drawCount, color, style);
+                };
+                secondaryLine(CPU_USER_LABEL, m_CpuPlotUser, theme.scheme().cpuUser, 0);
+                secondaryLine(CPU_SYSTEM_LABEL, m_CpuPlotSystem, theme.scheme().cpuSystem, 1);
 
                 if (ImPlot::IsPlotHovered())
                 {
@@ -1120,7 +1148,7 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
                                  cpuPlot,
                                  {cpuTotalNow, cpuUserNow, cpuSystemNow},
                                  false,
-                                 PROCESS_NOW_BAR_COLUMNS);
+                                 PROCESS_OVERVIEW_NOW_BAR_COLUMNS);
         fill.addPlot();
         ImGui::Spacing();
     }
@@ -1209,16 +1237,15 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
 
             auto memoryPlot = [&]()
             {
-                // Four legend entries (Used, Shared, Virtual, Peak Used): one row (see legendHorizontal).
                 const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
                     UI::Widgets::withHeight(
-                        UI::Widgets::withHorizontalLegend(UI::Widgets::rateHistoryConfigWithUpper(
-                            "##ProcOverviewMemory", axisConfig.xMin, axisConfig.xMax, UI::Widgets::formatAxisBytes, memAxisUpper)),
+                        UI::Widgets::rateHistoryConfigWithUpper(
+                            "##ProcOverviewMemory", axisConfig.xMin, axisConfig.xMax, UI::Widgets::formatAxisBytes, memAxisUpper),
                         fill.plotHeight()),
                     m_HistoryGeneration));
                 if (chart.active())
                 {
-                    UI::Widgets::setupSecondaryRateAxis(virtAxisUpper, UI::Widgets::formatAxisBytes);
+                    UI::Widgets::setupSecondaryRateAxis(virtAxisUpper, UI::Widgets::formatAxisBytes, theme.scheme().chartIo);
                     UI::Widgets::drawCollectingHint(alignedCount);
                     // Draw peak working set as a horizontal reference line (never decreases)
                     if (m_PeakMemoryBytes > 0.0)
@@ -1237,36 +1264,37 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
 
                     if (!usedData.empty())
                     {
-                        plotLineWithFill(MEM_USED_LABEL,
-                                         timeData.data(),
-                                         usedData.data(),
-                                         UI::Format::checkedCount(usedData.size()),
-                                         theme.scheme().chartMemory,
-                                         theme.scheme().chartMemoryFill);
+                        plotSeries(MEM_USED_LABEL,
+                                   timeData.data(),
+                                   usedData.data(),
+                                   UI::Format::checkedCount(usedData.size()),
+                                   theme.scheme().chartMemory,
+                                   theme.scheme().chartMemoryFill,
+                                   seriesStyle(SeriesRole::Primary));
                     }
 
                     if (!sharedData.empty())
                     {
-                        plotLineWithFill(MEM_SHARED_LABEL,
-                                         timeData.data(),
-                                         sharedData.data(),
-                                         UI::Format::checkedCount(sharedData.size()),
-                                         theme.scheme().chartCpu,
-                                         theme.scheme().chartCpuFill);
+                        plotSeries(MEM_SHARED_LABEL,
+                                   timeData.data(),
+                                   sharedData.data(),
+                                   UI::Format::checkedCount(sharedData.size()),
+                                   theme.scheme().chartCpu,
+                                   theme.scheme().chartCpuFill,
+                                   seriesStyle(SeriesRole::Secondary, 0));
                     }
 
                     if (!virtData.empty())
                     {
                         // Line only: a fill on its own scale would cover the Used and Shared areas.
                         ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
-                        plotLineWithFill(MEM_VIRTUAL_LABEL,
-                                         timeData.data(),
-                                         virtData.data(),
-                                         UI::Format::checkedCount(virtData.size()),
-                                         theme.scheme().chartIo,
-                                         theme.scheme().chartIoFill,
-                                         2.0F,
-                                         false);
+                        plotSeries(MEM_VIRTUAL_LABEL,
+                                   timeData.data(),
+                                   virtData.data(),
+                                   UI::Format::checkedCount(virtData.size()),
+                                   theme.scheme().chartIo,
+                                   theme.scheme().chartIoFill,
+                                   seriesStyle(SeriesRole::Secondary, 1));
                         ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
                     }
 
@@ -1324,7 +1352,7 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
                                      memoryPlot,
                                      memoryBars,
                                      false,
-                                     PROCESS_NOW_BAR_COLUMNS,
+                                     PROCESS_OVERVIEW_NOW_BAR_COLUMNS,
                                      false,
                                      UI::Widgets::NowBarValues::Strip,
                                      stripExtras);
@@ -1444,61 +1472,51 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
 
     auto plot = [&]()
     {
-        // One legend row: up to four short entries (with GDI on Windows) on a chart that shares the
-        // pane's height (see HistoryChartConfig::legendHorizontal).
         const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
-            UI::Widgets::withHeight(UI::Widgets::withHorizontalLegend(UI::Widgets::rateHistoryConfigWithUpper(
-                                        "##ProcThreadsFaults", axisConfig.xMin, axisConfig.xMax, formatAxisLocalized, countAxisUpper)),
+            UI::Widgets::withHeight(UI::Widgets::rateHistoryConfigWithUpper(
+                                        "##ProcThreadsFaults", axisConfig.xMin, axisConfig.xMax, formatAxisLocalized, countAxisUpper),
                                     fill.plotHeight()),
             m_HistoryGeneration));
         if (chart.active())
         {
-            UI::Widgets::setupSecondaryRateAxis(faultAxisUpper, formatAxisLocalized);
+            UI::Widgets::setupSecondaryRateAxis(faultAxisUpper, formatAxisLocalized, theme.accentColor(3));
             UI::Widgets::drawCollectingHint(alignedCount);
             const int plotCount = UI::Format::checkedCount(alignedCount);
-            plotLineWithFill(THREADS_LABEL,
-                             timeData.data(),
-                             threadData.data(),
-                             plotCount,
-                             theme.scheme().chartCpu,
-                             theme.scheme().chartCpuFill,
-                             2.0F,
-                             true,
-                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
-            plotLineWithFill(handleLabel,
-                             timeData.data(),
-                             handleData.data(),
-                             plotCount,
-                             theme.scheme().chartMemory,
-                             theme.scheme().chartMemoryFill,
-                             2.0F,
-                             true,
-                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+            plotSeries(THREADS_LABEL,
+                       timeData.data(),
+                       threadData.data(),
+                       plotCount,
+                       theme.scheme().chartCpu,
+                       theme.scheme().chartCpuFill,
+                       seriesStyle(SeriesRole::Primary));
+            plotSeries(handleLabel,
+                       timeData.data(),
+                       handleData.data(),
+                       plotCount,
+                       theme.scheme().chartMemory,
+                       theme.scheme().chartMemoryFill,
+                       seriesStyle(SeriesRole::Secondary, 0));
             ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
-            plotLineWithFill(FAULTS_LABEL,
-                             timeData.data(),
-                             faultData.data(),
-                             plotCount,
-                             theme.accentColor(3),
-                             std::nullopt,
-                             2.0F,
-                             true,
-                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+            plotSeries(FAULTS_LABEL,
+                       timeData.data(),
+                       faultData.data(),
+                       plotCount,
+                       theme.accentColor(3),
+                       std::nullopt,
+                       seriesStyle(SeriesRole::Secondary, 1));
             ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
 
 #ifdef _WIN32
             if (hasGdiSamples && gdiTimeOffset < timeData.size())
             {
                 const int gdiPlotCount = UI::Format::checkedCount(std::min(gdiData.size(), timeData.size() - gdiTimeOffset));
-                plotLineWithFill(GDI_LABEL,
-                                 std::span(timeData).subspan(gdiTimeOffset).data(),
-                                 gdiData.data(),
-                                 gdiPlotCount,
-                                 theme.accentColor(4),
-                                 std::nullopt,
-                                 2.0F,
-                                 true,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotSeries(GDI_LABEL,
+                           std::span(timeData).subspan(gdiTimeOffset).data(),
+                           gdiData.data(),
+                           gdiPlotCount,
+                           theme.accentColor(4),
+                           std::nullopt,
+                           seriesStyle(SeriesRole::Secondary, 2));
             }
 #endif
 
@@ -1536,14 +1554,17 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
 
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GEARS "  Resources (%zu samples)", alignedCount);
 #ifdef _WIN32
-    // 4 NowBars on Windows: Threads, Handles, Page Faults, GDI Objects
-    constexpr size_t RESOURCE_NOW_BAR_COLUMNS = 4;
-    renderHistoryWithNowBars(
-        "ProcessResourceHistory", fill.plotHeight(), plot, {threadsBar, handlesBar, faultsBar, gdiBar}, false, RESOURCE_NOW_BAR_COLUMNS);
+    // 4 NowBars on Windows: Threads, Handles, Page Faults, GDI Objects (PROCESS_OVERVIEW_NOW_BAR_COLUMNS)
+    renderHistoryWithNowBars("ProcessResourceHistory",
+                             fill.plotHeight(),
+                             plot,
+                             {threadsBar, handlesBar, faultsBar, gdiBar},
+                             false,
+                             PROCESS_OVERVIEW_NOW_BAR_COLUMNS);
     fill.addPlot();
 #else
     renderHistoryWithNowBars(
-        "ProcessResourceHistory", fill.plotHeight(), plot, {threadsBar, handlesBar, faultsBar}, false, PROCESS_NOW_BAR_COLUMNS);
+        "ProcessResourceHistory", fill.plotHeight(), plot, {threadsBar, handlesBar, faultsBar}, false, PROCESS_OVERVIEW_NOW_BAR_COLUMNS);
     fill.addPlot();
 #endif
     ImGui::Spacing();
@@ -1610,25 +1631,21 @@ void ProcessDetailsPanel::renderIoStats(UI::Widgets::FillPlotLayout& fill)
         {
             UI::Widgets::drawCollectingHint(alignedCount);
             const int plotCount = UI::Format::checkedCount(alignedCount);
-            plotLineWithFill(IO_READ_LABEL,
-                             timeData.data(),
-                             readData.data(),
-                             plotCount,
-                             theme.scheme().chartIo,
-                             theme.scheme().chartIoFill,
-                             2.0F,
-                             true,
-                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+            plotSeries(IO_READ_LABEL,
+                       timeData.data(),
+                       readData.data(),
+                       plotCount,
+                       theme.scheme().chartIo,
+                       theme.scheme().chartIoFill,
+                       seriesStyle(SeriesRole::Primary));
 
-            plotLineWithFill(IO_WRITE_LABEL,
-                             timeData.data(),
-                             writeData.data(),
-                             plotCount,
-                             theme.scheme().chartIoWrite,
-                             theme.scheme().chartIoWriteFill,
-                             2.0F,
-                             true,
-                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+            plotSeries(IO_WRITE_LABEL,
+                       timeData.data(),
+                       writeData.data(),
+                       plotCount,
+                       theme.scheme().chartIoWrite,
+                       theme.scheme().chartIoWriteFill,
+                       seriesStyle(SeriesRole::Secondary, 0));
 
             if (ImPlot::IsPlotHovered())
             {
@@ -1653,7 +1670,7 @@ void ProcessDetailsPanel::renderIoStats(UI::Widgets::FillPlotLayout& fill)
     };
 
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  I/O Statistics (%zu samples)", alignedCount);
-    renderHistoryWithNowBars("ProcessIoHistory", fill.plotHeight(), plot, {readBar, writeBar}, false, PROCESS_NOW_BAR_COLUMNS);
+    renderHistoryWithNowBars("ProcessIoHistory", fill.plotHeight(), plot, {readBar, writeBar}, false, PROCESS_NETWORK_IO_NOW_BAR_COLUMNS);
     fill.addPlot();
     ImGui::Spacing();
 }
@@ -1721,25 +1738,21 @@ void ProcessDetailsPanel::renderNetworkStats(UI::Widgets::FillPlotLayout& fill)
         {
             UI::Widgets::drawCollectingHint(alignedCount);
             const int plotCount = UI::Format::checkedCount(alignedCount);
-            plotLineWithFill(NET_SENT_LABEL,
-                             timeData.data(),
-                             sentData.data(),
-                             plotCount,
-                             theme.scheme().chartNetTx,
-                             theme.scheme().chartNetTxFill,
-                             2.0F,
-                             true,
-                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+            plotSeries(NET_SENT_LABEL,
+                       timeData.data(),
+                       sentData.data(),
+                       plotCount,
+                       theme.scheme().chartNetTx,
+                       theme.scheme().chartNetTxFill,
+                       seriesStyle(SeriesRole::Primary));
 
-            plotLineWithFill(NET_RECV_LABEL,
-                             timeData.data(),
-                             recvData.data(),
-                             plotCount,
-                             theme.scheme().chartNetRx,
-                             theme.scheme().chartNetRxFill,
-                             2.0F,
-                             true,
-                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+            plotSeries(NET_RECV_LABEL,
+                       timeData.data(),
+                       recvData.data(),
+                       plotCount,
+                       theme.scheme().chartNetRx,
+                       theme.scheme().chartNetRxFill,
+                       seriesStyle(SeriesRole::Secondary, 0));
 
             if (ImPlot::IsPlotHovered())
             {
@@ -1765,12 +1778,16 @@ void ProcessDetailsPanel::renderNetworkStats(UI::Widgets::FillPlotLayout& fill)
     };
 
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_NETWORK_WIRED "  Network (%zu samples)", alignedCount);
-    if (ImGui::IsItemHovered())
+    // The heading's tooltip is shown after the chart: its value strip is placed beside the heading,
+    // the item drawn just before it, so nothing else is submitted between the two.
+    const bool headingHovered = ImGui::IsItemHovered();
+    renderHistoryWithNowBars(
+        "ProcessNetworkHistory", fill.plotHeight(), plot, {sentBar, recvBar}, false, PROCESS_NETWORK_IO_NOW_BAR_COLUMNS);
+    if (headingHovered)
     {
         ImGui::SetTooltip("Network bytes/sec between readings of the process's open connections. A refresh that reuses a cached reading "
                           "shows the last rate.");
     }
-    renderHistoryWithNowBars("ProcessNetworkHistory", fill.plotHeight(), plot, {sentBar, recvBar}, false, PROCESS_NOW_BAR_COLUMNS);
     fill.addPlot();
     ImGui::Spacing();
 }
@@ -1850,7 +1867,7 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc, 
     };
 
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_BOLT "  Power Usage (%zu samples)", alignedCount);
-    renderHistoryWithNowBars("ProcessPowerHistory", fill.plotHeight(), plot, {powerBar}, false, PROCESS_NOW_BAR_COLUMNS);
+    renderHistoryWithNowBars("ProcessPowerHistory", fill.plotHeight(), plot, {powerBar}, false, PROCESS_OVERVIEW_NOW_BAR_COLUMNS);
     fill.addPlot();
     ImGui::Spacing();
 }
@@ -2213,12 +2230,12 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
         };
 
         ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CHART_LINE "  GPU Utilization History (%zu samples)", alignedCount);
-        renderHistoryWithNowBars("ProcessGPUUtilHistory", fill.plotHeight(), plotGpuUtil, {gpuUtilBar}, false, PROCESS_NOW_BAR_COLUMNS);
+        renderHistoryWithNowBars("ProcessGPUUtilHistory", fill.plotHeight(), plotGpuUtil, {gpuUtilBar}, false, PROCESS_GPU_NOW_BAR_COLUMNS);
         fill.addPlot();
         ImGui::Spacing();
 
         ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CHART_LINE "  GPU Memory History (%zu samples)", alignedCount);
-        renderHistoryWithNowBars("ProcessGPUMemHistory", fill.plotHeight(), plotGpuMem, {gpuMemBar}, false, PROCESS_NOW_BAR_COLUMNS);
+        renderHistoryWithNowBars("ProcessGPUMemHistory", fill.plotHeight(), plotGpuMem, {gpuMemBar}, false, PROCESS_GPU_NOW_BAR_COLUMNS);
         fill.addPlot();
         ImGui::Spacing();
     }

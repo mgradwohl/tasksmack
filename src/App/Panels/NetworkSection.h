@@ -33,10 +33,12 @@ struct FrameCache
 
     /// The selected interface's series labels, "<name> Sent" and "<name> Received", and the chart
     /// title naming it when its history is unavailable, built for labelsName: keyed on the display name
-    /// the labels are made from, not the selection index, so a selection that changes this frame or an
+    /// the labels are made from (and the width it was fitted to), not the selection index, so a selection that changes this frame or an
     /// index that now names another interface can't keep stale labels.
     bool labelsBuilt = false;
     std::string labelsName;
+    /// The width the interface name was fitted to (seriesNameBudget()); a resize or font change refits it.
+    float labelsBudget = -1.0F;
     std::string interfaceSentLabel;
     std::string interfaceRecvLabel;
     std::string unavailableTitle;

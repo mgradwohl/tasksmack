@@ -35,11 +35,11 @@ namespace UI::Widgets
 /// big presets and push a tab that used to fit into scrolling.
 inline constexpr float HISTORY_PLOT_MIN_HEIGHT_EM = 8.4375F;
 
-/// Shortest a stacked history chart may be in ems of its own axis and legend text, when that text is
+/// Shortest a stacked history chart may be in ems of its own axis text, when that text is
 /// the body size (Small and Medium; see UI::chartFontSize()): 11.25 is the proportion the Medium preset had when its chart
-/// text was 8px in a 90px chart, which keeps a four-entry legend (Memory: Used, Cached, Swap, Peak
-/// Used) and six Y-axis labels inside the plot. Moving chart text up to the body size at Medium
-/// (#1194) without this would have clipped that legend.
+/// text was 8px in a 90px chart, which kept six Y-axis labels (and, while charts had one, a legend row)
+/// inside the plot. Moving chart text up to the body size at Medium (#1194) without this would have
+/// clipped them.
 inline constexpr float HISTORY_PLOT_MIN_HEIGHT_CHART_EM = 11.25F;
 
 /// Tallest a stacked history chart may grow, in ems: 360px at the Medium preset, twice the 180px
@@ -51,7 +51,7 @@ inline constexpr float HISTORY_PLOT_MAX_HEIGHT_EM = 33.75F;
 inline constexpr float HISTORY_PLOT_FILL_MARGIN_PX = 2.0F;
 
 /// @param emPx       One em of body text, i.e. ImGui::GetFontSize().
-/// @param chartEmPx  One em of the chart's axis and legend text (UI::chartEmPx()); a value
+/// @param chartEmPx  One em of the chart's axis text (UI::chartEmPx()); a value
 ///                   that is not positive and finite means "the same as emPx".
 [[nodiscard]] inline float historyPlotMinHeight(float emPx, float chartEmPx = 0.0F) noexcept
 {

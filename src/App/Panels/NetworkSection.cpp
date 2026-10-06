@@ -40,8 +40,10 @@ using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
-using UI::Widgets::plotLineWithFill;
+using UI::Widgets::plotSeries;
 using UI::Widgets::renderHistoryWithNowBars;
+using UI::Widgets::SeriesRole;
+using UI::Widgets::seriesStyle;
 
 /// Update smoothed network values
 void updateSmoothedNetwork(double targetSent, double targetRecv, float deltaTimeSeconds, RenderContext& ctx)
@@ -59,7 +61,7 @@ void updateSmoothedNetwork(double targetSent, double targetRecv, float deltaTime
     *ctx.smoothedNetInitialized = true;
 }
 
-// One label per series, shared by its legend entry, tooltip row and NowBar (#1008).
+// One label per series, shared by its value-strip entry, tooltip row and NowBar (#1008).
 constexpr const char* TOTAL_SENT_LABEL = "Sent";
 constexpr const char* TOTAL_RECV_LABEL = "Received";
 constexpr const char* TOTAL_SENT_BEHIND_LABEL = "Sent (Total)";
@@ -309,16 +311,29 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     // Name the interface the way the picker above does (#1009).
     static const std::string NO_INTERFACE_NAME = "Network";
     const std::string& ifaceDisplayName = showingInterface ? interfaceNames[static_cast<size_t>(selectedInterface) + 1] : NO_INTERFACE_NAME;
-    // One label per series, shared by its legend entry, tooltip row and NowBar (#1008). The bars show
-    // the selected interface when there is one, else the totals. Rebuilt only when the name they show
-    // changes, not every frame (#1171).
-    if (!cache.labelsBuilt || cache.labelsName != ifaceDisplayName)
+    // One label per series, shared by its value-strip entry, tooltip row and NowBar (#1008). The bars
+    // show the selected interface when there is one, else the totals. An adapter's name is the OS's
+    // description, of any length, so the labels fit it to one row of the value strip (fitSeriesName();
+    // both labels cut at the longer suffix's budget, so they name it alike); the picker and the plot
+    // title keep it whole. The strip is as wide as the chart, so the Now column of
+    // renderHistoryWithNowBars() below comes off the budget. Rebuilt only when the name changes or the
+    // budget moves by half a pixel or more -- a resize or font change -- not every frame (#1171).
+    constexpr std::size_t NET_BAR_COUNT = 2; // Sent and Received, as NETWORK_NOW_BAR_COLUMNS below
+    constexpr float LABEL_BUDGET_REFIT_PX = 0.5F;
+    const float labelBudget =
+        UI::Widgets::seriesNameBudget(" Received", UI::Widgets::nowBarsReservedWidth(NET_BAR_COUNT, NET_BAR_COUNT, false));
+    if (!cache.labelsBuilt || cache.labelsName != ifaceDisplayName || std::abs(cache.labelsBudget - labelBudget) >= LABEL_BUDGET_REFIT_PX)
     {
         cache.labelsBuilt = false;
-        cache.interfaceSentLabel = std::format("{} Sent", ifaceDisplayName);
-        cache.interfaceRecvLabel = std::format("{} Received", ifaceDisplayName);
+        const std::string fittedName =
+            UI::Widgets::fitSeriesName(ifaceDisplayName,
+                                       labelBudget,
+                                       [](std::string_view text) { return ImGui::CalcTextSize(text.data(), text.data() + text.size()).x; });
+        cache.interfaceSentLabel = std::format("{} Sent", fittedName);
+        cache.interfaceRecvLabel = std::format("{} Received", fittedName);
         cache.unavailableTitle = std::format("Total (selected: {}, history unavailable)", ifaceDisplayName);
         cache.labelsName = ifaceDisplayName;
+        cache.labelsBudget = labelBudget;
         cache.labelsBuilt = true;
     }
     const std::string& ifaceSentLabel = cache.interfaceSentLabel;
@@ -329,7 +344,9 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     // Determine plot title based on selection
     const bool usingInterfaceHistory = showingInterface && !ifaceSentData.empty() && !ifaceRecvData.empty();
 
-    // Colors for interface-specific lines (lighter/dashed to distinguish from total)
+    // Colours of the machine totals drawn behind an interface's lines: muted, and drawn as thin
+    // reference lines (SeriesRole::Reference), so they differ from the interface's by weight and not
+    // by alpha alone, and from each other by marker shape (#1198).
     const auto ifaceSentColor = UI::withAlpha(theme.scheme().chartNetTx, 0.7F);
     const auto ifaceRecvColor = UI::withAlpha(theme.scheme().chartNetRx, 0.7F);
 
@@ -379,6 +396,11 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         stripExtras = totalEntries;
     }
     const bool interfaceHistoryUnavailable = showingInterface && !usingInterfaceHistory;
+    // The totals' labels as the chart plots them: "(Total)" whenever an interface is selected -- drawn
+    // behind its lines, or alone while it has no history -- so they match the strip's extras above,
+    // whose swatches take the plotted series' markers by label, and the tooltip's rows (#1008).
+    const char* const totalSentLabel = showingInterface ? TOTAL_SENT_BEHIND_LABEL : TOTAL_SENT_LABEL;
+    const char* const totalRecvLabel = showingInterface ? TOTAL_RECV_BEHIND_LABEL : TOTAL_RECV_LABEL;
 
     const char* plotTitle = "Total";
     if (usingInterfaceHistory)
@@ -408,66 +430,54 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
             if (usingInterfaceHistory)
             {
                 // Total lines (muted, in background)
-                plotLineWithFill(TOTAL_SENT_BEHIND_LABEL,
-                                 netTimes.data(),
-                                 sentData.data(),
-                                 count,
-                                 ifaceSentColor,
-                                 std::nullopt,
-                                 2.0F,
-                                 false, // line only: the interface fills in front are the series
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
-                plotLineWithFill(TOTAL_RECV_BEHIND_LABEL,
-                                 netTimes.data(),
-                                 recvData.data(),
-                                 count,
-                                 ifaceRecvColor,
-                                 std::nullopt,
-                                 2.0F,
-                                 false, // line only: the interface fills in front are the series
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotSeries(TOTAL_SENT_BEHIND_LABEL,
+                           netTimes.data(),
+                           sentData.data(),
+                           count,
+                           ifaceSentColor,
+                           std::nullopt,
+                           seriesStyle(SeriesRole::Reference));
+                plotSeries(TOTAL_RECV_BEHIND_LABEL,
+                           netTimes.data(),
+                           recvData.data(),
+                           count,
+                           ifaceRecvColor,
+                           std::nullopt,
+                           seriesStyle(SeriesRole::Reference, 1));
 
                 // Interface-specific lines (bright, in foreground)
-                plotLineWithFill(ifaceSentLabel.c_str(),
-                                 netTimes.data(),
-                                 ifaceSentData.data(),
-                                 count,
-                                 theme.scheme().chartNetTx,
-                                 theme.scheme().chartNetTxFill,
-                                 2.0F,
-                                 true,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
-                plotLineWithFill(ifaceRecvLabel.c_str(),
-                                 netTimes.data(),
-                                 ifaceRecvData.data(),
-                                 count,
-                                 theme.scheme().chartNetRx,
-                                 theme.scheme().chartNetRxFill,
-                                 2.0F,
-                                 true,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotSeries(ifaceSentLabel.c_str(),
+                           netTimes.data(),
+                           ifaceSentData.data(),
+                           count,
+                           theme.scheme().chartNetTx,
+                           theme.scheme().chartNetTxFill,
+                           seriesStyle(SeriesRole::Primary));
+                plotSeries(ifaceRecvLabel.c_str(),
+                           netTimes.data(),
+                           ifaceRecvData.data(),
+                           count,
+                           theme.scheme().chartNetRx,
+                           theme.scheme().chartNetRxFill,
+                           seriesStyle(SeriesRole::Secondary, 0));
             }
             else
             {
                 // Just total
-                plotLineWithFill(TOTAL_SENT_LABEL,
-                                 netTimes.data(),
-                                 sentData.data(),
-                                 count,
-                                 theme.scheme().chartNetTx,
-                                 theme.scheme().chartNetTxFill,
-                                 2.0F,
-                                 true,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
-                plotLineWithFill(TOTAL_RECV_LABEL,
-                                 netTimes.data(),
-                                 recvData.data(),
-                                 count,
-                                 theme.scheme().chartNetRx,
-                                 theme.scheme().chartNetRxFill,
-                                 2.0F,
-                                 true,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotSeries(totalSentLabel,
+                           netTimes.data(),
+                           sentData.data(),
+                           count,
+                           theme.scheme().chartNetTx,
+                           theme.scheme().chartNetTxFill,
+                           seriesStyle(SeriesRole::Primary));
+                plotSeries(totalRecvLabel,
+                           netTimes.data(),
+                           recvData.data(),
+                           count,
+                           theme.scheme().chartNetRx,
+                           theme.scheme().chartNetRxFill,
+                           seriesStyle(SeriesRole::Secondary, 0));
             }
 
             if (ImPlot::IsPlotHovered())
@@ -493,10 +503,8 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                         }
                         else
                         {
-                            rows.push_back(
-                                {.label = TOTAL_SENT_LABEL, .color = theme.scheme().chartNetTx, .value = rate(sentData[*idxVal])});
-                            rows.push_back(
-                                {.label = TOTAL_RECV_LABEL, .color = theme.scheme().chartNetRx, .value = rate(recvData[*idxVal])});
+                            rows.push_back({.label = totalSentLabel, .color = theme.scheme().chartNetTx, .value = rate(sentData[*idxVal])});
+                            rows.push_back({.label = totalRecvLabel, .color = theme.scheme().chartNetRx, .value = rate(recvData[*idxVal])});
                         }
                         UI::Widgets::renderHistoryTooltip(netTimes[*idxVal], rows);
                     }
@@ -508,11 +516,17 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_NETWORK_WIRED "  Network Throughput - %s (%zu samples)", plotTitle, aligned);
     if (interfaceHistoryUnavailable)
     {
+        // No spacing after it: the value strip below shares this line, right-aligned to the chart.
         ImGui::TextColored(theme.scheme().textMuted, "Per-interface history unavailable; showing total network history below.");
-        ImGui::Spacing();
     }
     constexpr size_t NETWORK_NOW_BAR_COLUMNS = 2; // Sent, Recv
-    UI::Widgets::renderNowBarValueStrip(netBars, stripExtras);
+    // Drawn here rather than by renderHistoryWithNowBars() so it can list the totals behind an
+    // interface (stripExtras) beside the bars' series; on the heading's line like every chart's.
+    UI::Widgets::renderNowBarValueStrip(netBars,
+                                        stripExtras,
+                                        UI::Widgets::ValueStripLayout::Wrap,
+                                        "SystemNetHistoryLayout",
+                                        UI::Widgets::nowBarsReservedWidth(netBars.size(), NETWORK_NOW_BAR_COLUMNS, false));
     renderHistoryWithNowBars(
         "SystemNetHistoryLayout", plotHeight, plot, netBars, false, NETWORK_NOW_BAR_COLUMNS, false, UI::Widgets::NowBarValues::None);
     if (ctx.fill != nullptr)
