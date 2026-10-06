@@ -396,8 +396,11 @@ GPUCapabilities PDHGPUProbe::capabilities() const
 
     if (m_Impl && m_Impl->initialized)
     {
-        caps.hasPerProcessMetrics = true;
-        caps.hasPerProcessUtilization = true; // GPU Engine counters: the busiest engine per process
+        // Per-process counters only in the Process role: an Adapter-role probe's
+        // readProcessGPUCounters() updates the adapter totals and returns none (#1365 review).
+        const bool perProcess = m_Impl->role == Role::Process;
+        caps.hasPerProcessMetrics = perProcess;
+        caps.hasPerProcessUtilization = perProcess; // GPU Engine counters: the busiest engine per process
         caps.hasEngineUtilization = true;
         caps.supportsMultiGPU = true;
     }

@@ -67,9 +67,9 @@ TEST(ProcessGpuHelpersTest, PerGpuBreakdownOnlyForMoreThanOneGpu)
 // before the retained history gets it too.
 TEST(ProcessGpuHelpersTest, NoGpuUsageTextNamesTheHistoryWindow)
 {
-    EXPECT_EQ(noGpuUsageDetail(300.0), "This process has not used a GPU in the last 5m.");
-    EXPECT_EQ(noGpuUsageDetail(90.0), "This process has not used a GPU in the last 1m 30s.");
-    EXPECT_EQ(noGpuUsageDetail(3600.0), "This process has not used a GPU in the last 1h.");
+    EXPECT_EQ(noGpuUsageDetail(300.0), "This process has not used a GPU in its retained history (up to 5m).");
+    EXPECT_EQ(noGpuUsageDetail(90.0), "This process has not used a GPU in its retained history (up to 1m 30s).");
+    EXPECT_EQ(noGpuUsageDetail(3600.0), "This process has not used a GPU in its retained history (up to 1h).");
 }
 
 // #1210: NVML on Linux reports a process's GPU memory but not its utilization; the tab shows N/A,

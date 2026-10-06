@@ -69,7 +69,9 @@ enum class GpuTabContent : std::uint8_t
 /// than claiming the process never used one. Built when the window changes, not every frame.
 [[nodiscard]] inline std::string noGpuUsageDetail(double historySeconds)
 {
-    return std::format("This process has not used a GPU in the last {}.",
+    // "Retained history (up to ...)", not "the last ...": histories are cleared when a process is
+    // selected, so right after selecting it far less than the configured length has been observed.
+    return std::format("This process has not used a GPU in its retained history (up to {}).",
                        UI::Format::formatDuration(historySeconds, UI::Format::DurationStyle::Compact));
 }
 
