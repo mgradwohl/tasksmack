@@ -1,6 +1,7 @@
 #pragma once
 
 #include "App/Panel.h"
+#include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessTreeFlatten.h"
 #include "App/ProcessColumnConfig.h"
@@ -9,6 +10,8 @@
 #include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
+#include "Platform/IProcessActions.h"
+#include "Platform/ProcessTypes.h"
 
 #include <array>
 #include <chrono>
@@ -183,6 +186,32 @@ class ProcessesPanel : public Panel
 
     // Column visibility
     ProcessColumnSettings m_ColumnSettings;
+    // Visibility asked for in the toolbar's Columns menu (#1209), handed to ImGui inside the table on
+    // the same frame; the menu shows it until then.
+    std::optional<ProcessColumnSettings> m_RequestedColumns;
+    bool m_ResetColumnOrderRequested = false; // "Reset columns" also restores the default order
+    bool m_TableHasDefaultOrder = true;       // As of the last frame, for enabling "Reset columns"
+
+    // Tree view gives the Name column room (#1209): adjusted once when the view mode changes. The
+    // width it had before, and the width tree view set (0 when it left it alone), so leaving tree
+    // view can restore a width the user did not change in the meantime.
+    bool m_NameWidthSyncPending = false;
+    float m_NameWidthBeforeTree = 0.0F;
+    float m_NameWidthSetForTree = 0.0F;
+
+    // Process actions from the row menu (#1209), confirmed in the same dialog as Process Details'
+    // Actions tab. Created at attach, like that panel's: this panel is part of the composition root.
+    std::unique_ptr<Platform::IProcessActions> m_ProcessActions;
+    Platform::ProcessActionCapabilities m_ActionCapabilities;
+    struct RowAction
+    {
+        Detail::ProcessAction action = Detail::ProcessAction::None;
+        Platform::ProcessTarget target; // PID and start time: a reused PID is refused (#973)
+        std::string processName;
+    } m_RowAction;
+    bool m_ShowRowActionConfirm = false;
+    Detail::ActionResultMessage m_RowActionResult; // Shown in the toolbar for a few seconds
+    float m_RowActionResultSeconds = 0.0F;
 
     // Search/filter state - using std::string for dynamic sizing
     std::string m_SearchBuffer;
@@ -244,6 +273,9 @@ class ProcessesPanel : public Panel
         // Static label widths
         float treeViewLabelWidth = 0.0F;
         float listViewLabelWidth = 0.0F;
+        float columnsLabelWidth = 0.0F;
+        float caretRightWidth = 0.0F; // Tree expanders (#1209)
+        float caretDownWidth = 0.0F;
         float unavailableTextWidth = 0.0F; // ProcessRowFormat::UNAVAILABLE_CELL_TEXT, for free-text cells (#1210)
 
         // Widths for PRIORITY_LABELS (Domain::Priority::getPriorityLabel()'s fixed label set).
@@ -306,6 +338,32 @@ class ProcessesPanel : public Panel
     /// @param snapshots The full list of process snapshots.
     /// @param filteredIndices Indices into snapshots for processes matching the current filter.
     void renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots, const std::vector<std::size_t>& filteredIndices);
+
+    /// The toolbar's Columns menu: a check per column and "Reset columns" (#1209).
+    void renderColumnsMenu();
+
+    /// Hands the Columns menu's requests to ImGui. Inside the table, after its columns are set up and
+    /// before the first row. Returns true when column visibility was changed this frame.
+    bool applyColumnRequests();
+
+    /// Gives the Name column tree view's width, or back the list's, after a view-mode change (#1209).
+    /// Inside the table, after its columns are set up and before the first row.
+    void syncNameWidthForViewMode();
+
+    /// Switches between list and tree view.
+    void setTreeView(bool enabled);
+
+    /// Selects `proc` as a click on its row does, and tells the other panels.
+    void selectProcess(const Domain::ProcessSnapshot& proc);
+
+    /// The right-click menu of a process row (#1209): Details, Copy, and the actions the platform has.
+    void renderRowContextMenu(const Domain::ProcessSnapshot& proc);
+
+    /// Asks to run `action` on `proc`, through the confirmation dialog.
+    void requestRowAction(Detail::ProcessAction action, const Domain::ProcessSnapshot& proc);
+
+    /// The confirmation dialog for a row-menu action, and the action once confirmed.
+    void renderRowActionConfirm();
 
     /// Render a single process row
     /// @param proc The process to render.

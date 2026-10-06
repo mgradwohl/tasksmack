@@ -204,6 +204,16 @@ void ShellLayer::onDetach()
 
 void ShellLayer::onEvent(Core::Event& event)
 {
+    // A request to see a process's details, from the Processes table's row menu (#1209): the
+    // selection itself travels as the ProcessSelectedEvent raised before it.
+    Core::EventDispatcher dispatcher(event);
+    dispatcher.dispatch<Core::ShowProcessDetailsEvent>(
+        [this](Core::ShowProcessDetailsEvent& /*e*/)
+        {
+            m_ShowDetailsTabRequested = true;
+            return false;
+        });
+
     // Forward events to all panels; each handles the settings events it needs itself
     m_Tabs.onEvent(event);
 }
@@ -453,13 +463,19 @@ void ShellLayer::renderTabBar()
         std::size_t index = 0;
         for (const auto& tab : m_Tabs.tabs())
         {
-            if (ImGui::BeginTabItem(tab.label(), nullptr, ImGuiTabItemFlags_NoCloseWithMiddleMouseButton))
+            ImGuiTabItemFlags tabFlags = ImGuiTabItemFlags_NoCloseWithMiddleMouseButton;
+            if (m_ShowDetailsTabRequested && tab.eventName == "ProcessDetails")
+            {
+                tabFlags |= ImGuiTabItemFlags_SetSelected;
+            }
+            if (ImGui::BeginTabItem(tab.label(), nullptr, tabFlags))
             {
                 m_Tabs.select(index);
                 ImGui::EndTabItem();
             }
             ++index;
         }
+        m_ShowDetailsTabRequested = false;
 
         ImGui::EndTabBar();
 

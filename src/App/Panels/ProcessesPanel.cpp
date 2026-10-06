@@ -2,8 +2,10 @@
 
 #include "App/Panel.h"
 #include "App/Panels/AdaptiveIntervalUtils.h"
+#include "App/Panels/ProcessActionConfirm.h"
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDetailsLayout.h"
+#include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessSortUtils.h"
 #include "App/Panels/ProcessStateColor.h"
@@ -24,6 +26,7 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/ProcessState.h"
 #include "Platform/Factory.h"
+#include "Platform/IProcessActions.h"
 #include "Platform/ProcessTypes.h"
 #include "UI/EmptyState.h"
 #include "UI/Format.h"
@@ -42,6 +45,7 @@
 #include <cctype>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -74,10 +78,40 @@ constexpr float INTERACTION_INTERVAL_HOLD_SECONDS = 0.40F;
 // slot is as wide as the widest of its units, measured in the current font (#1201).
 constexpr std::array<std::string_view, 3> POWER_UNITS = {" W", " mW", " µW"};
 
-// Static UI labels (cached for text size measurements)
-constexpr std::string_view TREE_VIEW_LABEL = "Tree View";
-constexpr std::string_view LIST_VIEW_LABEL = "List View";
+// Static UI labels (cached for text size measurements). The view-mode control is two segments, the
+// current mode's drawn selected, so it shows the mode it is in rather than the one it switches to (#1209).
+constexpr std::string_view LIST_VIEW_LABEL = ICON_FA_LIST " List";
+constexpr std::string_view TREE_VIEW_LABEL = ICON_FA_SITEMAP " Tree";
+constexpr std::string_view COLUMNS_LABEL = ICON_FA_TABLE_COLUMNS " Columns";
+constexpr const char* COLUMNS_POPUP_ID = "##ColumnsMenu";
 constexpr const char* FILTER_HINT = "Filter by name...";
+
+// How long a row-menu action's result stays in the toolbar, like the Actions tab's (#1209).
+constexpr float ROW_ACTION_RESULT_SECONDS = 5.0F;
+
+[[nodiscard]] float measureTextWidth(std::string_view text)
+{
+    return ImGui::CalcTextSize(text.data(), text.data() + text.size()).x;
+}
+
+/// One segment of the List | Tree view-mode control (#1209): a button of `width`, drawn in the
+/// selection colour while `selected`. Returns true when an unselected segment is pressed.
+bool viewModeSegment(std::string_view label, bool selected, float width)
+{
+    if (selected)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_Header));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_Header));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImGui::GetStyleColorVec4(ImGuiCol_Header));
+    }
+    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - the labels are constexpr literals
+    const bool pressed = ImGui::Button(label.data(), ImVec2(width, 0.0F));
+    if (selected)
+    {
+        ImGui::PopStyleColor(3);
+    }
+    return pressed && !selected;
+}
 
 [[nodiscard]] auto lowerAscii(char ch) -> int
 {
@@ -418,10 +452,12 @@ void ProcessesPanel::TextSizeCache::populate()
     unitPowerWidth = widestTextWidth(POWER_UNITS);
 
     // Cache static label widths
-    treeViewLabelWidth = ImGui::CalcTextSize(TREE_VIEW_LABEL.data(), TREE_VIEW_LABEL.data() + TREE_VIEW_LABEL.size()).x;
-    listViewLabelWidth = ImGui::CalcTextSize(LIST_VIEW_LABEL.data(), LIST_VIEW_LABEL.data() + LIST_VIEW_LABEL.size()).x;
-    const std::string_view dash = ProcessRowFormat::UNAVAILABLE_CELL_TEXT;
-    unavailableTextWidth = ImGui::CalcTextSize(dash.data(), dash.data() + dash.size()).x;
+    treeViewLabelWidth = measureTextWidth(TREE_VIEW_LABEL);
+    listViewLabelWidth = measureTextWidth(LIST_VIEW_LABEL);
+    columnsLabelWidth = measureTextWidth(COLUMNS_LABEL);
+    caretRightWidth = measureTextWidth(ICON_FA_CARET_RIGHT);
+    caretDownWidth = measureTextWidth(ICON_FA_CARET_DOWN);
+    unavailableTextWidth = measureTextWidth(ProcessRowFormat::UNAVAILABLE_CELL_TEXT);
 
     // Cache Domain::Priority::getPriorityLabel()'s fixed label widths
     for (std::size_t i = 0; i < PRIORITY_LABELS.size(); ++i)
@@ -445,10 +481,10 @@ float ProcessesPanel::measureToolbarMinimumWidth()
     const float clearButton = ImGui::CalcTextSize(ICON_FA_XMARK).x + (style.FramePadding.x * 2.0F);
     const float count =
         std::max(ImGui::CalcTextSize("99,999 processes, 9,999 running").x, ImGui::CalcTextSize("99,999 / 99,999 processes").x);
-    const float toggleButton = std::max(ImGui::CalcTextSize(TREE_VIEW_LABEL.data(), TREE_VIEW_LABEL.data() + TREE_VIEW_LABEL.size()).x,
-                                        ImGui::CalcTextSize(LIST_VIEW_LABEL.data(), LIST_VIEW_LABEL.data() + LIST_VIEW_LABEL.size()).x) +
-                               (style.FramePadding.x * 2.0F);
-    const float rest = (style.ItemSpacing.x * 3.0F) + clearButton + count + toggleButton;
+    // The Columns button and the two view-mode segments, which sit flush against each other (#1209).
+    const float columnsButton = measureTextWidth(COLUMNS_LABEL) + (style.FramePadding.x * 2.0F);
+    const float viewModeControl = measureTextWidth(LIST_VIEW_LABEL) + measureTextWidth(TREE_VIEW_LABEL) + (style.FramePadding.x * 4.0F);
+    const float rest = (style.ItemSpacing.x * 4.0F) + clearButton + count + columnsButton + viewModeControl;
     return ProcessTableLayout::computeToolbarMinimumWidth(filterWanted, filterForHint, rest);
 }
 
@@ -517,6 +553,10 @@ void ProcessesPanel::onAttach()
     processProbe->setSocketStatsCacheTtl(std::chrono::milliseconds(socketStatsCacheTtlMs));
 
     m_ProcessModel = std::make_shared<Domain::ProcessModel>(std::move(processProbe));
+
+    // The row menu's actions (#1209), with what this platform can do, so it offers nothing it can't.
+    m_ProcessActions = Platform::makeProcessActions();
+    m_ActionCapabilities = m_ProcessActions ? m_ProcessActions->actionCapabilities() : Platform::ProcessActionCapabilities{};
     // Config-file only (not in Settings), so applied once here, before the first refresh (#1123).
     m_ProcessModel->setMaxSaneNetworkRate(UserConfig::get().settings().maxSaneRateBps);
 
@@ -622,6 +662,11 @@ void ProcessesPanel::onEvent(Core::Event& event)
 
 void ProcessesPanel::onUpdate(float deltaTime)
 {
+    if (m_RowActionResultSeconds > 0.0F)
+    {
+        m_RowActionResultSeconds = std::max(0.0F, m_RowActionResultSeconds - std::max(0.0F, deltaTime));
+    }
+
     if (!m_ProcessModel || !m_Sampler)
     {
         return;
@@ -841,43 +886,61 @@ void ProcessesPanel::renderContent()
         m_SortPending = true; // In tree view the sort below is skipped; leaving it must still sort (#1174)
     }
 
-    // Process count with state summary (filtered/total)
+    // Process count with state summary (filtered/total), or for a few seconds the result of an action
+    // taken from a row's menu (#1209). Then the Columns button and the List | Tree control.
     ImGui::SameLine();
 
-    // Get a stable button width based on the widest possible label so layout doesn't shift when toggling
-    // Use cached label widths to avoid repeated CalcTextSize calls
-    const float maxLabelWidth = std::max(m_TextSizeCache.treeViewLabelWidth, m_TextSizeCache.listViewLabelWidth);
-
+    // Fixed widths from cached label widths, so the row does not shift when the mode changes.
     const ImGuiStyle& style = ImGui::GetStyle();
-    const float buttonWidthPx = maxLabelWidth + (style.FramePadding.x * 2.0F);
+    const float columnsButtonWidth = m_TextSizeCache.columnsLabelWidth + (style.FramePadding.x * 2.0F);
+    const float listSegmentWidth = m_TextSizeCache.listViewLabelWidth + (style.FramePadding.x * 2.0F);
+    const float treeSegmentWidth = m_TextSizeCache.treeViewLabelWidth + (style.FramePadding.x * 2.0F);
+    const float controlsWidth = columnsButtonWidth + style.ItemSpacing.x + listSegmentWidth + treeSegmentWidth;
 
+    const bool showActionResult = (m_RowActionResultSeconds > 0.0F) && !m_RowActionResult.empty();
+    const std::string& statusText = showActionResult ? m_RowActionResult.text : m_CachedSummaryStr;
     const float rightEdgeX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
-    const float textW = ImGui::CalcTextSize(m_CachedSummaryStr.c_str()).x;
-    ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), rightEdgeX - textW - buttonWidthPx - style.ItemSpacing.x));
-    ImGui::TextUnformatted(m_CachedSummaryStr.c_str());
-
-    // Tree view toggle button
-    ImGui::SameLine();
-    if (ImGui::Button(m_TreeViewEnabled ? LIST_VIEW_LABEL.data() : TREE_VIEW_LABEL.data()))
+    const float textW = ImGui::CalcTextSize(statusText.c_str(), statusText.c_str() + statusText.size()).x;
+    ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), rightEdgeX - textW - controlsWidth - style.ItemSpacing.x));
+    if (showActionResult)
     {
-        m_TreeViewEnabled = !m_TreeViewEnabled;
-        if (m_TreeViewEnabled)
-        {
-            // Tree view is not sortable, and ImGui leaves the sort out of a table's settings while
-            // it is not. Keep the layout as it stands now, in list view, so a layout saved later
-            // can still carry the user's sort (#952). Kept after returning to list view too: a
-            // resize made in tree view leaves ImGui's stored settings without a sort, and merely
-            // becoming sortable again does not rewrite them, so the gap outlasts tree view itself.
-            m_SortBackupLayout = captureTableLayout();
-            spdlog::debug("ProcessesPanel: Switched to tree view");
-        }
-        else
-        {
-            // ImGui need not mark the sort specs dirty on the way back, so force the sort (#1174).
-            m_SortPending = true;
-            spdlog::debug("ProcessesPanel: Switched to flat list view");
-        }
+        ImGui::TextColored(m_RowActionResult.ok ? theme.scheme().textSuccess : theme.scheme().textError, "%s", statusText.c_str());
     }
+    else
+    {
+        ImGui::TextUnformatted(statusText.c_str(), statusText.c_str() + statusText.size());
+    }
+
+    // Column chooser, beside ImGui's own header right-click menu (#1209)
+    ImGui::SameLine();
+    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - constexpr literal
+    if (ImGui::Button(COLUMNS_LABEL.data(), ImVec2(columnsButtonWidth, 0.0F)))
+    {
+        ImGui::OpenPopup(COLUMNS_POPUP_ID);
+    }
+    ImGui::SetItemTooltip("Show, hide or reset columns (also on a column header's right-click menu)");
+    if (ImGui::BeginPopup(COLUMNS_POPUP_ID))
+    {
+        renderColumnsMenu();
+        ImGui::EndPopup();
+    }
+
+    // View mode: List | Tree, the current one drawn selected (#1209)
+    ImGui::SameLine();
+    if (viewModeSegment(LIST_VIEW_LABEL, !m_TreeViewEnabled, listSegmentWidth))
+    {
+        setTreeView(false);
+    }
+    ImGui::SetItemTooltip("List view: every process, sortable by any column");
+    ImGui::SameLine(0.0F, 0.0F);
+    if (viewModeSegment(TREE_VIEW_LABEL, m_TreeViewEnabled, treeSegmentWidth))
+    {
+        setTreeView(true);
+    }
+    ImGui::SetItemTooltip("Tree view: processes under their parents");
+
+    // A row menu's Suspend, Resume, Terminate or Kill, confirmed as in the Actions tab (#1209)
+    renderRowActionConfirm();
 
     // Always create all columns with stable IDs (using enum value as ID)
     // Hidden columns use ImGuiTableColumnFlags_Disabled
@@ -964,11 +1027,17 @@ void ProcessesPanel::renderContent()
             }
         }
 
-        // Center headers within their columns for better readability
+        // The toolbar's Columns menu and a view-mode change, while the layout can still change (#1209)
+        const bool columnsChangedByMenu = applyColumnRequests();
+        syncNameWidthForViewMode();
+
+        // Headers are aligned like their cells: a numeric header over its right-aligned numbers (#1209)
         ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
         int headerIdx = 0;
         const ImGuiStyle& headerStyle = ImGui::GetStyle();
         const Platform::ProcessCapabilities headerCaps = processCapabilities();
+        const float sortArrowReserve =
+            ProcessTableLayout::sortArrowReserve(ImGui::GetFontSize(), headerStyle.FramePadding.x, headerStyle.CellPadding.x);
         for (const ProcessColumn col : allProcessColumns())
         {
             if (!ImGui::TableSetColumnIndex(headerIdx))
@@ -978,13 +1047,12 @@ void ProcessesPanel::renderContent()
             }
 
             const auto info = getColumnInfo(col);
-            const float colWidth = ImGui::GetColumnWidth();
-            // Use cached column header width
-            const float textWidth = m_TextSizeCache.getHeaderWidth(col);
-            const float startX = ImGui::GetCursorPosX();
-            const float paddingX = headerStyle.CellPadding.x;
-            const float targetX = startX + std::max(0.0F, ((colWidth - textWidth) * 0.5F) - paddingX);
-            ImGui::SetCursorPosX(targetX);
+            // ImGui draws the sort arrow at the sorted header's right edge; tree view is not sortable.
+            const bool showsSortArrow = !m_TreeViewEnabled && (ImGui::TableGetColumnFlags(headerIdx) & ImGuiTableColumnFlags_IsSorted) != 0;
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ProcessTableLayout::headerLabelOffset(columnAlignment(col),
+                                                                                                ImGui::GetContentRegionAvail().x,
+                                                                                                m_TextSizeCache.getHeaderWidth(col),
+                                                                                                showsSortArrow ? sortArrowReserve : 0.0F));
             // A column this system cannot fill is headed muted, like its cells (#1210).
             const bool columnSupported = ProcessColumnAvailability::isSupported(col, headerCaps);
             {
@@ -1026,6 +1094,7 @@ void ProcessesPanel::renderContent()
         if (const ImGuiTable* table = ImGui::GetCurrentTable(); table != nullptr)
         {
             m_TableId = table->ID;
+            m_TableHasDefaultOrder = table->IsDefaultDisplayOrder;
         }
         if (const ImGuiTable* table = ImGui::GetCurrentTable(); table != nullptr && commandColumnIdx >= 0)
         {
@@ -1096,22 +1165,26 @@ void ProcessesPanel::renderContent()
         }
 
         // Sync column visibility from ImGui back to our settings
-        // This captures changes made via the right-click context menu
-        bool settingsChanged = false;
-        int idx = 0;
-        for (const ProcessColumn col : allProcessColumns())
+        // This captures changes made via the right-click context menu. Not on a frame the Columns
+        // menu changed it: ImGui applies that next frame, so its flags still show the old state.
+        if (!columnsChangedByMenu)
         {
-            const bool isEnabled = (ImGui::TableGetColumnFlags(idx) & ImGuiTableColumnFlags_IsEnabled) != 0;
-            if (m_ColumnSettings.isVisible(col) != isEnabled)
+            bool settingsChanged = false;
+            int idx = 0;
+            for (const ProcessColumn col : allProcessColumns())
             {
-                m_ColumnSettings.setVisible(col, isEnabled);
-                settingsChanged = true;
+                const bool isEnabled = (ImGui::TableGetColumnFlags(idx) & ImGuiTableColumnFlags_IsEnabled) != 0;
+                if (m_ColumnSettings.isVisible(col) != isEnabled)
+                {
+                    m_ColumnSettings.setVisible(col, isEnabled);
+                    settingsChanged = true;
+                }
+                ++idx;
             }
-            ++idx;
-        }
-        if (settingsChanged)
-        {
-            UserConfig::get().settings().processColumns = m_ColumnSettings;
+            if (settingsChanged)
+            {
+                UserConfig::get().settings().processColumns = m_ColumnSettings;
+            }
         }
 
         ImGui::EndTable();
@@ -1249,14 +1322,16 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             {
                 ImGui::PopStyleColor();
             }
-            if (clicked)
+            // A right-click selects the row too, so the menu it opens acts on the highlighted row.
+            if (clicked || (!isSelected && ImGui::IsItemClicked(ImGuiMouseButton_Right)))
             {
-                m_SelectedPid = proc.pid;
-                m_SelectedUniqueKey = proc.uniqueKey;
-
-                // Emit process selection event for other panels to react
-                Core::ProcessSelectedEvent event(proc.pid, proc.uniqueKey);
-                Core::Application::get().raiseEvent(event);
+                selectProcess(proc);
+            }
+            // The row's menu (#1209), keyed on the selectable, whose ID is unique to this process.
+            if (ImGui::BeginPopupContextItem())
+            {
+                renderRowContextMenu(proc);
+                ImGui::EndPopup();
             }
             if (!columnVisible)
             {
@@ -1374,12 +1449,23 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
 
             if (m_TreeViewEnabled && hasChildren)
             {
+                // A caret, pointing down when expanded and right when collapsed (#1209), centred in the
+                // same slot a leaf's spacer takes, as tall as the text so the row keeps its height.
                 // Stack-allocated button ID: avoids heap allocation per visible row per frame
                 std::array<char, 40> buttonIdBuf{};
-                const char buttonChar = isExpanded ? '-' : '+';
-                auto btnRes = std::format_to_n(buttonIdBuf.data(), buttonIdBuf.size() - 1, "{}##tree_btn_{}", buttonChar, proc.uniqueKey);
+                auto btnRes = std::format_to_n(buttonIdBuf.data(), buttonIdBuf.size() - 1, "##tree_btn_{}", proc.uniqueKey);
                 *btnRes.out = '\0';
-                if (ImGui::SmallButton(buttonIdBuf.data()))
+                const ImVec2 slotPos = ImGui::GetCursorScreenPos();
+                const float slotWidth = ImGui::GetFrameHeight();
+                const bool toggled = ImGui::InvisibleButton(buttonIdBuf.data(), ImVec2(slotWidth, ImGui::GetTextLineHeight()));
+                const auto& scheme = UI::Theme::get().scheme();
+                const float caretWidth = isExpanded ? m_TextSizeCache.caretDownWidth : m_TextSizeCache.caretRightWidth;
+                ImGui::GetWindowDrawList()->AddText(
+                    ImVec2(slotPos.x + std::floor((slotWidth - caretWidth) * 0.5F), slotPos.y),
+                    ImGui::ColorConvertFloat4ToU32(ImGui::IsItemHovered() ? scheme.textPrimary : scheme.textMuted),
+                    isExpanded ? ICON_FA_CARET_DOWN : ICON_FA_CARET_RIGHT);
+                ImGui::SetItemTooltip(isExpanded ? "Collapse" : "Expand");
+                if (toggled)
                 {
                     // Toggle collapsed state using uniqueKey
                     if (isExpanded)
@@ -1588,6 +1674,234 @@ void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& 
             const ProcessTreeFlatten::ProcessTreeRow& row = rows[static_cast<std::size_t>(i)];
             renderProcessRow(snapshots[row.procIdx], row.depth, row.hasChildren, row.isExpanded);
         }
+    }
+}
+
+// ============================================================================
+// Discoverable table affordances (#1209)
+// ============================================================================
+
+void ProcessesPanel::renderColumnsMenu()
+{
+    // The menu shows a request ImGui has not applied yet, so a click is reflected at once.
+    const ProcessColumnSettings shown = m_RequestedColumns.value_or(m_ColumnSettings);
+    const Platform::ProcessCapabilities caps = processCapabilities();
+
+    // Stays open while columns are ticked on and off, as ImGui's header menu does.
+    ImGui::PushItemFlag(ImGuiItemFlags_AutoClosePopups, false);
+    for (const ProcessColumn col : allProcessColumns())
+    {
+        const auto info = getColumnInfo(col);
+        const bool visible = shown.isVisible(col);
+        ImGui::BeginDisabled(!info.canHide); // PID and Name are always shown
+        // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - constexpr literals are null-terminated
+        if (ImGui::MenuItem(info.menuName.data(), nullptr, visible))
+        {
+            ProcessColumnSettings next = shown;
+            next.requestVisible(col, !visible);
+            m_RequestedColumns = next;
+        }
+        ImGui::EndDisabled();
+        if (!ProcessColumnAvailability::isSupported(col, caps))
+        {
+            const std::string_view note = ProcessColumnAvailability::UNSUPPORTED_COLUMN_NOTE;
+            ImGui::SetItemTooltip("%.*s", static_cast<int>(note.size()), note.data());
+        }
+    }
+    ImGui::PopItemFlag();
+
+    ImGui::Separator();
+    const bool canReset = !shown.isDefault() || !m_TableHasDefaultOrder;
+    if (ImGui::MenuItem(ICON_FA_ROTATE_LEFT " Reset columns", nullptr, false, canReset))
+    {
+        m_RequestedColumns = ProcessColumnSettings::defaults();
+        m_ResetColumnOrderRequested = true;
+    }
+    ImGui::SetItemTooltip("Show the default columns, in their default order");
+}
+
+bool ProcessesPanel::applyColumnRequests()
+{
+    if (m_ResetColumnOrderRequested)
+    {
+        // ImGui's own "Reset order", applied when the columns are next set up.
+        if (ImGuiTable* table = ImGui::GetCurrentTable(); table != nullptr)
+        {
+            table->IsResetDisplayOrderRequest = true;
+        }
+        m_ResetColumnOrderRequested = false;
+    }
+
+    if (!m_RequestedColumns.has_value())
+    {
+        return false;
+    }
+    int idx = 0;
+    for (const ProcessColumn col : allProcessColumns())
+    {
+        ImGui::TableSetColumnEnabled(idx, m_RequestedColumns->isVisible(col));
+        ++idx;
+    }
+    m_ColumnSettings = *m_RequestedColumns;
+    m_RequestedColumns.reset();
+    UserConfig::get().settings().processColumns = m_ColumnSettings;
+    return true;
+}
+
+void ProcessesPanel::syncNameWidthForViewMode()
+{
+    if (!m_NameWidthSyncPending)
+    {
+        return;
+    }
+    m_NameWidthSyncPending = false;
+    const ImGuiTable* table = ImGui::GetCurrentTable();
+    if (table == nullptr)
+    {
+        return;
+    }
+    const auto nameIdx = static_cast<int>(toIndex(ProcessColumn::Name));
+    const float currentWidth = table->Columns[nameIdx].WidthGiven;
+    if (m_TreeViewEnabled)
+    {
+        const float treeWidth = ProcessTreeIndent::treeViewNameWidth(currentWidth, ImGui::GetFontSize());
+        m_NameWidthBeforeTree = currentWidth;
+        m_NameWidthSetForTree = (treeWidth > currentWidth) ? treeWidth : 0.0F;
+        if (m_NameWidthSetForTree > 0.0F)
+        {
+            ImGui::TableSetColumnWidth(nameIdx, treeWidth);
+        }
+        return;
+    }
+    if (ProcessTreeIndent::shouldRestoreNameWidth(m_NameWidthSetForTree, currentWidth))
+    {
+        ImGui::TableSetColumnWidth(nameIdx, m_NameWidthBeforeTree);
+    }
+    m_NameWidthSetForTree = 0.0F;
+}
+
+void ProcessesPanel::setTreeView(bool enabled)
+{
+    if (enabled == m_TreeViewEnabled)
+    {
+        return;
+    }
+    m_TreeViewEnabled = enabled;
+    m_NameWidthSyncPending = true;
+    if (m_TreeViewEnabled)
+    {
+        // Tree view is not sortable, and ImGui leaves the sort out of a table's settings while
+        // it is not. Keep the layout as it stands now, in list view, so a layout saved later
+        // can still carry the user's sort (#952). Kept after returning to list view too: a
+        // resize made in tree view leaves ImGui's stored settings without a sort, and merely
+        // becoming sortable again does not rewrite them, so the gap outlasts tree view itself.
+        m_SortBackupLayout = captureTableLayout();
+        spdlog::debug("ProcessesPanel: Switched to tree view");
+    }
+    else
+    {
+        // ImGui need not mark the sort specs dirty on the way back, so force the sort (#1174).
+        m_SortPending = true;
+        spdlog::debug("ProcessesPanel: Switched to flat list view");
+    }
+}
+
+void ProcessesPanel::selectProcess(const Domain::ProcessSnapshot& proc)
+{
+    m_SelectedPid = proc.pid;
+    m_SelectedUniqueKey = proc.uniqueKey;
+
+    // Emit process selection event for other panels to react
+    Core::ProcessSelectedEvent event(proc.pid, proc.uniqueKey);
+    Core::Application::get().raiseEvent(event);
+}
+
+void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
+{
+    // Only while the menu is open, so formatting here costs nothing on an ordinary frame.
+    ImGui::TextDisabled("%s (PID %d)", proc.name.c_str(), proc.pid);
+    ImGui::Separator();
+
+    if (ImGui::MenuItem(ICON_FA_CIRCLE_INFO " Details"))
+    {
+        selectProcess(proc);
+        Core::ShowProcessDetailsEvent event;
+        Core::Application::get().raiseEvent(event);
+    }
+
+    ImGui::Separator();
+    if (ImGui::MenuItem(ICON_FA_COPY " Copy PID"))
+    {
+        std::array<char, 16> pidText{};
+        const auto result = std::to_chars(pidText.data(), pidText.data() + pidText.size() - 1, proc.pid);
+        *result.ptr = '\0';
+        ImGui::SetClipboardText(pidText.data());
+    }
+    if (ImGui::MenuItem(ICON_FA_COPY " Copy Name"))
+    {
+        ImGui::SetClipboardText(proc.name.c_str());
+    }
+    if (ImGui::MenuItem(ICON_FA_COPY " Copy Command Line", nullptr, false, !proc.command.empty()))
+    {
+        ImGui::SetClipboardText(proc.command.c_str());
+    }
+
+    // Only what this platform can do (ProcessActionCapabilities), as in the Actions tab.
+    const Platform::ProcessActionCapabilities& can = m_ActionCapabilities;
+    if (can.canStop || can.canContinue)
+    {
+        ImGui::Separator();
+        if (can.canStop && ImGui::MenuItem(ICON_FA_PAUSE " Suspend..."))
+        {
+            requestRowAction(Detail::ProcessAction::Stop, proc);
+        }
+        if (can.canContinue && ImGui::MenuItem(ICON_FA_PLAY " Resume..."))
+        {
+            requestRowAction(Detail::ProcessAction::Resume, proc);
+        }
+    }
+    if (can.canTerminate || can.canKill)
+    {
+        // Ending a process can lose its work: in the danger colour, and confirmed in the dialog's
+        // danger-coloured button, as in the Actions tab (#1273).
+        ImGui::Separator();
+        ImGui::PushStyleColor(ImGuiCol_Text, UI::Theme::get().scheme().textError);
+        if (can.canTerminate && ImGui::MenuItem(ICON_FA_XMARK " Terminate..."))
+        {
+            requestRowAction(Detail::ProcessAction::Terminate, proc);
+        }
+        if (can.canKill && ImGui::MenuItem(ICON_FA_SKULL " Kill..."))
+        {
+            requestRowAction(Detail::ProcessAction::Kill, proc);
+        }
+        ImGui::PopStyleColor();
+    }
+}
+
+void ProcessesPanel::requestRowAction(Detail::ProcessAction action, const Domain::ProcessSnapshot& proc)
+{
+    m_RowAction.action = action;
+    // This row's identity: the platform refuses the action if the PID has since been reused (#973).
+    m_RowAction.target = Platform::ProcessTarget{.pid = proc.pid, .startTimeTicks = proc.startTimeTicks};
+    m_RowAction.processName = proc.name;
+    m_ShowRowActionConfirm = true;
+}
+
+void ProcessesPanel::renderRowActionConfirm()
+{
+    if (ProcessActionConfirm::render(m_ShowRowActionConfirm, m_RowAction.action, m_RowAction.processName, m_RowAction.target.pid) !=
+        ProcessActionConfirm::Outcome::Confirmed)
+    {
+        return;
+    }
+    const Platform::ProcessActionResult result =
+        m_ProcessActions ? Detail::dispatchProcessAction(*m_ProcessActions, m_RowAction.action, m_RowAction.target)
+                         : Platform::ProcessActionResult::error("Process actions unavailable");
+    m_RowActionResult = Detail::formatActionResultMessage(m_RowAction.action, m_RowAction.target.pid, result);
+    m_RowActionResultSeconds = ROW_ACTION_RESULT_SECONDS;
+    if (result.success)
+    {
+        requestRefresh(); // Show the process suspended, resumed or gone without waiting for the next sample
     }
 }
 

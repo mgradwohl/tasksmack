@@ -302,5 +302,71 @@ TEST(ProcessColumnSettingsTest, AllColumnsCanBeShown)
     }
 }
 
+// ========== Columns menu (#1209) ==========
+
+TEST(ProcessColumnSettingsTest, ResetRestoresTheDefaultColumns)
+{
+    ProcessColumnSettings settings;
+    EXPECT_TRUE(settings.isDefault());
+
+    settings.requestVisible(ProcessColumn::Command, false);
+    settings.requestVisible(ProcessColumn::Threads, true);
+    EXPECT_FALSE(settings.isDefault());
+
+    settings = ProcessColumnSettings::defaults();
+    EXPECT_TRUE(settings.isDefault());
+    EXPECT_EQ(settings, ProcessColumnSettings{});
+    for (const ProcessColumn col : allProcessColumns())
+    {
+        EXPECT_EQ(settings.isVisible(col), getColumnInfo(col).defaultVisible);
+    }
+}
+
+TEST(ProcessColumnSettingsTest, RequestVisibleKeepsUnhideableColumnsShown)
+{
+    ProcessColumnSettings settings;
+    settings.requestVisible(ProcessColumn::PID, false);
+    settings.requestVisible(ProcessColumn::Name, false);
+    EXPECT_TRUE(settings.isVisible(ProcessColumn::PID));
+    EXPECT_TRUE(settings.isVisible(ProcessColumn::Name));
+
+    settings.requestVisible(ProcessColumn::User, false);
+    EXPECT_FALSE(settings.isVisible(ProcessColumn::User));
+    settings.requestVisible(ProcessColumn::User, true);
+    EXPECT_TRUE(settings.isVisible(ProcessColumn::User));
+}
+
+// ========== Header alignment (#1209) ==========
+
+TEST(ProcessColumnConfigTest, NumericColumnsAreRightAligned)
+{
+    for (const ProcessColumn col :
+         {ProcessColumn::PID,        ProcessColumn::PPID,       ProcessColumn::CpuPercent, ProcessColumn::MemPercent,
+          ProcessColumn::Resident,   ProcessColumn::Virtual,    ProcessColumn::Shared,     ProcessColumn::PeakResident,
+          ProcessColumn::Priority,   ProcessColumn::Affinity,   ProcessColumn::Threads,    ProcessColumn::Handles,
+          ProcessColumn::GdiObjects, ProcessColumn::CpuTime,    ProcessColumn::StartTime,  ProcessColumn::IoRead,
+          ProcessColumn::IoWrite,    ProcessColumn::PageFaults, ProcessColumn::NetSent,    ProcessColumn::NetReceived,
+          ProcessColumn::Power,      ProcessColumn::GpuPercent, ProcessColumn::GpuMemory})
+    {
+        EXPECT_EQ(columnAlignment(col), ColumnAlign::Right) << getColumnInfo(col).configKey;
+    }
+}
+
+TEST(ProcessColumnConfigTest, TextColumnsAreLeftAlignedAndStateIsCentred)
+{
+    for (const ProcessColumn col : {ProcessColumn::Name,
+                                    ProcessColumn::User,
+                                    ProcessColumn::Publisher,
+                                    ProcessColumn::Status,
+                                    ProcessColumn::Type,
+                                    ProcessColumn::GpuEngine,
+                                    ProcessColumn::GpuDevice,
+                                    ProcessColumn::Command})
+    {
+        EXPECT_EQ(columnAlignment(col), ColumnAlign::Left) << getColumnInfo(col).configKey;
+    }
+    EXPECT_EQ(columnAlignment(ProcessColumn::State), ColumnAlign::Center);
+}
+
 } // namespace
 } // namespace App

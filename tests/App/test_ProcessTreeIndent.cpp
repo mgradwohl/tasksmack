@@ -93,5 +93,31 @@ TEST(ProcessTreeIndentTest, IndentPerLevelIsMoreThanACharacterAtAnyFont)
         EXPECT_GT(ProcessTreeIndent::INDENT_PER_LEVEL_EM * em, em);
     }
 }
+
+// ========== Tree view's Name width (#1209) ==========
+
+TEST(ProcessTreeIndentTest, TreeViewWidensANarrowNameColumn)
+{
+    constexpr float em = 16.0F;
+    EXPECT_FLOAT_EQ(ProcessTreeIndent::treeViewNameWidth(120.0F, em), ProcessTreeIndent::TREE_NAME_WIDTH_EM * em);
+    // Room for the expander, a few levels of indent and the list's own name width.
+    EXPECT_GT(ProcessTreeIndent::TREE_NAME_WIDTH_EM,
+              ProcessTreeIndent::MIN_NAME_WIDTH_EM + (3.0F * ProcessTreeIndent::INDENT_PER_LEVEL_EM));
+}
+
+TEST(ProcessTreeIndentTest, TreeViewNeverNarrowsANameColumnTheUserWidened)
+{
+    EXPECT_FLOAT_EQ(ProcessTreeIndent::treeViewNameWidth(900.0F, 16.0F), 900.0F);
+    EXPECT_FLOAT_EQ(ProcessTreeIndent::treeViewNameWidth(120.0F, 0.0F), 120.0F); // No usable em: unchanged
+}
+
+TEST(ProcessTreeIndentTest, LeavingTreeViewRestoresOnlyAWidthTheUserDidNotChange)
+{
+    EXPECT_TRUE(ProcessTreeIndent::shouldRestoreNameWidth(360.0F, 360.0F));
+    EXPECT_TRUE(ProcessTreeIndent::shouldRestoreNameWidth(360.0F, 360.5F));  // Layout rounding
+    EXPECT_FALSE(ProcessTreeIndent::shouldRestoreNameWidth(360.0F, 420.0F)); // Resized in tree view: kept
+    EXPECT_FALSE(ProcessTreeIndent::shouldRestoreNameWidth(0.0F, 120.0F));   // Tree view did not widen it
+}
+
 } // namespace
 } // namespace App

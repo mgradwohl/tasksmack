@@ -51,4 +51,30 @@ inline constexpr float MIN_NAME_WIDTH_EM = 6.75F;
     return std::min(requested, allowed);
 }
 
+/// Name column width tree view asks for, in ems: twice the list's default (11.25 em, 120px at the
+/// reference em), so a name keeps about as much room as in the list after the expander and a few
+/// levels of indent. In tree view the Name column is what identifies a row, and at the list's width
+/// names truncated heavily ("RuntimeBroker...", "Memory Compre...") while other columns kept theirs (#1209).
+inline constexpr float TREE_NAME_WIDTH_EM = 22.5F;
+
+/// Width to give the Name column on entering tree view (#1209): the tree's width, or the column's
+/// current one if the user already made it wider. Never narrows the column.
+[[nodiscard]] constexpr float treeViewNameWidth(float currentWidth, float emPx) noexcept
+{
+    const float wanted = (emPx > 0.0F) ? (TREE_NAME_WIDTH_EM * emPx) : 0.0F;
+    return std::max(currentWidth, wanted);
+}
+
+/// Whether leaving tree view should give the Name column back the width it had before (#1209): only
+/// when tree view widened it and the user has not resized it since, so a width the user chose stays.
+///
+/// @param widenedTo     Width tree view set, or 0 if it left the column as it was.
+/// @param currentWidth  The column's width now.
+[[nodiscard]] constexpr bool shouldRestoreNameWidth(float widenedTo, float currentWidth) noexcept
+{
+    constexpr float RESIZE_TOLERANCE_PX = 1.0F;
+    const float change = currentWidth - widenedTo;
+    return widenedTo > 0.0F && change <= RESIZE_TOLERANCE_PX && change >= -RESIZE_TOLERANCE_PX;
+}
+
 } // namespace App::ProcessTreeIndent

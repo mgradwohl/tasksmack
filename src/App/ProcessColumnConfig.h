@@ -228,6 +228,37 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
     return infos[toIndex(col)];
 }
 
+/// How a column's cells are aligned, which its header follows (#1209).
+enum class ColumnAlign : std::uint8_t
+{
+    Left,
+    Center,
+    Right,
+};
+
+/// The alignment of a column's cells: numbers, sizes, rates, times and counts right, the one-letter
+/// State code centred, free text left. ProcessesPanel::renderProcessRow() draws each column this way,
+/// and the header is aligned to match, so a numeric header sits over its numbers (#1209).
+[[nodiscard]] constexpr auto columnAlignment(ProcessColumn col) -> ColumnAlign
+{
+    switch (col)
+    {
+    case ProcessColumn::Name:
+    case ProcessColumn::User:
+    case ProcessColumn::Publisher:
+    case ProcessColumn::Status:
+    case ProcessColumn::Type:
+    case ProcessColumn::GpuEngine:
+    case ProcessColumn::GpuDevice:
+    case ProcessColumn::Command:
+        return ColumnAlign::Left;
+    case ProcessColumn::State:
+        return ColumnAlign::Center;
+    default:
+        return ColumnAlign::Right;
+    }
+}
+
 /// What a column's header tooltip adds to its description about what the platform leaves out, or
 /// empty. The network columns say when they count TCP only: UDP traffic -- QUIC/HTTP3, video calls,
 /// games, DNS -- isn't attributed per process, and a browser streaming over HTTP/3 reads about
@@ -296,6 +327,27 @@ struct ProcessColumnSettings
         const std::size_t idx = toIndex(col);
         visible[idx] = !visible[idx];
     }
+
+    /// Shows or hides `col` as the Columns menu asks (#1209); a column that cannot be hidden (PID,
+    /// Name) stays shown.
+    void requestVisible(ProcessColumn col, bool vis)
+    {
+        setVisible(col, vis || !getColumnInfo(col).canHide);
+    }
+
+    /// The default column set, what the Columns menu's "Reset columns" restores (#1209).
+    [[nodiscard]] static ProcessColumnSettings defaults()
+    {
+        return {};
+    }
+
+    /// Whether every column is shown or hidden as it is by default.
+    [[nodiscard]] bool isDefault() const
+    {
+        return visible == defaults().visible;
+    }
+
+    friend bool operator==(const ProcessColumnSettings&, const ProcessColumnSettings&) = default;
 };
 
 } // namespace App
