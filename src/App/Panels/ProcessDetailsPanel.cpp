@@ -109,7 +109,8 @@ constexpr const char* CPU_SYSTEM_LABEL = "System";
 // call one quantity by one name (#1273).
 constexpr const char* MEM_USED_LABEL = "Memory";
 constexpr const char* MEM_SHARED_LABEL = "Shared";
-// A series on a chart's right-hand axis ends in " →", pointing at it (setupSecondaryRateAxis(), #1206).
+// A series on a chart's right-hand axis ends in " →", pointing at it (setupSecondaryRateAxis(), #1206); in
+// its value-strip entry and tooltip rows the mark follows the value (SECONDARY_AXIS_MARK, #1300).
 constexpr const char* MEM_VIRTUAL_LABEL = "Virtual →";
 constexpr const char* MEM_PEAK_LABEL = "Peak Mem";
 constexpr const char* THREADS_LABEL = "Threads";
@@ -1041,42 +1042,36 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
                 }
 
                 // Bands and lines reach "now" like every plotLineWithFill series: the last sample
-                // held to x = 0 (UI::Widgets::holdLastValueToNow, #1016). Built in their own buffers,
-                // so the tooltip's lookup over cpuTimeData still finds real samples only.
-                if (!m_CpuPlotX.empty() && m_CpuPlotX.back() < 0.0)
-                {
-                    m_CpuPlotX.push_back(0.0);
-                    for (auto* series : {&y0, &yUserTop, &ySystemTop, &m_CpuPlotTotal, &m_CpuPlotUser, &m_CpuPlotSystem})
-                    {
-                        series->push_back(series->back());
-                    }
-                }
+                // held to x = 0 (#1016), unless it is too old to pass for current (#1147). Built in
+                // their own buffers, so the tooltip's lookup over cpuTimeData still finds real samples only.
+                UI::Widgets::holdLastValuesToNow(m_CpuPlotX,
+                                                 {&y0, &yUserTop, &ySystemTop, &m_CpuPlotTotal, &m_CpuPlotUser, &m_CpuPlotSystem},
+                                                 UI::Widgets::maxHoldSecondsForAxis(cpuTimeData));
                 const int drawCount = UI::Format::checkedCount(m_CpuPlotX.size());
 
                 // The bands share their labels with the User and System lines below, so ImPlot
                 // treats each band and its line as one item.
                 // ImPlot's shaded renderer doesn't break at NaN, so the bands are filled run by run over
                 // the finite points: a gap (a missing sample, or a UI stall that overran the sample ring,
-                // #1098) is drawn as a gap rather than as fill triangles through NaN. A gap point is NaN
-                // in every band, so the system top's runs serve both.
-                UI::Widgets::forEachFiniteRun(ySystemTop.data(),
-                                              drawCount,
-                                              [&](int runStart, int runLength)
-                                              {
-                                                  const auto at = static_cast<std::size_t>(runStart);
-                                                  ImPlot::PlotShaded(CPU_USER_LABEL,
-                                                                     &m_CpuPlotX[at],
-                                                                     &y0[at],
-                                                                     &yUserTop[at],
-                                                                     runLength,
-                                                                     {ImPlotProp_FillColor, theme.scheme().cpuUserFill});
-                                                  ImPlot::PlotShaded(CPU_SYSTEM_LABEL,
-                                                                     &m_CpuPlotX[at],
-                                                                     &yUserTop[at],
-                                                                     &ySystemTop[at],
-                                                                     runLength,
-                                                                     {ImPlotProp_FillColor, theme.scheme().cpuSystemFill});
-                                              });
+                // #1098) is drawn as a gap rather than as fill triangles through NaN. Each band uses the
+                // runs over which both of its own edges are finite, so a reading missing from one band
+                // alone can't feed NaN to the other (#1149).
+                const auto shadeBand =
+                    [&](const char* label, const std::vector<double>& lower, const std::vector<double>& upper, const ImVec4& fillColor)
+                {
+                    UI::Widgets::forEachJointFiniteRun(
+                        lower.data(),
+                        upper.data(),
+                        drawCount,
+                        [&](int runStart, int runLength)
+                        {
+                            const auto at = static_cast<std::size_t>(runStart);
+                            ImPlot::PlotShaded(
+                                label, &m_CpuPlotX[at], &lower[at], &upper[at], runLength, {ImPlotProp_FillColor, fillColor});
+                        });
+                };
+                shadeBand(CPU_USER_LABEL, y0, yUserTop, theme.scheme().cpuUserFill);
+                shadeBand(CPU_SYSTEM_LABEL, yUserTop, ySystemTop, theme.scheme().cpuSystemFill);
 
                 // Total at the primary series' weight; it has no fill of its own, the bands above are
                 // the fill. User and System are secondaries: lighter lines, each with its own marker
@@ -2120,7 +2115,9 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
     // GPU history graphs: drawn from the start, with the collecting hint until samples arrive, like
     // every other chart (#1013); this was a line of text until there was history.
     {
-        const size_t alignedCount = std::min(m_GpuUtilHistory.size(), m_Timestamps.size());
+        // Every series drawn counts, so a history that falls out of lockstep can't be read past its
+        // end (#1149).
+        const size_t alignedCount = std::min({m_GpuUtilHistory.size(), m_GpuMemHistory.size(), m_Timestamps.size()});
         const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
 
         // Extract only what we need for the graphs
