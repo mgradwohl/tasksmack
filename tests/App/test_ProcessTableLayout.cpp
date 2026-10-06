@@ -261,7 +261,8 @@ TEST(ProcessTableLayoutTest, ToolbarStatusSitsRightBeforeTheControls)
 TEST(ProcessTableLayoutTest, LongActionResultIsBoundedToTheCountTextsWidth)
 {
     // A long platform error gets no more room than the count text, so the controls do not move.
-    const auto layout = ProcessTableLayout::layoutToolbarStatus(300.0F, 1000.0F, 200.0F, 8.0F, /*text=*/900.0F, /*max=*/150.0F);
+    const auto layout =
+        ProcessTableLayout::layoutToolbarStatus(300.0F, 1000.0F, 200.0F, 8.0F, /*textWidthPx=*/900.0F, /*maxWidthPx=*/150.0F);
     EXPECT_FLOAT_EQ(layout.width, 150.0F);
     EXPECT_FLOAT_EQ(layout.x + layout.width, 792.0F); // Still ends where the controls begin
     EXPECT_TRUE(layout.clipped);
