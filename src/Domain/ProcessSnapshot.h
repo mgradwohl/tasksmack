@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Platform/CpuAffinity.h"
+
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -44,7 +46,7 @@ struct ProcessSnapshot
     std::uint64_t peakMemoryBytes = 0; // Peak RSS (from OS on Windows, tracked on Linux)
     std::uint64_t sharedBytes = 0;     // Shared memory
     std::uint64_t pageFaults = 0;      // Total page faults (cumulative)
-    std::uint64_t cpuAffinityMask = 0; // Bitmask of allowed CPU cores (0 = not available)
+    Platform::CpuAffinity cpuAffinity; // Logical processors it may run on (empty = not available)
 
     // GPU usage (per-process, across the GPUs it uses), on the same terms as the adapter figures on
     // the GPU tab (#1164). Utilization is that of the busiest GPU it uses, 0-100, as an adapter's is
