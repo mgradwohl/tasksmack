@@ -62,6 +62,14 @@ TEST(WindowEventRoutingTest, OsRestoreIsRouted)
     EXPECT_EQ(classify(SDL_EVENT_WINDOW_RESTORED), Action::SystemRestored);
 }
 
+TEST(WindowEventRoutingTest, DisplayScaleChangeIsRouted)
+{
+    // An in-place scale change must refresh the normal geometry's scale: otherwise a later outside
+    // maximize paired the normal rectangle with the old scale, and the next launch rescaled the saved
+    // size wrongly (#1250).
+    EXPECT_EQ(classify(SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED), Action::DisplayScaleChanged);
+}
+
 TEST(WindowEventRoutingTest, OtherEventsNeedNoRouting)
 {
     EXPECT_EQ(classify(SDL_EVENT_KEY_DOWN), Action::None);

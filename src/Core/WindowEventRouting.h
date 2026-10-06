@@ -52,6 +52,12 @@ enum class Action : std::uint8_t
     /// run() hands it to Window::handleSystemRestored(), which ends an OS maximize the window manager
     /// or compositor undid (#1250).
     SystemRestored,
+    /// SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED: the window's content scale changed in place (a display
+    /// scaling setting, or a move SDL reports without a MOVED). run() hands it to
+    /// Window::handleGeometryChanged() so the normal geometry a later outside maximize saves carries
+    /// the current scale, not the one from the last move or resize (#1250). UILayer still rebuilds
+    /// fonts and style from its own onSDLEvent().
+    DisplayScaleChanged,
 };
 
 /// Classify an SDL event type.
@@ -78,6 +84,8 @@ enum class Action : std::uint8_t
         return Action::SystemMaximized;
     case SDL_EVENT_WINDOW_RESTORED:
         return Action::SystemRestored;
+    case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
+        return Action::DisplayScaleChanged;
     default:
         return Action::None;
     }

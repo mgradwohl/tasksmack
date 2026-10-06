@@ -322,6 +322,21 @@ std::optional<Rect> savedNormal(const NormalGeometryTracker& tracker, bool maxim
     return selectNormalGeometry(maximizedNow, live, tracker.restoreTarget());
 }
 
+TEST(NormalGeometryTrackerTest, AScaleOnlyChangeWhileNormalIsCarriedIntoAnOutsideMaximize)
+{
+    // A display-scale change in place (no move or resize) is observed too (DisplayScaleChanged is
+    // routed to Window::handleGeometryChanged()): an outside maximize afterwards must pair the normal
+    // rectangle with the new scale, or the next launch rescales the saved size wrongly (#1250).
+    NormalGeometryTracker tracker;
+    tracker.observe(NORMAL_A, 1.0F, true);
+    tracker.observe(NORMAL_A, 1.5F, true); // scale changed, rectangle didn't
+    tracker.observe(MAXIMIZED, 1.5F, false);
+    tracker.systemMaximized(true, false);
+
+    EXPECT_EQ(tracker.restoreTarget(), NORMAL_A);
+    EXPECT_FLOAT_EQ(tracker.restoreScale(), 1.5F);
+}
+
 TEST(NormalGeometryTrackerTest, AnOutsideMaximizeSavesTheLastNormalGeometry)
 {
     // The #1250 scenario: the window manager maximizes the window (not the title-bar button). On exit

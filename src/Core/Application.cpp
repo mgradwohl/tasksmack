@@ -673,6 +673,10 @@ void Application::run()
                 // A window-manager or compositor restore of an OS maximize (#1250).
                 m_Window->handleSystemRestored();
                 break;
+            case WindowEventRouting::Action::DisplayScaleChanged:
+                // Refresh the normal geometry's scale, as a move or resize would (#1250).
+                m_Window->handleGeometryChanged();
+                break;
             case WindowEventRouting::Action::None:
                 break;
             }
