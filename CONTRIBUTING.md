@@ -492,6 +492,12 @@ twice, both blocking: on Linux over what `tools/clang-tidy.sh` analyses (which e
 Run the Windows script before pushing a change to Windows-only code. The Windows script skips one check,
 `clang-analyzer-optin.core.EnumCastOutOfRange`, for an MSVC STL false positive it can't suppress in our code.
 
+Naming is enforced by `readability-identifier-naming` in `.clang-tidy`: `PascalCase` classes, structs,
+enums, enumerators, namespaces and type aliases; `camelCase` functions, methods and parameters;
+`m_PascalCase` private and protected members (`m_CurrentFontSize`, not `m_currentFontSize`); and
+`UPPER_SNAKE_CASE` constants by convention. Public data members of snapshot structs are plain
+`camelCase` with no prefix.
+
 ### Include-What-You-Use (IWYU)
 
 IWYU analyzes `#include` directives and suggests additions/removals for cleaner dependencies:
