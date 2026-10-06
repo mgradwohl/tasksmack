@@ -567,6 +567,16 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         cache.rowsValid = false;
         auto rows = NetInterfaceUtils::getInterfaceStatusRows(interfaces, showAllInterfaces, seenTraffic);
         const std::size_t hidden = NetInterfaceUtils::countHiddenInterfaces(interfaces, seenTraffic);
+        cache.statusRowText.clear();
+        cache.statusRowText.reserve(rows.size());
+        for (const auto& row : rows)
+        {
+            cache.statusRowText.push_back({
+                .speed = (row.linkSpeedMbps > 0) ? UI::Format::formatLinkSpeed(row.linkSpeedMbps) : std::string{},
+                .sent = NetInterfaceUtils::makeRateCell(row.txBytesPerSec, row.txRateStatus),
+                .received = NetInterfaceUtils::makeRateCell(row.rxBytesPerSec, row.rxRateStatus),
+            });
+        }
         cache.statusRows = std::move(rows);
         cache.hiddenCount = hidden;
         cache.rowsShowAll = showAllInterfaces;
@@ -617,10 +627,23 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
             ImGui::TableSetupColumn("Received", ImGuiTableColumnFlags_None, 1.2F);
             ImGui::TableHeadersRow();
 
-            for (const auto& iface : sortedInterfaces)
+            // A Sent/Received cell (#1375): a reading in the direction's colour, a measured zero in
+            // its own format but muted, and a muted dash with the reason on hover where there's none.
+            const auto renderRateCell = [&theme](const NetInterfaceUtils::RateCell& cell, const ImVec4& valueColor)
             {
+                const bool isValue = cell.tone == NetInterfaceUtils::RateCellTone::Value;
+                ImGui::TextColored(isValue ? valueColor : theme.scheme().textMuted, "%s", cell.text.c_str());
+                if (cell.unavailableReason != nullptr && ImGui::IsItemHovered())
+                {
+                    ImGui::SetTooltip("%s", cell.unavailableReason);
+                }
+            };
+
+            for (std::size_t rowIndex = 0; rowIndex < sortedInterfaces.size(); ++rowIndex)
+            {
+                const auto& iface = sortedInterfaces[rowIndex];
+                const auto& rowText = cache.statusRowText[rowIndex];
                 // Determine if this row should be dimmed (interface is down)
-                const bool hasActivity = (iface.txBytesPerSec > 0.0) || (iface.rxBytesPerSec > 0.0);
                 const bool shouldDim = !iface.isUp;
 
                 ImGui::TableNextRow();
@@ -668,8 +691,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                 {
                     // In bits, as the adapter is rated ("10 Gbit/s"); the byte rate it carries at
                     // most, in the Sent and Received columns' unit, on hover (#1373).
-                    const std::string speedText = UI::Format::formatLinkSpeed(iface.linkSpeedMbps);
-                    ImGui::TextUnformatted(speedText.c_str());
+                    ImGui::TextUnformatted(rowText.speed.c_str());
                     if (ImGui::IsItemHovered())
                     {
                         const std::string byteRate = UI::Format::formatLinkSpeedAsByteRate(iface.linkSpeedMbps);
@@ -683,25 +705,11 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
 
                 // Sent
                 ImGui::TableNextColumn();
-                if (iface.txBytesPerSec > 0.0 || hasActivity)
-                {
-                    ImGui::TextColored(theme.scheme().chartNetTx, "%s", UI::Format::formatBytesPerSec(iface.txBytesPerSec).c_str());
-                }
-                else
-                {
-                    ImGui::TextColored(theme.scheme().textMuted, "-");
-                }
+                renderRateCell(rowText.sent, theme.scheme().chartNetTx);
 
                 // Received
                 ImGui::TableNextColumn();
-                if (iface.rxBytesPerSec > 0.0 || hasActivity)
-                {
-                    ImGui::TextColored(theme.scheme().chartNetRx, "%s", UI::Format::formatBytesPerSec(iface.rxBytesPerSec).c_str());
-                }
-                else
-                {
-                    ImGui::TextColored(theme.scheme().textMuted, "-");
-                }
+                renderRateCell(rowText.received, theme.scheme().chartNetRx);
 
                 if (shouldDim)
                 {
