@@ -4,6 +4,7 @@
 // unit-testable without a live ImGui context, following CONTRIBUTING.md's "extract the pure decision
 // logic into a small header" pattern (as ProcessTableFlags.h and ProcessTreeIndent.h do).
 
+#include <algorithm>
 #include <cmath>
 
 namespace App::ProcessTableLayout
@@ -70,6 +71,43 @@ inline constexpr float CLIP_TOLERANCE_PX = 0.5F;
         return false;
     }
     return textWidthPx > (availWidthPx + CLIP_TOLERANCE_PX);
+}
+
+/// Where a decimal-aligned cell's number and unit go (#1201), in pixels from the cell's left edge.
+struct UnitAlignedCellLayout
+{
+    float numberX = 0.0F;   ///< Left edge of the number ("512.0")
+    float unitX = 0.0F;     ///< Left edge of the unit (" MiB"): the start of the column's unit slot
+    float itemWidth = 0.0F; ///< From the number's left edge to the unit's right edge
+    bool fits = false;      ///< False when the number and the unit slot don't fit: draw the text clipped instead
+};
+
+/// Lays out a cell of a mixed-unit column ("512.0 B", "1.5 KiB", "3.2 MiB") so the decimal points
+/// line up: the unit sits in a slot as wide as the column's widest unit at the cell's right edge,
+/// and the number is right-aligned against that slot. Every number has one decimal digit, and
+/// digits are tabular (UI/TabularDigits.h), so equal-width fractions put every decimal point at the
+/// same x.
+///
+/// @param numberWidthPx    Measured width of the number, "512.0".
+/// @param unitWidthPx      Measured width of this cell's unit, " MiB".
+/// @param unitSlotWidthPx  Width of the widest unit the column can show; a wider unit widens the slot.
+/// @param availWidthPx     Width left in the cell from the cursor to its right edge.
+[[nodiscard]] inline UnitAlignedCellLayout
+layoutUnitAlignedCell(float numberWidthPx, float unitWidthPx, float unitSlotWidthPx, float availWidthPx) noexcept
+{
+    if (!std::isfinite(numberWidthPx) || !std::isfinite(unitWidthPx) || !std::isfinite(unitSlotWidthPx) || !std::isfinite(availWidthPx))
+    {
+        return {};
+    }
+    const float number = std::max(numberWidthPx, 0.0F);
+    const float unit = std::max(unitWidthPx, 0.0F);
+    const float slot = std::max(unitSlotWidthPx, unit);
+    if (isCellTextClipped(number + slot, availWidthPx))
+    {
+        return {};
+    }
+    const float unitX = std::max(availWidthPx - slot, number);
+    return {.numberX = unitX - number, .unitX = unitX, .itemWidth = number + unit, .fits = true};
 }
 
 /// Width of the filter box above the table, in ems: 200px at the reference em (32/3 px), which is

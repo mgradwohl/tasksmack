@@ -151,11 +151,24 @@ class NetlinkSocketStats
     static void parseSocketMessage(const void* msg, std::size_t len, std::vector<SocketStats>& results);
 };
 
-/// Build a mapping from socket inode to owning PID by scanning <procRoot>/[pid]/fd/*
-/// Returns map: inode -> PID. A socket open in several processes (inherited across fork(), passed
+/// The process holding a socket when the inode-to-PID map was built.
+struct SocketOwner
+{
+    std::int32_t pid = 0;
+    // The owner's start time (/proc/[pid]/stat field 22, the same ticks as
+    // ProcessCounters::startTimeTicks), so Domain credits the process and not a later one that
+    // reused its PID (#1336). 0 = couldn't be read (unknown).
+    std::uint64_t startTimeTicks = 0;
+};
+
+/// Build a mapping from socket inode to owning process by scanning <procRoot>/[pid]/fd/*
+/// Returns map: inode -> owner. A socket open in several processes (inherited across fork(), passed
 /// over a UNIX socket) maps to the lowest PID, so its owner doesn't flip between rebuilds with
 /// readdir() order (#1099).
-[[nodiscard]] std::unordered_map<std::uint64_t, std::int32_t> buildInodeToPidMap(const std::filesystem::path& procRoot = "/proc");
+/// Each process's fd links and stat file are read through one open handle on its <procRoot>/[pid]
+/// directory: once that process exits the handle refers to nothing, so a process that reuses its
+/// PID mid-scan can't pair its start time with the old process's sockets, or the reverse (#1336).
+[[nodiscard]] std::unordered_map<std::uint64_t, SocketOwner> buildInodeToPidMap(const std::filesystem::path& procRoot = "/proc");
 
 } // namespace Platform
 

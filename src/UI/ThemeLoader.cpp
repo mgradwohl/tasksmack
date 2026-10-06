@@ -363,6 +363,12 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
         scheme.successButtonHovered = getColor(tbl, "buttons.success.hovered");
         scheme.successButtonActive = getColor(tbl, "buttons.success.active");
 
+        // Danger buttons (Terminate, Kill); default to the same reds as the close button, a step
+        // darker at rest, so a theme without the section still sets them apart (#1273)
+        scheme.dangerButton = getColor(tbl, "buttons.danger.normal", ImVec4(0.64F, 0.08F, 0.08F, 1.0F));
+        scheme.dangerButtonHovered = getColor(tbl, "buttons.danger.hovered", ImVec4(0.8F, 0.1F, 0.1F, 1.0F));
+        scheme.dangerButtonActive = getColor(tbl, "buttons.danger.active", ImVec4(0.9F, 0.2F, 0.2F, 1.0F));
+
         // Close button (title bar ×); defaults to conventional dark-red hover/active
         scheme.closeButtonHovered = getColor(tbl, "buttons.close.hovered", ImVec4(0.8F, 0.1F, 0.1F, 1.0F));
         scheme.closeButtonActive = getColor(tbl, "buttons.close.active", ImVec4(0.9F, 0.2F, 0.2F, 1.0F));

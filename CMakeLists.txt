@@ -106,6 +106,7 @@ set(TASKSMACK_SOURCES
     src/UI/AssetPath.cpp
     src/UI/ChartLegend.cpp
     src/UI/MonospaceFontPath.cpp
+    src/UI/TabularDigits.cpp
     src/UI/UILayer.cpp
     src/UI/RenderMetrics.cpp
     src/UI/Theme.cpp
@@ -179,6 +180,7 @@ set(TASKSMACK_HEADERS
     src/Core/Window.h
     src/Core/Layer.h
     src/UI/AssetPath.h
+    src/UI/TabularDigits.h
     src/UI/UILayer.h
     src/UI/RenderMetrics.h
     src/App/ShellLayer.h

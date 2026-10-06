@@ -314,27 +314,67 @@ template<typename T, typename Formatter>
     return std::invoke(std::forward<Formatter>(formatter), value);
 }
 
+// ============================================================================
+// Durations (#1202): CPU Time, uptime and the history charts' time axis
+// ============================================================================
+
+/// How formatDuration() treats a zero second part.
+enum class DurationStyle : std::uint8_t
+{
+    /// Always two parts once a minute has passed ("5m 00s"), so a live value such as a process's
+    /// CPU Time keeps its width as it ticks over.
+    Fixed,
+    /// A zero second part is left off ("5m", "1h"), for the round values of an axis tick.
+    Compact,
+};
+
+/// A duration in the app's one grammar (#1202): "45s", "2m 05s", "1h 02m", "3d 04h" -- the two
+/// largest units, the second padded to two digits, rounded to the nearest second first. Negative
+/// durations are shown by their size and NaN as "N/A". Used for CPU Time, uptime and the history
+/// charts' time axis, which used to print "1:02:05", "Up: 3d 4h 5m" and "-300" respectively.
+[[nodiscard]] inline auto formatDuration(double seconds, DurationStyle style = DurationStyle::Fixed) -> std::string
+{
+    if (std::isnan(seconds))
+    {
+        return "N/A";
+    }
+    constexpr double MAX_SECONDS = 1e15; // Well inside long long; keeps std::llround defined
+    const long long total = std::llround(std::min(std::abs(seconds), MAX_SECONDS));
+    constexpr long long MINUTE = 60;
+    constexpr long long HOUR = 60 * MINUTE;
+    constexpr long long DAY = 24 * HOUR;
+
+    const auto twoParts = [style](long long major, char majorUnit, long long minor, char minorUnit)
+    {
+        if (style == DurationStyle::Compact && minor == 0)
+        {
+            return std::format("{}{}", major, majorUnit);
+        }
+        return std::format("{}{} {:02}{}", major, majorUnit, minor, minorUnit);
+    };
+    if (total < MINUTE)
+    {
+        return std::format("{}s", total);
+    }
+    if (total < HOUR)
+    {
+        return twoParts(total / MINUTE, 'm', total % MINUTE, 's');
+    }
+    if (total < DAY)
+    {
+        return twoParts(total / HOUR, 'h', (total % HOUR) / MINUTE, 'm');
+    }
+    return twoParts(total / DAY, 'd', (total % DAY) / HOUR, 'h');
+}
+
+/// "Up: 3d 04h", the system uptime in formatDuration()'s grammar; empty for 0 (not known).
 [[nodiscard]] inline auto formatUptimeShort(std::uint64_t seconds) -> std::string
 {
     if (seconds == 0)
     {
         return {};
     }
-
-    const std::uint64_t days = seconds / 86400;
-    const std::uint64_t hours = (seconds % 86400) / 3600;
-    const std::uint64_t minutes = (seconds % 3600) / 60;
-
-    if (days > 0)
-    {
-        return std::format("Up: {}d {}h {}m", days, hours, minutes);
-    }
-    if (hours > 0)
-    {
-        return std::format("Up: {}h {}m", hours, minutes);
-    }
-
-    return std::format("Up: {}m", minutes);
+    return "Up: " + formatDuration(static_cast<double>(seconds));
 }
 
 /// Format Unix epoch timestamp to human-readable local date/time.
@@ -468,17 +508,33 @@ struct ByteUnit
     int decimals = 0;
 };
 
-/// The four byte units, binary multiples. Named constants so a chart can hand ImPlot a stable
-/// pointer to the one unit its whole axis is labelled in (see byteUnitFor()).
-inline constexpr ByteUnit BYTE_UNIT_GB{.suffix = "GB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 1};
-inline constexpr ByteUnit BYTE_UNIT_MB{.suffix = "MB", .scale = 1024.0 * 1024.0, .decimals = 1};
-inline constexpr ByteUnit BYTE_UNIT_KB{.suffix = "KB", .scale = 1024.0, .decimals = 1};
+/// The byte units, binary multiples labelled with their IEC names (KiB, MiB, GiB, TiB) app-wide
+/// (#1202). Every size and rate in TaskSmack was already counted in powers of 1024 -- memory, disk
+/// and network alike -- but labelled "KB/MB/GB", which are decimal names: a "1.0 GB" that is
+/// 1,073,741,824 bytes. Relabelling keeps every number the user sees and makes the unit honest;
+/// switching to decimal units instead would have changed every number in the app.
+///
+/// Named constants so a chart can hand ImPlot a stable pointer to the one unit its whole axis is
+/// labelled in (see byteUnitFor()).
+inline constexpr ByteUnit BYTE_UNIT_TB{.suffix = "TiB", .scale = 1024.0 * 1024.0 * 1024.0 * 1024.0, .decimals = 1};
+inline constexpr ByteUnit BYTE_UNIT_GB{.suffix = "GiB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 1};
+inline constexpr ByteUnit BYTE_UNIT_MB{.suffix = "MiB", .scale = 1024.0 * 1024.0, .decimals = 1};
+inline constexpr ByteUnit BYTE_UNIT_KB{.suffix = "KiB", .scale = 1024.0, .decimals = 1};
 inline constexpr ByteUnit BYTE_UNIT_B{.suffix = "B", .scale = 1.0, .decimals = 1};
 
+/// Every byte unit, largest first.
+inline constexpr std::array<const ByteUnit*, 5> BYTE_UNITS = {&BYTE_UNIT_TB, &BYTE_UNIT_GB, &BYTE_UNIT_MB, &BYTE_UNIT_KB, &BYTE_UNIT_B};
+
 /// The largest unit `bytes` is at least one of, as a reference to one of the BYTE_UNIT_* constants.
+/// Terabytes have their own unit, so a 2 TiB disk or a byte axis above 1 TiB reads "2.0 TiB" and
+/// steps in TiB rather than "2,048.0 GB" (#1202).
 [[nodiscard]] inline auto byteUnitFor(double bytes) -> const ByteUnit&
 {
     const double absBytes = std::abs(bytes);
+    if (absBytes >= BYTE_UNIT_TB.scale)
+    {
+        return BYTE_UNIT_TB;
+    }
     if (absBytes >= BYTE_UNIT_GB.scale)
     {
         return BYTE_UNIT_GB;
@@ -629,6 +685,29 @@ struct AlignedBytesParts
     }
 };
 
+/// A table cell's unit, with the space before it: " MiB" or, for a rate, " MiB/s". Static strings,
+/// so AlignedBytesParts can point at them; a unit that is not one of BYTE_UNITS gets " B".
+[[nodiscard]] inline auto cellUnitSuffix(const ByteUnit& unit, bool perSecond) noexcept -> std::string_view
+{
+    struct CellSuffix
+    {
+        std::string_view suffix;
+        std::string_view size;
+        std::string_view rate;
+    };
+    static constexpr auto CELL_SUFFIXES = std::to_array<CellSuffix>({
+        {.suffix = "TiB", .size = " TiB", .rate = " TiB/s"},
+        {.suffix = "GiB", .size = " GiB", .rate = " GiB/s"},
+        {.suffix = "MiB", .size = " MiB", .rate = " MiB/s"},
+        {.suffix = "KiB", .size = " KiB", .rate = " KiB/s"},
+        {.suffix = "B", .size = " B", .rate = " B/s"},
+    });
+    // NOLINTNEXTLINE(readability-qualified-auto) - iterator type varies by platform
+    const auto it = std::ranges::find(CELL_SUFFIXES, unit.suffix, &CellSuffix::suffix);
+    const CellSuffix& found = (it != CELL_SUFFIXES.end()) ? *it : CELL_SUFFIXES.back();
+    return perSecond ? found.rate : found.size;
+}
+
 /// Zero-allocation fast path for splitting byte values for decimal-aligned rendering.
 /// This function produces equivalent output to splitBytesForAlignment but avoids
 /// std::format overhead and heap allocations. Use for high-frequency rendering.
@@ -709,32 +788,7 @@ struct AlignedBytesParts
     parts.wholePartLen = pos;
     parts.decimalDigit = static_cast<char>('0' + fractionalDigit);
 
-    // Unit part: " B", " KB", " MB", " GB" - we need to prepend space
-    // Store as string_view pointing to static string
-    static constexpr std::string_view unitB = " B";
-    static constexpr std::string_view unitKB = " KB";
-    static constexpr std::string_view unitMB = " MB";
-    static constexpr std::string_view unitGB = " GB";
-
-    // Match unit suffix to our static strings using full comparison
-    // This ensures correct handling of all byte units (B, KB, MB, GB)
-    if (unit.suffix == "GB")
-    {
-        parts.unitPart = unitGB;
-    }
-    else if (unit.suffix == "MB")
-    {
-        parts.unitPart = unitMB;
-    }
-    else if (unit.suffix == "KB")
-    {
-        parts.unitPart = unitKB;
-    }
-    else
-    {
-        parts.unitPart = unitB;
-    }
-
+    parts.unitPart = cellUnitSuffix(unit, false);
     return parts;
 }
 
@@ -743,30 +797,7 @@ struct AlignedBytesParts
 [[nodiscard]] inline auto splitBytesPerSecForAlignmentFast(double bytesPerSec, ByteUnit unit) -> AlignedBytesParts
 {
     auto parts = splitBytesForAlignmentFast(bytesPerSec, unit);
-
-    static constexpr std::string_view unitBps = " B/s";
-    static constexpr std::string_view unitKBps = " KB/s";
-    static constexpr std::string_view unitMBps = " MB/s";
-    static constexpr std::string_view unitGBps = " GB/s";
-
-    const std::string_view suffix = unit.suffix;
-    if (suffix == "GB")
-    {
-        parts.unitPart = unitGBps;
-    }
-    else if (suffix == "MB")
-    {
-        parts.unitPart = unitMBps;
-    }
-    else if (suffix == "KB")
-    {
-        parts.unitPart = unitKBps;
-    }
-    else
-    {
-        parts.unitPart = unitBps;
-    }
-
+    parts.unitPart = cellUnitSuffix(unit, true);
     return parts;
 }
 
@@ -944,31 +975,6 @@ struct AlignedBytesParts
     return std::format("{:.1Lf}/s", value);
 }
 
-[[nodiscard]] inline auto bytesUsedTotalPercentCompact(std::uint64_t usedBytes, std::uint64_t totalBytes, double percent) -> std::string
-{
-    const auto unit = unitForTotalBytes(std::max(usedBytes, totalBytes));
-    const std::string usedStr = formatBytesWithUnit(static_cast<double>(usedBytes), unit);
-    const std::string totalStr = formatBytesWithUnit(static_cast<double>(totalBytes), unit);
-    return std::format("{} / {} ({})", usedStr, totalStr, percentCompact(percent));
-}
-
-[[nodiscard]] inline auto formatCpuTimeCompact(double totalSeconds) -> std::string
-{
-    const auto totalSecs = std::llround(totalSeconds);
-    constexpr long long secondsPerHour = 60LL * 60LL;
-    constexpr long long secondsPerMinute = 60LL;
-    const auto hours = totalSecs / secondsPerHour;
-    const auto minutes = (totalSecs / secondsPerMinute) % 60;
-    const auto secs = totalSecs % 60;
-
-    if (hours > 0)
-    {
-        return std::format("{}:{:02}:{:02}", hours, minutes, secs);
-    }
-
-    return std::format("{}:{:02}", minutes, secs);
-}
-
 /// " (16 logical processors @ 3.70 GHz)", or " (16 logical processors)" without a clock, for the
 /// suffix after the CPU model. The count is of logical processors (hardware threads), which is
 /// what the OS reports per CPU slot; "cores" overstated it on SMT machines (#1203).
@@ -1110,6 +1116,27 @@ struct AlignedBytesParts
                        : formatFixedLocalized(roundHalfAwayFromZero(percent, 1), 1, "%");
 }
 
+/// formatPercent() for a float history sample, so the panels' float series need no cast.
+[[nodiscard]] inline auto formatPercent(float percent) -> std::string
+{
+    return formatPercent(static_cast<double>(percent));
+}
+
+/// A whole-number percent (battery health), "87%".
+template<std::integral T> [[nodiscard]] inline auto formatPercent(T percent) -> std::string
+{
+    return std::format("{:L}%", percent);
+}
+
+/// "3.2 GiB / 16.0 GiB (20%)": used and total in the one unit the larger of them calls for.
+[[nodiscard]] inline auto bytesUsedTotalPercentCompact(std::uint64_t usedBytes, std::uint64_t totalBytes, double percent) -> std::string
+{
+    const auto unit = unitForTotalBytes(std::max(usedBytes, totalBytes));
+    const std::string usedStr = formatBytesWithUnit(static_cast<double>(usedBytes), unit);
+    const std::string totalStr = formatBytesWithUnit(static_cast<double>(totalBytes), unit);
+    return std::format("{} / {} ({})", usedStr, totalStr, formatPercent(percent));
+}
+
 /// Format power value with appropriate unit (W/mW/µW) based on magnitude, one decimal (#1202),
 /// or "-" for zero or below.
 [[nodiscard]] inline auto formatPowerCompact(double watts) -> std::string
@@ -1136,6 +1163,43 @@ struct AlignedBytesParts
         return formatWatts(0.0);
     }
     return formatPowerCompact(watts);
+}
+
+/// "65°C", whole degrees rounded half away from zero, or "N/A" for NaN (no reading). The one rule
+/// for a temperature (#1202): the GPU value strip truncated (65.9 -> "65°C") while its tooltip
+/// rounded to even.
+[[nodiscard]] inline auto formatCelsius(double celsius) -> std::string
+{
+    if (std::isnan(celsius))
+    {
+        return "N/A";
+    }
+    const double rounded = roundHalfAwayFromZero(celsius, 0);
+    return std::format("{:.0f}°C", rounded == 0.0 ? 0.0 : rounded); // No "-0°C"
+}
+
+/// A link speed in the same unit family as the rates beside it (#1202): "119.2 MiB/s" for a
+/// 1 Gbps link, so it can be compared with the interface's "12.5 MiB/s" at a glance. Link speeds
+/// are reported in megabits per second (10^6 bits/s), 125,000 bytes/s each.
+[[nodiscard]] inline auto formatLinkSpeed(std::uint64_t megabitsPerSecond) -> std::string
+{
+    constexpr double BYTES_PER_SECOND_PER_MBPS = 1'000'000.0 / 8.0;
+    return formatBytesPerSec(static_cast<double>(megabitsPerSecond) * BYTES_PER_SECOND_PER_MBPS);
+}
+
+/// A link speed as the adapter is rated: "1 Gbps", "2.5 Gbps", "100 Mbps" (decimal bits, as
+/// network hardware is sold). Shown beside formatLinkSpeed()'s rate, not instead of it.
+[[nodiscard]] inline auto formatLinkSpeedNominal(std::uint64_t megabitsPerSecond) -> std::string
+{
+    if (megabitsPerSecond >= 1000)
+    {
+        if (megabitsPerSecond % 1000 == 0)
+        {
+            return std::format("{} Gbps", megabitsPerSecond / 1000);
+        }
+        return std::format("{:.1Lf} Gbps", static_cast<double>(megabitsPerSecond) / 1000.0);
+    }
+    return std::format("{} Mbps", megabitsPerSecond);
 }
 
 // ============================================================================

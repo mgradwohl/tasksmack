@@ -272,10 +272,16 @@ template<typename T> inline T initializeOrSmooth(T current, T target, double alp
     return static_cast<T>(smoothTowards(static_cast<double>(current), static_cast<double>(target), alpha));
 }
 
+/// "Age: 2.5s" for a hovered sample under a minute old, then the duration grammar the time axis
+/// uses ("Age: 1m 30s", Format::formatDuration()), not "Age: 90.0s" (#1202).
 inline std::string formatAgeSeconds(double relativeSeconds)
 {
     const double ageSeconds = std::abs(relativeSeconds);
-    return std::format("Age: {:.1f}s", ageSeconds);
+    if (ageSeconds < 59.95) // Shown to a tenth: from 59.95 it would print as "60.0s"
+    {
+        return std::format("Age: {:.1Lf}s", ageSeconds);
+    }
+    return "Age: " + Format::formatDuration(ageSeconds);
 }
 
 /// One row of a history chart's hover tooltip: a series' label and colour -- the same ones its
@@ -1629,10 +1635,10 @@ inline int formatAxisLocalized(double value, char* buff, int size, void* /*userD
     return const_cast<Format::ByteUnit*>(&unit);
 }
 
-/// Shared body of formatAxisBytes and formatAxisBytesPerSec: the value formatter's "1.5 GB" /
-/// "1.5 GB/s" (binary units, matching UI::Format::formatBytes). With a unit in `userData`
-/// (byteAxisUserData()) every tick uses that one unit, so a 0-2 GB axis reads 0.5 GB rather than
-/// 512.0 MB between 0.0 B and 1.0 GB.
+/// Shared body of formatAxisBytes and formatAxisBytesPerSec: the value formatter's "1.5 GiB" /
+/// "1.5 GiB/s" (IEC units, matching UI::Format::formatBytes). With a unit in `userData`
+/// (byteAxisUserData()) every tick uses that one unit, so a 0-2 GiB axis reads 0.5 GiB rather than
+/// 512.0 MiB between 0.0 B and 1.0 GiB.
 inline int formatAxisBinaryBytes(double value, char* buff, int size, void* userData, bool perSecond)
 {
     // Clamp tiny values to zero to avoid a "-0.0 B" display
@@ -1657,14 +1663,14 @@ inline int formatAxisBinaryBytes(double value, char* buff, int size, void* userD
     return Detail::copyAxisLabel(str, buff, size);
 }
 
-/// Format values as bytes with appropriate unit scaling (B, KB, MB, GB)
+/// Format values as bytes with appropriate unit scaling (B, KiB, MiB, GiB, TiB)
 /// Use with ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytes)
 inline int formatAxisBytes(double value, char* buff, int size, void* userData)
 {
     return formatAxisBinaryBytes(value, buff, size, userData, false);
 }
 
-/// Format values as bytes/s with appropriate unit scaling (B/s, KB/s, MB/s, GB/s)
+/// Format values as bytes/s with appropriate unit scaling (B/s, KiB/s, MiB/s, GiB/s, TiB/s)
 /// Use with ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytesPerSec)
 inline int formatAxisBytesPerSec(double value, char* buff, int size, void* userData)
 {
@@ -1690,6 +1696,30 @@ inline int formatAxisPercent(double value, char* buff, int size, void* /*userDat
     // formatPercent() prints anything under 0.05 % as "0%" (no "-0.0%"), and nothing larger: a
     // percent axis can scale down to 5 % (#1195), where ticks such as 0.2 % must not read 0 % (#1202).
     return Detail::copyAxisLabel(Format::formatPercent(value), buff, size);
+}
+
+/// Format a history chart's time axis: "now" at 0, then how long ago in the duration grammar
+/// ("30s", "5m", "1m 30s"; Format::formatDuration()) instead of negative seconds (#1202).
+/// Use with ImPlot::SetupAxisFormat(ImAxis_X1, formatAxisTimeAgo)
+inline int formatAxisTimeAgo(double value, char* buff, int size, void* /*userData*/)
+{
+    if (std::abs(value) < 0.5)
+    {
+        return Detail::copyAxisLabel("now", buff, size);
+    }
+    return Detail::copyAxisLabel(Format::formatDuration(value, Format::DurationStyle::Compact), buff, size);
+}
+
+/// Put a history chart's time axis on round steps between xMin and xMax (niceTimeAxisStep()), at
+/// most `maxTicks` labels, formatted by formatAxisTimeAgo().
+inline void setupTimeAxisTicks(double xMin, double xMax, int maxTicks)
+{
+    ImPlot::SetupAxisFormat(ImAxis_X1, formatAxisTimeAgo);
+    const TimeAxisTicks ticks = timeAxisTicks(xMin, xMax, niceTimeAxisStep(xMax - xMin, maxTicks));
+    if (ticks.count >= 2)
+    {
+        ImPlot::SetupAxisTicks(ImAxis_X1, ticks.first, ticks.last, ticks.count);
+    }
 }
 
 /// True for the two byte formatters, whose axes step in binary units (niceBinaryAxisStep()).
@@ -2209,7 +2239,7 @@ struct HistoryChartConfig
     double xMax = 0.0;
     ImPlotFormatter yFormatter = formatAxisLocalized;
     std::optional<std::pair<double, double>> yLimits;
-    /// The time axis's "Time (s)" title and tick labels. Off in a grid of small charts (CPU Cores, the
+    /// The time axis's tick labels ("5m ... now"). Off in a grid of small charts (CPU Cores, the
     /// per-disk grid), where every cell repeated them under the same axis (#1206); its gridlines and
     /// hover tooltip still place a sample in time.
     bool timeAxisLabels = true;
@@ -2521,10 +2551,10 @@ class HistoryChart
             m_AntiAliasingOverridden = true;
         }
 
-        ImPlot::SetupAxes(config.timeAxisLabels ? "Time (s)" : nullptr,
-                          nullptr,
-                          historyChartXAxisFlags(config.timeAxisLabels),
-                          historyChartYAxisFlags(config.yLimits.has_value()));
+        // No x-axis title: the ticks say what they are ("5m ... now", setupTimeAxisTicks()), where
+        // "Time (s)" over negative seconds needed one (#1202). Grid cells hide the tick labels (#1206).
+        ImPlot::SetupAxes(
+            nullptr, nullptr, historyChartXAxisFlags(config.timeAxisLabels), historyChartYAxisFlags(config.yLimits.has_value()));
         if (config.yLimits.has_value())
         {
             const double upper = config.easeYUpper ? easedChartUpperBound(plotId, config.yLimits->second) : config.yLimits->second;
@@ -2552,6 +2582,7 @@ class HistoryChart
             ImPlot::SetupAxisFormat(ImAxis_Y1, config.yFormatter);
         }
         ImPlot::SetupAxisLimits(ImAxis_X1, config.xMin, config.xMax, ImPlotCond_Always);
+        setupTimeAxisTicks(config.xMin, config.xMax, timeAxisMaxTicksForWidth(static_cast<float>(plotWidthPx), ImGui::GetFontSize()));
     }
 
     ~HistoryChart()
