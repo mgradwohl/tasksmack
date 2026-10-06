@@ -136,7 +136,7 @@ TEST(GPUModelTest, ProcessGpuDataComesWithTheSupportItWasReadUnder)
     caps.hasPerProcessMetrics = true;
     caps.hasPerProcessUtilization = false; // NVML-like
     probe->withCapabilities(caps);
-    probe->withProcessGPU(100, "GPU0", 1024 * 1024);
+    probe->withProcessGPU(100, "GPU0", 1024ULL * 1024);
     auto* rawProbe = probe.get();
     Domain::GPUModel model(std::move(probe));
 
