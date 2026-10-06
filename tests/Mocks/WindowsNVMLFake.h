@@ -70,6 +70,10 @@ struct FakeDeviceData
     bool utilizationOk = true;
     bool fanOk = true;
     bool pciInfoOk = true;
+    // What a failed UUID or PCI read (uuidOk/pciInfoOk false) returns: unsupported by default, or a
+    // reset (NVML_ERROR_GPU_IS_LOST) mid-identity-read.
+    nvmlReturn_t uuidFailure = NVML_ERROR_NOT_SUPPORTED;
+    nvmlReturn_t pciInfoFailure = NVML_ERROR_NOT_SUPPORTED;
 };
 
 /// One running process as the fake reports it. The entry points write it in the layout of the
@@ -208,7 +212,7 @@ inline nvmlReturn_t fakeDeviceGetUUID(nvmlDevice_t device, char* buf, unsigned i
     const auto& d = touchDevice(device);
     if (!d.uuidOk)
     {
-        return NVML_ERROR_NOT_SUPPORTED;
+        return d.uuidFailure;
     }
     copyToBuffer(buf, size, d.uuid);
     return NVML_SUCCESS;
@@ -357,7 +361,7 @@ inline nvmlReturn_t fakeDeviceGetPciInfo(nvmlDevice_t device, nvmlPciInfo_t* pci
     const auto& d = touchDevice(device);
     if (!d.pciInfoOk)
     {
-        return NVML_ERROR_NOT_SUPPORTED;
+        return d.pciInfoFailure;
     }
     *pci = nvmlPciInfo_t{};
     pci->bus = d.pciBus;

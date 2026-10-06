@@ -545,6 +545,35 @@ TEST_F(NVMLGPUProbeFakeTest, AGpuLostErrorReinitialisesNVMLAtTheNextFullRescan)
     EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full)) << "Lost is cleared by the restart";
 }
 
+// A reset that hits the one-time identity reads (after the handle lookup succeeded) must not leave
+// the device under an index-based id or without its PCI location for the rest of the session: the
+// device is skipped, the loss restarts NVML at the next full rescan, and the enumeration after that
+// reads its real identity.
+TEST_F(NVMLGPUProbeFakeTest, AGpuLostDuringTheIdentityReadIsNotCachedAndRestartsNVML)
+{
+    fakeState().deviceCount = 1;
+    deviceData(0).uuid = "GPU-aaaa";
+    deviceData(0).pciBus = 0x01;
+    deviceData(0).uuidOk = false;
+    deviceData(0).uuidFailure = NVML_ERROR_GPU_IS_LOST;
+    deviceData(0).pciInfoOk = false;
+    deviceData(0).pciInfoFailure = NVML_ERROR_UNINITIALIZED;
+
+    NVMLGPUProbe probe;
+    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
+    EXPECT_TRUE(probe.enumerateGPUs().empty()) << "Not listed under an index-based id";
+    EXPECT_TRUE(probe.readGPUCounters().empty());
+
+    deviceData(0).uuidOk = true;
+    deviceData(0).pciInfoOk = true;
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Full)) << "The loss restarts NVML";
+    EXPECT_EQ(fakeState().initCallCount, 1);
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    EXPECT_EQ(gpus[0].id, "GPU-aaaa");
+    EXPECT_EQ(gpus[0].pciLocation.value_or(PciLocation{}).bus, 0x01U);
+}
+
 // A GPU WindowsGPUProbe marks idle (PDH saw no activity on it) gets no NVML call, which could keep a
 // hybrid dGPU from suspending (#1265): its previous readings and process list are repeated, not
 // zeroed or marked unread. Once it is no longer idle it is read again.

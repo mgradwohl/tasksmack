@@ -26,6 +26,7 @@
 #include <format>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string_view>
 #include <utility>
 
@@ -489,33 +490,54 @@ bool NVMLGPUProbe::readDeviceIdentity(uint32_t index)
         return false;
     }
 
-    // Store device handle for later use
-    m_DeviceHandles[index] = device;
     DeviceDetails details;
+    // The identity is read once per session, so a read that found the GPU lost or NVML uninitialised
+    // (a driver reset after the handle lookup) must not be kept: it would leave the device under an
+    // index-based id, or with no PCI location to match it to its adapter, until the next restart.
+    // The loss is noted, so the next full rescan restarts NVML, and the device is skipped until then.
+    bool reset = false;
+    const auto noted = [this, &reset](nvmlReturn_t readResult)
+    {
+        reset = reset || isResetResult(noteResult(readResult));
+        return readResult;
+    };
 
     // Get device name
     std::array<char, NVML_DEVICE_NAME_BUFFER_SIZE> name{};
-    if (m_NVML.DeviceGetName(device, name.data(), NVML_DEVICE_NAME_BUFFER_SIZE) == NVML_SUCCESS)
+    if (noted(m_NVML.DeviceGetName(device, name.data(), NVML_DEVICE_NAME_BUFFER_SIZE)) == NVML_SUCCESS)
     {
         details.name = name.data();
     }
 
     // Get device UUID (unique identifier); fall back to an index-based id
     std::array<char, NVML_DEVICE_UUID_BUFFER_SIZE> uuid{};
-    result = m_NVML.DeviceGetUUID(device, uuid.data(), NVML_DEVICE_UUID_BUFFER_SIZE);
+    result = noted(m_NVML.DeviceGetUUID(device, uuid.data(), NVML_DEVICE_UUID_BUFFER_SIZE));
     std::string id = result == NVML_SUCCESS ? std::string(uuid.data()) : std::format("NVML_GPU{}", index);
 
     // PCI identity, read once: it matches the device to its DXGI adapter (#1091) and says where to
     // ask whether it is asleep (#1265).
-    m_DevicePciLocations.erase(index);
+    std::optional<PciLocation> location;
     if (m_NVML.DeviceGetPciInfo != nullptr)
     {
         NVML::nvmlPciInfo_t pci{};
-        if (m_NVML.DeviceGetPciInfo(device, &pci) == NVML_SUCCESS)
+        if (noted(m_NVML.DeviceGetPciInfo(device, &pci)) == NVML_SUCCESS)
         {
-            m_DevicePciLocations[index] = PciLocation{.bus = pci.bus, .device = pci.device, .function = NVML::pciFunction(pci)};
+            location = PciLocation{.bus = pci.bus, .device = pci.device, .function = NVML::pciFunction(pci)};
             details.pciDeviceId = pci.pciDeviceId;
         }
+    }
+    if (reset)
+    {
+        spdlog::warn("NVMLGPUProbe: NVIDIA GPU {} was lost while reading its identity; reading it again after NVML restarts", index);
+        return false;
+    }
+
+    // Store device handle for later use
+    m_DeviceHandles[index] = device;
+    m_DevicePciLocations.erase(index);
+    if (location.has_value())
+    {
+        m_DevicePciLocations[index] = *location;
     }
 
     // A device known before an NVML restart keeps what was found for it then (#1294).
