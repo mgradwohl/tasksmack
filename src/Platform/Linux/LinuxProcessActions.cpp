@@ -2,8 +2,9 @@
 
 #include "Domain/PriorityConfig.h"
 #include "Platform/IProcessActions.h"
+#include "PosixGuards.h"
 #include "PriorityErrorMessage.h"
-#include "ProcStatStartTime.h"
+#include "ProcParsing.h"
 #include "ThreadPriority.h"
 
 #include <spdlog/spdlog.h>
@@ -37,39 +38,14 @@ namespace Platform
 namespace
 {
 
-/// Owns a file descriptor, closing it on every exit path.
-class UniqueFd
-{
-  public:
-    explicit UniqueFd(int fd) noexcept : m_Fd(fd)
-    {}
-    UniqueFd(const UniqueFd&) = delete;
-    UniqueFd& operator=(const UniqueFd&) = delete;
-    UniqueFd(UniqueFd&&) = delete;
-    UniqueFd& operator=(UniqueFd&&) = delete;
-    ~UniqueFd() noexcept
-    {
-        if (m_Fd >= 0)
-        {
-            ::close(m_Fd);
-        }
-    }
-
-    [[nodiscard]] int get() const noexcept
-    {
-        return m_Fd;
-    }
-
-  private:
-    int m_Fd = -1;
-};
+using Posix::FdGuard;
 
 /// Start time of whatever process holds `pid` right now, or nullopt if there is none.
 [[nodiscard]] std::optional<std::uint64_t> readStartTicks(std::int32_t pid)
 {
     const std::string statPath = "/proc/" + std::to_string(pid) + "/stat";
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic by definition
-    const UniqueFd fd(::open(statPath.c_str(), O_RDONLY | O_CLOEXEC));
+    const FdGuard fd(::open(statPath.c_str(), O_RDONLY | O_CLOEXEC));
     if (fd.get() < 0)
     {
         return std::nullopt;
@@ -82,7 +58,7 @@ class UniqueFd
     {
         return std::nullopt;
     }
-    return ProcStat::parseStartTime(std::string_view(buf.data(), static_cast<std::size_t>(len)));
+    return ProcParsing::parseStatStartTime(std::string_view(buf.data(), static_cast<std::size_t>(len)));
 }
 
 /// Confirm the process holding the target's PID now is the one the target names.
@@ -146,7 +122,7 @@ struct PidfdOpen
 }
 
 /// Send `signal` through `pidfd`; 0 on success, -1 with errno set on failure.
-[[nodiscard]] int sendThroughPidfd(const UniqueFd& pidfd, int signal)
+[[nodiscard]] int sendThroughPidfd(const FdGuard& pidfd, int signal)
 {
 #if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
     return static_cast<int>(::syscall(SYS_pidfd_send_signal, pidfd.get(), signal, nullptr, 0U));
@@ -288,7 +264,7 @@ ProcessActionResult LinuxProcessActions::setPriority(const ProcessTarget& target
         spdlog::warn("Failed to set priority for PID {}: {}", target.pid, opened.refusal);
         return ProcessActionResult::error(opened.refusal);
     }
-    const UniqueFd pidfd(opened.fd);
+    const FdGuard pidfd(opened.fd);
 
     ProcessActionResult identity = verifyIdentity(target);
     if (!identity.success)
@@ -401,7 +377,7 @@ ProcessActionResult LinuxProcessActions::sendSignal(const ProcessTarget& target,
         spdlog::warn("Failed to send {} to PID {}: {}", signalName, target.pid, opened.refusal);
         return ProcessActionResult::error(opened.refusal);
     }
-    const UniqueFd pidfd(opened.fd);
+    const FdGuard pidfd(opened.fd);
 
     ProcessActionResult identity = verifyIdentity(target);
     if (!identity.success)

@@ -76,17 +76,17 @@ The process table is the primary view. It lists all running processes with these
 - **State** — what the process is doing (Running, Sleeping, and so on). Windows has no process state of its own, so there it comes from the process's threads: Running if any thread is running or ready to run, Stopped if every thread is suspended (a suspended app), otherwise Sleeping. The System Idle Process is Idle, and a process with no threads to judge by (Secure System) is Unknown. The column shows the state's one-letter code, as `ps` and `top` do: **R** Running, **S** Sleeping, **D** Disk Sleep (waiting on I/O), **Z** Zombie, **T** Stopped, **t** Tracing, **X** Dead, **I** Idle, **?** Unknown. Process Details spells the state out, in the same colour.
 - **CPU %** — percentage of total CPU time consumed since the last sample
 - **Mem %** — percentage of physical RAM used
-- **Memory / Virtual / Shared / Peak Mem** — resident, virtual, shared, and peak resident memory sizes
+- **Memory / Virtual / Shared / Peak Mem** — resident, virtual, shared, and peak resident memory sizes. Peak Mem is the larger of the OS's high-water mark (Linux: `VmHWM`; Windows: peak working set) and the highest peak TaskSmack has seen for the process, so it can reach back before TaskSmack started. On Linux `VmHWM` resets when a process runs a new program (`exec`); TaskSmack keeps the higher peak it saw before the reset, but a peak from before an `exec` that happened before monitoring began is lost.
 - **CPU Time** — cumulative CPU time, as a duration ("45s", "2m 05s", "1h 02m")
 - **PPID** — parent process ID
 - **Priority** — scheduling priority (from the nice value)
 - **Threads** — thread count per process
-- **Page Faults** — cumulative page faults
+- **Page Faults** — cumulative page faults. Windows keeps this count in 32 bits, so on a long-lived process it can wrap back to a small number; the page-fault rate counts through the wrap.
 - **Command** — full command line. On Windows, a process whose command line can't be read (System, Registry, isolated processes such as LsaIso.exe) shows its executable's path, or its name in brackets.
 - **I/O rates** — read and write bytes per second
 - **Network rates** — sent and received bytes per second when attribution is available
 - **GPU %, GPU Mem, GPU Engine, GPU** — utilization, memory, engines, and which GPU, when the active backend supports per-process data
-- **Affinity** — the logical processors the process may run on, numbered from 0 as the operating system numbers them: ranges of three or more as `4-7`, others by number, e.g. `0-3,70`. On Linux this includes processors 64 and above; on Windows it shows the process's primary processor group only.
+- **Affinity** — the logical processors the process may run on, numbered from 0 as the operating system numbers them: ranges of three or more as `4-7`, others by number, e.g. `0-3,70`. On Linux these are the online processors the process may run on, 64 and above included (an offline processor is left out even when the process is allowed it; if the list of online processors can't be read, or a processor goes offline mid-sample so none of the allowed ones is online, the process's full allowed list is shown instead); on Windows it shows the process's primary processor group only.
 
 Column visibility is toggled via the column header context menu and persisted across sessions.
 

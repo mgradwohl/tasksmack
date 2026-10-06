@@ -10,6 +10,7 @@
 #include "UI/RateAxis.h"
 #include "UI/RenderMetrics.h"
 #include "UI/StyleScale.h"
+#include "UI/TailAlignedSeries.h" // IWYU pragma: export
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
@@ -590,6 +591,20 @@ inline void reduceSeriesKeepingGaps(const TX* xData, const TY* yData, int count,
     return std::exp2(std::ceil(std::log2(span / static_cast<double>(bucketCount))));
 }
 
+/// The integer index of the min-max bucket of width `width` that holds `x`: floor(x / width), taken
+/// once, so samples are grouped by comparing integers rather than doubles (#1380). Saturates at
+/// +/-2^62 so the conversion is always defined; NaN, which no bucket holds, reads 0.
+[[nodiscard]] inline std::int64_t minMaxBucketIndex(double x, double width) noexcept
+{
+    constexpr double LIMIT = 4611686018427387904.0; // 2^62, exactly representable
+    const double bucket = std::floor(x / width);
+    if (std::isnan(bucket))
+    {
+        return 0;
+    }
+    return static_cast<std::int64_t>(std::clamp(bucket, -LIMIT, LIMIT));
+}
+
 /// Reduce `count` samples to at most `maxOut` points for drawing, keeping peaks and gaps (#1010).
 ///
 /// The samples are grouped into buckets of minMaxBucketWidth() along x, and each bucket contributes
@@ -648,13 +663,13 @@ inline int forEachMinMaxReducedPoint(const TX* xData,
 
     const auto bucketOf = [&](int index)
     {
-        return std::floor((static_cast<double>(xData[index]) + xOffset) / width);
+        return minMaxBucketIndex(static_cast<double>(xData[index]) + xOffset, width);
     };
     int written = 0;
     int bucketStart = 0;
     while (bucketStart < count)
     {
-        const double bucket = bucketOf(bucketStart);
+        const std::int64_t bucket = bucketOf(bucketStart);
         int minIdx = -1;
         int maxIdx = -1;
         int gapIdx = -1;
@@ -802,12 +817,12 @@ inline void forEachAlignedReducedPoint(std::span<const double> x,
 
     const auto bucketOf = [&](int index)
     {
-        return std::floor((x[static_cast<std::size_t>(index)] + xOffset) / width);
+        return minMaxBucketIndex(x[static_cast<std::size_t>(index)] + xOffset, width);
     };
     int bucketStart = 0;
     while (bucketStart < count)
     {
-        const double bucket = bucketOf(bucketStart);
+        const std::int64_t bucket = bucketOf(bucketStart);
         int next = bucketStart;
         while (next < count && bucketOf(next) == bucket)
         {
@@ -1083,7 +1098,7 @@ class ReducedPointsCache
 
 /// "Now" for history charts, in seconds since the steady_clock epoch, read once per ImGui frame.
 ///
-/// Every chart builds its time axis as `timestamp - historyFrameNowSeconds()` (buildTimeAxis), and
+/// Every chart builds its time axis as `timestamp - historyFrameNowSeconds()` (fillTimeAxis), and
 /// plotLineWithFill() adds the same value back to anchor its reduction buckets in absolute time, so
 /// x + anchor is exactly the sample's timestamp. If each chart read the clock itself, the anchor and
 /// the axis would differ by however long the frame took to reach the chart, and a sample near a
@@ -1279,7 +1294,7 @@ inline void plotLineWithFill(const char* label,
         return;
     }
 
-    // ImPlot takes x and y of one type. The time axis is double (buildTimeAxis) while some series
+    // ImPlot takes x and y of one type. The time axis is double (fillTimeAxis) while some series
     // are float, so y is drawn as TX: converted into reused buffers when the types differ.
     const auto renderSeries = [&](const TX* plotXData, const TX* plotYData, int plotCount)
     {
@@ -1356,16 +1371,6 @@ inline void plotLineWithFill(const char* label,
     }
     holdLastValueToNow(drawX, drawY, maxHoldSecondsForAxis(xData, count)); // Interval from every sample, not the reduced ones
     renderSeries(drawX.data(), drawY.data(), UI::Format::checkedCount(drawX.size()));
-}
-
-/// Helper for line-only rendering, reduced to at most LINE_PLOT_MAX_POINTS_DENSE points (see reduceSeriesMinMax).
-/// Fills are intentionally disabled; pass only the line color.
-/// A chart with more than one series draws them with plotSeries(), which gives only the primary a
-/// fill (#1198). Use plotDenseLine only for charts that should remain line-only (e.g., sparse event streams).
-template<typename TX, typename TY>
-inline void plotDenseLine(const char* label, const TX* xData, const TY* yData, int count, const ImVec4& lineColor)
-{
-    plotLineWithFill(label, xData, yData, count, lineColor, std::nullopt, 2.0F, false, LINE_PLOT_MAX_POINTS_DENSE);
 }
 
 /// What a series is to the chart it is drawn in, which decides how it is drawn (#1198): colour alone
@@ -2015,23 +2020,7 @@ class NowBarList
     return std::clamp(value / maxValue, 0.0, 1.0);
 }
 
-template<typename T> struct TailAlignedSpan
-{
-    std::span<const T> values;
-    std::size_t offset = 0;
-};
-
-template<typename T> [[nodiscard]] inline TailAlignedSpan<T> tailAlignedSpan(std::span<const T> data, std::size_t count)
-{
-    const std::size_t clampedCount = std::min(count, data.size());
-    const std::size_t offset = data.size() - clampedCount;
-    return {data.subspan(offset, clampedCount), offset};
-}
-
-template<typename T> [[nodiscard]] inline TailAlignedSpan<T> tailAlignedSpan(const std::vector<T>& data, std::size_t count)
-{
-    return tailAlignedSpan(std::span<const T>(data), count);
-}
+// TailAlignedSpan / tailAlignedSpan(): UI/TailAlignedSeries.h, exported through this header.
 
 // Returns the tooltip string to display for a NowBar, using the fallback chain:
 //   tooltipText (if non-empty) -> "label: valueText" (if both non-empty) -> label -> valueText
@@ -2099,14 +2088,6 @@ inline void fillTimeAxis(std::vector<double>& out, std::span<const double> times
     {
         out[i] = timestamps[offset + i] - nowSeconds;
     }
-}
-
-/// fillTimeAxis() into a new vector.
-[[nodiscard]] inline std::vector<double> buildTimeAxis(std::span<const double> timestamps, size_t desiredCount, double nowSeconds)
-{
-    std::vector<double> timeData;
-    fillTimeAxis(timeData, timestamps, desiredCount, nowSeconds);
-    return timeData;
 }
 
 /// Buffers for one frame's time axes, reused from frame to frame (#1018).
@@ -2231,40 +2212,6 @@ inline void trimFrameCaches()
     auto& buffer = Detail::timeAxisPool().acquire(ImGui::GetFrameCount());
     fillTimeAxis(buffer, timestamps, desiredCount, nowSeconds);
     return buffer;
-}
-
-inline auto hoveredIndexFromPlotX(const std::vector<float>& timeData, double mouseX) -> std::optional<size_t>
-{
-    if (timeData.empty())
-    {
-        return std::nullopt;
-    }
-
-    const float x = UI::Format::toFloatNarrow(mouseX);
-    const auto it = std::ranges::lower_bound(timeData, x);
-
-    if (it == timeData.begin())
-    {
-        return 0U;
-    }
-
-    if (it == timeData.end())
-    {
-        return timeData.size() - 1;
-    }
-
-    const auto upperDist = std::distance(timeData.begin(), it);
-    if (!std::in_range<size_t>(upperDist))
-    {
-        return std::nullopt;
-    }
-    const auto upperIdx = static_cast<size_t>(upperDist); // Safe: checked by std::in_range
-    const size_t lowerIdx = upperIdx - 1;
-
-    const float distLower = std::abs(timeData[lowerIdx] - x);
-    const float distUpper = std::abs(timeData[upperIdx] - x);
-
-    return (distUpper < distLower) ? upperIdx : lowerIdx;
 }
 
 inline auto hoveredIndexFromPlotX(std::span<const double> timeData, double mouseX) -> std::optional<size_t>
@@ -2413,9 +2360,10 @@ inline void drawCollectingHint(std::size_t sampleCount)
 
 /// Declarative configuration for a standard TaskSmack history chart.
 /// yLimits set → Y axis locked to that range (percent charts pin 0-100; the non-negative charts
-///   compute theirs from the data via rateHistoryConfig()).
-/// yLimits empty → Y axis auto-fits the plotted data, including below zero. No chart does this
-///   today -- see autoFitHistoryConfig() for why (#920).
+///   compute theirs from the data and pass it to rateHistoryConfigWithUpper()).
+/// yLimits empty → Y axis auto-fits the plotted data, including below zero. No chart does this:
+///   plain auto-fit degenerates on an all-zero window into a +/-0.5 sliver, which renders an
+///   impossible negative rate and a column of identical tick labels (#920).
 struct HistoryChartConfig
 {
     const char* id = "";
@@ -2429,10 +2377,6 @@ struct HistoryChartConfig
     bool timeAxisLabels = true;
     float height = HISTORY_PLOT_HEIGHT_DEFAULT;
     ImPlotFlags flags = PLOT_FLAGS_DEFAULT;
-    /// Ease the Y upper bound toward yLimits->second over a few frames instead of jumping to it
-    /// (see easeAxisUpperBound). Set by rateHistoryConfig(); a fixed range such as 0-100 % has
-    /// nothing to ease.
-    bool easeYUpper = false;
     /// The generation of the data this chart draws (nextChartDataGeneration()), or 0 if the caller
     /// does not track one. When set, plotLineWithFill() series drawn in the chart keep their reduced
     /// points until it changes instead of reducing their whole history every frame (#1139), so it
@@ -2487,22 +2431,6 @@ inline constexpr double PERCENT_AXIS_UPPER_WITH_HEADROOM = 104.0;
     return cfg;
 }
 
-/// Config for an auto-fit history chart: Y axis fits the plotted data, including below zero.
-///
-/// Prefer rateHistoryConfig() for any series that cannot be negative -- rates, counts and watts all
-/// use that instead, so nothing in the app calls this today. Kept for a genuinely signed series:
-/// plain auto-fit degenerates on an all-zero window into a +/-0.5 sliver, which renders an
-/// impossible negative rate and a column of identical tick labels (#920).
-[[nodiscard]] inline HistoryChartConfig autoFitHistoryConfig(const char* id, double xMin, double xMax, ImPlotFormatter yFormatter)
-{
-    HistoryChartConfig cfg;
-    cfg.id = id;
-    cfg.xMin = xMin;
-    cfg.xMax = xMax;
-    cfg.yFormatter = yFormatter;
-    return cfg;
-}
-
 /// Config for a non-negative history chart (rates, counts, watts): Y axis pinned to 0 at the bottom
 /// and drawn up to `upperBound` exactly -- pass easedRateAxisUpperBound(), the bound the chart's
 /// NowBars are scaled to as well. See rateAxisUpperBound() in RateAxis.h for why the limits are
@@ -2516,24 +2444,11 @@ rateHistoryConfigWithUpper(const char* id, double xMin, double xMax, ImPlotForma
     cfg.xMax = xMax;
     cfg.yFormatter = yFormatter;
     cfg.yLimits = std::pair{0.0, upperBound};
-    // Already the bound to draw (easedRateAxisUpperBound), so HistoryChart does not ease it again.
-    cfg.easeYUpper = false;
     return cfg;
 }
 
-/// A rate chart config whose upper bound comes from the data (rateAxisUpperBound) and is eased by
-/// HistoryChart itself. A chart that also has NowBars should use easedRateAxisUpperBound() and
-/// rateHistoryConfigWithUpper() instead, so its bars are scaled to the same per-frame bound (#1003).
-[[nodiscard]] inline HistoryChartConfig
-rateHistoryConfig(const char* id, double xMin, double xMax, ImPlotFormatter yFormatter, double dataMax, double minSpan)
-{
-    HistoryChartConfig cfg = rateHistoryConfigWithUpper(id, xMin, xMax, yFormatter, rateAxisUpperBound(dataMax, minSpan));
-    cfg.easeYUpper = true;
-    return cfg;
-}
-
-/// The Y upper bound a HistoryChart with easeYUpper draws this frame: its previous frame's bound
-/// eased toward `target` (easeAxisUpperBound). Kept per chart, keyed by the chart's ImGui ID. A chart
+/// The Y upper bound an eased chart draws this frame: its previous frame's bound eased toward
+/// `target` (easeAxisUpperBound). Kept per chart, keyed by the chart's ImGui ID. A chart
 /// that was not drawn last frame -- just opened, or its tab just shown -- starts at its target rather
 /// than easing in from a stale value. Frame-keyed: see "Frame-keyed caches" above (#1181).
 [[nodiscard]] inline double easedChartUpperBound(ImGuiID chartId, double target)
@@ -2768,9 +2683,10 @@ class HistoryChart
             nullptr, nullptr, historyChartXAxisFlags(config.timeAxisLabels), historyChartYAxisFlags(config.yLimits.has_value()));
         if (config.yLimits.has_value())
         {
-            const double upper = config.easeYUpper ? easedChartUpperBound(plotId, config.yLimits->second) : config.yLimits->second;
-            // This chart's own axis was just eased, and the chart is visible (we're past BeginPlot): make
-            // its request here rather than leaving it pending for the next chart or frame.
+            const double upper = config.yLimits->second;
+            // This chart's bound was eased just before it began (easedRateAxisUpperBound()), and the chart
+            // is visible (we're past BeginPlot): make its request here rather than leaving it pending for
+            // the next chart or frame.
             if (shouldRequestEaseFrames(Detail::g_PendingEaseRequestFrame, ImGui::GetFrameCount(), true))
             {
                 Core::AnimationRequest::request();

@@ -135,6 +135,38 @@ class CpuAffinity
         }
     }
 
+    /// Keeps only the processors `other` also includes (bitwise AND), e.g. a process's allowed CPUs
+    /// with the online ones. Never allocates: the result is no wider than this one was, and a result
+    /// within processors 0-63 moves back inline. Empty when the two have no processor in common.
+    void intersectWith(const CpuAffinity& other) noexcept
+    {
+        const auto theirs = other.words();
+        if (m_Words.empty())
+        {
+            m_Inline &= theirs.empty() ? std::uint64_t{0} : theirs.front();
+            return;
+        }
+        // Spilled. `other` may be this very object; ANDing a word with itself is harmless.
+        std::size_t kept = std::min(m_Words.size(), theirs.size());
+        for (std::size_t word = 0; word < kept; ++word)
+        {
+            m_Words[word] &= theirs[word];
+        }
+        while (kept > 0 && m_Words[kept - 1] == 0)
+        {
+            --kept; // Drop trailing zero words: equality and ordering compare words() as-is
+        }
+        if (kept <= 1)
+        {
+            m_Inline = (kept == 1) ? m_Words.front() : std::uint64_t{0};
+            m_Words.clear(); // Keeps the capacity; no allocation either way
+        }
+        else
+        {
+            m_Words.erase(m_Words.begin() + static_cast<std::ptrdiff_t>(kept), m_Words.end());
+        }
+    }
+
     /// Whether processor `cpu` is included.
     [[nodiscard]] bool test(std::size_t cpu) const noexcept
     {
@@ -199,7 +231,8 @@ class CpuAffinity
 
   private:
     // Invariant: m_Words is empty, or holds every word (at least two) with a non-zero last word;
-    // m_Inline is then 0. Processors are only ever added, so no trailing zero word can appear.
+    // m_Inline is then 0. setRange() only adds processors, so it can't leave a trailing zero word;
+    // intersectWith() trims any it leaves, and moves a result of one word or none back inline.
     std::uint64_t m_Inline = 0;         // Processors 0-63, while no higher one is included
     std::vector<std::uint64_t> m_Words; // Every word, once a processor at 64 or above is included
 };

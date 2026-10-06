@@ -38,8 +38,7 @@ namespace
 }
 } // namespace
 
-StorageModel::StorageModel(std::unique_ptr<Platform::IDiskProbe> probe)
-    : m_Probe(std::move(probe)), m_StartTime(std::chrono::steady_clock::now())
+StorageModel::StorageModel(std::unique_ptr<Platform::IDiskProbe> probe) : m_Probe(std::move(probe))
 {
     applyHistoryCapacity();
 }
@@ -215,8 +214,6 @@ void StorageModel::sampleAt(const std::chrono::steady_clock::time_point now)
         m_History.push(std::move(snapshot));
         trimHistory(nowSeconds);
         publish();
-        m_HasPrevSample = true;
-        m_PrevSampleTime = now;
     }
 
     spdlog::trace("StorageModel: sampled {} disks, total read: {:.2f} MB/s, write: {:.2f} MB/s",

@@ -7,7 +7,7 @@
 
 #include "Platform/IProcessActions.h"
 #include "Platform/Linux/LinuxProcessActions.h"
-#include "Platform/Linux/ProcStatStartTime.h"
+#include "Platform/Linux/ProcParsing.h"
 
 #include <gtest/gtest.h>
 
@@ -44,7 +44,7 @@ namespace
 {
     std::ifstream stat("/proc/self/stat");
     const std::string line((std::istreambuf_iterator<char>(stat)), std::istreambuf_iterator<char>());
-    return {.pid = static_cast<std::int32_t>(getpid()), .startTimeTicks = ProcStat::parseStartTime(line).value_or(0)};
+    return {.pid = static_cast<std::int32_t>(getpid()), .startTimeTicks = ProcParsing::parseStatStartTime(line).value_or(0)};
 }
 
 /// A forked child that sleeps until signalled, killed and reaped on scope exit if still running.
@@ -139,7 +139,7 @@ class SleepingChild
     {
         std::ifstream stat("/proc/" + std::to_string(m_Pid) + "/stat");
         const std::string line((std::istreambuf_iterator<char>(stat)), std::istreambuf_iterator<char>());
-        return {.pid = static_cast<std::int32_t>(m_Pid), .startTimeTicks = ProcStat::parseStartTime(line).value_or(0)};
+        return {.pid = static_cast<std::int32_t>(m_Pid), .startTimeTicks = ProcParsing::parseStatStartTime(line).value_or(0)};
     }
 
   private:

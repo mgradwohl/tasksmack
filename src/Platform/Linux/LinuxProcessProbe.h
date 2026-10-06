@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Platform/CpuAffinity.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/PlatformConfig.h"
 
@@ -36,6 +37,17 @@ class LinuxProcessProbe : public IProcessProbe
     /// Testability constructor that also takes the powercap root (normally /sys/class/powercap),
     /// so power detection can be exercised against fixture files.
     LinuxProcessProbe(std::filesystem::path procRoot, std::filesystem::path powercapRoot);
+
+    /// Testability constructor that also takes the cgroup filesystem root (normally /sys/fs/cgroup),
+    /// where a process's freeze state is read for its "Suspended" status (#1183).
+    LinuxProcessProbe(std::filesystem::path procRoot, std::filesystem::path powercapRoot, std::filesystem::path cgroupRoot);
+
+    /// Testability constructor that also takes the CPU sysfs root (normally /sys/devices/system/cpu),
+    /// whose `online` list each process's CPU affinity is limited to (#1384).
+    LinuxProcessProbe(std::filesystem::path procRoot,
+                      std::filesystem::path powercapRoot,
+                      std::filesystem::path cgroupRoot,
+                      std::filesystem::path cpuSysfsRoot);
 
     ~LinuxProcessProbe() override = default;
 
@@ -95,6 +107,8 @@ class LinuxProcessProbe : public IProcessProbe
   private:
     std::filesystem::path m_ProcRoot;
     std::filesystem::path m_PowercapRoot;
+    std::filesystem::path m_CgroupRoot;
+    std::filesystem::path m_CpuSysfsRoot;
     long m_TicksPerSecond;
     uint64_t m_PageSize;
     uint64_t m_BootTimeEpoch = 0;                            // System boot time (Unix epoch seconds)
@@ -160,8 +174,15 @@ class LinuxProcessProbe : public IProcessProbe
     /// Parse /proc/[pid]/statm for memory info
     void parseProcessStatm(int32_t pid, ProcessCounters& counters) const;
 
-    /// Parse /proc/[pid]/status for owner (UID) info and CPU affinity (Cpus_allowed_list)
-    static void parseProcessStatus(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot);
+    /// Parse /proc/[pid]/status for owner (UID) info and CPU affinity (Cpus_allowed_list). The
+    /// affinity is ANDed with `onlineCpus` when that is known (see readOnlineCpus()).
+    static void parseProcessStatus(int32_t pid,
+                                   ProcessCounters& counters,
+                                   const std::filesystem::path& procRoot,
+                                   const std::optional<CpuAffinity>& onlineCpus);
+
+    /// The online CPUs, from <cpuSysfsRoot>/online, or nullopt if it can't be read or parsed (#1384).
+    [[nodiscard]] static std::optional<CpuAffinity> readOnlineCpus(const std::filesystem::path& cpuSysfsRoot);
 
     /// Parse /proc/[pid]/cmdline for full command line
     static void parseProcessCmdline(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot);
@@ -180,7 +201,8 @@ class LinuxProcessProbe : public IProcessProbe
     [[nodiscard]] static bool checkIoCountersAvailability(const std::filesystem::path& procRoot);
 
     /// Get process status from cgroups (Suspended state detection)
-    [[nodiscard]] static std::string getProcessStatus(int32_t pid, const std::filesystem::path& procRoot);
+    [[nodiscard]] static std::string
+    getProcessStatus(int32_t pid, const std::filesystem::path& procRoot, const std::filesystem::path& cgroupRoot);
 
     /// Read total CPU time from /proc/stat
     [[nodiscard]] uint64_t readTotalCpuTime() const;
