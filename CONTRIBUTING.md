@@ -806,11 +806,36 @@ write artifacts under `perf-data/` and emit `KEY=value` lines at exit for script
 ### Linux — CPU profiling (perf)
 
 Use `tools/profile-perf.sh` to capture and `tools/analyze-perf.sh` to analyze.
-Default preset is `profile` for app mode and `benchmark` for bench mode.
+Default preset is `profile` for app mode and `benchmark` for bench mode. Every run prints, and
+writes to its log, the preset, build directory, build type, compiler and `CMAKE_CXX_FLAGS*` entries
+it profiled. Those cache entries miss `add_compile_options()`/`target_compile_options()` flags such as
+a `TASKSMACK_MARCH` `-march`, `-stdlib=libc++` and the release hardening flags. So each run also
+prints the real compile flags of one of the profiled binary's `src/` files (`src/main.cpp` for the
+app), read from the build's `compile_commands.json` with `python3`, and logs that file's full
+compile command. Every preset exports `compile_commands.json`. If the file or `python3` is missing,
+the run says so and logs the cache entries alone.
+
+App mode profiles steady state, not startup (#1371). It launches TaskSmack, waits for it to log
+`Entering main loop` (up to 30 s) plus a warm-up (`--warmup`, default 5 s), and only then attaches
+`perf record -p`. It records until you close TaskSmack, or for `--duration` seconds and then closes
+it. Ctrl+C also stops the capture and closes TaskSmack. `--include-startup` keeps the old behavior:
+TaskSmack runs under perf from launch. The run fails if TaskSmack exits before recording starts,
+exits before `--duration` elapses, or exits with a non-zero code. When the script closes TaskSmack
+itself (after `--duration` or Ctrl+C), it sends SIGTERM, and TaskSmack quitting cleanly with code 0
+passes. Needing the SIGKILL fallback after 10 s, or any other exit code, fails the run. In every app
+capture, `--include-startup` included, TaskSmack's own stdout and stderr go to
+`perf-data/perf-app-<timestamp>-app.log`. The `profile` preset keeps frame pointers for better stacks;
+pass `--preset release` to profile the shipped build's code generation.
 
 ```bash
-# App trace — exercise the app, then close it
+# App trace — steady state after a 5 s warm-up; exercise the app, then close it
 ./tools/profile-perf.sh app
+
+# Unattended app trace — 10 s warm-up, record 30 s, then close automatically
+./tools/profile-perf.sh app --warmup 10 --duration 30
+
+# Include startup (fonts, themes, first enumeration) in the profile
+./tools/profile-perf.sh app --include-startup
 
 # Benchmark trace — targeted hot-path capture
 ./tools/profile-perf.sh bench
