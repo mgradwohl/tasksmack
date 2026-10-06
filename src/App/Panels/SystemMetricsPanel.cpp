@@ -1073,8 +1073,12 @@ void SystemMetricsPanel::renderOverview()
             }
             ImGui::TextColored(theme.scheme().textPrimary, "%s", heading.c_str());
 
+            // The heading's tooltip is shown after the chart: its value strip is placed beside the
+            // heading, the item drawn just before it, so nothing else is submitted between the two.
+            const bool headingHovered = ImGui::IsItemHovered();
+            renderHistoryWithNowBars("PowerBatteryHistoryLayout", plotHeight, plot, bars, false, overviewNowBarColumns());
             // Tooltip with detailed info
-            if (ImGui::IsItemHovered())
+            if (headingHovered)
             {
                 ImGui::BeginTooltip();
                 if (hasProcessPower)
@@ -1100,8 +1104,6 @@ void SystemMetricsPanel::renderOverview()
                 }
                 ImGui::EndTooltip();
             }
-
-            renderHistoryWithNowBars("PowerBatteryHistoryLayout", plotHeight, plot, bars, false, overviewNowBarColumns());
             fill.addPlot();
             ImGui::Spacing();
         }

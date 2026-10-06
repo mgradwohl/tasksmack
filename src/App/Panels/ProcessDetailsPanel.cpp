@@ -1778,13 +1778,16 @@ void ProcessDetailsPanel::renderNetworkStats(UI::Widgets::FillPlotLayout& fill)
     };
 
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_NETWORK_WIRED "  Network (%zu samples)", alignedCount);
-    if (ImGui::IsItemHovered())
+    // The heading's tooltip is shown after the chart: its value strip is placed beside the heading,
+    // the item drawn just before it, so nothing else is submitted between the two.
+    const bool headingHovered = ImGui::IsItemHovered();
+    renderHistoryWithNowBars(
+        "ProcessNetworkHistory", fill.plotHeight(), plot, {sentBar, recvBar}, false, PROCESS_NETWORK_IO_NOW_BAR_COLUMNS);
+    if (headingHovered)
     {
         ImGui::SetTooltip("Network bytes/sec between readings of the process's open connections. A refresh that reuses a cached reading "
                           "shows the last rate.");
     }
-    renderHistoryWithNowBars(
-        "ProcessNetworkHistory", fill.plotHeight(), plot, {sentBar, recvBar}, false, PROCESS_NETWORK_IO_NOW_BAR_COLUMNS);
     fill.addPlot();
     ImGui::Spacing();
 }
