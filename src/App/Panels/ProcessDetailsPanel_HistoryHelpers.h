@@ -7,6 +7,8 @@
 #include "Domain/ProcessSnapshot.h"
 #include "ProcessDetailsLayout.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <span>
@@ -19,6 +21,32 @@ namespace App::Detail
 [[nodiscard]] constexpr double readingOrGap(bool available, double value) noexcept
 {
     return available ? value : std::numeric_limits<double>::quiet_NaN();
+}
+
+/// Whether a sample's rate is a reading: the probe can supply it on this system at all
+/// (ProcessCapabilities::hasIoCounters / hasNetworkCounters) and read it for this process this sample
+/// (ProcessSnapshot::ioAvailable / networkAvailable). A snapshot from a probe without the counters
+/// still says "available" with a rate of 0, which would chart as a measured zero (#1210).
+[[nodiscard]] constexpr bool rateIsReading(bool probeSupports, bool readThisSample) noexcept
+{
+    return probeSupports && readThisSample;
+}
+
+/// Whether a history holds any actual reading rather than only gaps (NaN).
+[[nodiscard]] inline bool hasAnyReading(std::span<const double> history) noexcept
+{
+    return std::ranges::any_of(history, [](double value) { return !std::isnan(value); });
+}
+
+/// Whether Process Details' Network and I/O tab has anything to chart, or should show its empty
+/// state (#1210). Only readings count: every sample adds a point to each history, a gap where the
+/// rate was not read, so a non-empty history alone does not mean there is data.
+[[nodiscard]] inline bool hasNetworkOrIoReadings(std::span<const double> ioRead,
+                                                 std::span<const double> ioWrite,
+                                                 std::span<const double> netSent,
+                                                 std::span<const double> netReceived) noexcept
+{
+    return hasAnyReading(ioRead) || hasAnyReading(ioWrite) || hasAnyReading(netSent) || hasAnyReading(netReceived);
 }
 
 /// Where the pane is in the selected process's samples (ProcessModel::watchedSamplesSince(), #1098).

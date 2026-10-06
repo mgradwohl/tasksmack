@@ -292,6 +292,9 @@ void ProcessDetailsPanel::recordHistoryPoint(const Domain::ProcessSnapshot& snap
         }
     }
 
+    const bool ioReading = Detail::rateIsReading(m_ProcessCapabilities.hasIoCounters, snapshot.ioAvailable);
+    const bool networkReading = Detail::rateIsReading(m_ProcessCapabilities.hasNetworkCounters, snapshot.networkAvailable);
+
     // Stored as double to avoid narrowing; converted only at the ImPlot boundary.
     // In the order of `histories` above. A value the probe could not read is NaN,
     // drawn as a gap (#1110).
@@ -311,10 +314,11 @@ void ProcessDetailsPanel::recordHistoryPoint(const Domain::ProcessSnapshot& snap
         toDouble(snapshot.threadCount),
         Detail::readingOrGap(snapshot.handleCountAvailable, toDouble(snapshot.handleCount)),
         snapshot.pageFaultsPerSec,
-        Detail::readingOrGap(snapshot.ioAvailable, snapshot.ioReadBytesPerSec),
-        Detail::readingOrGap(snapshot.ioAvailable, snapshot.ioWriteBytesPerSec),
-        Detail::readingOrGap(snapshot.networkAvailable, snapshot.netSentBytesPerSec),
-        Detail::readingOrGap(snapshot.networkAvailable, snapshot.netReceivedBytesPerSec),
+        // Gaps too where the probe has no such counters at all, not a line of measured-looking zeros (#1210).
+        Detail::readingOrGap(ioReading, snapshot.ioReadBytesPerSec),
+        Detail::readingOrGap(ioReading, snapshot.ioWriteBytesPerSec),
+        Detail::readingOrGap(networkReading, snapshot.netSentBytesPerSec),
+        Detail::readingOrGap(networkReading, snapshot.netReceivedBytesPerSec),
         snapshot.powerWatts,
         snapshot.gpuUtilPercent,
         toDouble(snapshot.gpuMemoryBytes),
@@ -468,12 +472,9 @@ void ProcessDetailsPanel::renderContent()
         {
             {
                 const UI::Widgets::TabContentScope content("##NetworkContent");
-                const auto& proc = cachedSnapshot();
-                const bool hasNetworkData = (proc.netSentBytesPerSec > 0.0 || proc.netReceivedBytesPerSec > 0.0 ||
-                                             !m_NetSentHistory.empty() || !m_NetRecvHistory.empty());
-                const bool hasIoData = (proc.ioReadBytesPerSec > 0.0 || proc.ioWriteBytesPerSec > 0.0 || !m_IoReadHistory.empty() ||
-                                        !m_IoWriteHistory.empty());
-                if (!hasNetworkData && !hasIoData)
+                // Readings only: every sample adds a point, a gap where there was no reading, so a
+                // history that is merely non-empty is not data (#1210).
+                if (!Detail::hasNetworkOrIoReadings(m_IoReadHistory, m_IoWriteHistory, m_NetSentHistory, m_NetRecvHistory))
                 {
                     UI::Widgets::renderEmptyState(ICON_FA_NETWORK_WIRED "  No network or disk I/O yet",
                                                   "Disk and network rates for this process appear here once they have been sampled.");
@@ -652,14 +653,15 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
                   snapshot.handleCountAvailable,
                   Domain::Numeric::toDouble(snapshot.handleCount));
     m_SmoothedUsage.handleCountAvailable = snapshot.handleCountAvailable;
-    smoothReading(m_SmoothedUsage.ioReadBytesPerSec, m_SmoothedUsage.ioAvailable, snapshot.ioAvailable, snapshot.ioReadBytesPerSec);
-    smoothReading(m_SmoothedUsage.ioWriteBytesPerSec, m_SmoothedUsage.ioAvailable, snapshot.ioAvailable, snapshot.ioWriteBytesPerSec);
-    m_SmoothedUsage.ioAvailable = snapshot.ioAvailable;
-    smoothReading(
-        m_SmoothedUsage.netSentBytesPerSec, m_SmoothedUsage.networkAvailable, snapshot.networkAvailable, snapshot.netSentBytesPerSec);
-    smoothReading(
-        m_SmoothedUsage.netRecvBytesPerSec, m_SmoothedUsage.networkAvailable, snapshot.networkAvailable, snapshot.netReceivedBytesPerSec);
-    m_SmoothedUsage.networkAvailable = snapshot.networkAvailable;
+    // A rate the probe cannot supply on this system at all is not a reading either (#1210).
+    const bool ioReading = Detail::rateIsReading(m_ProcessCapabilities.hasIoCounters, snapshot.ioAvailable);
+    const bool networkReading = Detail::rateIsReading(m_ProcessCapabilities.hasNetworkCounters, snapshot.networkAvailable);
+    smoothReading(m_SmoothedUsage.ioReadBytesPerSec, m_SmoothedUsage.ioAvailable, ioReading, snapshot.ioReadBytesPerSec);
+    smoothReading(m_SmoothedUsage.ioWriteBytesPerSec, m_SmoothedUsage.ioAvailable, ioReading, snapshot.ioWriteBytesPerSec);
+    m_SmoothedUsage.ioAvailable = ioReading;
+    smoothReading(m_SmoothedUsage.netSentBytesPerSec, m_SmoothedUsage.networkAvailable, networkReading, snapshot.netSentBytesPerSec);
+    smoothReading(m_SmoothedUsage.netRecvBytesPerSec, m_SmoothedUsage.networkAvailable, networkReading, snapshot.netReceivedBytesPerSec);
+    m_SmoothedUsage.networkAvailable = networkReading;
     m_SmoothedUsage.powerWatts = std::max(0.0, initializeOrSmooth(m_SmoothedUsage.powerWatts, targetPower, alpha, initialized));
     m_SmoothedUsage.gpuUtilPercent =
         UI::Format::clampPercent(initializeOrSmooth(m_SmoothedUsage.gpuUtilPercent, targetGpuUtil, alpha, initialized));

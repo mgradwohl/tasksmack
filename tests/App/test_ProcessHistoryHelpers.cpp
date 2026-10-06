@@ -10,6 +10,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -129,6 +130,33 @@ TEST(ProcessHistoryHelpersTest, AnUnreadValueIsAGapNotAZero)
     EXPECT_DOUBLE_EQ(readingOrGap(true, 12.0), 12.0);
     EXPECT_DOUBLE_EQ(readingOrGap(true, 0.0), 0.0);
     EXPECT_TRUE(std::isnan(readingOrGap(false, 0.0)));
+}
+
+// #1210: a probe without network (or I/O) counters still marks each snapshot available, with a rate
+// of 0. That is no reading, so it is recorded as a gap, not a measured zero.
+TEST(ProcessHistoryHelpersTest, ARateIsAReadingOnlyWhereTheProbeSupportsIt)
+{
+    EXPECT_TRUE(rateIsReading(/*probeSupports=*/true, /*readThisSample=*/true));
+    EXPECT_FALSE(rateIsReading(false, true));
+    EXPECT_FALSE(rateIsReading(true, false));
+    EXPECT_TRUE(std::isnan(readingOrGap(rateIsReading(false, true), 0.0)));
+}
+
+TEST(ProcessHistoryHelpersTest, HistoriesOfOnlyGapsAreNoData)
+{
+    const double gap = std::numeric_limits<double>::quiet_NaN();
+    const std::vector<double> gaps{gap, gap, gap};
+    const std::vector<double> none;
+    const std::vector<double> zeros{gap, 0.0, 0.0}; // A measured idle is data
+
+    EXPECT_FALSE(hasAnyReading(gaps));
+    EXPECT_FALSE(hasAnyReading(none));
+    EXPECT_TRUE(hasAnyReading(zeros));
+
+    // Every sample adds a point to every history, so non-empty is not enough for the tab's charts.
+    EXPECT_FALSE(hasNetworkOrIoReadings(gaps, gaps, gaps, gaps));
+    EXPECT_TRUE(hasNetworkOrIoReadings(gaps, gaps, zeros, gaps)); // Network supported, I/O not
+    EXPECT_TRUE(hasNetworkOrIoReadings(zeros, gaps, gaps, gaps)); // I/O supported, network not
 }
 
 TEST(ProcessHistoryHelpersTest, ASampleAcceptedEarlierInTheBatchCountsAsSeen)
