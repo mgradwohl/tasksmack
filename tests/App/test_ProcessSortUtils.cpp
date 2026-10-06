@@ -2,12 +2,15 @@
 #include "App/ProcessColumnConfig.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessSnapshot.h"
+#include "Platform/CpuAffinity.h"
+#include "UI/Format.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace App
@@ -51,7 +54,7 @@ using Domain::ProcessSnapshot;
     snap.peakMemoryBytes = u;
     snap.sharedBytes = u;
     snap.pageFaults = u;
-    snap.cpuAffinityMask = u;
+    snap.cpuAffinity = Platform::CpuAffinity::fromMask(u);
 
     snap.gpuUtilPercent = d;
     snap.gpuMemoryBytes = u;
@@ -316,6 +319,40 @@ TEST(ProcessSortUtilsTest, PriorityWithoutAClassSortsByNice)
     b.nice = 10;
     EXPECT_TRUE(ProcessSortUtils::compareByColumn(a, b, ProcessColumn::Priority, true));
     EXPECT_FALSE(ProcessSortUtils::compareByColumn(b, a, ProcessColumn::Priority, true));
+}
+
+// #1247: affinities past processor 63 sort as wider bitsets, by their highest processor first, and
+// an unreadable (empty) affinity sorts below every reading.
+TEST(ProcessSortUtilsTest, AffinitySortsBeyond64Cpus)
+{
+    const auto withAffinity = [](std::string_view list)
+    {
+        ProcessSnapshot snap = makeSnapshot(false);
+        snap.cpuAffinity = list.empty() ? Platform::CpuAffinity{} : *Platform::CpuAffinity::fromCpuList(list);
+        return snap;
+    };
+    std::vector<ProcessSnapshot> rows{withAffinity("70"),
+                                      withAffinity("0-63"),
+                                      withAffinity("0-3,64-127"),
+                                      withAffinity(""),
+                                      withAffinity("200"),
+                                      withAffinity("64"),
+                                      withAffinity("0")};
+    std::ranges::stable_sort(rows,
+                             [](const ProcessSnapshot& a, const ProcessSnapshot& b)
+                             { return ProcessSortUtils::compareColumnKey(a, b, ProcessColumn::Affinity, /*ascending=*/true); });
+
+    std::vector<std::string> order;
+    for (const auto& row : rows)
+    {
+        order.push_back(UI::Format::formatCpuAffinity(row.cpuAffinity.words()));
+    }
+    EXPECT_EQ(order, (std::vector<std::string>{"-", "0", "0-63", "64", "70", "0-3,64-127", "200"}));
+
+    // Descending is the reverse, and equal wide affinities don't compare less either way.
+    EXPECT_TRUE(ProcessSortUtils::compareColumnKey(withAffinity("200"), withAffinity("70"), ProcessColumn::Affinity, false));
+    EXPECT_FALSE(ProcessSortUtils::compareColumnKey(withAffinity("64-127"), withAffinity("64-127"), ProcessColumn::Affinity, true));
+    EXPECT_FALSE(ProcessSortUtils::compareColumnKey(withAffinity("64-127"), withAffinity("64-127"), ProcessColumn::Affinity, false));
 }
 
 TEST(ProcessSortUtilsTest, UnknownColumnReturnsFalse)

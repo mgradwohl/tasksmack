@@ -1,5 +1,6 @@
 #include "App/Panels/ProcessRowFormat.h"
 #include "Domain/ProcessSnapshot.h"
+#include "Platform/CpuAffinity.h"
 #include "UI/Format.h"
 
 #include <gtest/gtest.h>
@@ -56,7 +57,7 @@ using ProcessRowFormat::UNAVAILABLE_CELL_TEXT;
     snap.threadCount = 7;
     snap.handleCount = 42;
     snap.pageFaults = 123;
-    snap.cpuAffinityMask = 0x3;
+    snap.cpuAffinity = Platform::CpuAffinity::fromMask(0x3);
     snap.gdiObjectCount = 9;
     return snap;
 }
@@ -206,7 +207,7 @@ TEST(ProcessRowFormatTest, BuildRowFormatCacheFormatsEveryField)
     EXPECT_EQ(fmt.threads.text, UI::Format::formatIntLocalized(7));
     EXPECT_EQ(fmt.handles.text, UI::Format::formatIntLocalized(42));
     EXPECT_EQ(fmt.pageFaults.text, UI::Format::formatIntLocalized(std::uint64_t{123}));
-    EXPECT_EQ(fmt.affinity.text, UI::Format::formatCpuAffinityMask(0x3));
+    EXPECT_EQ(fmt.affinity.text, "0,1");
     EXPECT_EQ(fmt.gdiObjects.text, UI::Format::formatIntLocalized(9));
 }
 

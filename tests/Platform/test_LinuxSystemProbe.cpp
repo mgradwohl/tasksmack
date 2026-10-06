@@ -792,6 +792,50 @@ TEST(LinuxSystemProbeTest, NetworkTotalCountsEveryInterfaceWhenNoneIsHardware)
     EXPECT_TRUE(counters.networkInterfaces[0].isVirtual);
 }
 
+TEST(LinuxSystemProbeTest, OperStateAndLinkSpeedAreReadFromTheInjectedSysClassNetRoot)
+{
+    // #1183: operstate and speed come from the same injected root as the interface's class, not
+    // from the host's /sys/class/net.
+    ScopedTempDir proc("ts_test_sys_net_operstate");
+    ScopedTempDir sys("ts_test_sys_class_net_operstate");
+    std::filesystem::create_directories(proc.path / "net");
+    std::ofstream(proc.path / "net" / "dev") << NET_DEV_HEADER << netDevLine("tsup0", 5000, 700) << netDevLine("tsdown0", 300, 30);
+    addSysfsInterface(sys.path, "tsup0", true);
+    addSysfsInterface(sys.path, "tsdown0", true);
+    std::ofstream(sys.path / "tsup0" / "operstate") << "up\n";
+    std::ofstream(sys.path / "tsup0" / "speed") << "2500\n";
+    std::ofstream(sys.path / "tsdown0" / "operstate") << "down\n";
+    std::ofstream(sys.path / "tsdown0" / "speed") << "-1\n";
+
+    LinuxSystemProbe probe(proc.path, sys.path);
+    const auto counters = probe.read();
+    ASSERT_EQ(counters.networkInterfaces.size(), 2U);
+    EXPECT_EQ(counters.networkInterfaces[0].name, "tsup0");
+    EXPECT_TRUE(counters.networkInterfaces[0].isUp);
+    EXPECT_EQ(counters.networkInterfaces[0].linkSpeedMbps, 2500U);
+    EXPECT_EQ(counters.networkInterfaces[1].name, "tsdown0");
+    EXPECT_FALSE(counters.networkInterfaces[1].isUp);
+    EXPECT_EQ(counters.networkInterfaces[1].linkSpeedMbps, 0U);
+}
+
+TEST(LinuxSystemProbeTest, CpuFrequencyIsReadFromTheInjectedCpuSysfsRoot)
+{
+    // #1183: cpu0's current frequency (kHz), scaling_cur_freq first, cpuinfo_cur_freq as the fallback.
+    ScopedTempDir proc("ts_test_sys_cpufreq_proc");
+    ScopedTempDir scaling("ts_test_sys_cpufreq_scaling");
+    ScopedTempDir fallback("ts_test_sys_cpufreq_fallback");
+    ScopedTempDir none("ts_test_sys_cpufreq_none");
+    std::filesystem::create_directories(scaling.path / "cpu0" / "cpufreq");
+    std::ofstream(scaling.path / "cpu0" / "cpufreq" / "scaling_cur_freq") << "2400000\n";
+    std::ofstream(scaling.path / "cpu0" / "cpufreq" / "cpuinfo_cur_freq") << "1800000\n";
+    std::filesystem::create_directories(fallback.path / "cpu0" / "cpufreq");
+    std::ofstream(fallback.path / "cpu0" / "cpufreq" / "cpuinfo_cur_freq") << "1800000\n";
+
+    EXPECT_EQ(LinuxSystemProbe(proc.path, proc.path, scaling.path).read().cpuFreqMHz, 2400U);
+    EXPECT_EQ(LinuxSystemProbe(proc.path, proc.path, fallback.path).read().cpuFreqMHz, 1800U);
+    EXPECT_EQ(LinuxSystemProbe(proc.path, proc.path, none.path).read().cpuFreqMHz, 0U);
+}
+
 TEST(LinuxSystemProbeTest, MissingMeminfoReturnsZeroMemory)
 {
     ScopedTempDir scoped("ts_test_sys_nomem");

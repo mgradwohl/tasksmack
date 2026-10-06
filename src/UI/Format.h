@@ -13,52 +13,16 @@
 #include <ctime>
 #include <format>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <locale>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
 
 namespace UI::Format
 {
-
-// ============================================================================
-// Locale caching for thousand separator
-// ============================================================================
-
-/// Get the locale's thousand separator character, cached per-thread for performance.
-/// Uses the default C++ locale (which respects LC_* environment variables when imbued).
-/// Returns '\0' if the locale has no thousand separator (C locale has empty grouping).
-///
-/// @note The separator is cached on first access per thread and will NOT update if the
-///       global locale changes at runtime. This is acceptable since TaskSmack sets the
-///       locale once at startup and does not change it afterwards.
-[[nodiscard]] inline auto getLocaleThousandSep() noexcept -> char
-{
-    // thread_local for thread safety, lazy-init via lambda for efficiency
-    // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables,misc-const-correctness)
-    thread_local char cachedSep = []
-    {
-        try
-        {
-            // Use std::locale() (the global C++ locale) rather than std::locale("")
-            // which can crash on some libc++ configurations
-            const auto& facet = std::use_facet<std::numpunct<char>>(std::locale());
-            // Check if grouping is enabled - if empty, no separators should be inserted
-            // This is how std::format("{:L}", ...) determines whether to use separators
-            if (facet.grouping().empty())
-            {
-                return '\0'; // No grouping in this locale
-            }
-            return facet.thousands_sep();
-        }
-        catch (...)
-        {
-            return '\0'; // Fallback: no separator on error
-        }
-    }();
-    return cachedSep;
-}
 
 /// The global locale's decimal point, the one std::format's "L" specs print, so the table's aligned
 /// cells read "1,5 MB" beside a tooltip's "1,5 MB" in a comma-decimal locale (#1202); '.' in the
@@ -116,6 +80,17 @@ struct NumericPunctuation
     {
         return cached; // The last punctuation read (the "C" locale's until one is read successfully)
     }
+}
+
+/// The global locale's thousands separator as std::format("{:L}") inserts it, or '\0' when the locale
+/// has no grouping (the "C" locale), so none is inserted. Reads the per-thread punctuation cache above,
+/// so it follows the current global locale: a thread that formatted before the locale was set, or a
+/// locale change at run time, no longer leaves the fast byte-alignment path on a stale separator
+/// (#1366). Once the cache is warm this costs one std::locale() copy and a pointer compare.
+[[nodiscard]] inline auto getLocaleThousandSep() noexcept -> char
+{
+    const NumericPunctuation& punct = numericPunctuation();
+    return punct.grouping.empty() ? '\0' : punct.thousandsSep;
 }
 
 /// Writes `value` with `decimals` fraction digits into [out, out + capacity), exactly as
@@ -988,83 +963,63 @@ struct AlignedBytesParts
     return std::format(" ({} {})", logicalProcessors, noun);
 }
 
-[[nodiscard]] inline auto formatCpuAffinityMask(std::uint64_t mask) -> std::string
+/// The processors in a CPU affinity bitset (`words`: 64-bit words, processors 0-63 first), listed
+/// compactly in ascending order: runs of three or more as a range ("4-7"), pairs and singles by
+/// number ("0,1", "9"), e.g. "0-3,64-127,200". "-" when no processor is set (affinity unread).
+/// Any width: an affinity can include processors at 64 and above (#1247).
+[[nodiscard]] inline auto formatCpuAffinity(std::span<const std::uint64_t> words) -> std::string
 {
-    if (mask == 0)
+    constexpr std::size_t BITS_PER_WORD = 64;
+    const std::size_t bitCount = words.size() * BITS_PER_WORD;
+    const auto isSet = [words](std::size_t cpu) -> bool
     {
-        return "-";
-    }
+        return ((words[cpu / BITS_PER_WORD] >> (cpu % BITS_PER_WORD)) & 1U) != 0;
+    };
 
     std::string result;
-    result.reserve(64); // Reserve space for typical affinity string (avoid reallocations)
-    int rangeStart = -1;
-    int rangeEnd = -1;
-    bool hasAny = false;
-
-    for (int cpu = 0; cpu < 64; ++cpu)
+    std::size_t cpu = 0;
+    while (cpu < bitCount)
     {
-        const bool isSet = (mask & (1ULL << cpu)) != 0;
-
-        if (isSet)
+        if (cpu % BITS_PER_WORD == 0 && words[cpu / BITS_PER_WORD] == 0)
         {
-            if (rangeStart == -1)
-            {
-                rangeStart = cpu;
-                rangeEnd = cpu;
-            }
-            else
-            {
-                rangeEnd = cpu;
-            }
+            cpu += BITS_PER_WORD; // A whole word with no processor in it
+            continue;
         }
-        else if (rangeStart != -1)
+        if (!isSet(cpu))
         {
-            if (hasAny)
-            {
-                result += ',';
-            }
-            hasAny = true;
-
-            if (rangeStart == rangeEnd)
-            {
-                result += std::format("{}", rangeStart);
-            }
-            else if (rangeStart + 1 == rangeEnd)
-            {
-                result += std::format("{},{}", rangeStart, rangeEnd);
-            }
-            else
-            {
-                result += std::format("{}-{}", rangeStart, rangeEnd);
-            }
-
-            rangeStart = -1;
-            rangeEnd = -1;
+            ++cpu;
+            continue;
         }
-    }
-
-    if (rangeStart != -1)
-    {
-        if (hasAny)
+        const std::size_t first = cpu;
+        while (cpu < bitCount && isSet(cpu))
+        {
+            ++cpu;
+        }
+        const std::size_t last = cpu - 1;
+        if (!result.empty())
         {
             result += ',';
         }
-
-        if (rangeStart == rangeEnd)
+        if (first == last)
         {
-            result += std::format("{}", rangeStart);
+            std::format_to(std::back_inserter(result), "{}", first);
         }
-        else if (rangeStart + 1 == rangeEnd)
+        else if (first + 1 == last)
         {
-            result += std::format("{},{}", rangeStart, rangeEnd);
+            std::format_to(std::back_inserter(result), "{},{}", first, last);
         }
         else
         {
-            result += std::format("{}-{}", rangeStart, rangeEnd);
+            std::format_to(std::back_inserter(result), "{}-{}", first, last);
         }
     }
+    return result.empty() ? std::string("-") : result;
+}
 
-    return result;
+/// formatCpuAffinity() of a 64-bit mask, bit N = processor N.
+[[nodiscard]] inline auto formatCpuAffinityMask(std::uint64_t mask) -> std::string
+{
+    return formatCpuAffinity(std::span<const std::uint64_t>(&mask, 1));
 }
 
 // ============================================================================
@@ -1190,28 +1145,37 @@ template<std::integral T> [[nodiscard]] inline auto formatPercent(T percent) -> 
     return std::format("{:.0f} MHz", rounded == 0.0 ? 0.0 : rounded); // No "-0 MHz"
 }
 
-/// A link speed in the same unit family as the rates beside it (#1202): "119.2 MiB/s" for a
-/// 1 Gbps link, so it can be compared with the interface's "12.5 MiB/s" at a glance. Link speeds
-/// are reported in megabits per second (10^6 bits/s), 125,000 bytes/s each.
+/// A link speed as NICs, switches and the OS describe it: a decimal bit rate, "100 Mbit/s",
+/// "1 Gbit/s", "2.5 Gbit/s", "10 Gbit/s" (#1373). Whole megabits below 1 Gbit/s; from there,
+/// gigabits to one decimal, dropped when it is zero. "-" for 0, the probes' "unknown". Link speeds
+/// are reported in megabits per second (10^6 bits/s). Rates stay in bytes (formatBytesPerSec());
+/// formatLinkSpeedAsByteRate() gives the link's byte-rate equivalent to compare with them.
 [[nodiscard]] inline auto formatLinkSpeed(std::uint64_t megabitsPerSecond) -> std::string
+{
+    constexpr std::uint64_t MBIT_PER_GBIT = 1000;
+    constexpr std::uint64_t MBIT_PER_TENTH_GBIT = MBIT_PER_GBIT / 10;
+    if (megabitsPerSecond == 0)
+    {
+        return "-";
+    }
+    if (megabitsPerSecond < MBIT_PER_GBIT)
+    {
+        return formatFixedLocalized(static_cast<double>(megabitsPerSecond), 0, " Mbit/s");
+    }
+    // Tenths of a gigabit, rounded half up in integers, so 1999 Mbit/s reads "2 Gbit/s", not "2.0".
+    const std::uint64_t tenths =
+        (megabitsPerSecond / MBIT_PER_TENTH_GBIT) + ((megabitsPerSecond % MBIT_PER_TENTH_GBIT) >= MBIT_PER_TENTH_GBIT / 2 ? 1 : 0);
+    const int decimals = (tenths % 10 == 0) ? 0 : 1;
+    return formatFixedLocalized(static_cast<double>(tenths) / 10.0, decimals, " Gbit/s");
+}
+
+/// A link speed as the byte rate it carries at most, in the unit family of the Sent/Received rates
+/// beside it: "119.2 MiB/s" for a 1 Gbit/s link (125,000,000 bytes/s). Shown on hover beside
+/// formatLinkSpeed()'s bit rate, not instead of it (#1373).
+[[nodiscard]] inline auto formatLinkSpeedAsByteRate(std::uint64_t megabitsPerSecond) -> std::string
 {
     constexpr double BYTES_PER_SECOND_PER_MBPS = 1'000'000.0 / 8.0;
     return formatBytesPerSec(static_cast<double>(megabitsPerSecond) * BYTES_PER_SECOND_PER_MBPS);
-}
-
-/// A link speed as the adapter is rated: "1 Gbps", "2.5 Gbps", "100 Mbps" (decimal bits, as
-/// network hardware is sold). Shown beside formatLinkSpeed()'s rate, not instead of it.
-[[nodiscard]] inline auto formatLinkSpeedNominal(std::uint64_t megabitsPerSecond) -> std::string
-{
-    if (megabitsPerSecond >= 1000)
-    {
-        if (megabitsPerSecond % 1000 == 0)
-        {
-            return std::format("{} Gbps", megabitsPerSecond / 1000);
-        }
-        return std::format("{:.1Lf} Gbps", static_cast<double>(megabitsPerSecond) / 1000.0);
-    }
-    return std::format("{} Mbps", megabitsPerSecond);
 }
 
 // ============================================================================

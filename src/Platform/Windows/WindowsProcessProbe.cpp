@@ -1,6 +1,7 @@
 #include "WindowsProcessProbe.h"
 
 #include "Domain/Numeric.h"
+#include "Platform/CpuAffinity.h"
 #include "WindowsProcessActionsMath.h"
 #include "WindowsProcessProbeMath.h"
 
@@ -933,7 +934,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         counters.publisher = cache.publisher;
         counters.processType = cache.processType;
         counters.gdiObjectCount = cache.gdiObjectCount;
-        counters.cpuAffinityMask = cache.cpuAffinityMask;
+        counters.cpuAffinity = cache.cpuAffinity;
         counters.nice = cache.nice;
         counters.priorityClass = cache.priorityClass;
     }
@@ -1014,11 +1015,13 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         if (GetProcessAffinityMask(hProcess, &processAffinityMask, &systemAffinityMask) != 0)
         {
             // Safe: DWORD_PTR is pointer-sized (64-bit on x64); uint64_t can hold all values.
-            counters.cpuAffinityMask = static_cast<std::uint64_t>(processAffinityMask);
+            // Still the primary processor group's mask only, bit N = processor N of that group:
+            // mapping every group to global indices is #1247's Windows half.
+            counters.cpuAffinity = CpuAffinity::fromMask(static_cast<std::uint64_t>(processAffinityMask));
         }
         else
         {
-            counters.cpuAffinityMask = 0;
+            counters.cpuAffinity = CpuAffinity{};
         }
     }
     fallBackToName();
@@ -1062,7 +1065,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         cache.command = counters.command;
         cache.publisher = counters.publisher;
         cache.processType = counters.processType;
-        cache.cpuAffinityMask = counters.cpuAffinityMask;
+        cache.cpuAffinity = counters.cpuAffinity;
         if (canCache)
         {
             cache.nextHeavyRefresh = now + m_HeavyDetailTTL;
@@ -1109,6 +1112,7 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         // Non-admin + EStats access-denied: network data unavailable due to privilege. Never true
         // together with hasNetworkCounters: a non-elevated process never uses EStats.
         .hasReducedPrivileges = reducedPrivileges && networkAccessDenied,
+        .pageFaultCountBits = 32, // SYSTEM_PROCESS_INFORMATION::PageFaultCount is a ULONG (#1184)
     };
 }
 

@@ -2,6 +2,7 @@
 
 #include "App/Panel.h"
 #include "App/Panels/ProcessStateColor.h"
+#include "App/Panels/ProcessTypeColor.h"
 #include "App/ShellMetrics.h"
 #include "App/TabLabel.h"
 #include "Core/ApplicationEvents.h"
@@ -111,9 +112,13 @@ constexpr const char* CPU_SYSTEM_LABEL = "System";
 // call one quantity by one name (#1273).
 constexpr const char* MEM_USED_LABEL = "Memory";
 constexpr const char* MEM_SHARED_LABEL = "Shared";
-// A series on a chart's right-hand axis ends in " →", pointing at it (setupSecondaryRateAxis(), #1206).
+// A series on a chart's right-hand axis ends in " →", pointing at it (setupSecondaryRateAxis(), #1206); in
+// its value-strip entry and tooltip rows the mark follows the value (SECONDARY_AXIS_MARK, #1300).
 constexpr const char* MEM_VIRTUAL_LABEL = "Virtual →";
-constexpr const char* MEM_PEAK_LABEL = "Peak Mem";
+// A peak is named "Peak " plus the series it tracks: this chart's series is "Memory", as the
+// System chart's "Peak Used" tracks "Used" (#1342). The Processes table keeps its short "Peak Mem"
+// header for width, as it does "Mem %".
+constexpr const char* MEM_PEAK_LABEL = "Peak Memory";
 constexpr const char* THREADS_LABEL = "Threads";
 constexpr const char* FAULTS_LABEL = "Page Faults →"; // Its values carry the "/s" ("12.0/s"), #1202
 #ifdef _WIN32
@@ -850,21 +855,8 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     runtimeRows.add({.label = "Priority", .value = text.priority, .color = theme.scheme().textPrimary});
     if (!proc.processType.empty())
     {
-        // Color-code the process type using status colors for visual clarity
-        ImVec4 typeColor;
-        if (proc.processType == "App")
-        {
-            typeColor = theme.scheme().statusRunning;
-        }
-        else if (proc.processType == "Windows Process")
-        {
-            typeColor = theme.scheme().textInfo;
-        }
-        else
-        {
-            typeColor = theme.scheme().textMuted;
-        }
-        runtimeRows.add({.label = "Type", .value = proc.processType, .color = typeColor});
+        // The same colour as the table's Type column (#1180)
+        runtimeRows.add({.label = "Type", .value = proc.processType, .color = processTypeColor(proc.processType, theme.scheme())});
     }
     const auto runtimeRowCount = static_cast<float>(runtimeRows.count);
     const float rightHeight = (rowHeight * runtimeRowCount) + basePadding;
@@ -1001,99 +993,58 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
                             cpuTimeData, {cpuUserData, cpuSystemData, cpuData}, UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE, nowSeconds, out);
                     });
 
-                auto& y0 = m_CpuStackY0;
-                auto& yUserTop = m_CpuStackYUser;
-                auto& ySystemTop = m_CpuStackYSystem;
-                const std::size_t pointCount = points.size();
-                m_CpuPlotX.resize(pointCount);
-                m_CpuPlotTotal.resize(pointCount);
-                m_CpuPlotUser.resize(pointCount);
-                m_CpuPlotSystem.resize(pointCount);
-                y0.assign(pointCount, 0.0);
-                yUserTop.resize(pointCount);
-                ySystemTop.resize(pointCount);
-                for (std::size_t k = 0; k < pointCount; ++k)
-                {
-                    // A gap point is NaN in every series (see UI::Widgets::reduceAlignedSeries).
-                    const auto i = static_cast<std::size_t>(points[k].index);
-                    m_CpuPlotX[k] = cpuTimeData[i];
-                    if (points[k].gap)
-                    {
-                        constexpr double gap = std::numeric_limits<double>::quiet_NaN();
-                        m_CpuPlotTotal[k] = m_CpuPlotUser[k] = m_CpuPlotSystem[k] = yUserTop[k] = ySystemTop[k] = gap;
-                        continue;
-                    }
-                    m_CpuPlotTotal[k] = cpuData[i];
-                    m_CpuPlotUser[k] = cpuUserData[i];
-                    m_CpuPlotSystem[k] = cpuSystemData[i];
-                    // PlotShaded fills the area *between* two Y series, so a stacked user/system
-                    // area chart needs cumulative tops: user alone, then user+system on top of it.
-                    yUserTop[k] = cpuUserData[i];
-                    ySystemTop[k] = cpuUserData[i] + cpuSystemData[i];
-                }
+                // The User and System bands' edges (shared with the Overview, #1180), plus the Total and
+                // System lines. A gap point is NaN in every series (see UI::Widgets::reduceAlignedSeries).
+                // The User line is the User band's top, so it is drawn from that.
+                auto& stack = m_CpuStack;
+                UI::Widgets::buildUserSystemStack<double>(points, cpuTimeData, cpuUserData, cpuSystemData, stack);
+                UI::Widgets::gatherReducedValues<double>(points, cpuData, m_CpuPlotTotal);
+                UI::Widgets::gatherReducedValues<double>(points, cpuSystemData, m_CpuPlotSystem);
 
                 // Bands and lines reach "now" like every plotLineWithFill series: the last sample
-                // held to x = 0 (UI::Widgets::holdLastValueToNow, #1016). Built in their own buffers,
-                // so the tooltip's lookup over cpuTimeData still finds real samples only.
-                if (!m_CpuPlotX.empty() && m_CpuPlotX.back() < 0.0)
-                {
-                    m_CpuPlotX.push_back(0.0);
-                    for (auto* series : {&y0, &yUserTop, &ySystemTop, &m_CpuPlotTotal, &m_CpuPlotUser, &m_CpuPlotSystem})
-                    {
-                        series->push_back(series->back());
-                    }
-                }
-                const int drawCount = UI::Format::checkedCount(m_CpuPlotX.size());
+                // held to x = 0 (#1016), unless it is too old to pass for current (#1147). Built in
+                // their own buffers, so the tooltip's lookup over cpuTimeData still finds real samples only.
+                UI::Widgets::holdLastValuesToNow(stack.x,
+                                                 {&stack.base, &stack.userTop, &stack.systemTop, &m_CpuPlotTotal, &m_CpuPlotSystem},
+                                                 UI::Widgets::maxHoldSecondsForAxis(cpuTimeData));
+                const int drawCount = UI::Format::checkedCount(stack.x.size());
 
                 // The bands share their labels with the User and System lines below, so ImPlot
-                // treats each band and its line as one item.
-                // ImPlot's shaded renderer doesn't break at NaN, so the bands are filled run by run over
-                // the finite points: a gap (a missing sample, or a UI stall that overran the sample ring,
-                // #1098) is drawn as a gap rather than as fill triangles through NaN. A gap point is NaN
-                // in every band, so the system top's runs serve both.
-                UI::Widgets::forEachFiniteRun(ySystemTop.data(),
-                                              drawCount,
-                                              [&](int runStart, int runLength)
-                                              {
-                                                  const auto at = static_cast<std::size_t>(runStart);
-                                                  ImPlot::PlotShaded(CPU_USER_LABEL,
-                                                                     &m_CpuPlotX[at],
-                                                                     &y0[at],
-                                                                     &yUserTop[at],
-                                                                     runLength,
-                                                                     {ImPlotProp_FillColor, theme.scheme().cpuUserFill});
-                                                  ImPlot::PlotShaded(CPU_SYSTEM_LABEL,
-                                                                     &m_CpuPlotX[at],
-                                                                     &yUserTop[at],
-                                                                     &ySystemTop[at],
-                                                                     runLength,
-                                                                     {ImPlotProp_FillColor, theme.scheme().cpuSystemFill});
-                                              });
+                // treats each band and its line as one item. Each band is filled only where both of
+                // its own edges have a reading, so a reading missing from one band alone can't feed
+                // NaN to the other (#1149).
+                UI::Widgets::plotShadedBand(
+                    CPU_USER_LABEL, stack.x.data(), stack.base.data(), stack.userTop.data(), drawCount, theme.scheme().cpuUserFill);
+                UI::Widgets::plotShadedBand(CPU_SYSTEM_LABEL,
+                                            stack.x.data(),
+                                            stack.userTop.data(),
+                                            stack.systemTop.data(),
+                                            drawCount,
+                                            theme.scheme().cpuSystemFill);
 
                 // Total at the primary series' weight; it has no fill of its own, the bands above are
                 // the fill. User and System are secondaries: lighter lines, each with its own marker
                 // shape (shown on its value-strip swatch too), so they differ by more than colour (#1198).
                 ImPlot::PlotLine(CPU_TOTAL_LABEL,
-                                 m_CpuPlotX.data(),
+                                 stack.x.data(),
                                  m_CpuPlotTotal.data(),
                                  drawCount,
                                  {ImPlotProp_LineColor,
                                   theme.scheme().chartCpu,
                                   ImPlotProp_LineWeight,
                                   UI::Widgets::lineWeight(UI::Widgets::PRIMARY_SERIES_WEIGHT)});
-
-                const auto secondaryLine = [&](const char* label, const std::vector<double>& values, const ImVec4& color, std::size_t slot)
-                {
-                    const UI::Widgets::SeriesStyle style = seriesStyle(SeriesRole::Secondary, slot);
-                    ImPlot::PlotLine(label,
-                                     m_CpuPlotX.data(),
-                                     values.data(),
-                                     drawCount,
-                                     {ImPlotProp_LineColor, color, ImPlotProp_LineWeight, UI::Widgets::lineWeight(style.lineWeightPx)});
-                    UI::Widgets::plotSeriesMarkers(label, m_CpuPlotX.data(), values.data(), drawCount, color, style);
-                };
-                secondaryLine(CPU_USER_LABEL, m_CpuPlotUser, theme.scheme().cpuUser, 0);
-                secondaryLine(CPU_SYSTEM_LABEL, m_CpuPlotSystem, theme.scheme().cpuSystem, 1);
+                UI::Widgets::plotStyledLine(CPU_USER_LABEL,
+                                            stack.x.data(),
+                                            stack.userTop.data(),
+                                            drawCount,
+                                            theme.scheme().cpuUser,
+                                            seriesStyle(SeriesRole::Secondary, 0));
+                UI::Widgets::plotStyledLine(CPU_SYSTEM_LABEL,
+                                            stack.x.data(),
+                                            m_CpuPlotSystem.data(),
+                                            drawCount,
+                                            theme.scheme().cpuSystem,
+                                            seriesStyle(SeriesRole::Secondary, 1));
 
                 if (ImPlot::IsPlotHovered())
                 {
@@ -1317,7 +1268,7 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
 
             ImGui::Spacing();
             ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MEMORY "  Memory (%zu samples)", alignedCount);
-            // Peak Mem is a line with a tooltip row but no bar; list it in the value strip too (#1193).
+            // Peak Memory is a line with a tooltip row but no bar; list it in the value strip too (#1193).
             const std::array peakEntry{UI::Widgets::ValueStripEntry{
                 .label = MEM_PEAK_LABEL,
                 .value = UI::Format::formatBytes(m_PeakMemoryBytes),
@@ -2112,7 +2063,9 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
     // GPU history graphs: drawn from the start, with the collecting hint until samples arrive, like
     // every other chart (#1013); this was a line of text until there was history.
     {
-        const size_t alignedCount = std::min(m_GpuUtilHistory.size(), m_Timestamps.size());
+        // Every series drawn counts, so a history that falls out of lockstep can't be read past its
+        // end (#1149).
+        const size_t alignedCount = std::min({m_GpuUtilHistory.size(), m_GpuMemHistory.size(), m_Timestamps.size()});
         const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
 
         // Extract only what we need for the graphs

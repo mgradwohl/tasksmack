@@ -207,7 +207,7 @@ struct RowFormatCache
     AlignedCellText threads;    // formatOrDash/formatIntLocalized(threadCount)
     AlignedCellText handles;    // formatOrDash/formatIntLocalized(handleCount)
     AlignedCellText pageFaults; // formatOrDash/formatIntLocalized(pageFaults)
-    AlignedCellText affinity;   // formatCpuAffinityMask         — rarely changes
+    AlignedCellText affinity;   // formatCpuAffinity             — rarely changes
     AlignedCellText gdiObjects; // formatIntLocalized(*gdiObjectCount) or "-"
 
     // Widths of the cells drawn straight from the snapshot's own text (#1141); see LazyTextWidth.
@@ -286,7 +286,7 @@ struct RowFormatCache
                                   : std::string(UNAVAILABLE_CELL_TEXT));
     fmt.pageFaults =
         makeAlignedCellText(UI::Format::formatOrDash(proc.pageFaults, [](auto v) { return UI::Format::formatIntLocalized(v); }));
-    fmt.affinity = makeAlignedCellText(UI::Format::formatCpuAffinityMask(proc.cpuAffinityMask));
+    fmt.affinity = makeAlignedCellText(UI::Format::formatCpuAffinity(proc.cpuAffinity.words()));
     fmt.gdiObjects = makeAlignedCellText(proc.gdiObjectCount.has_value() ? UI::Format::formatIntLocalized(*proc.gdiObjectCount) : "-");
     return fmt;
 }

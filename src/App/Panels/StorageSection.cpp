@@ -83,6 +83,44 @@ constexpr float MIN_DISK_CELL_WIDTH_EM = 30.0F;
     return std::floor(UI::Widgets::historyPlotMinHeight(ImGui::GetFontSize(), UI::chartEmPx()));
 }
 
+/// The per-disk grid's sizing for a region @p availableWidth x @p availableHeight, shared by the
+/// grid itself and diskGridMinimumHeight() so the reserve the Network and I/O tab keeps for the grid
+/// is the grid it then gets.
+[[nodiscard]] ChartGridConfig diskGridConfig(float availableWidth, float availableHeight, std::size_t diskCount)
+{
+    const ImGuiStyle& style = ImGui::GetStyle();
+    // Approximate overhead used only as a floor for the grid's minimum cell height; the real
+    // per-cell overhead is measured directly in renderDiskCell via cursor position (see its
+    // doc comment and the #823 review that replaced an earlier hand-guessed constant here).
+    // Includes every fixed cost between the grid's chosen outer cellHeight and the plot it
+    // wraps: the bordered GridCell child's own WindowPadding (ChartGrid.h reserves it before
+    // renderDiskCell ever sees a height), the label row, and renderDiskCell's nested table
+    // CellPadding -- omitting any of those understates the floor, so the grid can pick a
+    // cellHeight that only fits a plot smaller than minDiskPlotHeight() once the real overhead is
+    // subtracted, which then clips invisibly against the cell's NoScrollbar instead of the
+    // grid falling back to more rows/scrolling (#823 review).
+    // Two text lines: the disk's name and, under it, its Read/Write value strip (#1193).
+    const float approxLabelOverhead =
+        (style.WindowPadding.y * 2.0F) + (ImGui::GetTextLineHeight() * 2.0F) + (style.ItemSpacing.y * 2.0F) + (style.CellPadding.y * 2.0F);
+    return ChartGridConfig{
+        .availableWidth = availableWidth,
+        .availableHeight = availableHeight,
+        .itemCount = diskCount,
+        // 30 em is the former fixed 320px at the reference em (32/3 px): the width floor now
+        // scales with the font like the height floor beside it, so a large font gets fewer,
+        // wider cells rather than rate labels and NowBars crowding a fixed 320px (#964).
+        .minCellWidth = MIN_DISK_CELL_WIDTH_EM * ImGui::GetFontSize(),
+        // The same floor and ceiling the Overview's charts keep to (UI/HistoryPlotHeight.h), so the
+        // two tabs follow one rule instead of one never growing and the other never stopping (#923).
+        .minCellHeight = approxLabelOverhead + minDiskPlotHeight(),
+        .maxCellHeight = approxLabelOverhead + UI::Widgets::historyPlotMaxHeight(ImGui::GetFontSize()),
+        .targetCellAspect = 1.0F,
+        // What renderChartGrid() sets around every cell (its table's CellPadding).
+        .columnOverhead = style.CellPadding.x * 2.0F,
+        .rowOverhead = style.CellPadding.y * 2.0F,
+    };
+}
+
 /// Render a single disk cell (label + read/write NowBars + chart). cellHeight is the enclosing
 /// grid cell's *usable content* height (see renderChartGrid's cellWidth/cellHeight doc in
 /// ChartGrid.h -- it's measured via GetContentRegionAvail() inside the cell's BeginChild, not
@@ -91,11 +129,11 @@ constexpr float MIN_DISK_CELL_WIDTH_EM = 30.0F;
 /// with a hand-picked constant -- see #823 review) so the chart fills exactly what's left in the
 /// cell.
 ///
-/// cachedOverhead is measured once per frame (on the first disk) and reused for the rest, and
-/// cached across frames too until the style metrics it's built from change: every cell gets the
-/// same cellHeight (ImGuiTableFlags_SizingStretchSame) and renders an identically-shaped
-/// single-line label row, so the resulting vertical overhead is the same across all disks and
-/// doesn't change frame to frame on its own.
+/// The overhead is measured on the first disk and reused for the rest, and cached across frames too
+/// until the style metrics it's built from change (UI::Widgets::CellOverheadCache): every cell gets
+/// the same cellHeight (ImGuiTableFlags_SizingStretchSame) and renders an identically-shaped label
+/// row, so the resulting vertical overhead is the same across all disks and doesn't change frame to
+/// frame on its own.
 ///
 /// diskAxisUpper is the grid's shared Y upper bound (sharedAxisUpperBound(), #1299), for the chart's
 /// axis and its bars alike, so a bar and its line show a value at the same height (#1003).
@@ -109,7 +147,8 @@ void renderDiskCell(const std::string& deviceName,
                     const UI::Widgets::TimeAxisConfig& axisConfig,
                     const UI::Theme& theme,
                     float cellHeight,
-                    std::optional<float>& cachedOverhead,
+                    UI::Widgets::CellOverheadCache& overheadCache,
+                    const UI::Widgets::CellStyleMetrics& styleMetrics,
                     std::uint64_t dataGeneration)
 {
     // The cell has no legend, so its value strip is the chart's key: each bar carries its series'
@@ -144,15 +183,20 @@ void renderDiskCell(const std::string& deviceName,
     // is measured once and the grid budgets one strip line per cell, and the longer "not reported
     // this sample" tooltip text would not fit a minimum-width cell. Hovering a bar still shows it.
     UI::Widgets::renderNowBarValueStrip(diskBars, {}, UI::Widgets::ValueStripLayout::Compact);
-    if (!cachedOverhead.has_value())
+    float measuredOverhead = 0.0F;
+    if (const auto cached = overheadCache.get(styleMetrics))
+    {
+        measuredOverhead = *cached;
+    }
+    else
     {
         // renderHistoryWithNowBars wraps the chart+bars in its own table, whose CellPadding.y
         // (top+bottom) adds a little more height beyond the label -- account for it here rather
         // than clipping the chart against it (#823 review: residual scrollbar after the cell's own
         // WindowPadding was already corrected for).
-        cachedOverhead = (ImGui::GetCursorPosY() - cellContentTop) + (ImGui::GetStyle().CellPadding.y * 2.0F);
+        measuredOverhead = (ImGui::GetCursorPosY() - cellContentTop) + (ImGui::GetStyle().CellPadding.y * 2.0F);
+        overheadCache.store(styleMetrics, measuredOverhead);
     }
-    const float measuredOverhead = *cachedOverhead;
     const float plotHeight = std::max(minDiskPlotHeight(), cellHeight - measuredOverhead);
 
     auto diskPlotFn = [&]()
@@ -223,6 +267,17 @@ void renderDiskCell(const std::string& deviceName,
 
 } // namespace
 
+float diskGridMinimumHeight(const Domain::StoragePublication* publication, float availableWidth)
+{
+    if (!usesDiskGrid(publication))
+    {
+        return 0.0F;
+    }
+    // The grid's heading line, then its rows (renderStorageSection()).
+    return ImGui::GetTextLineHeightWithSpacing() +
+           UI::Widgets::computeChartGridMinimumHeight(diskGridConfig(availableWidth, 0.0F, publication->perDiskHistory.size()));
+}
+
 void updateSmoothedDiskIO(double targetRead, double targetWrite, float deltaTimeSeconds, RenderContext& ctx)
 {
     if (ctx.smoothedReadBytesPerSec == nullptr || ctx.smoothedWriteBytesPerSec == nullptr || ctx.smoothedInitialized == nullptr)
@@ -288,63 +343,18 @@ void renderStorageSection(RenderContext& ctx)
                           { return std::ranges::none_of(perDisk, [&](const auto& disk) { return disk.deviceName == entry.first; }); });
         }
 
-        // Approximate overhead used only as a floor for the grid's minimum cell height; the real
-        // per-cell overhead is measured directly in renderDiskCell via cursor position (see its
-        // doc comment and the #823 review that replaced an earlier hand-guessed constant here).
-        // Includes every fixed cost between the grid's chosen outer cellHeight and the plot it
-        // wraps: the bordered GridCell child's own WindowPadding (ChartGrid.h reserves it before
-        // renderDiskCell ever sees a height), the label row, and renderDiskCell's nested table
-        // CellPadding -- omitting any of those understates the floor, so the grid can pick a
-        // cellHeight that only fits a plot smaller than minDiskPlotHeight() once the real overhead is
-        // subtracted, which then clips invisibly against the cell's NoScrollbar instead of the
-        // grid falling back to more rows/scrolling (#823 review).
-        // Two text lines: the disk's name and, under it, its Read/Write value strip (#1193).
-        const float approxLabelOverhead = (ImGui::GetStyle().WindowPadding.y * 2.0F) + (ImGui::GetTextLineHeight() * 2.0F) +
-                                          (ImGui::GetStyle().ItemSpacing.y * 2.0F) + (ImGui::GetStyle().CellPadding.y * 2.0F);
-
-        // Measured once (by renderDiskCell, on the first disk) and reused for the rest -- see
-        // renderDiskCell's doc comment. Cached across frames too, not just across disks within
-        // one frame: remeasure only when the style values it's built from actually change.
-        //
-        // Keyed on the actual style values (text line height, ItemSpacing.y, CellPadding.y)
-        // rather than theme.currentFontSize() alone: today's theme switches happen to leave
-        // those metrics untouched (Theme::applyImGuiStyle sets them to fixed values independent
-        // of the color scheme), but that's a property of the current theme implementation, not
-        // something this cache should have to assume stays true (#823 review).
-        static std::optional<float> cachedOverhead;
-        static float cachedTextLineHeight = -1.0F;
-        static float cachedItemSpacingY = -1.0F;
-        static float cachedCellPaddingY = -1.0F;
-        // Epsilon rather than `==`/`!=` on floats (CodeQL cpp/equality-on-floats): these are
-        // stored style values, not accumulated arithmetic, so exact comparison would actually be
-        // safe here, but a tolerance costs nothing and avoids relying on that.
-        constexpr float STYLE_METRIC_EPSILON = 1e-4F;
-        if (const float textLineHeight = ImGui::GetTextLineHeight(),
-            itemSpacingY = ImGui::GetStyle().ItemSpacing.y,
-            cellPaddingY = ImGui::GetStyle().CellPadding.y;
-            std::abs(cachedTextLineHeight - textLineHeight) > STYLE_METRIC_EPSILON ||
-            std::abs(cachedItemSpacingY - itemSpacingY) > STYLE_METRIC_EPSILON ||
-            std::abs(cachedCellPaddingY - cellPaddingY) > STYLE_METRIC_EPSILON)
-        {
-            cachedOverhead.reset();
-            cachedTextLineHeight = textLineHeight;
-            cachedItemSpacingY = itemSpacingY;
-            cachedCellPaddingY = cellPaddingY;
-        }
+        // Measured once (by renderDiskCell, on the first disk) and reused for the rest, and across
+        // frames until the style metrics it's built from change -- see renderDiskCell's doc comment.
+        static UI::Widgets::CellOverheadCache overheadCache;
+        const UI::Widgets::CellStyleMetrics styleMetrics{
+            .textLineHeight = ImGui::GetTextLineHeight(),
+            .itemSpacingY = ImGui::GetStyle().ItemSpacing.y,
+            .cellPaddingY = ImGui::GetStyle().CellPadding.y,
+        };
 
         const ImVec2 avail = ImGui::GetContentRegionAvail();
-        const ChartGridConfig gridConfig{
-            .availableWidth = avail.x,
-            .availableHeight = avail.y,
-            // 30 em is the former fixed 320px at the reference em (32/3 px): the width floor now
-            // scales with the font like the height floor beside it, so a large font gets fewer,
-            // wider cells rather than rate labels and NowBars crowding a fixed 320px (#964).
-            .minCellWidth = MIN_DISK_CELL_WIDTH_EM * ImGui::GetFontSize(),
-            // The same floor and ceiling the Overview's charts keep to (UI/HistoryPlotHeight.h), so the
-            // two tabs follow one rule instead of one never growing and the other never stopping (#923).
-            .minCellHeight = approxLabelOverhead + minDiskPlotHeight(),
-            .maxCellHeight = approxLabelOverhead + UI::Widgets::historyPlotMaxHeight(ImGui::GetFontSize()),
-        };
+        // The sizing diskGridMinimumHeight() reserved for this grid on the Network and I/O tab.
+        const ChartGridConfig gridConfig = diskGridConfig(avail.x, avail.y, diskCount);
 
         // One frame's data for each disk cell, gathered before the grid draws so every cell can be
         // drawn to one shared Y bound (#1299). Reused across frames (UI thread only), so a frame
@@ -445,7 +455,8 @@ void renderStorageSection(RenderContext& ctx)
                                diskAxis,
                                theme,
                                cellHeight,
-                               cachedOverhead,
+                               overheadCache,
+                               styleMetrics,
                                ctx.chartDataGeneration);
             },
             // Disks can be unplugged mid-session, shifting later indices in perDisk -- key each

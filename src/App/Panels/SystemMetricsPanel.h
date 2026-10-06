@@ -21,6 +21,7 @@
 #include "UI/FillPlotLayout.h"
 #include "UI/Theme.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -82,6 +83,17 @@ class SystemMetricsPanel : public Panel
     /// plot, at the current font and style. For the window's content minimum (#1207); needs a frame.
     [[nodiscard]] float overviewNowBarColumnWidth() const;
 
+    /// The most any of this panel's chart tabs spent around and above its first chart, plot aside,
+    /// counting only measurements taken at this window width and font size
+    /// (UI::Widgets::currentFirstPlotNonPlotHeight()): the minimum window height keeps room for it
+    /// (#1370 review). 0 when no tab has a current measurement.
+    [[nodiscard]] float firstChartNonPlotHeight(float windowWidth, float fontSize) const noexcept
+    {
+        return std::max({UI::Widgets::currentFirstPlotNonPlotHeight(m_OverviewFill.firstPlot, windowWidth, fontSize),
+                         UI::Widgets::currentFirstPlotNonPlotHeight(m_GpuFill.firstPlot, windowWidth, fontSize),
+                         UI::Widgets::currentFirstPlotNonPlotHeight(m_NetworkFill.firstPlot, windowWidth, fontSize)});
+    }
+
     /// NowBar columns every Overview chart reserves: the most bars any of them has, which depends on
     /// whether the platform reports I/O Wait (a fourth CPU bar).
     [[nodiscard]] std::size_t overviewNowBarColumns() const;
@@ -130,14 +142,10 @@ class SystemMetricsPanel : public Panel
     double m_MaxHistorySeconds = Domain::Numeric::toDouble(Domain::Sampling::HISTORY_SECONDS_DEFAULT);
     double m_HistoryScrollSeconds = 0.0;
     double m_CurrentNowSeconds = 0.0;
-    std::vector<double> m_TimestampsCache;
 
     // Render scratch buffers for stacked CPU breakdown chart (reused across frames to avoid per-frame heap allocation)
-    // double, to match the double time axis ImPlot pairs them with (UI::Widgets::buildTimeAxis)
-    std::vector<double> m_CpuStackX;
-    std::vector<double> m_CpuStackY0;
-    std::vector<double> m_CpuStackYUser;
-    std::vector<double> m_CpuStackYSystem;
+    // double, to match the double time axis ImPlot pairs them with (UI::Widgets::fillTimeAxis)
+    UI::Widgets::UserSystemStack m_CpuStack; // The User and System bands, shared with Process Details (#1180)
     std::vector<double> m_CpuStackYIowait;
     // The stacked bands' reduced points (#1022), kept until the next publication (#1139)
     UI::Widgets::ReducedPointsCache m_CpuStackReduction;
@@ -241,10 +249,14 @@ class SystemMetricsPanel : public Panel
     int m_LastCoreCount = 0;
     bool m_LayoutDirty = true; // Start dirty to calculate on first frame
 
-    // Cached hostname and snapshot for UI
+    // Cached hostname for UI. The snapshot and timestamps are read from m_SystemPublication (#1180).
     std::string m_Hostname = "System";
-    Domain::SystemSnapshot m_CachedSnapshot;
 
+    /// Holds the model's latest publication, takes a new chart data generation for it and moves
+    /// "now" to its last sample (onAttach() and onUpdate(), #1180).
+    void adoptSystemPublication();
+    /// The held publication's snapshot, or an empty one before the first publication.
+    [[nodiscard]] const Domain::SystemSnapshot& systemSnapshot() const;
     void updateCachedLayout();
     void updateSmoothedCpu(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);
     void updateSmoothedMemory(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);

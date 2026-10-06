@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <optional>
 
 namespace UI::Widgets
 {
@@ -186,5 +187,92 @@ struct ChartGridDimensions
 
     return {.columns = bestColumns, .rows = bestRows, .cellWidth = finalCellWidth, .cellHeight = finalCellHeight};
 }
+
+/// Shortest the grid computeChartGridLayout() lays out for @p config can be without overflowing:
+/// every row at minCellHeight (plus rowOverhead), with as many columns as fit the width at
+/// minCellWidth. That is the shape computeChartGridLayout() falls back to when the height is tight
+/// -- fewer columns would only add rows. 0 for no items.
+///
+/// A caller that shares a region between this grid and other content (the Network and I/O tab's
+/// network chart above its per-disk grid) reserves this much for the grid, so the content above
+/// cannot take the height the grid needs and push it into scrolling (#1370 review).
+[[nodiscard]] inline auto computeChartGridMinimumHeight(const ChartGridConfig& config) -> float
+{
+    if (config.itemCount == 0)
+    {
+        return 0.0F;
+    }
+    const auto atLeastZero = [](const float value)
+    {
+        return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
+    };
+    const float minCellWidth = atLeastZero(config.minCellWidth);
+    const float columnOverhead = atLeastZero(config.columnOverhead);
+    const float safeWidth = std::max(atLeastZero(config.availableWidth), minCellWidth);
+    // The same fit test, and tolerance, as computeChartGridLayout()'s widthFits.
+    constexpr float FIT_TOLERANCE = 1e-3F;
+    size_t columns = 1;
+    for (size_t candidate = 2; candidate <= config.itemCount; ++candidate)
+    {
+        if ((minCellWidth + columnOverhead) * static_cast<float>(candidate) > safeWidth * (1.0F + FIT_TOLERANCE))
+        {
+            break;
+        }
+        columns = candidate;
+    }
+    const size_t rows = (config.itemCount + columns - 1) / columns;
+    return static_cast<float>(rows) * (atLeastZero(config.minCellHeight) + atLeastZero(config.rowOverhead));
+}
+
+/// The style metrics a grid cell's measured vertical overhead (its label rows and padding) depends on.
+/// Keyed on these rather than on the font preset alone: today's theme switches leave them untouched
+/// (Theme::applyImGuiStyle sets them independently of the colour scheme), but that is a property of
+/// the current theme implementation, not something the cache should assume stays true (#823 review).
+struct CellStyleMetrics
+{
+    float textLineHeight = 0.0F;
+    float itemSpacingY = 0.0F;
+    float cellPaddingY = 0.0F;
+};
+
+/// A chart-grid cell's vertical overhead, measured in the first cell drawn and reused for the rest of
+/// the grid and for later frames until the style metrics it was measured under change. Every cell gets
+/// the same height and an identically shaped label row, so one measurement serves them all. Shared by
+/// the per-core and per-disk grids, which each kept their own copy (#1180).
+class CellOverheadCache
+{
+  public:
+    /// The overhead measured under @p metrics, or nullopt when there is none: measure it, then store().
+    [[nodiscard]] std::optional<float> get(const CellStyleMetrics& metrics) const noexcept
+    {
+        if (m_Overhead.has_value() && sameMetrics(m_Metrics, metrics))
+        {
+            return m_Overhead;
+        }
+        return std::nullopt;
+    }
+
+    /// Store an overhead measured under @p metrics. The value and its metrics are stored together,
+    /// after the measurement, so a value is never paired with metrics it was not measured under.
+    void store(const CellStyleMetrics& metrics, float overhead) noexcept
+    {
+        m_Overhead = overhead;
+        m_Metrics = metrics;
+    }
+
+  private:
+    [[nodiscard]] static bool sameMetrics(const CellStyleMetrics& a, const CellStyleMetrics& b) noexcept
+    {
+        // A tolerance rather than == on floats (CodeQL cpp/equality-on-floats): these are stored style
+        // values, not accumulated arithmetic, so exact comparison would be safe, but it costs nothing.
+        constexpr float STYLE_METRIC_EPSILON = 1e-4F;
+        return std::abs(a.textLineHeight - b.textLineHeight) <= STYLE_METRIC_EPSILON &&
+               std::abs(a.itemSpacingY - b.itemSpacingY) <= STYLE_METRIC_EPSILON &&
+               std::abs(a.cellPaddingY - b.cellPaddingY) <= STYLE_METRIC_EPSILON;
+    }
+
+    std::optional<float> m_Overhead;
+    CellStyleMetrics m_Metrics;
+};
 
 } // namespace UI::Widgets

@@ -167,6 +167,179 @@ TEST(ChartWidgetsTest, TailAlignedSpanWithEmptyDataReturnsEmptySpan)
     EXPECT_TRUE(span.values.empty());
 }
 
+// ========== tailAlignedOffset / tailAlignedSampleAt (#1180) ==========
+
+TEST(ChartWidgetsTest, TailAlignedOffsetPutsAShortSeriesAtTheEndOfTheAxis)
+{
+    EXPECT_EQ(tailAlignedOffset(5, 3), 2U);
+    EXPECT_EQ(tailAlignedOffset(5, 5), 0U);
+    EXPECT_EQ(tailAlignedOffset(5, 0), 5U);
+    EXPECT_EQ(tailAlignedOffset(5, 8), 0U); // longer than the axis
+    // The same offset tailAlignedSpan() takes the newest entries from.
+    const std::vector<double> axis{1.0, 2.0, 3.0, 4.0, 5.0};
+    EXPECT_EQ(tailAlignedSpan(axis, 3).offset, tailAlignedOffset(axis.size(), 3));
+}
+
+TEST(ChartWidgetsTest, TailAlignedSampleAtReadsTheSampleUnderAnAxisIndex)
+{
+    // Three float samples on a five-entry axis: indices 0 and 1 have none.
+    const std::vector<float> series{10.0F, std::numeric_limits<float>::quiet_NaN(), 30.0F};
+    const std::size_t offset = tailAlignedOffset(5, series.size());
+    EXPECT_FALSE(tailAlignedSampleAt<float>(series, offset, 0).has_value());
+    EXPECT_FALSE(tailAlignedSampleAt<float>(series, offset, 1).has_value());
+    EXPECT_DOUBLE_EQ(tailAlignedSampleAt<float>(series, offset, 2).value_or(-1.0), 10.0);
+    // A gap is a sample, returned as NaN for the caller to show as N/A.
+    const auto gap = tailAlignedSampleAt<float>(series, offset, 3);
+    ASSERT_TRUE(gap.has_value());
+    EXPECT_TRUE(std::isnan(gap.value_or(0.0)));
+    EXPECT_DOUBLE_EQ(tailAlignedSampleAt<float>(series, offset, 4).value_or(-1.0), 30.0);
+    EXPECT_FALSE(tailAlignedSampleAt<float>(series, offset, 5).has_value()); // past the axis
+}
+
+// ========== holdLastValuesToNow (#1016, #1180) ==========
+
+TEST(ChartWidgetsTest, HoldLastValuesToNowExtendsBandsAndLinesToNow)
+{
+    std::vector<double> x{-3.0, -1.5};
+    std::vector<double> band{10.0, 20.0};
+    std::vector<double> line{1.0, std::numeric_limits<double>::quiet_NaN()};
+    holdLastValuesToNow(x, {&band, &line}, 4.0);
+    ASSERT_EQ(x.size(), 3U);
+    EXPECT_DOUBLE_EQ(x.back(), 0.0);
+    ASSERT_EQ(band.size(), 3U);
+    EXPECT_DOUBLE_EQ(band.back(), 20.0);
+    // A trailing gap is held too, so every series stays the axis's length.
+    ASSERT_EQ(line.size(), 3U);
+    EXPECT_TRUE(std::isnan(line.back()));
+}
+
+TEST(ChartWidgetsTest, HoldLastValuesToNowLeavesAnAxisAlreadyAtNowAlone)
+{
+    std::vector<double> atNow{-1.0, 0.0};
+    std::vector<double> values{1.0, 2.0};
+    holdLastValuesToNow(atNow, {&values}, 4.0);
+    EXPECT_EQ(atNow.size(), 2U);
+    EXPECT_EQ(values.size(), 2U);
+
+    std::vector<double> empty;
+    std::vector<double> none;
+    holdLastValuesToNow(empty, {&none}, 4.0);
+    EXPECT_TRUE(empty.empty());
+    EXPECT_TRUE(none.empty());
+}
+
+// ========== Stacked User/System CPU bands (#1180) ==========
+
+TEST(ChartWidgetsStackTest, GatherReducedValuesCopiesKeptSamplesAndGapsAsNaN)
+{
+    const std::vector<float> values{1.5F, 2.5F, 3.5F, 4.5F};
+    const std::vector<ReducedPoint> points{{.index = 0, .gap = false}, {.index = 2, .gap = true}, {.index = 3, .gap = false}};
+    std::vector<double> out{99.0, 99.0, 99.0, 99.0, 99.0}; // Reused buffer, longer than needed
+    gatherReducedValues<float>(points, values, out);
+    ASSERT_EQ(out.size(), 3U);
+    EXPECT_DOUBLE_EQ(out[0], 1.5);
+    EXPECT_TRUE(std::isnan(out[1]));
+    EXPECT_DOUBLE_EQ(out[2], 4.5);
+
+    gatherReducedValues<float>({}, values, out);
+    EXPECT_TRUE(out.empty());
+}
+
+TEST(ChartWidgetsStackTest, UserSystemStackBuildsCumulativeTops)
+{
+    const std::vector<double> time{-3.0, -2.0, -1.0};
+    const std::vector<double> user{10.0, 20.0, 30.0};
+    const std::vector<double> system{5.0, 6.0, 7.0};
+    const std::vector<ReducedPoint> points{{.index = 0, .gap = false}, {.index = 1, .gap = false}, {.index = 2, .gap = false}};
+    UserSystemStack stack;
+    buildUserSystemStack<double>(points, time, user, system, stack);
+
+    ASSERT_EQ(stack.x.size(), 3U);
+    ASSERT_EQ(stack.base.size(), 3U);
+    ASSERT_EQ(stack.userTop.size(), 3U);
+    ASSERT_EQ(stack.systemTop.size(), 3U);
+    for (std::size_t k = 0; k < 3; ++k)
+    {
+        EXPECT_DOUBLE_EQ(stack.x[k], time[k]);
+        EXPECT_DOUBLE_EQ(stack.base[k], 0.0);
+        EXPECT_DOUBLE_EQ(stack.userTop[k], user[k]);
+        EXPECT_DOUBLE_EQ(stack.systemTop[k], user[k] + system[k]);
+    }
+}
+
+TEST(ChartWidgetsStackTest, UserSystemStackGapIsNaNInEveryEdgeButTheBase)
+{
+    const std::vector<double> time{-2.0, -1.0};
+    const std::vector<float> user{10.0F, 20.0F};
+    const std::vector<float> system{5.0F, 6.0F};
+    const std::vector<ReducedPoint> points{{.index = 0, .gap = true}, {.index = 1, .gap = false}};
+    UserSystemStack stack;
+    buildUserSystemStack<float>(points, time, user, system, stack);
+
+    ASSERT_EQ(stack.x.size(), 2U);
+    EXPECT_DOUBLE_EQ(stack.x[0], -2.0); // A gap keeps its time: the gap is drawn there
+    EXPECT_DOUBLE_EQ(stack.base[0], 0.0);
+    EXPECT_TRUE(std::isnan(stack.userTop[0]));
+    EXPECT_TRUE(std::isnan(stack.systemTop[0]));
+    EXPECT_DOUBLE_EQ(stack.userTop[1], 20.0);
+    EXPECT_DOUBLE_EQ(stack.systemTop[1], 26.0);
+}
+
+TEST(ChartWidgetsStackTest, UserSystemStackMatchesTheLoopsItReplaced)
+{
+    // The loops the Overview (float series) and Process Details (double series) each ran before
+    // #1180, over a reduction with a skipped sample and a gap.
+    const std::vector<double> time{-5.0, -4.0, -3.0, -2.0, -1.0};
+    const std::vector<float> userF{1.25F, 2.5F, 3.75F, 5.0F, 6.25F};
+    const std::vector<float> systemF{0.5F, 0.25F, 0.125F, 1.0F, 2.0F};
+    const std::vector<double> userD(userF.begin(), userF.end());
+    const std::vector<double> systemD(systemF.begin(), systemF.end());
+    const std::vector<ReducedPoint> points{
+        {.index = 0, .gap = false}, {.index = 2, .gap = true}, {.index = 3, .gap = false}, {.index = 4, .gap = false}};
+
+    UserSystemStack overview;
+    buildUserSystemStack<float>(points, time, userF, systemF, overview);
+    UserSystemStack details;
+    buildUserSystemStack<double>(points, time, userD, systemD, details);
+
+    for (std::size_t k = 0; k < points.size(); ++k)
+    {
+        const auto i = static_cast<std::size_t>(points[k].index);
+        EXPECT_DOUBLE_EQ(overview.x[k], time[i]);
+        EXPECT_DOUBLE_EQ(details.x[k], time[i]);
+        if (points[k].gap)
+        {
+            EXPECT_TRUE(std::isnan(overview.userTop[k]) && std::isnan(overview.systemTop[k]));
+            EXPECT_TRUE(std::isnan(details.userTop[k]) && std::isnan(details.systemTop[k]));
+            continue;
+        }
+        // Overview: yUserTop = double(user); ySystemTop = yUserTop + double(system)
+        const auto overviewUser = static_cast<double>(userF[i]);
+        EXPECT_DOUBLE_EQ(overview.userTop[k], overviewUser);
+        EXPECT_DOUBLE_EQ(overview.systemTop[k], overviewUser + static_cast<double>(systemF[i]));
+        // Process Details: yUserTop = user; ySystemTop = user + system
+        EXPECT_DOUBLE_EQ(details.userTop[k], userD[i]);
+        EXPECT_DOUBLE_EQ(details.systemTop[k], userD[i] + systemD[i]);
+    }
+}
+
+TEST(ChartWidgetsStackTest, UserSystemStackReusesItsBuffersAcrossCalls)
+{
+    const std::vector<double> time{-2.0, -1.0};
+    const std::vector<double> values{1.0, 2.0};
+    UserSystemStack stack;
+    buildUserSystemStack<double>(
+        std::vector<ReducedPoint>{{.index = 0, .gap = false}, {.index = 1, .gap = false}}, time, values, values, stack);
+    ASSERT_EQ(stack.x.size(), 2U);
+    // Fewer points next time: every edge shrinks to match, and the base is reset to 0.
+    stack.base[0] = 42.0;
+    buildUserSystemStack<double>(std::vector<ReducedPoint>{{.index = 1, .gap = false}}, time, values, values, stack);
+    ASSERT_EQ(stack.x.size(), 1U);
+    ASSERT_EQ(stack.base.size(), 1U);
+    EXPECT_DOUBLE_EQ(stack.base[0], 0.0);
+    EXPECT_DOUBLE_EQ(stack.systemTop[0], 4.0);
+}
+
 // ========== NowBar ==========
 
 TEST(NowBarListTest, HoldsBarsInOrderAndViewsThemAsASpan)
@@ -475,6 +648,74 @@ TEST(ChartWidgetsReduceTest, BucketWidthIsAPowerOfTwoThatHoldsAsTheSpanDrifts)
     EXPECT_DOUBLE_EQ(minMaxBucketWidth(std::numeric_limits<double>::quiet_NaN(), 239), 0.0);
 }
 
+TEST(ChartWidgetsReduceTest, BucketIndexIsTheFlooredIntegerAndABoundaryStartsTheNextBucket)
+{
+    // #1380: bucket indices are integers, floored once, so grouping compares integers, not doubles.
+    EXPECT_EQ(minMaxBucketIndex(0.0, 2.0), 0);
+    EXPECT_EQ(minMaxBucketIndex(1.999, 2.0), 0);
+    EXPECT_EQ(minMaxBucketIndex(2.0, 2.0), 1); // exactly on the edge: the next bucket
+    EXPECT_EQ(minMaxBucketIndex(864'150.0, 2.0), 432'075);
+    EXPECT_EQ(minMaxBucketIndex(864'150.0 - 2e-6, 2.0), 432'074);
+    EXPECT_EQ(minMaxBucketIndex(-0.5, 2.0), -1);
+    EXPECT_EQ(minMaxBucketIndex(-2.0, 2.0), -1);
+    EXPECT_EQ(minMaxBucketIndex(std::numeric_limits<double>::quiet_NaN(), 2.0), 0);
+    EXPECT_EQ(minMaxBucketIndex(1e300, 2.0), std::int64_t{1} << 62); // saturates: always defined
+    EXPECT_EQ(minMaxBucketIndex(-1e300, 2.0), -(std::int64_t{1} << 62));
+}
+
+namespace
+{
+// 16 samples 0.5 apart (x = 0 .. 7.5) reduced to 20 points: 5 buckets fit, so the width is 2 and the
+// buckets are [0, 2), [2, 4), [4, 6), [6, 8). Sample 3 (x = 1.5) is the first bucket's peak; sample 4
+// sits exactly on the x = 2 edge, starts the second bucket, and is its peak. Were sample 4 grouped
+// with the first bucket, it would displace sample 3 as that bucket's maximum.
+struct BoundaryFixture
+{
+    static constexpr int COUNT = 16;
+    static constexpr int MAX_OUT = 20;
+    std::vector<double> x = std::vector<double>(COUNT);
+    std::vector<double> y = std::vector<double>(COUNT, 10.0);
+    BoundaryFixture()
+    {
+        for (int i = 0; i < COUNT; ++i)
+        {
+            x[static_cast<std::size_t>(i)] = static_cast<double>(i) * 0.5;
+        }
+        y[3] = 50.0;
+        y[4] = 90.0;
+    }
+};
+} // namespace
+
+TEST(ChartWidgetsReduceTest, MinMaxReductionStartsANewBucketAtAnExactBoundary)
+{
+    const BoundaryFixture f;
+    ASSERT_DOUBLE_EQ(minMaxBucketWidth(f.x.back() - f.x.front(), ((BoundaryFixture::MAX_OUT - 2) / 3) - 1), 2.0);
+    std::vector<int> kept;
+    forEachMinMaxReducedPoint(f.x.data(),
+                              f.y.data(),
+                              BoundaryFixture::COUNT,
+                              BoundaryFixture::MAX_OUT,
+                              0.0,
+                              [&kept](int index, bool /*gap*/) { kept.push_back(index); });
+    EXPECT_NE(std::ranges::find(kept, 3), kept.end()) << "the first bucket lost its peak";
+    EXPECT_NE(std::ranges::find(kept, 4), kept.end()) << "the boundary sample lost its peak";
+}
+
+TEST(ChartWidgetsReduceTest, AlignedReductionStartsANewBucketAtAnExactBoundary)
+{
+    const BoundaryFixture f;
+    const std::array<std::span<const double>, 1> keyed{std::span<const double>(f.y)};
+    std::vector<int> kept;
+    forEachAlignedReducedPoint<double>(std::span<const double>(f.x),
+                                       std::span<const std::span<const double>>(keyed),
+                                       BoundaryFixture::MAX_OUT,
+                                       0.0,
+                                       [&kept](int index, bool /*gap*/) { kept.push_back(index); });
+    EXPECT_NE(std::ranges::find(kept, 3), kept.end()) << "the first bucket lost its peak";
+    EXPECT_NE(std::ranges::find(kept, 4), kept.end()) << "the boundary sample lost its peak";
+}
+
 namespace
 {
 // 100 ms samples over 300 s, as "seconds before now" (the last sample at x = 0).
@@ -781,7 +1022,7 @@ TEST(ChartWidgetsReduceTest, MinMaxReductionNeverBridgesAGapWhateverItsLayoutInO
 
 TEST(ChartWidgetsReduceTest, ReductionOfABuiltTimeAxisIsStableAsNowAdvances)
 {
-    // The production path: buildTimeAxis(timestamps, n, now) then a reduction anchored at the same
+    // The production path: fillTimeAxis(axis, timestamps, n, now) then a reduction anchored at the same
     // now. With a float axis, x + now did not recover the timestamp exactly and the error changed as
     // now advanced, so a sample this close to a bucket boundary could change bucket between frames
     // (#1051 review). Timestamps are large, like steady_clock seconds on a long-running machine.
@@ -802,7 +1043,8 @@ TEST(ChartWidgetsReduceTest, ReductionOfABuiltTimeAxisIsStableAsNowAdvances)
     for (const double elapsed : {0.0, 0.0161, 0.0334, 0.0517, 0.0833, 0.1})
     {
         const double now = timestamps.back() + 0.04 + elapsed;
-        const auto x = buildTimeAxis(timestamps, COUNT, now);
+        std::vector<double> x;
+        fillTimeAxis(x, timestamps, COUNT, now);
         std::vector<double> outX(LINE_PLOT_MAX_POINTS_DENSE);
         std::vector<double> outY(LINE_PLOT_MAX_POINTS_DENSE);
         const int written =
@@ -1318,6 +1560,54 @@ TEST(ChartWidgetsTest, NowBarTooltipRowReadsLikeTheTooltipRow)
     EXPECT_EQ(selectNowBarTooltip(bar), "Memory: 45% (3.6 GB / 8.0 GB)");
 }
 
+// ========== Right-hand-axis mark (#1300) ==========
+
+TEST(ChartWidgetsTest, SecondaryAxisMarkSplitsOffTheLabel)
+{
+    const SeriesLabelParts marked = splitSecondaryAxisMark("Page Faults →");
+    EXPECT_EQ(marked.name, "Page Faults");
+    EXPECT_TRUE(marked.rightAxis);
+
+    const SeriesLabelParts plain = splitSecondaryAxisMark("Threads");
+    EXPECT_EQ(plain.name, "Threads");
+    EXPECT_FALSE(plain.rightAxis);
+
+    // The mark alone is not a series name.
+    EXPECT_FALSE(splitSecondaryAxisMark(" →").rightAxis);
+    EXPECT_FALSE(splitSecondaryAxisMark("").rightAxis);
+}
+
+// The arrow points at the axis the value is read on, so it follows the value, not the name: the
+// strip read "Page Faults →: 3.2K/s".
+TEST(ChartWidgetsTest, TooltipRowPutsTheAxisMarkAfterTheValue)
+{
+    EXPECT_EQ(formatTooltipRow("Page Faults →", "3.2K/s"), "Page Faults: 3.2K/s →");
+    EXPECT_EQ(tooltipRowText("Virtual →", "10.1 GB").view(), "Virtual: 10.1 GB →");
+    const NowBar bar{.valueText = "3.2K/s", .label = "Page Faults →", .tooltipText = {}, .value01 = 0.5, .color = {}};
+    EXPECT_EQ(selectNowBarTooltip(bar), "Page Faults: 3.2K/s →");
+}
+
+TEST(ChartWidgetsTest, StripTextSplitsNameFromValueWithoutTheMark)
+{
+    // As tooltipRowText() builds it.
+    const StripTextParts row = splitStripText("Page Faults: 3.2K/s →", "Page Faults →");
+    EXPECT_EQ(row.head, "Page Faults");
+    EXPECT_EQ(row.tail, "3.2K/s");
+
+    // A tip still built from the whole label.
+    const StripTextParts legacy = splitStripText("Battery →: 94% (charging)", "Battery →");
+    EXPECT_EQ(legacy.head, "Battery");
+    EXPECT_EQ(legacy.tail, "94% (charging)");
+
+    // A plain series, and a tip that doesn't name its series at all.
+    const StripTextParts plain = splitStripText("Handles: 266,257", "Handles");
+    EXPECT_EQ(plain.head, "Handles");
+    EXPECT_EQ(plain.tail, "266,257");
+    const StripTextParts unnamed = splitStripText("45% (3.6 GB / 8.0 GB)", "Memory");
+    EXPECT_TRUE(unnamed.head.empty());
+    EXPECT_EQ(unnamed.tail, "45% (3.6 GB / 8.0 GB)");
+}
+
 TEST(ChartWidgetsTest, SampleWithNoReadingFormatsAsNA)
 {
     const auto percent = [](double v)
@@ -1335,7 +1625,7 @@ TEST(ChartWidgetsTest, HoldExtendsTheLastValueToNow)
 {
     std::vector<double> x{-3.0, -2.0, -0.7};
     std::vector<double> y{10.0, 20.0, 30.0};
-    holdLastValueToNow(x, y);
+    holdLastValueToNow(x, y, HOLD_FALLBACK_SECONDS);
     ASSERT_EQ(x.size(), 4U);
     EXPECT_DOUBLE_EQ(x.back(), 0.0);
     EXPECT_DOUBLE_EQ(y.back(), 30.0);
@@ -1346,7 +1636,7 @@ TEST(ChartWidgetsTest, HoldLeavesAGapAtTheEndAlone)
     // A trailing NaN is a missing reading: there is nothing to hold, and the gap must stay a gap.
     std::vector<double> x{-2.0, -1.0};
     std::vector<double> y{5.0, std::numeric_limits<double>::quiet_NaN()};
-    holdLastValueToNow(x, y);
+    holdLastValueToNow(x, y, HOLD_FALLBACK_SECONDS);
     EXPECT_EQ(x.size(), 2U);
 }
 
@@ -1354,13 +1644,79 @@ TEST(ChartWidgetsTest, HoldDoesNothingForAnEmptyOrAlreadyCurrentSeries)
 {
     std::vector<double> emptyX;
     std::vector<double> emptyY;
-    holdLastValueToNow(emptyX, emptyY);
+    holdLastValueToNow(emptyX, emptyY, HOLD_FALLBACK_SECONDS);
     EXPECT_TRUE(emptyX.empty());
 
     std::vector<double> x{-1.0, 0.0};
     std::vector<double> y{1.0, 2.0};
-    holdLastValueToNow(x, y);
+    holdLastValueToNow(x, y, HOLD_FALLBACK_SECONDS);
     EXPECT_EQ(x.size(), 2U);
+}
+
+// A stalled sampler: the last reading is 30 s old on a 1 s series, so it is not drawn out to now as
+// if it were current (#1147).
+TEST(ChartWidgetsTest, HoldDoesNotExtendAStaleSample)
+{
+    std::vector<double> x{-32.0, -31.0, -30.0};
+    std::vector<double> y{1.0, 2.0, 3.0};
+    holdLastValueToNow(x, y, 2.0);
+    EXPECT_EQ(x.size(), 3U);
+
+    std::vector<double> fresh{-3.0, -2.0, -1.5};
+    std::vector<double> freshY{1.0, 2.0, 3.0};
+    holdLastValueToNow(fresh, freshY, 2.0);
+    EXPECT_EQ(fresh.size(), 4U);
+}
+
+TEST(ChartWidgetsTest, HoldLimitFollowsTheSeriesOwnInterval)
+{
+    // HOLD_MAX_SAMPLE_INTERVALS of the last interval...
+    const std::vector<double> oneSecond{-3.0, -2.0, -1.0};
+    EXPECT_DOUBLE_EQ(maxHoldSecondsForAxis(oneSecond.data(), 3), HOLD_MAX_SAMPLE_INTERVALS * 1.0);
+    const std::vector<double> fiveSeconds{-10.0, -5.0};
+    EXPECT_DOUBLE_EQ(maxHoldSecondsForAxis(fiveSeconds.data(), 2), HOLD_MAX_SAMPLE_INTERVALS * 5.0);
+    // ...never under the floor, so a fast refresh doesn't flicker on jitter...
+    const std::vector<double> fast{-0.2, -0.1};
+    EXPECT_DOUBLE_EQ(maxHoldSecondsForAxis(fast.data(), 2), HOLD_MIN_SECONDS);
+    // ...and with no interval to go by, the slowest refresh's limit.
+    const std::vector<double> single{-1.0};
+    EXPECT_DOUBLE_EQ(maxHoldSecondsForAxis(single.data(), 1), HOLD_FALLBACK_SECONDS);
+    const std::vector<double> repeated{-1.0, -1.0};
+    EXPECT_DOUBLE_EQ(maxHoldSecondsForAxis(repeated.data(), 2), HOLD_FALLBACK_SECONDS);
+}
+
+TEST(ChartWidgetsTest, LastSampleHoldsOnlyWhileRecent)
+{
+    EXPECT_TRUE(lastSampleHoldsToNow(-0.5, 4.0));
+    EXPECT_TRUE(lastSampleHoldsToNow(-4.0, 4.0));
+    EXPECT_FALSE(lastSampleHoldsToNow(-4.5, 4.0));
+    EXPECT_FALSE(lastSampleHoldsToNow(0.0, 4.0));
+    EXPECT_FALSE(lastSampleHoldsToNow(std::numeric_limits<double>::quiet_NaN(), 4.0));
+}
+
+// Stacked bands are held together: every edge reaches now, or none does.
+TEST(ChartWidgetsTest, HoldManySeriesTogether)
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    std::vector<double> x{-2.0, -1.0};
+    std::vector<double> lower{0.0, 0.0};
+    std::vector<double> upper{5.0, nan};
+    holdLastValuesToNow(x, {&lower, &upper}, 4.0);
+    ASSERT_EQ(x.size(), 3U);
+    EXPECT_DOUBLE_EQ(x.back(), 0.0);
+    EXPECT_DOUBLE_EQ(lower.back(), 0.0);
+    EXPECT_TRUE(std::isnan(upper.back())); // a trailing gap stays a gap
+
+    std::vector<double> stale{-31.0, -30.0};
+    std::vector<double> band{1.0, 2.0};
+    holdLastValuesToNow(stale, {&band}, 4.0);
+    EXPECT_EQ(stale.size(), 2U);
+    EXPECT_EQ(band.size(), 2U);
+
+    std::vector<double> mismatched{-2.0, -1.0};
+    std::vector<double> shortBand{1.0};
+    holdLastValuesToNow(mismatched, {&shortBand}, 4.0);
+    EXPECT_EQ(mismatched.size(), 2U);
 }
 
 // ========== normalizeToUnitInterval ==========
@@ -1443,6 +1799,37 @@ TEST(ChartWidgetsTest, FiniteRunsOfNothingFiniteIsNoRuns)
     EXPECT_TRUE(finiteRuns({std::numeric_limits<float>::infinity()}).empty());
 }
 
+// ========== forEachJointFiniteRun (#1149) ==========
+
+namespace
+{
+[[nodiscard]] std::vector<std::pair<int, int>> jointFiniteRuns(const std::vector<double>& lower, const std::vector<double>& upper)
+{
+    std::vector<std::pair<int, int>> runs;
+    UI::Widgets::forEachJointFiniteRun(
+        lower.data(), upper.data(), static_cast<int>(lower.size()), [&](int start, int length) { runs.emplace_back(start, length); });
+    return runs;
+}
+} // namespace
+
+// A stacked band is filled between two edges: a NaN gap in either edge splits the band there.
+TEST(ChartWidgetsTest, JointFiniteRunsSplitWhereEitherEdgeIsNaN)
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    // A gap point (NaN in both edges), as reduceAlignedPoints emits for a missed sample.
+    EXPECT_EQ(jointFiniteRuns({0.0, 0.0, 0.0, 0.0}, {10.0, 20.0, nan, 30.0}), (std::vector<std::pair<int, int>>{{0, 2}, {3, 1}}));
+    // The lower edge alone missing a reading (an offline core in the band below) still splits it.
+    EXPECT_EQ(jointFiniteRuns({1.0, nan, 1.0, 1.0}, {2.0, 2.0, 2.0, 2.0}), (std::vector<std::pair<int, int>>{{0, 1}, {2, 2}}));
+    // Gaps in different edges at different points leave only the points where both are finite.
+    EXPECT_EQ(jointFiniteRuns({nan, 1.0, 1.0, 1.0, 1.0}, {2.0, 2.0, 2.0, nan, 2.0}), (std::vector<std::pair<int, int>>{{1, 2}, {4, 1}}));
+}
+
+TEST(ChartWidgetsTest, JointFiniteRunsOfUnbrokenEdgesIsOneRun)
+{
+    EXPECT_EQ(jointFiniteRuns({0.0, 0.0, 0.0}, {1.0, 2.0, 3.0}), (std::vector<std::pair<int, int>>{{0, 3}}));
+    EXPECT_TRUE(jointFiniteRuns({}, {}).empty());
+}
+
 TEST(ChartWidgetsTest, NormalizeToUnitIntervalScalesWithinRange)
 {
     EXPECT_DOUBLE_EQ(normalizeToUnitInterval(50.0, 100.0), 0.5);
@@ -1500,27 +1887,30 @@ TEST(ChartWidgetsTimeAxisTest, MakeTimeAxisConfigClampsNegativeOffsetToZero)
     EXPECT_DOUBLE_EQ(cfg.xMax, 0.0);
 }
 
-TEST(ChartWidgetsTimeAxisTest, BuildTimeAxisReturnsRelativeTimes)
+TEST(ChartWidgetsTimeAxisTest, FillTimeAxisReturnsRelativeTimes)
 {
     const std::vector<double> timestamps{10.0, 20.0, 30.0};
-    const auto axis = buildTimeAxis(timestamps, 2, 30.0);
+    std::vector<double> axis;
+    fillTimeAxis(axis, timestamps, 2, 30.0);
 
     ASSERT_EQ(axis.size(), 2U);
-    EXPECT_FLOAT_EQ(axis[0], -10.0F);
-    EXPECT_FLOAT_EQ(axis[1], 0.0F);
+    EXPECT_DOUBLE_EQ(axis[0], -10.0);
+    EXPECT_DOUBLE_EQ(axis[1], 0.0);
 }
 
-TEST(ChartWidgetsTimeAxisTest, BuildTimeAxisReturnsEmptyWhenInputEmpty)
+TEST(ChartWidgetsTimeAxisTest, FillTimeAxisReturnsEmptyWhenInputEmpty)
 {
     const std::vector<double> timestamps{};
-    const auto axis = buildTimeAxis(timestamps, 5, 30.0);
+    std::vector<double> axis{1.0, 2.0}; // reused buffer: cleared, not appended to
+    fillTimeAxis(axis, timestamps, 5, 30.0);
     EXPECT_TRUE(axis.empty());
 }
 
-TEST(ChartWidgetsTimeAxisTest, BuildTimeAxisDoublesReturnsRelativeTimes)
+TEST(ChartWidgetsTimeAxisTest, FillTimeAxisDoublesReturnsRelativeTimes)
 {
     const std::vector<double> timestamps{10.0, 20.0, 30.0};
-    const auto axis = buildTimeAxis(timestamps, 3, 25.0);
+    std::vector<double> axis;
+    fillTimeAxis(axis, timestamps, 3, 25.0);
 
     ASSERT_EQ(axis.size(), 3U);
     EXPECT_DOUBLE_EQ(axis[0], -15.0);
@@ -1528,10 +1918,11 @@ TEST(ChartWidgetsTimeAxisTest, BuildTimeAxisDoublesReturnsRelativeTimes)
     EXPECT_DOUBLE_EQ(axis[2], 5.0);
 }
 
-TEST(ChartWidgetsTimeAxisTest, BuildTimeAxisDoublesRespectsDesiredCount)
+TEST(ChartWidgetsTimeAxisTest, FillTimeAxisDoublesRespectsDesiredCount)
 {
     const std::vector<double> timestamps{1.0, 3.0, 7.0, 9.0};
-    const auto axis = buildTimeAxis(timestamps, 2, 10.0);
+    std::vector<double> axis;
+    fillTimeAxis(axis, timestamps, 2, 10.0);
 
     ASSERT_EQ(axis.size(), 2U);
     EXPECT_DOUBLE_EQ(axis[0], -3.0);
@@ -1540,18 +1931,13 @@ TEST(ChartWidgetsTimeAxisTest, BuildTimeAxisDoublesRespectsDesiredCount)
 
 TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXHandlesBoundsAndMiddle)
 {
-    const std::vector<float> axisF{-10.0F, -5.0F, 0.0F};
-    const auto resF_lo = hoveredIndexFromPlotX(axisF, -99.0);
-    ASSERT_TRUE(resF_lo.has_value());
-    EXPECT_EQ(resF_lo.value(), 0U);
-    const auto resF_hi = hoveredIndexFromPlotX(axisF, 99.0);
-    ASSERT_TRUE(resF_hi.has_value());
-    EXPECT_EQ(resF_hi.value(), 2U);
-    const auto resF_mid = hoveredIndexFromPlotX(axisF, -4.2);
-    ASSERT_TRUE(resF_mid.has_value());
-    EXPECT_EQ(resF_mid.value(), 1U);
-
     const std::vector<double> axisD{-10.0, -5.0, 0.0};
+    const auto resD_out_lo = hoveredIndexFromPlotX(axisD, -99.0);
+    ASSERT_TRUE(resD_out_lo.has_value());
+    EXPECT_EQ(resD_out_lo.value(), 0U);
+    const auto resD_hi = hoveredIndexFromPlotX(axisD, 99.0);
+    ASSERT_TRUE(resD_hi.has_value());
+    EXPECT_EQ(resD_hi.value(), 2U);
     const auto resD_lo = hoveredIndexFromPlotX(axisD, -9.9);
     ASSERT_TRUE(resD_lo.has_value());
     EXPECT_EQ(resD_lo.value(), 0U);
@@ -1562,11 +1948,6 @@ TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXHandlesBoundsAndMiddle)
 
 TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXTieSelectsLowerNeighbor)
 {
-    const std::vector<float> axisF{-10.0F, -5.0F};
-    const auto resFTie = hoveredIndexFromPlotX(axisF, -7.5);
-    ASSERT_TRUE(resFTie.has_value());
-    EXPECT_EQ(resFTie.value(), 0U);
-
     const std::vector<double> axisD{-10.0, -5.0};
     const auto resDTie = hoveredIndexFromPlotX(axisD, -7.5);
     ASSERT_TRUE(resDTie.has_value());
@@ -1575,9 +1956,7 @@ TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXTieSelectsLowerNeighbor)
 
 TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXReturnsNulloptForEmptyInput)
 {
-    const std::vector<float> axisF{};
     const std::vector<double> axisD{};
-    EXPECT_FALSE(hoveredIndexFromPlotX(axisF, 0.0).has_value());
     EXPECT_FALSE(hoveredIndexFromPlotX(axisD, 0.0).has_value());
 }
 
@@ -1596,17 +1975,10 @@ TEST(HistoryChartConfigTest, PercentConfigLocksZeroToHundred)
     EXPECT_FLOAT_EQ(cfg.height, HISTORY_PLOT_HEIGHT_DEFAULT);
 }
 
-TEST(HistoryChartConfigTest, AutoFitConfigHasNoYLimits)
-{
-    const auto cfg = autoFitHistoryConfig("##Net", -30.0, 0.0, formatAxisBytesPerSec);
-    EXPECT_STREQ(cfg.id, "##Net");
-    EXPECT_FALSE(cfg.yLimits.has_value());
-    EXPECT_EQ(cfg.yFormatter, &formatAxisBytesPerSec);
-}
-
 TEST(HistoryChartConfigTest, RateConfigPinsZeroAndSizesTheTopFromTheData)
 {
-    const auto cfg = rateHistoryConfig("##Disk", -300.0, 0.0, formatAxisBytesPerSec, 10'000.0, RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
+    const auto cfg = rateHistoryConfigWithUpper(
+        "##Disk", -300.0, 0.0, formatAxisBytesPerSec, rateAxisUpperBound(10'000.0, RATE_AXIS_MIN_SPAN_BYTES_PER_SEC));
     EXPECT_STREQ(cfg.id, "##Disk");
     EXPECT_DOUBLE_EQ(cfg.xMin, -300.0);
     EXPECT_DOUBLE_EQ(cfg.xMax, 0.0);
@@ -1618,10 +1990,11 @@ TEST(HistoryChartConfigTest, RateConfigPinsZeroAndSizesTheTopFromTheData)
 
 TEST(HistoryChartConfigTest, RateConfigStillSetsLimitsForAnAllZeroSeries)
 {
-    // The regression that matters: if rateHistoryConfig() ever stopped assigning yLimits, the axis
+    // The regression that matters: if rateHistoryConfigWithUpper() ever stopped assigning yLimits, the axis
     // would fall back to ImPlot's auto-fit and reproduce #920 exactly -- a +/-0.5 sliver with a
     // negative tick. The RateAxis unit tests would not notice, because they only cover the maths.
-    const auto cfg = rateHistoryConfig("##Idle", -300.0, 0.0, formatAxisBytesPerSec, 0.0, RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
+    const auto cfg =
+        rateHistoryConfigWithUpper("##Idle", -300.0, 0.0, formatAxisBytesPerSec, rateAxisUpperBound(0.0, RATE_AXIS_MIN_SPAN_BYTES_PER_SEC));
     ASSERT_TRUE(cfg.yLimits.has_value());
     EXPECT_DOUBLE_EQ(cfg.yLimits->first, 0.0);
     EXPECT_DOUBLE_EQ(cfg.yLimits->second, RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
@@ -1630,7 +2003,7 @@ TEST(HistoryChartConfigTest, RateConfigStillSetsLimitsForAnAllZeroSeries)
 
 TEST(HistoryChartConfigTest, RateConfigTakesTheLockedAxisPathNotAutoFit)
 {
-    const auto cfg = rateHistoryConfig("##Watts", -60.0, 0.0, formatAxisWatts, 0.0, RATE_AXIS_MIN_SPAN_WATTS);
+    const auto cfg = rateHistoryConfigWithUpper("##Watts", -60.0, 0.0, formatAxisWatts, rateAxisUpperBound(0.0, RATE_AXIS_MIN_SPAN_WATTS));
     EXPECT_EQ(historyChartYAxisFlags(cfg.yLimits.has_value()), ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
 }
 
@@ -1826,6 +2199,55 @@ TEST(ChartWidgetsTest, NowBarWidthSurvivesDegenerateInput)
         EXPECT_TRUE(std::isfinite(width));
         EXPECT_GE(width, 1.0F);
     }
+}
+
+// ========== NowBar column cap (#1300) ==========
+
+// At a wide row the bars keep their full width.
+TEST(ChartWidgetsTest, FittedNowBarWidthIsFullInAWideRow)
+{
+    const float em = 32.0F / 3.0F; // 24px bars
+    EXPECT_FLOAT_EQ(fittedNowBarWidth(em, 4, 8.0F, 2000.0F), 24.0F);
+    // An unknown row width leaves them alone too.
+    EXPECT_FLOAT_EQ(fittedNowBarWidth(em, 4, 8.0F, -1.0F), 24.0F);
+    EXPECT_FLOAT_EQ(fittedNowBarWidth(em, 4, 8.0F, std::numeric_limits<float>::quiet_NaN()), 24.0F);
+}
+
+// The reported case: four bars in a narrow Process Details pane took ~30 % of it.
+TEST(ChartWidgetsTest, FittedNowBarWidthCapsTheColumnInANarrowRow)
+{
+    const float em = 32.0F / 3.0F;
+    const float row = 400.0F;
+    const float spacing = 8.0F;
+    const float bar = fittedNowBarWidth(em, 4, spacing, row);
+    EXPECT_LT(bar, 24.0F);
+    EXPECT_LE((bar * 4.0F) + (spacing * 3.0F), row * NOW_BAR_COLUMN_MAX_FRACTION);
+    EXPECT_FLOAT_EQ(bar, std::floor(bar)); // whole pixels
+}
+
+// Never thinner than the readable minimum, however narrow the row.
+TEST(ChartWidgetsTest, FittedNowBarWidthKeepsItsMinimum)
+{
+    const float em = 32.0F / 3.0F;
+    EXPECT_FLOAT_EQ(fittedNowBarWidth(em, 4, 8.0F, 50.0F), std::round(NOW_BAR_MIN_WIDTH_EM * em));
+    EXPECT_FLOAT_EQ(fittedNowBarWidth(em, 0, 8.0F, 50.0F), 24.0F);
+}
+
+// ========== Percent axis headroom (#1300) ==========
+
+// A full battery's line sits below the plot's top edge; the labels still stop at 100 %.
+TEST(ChartWidgetsTest, PercentAxisWithHeadroomTicksUpTo100)
+{
+    const HistoryChartConfig cfg = percentHistoryConfigWithHeadroom("##Battery", -60.0, 0.0);
+    ASSERT_TRUE(cfg.yLimits.has_value());
+    EXPECT_DOUBLE_EQ(cfg.yLimits.value_or(std::pair{0.0, 0.0}).first, 0.0);
+    EXPECT_GT(cfg.yLimits.value_or(std::pair{0.0, 0.0}).second, 100.0);
+    EXPECT_DOUBLE_EQ(cfg.yTicksUpTo.value_or(0.0), 100.0);
+    EXPECT_EQ(cfg.yFormatter, percentHistoryConfig("##Battery", -60.0, 0.0).yFormatter);
+    // The bar beside it, scaled to the same top, meets the line: full charge is not a full bar.
+    EXPECT_LT(normalizeToUnitInterval(100.0, PERCENT_AXIS_UPPER_WITH_HEADROOM), 1.0);
+    // A plain percent chart keeps its 0-100 axis.
+    EXPECT_FALSE(percentHistoryConfig("##CPU", -60.0, 0.0).yTicksUpTo.has_value());
 }
 
 // ========== Series encoding (#1198) ==========

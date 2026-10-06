@@ -7,6 +7,7 @@
 
 #include "Domain/PriorityConfig.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/ProcessTypes.h"
 #include "Platform/Windows/WindowsProcessActions.h"
 #include "Platform/Windows/WindowsProcessActionsMath.h"
 

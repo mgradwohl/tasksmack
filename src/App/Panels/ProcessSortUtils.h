@@ -68,7 +68,7 @@ compareColumnKey(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot
     case ProcessColumn::PageFaults:
         return compare(a.pageFaults, b.pageFaults);
     case ProcessColumn::Affinity:
-        return compare(a.cpuAffinityMask, b.cpuAffinityMask);
+        return compare(a.cpuAffinity, b.cpuAffinity);
     case ProcessColumn::Command:
         return compare(a.command, b.command);
     case ProcessColumn::IoRead:

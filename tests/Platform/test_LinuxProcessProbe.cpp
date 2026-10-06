@@ -19,6 +19,7 @@
 
 #if TASKSMACK_HAS_UNISTD
 
+#include "Platform/CpuAffinity.h"
 #include "Platform/Linux/LinuxProcessProbe.h"
 #include "Platform/Linux/ProcPrivileges.h"
 #include "Platform/PlatformConfig.h"
@@ -40,12 +41,15 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <iterator>
+#include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -53,6 +57,7 @@
 #include <thread>
 #include <utility>
 
+#include <sched.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -93,6 +98,9 @@ TEST(LinuxProcessProbeTest, CapabilitiesReportedCorrectly)
     // Shared memory comes from /proc/[pid]/statm; the process details chart draws it only when
     // this is set (#1035).
     EXPECT_TRUE(caps.hasSharedMemory);
+    // Peak RSS is the kernel's VmHWM (#1184), and the page-fault count doesn't wrap.
+    EXPECT_TRUE(caps.hasPeakRss);
+    EXPECT_EQ(caps.pageFaultCountBits, 64U);
 }
 
 TEST(LinuxProcessProbeTest, ReducedPrivilegesMatchesEuidAndEffectiveCapabilities)
@@ -827,6 +835,136 @@ void writeFile(const std::filesystem::path& path, std::string_view content)
     std::ofstream(path) << content;
 }
 
+TEST(LinuxProcessProbeTest, PeakRssIsVmHwmFromStatus)
+{
+    // #1184: the peak is the kernel's high-water mark over the process's whole life, from the status
+    // file enumerate() already reads -- not just the largest RSS TaskSmack happened to sample.
+    ScopedTempDir proc("ts_test_proc_vmhwm");
+    const auto writeProcess = [&proc](int pid, std::string_view status, std::string_view statm)
+    {
+        const auto dir = proc.path / std::to_string(pid);
+        writeFile(dir / "stat",
+                  std::to_string(pid) + " (app) S 1 1 1 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+                                        "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+        writeFile(dir / "status", status);
+        writeFile(dir / "statm", statm);
+    };
+    const long pageSize = sysconf(_SC_PAGESIZE);
+    ASSERT_GT(pageSize, 0);
+    const auto page = static_cast<std::uint64_t>(pageSize);
+
+    // An ordinary process: VmHWM 8192 kB, RSS 100 pages.
+    writeProcess(
+        4242, "Name:\tapp\nUid:\t0\t0\t0\t0\nVmPeak:\t  20000 kB\nVmHWM:\t    8192 kB\nVmRSS:\t    4096 kB\n", "500 100 10 1 0 50 0\n");
+    // A kernel thread has no Vm* lines: unknown, left to Domain's own tracking.
+    writeProcess(4343, "Name:\tkworker/0:1\nUid:\t0\t0\t0\t0\n", "0 0 0 0 0 0 0\n");
+    // A peak a moment behind the RSS statm reported (batched per-CPU counters) is raised to it.
+    writeProcess(4444, "Name:\tapp\nUid:\t0\t0\t0\t0\nVmHWM:\t       4 kB\n", "500 100 10 1 0 50 0\n");
+
+    LinuxProcessProbe probe(proc.path);
+    const auto processes = probe.enumerate();
+    const auto peakOf = [&processes](std::int32_t pid) -> std::uint64_t
+    {
+        const auto it = std::ranges::find_if(processes, [pid](const ProcessCounters& p) { return p.pid == pid; });
+        return it == processes.end() ? std::numeric_limits<std::uint64_t>::max() : it->peakRssBytes;
+    };
+    EXPECT_EQ(peakOf(4242), 8192U * 1024U);
+    EXPECT_EQ(peakOf(4343), 0U);
+    EXPECT_EQ(peakOf(4444), 100U * page);
+}
+
+void writeVmHwmProcess(const std::filesystem::path& procRoot, std::string_view status)
+{
+    const auto dir = procRoot / "4242";
+    writeFile(dir / "stat",
+              "4242 (app) S 1 1 1 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+    writeFile(dir / "status", status);
+}
+
+[[nodiscard]] std::uint64_t onlyPeakRss(const std::filesystem::path& procRoot)
+{
+    LinuxProcessProbe probe(procRoot);
+    const auto processes = probe.enumerate();
+    EXPECT_EQ(processes.size(), 1U);
+    return processes.empty() ? std::numeric_limits<std::uint64_t>::max() : processes[0].peakRssBytes;
+}
+
+// The probe's stack read of /proc/[pid]/status (LinuxProcessProbe::parseProcessStatus).
+constexpr std::size_t STATUS_STACK_READ_SIZE = 8192;
+
+TEST(LinuxProcessProbeTest, VmHwmPastTheStackBufferIsReadInFull)
+{
+    // The stack buffer (8 KiB) ends inside VmHWM's digits; the rest of the file is readable, so the
+    // whole file is read and the complete peak is used -- not the truncated "123".
+    ScopedTempDir proc("ts_test_proc_vmhwm_cut");
+    const std::string head = "Name:\tapp\nUid:\t0\t0\t0\t0\nGroups:\t";
+    const std::string vmHwm = "\nVmHWM:\t 123";
+    writeVmHwmProcess(proc.path, head + std::string(STATUS_STACK_READ_SIZE - head.size() - vmHwm.size(), '1') + vmHwm + "456789 kB\n");
+    EXPECT_EQ(onlyPeakRss(proc.path), 123456789ULL * 1024ULL);
+}
+
+TEST(LinuxProcessProbeTest, VmHwmAndCpusAllowedListPastTheStackBufferComeFromOneFullRead)
+{
+    // Either line cut off by the stack read sends the probe to the full file, and both come from it.
+    // cutVmHwm: the buffer ends inside VmHWM's digits, with a Cpus_allowed_list wholly after it.
+    // cutAfterList: a (here out-of-order) Cpus_allowed_list fits whole, VmHWM is cut -- the re-read
+    // happens for VmHWM alone.
+    const std::string head = "Name:\tapp\nUid:\t0\t0\t0\t0\nGroups:\t";
+    const std::string vmHwm = "\nVmHWM:\t 123";
+
+    ScopedTempDir cutVmHwm("ts_test_proc_status_both_cut");
+    writeVmHwmProcess(cutVmHwm.path,
+                      head + std::string(STATUS_STACK_READ_SIZE - head.size() - vmHwm.size(), '1') + vmHwm +
+                          "456789 kB\nCpus_allowed_list:\t0-3,64-127\nMems_allowed_list:\t0\n");
+
+    const std::string listFirst = "Name:\tapp\nUid:\t0\t0\t0\t0\nCpus_allowed_list:\t0-3,64-127\nGroups:\t";
+    ScopedTempDir cutAfterList("ts_test_proc_status_list_first");
+    writeVmHwmProcess(cutAfterList.path,
+                      listFirst + std::string(STATUS_STACK_READ_SIZE - listFirst.size() - vmHwm.size(), '1') + vmHwm + "456789 kB\n");
+
+    const auto expectedAffinity = CpuAffinity::fromCpuList("0-3,64-127").value_or(CpuAffinity{});
+    for (const auto* root : {&cutVmHwm.path, &cutAfterList.path})
+    {
+        // No CPU sysfs online list: the raw Cpus_allowed_list is used (#1384).
+        const auto absent = *root / "absent";
+        LinuxProcessProbe probe(*root, absent, absent, absent);
+        const auto processes = probe.enumerate();
+        ASSERT_EQ(processes.size(), 1U) << *root;
+        EXPECT_EQ(processes[0].peakRssBytes, 123456789ULL * 1024ULL) << *root;
+        EXPECT_EQ(processes[0].cpuAffinity, expectedAffinity) << *root;
+    }
+}
+
+TEST(LinuxProcessProbeTest, VmHwmAfterALongGroupsListIsFound)
+{
+    // A user in many supplementary groups: Groups: alone is past the 8 KiB stack read, and VmHWM follows it.
+    ScopedTempDir proc("ts_test_proc_vmhwm_groups");
+    std::string status = "Name:\tapp\nUid:\t1000\t1000\t1000\t1000\nGroups:\t";
+    for (int gid = 100000; gid < 101500; ++gid)
+    {
+        status += std::to_string(gid) + ' ';
+    }
+    ASSERT_GT(status.size(), 8192U);
+    status += "\nVmPeak:\t  20000 kB\nVmHWM:\t    8192 kB\nVmRSS:\t    4096 kB\n";
+    writeVmHwmProcess(proc.path, status);
+    EXPECT_EQ(onlyPeakRss(proc.path), 8192U * 1024U);
+}
+
+TEST(LinuxProcessProbeTest, IncompleteVmHwmLineIsIgnored)
+{
+    // A VmHWM line with no newline (the file ends mid-line) could carry a truncated number: it is not
+    // used, whether the file is short or longer than the stack buffer.
+    ScopedTempDir shortProc("ts_test_proc_vmhwm_eof_short");
+    writeVmHwmProcess(shortProc.path, "Name:\tapp\nUid:\t0\t0\t0\t0\nVmHWM:\t 123");
+    EXPECT_EQ(onlyPeakRss(shortProc.path), 0U);
+
+    ScopedTempDir longProc("ts_test_proc_vmhwm_eof_long");
+    const std::string head = "Name:\tapp\nUid:\t0\t0\t0\t0\nGroups:\t";
+    writeVmHwmProcess(longProc.path, head + std::string(STATUS_STACK_READ_SIZE + 2000, '1') + "\nVmHWM:\t 123");
+    EXPECT_EQ(onlyPeakRss(longProc.path), 0U);
+}
+
 TEST(LinuxProcessProbeTest, ReadableRaplCounterEnablesPowerUsage)
 {
     ScopedTempDir proc("ts_test_proc_rapl_ok");
@@ -988,6 +1126,233 @@ TEST(LinuxProcessProbeTest, UnreadableFdAndIoAreReportedUnavailableNotZero)
     EXPECT_FALSE(unreadable->networkCountersAvailable);
 }
 
+TEST(LinuxProcessProbeTest, CpuAffinityIsReadFromCpusAllowedListWithoutA64CpuCap)
+{
+    // #1247: the affinity was a 64-bit mask, so a process allowed only CPUs from
+    // 64 up (taskset -c 70) showed none. It now comes from /proc/[pid]/status
+    // Cpus_allowed_list, under the probe's procRoot.
+    ScopedTempDir proc("ts_test_proc_cpus_allowed_list");
+    const auto writeProcess = [&proc](std::int32_t pid, const std::optional<std::string>& status)
+    {
+        writeFile(proc.path / std::to_string(pid) / "stat",
+                  std::format("{} (app) S 1 {} {} 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 "
+                              "0 "
+                              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n",
+                              pid,
+                              pid,
+                              pid));
+        if (status.has_value())
+        {
+            writeFile(proc.path / std::to_string(pid) / "status", *status);
+        }
+    };
+    const auto statusWith = [](std::string_view cpusAllowedList)
+    {
+        return std::format("Name:\tapp\nUid:\t0\t0\t0\t0\nCpus_allowed:\tffffffff,"
+                           "ffffffff,0000000f\n"
+                           "Cpus_allowed_list:\t{}\nMems_allowed_list:\t0\n",
+                           cpusAllowedList);
+    };
+    writeProcess(4242, statusWith("0-3,64-127"));
+    writeProcess(4343, statusWith("70"));
+    writeProcess(4444,
+                 statusWith("0-3,64-x")); // Malformed: rejected whole, not read as 0-3
+    writeProcess(4545, std::nullopt);     // No status file at all
+    // A list the probe's 8 KiB stack read cuts off ("0-12" of "0-127") is not read as the part that
+    // fit: the probe reads the whole file and gets all of it. Pad an earlier line so the buffer ends
+    // right after "0-12".
+    const std::string head = "Name:\tapp\nUid:\t0\t0\t0\t0\nGroups:\t";
+    const std::string tail = "\nCpus_allowed_list:\t0-12";
+    writeProcess(4646, head + std::string(STATUS_STACK_READ_SIZE - head.size() - tail.size(), '1') + tail + "7\nMems_allowed_list:\t0\n");
+    // A sparse list, every even CPU up to 8190, is about 20 KiB on its own -- longer than the stack
+    // read -- and is still read whole.
+    std::string sparseList;
+    for (std::size_t cpu = 0; cpu <= 8190; cpu += 2)
+    {
+        sparseList += (cpu == 0 ? "" : ",") + std::to_string(cpu);
+    }
+    ASSERT_GT(sparseList.size(), 2 * STATUS_STACK_READ_SIZE);
+    writeProcess(4747, statusWith(sparseList));
+    // A long Groups: line (many supplementary groups) pushes the list past the stack read.
+    std::string groups;
+    for (int gid = 100000; gid < 102000; ++gid)
+    {
+        groups += std::to_string(gid) + ' ';
+    }
+    ASSERT_GT(groups.size(), STATUS_STACK_READ_SIZE);
+    writeProcess(4848, "Name:\tapp\nUid:\t0\t0\t0\t0\nGroups:\t" + groups + "\nCpus_allowed_list:\t0-3,64-127\nMems_allowed_list:\t0\n");
+    // A file that really ends partway through the list line (no newline) is still not read in part.
+    writeProcess(4949, "Name:\tapp\nUid:\t0\t0\t0\t0\nGroups:\t" + groups + "\nCpus_allowed_list:\t0-12");
+
+    // No CPU sysfs online list, so the host's own online CPUs don't trim these lists (#1384).
+    const auto absent = proc.path / "absent";
+    LinuxProcessProbe probe(proc.path, absent, absent, absent);
+    EXPECT_TRUE(probe.capabilities().hasCpuAffinity);
+    const auto processes = probe.enumerate();
+    const auto affinityOf = [&processes](std::int32_t pid) -> CpuAffinity
+    {
+        const auto it = std::ranges::find(processes, pid, &ProcessCounters::pid);
+        EXPECT_NE(it, processes.end()) << pid;
+        return (it == processes.end()) ? CpuAffinity{} : it->cpuAffinity;
+    };
+
+    EXPECT_EQ(affinityOf(4242), CpuAffinity::fromCpuList("0-3,64-127").value_or(CpuAffinity{}));
+    EXPECT_EQ(affinityOf(4242).count(), 68U);
+    EXPECT_EQ(affinityOf(4343), CpuAffinity::fromCpuList("70").value_or(CpuAffinity{}));
+    EXPECT_TRUE(affinityOf(4343).test(70));
+    EXPECT_TRUE(affinityOf(4444).empty());
+    EXPECT_TRUE(affinityOf(4545).empty());
+    EXPECT_EQ(affinityOf(4646), CpuAffinity::fromCpuList("0-127").value_or(CpuAffinity{}));
+    EXPECT_EQ(affinityOf(4747).count(), 4096U);
+    EXPECT_TRUE(affinityOf(4747).test(0));
+    EXPECT_TRUE(affinityOf(4747).test(8190));
+    EXPECT_FALSE(affinityOf(4747).test(8189));
+    EXPECT_EQ(affinityOf(4848), CpuAffinity::fromCpuList("0-3,64-127").value_or(CpuAffinity{}));
+    EXPECT_TRUE(affinityOf(4949).empty());
+}
+
+/// Each process's affinity from a synthetic /proc with `Cpus_allowed_list` per pid, and a fake CPU
+/// sysfs root whose `online` file holds `online` (none at all when nullopt).
+[[nodiscard]] std::vector<std::pair<std::int32_t, CpuAffinity>>
+affinitiesWithOnline(const std::vector<std::pair<std::int32_t, std::string>>& lists, const std::optional<std::string>& online)
+{
+    ScopedTempDir proc("ts_test_proc_affinity_online");
+    ScopedTempDir cpuSysfs("ts_test_sys_cpu_online");
+    for (const auto& [pid, list] : lists)
+    {
+        writeFile(proc.path / std::to_string(pid) / "stat",
+                  std::format("{} (app) S 1 {} {} 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+                              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n",
+                              pid,
+                              pid,
+                              pid));
+        writeFile(proc.path / std::to_string(pid) / "status",
+                  std::format("Name:\tapp\nUid:\t0\t0\t0\t0\nCpus_allowed_list:\t{}\nMems_allowed_list:\t0\n", list));
+    }
+    if (online.has_value())
+    {
+        writeFile(cpuSysfs.path / "online", *online);
+    }
+    const auto absent = proc.path / "absent";
+    LinuxProcessProbe probe(proc.path, absent, absent, cpuSysfs.path);
+    std::vector<std::pair<std::int32_t, CpuAffinity>> result;
+    for (const auto& process : probe.enumerate())
+    {
+        result.emplace_back(process.pid, process.cpuAffinity);
+    }
+    std::ranges::sort(result, {}, &std::pair<std::int32_t, CpuAffinity>::first);
+    return result;
+}
+
+[[nodiscard]] CpuAffinity cpuList(std::string_view list)
+{
+    const auto affinity = CpuAffinity::fromCpuList(list);
+    EXPECT_TRUE(affinity.has_value()) << list;
+    return affinity.value_or(CpuAffinity{});
+}
+
+TEST(LinuxProcessProbeTest, CpuAffinityIsLimitedToOnlineCpus)
+{
+    // #1384: Cpus_allowed_list is the task's raw mask, which keeps possible-but-offline CPUs (a VM
+    // with hot-add slots: possible 0-63, online 0-7). sched_getaffinity() -- what the column showed
+    // before #1360 -- ANDs it with the active CPUs; so does the probe, with the sysfs online list.
+    const auto affinities = affinitiesWithOnline({{4242, "0-63"}, {4343, "4-127"}, {4444, "2"}}, "0-7\n");
+    ASSERT_EQ(affinities.size(), 3U);
+    EXPECT_EQ(affinities[0].second, cpuList("0-7"));
+    EXPECT_EQ(affinities[0].second.count(), 8U);
+    EXPECT_EQ(affinities[1].second, cpuList("4-7")); // A spilled list comes back inline
+    EXPECT_EQ(affinities[1].second.words().size(), 1U);
+    EXPECT_EQ(affinities[2].second, cpuList("2"));
+}
+
+TEST(LinuxProcessProbeTest, CpuAffinityFollowsASparseOnlineList)
+{
+    // CPUs 4 and 5 taken offline by hand (echo 0 > cpu4/online): online reads 0-3,6-7.
+    const auto affinities = affinitiesWithOnline({{4242, "0-63"}, {4343, "0-3,64-127"}}, "0-3,6-7\n");
+    ASSERT_EQ(affinities.size(), 2U);
+    EXPECT_EQ(affinities[0].second, cpuList("0-3,6-7"));
+    EXPECT_FALSE(affinities[0].second.test(4));
+    EXPECT_FALSE(affinities[0].second.test(5));
+    EXPECT_EQ(affinities[1].second, cpuList("0-3"));
+}
+
+TEST(LinuxProcessProbeTest, CpuAffinityIsTheRawListWhenOnlineCantBeUsed)
+{
+    // No online file, or one that doesn't parse: each process's list is used as it is.
+    for (const auto& online : {std::optional<std::string>{}, std::optional<std::string>{"garbage\n"}, std::optional<std::string>{""}})
+    {
+        const auto affinities = affinitiesWithOnline({{4242, "0-63"}, {4343, "0-3,64-127"}}, online);
+        ASSERT_EQ(affinities.size(), 2U) << online.value_or("<missing>");
+        EXPECT_EQ(affinities[0].second, cpuList("0-63")) << online.value_or("<missing>");
+        EXPECT_EQ(affinities[1].second, cpuList("0-3,64-127")) << online.value_or("<missing>");
+    }
+}
+
+TEST(LinuxProcessProbeTest, CpuAffinityWithNoOnlineCpuInCommonKeepsTheRawList)
+{
+    // A process pinned to a CPU that went offline between the two reads: the raw list, not "unknown".
+    const auto affinities = affinitiesWithOnline({{4242, "8-9"}}, "0-7\n");
+    ASSERT_EQ(affinities.size(), 1U);
+    EXPECT_EQ(affinities[0].second, cpuList("8-9"));
+}
+
+TEST(LinuxProcessProbeTest, CpuAffinityReadsAnOnlineListLongerThanItsStackBuffer)
+{
+    // Every even CPU up to 2046 online (over 4 KiB of list): read whole, not cut off partway.
+    std::string online;
+    for (std::size_t cpu = 0; cpu <= 2046; cpu += 2)
+    {
+        online += (cpu == 0 ? "" : ",") + std::to_string(cpu);
+    }
+    ASSERT_GT(online.size(), 4096U);
+    const auto affinities = affinitiesWithOnline({{4242, "0-2047"}}, online + "\n");
+    ASSERT_EQ(affinities.size(), 1U);
+    EXPECT_EQ(affinities[0].second.count(), 1024U);
+    EXPECT_TRUE(affinities[0].second.test(2046));
+    EXPECT_FALSE(affinities[0].second.test(2045));
+}
+
+TEST(LinuxProcessProbeTest, OwnProcessAffinityMatchesSchedGetaffinity)
+{
+    // The real /proc: our own Cpus_allowed_list, limited to the online CPUs (#1384), names the same
+    // CPUs the kernel's affinity call does -- on hosts with possible-but-offline CPUs too. The set is sized at run time (CPU_ALLOC),
+    // growing until the kernel's mask fits, so a machine with more than CPU_SETSIZE (1024) CPUs is checked in full.
+    struct CpuSetDeleter
+    {
+        void operator()(cpu_set_t* set) const noexcept // NOLINT(misc-include-cleaner) - <sched.h>
+        {
+            CPU_FREE(set);
+        }
+    };
+    std::size_t cpuCapacity = CPU_SETSIZE;
+    std::unique_ptr<cpu_set_t, CpuSetDeleter> set;
+    std::size_t setSize = 0;
+    for (;;)
+    {
+        set.reset(CPU_ALLOC(cpuCapacity));
+        ASSERT_NE(set, nullptr);
+        setSize = CPU_ALLOC_SIZE(cpuCapacity);
+        CPU_ZERO_S(setSize, set.get());
+        if (sched_getaffinity(0, setSize, set.get()) == 0)
+        {
+            break;
+        }
+        ASSERT_EQ(errno, EINVAL);
+        ASSERT_LT(cpuCapacity, CpuAffinity::MAX_CPUS) << "kernel affinity mask larger than CpuAffinity supports";
+        cpuCapacity *= 2;
+    }
+
+    LinuxProcessProbe probe;
+    const auto processes = probe.enumerate();
+    const auto self = std::ranges::find(processes, static_cast<std::int32_t>(::getpid()), &ProcessCounters::pid);
+    ASSERT_NE(self, processes.end());
+    ASSERT_FALSE(self->cpuAffinity.empty());
+    EXPECT_EQ(self->cpuAffinity.count(), static_cast<std::size_t>(CPU_COUNT_S(setSize, set.get())));
+    for (std::size_t cpu = 0; cpu < cpuCapacity; ++cpu)
+    {
+        EXPECT_EQ(self->cpuAffinity.test(cpu), CPU_ISSET_S(cpu, setSize, set.get()) != 0) << cpu;
+    }
+}
 /// Restores a directory's permissions on scope exit, so ScopedTempDir can remove it.
 class RestoreDirPermissions
 {

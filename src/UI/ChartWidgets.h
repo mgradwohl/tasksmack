@@ -10,6 +10,7 @@
 #include "UI/RateAxis.h"
 #include "UI/RenderMetrics.h"
 #include "UI/StyleScale.h"
+#include "UI/TailAlignedSeries.h" // IWYU pragma: export
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
@@ -172,6 +173,32 @@ inline constexpr float NOW_BAR_WIDTH_EM = 2.25F;
     const float em = (std::isfinite(emPx) && emPx > 0.0F) ? emPx : 1.0F;
     return std::max(1.0F, std::round(NOW_BAR_WIDTH_EM * em));
 }
+
+/// Most of a chart row's width the "now" column may take: in a narrow pane (Process Details beside
+/// the process table) four full-width bars took about 30 % of it (#1300).
+inline constexpr float NOW_BAR_COLUMN_MAX_FRACTION = 0.2F;
+/// Narrowest a "now" bar gets when the column is capped, in ems: still a bar, and still something to
+/// hover for its tooltip.
+inline constexpr float NOW_BAR_MIN_WIDTH_EM = 1.0F;
+
+/// Width of one "now" bar in a column of @p barColumnCount bars @p spacingPx apart, beside a chart in
+/// a row @p availableWidthPx wide: nowBarWidth(), narrowed in whole pixels so the column takes at most
+/// NOW_BAR_COLUMN_MAX_FRACTION of the row, but never below NOW_BAR_MIN_WIDTH_EM (#1300). An unknown
+/// row width (not positive) leaves the bars at full width.
+[[nodiscard]] inline float fittedNowBarWidth(float emPx, std::size_t barColumnCount, float spacingPx, float availableWidthPx) noexcept
+{
+    const float full = nowBarWidth(emPx);
+    if (barColumnCount == 0 || !std::isfinite(availableWidthPx) || !(availableWidthPx > 0.0F))
+    {
+        return full;
+    }
+    const auto count = static_cast<float>(barColumnCount);
+    const float spacing = std::isfinite(spacingPx) ? std::max(0.0F, spacingPx) * (count - 1.0F) : 0.0F;
+    const float budget = (availableWidthPx * NOW_BAR_COLUMN_MAX_FRACTION) - spacing;
+    const float em = (std::isfinite(emPx) && emPx > 0.0F) ? emPx : 1.0F;
+    const float minimum = std::max(1.0F, std::round(NOW_BAR_MIN_WIDTH_EM * em));
+    return std::clamp(std::floor(budget / count), std::min(minimum, full), full);
+}
 inline constexpr int LINE_PLOT_MAX_POINTS_DENSE = 720;
 
 /// RAII guard that pushes the chart font (see UI::chartFontSize()) for axis labels and hints.
@@ -294,16 +321,78 @@ struct TooltipRow
     std::string value;
 };
 
-/// "label: value", the text of one tooltip row.
+/// The end of the label of a series drawn on its chart's right-hand axis (setupSecondaryRateAxis(),
+/// #1206): "Page Faults →". The label keeps it -- it is the series' ImPlot ID and marker key -- but
+/// text that names the series and then gives its value shows it after the value ("Page Faults:
+/// 3.2K/s →"), where it points at the axis that value is read on rather than reading as part of the
+/// name (#1300). splitSecondaryAxisMark() takes it off.
+inline constexpr std::string_view SECONDARY_AXIS_MARK = " →";
+
+/// A series label without its SECONDARY_AXIS_MARK, and whether it had one.
+struct SeriesLabelParts
+{
+    std::string_view name;
+    bool rightAxis = false;
+};
+
+[[nodiscard]] constexpr SeriesLabelParts splitSecondaryAxisMark(std::string_view label) noexcept
+{
+    if (label.size() > SECONDARY_AXIS_MARK.size() && label.ends_with(SECONDARY_AXIS_MARK))
+    {
+        // Built from pointer and length, not substr(), which may throw (bugprone-exception-escape)
+        return {.name = std::string_view{label.data(), label.size() - SECONDARY_AXIS_MARK.size()}, .rightAxis = true};
+    }
+    return {.name = label, .rightAxis = false};
+}
+
+/// "label: value", the text of one tooltip row; a right-hand-axis series reads "name: value →"
+/// (SECONDARY_AXIS_MARK).
 [[nodiscard]] inline std::string formatTooltipRow(std::string_view label, std::string_view value)
 {
-    return std::format("{}: {}", label, value);
+    const SeriesLabelParts parts = splitSecondaryAxisMark(label);
+    return std::format("{}: {}{}", parts.name, value, parts.rightAxis ? SECONDARY_AXIS_MARK : std::string_view{});
 }
 
 /// formatTooltipRow() into an InlineText, for a NowBar's tooltipText: no allocation (#1171).
 [[nodiscard]] inline InlineText tooltipRowText(std::string_view label, std::string_view value)
 {
-    return InlineText::format("{}: {}", label, value);
+    const SeriesLabelParts parts = splitSecondaryAxisMark(label);
+    return InlineText::format("{}: {}{}", parts.name, value, parts.rightAxis ? SECONDARY_AXIS_MARK : std::string_view{});
+}
+
+/// A value-strip entry's text from its bar's tooltipText: `head` the series' name (muted, the strip
+/// adds its colon) and `tail` the rest, with any SECONDARY_AXIS_MARK taken off both -- the strip draws
+/// it after the value itself (#1300). A tip that doesn't start with "name:" (or "label:") is all tail.
+struct StripTextParts
+{
+    std::string_view head;
+    std::string_view tail;
+};
+
+[[nodiscard]] constexpr StripTextParts splitStripText(std::string_view tip, std::string_view seriesLabel) noexcept
+{
+    const SeriesLabelParts label = splitSecondaryAxisMark(seriesLabel);
+    const auto prefixLength = [tip](std::string_view name) -> std::size_t
+    {
+        return (!name.empty() && tip.size() > name.size() && tip.starts_with(name) && tip[name.size()] == ':') ? name.size() + 1 : 0;
+    };
+    // "name: value →" (tooltipRowText()), or a tip still built from the whole label ("name →: value").
+    std::size_t prefix = prefixLength(label.name);
+    if (prefix == 0)
+    {
+        prefix = prefixLength(seriesLabel);
+    }
+    StripTextParts parts{.head = (prefix != 0) ? label.name : std::string_view{},
+                         .tail = std::string_view{tip.data() + prefix, tip.size() - prefix}};
+    if (parts.tail.starts_with(' '))
+    {
+        parts.tail.remove_prefix(1);
+    }
+    if (label.rightAxis && parts.tail.ends_with(SECONDARY_AXIS_MARK))
+    {
+        parts.tail.remove_suffix(SECONDARY_AXIS_MARK.size());
+    }
+    return parts;
 }
 
 /// `format(value)`, or "N/A" for a non-finite value: a history sample with no reading is NaN.
@@ -364,6 +453,40 @@ inline void forEachFiniteRun(const T* values, int count, OnRun&& onRun) // NOLIN
         }
         int runEnd = runStart;
         while (runEnd < count && std::isfinite(static_cast<double>(values[runEnd])))
+        {
+            ++runEnd;
+        }
+        if (runEnd > runStart)
+        {
+            onRun(runStart, runEnd - runStart);
+        }
+        runStart = runEnd;
+    }
+}
+
+/// Calls `onRun(start, length)` for each maximal run over which both `lower[i]` and `upper[i]` are
+/// finite, for i in [0, count).
+///
+/// A band filled between two series (ImPlot::PlotShaded with two Y arrays, as the stacked CPU bands
+/// are) is drawn only where both of its edges have a reading: ImPlot's shaded renderer has no NaN
+/// handling, so a NaN in either edge would otherwise become garbage triangles (#1149).
+// onRun is called once per run, so it is used as an lvalue rather than forwarded.
+template<typename T, typename OnRun>
+inline void forEachJointFiniteRun(const T* lower, const T* upper, int count, OnRun&& onRun) // NOLINT(cppcoreguidelines-missing-std-forward)
+{
+    const auto finiteAt = [&](int i)
+    {
+        return std::isfinite(static_cast<double>(lower[i])) && std::isfinite(static_cast<double>(upper[i]));
+    };
+    int runStart = 0;
+    while (runStart < count)
+    {
+        while (runStart < count && !finiteAt(runStart))
+        {
+            ++runStart;
+        }
+        int runEnd = runStart;
+        while (runEnd < count && finiteAt(runEnd))
         {
             ++runEnd;
         }
@@ -468,6 +591,20 @@ inline void reduceSeriesKeepingGaps(const TX* xData, const TY* yData, int count,
     return std::exp2(std::ceil(std::log2(span / static_cast<double>(bucketCount))));
 }
 
+/// The integer index of the min-max bucket of width `width` that holds `x`: floor(x / width), taken
+/// once, so samples are grouped by comparing integers rather than doubles (#1380). Saturates at
+/// +/-2^62 so the conversion is always defined; NaN, which no bucket holds, reads 0.
+[[nodiscard]] inline std::int64_t minMaxBucketIndex(double x, double width) noexcept
+{
+    constexpr double LIMIT = 4611686018427387904.0; // 2^62, exactly representable
+    const double bucket = std::floor(x / width);
+    if (std::isnan(bucket))
+    {
+        return 0;
+    }
+    return static_cast<std::int64_t>(std::clamp(bucket, -LIMIT, LIMIT));
+}
+
 /// Reduce `count` samples to at most `maxOut` points for drawing, keeping peaks and gaps (#1010).
 ///
 /// The samples are grouped into buckets of minMaxBucketWidth() along x, and each bucket contributes
@@ -526,13 +663,13 @@ inline int forEachMinMaxReducedPoint(const TX* xData,
 
     const auto bucketOf = [&](int index)
     {
-        return std::floor((static_cast<double>(xData[index]) + xOffset) / width);
+        return minMaxBucketIndex(static_cast<double>(xData[index]) + xOffset, width);
     };
     int written = 0;
     int bucketStart = 0;
     while (bucketStart < count)
     {
-        const double bucket = bucketOf(bucketStart);
+        const std::int64_t bucket = bucketOf(bucketStart);
         int minIdx = -1;
         int maxIdx = -1;
         int gapIdx = -1;
@@ -680,12 +817,12 @@ inline void forEachAlignedReducedPoint(std::span<const double> x,
 
     const auto bucketOf = [&](int index)
     {
-        return std::floor((x[static_cast<std::size_t>(index)] + xOffset) / width);
+        return minMaxBucketIndex(x[static_cast<std::size_t>(index)] + xOffset, width);
     };
     int bucketStart = 0;
     while (bucketStart < count)
     {
-        const double bucket = bucketOf(bucketStart);
+        const std::int64_t bucket = bucketOf(bucketStart);
         int next = bucketStart;
         while (next < count && bucketOf(next) == bucket)
         {
@@ -961,7 +1098,7 @@ class ReducedPointsCache
 
 /// "Now" for history charts, in seconds since the steady_clock epoch, read once per ImGui frame.
 ///
-/// Every chart builds its time axis as `timestamp - historyFrameNowSeconds()` (buildTimeAxis), and
+/// Every chart builds its time axis as `timestamp - historyFrameNowSeconds()` (fillTimeAxis), and
 /// plotLineWithFill() adds the same value back to anchor its reduction buckets in absolute time, so
 /// x + anchor is exactly the sample's timestamp. If each chart read the clock itself, the anchor and
 /// the axis would differ by however long the frame took to reach the chart, and a sample near a
@@ -989,27 +1126,145 @@ class ReducedPointsCache
     return scaledLineWeight(authoredPx, Theme::get().styleScale());
 }
 
+/// How many of a series' own sample intervals its last reading is held out to "now" for
+/// (holdLastValueToNow(), #1147). Above 3 because the samplers slow to 3x the refresh interval while
+/// the window is being resized or dragged (AdaptiveIntervalUtils), and the next reading also waits
+/// for its publish.
+inline constexpr double HOLD_MAX_SAMPLE_INTERVALS = 4.0;
+/// The shortest hold limit, in seconds, so a fast refresh (100 ms) doesn't make the line flicker
+/// between held and not held on ordinary sampling jitter.
+inline constexpr double HOLD_MIN_SECONDS = 1.0;
+/// The hold limit for a series with one sample, and so no interval of its own: as long as the slowest
+/// refresh interval would allow.
+inline constexpr double HOLD_FALLBACK_SECONDS =
+    HOLD_MAX_SAMPLE_INTERVALS * static_cast<double>(Domain::Sampling::REFRESH_INTERVAL_MAX_MS) / 1000.0;
+
+/// The longest a series' last reading is held out to "now" (holdLastValueToNow()), in seconds, from
+/// its time axis @p x (seconds before now, oldest first): HOLD_MAX_SAMPLE_INTERVALS of the interval
+/// between its last two samples, at least HOLD_MIN_SECONDS. Taken from the data rather than from the
+/// refresh setting, so it follows the samplers' adaptive slow-downs and needs no plumbing; a stall
+/// shows because the interval before it was an ordinary one (#1147).
+template<typename T> [[nodiscard]] inline double maxHoldSecondsForAxis(const T* x, int count) noexcept
+{
+    if (x == nullptr || count < 2)
+    {
+        return HOLD_FALLBACK_SECONDS;
+    }
+    const double interval = static_cast<double>(x[count - 1]) - static_cast<double>(x[count - 2]);
+    if (!std::isfinite(interval) || !(interval > 0.0))
+    {
+        return HOLD_FALLBACK_SECONDS;
+    }
+    return std::max(HOLD_MIN_SECONDS, HOLD_MAX_SAMPLE_INTERVALS * interval);
+}
+
+template<typename T> [[nodiscard]] inline double maxHoldSecondsForAxis(std::span<const T> x) noexcept
+{
+    return maxHoldSecondsForAxis(x.data(), UI::Format::checkedCount(x.size()));
+}
+
+/// Whether a series' last sample, @p lastX seconds before now (negative), is held out to x = 0: it is
+/// in the past, and no older than @p maxHoldSeconds.
+[[nodiscard]] inline bool lastSampleHoldsToNow(double lastX, double maxHoldSeconds) noexcept
+{
+    return (lastX < 0.0) && (-lastX <= maxHoldSeconds);
+}
+
 /// Extend a history series to x = 0 ("now") by repeating its last value there.
 ///
 /// Samples arrive once per refresh interval while the chart scrolls every frame, so the newest
 /// point sits up to an interval left of the right edge: the line stopped short of "now" and jumped
 /// forward with each new sample (#1016). Holding the latest reading until the next one -- the usual
 /// sample-and-hold reading of a sampled series -- draws it to the edge. Nothing is added when the
-/// last sample is a gap (NaN: no reading to hold) or already at or past x = 0.
-template<typename T> inline void holdLastValueToNow(std::vector<T>& x, std::vector<T>& y)
+/// last sample is a gap (NaN: no reading to hold), already at or past x = 0, or older than
+/// @p maxHoldSeconds (lastSampleHoldsToNow()): a sampler that has stalled must show as a line that
+/// stops, not a flat one that looks live (#1147).
+template<typename T> inline void holdLastValueToNow(std::vector<T>& x, std::vector<T>& y, double maxHoldSeconds)
 {
     if (x.empty() || y.size() != x.size())
     {
         return;
     }
-    const auto lastX = static_cast<double>(x.back());
     const auto lastY = static_cast<double>(y.back());
-    if (!(lastX < 0.0) || !std::isfinite(lastY))
+    if (!lastSampleHoldsToNow(static_cast<double>(x.back()), maxHoldSeconds) || !std::isfinite(lastY))
     {
         return;
     }
     x.push_back(T{0});
     y.push_back(y.back());
+}
+
+/// holdLastValueToNow() for series drawn together on one time axis @p x -- a stacked chart's band
+/// edges -- so they all reach "now", or none does. Each series gets its own last value repeated
+/// (a trailing gap stays a gap: NaN repeated).
+template<typename T> inline void holdLastValuesToNow(std::vector<T>& x, std::initializer_list<std::vector<T>*> ys, double maxHoldSeconds)
+{
+    if (x.empty() || !lastSampleHoldsToNow(static_cast<double>(x.back()), maxHoldSeconds) ||
+        std::ranges::any_of(ys, [&x](const std::vector<T>* y) { return y->size() != x.size(); }))
+    {
+        return;
+    }
+    x.push_back(T{0});
+    for (std::vector<T>* y : ys)
+    {
+        y->push_back(y->back());
+    }
+}
+
+/// `values` at each of a reduction's kept `points`, in `out` (resized to match): the sample at the
+/// point's source index, or NaN at a gap point (see reduceAlignedSeries()). For a series drawn with
+/// ImPlot directly from a ReducedPointsCache's points (#1139).
+template<typename T>
+inline void gatherReducedValues(std::span<const ReducedPoint> points, std::span<const T> values, std::vector<double>& out)
+{
+    out.resize(points.size());
+    for (std::size_t k = 0; k < points.size(); ++k)
+    {
+        out[k] = points[k].gap ? std::numeric_limits<double>::quiet_NaN()
+                               : static_cast<double>(values[static_cast<std::size_t>(points[k].index)]);
+    }
+}
+
+/// The x axis and band edges of a stacked User/System CPU chart, which the Overview and Process
+/// Details both draw (#1180). PlotShaded fills between two Y series, so the stack needs cumulative
+/// tops: the User band from `base` (0) to `userTop` (User), the System band from `userTop` to
+/// `systemTop` (User + System).
+struct UserSystemStack
+{
+    std::vector<double> x;         // The kept points' times, held to now by the caller (#1016)
+    std::vector<double> base;      // 0: the User band's bottom
+    std::vector<double> userTop;   // User
+    std::vector<double> systemTop; // User + System
+};
+
+/// Builds `out` from a reduction's kept `points` over `time` and the User and System series: a gap
+/// point is NaN in every edge but `base` (see reduceAlignedSeries()). Every series must be as long
+/// as `time`. Buffers are resized in place, so a chart reusing one UserSystemStack across frames
+/// allocates only when it draws more points than before.
+template<typename T>
+inline void buildUserSystemStack(std::span<const ReducedPoint> points,
+                                 std::span<const double> time,
+                                 std::span<const T> user,
+                                 std::span<const T> system,
+                                 UserSystemStack& out)
+{
+    const std::size_t pointCount = points.size();
+    out.x.resize(pointCount);
+    out.base.assign(pointCount, 0.0);
+    out.userTop.resize(pointCount);
+    out.systemTop.resize(pointCount);
+    for (std::size_t k = 0; k < pointCount; ++k)
+    {
+        const auto i = static_cast<std::size_t>(points[k].index);
+        out.x[k] = time[i];
+        if (points[k].gap)
+        {
+            out.userTop[k] = out.systemTop[k] = std::numeric_limits<double>::quiet_NaN();
+            continue;
+        }
+        out.userTop[k] = static_cast<double>(user[i]);
+        out.systemTop[k] = out.userTop[k] + static_cast<double>(system[i]);
+    }
 }
 
 /// The data generation of the HistoryChart being drawn (HistoryChartConfig::dataGeneration) and the
@@ -1095,7 +1350,7 @@ inline void plotLineWithFill(const char* label,
         return;
     }
 
-    // ImPlot takes x and y of one type. The time axis is double (buildTimeAxis) while some series
+    // ImPlot takes x and y of one type. The time axis is double (fillTimeAxis) while some series
     // are float, so y is drawn as TX: converted into reused buffers when the types differ.
     const auto renderSeries = [&](const TX* plotXData, const TX* plotYData, int plotCount)
     {
@@ -1170,18 +1425,8 @@ inline void plotLineWithFill(const char* label,
         drawX.assign(xData, xData + count);
         drawY.assign(yData, yData + count);
     }
-    holdLastValueToNow(drawX, drawY);
+    holdLastValueToNow(drawX, drawY, maxHoldSecondsForAxis(xData, count)); // Interval from every sample, not the reduced ones
     renderSeries(drawX.data(), drawY.data(), UI::Format::checkedCount(drawX.size()));
-}
-
-/// Helper for line-only rendering, reduced to at most LINE_PLOT_MAX_POINTS_DENSE points (see reduceSeriesMinMax).
-/// Fills are intentionally disabled; pass only the line color.
-/// A chart with more than one series draws them with plotSeries(), which gives only the primary a
-/// fill (#1198). Use plotDenseLine only for charts that should remain line-only (e.g., sparse event streams).
-template<typename TX, typename TY>
-inline void plotDenseLine(const char* label, const TX* xData, const TY* yData, int count, const ImVec4& lineColor)
-{
-    plotLineWithFill(label, xData, yData, count, lineColor, std::nullopt, 2.0F, false, LINE_PLOT_MAX_POINTS_DENSE);
 }
 
 /// What a series is to the chart it is drawn in, which decides how it is drawn (#1198): colour alone
@@ -1546,6 +1791,34 @@ inline void plotSeries(const char* label,
     plotSeriesMarkers(label, xData, yData, count, lineColor, style);
 }
 
+/// A band filled between `lower` and `upper` (ImPlot::PlotShaded with two Y arrays), as the stacked
+/// CPU charts draw theirs, filled run by run over the points where both edges have a reading.
+/// ImPlot's shaded renderer has no NaN handling, so a gap point (a missed sample, or a UI stall that
+/// overran the sample ring, #1098) or a band with no reading is drawn as a gap rather than as
+/// triangles through NaN (#1149). Call between BeginPlot and EndPlot.
+inline void
+plotShadedBand(const char* label, const double* xData, const double* lower, const double* upper, int count, const ImVec4& fillColor)
+{
+    forEachJointFiniteRun(lower,
+                          upper,
+                          count,
+                          [&](int runStart, int runLength)
+                          {
+                              const auto at = static_cast<std::size_t>(runStart);
+                              ImPlot::PlotShaded(label, &xData[at], &lower[at], &upper[at], runLength, {ImPlotProp_FillColor, fillColor});
+                          });
+}
+
+/// A line drawn with ImPlot directly at `style`'s weight, with its markers (plotSeriesMarkers()): the
+/// stacked CPU charts' band edges and User/System lines, whose fill the bands already are, so they
+/// cannot go through plotSeries() (#1192, #1198). Call between BeginPlot and EndPlot.
+inline void
+plotStyledLine(const char* label, const double* xData, const double* yData, int count, const ImVec4& color, const SeriesStyle& style)
+{
+    ImPlot::PlotLine(label, xData, yData, count, {ImPlotProp_LineColor, color, ImPlotProp_LineWeight, lineWeight(style.lineWeightPx)});
+    plotSeriesMarkers(label, xData, yData, count, color, style);
+}
+
 // ============================================================================
 // Axis formatters for ImPlot Y-axis tick labels
 // These use C callbacks required by ImPlot::SetupAxisFormat. Each is a thin adapter over the
@@ -1831,23 +2104,7 @@ class NowBarList
     return std::clamp(value / maxValue, 0.0, 1.0);
 }
 
-template<typename T> struct TailAlignedSpan
-{
-    std::span<const T> values;
-    std::size_t offset = 0;
-};
-
-template<typename T> [[nodiscard]] inline TailAlignedSpan<T> tailAlignedSpan(std::span<const T> data, std::size_t count)
-{
-    const std::size_t clampedCount = std::min(count, data.size());
-    const std::size_t offset = data.size() - clampedCount;
-    return {data.subspan(offset, clampedCount), offset};
-}
-
-template<typename T> [[nodiscard]] inline TailAlignedSpan<T> tailAlignedSpan(const std::vector<T>& data, std::size_t count)
-{
-    return tailAlignedSpan(std::span<const T>(data), count);
-}
+// TailAlignedSpan / tailAlignedSpan(): UI/TailAlignedSeries.h, exported through this header.
 
 // Returns the tooltip string to display for a NowBar, using the fallback chain:
 //   tooltipText (if non-empty) -> "label: valueText" (if both non-empty) -> label -> valueText
@@ -1860,7 +2117,7 @@ template<typename T> [[nodiscard]] inline TailAlignedSpan<T> tailAlignedSpan(con
     }
     if (!bar.label.empty() && !bar.valueText.empty())
     {
-        return std::format("{}: {}", bar.label, bar.valueText);
+        return formatTooltipRow(bar.label, bar.valueText);
     }
     if (!bar.label.empty())
     {
@@ -1915,14 +2172,6 @@ inline void fillTimeAxis(std::vector<double>& out, std::span<const double> times
     {
         out[i] = timestamps[offset + i] - nowSeconds;
     }
-}
-
-/// fillTimeAxis() into a new vector.
-[[nodiscard]] inline std::vector<double> buildTimeAxis(std::span<const double> timestamps, size_t desiredCount, double nowSeconds)
-{
-    std::vector<double> timeData;
-    fillTimeAxis(timeData, timestamps, desiredCount, nowSeconds);
-    return timeData;
 }
 
 /// Buffers for one frame's time axes, reused from frame to frame (#1018).
@@ -2047,40 +2296,6 @@ inline void trimFrameCaches()
     auto& buffer = Detail::timeAxisPool().acquire(ImGui::GetFrameCount());
     fillTimeAxis(buffer, timestamps, desiredCount, nowSeconds);
     return buffer;
-}
-
-inline auto hoveredIndexFromPlotX(const std::vector<float>& timeData, double mouseX) -> std::optional<size_t>
-{
-    if (timeData.empty())
-    {
-        return std::nullopt;
-    }
-
-    const float x = UI::Format::toFloatNarrow(mouseX);
-    const auto it = std::ranges::lower_bound(timeData, x);
-
-    if (it == timeData.begin())
-    {
-        return 0U;
-    }
-
-    if (it == timeData.end())
-    {
-        return timeData.size() - 1;
-    }
-
-    const auto upperDist = std::distance(timeData.begin(), it);
-    if (!std::in_range<size_t>(upperDist))
-    {
-        return std::nullopt;
-    }
-    const auto upperIdx = static_cast<size_t>(upperDist); // Safe: checked by std::in_range
-    const size_t lowerIdx = upperIdx - 1;
-
-    const float distLower = std::abs(timeData[lowerIdx] - x);
-    const float distUpper = std::abs(timeData[upperIdx] - x);
-
-    return (distUpper < distLower) ? upperIdx : lowerIdx;
 }
 
 inline auto hoveredIndexFromPlotX(std::span<const double> timeData, double mouseX) -> std::optional<size_t>
@@ -2229,9 +2444,10 @@ inline void drawCollectingHint(std::size_t sampleCount)
 
 /// Declarative configuration for a standard TaskSmack history chart.
 /// yLimits set → Y axis locked to that range (percent charts pin 0-100; the non-negative charts
-///   compute theirs from the data via rateHistoryConfig()).
-/// yLimits empty → Y axis auto-fits the plotted data, including below zero. No chart does this
-///   today -- see autoFitHistoryConfig() for why (#920).
+///   compute theirs from the data and pass it to rateHistoryConfigWithUpper()).
+/// yLimits empty → Y axis auto-fits the plotted data, including below zero. No chart does this:
+///   plain auto-fit degenerates on an all-zero window into a +/-0.5 sliver, which renders an
+///   impossible negative rate and a column of identical tick labels (#920).
 struct HistoryChartConfig
 {
     const char* id = "";
@@ -2245,15 +2461,14 @@ struct HistoryChartConfig
     bool timeAxisLabels = true;
     float height = HISTORY_PLOT_HEIGHT_DEFAULT;
     ImPlotFlags flags = PLOT_FLAGS_DEFAULT;
-    /// Ease the Y upper bound toward yLimits->second over a few frames instead of jumping to it
-    /// (see easeAxisUpperBound). Set by rateHistoryConfig(); a fixed range such as 0-100 % has
-    /// nothing to ease.
-    bool easeYUpper = false;
     /// The generation of the data this chart draws (nextChartDataGeneration()), or 0 if the caller
     /// does not track one. When set, plotLineWithFill() series drawn in the chart keep their reduced
     /// points until it changes instead of reducing their whole history every frame (#1139), so it
     /// must change whenever anything the series are computed from does. See withDataGeneration().
     std::uint64_t dataGeneration = 0;
+    /// Where the Y ticks stop, when that is below the axis's top (yLimits->second): a percent axis
+    /// with headroom (percentHistoryConfigWithHeadroom()) labels up to 100 % only (#1300).
+    std::optional<double> yTicksUpTo;
 };
 
 /// Returns `config` with its data generation set (see HistoryChartConfig::dataGeneration).
@@ -2283,19 +2498,20 @@ struct HistoryChartConfig
     return cfg;
 }
 
-/// Config for an auto-fit history chart: Y axis fits the plotted data, including below zero.
-///
-/// Prefer rateHistoryConfig() for any series that cannot be negative -- rates, counts and watts all
-/// use that instead, so nothing in the app calls this today. Kept for a genuinely signed series:
-/// plain auto-fit degenerates on an all-zero window into a +/-0.5 sliver, which renders an
-/// impossible negative rate and a column of identical tick labels (#920).
-[[nodiscard]] inline HistoryChartConfig autoFitHistoryConfig(const char* id, double xMin, double xMax, ImPlotFormatter yFormatter)
+/// Top of a percent axis with headroom: a little above 100, so a series at 100 % -- a fully charged
+/// battery -- draws as a line below the plot's top edge rather than along it (#1300). Its ticks still
+/// stop at 100 %.
+inline constexpr double PERCENT_AXIS_UPPER_WITH_HEADROOM = 104.0;
+
+/// percentHistoryConfig() drawn to PERCENT_AXIS_UPPER_WITH_HEADROOM, ticks up to 100 %. For a series
+/// that sits at 100 % for long stretches (battery charge), where the plain 0-100 axis hid it on the
+/// top edge. A NowBar beside it is scaled to the same top (normalizeToUnitInterval()), so the bar
+/// still meets its line (#1003).
+[[nodiscard]] inline HistoryChartConfig percentHistoryConfigWithHeadroom(const char* id, double xMin, double xMax)
 {
-    HistoryChartConfig cfg;
-    cfg.id = id;
-    cfg.xMin = xMin;
-    cfg.xMax = xMax;
-    cfg.yFormatter = yFormatter;
+    HistoryChartConfig cfg = percentHistoryConfig(id, xMin, xMax);
+    cfg.yLimits = std::pair{0.0, PERCENT_AXIS_UPPER_WITH_HEADROOM};
+    cfg.yTicksUpTo = 100.0;
     return cfg;
 }
 
@@ -2312,24 +2528,11 @@ rateHistoryConfigWithUpper(const char* id, double xMin, double xMax, ImPlotForma
     cfg.xMax = xMax;
     cfg.yFormatter = yFormatter;
     cfg.yLimits = std::pair{0.0, upperBound};
-    // Already the bound to draw (easedRateAxisUpperBound), so HistoryChart does not ease it again.
-    cfg.easeYUpper = false;
     return cfg;
 }
 
-/// A rate chart config whose upper bound comes from the data (rateAxisUpperBound) and is eased by
-/// HistoryChart itself. A chart that also has NowBars should use easedRateAxisUpperBound() and
-/// rateHistoryConfigWithUpper() instead, so its bars are scaled to the same per-frame bound (#1003).
-[[nodiscard]] inline HistoryChartConfig
-rateHistoryConfig(const char* id, double xMin, double xMax, ImPlotFormatter yFormatter, double dataMax, double minSpan)
-{
-    HistoryChartConfig cfg = rateHistoryConfigWithUpper(id, xMin, xMax, yFormatter, rateAxisUpperBound(dataMax, minSpan));
-    cfg.easeYUpper = true;
-    return cfg;
-}
-
-/// The Y upper bound a HistoryChart with easeYUpper draws this frame: its previous frame's bound
-/// eased toward `target` (easeAxisUpperBound). Kept per chart, keyed by the chart's ImGui ID. A chart
+/// The Y upper bound an eased chart draws this frame: its previous frame's bound eased toward
+/// `target` (easeAxisUpperBound). Kept per chart, keyed by the chart's ImGui ID. A chart
 /// that was not drawn last frame -- just opened, or its tab just shown -- starts at its target rather
 /// than easing in from a stale value. Frame-keyed: see "Frame-keyed caches" above (#1181).
 [[nodiscard]] inline double easedChartUpperBound(ImGuiID chartId, double target)
@@ -2415,8 +2618,15 @@ rateHistoryConfig(const char* id, double xMin, double xMax, ImPlotFormatter yFor
 /// The axis's tick marks are drawn in @p seriesColor and its tick labels in that colour made readable
 /// as text (ColorContrast::readableTint()), the colour of the series on it, and that
 /// series' label ends in " →" (pointing at this right-hand axis), so a reader can tell which scale a
-/// line is read against (#1206).
-inline void setupSecondaryRateAxis(double upperBound, ImPlotFormatter formatter, const ImVec4& seriesColor)
+/// line is read against (#1206). Its value-strip entry and tooltip rows show the mark after the value
+/// (SECONDARY_AXIS_MARK, #1300).
+///
+/// With @p ticksUpTo the ticks stop there, below the axis's top: a percent axis drawn to
+/// PERCENT_AXIS_UPPER_WITH_HEADROOM keeps its last label at 100 % (#1300).
+inline void setupSecondaryRateAxis(double upperBound,
+                                   ImPlotFormatter formatter,
+                                   const ImVec4& seriesColor,
+                                   std::optional<double> ticksUpTo = std::nullopt)
 {
     // ImPlot reads an axis's colours from the style when the axis is set up (UpdateAxisColors), the
     // tick marks' apart from the labels', so both are pushed. The marks take the series colour as it
@@ -2435,7 +2645,7 @@ inline void setupSecondaryRateAxis(double upperBound, ImPlotFormatter formatter,
     ImPlot::PopStyleColor(2);
     ImPlot::SetupAxisLimits(ImAxis_Y2, 0.0, upperBound, ImPlotCond_Always);
     // Round ticks like the primary axis, and no more of them (#1202).
-    setupNiceAxisTicks(ImAxis_Y2, upperBound, formatter, activeChartDataScope().maxYTicks);
+    setupNiceAxisTicks(ImAxis_Y2, ticksUpTo.value_or(upperBound), formatter, activeChartDataScope().maxYTicks);
 }
 
 /// RAII scope around a stack of history charts drawn one above another in a view (#1206): ImPlot
@@ -2557,9 +2767,10 @@ class HistoryChart
             nullptr, nullptr, historyChartXAxisFlags(config.timeAxisLabels), historyChartYAxisFlags(config.yLimits.has_value()));
         if (config.yLimits.has_value())
         {
-            const double upper = config.easeYUpper ? easedChartUpperBound(plotId, config.yLimits->second) : config.yLimits->second;
-            // This chart's own axis was just eased, and the chart is visible (we're past BeginPlot): make
-            // its request here rather than leaving it pending for the next chart or frame.
+            const double upper = config.yLimits->second;
+            // This chart's bound was eased just before it began (easedRateAxisUpperBound()), and the chart
+            // is visible (we're past BeginPlot): make its request here rather than leaving it pending for
+            // the next chart or frame.
             if (shouldRequestEaseFrames(Detail::g_PendingEaseRequestFrame, ImGui::GetFrameCount(), true))
             {
                 Core::AnimationRequest::request();
@@ -2570,7 +2781,7 @@ class HistoryChart
             // at 0 (percent and rate configs); any other lower bound keeps ImPlot's own ticks.
             if (config.yLimits->first == 0.0)
             {
-                setupNiceAxisTicks(ImAxis_Y1, upper, config.yFormatter, maxYTicks);
+                setupNiceAxisTicks(ImAxis_Y1, std::min(upper, config.yTicksUpTo.value_or(upper)), config.yFormatter, maxYTicks);
             }
             else
             {
@@ -2707,10 +2918,13 @@ namespace Detail
 {
 /// Lays out one value strip entry: a swatch in `color` (alpha kept, so a translucent series reads as
 /// muted), then `head` in muted text -- with `colon` appended when `head` does not already end in one
-/// -- and `tail` in primary text. With `wrap`, an entry that does not fit the row starts a new line;
-/// without it the row runs on and the container clips it.
-/// The width drawValueStripEntry() gives an entry: swatch, `head` (with its colon) and `tail`.
-[[nodiscard]] inline float valueStripEntryWidth(std::string_view head, std::string_view tail)
+/// -- and `tail` in primary text, then for a right-hand-axis series (`rightAxis`) SECONDARY_AXIS_MARK
+/// in the series' colour made readable as text, as that axis's labels are (#1300). With `wrap`, an
+/// entry that does not fit the row starts a new line; without it the row runs on and the container
+/// clips it.
+/// The width drawValueStripEntry() gives an entry: swatch, `head` (with its colon), `tail` and the
+/// right-axis mark.
+[[nodiscard]] inline float valueStripEntryWidth(std::string_view head, std::string_view tail, bool rightAxis = false)
 {
     const ImGuiStyle& style = ImGui::GetStyle();
     const float side = std::floor(ImGui::GetTextLineHeight() * TOOLTIP_SWATCH_LINE_FRACTION);
@@ -2718,7 +2932,9 @@ namespace Detail
     const float headWidth = head.empty() ? 0.0F
                                          : ImGui::CalcTextSize(head.data(), head.data() + head.size()).x +
                                                (addColon ? ImGui::CalcTextSize(":").x : 0.0F) + style.ItemInnerSpacing.x;
-    return side + style.ItemInnerSpacing.x + headWidth + ImGui::CalcTextSize(tail.data(), tail.data() + tail.size()).x;
+    const float markWidth =
+        rightAxis ? ImGui::CalcTextSize(SECONDARY_AXIS_MARK.data(), SECONDARY_AXIS_MARK.data() + SECONDARY_AXIS_MARK.size()).x : 0.0F;
+    return side + style.ItemInnerSpacing.x + headWidth + ImGui::CalcTextSize(tail.data(), tail.data() + tail.size()).x + markWidth;
 }
 
 inline void drawValueStripEntry(std::string_view head,
@@ -2730,14 +2946,15 @@ inline void drawValueStripEntry(std::string_view head,
                                 const ImVec4& muted,
                                 ImPlotMarker marker = ImPlotMarker_None,
                                 float slotWidth = 0.0F,
-                                std::string_view seriesLabel = {})
+                                std::string_view seriesLabel = {},
+                                bool rightAxis = false)
 {
     const ImGuiStyle& style = ImGui::GetStyle();
     const float lineHeight = ImGui::GetTextLineHeight();
     const float side = std::floor(lineHeight * TOOLTIP_SWATCH_LINE_FRACTION);
     const float inset = std::floor((lineHeight - side) * 0.5F);
     const bool addColon = !head.empty() && !head.ends_with(':');
-    const float naturalWidth = valueStripEntryWidth(head, tail);
+    const float naturalWidth = valueStripEntryWidth(head, tail, rightAxis);
     const float entryWidth = std::max(naturalWidth, slotWidth);
     if (!first)
     {
@@ -2780,6 +2997,18 @@ inline void drawValueStripEntry(std::string_view head,
     // they change and the entries beside it do not move.
     ImGui::SameLine(0.0F, style.ItemInnerSpacing.x + (entryWidth - naturalWidth));
     ImGui::TextUnformatted(tail.data(), tail.data() + tail.size());
+    if (rightAxis)
+    {
+        // After the value, not the name: it says which axis the value is read on (#1300). Tinted like
+        // that axis's tick labels (setupSecondaryRateAxis()), held to text contrast on the window.
+        const ImVec4 windowBg = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
+        const ImVec4 markColor = ColorContrast::readableTint(
+            withAlpha(color, 1.0F), Theme::get().scheme().textPrimary, windowBg, ColorContrast::TEXT_CONTRAST_MIN);
+        ImGui::SameLine(0.0F, 0.0F);
+        ImGui::PushStyleColor(ImGuiCol_Text, markColor);
+        ImGui::TextUnformatted(SECONDARY_AXIS_MARK.data(), SECONDARY_AXIS_MARK.data() + SECONDARY_AXIS_MARK.size());
+        ImGui::PopStyleColor();
+    }
 }
 } // namespace Detail
 
@@ -2822,6 +3051,7 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
         // "label: valueText", where head/tail may hold its richer tooltipText.
         std::string_view compactHead;
         std::string_view compactTail;
+        bool rightAxis = false; // Drawn on the chart's right-hand axis: SECONDARY_AXIS_MARK after the value
     };
     static std::vector<Entry> entries; // UI thread only; reused
     entries.clear();
@@ -2830,36 +3060,36 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
     const ImGuiID slotsKey = (layoutId != nullptr) ? ImGui::GetID(layoutId) : 0;
     for (const NowBar& bar : bars)
     {
-        std::string_view head = bar.label;
+        // A right-hand-axis series is named without its " →", which follows its value (#1300).
+        const SeriesLabelParts label = splitSecondaryAxisMark(bar.label);
+        std::string_view head = label.name;
         std::string_view tail = bar.valueText;
         if (wrap && !bar.tooltipText.empty())
         {
-            // A tooltipText that starts with "label:" ("Handles: 266,257") splits like the fallback.
             const std::string_view tip = bar.tooltipText.view();
-            const bool labelled = !bar.label.empty() && tip.starts_with(bar.label) && tip.substr(bar.label.size()).starts_with(':');
-            head = labelled ? tip.substr(0, bar.label.size() + 1) : std::string_view{};
-            tail = labelled ? tip.substr(bar.label.size() + 1) : tip;
-            if (tail.starts_with(' '))
-            {
-                tail.remove_prefix(1);
-            }
+            const StripTextParts parts = splitStripText(tip, bar.label);
+            head = parts.head;
+            tail = parts.tail;
         }
         entries.push_back({.head = head,
                            .tail = tail,
                            .color = bar.color,
                            .marker = bar.marker,
                            .seriesLabel = bar.label,
-                           .compactHead = bar.label,
-                           .compactTail = bar.valueText});
+                           .compactHead = label.name,
+                           .compactTail = bar.valueText,
+                           .rightAxis = label.rightAxis});
     }
     for (const ValueStripEntry& entry : extras)
     {
-        entries.push_back({.head = entry.label,
+        const SeriesLabelParts label = splitSecondaryAxisMark(entry.label);
+        entries.push_back({.head = label.name,
                            .tail = entry.value,
                            .color = entry.color,
                            .seriesLabel = entry.label,
-                           .compactHead = entry.label,
-                           .compactTail = entry.value});
+                           .compactHead = label.name,
+                           .compactTail = entry.value,
+                           .rightAxis = label.rightAxis});
     }
     if (entries.empty())
     {
@@ -2885,13 +3115,13 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
     };
     for (Entry& entry : entries)
     {
-        if (Detail::valueStripEntryWidth(entry.head, entry.tail) <= rowWidth)
+        if (Detail::valueStripEntryWidth(entry.head, entry.tail, entry.rightAxis) <= rowWidth)
         {
             continue;
         }
         entry.head = entry.compactHead;
         entry.tail = entry.compactTail;
-        if (const float natural = Detail::valueStripEntryWidth(entry.head, entry.tail); natural > rowWidth)
+        if (const float natural = Detail::valueStripEntryWidth(entry.head, entry.tail, entry.rightAxis); natural > rowWidth)
         {
             const float tailBudget = rowWidth - (natural - textWidth(entry.tail));
             fittedTails.push_back(fitSeriesName(entry.tail, tailBudget, textWidth));
@@ -2918,7 +3148,7 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
     }
     for (std::size_t i = 0; i < entries.size(); ++i)
     {
-        const float natural = Detail::valueStripEntryWidth(entries[i].head, entries[i].tail);
+        const float natural = Detail::valueStripEntryWidth(entries[i].head, entries[i].tail, entries[i].rightAxis);
         // Never wider than the row: a slot held from a wider value must not push the entry past it.
         entries[i].slotWidth =
             std::min(rowWidth,
@@ -2958,8 +3188,17 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
     bool first = true;
     for (const Entry& entry : entries)
     {
-        Detail::drawValueStripEntry(
-            entry.head, entry.tail, entry.color, first, rowWraps, rowRight, muted, entry.marker, entry.slotWidth, entry.seriesLabel);
+        Detail::drawValueStripEntry(entry.head,
+                                    entry.tail,
+                                    entry.color,
+                                    first,
+                                    rowWraps,
+                                    rowRight,
+                                    muted,
+                                    entry.marker,
+                                    entry.slotWidth,
+                                    entry.seriesLabel,
+                                    entry.rightAxis);
         first = false;
     }
 }
@@ -3023,21 +3262,25 @@ inline void requestNowBarMotion(ImGuiID barId, double value01, float heightPx)
 }
 } // namespace Detail
 
-/// Width of renderHistoryWithNowBars()'s "Now" column for @p barColumnCount bars.
-[[nodiscard]] inline float nowBarColumnWidth(std::size_t barColumnCount)
+/// Width of renderHistoryWithNowBars()'s "Now" column for @p barColumnCount bars, in a row
+/// @p availableWidth wide (fittedNowBarWidth(); not positive: uncapped, full-width bars).
+[[nodiscard]] inline float nowBarColumnWidth(std::size_t barColumnCount, float availableWidth = -1.0F)
 {
     const float count = UI::Format::toFloatNarrow(Domain::Numeric::toDouble(barColumnCount));
-    const float spacing = (barColumnCount > 1) ? ImGui::GetStyle().ItemSpacing.x * (count - 1.0F) : 0.0F;
-    return (nowBarWidth(ImGui::GetFontSize()) * count) + spacing;
+    const float itemSpacing = ImGui::GetStyle().ItemSpacing.x;
+    const float spacing = (barColumnCount > 1) ? itemSpacing * (count - 1.0F) : 0.0F;
+    return (fittedNowBarWidth(ImGui::GetFontSize(), barColumnCount, itemSpacing, availableWidth) * count) + spacing;
 }
 
 /// Width renderHistoryWithNowBars() takes from the available width beside its chart: the "Now" column
 /// for max(@p barCount, @p minBarColumns) bars and, unless @p compactSpacing, the cell padding on each
-/// side of the boundary between the two columns. Errs on the wide side.
-[[nodiscard]] inline float nowBarsReservedWidth(std::size_t barCount, std::size_t minBarColumns, bool compactSpacing)
+/// side of the boundary between the two columns. Errs on the wide side: without @p availableWidth
+/// (the row renderHistoryWithNowBars() lays out in) it is the uncapped column.
+[[nodiscard]] inline float
+nowBarsReservedWidth(std::size_t barCount, std::size_t minBarColumns, bool compactSpacing, float availableWidth = -1.0F)
 {
     const float cellPadding = compactSpacing ? 0.0F : 2.0F * ImGui::GetStyle().CellPadding.x;
-    return nowBarColumnWidth(std::max(barCount, minBarColumns)) + cellPadding;
+    return nowBarColumnWidth(std::max(barCount, minBarColumns), availableWidth) + cellPadding;
 }
 
 /// @p plotFn draws the chart; it is called before this returns, and never stored. A template parameter
@@ -3070,12 +3313,18 @@ inline void renderHistoryWithNowBars(const char* tableId,
         return;
     }
 
+    // The row the chart and its bars share: the bars' column is capped to a share of it, so a narrow
+    // pane keeps most of its width for the chart (fittedNowBarWidth(), #1300). Charts stacked in one
+    // pane share the row width and minBarColumns, so their columns stay equal.
+    const float rowWidth = ImGui::GetContentRegionAvail().x;
+    const std::size_t barColumns = std::max(bars.size(), minBarColumns);
+
     if (values == NowBarValues::Strip)
     {
         // stripExtras: series the chart draws without a bar (a peak line), so the strip lists every
         // series its tooltip does. On the heading's line, right-aligned to the chart.
         renderNowBarValueStrip(
-            bars, stripExtras, ValueStripLayout::Wrap, tableId, nowBarsReservedWidth(bars.size(), minBarColumns, compactSpacing));
+            bars, stripExtras, ValueStripLayout::Wrap, tableId, nowBarsReservedWidth(bars.size(), minBarColumns, compactSpacing, rowWidth));
     }
 
     if (barsOnly)
@@ -3117,8 +3366,8 @@ inline void renderHistoryWithNowBars(const char* tableId,
     }
 
     const ImGuiStyle& style = ImGui::GetStyle();
-    const float barWidth = nowBarWidth(ImGui::GetFontSize());
-    const float columnWidth = nowBarColumnWidth(std::max(bars.size(), minBarColumns));
+    const float barWidth = fittedNowBarWidth(ImGui::GetFontSize(), barColumns, style.ItemSpacing.x, rowWidth);
+    const float columnWidth = nowBarColumnWidth(barColumns, rowWidth);
 
     int pushedVars = 0;
     if (compactSpacing)

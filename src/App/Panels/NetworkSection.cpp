@@ -209,17 +209,21 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         const auto& selectedIface = interfaces[static_cast<size_t>(selectedInterface)];
         if (selectedIface.linkSpeedMbps > 0)
         {
-            // In the rates' own unit, so it compares with them at a glance, then as the adapter is
-            // rated (#1202). Built once per link speed, not every frame (#1171).
+            // In bits, as the adapter is rated ("10 Gbit/s"); its byte-rate equivalent, which
+            // compares with the rates, on hover (#1373). Built once per link speed, not every
+            // frame (#1171).
             if (cache.linkTextMbps != selectedIface.linkSpeedMbps)
             {
-                auto text = std::format("Link: {} ({})",
-                                        UI::Format::formatLinkSpeed(selectedIface.linkSpeedMbps),
-                                        UI::Format::formatLinkSpeedNominal(selectedIface.linkSpeedMbps));
+                auto text = std::format("Link: {}", UI::Format::formatLinkSpeed(selectedIface.linkSpeedMbps));
                 cache.linkText = std::move(text);
                 cache.linkTextMbps = selectedIface.linkSpeedMbps;
             }
             ImGui::TextColored(theme.scheme().textMuted, "%s", cache.linkText.c_str());
+            if (ImGui::IsItemHovered())
+            {
+                const std::string byteRate = UI::Format::formatLinkSpeedAsByteRate(selectedIface.linkSpeedMbps);
+                ImGui::SetTooltip("Up to %s", byteRate.c_str());
+            }
         }
         else
         {
@@ -328,8 +332,9 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     // budget moves by half a pixel or more -- a resize or font change -- not every frame (#1171).
     constexpr std::size_t NET_BAR_COUNT = 2; // Sent and Received, as NETWORK_NOW_BAR_COLUMNS below
     constexpr float LABEL_BUDGET_REFIT_PX = 0.5F;
-    const float labelBudget =
-        UI::Widgets::seriesNameBudget(" Received", UI::Widgets::nowBarsReservedWidth(NET_BAR_COUNT, NET_BAR_COUNT, false));
+    // The same row width renderHistoryWithNowBars() caps its bar column against (#1300 review)
+    const float labelBudget = UI::Widgets::seriesNameBudget(
+        " Received", UI::Widgets::nowBarsReservedWidth(NET_BAR_COUNT, NET_BAR_COUNT, false, ImGui::GetContentRegionAvail().x));
     if (!cache.labelsBuilt || cache.labelsName != ifaceDisplayName || std::abs(cache.labelsBudget - labelBudget) >= LABEL_BUDGET_REFIT_PX)
     {
         cache.labelsBuilt = false;
@@ -530,11 +535,14 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     constexpr size_t NETWORK_NOW_BAR_COLUMNS = 2; // Sent, Recv
     // Drawn here rather than by renderHistoryWithNowBars() so it can list the totals behind an
     // interface (stripExtras) beside the bars' series; on the heading's line like every chart's.
-    UI::Widgets::renderNowBarValueStrip(netBars,
-                                        stripExtras,
-                                        UI::Widgets::ValueStripLayout::Wrap,
-                                        "SystemNetHistoryLayout",
-                                        UI::Widgets::nowBarsReservedWidth(netBars.size(), NETWORK_NOW_BAR_COLUMNS, false));
+    UI::Widgets::renderNowBarValueStrip(
+        netBars,
+        stripExtras,
+        UI::Widgets::ValueStripLayout::Wrap,
+        "SystemNetHistoryLayout",
+        // The row renderHistoryWithNowBars() below lays out in, so the strip
+        // reserves the same capped bar column the chart does (#1300 review)
+        UI::Widgets::nowBarsReservedWidth(netBars.size(), NETWORK_NOW_BAR_COLUMNS, false, ImGui::GetContentRegionAvail().x));
     renderHistoryWithNowBars(
         "SystemNetHistoryLayout", plotHeight, plot, netBars, false, NETWORK_NOW_BAR_COLUMNS, false, UI::Widgets::NowBarValues::None);
     if (ctx.fill != nullptr)
@@ -603,7 +611,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
             ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, typeColumnWidth);
             ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_None, 2.5F);
             ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_None, 0.8F);
-            ImGui::TableSetupColumn("Speed", ImGuiTableColumnFlags_None, 1.2F); // A rate, like Sent and Received (#1202)
+            ImGui::TableSetupColumn("Speed", ImGuiTableColumnFlags_None, 1.2F); // The link speed, in bits (#1373)
             // Sent/Received, the words the charts and the process table use (#1203)
             ImGui::TableSetupColumn("Sent", ImGuiTableColumnFlags_None, 1.2F);
             ImGui::TableSetupColumn("Received", ImGuiTableColumnFlags_None, 1.2F);
@@ -658,14 +666,14 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                 ImGui::TableNextColumn();
                 if (iface.linkSpeedMbps > 0)
                 {
-                    // The same unit as the Sent and Received columns beside it; the rated speed
-                    // ("1 Gbps") on hover (#1202).
+                    // In bits, as the adapter is rated ("10 Gbit/s"); the byte rate it carries at
+                    // most, in the Sent and Received columns' unit, on hover (#1373).
                     const std::string speedText = UI::Format::formatLinkSpeed(iface.linkSpeedMbps);
                     ImGui::TextUnformatted(speedText.c_str());
                     if (ImGui::IsItemHovered())
                     {
-                        const std::string rated = UI::Format::formatLinkSpeedNominal(iface.linkSpeedMbps);
-                        ImGui::SetTooltip("Rated %s", rated.c_str());
+                        const std::string byteRate = UI::Format::formatLinkSpeedAsByteRate(iface.linkSpeedMbps);
+                        ImGui::SetTooltip("Up to %s", byteRate.c_str());
                     }
                 }
                 else
@@ -721,13 +729,19 @@ void renderNetworkSection(RenderContext& ctx)
     // The charts share the tab's height like every other tab's (#959). With one disk that is just
     // the network chart and the disk chart. With several, the per-disk grid still takes whatever
     // is left, so it is not measured: it is reserved one share of the height, and the fill scope
-    // closes before it renders. The network chart and the grid then split the tab between them.
+    // closes before it renders. The network chart and the grid then split the tab between them --
+    // but the grid always keeps at least its rows at their minimum height. One share alone let the
+    // filling network chart (#1278) take height the grid's rows needed, and the tab scrolled with
+    // eight disks in an 800x1400 region (#1370 review).
     const bool diskGrid = StorageSection::usesDiskGrid(ctx.storagePublication);
     {
         std::optional<UI::Widgets::FillPlotLayout> fill;
         if (ctx.fillState != nullptr)
         {
-            fill.emplace(*ctx.fillState, diskGrid ? 1U : 0U);
+            // Measured at the width the grid will be drawn at: this tab's content region.
+            const float gridMinimum =
+                diskGrid ? StorageSection::diskGridMinimumHeight(ctx.storagePublication, ImGui::GetContentRegionAvail().x) : 0.0F;
+            fill.emplace(*ctx.fillState, diskGrid ? 1U : 0U, gridMinimum);
             ctx.fill = &*fill;
         }
 
