@@ -3,13 +3,44 @@
 #
 # Usage:
 #   ./tools/profile-perf.sh app   [--preset <preset>] [--skip-build]
+#                                 [--warmup <seconds>] [--duration <seconds>] [--include-startup]
 #   ./tools/profile-perf.sh bench [--preset <preset>] [--skip-build]
 #                                 [--bench-filter <regex>] [--bench-reps <n>]
 #                                 [--bench-min-time <t>]
 #
 # Modes:
-#   app   — launch TaskSmack, wait for it to exit, then stop perf. Default preset: profile.
+#   app   — launch TaskSmack, let it start up and warm up, then attach perf and record its
+#           steady state until it exits (or for --duration seconds). Default preset: profile.
 #   bench — run TaskSmackBenchmarks under perf with a benchmark filter. Default preset: benchmark.
+#
+# App-mode options:
+#   --warmup <seconds>   Once TaskSmack's main loop is running, wait this long before perf
+#                        attaches, so font/theme loading and the first process enumerations stay
+#                        out of the profile. Default: 5. 0 attaches as soon as the loop starts.
+#   --duration <seconds> Record for this long, then close TaskSmack (SIGTERM) automatically.
+#                        Default: 0 = record until you close TaskSmack (or press Ctrl+C, which
+#                        stops the capture and closes TaskSmack).
+#   --include-startup    Launch TaskSmack under perf as before, so startup is profiled too, until
+#                        you close it. --warmup is ignored; --duration cannot be combined with it.
+#
+# Steady-state captures wait for TaskSmack to log "Entering main loop" (up to 30 s; launched with
+# TASKSMACK_LOG_LEVEL=info unless already set, so release builds log it too), then for --warmup.
+# In every app capture, --include-startup included, TaskSmack's own stdout and stderr go to
+# perf-app-<timestamp>-app.log; perf's messages stay on the terminal and in the session log.
+#
+# The run fails if TaskSmack exits before recording starts, before --duration elapses, or with a
+# non-zero exit code. When the script closes TaskSmack (after --duration or Ctrl+C), a clean exit
+# after SIGTERM (code 0) passes; needing SIGKILL after 10 s, or any other exit code, fails.
+#
+# The preset, its build directory, build type, compiler and CMAKE_CXX_FLAGS* entries are printed and
+# written to the log, so every profile says what it measured. So are the real compile flags of one of
+# the profiled binary's src/ files (src/main.cpp for the app), read from the build's
+# compile_commands.json, which include add_compile_options() flags such as a TASKSMACK_MARCH -march,
+# -stdlib=libc++ and the release hardening flags; the log also has that file's full compile command.
+# Without compile_commands.json or python3 the script notes that and logs the cache entries only.
+# The default app preset, profile, is an
+# -O2 build with frame pointers kept for better stacks; pass --preset release to profile the
+# shipped build's code generation instead.
 #
 # Outputs under perf-data/:
 #   perf-<mode>-<timestamp>.data   — perf sample data (pass to analyze-perf.sh or hotspot)
@@ -18,6 +49,8 @@
 # Examples:
 #   ./tools/profile-perf.sh app
 #   ./tools/profile-perf.sh app --preset profile
+#   ./tools/profile-perf.sh app --warmup 10 --duration 30
+#   ./tools/profile-perf.sh app --include-startup
 #   ./tools/profile-perf.sh bench --bench-filter 'BM_ProcessModel_Refresh$'
 #   ./tools/profile-perf.sh bench --preset profile --bench-filter 'BM_(ProcessProbe|ProcessModel)'
 #
@@ -47,12 +80,17 @@ MODE="${1:-}"
 shift || true
 
 if [[ -z "${MODE}" || ( "${MODE}" != "app" && "${MODE}" != "bench" ) ]]; then
-    echo "Usage: $0 app|bench [--preset <preset>] [--skip-build] [--bench-filter <regex>] [--bench-reps <n>] [--bench-min-time <t>]" >&2
+    echo "Usage: $0 app   [--preset <preset>] [--skip-build] [--warmup <seconds>] [--duration <seconds>] [--include-startup]" >&2
+    echo "       $0 bench [--preset <preset>] [--skip-build] [--bench-filter <regex>] [--bench-reps <n>] [--bench-min-time <t>]" >&2
     exit 1
 fi
 
 PRESET=""
 SKIP_BUILD=0
+WARMUP_SECONDS=5
+DURATION_SECONDS=0
+INCLUDE_STARTUP=0
+APP_OPTION_GIVEN=""
 BENCH_FILTER='BM_(ProcessProbe_Enumerate|ProcessModel_Refresh|SystemProbe_Sample|SystemModel_Refresh|GPUProbe_ReadCounters|GPUModel_Refresh)$'
 BENCH_REPS=5
 BENCH_MIN_TIME="0.5s"
@@ -64,9 +102,26 @@ while [[ $# -gt 0 ]]; do
         --bench-filter) [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_FILTER="$2";  shift 2 ;;
         --bench-reps)   [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_REPS="$2";    shift 2 ;;
         --bench-min-time) [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_MIN_TIME="$2"; shift 2 ;;
+        --warmup)       [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; WARMUP_SECONDS="$2"; APP_OPTION_GIVEN="$1"; shift 2 ;;
+        --duration)     [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; DURATION_SECONDS="$2"; APP_OPTION_GIVEN="$1"; shift 2 ;;
+        --include-startup) INCLUDE_STARTUP=1; APP_OPTION_GIVEN="$1"; shift ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
 done
+
+if [[ "${MODE}" != "app" && -n "${APP_OPTION_GIVEN}" ]]; then
+    echo "ERROR: ${APP_OPTION_GIVEN} applies to app mode only" >&2
+    exit 1
+fi
+[[ "${WARMUP_SECONDS}" =~ ^[0-9]+$ ]]   || { echo "ERROR: --warmup must be a whole number of seconds" >&2; exit 1; }
+[[ "${DURATION_SECONDS}" =~ ^[0-9]+$ ]] || { echo "ERROR: --duration must be a whole number of seconds" >&2; exit 1; }
+# Base 10: Bash reads a leading zero as octal in -gt and $(( )), so "08" would abort.
+WARMUP_SECONDS=$((10#${WARMUP_SECONDS}))
+DURATION_SECONDS=$((10#${DURATION_SECONDS}))
+if [[ "${INCLUDE_STARTUP}" -eq 1 && "${DURATION_SECONDS}" -gt 0 ]]; then
+    echo "ERROR: --duration cannot be combined with --include-startup (close TaskSmack to end that capture)" >&2
+    exit 1
+fi
 
 # Default preset depends on mode
 if [[ -z "${PRESET}" ]]; then
@@ -161,6 +216,89 @@ fi
 
 [[ -x "${BINARY}" ]] || die "Binary not found or not executable: ${BINARY}. Build with: cmake --build --preset ${PRESET}"
 
+# What was profiled (#1371): the preset's build type and compiler flags, read from its CMake cache,
+# so a profile of the -O2 frame-pointer `profile` build is never mistaken for the shipped release.
+BUILD_DIR="${REPO_ROOT}/build/${PRESET}"
+cmake_cache_value() {
+    local cache="${BUILD_DIR}/CMakeCache.txt"
+    [[ -f "${cache}" ]] || return 0
+    sed -n "s/^$1:[A-Z]*=//p" "${cache}" | head -n 1
+}
+BUILD_TYPE="$(cmake_cache_value CMAKE_BUILD_TYPE)"
+BUILD_TYPE_UPPER="$(printf '%s' "${BUILD_TYPE}" | tr '[:lower:]' '[:upper:]')"
+CXX_FLAGS="$(cmake_cache_value CMAKE_CXX_FLAGS)"
+if [[ -n "${BUILD_TYPE_UPPER}" ]]; then
+    CXX_FLAGS="${CXX_FLAGS:+${CXX_FLAGS} }$(cmake_cache_value "CMAKE_CXX_FLAGS_${BUILD_TYPE_UPPER}")"
+fi
+CXX_COMPILER="$(cmake_cache_value CMAKE_CXX_COMPILER)"
+
+# The CMAKE_CXX_FLAGS* cache entries miss everything added with add_compile_options() or
+# target_compile_options(): a TASKSMACK_MARCH override's -march, -stdlib=libc++, the release
+# hardening flags. So also log the real compile command of one of the profiled binary's own src/
+# translation units, from compile_commands.json (every preset sets CMAKE_EXPORT_COMPILE_COMMANDS).
+# COMPILE_FLAGS is that command without the compiler, include paths and per-file arguments.
+COMPILE_DB="${BUILD_DIR}/compile_commands.json"
+COMPILE_TU=""
+COMPILE_COMMAND=""
+COMPILE_FLAGS=""
+COMPILE_NOTE=""
+if [[ ! -f "${COMPILE_DB}" ]]; then
+    COMPILE_NOTE="no ${COMPILE_DB}; reconfigure the preset to get the full compile command"
+elif ! command -v python3 &>/dev/null; then
+    COMPILE_NOTE="python3 not found; compile command not read from ${COMPILE_DB}"
+else
+    # Prints three lines: the translation unit, its full command, and the filtered flags.
+    COMPILE_INFO="$(python3 - "${COMPILE_DB}" "${REPO_ROOT}/src/" "$(basename "${BINARY}")" <<'PY' || true
+import json, shlex, sys
+
+db_path, src_root, target = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(db_path, encoding="utf-8") as f:
+    entries = json.load(f)
+
+def is_src(e):
+    return e.get("file", "").startswith(src_root)
+
+def from_target(e):
+    return f"/{target}.dir/" in e.get("output", "")
+
+def rank(e):
+    # The binary's own main.cpp first, then any of its src/ files, then any src/ file.
+    if from_target(e) and e["file"].endswith("/src/main.cpp"):
+        return 0
+    return 1 if from_target(e) else 2
+
+candidates = sorted((e for e in entries if is_src(e)), key=rank)
+if not candidates:
+    sys.exit(1)
+entry = candidates[0]
+args = entry.get("arguments") or shlex.split(entry["command"])
+flags, i = [], 1
+while i < len(args):
+    arg = args[i]
+    nxt = args[i + 1] if i + 1 < len(args) else ""
+    if arg == "-Xclang" and nxt in ("-include-pch", "-include"):
+        i += 4  # -Xclang -include-pch -Xclang <path>: the precompiled header
+        continue
+    if arg in ("-o", "-c", "-MF", "-MT", "-MQ", "-isystem", "-I", "-include"):
+        i += 2
+        continue
+    if not (arg.startswith(("-I", "-isystem", "@")) or arg in ("-MD", "-Winvalid-pch", entry["file"])):
+        flags.append(arg)
+    i += 1
+print(entry["file"])
+print(shlex.join(args))
+print(" ".join(flags))
+PY
+)"
+    if [[ -n "${COMPILE_INFO}" ]]; then
+        COMPILE_TU="$(sed -n 1p <<<"${COMPILE_INFO}")"
+        COMPILE_COMMAND="$(sed -n 2p <<<"${COMPILE_INFO}")"
+        COMPILE_FLAGS="$(sed -n 3p <<<"${COMPILE_INFO}")"
+    else
+        COMPILE_NOTE="no src/ translation unit found in ${COMPILE_DB}"
+    fi
+fi
+
 # In bench mode, warn if the filter matches multiple benchmarks. Google Benchmark scales
 # iteration count (not time) to fill --benchmark_min_time per benchmark, so a cheap
 # per-call benchmark gets looped far more times than an expensive one to fill the same
@@ -195,17 +333,45 @@ fi
 
 # ── capture ───────────────────────────────────────────────────────────────────
 print_step "Starting perf capture (mode=${MODE}, preset=${PRESET})"
-info "Data:   ${DATA_FILE}"
-info "Log:    ${LOG_FILE}"
-info "Binary: ${BINARY}"
+info "Preset:     ${PRESET}"
+info "Build dir:  ${BUILD_DIR}"
+info "Build type: ${BUILD_TYPE:-<unknown: no CMakeCache.txt>}"
+info "CXX flags:  ${CXX_FLAGS:-<unknown>} (CMAKE_CXX_FLAGS* cache entries only)"
+info "Compiler:   ${CXX_COMPILER:-<unknown>}"
+if [[ -n "${COMPILE_FLAGS}" ]]; then
+    info "Compiled:   ${COMPILE_FLAGS}"
+    info "            (from ${COMPILE_TU#"${REPO_ROOT}/"}; full command in the log)"
+else
+    echo "NOTE: ${COMPILE_NOTE}; only the CMAKE_CXX_FLAGS* cache entries above are known, which miss" >&2
+    echo "      add_compile_options()/target_compile_options() flags such as -march or -stdlib." >&2
+fi
+info "Binary:     ${BINARY}"
+info "Data:       ${DATA_FILE}"
+info "Log:        ${LOG_FILE}"
 
 {
     echo "PROFILE_MODE=${MODE}"
     echo "PRESET=${PRESET}"
+    echo "BUILD_DIR=${BUILD_DIR}"
+    echo "BUILD_TYPE=${BUILD_TYPE}"
+    echo "CXX_FLAGS=${CXX_FLAGS}"
+    echo "CXX_COMPILER=${CXX_COMPILER}"
+    if [[ -n "${COMPILE_FLAGS}" ]]; then
+        echo "COMPILE_TU=${COMPILE_TU}"
+        echo "COMPILE_FLAGS=${COMPILE_FLAGS}"
+        echo "COMPILE_COMMAND=${COMPILE_COMMAND}"
+    else
+        echo "COMPILE_NOTE=${COMPILE_NOTE}"
+    fi
     echo "BINARY=${BINARY}"
     echo "DATA_FILE=${DATA_FILE}"
     echo "TIMESTAMP=${TIMESTAMP}"
     echo "PERF_EVENT=${PERF_EVENT}"
+    if [[ "${MODE}" = "app" ]]; then
+        echo "INCLUDE_STARTUP=${INCLUDE_STARTUP}"
+        echo "WARMUP_SECONDS=${WARMUP_SECONDS}"
+        echo "DURATION_SECONDS=${DURATION_SECONDS}"
+    fi
 } > "${LOG_FILE}"
 
 # perf record flags:
@@ -218,15 +384,168 @@ info "Binary: ${BINARY}"
 PERF_RECORD_FLAGS=(-e "${PERF_EVENT}" -F 997 -g --call-graph dwarf -o "${DATA_FILE}")
 
 PERF_EXIT_CODE=0
-if [[ "${MODE}" = "app" ]]; then
+# Every app capture keeps TaskSmack's own stdout/stderr here, apart from perf's messages.
+APP_LOG="${PERF_DIR}/${PREFIX}-${TIMESTAMP}-app.log"
+if [[ "${MODE}" = "app" && "${INCLUDE_STARTUP}" -eq 1 ]]; then
+    info "App log:    ${APP_LOG}"
+    echo "APP_LOG=${APP_LOG}" >> "${LOG_FILE}"
     echo ""
-    echo "Launching TaskSmack under perf. Exercise the application, then close it."
+    echo "Launching TaskSmack under perf (startup included). Exercise the application, then close it."
     echo ""
+    # perf record exits with the workload's exit status, so a crash or early failure fails the run.
+    # The workload is a shell that redirects its output to the app log and then execs TaskSmack in
+    # the same process, so perf keeps following it and perf's own stderr still reaches the terminal.
     set +e
-    perf record "${PERF_RECORD_FLAGS[@]}" -- "${BINARY}" 2> >(tee -a "${LOG_FILE}" >&2)
+    # shellcheck disable=SC2016 # $1/$2 are expanded by the inner shell, not here
+    perf record "${PERF_RECORD_FLAGS[@]}" -- /bin/sh -c 'exec "$1" > "$2" 2>&1' sh "${BINARY}" "${APP_LOG}" \
+        2> >(tee -a "${LOG_FILE}" >&2)
     PERF_EXIT_CODE=$?
     set -e
     echo "EXIT_CODE=${PERF_EXIT_CODE}" >> "${LOG_FILE}"
+elif [[ "${MODE}" = "app" ]]; then
+    # Steady-state capture (#1371): launch TaskSmack on its own, wait for its main loop plus a
+    # warm-up, then attach perf to the running process, so startup costs (fonts, themes, the first
+    # process enumeration) stay out of the profile.
+    MAIN_LOOP_TIMEOUT_SECONDS=30
+    MAIN_LOOP_MARKER="Entering main loop" # Logged by Core::Application::run() at info level
+    APP_PID=""
+    APP_EXIT_CODE=""
+    INTERRUPTED=0
+
+    app_alive() { [[ -n "${APP_PID}" ]] && kill -0 "${APP_PID}" 2>/dev/null; }
+    reap_app() {
+        [[ -n "${APP_PID}" ]] || return 0
+        set +e
+        wait "${APP_PID}"
+        APP_EXIT_CODE=$?
+        set -e
+        APP_PID=""
+    }
+    # SIGTERM (SDL turns it into a normal quit), then SIGKILL if it hasn't exited after 10 s.
+    APP_KILLED=0
+    stop_app() {
+        [[ -n "${APP_PID}" ]] || return 0
+        if app_alive; then
+            kill -TERM "${APP_PID}" 2>/dev/null || true
+            local i
+            for ((i = 0; i < 20; i++)); do
+                app_alive || break
+                sleep 0.5
+            done
+            if app_alive; then
+                kill -KILL "${APP_PID}" 2>/dev/null || true
+                APP_KILLED=1
+            fi
+        fi
+        reap_app
+    }
+    # Fails the run if TaskSmack is gone or the user pressed Ctrl+C before recording started.
+    check_still_waiting() {
+        if [[ "${INTERRUPTED}" -eq 1 ]]; then
+            stop_app
+            die "Interrupted before recording started; nothing was captured."
+        fi
+        if ! app_alive; then
+            reap_app
+            echo "APP_EXIT_CODE=${APP_EXIT_CODE}" >> "${LOG_FILE}"
+            die "TaskSmack exited (code ${APP_EXIT_CODE}) before recording started; nothing was captured. See ${APP_LOG}."
+        fi
+    }
+
+    # A background job in a non-interactive shell ignores SIGINT, so Ctrl+C reaches perf and this
+    # script but not TaskSmack: note it here and close TaskSmack ourselves. Never leave it running.
+    trap 'INTERRUPTED=1' INT
+    trap 'stop_app' EXIT
+
+    info "App log:    ${APP_LOG}"
+    echo "APP_LOG=${APP_LOG}" >> "${LOG_FILE}"
+    # Release builds log at warn by default; info makes them print the main-loop marker too.
+    # A TASKSMACK_LOG_LEVEL already in the environment wins.
+    TASKSMACK_LOG_LEVEL="${TASKSMACK_LOG_LEVEL:-info}" "${BINARY}" > "${APP_LOG}" 2>&1 &
+    APP_PID=$!
+    echo "APP_PID=${APP_PID}" >> "${LOG_FILE}"
+
+    echo ""
+    echo "Launched TaskSmack (pid ${APP_PID}). Waiting for its main loop (up to ${MAIN_LOOP_TIMEOUT_SECONDS}s)..."
+    MAIN_LOOP_DEADLINE=$((SECONDS + MAIN_LOOP_TIMEOUT_SECONDS))
+    MAIN_LOOP_SEEN=0
+    while ((SECONDS < MAIN_LOOP_DEADLINE)); do
+        check_still_waiting
+        if grep -q "${MAIN_LOOP_MARKER}" "${APP_LOG}" 2>/dev/null; then
+            MAIN_LOOP_SEEN=1
+            break
+        fi
+        sleep 0.25
+    done
+    check_still_waiting
+    if [[ "${MAIN_LOOP_SEEN}" -eq 0 ]]; then
+        echo "WARNING: TaskSmack did not log '${MAIN_LOOP_MARKER}' within ${MAIN_LOOP_TIMEOUT_SECONDS}s; continuing with the warm-up alone." >&2
+    fi
+    echo "MAIN_LOOP_SEEN=${MAIN_LOOP_SEEN}" >> "${LOG_FILE}"
+
+    if [[ "${WARMUP_SECONDS}" -gt 0 ]]; then
+        echo "Warming up for ${WARMUP_SECONDS}s before perf attaches..."
+        for ((i = 0; i < WARMUP_SECONDS; i++)); do
+            check_still_waiting
+            sleep 1
+        done
+        check_still_waiting
+    fi
+
+    PERF_TARGET_ARGS=(-p "${APP_PID}")
+    echo ""
+    if [[ "${DURATION_SECONDS}" -gt 0 ]]; then
+        PERF_TARGET_ARGS+=(-- sleep "${DURATION_SECONDS}")
+        echo "Recording TaskSmack for ${DURATION_SECONDS}s; it is closed automatically afterwards."
+    else
+        echo "Recording TaskSmack. Exercise the application, then close it (Ctrl+C also stops the capture and closes it)."
+    fi
+    echo ""
+    set +e
+    perf record "${PERF_RECORD_FLAGS[@]}" "${PERF_TARGET_ARGS[@]}" 2> >(tee -a "${LOG_FILE}" >&2)
+    PERF_EXIT_CODE=$?
+    set -e
+    echo "EXIT_CODE=${PERF_EXIT_CODE}" >> "${LOG_FILE}"
+
+    # perf record -p exits 0 when its target exits, whatever the target's exit code, so check the
+    # app's own status: a crash, or an exit before --duration elapsed, fails the run.
+    if app_alive; then
+        # TaskSmack quits cleanly on SIGTERM: SDL turns it into SDL_EVENT_QUIT, the main loop ends and
+        # main() returns 0. Anything else -- the SIGKILL fallback for a hang (137), or a crash during
+        # shutdown (e.g. 134 for SIGABRT, 139 for SIGSEGV) -- fails the run.
+        stop_app
+        if [[ "${APP_KILLED}" -eq 1 ]]; then
+            END_REASON="did not exit within 10s of SIGTERM and was killed with SIGKILL"
+            APP_FAILED=1
+        elif [[ "${APP_EXIT_CODE}" -ne 0 ]]; then
+            END_REASON="exited with a non-zero code after the script's SIGTERM (after --duration or Ctrl+C)"
+            APP_FAILED=1
+        else
+            END_REASON="closed cleanly by the script's SIGTERM (after --duration or Ctrl+C)"
+            APP_FAILED=0
+        fi
+    else
+        reap_app
+        if [[ "${DURATION_SECONDS}" -gt 0 && "${INTERRUPTED}" -eq 0 ]]; then
+            END_REASON="exited on its own before --duration elapsed"
+            APP_FAILED=1
+        elif [[ "${APP_EXIT_CODE}" -ne 0 ]]; then
+            END_REASON="exited with a non-zero code"
+            APP_FAILED=1
+        else
+            END_REASON="closed by the user"
+            APP_FAILED=0
+        fi
+    fi
+    {
+        echo "APP_EXIT_CODE=${APP_EXIT_CODE}"
+        echo "APP_END_REASON=${END_REASON}"
+    } >> "${LOG_FILE}"
+    trap - INT EXIT
+    if [[ "${APP_FAILED}" -eq 1 ]]; then
+        die "TaskSmack ${END_REASON} (code ${APP_EXIT_CODE}). The trace at ${DATA_FILE} was kept but the run failed; see ${APP_LOG}."
+    fi
+    info "TaskSmack ${END_REASON} (code ${APP_EXIT_CODE})."
 else
     set +e
     perf record "${PERF_RECORD_FLAGS[@]}" -- \
