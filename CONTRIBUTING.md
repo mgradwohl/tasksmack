@@ -690,6 +690,10 @@ python -m google_benchmark.compare perf-data/linux-baseline.json perf-data/bench
 
 ### CI Benchmark Regression Gate
 
+PR CI (`ci.yml`'s Linux Release job) only *builds* `TaskSmackBenchmarks` -- it never runs it -- so a
+change that breaks the benchmark build fails the PR (#1348). Timing runs and the regression gate below
+live only in `heavy-checks.yml`.
+
 `heavy-checks.yml`'s `benchmark-regression` job runs on every push to `main`, gating against
 `perf-data/linux-ci-baseline.json` via `tools/check-benchmark-regression.py` (40% threshold,
 comparing medians of `tools/bench.sh`'s 10 repetitions per benchmark) -- a failure here **fails
@@ -1468,8 +1472,8 @@ Override the cache dir with `TASKSMACK_FETCHCONTENT_CACHE_DIR` or `FETCHCONTENT_
 We use GitHub Actions for our CI workflows. They are categorized as follows:
 
 ### Core Build & Test
-- **`ci.yml`**: The primary hub. Runs on pushes to `main`/`dev/**`, all PRs, merge-queue merge groups, weekly, and via manual dispatch. It detects docs-only changes (for both pull requests and merge groups -- `dorny/paths-filter` supports `merge_group` natively) to skip C++ builds and `clang-tidy`. It runs Linux and Windows Debug builds on push/PR/merge-group, Release builds on schedule/dispatch, checks markdown links, runs `clang-tidy` (blocking) on Linux and on Windows on PRs/merge groups/schedule/dispatch (skipped on docs-only PRs and merge groups, and on plain pushes to `main`, which `static-analysis.yml` already covers; the Windows job is also skipped when every change is Linux-only), runs IWYU (include analysis) only via manual dispatch, and runs a non-blocking advisory Address/Undefined Behavior sanitizer on PRs. It outputs a `ci-success` gate job used for branch protection.
-- **`reusable-build-test.yml`**: Contains the actual matrix steps for setting up LLVM, Python, `ccache`, configuring CMake, building, and running CTest tests. Called by other workflows.
+- **`ci.yml`**: The primary hub. Runs on pushes to `main`/`dev/**`, all PRs, merge-queue merge groups, weekly, and via manual dispatch. It detects docs-only changes (for both pull requests and merge groups -- `dorny/paths-filter` supports `merge_group` natively) to skip C++ builds and `clang-tidy`. It runs Linux and Windows Debug builds on push/PR/merge-group, a Linux Release build on the same events plus the weekly schedule (Windows Release runs on push/schedule/dispatch only), compiles and links (but does not run) `TaskSmackBenchmarks` in that Linux Release job so a PR that breaks the benchmark build fails CI (#1348), checks markdown links, runs `clang-tidy` (blocking) on Linux and on Windows on PRs/merge groups/schedule/dispatch (skipped on docs-only PRs and merge groups, and on plain pushes to `main`, which `static-analysis.yml` already covers; the Windows job is also skipped when every change is Linux-only), runs IWYU (include analysis) only via manual dispatch, and runs a non-blocking advisory Address/Undefined Behavior sanitizer on PRs. It outputs a `ci-success` gate job used for branch protection.
+- **`reusable-build-test.yml`**: Contains the actual matrix steps for setting up LLVM, Python, `ccache`, configuring CMake, building, and running CTest tests, plus an optional Linux build-only `TaskSmackBenchmarks` step (`build_benchmarks` input). Called by other workflows.
 - **`manual-build.yml`**: Manual dispatch entry point to trigger a specific OS and build type build from the GitHub UI without opening a PR.
 
 ### Security & Fuzzing
