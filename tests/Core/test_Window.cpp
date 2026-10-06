@@ -542,7 +542,6 @@ TEST_F(WindowTest, ShellMinimizeWithoutWinDownStillMinimizesTheMaximizedWindow)
         FAIL() << "Window creation failed unexpectedly: " << e.what();
     }
 }
-#endif
 
 // #1279: the fix itself. With Win+Down held, the shell's minimize of the client-side maximized
 // window is dropped and the window is restored to its normal rectangle instead, as the first
@@ -612,6 +611,7 @@ TEST_F(WindowTest, MinimizeAlreadyCarriedOutWithWinDownIsUndoneAndRestored)
         FAIL() << "Window creation failed unexpectedly: " << e.what();
     }
 }
+#endif // _WIN32: the shell's Win+Down minimize is Windows behaviour (#1279)
 
 TEST_F(WindowTest, SetHitTestCallbackDoesNotThrow)
 {
