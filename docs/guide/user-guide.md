@@ -76,7 +76,7 @@ The process table is the primary view. It lists all running processes with these
 - **State** — what the process is doing (Running, Sleeping, and so on). Windows has no process state of its own, so there it comes from the process's threads: Running if any thread is running or ready to run, Stopped if every thread is suspended (a suspended app), otherwise Sleeping. The System Idle Process is Idle, and a process with no threads to judge by (Secure System) is Unknown.
 - **CPU %** — percentage of total CPU time consumed since the last sample
 - **Mem %** — percentage of physical RAM used
-- **Memory / Virtual / Shared / Peak Mem** — resident, virtual, shared, and peak resident memory sizes. Peak Mem is the largest resident size over the process's whole life as the OS records it (Linux: `VmHWM`; Windows: peak working set), not only since TaskSmack started.
+- **Memory / Virtual / Shared / Peak Mem** — resident, virtual, shared, and peak resident memory sizes. Peak Mem is the larger of the OS's high-water mark (Linux: `VmHWM`; Windows: peak working set) and the highest peak TaskSmack has seen for the process, so it can reach back before TaskSmack started. On Linux `VmHWM` resets when a process runs a new program (`exec`); TaskSmack keeps the higher peak it saw before the reset, but a peak from before an `exec` that happened before monitoring began is lost.
 - **CPU Time** — cumulative CPU time, as a duration ("45s", "2m 05s", "1h 02m")
 - **PPID** — parent process ID
 - **Priority** — scheduling priority (from the nice value)

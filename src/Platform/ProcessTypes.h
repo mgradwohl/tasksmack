@@ -30,8 +30,8 @@ struct ProcessCounters
 
     // Memory (bytes)
     std::uint64_t rssBytes = 0;
-    std::uint64_t peakRssBytes = 0; // Peak resident size over the process's life, 0 = unknown (Linux: VmHWM;
-                                    // Windows: PeakWorkingSetSize)
+    std::uint64_t peakRssBytes = 0; // OS-reported peak resident size, 0 = unknown (Linux: VmHWM, which resets on
+                                    // exec; Windows: PeakWorkingSetSize). Domain keeps the highest peak it observed.
     std::uint64_t virtualBytes = 0;
     std::uint64_t sharedBytes = 0; // Shared memory (from statm on Linux)
 
