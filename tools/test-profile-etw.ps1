@@ -154,6 +154,18 @@ try {
     Assert-True ($flags.BuildType -eq 'Release' -and $flags.CxxConfigFlags -eq '-O3 -DNDEBUG -march=x86-64-v3' -and $flags.Ipo -eq 'ON') "Flags not read: $($flags | ConvertTo-Json -Compress)"
     $flagLine = Format-PresetBuildFlags -Preset 'win-optimized' -Flags $flags
     Assert-True ($flagLine -like '*win-optimized*-fms-compatibility -O3 -DNDEBUG -march=x86-64-v3*IPO/LTO: ON*') "Flag line: $flagLine"
+    # A normal win-release cache has no CMAKE_INTERPROCEDURAL_OPTIMIZATION entry: LTO comes from the
+    # cached TASKSMACK_ENABLE_IPO option, and must not be reported as OFF (#1372 review).
+    $releaseBuild = Join-Path $root 'build-release-fake'
+    New-Item -ItemType Directory -Path $releaseBuild | Out-Null
+    Set-Content -LiteralPath (Join-Path $releaseBuild 'CMakeCache.txt') -Encoding ascii -Value @(
+        'CMAKE_BUILD_TYPE:STRING=Release'
+        'CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -DNDEBUG'
+        'TASKSMACK_ENABLE_IPO:BOOL=ON'
+    )
+    $releaseFlags = Get-PresetBuildFlags -BuildDirectory $releaseBuild
+    Assert-True ($releaseFlags.Ipo -like 'ON*TASKSMACK_ENABLE_IPO*') "IPO from the option not read: $($releaseFlags.Ipo)"
+    Assert-True ((Format-PresetBuildFlags -Preset 'win-release' -Flags $releaseFlags) -notlike '*IPO/LTO: OFF*') 'A default release cache must not report LTO off'
     $noFlags = Get-PresetBuildFlags -BuildDirectory (Join-Path $root 'no-such-build')
     Assert-True ($null -eq $noFlags.BuildType -and (Format-PresetBuildFlags -Preset 'x' -Flags $noFlags) -like '*compile flags unknown*') 'A missing build tree must be reported as unknown flags'
 

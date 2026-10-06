@@ -245,7 +245,12 @@ function Get-PresetBuildFlags {
     $flags.BuildType = $cache['CMAKE_BUILD_TYPE']
     $flags.CxxFlags = $cache['CMAKE_CXX_FLAGS']
     if ($flags.BuildType) { $flags.CxxConfigFlags = $cache["CMAKE_CXX_FLAGS_$($flags.BuildType.ToUpperInvariant())"] }
-    $flags.Ipo = if ($cache.ContainsKey('CMAKE_INTERPROCEDURAL_OPTIMIZATION')) { $cache['CMAKE_INTERPROCEDURAL_OPTIMIZATION'] } else { 'OFF' }
+    # A preset can cache CMAKE_INTERPROCEDURAL_OPTIMIZATION itself; otherwise CompilerOptions.cmake sets
+    # it as a plain variable from the TASKSMACK_ENABLE_IPO option (ON by default), which is cached --
+    # so a normal win-release cache has LTO on with no CMAKE_INTERPROCEDURAL_OPTIMIZATION entry (#1372 review).
+    $flags.Ipo = if ($cache.ContainsKey('CMAKE_INTERPROCEDURAL_OPTIMIZATION')) { $cache['CMAKE_INTERPROCEDURAL_OPTIMIZATION'] }
+    elseif ($cache.ContainsKey('TASKSMACK_ENABLE_IPO')) { "$($cache['TASKSMACK_ENABLE_IPO']) (TASKSMACK_ENABLE_IPO, where the compiler supports it)" }
+    else { 'unknown' }
     return $flags
 }
 
