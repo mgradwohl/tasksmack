@@ -4,8 +4,10 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <string_view>
+#include <utility>
 
 namespace Domain::Priority
 {
@@ -230,9 +232,91 @@ TEST(PriorityClassTest, SortKeyOrdersHigherClassesFirst)
 
 TEST(PriorityClassTest, SortKeyWithoutAClassIsNiceOrder)
 {
-    EXPECT_LT(prioritySortKey(PriorityClass::None, -20), prioritySortKey(PriorityClass::None, -19));
-    EXPECT_LT(prioritySortKey(PriorityClass::None, 0), prioritySortKey(PriorityClass::None, 19));
-    EXPECT_EQ(prioritySortKey(PriorityClass::None, 5), prioritySortKey(PriorityClass::None, 5));
+    // Linux: every process has no class, so the key must order exactly as nice does.
+    for (int32_t a = MIN_NICE; a <= MAX_NICE; ++a)
+    {
+        for (int32_t b = MIN_NICE; b <= MAX_NICE; ++b)
+        {
+            EXPECT_EQ(prioritySortKey(PriorityClass::None, a) < prioritySortKey(PriorityClass::None, b), a < b) << a << " vs " << b;
+        }
+    }
+}
+
+TEST(PriorityClassTest, ForNiceMatchesTheLabelBucket)
+{
+    for (int32_t nice = MIN_NICE; nice <= MAX_NICE; ++nice)
+    {
+        EXPECT_EQ(getPriorityClassLabel(priorityClassForNice(nice)), getPriorityLabel(nice)) << nice;
+    }
+}
+
+TEST(PriorityClassTest, SortKeyPutsAnUnreadClassWithTheClassItsLabelNames)
+{
+    // The Windows probe's fallback for a class it could not read: no class, nice 0, shown "Normal".
+    // It must sort with Normal -- above Below Normal and Idle, below Above Normal, High and Realtime --
+    // not below Idle.
+    const auto unread = prioritySortKey(PriorityClass::None, NORMAL_NICE);
+    EXPECT_EQ(getProcessPriorityLabel(PriorityClass::None, NORMAL_NICE), "Normal");
+    EXPECT_EQ(unread, prioritySortKey(PriorityClass::Normal, NORMAL_NICE));
+
+    // Each class at the nice value the Windows probe reports for it.
+    const std::array<std::pair<PriorityClass, int32_t>, 6> classes{{
+        {PriorityClass::Realtime, MIN_NICE},
+        {PriorityClass::High, -15},
+        {PriorityClass::AboveNormal, -7},
+        {PriorityClass::Normal, NORMAL_NICE},
+        {PriorityClass::BelowNormal, 10},
+        {PriorityClass::Idle, MAX_NICE},
+    }};
+    for (const auto& [priorityClass, nice] : classes)
+    {
+        const auto key = prioritySortKey(priorityClass, nice);
+        const std::string_view name = getPriorityClassLabel(priorityClass);
+        if (priorityClass > PriorityClass::Normal)
+        {
+            EXPECT_LT(key, unread) << name; // Higher priority sorts first ascending...
+            EXPECT_GT(unread, key) << name; // ...and last descending.
+        }
+        else if (priorityClass < PriorityClass::Normal)
+        {
+            EXPECT_GT(key, unread) << name;
+            EXPECT_LT(unread, key) << name;
+        }
+        else
+        {
+            EXPECT_EQ(key, unread) << name;
+        }
+    }
+}
+
+TEST(PriorityClassTest, SortKeyPutsAnyClasslessNiceInItsLabelsClass)
+{
+    // A classless row sorts among the class whose label it shows, against every class.
+    const std::array<std::pair<PriorityClass, int32_t>, 6> classes{{
+        {PriorityClass::Realtime, MIN_NICE},
+        {PriorityClass::High, -15},
+        {PriorityClass::AboveNormal, -7},
+        {PriorityClass::Normal, NORMAL_NICE},
+        {PriorityClass::BelowNormal, 10},
+        {PriorityClass::Idle, MAX_NICE},
+    }};
+    for (int32_t nice = MIN_NICE; nice <= MAX_NICE; ++nice)
+    {
+        const PriorityClass bucket = priorityClassForNice(nice);
+        const auto classless = prioritySortKey(PriorityClass::None, nice);
+        for (const auto& [priorityClass, classNice] : classes)
+        {
+            const auto key = prioritySortKey(priorityClass, classNice);
+            if (priorityClass > bucket)
+            {
+                EXPECT_LT(key, classless) << nice << " vs " << getPriorityClassLabel(priorityClass);
+            }
+            else if (priorityClass < bucket)
+            {
+                EXPECT_GT(key, classless) << nice << " vs " << getPriorityClassLabel(priorityClass);
+            }
+        }
+    }
 }
 
 } // namespace

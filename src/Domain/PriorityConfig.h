@@ -113,12 +113,39 @@ inline constexpr std::array<std::string_view, 6> PROCESS_PRIORITY_LABELS = {
     getPriorityClassLabel(PriorityClass::Idle),
 };
 
+/// The class whose getPriorityLabel() bucket a nice value falls in (High for anything below
+/// HIGH_THRESHOLD: nice alone never means Realtime).
+[[nodiscard]] constexpr PriorityClass priorityClassForNice(int32_t nice) noexcept
+{
+    if (nice < HIGH_THRESHOLD)
+    {
+        return PriorityClass::High;
+    }
+    if (nice < ABOVE_NORMAL_THRESHOLD)
+    {
+        return PriorityClass::AboveNormal;
+    }
+    if (nice < BELOW_NORMAL_THRESHOLD)
+    {
+        return PriorityClass::Normal;
+    }
+    if (nice < IDLE_THRESHOLD)
+    {
+        return PriorityClass::BelowNormal;
+    }
+    return PriorityClass::Idle;
+}
+
 /// Sort key for a process's priority, smallest = highest priority, as nice orders: by class first
-/// (Realtime before High, whatever nice values stand for them), then by nice. Processes with no
-/// class (all of them on Linux) all share the first component, so nice alone orders them.
+/// (Realtime before High, whatever nice values stand for them), then by nice. A process with no class
+/// sorts in the class its nice value's label names, so it sits with the rows that show the same
+/// label: a Windows process whose class could not be read (nice 0, shown "Normal") sorts with Normal,
+/// not below Idle. Every process on Linux has no class, and the bucket rises with nice, so there the
+/// key orders exactly as nice does.
 [[nodiscard]] constexpr std::pair<int32_t, int32_t> prioritySortKey(PriorityClass priorityClass, int32_t nice) noexcept
 {
-    return {-static_cast<int32_t>(priorityClass), nice};
+    const PriorityClass effective = priorityClass == PriorityClass::None ? priorityClassForNice(nice) : priorityClass;
+    return {-static_cast<int32_t>(effective), nice};
 }
 
 } // namespace Domain::Priority
