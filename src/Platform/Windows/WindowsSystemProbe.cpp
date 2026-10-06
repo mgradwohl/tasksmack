@@ -23,6 +23,7 @@
 #include <winternl.h>
 #include <iphlpapi.h>    // Network interface APIs (includes netioapi.h)
 #include <cfgmgr32.h>    // CM_Locate_DevNodeW: whether an adapter's device is present (#1284)
+#include <wlanapi.h>     // WlanEnumInterfaces types; wlanapi.dll is loaded at run time (#1284)
 // clang-format on
 
 #undef max
@@ -37,6 +38,7 @@
 #include <concepts>
 #include <cwchar>
 #include <format>
+#include <memory>
 #include <span>
 #include <type_traits>
 #include <unordered_map>
@@ -612,6 +614,55 @@ constexpr const wchar_t* PNP_INSTANCE_ID_VALUE = L"PnPInstanceId";
     }
 }
 
+// The InterfaceGuids (as guidText()) of the WLAN service's station interfaces, which
+// WlanEnumInterfaces() lists and a Wi-Fi adapter's Wi-Fi Direct and multi-link ports are not (#1284);
+// std::nullopt when the WLAN API is not available -- wlanapi.dll missing (Server without the Wireless
+// LAN feature) or the WLAN AutoConfig service stopped. Loaded at run time so the app starts without it.
+[[nodiscard]] std::optional<std::vector<std::wstring>> readWlanStationGuids()
+{
+    using ModuleHandle = std::unique_ptr<std::remove_pointer_t<HMODULE>, decltype(&FreeLibrary)>;
+    const ModuleHandle wlanapi(LoadLibraryExW(L"wlanapi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32), &FreeLibrary);
+    if (wlanapi == nullptr)
+    {
+        return std::nullopt;
+    }
+    const auto openHandle = Windows::getProcAddress<decltype(&WlanOpenHandle)>(wlanapi.get(), "WlanOpenHandle");
+    const auto enumInterfaces = Windows::getProcAddress<decltype(&WlanEnumInterfaces)>(wlanapi.get(), "WlanEnumInterfaces");
+    const auto freeMemory = Windows::getProcAddress<decltype(&WlanFreeMemory)>(wlanapi.get(), "WlanFreeMemory");
+    const auto closeHandle = Windows::getProcAddress<decltype(&WlanCloseHandle)>(wlanapi.get(), "WlanCloseHandle");
+    if (openHandle == nullptr || enumInterfaces == nullptr || freeMemory == nullptr || closeHandle == nullptr)
+    {
+        return std::nullopt;
+    }
+
+    constexpr DWORD WLAN_API_VERSION_2 = 2; // Windows Vista and later
+    DWORD negotiatedVersion = 0;
+    HANDLE client = nullptr;
+    if (openHandle(WLAN_API_VERSION_2, nullptr, &negotiatedVersion, &client) != ERROR_SUCCESS)
+    {
+        return std::nullopt;
+    }
+    PWLAN_INTERFACE_INFO_LIST list = nullptr;
+    std::optional<std::vector<std::wstring>> stations;
+    if (enumInterfaces(client, nullptr, &list) == ERROR_SUCCESS && list != nullptr)
+    {
+        // InterfaceInfo is declared with one element and allocated with dwNumberOfItems.
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-array-to-pointer-decay) - variable-length WLAN_INTERFACE_INFO_LIST
+        const std::span<const WLAN_INTERFACE_INFO> interfaces(list->InterfaceInfo, list->dwNumberOfItems);
+        stations.emplace();
+        for (const WLAN_INTERFACE_INFO& info : interfaces)
+        {
+            stations->push_back(guidText(info.InterfaceGuid));
+        }
+    }
+    if (list != nullptr)
+    {
+        freeMemory(list);
+    }
+    closeHandle(client, nullptr);
+    return stations;
+}
+
 // The adapter's device instance id, from @p cache or, the first time, the registry: an interface's
 // adapter never changes.
 [[nodiscard]] const std::wstring&
@@ -639,13 +690,14 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
         return;
     }
 
-    // Each listed row's type, LUID and (for a hardware Wi-Fi row) adapter device instance id, in step
-    // with the interfaces appended to counters.networkInterfaces, for picking out secondary Wi-Fi
-    // ports once all are known (#1284).
+    // Each listed row's type and, for a hardware Wi-Fi row, its interface GUID and adapter device
+    // instance id, in step with the interfaces appended to counters.networkInterfaces, for picking
+    // out secondary Wi-Fi ports once all are known (#1284).
     const std::size_t firstInterface = counters.networkInterfaces.size();
     std::vector<std::uint32_t> rowTypes;
-    std::vector<std::uint64_t> rowLuids;
+    std::vector<std::wstring> rowGuids;
     std::vector<std::string> rowDeviceIds;
+    std::vector<std::uint64_t> wifiLuids;
 
     for (ULONG i = 0; i < table->NumEntries; ++i)
     {
@@ -726,11 +778,15 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
 
         counters.networkInterfaces.push_back(std::move(ifaceCounters));
         rowTypes.push_back(row.Type);
-        rowLuids.push_back(row.InterfaceLuid.Value);
-        rowDeviceIds.push_back(
-            row.Type == IF_TYPE_WIFI && hardware
-                ? WinString::wideToUtf8(adapterDeviceInstanceId(m_AdapterDeviceInstanceIds, row.InterfaceLuid.Value, row.InterfaceGuid))
-                : std::string{});
+        const bool hardwareWifi = row.Type == IF_TYPE_WIFI && hardware;
+        rowGuids.push_back(hardwareWifi ? guidText(row.InterfaceGuid) : std::wstring{});
+        rowDeviceIds.push_back(hardwareWifi ? WinString::wideToUtf8(adapterDeviceInstanceId(
+                                                  m_AdapterDeviceInstanceIds, row.InterfaceLuid.Value, row.InterfaceGuid))
+                                            : std::string{});
+        if (hardwareWifi)
+        {
+            wifiLuids.push_back(row.InterfaceLuid.Value);
+        }
     }
 
     // Free the table allocated by GetIfTable2
@@ -738,6 +794,20 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
 
     // A Wi-Fi adapter's secondary ports ("Wi-Fi 2" to "Wi-Fi 5": Wi-Fi Direct and multi-link) report
     // HardwareInterface too; the Total counts the adapter once (#1284).
+    // The station interfaces come from the WLAN service, asked again only when the hardware Wi-Fi
+    // interfaces change -- not every sample.
+    std::ranges::sort(wifiLuids);
+    if (!m_WlanStationsRead || wifiLuids != m_WlanStationsForLuids)
+    {
+        m_WlanStationGuids = readWlanStationGuids();
+        m_WlanStationsForLuids = std::move(wifiLuids);
+        m_WlanStationsRead = true;
+    }
+    const auto isWlanStation = [this](const std::wstring& guid)
+    {
+        return !guid.empty() && m_WlanStationGuids.has_value() && std::ranges::find(*m_WlanStationGuids, guid) != m_WlanStationGuids->end();
+    };
+
     const std::span<SystemCounters::InterfaceCounters> listed = std::span(counters.networkInterfaces).subspan(firstInterface);
     std::vector<NetworkAdapterPort> ports;
     ports.reserve(listed.size());
@@ -745,8 +815,8 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
     {
         ports.push_back(NetworkAdapterPort{
             .ifType = rowTypes[i],
-            .interfaceLuid = rowLuids[i],
             .hardware = !listed[i].isVirtual,
+            .isWlanStation = isWlanStation(rowGuids[i]),
             .deviceInstanceId = rowDeviceIds[i],
         });
     }

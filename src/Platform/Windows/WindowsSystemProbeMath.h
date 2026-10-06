@@ -309,8 +309,8 @@ enum class DevicePresence : std::uint8_t
 struct NetworkAdapterPort
 {
     std::uint32_t ifType = 0;          // MIB_IF_ROW2::Type
-    std::uint64_t interfaceLuid = 0;   // MIB_IF_ROW2::InterfaceLuid.Value
     bool hardware = false;             // isHardwareNetworkRow()
+    bool isWlanStation = false;        // Listed by WlanEnumInterfaces(): a Wi-Fi station interface
     std::string_view deviceInstanceId; // The adapter's PnP device instance id; empty when unknown
 };
 
@@ -333,24 +333,26 @@ struct NetworkAdapterPort
 /// counters on them would have multiplied it. They are ports of one PnP device: every one carries
 /// the same device instance id, while a second physical card -- even of the same model, whose
 /// description differs only by a " #2" -- is a device of its own with its own id. So hardware Wi-Fi
-/// rows that share a device instance id are one adapter, counted once through the port Windows
-/// created first (the lowest interface LUID, the station port), and the others are left out of the
-/// Total like virtual adapters. A row whose device id is unknown is never left out. Limited to Wi-Fi:
-/// a mobile broadband modem's extra contexts are ports of one device too, but carry traffic of
-/// their own.
+/// rows that share a device instance id are one adapter, counted once through its station port: the
+/// interface the WLAN service (WlanEnumInterfaces()) lists, which only lists station interfaces --
+/// on the report's laptop "Wi-Fi" and none of "Wi-Fi 2" to "Wi-Fi 5". The adapter's other ports are
+/// left out of the Total like virtual adapters. Nothing is left out without that proof: a row whose
+/// device id is unknown, or one whose adapter has no listed station port (the WLAN service stopped,
+/// wlanapi.dll missing), is counted. Limited to Wi-Fi: a mobile broadband modem's extra contexts are
+/// ports of one device too, but carry traffic of their own.
 ///
 /// @param row   The row to classify.
 /// @param rows  Every counted row of the same GetIfTable2 snapshot (may include @p row).
 [[nodiscard]] constexpr bool isSecondaryWifiPort(const NetworkAdapterPort& row, std::span<const NetworkAdapterPort> rows) noexcept
 {
-    if (row.ifType != IF_TYPE_WIFI || !row.hardware || row.deviceInstanceId.empty())
+    if (row.ifType != IF_TYPE_WIFI || !row.hardware || row.isWlanStation || row.deviceInstanceId.empty())
     {
         return false;
     }
     return std::ranges::any_of(rows,
                                [&row](const NetworkAdapterPort& other)
                                {
-                                   return other.ifType == IF_TYPE_WIFI && other.hardware && other.interfaceLuid < row.interfaceLuid &&
+                                   return other.ifType == IF_TYPE_WIFI && other.hardware && other.isWlanStation &&
                                           equalsIgnoringAsciiCase(other.deviceInstanceId, row.deviceInstanceId);
                                });
 }

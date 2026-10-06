@@ -435,24 +435,25 @@ TEST(WindowsSystemProbeMathTest, TheHardwareFlagDecidesForEverythingElse)
 
 namespace
 {
-// What the report's Wi-Fi 7 laptop lists: every Wi-Fi port is the one PCI device.
+// What the report's Wi-Fi 7 laptop lists: every Wi-Fi port is the one PCI device, and the WLAN
+// service lists only "Wi-Fi" as a station interface.
 constexpr std::string_view WIFI_DEVICE = "PCI\\VEN_8086&DEV_7740&SUBSYS_40E08086&REV_00\\3&11583659&0&A3";
 constexpr std::string_view SECOND_WIFI_DEVICE = "PCI\\VEN_8086&DEV_7740&SUBSYS_40E08086&REV_00\\4&22222222&0&E0";
 constexpr std::string_view USB_ETHERNET_DEVICE = "USB\\VID_0BDA&PID_8156\\4013000001";
-// IfType 71 in the top 16 bits, the NetLuidIndex below: the station port is created first.
-constexpr std::uint64_t WIFI_LUID = 0x0047'0000'8000'0000ULL;
-constexpr std::uint64_t WIFI_2_LUID = 0x0047'0000'8001'0000ULL;
-constexpr std::uint64_t WIFI_3_LUID = 0x0047'0000'8002'0000ULL;
-constexpr std::uint64_t ETHERNET_LUID = 0x0006'0000'8003'0000ULL;
+
+constexpr NetworkAdapterPort wifiPort(std::string_view device, bool isWlanStation)
+{
+    return {.ifType = IF_TYPE_WIFI, .hardware = true, .isWlanStation = isWlanStation, .deviceInstanceId = device};
+}
 } // namespace
 
-TEST(WindowsSystemProbeMathTest, WifiPortsOfOneDeviceCountOnceThroughTheFirst)
+TEST(WindowsSystemProbeMathTest, WifiPortsOfOneDeviceCountOnceThroughTheStation)
 {
     const std::array<NetworkAdapterPort, 4> rows{{
-        {.ifType = IF_TYPE_WIFI, .interfaceLuid = WIFI_LUID, .hardware = true, .deviceInstanceId = WIFI_DEVICE},
-        {.ifType = IF_TYPE_WIFI, .interfaceLuid = WIFI_2_LUID, .hardware = true, .deviceInstanceId = WIFI_DEVICE},
-        {.ifType = IF_TYPE_WIFI, .interfaceLuid = WIFI_3_LUID, .hardware = true, .deviceInstanceId = WIFI_DEVICE},
-        {.ifType = IF_TYPE_ETHERNET, .interfaceLuid = ETHERNET_LUID, .hardware = true, .deviceInstanceId = USB_ETHERNET_DEVICE},
+        wifiPort(WIFI_DEVICE, true),  // Wi-Fi
+        wifiPort(WIFI_DEVICE, false), // Wi-Fi 2
+        wifiPort(WIFI_DEVICE, false), // Wi-Fi 3
+        {.ifType = IF_TYPE_ETHERNET, .hardware = true, .isWlanStation = false, .deviceInstanceId = USB_ETHERNET_DEVICE},
     }};
     EXPECT_FALSE(isSecondaryWifiPort(rows[0], rows));
     EXPECT_TRUE(isSecondaryWifiPort(rows[1], rows));
@@ -460,26 +461,51 @@ TEST(WindowsSystemProbeMathTest, WifiPortsOfOneDeviceCountOnceThroughTheFirst)
     EXPECT_FALSE(isSecondaryWifiPort(rows[3], rows));
 }
 
+TEST(WindowsSystemProbeMathTest, TheStationCountsWhereverItIsListed)
+{
+    // Interface order and LUIDs say nothing about which port is the station: a Wi-Fi Direct port
+    // listed (or numbered) before it is still the one left out.
+    const std::array<NetworkAdapterPort, 3> rows{{
+        wifiPort(WIFI_DEVICE, false),
+        wifiPort(WIFI_DEVICE, false),
+        wifiPort(WIFI_DEVICE, true),
+    }};
+    EXPECT_TRUE(isSecondaryWifiPort(rows[0], rows));
+    EXPECT_TRUE(isSecondaryWifiPort(rows[1], rows));
+    EXPECT_FALSE(isSecondaryWifiPort(rows[2], rows));
+}
+
+TEST(WindowsSystemProbeMathTest, WithoutWlanInformationNoWifiPortIsLeftOut)
+{
+    // The WLAN service stopped or wlanapi.dll missing: no station is known, so all ports count.
+    const std::array<NetworkAdapterPort, 3> rows{{
+        wifiPort(WIFI_DEVICE, false),
+        wifiPort(WIFI_DEVICE, false),
+        wifiPort(WIFI_DEVICE, false),
+    }};
+    for (const NetworkAdapterPort& row : rows)
+    {
+        EXPECT_FALSE(isSecondaryWifiPort(row, rows));
+    }
+}
+
 TEST(WindowsSystemProbeMathTest, ASecondCardOfTheSameModelIsADeviceOfItsOwn)
 {
-    // Described "<model>" and "<model> #2", but two PCI devices: both carry traffic and both count.
-    const std::array<NetworkAdapterPort, 2> rows{{
-        {.ifType = IF_TYPE_WIFI, .interfaceLuid = WIFI_LUID, .hardware = true, .deviceInstanceId = WIFI_DEVICE},
-        {.ifType = IF_TYPE_WIFI, .interfaceLuid = WIFI_2_LUID, .hardware = true, .deviceInstanceId = SECOND_WIFI_DEVICE},
-    }};
-    EXPECT_FALSE(isSecondaryWifiPort(rows[0], rows));
-    EXPECT_FALSE(isSecondaryWifiPort(rows[1], rows));
+    // Described "<model>" and "<model> #2", but two PCI devices: both carry traffic and both count,
+    // whether or not the second card's station is listed.
+    const std::array<NetworkAdapterPort, 2> withStation{{wifiPort(WIFI_DEVICE, true), wifiPort(SECOND_WIFI_DEVICE, true)}};
+    EXPECT_FALSE(isSecondaryWifiPort(withStation[0], withStation));
+    EXPECT_FALSE(isSecondaryWifiPort(withStation[1], withStation));
+    const std::array<NetworkAdapterPort, 2> withoutStation{{wifiPort(WIFI_DEVICE, true), wifiPort(SECOND_WIFI_DEVICE, false)}};
+    EXPECT_FALSE(isSecondaryWifiPort(withoutStation[1], withoutStation));
 }
 
 TEST(WindowsSystemProbeMathTest, DeviceInstanceIdsMatchIgnoringCase)
 {
     // The registry can hold an id with different case than the device tree.
     const std::array<NetworkAdapterPort, 2> rows{{
-        {.ifType = IF_TYPE_WIFI, .interfaceLuid = WIFI_LUID, .hardware = true, .deviceInstanceId = "PCI\\VEN_8086&DEV_7740\\3&ABCDEF&0&A3"},
-        {.ifType = IF_TYPE_WIFI,
-         .interfaceLuid = WIFI_2_LUID,
-         .hardware = true,
-         .deviceInstanceId = "pci\\ven_8086&dev_7740\\3&abcdef&0&a3"},
+        wifiPort("PCI\\VEN_8086&DEV_7740\\3&ABCDEF&0&A3", true),
+        wifiPort("pci\\ven_8086&dev_7740\\3&abcdef&0&a3", false),
     }};
     EXPECT_TRUE(isSecondaryWifiPort(rows[1], rows));
     EXPECT_TRUE(equalsIgnoringAsciiCase("Abc", "aBC"));
@@ -490,23 +516,20 @@ TEST(WindowsSystemProbeMathTest, DeviceInstanceIdsMatchIgnoringCase)
 TEST(WindowsSystemProbeMathTest, AWifiPortWhoseDeviceIsUnknownIsNeverLeftOut)
 {
     // Without a device id there is no proof the rows are one adapter: count both.
-    const std::array<NetworkAdapterPort, 2> rows{{
-        {.ifType = IF_TYPE_WIFI, .interfaceLuid = WIFI_LUID, .hardware = true, .deviceInstanceId = {}},
-        {.ifType = IF_TYPE_WIFI, .interfaceLuid = WIFI_2_LUID, .hardware = true, .deviceInstanceId = {}},
-    }};
+    const std::array<NetworkAdapterPort, 2> rows{{wifiPort({}, true), wifiPort({}, false)}};
     EXPECT_FALSE(isSecondaryWifiPort(rows[0], rows));
     EXPECT_FALSE(isSecondaryWifiPort(rows[1], rows));
 }
 
 TEST(WindowsSystemProbeMathTest, OnlyHardwareWifiRowsAreSecondaryPorts)
 {
-    // Ports of one wired or virtual device are not this case; nor is a Wi-Fi port whose first port
-    // is not a hardware row.
+    // Ports of one wired device are not this case; nor is a Wi-Fi port whose station is not a
+    // hardware row.
     const std::array<NetworkAdapterPort, 4> rows{{
-        {.ifType = IF_TYPE_ETHERNET, .interfaceLuid = 1, .hardware = true, .deviceInstanceId = USB_ETHERNET_DEVICE},
-        {.ifType = IF_TYPE_ETHERNET, .interfaceLuid = 2, .hardware = true, .deviceInstanceId = USB_ETHERNET_DEVICE},
-        {.ifType = IF_TYPE_WIFI, .interfaceLuid = WIFI_LUID, .hardware = false, .deviceInstanceId = WIFI_DEVICE},
-        {.ifType = IF_TYPE_WIFI, .interfaceLuid = WIFI_2_LUID, .hardware = true, .deviceInstanceId = WIFI_DEVICE},
+        {.ifType = IF_TYPE_ETHERNET, .hardware = true, .isWlanStation = false, .deviceInstanceId = USB_ETHERNET_DEVICE},
+        {.ifType = IF_TYPE_ETHERNET, .hardware = true, .isWlanStation = false, .deviceInstanceId = USB_ETHERNET_DEVICE},
+        {.ifType = IF_TYPE_WIFI, .hardware = false, .isWlanStation = true, .deviceInstanceId = WIFI_DEVICE},
+        wifiPort(WIFI_DEVICE, false),
     }};
     EXPECT_FALSE(isSecondaryWifiPort(rows[1], rows));
     EXPECT_FALSE(isSecondaryWifiPort(rows[3], rows));

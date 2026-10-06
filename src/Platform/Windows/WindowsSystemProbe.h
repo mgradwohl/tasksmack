@@ -54,6 +54,12 @@ class WindowsSystemProbe : public ISystemProbe
     // The PnP device instance id of the adapter behind each network interface, by interface LUID:
     // read from the registry once per interface (#1284). Sampler thread only.
     std::unordered_map<std::uint64_t, std::wstring> m_AdapterDeviceInstanceIds;
+    // The WLAN service's station interfaces (GUID text; std::nullopt when the WLAN API is
+    // unavailable), read for the hardware Wi-Fi interfaces listed in m_WlanStationsForLuids and
+    // read again only when those change (#1284). Sampler thread only.
+    std::optional<std::vector<std::wstring>> m_WlanStationGuids;
+    std::vector<std::uint64_t> m_WlanStationsForLuids;
+    bool m_WlanStationsRead = false;
 
     // Cached static info (read once)
     std::string m_Hostname;
