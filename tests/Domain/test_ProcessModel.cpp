@@ -2189,6 +2189,39 @@ TEST(ProcessModelTest, ShrinkingTheHistoryWindowPublishesTheTrimmedSystemHistori
 // Peak RSS Tracking Tests
 // =============================================================================
 
+TEST(ProcessModelTest, AnOsPeakThatDecreasesKeepsTheHighestPeakSeen)
+{
+    // #1351 review: with hasPeakRss the OS peak (Linux VmHWM) is used, but VmHWM resets on exec while
+    // the PID and start time stay the same; Peak Mem must not drop below a peak already observed.
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setTotalCpuTime(100000);
+    Platform::ProcessCapabilities caps = probe->capabilities();
+    caps.hasPeakRss = true;
+    probe->setCapabilities(caps);
+    auto* rawProbe = probe.get();
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
+
+    auto counter = makeCounter(100, "proc1", 'R', 1000, 500, 1000, 10 * 1024 * 1024);
+    counter.peakRssBytes = 50 * 1024 * 1024;
+    rawProbe->setCounters({counter});
+    model.refresh();
+    ASSERT_EQ(model.snapshots().size(), 1U);
+    EXPECT_EQ(model.snapshots()[0].peakMemoryBytes, 50U * 1024 * 1024);
+
+    clock.advance(std::chrono::milliseconds(10));
+    counter.peakRssBytes = 12 * 1024 * 1024; // exec reset VmHWM; same PID and start time
+    rawProbe->setCounters({counter});
+    model.refresh();
+    EXPECT_EQ(model.snapshots()[0].peakMemoryBytes, 50U * 1024 * 1024) << "an observed peak is kept";
+
+    clock.advance(std::chrono::milliseconds(10));
+    counter.peakRssBytes = 80 * 1024 * 1024;
+    rawProbe->setCounters({counter});
+    model.refresh();
+    EXPECT_EQ(model.snapshots()[0].peakMemoryBytes, 80U * 1024 * 1024);
+}
+
 TEST(ProcessModelTest, PeakRssTracksMaximumMemory)
 {
     auto probe = std::make_unique<MockProcessProbe>();

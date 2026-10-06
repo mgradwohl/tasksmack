@@ -297,7 +297,10 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         // --- peak RSS ---
         if (m_Capabilities.hasPeakRss && current.peakRssBytes > 0)
         {
-            state.peakRss = current.peakRssBytes;
+            // The OS peak can go down for the same process: Linux resets VmHWM on exec while the PID
+            // and start time stay the same. Keep the highest peak seen (#1351 review).
+            const std::uint64_t observed = std::max(current.peakRssBytes, current.rssBytes);
+            state.peakRss = inserted ? observed : std::max(state.peakRss, observed);
         }
         else
         {
