@@ -267,6 +267,10 @@ class ProcessDetailsPanel : public Panel
         double powerWatts = 0.0;
         double gpuUtilPercent = 0.0;
         double gpuMemoryBytes = 0.0;
+        // Whether the latest sample's generation had these from the GPU probe (#1210): one it did not
+        // leaves the value where it was and shows N/A, like the I/O and network readings above.
+        bool gpuUtilAvailable = false;
+        bool gpuMemoryAvailable = false;
         // Whether the latest sample had these readings (#1110): an unread one leaves its value where it
         // was and shows N/A, as its line shows a gap, like the GDI count below.
         bool handleCountAvailable = false;

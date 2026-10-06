@@ -692,9 +692,17 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
     smoothReading(m_SmoothedUsage.netRecvBytesPerSec, m_SmoothedUsage.networkAvailable, networkReading, snapshot.netReceivedBytesPerSec);
     m_SmoothedUsage.networkAvailable = networkReading;
     m_SmoothedUsage.powerWatts = std::max(0.0, initializeOrSmooth(m_SmoothedUsage.powerWatts, targetPower, alpha, initialized));
-    m_SmoothedUsage.gpuUtilPercent =
-        UI::Format::clampPercent(initializeOrSmooth(m_SmoothedUsage.gpuUtilPercent, targetGpuUtil, alpha, initialized));
-    m_SmoothedUsage.gpuMemoryBytes = std::max(0.0, initializeOrSmooth(m_SmoothedUsage.gpuMemoryBytes, targetGpuMem, alpha, initialized));
+    // GPU utilization and memory the GPU probe did not supply for the shown sample's generation are
+    // not readings either (#1210): not smoothed toward 0, so once support arrives the first real
+    // reading starts afresh rather than easing up from placeholder zeros.
+    const bool gpuUtilSupplied = m_CachedRateReadings.gpuUtilization;
+    const bool gpuMemSupplied = m_CachedRateReadings.gpuPerProcess;
+    smoothReading(m_SmoothedUsage.gpuUtilPercent, m_SmoothedUsage.gpuUtilAvailable, gpuUtilSupplied, targetGpuUtil);
+    m_SmoothedUsage.gpuUtilPercent = UI::Format::clampPercent(m_SmoothedUsage.gpuUtilPercent);
+    m_SmoothedUsage.gpuUtilAvailable = gpuUtilSupplied;
+    smoothReading(m_SmoothedUsage.gpuMemoryBytes, m_SmoothedUsage.gpuMemoryAvailable, gpuMemSupplied, targetGpuMem);
+    m_SmoothedUsage.gpuMemoryBytes = std::max(0.0, m_SmoothedUsage.gpuMemoryBytes);
+    m_SmoothedUsage.gpuMemoryAvailable = gpuMemSupplied;
     // A sample with no GDI reading isn't smoothed toward 0: the NowBar shows N/A for it instead,
     // matching the gap in the line, and the next reading starts afresh (#1148).
     const auto gdi = Detail::smoothOptionalReading(
@@ -1901,7 +1909,7 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
         ImGui::TableNextColumn();
         const ImVec4 gpuUtilColor = theme.scheme().gpuUtilization;
         ImGui::TextColored(
-            gpuUtilColor, "%s", Detail::gpuUtilizationText(m_CachedRateReadings.gpuUtilization, m_SmoothedUsage.gpuUtilPercent).c_str());
+            gpuUtilColor, "%s", Detail::gpuUtilizationText(m_SmoothedUsage.gpuUtilAvailable, m_SmoothedUsage.gpuUtilPercent).c_str());
 
         // GPU Memory
         ImGui::TableNextRow();
@@ -1909,7 +1917,8 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
         ImGui::TextUnformatted(LABEL_MEMORY);
         ImGui::TableNextColumn();
         const ImVec4 gpuMemColor = theme.scheme().gpuMemory;
-        const std::string memStr = UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes);
+        const std::string memStr =
+            m_SmoothedUsage.gpuMemoryAvailable ? UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes) : std::string("N/A");
         ImGui::TextColored(gpuMemColor, "%s", memStr.c_str());
 
         // GPU Memory counts what each GPU's "used" figure on the GPU tab counts (#1164). Both kinds are
@@ -2157,8 +2166,9 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
         // value, which can still be easing down from a peak that has just left it.
         const double gpuMemAxisUpper = UI::Widgets::easedRateAxisUpperBound(
             "##GPUMemPlot",
-            UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, gpuMemVec),
-                                           {m_SmoothedUsage.gpuMemoryBytes}),
+            UI::Widgets::withCurrentValues(
+                UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, gpuMemVec),
+                {UI::Widgets::currentIfAvailable(m_SmoothedUsage.gpuMemoryAvailable, m_SmoothedUsage.gpuMemoryBytes)}),
             UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES);
         auto plotGpuMem = [&]()
         {
@@ -2210,18 +2220,20 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
 
         // Now bars for current values
         const NowBar gpuUtilBar{
-            .valueText = Detail::gpuUtilizationText(m_CachedRateReadings.gpuUtilization, m_SmoothedUsage.gpuUtilPercent),
+            .valueText = Detail::gpuUtilizationText(m_SmoothedUsage.gpuUtilAvailable, m_SmoothedUsage.gpuUtilPercent),
             .label = GPU_UTIL_LABEL,
             .tooltipText = {},
-            .value01 = m_CachedRateReadings.gpuUtilization ? UI::Format::percent01(m_SmoothedUsage.gpuUtilPercent) : 0.0,
+            .value01 = m_SmoothedUsage.gpuUtilAvailable ? UI::Format::percent01(m_SmoothedUsage.gpuUtilPercent) : 0.0,
             .color = theme.scheme().gpuUtilization,
         };
 
         const NowBar gpuMemBar{
-            .valueText = UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes),
+            .valueText = m_SmoothedUsage.gpuMemoryAvailable ? UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes) : std::string("N/A"),
             .label = GPU_MEMORY_LABEL,
             .tooltipText = {},
-            .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.gpuMemoryBytes, gpuMemAxisUpper),
+            .value01 = m_SmoothedUsage.gpuMemoryAvailable
+                         ? UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.gpuMemoryBytes, gpuMemAxisUpper)
+                         : 0.0,
             .color = theme.scheme().gpuMemory,
         };
 
