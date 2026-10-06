@@ -119,6 +119,7 @@ GPUModel::GPUModel(std::unique_ptr<Platform::IGPUProbe> probe)
     {
         m_Capabilities = m_Probe->capabilities();
         m_CapabilitiesKnown = true;
+        m_PerProcessKnownUnsupported.store(!m_Capabilities.hasPerProcessMetrics, std::memory_order_release);
     }
     catch (const std::exception& e)
     {
@@ -290,6 +291,7 @@ void GPUModel::rescanGPUs(std::chrono::steady_clock::time_point now)
     {
         m_Capabilities = *capabilities;
         m_CapabilitiesKnown = true;
+        m_PerProcessKnownUnsupported.store(!m_Capabilities.hasPerProcessMetrics, std::memory_order_release);
     }
     if (gpuInfo.has_value())
     {
@@ -314,6 +316,12 @@ void GPUModel::setMaxHistorySeconds(double seconds)
     if (!m_HistoryTimestamps.empty())
     {
         trimHistory(m_HistoryTimestamps.back());
+    }
+    // Republish the trimmed history now rather than at the next sample (#1145); see
+    // SystemModel::setMaxHistorySeconds(). Nothing is published before the first refresh.
+    if (m_PublicationVersion != 0)
+    {
+        publish();
     }
 }
 
@@ -498,8 +506,10 @@ Platform::GPUCapabilities GPUModel::capabilities() const
 std::vector<Platform::ProcessGPUCounters> GPUModel::readProcessGPUCounters() const
 {
     // m_Capabilities and m_CapabilitiesKnown can be re-read by the sampler thread (rescanGPUs()),
-    // so they are read under a shared m_Mutex -- not the probe lock, which a slow probe read holds.
-    // Checking m_CapabilitiesKnown first matters: if the capabilities() query
+    // so this reads m_PerProcessKnownUnsupported, the atomic flag written alongside them -- not
+    // the fields under a shared m_Mutex, which cost this hot early exit ~60% (#1322), nor the
+    // probe lock, which a slow probe read holds.
+    // The flag folds in m_CapabilitiesKnown deliberately: if the capabilities() query
     // threw, m_Capabilities is left at its default (all-false) values, and treating that as
     // "confirmed unsupported" would permanently and silently suppress a probe that might
     // genuinely support per-process data, just because of a one-time query failure. Only
@@ -511,12 +521,7 @@ std::vector<Platform::ProcessGPUCounters> GPUModel::readProcessGPUCounters() con
     {
         return {};
     }
-    bool knownUnsupported = false;
-    {
-        const std::shared_lock lock(m_Mutex);
-        knownUnsupported = m_CapabilitiesKnown && !m_Capabilities.hasPerProcessMetrics;
-    }
-    if (knownUnsupported)
+    if (m_PerProcessKnownUnsupported.load(std::memory_order_acquire))
     {
         return {};
     }
@@ -561,6 +566,20 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
     snapshot.computeUtilPercent = current.computeUtilPercent;
     snapshot.encoderUtilPercent = current.encoderUtilPercent;
     snapshot.decoderUtilPercent = current.decoderUtilPercent;
+
+    // Power from a cumulative energy counter (#1269): its change over the sample interval. Without
+    // a readable previous counter, or when it went backwards (a driver reload), power is unread.
+    if (current.energyAvailable)
+    {
+        const bool haveDelta = previous != nullptr && previous->energyAvailable && timeDeltaSeconds > 0.0 &&
+                               current.energyMicroJoules >= previous->energyMicroJoules;
+        constexpr double MICROJOULES_PER_JOULE = 1'000'000.0;
+        snapshot.powerAvailable = haveDelta;
+        snapshot.powerDrawWatts =
+            haveDelta
+                ? Numeric::counterRate(current.energyMicroJoules, previous->energyMicroJoules, timeDeltaSeconds) / MICROJOULES_PER_JOULE
+                : 0.0;
+    }
 
     // Compute derived values
     if (current.memoryTotalBytes > 0)

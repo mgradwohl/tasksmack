@@ -390,7 +390,7 @@ void ShellLayer::onRender()
         // Overview's NowBar column beside MIN_PLOT_WIDTH_EM of plot (#1207). Measured with the body
         // font, here, where the panels will draw with it; a few text measurements a frame.
         applyContentMinimumWidth(computeContentMinimumWidth(ProcessesPanel::measureToolbarMinimumWidth(),
-                                                            SystemMetricsPanel::overviewNowBarColumnWidth(),
+                                                            m_SystemMetricsPanel.overviewNowBarColumnWidth(),
                                                             ImGui::GetFontSize(),
                                                             (contentPaddingH * 2.0F) + ImGui::GetStyle().ScrollbarSize));
 

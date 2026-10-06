@@ -6,6 +6,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/google/googletest.git
     GIT_TAG 063de7e9578f82b369302001269680b4b1553359  # v1.18.0 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from gtest
+    BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/googletest-build"  # per-preset build tree (#1308)
 )
 
 # For Windows: Prevent overriding the parent project's compiler/linker settings
@@ -51,6 +52,11 @@ if(WIN32)
     endif()
 endif()
 
+# tools/check-benchmark-regression.py gates CI on benchmark regressions; Python3_EXECUTABLE is
+# already required (GLAD generation, cmake/Dependencies.cmake).
+add_test(NAME BenchmarkRegressionGateScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_benchmark_regression.py)
+
 # Test sources. Every list is defined on every platform, so the registration check below can see
 # all of them; the platform branch then picks its own.
 set(COMMON_TEST_SOURCES
@@ -86,6 +92,7 @@ set(COMMON_TEST_SOURCES
     UI/test_Format.cpp
     UI/test_RenderMetrics.cpp
     UI/test_RateAxis.cpp
+    UI/test_InlineText.cpp
     UI/test_BundledThemes.cpp
     UI/test_ColorContrast.cpp
     UI/test_ColorDifference.cpp
@@ -274,6 +281,19 @@ add_executable(TaskSmackTests
     ${CMAKE_CURRENT_SOURCE_DIR}/Mocks/ThemeStub.cpp
     ${PLATFORM_SRC_UNDER_TEST}
 )
+
+# The Theme stub defines Theme::get() & co. with the same names (and bodies) as src/UI/Theme.cpp.
+# With honest coverage (#1131) the report merges the test binary with the app binary, and LLVM matches
+# profile counters by function name and hash, not by binary -- so stub executions were credited to the
+# production Theme.cpp, which no test runs. Leave the stub uninstrumented; Theme.cpp keeps its coverage.
+if(TASKSMACK_ENABLE_COVERAGE)
+    if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+        set(TASKSMACK_NO_COVERAGE_FLAGS "/clang:-fno-profile-instr-generate" "/clang:-fno-coverage-mapping")
+    else()
+        set(TASKSMACK_NO_COVERAGE_FLAGS -fno-profile-instr-generate -fno-coverage-mapping)
+    endif()
+    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/Mocks/ThemeStub.cpp PROPERTIES COMPILE_OPTIONS "${TASKSMACK_NO_COVERAGE_FLAGS}")
+endif()
 
 target_include_directories(TaskSmackTests PRIVATE
     ${CMAKE_SOURCE_DIR}/src

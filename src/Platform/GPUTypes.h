@@ -106,6 +106,14 @@ struct GPUCounters
     double powerDrawWatts = 0.0;
     double powerLimitWatts = 0.0;
 
+    // Cumulative energy (µJ), for a GPU whose driver reports an energy counter rather than power
+    // (Intel i915/xe hwmon energy1_input, #1269). When energyAvailable, Domain derives powerDrawWatts
+    // from the counter's change since the previous sample, as it does for the PCIe byte counters;
+    // a sample without a readable previous counter (the first, or after a failed read, a suspend or
+    // a counter reset) has no power.
+    bool energyAvailable = false;
+    std::uint64_t energyMicroJoules = 0;
+
     // Clock speeds (MHz)
     std::uint32_t gpuClockMHz = 0;
     std::uint32_t memoryClockMHz = 0;

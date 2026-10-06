@@ -8,7 +8,6 @@
 // so -- same reasoning as UI/IconLoader.cpp's direct test linkage documented in
 // CONTRIBUTING.md -- they benchmark real production code, not a parallel copy.
 
-#include "Domain/GPUModel.h"
 #include "UI/ChartWidgets.h"
 
 #include <benchmark/benchmark.h>
@@ -16,6 +15,7 @@
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <random>
 #include <vector>
 
@@ -25,6 +25,14 @@ namespace
 constexpr size_t kPoolSize = 1024;
 constexpr size_t kPoolMask = kPoolSize - 1;
 static_assert((kPoolSize & kPoolMask) == 0, "kPoolSize must be a power of two for idx & kPoolMask to wrap correctly");
+
+// Retained-history buffer sizes for the tailAlignedSpan benchmarks, in samples at the 1s sampling
+// interval: 5 minutes (the default history window, and the fixed size GPU history had before it
+// followed the history window, #1044) and 30 minutes (the longest history window). Explicit counts
+// rather than a Domain constant, so the benchmark names (.../300/60, .../1800/300) stay comparable
+// with the CI baseline whatever the sizing code does (#1255).
+constexpr std::int64_t kFiveMinuteHistorySamples = 300;
+constexpr std::int64_t kThirtyMinuteHistorySamples = 1800;
 
 // =============================================================================
 // computeAlpha Benchmarks -- called every frame for every smoothed chart value
@@ -56,11 +64,11 @@ BENCHMARK(BM_ChartWidgets_ComputeAlpha);
 // the plotted history window from the full retained buffer.
 // =============================================================================
 
-// Domain::GPU_HISTORY_CAPACITY-sized buffer (5 min of retained history at the 1s sampling
+// A 5-minute buffer (kFiveMinuteHistorySamples: 5 min of retained history at the 1s sampling
 // interval), requesting the full window -- the common case for a freshly-opened chart.
 static void BM_ChartWidgets_TailAlignedSpan_FullWindow(benchmark::State& state)
 {
-    const std::vector<float> data(Domain::GPU_HISTORY_CAPACITY, 42.0F);
+    const std::vector<float> data(static_cast<size_t>(kFiveMinuteHistorySamples), 42.0F);
 
     for (auto _ : state)
     {
@@ -83,8 +91,8 @@ static void BM_ChartWidgets_TailAlignedSpan_PartialWindow(benchmark::State& stat
     }
 }
 BENCHMARK(BM_ChartWidgets_TailAlignedSpan_PartialWindow)
-    ->Args({static_cast<int64_t>(Domain::GPU_HISTORY_CAPACITY), 60})
-    ->Args({1800, static_cast<int64_t>(Domain::GPU_HISTORY_CAPACITY)});
+    ->Args({kFiveMinuteHistorySamples, 60})
+    ->Args({kThirtyMinuteHistorySamples, kFiveMinuteHistorySamples});
 
 // =============================================================================
 // Axis formatter Benchmarks -- called once per visible tick label per axis per

@@ -314,7 +314,7 @@ SystemDiskCounters WindowsDiskProbe::readCounters()
                 continue;
             }
 
-            const wchar_t driveLetter = static_cast<wchar_t>('A' + i);
+            const auto driveLetter = static_cast<wchar_t>('A' + i);
             const std::wstring drivePath = std::wstring{driveLetter} + L":\\";
 
             const UINT driveType = GetDriveTypeW(drivePath.c_str());

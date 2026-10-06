@@ -423,12 +423,19 @@ std::vector<double> StorageModel::historyTimestamps() const
 void StorageModel::setMaxHistorySeconds(double seconds)
 {
     std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    m_MaxHistorySeconds = std::max(0.0, seconds);
+    // The same guardrail as SystemModel and GPUModel, so every model keeps the same window (#1145).
+    m_MaxHistorySeconds = Sampling::clampHistorySeconds(seconds);
     applyHistoryCapacity();
 
     if (!m_Timestamps.empty())
     {
         trimHistory(m_Timestamps.latest());
+    }
+    // Republish the trimmed history now rather than at the next sample (#1145); see
+    // SystemModel::setMaxHistorySeconds(). Nothing is published before the first sample.
+    if (m_PublicationVersion != 0)
+    {
+        publish();
     }
 }
 

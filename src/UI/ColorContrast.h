@@ -88,4 +88,36 @@ inline constexpr float ALTERNATE_MARGIN = 1.2F;
     return (contrastRatio(fill, alternate) > (contrastRatio(fill, preferred) * ALTERNATE_MARGIN)) ? alternate : preferred;
 }
 
+/// Contrast floor for text (WCAG AA for normal text), as the bundled-theme tests hold text to.
+inline constexpr float TEXT_CONTRAST_MIN = 4.5F;
+
+/// How finely readableTint() mixes toward the readable colour: in steps of 1 / READABLE_TINT_STEPS.
+inline constexpr int READABLE_TINT_STEPS = 20;
+
+/// @p color as text on @p background: unchanged when it already reaches @p minRatio there, else
+/// mixed toward @p readable (a colour that does, such as the theme's primary text) just far enough to
+/// -- in steps of 1 / READABLE_TINT_STEPS of the way -- so it keeps as much of its hue as the floor allows. @p readable
+/// itself if no mix gets there. A series colour is held only to 3:1, enough for a line but not for
+/// the text that names it, such as a second axis's tick labels drawn in its series' colour (#1206).
+[[nodiscard]] inline ImVec4 readableTint(const ImVec4& color, const ImVec4& readable, const ImVec4& background, float minRatio) noexcept
+{
+    if (contrastRatio(color, background) >= minRatio)
+    {
+        return color;
+    }
+    for (int step = 1; step < READABLE_TINT_STEPS; ++step)
+    {
+        const float t = static_cast<float>(step) / static_cast<float>(READABLE_TINT_STEPS);
+        const ImVec4 mix{color.x + ((readable.x - color.x) * t),
+                         color.y + ((readable.y - color.y) * t),
+                         color.z + ((readable.z - color.z) * t),
+                         color.w + ((readable.w - color.w) * t)};
+        if (contrastRatio(mix, background) >= minRatio)
+        {
+            return mix;
+        }
+    }
+    return readable;
+}
+
 } // namespace UI::ColorContrast

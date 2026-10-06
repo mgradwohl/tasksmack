@@ -1117,6 +1117,45 @@ TEST(SystemModelTest, MaxHistorySecondsClamped)
     // Clamp above maximum (1800s)
     model.setMaxHistorySeconds(7200.0);
     EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), Domain::Sampling::HISTORY_SECONDS_MAX);
+
+    // NaN maps to the minimum instead of passing through the clamp (#1325)
+    model.setMaxHistorySeconds(std::numeric_limits<double>::quiet_NaN());
+    EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), Domain::Sampling::HISTORY_SECONDS_MIN);
+}
+
+// #1145: a window change republishes the trimmed history at once instead of leaving the old window's
+// data, scale and peaks on show until the next sample.
+TEST(SystemModelTest, ShrinkingTheHistoryWindowRepublishesTheTrimmedHistory)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    const auto counters = makeSystemCounters(makeCpuCounters(100, 0, 50, 500), makeMemoryCounters(1024, 512));
+    Domain::SystemModel model(std::move(probe));
+    model.setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_DEFAULT);
+
+    for (int i = 0; i <= 100; ++i)
+    {
+        model.updateFromCounters(counters, static_cast<double>(i));
+    }
+    const std::uint64_t versionBefore = model.publicationVersion();
+    ASSERT_GT(model.publication()->timestamps.size(), 30U);
+
+    model.setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
+
+    EXPECT_GT(model.publicationVersion(), versionBefore);
+    const auto publication = model.publication();
+    EXPECT_EQ(publication->version, model.publicationVersion());
+    ASSERT_FALSE(publication->timestamps.empty());
+    // t = 90..100, plus the sample kept just before the cutoff (#1016).
+    EXPECT_DOUBLE_EQ(publication->timestamps.front(), 100.0 - Domain::Sampling::HISTORY_SECONDS_MIN - 1.0);
+    EXPECT_EQ(publication->timestamps.size(), static_cast<std::size_t>(Domain::Sampling::HISTORY_SECONDS_MIN) + 2U);
+    EXPECT_EQ(publication->cpuHistory.size(), publication->timestamps.size());
+}
+
+TEST(SystemModelTest, ChangingTheHistoryWindowBeforeAnySamplePublishesNothing)
+{
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    model.setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
+    EXPECT_EQ(model.publicationVersion(), 0U);
 }
 
 // =============================================================================
