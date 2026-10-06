@@ -610,8 +610,11 @@ bool LinuxSystemProbe::classifyInterfaces(const std::vector<std::string>& names,
                 rebuilt.insert_or_assign(names[i], *known);
             }
         }
-        m_InterfaceIsVirtual = std::move(rebuilt);
-        m_ClassifiedInterfaces = names;
+        // Copy the key before touching either member, then commit both with non-throwing swaps: a
+        // throw while copying can no longer leave the old key paired with the new entries.
+        auto key = names;
+        m_InterfaceIsVirtual.swap(rebuilt);
+        m_ClassifiedInterfaces.swap(key);
     }
     else if (names == m_ClassifiedInterfaces) // unless another read() changed the set meanwhile
     {
