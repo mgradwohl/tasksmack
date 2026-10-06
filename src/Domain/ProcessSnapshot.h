@@ -129,6 +129,9 @@ struct ProcessSample
     /// lose either on re-enumeration, on its own sampler, so each sample carries its own.
     bool gpuPerProcessSupported = true;
     bool gpuUtilizationSupported = true;
+    /// The GPU probe supported per-process data, but reading it failed for that generation: its GPU
+    /// fields are a gap, not a measurement (#1210).
+    bool gpuReadFailed = false;
 };
 
 } // namespace Domain

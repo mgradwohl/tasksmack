@@ -54,6 +54,9 @@ class ProcessModel : public ISamplable
     {
         bool perProcess = false;  ///< Per-process GPU data at all
         bool utilization = false; ///< Per-process utilization among it
+        /// The probe supports per-process GPU data, but reading it failed for this generation: its
+        /// GPU fields are a gap, not a measurement -- and not "not available on this system".
+        bool readFailed = false;
 
         friend bool operator==(const GpuSupport&, const GpuSupport&) = default;
     };
@@ -197,8 +200,7 @@ class ProcessModel : public ISamplable
     Platform::ProcessCapabilities m_PublishedCapabilities;
     // What the GPU probe supplied per process for the published generation (ProcessSample, #1210),
     // guarded by m_Mutex like m_PublishedCapabilities.
-    bool m_PublishedGpuPerProcessSupported = false;
-    bool m_PublishedGpuUtilizationSupported = false;
+    GpuSupport m_PublishedGpuSupport;
 
     // Per-process tracking state.  Consolidating previous counters and
     // peak-RSS into one struct reduces per-process map lookups
@@ -295,7 +297,9 @@ class ProcessModel : public ISamplable
     /// Requires m_SamplingMutex held.
     void computeSnapshotsLocked(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime);
 
-    static GpuSupport mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel);
+    /// Merges the per-process GPU counters into @p snapshots. @p outSupport is set to the support
+    /// they were read under as soon as the read returns, so a throw later in the merge leaves it set.
+    static void mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel, GpuSupport& outSupport);
 
     /// mergeGPUData(), contained: a throwing GPU merge must not stop process publication (#1142).
     /// On a throw the snapshots are published without GPU fields, as unsupported. Requires

@@ -209,7 +209,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         gpuModel = m_GPUModel;
         // The support the previous generation's GPU fields were read under, for a generation that
         // reuses them rather than reading again (the throttled path below, #1210).
-        previousGpuSupport = {.perProcess = m_PublishedGpuPerProcessSupported, .utilization = m_PublishedGpuUtilizationSupported};
+        previousGpuSupport = m_PublishedGpuSupport;
         // m_Snapshots is immutable once published, so grabbing the shared_ptr here is an O(1)
         // refcount bump -- the loop below (previously run while still holding this lock) can
         // run against the local copy after the lock is released, instead of holding readers of
@@ -534,8 +534,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         ++m_SnapshotVersion;
         ++m_SystemHistoryVersion;
         m_PublishedCapabilities = m_Capabilities;
-        m_PublishedGpuPerProcessSupported = gpuSupport.perProcess;
-        m_PublishedGpuUtilizationSupported = gpuSupport.utilization;
+        m_PublishedGpuSupport = gpuSupport;
         m_SnapshotSampleTimeSeconds = sampleTimeSeconds;
 
         // Every generation published while a process is watched gets a sample, the process absent
@@ -553,7 +552,8 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
                                                                     .ioCountersSupported = m_PublishedCapabilities.hasIoCounters,
                                                                     .networkCountersSupported = m_PublishedCapabilities.hasNetworkCounters,
                                                                     .gpuPerProcessSupported = gpuSupport.perProcess,
-                                                                    .gpuUtilizationSupported = gpuSupport.utilization});
+                                                                    .gpuUtilizationSupported = gpuSupport.utilization,
+                                                                    .gpuReadFailed = gpuSupport.readFailed});
         }
 
         m_PublishedSnapshotVersion.store(m_SnapshotVersion, std::memory_order_release);
@@ -637,8 +637,7 @@ void ProcessModel::watchProcess(std::int32_t pid)
     std::uint64_t currentVersion = 0;
     double currentSampleTime = 0.0;
     Platform::ProcessCapabilities currentCapabilities;
-    bool currentGpuPerProcessSupported = false;
-    bool currentGpuUtilizationSupported = false;
+    GpuSupport currentGpuSupport;
     {
         std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
         m_WatchedPid.store(watched, std::memory_order_release);
@@ -649,8 +648,7 @@ void ProcessModel::watchProcess(std::int32_t pid)
         currentVersion = m_SnapshotVersion;
         currentSampleTime = m_SnapshotSampleTimeSeconds;
         currentCapabilities = m_PublishedCapabilities;
-        currentGpuPerProcessSupported = m_PublishedGpuPerProcessSupported;
-        currentGpuUtilizationSupported = m_PublishedGpuUtilizationSupported;
+        currentGpuSupport = m_PublishedGpuSupport;
     }
     if (watched == 0 || currentVersion == 0)
     {
@@ -669,8 +667,9 @@ void ProcessModel::watchProcess(std::int32_t pid)
                                                                 .sampleTimeSeconds = currentSampleTime,
                                                                 .ioCountersSupported = currentCapabilities.hasIoCounters,
                                                                 .networkCountersSupported = currentCapabilities.hasNetworkCounters,
-                                                                .gpuPerProcessSupported = currentGpuPerProcessSupported,
-                                                                .gpuUtilizationSupported = currentGpuUtilizationSupported}));
+                                                                .gpuPerProcessSupported = currentGpuSupport.perProcess,
+                                                                .gpuUtilizationSupported = currentGpuSupport.utilization,
+                                                                .gpuReadFailed = currentGpuSupport.readFailed}));
     }
 }
 
@@ -761,7 +760,7 @@ bool ProcessModel::tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
         }
         if (outGpuSupport != nullptr)
         {
-            *outGpuSupport = {.perProcess = m_PublishedGpuPerProcessSupported, .utilization = m_PublishedGpuUtilizationSupported};
+            *outGpuSupport = m_PublishedGpuSupport;
         }
     }
 
@@ -859,20 +858,21 @@ void ProcessModel::setInteractionActive(const bool active) noexcept
     m_InteractionActive.store(active, std::memory_order_release);
 }
 
-ProcessModel::GpuSupport ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel)
+void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel, GpuSupport& outSupport)
 {
     if (gpuModel == nullptr)
     {
-        return {};
+        outSupport = {};
+        return;
     }
 
     // Query per-process GPU counters from GPUModel, with the support they were read under (#1210)
     GPUModel::ProcessGPUReading reading = gpuModel->readProcessGPUData();
-    const GpuSupport support{.perProcess = reading.perProcessSupported, .utilization = reading.utilizationSupported};
+    outSupport = {.perProcess = reading.perProcessSupported, .utilization = reading.utilizationSupported, .readFailed = false};
     auto gpuCounters = std::move(reading.counters);
     if (gpuCounters.empty())
     {
-        return support;
+        return;
     }
 
     // Build lookup map: GPU ID -> what the per-process breakdown shows about that adapter.
@@ -1022,7 +1022,6 @@ ProcessModel::GpuSupport ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>
     }
 
     spdlog::debug("ProcessModel::mergeGPUData: merged GPU data for {} processes", mergedCount);
-    return support;
 }
 
 ProcessModel::GpuSupport ProcessModel::mergeGPUDataContained(std::vector<ProcessSnapshot>& snapshots,
@@ -1032,9 +1031,14 @@ ProcessModel::GpuSupport ProcessModel::mergeGPUDataContained(std::vector<Process
     // after the per-process state had already advanced, so a probe that threw every time stopped
     // the process list from ever updating again (#1142). The processes are published regardless,
     // without GPU fields for this refresh.
+    // The probe's support as the GPU model has it now, in case the read itself throws before
+    // returning the support it ran under; mergeGPUData() replaces it with that as soon as it has it.
+    GpuSupport support{.perProcess = !gpuModel->perProcessMetricsKnownUnsupported(),
+                       .utilization = !gpuModel->perProcessMetricsKnownUnsupported() && !gpuModel->perProcessUtilizationKnownUnsupported(),
+                       .readFailed = false};
     try
     {
-        const GpuSupport support = mergeGPUData(snapshots, gpuModel);
+        mergeGPUData(snapshots, gpuModel, support);
         if (m_GpuMergeFailing)
         {
             spdlog::info("ProcessModel: per-process GPU data is being merged again");
@@ -1063,7 +1067,11 @@ ProcessModel::GpuSupport ProcessModel::mergeGPUDataContained(std::vector<Process
             snapshot.gpuDevices.clear();
         }
     }
-    return {}; // No GPU fields this generation: published as unsupported, not as measured zeros
+    // No GPU fields this generation. A failed read is not a lack of support: the generation keeps the
+    // probe's support and is marked as a failed read, so its GPU cells read as unreadable and its
+    // history as a gap -- not as measured zeros, nor as "not available on this system" (#1210).
+    support.readFailed = support.perProcess;
+    return support;
 }
 
 ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& current,

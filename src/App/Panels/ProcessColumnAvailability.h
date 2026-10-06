@@ -27,6 +27,9 @@ struct GpuSupport
     /// Per-process GPU utilization as well (hasPerProcessUtilization): NVML's running-process lists
     /// give a process's memory and engines but not its utilization, which then reads 0 everywhere.
     bool utilization = true;
+    /// Supported, but reading the per-process GPU data failed for the generation being drawn: its GPU
+    /// cells are unreadable for that sample, not "not available on this system" (#1210).
+    bool readFailed = false;
 
     friend constexpr bool operator==(const GpuSupport&, const GpuSupport&) = default;
 };
@@ -44,9 +47,9 @@ gpuSupport(bool hasGpuModel, bool perProcessKnownUnsupported, bool perProcessUti
 /// (Domain::ProcessModel::GpuSupport): its GPU fields were read under that, which can differ from the
 /// GPU model's current state while GPU merges are throttled (#1210). No per-process data means no
 /// utilization either.
-[[nodiscard]] constexpr GpuSupport gpuSupportOfGeneration(bool perProcess, bool utilization) noexcept
+[[nodiscard]] constexpr GpuSupport gpuSupportOfGeneration(bool perProcess, bool utilization, bool readFailed = false) noexcept
 {
-    return {.perProcess = perProcess, .utilization = perProcess && utilization};
+    return {.perProcess = perProcess, .utilization = perProcess && utilization, .readFailed = perProcess && readFailed};
 }
 
 /// Whether the process probe can fill `col` at all on this system. A column it cannot shows
@@ -186,6 +189,7 @@ enum class TextCell : std::uint8_t
     options.hasGdiObjects = caps.hasGdiObjects;
     options.hasPerProcessGpu = gpu.perProcess;
     options.hasPerProcessGpuUtilization = gpu.utilization;
+    options.gpuReadFailed = gpu.readFailed;
     options.hasStatus = caps.hasStatus;
     options.hasPublisher = caps.hasPublisher;
     options.hasProcessType = caps.hasProcessType;

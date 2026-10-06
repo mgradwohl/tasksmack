@@ -480,14 +480,29 @@ void leftAlignedOrBlankCell(const Domain::ProcessSnapshot& proc, const RowFormat
         ProcessColumnAvailability::textCell(fmt.*Supported, !(proc.*Text).empty()), proc.*Text, fmt.*Width, widths.unavailableText);
 }
 
-/// The GPU engines in use: RowFormatCache's comma-joined list, left-aligned; blank for none, and the
-/// unavailable dash where per-process GPU usage cannot be observed (#1210).
+/// A GPU text cell (engines, devices): blank for none, the "not available on this system" dash where
+/// per-process GPU usage cannot be observed, and the unreadable dash where it can but this
+/// generation's read failed (#1210).
+void renderGpuTextCell(std::string_view text, const ProcessRowFormat::LazyTextWidth& width, const RowFormatCache& fmt, float dashWidth)
+{
+    if (fmt.gpuSupported && fmt.gpuReadFailed)
+    {
+        renderUnavailableTextCell(ProcessRowFormat::GPU_READ_FAILED_CELL_REASON, dashWidth);
+        return;
+    }
+    renderTextCell(ProcessColumnAvailability::textCell(fmt.gpuSupported, !text.empty()), text, width, dashWidth);
+}
+
+/// The GPU engines in use: RowFormatCache's comma-joined list, left-aligned (renderGpuTextCell()).
 void gpuEngineCell(const Domain::ProcessSnapshot& /*proc*/, const RowFormatCache& fmt, const ProcessCellWidths& widths)
 {
-    renderTextCell(ProcessColumnAvailability::textCell(fmt.gpuSupported, !fmt.gpuEngines.empty()),
-                   fmt.gpuEngines,
-                   fmt.gpuEnginesWidth,
-                   widths.unavailableText);
+    renderGpuTextCell(fmt.gpuEngines, fmt.gpuEnginesWidth, fmt, widths.unavailableText);
+}
+
+/// The GPUs the process uses, left-aligned (renderGpuTextCell()).
+void gpuDeviceCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, const ProcessCellWidths& widths)
+{
+    renderGpuTextCell(proc.gpuDevices, fmt.gpuDevicesWidth, fmt, widths.unavailableText);
 }
 
 /// The kernel-style state code, centred, in its state colour.
@@ -615,9 +630,7 @@ constexpr std::array<ProcessCellEntry, processColumnCount()> CELL_RENDERERS = {{
     {.column = ProcessColumn::GpuPercent, .render = &rightAlignedCell<&RowFormatCache::gpuPercent>},
     {.column = ProcessColumn::GpuMemory, .render = &unitAlignedCell<&RowFormatCache::gpuMemory, &ProcessCellWidths::unitBytes>},
     {.column = ProcessColumn::GpuEngine, .render = &gpuEngineCell},
-    {.column = ProcessColumn::GpuDevice,
-     .render =
-         &leftAlignedOrBlankCell<&Domain::ProcessSnapshot::gpuDevices, &RowFormatCache::gpuDevicesWidth, &RowFormatCache::gpuSupported>},
+    {.column = ProcessColumn::GpuDevice, .render = &gpuDeviceCell},
     // Command
     {.column = ProcessColumn::Command, .render = &commandCell},
 }};
@@ -1644,8 +1657,10 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         proc,
         m_CachedSnapshotVersion,
         m_TextSizeCache.stamp,
-        ProcessColumnAvailability::rowFormatOptions(
-            caps, ProcessColumnAvailability::gpuSupportOfGeneration(m_CachedGpuSupport.perProcess, m_CachedGpuSupport.utilization)));
+        ProcessColumnAvailability::rowFormatOptions(caps,
+                                                    ProcessColumnAvailability::gpuSupportOfGeneration(m_CachedGpuSupport.perProcess,
+                                                                                                      m_CachedGpuSupport.utilization,
+                                                                                                      m_CachedGpuSupport.readFailed)));
 
     // Render all columns
     int colIdx = 0;

@@ -3,6 +3,7 @@
 /// one point per published generation at the generation's own sample time (#1098), and NaN for a
 /// value the probe could not read (#1110).
 
+#include "App/Panels/ProcessDetailsPanel_GpuHelpers.h"
 #include "App/Panels/ProcessDetailsPanel_HistoryHelpers.h"
 #include "Domain/ProcessSnapshot.h"
 
@@ -37,7 +38,8 @@ struct Recorded
             .ioCountersSupported = true,
             .networkCountersSupported = true,
             .gpuPerProcessSupported = true,
-            .gpuUtilizationSupported = true};
+            .gpuUtilizationSupported = true,
+            .gpuReadFailed = false};
 }
 
 [[nodiscard]] std::vector<Recorded>
@@ -131,7 +133,8 @@ TEST(ProcessHistoryHelpersTest, AGenerationWithoutTheProcessClearsPresent)
                                                       .ioCountersSupported = true,
                                                       .networkCountersSupported = true,
                                                       .gpuPerProcessSupported = true,
-                                                      .gpuUtilizationSupported = true}},
+                                                      .gpuUtilizationSupported = true,
+                                                      .gpuReadFailed = false}},
                                42,
                                key,
                                intake);
@@ -171,14 +174,16 @@ TEST(ProcessHistoryHelpersTest, EachSampleIsJudgedByItsOwnGenerationsSupport)
                                        .ioCountersSupported = true,
                                        .networkCountersSupported = true,
                                        .gpuPerProcessSupported = true,
-                                       .gpuUtilizationSupported = true};
+                                       .gpuUtilizationSupported = true,
+                                       .gpuReadFailed = false};
     const Domain::ProcessSample after{.snapshot = snapshot,
                                       .version = 2,
                                       .sampleTimeSeconds = 2.0,
                                       .ioCountersSupported = true,
                                       .networkCountersSupported = false,
                                       .gpuPerProcessSupported = true,
-                                      .gpuUtilizationSupported = true};
+                                      .gpuUtilizationSupported = true,
+                                      .gpuReadFailed = false};
 
     EXPECT_TRUE(rateReadings(before).network);
     EXPECT_TRUE(rateReadings(before).io);
@@ -195,7 +200,8 @@ TEST(ProcessHistoryHelpersTest, EachSampleIsJudgedByItsOwnGenerationsSupport)
                                              .ioCountersSupported = true,
                                              .networkCountersSupported = true,
                                              .gpuPerProcessSupported = true,
-                                             .gpuUtilizationSupported = true};
+                                             .gpuUtilizationSupported = true,
+                                             .gpuReadFailed = false};
     EXPECT_FALSE(rateReadings(unreadSample).io);
     EXPECT_FALSE(rateReadings(unreadSample).network);
     const Domain::ProcessSample absent{.snapshot = nullptr,
@@ -204,7 +210,8 @@ TEST(ProcessHistoryHelpersTest, EachSampleIsJudgedByItsOwnGenerationsSupport)
                                        .ioCountersSupported = true,
                                        .networkCountersSupported = true,
                                        .gpuPerProcessSupported = true,
-                                       .gpuUtilizationSupported = true};
+                                       .gpuUtilizationSupported = true,
+                                       .gpuReadFailed = false};
     EXPECT_FALSE(rateReadings(absent).io);
 }
 
@@ -220,21 +227,24 @@ TEST(ProcessHistoryHelpersTest, EachSampleCarriesItsOwnGenerationsGpuSupport)
                                        .ioCountersSupported = true,
                                        .networkCountersSupported = true,
                                        .gpuPerProcessSupported = true,
-                                       .gpuUtilizationSupported = true};
+                                       .gpuUtilizationSupported = true,
+                                       .gpuReadFailed = false};
     const Domain::ProcessSample after{.snapshot = snapshot,
                                       .version = 2,
                                       .sampleTimeSeconds = 2.0,
                                       .ioCountersSupported = true,
                                       .networkCountersSupported = true,
                                       .gpuPerProcessSupported = true,
-                                      .gpuUtilizationSupported = false};
+                                      .gpuUtilizationSupported = false,
+                                      .gpuReadFailed = false};
     const Domain::ProcessSample none{.snapshot = snapshot,
                                      .version = 3,
                                      .sampleTimeSeconds = 3.0,
                                      .ioCountersSupported = true,
                                      .networkCountersSupported = true,
                                      .gpuPerProcessSupported = false,
-                                     .gpuUtilizationSupported = true};
+                                     .gpuUtilizationSupported = true,
+                                     .gpuReadFailed = false};
 
     EXPECT_TRUE(rateReadings(before).gpuUtilization);
     EXPECT_TRUE(rateReadings(before).gpuPerProcess);
@@ -243,6 +253,26 @@ TEST(ProcessHistoryHelpersTest, EachSampleCarriesItsOwnGenerationsGpuSupport)
     // No per-process data means no utilization either, whatever the other flag says.
     EXPECT_FALSE(rateReadings(none).gpuPerProcess);
     EXPECT_FALSE(rateReadings(none).gpuUtilization);
+}
+
+TEST(ProcessHistoryHelpersTest, AFailedGpuReadIsAGapButKeepsSupport)
+{
+    // #1210: the sample's GPU figures are not readings (a gap, N/A), but the GPU tab must not say the
+    // system cannot report per-process GPU usage.
+    auto snapshot = std::make_shared<Domain::ProcessSnapshot>();
+    const Domain::ProcessSample failed{.snapshot = snapshot,
+                                       .version = 1,
+                                       .sampleTimeSeconds = 1.0,
+                                       .ioCountersSupported = true,
+                                       .networkCountersSupported = true,
+                                       .gpuPerProcessSupported = true,
+                                       .gpuUtilizationSupported = true,
+                                       .gpuReadFailed = true};
+    const SampleRateReadings readings = rateReadings(failed);
+    EXPECT_FALSE(readings.gpuPerProcess);
+    EXPECT_FALSE(readings.gpuUtilization);
+    EXPECT_TRUE(readings.gpuSupported);
+    EXPECT_NE(gpuTabContent(readings.gpuSupported, false), GpuTabContent::Unavailable);
 }
 
 TEST(ProcessHistoryHelpersTest, HistoriesOfOnlyGapsAreNoData)

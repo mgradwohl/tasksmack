@@ -39,6 +39,9 @@ struct SampleRateReadings
     bool network = false;
     bool gpuPerProcess = false;  ///< The GPU probe supplied per-process GPU data for this sample
     bool gpuUtilization = false; ///< ...and per-process utilization among it
+    /// The GPU probe supports per-process data at all, whether or not this sample's read succeeded:
+    /// a failed read is a gap in one sample, not a lack of support (#1210).
+    bool gpuSupported = false;
 };
 
 /// A sample's I/O and network rates, and its GPU figures, as readings or not, each judged by the
@@ -52,10 +55,13 @@ struct SampleRateReadings
     {
         return {};
     }
+    // A generation whose GPU read failed has no GPU readings, but keeps the probe's support.
+    const bool gpuRead = sample.gpuPerProcessSupported && !sample.gpuReadFailed;
     return {.io = rateIsReading(sample.ioCountersSupported, sample.snapshot->ioAvailable),
             .network = rateIsReading(sample.networkCountersSupported, sample.snapshot->networkAvailable),
-            .gpuPerProcess = sample.gpuPerProcessSupported,
-            .gpuUtilization = sample.gpuPerProcessSupported && sample.gpuUtilizationSupported};
+            .gpuPerProcess = gpuRead,
+            .gpuUtilization = gpuRead && sample.gpuUtilizationSupported,
+            .gpuSupported = sample.gpuPerProcessSupported};
 }
 
 /// Whether a history holds any actual reading rather than only gaps (NaN).

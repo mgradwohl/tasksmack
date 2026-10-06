@@ -239,6 +239,14 @@ TEST(ProcessColumnAvailabilityTest, CellsFollowTheSupportTheirGenerationWasReadU
     EXPECT_EQ(gpuSupportOfGeneration(true, false), NO_PER_PROCESS_GPU_UTILIZATION);
     EXPECT_EQ(gpuSupportOfGeneration(false, true), NO_PER_PROCESS_GPU); // No data means no utilization
     EXPECT_EQ(gpuSupportOfGeneration(false, false), NO_PER_PROCESS_GPU);
+
+    // A failed read keeps the support and is passed on to the row formatter (#1210).
+    const auto failed = gpuSupportOfGeneration(true, true, /*readFailed=*/true);
+    EXPECT_TRUE(failed.perProcess);
+    EXPECT_TRUE(failed.readFailed);
+    EXPECT_TRUE(rowFormatOptions(linuxWithoutRaplCapabilities(), failed).gpuReadFailed);
+    EXPECT_TRUE(rowFormatOptions(linuxWithoutRaplCapabilities(), failed).hasPerProcessGpu);
+    EXPECT_FALSE(gpuSupportOfGeneration(false, false, true).readFailed); // No support: nothing to fail
 }
 
 TEST(ProcessColumnAvailabilityTest, GpuColumnsNeedPerProcessGpuMetrics)

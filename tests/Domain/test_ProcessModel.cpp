@@ -3638,6 +3638,69 @@ TEST(ProcessModelTest, NoSamplesAreKeptWhileNothingIsWatched)
 // A throwing per-process GPU merge (#1142)
 // =============================================================================
 
+TEST(ProcessModelTest, AFailedGpuReadOnASupportedProbeIsAGapNotALackOfSupport)
+{
+    // #1210: the throw used to publish the generation as unsupported, so the table said "Not
+    // available on this system" though only this generation's read failed. It keeps the probe's
+    // support and is marked as a failed read instead.
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1000, 500)});
+    processProbe->setTotalCpuTime(100000);
+
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    caps.hasPerProcessUtilization = true;
+    gpuProbe->withCapabilities(caps);
+    gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor").withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024).withProcessCountersThrowing();
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    gpuModel->refresh();
+
+    Domain::ProcessModel processModel(std::move(processProbe));
+    processModel.setGPUModel(gpuModel);
+    processModel.watchProcess(100);
+    ASSERT_NO_THROW(processModel.refresh());
+
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(processModel.watchedSamplesSince(0, samples));
+    ASSERT_EQ(samples.size(), 1U);
+    EXPECT_TRUE(samples[0].gpuPerProcessSupported);
+    EXPECT_TRUE(samples[0].gpuUtilizationSupported);
+    EXPECT_TRUE(samples[0].gpuReadFailed);
+
+    std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> snapshots;
+    std::uint64_t version = 0;
+    Domain::ProcessModel::GpuSupport support;
+    ASSERT_TRUE(processModel.tryCopySnapshotsIfNewer(0, snapshots, version, nullptr, &support));
+    EXPECT_TRUE(support.perProcess);
+    EXPECT_TRUE(support.readFailed);
+}
+
+TEST(ProcessModelTest, ASuccessfulGpuReadIsNotMarkedFailed)
+{
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1000, 500)});
+    processProbe->setTotalCpuTime(100000);
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    gpuProbe->withCapabilities(caps);
+    gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor").withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024);
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    gpuModel->refresh();
+
+    Domain::ProcessModel processModel(std::move(processProbe));
+    processModel.setGPUModel(gpuModel);
+    processModel.refresh();
+
+    std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> snapshots;
+    std::uint64_t version = 0;
+    Domain::ProcessModel::GpuSupport support;
+    ASSERT_TRUE(processModel.tryCopySnapshotsIfNewer(0, snapshots, version, nullptr, &support));
+    EXPECT_TRUE(support.perProcess);
+    EXPECT_FALSE(support.readFailed);
+}
+
 TEST(ProcessModelTest, ThrowingPerProcessGpuQueryStillPublishesProcesses)
 {
     // #1142: readProcessGPUCounters() throwing escaped refresh() after the

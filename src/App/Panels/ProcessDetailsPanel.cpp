@@ -461,7 +461,7 @@ void ProcessDetailsPanel::renderContent()
                 const UI::Widgets::TabContentScope content("##GpuContent");
                 const auto& proc = cachedSnapshot();
                 const Detail::GpuTabContent gpuContent = Detail::gpuTabContent(
-                    m_CachedRateReadings.gpuPerProcess,
+                    m_CachedRateReadings.gpuSupported, // A failed read is not "not available on this system" (#1210)
                     Detail::hasGpuUsageToShow(
                         proc.gpuMemoryBytes, proc.gpuUtilPercent, !proc.gpuDevices.empty(), m_GpuUtilHistory, m_GpuMemHistory));
                 if (gpuContent == Detail::GpuTabContent::Unavailable)

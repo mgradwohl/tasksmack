@@ -118,6 +118,10 @@ inline constexpr std::string_view UNAVAILABLE_CELL_TEXT = "\xE2\x80\x94";
 inline constexpr const char* UNREADABLE_CELL_REASON =
     "Not available: TaskSmack could not read this for this process, usually for lack of privileges.";
 
+/// Tooltip of a GPU cell whose generation's per-process GPU read failed, on a system that has the
+/// data (#1210): a gap in one sample, not a lack of support.
+inline constexpr const char* GPU_READ_FAILED_CELL_REASON = "Not available: reading per-process GPU data failed for this sample.";
+
 /// Tooltip of a cell in a column this system's process probe cannot fill at all (#1028, #1035).
 inline constexpr const char* UNSUPPORTED_CELL_REASON = "Not available on this system.";
 
@@ -137,6 +141,7 @@ struct RowFormatOptions
     bool hasGdiObjects = true;
     bool hasPerProcessGpu = true;            ///< Platform::GPUCapabilities::hasPerProcessMetrics, from the GPU probe (#1210)
     bool hasPerProcessGpuUtilization = true; ///< Platform::GPUCapabilities::hasPerProcessUtilization (#1210)
+    bool gpuReadFailed = false;              ///< Supported, but this generation's per-process GPU read failed (#1210)
     bool hasStatus = true;
     bool hasPublisher = true;
     bool hasProcessType = true;
@@ -295,7 +300,8 @@ struct RowFormatCache
     bool statusSupported = true;
     bool publisherSupported = true;
     bool processTypeSupported = true;
-    bool gpuSupported = true; // GPU Engine and GPU Device; GPU % and GPU Memory carry their own tone
+    bool gpuSupported = true;   // GPU Engine and GPU Device; GPU % and GPU Memory carry their own tone
+    bool gpuReadFailed = false; // Supported, but this generation's per-process GPU read failed (#1210)
 };
 
 /// Formats every RowFormatCache field for one process snapshot. Pure (no ImGui calls, no shared
@@ -316,6 +322,7 @@ struct RowFormatCache
     fmt.publisherSupported = options.hasPublisher;
     fmt.processTypeSupported = options.hasProcessType;
     fmt.gpuSupported = options.hasPerProcessGpu;
+    fmt.gpuReadFailed = options.hasPerProcessGpu && options.gpuReadFailed;
     fmt.ppid = makeAlignedCellText(UI::Format::formatId(proc.parentPid));
     fmt.startTime = (proc.startTimeEpoch != 0) ? makeAlignedCellText(UI::Format::formatEpochDateTimeShort(proc.startTimeEpoch))
                                                : unavailableCell(UNREADABLE_CELL_REASON);
@@ -359,11 +366,28 @@ struct RowFormatCache
                   : unavailableCell(UNSUPPORTED_CELL_REASON);
     // Where the GPU probe has no per-process metrics (DRM- or ROCm-only Linux), every process reads 0:
     // that is no measurement (#1210). Nor is GPU % where it has memory but not utilization (NVML).
-    fmt.gpuPercent = (options.hasPerProcessGpu && options.hasPerProcessGpuUtilization)
-                       ? withZeroTone(makeAlignedCellText(formatAlignedPercentString(proc.gpuUtilPercent)),
-                                      readsAsZeroAtOneDecimal(proc.gpuUtilPercent))
-                       : unavailableCell(UNSUPPORTED_CELL_REASON);
-    fmt.gpuMemory = options.hasPerProcessGpu ? bytesCell(proc.gpuMemoryBytes) : unavailableCell(UNSUPPORTED_CELL_REASON);
+    // A supported read that failed for this generation is a gap in one sample, not either of those.
+    if (!(options.hasPerProcessGpu && options.hasPerProcessGpuUtilization))
+    {
+        fmt.gpuPercent = unavailableCell(UNSUPPORTED_CELL_REASON);
+    }
+    else if (options.gpuReadFailed)
+    {
+        fmt.gpuPercent = unavailableCell(GPU_READ_FAILED_CELL_REASON);
+    }
+    else
+    {
+        fmt.gpuPercent = withZeroTone(makeAlignedCellText(formatAlignedPercentString(proc.gpuUtilPercent)),
+                                      readsAsZeroAtOneDecimal(proc.gpuUtilPercent));
+    }
+    if (!options.hasPerProcessGpu)
+    {
+        fmt.gpuMemory = unavailableCell(UNSUPPORTED_CELL_REASON);
+    }
+    else
+    {
+        fmt.gpuMemory = options.gpuReadFailed ? unavailableCell(GPU_READ_FAILED_CELL_REASON) : bytesCell(proc.gpuMemoryBytes);
+    }
     // No engine in use is a fact rather than a gap, so it is left blank rather than marked unavailable.
     for (std::size_t i = 0; i < proc.gpuEngines.size(); ++i)
     {

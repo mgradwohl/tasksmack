@@ -435,6 +435,28 @@ TEST(ProcessRowFormatTest, GpuCellsAreUnavailableWithoutPerProcessGpuMetrics)
     expectMeasuredZero(measured.gpuMemory);
 }
 
+TEST(ProcessRowFormatTest, AFailedGpuReadIsUnreadableNotUnsupported)
+{
+    // #1210: a supported probe whose read failed for this generation: the GPU cells say the read
+    // failed, not "not available on this system", and never show the placeholder zeros.
+    ProcessSnapshot snap = makeSnapshot();
+    snap.gpuUtilPercent = 0.0;
+    snap.gpuMemoryBytes = 0;
+    ProcessRowFormat::RowFormatOptions failed;
+    failed.gpuReadFailed = true;
+    const RowFormatCache fmt = buildRowFormatCache(snap, failed);
+    expectUnavailable(fmt.gpuPercent, ProcessRowFormat::GPU_READ_FAILED_CELL_REASON);
+    expectUnavailable(fmt.gpuMemory, ProcessRowFormat::GPU_READ_FAILED_CELL_REASON);
+    EXPECT_TRUE(fmt.gpuSupported);
+    EXPECT_TRUE(fmt.gpuReadFailed);
+
+    // Unsupported wins: a failed read on a system without the data is still "not available".
+    failed.hasPerProcessGpu = false;
+    const RowFormatCache unsupported = buildRowFormatCache(snap, failed);
+    expectUnavailable(unsupported.gpuPercent, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
+    EXPECT_FALSE(unsupported.gpuReadFailed);
+}
+
 TEST(ProcessRowFormatTest, GpuPercentIsUnavailableWithoutPerProcessUtilization)
 {
     // #1210: Linux NVML gives each process's GPU memory but not its utilization; GPU % read 0.0%.
