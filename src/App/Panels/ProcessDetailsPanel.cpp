@@ -105,13 +105,15 @@ void dropOldest(std::vector<double>& data, std::size_t count)
 constexpr const char* CPU_TOTAL_LABEL = "Total";
 constexpr const char* CPU_USER_LABEL = "User";
 constexpr const char* CPU_SYSTEM_LABEL = "System";
-constexpr const char* MEM_USED_LABEL = "Used";
+// The resident and peak pair carry the Processes table's column names, so the chart and the table
+// call one quantity by one name (#1273).
+constexpr const char* MEM_USED_LABEL = "Memory";
 constexpr const char* MEM_SHARED_LABEL = "Shared";
 // A series on a chart's right-hand axis ends in " →", pointing at it (setupSecondaryRateAxis(), #1206).
 constexpr const char* MEM_VIRTUAL_LABEL = "Virtual →";
-constexpr const char* MEM_PEAK_LABEL = "Peak Used";
+constexpr const char* MEM_PEAK_LABEL = "Peak Mem";
 constexpr const char* THREADS_LABEL = "Threads";
-constexpr const char* FAULTS_LABEL = "Page Faults/s →";
+constexpr const char* FAULTS_LABEL = "Page Faults →"; // Its values carry the "/s" ("12.0/s"), #1202
 #ifdef _WIN32
 constexpr const char* GDI_LABEL = "GDI Objects";
 #endif
@@ -134,6 +136,13 @@ constexpr const char* GPU_MEMORY_LABEL = "Memory";
         return 0.0;
     }
     return usedPercent / Domain::Numeric::toDouble(snapshot.memoryBytes);
+}
+
+/// The theme's danger fills, for the buttons that end a process (Detail::isDestructiveAction()).
+[[nodiscard]] UI::Widgets::ButtonFills dangerButtonFills()
+{
+    const auto& scheme = UI::Theme::get().scheme();
+    return {.resting = scheme.dangerButton, .hovered = scheme.dangerButtonHovered, .pressed = scheme.dangerButtonActive};
 }
 
 /// A count history sample as text, or N/A for NaN (an unread value or a gap, #1110 / #1098): std::llround
@@ -835,7 +844,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         {
             fresh.handles = proc.handleCount > 0 ? formatCountLocale(proc.handleCount) : std::string("-");
         }
-        fresh.cpuTime = UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds);
+        fresh.cpuTime = UI::Format::formatDuration(proc.cpuTimeSeconds);
         fresh.priority = Detail::priorityDisplayText(proc.nice, Detail::PRIORITY_USES_WINDOWS_CLASSES); // No nice on Windows (#1204)
         fresh.keepAlive = ownedSnapshot ? m_CachedSnapshot : nullptr;
         fresh.key = ownedSnapshot ? &proc : nullptr;
@@ -1335,7 +1344,7 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
 
             ImGui::Spacing();
             ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MEMORY "  Memory (%zu samples)", alignedCount);
-            // Peak Used is a line with a tooltip row but no bar; list it in the value strip too (#1193).
+            // Peak Mem is a line with a tooltip row but no bar; list it in the value strip too (#1193).
             const std::array peakEntry{UI::Widgets::ValueStripEntry{
                 .label = MEM_PEAK_LABEL,
                 .value = UI::Format::formatBytes(m_PeakMemoryBytes),
@@ -1940,7 +1949,7 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
         ImGui::TextUnformatted(LABEL_UTILIZATION);
         ImGui::TableNextColumn();
         const ImVec4 gpuUtilColor = theme.scheme().gpuUtilization;
-        ImGui::TextColored(gpuUtilColor, "%.1f%%", m_SmoothedUsage.gpuUtilPercent);
+        ImGui::TextColored(gpuUtilColor, "%s", UI::Format::percentOneDecimal(m_SmoothedUsage.gpuUtilPercent).c_str());
 
         // GPU Memory
         ImGui::TableNextRow();
@@ -1988,7 +1997,7 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
             ImGui::TextUnformatted(LABEL_ENCODER);
             ImGui::TableNextColumn();
             const ImVec4 encColor = theme.scheme().gpuEncoder;
-            ImGui::TextColored(encColor, "%.1f%%", proc.gpuEncoderUtil);
+            ImGui::TextColored(encColor, "%s", UI::Format::percentOneDecimal(proc.gpuEncoderUtil).c_str());
         }
 
         if (proc.gpuDecoderUtil > 0.0)
@@ -1998,7 +2007,7 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
             ImGui::TextUnformatted(LABEL_DECODER);
             ImGui::TableNextColumn();
             const ImVec4 decColor = theme.scheme().gpuDecoder;
-            ImGui::TextColored(decColor, "%.1f%%", proc.gpuDecoderUtil);
+            ImGui::TextColored(decColor, "%s", UI::Format::percentOneDecimal(proc.gpuDecoderUtil).c_str());
         }
 
         ImGui::EndTable();
@@ -2048,7 +2057,7 @@ void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& p
                     ImGui::TableNextColumn();
                     ImGui::TextUnformatted(LABEL_UTILIZATION);
                     ImGui::TableNextColumn();
-                    ImGui::TextColored(gpuUtilColor, "%.1f%%", gpuUsage.utilPercent);
+                    ImGui::TextColored(gpuUtilColor, "%s", UI::Format::percentOneDecimal(gpuUsage.utilPercent).c_str());
 
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn();
@@ -2137,10 +2146,11 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
                         {
                             if (*idxVal < alignedCount)
                             {
-                                const std::array rows{
-                                    UI::Widgets::TooltipRow{.label = GPU_UTIL_LABEL,
-                                                            .color = theme.scheme().gpuUtilization,
-                                                            .value = UI::Format::percentCompact(static_cast<double>(gpuUtilVec[*idxVal]))}};
+                                const std::array rows{UI::Widgets::TooltipRow{
+                                    .label = GPU_UTIL_LABEL,
+                                    .color = theme.scheme().gpuUtilization,
+                                    .value = UI::Format::percentOneDecimal(static_cast<double>(gpuUtilVec[*idxVal])),
+                                }};
                                 UI::Widgets::renderHistoryTooltip(timeData[*idxVal], rows);
                             }
                         }
@@ -2211,7 +2221,7 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
 
         // Now bars for current values
         const NowBar gpuUtilBar{
-            .valueText = UI::Format::percentCompact(m_SmoothedUsage.gpuUtilPercent),
+            .valueText = UI::Format::percentOneDecimal(m_SmoothedUsage.gpuUtilPercent),
             .label = GPU_UTIL_LABEL,
             .tooltipText = {},
             .value01 = UI::Format::percent01(m_SmoothedUsage.gpuUtilPercent),
@@ -2421,7 +2431,16 @@ void ProcessDetailsPanel::renderConfirmDialog()
             contentBudget,
             confirmStyle.ItemSpacing.x);
 
-        if (ImGui::Button(confirmLabel, ImVec2(confirmButtonWidth, 0.0F)))
+        // Ending a process can lose its work, so Terminate and Kill confirm in the danger colour
+        // their buttons in the Actions tab use (#1273).
+        const auto& theme = UI::Theme::get();
+        const bool confirmed = Detail::isDestructiveAction(m_ConfirmAction) ? UI::Widgets::filledButton(confirmLabel,
+                                                                                                        ImVec2(confirmButtonWidth, 0.0F),
+                                                                                                        dangerButtonFills(),
+                                                                                                        theme.scheme().textPrimary,
+                                                                                                        theme.scheme().windowBg)
+                                                                            : ImGui::Button(confirmLabel, ImVec2(confirmButtonWidth, 0.0F));
+        if (confirmed)
         {
             dispatchConfirmedAction();
             m_ShowConfirmDialog = false;
@@ -2483,6 +2502,10 @@ void ProcessDetailsPanel::renderActionButtons()
     constexpr float BUTTON_HEIGHT = 0.0F; // Use default height
     const ImVec2 buttonSize(buttonWidth, BUTTON_HEIGHT);
 
+    // Terminate and Kill end the process, so they are drawn in the theme's danger colour, apart from
+    // Suspend and Resume, which can be undone (#1273).
+    const auto& theme = UI::Theme::get();
+
     // Use a table for consistent alignment
     if (ImGui::BeginTable("ActionButtons", 2, ImGuiTableFlags_SizingFixedFit))
     {
@@ -2496,7 +2519,8 @@ void ProcessDetailsPanel::renderActionButtons()
         ImGui::TableNextColumn();
         if (m_ActionCapabilities.canTerminate)
         {
-            if (ImGui::Button(TERMINATE_LABEL, buttonSize))
+            if (UI::Widgets::filledButton(
+                    TERMINATE_LABEL, buttonSize, dangerButtonFills(), theme.scheme().textPrimary, theme.scheme().windowBg))
             {
                 m_ConfirmAction = ProcessAction::Terminate;
                 m_ShowConfirmDialog = true;
@@ -2511,7 +2535,7 @@ void ProcessDetailsPanel::renderActionButtons()
         ImGui::TableNextColumn();
         if (m_ActionCapabilities.canKill)
         {
-            if (ImGui::Button(KILL_LABEL, buttonSize))
+            if (UI::Widgets::filledButton(KILL_LABEL, buttonSize, dangerButtonFills(), theme.scheme().textPrimary, theme.scheme().windowBg))
             {
                 m_ConfirmAction = ProcessAction::Kill;
                 m_ShowConfirmDialog = true;
