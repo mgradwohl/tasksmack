@@ -174,5 +174,91 @@ TEST(CpuAffinityTest, OrdersByNumericValueOfTheBitset)
     EXPECT_EQ(parsed("64-127") <=> parsed("64-127"), std::strong_ordering::equal);
 }
 
+// ========== Intersection (online CPUs, #1384) ==========
+
+TEST(CpuAffinityTest, IntersectWithKeepsInlineBitsInBoth)
+{
+    CpuAffinity affinity = parsed("0-63");
+    affinity.intersectWith(parsed("0-7"));
+    EXPECT_EQ(affinity, parsed("0-7"));
+    EXPECT_EQ(affinity.words().size(), 1U);
+
+    CpuAffinity sparse = parsed("0-63");
+    sparse.intersectWith(parsed("0-3,6-7"));
+    EXPECT_EQ(cpusOf(sparse), (std::vector<std::size_t>{0, 1, 2, 3, 6, 7}));
+}
+
+TEST(CpuAffinityTest, IntersectWithOfTwoSpilledSetsKeepsTheCommonWords)
+{
+    CpuAffinity affinity = parsed("0-3,64-127,200");
+    affinity.intersectWith(parsed("2-5,100-300"));
+    EXPECT_EQ(affinity, parsed("2-3,100-127,200"));
+    EXPECT_EQ(affinity.count(), 2U + 28U + 1U);
+    EXPECT_NE(affinity.words().back(), 0U);
+}
+
+TEST(CpuAffinityTest, IntersectWithTrimsTrailingZeroWordsSoEqualityAndOrderingHold)
+{
+    // 0-3,200 AND 0-150: word 3 (processors 192-255) becomes zero and is dropped, leaving two words.
+    CpuAffinity affinity = parsed("0-3,70,200");
+    affinity.intersectWith(parsed("0-150"));
+    EXPECT_EQ(affinity, parsed("0-3,70"));
+    EXPECT_EQ(affinity.words().size(), 2U);
+    EXPECT_EQ(affinity <=> parsed("0-3,70"), std::strong_ordering::equal);
+    EXPECT_LT(affinity, parsed("0-3,71"));
+}
+
+TEST(CpuAffinityTest, IntersectWithMovesASpilledResultWithinProcessors0To63BackInline)
+{
+    // A process allowed 0-63 on a kernel listing it as possible 0-127, with online 0-7.
+    CpuAffinity affinity = parsed("0-127");
+    affinity.intersectWith(parsed("0-7"));
+    EXPECT_EQ(affinity, CpuAffinity::fromMask(0xFF));
+    EXPECT_EQ(affinity.words().size(), 1U);
+    // Still behaves as an inline set afterwards: it can spill again.
+    affinity.set(64);
+    EXPECT_EQ(affinity, parsed("0-7,64"));
+}
+
+TEST(CpuAffinityTest, IntersectWithOfMixedWidthsUsesTheNarrowerOne)
+{
+    // Inline AND spilled.
+    CpuAffinity narrow = CpuAffinity::fromMask(0xF0F);
+    narrow.intersectWith(parsed("0-1,8-9,64-127"));
+    EXPECT_EQ(narrow, parsed("0-1,8-9"));
+
+    // Spilled AND inline.
+    CpuAffinity wide = parsed("0-1,8-9,64-127");
+    wide.intersectWith(CpuAffinity::fromMask(0xF0F));
+    EXPECT_EQ(wide, parsed("0-1,8-9"));
+    EXPECT_EQ(wide.words().size(), 1U);
+}
+
+TEST(CpuAffinityTest, IntersectWithNoCommonProcessorIsEmpty)
+{
+    CpuAffinity inlineOnly = parsed("0-3");
+    inlineOnly.intersectWith(parsed("4-7"));
+    EXPECT_TRUE(inlineOnly.empty());
+    EXPECT_EQ(inlineOnly, CpuAffinity{});
+
+    CpuAffinity spilled = parsed("64-127");
+    spilled.intersectWith(parsed("0-63"));
+    EXPECT_TRUE(spilled.empty());
+    EXPECT_EQ(spilled, CpuAffinity{});
+
+    CpuAffinity withEmpty = parsed("0-3,64-127");
+    withEmpty.intersectWith(CpuAffinity{});
+    EXPECT_TRUE(withEmpty.empty());
+}
+
+TEST(CpuAffinityTest, IntersectWithItselfIsUnchanged)
+{
+    CpuAffinity wide = parsed("0-3,64-127");
+    const CpuAffinity before = wide;
+    const CpuAffinity& self = wide;
+    wide.intersectWith(self);
+    EXPECT_EQ(wide, before);
+}
+
 } // namespace
 } // namespace Platform
