@@ -4,6 +4,7 @@
 // unit-testable without a live ImGui context, following CONTRIBUTING.md's "extract the pure decision
 // logic into a small header" pattern (as ProcessTableFlags.h and ProcessTreeIndent.h do).
 
+#include <algorithm>
 #include <cmath>
 
 namespace App::ProcessTableLayout

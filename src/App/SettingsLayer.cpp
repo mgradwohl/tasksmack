@@ -293,7 +293,20 @@ void SettingsLayer::renderSettingsDialog()
         // taller than leaves room for that row below it, so the buttons stay on screen at any font
         // size in any window height (#1129). Reserved: the title bar, the window padding, and the
         // footer (separator, spacing and the button row) with the item spacing between them.
-        const float footerHeight = (style.ItemSpacing.y * 3.0F) + 1.0F + ImGui::GetFrameHeight();
+        // The action row's buttons, measured from their text: the floor of 9.375 em is exactly the
+        // former fixed 100px at the reference configuration, and the measured term takes over for
+        // whichever of Cancel and Save is wider once the font grows. Reset to defaults sits at their
+        // left at its own text's width, while the three fit at full width; in a dialog narrower than
+        // that (the 200 px minimum window at the largest font) it takes a row of its own above them,
+        // so Cancel and Save are never pushed past the dialog's edge (#1341 review).
+        const float actionButtonWidth = std::max(
+            UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize(CANCEL_LABEL).x, ImGui::GetFontSize(), SETTINGS_BUTTON_MIN_EM),
+            UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize(SAVE_LABEL).x, ImGui::GetFontSize(), SETTINGS_BUTTON_MIN_EM));
+        const float resetButtonWidth = ImGui::CalcTextSize(RESET_LABEL).x + (style.FramePadding.x * 2.0F);
+        const float actionRowWidth = resetButtonWidth + (actionButtonWidth * 2.0F) + (style.ItemSpacing.x * 2.0F);
+        const bool resetOnOwnRow = ImGui::GetContentRegionAvail().x < actionRowWidth;
+        const float footerHeight =
+            (style.ItemSpacing.y * 3.0F) + 1.0F + ImGui::GetFrameHeight() + (resetOnOwnRow ? ImGui::GetFrameHeightWithSpacing() : 0.0F);
         const float reservedHeight = ImGui::GetFrameHeight() + (style.WindowPadding.y * 2.0F) + footerHeight;
         const float bodyMaxHeight =
             UI::DialogMetrics::computeScrollableBodyMaxHeight(dialogMaxSize.y, reservedHeight, ImGui::GetFrameHeightWithSpacing() * 2.0F);
@@ -358,12 +371,7 @@ void SettingsLayer::renderSettingsDialog()
         // the dialog is known here, and the combos are widened to reach it.
         const float advancedRowWidth = ImGui::CalcTextSize(EDIT_CONFIG_LABEL).x + ImGui::CalcTextSize(OPEN_THEMES_LABEL).x +
                                        (style.FramePadding.x * 4.0F) + style.ItemSpacing.x;
-        const float actionButtonWidth =
-            std::max(UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize(CANCEL_LABEL).x, emPx, SETTINGS_BUTTON_MIN_EM),
-                     UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize(SAVE_LABEL).x, emPx, SETTINGS_BUTTON_MIN_EM));
-        // Reset to defaults sits at the left of the same row, at its own text's width.
-        const float resetButtonWidth = ImGui::CalcTextSize(RESET_LABEL).x + (style.FramePadding.x * 2.0F);
-        const float actionRowWidth = resetButtonWidth + (actionButtonWidth * 2.0F) + (style.ItemSpacing.x * 2.0F);
+        // actionButtonWidth, resetButtonWidth and actionRowWidth are measured above, with the footer.
         // The Advanced section's checkboxes: a square of the frame height, then the label. On
         // native Wayland the window-decorations one is the widest row in the dialog.
         const auto checkboxWidth = [&style](const char* label)
@@ -612,14 +620,13 @@ void SettingsLayer::renderSettingsDialog()
         // ========================================
         // Buttons (pinned below the scrolling body)
         // ========================================
-        // Floor of 9.375 em is exactly the former fixed 100px at the reference configuration; the
-        // measured term takes over for whichever of the two labels is wider once the font grows.
-        // (Computed above as actionButtonWidth, where the combos need it to find the dialog's width.)
-        // Shrunk to the row when the viewport-capped dialog is narrower than the row (#1129), so
-        // Cancel can't be pushed off the left edge. Reset to defaults keeps its width at the left.
+        // Cancel and Save at actionButtonWidth (measured above, with the footer), shrunk to the row
+        // when the viewport-capped dialog is narrower than it (#1129), so Cancel can't be pushed off
+        // the left edge. Reset to defaults keeps its width: at their left, or on its own row above
+        // them when the dialog is too narrow for all three (resetOnOwnRow).
         const float rowStartX = ImGui::GetCursorPosX();
         const float availWidth = ImGui::GetContentRegionAvail().x;
-        const float pairAvailWidth = std::max(0.0F, availWidth - resetButtonWidth - style.ItemSpacing.x);
+        const float pairAvailWidth = resetOnOwnRow ? availWidth : std::max(0.0F, availWidth - resetButtonWidth - style.ItemSpacing.x);
         const float buttonWidth = UI::DialogMetrics::fitActionButtonPairWidth(actionButtonWidth, style.ItemSpacing.x, pairAvailWidth);
         const float totalButtonWidth = (buttonWidth * 2.0F) + style.ItemSpacing.x;
 
@@ -630,7 +637,10 @@ void SettingsLayer::renderSettingsDialog()
             resetToDefaults();
         }
         ImGui::SetItemTooltip("Put every setting here back to its default; Save keeps them");
-        ImGui::SameLine();
+        if (!resetOnOwnRow)
+        {
+            ImGui::SameLine();
+        }
 
         // Right-align Cancel and Save
         ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), rowStartX + availWidth - totalButtonWidth));

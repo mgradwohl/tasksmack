@@ -53,11 +53,11 @@ struct AlignedCellText
     }
     [[nodiscard]] std::string_view number() const noexcept
     {
-        return std::string_view(text).substr(0, hasUnit() ? unitStart : text.size());
+        return {text.data(), hasUnit() ? unitStart : text.size()};
     }
     [[nodiscard]] std::string_view unit() const noexcept
     {
-        return hasUnit() ? std::string_view(text).substr(unitStart) : std::string_view{};
+        return hasUnit() ? std::string_view{text.data() + unitStart, text.size() - unitStart} : std::string_view{};
     }
 };
 
