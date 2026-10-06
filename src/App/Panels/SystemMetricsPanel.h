@@ -125,7 +125,7 @@ class SystemMetricsPanel : public Panel
     std::vector<double> m_TimestampsCache;
 
     // Render scratch buffers for stacked CPU breakdown chart (reused across frames to avoid per-frame heap allocation)
-    // double, to match the double time axis ImPlot pairs them with (UI::Widgets::buildTimeAxis)
+    // double, to match the double time axis ImPlot pairs them with (UI::Widgets::fillTimeAxis)
     std::vector<double> m_CpuStackX;
     std::vector<double> m_CpuStackY0;
     std::vector<double> m_CpuStackYUser;
