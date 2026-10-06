@@ -141,7 +141,8 @@ jobs:
   # Release differs from Debug in NDEBUG paths, IPO/LTO, hardening flags and -Werror at -O3, so
   # it is built and tested on every event that builds Debug (and on the weekly schedule), not just
   # at release time (#1134). Linux only on PRs: it runs in parallel with the longer Windows debug
-  # and static-analysis jobs, so it adds runner minutes but no wall-clock time.
+  # and static-analysis jobs, so it adds runner minutes but no wall-clock time. It also builds
+  # the benchmark target (build only), the one PR job that does.
   build-linux-release:
     needs: [detect-docs-only]
     if: >-
@@ -154,6 +155,9 @@ jobs:
     with:
       os: ubuntu-24.04
       build_type: release
+      # Also compile and link TaskSmackBenchmarks (no timing run), so a PR that breaks the
+      # benchmark build fails here rather than on main (#1348).
+      build_benchmarks: true
 
   build-windows-debug:
     needs: [detect-docs-only]
