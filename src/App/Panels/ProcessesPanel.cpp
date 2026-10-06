@@ -598,6 +598,10 @@ void ProcessesPanel::onAttach()
         m_CachedSnapshotVersion = newVersion;
     }
 
+    // A column this system cannot fill is hidden by default, unless its visibility was chosen (#1210).
+    // Before the table is first drawn, since its default visibility is set from these settings.
+    ProcessColumnAvailability::applyCapabilityDefaults(m_ColumnSettings, processCapabilities());
+
     spdlog::info("ProcessesPanel: initialized with background sampler ({}ms interval)", m_AppliedSamplerInterval.count());
 }
 
@@ -1719,10 +1723,11 @@ void ProcessesPanel::renderColumnsMenu()
     ImGui::PopItemFlag();
 
     ImGui::Separator();
-    const bool canReset = !shown.isDefault() || !m_TableHasDefaultOrder;
+    const bool canReset = !ProcessColumnAvailability::hasDefaultColumns(shown, caps) || !m_TableHasDefaultOrder;
     if (ImGui::MenuItem(ICON_FA_ROTATE_LEFT " Reset columns", nullptr, false, canReset))
     {
-        m_RequestedColumns = ProcessColumnSettings::defaults();
+        // This system's defaults: a column it cannot fill is hidden (#1210)
+        m_RequestedColumns = ProcessColumnAvailability::defaultColumns(caps);
         m_ResetColumnOrderRequested = true;
     }
     ImGui::SetItemTooltip("Show the default columns, in their default order");

@@ -322,6 +322,23 @@ TEST(ProcessColumnSettingsTest, ResetRestoresTheDefaultColumns)
     }
 }
 
+TEST(ProcessColumnSettingsTest, OnlyAnUnchosenColumnTakesANewDefault)
+{
+    ProcessColumnSettings settings;
+    EXPECT_FALSE(settings.isChosen(ProcessColumn::Power));
+    settings.setDefaultVisible(ProcessColumn::Power, false);
+    EXPECT_FALSE(settings.isVisible(ProcessColumn::Power));
+    EXPECT_FALSE(settings.isChosen(ProcessColumn::Power));
+
+    settings.setVisible(ProcessColumn::Power, true); // The user's (or the config file's) choice
+    EXPECT_TRUE(settings.isChosen(ProcessColumn::Power));
+    settings.setDefaultVisible(ProcessColumn::Power, false);
+    EXPECT_TRUE(settings.isVisible(ProcessColumn::Power));
+
+    settings.toggleVisible(ProcessColumn::Threads);
+    EXPECT_TRUE(settings.isChosen(ProcessColumn::Threads));
+}
+
 TEST(ProcessColumnSettingsTest, RequestVisibleKeepsUnhideableColumnsShown)
 {
     ProcessColumnSettings settings;

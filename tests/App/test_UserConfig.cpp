@@ -430,6 +430,11 @@ name = true
     EXPECT_FALSE(settings.showPrivilegeNotice);
     EXPECT_FALSE(settings.processColumns.isVisible(ProcessColumn::PID));
     EXPECT_TRUE(settings.processColumns.isVisible(ProcessColumn::Name));
+    // A saved column is the user's choice, which this system's defaults must not override (#1210);
+    // one the file does not name is left at its default.
+    EXPECT_TRUE(settings.processColumns.isChosen(ProcessColumn::PID));
+    EXPECT_TRUE(settings.processColumns.isChosen(ProcessColumn::Name));
+    EXPECT_FALSE(settings.processColumns.isChosen(ProcessColumn::Power));
 }
 
 TEST_F(UserConfigLoadSaveTest, LoadIgnoresValuesWithWrongTypes)

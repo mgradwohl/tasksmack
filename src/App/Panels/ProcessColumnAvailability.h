@@ -55,6 +55,41 @@ namespace App::ProcessColumnAvailability
     }
 }
 
+/// The default columns on this system (#1210): getColumnInfo()'s defaults, less any column the probe
+/// cannot fill, so no column shown by default is all dashes -- Power without RAPL on Linux, say. It is
+/// what "Reset columns" restores. A hidden column can still be shown from the Columns menu, where it
+/// says it is not available on this system.
+[[nodiscard]] inline ProcessColumnSettings defaultColumns(const Platform::ProcessCapabilities& caps)
+{
+    ProcessColumnSettings settings;
+    for (const ProcessColumn col : allProcessColumns())
+    {
+        if (!isSupported(col, caps))
+        {
+            settings.setDefaultVisible(col, false);
+        }
+    }
+    return settings;
+}
+
+/// Gives every column whose visibility was not chosen -- by the user, or in the config file -- this
+/// system's default (defaultColumns()). A chosen one is left as it is.
+inline void applyCapabilityDefaults(ProcessColumnSettings& settings, const Platform::ProcessCapabilities& caps)
+{
+    const ProcessColumnSettings defaults = defaultColumns(caps);
+    for (const ProcessColumn col : allProcessColumns())
+    {
+        settings.setDefaultVisible(col, defaults.isVisible(col));
+    }
+}
+
+/// Whether `settings` shows exactly this system's default columns, i.e. "Reset columns" would change
+/// no column's visibility.
+[[nodiscard]] inline bool hasDefaultColumns(const ProcessColumnSettings& settings, const Platform::ProcessCapabilities& caps)
+{
+    return settings.visible == defaultColumns(caps).visible;
+}
+
 /// What a free-text cell (Status, Publisher) shows.
 enum class TextCell : std::uint8_t
 {

@@ -5,6 +5,8 @@
 
 #include <gtest/gtest.h>
 
+#include <initializer_list>
+
 namespace App
 {
 namespace
@@ -86,6 +88,73 @@ TEST(ProcessColumnAvailabilityTest, UnsupportedNoteWinsOverThePerProcessNote)
     Platform::ProcessCapabilities caps = windowsLikeCapabilities();
     caps.hasNetworkCounters = false;
     EXPECT_EQ(unavailableValuesNote(ProcessColumn::NetSent, caps), ProcessColumnAvailability::UNSUPPORTED_COLUMN_NOTE);
+}
+
+/// What the Linux probe reports on a machine without RAPL (LinuxProcessProbe::capabilities()).
+[[nodiscard]] Platform::ProcessCapabilities linuxWithoutRaplCapabilities()
+{
+    Platform::ProcessCapabilities caps;
+    caps.hasIoCounters = true;
+    caps.hasThreadCount = true;
+    caps.hasHandleCount = true;
+    caps.hasPageFaults = true;
+    caps.hasCpuAffinity = true;
+    caps.hasNetworkCounters = true;
+    caps.hasPowerUsage = false;
+    caps.hasStatus = true;
+    caps.hasSharedMemory = true;
+    return caps;
+}
+
+TEST(ProcessColumnAvailabilityTest, NoDefaultColumnIsEntirelyUnavailable)
+{
+    // #1210: Power is shown by default, and on Linux without RAPL it would be a column of dashes.
+    ASSERT_TRUE(getColumnInfo(ProcessColumn::Power).defaultVisible);
+    for (const Platform::ProcessCapabilities& caps : {linuxWithoutRaplCapabilities(), windowsLikeCapabilities()})
+    {
+        const ProcessColumnSettings defaults = ProcessColumnAvailability::defaultColumns(caps);
+        for (const ProcessColumn col : allProcessColumns())
+        {
+            if (defaults.isVisible(col))
+            {
+                EXPECT_TRUE(isSupported(col, caps)) << getColumnInfo(col).configKey;
+            }
+        }
+    }
+    EXPECT_FALSE(ProcessColumnAvailability::defaultColumns(linuxWithoutRaplCapabilities()).isVisible(ProcessColumn::Power));
+}
+
+TEST(ProcessColumnAvailabilityTest, SupportedColumnsKeepTheirDefaults)
+{
+    Platform::ProcessCapabilities everything = linuxWithoutRaplCapabilities();
+    everything.hasPowerUsage = true;
+    everything.hasPublisher = true;
+    everything.hasProcessType = true;
+    everything.hasGdiObjects = true;
+    EXPECT_EQ(ProcessColumnAvailability::defaultColumns(everything).visible, ProcessColumnSettings::defaults().visible);
+    EXPECT_TRUE(ProcessColumnAvailability::hasDefaultColumns(ProcessColumnSettings{}, everything));
+}
+
+TEST(ProcessColumnAvailabilityTest, CapabilityDefaultsLeaveAChosenColumnAlone)
+{
+    const Platform::ProcessCapabilities caps = linuxWithoutRaplCapabilities();
+
+    // Not chosen (no saved value): hidden, since this system cannot fill it.
+    ProcessColumnSettings fresh;
+    ProcessColumnAvailability::applyCapabilityDefaults(fresh, caps);
+    EXPECT_FALSE(fresh.isVisible(ProcessColumn::Power));
+    EXPECT_TRUE(ProcessColumnAvailability::hasDefaultColumns(fresh, caps));
+
+    // Chosen (the user turned it on, or the config file says so): kept.
+    ProcessColumnSettings saved;
+    saved.setVisible(ProcessColumn::Power, true);
+    ProcessColumnAvailability::applyCapabilityDefaults(saved, caps);
+    EXPECT_TRUE(saved.isVisible(ProcessColumn::Power));
+    EXPECT_FALSE(ProcessColumnAvailability::hasDefaultColumns(saved, caps)); // "Reset columns" would hide it
+
+    // The Columns menu can still show it.
+    fresh.requestVisible(ProcessColumn::Power, true);
+    EXPECT_TRUE(fresh.isVisible(ProcessColumn::Power));
 }
 
 TEST(ProcessColumnAvailabilityTest, EmptyTextInASupportedColumnIsBlankNotUnavailable)

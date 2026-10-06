@@ -302,6 +302,10 @@ enum class ColumnAlign : std::uint8_t
 struct ProcessColumnSettings
 {
     std::array<bool, processColumnCount()> visible{};
+    /// Columns whose visibility was chosen -- by the user, or loaded from the config file -- rather
+    /// than left at a default. Only the others follow the system's capabilities (#1210, see
+    /// ProcessColumnAvailability::applyCapabilityDefaults()).
+    std::array<bool, processColumnCount()> chosen{};
 
     ProcessColumnSettings()
     {
@@ -317,15 +321,31 @@ struct ProcessColumnSettings
         return visible[toIndex(col)];
     }
 
+    /// Shows or hides `col` as chosen (by the user or the config file), marking it chosen.
     void setVisible(ProcessColumn col, bool vis)
     {
         visible[toIndex(col)] = vis;
+        chosen[toIndex(col)] = true;
     }
 
     void toggleVisible(ProcessColumn col)
     {
-        const std::size_t idx = toIndex(col);
-        visible[idx] = !visible[idx];
+        setVisible(col, !isVisible(col));
+    }
+
+    /// Whether `col`'s visibility was chosen rather than left at a default.
+    [[nodiscard]] bool isChosen(ProcessColumn col) const
+    {
+        return chosen[toIndex(col)];
+    }
+
+    /// Sets the default visibility of a column whose visibility was not chosen; one that was is left alone.
+    void setDefaultVisible(ProcessColumn col, bool vis)
+    {
+        if (!isChosen(col))
+        {
+            visible[toIndex(col)] = vis;
+        }
     }
 
     /// Shows or hides `col` as the Columns menu asks (#1209); a column that cannot be hidden (PID,
@@ -335,7 +355,8 @@ struct ProcessColumnSettings
         setVisible(col, vis || !getColumnInfo(col).canHide);
     }
 
-    /// The default column set, what the Columns menu's "Reset columns" restores (#1209).
+    /// The default column set regardless of what the system can fill; see
+    /// ProcessColumnAvailability::defaultColumns() for what "Reset columns" restores (#1209, #1210).
     [[nodiscard]] static ProcessColumnSettings defaults()
     {
         return {};
