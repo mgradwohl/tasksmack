@@ -673,6 +673,12 @@ void Application::run()
                 // A window-manager or compositor restore of an OS maximize (#1250).
                 m_Window->handleSystemRestored();
                 break;
+            case WindowEventRouting::Action::Minimized:
+                // Win+Down on the client-side maximized window restores it, as it does a native
+                // maximized one (#1279). The window's subclass procedure normally catches it before
+                // the minimize happens; this is for a minimize that did not pass through it.
+                static_cast<void>(m_Window->restoreForShellMinimize());
+                break;
             case WindowEventRouting::Action::DisplayScaleChanged:
                 // Refresh the normal geometry's scale, as a move or resize would (#1250).
                 m_Window->handleGeometryChanged();
