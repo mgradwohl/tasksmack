@@ -116,7 +116,7 @@ The System Metrics panel displays real-time and historical charts for:
 
 All charts retain a bounded scrolling history window. Depending on the metric, TaskSmack uses fixed-capacity ring buffers or time-trimmed history containers so memory usage stays bounded regardless of how long the app runs.
 
-Each chart's key is the value strip on its heading line: a swatch and the current value of each series. A series drawn against the chart's right-hand axis has **→** after its value ("Page Faults: 3.2K/s →"), in the colour of that axis's labels; its chart tooltip rows read the same way.
+A chart with several series has a value strip on its heading line as its key: a swatch and the current value of each series. (Grid cells such as the CPU core charts show their one value in the cell instead.) A series drawn against the chart's right-hand axis has **→** after its value ("Page Faults: 3.2K/s →"), in the colour of that axis's labels; its chart tooltip rows read the same way.
 
 ### Network Monitoring
 

@@ -338,7 +338,8 @@ struct SeriesLabelParts
 {
     if (label.size() > SECONDARY_AXIS_MARK.size() && label.ends_with(SECONDARY_AXIS_MARK))
     {
-        return {.name = label.substr(0, label.size() - SECONDARY_AXIS_MARK.size()), .rightAxis = true};
+        // Built from pointer and length, not substr(), which may throw (bugprone-exception-escape)
+        return {.name = std::string_view{label.data(), label.size() - SECONDARY_AXIS_MARK.size()}, .rightAxis = true};
     }
     return {.name = label, .rightAxis = false};
 }
@@ -372,7 +373,7 @@ struct StripTextParts
     const SeriesLabelParts label = splitSecondaryAxisMark(seriesLabel);
     const auto prefixLength = [tip](std::string_view name) -> std::size_t
     {
-        return (!name.empty() && tip.starts_with(name) && tip.substr(name.size()).starts_with(':')) ? name.size() + 1 : 0;
+        return (!name.empty() && tip.size() > name.size() && tip.starts_with(name) && tip[name.size()] == ':') ? name.size() + 1 : 0;
     };
     // "name: value →" (tooltipRowText()), or a tip still built from the whole label ("name →: value").
     std::size_t prefix = prefixLength(label.name);
@@ -380,7 +381,8 @@ struct StripTextParts
     {
         prefix = prefixLength(seriesLabel);
     }
-    StripTextParts parts{.head = (prefix != 0) ? label.name : std::string_view{}, .tail = tip.substr(prefix)};
+    StripTextParts parts{.head = (prefix != 0) ? label.name : std::string_view{},
+                         .tail = std::string_view{tip.data() + prefix, tip.size() - prefix}};
     if (parts.tail.starts_with(' '))
     {
         parts.tail.remove_prefix(1);
