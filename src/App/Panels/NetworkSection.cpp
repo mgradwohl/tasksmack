@@ -729,13 +729,19 @@ void renderNetworkSection(RenderContext& ctx)
     // The charts share the tab's height like every other tab's (#959). With one disk that is just
     // the network chart and the disk chart. With several, the per-disk grid still takes whatever
     // is left, so it is not measured: it is reserved one share of the height, and the fill scope
-    // closes before it renders. The network chart and the grid then split the tab between them.
+    // closes before it renders. The network chart and the grid then split the tab between them --
+    // but the grid always keeps at least its rows at their minimum height. One share alone let the
+    // filling network chart (#1278) take height the grid's rows needed, and the tab scrolled with
+    // eight disks in an 800x1400 region (#1370 review).
     const bool diskGrid = StorageSection::usesDiskGrid(ctx.storagePublication);
     {
         std::optional<UI::Widgets::FillPlotLayout> fill;
         if (ctx.fillState != nullptr)
         {
-            fill.emplace(*ctx.fillState, diskGrid ? 1U : 0U);
+            // Measured at the width the grid will be drawn at: this tab's content region.
+            const float gridMinimum =
+                diskGrid ? StorageSection::diskGridMinimumHeight(ctx.storagePublication, ImGui::GetContentRegionAvail().x) : 0.0F;
+            fill.emplace(*ctx.fillState, diskGrid ? 1U : 0U, gridMinimum);
             ctx.fill = &*fill;
         }
 

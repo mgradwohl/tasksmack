@@ -15,6 +15,7 @@
 #include "TitleBarLayer.h"
 #include "UI/DpiScale.h"
 #include "UI/Format.h"
+#include "UI/HistoryPlotHeight.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/RenderMetrics.h"
 #include "UI/Theme.h"
@@ -128,10 +129,11 @@ void ShellLayer::applyBaseMinimumWindowSize()
         // Held inside the display's usable bounds, so a large font on a small display cannot leave
         // a window that does not fit on-screen (#1207).
         const auto [usableWidth, usableHeight] = window.getUsableDisplaySize().value_or(std::pair{0, 0});
-        const WindowMinimumSize baseMinimum =
-            capMinimumToUsable(computeMinimumWindowSize(m_MinimumSizeDisplayScale, 0.0F, static_cast<float>(m_ContentMinimumWidthPx)),
-                               usableWidth,
-                               usableHeight);
+        const WindowMinimumSize baseMinimum = capMinimumToUsable(
+            computeMinimumWindowSize(
+                m_MinimumSizeDisplayScale, 0.0F, static_cast<float>(m_ContentMinimumWidthPx), static_cast<float>(m_ContentMinimumHeightPx)),
+            usableWidth,
+            usableHeight);
         if (!SDL_SetWindowMinimumSize(sdlWindow, baseMinimum.width, baseMinimum.height))
         {
             spdlog::warn("SDL_SetWindowMinimumSize({}, {}) failed: {}", baseMinimum.width, baseMinimum.height, SDL_GetError());
@@ -139,19 +141,26 @@ void ShellLayer::applyBaseMinimumWindowSize()
     }
 }
 
-void ShellLayer::applyContentMinimumWidth(float widthPx)
+void ShellLayer::applyContentMinimumSize(float widthPx, float heightPx)
 {
     // With the custom title bar, it owns the minimum: hand it over, it re-derives the minimum every
     // frame and calls SDL only on a change. Otherwise apply it here when the whole-pixel width moves.
     if (m_TitleBar != nullptr)
     {
-        m_TitleBar->setContentMinimumWidth(widthPx);
+        m_TitleBar->setContentMinimumSize(widthPx, heightPx);
         return;
     }
-    const auto wholePx = static_cast<int>(std::ceil(std::clamp(widthPx, 0.0F, static_cast<float>(Core::WINDOW_MAX_DIMENSION))));
-    if (wholePx != m_ContentMinimumWidthPx)
+    const auto toWholePx = [](const float px)
     {
-        m_ContentMinimumWidthPx = wholePx;
+        // NaN fails both comparisons in std::clamp and would pass straight through: treat it as unknown.
+        return std::isfinite(px) ? static_cast<int>(std::ceil(std::clamp(px, 0.0F, static_cast<float>(Core::WINDOW_MAX_DIMENSION)))) : 0;
+    };
+    const int wholeWidth = toWholePx(widthPx);
+    const int wholeHeight = toWholePx(heightPx);
+    if (wholeWidth != m_ContentMinimumWidthPx || wholeHeight != m_ContentMinimumHeightPx)
+    {
+        m_ContentMinimumWidthPx = wholeWidth;
+        m_ContentMinimumHeightPx = wholeHeight;
         applyBaseMinimumWindowSize();
     }
 }
@@ -387,20 +396,14 @@ void ShellLayer::onRender()
         ImGui::PopStyleVar(3);
 
         renderTabBar();
+        // This window has no padding, so the cursor now sits exactly the main tab strip's height down.
+        const float mainTabsHeight = ImGui::GetCursorPosY();
 
         // Render content area with padding. Authored at the reference configuration and scaled
         // like the style it overrides, so the gutter keeps its proportion to the text (#971).
         const float styleScale = UI::Theme::get().styleScale();
         const float contentPaddingH = ShellMetrics::CONTENT_PADDING_H * styleScale;
         const float contentPaddingV = ShellMetrics::CONTENT_PADDING_V * styleScale;
-
-        // The window may not be narrower than the panels' content: the Processes toolbar row, or the
-        // Overview's NowBar column beside MIN_PLOT_WIDTH_EM of plot (#1207). Measured with the body
-        // font, here, where the panels will draw with it; a few text measurements a frame.
-        applyContentMinimumWidth(computeContentMinimumWidth(ProcessesPanel::measureToolbarMinimumWidth(),
-                                                            m_SystemMetricsPanel.overviewNowBarColumnWidth(),
-                                                            ImGui::GetFontSize(),
-                                                            (contentPaddingH * 2.0F) + ImGui::GetStyle().ScrollbarSize));
 
         // Add padding by using a child window with border that provides internal padding
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(contentPaddingH, contentPaddingV));
@@ -413,6 +416,42 @@ void ShellLayer::onRender()
         }
         ImGui::EndChild();
         ImGui::PopStyleVar();
+
+        // The window may not be narrower than the panels' content: the Processes toolbar row, or the
+        // Overview's NowBar column beside MIN_PLOT_WIDTH_EM of plot (#1207). Nor shorter than the
+        // title bar, the tab strips, one chart at its minimum height and the status bar (#1278).
+        // Measured with the body font, after the panels have drawn with it -- so the tab on show has
+        // measured its first chart at this frame's width (#1370 review); a few text measurements a frame.
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const float fontSize = ImGui::GetFontSize();
+        const float plotMinHeight = std::floor(UI::Widgets::historyPlotMinHeight(fontSize, UI::chartEmPx()));
+        // The tallest tab's lead-in and first chart, at its floor (UI/HistoryPlotHeight.h): estimated
+        // from the style -- the tab bodies draw with the theme's FramePadding (TabContentScope), which
+        // is what is pushed here, outside the tab bars -- or as the tabs last measured it, which also
+        // counts a value strip wrapped onto extra rows at this width. Only measurements taken at this
+        // window width and font size count: a hidden tab's goes stale when either changes (#1370 review).
+        const float firstChartBudget = computeFirstChartBudget(computeTallestFirstChartBlock({
+                                                                   .textLineWithSpacingPx = ImGui::GetTextLineHeightWithSpacing(),
+                                                                   .frameHeightWithSpacingPx = ImGui::GetFrameHeightWithSpacing(),
+                                                                   .itemSpacingYPx = style.ItemSpacing.y,
+                                                                   .cellPaddingYPx = style.CellPadding.y,
+                                                                   .plotMinHeightPx = plotMinHeight,
+                                                               }),
+                                                               m_SystemMetricsPanel.firstChartNonPlotHeight(viewport->Size.x, fontSize),
+                                                               plotMinHeight);
+        applyContentMinimumSize(computeContentMinimumWidth(ProcessesPanel::measureToolbarMinimumWidth(),
+                                                           m_SystemMetricsPanel.overviewNowBarColumnWidth(),
+                                                           fontSize,
+                                                           (contentPaddingH * 2.0F) + style.ScrollbarSize),
+                                computeContentMinimumHeight({
+                                    .titleBarPx = titleBarHeight,
+                                    .mainTabsPx = mainTabsHeight,
+                                    // As the panels draw them: a tab bar at SUB_TAB_PADDING_Y, then the item spacing below it.
+                                    .subTabsPx = fontSize + (ShellMetrics::SUB_TAB_PADDING_Y * styleScale * 2.0F) + style.ItemSpacing.y,
+                                    .chartPx = firstChartBudget,
+                                    .statusBarPx = statusBarHeight,
+                                    .chromePx = contentPaddingV * 2.0F,
+                                }));
     }
     else
     {

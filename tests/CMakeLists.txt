@@ -92,6 +92,7 @@ set(COMMON_TEST_SOURCES
     UI/test_ChartWidgets.cpp
     UI/test_ChartGridLayout.cpp
     UI/test_HistoryPlotHeight.cpp
+    UI/test_FillPlotLayout.cpp
     UI/test_EmptyState.cpp
     UI/test_Format.cpp
     UI/test_RenderMetrics.cpp
@@ -123,6 +124,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessTableFlags.cpp
     App/test_ProcessTableLayout.cpp
     App/test_ProcessTableSettings.cpp
+    App/test_ProcessTableSettingsRoundTrip.cpp
     App/test_ProcessDetailsLayout.cpp
     App/test_GpuClockReference.cpp
     App/test_GpuSeriesScale.cpp
@@ -306,6 +308,8 @@ add_executable(TaskSmackTests
     # a live ImGui/GL context to link, only to actually load a texture successfully (#771).
     ${CMAKE_SOURCE_DIR}/src/UI/IconLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/UI/MonospaceFontPath.cpp
+    # Marker glyphs for the value strip, drawn by test_FillPlotLayout.cpp under a live ImGui context
+    ${CMAKE_SOURCE_DIR}/src/UI/ChartLegend.cpp
     # Measures font files with FreeType (linked below), no ImGui context needed (#1201)
     ${CMAKE_SOURCE_DIR}/src/UI/TabularDigits.cpp
     # Stub: satisfies Theme symbols referenced by UserConfig.cpp without a live ImGui context
@@ -346,7 +350,8 @@ target_link_libraries(TaskSmackTests PRIVATE
     SDL3::SDL3
     glad_gl_core_33
     Freetype::Freetype  # For TabularDigits.cpp
-    # test_TabLabel.cpp checks labels against ImGui's own ImHashStr() (no ImGui context needed).
+    # test_TabLabel.cpp checks labels against ImGui's own ImHashStr() (no ImGui context needed);
+    # test_ProcessTableSettingsRoundTrip.cpp runs headless ImGui frames to load saved table layouts.
     imgui_lib
 )
 tasksmack_apply_linux_toolchain(TaskSmackTests)
