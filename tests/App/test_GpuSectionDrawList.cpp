@@ -89,6 +89,29 @@ TEST(GpuSectionDrawListTest, AGpuMissingFromTheReadKeepsItsSlotAndTheOthersKeepT
     EXPECT_EQ(after[2].snapshot->gpuId, "GPU2");
 }
 
+// #1171: the tab rebuilds the list every frame into storage it keeps, so the list must replace what
+// that storage held -- not append to it -- and reuse its capacity.
+TEST(GpuSectionDrawListTest, RebuildingIntoKeptStorageReplacesItsEntries)
+{
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    publication.gpuInfo = {info("GPU0"), info("GPU1"), info("GPU2")};
+    publication.snapshots = {snapshot("GPU0"), snapshot("GPU1"), snapshot("GPU2")};
+
+    std::vector<GpuDrawEntry> kept;
+    gpuDrawList(publication, kept);
+    ASSERT_EQ(idsOf(kept), (std::vector<std::string>{"GPU0", "GPU1", "GPU2"}));
+    const auto* storage = kept.data();
+
+    publication.gpuInfo = {info("GPU1")};
+    publication.snapshots = {snapshot("GPU1")};
+    gpuDrawList(publication, kept);
+
+    EXPECT_EQ(idsOf(kept), (std::vector<std::string>{"GPU1"}));
+    EXPECT_EQ(kept.data(), storage); // No reallocation for a shorter list
+    EXPECT_EQ(idsOf(kept), idsOf(gpuDrawList(publication)));
+}
+
 // #1296 review: when every known GPU misses a read (one GPU, or all at once), the tab still draws
 // each GPU's slot -- with "No reading" -- rather than collapsing into an empty state.
 TEST(GpuSectionDrawListTest, WhenEveryGpuMissesTheReadEachKeepsItsSlot)

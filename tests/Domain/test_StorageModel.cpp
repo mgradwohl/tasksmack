@@ -218,18 +218,79 @@ TEST(StorageModelTest, MaxHistorySecondsLimitsHistory)
     mockProbe->setNextCounters(counters);
 
     StorageModel model(std::move(mockProbe));
-    model.setMaxHistorySeconds(0.5); // Very short history
+    model.setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
 
-    // Sample multiple times with delays
-    for (int i = 0; i < 10; ++i)
+    // One sample a second for three windows' worth, at injected times rather than real sleeps.
+    const auto start = std::chrono::ceil<std::chrono::seconds>(std::chrono::steady_clock::now());
+    for (int i = 0; i <= 3 * Domain::Sampling::HISTORY_SECONDS_MIN; ++i)
     {
-        model.sample();
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        model.sampleAt(start + std::chrono::seconds(i));
     }
 
     const auto history = model.history();
-    // Retention should be trimmed to the configured 0.5-second window.
-    EXPECT_LE(history.size(), 7ULL);
+    // The window's samples, plus the one kept just before its cutoff (#1016).
+    EXPECT_EQ(history.size(), static_cast<std::size_t>(Domain::Sampling::HISTORY_SECONDS_MIN) + 2U);
+}
+
+// #1145: StorageModel clamps the window like SystemModel and GPUModel, where it used to accept any
+// non-negative value, so a too-short setting kept a different window from every other chart.
+TEST(StorageModelTest, MaxHistorySecondsIsClampedToTheSupportedRange)
+{
+    auto mockProbe = std::make_unique<Mocks::MockDiskProbe>();
+    Platform::SystemDiskCounters counters;
+    Platform::DiskCounters disk;
+    disk.deviceName = "sda";
+    disk.sectorSize = 512;
+    counters.disks.push_back(disk);
+    mockProbe->setNextCounters(counters);
+
+    StorageModel model(std::move(mockProbe));
+    model.setMaxHistorySeconds(0.5); // Below HISTORY_SECONDS_MIN: kept as HISTORY_SECONDS_MIN
+
+    const auto start = std::chrono::ceil<std::chrono::seconds>(std::chrono::steady_clock::now());
+    for (int i = 0; i <= 3 * Domain::Sampling::HISTORY_SECONDS_MIN; ++i)
+    {
+        model.sampleAt(start + std::chrono::seconds(i));
+    }
+
+    // A 0.5 s window would keep the newest sample and its anchor; the clamped one keeps
+    // HISTORY_SECONDS_MIN seconds of them plus the anchor.
+    EXPECT_EQ(model.historyTimestamps().size(), static_cast<std::size_t>(Domain::Sampling::HISTORY_SECONDS_MIN) + 2U);
+}
+
+// #1145: the trimmed history is published at once, not at the next sample, which can be seconds away.
+TEST(StorageModelTest, ShrinkingTheHistoryWindowRepublishesTheTrimmedHistory)
+{
+    auto mockProbe = std::make_unique<Mocks::MockDiskProbe>();
+    Platform::SystemDiskCounters counters;
+    Platform::DiskCounters disk;
+    disk.deviceName = "sda";
+    disk.sectorSize = 512;
+    counters.disks.push_back(disk);
+    mockProbe->setNextCounters(counters);
+
+    StorageModel model(std::move(mockProbe));
+    model.setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_DEFAULT);
+    EXPECT_EQ(model.publicationVersion(), 0U);
+
+    const auto start = std::chrono::ceil<std::chrono::seconds>(std::chrono::steady_clock::now());
+    for (int i = 0; i <= 60; ++i)
+    {
+        model.sampleAt(start + std::chrono::seconds(i));
+    }
+    const std::uint64_t versionBefore = model.publicationVersion();
+    ASSERT_EQ(model.publication()->timestamps.size(), 61U);
+
+    model.setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
+
+    EXPECT_GT(model.publicationVersion(), versionBefore);
+    const auto publication = model.publication();
+    EXPECT_EQ(publication->version, model.publicationVersion());
+    const std::size_t expected = static_cast<std::size_t>(Domain::Sampling::HISTORY_SECONDS_MIN) + 2U;
+    EXPECT_EQ(publication->timestamps.size(), expected);
+    EXPECT_EQ(publication->totalReadHistory.size(), expected);
+    ASSERT_EQ(publication->perDiskHistory.size(), 1U);
+    EXPECT_EQ(publication->perDiskHistory.front().readBytesPerSec.size(), expected);
 }
 
 // =============================================================================
