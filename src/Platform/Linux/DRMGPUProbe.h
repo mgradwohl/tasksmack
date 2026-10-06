@@ -88,6 +88,10 @@ class DRMGPUProbe : public IGPUProbe
         // hwmon energy counter (µJ) Domain derives the power draw from (#1269): energy1_input (card),
         // or energy2_input (package) where xe exposes only that (DG2, PVC). Empty if neither exists.
         std::string energyPath;
+        // hwmon temperature input (millidegrees C) the card's temperature is read from (#1314): the
+        // temp*_input labelled "pkg" (xe: temp2_input; its temp1 has a label but no input), else the
+        // lowest-numbered temp*_input (i915: temp1_input, unlabelled). Empty if the hwmon has none.
+        std::string temperaturePath;
         // The DRM query ioctl's VRAM figures (#1283): the total is cached, as it doesn't change;
         // the query is repeated each awake sample only while the kernel reports used memory.
         bool vramQueried{false};
@@ -109,6 +113,8 @@ class DRMGPUProbe : public IGPUProbe
     [[nodiscard]] static std::string findRenderNodePath(const std::string& devicePath);
     /// The hwmon energy counter file the power draw is derived from, or "" (see DRMCard::energyPath).
     [[nodiscard]] static std::string findEnergyPath(const std::string& hwmonPath);
+    /// The hwmon temperature input the card's temperature is read from, or "" (see DRMCard::temperaturePath).
+    [[nodiscard]] static std::string findTemperaturePath(const std::string& hwmonPath);
     /// The current-frequency file (MHz) for the card's driver: i915's cardN/gt_cur_freq_mhz, or xe's
     /// device/tile0/gt0/freq0/cur_freq (xe_gt_freq.c; GT0 of the root tile is the primary GT) (#1268).
     [[nodiscard]] static std::string clockPath(const DRMCard& card);
