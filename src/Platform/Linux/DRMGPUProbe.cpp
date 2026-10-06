@@ -24,6 +24,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -974,16 +975,43 @@ void DRMGPUProbe::discoverDrmClients()
     m_ClientScanReliable = !procErr && anyFdDirRead;
     for (std::size_t i = 0; i < m_Cards.size(); ++i)
     {
-        // Each path its own client until a read gives its drm-client-id: telling dup'd and inherited
-        // fds apart needs their fdinfo, which xe can't report without waking the card (#1117), so the
-        // first awake sample reads each once and readEngineClients() merges those sharing an id (#1356).
-        std::vector<DrmClientFds> clients;
-        clients.reserve(found[i].size());
-        for (auto& path : found[i])
+        // Reconciled with the clients the samples so far have grouped, rather than replacing them: a
+        // full rescan every few seconds would otherwise make the next sample read every dup'd and
+        // inherited fd again (#1356). A path still found keeps its client and place; a path no longer
+        // found is dropped, and with it a client left with none. A new path is its own client until a
+        // read gives its drm-client-id: telling dup'd and inherited fds apart needs their fdinfo, which
+        // xe can't report without waking the card (#1117), so the next awake sample reads each new path
+        // once and readEngineClients() merges those sharing an id with a client already known.
+        auto& clients = m_Cards[i].clients;
+        // Everything that allocates comes first, so that an exception leaves this card's clients as
+        // they were; the reconciliation below only moves and erases.
+        const std::unordered_set<std::string_view> foundPaths(found[i].begin(), found[i].end());
+        std::unordered_set<std::string_view> knownPaths;
+        for (const auto& client : clients)
         {
-            clients.push_back(DrmClientFds{.clientId = std::nullopt, .fdinfoPaths = {std::move(path)}});
+            knownPaths.insert(client.fdinfoPaths.begin(), client.fdinfoPaths.end());
         }
-        m_Cards[i].clients = std::move(clients);
+        std::vector<DrmClientFds> added;
+        for (const auto& path : found[i])
+        {
+            if (!knownPaths.contains(path))
+            {
+                added.push_back(DrmClientFds{.clientId = std::nullopt, .fdinfoPaths = {path}});
+            }
+        }
+        std::vector<DrmClientFds> reconciled;
+        reconciled.reserve(clients.size() + added.size());
+
+        for (auto& client : clients)
+        {
+            std::erase_if(client.fdinfoPaths, [&foundPaths](const std::string& path) { return !foundPaths.contains(path); });
+            if (!client.fdinfoPaths.empty())
+            {
+                reconciled.push_back(std::move(client));
+            }
+        }
+        std::ranges::move(added, std::back_inserter(reconciled));
+        clients = std::move(reconciled);
     }
 }
 

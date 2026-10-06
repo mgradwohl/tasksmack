@@ -2282,6 +2282,79 @@ TEST_F(DRMGPUProbeEngineTest, AReusedFdLeavesItsAliasWithItsClient)
     EXPECT_EQ(clientIds(), (std::vector<std::uint64_t>{8}));
 }
 
+// #1356: a full rescan keeps the client groups the samples have learned. One client open through three
+// fds is still read once per sample after a rescan, not once per fd again; a path closed before the
+// rescan is dropped from its group, and a newly opened fd of another client is read and grouped.
+TEST_F(DRMGPUProbeEngineTest, AFullRescanKeepsTheClientsGrouped)
+{
+    const std::array<std::filesystem::path, 3> fdinfos{
+        m_ProcRoot / "100" / "fdinfo" / "4", m_ProcRoot / "100" / "fdinfo" / "5", m_ProcRoot / "200" / "fdinfo" / "4"};
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", xeFdinfo(7, 10, 100));
+    makeFd(m_ProcRoot, 100, 5, "/dev/dri/renderD129", xeFdinfo(7, 20, 100)); // dup'd
+    makeFd(m_ProcRoot, 200, 4, "/dev/dri/renderD129", xeFdinfo(7, 30, 100)); // inherited
+    const auto probe = makeProbe();
+    const auto reads = [&probe]
+    {
+        return DRMGPUProbeTestAccessor::fdinfoReads(*probe);
+    };
+    // The sample's clients' ids, sorted, and the fdinfo file read for client 7 (from its cycle count).
+    std::optional<std::filesystem::path> readFor7;
+    const auto sample = [&probe, &fdinfos, &readFor7]
+    {
+        const auto counters = probe->readGPUCounters();
+        EXPECT_TRUE(counters[0].engineBusyAvailable);
+        std::vector<std::uint64_t> ids;
+        readFor7.reset();
+        for (const auto& client : counters[0].engineClients)
+        {
+            ids.push_back(client.clientId);
+            const std::uint64_t cycles = client.engines.at(RENDER).busy;
+            if (client.clientId == 7U && cycles >= 10U && cycles <= 30U)
+            {
+                readFor7 = fdinfos.at((cycles / 10U) - 1U);
+            }
+        }
+        std::ranges::sort(ids);
+        return ids;
+    };
+
+    EXPECT_EQ(sample(), (std::vector<std::uint64_t>{7}));
+    EXPECT_EQ(reads(), 3U); // Each fd once, to learn they are one client
+    ASSERT_TRUE(readFor7.has_value());
+    const auto first = *readFor7;
+
+    // A rescan finds the same three fds: the next sample still reads one file, the same one.
+    EXPECT_FALSE(probe->rescanGPUs(GPURescan::Full));
+    auto before = reads();
+    EXPECT_EQ(sample(), (std::vector<std::uint64_t>{7}));
+    EXPECT_EQ(reads(), before + 1U);
+    EXPECT_EQ(readFor7, first);
+
+    // Before the next rescan, the file read for client 7 closes and another client opens the card.
+    std::filesystem::remove(first);
+    std::filesystem::remove(first.parent_path().parent_path() / "fd" / first.filename());
+    makeFd(m_ProcRoot, 300, 6, "/dev/dri/renderD129", xeFdinfo(8, 50, 100));
+    EXPECT_FALSE(probe->rescanGPUs(GPURescan::Full));
+    // The closed path is gone from client 7's group, so it isn't tried: one read for client 7 (an
+    // alias) and one for the new path.
+    before = reads();
+    EXPECT_EQ(sample(), (std::vector<std::uint64_t>{7, 8}));
+    EXPECT_EQ(reads(), before + 2U);
+    ASSERT_TRUE(readFor7.has_value());
+    EXPECT_NE(readFor7, first);
+    const auto second = *readFor7;
+
+    // Grouped now: one read per client, through rescans too.
+    for (int i = 0; i < 2; ++i)
+    {
+        EXPECT_FALSE(probe->rescanGPUs(GPURescan::Full));
+        before = reads();
+        EXPECT_EQ(sample(), (std::vector<std::uint64_t>{7, 8}));
+        EXPECT_EQ(reads(), before + 2U);
+        EXPECT_EQ(readFor7, second);
+    }
+}
+
 } // namespace
 } // namespace Platform
 

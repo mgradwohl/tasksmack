@@ -182,6 +182,8 @@ class DRMGPUProbe : public IGPUProbe
     /// Finds the fds open on each card's DRM nodes (/dev/dri/cardN, renderDN) under m_ProcRoot: a walk
     /// of every visible process's fd links, so only at the first read and each full rescan (#1267).
     /// Link targets only: nothing here touches a GPU, so it never wakes a sleeping card (#1117).
+    /// The paths found are reconciled with each card's clients: known paths keep their client, paths
+    /// no longer found are dropped, and only new paths are added, ungrouped until read (#1356).
     void discoverDrmClients();
     /// Reads the card's clients' fdinfo into `counter`'s engine fields. Only for an awake card: xe takes
     /// a runtime-PM reference to report its cycles (#1117).
