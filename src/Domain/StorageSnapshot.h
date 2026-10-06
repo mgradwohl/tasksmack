@@ -53,6 +53,10 @@ struct StorageSnapshot
     double totalWriteBytesPerSec = 0.0;
     double totalReadOpsPerSec = 0.0;
     double totalWriteOpsPerSec = 0.0;
+    // Whether the totals are a measurement: some disk had measured rates and none was thrown out as a
+    // counter glitch (#1102, #1291). Decided once when the sample is taken, so reading the total
+    // histories doesn't rescan every sample's disks.
+    bool totalsMeasured = false;
 
     // Capabilities (what data is available)
     bool hasDiskStats = false;
