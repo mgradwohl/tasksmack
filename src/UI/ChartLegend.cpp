@@ -43,11 +43,11 @@ void drawMarkerGlyph(ImDrawList& drawList, ImPlotMarker marker, ImVec2 centre, f
 float seriesNameBudget(std::string_view suffix, float reservedWidth)
 {
     // An entry is its swatch and inner spacing, "<name><suffix>:", inner spacing, then the value; a
-    // rate value is at most about "999.9 MB/s" wide.
+    // rate value is at most about "999.9 MiB/s" wide (IEC units, #1274).
     const ImGuiStyle& style = ImGui::GetStyle();
     const float swatch = std::floor(ImGui::GetTextLineHeight() * TOOLTIP_SWATCH_LINE_FRACTION) + style.ItemInnerSpacing.x;
     const float suffixWidth = ImGui::CalcTextSize(suffix.data(), suffix.data() + suffix.size()).x + ImGui::CalcTextSize(":").x;
-    const float valueWidth = style.ItemInnerSpacing.x + ImGui::CalcTextSize("999.9 MB/s").x;
+    const float valueWidth = style.ItemInnerSpacing.x + ImGui::CalcTextSize("999.9 MiB/s").x;
     return ImGui::GetContentRegionAvail().x - reservedWidth - swatch - suffixWidth - valueWidth;
 }
 

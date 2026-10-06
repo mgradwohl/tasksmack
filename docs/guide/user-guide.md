@@ -77,7 +77,7 @@ The process table is the primary view. It lists all running processes with these
 - **CPU %** — percentage of total CPU time consumed since the last sample
 - **Mem %** — percentage of physical RAM used
 - **Memory / Virtual / Shared / Peak Mem** — resident, virtual, shared, and peak resident memory sizes
-- **CPU Time** — cumulative CPU time
+- **CPU Time** — cumulative CPU time, as a duration ("45s", "2m 05s", "1h 02m")
 - **PPID** — parent process ID
 - **Priority** — scheduling priority (from the nice value)
 - **Threads** — thread count per process
@@ -167,6 +167,17 @@ The UI shows only the metrics exposed by the available backend. If no backend di
 
 On Linux, TaskSmack checks for GPU changes every 10 seconds without waking a sleeping GPU: a GPU that is hot-plugged (an eGPU) appears, and one that is removed, or lost after a driver reset or reload, is re-detected once it is back. A GPU that stays in the list keeps its chart history; one that is removed disappears from the GPU tab. On Windows the GPU list is still fixed at startup.
 
+### Numbers and units
+
+TaskSmack writes a quantity the same way wherever it appears: in a table cell, in the value strip beside a chart, in a chart tooltip and on a chart axis.
+
+Digits are all the same width, so a value that changes every second does not shift the text around it, and in the process table's size, rate and power columns the decimal points line up whatever the unit ("512.0 B" above "3.2 MiB").
+
+- **Sizes and rates** use binary units with their IEC names: B, KiB, MiB, GiB and TiB (1 KiB = 1,024 bytes), with one decimal, such as "512.0 MiB" or "1.5 GiB/s". A network interface's link speed is shown as a rate in the same units ("119.2 MiB/s" for a 1 Gbps link), with its rated speed ("1 Gbps") beside it or on hover.
+- **Percentages** are whole numbers from 10% up and keep one decimal below it ("4.2%"). Per-process CPU and memory percentages always keep one decimal, as the process table shows them.
+- **Power** has one decimal in W, mW or µW ("45.0 W"). **Temperature** is in whole degrees, rounded ("65°C").
+- **Durations** (CPU Time, uptime) use the two largest units: "45s", "2m 05s", "1h 02m", "3d 04h". The charts' time axis counts back from **now** ("5m", "4m", … "now"), and a chart tooltip gives the hovered sample's age.
+
 ### Process Actions
 
 Right-click any process row to access actions:
@@ -179,7 +190,7 @@ Right-click any process row to access actions:
 | Resume (SIGCONT) | ✅ | ❌ |
 | Change priority (nice) | ✅ | ✅ (mapped) |
 
-Destructive actions require confirmation.
+Destructive actions require confirmation. In Process Details, Terminate and Kill, which end the process, are drawn in red, apart from Suspend and Resume.
 
 ### Themes and Configuration
 
@@ -242,7 +253,17 @@ TaskSmack reopens at the size and position it had when it was closed, and maximi
 
 If the saved position is no longer on any connected display (a monitor was unplugged, say), TaskSmack opens centered on the primary display instead, and a saved size larger than the display is shrunk to fit it.
 
-Dialogs (Settings, About and the privilege notice) are kept inside the main window. When the font size or display scaling makes the Settings dialog taller than the window, its options scroll and the Cancel and Apply buttons stay visible; Escape also cancels it.
+### Settings dialog
+
+The Settings dialog (the gear icon) has three sections:
+
+- **Appearance:** Theme and Font size (Small to Largest).
+- **Performance:** Update interval (how often values are sampled) and History length (how much the charts keep).
+- **Advanced:** buttons that open `config.toml` and the user themes folder, and **Show limited-data notice**, which turns the startup notice about missing administrator or root rights back on after its "Don't show again" was ticked.
+
+**Save** writes your changes to `config.toml` and closes the dialog; **Cancel** (or Escape) closes it without changing anything. **Reset to defaults** sets every control in the dialog back to its default, and Save keeps them.
+
+Dialogs (Settings, About and the limited-data notice) are kept inside the main window. When the font size or display scaling makes the Settings dialog taller than the window, its options scroll and the Cancel and Save buttons stay visible.
 
 To reset all layout and theme settings, delete the `config.toml` file in the user config directory. TaskSmack will recreate it with defaults on the next launch.
 
