@@ -50,11 +50,85 @@ TEST(HistoryPlotHeightTest, ChartsShareTheAvailableHeight)
     EXPECT_LE((height * 4.0F) + 160.0F, 1100.0F);
 }
 
-// The #923 half of the rule: past the maximum, more room does not make the charts taller.
+// The #923 half of the rule: past the maximum, more room does not make the charts taller -- while
+// the charts at their maximum still take most of the region.
 TEST(HistoryPlotHeightTest, GrowthStopsAtTheMaximum)
 {
-    EXPECT_FLOAT_EQ(computeFillPlotHeight(REFERENCE_EM_PX, 4000.0F, 160.0F, 4), 360.0F);
-    EXPECT_FLOAT_EQ(computeFillPlotHeight(REFERENCE_EM_PX, 9000.0F, 160.0F, 4), 360.0F);
+    // (1800 - 160 - 2) / 4 = 409.5 each would be the fill; 360 each leaves 12% of it empty.
+    EXPECT_FLOAT_EQ(computeFillPlotHeight(REFERENCE_EM_PX, 1800.0F, 160.0F, 4), 360.0F);
+    // (2082 - 162) / 4 = 480: exactly where three quarters of it is the maximum.
+    EXPECT_FLOAT_EQ(computeFillPlotHeight(REFERENCE_EM_PX, 2082.0F, 160.0F, 4), 360.0F);
+}
+
+// #1278: with few charts in a tall region the maximum would leave most of it empty, so the charts
+// grow past it to take three quarters of the height they share.
+TEST(HistoryPlotHeightTest, FewChartsGrowPastTheMaximumInATallRegion)
+{
+    // (4000 - 162) / 4 = 959.5 each; three quarters of it, 719.6, rounded down.
+    EXPECT_FLOAT_EQ(computeFillPlotHeight(REFERENCE_EM_PX, 4000.0F, 160.0F, 4), 719.0F);
+
+    // The issue's case: one GPU with only its core chart, maximized on 3840x2160 at 175% (Medium,
+    // em = 18.67px, maximum 630px). Region and non-plot height are approximate.
+    const float em = REFERENCE_EM_PX * 1.75F;
+    const float available = 1900.0F;
+    const float nonPlot = 220.0F;
+    const float height = computeFillPlotHeight(em, available, nonPlot, 1);
+    EXPECT_GT(height, historyPlotMaxHeight(em));
+    EXPECT_FLOAT_EQ(height, 1258.0F); // 0.75 * (1900 - 220 - 2) = 1258.5
+    EXPECT_LE(available - nonPlot - height, 0.25F * available);
+}
+
+// The 25% bound holds for every chart count, region and font: whatever the charts leave empty is at
+// most a quarter of the height they share (plus the whole-pixel rounding of each chart).
+TEST(HistoryPlotHeightTest, ChartsNeverLeaveMoreThanAQuarterOfTheRegionEmpty)
+{
+    for (const float em : {8.0F, REFERENCE_EM_PX, REFERENCE_EM_PX * 1.75F, 21.33F})
+    {
+        for (const float available : {600.0F, 1040.0F, 1400.0F, 2100.0F, 4000.0F})
+        {
+            for (std::size_t count = 1; count <= 8; ++count)
+            {
+                const float nonPlot = 200.0F;
+                const float forPlots = available - nonPlot - HISTORY_PLOT_FILL_MARGIN_PX;
+                const float height = computeFillPlotHeight(em, available, nonPlot, count);
+                if (forPlots / static_cast<float>(count) < historyPlotMinHeight(em))
+                {
+                    continue; // too short to fit at the minimum: the tab scrolls instead
+                }
+                const float empty = forPlots - (height * static_cast<float>(count));
+                EXPECT_GE(empty, 0.0F) << "em=" << em << " available=" << available << " count=" << count;
+                EXPECT_LE(empty, (0.25F * forPlots) + static_cast<float>(count))
+                    << "em=" << em << " available=" << available << " count=" << count;
+            }
+        }
+    }
+}
+
+// Tabs with enough charts to fill most of the region keep exactly the old rule.
+TEST(HistoryPlotHeightTest, ManyChartTabsAreUnchanged)
+{
+    // Six charts: (2400 - 162) / 6 = 373 each; three quarters of that is below the maximum.
+    EXPECT_FLOAT_EQ(computeFillPlotHeight(REFERENCE_EM_PX, 2400.0F, 160.0F, 6), 360.0F);
+    // Below the maximum the charts share the region exactly, as before.
+    EXPECT_FLOAT_EQ(computeFillPlotHeight(REFERENCE_EM_PX, 1100.0F, 160.0F, 4), 234.0F);
+}
+
+// The rule is continuous: as the region grows the charts never get shorter, and never jump past the
+// point where the maximum gives way.
+TEST(HistoryPlotHeightTest, HeightNeverShrinksAsTheRegionGrows)
+{
+    for (const std::size_t count : {std::size_t{1}, std::size_t{2}, std::size_t{4}})
+    {
+        float previous = computeFillPlotHeight(REFERENCE_EM_PX, 100.0F, 160.0F, count);
+        for (int step = 0; step <= 700; ++step)
+        {
+            const float available = 100.0F + (7.0F * static_cast<float>(step));
+            const float height = computeFillPlotHeight(REFERENCE_EM_PX, available, 160.0F, count);
+            EXPECT_GE(height, previous) << "available=" << available << " count=" << count;
+            EXPECT_LE(height - previous, 7.0F) << "available=" << available << " count=" << count;
+            previous = height;
+        }
+    }
 }
 
 // A short window: the charts hold their minimum and the tab scrolls, rather than squashing flat.
@@ -95,12 +169,17 @@ TEST(HistoryPlotHeightTest, MinimumNeverExceedsTheMaximum)
 
 // #923 reported Small more than doubling the chart height (920px against 400px at Even Huger),
 // because a smaller font left more room and the charts took all of it. The cap bounds that: at
-// Small the charts stop at their own maximum however much room the smaller font frees up.
+// Small the charts stop at their own maximum however much room the smaller font frees up -- as long
+// as they still fill most of the region (#1278).
 TEST(HistoryPlotHeightTest, SmallFontChartsStopAtTheirMaximumInATallRegion)
 {
     const float smallEm = 8.0F;
-    EXPECT_FLOAT_EQ(computeFillPlotHeight(smallEm, 1300.0F, 100.0F, 1), historyPlotMaxHeight(smallEm));
-    EXPECT_FLOAT_EQ(computeFillPlotHeight(smallEm, 1300.0F, 100.0F, 1), 270.0F);
+    // (1302 - 102) / 4 = 300 each; 270 each leaves 10% empty.
+    EXPECT_FLOAT_EQ(computeFillPlotHeight(smallEm, 1302.0F, 100.0F, 4), historyPlotMaxHeight(smallEm));
+    EXPECT_FLOAT_EQ(computeFillPlotHeight(smallEm, 1302.0F, 100.0F, 4), 270.0F);
+    // A single chart in the same region would leave 77% of it empty at 270px, so it takes three
+    // quarters of it instead: 0.75 * 1198 = 898.5.
+    EXPECT_FLOAT_EQ(computeFillPlotHeight(smallEm, 1300.0F, 100.0F, 1), 898.0F);
 }
 
 // The result is always a whole number of pixels, in every branch. A fractional height is what made
@@ -188,7 +267,9 @@ TEST(HistoryPlotHeightTest, SurvivesDegenerateInput)
     {
         const float height = computeFillPlotHeight(em, 1100.0F, 160.0F, 4);
         EXPECT_GT(height, 0.0F);
-        EXPECT_LE(height, HISTORY_PLOT_MAX_HEIGHT_EM);
+        // A one-pixel em: the maximum is 33.75px, so the fill share governs.
+        EXPECT_LE(height, 1100.0F - 160.0F);
+        EXPECT_FLOAT_EQ(height, std::floor(HISTORY_PLOT_MIN_FILL_SHARE * (1100.0F - 162.0F) / 4.0F));
     }
 }
 

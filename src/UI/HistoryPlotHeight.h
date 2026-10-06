@@ -16,6 +16,13 @@
 //   - above the maximum the extra height shows nothing more -- the data has no more detail to give --
 //     and the space is better left to the other sections on the tab.
 //
+// The maximum gives way when a tab has so few charts that keeping to it would leave most of a tall
+// window empty: the system GPU tab with one GPU and only its core chart left well over half of a
+// maximized window blank below that one chart (#1278). The charts then grow until they take at
+// least HISTORY_PLOT_MIN_FILL_SHARE of the height they share, so no more than a quarter of it is
+// left empty. Where the maximum already left less than that empty -- every tab with enough charts
+// to fill most of the window -- nothing changes.
+//
 // The pure arithmetic lives here so it is unit-testable without a live ImGui context, following
 // CONTRIBUTING.md's "extract the pure decision logic into a small header" pattern.
 
@@ -43,8 +50,14 @@ inline constexpr float HISTORY_PLOT_MIN_HEIGHT_EM = 8.4375F;
 inline constexpr float HISTORY_PLOT_MIN_HEIGHT_CHART_EM = 11.25F;
 
 /// Tallest a stacked history chart may grow, in ems: 360px at the Medium preset, twice the 180px
-/// these charts used to be fixed at.
+/// these charts used to be fixed at. Yields to HISTORY_PLOT_MIN_FILL_SHARE on a tab with few charts.
 inline constexpr float HISTORY_PLOT_MAX_HEIGHT_EM = 33.75F;
+
+/// Least share of the height available to the charts that they take together, even when that makes
+/// each taller than HISTORY_PLOT_MAX_HEIGHT_EM (#1278). With few charts in a tall window the maximum
+/// alone left most of it empty; three quarters keeps the empty band below the charts to at most a
+/// quarter of the space while still leaving them shorter than a pure fill would.
+inline constexpr float HISTORY_PLOT_MIN_FILL_SHARE = 0.75F;
 
 /// Height kept back from the fill so the charts never sum to a hair more than the space they were
 /// measured against, which would summon a scrollbar the layout was specifically sized to avoid.
@@ -79,14 +92,14 @@ inline constexpr float HISTORY_PLOT_FILL_MARGIN_PX = 2.0F;
 /// @param plotCount          Number of charts sharing the region.
 /// @param chartEmPx          One em of chart text; see historyPlotMinHeight().
 /// @return The plot height in whole pixels, within [historyPlotMinHeight, historyPlotMaxHeight]
-///         rounded down. With nothing
+///         rounded down -- except that the maximum yields to HISTORY_PLOT_MIN_FILL_SHARE of each
+///         chart's share of the region when that is taller (few charts, tall region). With nothing
 ///         measured yet (plotCount == 0, or an unusable height) it is the minimum, so the first
 ///         frame under-fills rather than overflowing and the next frame corrects it.
 [[nodiscard]] inline float
 computeFillPlotHeight(float emPx, float availableHeightPx, float nonPlotHeightPx, std::size_t plotCount, float chartEmPx = 0.0F) noexcept
 {
     const float minHeight = std::min(historyPlotMinHeight(emPx, chartEmPx), historyPlotMaxHeight(emPx));
-    const float maxHeight = historyPlotMaxHeight(emPx);
 
     if (plotCount == 0 || !std::isfinite(availableHeightPx) || availableHeightPx <= 0.0F || !std::isfinite(nonPlotHeightPx))
     {
@@ -95,6 +108,10 @@ computeFillPlotHeight(float emPx, float availableHeightPx, float nonPlotHeightPx
 
     const float forPlots = availableHeightPx - std::max(nonPlotHeightPx, 0.0F) - HISTORY_PLOT_FILL_MARGIN_PX;
     const float each = forPlots / static_cast<float>(plotCount);
+    // The maximum, unless keeping to it would leave more than (1 - HISTORY_PLOT_MIN_FILL_SHARE) of
+    // the region empty: then the share wins (#1278). Continuous in the region and the chart count,
+    // so a resize or a chart appearing never makes the height jump.
+    const float maxHeight = std::max(historyPlotMaxHeight(emPx), HISTORY_PLOT_MIN_FILL_SHARE * each);
 
     // Whole pixels only. ImGui lays items out on whole pixels, so a fractional plot height is
     // rounded differently from one chart to the next, and the caller -- which measures the non-plot
