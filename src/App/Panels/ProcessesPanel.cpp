@@ -468,11 +468,7 @@ void ProcessesPanel::onAttach()
 
     // Ensure the initial seed snapshots are loaded into the render cache so the UI
     // isn't empty before the first background sample arrives.
-    std::uint64_t newVersion = m_CachedSnapshotVersion;
-    if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion, &m_CachedCapabilities))
-    {
-        m_CachedSnapshotVersion = newVersion;
-    }
+    adoptNewerSnapshots();
 
     spdlog::info("ProcessesPanel: initialized with background sampler ({}ms interval)", m_AppliedSamplerInterval.count());
 }
@@ -589,7 +585,13 @@ void ProcessesPanel::onUpdate(float deltaTime)
         m_ForceRefresh = false;
     }
 
-    // Detect and copy new data in a single lock acquisition.
+    adoptNewerSnapshots();
+}
+
+void ProcessesPanel::adoptNewerSnapshots()
+{
+    // Detect and copy new data in a single lock acquisition. tryCopySnapshotsIfNewer() checks the
+    // published version lock-free first, so a call with nothing new costs one atomic load.
     std::uint64_t newVersion = m_CachedSnapshotVersion;
     if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion, &m_CachedCapabilities))
     {
@@ -643,15 +645,10 @@ void ProcessesPanel::renderContent()
 
     // Get thread-safe copy of snapshots — only when data has actually changed (version-cached).
     // ProcessModel updates at 1Hz but render runs at 60fps; skip 59/60 redundant deep copies.
+    // onUpdate() adopts too, but onUpdate() is skipped without a sampler and a generation can be
+    // published between the two; with nothing new this is one atomic load.
     const auto currentVersion = m_ProcessModel->snapshotVersion();
-    if (currentVersion != m_CachedSnapshotVersion)
-    {
-        std::uint64_t copiedVersion = m_CachedSnapshotVersion;
-        if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, copiedVersion, &m_CachedCapabilities))
-        {
-            m_CachedSnapshotVersion = copiedVersion;
-        }
-    }
+    adoptNewerSnapshots();
     const auto& currentSnapshots = *m_CachedRenderSnapshots;
 
     // Prune row format cache entries for processes no longer present, once per new snapshot

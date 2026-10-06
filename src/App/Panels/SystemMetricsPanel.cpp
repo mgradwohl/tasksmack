@@ -203,25 +203,38 @@ void SystemMetricsPanel::onAttach()
     }
     m_Sampler->start();
 
-    m_SystemPublication = m_Model->publication();
-    m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
+    adoptSystemPublication();
     m_StoragePublication = m_StorageModel->publication();
     m_GPUPublication = m_GPUModel ? m_GPUModel->publication() : nullptr;
-    m_TimestampsCache = m_SystemPublication->timestamps;
-    if (!m_TimestampsCache.empty())
+    m_ForceRefresh = false;
+
+    // NOTE: m_Hostname intentionally stores the raw hostname without any icon prefix.
+    // UI code (e.g., tab labels) is responsible for adding icons when rendering.
+    const std::string& hostname = m_SystemPublication->snapshot.hostname;
+    m_Hostname = hostname.empty() ? "System" : hostname;
+}
+
+void SystemMetricsPanel::adoptSystemPublication()
+{
+    // Held, not copied: the publication is immutable and shared with the model, so its snapshot and
+    // timestamps are read in place (#1180) rather than copied into panel members on every adoption.
+    m_SystemPublication = m_Model->publication();
+    m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
+    const std::vector<double>& timestamps = m_SystemPublication->timestamps;
+    if (!timestamps.empty())
     {
-        m_CurrentNowSeconds = m_TimestampsCache.back();
+        m_CurrentNowSeconds = timestamps.back();
     }
     else
     {
         m_CurrentNowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     }
-    m_ForceRefresh = false;
+}
 
-    m_CachedSnapshot = m_SystemPublication->snapshot;
-    // NOTE: m_Hostname intentionally stores the raw hostname without any icon prefix.
-    // UI code (e.g., tab labels) is responsible for adding icons when rendering.
-    m_Hostname = m_CachedSnapshot.hostname.empty() ? "System" : m_CachedSnapshot.hostname;
+const Domain::SystemSnapshot& SystemMetricsPanel::systemSnapshot() const
+{
+    static const Domain::SystemSnapshot empty{};
+    return m_SystemPublication ? m_SystemPublication->snapshot : empty;
 }
 
 void SystemMetricsPanel::onDetach()
@@ -336,22 +349,10 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
 
     if (!m_SystemPublication || m_Model->publicationVersion() != m_SystemPublication->version)
     {
-        m_SystemPublication = m_Model->publication();
-        m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
-        m_TimestampsCache = m_SystemPublication->timestamps;
-        if (!m_TimestampsCache.empty())
+        adoptSystemPublication();
+        if (const std::string& hostname = m_SystemPublication->snapshot.hostname; !hostname.empty())
         {
-            m_CurrentNowSeconds = m_TimestampsCache.back();
-        }
-        else
-        {
-            m_CurrentNowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-        }
-
-        m_CachedSnapshot = m_SystemPublication->snapshot;
-        if (!m_CachedSnapshot.hostname.empty())
-        {
-            m_Hostname = m_CachedSnapshot.hostname;
+            m_Hostname = hostname;
         }
     }
     if (m_StorageModel && (!m_StoragePublication || m_StorageModel->publicationVersion() != m_StoragePublication->version))
@@ -416,9 +417,9 @@ void SystemMetricsPanel::renderContent()
         m_LayoutDirty = true;
     }
 
-    // A reference, not a copy: m_CachedSnapshot is only reassigned in onUpdate(), never while
+    // A reference, not a copy: m_SystemPublication is only reassigned in onUpdate(), never while
     // rendering, and a copy duplicated every per-core and per-interface vector each frame (#1017).
-    const auto& snap = m_CachedSnapshot;
+    const auto& snap = systemSnapshot();
 
     const int coreCount = snap.coreCount;
     if (coreCount != m_LastCoreCount)
@@ -542,7 +543,7 @@ void SystemMetricsPanel::renderContent()
 
 void SystemMetricsPanel::renderOverview()
 {
-    const auto& snap = m_CachedSnapshot; // See renderContent() (#1017)
+    const auto& snap = systemSnapshot(); // See renderContent() (#1017)
     // Held for the frame: ProcessesPanel owns the model and may already have released it (#1176).
     const std::shared_ptr<Domain::ProcessModel> processModel = m_ProcessModel.lock();
 
@@ -657,7 +658,7 @@ void SystemMetricsPanel::renderOverview()
     const auto& cpuSystemHist = m_SystemPublication->cpuSystemHistory;
     const auto& cpuIowaitHist = m_SystemPublication->cpuIowaitHistory;
     const auto& cpuIdleHist = m_SystemPublication->cpuIdleHistory;
-    const auto& timestamps = m_TimestampsCache;
+    const std::vector<double>& timestamps = m_SystemPublication->timestamps;
     const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds);
 

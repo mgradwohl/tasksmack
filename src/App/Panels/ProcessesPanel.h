@@ -294,6 +294,10 @@ class ProcessesPanel : public Panel
     /// Ensure text size cache is populated for current font
     void ensureTextSizeCacheValid();
 
+    /// Adopts the model's latest snapshot generation and its capabilities into the render cache if
+    /// it is newer than the cached one (onAttach(), onUpdate() and renderContent(), #1180).
+    void adoptNewerSnapshots();
+
     /// Get the number of visible columns
     [[nodiscard]] int visibleColumnCount() const;
 
