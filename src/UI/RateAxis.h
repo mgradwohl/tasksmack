@@ -320,6 +320,25 @@ template<std::ranges::sized_range... Rs>
     return best;
 }
 
+/// One Y upper bound for a grid of small charts meant to be compared side by side (#1299): the
+/// largest of the cells' own eased upper bounds (easedRateAxisUpperBound()), so a busy cell and an
+/// idle one are drawn to the same scale and the idle one's noise is not blown up to fill its cell.
+/// Each cell still eases its own bound, so the shared one eases whenever the largest does.
+/// Non-finite and non-positive bounds are ignored; with none left the result is @p minSpan (a
+/// non-positive or non-finite @p minSpan counts as 1, as in rateAxisUpperBound()).
+[[nodiscard]] inline double sharedAxisUpperBound(std::span<const double> cellUpperBounds, double minSpan) noexcept
+{
+    double best = (std::isfinite(minSpan) && minSpan > 0.0) ? minSpan : 1.0;
+    for (const double bound : cellUpperBounds)
+    {
+        if (std::isfinite(bound) && bound > best)
+        {
+            best = bound;
+        }
+    }
+    return best;
+}
+
 /// Time constants for easing a rate chart's Y upper bound toward rateAxisUpperBound() (#1011).
 /// Rising is quick, so a new peak is clipped for only a few frames; falling is slower, so the chart
 /// settles rather than snapping when a peak scrolls out of the window.
