@@ -2,6 +2,7 @@
 
 #include "App/Panel.h"
 #include "App/Panels/AdaptiveIntervalUtils.h"
+#include "App/Panels/CpuCoreGridIds.h"
 #include "App/Panels/CpuCoresSection.h"
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/MemorySection.h"
@@ -448,7 +449,7 @@ void SystemMetricsPanel::renderContent()
             ImGui::EndTabItem();
         }
 
-        if (snap.coreCount > 1)
+        if (CpuCoresSection::showCpuCoresTab(snap.seenCoreIds, static_cast<std::size_t>(snap.coreCount)))
         {
             if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  CPU Cores"))
             {

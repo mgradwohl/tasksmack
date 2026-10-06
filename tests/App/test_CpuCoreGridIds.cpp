@@ -19,6 +19,7 @@ namespace
 {
 
 using App::CpuCoresSection::selectCpuCoreGridIds;
+using App::CpuCoresSection::showCpuCoresTab;
 using TestMocks::makeCpuCounters;
 using TestMocks::makeMemoryCounters;
 using TestMocks::makeSystemCounters;
@@ -79,6 +80,33 @@ TEST(CpuCoreGridIdsTest, ACoreSeenThenOfflineKeepsItsChart)
     model.refresh();
 
     EXPECT_EQ(gridIdsFor(model), (std::vector<std::size_t>{0, 1, 2, 3}));
+}
+
+TEST(CpuCoreGridIdsTest, TwoCpusDroppingToOneKeepTheTabAndTheOfflineChart)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+    setCoreSample(*rawProbe, 0, {0, 1});
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+    setCoreSample(*rawProbe, 1, {0, 1});
+    model.refresh();
+    setCoreSample(*rawProbe, 2, {0}); // cpu1 offline: one CPU online
+    model.refresh();
+    setCoreSample(*rawProbe, 3, {0});
+    model.refresh();
+
+    const auto publication = model.publication();
+    EXPECT_TRUE(showCpuCoresTab(publication->snapshot.seenCoreIds, static_cast<std::size_t>(publication->snapshot.coreCount)));
+    EXPECT_EQ(gridIdsFor(model), (std::vector<std::size_t>{0, 1}));
+}
+
+TEST(CpuCoreGridIdsTest, TabVisibilityFollowsSeenIdsElseTheCoreCount)
+{
+    EXPECT_FALSE(showCpuCoresTab({0}, 1));
+    EXPECT_TRUE(showCpuCoresTab({0, 1}, 1));
+    EXPECT_FALSE(showCpuCoresTab({}, 1));
+    EXPECT_TRUE(showCpuCoresTab({}, 2));
 }
 
 TEST(CpuCoreGridIdsTest, WithoutSeenIdsEverySlotIsCharted)

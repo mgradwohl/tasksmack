@@ -29,4 +29,12 @@ inline void selectCpuCoreGridIds(const std::vector<std::size_t>& seenCoreIds, st
     }
 }
 
+/// Whether the CPU Cores tab is shown: when more than one CPU has been reported this session, so a
+/// two-CPU machine that drops to one online CPU keeps the tab and the offline CPU's chart with its
+/// gap. With no seen ids (a snapshot not built by SystemModel), when the snapshot counts more than one.
+[[nodiscard]] inline bool showCpuCoresTab(const std::vector<std::size_t>& seenCoreIds, std::size_t coreCount)
+{
+    return seenCoreIds.empty() ? coreCount > 1 : seenCoreIds.size() > 1;
+}
+
 } // namespace App::CpuCoresSection
