@@ -475,17 +475,20 @@ TEST_F(WindowTest, ApplySavedGeometryKeepsAnOffScreenPositionOnADisplay)
         };
 
         // On X11 the move is only a request until the window manager answers, and setPosition()
-        // doesn't wait for it (#1363): SDL reports the new position once it processes the configure
-        // event, which can come late under load. Pump events until the window is on a display or
-        // the deadline passes; a move that never lands still fails below.
-        constexpr auto MOVE_TIMEOUT = std::chrono::seconds{5};
-        constexpr auto POLL_INTERVAL = std::chrono::milliseconds{10};
-        const auto deadline = std::chrono::steady_clock::now() + MOVE_TIMEOUT;
-        while (!onADisplay(window.getPosition()) && std::chrono::steady_clock::now() < deadline)
+        // doesn't wait for it (#1363), so the position read straight away can still be the creation
+        // position -- which may itself be on a display, hiding a move that went off-screen. Wait for
+        // every pending request to be applied before checking: SDL_SyncWindow() waits a bounded time
+        // (100ms on X11) and returns false if it timed out, so retry it until it succeeds or the
+        // deadline passes, and fail if it never does.
+        constexpr auto SYNC_TIMEOUT = std::chrono::seconds{5};
+        const auto deadline = std::chrono::steady_clock::now() + SYNC_TIMEOUT;
+        bool synced = SDL_SyncWindow(window.getHandle());
+        while (!synced && std::chrono::steady_clock::now() < deadline)
         {
             SDL_PumpEvents();
-            std::this_thread::sleep_for(POLL_INTERVAL);
+            synced = SDL_SyncWindow(window.getHandle());
         }
+        ASSERT_TRUE(synced) << "the saved-geometry move was not applied within " << SYNC_TIMEOUT.count() << " s";
         const auto [x, y] = window.getPosition();
         EXPECT_TRUE(onADisplay({x, y})) << "window top-left at (" << x << ", " << y << ")";
     }
