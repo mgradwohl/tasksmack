@@ -1577,26 +1577,41 @@ inline int formatAxisLocalized(double value, char* buff, int size, void* /*userD
     }
 
     const double absValue = std::abs(value);
-    std::string str;
-
+    double scaled = value;
+    std::string_view suffix;
     if (absValue >= 1'000'000'000.0)
     {
-        str = std::format("{:.1Lf}G", value / 1'000'000'000.0);
+        scaled = value / 1'000'000'000.0;
+        suffix = "G";
     }
     else if (absValue >= 1'000'000.0)
     {
-        str = std::format("{:.1Lf}M", value / 1'000'000.0);
+        scaled = value / 1'000'000.0;
+        suffix = "M";
     }
     else if (absValue >= 1'000.0)
     {
-        str = std::format("{:.1Lf}K", value / 1'000.0);
-    }
-    else
-    {
-        str = std::format("{:.1Lf}", value);
+        scaled = value / 1'000.0;
+        suffix = "K";
     }
 
-    return Detail::copyAxisLabel(str, buff, size);
+    // Straight into ImPlot's buffer, keeping one byte for the terminator (#1334).
+    if (size > 1)
+    {
+        const auto capacity = static_cast<std::size_t>(size - 1);
+        std::size_t length = Format::formatFixedLocalizedTo(buff, capacity, scaled, 1);
+        if (length > 0)
+        {
+            Format::appendText(buff, capacity, length, suffix);
+            if (length <= capacity)
+            {
+                buff[length] = '\0';
+                return static_cast<int>(length);
+            }
+        }
+        buff[0] = '\0'; // A partial label never reaches ImPlot, which reads the buffer up to its NUL
+    }
+    return Detail::copyAxisLabel(std::format("{:.1Lf}{}", scaled, suffix), buff, size);
 }
 
 /// The unit a byte axis is labelled in, as ImPlot formatter user data: a pointer to one of the
@@ -1620,7 +1635,18 @@ inline int formatAxisBinaryBytes(double value, char* buff, int size, void* userD
         value = 0.0;
     }
 
-    const Format::ByteUnit unit = (userData != nullptr) ? *static_cast<const Format::ByteUnit*>(userData) : Format::chooseByteUnit(value);
+    const Format::ByteUnit& unit = (userData != nullptr) ? *static_cast<const Format::ByteUnit*>(userData) : Format::byteUnitFor(value);
+    // Straight into ImPlot's buffer, keeping one byte for the terminator (#1334).
+    if (size > 1)
+    {
+        if (const std::size_t length = Format::formatBytesWithUnitTo(buff, static_cast<std::size_t>(size - 1), value, unit, perSecond);
+            length > 0)
+        {
+            buff[length] = '\0';
+            return static_cast<int>(length);
+        }
+        buff[0] = '\0'; // A partial label never reaches ImPlot, which reads the buffer up to its NUL
+    }
     const std::string str = perSecond ? Format::formatBytesPerSecWithUnit(value, unit) : Format::formatBytesWithUnit(value, unit);
     return Detail::copyAxisLabel(str, buff, size);
 }

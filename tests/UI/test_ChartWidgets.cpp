@@ -1144,6 +1144,79 @@ TEST(ChartWidgetsFormattersTest, FormatAxisBytesPerSecHandlesMegaAndGigaSuffixes
     EXPECT_EQ(std::string(buf), "2.0 GB/s");
 }
 
+// #1334: the axis formatters write straight into ImPlot's buffer instead of through std::format;
+// the text must be what the std::format definition gives, for every magnitude and sign.
+TEST(ChartWidgetsFormattersTest, FormatAxisLocalizedMatchesItsStdFormatDefinition)
+{
+    const auto expected = [](double value)
+    {
+        if (std::abs(value) < 0.5)
+        {
+            value = 0.0;
+        }
+        const double absValue = std::abs(value);
+        if (absValue >= 1'000'000'000.0)
+        {
+            return std::format("{:.1Lf}G", value / 1'000'000'000.0);
+        }
+        if (absValue >= 1'000'000.0)
+        {
+            return std::format("{:.1Lf}M", value / 1'000'000.0);
+        }
+        if (absValue >= 1'000.0)
+        {
+            return std::format("{:.1Lf}K", value / 1'000.0);
+        }
+        return std::format("{:.1Lf}", value);
+    };
+    std::array<char, 32> buf{};
+    for (const double value : {0.0,
+                               -0.0,
+                               0.49,
+                               -0.49,
+                               0.5,
+                               0.05,
+                               999.94,
+                               999.96,
+                               1'000.0,
+                               1'250.0,
+                               -1'250.0,
+                               999'950.0,
+                               1.0e6,
+                               2.5e9,
+                               -2.5e9,
+                               1'234'567.0,
+                               9.87e12,
+                               1.0e15})
+    {
+        const int len = formatAxisLocalized(value, buf.data(), static_cast<int>(buf.size()), nullptr);
+        EXPECT_EQ(std::string(buf.data()), expected(value)) << value;
+        EXPECT_EQ(len, static_cast<int>(expected(value).size())) << value;
+    }
+}
+
+TEST(ChartWidgetsFormattersTest, AxisFormattersFitExactlyOrLeaveAnEmptyLabel)
+{
+    // "1.5K" is 4 characters: a 5-byte buffer holds it and its terminator, a 4-byte one does not, and
+    // then the buffer holds an empty string, never a partial label ImPlot would read past (#1334).
+    std::array<char, 5> exact{};
+    EXPECT_EQ(formatAxisLocalized(1500.0, exact.data(), static_cast<int>(exact.size()), nullptr), 4);
+    EXPECT_EQ(std::string(exact.data()), "1.5K");
+
+    std::array<char, 4> tooSmall{'x', 'x', 'x', 'x'};
+    EXPECT_EQ(formatAxisLocalized(1500.0, tooSmall.data(), static_cast<int>(tooSmall.size()), nullptr), 0);
+    EXPECT_EQ(tooSmall[0], '\0');
+
+    // "2.0 KB/s" is 8 characters.
+    std::array<char, 9> bytesExact{};
+    EXPECT_EQ(formatAxisBytesPerSec(2048.0, bytesExact.data(), static_cast<int>(bytesExact.size()), nullptr), 8);
+    EXPECT_EQ(std::string(bytesExact.data()), "2.0 KB/s");
+
+    std::array<char, 8> bytesTooSmall{'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x'};
+    EXPECT_EQ(formatAxisBytesPerSec(2048.0, bytesTooSmall.data(), static_cast<int>(bytesTooSmall.size()), nullptr), 0);
+    EXPECT_EQ(bytesTooSmall[0], '\0');
+}
+
 // #1202: every axis formatter is the value formatter for its quantity, so an axis tick reads
 // exactly like the tooltip and table cell beside it.
 TEST(ChartWidgetsFormattersTest, AxisFormattersMatchValueFormatters)
