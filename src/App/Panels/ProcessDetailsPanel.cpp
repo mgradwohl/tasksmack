@@ -2,6 +2,7 @@
 
 #include "App/Panel.h"
 #include "App/Panels/ProcessStateColor.h"
+#include "App/Panels/ProcessTypeColor.h"
 #include "App/ShellMetrics.h"
 #include "App/TabLabel.h"
 #include "Core/ApplicationEvents.h"
@@ -851,21 +852,8 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     runtimeRows.add({.label = "Priority", .value = text.priority, .color = theme.scheme().textPrimary});
     if (!proc.processType.empty())
     {
-        // Color-code the process type using status colors for visual clarity
-        ImVec4 typeColor;
-        if (proc.processType == "App")
-        {
-            typeColor = theme.scheme().statusRunning;
-        }
-        else if (proc.processType == "Windows Process")
-        {
-            typeColor = theme.scheme().textInfo;
-        }
-        else
-        {
-            typeColor = theme.scheme().textMuted;
-        }
-        runtimeRows.add({.label = "Type", .value = proc.processType, .color = typeColor});
+        // The same colour as the table's Type column (#1180)
+        runtimeRows.add({.label = "Type", .value = proc.processType, .color = processTypeColor(proc.processType, theme.scheme())});
     }
     const auto runtimeRowCount = static_cast<float>(runtimeRows.count);
     const float rightHeight = (rowHeight * runtimeRowCount) + basePadding;

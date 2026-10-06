@@ -11,6 +11,7 @@
 #include "App/Panels/ProcessTableSettings.h"
 #include "App/Panels/ProcessTreeFlatten.h"
 #include "App/Panels/ProcessTreeIndent.h"
+#include "App/Panels/ProcessTypeColor.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/UserConfig.h"
 #include "Core/Application.h"
@@ -1439,21 +1440,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         {
             if (!proc.processType.empty())
             {
-                const auto& scheme = UI::Theme::get().scheme();
-                ImVec4 typeColor;
-                if (proc.processType == "App")
-                {
-                    typeColor = scheme.statusRunning;
-                }
-                else if (proc.processType == "Windows Process")
-                {
-                    typeColor = scheme.textInfo;
-                }
-                else
-                {
-                    typeColor = scheme.textMuted;
-                }
-                ImGui::PushStyleColor(ImGuiCol_Text, typeColor);
+                ImGui::PushStyleColor(ImGuiCol_Text, processTypeColor(proc.processType, UI::Theme::get().scheme()));
                 renderLeftAlignedText(proc.processType, fmt.processTypeWidth);
                 ImGui::PopStyleColor();
             }
