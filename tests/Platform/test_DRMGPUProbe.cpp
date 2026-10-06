@@ -17,6 +17,7 @@
 #include "Platform/Linux/DRMGPUProbe.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -29,6 +30,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <tuple>
 #include <utility>
@@ -58,6 +60,12 @@ struct DRMGPUProbeTestAccessor
         card.driver = driver;
         card.gpuId = gpuId;
         return probe.cardToGPUInfo(card);
+    }
+
+    /// How many client fdinfo files the probe has opened or tried to (#1356).
+    [[nodiscard]] static std::uint64_t fdinfoReads(const DRMGPUProbe& probe)
+    {
+        return probe.m_FdinfoReads;
     }
 };
 
@@ -2069,12 +2077,61 @@ TEST_F(DRMGPUProbeEngineTest, ASuspendedCardsClientsAreNotRead)
     EXPECT_TRUE(counters[0].engineClients.empty());
 }
 
-// A kernel whose fdinfo has no engine stats (i915 before 5.19): utilization stays N/A, not 0%.
+// A client whose fdinfo has a drm-client-id but no engine busyness (none of its classes reported):
+// utilization stays N/A, not 0%. A real pre-5.19 i915 prints no drm-* keys at all: see the next test.
 TEST_F(DRMGPUProbeEngineTest, ClientsWithoutEngineStatsLeaveBusynessUnread)
 {
     makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", "drm-driver:\txe\ndrm-pdev:\t0000:03:00.0\ndrm-client-id:\t7\n");
     const auto probe = makeProbe();
     EXPECT_FALSE(probe->readGPUCounters()[0].engineBusyAvailable);
+}
+
+/// A DRM fd's fdinfo on i915 before Linux 5.19: no drm-* keys at all, so no drm-client-id (#1361).
+constexpr std::string_view PRE_5_19_FDINFO = "pos:\t0\nflags:\t02100002\nmnt_id:\t25\nino:\t1234\n";
+
+// #1361: on i915 before 5.19 a client's fdinfo has no drm-client-id, which isn't a closed fd while the
+// fd still links to the card: the card has a client without engine stats, so N/A, not idle (0%).
+TEST_F(DRMGPUProbeEngineTest, Pre519DrmFdWithoutClientIdLeavesBusynessUnread)
+{
+    std::filesystem::remove(m_PciDir / "driver");
+    std::filesystem::create_symlink("/nonexistent/drivers/i915", m_PciDir / "driver");
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", std::string(PRE_5_19_FDINFO));
+    const auto probe = makeProbe();
+    for (int sample = 0; sample < 2; ++sample)
+    {
+        const auto counters = probe->readGPUCounters();
+        ASSERT_EQ(counters.size(), 1U);
+        EXPECT_FALSE(counters[0].engineBusyAvailable) << "sample " << sample;
+        EXPECT_TRUE(counters[0].engineClients.empty());
+    }
+    // One fdinfo read per sample for the client, kept from one sample to the next.
+    const auto before = DRMGPUProbeTestAccessor::fdinfoReads(*probe);
+    std::ignore = probe->readGPUCounters();
+    EXPECT_EQ(DRMGPUProbeTestAccessor::fdinfoReads(*probe), before + 1U);
+    EXPECT_FALSE(utilizationAfterTwoSamples(makeProbe()).has_value());
+
+    // Once the fd closes, the card has no clients: idle.
+    std::filesystem::remove_all(m_ProcRoot / "100");
+    EXPECT_TRUE(probe->readGPUCounters()[0].engineBusyAvailable);
+}
+
+// #1361: the same fdinfo from an fd whose number now names something other than the card's DRM node
+// is a closed client's reused fd, dropped as before: with no other clients, the card is idle.
+TEST_F(DRMGPUProbeEngineTest, ReusedFdWithoutClientIdIsDropped)
+{
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", std::string(PRE_5_19_FDINFO));
+    const auto probe = makeProbe();
+    const auto first = probe->readGPUCounters();
+    ASSERT_EQ(first.size(), 1U);
+    EXPECT_FALSE(first[0].engineBusyAvailable); // Still the card's: a client without stats
+
+    const auto link = m_ProcRoot / "100" / "fd" / "4";
+    std::filesystem::remove(link);
+    std::filesystem::create_symlink("/home/user/notes.txt", link); // Closed, and its number reused
+    const auto counters = probe->readGPUCounters();
+    EXPECT_TRUE(counters[0].engineClients.empty());
+    EXPECT_TRUE(counters[0].engineBusyAvailable); // Idle, not unread
+    EXPECT_TRUE(probe->readGPUCounters()[0].engineBusyAvailable);
 }
 
 // The issue's regression test: a fake fdinfo tree, two samples, the utilization Domain derives.
@@ -2117,6 +2174,255 @@ TEST_F(DRMGPUProbeEngineTest, I915BusyNanosecondsAgainstTheClock)
     ASSERT_EQ(snapshots.size(), 1U);
     EXPECT_TRUE(snapshots[0].utilizationAvailable);
     EXPECT_DOUBLE_EQ(snapshots[0].utilizationPercent, 25.0);
+}
+
+// #1356: one DRM client open through three fds (two dup'd in one process, one inherited by a child)
+// costs one fdinfo read per sample, not three. Each file carries its own cycle count -- which a real
+// kernel would not, as they're one file -- so the reading shows which of them was read.
+TEST_F(DRMGPUProbeEngineTest, OneClientThroughSeveralFdsIsReadOncePerSample)
+{
+    const std::array<std::filesystem::path, 3> fdinfos{
+        m_ProcRoot / "100" / "fdinfo" / "4", m_ProcRoot / "100" / "fdinfo" / "5", m_ProcRoot / "200" / "fdinfo" / "4"};
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", xeFdinfo(7, 10, 100));
+    makeFd(m_ProcRoot, 100, 5, "/dev/dri/renderD129", xeFdinfo(7, 20, 100)); // dup'd
+    makeFd(m_ProcRoot, 200, 4, "/dev/dri/renderD129", xeFdinfo(7, 30, 100)); // inherited
+    const auto probe = makeProbe();
+    // The fdinfo file read for the client this sample, from its cycle count.
+    const auto sample = [&probe, &fdinfos]() -> std::optional<std::filesystem::path>
+    {
+        const auto counters = probe->readGPUCounters();
+        EXPECT_TRUE(counters[0].engineBusyAvailable);
+        if (counters[0].engineClients.size() != 1U)
+        {
+            return std::nullopt;
+        }
+        EXPECT_EQ(counters[0].engineClients[0].clientId, 7U);
+        const std::uint64_t cycles = counters[0].engineClients[0].engines.at(RENDER).busy;
+        EXPECT_TRUE(cycles == 10U || cycles == 20U || cycles == 30U) << cycles;
+        return fdinfos.at(std::min<std::size_t>((cycles / 10U) - 1U, fdinfos.size() - 1U));
+    };
+    const auto reads = [&probe]
+    {
+        return DRMGPUProbeTestAccessor::fdinfoReads(*probe);
+    };
+
+    // The first sample reads each fd once to learn they are one client.
+    const auto first = sample();
+    ASSERT_TRUE(first.has_value());
+    EXPECT_EQ(reads(), 3U);
+
+    // From then on, one read per sample, always of the same file.
+    for (int i = 0; i < 3; ++i)
+    {
+        const auto before = reads();
+        EXPECT_EQ(sample(), first);
+        EXPECT_EQ(reads(), before + 1U);
+    }
+
+    // The file read closes: an alias takes over without losing the client, and then is the one read.
+    std::filesystem::remove(*first);
+    auto before = reads();
+    const auto second = sample();
+    ASSERT_TRUE(second.has_value());
+    EXPECT_NE(second, first);
+    EXPECT_EQ(reads(), before + 2U); // The closed file, then the alias
+    before = reads();
+    EXPECT_EQ(sample(), second);
+    EXPECT_EQ(reads(), before + 1U);
+
+    // And again for the last alias.
+    std::filesystem::remove(*second);
+    const auto third = sample();
+    ASSERT_TRUE(third.has_value());
+    EXPECT_NE(third, first);
+    EXPECT_NE(third, second);
+
+    // With every fd closed, the client is gone and the card idle.
+    std::filesystem::remove(*third);
+    const auto counters = probe->readGPUCounters();
+    EXPECT_TRUE(counters[0].engineClients.empty());
+    EXPECT_TRUE(counters[0].engineBusyAvailable);
+}
+
+// #1356: the file read for a client whose fd number is reused for another DRM file of the card moves
+// to that client; its alias still names the first client, which stays counted.
+TEST_F(DRMGPUProbeEngineTest, AReusedFdLeavesItsAliasWithItsClient)
+{
+    const std::array<std::filesystem::path, 2> fdinfos{m_ProcRoot / "100" / "fdinfo" / "4", m_ProcRoot / "100" / "fdinfo" / "5"};
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", xeFdinfo(7, 10, 100));
+    makeFd(m_ProcRoot, 100, 5, "/dev/dri/renderD129", xeFdinfo(7, 20, 100)); // dup'd
+    const auto probe = makeProbe();
+    std::ignore = probe->readGPUCounters(); // Learns they are one client
+    const auto counters = probe->readGPUCounters();
+    ASSERT_EQ(counters[0].engineClients.size(), 1U);
+    // Which file is read for the client, from its cycle count; the other is the alias.
+    const bool firstIsRead = counters[0].engineClients[0].engines.at(RENDER).busy == 10U;
+    const auto& read = fdinfos.at(firstIsRead ? 0 : 1);
+    const auto& alias = fdinfos.at(firstIsRead ? 1 : 0);
+
+    std::ofstream(read) << xeFdinfo(8, 50, 100); // Closed, and its number reused for client 8
+    const auto clientIds = [&probe]
+    {
+        std::vector<std::uint64_t> ids;
+        for (const auto& client : probe->readGPUCounters()[0].engineClients)
+        {
+            ids.push_back(client.clientId);
+        }
+        std::ranges::sort(ids);
+        return ids;
+    };
+    auto before = DRMGPUProbeTestAccessor::fdinfoReads(*probe);
+    EXPECT_EQ(clientIds(), (std::vector<std::uint64_t>{7, 8}));
+    EXPECT_EQ(DRMGPUProbeTestAccessor::fdinfoReads(*probe), before + 2U); // The reused file, then the alias
+    before = DRMGPUProbeTestAccessor::fdinfoReads(*probe);
+    EXPECT_EQ(clientIds(), (std::vector<std::uint64_t>{7, 8}));
+    EXPECT_EQ(DRMGPUProbeTestAccessor::fdinfoReads(*probe), before + 2U); // Now one file per client
+
+    std::filesystem::remove(alias); // Client 7 closes; client 8 stays
+    EXPECT_EQ(clientIds(), (std::vector<std::uint64_t>{8}));
+}
+
+// #1356: a full rescan keeps the client groups the samples have learned. One client open through three
+// fds is still read through the same file after a rescan, and once per sample in steady state; the
+// sample after a rescan reads each alias once more, as it may have been reused for another client. A
+// path closed before the rescan is dropped from its group, and a newly opened fd of another client is
+// read and grouped.
+TEST_F(DRMGPUProbeEngineTest, AFullRescanKeepsTheClientsGrouped)
+{
+    const std::array<std::filesystem::path, 3> fdinfos{
+        m_ProcRoot / "100" / "fdinfo" / "4", m_ProcRoot / "100" / "fdinfo" / "5", m_ProcRoot / "200" / "fdinfo" / "4"};
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", xeFdinfo(7, 10, 100));
+    makeFd(m_ProcRoot, 100, 5, "/dev/dri/renderD129", xeFdinfo(7, 20, 100)); // dup'd
+    makeFd(m_ProcRoot, 200, 4, "/dev/dri/renderD129", xeFdinfo(7, 30, 100)); // inherited
+    const auto probe = makeProbe();
+    const auto reads = [&probe]
+    {
+        return DRMGPUProbeTestAccessor::fdinfoReads(*probe);
+    };
+    // The sample's clients' ids, sorted, and the fdinfo file read for client 7 (from its cycle count).
+    std::optional<std::filesystem::path> readFor7;
+    const auto sample = [&probe, &fdinfos, &readFor7]
+    {
+        const auto counters = probe->readGPUCounters();
+        EXPECT_TRUE(counters[0].engineBusyAvailable);
+        std::vector<std::uint64_t> ids;
+        readFor7.reset();
+        for (const auto& client : counters[0].engineClients)
+        {
+            ids.push_back(client.clientId);
+            const std::uint64_t cycles = client.engines.at(RENDER).busy;
+            if (client.clientId == 7U && cycles >= 10U && cycles <= 30U)
+            {
+                readFor7 = fdinfos.at((cycles / 10U) - 1U);
+            }
+        }
+        std::ranges::sort(ids);
+        return ids;
+    };
+
+    EXPECT_EQ(sample(), (std::vector<std::uint64_t>{7}));
+    EXPECT_EQ(reads(), 3U); // Each fd once, to learn they are one client
+    ASSERT_TRUE(readFor7.has_value());
+    const auto first = *readFor7;
+
+    // A rescan finds the same three fds: the next sample reads the same file for the client, and each
+    // alias once to confirm it still names client 7; the samples after it read one file again.
+    EXPECT_FALSE(probe->rescanGPUs(GPURescan::Full));
+    auto before = reads();
+    EXPECT_EQ(sample(), (std::vector<std::uint64_t>{7}));
+    EXPECT_EQ(reads(), before + 3U);
+    EXPECT_EQ(readFor7, first);
+    before = reads();
+    EXPECT_EQ(sample(), (std::vector<std::uint64_t>{7}));
+    EXPECT_EQ(reads(), before + 1U);
+    EXPECT_EQ(readFor7, first);
+
+    // Before the next rescan, the file read for client 7 closes and another client opens the card.
+    std::filesystem::remove(first);
+    std::filesystem::remove(first.parent_path().parent_path() / "fd" / first.filename());
+    makeFd(m_ProcRoot, 300, 6, "/dev/dri/renderD129", xeFdinfo(8, 50, 100));
+    EXPECT_FALSE(probe->rescanGPUs(GPURescan::Full));
+    // The closed path is gone from client 7's group, so it isn't tried: an alias is read for client 7,
+    // the other alias once, and the new path.
+    before = reads();
+    EXPECT_EQ(sample(), (std::vector<std::uint64_t>{7, 8}));
+    EXPECT_EQ(reads(), before + 3U);
+    ASSERT_TRUE(readFor7.has_value());
+    EXPECT_NE(readFor7, first);
+    const auto second = *readFor7;
+
+    // Grouped now: one read per client in steady state, through rescans too.
+    for (int i = 0; i < 2; ++i)
+    {
+        EXPECT_FALSE(probe->rescanGPUs(GPURescan::Full));
+        before = reads();
+        EXPECT_EQ(sample(), (std::vector<std::uint64_t>{7, 8}));
+        EXPECT_EQ(reads(), before + 3U); // Client 7's file and its alias, and client 8's
+        EXPECT_EQ(readFor7, second);
+        before = reads();
+        EXPECT_EQ(sample(), (std::vector<std::uint64_t>{7, 8}));
+        EXPECT_EQ(reads(), before + 2U);
+        EXPECT_EQ(readFor7, second);
+    }
+}
+
+// #1356: an alias is unread while its client's file is, so its fd number could be closed and reused for
+// another client's DRM file of the same card -- the same /dev/dri link -- unnoticed by the walk. A full
+// rescan ungroups the aliases, so the next sample reads it and finds the new client.
+TEST_F(DRMGPUProbeEngineTest, AnAliasReusedForAnotherClientIsFoundAfterAFullRescan)
+{
+    const std::array<std::filesystem::path, 2> fdinfos{m_ProcRoot / "100" / "fdinfo" / "4", m_ProcRoot / "100" / "fdinfo" / "5"};
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", xeFdinfo(7, 10, 100));
+    makeFd(m_ProcRoot, 100, 5, "/dev/dri/renderD129", xeFdinfo(7, 20, 100)); // dup'd
+    const auto probe = makeProbe();
+    const auto clientIds = [&probe]
+    {
+        std::vector<std::uint64_t> ids;
+        for (const auto& client : probe->readGPUCounters()[0].engineClients)
+        {
+            ids.push_back(client.clientId);
+        }
+        std::ranges::sort(ids);
+        return ids;
+    };
+    std::ignore = probe->readGPUCounters(); // Learns they are one client
+    const auto counters = probe->readGPUCounters();
+    ASSERT_EQ(counters[0].engineClients.size(), 1U);
+    const bool firstIsRead = counters[0].engineClients[0].engines.at(RENDER).busy == 10U;
+    const auto& alias = fdinfos.at(firstIsRead ? 1 : 0);
+
+    // The alias closes and its number is reused for client 9; its link is the same render node.
+    std::ofstream(alias) << xeFdinfo(9, 40, 100);
+    EXPECT_EQ(clientIds(), (std::vector<std::uint64_t>{7})); // Unread, so not yet seen
+
+    EXPECT_FALSE(probe->rescanGPUs(GPURescan::Full));
+    EXPECT_EQ(clientIds(), (std::vector<std::uint64_t>{7, 9}));
+    const auto before = DRMGPUProbeTestAccessor::fdinfoReads(*probe);
+    EXPECT_EQ(clientIds(), (std::vector<std::uint64_t>{7, 9}));
+    EXPECT_EQ(DRMGPUProbeTestAccessor::fdinfoReads(*probe), before + 2U); // One file per client
+}
+
+// A client that begins reporting engine stats between the reads of two of its fds: the reading with
+// stats counts even when it is read second, under an id already kept from the reading without them.
+// Otherwise the card publishes engineBusyAvailable with no counters, which reads as idle.
+TEST_F(DRMGPUProbeEngineTest, AnAliasReadWithStatsAfterOneWithoutThemCounts)
+{
+    // Which of the two fds is read first is up to the directory listing, so cover both ways round:
+    // one of them reads the stats-less file first.
+    for (const int statsFd : {4, 5})
+    {
+        SCOPED_TRACE(statsFd);
+        const auto procRoot = m_ProcRoot / std::format("stats-on-{}", statsFd);
+        const std::string noStats = "drm-driver:\txe\ndrm-pdev:\t0000:03:00.0\ndrm-client-id:\t7\n";
+        makeFd(procRoot, 100, 4, "/dev/dri/renderD129", statsFd == 4 ? xeFdinfo(7, 10, 100) : noStats);
+        makeFd(procRoot, 100, 5, "/dev/dri/renderD129", statsFd == 5 ? xeFdinfo(7, 10, 100) : noStats);
+        const ScriptedVramQuery query; // No VRAM reply: keeps the real ioctl out of these tests
+        const auto probe = std::make_unique<DRMGPUProbe>(m_SysRoot.string(), query.fn(), procRoot.string());
+        const auto counters = probe->readGPUCounters();
+        EXPECT_TRUE(counters[0].engineBusyAvailable);
+        ASSERT_EQ(counters[0].engineClients.size(), 1U);
+        EXPECT_EQ(counters[0].engineClients[0].clientId, 7U);
+    }
 }
 
 } // namespace

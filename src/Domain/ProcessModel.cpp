@@ -1049,7 +1049,7 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     snapshot.ioAvailable = current.ioCountersAvailable && (previous == nullptr || previous->ioCountersAvailable);
     snapshot.nice = current.nice;
     snapshot.pageFaults = current.pageFaultCount;
-    snapshot.cpuAffinityMask = current.cpuAffinityMask;
+    snapshot.cpuAffinity = current.cpuAffinity;
     snapshot.startTimeEpoch = current.startTimeEpoch;
     snapshot.startTimeTicks = current.startTimeTicks;
     snapshot.uniqueKey = makeUniqueKey(current.pid, current.startTimeTicks);
