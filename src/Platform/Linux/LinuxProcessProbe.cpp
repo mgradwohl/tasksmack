@@ -176,9 +176,18 @@ LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot, std::filesy
 {}
 
 LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot, std::filesystem::path powercapRoot, std::filesystem::path cgroupRoot)
+    : LinuxProcessProbe(
+          std::move(procRoot), std::move(powercapRoot), std::move(cgroupRoot), std::filesystem::path("/sys/devices/system/cpu"))
+{}
+
+LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot,
+                                     std::filesystem::path powercapRoot,
+                                     std::filesystem::path cgroupRoot,
+                                     std::filesystem::path cpuSysfsRoot)
     : m_ProcRoot(std::move(procRoot)),
       m_PowercapRoot(std::move(powercapRoot)),
       m_CgroupRoot(std::move(cgroupRoot)),
+      m_CpuSysfsRoot(std::move(cpuSysfsRoot)),
       m_TicksPerSecond(sysconf(_SC_CLK_TCK)),
       m_PageSize(toU64PositiveOr(sysconf(_SC_PAGESIZE), 4096ULL)),
       m_BootTimeEpoch(readBootTime(m_ProcRoot))
@@ -269,6 +278,10 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
     const std::filesystem::path& procPath = m_ProcRoot;
     std::error_code errorCode;
 
+    // Once per sample: Cpus_allowed_list is the task's raw mask, which still names CPUs that are
+    // possible but offline; the sched_getaffinity() it replaced ANDed it with the active CPUs (#1384).
+    const std::optional<CpuAffinity> onlineCpus = readOnlineCpus(m_CpuSysfsRoot);
+
     for (const auto& entry : std::filesystem::directory_iterator(procPath, errorCode))
     {
         if (!entry.is_directory())
@@ -294,7 +307,7 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         }
 
         parseProcessStatm(pid, counters);
-        parseProcessStatus(pid, counters, m_ProcRoot); // Owner, peak RSS (after statm) and CPU affinity
+        parseProcessStatus(pid, counters, m_ProcRoot, onlineCpus); // Owner, peak RSS (after statm) and CPU affinity
         parseProcessCmdline(pid, counters, m_ProcRoot);
 
         // Count open file descriptors (may fail for some processes due to permissions)
@@ -479,7 +492,35 @@ void LinuxProcessProbe::parseProcessStatm(int32_t pid, ProcessCounters& counters
     }
 }
 
-void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot)
+std::optional<CpuAffinity> LinuxProcessProbe::readOnlineCpus(const std::filesystem::path& cpuSysfsRoot)
+{
+    // <cpuSysfsRoot>/online is a kernel CPU list ("0-7", "0-3,6-7"), a few bytes on any real machine.
+    // A list that fills the buffer may be cut off, so it is then read whole instead (bounded).
+    const std::string onlinePath = (cpuSysfsRoot / "online").string();
+    constexpr std::size_t BUF_SIZE = 256;
+    std::array<char, BUF_SIZE> buf{};
+    const std::size_t len = readProcFile(onlinePath.c_str(), buf.data(), BUF_SIZE);
+    if (len == 0)
+    {
+        return std::nullopt;
+    }
+    if (len < BUF_SIZE)
+    {
+        return CpuAffinity::fromCpuList(std::string_view(buf.data(), len));
+    }
+    constexpr std::size_t MAX_ONLINE_SIZE = std::size_t{1} << 20U; // 1 MiB, far above any real list
+    const std::vector<char> full = readProcFileBounded(onlinePath, 4 * BUF_SIZE, MAX_ONLINE_SIZE);
+    if (full.empty() || full.size() == MAX_ONLINE_SIZE)
+    {
+        return std::nullopt; // Unreadable now, or possibly cut off
+    }
+    return CpuAffinity::fromCpuList(std::string_view(full.data(), full.size()));
+}
+
+void LinuxProcessProbe::parseProcessStatus(int32_t pid,
+                                           ProcessCounters& counters,
+                                           const std::filesystem::path& procRoot,
+                                           const std::optional<CpuAffinity>& onlineCpus)
 {
     // Read /proc/[pid]/status, key:value pairs one per line, for:
     //   Uid:               <real> <effective> <saved> <filesystem>  -- the owner
@@ -488,7 +529,9 @@ void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counter
     // A kernel thread has no Vm* lines at all. The affinity used to come from sched_getaffinity(),
     // packed into a 64-bit mask that dropped every CPU from 64 up (#1247). The list here has no width
     // limit, is already in the file this reads, and follows procRoot (sched_getaffinity() asked the
-    // real kernel about a test's fake pid).
+    // real kernel about a test's fake pid). It is the task's raw mask, though, which keeps CPUs that
+    // are possible but offline (a VM's hot-add slots, SMT turned off); sched_getaffinity() ANDed it
+    // with the active CPUs, and this ANDs it with the online list (#1384).
 
     const std::string statusPath = (procRoot / std::to_string(pid) / "status").string();
     // A status file is about 1.5 KiB. Big enough for the usual file, Cpus_allowed's hex mask on a
@@ -576,9 +619,21 @@ void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counter
             // Only a whole line: one the buffer cut off could read "0-12" for "0-127".
             if (lineEnd < end)
             {
-                if (auto affinity = CpuAffinity::fromCpuList(line.substr(CPUS_ALLOWED_LIST_PREFIX.size())))
+                const std::string_view list = line.substr(CPUS_ALLOWED_LIST_PREFIX.size());
+                if (auto affinity = CpuAffinity::fromCpuList(list))
                 {
-                    counters.cpuAffinity = std::move(*affinity);
+                    if (onlineCpus.has_value())
+                    {
+                        affinity->intersectWith(*onlineCpus);
+                        if (affinity->empty())
+                        {
+                            // None of its CPUs online (a hotplug racing this sample): keep the raw
+                            // list rather than report the affinity as unreadable. Rare, so re-parse
+                            // instead of copying every process's list up front.
+                            affinity = CpuAffinity::fromCpuList(list);
+                        }
+                    }
+                    counters.cpuAffinity = std::move(affinity).value_or(CpuAffinity{});
                 }
             }
         }

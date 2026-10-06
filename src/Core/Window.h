@@ -150,6 +150,22 @@ class Window
     /// while the window is normal (not maximized, minimized or fullscreen), as the restore target for
     /// a maximize from outside the app (#1250). A few cached SDL queries, cheap enough per event.
     void handleGeometryChanged();
+    /// A minimize from the shell reached the window (#1279): Win32 WM_SYSCOMMAND SC_MINIMIZE, before
+    /// it is carried out, or SDL_EVENT_WINDOW_MINIMIZED, for a minimize that did not come that way.
+    /// When WindowGeometry::shellMinimizeRestores() says it is Win+Down on a client-side maximized
+    /// window, restores the window to its normal rectangle -- un-minimizing it first if the minimize
+    /// already happened -- as the first Win+Down does for a natively maximized window. Reads the
+    /// keyboard state on Windows; does nothing elsewhere.
+    /// @return Whether the window was restored, so a minimize not yet carried out should be dropped.
+    bool restoreForShellMinimize();
+    /// Reads whether {a Windows key, the Down arrow} are held, for restoreForShellMinimize().
+    using ShellRestoreKeysReader = auto (*)() noexcept -> std::pair<bool, bool>;
+    /// Replace how this window reads the Win+Down key state; nullptr restores the real keyboard
+    /// state. A test seam: synthetic input cannot hold keys on a locked or headless desktop (#1279).
+    void setShellRestoreKeysReader(ShellRestoreKeysReader reader) noexcept
+    {
+        m_ShellRestoreKeysReader = reader;
+    }
     void restore();
     void minimize() const;
 
@@ -177,6 +193,8 @@ class Window
     // restore whoever starts it (#1250). Its state is the only maximized signal for a borderless
     // window on a client-side-maximize backend (see isMaximized()).
     WindowGeometry::NormalGeometryTracker m_Geometry;
+    // See setShellRestoreKeysReader(); nullptr reads the keyboard.
+    ShellRestoreKeysReader m_ShellRestoreKeysReader = nullptr;
 
 #ifdef _WIN32
     // Owned title-bar/taskbar icon handles (opaque void* here so <windows.h> stays out of
