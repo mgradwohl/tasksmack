@@ -20,11 +20,13 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <future>
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using TestMocks::makeGPUCounters;
@@ -735,6 +737,117 @@ TEST(GPUModelTest, PowerFromTheEnergyCounterCarriesOnAcrossAReEnumeration)
     ASSERT_NE(gpu0, snaps.end());
     EXPECT_TRUE(gpu0->powerAvailable);
     EXPECT_DOUBLE_EQ(gpu0->powerDrawWatts, 3.0);
+}
+
+// =============================================================================
+// Utilization from DRM clients' engine busyness (#1267)
+// =============================================================================
+
+constexpr auto RENDER_CLASS = static_cast<std::size_t>(Platform::GPUEngineClass::Render);
+constexpr auto VIDEO_CLASS = static_cast<std::size_t>(Platform::GPUEngineClass::Video);
+
+/// A DRM client with one engine class's cumulative busy/total counters.
+[[nodiscard]] Platform::GPUEngineClientCounters
+engineClient(std::uint64_t clientId, std::size_t engineClass, std::uint64_t busy, std::uint64_t total, std::uint32_t capacity = 1)
+{
+    Platform::GPUEngineClientCounters client;
+    client.clientId = clientId;
+    client.engines.at(engineClass) = Platform::GPUEngineBusyCounter{.available = true, .busy = busy, .total = total, .capacity = capacity};
+    return client;
+}
+
+/// GPU0's counters as the DRM probe reports them: engine busyness, but no utilization of its own.
+[[nodiscard]] Platform::GPUCounters engineCounters(std::vector<Platform::GPUEngineClientCounters> clients)
+{
+    auto counters = makeGPUCounters("GPU0");
+    counters.utilizationAvailable = false;
+    counters.utilizationPercent = 0.0;
+    counters.engineBusyAvailable = true;
+    counters.engineClients = std::move(clients);
+    return counters;
+}
+
+// Per class, the clients' busy shares are summed over the class's engine count; the busiest class wins.
+TEST(GPUModelTest, UtilizationIsTheBusiestEngineClassAcrossClients)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "Intel")
+        .withGPUCounters("GPU0",
+                         engineCounters({engineClient(1, RENDER_CLASS, 0, 1000),
+                                         engineClient(2, RENDER_CLASS, 0, 1000),
+                                         engineClient(3, VIDEO_CLASS, 0, 1000, 2)}));
+    Domain::GPUModel model(std::move(probe));
+    const auto start = std::chrono::steady_clock::now();
+    model.refreshAt(start);
+    EXPECT_FALSE(model.snapshots()[0].utilizationAvailable); // No previous sample: a gap, not 0%
+
+    // Render: 100 + 200 busy of 1000 = 30%. Video: 900 of 1000 on one of its two engines = 45%.
+    rawProbe->withGPUCounters("GPU0",
+                              engineCounters({engineClient(1, RENDER_CLASS, 100, 2000),
+                                              engineClient(2, RENDER_CLASS, 200, 2000),
+                                              engineClient(3, VIDEO_CLASS, 900, 2000, 2)}));
+    model.refreshAt(start + std::chrono::seconds(1));
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1U);
+    EXPECT_TRUE(snaps[0].utilizationAvailable);
+    EXPECT_DOUBLE_EQ(snaps[0].utilizationPercent, 45.0);
+}
+
+TEST(GPUModelTest, EngineUtilizationIgnoresClientsSeenOnceAndCountersThatWentBack)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "Intel")
+        .withGPUCounters("GPU0",
+                         engineCounters({engineClient(1, RENDER_CLASS, 500, 1000),
+                                         engineClient(2, RENDER_CLASS, 900, 1000),
+                                         engineClient(4, RENDER_CLASS, 0, 1000)}));
+    Domain::GPUModel model(std::move(probe));
+    const auto start = std::chrono::steady_clock::now();
+    model.refreshAt(start);
+
+    // Client 1 exited, client 3 is new (its lifetime busyness isn't this interval's), client 2's
+    // counter went backwards; only client 4, busy 100 of 1000, counts.
+    rawProbe->withGPUCounters("GPU0",
+                              engineCounters({engineClient(2, RENDER_CLASS, 10, 2000),
+                                              engineClient(3, RENDER_CLASS, 5'000, 2000),
+                                              engineClient(4, RENDER_CLASS, 100, 2000)}));
+    model.refreshAt(start + std::chrono::seconds(1));
+    EXPECT_TRUE(model.snapshots()[0].utilizationAvailable);
+    EXPECT_DOUBLE_EQ(model.snapshots()[0].utilizationPercent, 10.0);
+
+    // No clients at all: the GPU is idle.
+    rawProbe->withGPUCounters("GPU0", engineCounters({}));
+    model.refreshAt(start + std::chrono::seconds(2));
+    EXPECT_TRUE(model.snapshots()[0].utilizationAvailable);
+    EXPECT_DOUBLE_EQ(model.snapshots()[0].utilizationPercent, 0.0);
+
+    // A sample without busyness (a suspended card) leaves the next one nothing to compare against.
+    auto suspended = engineCounters({});
+    suspended.engineBusyAvailable = false;
+    rawProbe->withGPUCounters("GPU0", suspended);
+    model.refreshAt(start + std::chrono::seconds(3));
+    EXPECT_FALSE(model.snapshots()[0].utilizationAvailable);
+    rawProbe->withGPUCounters("GPU0", engineCounters({engineClient(4, RENDER_CLASS, 200, 3000)}));
+    model.refreshAt(start + std::chrono::seconds(4));
+    EXPECT_FALSE(model.snapshots()[0].utilizationAvailable);
+}
+
+TEST(GPUModelTest, EngineUtilizationIsCappedAtOneHundredPercent)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "Intel")
+        .withGPUCounters("GPU0", engineCounters({engineClient(1, RENDER_CLASS, 0, 1000), engineClient(2, RENDER_CLASS, 0, 1000)}));
+    Domain::GPUModel model(std::move(probe));
+    const auto start = std::chrono::steady_clock::now();
+    model.refreshAt(start);
+
+    // Reads moments apart: each client's share is measured over a slightly different interval.
+    rawProbe->withGPUCounters("GPU0", engineCounters({engineClient(1, RENDER_CLASS, 600, 2000), engineClient(2, RENDER_CLASS, 500, 2000)}));
+    model.refreshAt(start + std::chrono::seconds(1));
+    EXPECT_DOUBLE_EQ(model.snapshots()[0].utilizationPercent, 100.0);
 }
 
 // =============================================================================

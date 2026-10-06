@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -66,6 +68,37 @@ struct GPUInfo
     std::uint32_t pciDeviceId = 0;
 };
 
+/// The engine classes DRM fdinfo reports busyness for (the kernel's drm-usage-stats.rst): i915 names
+/// them render/copy/video/video-enhance/compute, xe rcs/bcs/vcs/vecs/ccs (#1267).
+enum class GPUEngineClass : std::uint8_t
+{
+    Render,
+    Copy,
+    Video,
+    VideoEnhance,
+    Compute,
+};
+inline constexpr std::size_t GPU_ENGINE_CLASS_COUNT = 5;
+
+/// One engine class's cumulative busyness for one DRM client. `busy` and `total` are in one unit, so
+/// their changes between two samples give the share of the time the client kept the class busy:
+/// i915 reports busy nanoseconds, and the probe stamps `total` with CLOCK_MONOTONIC nanoseconds as
+/// it reads them; xe reports busy GPU-timestamp cycles together with the GPU timestamp itself.
+struct GPUEngineBusyCounter
+{
+    bool available = false;
+    std::uint64_t busy = 0;
+    std::uint64_t total = 0;
+    std::uint32_t capacity = 1; // Engines of the class (drm-engine-capacity-*; the kernel omits it when 1)
+};
+
+/// One DRM client's (one open DRM file's) cumulative engine busyness, from /proc/<pid>/fdinfo (#1267).
+struct GPUEngineClientCounters
+{
+    std::uint64_t clientId = 0; // drm-client-id: one per open DRM file, shared by dup'd and inherited fds
+    std::array<GPUEngineBusyCounter, GPU_ENGINE_CLASS_COUNT> engines{};
+};
+
 // Raw GPU counters (Platform layer provides raw values only)
 // Derived metrics (rates, percentages) are computed by Domain layer
 struct GPUCounters
@@ -111,6 +144,14 @@ struct GPUCounters
     // a counter reset) has no power.
     bool energyAvailable = false;
     std::uint64_t energyMicroJoules = 0;
+
+    // Per-client cumulative engine busyness, for a GPU whose driver reports no utilization of its own
+    // (Intel i915/xe, from each DRM client's fdinfo, #1267). When engineBusyAvailable, Domain derives
+    // utilizationPercent from the clients in both this and the previous sample: per engine class, the
+    // sum of their busy shares over the class's capacity, the busiest class being the GPU's
+    // utilization; no clients means idle. Without a previous sample, utilization is unread.
+    bool engineBusyAvailable = false;
+    std::vector<GPUEngineClientCounters> engineClients;
 
     // Clock speeds (MHz)
     std::uint32_t gpuClockMHz = 0;

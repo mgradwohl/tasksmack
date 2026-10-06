@@ -47,6 +47,42 @@ template<typename T> [[nodiscard]] float readingOrNaN(const GPUSnapshot& sample,
     return available ? sampleOrNaN(sample, value) : std::numeric_limits<float>::quiet_NaN();
 }
 
+/// A GPU's utilization from its DRM clients' cumulative engine busyness (#1267). Per engine class,
+/// each client in both samples adds the share of the interval it kept the class busy (its busy
+/// change over its total's change, both in one unit); the shares summed over the class's capacity
+/// (engine count) give the class's percent, and the busiest class is the GPU's. A client seen in only
+/// one sample (started or exited in between), or whose counters went backwards, adds nothing; no
+/// clients at all is an idle GPU, 0%.
+[[nodiscard]] double engineUtilizationPercent(std::span<const Platform::GPUEngineClientCounters> current,
+                                              std::span<const Platform::GPUEngineClientCounters> previous)
+{
+    double busiest = 0.0;
+    for (std::size_t engineClass = 0; engineClass < Platform::GPU_ENGINE_CLASS_COUNT; ++engineClass)
+    {
+        double busyShare = 0.0;
+        std::uint32_t capacity = 1;
+        for (const auto& client : current)
+        {
+            const auto before = std::ranges::find(previous, client.clientId, &Platform::GPUEngineClientCounters::clientId);
+            if (before == previous.end())
+            {
+                continue;
+            }
+            const auto& now = client.engines.at(engineClass);
+            const auto& then = before->engines.at(engineClass);
+            if (!now.available || !then.available || now.total <= then.total || now.busy < then.busy)
+            {
+                continue;
+            }
+            busyShare += Numeric::toDouble(now.busy - then.busy) / Numeric::toDouble(now.total - then.total);
+            capacity = std::max(capacity, now.capacity);
+        }
+        busiest = std::max(busiest, (busyShare / static_cast<double>(capacity)) * 100.0);
+    }
+    // Clients' reads are moments apart, so the shares of a fully busy class can sum just past 100%.
+    return std::clamp(busiest, 0.0, 100.0);
+}
+
 /// The GPU clock: NaN when the read failed or returned 0 MHz. A 0 is the probes' "couldn't read it"
 /// (DRM, and NVML on a suspended GPU), and the Clock NowBar already shows N/A for it (#995), so the
 /// line has a gap there too rather than diving to 0 (#1111).
@@ -579,6 +615,15 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
             haveDelta
                 ? Numeric::counterRate(current.energyMicroJoules, previous->energyMicroJoules, timeDeltaSeconds) / MICROJOULES_PER_JOULE
                 : 0.0;
+    }
+
+    // Utilization from the DRM clients' engine busyness (#1267): their change since the previous
+    // sample. Without a previous reading (the first sample, or after a suspend or a failed read), unread.
+    if (current.engineBusyAvailable)
+    {
+        const bool haveDelta = previous != nullptr && previous->engineBusyAvailable;
+        snapshot.utilizationAvailable = haveDelta;
+        snapshot.utilizationPercent = haveDelta ? engineUtilizationPercent(current.engineClients, previous->engineClients) : 0.0;
     }
 
     // Compute derived values
