@@ -1,5 +1,6 @@
 #include "App/Panels/ProcessSortUtils.h"
 #include "App/ProcessColumnConfig.h"
+#include "Domain/PriorityConfig.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/CpuAffinity.h"
 #include "UI/Format.h"
@@ -275,6 +276,88 @@ TEST(ProcessSortUtilsTest, UnreadableValuesSortBelowEveryReadingIncludingZero)
         EXPECT_FALSE(ProcessSortUtils::compareByColumn(zero, unreadable, column, true)) << static_cast<int>(column);
         EXPECT_TRUE(ProcessSortUtils::compareByColumn(zero, unreadable, column, false)) << static_cast<int>(column);
     }
+}
+
+TEST(ProcessSortUtilsTest, PrioritySortsWindowsRealtimeAboveHigh)
+{
+    // #1280: on Windows Realtime and High are both "high" on the nice scale; the class keeps them apart.
+    using Domain::Priority::PriorityClass;
+    const auto withClass = [](std::int32_t pid, PriorityClass priorityClass, std::int32_t nice)
+    {
+        ProcessSnapshot snap;
+        snap.pid = pid;
+        snap.priorityClass = priorityClass;
+        snap.nice = nice;
+        return snap;
+    };
+    // Even if both were reported at one nice value, the class decides.
+    const ProcessSnapshot realtime = withClass(1, PriorityClass::Realtime, -15);
+    const ProcessSnapshot high = withClass(2, PriorityClass::High, -15);
+    const ProcessSnapshot normal = withClass(3, PriorityClass::Normal, 0);
+    const ProcessSnapshot idle = withClass(4, PriorityClass::Idle, 19);
+
+    std::vector<ProcessSnapshot> rows{idle, high, normal, realtime};
+    std::ranges::sort(rows,
+                      [](const ProcessSnapshot& a, const ProcessSnapshot& b)
+                      { return ProcessSortUtils::compareByColumn(a, b, ProcessColumn::Priority, true); });
+    ASSERT_EQ(rows.size(), 4U);
+    EXPECT_EQ(rows[0].priorityClass, PriorityClass::Realtime);
+    EXPECT_EQ(rows[1].priorityClass, PriorityClass::High);
+    EXPECT_EQ(rows[2].priorityClass, PriorityClass::Normal);
+    EXPECT_EQ(rows[3].priorityClass, PriorityClass::Idle);
+
+    // Descending puts Idle first and Realtime last.
+    EXPECT_TRUE(ProcessSortUtils::compareByColumn(high, realtime, ProcessColumn::Priority, false));
+    EXPECT_FALSE(ProcessSortUtils::compareByColumn(realtime, high, ProcessColumn::Priority, false));
+}
+
+TEST(ProcessSortUtilsTest, PriorityUnreadWindowsClassSortsWithNormal)
+{
+    // A Windows process whose class could not be read has no class and nice 0, and shows "Normal".
+    using Domain::Priority::PriorityClass;
+    const auto withClass = [](std::int32_t pid, PriorityClass priorityClass, std::int32_t nice)
+    {
+        ProcessSnapshot snap;
+        snap.pid = pid;
+        snap.priorityClass = priorityClass;
+        snap.nice = nice;
+        return snap;
+    };
+    const ProcessSnapshot realtime = withClass(1, PriorityClass::Realtime, -20);
+    const ProcessSnapshot high = withClass(2, PriorityClass::High, -15);
+    const ProcessSnapshot aboveNormal = withClass(3, PriorityClass::AboveNormal, -7);
+    const ProcessSnapshot normal = withClass(4, PriorityClass::Normal, 0);
+    const ProcessSnapshot unread = withClass(5, PriorityClass::None, 0);
+    const ProcessSnapshot belowNormal = withClass(6, PriorityClass::BelowNormal, 10);
+    const ProcessSnapshot idle = withClass(7, PriorityClass::Idle, 19);
+
+    const auto sorted = [&](bool ascending)
+    {
+        std::vector<ProcessSnapshot> rows{idle, unread, belowNormal, realtime, normal, aboveNormal, high};
+        std::ranges::sort(rows,
+                          [ascending](const ProcessSnapshot& a, const ProcessSnapshot& b)
+                          { return ProcessSortUtils::compareByColumn(a, b, ProcessColumn::Priority, ascending); });
+        std::vector<std::int32_t> pids;
+        pids.reserve(rows.size());
+        for (const auto& row : rows)
+        {
+            pids.push_back(row.pid);
+        }
+        return pids;
+    };
+    // Ties (Normal and the unread row) break by PID in the sort's direction.
+    EXPECT_EQ(sorted(true), (std::vector<std::int32_t>{1, 2, 3, 4, 5, 6, 7}));
+    EXPECT_EQ(sorted(false), (std::vector<std::int32_t>{7, 6, 5, 4, 3, 2, 1}));
+}
+
+TEST(ProcessSortUtilsTest, PriorityWithoutAClassSortsByNice)
+{
+    ProcessSnapshot a;
+    a.nice = -5;
+    ProcessSnapshot b;
+    b.nice = 10;
+    EXPECT_TRUE(ProcessSortUtils::compareByColumn(a, b, ProcessColumn::Priority, true));
+    EXPECT_FALSE(ProcessSortUtils::compareByColumn(b, a, ProcessColumn::Priority, true));
 }
 
 // #1247: affinities past processor 63 sort as wider bitsets, by their highest processor first, and

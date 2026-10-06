@@ -45,10 +45,28 @@ TEST(ProcessCellWidthsTest, EveryNiceValueMapsToAMeasuredLabel)
     }
 }
 
+TEST(ProcessCellWidthsTest, EveryPriorityClassMapsToAMeasuredLabel)
+{
+    // On Windows the cell shows the class name (#1280), Realtime included.
+    using Domain::Priority::PriorityClass;
+    const App::ProcessCellWidths widths = distinctWidths();
+    for (const PriorityClass priorityClass : {PriorityClass::Idle,
+                                              PriorityClass::BelowNormal,
+                                              PriorityClass::Normal,
+                                              PriorityClass::AboveNormal,
+                                              PriorityClass::High,
+                                              PriorityClass::Realtime})
+    {
+        const std::string_view label = Domain::Priority::getProcessPriorityLabel(priorityClass, Domain::Priority::NORMAL_NICE);
+        SCOPED_TRACE(label);
+        EXPECT_GT(widths.priorityLabelWidth(label), 0.0F);
+    }
+}
+
 TEST(ProcessCellWidthsTest, AnyOtherStringHasNoWidth)
 {
     const App::ProcessCellWidths widths = distinctWidths();
-    for (const std::string_view other : {"", "normal", "Realtime", "High "})
+    for (const std::string_view other : {"", "normal", "Real-time", "High "})
     {
         SCOPED_TRACE(other);
         EXPECT_FLOAT_EQ(widths.priorityLabelWidth(other), 0.0F);
@@ -61,6 +79,7 @@ TEST(ProcessCellWidthsTest, DefaultsToUnmeasured)
     EXPECT_FLOAT_EQ(widths.unitBytes, 0.0F);
     EXPECT_FLOAT_EQ(widths.unitBytesPerSec, 0.0F);
     EXPECT_FLOAT_EQ(widths.unitPower, 0.0F);
+    EXPECT_FLOAT_EQ(widths.widestPriorityLabel, 0.0F);
     for (const float width : widths.priorityLabels)
     {
         EXPECT_FLOAT_EQ(width, 0.0F);
