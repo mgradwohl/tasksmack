@@ -73,7 +73,7 @@ See [CONTRIBUTING.md](../../CONTRIBUTING.md#cpu-compatibility) for build instruc
 
 The process table is the primary view. It lists all running processes with these columns:
 
-- **State** — what the process is doing (Running, Sleeping, and so on). Windows has no process state of its own, so there it comes from the process's threads: Running if any thread is running or ready to run, Stopped if every thread is suspended (a suspended app), otherwise Sleeping. The System Idle Process is Idle, and a process with no threads to judge by (Secure System) is Unknown.
+- **State** — what the process is doing (Running, Sleeping, and so on). Windows has no process state of its own, so there it comes from the process's threads: Running if any thread is running or ready to run, Stopped if every thread is suspended (a suspended app), otherwise Sleeping. The System Idle Process is Idle, and a process with no threads to judge by (Secure System) is Unknown. The column shows the state's one-letter code, as `ps` and `top` do: **R** Running, **S** Sleeping, **D** Disk Sleep (waiting on I/O), **Z** Zombie, **T** Stopped, **t** Tracing, **X** Dead, **I** Idle, **?** Unknown. Process Details spells the state out, in the same colour.
 - **CPU %** — percentage of total CPU time consumed since the last sample
 - **Mem %** — percentage of physical RAM used
 - **Memory / Virtual / Shared / Peak Mem** — resident, virtual, shared, and peak resident memory sizes
@@ -104,7 +104,7 @@ Process rows are color-coded by state (running, sleeping, stopped, zombie).
 
 The System Metrics panel displays real-time and historical charts for:
 
-- **CPU utilisation** — system-wide and per-core breakdowns
+- **CPU utilisation** — system-wide and per-core breakdowns. The CPU Cores tab has a chart for each CPU reported since TaskSmack started, so a CPU that never comes online (reserved hot-add capacity, a CPU offline since boot) gets none, and one that goes offline keeps its chart, with a gap while it's offline.
 - **Memory** — used and cached RAM displayed as percentage history, with current availability derived from the latest system snapshot
 - **Swap** — swap usage percentage history
 - **Storage** — aggregate and per-device throughput
