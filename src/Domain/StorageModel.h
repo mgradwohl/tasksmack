@@ -108,9 +108,6 @@ class StorageModel : public ISamplable
 
     // Per-device state for delta calculations
     std::unordered_map<std::string, DiskState> m_DiskStates;
-    std::chrono::steady_clock::time_point m_PrevSampleTime;
-    std::chrono::steady_clock::time_point m_StartTime;
-    bool m_HasPrevSample = false;
 
     // Per-device I/O history for per-disk charting. Newly discovered disks are
     // backfilled with NaN (clamped to ring capacity) and absent disks receive NaN

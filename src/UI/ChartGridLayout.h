@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <optional>
 
 namespace UI::Widgets
 {
@@ -186,5 +187,56 @@ struct ChartGridDimensions
 
     return {.columns = bestColumns, .rows = bestRows, .cellWidth = finalCellWidth, .cellHeight = finalCellHeight};
 }
+
+/// The style metrics a grid cell's measured vertical overhead (its label rows and padding) depends on.
+/// Keyed on these rather than on the font preset alone: today's theme switches leave them untouched
+/// (Theme::applyImGuiStyle sets them independently of the colour scheme), but that is a property of
+/// the current theme implementation, not something the cache should assume stays true (#823 review).
+struct CellStyleMetrics
+{
+    float textLineHeight = 0.0F;
+    float itemSpacingY = 0.0F;
+    float cellPaddingY = 0.0F;
+};
+
+/// A chart-grid cell's vertical overhead, measured in the first cell drawn and reused for the rest of
+/// the grid and for later frames until the style metrics it was measured under change. Every cell gets
+/// the same height and an identically shaped label row, so one measurement serves them all. Shared by
+/// the per-core and per-disk grids, which each kept their own copy (#1180).
+class CellOverheadCache
+{
+  public:
+    /// The overhead measured under @p metrics, or nullopt when there is none: measure it, then store().
+    [[nodiscard]] std::optional<float> get(const CellStyleMetrics& metrics) const noexcept
+    {
+        if (m_Overhead.has_value() && sameMetrics(m_Metrics, metrics))
+        {
+            return m_Overhead;
+        }
+        return std::nullopt;
+    }
+
+    /// Store an overhead measured under @p metrics. The value and its metrics are stored together,
+    /// after the measurement, so a value is never paired with metrics it was not measured under.
+    void store(const CellStyleMetrics& metrics, float overhead) noexcept
+    {
+        m_Overhead = overhead;
+        m_Metrics = metrics;
+    }
+
+  private:
+    [[nodiscard]] static bool sameMetrics(const CellStyleMetrics& a, const CellStyleMetrics& b) noexcept
+    {
+        // A tolerance rather than == on floats (CodeQL cpp/equality-on-floats): these are stored style
+        // values, not accumulated arithmetic, so exact comparison would be safe, but it costs nothing.
+        constexpr float STYLE_METRIC_EPSILON = 1e-4F;
+        return std::abs(a.textLineHeight - b.textLineHeight) <= STYLE_METRIC_EPSILON &&
+               std::abs(a.itemSpacingY - b.itemSpacingY) <= STYLE_METRIC_EPSILON &&
+               std::abs(a.cellPaddingY - b.cellPaddingY) <= STYLE_METRIC_EPSILON;
+    }
+
+    std::optional<float> m_Overhead;
+    CellStyleMetrics m_Metrics;
+};
 
 } // namespace UI::Widgets
