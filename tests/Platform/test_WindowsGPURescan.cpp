@@ -359,6 +359,45 @@ TEST_F(WindowsGPURescanTest, AGpuLostErrorReinitialisesNVMLAndRematchesByPciLoca
     EXPECT_EQ(temperatureOf(secondId), 70);
 }
 
+// A LUID can be reused: DXGI may list a different NVIDIA card under the LUID an old one had. The
+// LUIDs alone then compare equal, and NVML kept the old card's devices and handles. The adapter's
+// identity (its slot-and-model id and PCI ids) is compared too, so the replacement restarts NVML and
+// is matched to its own NVML device.
+TEST_F(WindowsGPURescanTest, AnotherNVIDIACardUnderAReusedLuidRestartsNVML)
+{
+    setAdapters({intelIGPU(), nvidiaGPU(0x200, 0x01)});
+    fakeState().deviceCount = 1;
+    setNVMLDevice(0, "GPU-old", 0x01, 50);
+
+    WindowsGPUProbe probe;
+    useFakes(probe);
+    const auto before = probe.enumerateGPUs();
+    ASSERT_EQ(before.size(), 2U);
+    const std::string oldId = findByLuid(before, 0x200)->id;
+
+    // Replaced by another model, listed under the same LUID.
+    constexpr std::uint32_t DEVICE_OTHER = 0x2782;
+    setAdapters(
+        {intelIGPU(),
+         makeAdapter(
+             L"NVIDIA GeForce RTX 4070 Ti", VENDOR_NVIDIA, DEVICE_OTHER, 0x200, PciLocation{.bus = 0x01, .device = 0x00, .function = 0})});
+    setNVMLDevice(0, "GPU-new", 0x01, 65);
+    deviceData(0).name = "NVIDIA GeForce RTX 4070 Ti";
+    deviceData(0).pciDeviceId = (DEVICE_OTHER << 16U) | VENDOR_NVIDIA;
+    ASSERT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    const auto after = probe.enumerateGPUs();
+    EXPECT_EQ(fakeState().initCallCount, 1) << "The replacement restarts NVML";
+    ASSERT_EQ(after.size(), 2U);
+    const GPUInfo* replacement = findByLuid(after, 0x200);
+    ASSERT_NE(replacement, nullptr);
+    EXPECT_NE(replacement->id, oldId);
+    EXPECT_TRUE(replacement->sensorCapabilities.value_or(GPUCapabilities{}).hasTemperature) << "Matched to the new NVML device";
+    const auto counters = probe.readGPUCounters();
+    const auto it = std::ranges::find(counters, replacement->id, &GPUCounters::gpuId);
+    ASSERT_NE(it, counters.end());
+    EXPECT_EQ(it->temperatureC, 65);
+}
+
 // A driver reset is seen by both probes in one full rescan: NVML restarts for the lost GPU, and
 // DXGI's factory is no longer current because the GPU came back under a new LUID. The
 // re-enumeration that follows sees the changed NVIDIA LUID set, but NVML, started after the reset,

@@ -8,7 +8,6 @@
 
 #include <spdlog/spdlog.h>
 
-#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -115,17 +114,9 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
 
 void WindowsGPUProbe::restartNVMLIfNVIDIAAdaptersChanged(const std::vector<GPUInfo>& dxgiGPUs)
 {
-    std::vector<std::string> nvidiaLuids;
-    for (const auto& gpu : dxgiGPUs)
-    {
-        if (gpu.vendor == "NVIDIA")
-        {
-            nvidiaLuids.push_back(gpu.luidId);
-        }
-    }
-    std::ranges::sort(nvidiaLuids);
-    const bool changed = m_NVIDIAAdapterLuids.has_value() && *m_NVIDIAAdapterLuids != nvidiaLuids;
-    m_NVIDIAAdapterLuids = std::move(nvidiaLuids);
+    std::vector<std::string> nvidiaAdapters = nvidiaAdapterFingerprint(dxgiGPUs);
+    const bool changed = m_NVIDIAAdapters.has_value() && *m_NVIDIAAdapters != nvidiaAdapters;
+    m_NVIDIAAdapters = std::move(nvidiaAdapters);
     const bool restartedForThisChange = m_NVMLRestartedSinceEnumeration;
     m_NVMLRestartedSinceEnumeration = false;
     // NVML lists the GPUs present when it started, so a new NVIDIA adapter is only seen by a restart
@@ -159,7 +150,7 @@ bool WindowsGPUProbe::rescanGPUs(GPURescan depth)
         // or to restart after a lost GPU (a driver mid-reset, say) -- is tried again at the
         // full-rescan rate. Without an NVIDIA adapter it never could start; one appearing changes
         // the adapter set, which restarts NVML anyway.
-        const bool hasNVIDIAAdapter = m_NVIDIAAdapterLuids.has_value() && !m_NVIDIAAdapterLuids->empty();
+        const bool hasNVIDIAAdapter = m_NVIDIAAdapters.has_value() && !m_NVIDIAAdapters->empty();
         if (depth == GPURescan::Full && !m_NVMLProbe->isAvailable() && m_NVMLProbe->isLoaded() && hasNVIDIAAdapter)
         {
             nvmlChanged = m_NVMLProbe->restart();

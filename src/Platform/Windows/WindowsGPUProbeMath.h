@@ -571,4 +571,25 @@ inline void excludeIdleNVMLMemory(std::unordered_set<std::string>& nvmlMemoryIds
     }
 }
 
+/// What WindowsGPUProbe compares between enumerations to tell whether the NVIDIA adapters changed, so
+/// NVML (whose device list is fixed when it starts) must restart (#1294): one entry per NVIDIA
+/// adapter, its LUID with its stable id (slot and model) and PCI ids, sorted. The LUID alone missed a
+/// replacement under a reused LUID -- DXGI may give a new adapter a LUID an old one had, which is
+/// why DXGIGPUProbe forgets what it decided per LUID at each refresh -- leaving NVML with the old
+/// devices' handles. An identical card in the same slot under the same LUID still reads as
+/// unchanged; DXGI can't tell it apart either, and NVML reports its stale handle as lost.
+[[nodiscard]] inline std::vector<std::string> nvidiaAdapterFingerprint(const std::vector<GPUInfo>& dxgiGPUs)
+{
+    std::vector<std::string> fingerprint;
+    for (const auto& gpu : dxgiGPUs)
+    {
+        if (gpu.vendor == "NVIDIA")
+        {
+            fingerprint.push_back(gpu.luidId + "|" + gpu.id + "|" + std::to_string(gpu.pciDeviceId));
+        }
+    }
+    std::ranges::sort(fingerprint);
+    return fingerprint;
+}
+
 } // namespace Platform

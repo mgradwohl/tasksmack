@@ -94,10 +94,11 @@ class WindowsGPUProbe : public IGPUProbe
     // use is the shared or the dedicated segment. Built during enumerateGPUs().
     std::unordered_map<std::string, bool> m_DXGIIdIsIntegrated;
 
-    // The NVIDIA adapters' LUIDs at the last enumeration, sorted; unset before the first. A change
-    // (an NVIDIA GPU added or removed, or re-created under a new LUID by a driver update or reset)
-    // restarts NVML, whose device list is fixed when it starts (#1294).
-    std::optional<std::vector<std::string>> m_NVIDIAAdapterLuids;
+    // The NVIDIA adapters at the last enumeration (nvidiaAdapterFingerprint()); unset before the
+    // first. A change (an NVIDIA GPU added or removed, re-created under a new LUID by a driver update
+    // or reset, or another card under a reused LUID) restarts NVML, whose device list is fixed when
+    // it starts (#1294).
+    std::optional<std::vector<std::string>> m_NVIDIAAdapters;
 
     // NVML was restarted by a rescan since the last enumeration (after a lost GPU, or a retried
     // start), so a changed NVIDIA LUID set at that enumeration -- the same driver reset, seen by
