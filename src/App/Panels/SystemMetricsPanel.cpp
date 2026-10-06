@@ -1058,9 +1058,19 @@ void SystemMetricsPanel::renderOverview()
             };
 
             // Chart heading with the sample count; the battery's status is in its value-strip entry.
-            const std::string heading = !snap.power.hasBattery ? std::format(ICON_FA_BOLT "  Power ({} samples)", alignedCount)
-                                      : hasProcessPower        ? std::format(ICON_FA_BOLT "  Power & Battery ({} samples)", alignedCount)
-                                                               : std::format(ICON_FA_BOLT "  Battery ({} samples)", alignedCount);
+            std::string heading;
+            if (!snap.power.hasBattery)
+            {
+                heading = std::format(ICON_FA_BOLT "  Power ({} samples)", alignedCount);
+            }
+            else if (hasProcessPower)
+            {
+                heading = std::format(ICON_FA_BOLT "  Power & Battery ({} samples)", alignedCount);
+            }
+            else
+            {
+                heading = std::format(ICON_FA_BOLT "  Battery ({} samples)", alignedCount);
+            }
             ImGui::TextColored(theme.scheme().textPrimary, "%s", heading.c_str());
 
             // Tooltip with detailed info

@@ -1324,10 +1324,13 @@ void drawMarkerGlyph(ImDrawList& drawList, ImPlotMarker marker, ImVec2 centre, f
 namespace Detail
 {
 /// A series' marker shape under its plot label, recorded by plotSeriesMarkers() so the value strip,
-/// the chart's only key, can show it on the series' swatch (#1198).
+/// the chart's only key, can show it on the series' swatch (#1198). The label is a view: the strip
+/// looks it up in the same frame, right after the chart (drawPendingStripMarkers()), while the label
+/// the series was plotted under -- a constant, or a string the panel keeps -- still exists, and an
+/// owned copy allocated every frame for a label too long for the small-string buffer.
 struct SeriesMarker
 {
-    std::string label;
+    std::string_view label;
     ImPlotMarker marker = ImPlotMarker_None;
     bool operator==(const SeriesMarker&) const = default;
 };
@@ -1400,7 +1403,8 @@ struct StripSlot
 /// once; a narrower one shrinks it only once it has stayed narrower for @p shrinkDelaySeconds.
 [[nodiscard]] inline float settleStripSlot(StripSlot& slot, float measured, double now, double shrinkDelaySeconds) noexcept
 {
-    if (measured >= slot.width)
+    const bool shrinkDue = slot.narrowSince >= 0.0 && now - slot.narrowSince >= shrinkDelaySeconds;
+    if (measured >= slot.width || shrinkDue)
     {
         slot.width = measured;
         slot.narrowSince = -1.0;
@@ -1408,11 +1412,6 @@ struct StripSlot
     else if (slot.narrowSince < 0.0)
     {
         slot.narrowSince = now;
-    }
-    else if (now - slot.narrowSince >= shrinkDelaySeconds)
-    {
-        slot.width = measured;
-        slot.narrowSince = -1.0;
     }
     return slot.width;
 }
@@ -1476,9 +1475,10 @@ inline void plotSeriesMarkers(const char* label, const TX* xData, const TY* yDat
     }
     // Recorded even without samples, so the strip's swatch shows the shape from the series' first frame.
     auto& seriesMarkers = Detail::seriesMarkers();
-    if (std::ranges::none_of(seriesMarkers, [label](const Detail::SeriesMarker& m) { return m.label == label; }))
+    if (const std::string_view name = label;
+        std::ranges::none_of(seriesMarkers, [name](const Detail::SeriesMarker& m) { return m.label == name; }))
     {
-        seriesMarkers.push_back(Detail::SeriesMarker{.label = label, .marker = style.marker});
+        seriesMarkers.push_back(Detail::SeriesMarker{.label = name, .marker = style.marker});
     }
     if (count <= 0)
     {
