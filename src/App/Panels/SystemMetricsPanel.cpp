@@ -24,7 +24,6 @@
 #include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
-#include "UI/InlineText.h"
 #include "UI/LineLayout.h"
 #include "UI/RateAxis.h"
 #include "UI/TabContent.h"
@@ -93,7 +92,8 @@ constexpr const char* CPU_IOWAIT_LABEL = "I/O Wait";
 constexpr const char* CPU_IDLE_LABEL = "Idle";
 constexpr const char* POWER_LABEL = "Power";
 constexpr const char* BATTERY_LABEL = "Battery";
-// A series on a chart's right-hand axis ends in " →", pointing at it (setupSecondaryRateAxis(), #1206).
+// A series on a chart's right-hand axis ends in " →", pointing at it (setupSecondaryRateAxis(), #1206); in
+// its value-strip entry and tooltip rows the mark follows the value (SECONDARY_AXIS_MARK, #1300).
 constexpr const char* BATTERY_Y2_LABEL = "Battery →"; // Beside Power, on its own 0-100 % axis
 constexpr const char* THREADS_LABEL = "Threads";
 constexpr const char* FAULTS_LABEL = "Page Faults →"; // Right-hand axis; its values carry the "/s" ("12.0/s"), #1202
@@ -971,8 +971,10 @@ void SystemMetricsPanel::renderOverview()
                 // chart's value strip; it was a separate right-aligned status there.
                 bars.push_back({.valueText = UI::Format::formatPercent(m_SmoothedPower.batteryChargePercent),
                                 .label = batteryLabel,
-                                .tooltipText = UI::InlineText::format("{}: {}", batteryLabel, Detail::batteryHeaderStatus(snap.power)),
-                                .value01 = UI::Format::percent01(m_SmoothedPower.batteryChargePercent),
+                                .tooltipText = UI::Widgets::tooltipRowText(batteryLabel, Detail::batteryHeaderStatus(snap.power)),
+                                // Scaled to the battery axis's top, headroom included, so the bar meets the line.
+                                .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedPower.batteryChargePercent,
+                                                                                UI::Widgets::PERCENT_AXIS_UPPER_WITH_HEADROOM),
                                 .color = theme.scheme().chartMemory});
             }
 
@@ -982,21 +984,25 @@ void SystemMetricsPanel::renderOverview()
                 // power, Battery is the only series and takes the primary axis as a percentage, so no
                 // Watts axis is left labelling nothing.
                 const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
-                    UI::Widgets::withHeight(hasProcessPower
-                                                ? UI::Widgets::rateHistoryConfigWithUpper(
-                                                      "##PowerBatteryHistory", axis.xMin, axis.xMax, formatAxisWatts, powerAxisUpper)
-                                                : UI::Widgets::percentHistoryConfig("##PowerBatteryHistory", axis.xMin, axis.xMax),
-                                            plotHeight),
+                    UI::Widgets::withHeight(
+                        hasProcessPower ? UI::Widgets::rateHistoryConfigWithUpper(
+                                              "##PowerBatteryHistory", axis.xMin, axis.xMax, formatAxisWatts, powerAxisUpper)
+                                        : UI::Widgets::percentHistoryConfigWithHeadroom("##PowerBatteryHistory", axis.xMin, axis.xMax),
+                        plotHeight),
                     m_ChartDataGeneration));
                 if (chart.active())
                 {
                     // Secondary Y-axis: Battery % (0-100), labelled like any second axis (#1206). Its
                     // ticks were hidden to keep the time axis aligned with the charts above, which left
                     // the battery line reading against a Watts axis; the stack is aligned by
-                    // AlignedChartStack now instead.
+                    // AlignedChartStack now instead. Drawn a little past 100 % with ticks up to 100, so a full
+                    // battery's line sits below the top edge instead of on it (#1300).
                     if (hasProcessPower && snap.power.hasBattery && !batteryHist.empty())
                     {
-                        UI::Widgets::setupSecondaryRateAxis(100.0, UI::Widgets::formatAxisPercent, theme.scheme().chartMemory);
+                        UI::Widgets::setupSecondaryRateAxis(UI::Widgets::PERCENT_AXIS_UPPER_WITH_HEADROOM,
+                                                            UI::Widgets::formatAxisPercent,
+                                                            theme.scheme().chartMemory,
+                                                            100.0);
                     }
                     // After all axis setup: the hint reads the plot's geometry, which locks setup (#1013).
                     UI::Widgets::drawCollectingHint(alignedCount);

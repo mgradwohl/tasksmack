@@ -1318,6 +1318,54 @@ TEST(ChartWidgetsTest, NowBarTooltipRowReadsLikeTheTooltipRow)
     EXPECT_EQ(selectNowBarTooltip(bar), "Memory: 45% (3.6 GB / 8.0 GB)");
 }
 
+// ========== Right-hand-axis mark (#1300) ==========
+
+TEST(ChartWidgetsTest, SecondaryAxisMarkSplitsOffTheLabel)
+{
+    const SeriesLabelParts marked = splitSecondaryAxisMark("Page Faults →");
+    EXPECT_EQ(marked.name, "Page Faults");
+    EXPECT_TRUE(marked.rightAxis);
+
+    const SeriesLabelParts plain = splitSecondaryAxisMark("Threads");
+    EXPECT_EQ(plain.name, "Threads");
+    EXPECT_FALSE(plain.rightAxis);
+
+    // The mark alone is not a series name.
+    EXPECT_FALSE(splitSecondaryAxisMark(" →").rightAxis);
+    EXPECT_FALSE(splitSecondaryAxisMark("").rightAxis);
+}
+
+// The arrow points at the axis the value is read on, so it follows the value, not the name: the
+// strip read "Page Faults →: 3.2K/s".
+TEST(ChartWidgetsTest, TooltipRowPutsTheAxisMarkAfterTheValue)
+{
+    EXPECT_EQ(formatTooltipRow("Page Faults →", "3.2K/s"), "Page Faults: 3.2K/s →");
+    EXPECT_EQ(tooltipRowText("Virtual →", "10.1 GB").view(), "Virtual: 10.1 GB →");
+    const NowBar bar{.valueText = "3.2K/s", .label = "Page Faults →", .tooltipText = {}, .value01 = 0.5, .color = {}};
+    EXPECT_EQ(selectNowBarTooltip(bar), "Page Faults: 3.2K/s →");
+}
+
+TEST(ChartWidgetsTest, StripTextSplitsNameFromValueWithoutTheMark)
+{
+    // As tooltipRowText() builds it.
+    const StripTextParts row = splitStripText("Page Faults: 3.2K/s →", "Page Faults →");
+    EXPECT_EQ(row.head, "Page Faults");
+    EXPECT_EQ(row.tail, "3.2K/s");
+
+    // A tip still built from the whole label.
+    const StripTextParts legacy = splitStripText("Battery →: 94% (charging)", "Battery →");
+    EXPECT_EQ(legacy.head, "Battery");
+    EXPECT_EQ(legacy.tail, "94% (charging)");
+
+    // A plain series, and a tip that doesn't name its series at all.
+    const StripTextParts plain = splitStripText("Handles: 266,257", "Handles");
+    EXPECT_EQ(plain.head, "Handles");
+    EXPECT_EQ(plain.tail, "266,257");
+    const StripTextParts unnamed = splitStripText("45% (3.6 GB / 8.0 GB)", "Memory");
+    EXPECT_TRUE(unnamed.head.empty());
+    EXPECT_EQ(unnamed.tail, "45% (3.6 GB / 8.0 GB)");
+}
+
 TEST(ChartWidgetsTest, SampleWithNoReadingFormatsAsNA)
 {
     const auto percent = [](double v)
@@ -1923,6 +1971,55 @@ TEST(ChartWidgetsTest, NowBarWidthSurvivesDegenerateInput)
         EXPECT_TRUE(std::isfinite(width));
         EXPECT_GE(width, 1.0F);
     }
+}
+
+// ========== NowBar column cap (#1300) ==========
+
+// At a wide row the bars keep their full width.
+TEST(ChartWidgetsTest, FittedNowBarWidthIsFullInAWideRow)
+{
+    const float em = 32.0F / 3.0F; // 24px bars
+    EXPECT_FLOAT_EQ(fittedNowBarWidth(em, 4, 8.0F, 2000.0F), 24.0F);
+    // An unknown row width leaves them alone too.
+    EXPECT_FLOAT_EQ(fittedNowBarWidth(em, 4, 8.0F, -1.0F), 24.0F);
+    EXPECT_FLOAT_EQ(fittedNowBarWidth(em, 4, 8.0F, std::numeric_limits<float>::quiet_NaN()), 24.0F);
+}
+
+// The reported case: four bars in a narrow Process Details pane took ~30 % of it.
+TEST(ChartWidgetsTest, FittedNowBarWidthCapsTheColumnInANarrowRow)
+{
+    const float em = 32.0F / 3.0F;
+    const float row = 400.0F;
+    const float spacing = 8.0F;
+    const float bar = fittedNowBarWidth(em, 4, spacing, row);
+    EXPECT_LT(bar, 24.0F);
+    EXPECT_LE((bar * 4.0F) + (spacing * 3.0F), row * NOW_BAR_COLUMN_MAX_FRACTION);
+    EXPECT_FLOAT_EQ(bar, std::floor(bar)); // whole pixels
+}
+
+// Never thinner than the readable minimum, however narrow the row.
+TEST(ChartWidgetsTest, FittedNowBarWidthKeepsItsMinimum)
+{
+    const float em = 32.0F / 3.0F;
+    EXPECT_FLOAT_EQ(fittedNowBarWidth(em, 4, 8.0F, 50.0F), std::round(NOW_BAR_MIN_WIDTH_EM * em));
+    EXPECT_FLOAT_EQ(fittedNowBarWidth(em, 0, 8.0F, 50.0F), 24.0F);
+}
+
+// ========== Percent axis headroom (#1300) ==========
+
+// A full battery's line sits below the plot's top edge; the labels still stop at 100 %.
+TEST(ChartWidgetsTest, PercentAxisWithHeadroomTicksUpTo100)
+{
+    const HistoryChartConfig cfg = percentHistoryConfigWithHeadroom("##Battery", -60.0, 0.0);
+    ASSERT_TRUE(cfg.yLimits.has_value());
+    EXPECT_DOUBLE_EQ(cfg.yLimits.value_or(std::pair{0.0, 0.0}).first, 0.0);
+    EXPECT_GT(cfg.yLimits.value_or(std::pair{0.0, 0.0}).second, 100.0);
+    EXPECT_DOUBLE_EQ(cfg.yTicksUpTo.value_or(0.0), 100.0);
+    EXPECT_EQ(cfg.yFormatter, percentHistoryConfig("##Battery", -60.0, 0.0).yFormatter);
+    // The bar beside it, scaled to the same top, meets the line: full charge is not a full bar.
+    EXPECT_LT(normalizeToUnitInterval(100.0, PERCENT_AXIS_UPPER_WITH_HEADROOM), 1.0);
+    // A plain percent chart keeps its 0-100 axis.
+    EXPECT_FALSE(percentHistoryConfig("##CPU", -60.0, 0.0).yTicksUpTo.has_value());
 }
 
 // ========== Series encoding (#1198) ==========

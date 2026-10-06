@@ -111,7 +111,8 @@ constexpr const char* CPU_SYSTEM_LABEL = "System";
 // call one quantity by one name (#1273).
 constexpr const char* MEM_USED_LABEL = "Memory";
 constexpr const char* MEM_SHARED_LABEL = "Shared";
-// A series on a chart's right-hand axis ends in " →", pointing at it (setupSecondaryRateAxis(), #1206).
+// A series on a chart's right-hand axis ends in " →", pointing at it (setupSecondaryRateAxis(), #1206); in
+// its value-strip entry and tooltip rows the mark follows the value (SECONDARY_AXIS_MARK, #1300).
 constexpr const char* MEM_VIRTUAL_LABEL = "Virtual →";
 constexpr const char* MEM_PEAK_LABEL = "Peak Mem";
 constexpr const char* THREADS_LABEL = "Threads";
