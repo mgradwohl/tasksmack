@@ -151,6 +151,18 @@ hovered = "#26C6DA"
 active = "#00838F"
 ```
 
+### `[buttons.danger]` - Danger Button Colors
+
+Optional. The Terminate and Kill buttons in Process Details, and the confirm button that ends a
+process. Without this section they use dark red (`#A31414`, `#CC1A1A` hovered, `#E63333` pressed).
+
+```toml
+[buttons.danger]
+normal = "#A31414"
+hovered = "#CC1A1A"
+active = "#E63333"
+```
+
 ### `[priority]` - Priority Badge Colors
 
 ```toml

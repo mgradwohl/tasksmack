@@ -76,6 +76,165 @@ namespace UI::Format
     }
 }
 
+// ============================================================================
+// Allocation-free localized fixed-point formatting (#1334)
+// ============================================================================
+
+/// The global locale's numeric punctuation, as std::format's "L" specs apply it to a number.
+struct NumericPunctuation
+{
+    char decimalPoint = '.';
+    char thousandsSep = ',';
+    std::string grouping; // numpunct::grouping(): empty for no separators ("C" locale)
+};
+
+/// The global locale's punctuation, cached per thread and re-read whenever the global locale is
+/// replaced (the test suites switch it; TaskSmack sets it once at startup). Checking costs one
+/// std::locale() copy and a pointer compare, against the locale lookup, facet calls and grouping
+/// string std::format("{:L}") pays on every call.
+[[nodiscard]] inline auto numericPunctuation() noexcept -> const NumericPunctuation&
+{
+    // NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables,misc-const-correctness)
+    thread_local std::locale cachedLocale = std::locale::classic();
+    thread_local NumericPunctuation cached{.decimalPoint = '.', .thousandsSep = ',', .grouping = {}};
+    // NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables,misc-const-correctness)
+    try
+    {
+        const std::locale current;
+        if (current != cachedLocale)
+        {
+            // Build the new value first and commit the key last, so a throw leaves the old pair intact.
+            const auto& facet = std::use_facet<std::numpunct<char>>(current);
+            NumericPunctuation fresh{
+                .decimalPoint = facet.decimal_point(), .thousandsSep = facet.thousands_sep(), .grouping = facet.grouping()};
+            cached = std::move(fresh);
+            cachedLocale = current;
+        }
+        return cached;
+    }
+    catch (...)
+    {
+        return cached; // The last punctuation read (the "C" locale's until one is read successfully)
+    }
+}
+
+/// Writes `value` with `decimals` fraction digits into [out, out + capacity), exactly as
+/// std::format("{:.{}Lf}", value, decimals) prints it with the global locale: its decimal point,
+/// and its thousands separator placed by its grouping. No allocation and no locale lookup per call,
+/// which is what made every chart axis tick about twice as slow once the axes went localized (#1334).
+/// Returns the length written, or 0 if it doesn't fit, `value` isn't finite, or `decimals` is outside
+/// 0-9; the caller then falls back to std::format, so the output never differs from it.
+[[nodiscard]] inline auto formatFixedLocalizedTo(char* out, std::size_t capacity, double value, int decimals) noexcept -> std::size_t
+{
+    constexpr int MAX_DECIMALS = 9;
+    if (!std::isfinite(value) || decimals < 0 || decimals > MAX_DECIMALS)
+    {
+        return 0;
+    }
+    // std::format's "f" is to_chars' fixed format: up to 309 integer digits, a sign and a point.
+    std::array<char, 330> digits{};
+    const auto [digitsEnd, error] = std::to_chars(digits.data(), digits.data() + digits.size(), value, std::chars_format::fixed, decimals);
+    if (error != std::errc{})
+    {
+        return 0;
+    }
+
+    const NumericPunctuation& punct = numericPunctuation();
+    const char* first = digits.data();
+    std::size_t length = 0;
+    const auto put = [out, capacity, &length](char c) noexcept
+    {
+        if (length < capacity)
+        {
+            out[length] = c;
+        }
+        ++length;
+    };
+
+    if (*first == '-')
+    {
+        put('-');
+        ++first;
+    }
+    const char* const textEnd = digitsEnd;
+    const char* integerEnd = std::find(first, textEnd, '.');
+    const auto integerDigits = static_cast<std::size_t>(integerEnd - first);
+
+    // Separator positions, as the count of integer digits to their right: numpunct grouping gives
+    // the group sizes from the right, its last entry repeating; a size <= 0 or CHAR_MAX ends grouping.
+    std::array<std::size_t, 320> cuts{};
+    std::size_t cutCount = 0;
+    if (!punct.grouping.empty())
+    {
+        std::size_t position = 0;
+        for (std::size_t group = 0; cutCount < cuts.size(); ++group)
+        {
+            const char size = punct.grouping[std::min(group, punct.grouping.size() - 1)];
+            if (size <= 0 || size == std::numeric_limits<char>::max())
+            {
+                break;
+            }
+            position += static_cast<std::size_t>(size);
+            if (position >= integerDigits)
+            {
+                break;
+            }
+            cuts[cutCount++] = position;
+        }
+    }
+
+    for (std::size_t i = 0; i < integerDigits; ++i)
+    {
+        put(first[i]);
+        const std::size_t toTheRight = integerDigits - i - 1;
+        if (cutCount > 0 && toTheRight == cuts[cutCount - 1])
+        {
+            put(punct.thousandsSep);
+            --cutCount;
+        }
+    }
+    if (integerEnd != textEnd)
+    {
+        put(punct.decimalPoint);
+        for (const char* p = integerEnd + 1; p != textEnd; ++p)
+        {
+            put(*p);
+        }
+    }
+    return length <= capacity ? length : 0;
+}
+
+/// Appends `text` at out[length], tracking the length past `capacity` so the caller can tell it
+/// didn't fit (formatFixedLocalizedTo()'s convention).
+inline void appendText(char* out, std::size_t capacity, std::size_t& length, std::string_view text) noexcept
+{
+    for (const char c : text)
+    {
+        if (length < capacity)
+        {
+            out[length] = c;
+        }
+        ++length;
+    }
+}
+
+/// std::format("{:.{}Lf}{}", value, decimals, suffix) through formatFixedLocalizedTo(): the same
+/// text, built in a stack buffer instead of through std::format's locale-aware path (#1334).
+[[nodiscard]] inline auto formatFixedLocalized(double value, int decimals, std::string_view suffix) -> std::string
+{
+    std::array<char, 64> buffer{};
+    std::size_t length = formatFixedLocalizedTo(buffer.data(), buffer.size(), value, decimals);
+    if (length > 0)
+    {
+        appendText(buffer.data(), buffer.size(), length, suffix);
+        if (length <= buffer.size())
+        {
+            return {buffer.data(), length};
+        }
+    }
+    return std::format("{:.{}Lf}{}", value, decimals, suffix);
+}
+
 [[nodiscard]] inline auto toIntSaturated(long value) -> int
 {
     if (!std::in_range<int>(value))
@@ -155,27 +314,67 @@ template<typename T, typename Formatter>
     return std::invoke(std::forward<Formatter>(formatter), value);
 }
 
+// ============================================================================
+// Durations (#1202): CPU Time, uptime and the history charts' time axis
+// ============================================================================
+
+/// How formatDuration() treats a zero second part.
+enum class DurationStyle : std::uint8_t
+{
+    /// Always two parts once a minute has passed ("5m 00s"), so a live value such as a process's
+    /// CPU Time keeps its width as it ticks over.
+    Fixed,
+    /// A zero second part is left off ("5m", "1h"), for the round values of an axis tick.
+    Compact,
+};
+
+/// A duration in the app's one grammar (#1202): "45s", "2m 05s", "1h 02m", "3d 04h" -- the two
+/// largest units, the second padded to two digits, rounded to the nearest second first. Negative
+/// durations are shown by their size and NaN as "N/A". Used for CPU Time, uptime and the history
+/// charts' time axis, which used to print "1:02:05", "Up: 3d 4h 5m" and "-300" respectively.
+[[nodiscard]] inline auto formatDuration(double seconds, DurationStyle style = DurationStyle::Fixed) -> std::string
+{
+    if (std::isnan(seconds))
+    {
+        return "N/A";
+    }
+    constexpr double MAX_SECONDS = 1e15; // Well inside long long; keeps std::llround defined
+    const long long total = std::llround(std::min(std::abs(seconds), MAX_SECONDS));
+    constexpr long long MINUTE = 60;
+    constexpr long long HOUR = 60 * MINUTE;
+    constexpr long long DAY = 24 * HOUR;
+
+    const auto twoParts = [style](long long major, char majorUnit, long long minor, char minorUnit)
+    {
+        if (style == DurationStyle::Compact && minor == 0)
+        {
+            return std::format("{}{}", major, majorUnit);
+        }
+        return std::format("{}{} {:02}{}", major, majorUnit, minor, minorUnit);
+    };
+    if (total < MINUTE)
+    {
+        return std::format("{}s", total);
+    }
+    if (total < HOUR)
+    {
+        return twoParts(total / MINUTE, 'm', total % MINUTE, 's');
+    }
+    if (total < DAY)
+    {
+        return twoParts(total / HOUR, 'h', (total % HOUR) / MINUTE, 'm');
+    }
+    return twoParts(total / DAY, 'd', (total % DAY) / HOUR, 'h');
+}
+
+/// "Up: 3d 04h", the system uptime in formatDuration()'s grammar; empty for 0 (not known).
 [[nodiscard]] inline auto formatUptimeShort(std::uint64_t seconds) -> std::string
 {
     if (seconds == 0)
     {
         return {};
     }
-
-    const std::uint64_t days = seconds / 86400;
-    const std::uint64_t hours = (seconds % 86400) / 3600;
-    const std::uint64_t minutes = (seconds % 3600) / 60;
-
-    if (days > 0)
-    {
-        return std::format("Up: {}d {}h {}m", days, hours, minutes);
-    }
-    if (hours > 0)
-    {
-        return std::format("Up: {}h {}m", hours, minutes);
-    }
-
-    return std::format("Up: {}m", minutes);
+    return "Up: " + formatDuration(static_cast<double>(seconds));
 }
 
 /// Format Unix epoch timestamp to human-readable local date/time.
@@ -309,17 +508,33 @@ struct ByteUnit
     int decimals = 0;
 };
 
-/// The four byte units, binary multiples. Named constants so a chart can hand ImPlot a stable
-/// pointer to the one unit its whole axis is labelled in (see byteUnitFor()).
-inline constexpr ByteUnit BYTE_UNIT_GB{.suffix = "GB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 1};
-inline constexpr ByteUnit BYTE_UNIT_MB{.suffix = "MB", .scale = 1024.0 * 1024.0, .decimals = 1};
-inline constexpr ByteUnit BYTE_UNIT_KB{.suffix = "KB", .scale = 1024.0, .decimals = 1};
+/// The byte units, binary multiples labelled with their IEC names (KiB, MiB, GiB, TiB) app-wide
+/// (#1202). Every size and rate in TaskSmack was already counted in powers of 1024 -- memory, disk
+/// and network alike -- but labelled "KB/MB/GB", which are decimal names: a "1.0 GB" that is
+/// 1,073,741,824 bytes. Relabelling keeps every number the user sees and makes the unit honest;
+/// switching to decimal units instead would have changed every number in the app.
+///
+/// Named constants so a chart can hand ImPlot a stable pointer to the one unit its whole axis is
+/// labelled in (see byteUnitFor()).
+inline constexpr ByteUnit BYTE_UNIT_TB{.suffix = "TiB", .scale = 1024.0 * 1024.0 * 1024.0 * 1024.0, .decimals = 1};
+inline constexpr ByteUnit BYTE_UNIT_GB{.suffix = "GiB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 1};
+inline constexpr ByteUnit BYTE_UNIT_MB{.suffix = "MiB", .scale = 1024.0 * 1024.0, .decimals = 1};
+inline constexpr ByteUnit BYTE_UNIT_KB{.suffix = "KiB", .scale = 1024.0, .decimals = 1};
 inline constexpr ByteUnit BYTE_UNIT_B{.suffix = "B", .scale = 1.0, .decimals = 1};
 
+/// Every byte unit, largest first.
+inline constexpr std::array<const ByteUnit*, 5> BYTE_UNITS = {&BYTE_UNIT_TB, &BYTE_UNIT_GB, &BYTE_UNIT_MB, &BYTE_UNIT_KB, &BYTE_UNIT_B};
+
 /// The largest unit `bytes` is at least one of, as a reference to one of the BYTE_UNIT_* constants.
+/// Terabytes have their own unit, so a 2 TiB disk or a byte axis above 1 TiB reads "2.0 TiB" and
+/// steps in TiB rather than "2,048.0 GB" (#1202).
 [[nodiscard]] inline auto byteUnitFor(double bytes) -> const ByteUnit&
 {
     const double absBytes = std::abs(bytes);
+    if (absBytes >= BYTE_UNIT_TB.scale)
+    {
+        return BYTE_UNIT_TB;
+    }
     if (absBytes >= BYTE_UNIT_GB.scale)
     {
         return BYTE_UNIT_GB;
@@ -360,8 +575,37 @@ inline constexpr ByteUnit BYTE_UNIT_B{.suffix = "B", .scale = 1.0, .decimals = 1
     return std::isfinite(rounded) ? rounded : value;
 }
 
+/// formatBytesWithUnit() / formatBytesPerSecWithUnit() written into [out, out + capacity) ("1.5 GB",
+/// "1.5 GB/s"), without allocating: chart axis ticks call this for every label every frame (#1334).
+/// Returns the length, or 0 if it doesn't fit or the value isn't finite.
+[[nodiscard]] inline auto formatBytesWithUnitTo(char* out, std::size_t capacity, double bytes, ByteUnit unit, bool perSecond) noexcept
+    -> std::size_t
+{
+    const double value = roundHalfAwayFromZero(bytes / unit.scale, unit.decimals);
+    std::size_t length = formatFixedLocalizedTo(out, capacity, value, unit.decimals);
+    if (length == 0)
+    {
+        return 0;
+    }
+    appendText(out, capacity, length, " ");
+    appendText(out, capacity, length, unit.suffix);
+    if (perSecond)
+    {
+        appendText(out, capacity, length, "/s");
+    }
+    return length <= capacity ? length : 0;
+}
+
+/// The longest byte value a stack buffer holds before formatBytesWithUnit() falls back to std::format.
+inline constexpr std::size_t BYTE_TEXT_CAPACITY = 64;
+
 [[nodiscard]] inline auto formatBytesWithUnit(double bytes, ByteUnit unit) -> std::string
 {
+    std::array<char, BYTE_TEXT_CAPACITY> buffer{};
+    if (const std::size_t length = formatBytesWithUnitTo(buffer.data(), buffer.size(), bytes, unit, false); length > 0)
+    {
+        return {buffer.data(), length};
+    }
     const double value = roundHalfAwayFromZero(bytes / unit.scale, unit.decimals);
     return std::format("{:.{}Lf} {}", value, unit.decimals, unit.suffix);
 }
@@ -374,6 +618,11 @@ inline constexpr ByteUnit BYTE_UNIT_B{.suffix = "B", .scale = 1.0, .decimals = 1
 
 [[nodiscard]] inline auto formatBytesPerSecWithUnit(double bytesPerSec, ByteUnit unit) -> std::string
 {
+    std::array<char, BYTE_TEXT_CAPACITY> buffer{};
+    if (const std::size_t length = formatBytesWithUnitTo(buffer.data(), buffer.size(), bytesPerSec, unit, true); length > 0)
+    {
+        return {buffer.data(), length};
+    }
     return formatBytesWithUnit(bytesPerSec, unit) + "/s";
 }
 
@@ -435,6 +684,29 @@ struct AlignedBytesParts
         return {buffer.data(), wholePartLen};
     }
 };
+
+/// A table cell's unit, with the space before it: " MiB" or, for a rate, " MiB/s". Static strings,
+/// so AlignedBytesParts can point at them; a unit that is not one of BYTE_UNITS gets " B".
+[[nodiscard]] inline auto cellUnitSuffix(const ByteUnit& unit, bool perSecond) noexcept -> std::string_view
+{
+    struct CellSuffix
+    {
+        std::string_view suffix;
+        std::string_view size;
+        std::string_view rate;
+    };
+    static constexpr auto CELL_SUFFIXES = std::to_array<CellSuffix>({
+        {.suffix = "TiB", .size = " TiB", .rate = " TiB/s"},
+        {.suffix = "GiB", .size = " GiB", .rate = " GiB/s"},
+        {.suffix = "MiB", .size = " MiB", .rate = " MiB/s"},
+        {.suffix = "KiB", .size = " KiB", .rate = " KiB/s"},
+        {.suffix = "B", .size = " B", .rate = " B/s"},
+    });
+    // NOLINTNEXTLINE(readability-qualified-auto) - iterator type varies by platform
+    const auto it = std::ranges::find(CELL_SUFFIXES, unit.suffix, &CellSuffix::suffix);
+    const CellSuffix& found = (it != CELL_SUFFIXES.end()) ? *it : CELL_SUFFIXES.back();
+    return perSecond ? found.rate : found.size;
+}
 
 /// Zero-allocation fast path for splitting byte values for decimal-aligned rendering.
 /// This function produces equivalent output to splitBytesForAlignment but avoids
@@ -516,32 +788,7 @@ struct AlignedBytesParts
     parts.wholePartLen = pos;
     parts.decimalDigit = static_cast<char>('0' + fractionalDigit);
 
-    // Unit part: " B", " KB", " MB", " GB" - we need to prepend space
-    // Store as string_view pointing to static string
-    static constexpr std::string_view unitB = " B";
-    static constexpr std::string_view unitKB = " KB";
-    static constexpr std::string_view unitMB = " MB";
-    static constexpr std::string_view unitGB = " GB";
-
-    // Match unit suffix to our static strings using full comparison
-    // This ensures correct handling of all byte units (B, KB, MB, GB)
-    if (unit.suffix == "GB")
-    {
-        parts.unitPart = unitGB;
-    }
-    else if (unit.suffix == "MB")
-    {
-        parts.unitPart = unitMB;
-    }
-    else if (unit.suffix == "KB")
-    {
-        parts.unitPart = unitKB;
-    }
-    else
-    {
-        parts.unitPart = unitB;
-    }
-
+    parts.unitPart = cellUnitSuffix(unit, false);
     return parts;
 }
 
@@ -550,30 +797,7 @@ struct AlignedBytesParts
 [[nodiscard]] inline auto splitBytesPerSecForAlignmentFast(double bytesPerSec, ByteUnit unit) -> AlignedBytesParts
 {
     auto parts = splitBytesForAlignmentFast(bytesPerSec, unit);
-
-    static constexpr std::string_view unitBps = " B/s";
-    static constexpr std::string_view unitKBps = " KB/s";
-    static constexpr std::string_view unitMBps = " MB/s";
-    static constexpr std::string_view unitGBps = " GB/s";
-
-    const std::string_view suffix = unit.suffix;
-    if (suffix == "GB")
-    {
-        parts.unitPart = unitGBps;
-    }
-    else if (suffix == "MB")
-    {
-        parts.unitPart = unitMBps;
-    }
-    else if (suffix == "KB")
-    {
-        parts.unitPart = unitKBps;
-    }
-    else
-    {
-        parts.unitPart = unitBps;
-    }
-
+    parts.unitPart = cellUnitSuffix(unit, true);
     return parts;
 }
 
@@ -751,31 +975,6 @@ struct AlignedBytesParts
     return std::format("{:.1Lf}/s", value);
 }
 
-[[nodiscard]] inline auto bytesUsedTotalPercentCompact(std::uint64_t usedBytes, std::uint64_t totalBytes, double percent) -> std::string
-{
-    const auto unit = unitForTotalBytes(std::max(usedBytes, totalBytes));
-    const std::string usedStr = formatBytesWithUnit(static_cast<double>(usedBytes), unit);
-    const std::string totalStr = formatBytesWithUnit(static_cast<double>(totalBytes), unit);
-    return std::format("{} / {} ({})", usedStr, totalStr, percentCompact(percent));
-}
-
-[[nodiscard]] inline auto formatCpuTimeCompact(double totalSeconds) -> std::string
-{
-    const auto totalSecs = std::llround(totalSeconds);
-    constexpr long long secondsPerHour = 60LL * 60LL;
-    constexpr long long secondsPerMinute = 60LL;
-    const auto hours = totalSecs / secondsPerHour;
-    const auto minutes = (totalSecs / secondsPerMinute) % 60;
-    const auto secs = totalSecs % 60;
-
-    if (hours > 0)
-    {
-        return std::format("{}:{:02}:{:02}", hours, minutes, secs);
-    }
-
-    return std::format("{}:{:02}", minutes, secs);
-}
-
 /// " (16 logical processors @ 3.70 GHz)", or " (16 logical processors)" without a clock, for the
 /// suffix after the CPU model. The count is of logical processors (hardware threads), which is
 /// what the OS reports per CPU slot; "cores" overstated it on SMT machines (#1203).
@@ -883,18 +1082,18 @@ struct AlignedBytesParts
 {
     if (watts == 0.0)
     {
-        return std::format("{:.1Lf} W", 0.0); // Also -0.0, which would print as "-0.0 W"
+        return formatFixedLocalized(0.0, 1, " W"); // Also -0.0, which would print as "-0.0 W"
     }
     const double absWatts = std::abs(watts);
     if (absWatts >= 1.0)
     {
-        return std::format("{:.1Lf} W", roundHalfAwayFromZero(watts, 1));
+        return formatFixedLocalized(roundHalfAwayFromZero(watts, 1), 1, " W");
     }
     if (absWatts >= 0.001)
     {
-        return std::format("{:.1Lf} mW", roundHalfAwayFromZero(watts * 1000.0, 1));
+        return formatFixedLocalized(roundHalfAwayFromZero(watts * 1000.0, 1), 1, " mW");
     }
-    return std::format("{:.1Lf} µW", roundHalfAwayFromZero(watts * 1'000'000.0, 1));
+    return formatFixedLocalized(roundHalfAwayFromZero(watts * 1'000'000.0, 1), 1, " µW");
 }
 
 /// "42%" from 10 % up, "4.2%" below it (where a whole number would read 0 % or 1 % for most
@@ -913,8 +1112,29 @@ struct AlignedBytesParts
     }
     // Decide on the rounded value, so 9.96 becomes "10%" rather than "10.0%".
     const bool wholeNumber = std::abs(percent) >= 9.95;
-    return wholeNumber ? std::format("{:.0Lf}%", roundHalfAwayFromZero(percent, 0))
-                       : std::format("{:.1Lf}%", roundHalfAwayFromZero(percent, 1));
+    return wholeNumber ? formatFixedLocalized(roundHalfAwayFromZero(percent, 0), 0, "%")
+                       : formatFixedLocalized(roundHalfAwayFromZero(percent, 1), 1, "%");
+}
+
+/// formatPercent() for a float history sample, so the panels' float series need no cast.
+[[nodiscard]] inline auto formatPercent(float percent) -> std::string
+{
+    return formatPercent(static_cast<double>(percent));
+}
+
+/// A whole-number percent (battery health), "87%".
+template<std::integral T> [[nodiscard]] inline auto formatPercent(T percent) -> std::string
+{
+    return std::format("{:L}%", percent);
+}
+
+/// "3.2 GiB / 16.0 GiB (20%)": used and total in the one unit the larger of them calls for.
+[[nodiscard]] inline auto bytesUsedTotalPercentCompact(std::uint64_t usedBytes, std::uint64_t totalBytes, double percent) -> std::string
+{
+    const auto unit = unitForTotalBytes(std::max(usedBytes, totalBytes));
+    const std::string usedStr = formatBytesWithUnit(static_cast<double>(usedBytes), unit);
+    const std::string totalStr = formatBytesWithUnit(static_cast<double>(totalBytes), unit);
+    return std::format("{} / {} ({})", usedStr, totalStr, formatPercent(percent));
 }
 
 /// Format power value with appropriate unit (W/mW/µW) based on magnitude, one decimal (#1202),
@@ -943,6 +1163,43 @@ struct AlignedBytesParts
         return formatWatts(0.0);
     }
     return formatPowerCompact(watts);
+}
+
+/// "65°C", whole degrees rounded half away from zero, or "N/A" for NaN (no reading). The one rule
+/// for a temperature (#1202): the GPU value strip truncated (65.9 -> "65°C") while its tooltip
+/// rounded to even.
+[[nodiscard]] inline auto formatCelsius(double celsius) -> std::string
+{
+    if (std::isnan(celsius))
+    {
+        return "N/A";
+    }
+    const double rounded = roundHalfAwayFromZero(celsius, 0);
+    return std::format("{:.0f}°C", rounded == 0.0 ? 0.0 : rounded); // No "-0°C"
+}
+
+/// A link speed in the same unit family as the rates beside it (#1202): "119.2 MiB/s" for a
+/// 1 Gbps link, so it can be compared with the interface's "12.5 MiB/s" at a glance. Link speeds
+/// are reported in megabits per second (10^6 bits/s), 125,000 bytes/s each.
+[[nodiscard]] inline auto formatLinkSpeed(std::uint64_t megabitsPerSecond) -> std::string
+{
+    constexpr double BYTES_PER_SECOND_PER_MBPS = 1'000'000.0 / 8.0;
+    return formatBytesPerSec(static_cast<double>(megabitsPerSecond) * BYTES_PER_SECOND_PER_MBPS);
+}
+
+/// A link speed as the adapter is rated: "1 Gbps", "2.5 Gbps", "100 Mbps" (decimal bits, as
+/// network hardware is sold). Shown beside formatLinkSpeed()'s rate, not instead of it.
+[[nodiscard]] inline auto formatLinkSpeedNominal(std::uint64_t megabitsPerSecond) -> std::string
+{
+    if (megabitsPerSecond >= 1000)
+    {
+        if (megabitsPerSecond % 1000 == 0)
+        {
+            return std::format("{} Gbps", megabitsPerSecond / 1000);
+        }
+        return std::format("{:.1Lf} Gbps", static_cast<double>(megabitsPerSecond) / 1000.0);
+    }
+    return std::format("{} Mbps", megabitsPerSecond);
 }
 
 // ============================================================================

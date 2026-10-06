@@ -627,6 +627,82 @@ TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_HwmonZeroTemp_IsIgnored)
     EXPECT_FALSE(counters[0].temperatureAvailable);
 }
 
+// xe has no temp1_input: its channel 1 has a label only, and the package temperature is temp2_input,
+// labelled "pkg" (VRAM temp3_input, "vram", on some parts) (#1314).
+TEST_F(DRMGPUProbeUnitTest, XeCard_PackageTemperatureReadFromTheInputLabelledPkg)
+{
+    const auto deviceDir = makeCard("card0", "xe");
+    writeFile(deviceDir / "vendor", "0x8086");
+    writeFile(deviceDir / "class", "0x030000");
+    makeHwmon(deviceDir);
+    writeHwmonFile(deviceDir, "hwmon0", "temp1_label", "mctp");
+    writeHwmonFile(deviceDir, "hwmon0", "temp2_label", "pkg");
+    writeHwmonFile(deviceDir, "hwmon0", "temp2_input", "61000");
+    writeHwmonFile(deviceDir, "hwmon0", "temp3_label", "vram");
+    writeHwmonFile(deviceDir, "hwmon0", "temp3_input", "70000");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    ASSERT_TRUE(probe.isAvailable());
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    EXPECT_TRUE(gpus[0].sensorCapabilities.value_or(GPUCapabilities{}).hasTemperature);
+
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_TRUE(counters[0].temperatureAvailable);
+    EXPECT_EQ(counters[0].temperatureC, 61) << "the package sensor, not VRAM";
+}
+
+TEST_F(DRMGPUProbeUnitTest, XeCard_OnlyTemp2InputLabelledPkgIsRead)
+{
+    // The issue's case: temp2_input + temp2_label = pkg, and nothing else.
+    const auto deviceDir = makeCard("card0", "xe");
+    writeFile(deviceDir / "vendor", "0x8086");
+    makeHwmon(deviceDir);
+    writeHwmonFile(deviceDir, "hwmon0", "temp2_input", "55000");
+    writeHwmonFile(deviceDir, "hwmon0", "temp2_label", "pkg");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_TRUE(counters[0].temperatureAvailable);
+    EXPECT_EQ(counters[0].temperatureC, 55);
+}
+
+TEST_F(DRMGPUProbeUnitTest, UnlabelledTemperatureInputsFallBackToTheLowestNumbered)
+{
+    const auto deviceDir = makeCard("card0", "xe");
+    writeFile(deviceDir / "vendor", "0x8086");
+    makeHwmon(deviceDir);
+    writeHwmonFile(deviceDir, "hwmon0", "temp3_input", "70000");
+    writeHwmonFile(deviceDir, "hwmon0", "temp2_input", "58000");
+    writeHwmonFile(deviceDir, "hwmon0", "temp2_crit", "105000"); // not an input
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_TRUE(counters[0].temperatureAvailable);
+    EXPECT_EQ(counters[0].temperatureC, 58);
+}
+
+TEST_F(DRMGPUProbeUnitTest, HwmonWithoutTemperatureInputHasNoTemperature)
+{
+    // An hwmon with only an energy counter (and xe's input-less channel-1 label) has no temperature sensor.
+    const auto deviceDir = makeCard("card0", "xe");
+    writeFile(deviceDir / "vendor", "0x8086");
+    makeHwmon(deviceDir);
+    writeHwmonFile(deviceDir, "hwmon0", "temp1_label", "pkg");
+    writeHwmonFile(deviceDir, "hwmon0", "energy1_input", "1000");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    EXPECT_FALSE(gpus[0].sensorCapabilities.value_or(GPUCapabilities{}).hasTemperature);
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_FALSE(counters[0].temperatureAvailable);
+}
+
 TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_GpuFrequency_IsRead)
 {
     const auto deviceDir = makeCard("card0", "i915");

@@ -988,6 +988,56 @@ TEST(LinuxProcessProbeTest, UnreadableFdAndIoAreReportedUnavailableNotZero)
     EXPECT_FALSE(unreadable->networkCountersAvailable);
 }
 
+/// Restores a directory's permissions on scope exit, so ScopedTempDir can remove it.
+class RestoreDirPermissions
+{
+  public:
+    explicit RestoreDirPermissions(std::filesystem::path dir) : m_Dir(std::move(dir))
+    {}
+    ~RestoreDirPermissions()
+    {
+        std::error_code ignored;
+        std::filesystem::permissions(m_Dir, std::filesystem::perms::owner_all, ignored);
+    }
+    RestoreDirPermissions(const RestoreDirPermissions&) = delete;
+    RestoreDirPermissions& operator=(const RestoreDirPermissions&) = delete;
+    RestoreDirPermissions(RestoreDirPermissions&&) = delete;
+    RestoreDirPermissions& operator=(RestoreDirPermissions&&) = delete;
+
+  private:
+    std::filesystem::path m_Dir;
+};
+
+TEST(LinuxProcessProbeTest, ListableFdsWhoseLinksCantBeReadReportNetworkUnavailable)
+{
+    // #1328: with CAP_DAC_READ_SEARCH but not CAP_SYS_PTRACE, another user's /proc/[pid]/fd can be
+    // listed but its links can't be read, and the socket inode-to-PID map reads those links. The FD
+    // count is known, but none of the process's connections can be attributed to it: network must be
+    // unavailable, not a confident 0. A directory with read but no search permission behaves the same
+    // way for an ordinary user: readdir() lists the entries, readlink() on them fails with EACCES.
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root can read links in a directory without search permission";
+    }
+    ScopedTempDir proc("ts_test_proc_fd_links_denied");
+    writeFile(proc.path / "4242" / "stat",
+              "4242 (app) S 1 4242 4242 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+    const auto fdDir = proc.path / "4242" / "fd";
+    std::filesystem::create_directories(fdDir);
+    std::filesystem::create_symlink("socket:[11]", fdDir / "3");
+    std::filesystem::create_symlink("/dev/null", fdDir / "4");
+    std::filesystem::permissions(fdDir, std::filesystem::perms::owner_read);
+    const RestoreDirPermissions restore(fdDir);
+
+    LinuxProcessProbe probe(proc.path);
+    const auto processes = probe.enumerate();
+    ASSERT_EQ(processes.size(), 1U);
+    EXPECT_TRUE(processes[0].handleCountAvailable);
+    EXPECT_EQ(processes[0].handleCount, 2);
+    EXPECT_FALSE(processes[0].networkCountersAvailable);
+}
+
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 TEST(LinuxProcessProbeTest, ReadSocketTrafficReportsRawAttributedSocketCounters)
 {
@@ -1051,6 +1101,8 @@ TEST(LinuxProcessProbeTest, ReadSocketTrafficReportsRawAttributedSocketCounters)
     ASSERT_NE(socket12, first.sockets.end());
     ASSERT_NE(socket99, first.sockets.end());
     EXPECT_EQ(socket11->pid, 4242);
+    EXPECT_EQ(socket11->ownerStartTimeTicks, processes[0].startTimeTicks) << "the owner's start time, as enumerate() reads it (#1336)";
+    EXPECT_EQ(socket11->ownerStartTimeTicks, 12345U);
     EXPECT_EQ(socket11->bytesReceived, 1'000U);
     EXPECT_EQ(socket11->bytesSent, 10U);
     EXPECT_EQ(socket12->pid, 4242);

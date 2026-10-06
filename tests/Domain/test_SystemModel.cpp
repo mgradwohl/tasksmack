@@ -1651,6 +1651,53 @@ TEST(SystemModelTest, TheConfiguredNetworkCeilingAppliesToInterfaceRates)
     EXPECT_TRUE(std::isnan(model.netRxHistoryForInterface("eth0")[0]));
 }
 
+TEST(SystemModelTest, TheNetworkCeilingAppliesToTheAggregateCounterFallback)
+{
+    // #1337: a probe with no per-interface counters falls back to the summed netRxBytes/netTxBytes.
+    // That branch applies the same ceiling (#1291): above it the snapshot reads 0 and the history
+    // has a NaN gap; exactly at it the rate is kept.
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    model.setMaxSaneNetworkRate(Domain::Sampling::MAX_SANE_RATE_BPS_MIN);
+    const auto ceiling = static_cast<uint64_t>(Domain::Sampling::MAX_SANE_RATE_BPS_MIN);
+    const auto cpu = makeCpuCounters(100, 0, 50, 850);
+    const auto memory = makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024);
+    const auto sampleAggregate = [&](uint64_t rx, uint64_t tx, double nowSeconds)
+    {
+        model.updateFromCounters(makeSystemCounters(cpu, memory, 0, {}, rx, tx, {}), nowSeconds);
+    };
+
+    sampleAggregate(0, 0, 1.0);
+    sampleAggregate(ceiling + 1, ceiling, 2.0); // rx 1 B/s over the ceiling, tx exactly at it
+
+    auto snap = model.snapshot();
+    ASSERT_TRUE(snap.networkInterfaces.empty()) << "the fallback branch needs a probe with no interfaces";
+    EXPECT_DOUBLE_EQ(snap.netRxBytesPerSec, 0.0) << "over the ceiling is a glitch, not traffic";
+    EXPECT_DOUBLE_EQ(snap.netTxBytesPerSec, Domain::Sampling::MAX_SANE_RATE_BPS_MIN) << "at the ceiling is kept";
+
+    auto rxHistory = model.netRxHistory();
+    auto txHistory = model.netTxHistory();
+    ASSERT_EQ(rxHistory.size(), 1U);
+    ASSERT_EQ(txHistory.size(), 1U);
+    EXPECT_TRUE(std::isnan(rxHistory[0])) << "a gap, not a spike or a false 0";
+    EXPECT_FLOAT_EQ(txHistory[0], static_cast<float>(Domain::Sampling::MAX_SANE_RATE_BPS_MIN));
+
+    // The other way round on the next sample, and an ordinary rate after the glitch is measured again.
+    sampleAggregate((2 * ceiling) + 1, (3 * ceiling) + 1, 3.0);
+    sampleAggregate((2 * ceiling) + 1'001, (3 * ceiling) + 501, 4.0);
+
+    snap = model.snapshot();
+    EXPECT_DOUBLE_EQ(snap.netRxBytesPerSec, 1'000.0);
+    EXPECT_DOUBLE_EQ(snap.netTxBytesPerSec, 500.0);
+    rxHistory = model.netRxHistory();
+    txHistory = model.netTxHistory();
+    ASSERT_EQ(rxHistory.size(), 3U);
+    ASSERT_EQ(txHistory.size(), 3U);
+    EXPECT_FLOAT_EQ(rxHistory[1], static_cast<float>(Domain::Sampling::MAX_SANE_RATE_BPS_MIN));
+    EXPECT_TRUE(std::isnan(txHistory[1]));
+    EXPECT_FLOAT_EQ(rxHistory[2], 1'000.0F);
+    EXPECT_FLOAT_EQ(txHistory[2], 500.0F);
+}
+
 TEST(SystemModelTest, InterfaceSnapshotsSayWhetherThePlatformClassifiedThem)
 {
     // #1260: the UI follows the platform's isVirtual flag where the platform could classify the

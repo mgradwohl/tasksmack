@@ -43,6 +43,10 @@ struct FrameCache
     std::string interfaceRecvLabel;
     std::string unavailableTitle;
 
+    /// The selected interface's "Link: <rate> (<nominal>)" text, built for linkTextMbps (0: not built).
+    std::uint64_t linkTextMbps = 0;
+    std::string linkText;
+
     /// The Interface Status table's rows (NetInterfaceUtils::getInterfaceStatusRows()) and hidden
     /// count, for rowsShowAll and rowsSeenTraffic interfaces seen moving traffic (a set that only grows).
     bool rowsValid = false;

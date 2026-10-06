@@ -26,6 +26,38 @@ namespace UI::Widgets
 namespace
 {
 
+// ========== Axis label buffers (#1345) ==========
+
+TEST(ChartWidgetsTest, AnAxisLabelThatDoesNotFitLeavesAnEmptyTerminatedBuffer)
+{
+    // ImPlot ignores a formatter's return value and reads the buffer as a C string: a label that
+    // doesn't fit must leave it empty, not holding whatever was there before.
+    std::array<char, 4> buff{'x', 'y', 'z', 'w'};
+    EXPECT_EQ(UI::Widgets::Detail::copyAxisLabel("too long", buff.data(), static_cast<int>(buff.size())), 0);
+    EXPECT_EQ(buff[0], '\0');
+
+    std::array<char, 1> oneByte{'x'};
+    EXPECT_EQ(UI::Widgets::Detail::copyAxisLabel("1", oneByte.data(), 1), 0);
+    EXPECT_EQ(oneByte[0], '\0');
+
+    std::array<char, 8> fits{};
+    EXPECT_EQ(UI::Widgets::Detail::copyAxisLabel("12 W", fits.data(), static_cast<int>(fits.size())), 4);
+    EXPECT_STREQ(fits.data(), "12 W");
+}
+
+TEST(ChartWidgetsTest, AxisFormattersTerminateAOneByteBuffer)
+{
+    char one = 'x';
+    UI::Widgets::formatAxisLocalized(1234.0, &one, 1, nullptr);
+    EXPECT_EQ(one, '\0');
+    one = 'x';
+    UI::Widgets::formatAxisWatts(12.5, &one, 1, nullptr);
+    EXPECT_EQ(one, '\0');
+    one = 'x';
+    UI::Widgets::formatAxisPercent(50.0, &one, 1, nullptr);
+    EXPECT_EQ(one, '\0');
+}
+
 TEST(ChartWidgetsTest, ComputeAlphaClampsTauMin)
 {
     const auto interval = std::chrono::milliseconds(10);
@@ -1047,7 +1079,7 @@ TEST(ChartWidgetsFormattersTest, FormatAxisBytesPerSecScalesUnits)
 
     len = formatAxisBytesPerSec(2048.0, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "2.0 KB/s");
+    EXPECT_EQ(std::string(buf), "2.0 KiB/s");
 }
 
 TEST(ChartWidgetsFormattersTest, FormatAxisBytesUsesBinaryUnitsWithoutRateSuffix)
@@ -1060,11 +1092,11 @@ TEST(ChartWidgetsFormattersTest, FormatAxisBytesUsesBinaryUnitsWithoutRateSuffix
 
     len = formatAxisBytes(1536.0, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "1.5 KB");
+    EXPECT_EQ(std::string(buf), "1.5 KiB");
 
     len = formatAxisBytes(1.5 * 1024.0 * 1024.0 * 1024.0, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "1.5 GB");
+    EXPECT_EQ(std::string(buf), "1.5 GiB");
 
     len = formatAxisBytes(-0.1, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
@@ -1137,11 +1169,84 @@ TEST(ChartWidgetsFormattersTest, FormatAxisBytesPerSecHandlesMegaAndGigaSuffixes
     char buf[32]{};
     int len = formatAxisBytesPerSec(5.0 * 1024.0 * 1024.0, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "5.0 MB/s");
+    EXPECT_EQ(std::string(buf), "5.0 MiB/s");
 
     len = formatAxisBytesPerSec(2.0 * 1024.0 * 1024.0 * 1024.0, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "2.0 GB/s");
+    EXPECT_EQ(std::string(buf), "2.0 GiB/s");
+}
+
+// #1334: the axis formatters write straight into ImPlot's buffer instead of through std::format;
+// the text must be what the std::format definition gives, for every magnitude and sign.
+TEST(ChartWidgetsFormattersTest, FormatAxisLocalizedMatchesItsStdFormatDefinition)
+{
+    const auto expected = [](double value)
+    {
+        if (std::abs(value) < 0.5)
+        {
+            value = 0.0;
+        }
+        const double absValue = std::abs(value);
+        if (absValue >= 1'000'000'000.0)
+        {
+            return std::format("{:.1Lf}G", value / 1'000'000'000.0);
+        }
+        if (absValue >= 1'000'000.0)
+        {
+            return std::format("{:.1Lf}M", value / 1'000'000.0);
+        }
+        if (absValue >= 1'000.0)
+        {
+            return std::format("{:.1Lf}K", value / 1'000.0);
+        }
+        return std::format("{:.1Lf}", value);
+    };
+    std::array<char, 32> buf{};
+    for (const double value : {0.0,
+                               -0.0,
+                               0.49,
+                               -0.49,
+                               0.5,
+                               0.05,
+                               999.94,
+                               999.96,
+                               1'000.0,
+                               1'250.0,
+                               -1'250.0,
+                               999'950.0,
+                               1.0e6,
+                               2.5e9,
+                               -2.5e9,
+                               1'234'567.0,
+                               9.87e12,
+                               1.0e15})
+    {
+        const int len = formatAxisLocalized(value, buf.data(), static_cast<int>(buf.size()), nullptr);
+        EXPECT_EQ(std::string(buf.data()), expected(value)) << value;
+        EXPECT_EQ(len, static_cast<int>(expected(value).size())) << value;
+    }
+}
+
+TEST(ChartWidgetsFormattersTest, AxisFormattersFitExactlyOrLeaveAnEmptyLabel)
+{
+    // "1.5K" is 4 characters: a 5-byte buffer holds it and its terminator, a 4-byte one does not, and
+    // then the buffer holds an empty string, never a partial label ImPlot would read past (#1334).
+    std::array<char, 5> exact{};
+    EXPECT_EQ(formatAxisLocalized(1500.0, exact.data(), static_cast<int>(exact.size()), nullptr), 4);
+    EXPECT_EQ(std::string(exact.data()), "1.5K");
+
+    std::array<char, 4> tooSmall{'x', 'x', 'x', 'x'};
+    EXPECT_EQ(formatAxisLocalized(1500.0, tooSmall.data(), static_cast<int>(tooSmall.size()), nullptr), 0);
+    EXPECT_EQ(tooSmall[0], '\0');
+
+    // "2.0 KiB/s" is 9 characters (IEC unit names since #1341).
+    std::array<char, 10> bytesExact{};
+    EXPECT_EQ(formatAxisBytesPerSec(2048.0, bytesExact.data(), static_cast<int>(bytesExact.size()), nullptr), 9);
+    EXPECT_EQ(std::string(bytesExact.data()), "2.0 KiB/s");
+
+    std::array<char, 9> bytesTooSmall{'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x'};
+    EXPECT_EQ(formatAxisBytesPerSec(2048.0, bytesTooSmall.data(), static_cast<int>(bytesTooSmall.size()), nullptr), 0);
+    EXPECT_EQ(bytesTooSmall[0], '\0');
 }
 
 // #1202: every axis formatter is the value formatter for its quantity, so an axis tick reads
@@ -1176,12 +1281,12 @@ TEST(ChartWidgetsFormattersTest, ByteAxisUsesTheUnitItIsGiven)
     const int size = static_cast<int>(buf.size());
     constexpr double GIB = 1024.0 * 1024.0 * 1024.0;
     EXPECT_GT(formatAxisBytes(0.5 * GIB, buf.data(), size, byteAxisUserData(Format::BYTE_UNIT_GB)), 0);
-    EXPECT_EQ(std::string(buf.data()), "0.5 GB");
+    EXPECT_EQ(std::string(buf.data()), "0.5 GiB");
     EXPECT_GT(formatAxisBytesPerSec(0.0, buf.data(), size, byteAxisUserData(Format::BYTE_UNIT_MB)), 0);
-    EXPECT_EQ(std::string(buf.data()), "0.0 MB/s");
+    EXPECT_EQ(std::string(buf.data()), "0.0 MiB/s");
     // Without a unit each tick picks its own, as before.
     EXPECT_GT(formatAxisBytes(0.5 * GIB, buf.data(), size, nullptr), 0);
-    EXPECT_EQ(std::string(buf.data()), "512.0 MB");
+    EXPECT_EQ(std::string(buf.data()), "512.0 MiB");
 }
 
 TEST(ChartWidgetsFormattersTest, OnlyTheByteFormattersStepInBinaryUnits)
@@ -1197,7 +1302,7 @@ TEST(ChartWidgetsFormattersTest, OnlyTheByteFormattersStepInBinaryUnits)
 
 TEST(ChartWidgetsTest, TooltipRowIsLabelColonValue)
 {
-    EXPECT_EQ(formatTooltipRow("Read", "1.5 MB/s"), "Read: 1.5 MB/s");
+    EXPECT_EQ(formatTooltipRow("Read", "1.5 MiB/s"), "Read: 1.5 MiB/s");
     EXPECT_EQ(formatTooltipRow("Page Faults/s", "12/s"), "Page Faults/s: 12/s");
 }
 
@@ -1605,6 +1710,32 @@ TEST(ChartWidgetsHelpersTest, FormatAgeSecondsUsesAbsoluteValue)
 {
     EXPECT_EQ(formatAgeSeconds(2.5), "Age: 2.5s");
     EXPECT_EQ(formatAgeSeconds(-2.5), "Age: 2.5s");
+}
+
+// From a minute up a hovered sample's age reads like the time axis beside it (#1202).
+TEST(ChartWidgetsHelpersTest, FormatAgeSecondsUsesTheDurationGrammarFromAMinute)
+{
+    EXPECT_EQ(formatAgeSeconds(-59.9), "Age: 59.9s");
+    EXPECT_EQ(formatAgeSeconds(-59.96), "Age: 1m 00s"); // Not "60.0s"
+    EXPECT_EQ(formatAgeSeconds(-90.0), "Age: 1m 30s");
+    EXPECT_EQ(formatAgeSeconds(-300.0), "Age: 5m 00s");
+}
+
+// The time axis reads "5m ... 1m ... now", not -300 ... 0 (#1202).
+TEST(ChartWidgetsFormattersTest, FormatAxisTimeAgoReadsHowLongAgo)
+{
+    std::array<char, 32> buf{};
+    const int size = static_cast<int>(buf.size());
+    EXPECT_GT(formatAxisTimeAgo(0.0, buf.data(), size, nullptr), 0);
+    EXPECT_EQ(std::string(buf.data()), "now");
+    EXPECT_GT(formatAxisTimeAgo(-0.3, buf.data(), size, nullptr), 0);
+    EXPECT_EQ(std::string(buf.data()), "now");
+    EXPECT_GT(formatAxisTimeAgo(-300.0, buf.data(), size, nullptr), 0);
+    EXPECT_EQ(std::string(buf.data()), "5m");
+    EXPECT_GT(formatAxisTimeAgo(-90.0, buf.data(), size, nullptr), 0);
+    EXPECT_EQ(std::string(buf.data()), "1m 30s");
+    EXPECT_GT(formatAxisTimeAgo(-30.0, buf.data(), size, nullptr), 0);
+    EXPECT_EQ(std::string(buf.data()), "30s");
 }
 
 // ========== Chart anti-aliasing toggle (perf-plan #843 phase 1) ==========

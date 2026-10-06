@@ -715,6 +715,66 @@ TEST(LinuxSystemProbeTest, AnUnreadableInterfaceDirectoryIsUnclassified)
     EXPECT_FALSE(counters.networkInterfaces[0].isVirtualKnown);
 }
 
+TEST(LinuxSystemProbeTest, InterfaceClassificationIsCachedUntilTheInterfaceSetChanges)
+{
+    // #1335: classifying an interface costs two sysfs lookups per read, but its class can't change
+    // while it exists. It is looked up again only when the interface set changes.
+    ScopedTempDir proc("ts_test_sys_net_class_cache");
+    ScopedTempDir sys("ts_test_sys_class_net_class_cache");
+    std::filesystem::create_directories(proc.path / "net");
+    const auto writeNetDev = [&proc](bool withWg)
+    {
+        std::ofstream netDev(proc.path / "net" / "dev");
+        netDev << NET_DEV_HEADER << netDevLine("eth0", 5000, 700);
+        if (withWg)
+        {
+            netDev << netDevLine("wg0", 4000, 600);
+        }
+    };
+    writeNetDev(false);
+    addSysfsInterface(sys.path, "eth0", true);
+
+    LinuxSystemProbe probe(proc.path, sys.path);
+    auto counters = probe.read();
+    ASSERT_EQ(counters.networkInterfaces.size(), 1U);
+    EXPECT_FALSE(counters.networkInterfaces[0].isVirtual);
+
+    // A changed sysfs entry for the same interface set isn't looked up again.
+    std::filesystem::remove(sys.path / "eth0" / "device");
+    counters = probe.read();
+    ASSERT_EQ(counters.networkInterfaces.size(), 1U);
+    EXPECT_FALSE(counters.networkInterfaces[0].isVirtual) << "cached while the interface set is unchanged";
+    EXPECT_TRUE(counters.networkInterfaces[0].isVirtualKnown);
+
+    // A new interface changes the set: every interface is classified again.
+    addSysfsInterface(sys.path, "wg0", false);
+    writeNetDev(true);
+    counters = probe.read();
+    ASSERT_EQ(counters.networkInterfaces.size(), 2U);
+    EXPECT_TRUE(counters.networkInterfaces[0].isVirtual) << "eth0 re-classified with the new set";
+    EXPECT_TRUE(counters.networkInterfaces[1].isVirtual);
+}
+
+TEST(LinuxSystemProbeTest, AnUnclassifiedInterfaceIsRetriedOnTheNextRead)
+{
+    // #1260/#1335: "can't tell" isn't cached; an interface whose sysfs entry appears later is classified.
+    ScopedTempDir proc("ts_test_sys_net_class_retry");
+    ScopedTempDir sys("ts_test_sys_class_net_class_retry");
+    std::filesystem::create_directories(proc.path / "net");
+    std::ofstream(proc.path / "net" / "dev") << NET_DEV_HEADER << netDevLine("veth9", 300, 30);
+
+    LinuxSystemProbe probe(proc.path, sys.path);
+    auto counters = probe.read();
+    ASSERT_EQ(counters.networkInterfaces.size(), 1U);
+    EXPECT_FALSE(counters.networkInterfaces[0].isVirtualKnown);
+
+    addSysfsInterface(sys.path, "veth9", false);
+    counters = probe.read();
+    ASSERT_EQ(counters.networkInterfaces.size(), 1U);
+    EXPECT_TRUE(counters.networkInterfaces[0].isVirtualKnown);
+    EXPECT_TRUE(counters.networkInterfaces[0].isVirtual);
+}
+
 TEST(LinuxSystemProbeTest, NetworkTotalCountsEveryInterfaceWhenNoneIsHardware)
 {
     // Inside a container eth0 is one end of a veth pair: the Total must not drop to 0.
