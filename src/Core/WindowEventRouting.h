@@ -42,10 +42,22 @@ enum class Action : std::uint8_t
     /// against (#1126).
     DisplayChanged,
     /// SDL_EVENT_WINDOW_MAXIMIZED: the OS maximized the window (Win+Up, snap to the top edge,
-    /// ShowWindow(SW_MAXIMIZE), or SDL_MaximizeWindow()). For the borderless window on a
-    /// client-side-maximize backend the OS sizes it from the primary screen rather than the current
-    /// monitor's work area, so run() hands it to Window::adoptSystemMaximize() (#1208).
+    /// ShowWindow(SW_MAXIMIZE), an X11/XWayland window-manager shortcut or menu, a Wayland compositor,
+    /// or SDL_MaximizeWindow()). run() hands it to Window::handleSystemMaximized(). On Windows the OS
+    /// sizes the borderless window from the primary screen rather than the current monitor's work
+    /// area, so there it is replaced by the client-side maximize (#1208); everywhere the window
+    /// records that it is maximized and which rectangle it restores to (#1250).
     SystemMaximized,
+    /// SDL_EVENT_WINDOW_RESTORED: the window left the maximized or minimized state, whoever did it.
+    /// run() hands it to Window::handleSystemRestored(), which ends an OS maximize the window manager
+    /// or compositor undid (#1250).
+    SystemRestored,
+    /// SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED: the window's content scale changed in place (a display
+    /// scaling setting, or a move SDL reports without a MOVED). run() hands it to
+    /// Window::handleGeometryChanged() so the normal geometry a later outside maximize saves carries
+    /// the current scale, not the one from the last move or resize (#1250). UILayer still rebuilds
+    /// fonts and style from its own onSDLEvent().
+    DisplayScaleChanged,
 };
 
 /// Classify an SDL event type.
@@ -70,6 +82,10 @@ enum class Action : std::uint8_t
         return Action::DisplayChanged;
     case SDL_EVENT_WINDOW_MAXIMIZED:
         return Action::SystemMaximized;
+    case SDL_EVENT_WINDOW_RESTORED:
+        return Action::SystemRestored;
+    case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
+        return Action::DisplayScaleChanged;
     default:
         return Action::None;
     }

@@ -238,7 +238,7 @@ TaskSmack persists settings in several places:
 
 ### Window size and position
 
-TaskSmack reopens at the size and position it had when it was closed, and maximized if it was maximized. Closing it while maximized keeps the size and position it had before it was maximized, so Restore returns there on the next launch. (Native Wayland does not let apps position their windows, so there only the size and maximized state are restored.)
+TaskSmack reopens at the size and position it had when it was closed, and maximized if it was maximized. Closing it while maximized keeps the size and position it had before it was maximized -- whether it was maximized with the title-bar button or by the window manager or compositor (a keyboard shortcut, a window menu, snapping) -- so Restore returns there on the next launch. (Native Wayland does not let apps position their windows, so there only the size and maximized state are restored.)
 
 If the saved position is no longer on any connected display (a monitor was unplugged, say), TaskSmack opens centered on the primary display instead, and a saved size larger than the display is shrunk to fit it.
 
