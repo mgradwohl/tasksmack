@@ -94,6 +94,7 @@ ProcessModel::ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe, NowFu
     if (m_Probe)
     {
         m_Capabilities = m_Probe->capabilities();
+        m_PublishedCapabilities = m_Capabilities;
         m_TicksPerSecond = m_Probe->ticksPerSecond();
         m_SystemTotalMemory = m_Probe->systemTotalMemory();
         spdlog::info("ProcessModel initialized with probe capabilities: hasIoCounters={}, hasThreadCount={}, "
@@ -141,7 +142,16 @@ void ProcessModel::refresh()
     // real EStats sample can prove them unusable (#1161). The counters enumerate() returned were
     // marked with the availability it had before, so without this the sample would publish a held or
     // zero rate as a reading for one interval, instead of unavailable (#1285).
-    if (hadNetworkCounters && !m_Probe->capabilities().hasNetworkCounters)
+    // Capabilities are re-read every sample, after that read, and published with this generation:
+    // one withdrawn now reaches the UI rather than the startup set staying in force (#1254).
+    if (Platform::ProcessCapabilities capabilities = m_Probe->capabilities(); capabilities != m_Capabilities)
+    {
+        spdlog::info("ProcessModel: probe capabilities changed (networkCounters={}, reducedPrivileges={})",
+                     capabilities.hasNetworkCounters,
+                     capabilities.hasReducedPrivileges);
+        m_Capabilities = capabilities;
+    }
+    if (hadNetworkCounters && !m_Capabilities.hasNetworkCounters)
     {
         for (auto& counters : currentCounters)
         {
@@ -501,6 +511,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         m_Snapshots = std::move(newSnapshotsPublication); // pointer swap only, no allocation or destruction
         ++m_SnapshotVersion;
         ++m_SystemHistoryVersion;
+        m_PublishedCapabilities = m_Capabilities;
         m_SnapshotSampleTimeSeconds = sampleTimeSeconds;
 
         // Every generation published while a process is watched gets a sample, the process absent
@@ -669,12 +680,14 @@ bool ProcessModel::tryCopySystemHistoriesIfNewer(std::uint64_t lastSeenVersion, 
     outHistories.pageFaults = HistoryUtils::toVector(m_SystemPageFaultsHistory);
     outHistories.threadCount = HistoryUtils::toVector(m_SystemThreadCountHistory);
     outHistories.handleCount = HistoryUtils::toVector(m_SystemHandleCountHistory);
+    outHistories.capabilities = m_PublishedCapabilities;
     return true;
 }
 
 bool ProcessModel::tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
                                            std::shared_ptr<const std::vector<ProcessSnapshot>>& outSnapshots,
-                                           std::uint64_t& outVersion) const
+                                           std::uint64_t& outVersion,
+                                           Platform::ProcessCapabilities* outCapabilities) const
 {
     // Fast path: avoid the shared lock on the common case where no new snapshot exists.
     // m_PublishedSnapshotVersion is always equal to m_SnapshotVersion (written together
@@ -701,6 +714,10 @@ bool ProcessModel::tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
         }
         newSnapshots = m_Snapshots; // refcount bump only -- newSnapshots is a fresh local, nothing to destroy
         newVersion = m_SnapshotVersion;
+        if (outCapabilities != nullptr)
+        {
+            *outCapabilities = m_PublishedCapabilities;
+        }
     }
 
     // The caller's previous generation, if this assignment drops its last reference, is
@@ -780,9 +797,10 @@ std::size_t ProcessModel::processCount() const
     return m_Snapshots->size();
 }
 
-const Platform::ProcessCapabilities& ProcessModel::capabilities() const
+Platform::ProcessCapabilities ProcessModel::capabilities() const
 {
-    return m_Capabilities;
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    return m_PublishedCapabilities;
 }
 
 void ProcessModel::setGPUModel(std::shared_ptr<GPUModel> gpuModel)

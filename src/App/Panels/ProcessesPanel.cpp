@@ -42,6 +42,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -467,7 +468,7 @@ void ProcessesPanel::onAttach()
     // Ensure the initial seed snapshots are loaded into the render cache so the UI
     // isn't empty before the first background sample arrives.
     std::uint64_t newVersion = m_CachedSnapshotVersion;
-    if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion))
+    if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion, &m_CachedCapabilities))
     {
         m_CachedSnapshotVersion = newVersion;
     }
@@ -589,7 +590,7 @@ void ProcessesPanel::onUpdate(float deltaTime)
 
     // Detect and copy new data in a single lock acquisition.
     std::uint64_t newVersion = m_CachedSnapshotVersion;
-    if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion))
+    if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion, &m_CachedCapabilities))
     {
         m_CachedSnapshotVersion = newVersion;
     }
@@ -645,7 +646,7 @@ void ProcessesPanel::renderContent()
     if (currentVersion != m_CachedSnapshotVersion)
     {
         std::uint64_t copiedVersion = m_CachedSnapshotVersion;
-        if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, copiedVersion))
+        if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, copiedVersion, &m_CachedCapabilities))
         {
             m_CachedSnapshotVersion = copiedVersion;
         }
@@ -1043,12 +1044,23 @@ size_t ProcessesPanel::processCount() const
 
 bool ProcessesPanel::hasReducedPrivileges() const
 {
-    return m_ProcessModel && m_ProcessModel->capabilities().hasReducedPrivileges;
+    return processCapabilities().hasReducedPrivileges;
 }
 
 Platform::ProcessCapabilities ProcessesPanel::processCapabilities() const
 {
-    return m_ProcessModel ? m_ProcessModel->capabilities() : Platform::ProcessCapabilities{};
+    if (!m_ProcessModel)
+    {
+        return Platform::ProcessCapabilities{};
+    }
+    // The capabilities published with the cached snapshot generation, copied with it under the same
+    // lock (#1254), so a per-frame reader takes no lock. Before the first generation is cached, the
+    // model's own (current) copy.
+    if (m_CachedSnapshotVersion == std::numeric_limits<std::uint64_t>::max())
+    {
+        return m_ProcessModel->capabilities();
+    }
+    return m_CachedCapabilities;
 }
 
 std::optional<Domain::ProcessSnapshot> ProcessesPanel::findSnapshot(std::int32_t pid) const
