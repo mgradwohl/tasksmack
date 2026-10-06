@@ -458,7 +458,7 @@ void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counter
 
     const std::string statusPath = (procRoot / std::to_string(pid) / "status").string();
     // A status file is about 1.5 KiB; VmHWM sits in its first half, after Groups:, which grows with
-    // the owner's supplementary groups.
+    // the owner's supplementary groups. The stack buffer covers the usual file without allocating.
     constexpr std::size_t BUF_SIZE = 4096;
     std::array<char, BUF_SIZE> buf{};
     const std::size_t len = readProcFile(statusPath.c_str(), buf.data(), BUF_SIZE);
@@ -466,21 +466,30 @@ void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counter
     {
         return;
     }
+    std::string_view text(buf.data(), len);
+    std::vector<char> fullStatus;
     if (len == BUF_SIZE)
     {
-        // readProcFile() truncates silently at BUF_SIZE. "Uid:" and "VmHWM:" are well inside this
-        // on every kernel this project has seen, but if a future kernel adds/grows earlier fields
-        // (Groups:, Seccomp_filters:, ...) enough to push them past the buffer, this makes that
-        // regression diagnosable instead of a silently-empty counters.user.
-        spdlog::debug("LinuxProcessProbe: /proc/{}/status truncated at {} bytes; Uid:/VmHWM: may have been missed", pid, BUF_SIZE);
+        // readProcFile() truncates silently at BUF_SIZE: a long Groups: list can push VmHWM past it.
+        // Read the whole file instead; if that fails (the process just exited), fall back to the
+        // prefix, where a VmHWM line cut off by the buffer is ignored below.
+        fullStatus = readProcFileFull(statusPath.c_str());
+        if (!fullStatus.empty())
+        {
+            text = std::string_view(fullStatus.data(), fullStatus.size());
+        }
+        else
+        {
+            spdlog::debug("LinuxProcessProbe: /proc/{}/status truncated at {} bytes; Uid:/VmHWM: may have been missed", pid, BUF_SIZE);
+        }
     }
 
     constexpr std::string_view UID_PREFIX = "Uid:";
     constexpr std::string_view VM_HWM_PREFIX = "VmHWM:";
     constexpr std::uint64_t BYTES_PER_KIB = 1024;
 
-    const char* p = buf.data();
-    const char* const end = buf.data() + len;
+    const char* p = text.data();
+    const char* const end = text.data() + text.size();
     while (p < end)
     {
         const char* lineEnd = p;
@@ -502,7 +511,8 @@ void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counter
         }
         else if (line.starts_with(VM_HWM_PREFIX))
         {
-            // Only a whole line: a line cut off by the buffer could hold a truncated number.
+            // Only a whole line (newline-terminated): a line cut off by the read could hold a
+            // truncated number.
             const char* ptr = p + VM_HWM_PREFIX.size();
             std::uint64_t peakKib = 0;
             if (lineEnd < end && parseNum(ptr, lineEnd, peakKib) && peakKib <= (std::numeric_limits<std::uint64_t>::max() / BYTES_PER_KIB))

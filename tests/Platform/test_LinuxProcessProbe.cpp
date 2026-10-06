@@ -869,24 +869,61 @@ TEST(LinuxProcessProbeTest, PeakRssIsVmHwmFromStatus)
     EXPECT_EQ(peakOf(4444), 100U * page);
 }
 
-TEST(LinuxProcessProbeTest, VmHwmCutOffByTheReadBufferIsIgnored)
+void writeVmHwmProcess(const std::filesystem::path& procRoot, std::string_view status)
 {
-    // A VmHWM line the status read cut short could carry a truncated number: it is not used.
-    ScopedTempDir proc("ts_test_proc_vmhwm_cut");
-    const auto dir = proc.path / "4242";
+    const auto dir = procRoot / "4242";
     writeFile(dir / "stat",
               "4242 (app) S 1 1 1 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
               "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
-    // Pad Groups: so the buffer (4 KiB) ends inside VmHWM's digits.
+    writeFile(dir / "status", status);
+}
+
+[[nodiscard]] std::uint64_t onlyPeakRss(const std::filesystem::path& procRoot)
+{
+    LinuxProcessProbe probe(procRoot);
+    const auto processes = probe.enumerate();
+    EXPECT_EQ(processes.size(), 1U);
+    return processes.empty() ? std::numeric_limits<std::uint64_t>::max() : processes[0].peakRssBytes;
+}
+
+TEST(LinuxProcessProbeTest, VmHwmPastTheStackBufferIsReadInFull)
+{
+    // The stack buffer (4 KiB) ends inside VmHWM's digits; the rest of the file is readable, so the
+    // whole file is read and the complete peak is used -- not the truncated "123".
+    ScopedTempDir proc("ts_test_proc_vmhwm_cut");
     const std::string head = "Name:\tapp\nUid:\t0\t0\t0\t0\nGroups:\t";
     const std::string vmHwm = "\nVmHWM:\t 123";
-    const std::string status = head + std::string(4096 - head.size() - vmHwm.size(), '1') + vmHwm + "456789 kB\n";
-    writeFile(dir / "status", status);
+    writeVmHwmProcess(proc.path, head + std::string(4096 - head.size() - vmHwm.size(), '1') + vmHwm + "456789 kB\n");
+    EXPECT_EQ(onlyPeakRss(proc.path), 123456789ULL * 1024ULL);
+}
 
-    LinuxProcessProbe probe(proc.path);
-    const auto processes = probe.enumerate();
-    ASSERT_EQ(processes.size(), 1U);
-    EXPECT_EQ(processes[0].peakRssBytes, 0U);
+TEST(LinuxProcessProbeTest, VmHwmAfterALongGroupsListIsFound)
+{
+    // A user in many supplementary groups: Groups: alone is well past 4 KiB, and VmHWM follows it.
+    ScopedTempDir proc("ts_test_proc_vmhwm_groups");
+    std::string status = "Name:\tapp\nUid:\t1000\t1000\t1000\t1000\nGroups:\t";
+    for (int gid = 100000; gid < 101500; ++gid)
+    {
+        status += std::to_string(gid) + ' ';
+    }
+    ASSERT_GT(status.size(), 8192U);
+    status += "\nVmPeak:\t  20000 kB\nVmHWM:\t    8192 kB\nVmRSS:\t    4096 kB\n";
+    writeVmHwmProcess(proc.path, status);
+    EXPECT_EQ(onlyPeakRss(proc.path), 8192U * 1024U);
+}
+
+TEST(LinuxProcessProbeTest, IncompleteVmHwmLineIsIgnored)
+{
+    // A VmHWM line with no newline (the file ends mid-line) could carry a truncated number: it is not
+    // used, whether the file is short or longer than the stack buffer.
+    ScopedTempDir shortProc("ts_test_proc_vmhwm_eof_short");
+    writeVmHwmProcess(shortProc.path, "Name:\tapp\nUid:\t0\t0\t0\t0\nVmHWM:\t 123");
+    EXPECT_EQ(onlyPeakRss(shortProc.path), 0U);
+
+    ScopedTempDir longProc("ts_test_proc_vmhwm_eof_long");
+    const std::string head = "Name:\tapp\nUid:\t0\t0\t0\t0\nGroups:\t";
+    writeVmHwmProcess(longProc.path, head + std::string(6000, '1') + "\nVmHWM:\t 123");
+    EXPECT_EQ(onlyPeakRss(longProc.path), 0U);
 }
 
 TEST(LinuxProcessProbeTest, ReadableRaplCounterEnablesPowerUsage)

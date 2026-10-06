@@ -52,10 +52,11 @@ template<std::integral To, std::integral From> [[nodiscard]] constexpr auto narr
 /// past its maximum -- Windows' per-process page-fault count is a 32-bit ULONG (#1184). A reading
 /// below the previous one is one wrap, so the delta is taken modulo 2^bits instead of reading 0 for
 /// that interval. @p bits of 0 or at least T's width means the counter does not wrap (counterDelta()).
-/// A previous reading too big for @p bits cannot have come from such a counter: the delta is 0.
+/// A reading (either one) too big for @p bits cannot have come from such a counter: the delta is 0,
+/// whether or not the readings increased.
 template<std::unsigned_integral T> [[nodiscard]] constexpr auto wrappingCounterDelta(T current, T previous, unsigned bits) noexcept -> T
 {
-    if (bits == 0 || bits >= static_cast<unsigned>(std::numeric_limits<T>::digits) || current >= previous)
+    if (bits == 0 || bits >= static_cast<unsigned>(std::numeric_limits<T>::digits))
     {
         return counterDelta(current, previous);
     }
@@ -63,6 +64,10 @@ template<std::unsigned_integral T> [[nodiscard]] constexpr auto wrappingCounterD
     if (previous > maxValue || current > maxValue)
     {
         return T{};
+    }
+    if (current >= previous)
+    {
+        return current - previous;
     }
     return (maxValue - previous) + current + T{1};
 }

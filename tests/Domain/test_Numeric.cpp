@@ -195,6 +195,19 @@ TEST(NumericTest, WrappingCounterDeltaRejectsReadingsTooBigForTheWidth)
     EXPECT_DOUBLE_EQ(wrappingCounterRate(std::uint64_t{5}, std::uint64_t{1}, 0.0, 32), 0.0);
 }
 
+TEST(NumericTest, WrappingCounterDeltaRejectsIncreasingReadingsTooBigForTheWidth)
+{
+    // An increase is no excuse: both readings are checked against the width before the ordinary delta.
+    constexpr std::uint64_t MAX32 = 0xFFFF'FFFFULL;
+    EXPECT_EQ(wrappingCounterDelta(std::uint64_t{0x1'0000'0001ULL}, std::uint64_t{0x1'0000'0000ULL}, 32), 0U);
+    // A valid previous reading followed by an invalid current one.
+    EXPECT_EQ(wrappingCounterDelta(std::uint64_t{0x1'0000'0000ULL}, MAX32, 32), 0U);
+    EXPECT_EQ(wrappingCounterDelta(std::uint64_t{0x2'0000'0005ULL}, std::uint64_t{5}, 32), 0U);
+    EXPECT_DOUBLE_EQ(wrappingCounterRate(std::uint64_t{0x1'0000'0000ULL}, std::uint64_t{100}, 1.0, 32), 0.0);
+    // Readings at the top of the range are still valid.
+    EXPECT_EQ(wrappingCounterDelta(MAX32, MAX32 - 3, 32), 3U);
+}
+
 } // namespace
 } // namespace Domain::Numeric
 // NOLINTEND(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
