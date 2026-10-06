@@ -358,6 +358,48 @@ TEST_F(WindowsGPURescanTest, AGpuLostErrorReinitialisesNVMLAndRematchesByPciLoca
     EXPECT_EQ(temperatureOf(secondId), 70);
 }
 
+// A driver reset is seen by both probes in one full rescan: NVML restarts for the lost GPU, and
+// DXGI's factory is no longer current because the GPU came back under a new LUID. The
+// re-enumeration that follows sees the changed NVIDIA LUID set, but NVML, started after the reset,
+// already lists the GPU, so it isn't shut down and started a second time. A later change it hasn't
+// restarted for (an eGPU plugged in) still restarts it.
+TEST_F(WindowsGPURescanTest, ADriverResetSeenByBothProbesRestartsNVMLOnce)
+{
+    setAdapters({intelIGPU(), nvidiaGPU(0x200, 0x01)});
+    fakeState().deviceCount = 1;
+    setNVMLDevice(0, "GPU-internal", 0x01, 50);
+
+    WindowsGPUProbe probe;
+    useFakes(probe);
+    const auto before = probe.enumerateGPUs();
+    ASSERT_EQ(before.size(), 2U);
+    const std::string nvidiaId = findByLuid(before, 0x200)->id;
+
+    // The reset: readings report the GPU lost, and it comes back under a new LUID.
+    fakeState().lostDevices.insert(0);
+    static_cast<void>(probe.readGPUCounters());
+    fakeState().lostDevices.clear();
+    setAdapters({intelIGPU(), nvidiaGPU(0x210, 0x01)});
+    const int shutdownsBefore = fakeState().shutdownCallCount;
+    ASSERT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    const auto after = probe.enumerateGPUs();
+    EXPECT_EQ(fakeState().initCallCount, 1) << "One NVML restart for one driver reset";
+    EXPECT_EQ(fakeState().shutdownCallCount, shutdownsBefore + 1);
+    ASSERT_EQ(after.size(), 2U);
+    const GPUInfo* nvidia = findByLuid(after, 0x210);
+    ASSERT_NE(nvidia, nullptr);
+    EXPECT_EQ(nvidia->id, nvidiaId) << "Same card, same PCI location: same GPU";
+    EXPECT_TRUE(nvidia->sensorCapabilities.value_or(GPUCapabilities{}).hasTemperature) << "Still matched to its NVML device";
+
+    // A later NVIDIA change NVML hasn't restarted for restarts it as before.
+    setAdapters({intelIGPU(), nvidiaGPU(0x210, 0x01), nvidiaGPU(0x300, 0x41)});
+    fakeState().deviceCount = 2;
+    setNVMLDevice(1, "GPU-external", 0x41, 70);
+    ASSERT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    EXPECT_EQ(probe.enumerateGPUs().size(), 3U);
+    EXPECT_EQ(fakeState().initCallCount, 2);
+}
+
 // NVML that is installed but not running while an NVIDIA adapter is present (it failed to start, or
 // to restart after a reset) is tried again at each full rescan, and the GPUs are re-enumerated once
 // it starts.

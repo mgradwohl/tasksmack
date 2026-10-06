@@ -252,6 +252,7 @@ bool NVMLGPUProbe::restart()
 
     // nvmlShutdown() then nvmlInit() is NVML's supported way to start over; the device handles of
     // the old session are dropped with it.
+    ++m_RestartCount;
     shutdownNVML();
     m_GPULost = false;
     const bool quiet = m_RestartFailures > 0;

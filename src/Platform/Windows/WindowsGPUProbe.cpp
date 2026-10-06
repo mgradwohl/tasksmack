@@ -123,10 +123,20 @@ void WindowsGPUProbe::restartNVMLIfNVIDIAAdaptersChanged(const std::vector<GPUIn
     std::ranges::sort(nvidiaLuids);
     const bool changed = m_NVIDIAAdapterLuids.has_value() && *m_NVIDIAAdapterLuids != nvidiaLuids;
     m_NVIDIAAdapterLuids = std::move(nvidiaLuids);
+    const bool restartedForThisChange = m_NVMLRestartedSinceEnumeration;
+    m_NVMLRestartedSinceEnumeration = false;
     // NVML lists the GPUs present when it started, so a new NVIDIA adapter is only seen by a restart
-    // (which may wake a sleeping dGPU once, as starting it does) (#1294).
+    // (which may wake a sleeping dGPU once, as starting it does) (#1294). A driver reset is seen by
+    // both probes in the same rescan: NVML restarts for the lost GPU, and the new LUID changes the
+    // set here. NVML started after the reset already lists the GPUs present, so a second shutdown
+    // and init for the same change would only cost (and possibly wake) once more.
     if (changed && m_NVMLProbe)
     {
+        if (restartedForThisChange)
+        {
+            spdlog::debug("WindowsGPUProbe: NVIDIA adapters changed; NVML already restarted for it");
+            return;
+        }
         spdlog::info("WindowsGPUProbe: NVIDIA adapters changed; restarting NVML");
         static_cast<void>(m_NVMLProbe->restart());
     }
@@ -141,6 +151,7 @@ bool WindowsGPUProbe::rescanGPUs(GPURescan depth)
     bool nvmlChanged = false;
     if (m_NVMLProbe)
     {
+        const std::uint64_t restartsBefore = m_NVMLProbe->restartCount();
         // NVML installed and an NVIDIA adapter present, but NVML not running -- it failed to start,
         // or to restart after a lost GPU (a driver mid-reset, say) -- is tried again at the
         // full-rescan rate. Without an NVIDIA adapter it never could start; one appearing changes
@@ -154,6 +165,9 @@ bool WindowsGPUProbe::rescanGPUs(GPURescan depth)
         {
             nvmlChanged = m_NVMLProbe->rescanGPUs(depth);
         }
+        // The enumeration this rescan leads to needn't restart NVML again (see
+        // restartNVMLIfNVIDIAAdaptersChanged()).
+        m_NVMLRestartedSinceEnumeration = m_NVMLRestartedSinceEnumeration || m_NVMLProbe->restartCount() != restartsBefore;
     }
     return adaptersChanged || nvmlChanged;
 }

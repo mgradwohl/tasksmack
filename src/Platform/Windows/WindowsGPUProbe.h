@@ -58,7 +58,8 @@ class WindowsGPUProbe : public IGPUProbe
     // Test-only: swaps in sub-probes backed by fakes (test_WindowsGPURescan.cpp).
     friend struct WindowsGPUProbeTestAccessor;
 
-    /// Restart NVML when the NVIDIA adapters in @p dxgiGPUs differ from the last enumeration's.
+    /// Restart NVML when the NVIDIA adapters in @p dxgiGPUs differ from the last enumeration's,
+    /// unless a rescan restarted it since that enumeration.
     void restartNVMLIfNVIDIAAdaptersChanged(const std::vector<GPUInfo>& dxgiGPUs);
 
     [[nodiscard]] std::unordered_set<std::string>
@@ -96,6 +97,11 @@ class WindowsGPUProbe : public IGPUProbe
     // (an NVIDIA GPU added or removed, or re-created under a new LUID by a driver update or reset)
     // restarts NVML, whose device list is fixed when it starts (#1294).
     std::optional<std::vector<std::string>> m_NVIDIAAdapterLuids;
+
+    // NVML was restarted by a rescan since the last enumeration (after a lost GPU, or a retried
+    // start), so a changed NVIDIA LUID set at that enumeration -- the same driver reset, seen by
+    // DXGI -- doesn't restart it a second time.
+    bool m_NVMLRestartedSinceEnumeration{false};
 };
 
 } // namespace Platform

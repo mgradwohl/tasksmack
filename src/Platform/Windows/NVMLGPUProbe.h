@@ -62,6 +62,13 @@ class NVMLGPUProbe : public IGPUProbe
     /// found for it, since one asleep now isn't woken to find them again. Returns isAvailable().
     bool restart();
 
+    /// How many times restart() has run (succeeded or not), so a caller can tell whether NVML was
+    /// just restarted -- and not restart it again for the same change (#1294).
+    [[nodiscard]] std::uint64_t restartCount() const
+    {
+        return m_RestartCount;
+    }
+
     /// The id each device's per-process counters carry, by the device's own id (its UUID): the id of
     /// the DXGI adapter WindowsGPUProbe matched it to by PCI location, so a process is attributed to
     /// the same GPU the GPU tab shows. NVML numbers its devices in its own order, not DXGI's, so the
@@ -210,6 +217,8 @@ class NVMLGPUProbe : public IGPUProbe
     bool m_GPULost{false};
     // Consecutive restarts that failed; after the first, a failure is logged quietly.
     int m_RestartFailures{0};
+    // Every restart() so far (restartCount()).
+    std::uint64_t m_RestartCount{0};
 
     // The non-waking PnP power query; its devnode cache is dropped at each enumeration (#1265).
     std::shared_ptr<DisplayDevicePower> m_DevicePower;
