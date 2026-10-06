@@ -90,7 +90,7 @@ The process table is the primary view. It lists all running processes with these
 
 Column visibility is toggled via the column header context menu and persisted across sessions.
 
-A cell reading **-** is a value of 0 (or one that doesn't apply). A cell reading **N/A** is a value TaskSmack could not read for that process: on Linux, for other users' processes, the FD count without `CAP_DAC_READ_SEARCH`, and the I/O and network rates without both `CAP_DAC_READ_SEARCH` and `CAP_SYS_PTRACE` (root with its normal capabilities has both; see the FAQ); on Windows, without administrator rights, every process's network rates (handle counts and I/O rates are read for every process). One known exception: on Linux, with `CAP_DAC_READ_SEARCH` but not `CAP_SYS_PTRACE`, another user's network rate currently reads 0 rather than N/A, because its fd list is readable but its fd links are not (#1328). Process Details shows the same values as N/A, with a gap in their charts, and the system totals leave them out. Sorting puts N/A below every reading.
+A cell reading **-** is a value of 0 (or one that doesn't apply). A cell reading **N/A** is a value TaskSmack could not read for that process: on Linux, for other users' processes, the FD count without `CAP_DAC_READ_SEARCH`, and the I/O and network rates without both `CAP_DAC_READ_SEARCH` and `CAP_SYS_PTRACE` (root with its normal capabilities has both; see the FAQ); on Windows, without administrator rights, every process's network rates (handle counts and I/O rates are read for every process). Process Details shows the same values as N/A, with a gap in their charts, and the system totals leave them out. Sorting puts N/A below every reading.
 
 **Sorting** is available on any column with a single click. Click again to reverse order.
 
@@ -156,7 +156,7 @@ TaskSmack combines operating-system GPU APIs with optional vendor libraries:
 **Intel GPUs on Linux** (i915 and xe drivers) report what the kernel exposes for each card:
 
 - **Clock:** i915's `gt_cur_freq_mhz`, or xe's `tile0/gt0/freq0/cur_freq`.
-- **Temperature and power:** from the card's hwmon, which only discrete cards (Arc) have. Temperature is read from hwmon's first channel (`temp1_input`); xe cards report their package temperature as `temp2_input` instead, so they may show no temperature until [#1314](https://github.com/mgradwohl/tasksmack/issues/1314) is fixed. Power is worked out from hwmon's energy counter, so it appears from the second sample on.
+- **Temperature and power:** from the card's hwmon, which only discrete cards (Arc) have. Temperature is the package sensor: the hwmon channel labelled `pkg` (xe: `temp2_input`), or else the lowest-numbered temperature input (i915: `temp1_input`). Power is worked out from hwmon's energy counter, so it appears from the second sample on.
 - **VRAM:** comes from the DRM memory-region query on the card's render node (`/dev/dri/renderD*`), made only while the card is awake. The capacity is remembered after the first answer, and also tells a discrete card from an integrated one. Used VRAM appears only when the kernel reports it (i915 needs `CAP_PERFMON` for that); when it does, the query is repeated each sample to keep the figure current, otherwise it isn't made again.
 - **Not read:** utilisation.
 - **Sleeping cards:** a card in runtime suspend isn't queried, so watching it doesn't wake it.

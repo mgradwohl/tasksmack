@@ -7,10 +7,12 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <optional>
 #include <span>
@@ -223,7 +225,7 @@ bool DRMGPUProbe::rescanGPUs(GPURescan depth)
         // The energy counter and render node are found at discovery too: one that appears late (a
         // render node registered after the card) is a change, or the card would never get it (#1269, #1283).
         return lhs.gpuId == rhs.gpuId && lhs.cardPath == rhs.cardPath && lhs.hwmonPath == rhs.hwmonPath && lhs.driver == rhs.driver &&
-               lhs.energyPath == rhs.energyPath && lhs.renderNodePath == rhs.renderNodePath;
+               lhs.energyPath == rhs.energyPath && lhs.temperaturePath == rhs.temperaturePath && lhs.renderNodePath == rhs.renderNodePath;
     };
     if (std::ranges::equal(cards, m_Cards, sameCard))
     {
@@ -320,6 +322,7 @@ std::vector<DRMGPUProbe::DRMCard> DRMGPUProbe::discoverDRMCards() const
         // Find hwmon directory for temperature and energy sensors, and the render node for the VRAM query
         card.hwmonPath = findHwmonPath(card.devicePath);
         card.energyPath = findEnergyPath(card.hwmonPath);
+        card.temperaturePath = findTemperaturePath(card.hwmonPath);
         card.renderNodePath = findRenderNodePath(card.devicePath);
 
         // Generate unique GPU ID (use PCI address if available, e.g. 0000:00:02.0), else cardX
@@ -453,6 +456,46 @@ std::string DRMGPUProbe::findEnergyPath(const std::string& hwmonPath)
         }
     }
     return "";
+}
+
+std::string DRMGPUProbe::findTemperaturePath(const std::string& hwmonPath)
+{
+    // i915_hwmon.c exposes one unlabelled temp1_input. xe_hwmon.c labels its channels and numbers
+    // them from 1 with no temp1_input: the package temperature is temp2_input (label "pkg"), VRAM
+    // temp3_input ("vram") where present (#1314). Prefer the package sensor by its label, so a
+    // driver that renumbers its channels still gets the right one; otherwise the lowest-numbered
+    // input that exists.
+    if (hwmonPath.empty())
+    {
+        return "";
+    }
+    std::optional<std::uint32_t> lowest;
+    for (const auto& entryPath : listDirectory(hwmonPath))
+    {
+        const std::string name = entryPath.filename().string();
+        constexpr std::string_view PREFIX = "temp";
+        constexpr std::string_view SUFFIX = "_input";
+        if (!name.starts_with(PREFIX) || !name.ends_with(SUFFIX) || name.size() <= PREFIX.size() + SUFFIX.size())
+        {
+            continue;
+        }
+        const std::string_view digits = std::string_view(name).substr(PREFIX.size(), name.size() - PREFIX.size() - SUFFIX.size());
+        std::uint32_t channel = 0;
+        const auto [ptr, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), channel);
+        if (ec != std::errc{} || ptr != digits.data() + digits.size())
+        {
+            continue;
+        }
+        if (readSysfsString(std::format("{}/temp{}_label", hwmonPath, channel)) == "pkg")
+        {
+            return entryPath.string();
+        }
+        if (!lowest.has_value() || channel < *lowest)
+        {
+            lowest = channel;
+        }
+    }
+    return lowest.has_value() ? std::format("{}/temp{}_input", hwmonPath, *lowest) : "";
 }
 
 std::string DRMGPUProbe::clockPath(const DRMCard& card)
@@ -812,7 +855,7 @@ GPUInfo DRMGPUProbe::cardToGPUInfo(const DRMCard& card) const
     // series stuck at 0, and a temperature line although i915 iGPUs have no hwmon at all.
     GPUCapabilities sensors = capabilities();
     std::error_code fsErr;
-    sensors.hasTemperature = !card.hwmonPath.empty() && Fs::exists(card.hwmonPath + "/temp1_input", fsErr);
+    sensors.hasTemperature = !card.temperaturePath.empty(); // #1314
     sensors.hasClockSpeeds = Fs::exists(clockPath(card), fsErr);
     sensors.hasPowerMetrics = !card.energyPath.empty();
     info.sensorCapabilities = sensors;
@@ -859,15 +902,14 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
 
         // Read temperature from hwmon (if available). capabilities() advertises temperature for
         // every card, so a card without hwmon has an unread temperature, not 0 °C (#1111).
-        if (card.hwmonPath.empty())
+        if (card.temperaturePath.empty())
         {
             counter.temperatureAvailable = false;
         }
         else
         {
-            // Intel GPUs typically expose temp1_input (in millidegrees Celsius)
-            const std::string tempPath = card.hwmonPath + "/temp1_input";
-            const uint64_t tempMilliC = readSysfsUint64(tempPath);
+            // i915's temp1_input or xe's package temp2_input, in millidegrees Celsius (#1314)
+            const uint64_t tempMilliC = readSysfsUint64(card.temperaturePath);
             if (tempMilliC > 0)
             {
                 counter.temperatureC = static_cast<std::int32_t>(tempMilliC / 1000);

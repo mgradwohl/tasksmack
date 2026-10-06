@@ -87,6 +87,11 @@ struct SocketTrafficSample
 {
     std::uint64_t key = 0; // Stable identity of the connection for its lifetime: the socket inode on Linux
     std::int32_t pid = 0;  // Owning process; 0 = not attributed (yet)
+    // The owning process's start time, in the same raw ticks as ProcessCounters::startTimeTicks, so a
+    // process that reused `pid` isn't credited with this connection's bytes (#1336). 0 = unknown: the
+    // connection is then matched to a process by PID alone. Linux reads it from /proc/[pid]/stat when
+    // building the inode-to-PID map; Windows reports 0 (its TCP tables give only the owning PID).
+    std::uint64_t ownerStartTimeTicks = 0;
     std::uint64_t bytesReceived = 0;
     std::uint64_t bytesSent = 0;
     // False for a connection present in the OS table whose counters couldn't be read this time
