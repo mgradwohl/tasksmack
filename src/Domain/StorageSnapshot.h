@@ -36,6 +36,11 @@ struct DiskSnapshot
     // Whether the rate fields were measured. False for a disk's first sample and for a seed
     // transition too short to measure, whose rates read 0; their history records a gap (#1102).
     bool hasRates = false;
+    // The sample's rates were thrown out as a counter glitch (over MAX_SANE_DISK_RATE_BPS, #1291):
+    // unmeasured like a first sample, but the system Total must also be a gap rather than the sum of
+    // the other disks, which would plot a false dip (#1327 review). A disk merely new to the sample
+    // doesn't gap the Total.
+    bool ratesRejected = false;
 };
 
 /// Aggregate storage metrics across all devices.

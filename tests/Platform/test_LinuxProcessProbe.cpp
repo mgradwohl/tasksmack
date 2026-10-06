@@ -20,11 +20,13 @@
 #if TASKSMACK_HAS_UNISTD
 
 #include "Platform/Linux/LinuxProcessProbe.h"
+#include "Platform/Linux/ProcPrivileges.h"
 #include "Platform/PlatformConfig.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/ScopedTempDir.h"
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+#include "Domain/SocketTrafficAccumulator.h"
 #include "Platform/Linux/NetlinkSocketStats.h"
 #include "Platform/NetlinkTestUtils.h"
 
@@ -43,6 +45,9 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <iterator>
+#include <optional>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <thread>
@@ -90,14 +95,63 @@ TEST(LinuxProcessProbeTest, CapabilitiesReportedCorrectly)
     EXPECT_TRUE(caps.hasSharedMemory);
 }
 
-TEST(LinuxProcessProbeTest, ReducedPrivilegesMatchesEuid)
+TEST(LinuxProcessProbeTest, ReducedPrivilegesMatchesEuidAndEffectiveCapabilities)
 {
-    LinuxProcessProbe probe;
+    const LinuxProcessProbe probe;
     const auto caps = probe.capabilities();
 
-    // hasReducedPrivileges should be true when running as non-root, false as root
-    const bool expectedReducedPrivileges = (geteuid() != 0);
+    // Not reduced with CAP_SYS_PTRACE + CAP_DAC_READ_SEARCH (or CAP_DAC_OVERRIDE) effective -- root with
+    // its normal capabilities, or setcap; with CapEff unreadable, only as root.
+    std::ifstream statusFile("/proc/self/status");
+    const std::string status{std::istreambuf_iterator<char>(statusFile), std::istreambuf_iterator<char>()};
+    const bool expectedReducedPrivileges = ProcPrivileges::hasReducedPrivileges(geteuid() == 0, ProcPrivileges::parseCapEff(status));
     EXPECT_EQ(caps.hasReducedPrivileges, expectedReducedPrivileges);
+}
+
+// #1327 review: the privilege notice fired for every non-root process, including one granted the
+// capabilities docs/guide/faq.md recommends. CapEff (hex) in /proc/self/status decides instead.
+TEST(ProcPrivilegesTest, ParsesCapEffFromStatus)
+{
+    constexpr std::string_view STATUS = "Name:\tTaskSmack\nCapInh:\t0000000000000000\nCapPrm:\t0000000000080004\n"
+                                        "CapEff:\t0000000000080004\nCapBnd:\t000001ffffffffff\n";
+    EXPECT_EQ(ProcPrivileges::parseCapEff(STATUS), std::optional<std::uint64_t>{0x80004});
+    EXPECT_EQ(ProcPrivileges::parseCapEff("CapEff:\t000001ffffffffff"), std::optional<std::uint64_t>{0x1ffffffffff});
+    EXPECT_EQ(ProcPrivileges::parseCapEff("CapEff:\t0000000000000000\n"), std::optional<std::uint64_t>{0});
+}
+
+TEST(ProcPrivilegesTest, MissingOrMalformedCapEffIsUnknown)
+{
+    EXPECT_EQ(ProcPrivileges::parseCapEff(""), std::nullopt);
+    EXPECT_EQ(ProcPrivileges::parseCapEff("Name:\tx\nCapPrm:\t0000000000080004\n"), std::nullopt);
+    EXPECT_EQ(ProcPrivileges::parseCapEff("CapEff:\n"), std::nullopt);
+    EXPECT_EQ(ProcPrivileges::parseCapEff("CapEff:\tzz00000000000000\n"), std::nullopt);
+    EXPECT_EQ(ProcPrivileges::parseCapEff("CapEff:\t00000000000800g4\n"), std::nullopt);
+    // Only a whole "CapEff:" key at a line start counts.
+    EXPECT_EQ(ProcPrivileges::parseCapEff("XCapEff:\t0000000000080004\n"), std::nullopt);
+}
+
+TEST(ProcPrivilegesTest, KnownCapabilitiesDecideForRootTooAndAnUnknownSetFallsBackToTheEuid)
+{
+    constexpr std::uint64_t DAC_READ_SEARCH = std::uint64_t{1} << 2;
+    constexpr std::uint64_t SYS_PTRACE = std::uint64_t{1} << 19;
+    constexpr std::uint64_t DAC_OVERRIDE = std::uint64_t{1} << 1;
+
+    // Root with an unreadable status falls back to the EUID; root with its full set is not reduced.
+    EXPECT_FALSE(ProcPrivileges::hasReducedPrivileges(true, std::nullopt));
+    EXPECT_FALSE(ProcPrivileges::hasReducedPrivileges(true, 0x1ffffffffffULL));
+    // Root with its capabilities dropped (a container, a hardened service) is reduced like anyone else.
+    EXPECT_TRUE(ProcPrivileges::hasReducedPrivileges(true, 0));
+    EXPECT_TRUE(ProcPrivileges::hasReducedPrivileges(true, SYS_PTRACE));
+    // CAP_DAC_OVERRIDE covers CAP_DAC_READ_SEARCH for these reads.
+    EXPECT_FALSE(ProcPrivileges::hasReducedPrivileges(false, DAC_OVERRIDE | SYS_PTRACE));
+    EXPECT_FALSE(ProcPrivileges::hasReducedPrivileges(false, DAC_READ_SEARCH | SYS_PTRACE));
+    EXPECT_FALSE(ProcPrivileges::hasReducedPrivileges(false, 0x1ffffffffffULL));
+
+    // Anything less than both is reduced: CAP_DAC_READ_SEARCH alone restores FD counts, not I/O or network.
+    EXPECT_TRUE(ProcPrivileges::hasReducedPrivileges(false, DAC_READ_SEARCH));
+    EXPECT_TRUE(ProcPrivileges::hasReducedPrivileges(false, SYS_PTRACE));
+    EXPECT_TRUE(ProcPrivileges::hasReducedPrivileges(false, 0));
+    EXPECT_TRUE(ProcPrivileges::hasReducedPrivileges(false, std::nullopt));
 }
 
 TEST(LinuxProcessProbeTest, TicksPerSecondIsPositive)
@@ -491,7 +545,7 @@ TEST(LinuxProcessProbeTest, IoCountersForSelfProcess)
     // Only test if I/O counters are available
     if (!caps.hasIoCounters)
     {
-        GTEST_SKIP() << "I/O counters not available (requires root or CAP_DAC_READ_SEARCH)";
+        GTEST_SKIP() << "/proc/self/io is unreadable (likely a procfs restriction, e.g. a sandbox or hidepid mount)";
     }
 
     auto processes = probe.enumerate();
@@ -536,7 +590,7 @@ TEST(LinuxProcessProbeTest, IoCountersIncreaseWithActivity)
 
     if (!caps.hasIoCounters)
     {
-        GTEST_SKIP() << "I/O counters not available (requires root or CAP_DAC_READ_SEARCH)";
+        GTEST_SKIP() << "/proc/self/io is unreadable (likely a procfs restriction, e.g. a sandbox or hidepid mount)";
     }
 
     const pid_t selfPid = getpid();
@@ -812,6 +866,26 @@ TEST(LinuxProcessProbeTest, UnreadableRaplCounterDisablesPowerUsage)
     EXPECT_FALSE(probe.capabilities().hasPowerUsage);
 }
 
+TEST(LinuxProcessProbeTest, ReducedPrivilegesReadsCapEffUnderTheProcRoot)
+{
+    // A readable CapEff decides for root too, so these hold whatever the test runs as.
+    ScopedTempDir withCaps("ts_test_proc_capeff_full");
+    writeFile(withCaps.path / "self" / "status", "Name:\tTaskSmack\nCapEff:\t0000000000080004\n");
+    EXPECT_FALSE(LinuxProcessProbe(withCaps.path).capabilities().hasReducedPrivileges);
+
+    ScopedTempDir dacOnly("ts_test_proc_capeff_dac");
+    writeFile(dacOnly.path / "self" / "status", "Name:\tTaskSmack\nCapEff:\t0000000000000004\n");
+    EXPECT_TRUE(LinuxProcessProbe(dacOnly.path).capabilities().hasReducedPrivileges);
+
+    ScopedTempDir dropped("ts_test_proc_capeff_dropped");
+    writeFile(dropped.path / "self" / "status", "Name:\tTaskSmack\nCapEff:\t0000000000000000\n");
+    EXPECT_TRUE(LinuxProcessProbe(dropped.path).capabilities().hasReducedPrivileges);
+
+    // Only an unreadable status falls back to the EUID.
+    ScopedTempDir noStatus("ts_test_proc_capeff_none");
+    EXPECT_EQ(LinuxProcessProbe(noStatus.path).capabilities().hasReducedPrivileges, ::geteuid() != 0);
+}
+
 TEST(LinuxProcessProbeTest, NoRaplCounterDisablesPowerUsage)
 {
     ScopedTempDir proc("ts_test_proc_rapl_none");
@@ -864,7 +938,7 @@ TEST(LinuxProcessProbeTest, AFailedPreTailTotalReadIsReturnedNotRetriedAfterTheT
 
 TEST(LinuxProcessProbeTest, UnreadableFdAndIoAreReportedUnavailableNotZero)
 {
-    // #1110: without root, another user's /proc/[pid]/fd and /proc/[pid]/io can't be read. Their
+    // #1110: without the needed capabilities, another user's /proc/[pid]/fd and /proc/[pid]/io can't be read. Their
     // values used to be left at 0, which the table showed as "0 FDs" / "no I/O" and the totals
     // counted. They are now marked unavailable -- and so are the process's network counters, whose
     // attribution needs that same fd directory. Here the fd "directory" is a plain file and there is
@@ -992,6 +1066,248 @@ TEST(LinuxProcessProbeTest, ReadSocketTrafficReportsRawAttributedSocketCounters)
     ASSERT_EQ(third.sockets.size(), 1U);
     EXPECT_EQ(third.sockets[0].bytesReceived, 3'000U) << "the raw cumulative counter, not a delta";
     EXPECT_EQ(third.sockets[0].pid, 4242);
+}
+
+TEST(LinuxProcessProbeTest, ANewSocketIsAttributedInTheReadingItFirstAppearsIn)
+{
+    // #1259: the inode-to-PID map is rebuilt every INODE_PID_CACHE_TTL_MS, so a connection opened
+    // just after a rebuild used to stay unowned for up to that long, and a short one was never
+    // credited at all. A socket that appears unowned after the map was built now triggers an early
+    // (rate-limited) rebuild; one that was already unowned before the build doesn't.
+    ScopedTempDir proc("ts_test_proc_net_early_rebuild");
+    writeFile(proc.path / "4242" / "stat",
+              "4242 (app) S 1 4242 4242 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+    writeFile(proc.path / "stat", "cpu  100 0 100 800 0 0 0 0 0 0\n");
+    const auto fdDir = proc.path / "4242" / "fd";
+    std::filesystem::create_directories(fdDir);
+    std::filesystem::create_symlink("socket:[11]", fdDir / "3");
+
+    using Platform::TestSupport::FakeSocket;
+    using Platform::TestSupport::ScriptedNetlinkTransport;
+    std::vector<FakeSocket> current{{.inode = 11, .bytesReceived = 100}, {.inode = 99, .bytesReceived = 7}};
+    auto transport = std::make_unique<ScriptedNetlinkTransport>();
+    auto* script = transport.get();
+    auto stats = std::make_shared<Platform::NetlinkSocketStats>(std::move(transport), std::chrono::milliseconds{0});
+    script->onRequest = [&](const ScriptedNetlinkTransport::Request& request) -> ScriptedNetlinkTransport::Reply
+    {
+        return Platform::TestSupport::completeDump(request, request.family == AF_INET ? current : std::vector<FakeSocket>{});
+    };
+
+    LinuxProcessProbe probe(proc.path);
+    probe.setSocketStatsForTesting(stats);
+    probe.setInodeMapEarlyRebuildIntervalForTesting(std::chrono::milliseconds{0}); // no rate limit, for the test
+    ASSERT_TRUE(probe.capabilities().hasNetworkCounters);
+    const auto ownerOf = [](const Platform::SocketTrafficReading& traffic, std::uint64_t inode)
+    {
+        const auto it = std::ranges::find(traffic.sockets, inode, &Platform::SocketTrafficSample::key);
+        return it != traffic.sockets.end() ? it->pid : -1;
+    };
+
+    const auto first = probe.readSocketTraffic(); // builds the map
+    EXPECT_EQ(ownerOf(first, 11), 4242);
+    EXPECT_EQ(ownerOf(first, 99), 0);
+
+    // 99 was unowned before the map was built (another user's process, say): it must not force a
+    // rebuild, so an fd for it appearing now isn't seen until the TTL rebuild.
+    std::filesystem::create_symlink("socket:[99]", fdDir / "5");
+    const auto second = probe.readSocketTraffic();
+    EXPECT_EQ(ownerOf(second, 99), 0) << "an already-unowned socket doesn't trigger an early rebuild";
+
+    // 12 opens after the build: the map is rebuilt in this very reading and it has its owner.
+    std::filesystem::create_symlink("socket:[12]", fdDir / "4");
+    current.push_back({.inode = 12, .bytesReceived = 4'096});
+    const auto third = probe.readSocketTraffic();
+    EXPECT_EQ(ownerOf(third, 12), 4242) << "a new socket is attributed in the reading it first appears in";
+    EXPECT_EQ(ownerOf(third, 99), 4242);
+}
+
+TEST(LinuxProcessProbeTest, AnEmptyInodeMapIsRescannedAtMostOncePerEarlyInterval)
+{
+    // #1327 review: when every visible socket belongs to a process we can't read, each scan comes
+    // back empty. The empty-scan path backdated the cache time for a quick retry, which also let the
+    // early rebuild for those (still unowned) sockets through: two /proc/*/fd scans per reading.
+    // The last attempt is now tracked separately and gates every rebuild.
+    ScopedTempDir proc("ts_test_proc_net_empty_map");
+    writeFile(proc.path / "4343" / "stat",
+              "4343 (app) S 1 4343 4343 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+    writeFile(proc.path / "stat", "cpu  100 0 100 800 0 0 0 0 0 0\n");
+    writeFile(proc.path / "4343" / "fd", "not a directory"); // its fds can't be read
+
+    using Platform::TestSupport::FakeSocket;
+    using Platform::TestSupport::ScriptedNetlinkTransport;
+    const std::vector<FakeSocket> current{{.inode = 99, .bytesReceived = 7}};
+    auto transport = std::make_unique<ScriptedNetlinkTransport>();
+    auto* script = transport.get();
+    auto stats = std::make_shared<Platform::NetlinkSocketStats>(std::move(transport), std::chrono::milliseconds{0});
+    script->onRequest = [&](const ScriptedNetlinkTransport::Request& request) -> ScriptedNetlinkTransport::Reply
+    {
+        return Platform::TestSupport::completeDump(request, request.family == AF_INET ? current : std::vector<FakeSocket>{});
+    };
+
+    constexpr auto EARLY_INTERVAL = std::chrono::milliseconds{500};
+    LinuxProcessProbe probe(proc.path);
+    probe.setSocketStatsForTesting(stats);
+    probe.setInodeMapEarlyRebuildIntervalForTesting(EARLY_INTERVAL);
+    int scans = 0;
+    probe.setInodeMapScanHookForTesting([&scans] { ++scans; });
+    ASSERT_TRUE(probe.capabilities().hasNetworkCounters);
+
+    const auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < 3; ++i)
+    {
+        const auto traffic = probe.readSocketTraffic();
+        ASSERT_EQ(traffic.sockets.size(), 1U);
+        EXPECT_EQ(traffic.sockets[0].pid, 0);
+    }
+    if (std::chrono::steady_clock::now() - start >= EARLY_INTERVAL)
+    {
+        GTEST_SKIP() << "the readings took longer than the early interval";
+    }
+    EXPECT_EQ(scans, 1) << "one scan for three readings within the early interval";
+
+    std::this_thread::sleep_for(EARLY_INTERVAL + std::chrono::milliseconds{100});
+    (void) probe.readSocketTraffic();
+    EXPECT_EQ(scans, 2) << "once the interval has passed, one more scan -- not a retry plus an early rebuild";
+}
+
+TEST(LinuxProcessProbeTest, AConnectionAttributedOnACachedSocketQueryKeepsItsHeldBytes)
+{
+    // #1327 review: a rate-limited early rebuild can run on a cached socket query, so a connection
+    // gets its owner in a reading with the same sampleTimeNs as the last. Domain used to skip that
+    // reading as a repeat, and the bytes the connection moved while unowned were lost if it closed
+    // before the next fresh query. End to end, through SocketTrafficAccumulator, they are credited.
+    ScopedTempDir proc("ts_test_proc_net_cached_rebuild");
+    writeFile(proc.path / "4242" / "stat",
+              "4242 (app) S 1 4242 4242 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+    writeFile(proc.path / "stat", "cpu  100 0 100 800 0 0 0 0 0 0\n");
+    const auto fdDir = proc.path / "4242" / "fd";
+    std::filesystem::create_directories(fdDir);
+    std::filesystem::create_symlink("socket:[11]", fdDir / "3");
+
+    using Platform::TestSupport::FakeSocket;
+    using Platform::TestSupport::ScriptedNetlinkTransport;
+    std::vector<FakeSocket> current{{.inode = 11, .bytesReceived = 10}};
+    auto transport = std::make_unique<ScriptedNetlinkTransport>();
+    auto* script = transport.get();
+    // Cached until invalidated, so a reading is fresh only when the test says so.
+    auto stats = std::make_shared<Platform::NetlinkSocketStats>(std::move(transport), std::chrono::hours{1});
+    script->onRequest = [&](const ScriptedNetlinkTransport::Request& request) -> ScriptedNetlinkTransport::Reply
+    {
+        return Platform::TestSupport::completeDump(request, request.family == AF_INET ? current : std::vector<FakeSocket>{});
+    };
+
+    constexpr auto EARLY_INTERVAL = std::chrono::milliseconds{500};
+    LinuxProcessProbe probe(proc.path);
+    probe.setSocketStatsForTesting(stats);
+    probe.setInodeMapEarlyRebuildIntervalForTesting(EARLY_INTERVAL);
+    ASSERT_TRUE(probe.capabilities().hasNetworkCounters);
+
+    Domain::SocketTrafficAccumulator accumulator;
+    Platform::ProcessCounters owner;
+    owner.pid = 4242;
+    owner.startTimeTicks = 12345;
+    std::vector processes{owner};
+    const auto ownerOf = [](const Platform::SocketTrafficReading& traffic, std::uint64_t inode)
+    {
+        const auto it = std::ranges::find(traffic.sockets, inode, &Platform::SocketTrafficSample::key);
+        return it != traffic.sockets.end() ? it->pid : -1;
+    };
+
+    const auto start = std::chrono::steady_clock::now();
+    accumulator.apply(probe.readSocketTraffic(), processes); // builds the map
+
+    // 12 opens with no fd visible yet; the early rebuild it asks for is rate-limited.
+    current.push_back({.inode = 12, .bytesReceived = 100});
+    stats->invalidateCache();
+    const auto unowned = probe.readSocketTraffic();
+    ASSERT_EQ(ownerOf(unowned, 12), 0);
+    accumulator.apply(unowned, processes);
+
+    current.back().bytesReceived = 600; // 500 held for its future owner
+    stats->invalidateCache();
+    const auto held = probe.readSocketTraffic();
+    ASSERT_EQ(ownerOf(held, 12), 0);
+    accumulator.apply(held, processes);
+    if (std::chrono::steady_clock::now() - start >= EARLY_INTERVAL)
+    {
+        GTEST_SKIP() << "the readings took longer than the early interval";
+    }
+
+    // Its fd appears; once the interval passes, the next read rebuilds on the cached query.
+    std::filesystem::create_symlink("socket:[12]", fdDir / "4");
+    std::this_thread::sleep_for(EARLY_INTERVAL + std::chrono::milliseconds{100});
+    const auto attributed = probe.readSocketTraffic();
+    ASSERT_EQ(attributed.sampleTimeNs, held.sampleTimeNs) << "the cached query, not a fresh one";
+    ASSERT_EQ(ownerOf(attributed, 12), 4242);
+    accumulator.apply(attributed, processes);
+
+    // 12 closes before the next fresh query.
+    current.pop_back();
+    stats->invalidateCache();
+    accumulator.apply(probe.readSocketTraffic(), processes);
+    EXPECT_EQ(processes[0].netReceivedBytes, 500U) << "the bytes 12 moved while unowned";
+}
+
+TEST(LinuxProcessProbeTest, ACompleteEmptyReadingForgetsUnownedSocketsAndAFailedOneDoesNot)
+{
+    // #1327 review: the unowned sockets' first-seen times were replaced only by a reading with
+    // sockets in it, so an empty one left them behind. A later connection reusing one of those
+    // inodes then looked older than the map and never triggered the early rebuild.
+    using Platform::TestSupport::FakeSocket;
+    using Platform::TestSupport::ScriptedNetlinkTransport;
+    const auto ownerOfReused = [](bool failMiddleReading)
+    {
+        ScopedTempDir proc(failMiddleReading ? "ts_test_proc_net_unowned_failed" : "ts_test_proc_net_unowned_empty");
+        writeFile(proc.path / "4242" / "stat",
+                  "4242 (app) S 1 4242 4242 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+                  "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+        writeFile(proc.path / "stat", "cpu  100 0 100 800 0 0 0 0 0 0\n");
+        const auto fdDir = proc.path / "4242" / "fd";
+        std::filesystem::create_directories(fdDir);
+        std::filesystem::create_symlink("socket:[11]", fdDir / "3");
+
+        std::vector<FakeSocket> current{{.inode = 11, .bytesReceived = 10}, {.inode = 99, .bytesReceived = 7}};
+        bool failNext = false;
+        auto transport = std::make_unique<ScriptedNetlinkTransport>();
+        auto* script = transport.get();
+        auto stats = std::make_shared<Platform::NetlinkSocketStats>(std::move(transport), std::chrono::milliseconds{0});
+        script->onRequest = [&](const ScriptedNetlinkTransport::Request& request) -> ScriptedNetlinkTransport::Reply
+        {
+            if (request.family == AF_INET && failNext)
+            {
+                failNext = false;
+                return {Platform::TestSupport::errorDatagram(request.sequence, ScriptedNetlinkTransport::PORT_ID, -ENOBUFS)};
+            }
+            return Platform::TestSupport::completeDump(request, request.family == AF_INET ? current : std::vector<FakeSocket>{});
+        };
+
+        LinuxProcessProbe probe(proc.path);
+        probe.setSocketStatsForTesting(stats);
+        probe.setInodeMapEarlyRebuildIntervalForTesting(std::chrono::milliseconds{0}); // no rate limit, for the test
+        EXPECT_TRUE(probe.capabilities().hasNetworkCounters);
+
+        const auto first = probe.readSocketTraffic(); // builds the map; 99 is unowned before the build
+        EXPECT_EQ(first.sockets.size(), 2U);
+
+        current.clear();
+        failNext = failMiddleReading;
+        const auto middle = probe.readSocketTraffic();
+        EXPECT_TRUE(middle.sockets.empty());
+        EXPECT_EQ(middle.sampleTimeNs != 0, !failMiddleReading);
+
+        // A connection now holds inode 99, and its fd is visible.
+        std::filesystem::create_symlink("socket:[99]", fdDir / "4");
+        current.push_back({.inode = 99, .bytesReceived = 1});
+        const auto reused = probe.readSocketTraffic();
+        const auto it = std::ranges::find(reused.sockets, std::uint64_t{99}, &Platform::SocketTrafficSample::key);
+        return it != reused.sockets.end() ? it->pid : -1;
+    };
+
+    EXPECT_EQ(ownerOfReused(false), 4242) << "after a complete empty reading, a reused inode is new and rebuilds the map";
+    EXPECT_EQ(ownerOfReused(true), 0) << "a failed reading says nothing about the sockets: 99 is still unowned from before the build";
 }
 #endif
 

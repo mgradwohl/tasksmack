@@ -7,6 +7,7 @@
 #include "App/Panels/MemorySection.h"
 #include "App/Panels/NetworkSection.h"
 #include "App/ShellMetrics.h"
+#include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/BackgroundSampler.h"
@@ -171,6 +172,8 @@ void SystemMetricsPanel::onAttach()
 
     m_Model = std::make_shared<Domain::SystemModel>(Platform::makeSystemProbe(), Platform::makePowerProbe());
     m_Model->setMaxHistorySeconds(m_MaxHistorySeconds);
+    // Config-file only (not in Settings), so applied once here, before the first refresh (#1291).
+    m_Model->setMaxSaneNetworkRate(UserConfig::get().settings().maxSaneRateBps);
 
     m_StorageModel = std::make_shared<Domain::StorageModel>(Platform::makeDiskProbe());
     m_StorageModel->setMaxHistorySeconds(m_MaxHistorySeconds);

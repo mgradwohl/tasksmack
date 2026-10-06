@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -65,7 +66,9 @@ class LinuxSystemProbe : public ISystemProbe
     /// True when the interface has no backing device (no <sysClassNetRoot>/<iface>/device; it lives
     /// under /sys/devices/virtual/net): loopback, bridges, veth pairs, VLANs, bonds, tun/tap,
     /// WireGuard. Their traffic also crosses a hardware interface, so the Total leaves them out (#1106).
-    [[nodiscard]] static bool isVirtualInterface(const std::filesystem::path& sysClassNetRoot, std::string_view ifaceName);
+    /// nullopt when the interface isn't in sysfs at all (not mounted, or it vanished): it can't be
+    /// classified, and is counted as hardware (#1260).
+    [[nodiscard]] static std::optional<bool> isVirtualInterface(const std::filesystem::path& sysClassNetRoot, std::string_view ifaceName);
 
     /// Read interface operational state from sysfs (up/down/unknown).
     [[nodiscard]] static bool readInterfaceOperState(const std::string& ifaceName);
