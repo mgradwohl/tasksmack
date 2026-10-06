@@ -177,7 +177,8 @@ TaskSmack writes a quantity the same way wherever it appears: in a table cell, i
 
 Digits are all the same width, so a value that changes every second does not shift the text around it, and in the process table's size, rate and power columns the decimal points line up whatever the unit ("512.0 B" above "3.2 MiB").
 
-- **Sizes and rates** use binary units with their IEC names: B, KiB, MiB, GiB and TiB (1 KiB = 1,024 bytes), with one decimal, such as "512.0 MiB" or "1.5 GiB/s". A network interface's link speed is shown as a rate in the same units ("119.2 MiB/s" for a 1 Gbps link), with its rated speed ("1 Gbps") beside it or on hover.
+- **Sizes and rates** use binary units with their IEC names: B, KiB, MiB, GiB and TiB (1 KiB = 1,024 bytes), with one decimal, such as "512.0 MiB" or "1.5 GiB/s".
+- **Link speed** is the exception: a network interface's link speed is in bits with decimal prefixes, as network adapters, switches and the OS describe it: "100 Mbit/s", "1 Gbit/s", "2.5 Gbit/s", "10 Gbit/s". Hovering over it shows the most it can carry in the units of the Sent and Received rates ("Up to 1.2 GiB/s" for a 10 Gbit/s link). An unknown link speed shows "-" in the Interface Status table and "Link: Unknown" beside the interface selector.
 - **Percentages** are whole numbers from 10% up and keep one decimal below it ("4.2%"). Per-process CPU and memory percentages always keep one decimal, as the process table shows them.
 - **Power** has one decimal in W, mW or µW ("45.0 W"). **Temperature** is in whole degrees, rounded ("65°C").
 - **Durations** (CPU Time, uptime) use the two largest units: "45s", "2m 05s", "1h 02m", "3d 04h". The charts' time axis counts back from **now** ("5m", "4m", … "now"), and a chart tooltip gives the hovered sample's age.
