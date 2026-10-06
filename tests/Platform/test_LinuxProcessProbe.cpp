@@ -48,6 +48,7 @@
 #include <format>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -97,6 +98,9 @@ TEST(LinuxProcessProbeTest, CapabilitiesReportedCorrectly)
     // Shared memory comes from /proc/[pid]/statm; the process details chart draws it only when
     // this is set (#1035).
     EXPECT_TRUE(caps.hasSharedMemory);
+    // Peak RSS is the kernel's VmHWM (#1184), and the page-fault count doesn't wrap.
+    EXPECT_TRUE(caps.hasPeakRss);
+    EXPECT_EQ(caps.pageFaultCountBits, 64U);
 }
 
 TEST(LinuxProcessProbeTest, ReducedPrivilegesMatchesEuidAndEffectiveCapabilities)
@@ -831,6 +835,134 @@ void writeFile(const std::filesystem::path& path, std::string_view content)
     std::ofstream(path) << content;
 }
 
+TEST(LinuxProcessProbeTest, PeakRssIsVmHwmFromStatus)
+{
+    // #1184: the peak is the kernel's high-water mark over the process's whole life, from the status
+    // file enumerate() already reads -- not just the largest RSS TaskSmack happened to sample.
+    ScopedTempDir proc("ts_test_proc_vmhwm");
+    const auto writeProcess = [&proc](int pid, std::string_view status, std::string_view statm)
+    {
+        const auto dir = proc.path / std::to_string(pid);
+        writeFile(dir / "stat",
+                  std::to_string(pid) + " (app) S 1 1 1 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+                                        "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+        writeFile(dir / "status", status);
+        writeFile(dir / "statm", statm);
+    };
+    const long pageSize = sysconf(_SC_PAGESIZE);
+    ASSERT_GT(pageSize, 0);
+    const auto page = static_cast<std::uint64_t>(pageSize);
+
+    // An ordinary process: VmHWM 8192 kB, RSS 100 pages.
+    writeProcess(
+        4242, "Name:\tapp\nUid:\t0\t0\t0\t0\nVmPeak:\t  20000 kB\nVmHWM:\t    8192 kB\nVmRSS:\t    4096 kB\n", "500 100 10 1 0 50 0\n");
+    // A kernel thread has no Vm* lines: unknown, left to Domain's own tracking.
+    writeProcess(4343, "Name:\tkworker/0:1\nUid:\t0\t0\t0\t0\n", "0 0 0 0 0 0 0\n");
+    // A peak a moment behind the RSS statm reported (batched per-CPU counters) is raised to it.
+    writeProcess(4444, "Name:\tapp\nUid:\t0\t0\t0\t0\nVmHWM:\t       4 kB\n", "500 100 10 1 0 50 0\n");
+
+    LinuxProcessProbe probe(proc.path);
+    const auto processes = probe.enumerate();
+    const auto peakOf = [&processes](std::int32_t pid) -> std::uint64_t
+    {
+        const auto it = std::ranges::find_if(processes, [pid](const ProcessCounters& p) { return p.pid == pid; });
+        return it == processes.end() ? std::numeric_limits<std::uint64_t>::max() : it->peakRssBytes;
+    };
+    EXPECT_EQ(peakOf(4242), 8192U * 1024U);
+    EXPECT_EQ(peakOf(4343), 0U);
+    EXPECT_EQ(peakOf(4444), 100U * page);
+}
+
+void writeVmHwmProcess(const std::filesystem::path& procRoot, std::string_view status)
+{
+    const auto dir = procRoot / "4242";
+    writeFile(dir / "stat",
+              "4242 (app) S 1 1 1 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+    writeFile(dir / "status", status);
+}
+
+[[nodiscard]] std::uint64_t onlyPeakRss(const std::filesystem::path& procRoot)
+{
+    LinuxProcessProbe probe(procRoot);
+    const auto processes = probe.enumerate();
+    EXPECT_EQ(processes.size(), 1U);
+    return processes.empty() ? std::numeric_limits<std::uint64_t>::max() : processes[0].peakRssBytes;
+}
+
+// The probe's stack read of /proc/[pid]/status (LinuxProcessProbe::parseProcessStatus).
+constexpr std::size_t STATUS_STACK_READ_SIZE = 8192;
+
+TEST(LinuxProcessProbeTest, VmHwmPastTheStackBufferIsReadInFull)
+{
+    // The stack buffer (8 KiB) ends inside VmHWM's digits; the rest of the file is readable, so the
+    // whole file is read and the complete peak is used -- not the truncated "123".
+    ScopedTempDir proc("ts_test_proc_vmhwm_cut");
+    const std::string head = "Name:\tapp\nUid:\t0\t0\t0\t0\nGroups:\t";
+    const std::string vmHwm = "\nVmHWM:\t 123";
+    writeVmHwmProcess(proc.path, head + std::string(STATUS_STACK_READ_SIZE - head.size() - vmHwm.size(), '1') + vmHwm + "456789 kB\n");
+    EXPECT_EQ(onlyPeakRss(proc.path), 123456789ULL * 1024ULL);
+}
+
+TEST(LinuxProcessProbeTest, VmHwmAndCpusAllowedListPastTheStackBufferComeFromOneFullRead)
+{
+    // Either line cut off by the stack read sends the probe to the full file, and both come from it.
+    // cutVmHwm: the buffer ends inside VmHWM's digits, with a Cpus_allowed_list wholly after it.
+    // cutAfterList: a (here out-of-order) Cpus_allowed_list fits whole, VmHWM is cut -- the re-read
+    // happens for VmHWM alone.
+    const std::string head = "Name:\tapp\nUid:\t0\t0\t0\t0\nGroups:\t";
+    const std::string vmHwm = "\nVmHWM:\t 123";
+
+    ScopedTempDir cutVmHwm("ts_test_proc_status_both_cut");
+    writeVmHwmProcess(cutVmHwm.path,
+                      head + std::string(STATUS_STACK_READ_SIZE - head.size() - vmHwm.size(), '1') + vmHwm +
+                          "456789 kB\nCpus_allowed_list:\t0-3,64-127\nMems_allowed_list:\t0\n");
+
+    const std::string listFirst = "Name:\tapp\nUid:\t0\t0\t0\t0\nCpus_allowed_list:\t0-3,64-127\nGroups:\t";
+    ScopedTempDir cutAfterList("ts_test_proc_status_list_first");
+    writeVmHwmProcess(cutAfterList.path,
+                      listFirst + std::string(STATUS_STACK_READ_SIZE - listFirst.size() - vmHwm.size(), '1') + vmHwm + "456789 kB\n");
+
+    const auto expectedAffinity = CpuAffinity::fromCpuList("0-3,64-127").value_or(CpuAffinity{});
+    for (const auto* root : {&cutVmHwm.path, &cutAfterList.path})
+    {
+        LinuxProcessProbe probe(*root);
+        const auto processes = probe.enumerate();
+        ASSERT_EQ(processes.size(), 1U) << *root;
+        EXPECT_EQ(processes[0].peakRssBytes, 123456789ULL * 1024ULL) << *root;
+        EXPECT_EQ(processes[0].cpuAffinity, expectedAffinity) << *root;
+    }
+}
+
+TEST(LinuxProcessProbeTest, VmHwmAfterALongGroupsListIsFound)
+{
+    // A user in many supplementary groups: Groups: alone is past the 8 KiB stack read, and VmHWM follows it.
+    ScopedTempDir proc("ts_test_proc_vmhwm_groups");
+    std::string status = "Name:\tapp\nUid:\t1000\t1000\t1000\t1000\nGroups:\t";
+    for (int gid = 100000; gid < 101500; ++gid)
+    {
+        status += std::to_string(gid) + ' ';
+    }
+    ASSERT_GT(status.size(), 8192U);
+    status += "\nVmPeak:\t  20000 kB\nVmHWM:\t    8192 kB\nVmRSS:\t    4096 kB\n";
+    writeVmHwmProcess(proc.path, status);
+    EXPECT_EQ(onlyPeakRss(proc.path), 8192U * 1024U);
+}
+
+TEST(LinuxProcessProbeTest, IncompleteVmHwmLineIsIgnored)
+{
+    // A VmHWM line with no newline (the file ends mid-line) could carry a truncated number: it is not
+    // used, whether the file is short or longer than the stack buffer.
+    ScopedTempDir shortProc("ts_test_proc_vmhwm_eof_short");
+    writeVmHwmProcess(shortProc.path, "Name:\tapp\nUid:\t0\t0\t0\t0\nVmHWM:\t 123");
+    EXPECT_EQ(onlyPeakRss(shortProc.path), 0U);
+
+    ScopedTempDir longProc("ts_test_proc_vmhwm_eof_long");
+    const std::string head = "Name:\tapp\nUid:\t0\t0\t0\t0\nGroups:\t";
+    writeVmHwmProcess(longProc.path, head + std::string(STATUS_STACK_READ_SIZE + 2000, '1') + "\nVmHWM:\t 123");
+    EXPECT_EQ(onlyPeakRss(longProc.path), 0U);
+}
+
 TEST(LinuxProcessProbeTest, ReadableRaplCounterEnablesPowerUsage)
 {
     ScopedTempDir proc("ts_test_proc_rapl_ok");
@@ -1027,10 +1159,9 @@ TEST(LinuxProcessProbeTest, CpuAffinityIsReadFromCpusAllowedListWithoutA64CpuCap
     // A list the probe's 8 KiB stack read cuts off ("0-12" of "0-127") is not read as the part that
     // fit: the probe reads the whole file and gets all of it. Pad an earlier line so the buffer ends
     // right after "0-12".
-    constexpr std::size_t STATUS_READ_SIZE = 8192;
     const std::string head = "Name:\tapp\nUid:\t0\t0\t0\t0\nGroups:\t";
     const std::string tail = "\nCpus_allowed_list:\t0-12";
-    writeProcess(4646, head + std::string(STATUS_READ_SIZE - head.size() - tail.size(), '1') + tail + "7\nMems_allowed_list:\t0\n");
+    writeProcess(4646, head + std::string(STATUS_STACK_READ_SIZE - head.size() - tail.size(), '1') + tail + "7\nMems_allowed_list:\t0\n");
     // A sparse list, every even CPU up to 8190, is about 20 KiB on its own -- longer than the stack
     // read -- and is still read whole.
     std::string sparseList;
@@ -1038,7 +1169,7 @@ TEST(LinuxProcessProbeTest, CpuAffinityIsReadFromCpusAllowedListWithoutA64CpuCap
     {
         sparseList += (cpu == 0 ? "" : ",") + std::to_string(cpu);
     }
-    ASSERT_GT(sparseList.size(), 2 * STATUS_READ_SIZE);
+    ASSERT_GT(sparseList.size(), 2 * STATUS_STACK_READ_SIZE);
     writeProcess(4747, statusWith(sparseList));
     // A long Groups: line (many supplementary groups) pushes the list past the stack read.
     std::string groups;
@@ -1046,7 +1177,7 @@ TEST(LinuxProcessProbeTest, CpuAffinityIsReadFromCpusAllowedListWithoutA64CpuCap
     {
         groups += std::to_string(gid) + ' ';
     }
-    ASSERT_GT(groups.size(), STATUS_READ_SIZE);
+    ASSERT_GT(groups.size(), STATUS_STACK_READ_SIZE);
     writeProcess(4848, "Name:\tapp\nUid:\t0\t0\t0\t0\nGroups:\t" + groups + "\nCpus_allowed_list:\t0-3,64-127\nMems_allowed_list:\t0\n");
     // A file that really ends partway through the list line (no newline) is still not read in part.
     writeProcess(4949, "Name:\tapp\nUid:\t0\t0\t0\t0\nGroups:\t" + groups + "\nCpus_allowed_list:\t0-12");
