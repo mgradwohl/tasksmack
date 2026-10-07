@@ -169,6 +169,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessDetailsHistory.cpp
     App/test_ProcessActionHelpers.cpp
     App/test_ProcessActionsView.cpp
+    App/test_ProcessActionConfirmPopup.cpp
     App/test_SettingsLayerDetail.cpp
     App/test_NetInterfaceUtils.cpp
     App/test_PowerStatusText.cpp
@@ -310,6 +311,9 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/InstanceLock.cpp
     # Synthetic scenario (#1413): the env-var parser, composition helpers and history preload
     ${CMAKE_SOURCE_DIR}/src/App/SyntheticScenario.cpp
+    # The process-action confirm modal and the Actions tab, run headless (test_ProcessActionConfirmPopup.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionConfirm.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionsView.cpp
     # Domain layer
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/GPUModel.cpp
