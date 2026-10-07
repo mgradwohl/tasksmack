@@ -76,11 +76,8 @@
 #                         --window '' (or off, 0, false, no, as the app reads them) turns an
 #                         inherited one off. The value is checked and clamped here as the app
 #                         does, and the app is given the canonical clamped form. Default: unset (the saved
-#                         geometry). It is opt-in because the idle-CPU targets in CONTRIBUTING.md
-#                         were measured at a saved geometry (maximized, 3840x2100) and have not
-#                         been re-measured at a fixed size such as 1600x900; on the display they
-#                         were measured on, --window 1600x900,maximized reproduces their geometry
-#                         whatever is saved. The requested value is recorded as
+#                         geometry), for ad-hoc runs. The idle-CPU targets in CONTRIBUTING.md are
+#                         set at --window 1600x900, so gate runs pass it. The requested value is recorded as
 #                         scenario.requestedWindow in the JSON (the applied spec and sides, the
 #                         value as given, and whether the app logged applying it), next to the
 #                         measured scenario.window.
