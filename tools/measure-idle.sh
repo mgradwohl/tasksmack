@@ -171,8 +171,9 @@ DURATION_SECONDS=$((10#${DURATION_SECONDS}))
 REPEAT=$((10#${REPEAT}))
 [[ "${DURATION_SECONDS}" -gt 0 ]] || die "--duration must be at least 1 second"
 [[ "${REPEAT}" -gt 0 ]] || die "--repeat must be at least 1"
-[[ -z "${FAIL_ABOVE}" || "${FAIL_ABOVE}" =~ ^[0-9]+(\.[0-9]+)?$ ]] \
-    || die "--fail-above must be a non-negative number (percent of one logical CPU)"
+# Canonical decimal only (no leading zeros): it is written into the JSON as a number.
+[[ -z "${FAIL_ABOVE}" || "${FAIL_ABOVE}" =~ ^(0|[1-9][0-9]*)(\.[0-9]+)?$ ]] \
+    || die "--fail-above must be a non-negative decimal without leading zeros (percent of one logical CPU)"
 [[ "${LABEL}" =~ ^[A-Za-z0-9._-]+$ ]] || die "--label may only contain letters, digits, '.', '_' and '-'"
 [[ -r /proc/self/stat ]] || die "/proc is required (Linux only)"
 # Letters, digits and = , . _ - only: it goes into the RESULT line as one key=value field.
@@ -522,43 +523,29 @@ FIRST_LOG="$(head -n 1 "${REPS_FILE}" | cut -d ' ' -f 17-)"
 sampling_constant() {
     sed -n "s/^inline constexpr int $1 = \([0-9]*\);.*/\1/p" "${SAMPLING_CONFIG_H}" 2>/dev/null | head -n 1
 }
-# A [sampling] key's integer value from a config.toml, as UserConfig applies it: a TOML integer
-# (underscores between digits allowed, e.g. 1_800) clamped to [<min>, <max>]. Prints nothing for a
-# missing key, a value outside C++ int, or any other token (a quoted string, a float, a hex literal), which TaskSmack ignores
-# in favour of the default, so the caller falls through to that default too.
-# Usage: config_sampling_int <config.toml> <key> <min> <max>
+# A [sampling] key's value from a config.toml, as UserConfig applies it. The file is parsed with a
+# real TOML parser (Python's tomllib), so dotted keys (sampling.history_max_seconds = 600), inline
+# tables and quoted keys read as the app's toml++ reads them. Like loadAndNarrowInt64(): only a TOML
+# integer counts (not a bool, float or string); one outside C++ int narrows to the default; the
+# result is clamped to [<min>, <max>]. Prints nothing when the file doesn't parse, the key is absent
+# or its value is ignored, so the caller falls through to the default, which is what TaskSmack uses.
+# Usage: config_sampling_int <config.toml> <key> <min> <max> <default>
 config_sampling_int() {
-    local raw
-    raw="$(config_sampling_value "$1" "$2")"
-    [[ "${raw}" =~ ^[+-]?[0-9]+(_[0-9]+)*$ ]] || return 0
-    raw="${raw//_/}"
-    raw="${raw#+}"
-    # Outside C++ int, UserConfig's narrowOr<int>() keeps the default: print nothing, as for a bad token.
-    # Compare as digit strings (awk numbers are doubles and would round huge values).
-    local digits="${raw#-}"
-    digits="${digits#"${digits%%[!0]*}"}"
-    local limit=2147483647
-    [[ "${raw}" == -* ]] && limit=2147483648
-    # shellcheck disable=SC2071 # equal-length digit strings: a string comparison is the numeric one
-    if (( ${#digits} > ${#limit} )) || { (( ${#digits} == ${#limit} )) && [[ "${digits}" > "${limit}" ]]; }; then
-        return 0
-    fi
-    awk -v v="${raw}" -v lo="$3" -v hi="$4" 'BEGIN { v += 0; if (v < lo) v = lo; if (v > hi) v = hi; printf "%d\n", v }'
-}
-# A [sampling] key's raw token from a config.toml (use config_sampling_int for the value).
-config_sampling_value() {
-    [[ -r "$1" ]] || return 0
-    # TOML layout: whitespace around '=' and inside a table header is optional, and '#' starts a
-    # comment (the values read here are bare integers, so a '#' never sits inside a string).
-    awk -v key="$2" '
-        { line = $0; sub(/#.*/, "", line); gsub(/^[ \t]+|[ \t]+$/, "", line) }
-        line ~ /^\[/ { gsub(/[ \t]/, "", line); in_sampling = (line == "[sampling]"); next }
-        in_sampling && index(line, "=") {
-            k = substr(line, 1, index(line, "=") - 1); v = substr(line, index(line, "=") + 1)
-            gsub(/^[ \t]+|[ \t]+$/, "", k); gsub(/^[ \t]+|[ \t]+$/, "", v)
-            if (k == key) { print v; exit }
-        }
-    ' "$1"
+    [[ -r "$1" ]] && command -v python3 &>/dev/null || return 0
+    python3 - "$@" <<'PY' 2>/dev/null || true
+import sys, tomllib
+path, key, lo, hi, default = sys.argv[1], sys.argv[2], *map(int, sys.argv[3:6])
+try:
+    with open(path, "rb") as f:
+        value = tomllib.load(f).get("sampling", {}).get(key)
+except (OSError, tomllib.TOMLDecodeError, AttributeError):
+    sys.exit(0)
+if type(value) is not int:
+    sys.exit(0)
+if not -2**31 <= value < 2**31:
+    value = default
+print(min(max(value, lo), hi))
+PY
 }
 
 GIT_COMMIT="$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null || true)"
@@ -575,7 +562,8 @@ REFRESH_MS="$(grep -oE 'BackgroundSampler: (starting with|interval changed to) [
 REFRESH_SOURCE="app log"
 if [[ -z "${REFRESH_MS}" ]]; then
     REFRESH_MS="$(config_sampling_int "${CONFIG_PATH}" interval_ms \
-        "$(sampling_constant REFRESH_INTERVAL_MIN_MS)" "$(sampling_constant REFRESH_INTERVAL_MAX_MS)")"
+        "$(sampling_constant REFRESH_INTERVAL_MIN_MS)" "$(sampling_constant REFRESH_INTERVAL_MAX_MS)" \
+        "$(sampling_constant REFRESH_INTERVAL_DEFAULT_MS)")"
     REFRESH_SOURCE="config"
 fi
 if [[ -z "${REFRESH_MS}" ]]; then
@@ -585,13 +573,14 @@ fi
 
 # History window: the synthetic scenario's (logged as history=<N>s) when it sets one, else the
 # config file's, else SamplingConfig.h's default.
-# The scenario logs history=<N>s whenever it runs, and N is 0 for history=none: that is its setting,
-# not an absent one, so only a missing value falls back.
+# The scenario logs history=<N>s whenever it runs; N is 0 for history=none, which only skips the
+# preload and keeps the configured window (Synthetic::startupHistorySeconds), so 0 falls back too.
 HISTORY_S="$(grep -m 1 'showing a synthetic machine' "${FIRST_LOG}" | grep -oE 'history=[0-9]+s' | grep -oE '[0-9]+' || true)"
 HISTORY_SOURCE="synthetic scenario"
-if [[ -z "${HISTORY_S}" ]]; then
+if [[ -z "${HISTORY_S}" || "${HISTORY_S}" -eq 0 ]]; then
     HISTORY_S="$(config_sampling_int "${CONFIG_PATH}" history_max_seconds \
-        "$(sampling_constant HISTORY_SECONDS_MIN)" "$(sampling_constant HISTORY_SECONDS_MAX)")"
+        "$(sampling_constant HISTORY_SECONDS_MIN)" "$(sampling_constant HISTORY_SECONDS_MAX)" \
+        "$(sampling_constant HISTORY_SECONDS_DEFAULT)")"
     HISTORY_SOURCE="config"
 fi
 if [[ -z "${HISTORY_S}" ]]; then

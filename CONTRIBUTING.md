@@ -1414,7 +1414,7 @@ below) and says nothing about TaskSmack.
 
 #### Idle-CPU target (Linux/WSL app CPU)
 
-Per maintainer decision D1 (#843: measure first, then set a target), the idle-CPU target is:
+Per maintainer decision D1 (#1408, part of #843: measure first, then set a target), the idle-CPU target is:
 
 | Scenario | Target: median app CPU over `--repeat 5` |
 |---|---|
