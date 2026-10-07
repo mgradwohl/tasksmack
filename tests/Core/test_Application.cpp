@@ -31,7 +31,9 @@
 #include <spdlog/sinks/ostream_sink.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
@@ -989,13 +991,135 @@ TEST(FramePacingTest, VsyncTransitionNoChangeWhileInteractionStateUnchanged)
 
 TEST(FramePacingTest, SkipRenderThisFrameWhenDrainExceedsBudgetAndNotMinimized)
 {
-    EXPECT_TRUE(Core::FramePacing::computeSkipRenderThisFrame(16.0, 16.0, false));
-    EXPECT_FALSE(Core::FramePacing::computeSkipRenderThisFrame(15.9, 16.0, false));
+    EXPECT_TRUE(Core::FramePacing::computeSkipRenderThisFrame(16.0, 16.0, false, 0, Core::FramePacing::MAX_CONSECUTIVE_SKIPPED_RENDERS));
+    EXPECT_FALSE(Core::FramePacing::computeSkipRenderThisFrame(15.9, 16.0, false, 0, Core::FramePacing::MAX_CONSECUTIVE_SKIPPED_RENDERS));
 }
 
 TEST(FramePacingTest, SkipRenderThisFrameNeverSkipsWhileMinimized)
 {
-    EXPECT_FALSE(Core::FramePacing::computeSkipRenderThisFrame(1000.0, 16.0, true));
+    EXPECT_FALSE(Core::FramePacing::computeSkipRenderThisFrame(1000.0, 16.0, true, 0, Core::FramePacing::MAX_CONSECUTIVE_SKIPPED_RENDERS));
+}
+
+// #1410: a sustained slow drain skips at most MAX_CONSECUTIVE_SKIPPED_RENDERS renders in a row, then a
+// frame renders, however long every drain takes; the pattern repeats rather than freezing the display.
+TEST(FramePacingTest, ConsecutiveSkippedRendersAreBounded)
+{
+    using Core::FramePacing::MAX_CONSECUTIVE_SKIPPED_RENDERS;
+    static_assert(MAX_CONSECUTIVE_SKIPPED_RENDERS >= 1, "P3 must still be able to skip an isolated stall");
+
+    constexpr double SLOW_DRAIN_MS = 40.0; // every drain overruns the 16 ms skip threshold
+    constexpr int ITERATIONS = 30;
+    std::uint32_t consecutive = 0;
+    std::uint32_t longestRun = 0;
+    int renders = 0;
+    for (int i = 0; i < ITERATIONS; ++i)
+    {
+        SCOPED_TRACE(i);
+        const bool skip =
+            Core::FramePacing::computeSkipRenderThisFrame(SLOW_DRAIN_MS, 16.0, false, consecutive, MAX_CONSECUTIVE_SKIPPED_RENDERS);
+        // Every N+1-th iteration renders: N skips, then a forced frame.
+        EXPECT_EQ(skip, (i % static_cast<int>(MAX_CONSECUTIVE_SKIPPED_RENDERS + 1)) != static_cast<int>(MAX_CONSECUTIVE_SKIPPED_RENDERS));
+        renders += skip ? 0 : 1;
+        consecutive = Core::FramePacing::nextConsecutiveSkippedRenders(consecutive, skip, !skip);
+        longestRun = std::max(longestRun, consecutive);
+    }
+    EXPECT_EQ(longestRun, MAX_CONSECUTIVE_SKIPPED_RENDERS);
+    EXPECT_EQ(renders, ITERATIONS / static_cast<int>(MAX_CONSECUTIVE_SKIPPED_RENDERS + 1));
+}
+
+TEST(FramePacingTest, ConsecutiveSkipCountResetsOnAFrameAndHoldsOtherwise)
+{
+    using Core::FramePacing::nextConsecutiveSkippedRenders;
+    EXPECT_EQ(nextConsecutiveSkippedRenders(0, true, false), 1U);
+    EXPECT_EQ(nextConsecutiveSkippedRenders(1, true, false), 2U);
+    EXPECT_EQ(nextConsecutiveSkippedRenders(2, false, true), 0U);
+    EXPECT_EQ(nextConsecutiveSkippedRenders(1, false, false), 1U);
+}
+
+namespace
+{
+
+/// A scripted event source for drainEventsWithinBudget(): each queued event takes the given time to
+/// poll and dispatch, on a fake millisecond clock.
+struct FakeDrainSource
+{
+    std::vector<double> eventCostsMs;
+    std::size_t next = 0;
+    double clockMs = 0.0;
+    int clockReads = 0;
+
+    auto pollAndDispatch()
+    {
+        return [this]
+        {
+            if (next >= eventCostsMs.size())
+            {
+                return false;
+            }
+            clockMs += eventCostsMs[next++];
+            return true;
+        };
+    }
+
+    auto elapsedMs()
+    {
+        return [this]
+        {
+            ++clockReads;
+            return clockMs;
+        };
+    }
+};
+
+} // namespace
+
+// #1410: the budget is checked after every event. The drain used to check only every fourth event,
+// so a single stalled poll early in a batch ran up to three more polls past the budget.
+TEST(FramePacingTest, DrainChecksItsBudgetAfterEveryEvent)
+{
+    constexpr double BUDGET_MS = 8.0;
+    struct Case
+    {
+        const char* name;
+        std::vector<double> costsMs;
+        std::uint32_t expectedEvents;
+        bool expectedBudgetExceeded;
+        double expectedMaxSingleMs;
+    };
+    const std::vector<Case> cases = {
+        {.name = "first poll stalls",
+         .costsMs = {9.0, 1.0, 1.0, 1.0, 1.0},
+         .expectedEvents = 1,
+         .expectedBudgetExceeded = true,
+         .expectedMaxSingleMs = 9.0},
+        {.name = "second poll crosses",
+         .costsMs = {1.0, 7.5, 1.0, 1.0},
+         .expectedEvents = 2,
+         .expectedBudgetExceeded = true,
+         .expectedMaxSingleMs = 7.5},
+        {.name = "fifth poll crosses",
+         .costsMs = {2.0, 2.0, 2.0, 1.0, 1.0, 1.0},
+         .expectedEvents = 5,
+         .expectedBudgetExceeded = true,
+         .expectedMaxSingleMs = 2.0},
+        {.name = "fits the budget",
+         .costsMs = {1.0, 1.0, 3.0},
+         .expectedEvents = 3,
+         .expectedBudgetExceeded = false,
+         .expectedMaxSingleMs = 3.0},
+        {.name = "empty queue", .costsMs = {}, .expectedEvents = 0, .expectedBudgetExceeded = false, .expectedMaxSingleMs = 0.0},
+    };
+    for (const auto& testCase : cases)
+    {
+        SCOPED_TRACE(testCase.name);
+        FakeDrainSource source{.eventCostsMs = testCase.costsMs};
+        const auto result = Core::FramePacing::drainEventsWithinBudget(source.pollAndDispatch(), source.elapsedMs(), BUDGET_MS);
+        EXPECT_EQ(result.eventCount, testCase.expectedEvents);
+        EXPECT_EQ(result.budgetExceeded, testCase.expectedBudgetExceeded);
+        EXPECT_DOUBLE_EQ(result.maxSingleEventMs, testCase.expectedMaxSingleMs);
+        // One clock read per event handled, none for the empty poll that ends the drain.
+        EXPECT_EQ(source.clockReads, static_cast<int>(testCase.expectedEvents));
+    }
 }
 
 TEST(FramePacingTest, ShouldSleepWhenIdleOutsideGracePeriod)

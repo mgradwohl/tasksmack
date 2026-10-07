@@ -122,7 +122,8 @@ struct ResizePerfTraceStats
     std::uint32_t p0BudgetCapHits = 0;
     /// Number of frames skipped by P3 (drain-overrun skip-render).
     std::uint32_t skippedRenderFrames = 0;
-    /// Max wall time for any single 4-event budget-check interval inside the drain loop.
+    /// Max wall time for any single event (poll + dispatch) inside the drain loop, which checks its
+    /// budget after every event (#1410; it was every fourth, so this was a 4-event interval).
     /// A large value here indicates a single SDL_PollEvent call stalling (Wayland configure hold).
     double maxSinglePollBatchMs = 0.0;
     /// Deliver-to-deliver loop intervals: wall time from one presented frame's end (after swap)
