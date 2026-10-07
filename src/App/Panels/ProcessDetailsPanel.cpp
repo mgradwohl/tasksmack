@@ -7,13 +7,13 @@
 #include "App/TabLabel.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
-#include "Domain/History.h"
 #include "Domain/Numeric.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
 #include "Platform/Factory.h"
 #include "Platform/IProcessActions.h"
 #include "ProcessActionConfirm.h"
+#include "ProcessDetailsHistory.h"
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
 #include "ProcessDetailsPanel_GpuHelpers.h"
@@ -44,7 +44,6 @@
 #include <cstdint>
 #include <format>
 #include <initializer_list>
-#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -89,15 +88,9 @@ constexpr size_t PROCESS_NETWORK_IO_NOW_BAR_COLUMNS = 2;
 constexpr size_t PROCESS_GPU_NOW_BAR_COLUMNS = 1;
 
 // The newest @p count samples of a history, viewed in place (#1018: this was a per-frame copy).
-[[nodiscard]] auto tailSpan(const std::vector<double>& data, std::size_t count) -> std::span<const double>
+[[nodiscard]] auto tailSpan(std::span<const double> data, std::size_t count) -> std::span<const double>
 {
     return UI::Widgets::tailAlignedSpan(data, count).values;
-}
-
-// Drops the oldest @p count samples of a history (all of them if it has fewer).
-void dropOldest(std::vector<double>& data, std::size_t count)
-{
-    data.erase(data.begin(), data.begin() + static_cast<std::ptrdiff_t>(std::min(count, data.size())));
 }
 
 // ImPlot series counts are int; keep conversion explicit + checked.
@@ -166,6 +159,7 @@ using Detail::NICE_MIN;
 using Detail::NICE_RANGE;
 using Detail::PRIORITY_APPLY_BUTTON_MIN_EM;
 using Detail::PRIORITY_GRADIENT_SEGMENTS;
+using Detail::ProcessSeries;
 
 // Constructor (inside App namespace)
 ProcessDetailsPanel::ProcessDetailsPanel() : ProcessDetailsPanel(Platform::makeProcessActions())
@@ -235,7 +229,7 @@ void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSampl
                         });
     if (recorded)
     {
-        trimHistory(m_Timestamps.back());
+        m_History.trimToWindow(m_MaxHistorySeconds);
         m_HistoryGeneration = UI::Widgets::nextChartDataGeneration();
     }
 
@@ -268,84 +262,11 @@ void ProcessDetailsPanel::recordHistoryPoint(const Domain::ProcessSnapshot& snap
                                              bool gapBefore,
                                              Detail::SampleRateReadings rateReadings)
 {
-    using Domain::Numeric::toDouble;
-
-    // Every history, m_Timestamps included, gets one value per point, so they
-    // stay aligned.
-    const std::array<std::vector<double>*, 17> histories{&m_CpuHistory,
-                                                         &m_CpuUserHistory,
-                                                         &m_CpuSystemHistory,
-                                                         &m_MemoryHistory,
-                                                         &m_SharedHistory,
-                                                         &m_VirtualHistory,
-                                                         &m_ThreadHistory,
-                                                         &m_HandleHistory,
-                                                         &m_PageFaultHistory,
-                                                         &m_IoReadHistory,
-                                                         &m_IoWriteHistory,
-                                                         &m_NetSentHistory,
-                                                         &m_NetRecvHistory,
-                                                         &m_PowerHistory,
-                                                         &m_GpuUtilHistory,
-                                                         &m_GpuMemHistory,
-                                                         &m_GdiHistory};
-
-    if (gapBefore && !m_Timestamps.empty() && sampleTimeSeconds > m_Timestamps.back())
-    {
-        // Generations were published here that are no longer available: NaN in
-        // every series, so each chart shows a gap rather than a line drawn across
-        // the missing samples.
-        m_Timestamps.push_back((m_Timestamps.back() + sampleTimeSeconds) * 0.5);
-        for (auto* history : histories)
-        {
-            history->push_back(std::numeric_limits<double>::quiet_NaN());
-        }
-    }
-
-    const bool ioReading = rateReadings.io;
-    const bool networkReading = rateReadings.network;
-
-    // Stored as double to avoid narrowing; converted only at the ImPlot boundary.
-    // In the order of `histories` above. A value the probe could not read is NaN,
-    // drawn as a gap (#1110).
-    const std::array<double, 17> values{
-        snapshot.cpuPercent,
-        snapshot.cpuUserPercent,
-        snapshot.cpuSystemPercent,
-        // Bytes, not a percent of RAM: a typical process is under 1 % of RAM,
-        // which drew a flat line on a 0-100 % axis (#1195). The share of RAM is
-        // shown in the tooltip and bar text instead.
-        toDouble(snapshot.memoryBytes),
-        toDouble(snapshot.sharedBytes),
-        // Bytes, not a percent of RAM: a process's virtual size is usually larger
-        // than physical RAM, so as a percent it was clamped to 100 and carried no
-        // information (#992).
-        toDouble(snapshot.virtualBytes),
-        toDouble(snapshot.threadCount),
-        Detail::readingOrGap(snapshot.handleCountAvailable, toDouble(snapshot.handleCount)),
-        snapshot.pageFaultsPerSec,
-        // Gaps too where the probe has no such counters at all, not a line of measured-looking zeros (#1210).
-        Detail::readingOrGap(ioReading, snapshot.ioReadBytesPerSec),
-        Detail::readingOrGap(ioReading, snapshot.ioWriteBytesPerSec),
-        Detail::readingOrGap(networkReading, snapshot.netSentBytesPerSec),
-        Detail::readingOrGap(networkReading, snapshot.netReceivedBytesPerSec),
-        snapshot.powerWatts,
-        // Gaps where the GPU probe supplied no per-process data, or memory but not utilization (NVML on
-        // Linux), when this sample's generation was produced -- not as of the latest frame (#1210).
-        Detail::readingOrGap(rateReadings.gpuUtilization, snapshot.gpuUtilPercent),
-        Detail::readingOrGap(rateReadings.gpuPerProcess, toDouble(snapshot.gpuMemoryBytes)),
-        // NaN signals "no data" to the plot; ImPlot renders NaN as a gap in the
-        // line.
-        snapshot.gdiObjectCount.has_value() ? toDouble(*snapshot.gdiObjectCount) : std::numeric_limits<double>::quiet_NaN(),
-    };
-    m_Timestamps.push_back(sampleTimeSeconds);
-    for (std::size_t i = 0; i < histories.size(); ++i)
-    {
-        histories[i]->push_back(values[i]);
-    }
+    // One value per series at each point, a gap where the probe had no reading (Detail::historyPointFrom()).
+    m_History.append(sampleTimeSeconds, Detail::historyPointFrom(snapshot, rateReadings), gapBefore);
 
     // Peak working set in bytes, like the Used line it caps (never decreases)
-    m_PeakMemoryBytes = std::max(m_PeakMemoryBytes, toDouble(snapshot.peakMemoryBytes));
+    m_PeakMemoryBytes = std::max(m_PeakMemoryBytes, Domain::Numeric::toDouble(snapshot.peakMemoryBytes));
 }
 
 const Domain::ProcessSnapshot& ProcessDetailsPanel::cachedSnapshot() const
@@ -460,11 +381,15 @@ void ProcessDetailsPanel::renderContent()
             {
                 const UI::Widgets::TabContentScope content("##GpuContent");
                 const auto& proc = cachedSnapshot();
-                const Detail::GpuTabContent gpuContent = Detail::gpuTabContent(
-                    m_CachedRateReadings.gpuSupported, // A failed read is not "not available on this system" (#1210)
-                    Detail::hasGpuUsageToShow(
-                        proc.gpuMemoryBytes, proc.gpuUtilPercent, !proc.gpuDevices.empty(), m_GpuUtilHistory, m_GpuMemHistory),
-                    Detail::hasAnyReading(m_GpuUtilHistory) || Detail::hasAnyReading(m_GpuMemHistory));
+                const Detail::GpuTabContent gpuContent =
+                    Detail::gpuTabContent(m_CachedRateReadings.gpuSupported, // A failed read is not "not available on this system" (#1210)
+                                          Detail::hasGpuUsageToShow(proc.gpuMemoryBytes,
+                                                                    proc.gpuUtilPercent,
+                                                                    !proc.gpuDevices.empty(),
+                                                                    m_History.series(ProcessSeries::GpuUtil),
+                                                                    m_History.series(ProcessSeries::GpuMemory)),
+                                          Detail::hasAnyReading(m_History.series(ProcessSeries::GpuUtil)) ||
+                                              Detail::hasAnyReading(m_History.series(ProcessSeries::GpuMemory)));
                 if (gpuContent == Detail::GpuTabContent::Unavailable)
                 {
                     // Not "no usage": without per-process metrics none can be seen (#1210).
@@ -507,7 +432,10 @@ void ProcessDetailsPanel::renderContent()
                 const UI::Widgets::TabContentScope content("##NetworkContent");
                 // Readings only: every sample adds a point, a gap where there was no reading, so a
                 // history that is merely non-empty is not data (#1210).
-                if (!Detail::hasNetworkOrIoReadings(m_IoReadHistory, m_IoWriteHistory, m_NetSentHistory, m_NetRecvHistory))
+                if (!Detail::hasNetworkOrIoReadings(m_History.series(ProcessSeries::IoRead),
+                                                    m_History.series(ProcessSeries::IoWrite),
+                                                    m_History.series(ProcessSeries::NetSent),
+                                                    m_History.series(ProcessSeries::NetReceived)))
                 {
                     UI::Widgets::renderEmptyState(ICON_FA_NETWORK_WIRED "  No network or disk I/O yet",
                                                   "Disk and network rates for this process appear here once they have been sampled.");
@@ -578,9 +506,9 @@ void ProcessDetailsPanel::onEvent(Core::Event& event)
             // that is no longer sampled (#1145).
             m_MaxHistorySeconds = Domain::Sampling::clampHistorySeconds(Domain::Numeric::toDouble(e.getSeconds()));
             m_NoGpuUsageDetail.clear(); // It names the window (#1210)
-            if (!m_Timestamps.empty())
+            if (!m_History.empty())
             {
-                trimHistory(m_Timestamps.back());
+                m_History.trimToWindow(m_MaxHistorySeconds);
                 m_HistoryGeneration = UI::Widgets::nextChartDataGeneration();
             }
             return false;
@@ -608,24 +536,7 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t uniqueK
 
     m_SelectedPid = pid;
     m_SelectedUniqueKey = uniqueKey;
-    m_CpuHistory.clear();
-    m_CpuUserHistory.clear();
-    m_CpuSystemHistory.clear();
-    m_MemoryHistory.clear();
-    m_SharedHistory.clear();
-    m_VirtualHistory.clear();
-    m_ThreadHistory.clear();
-    m_HandleHistory.clear();
-    m_PageFaultHistory.clear();
-    m_IoReadHistory.clear();
-    m_IoWriteHistory.clear();
-    m_NetSentHistory.clear();
-    m_NetRecvHistory.clear();
-    m_PowerHistory.clear();
-    m_GpuUtilHistory.clear();
-    m_GpuMemHistory.clear();
-    m_GdiHistory.clear();
-    m_Timestamps.clear();
+    m_History.clear();
     m_HistoryGeneration = UI::Widgets::nextChartDataGeneration();
     m_SampleIntake = {};
     m_CachedSnapshot.reset();
@@ -956,16 +867,15 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
     const auto& theme = UI::Theme::get();
 
     // Inline CPU history with paired now bar
-    if (!m_Timestamps.empty() && !m_CpuHistory.empty())
+    if (!m_History.empty())
     {
         const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
-        const size_t alignedCount =
-            std::min({m_Timestamps.size(), m_CpuHistory.size(), m_CpuUserHistory.size(), m_CpuSystemHistory.size()});
+        const size_t alignedCount = m_History.size();
 
-        const auto timestamps = tailSpan(m_Timestamps, alignedCount);
-        const auto cpuData = tailSpan(m_CpuHistory, alignedCount);
-        const auto cpuUserData = tailSpan(m_CpuUserHistory, alignedCount);
-        const auto cpuSystemData = tailSpan(m_CpuSystemHistory, alignedCount);
+        const auto timestamps = tailSpan(m_History.timestamps(), alignedCount);
+        const auto cpuData = tailSpan(m_History.series(ProcessSeries::CpuTotal), alignedCount);
+        const auto cpuUserData = tailSpan(m_History.series(ProcessSeries::CpuUser), alignedCount);
+        const auto cpuSystemData = tailSpan(m_History.series(ProcessSeries::CpuSystem), alignedCount);
 
         const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
         const auto cpuTimeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
@@ -1131,21 +1041,21 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
     const auto& theme = UI::Theme::get();
 
     // Inline history for memory (overview) mirroring system memory chart layout
-    if (!m_Timestamps.empty())
+    if (!m_History.empty())
     {
         const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
-        const size_t alignedCount =
-            std::min({m_Timestamps.size(), m_MemoryHistory.size(), m_SharedHistory.size(), m_VirtualHistory.size()});
+        const size_t alignedCount = m_History.size();
 
         if (alignedCount > 0)
         {
-            const auto timestamps = tailSpan(m_Timestamps, alignedCount);
-            const auto usedData = tailSpan(m_MemoryHistory, alignedCount);
+            const auto timestamps = tailSpan(m_History.timestamps(), alignedCount);
+            const auto usedData = tailSpan(m_History.series(ProcessSeries::MemoryUsed), alignedCount);
             // Shared is not reported on Windows; its line, tooltip row and bar are left out there
             // rather than shown as a permanent 0 (#1035).
             const bool showShared = m_ProcessCapabilities.hasSharedMemory;
-            const auto sharedData = showShared ? tailSpan(m_SharedHistory, alignedCount) : std::span<const double>{};
-            const auto virtData = tailSpan(m_VirtualHistory, alignedCount);
+            const auto sharedData =
+                showShared ? tailSpan(m_History.series(ProcessSeries::MemoryShared), alignedCount) : std::span<const double>{};
+            const auto virtData = tailSpan(m_History.series(ProcessSeries::Virtual), alignedCount);
 
             const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
             const auto timeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
@@ -1337,26 +1247,22 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
 // bars, and returns early when no aligned data is available.
 void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayout& fill)
 {
-    if (m_Timestamps.empty() || (m_ThreadHistory.empty() && m_HandleHistory.empty() && m_PageFaultHistory.empty()))
+    if (m_History.empty())
     {
         return;
     }
 
-    // Align the independently sampled histories to their newest shared window so
-    // every plotted value and tooltip lookup refers to the same point in time.
+    // Every series has one value per timestamp (Detail::ProcessDetailsHistory), so every plotted value
+    // and tooltip lookup refers to the same point in time.
     const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
-    const size_t alignedCount = std::min({m_Timestamps.size(), m_ThreadHistory.size(), m_HandleHistory.size(), m_PageFaultHistory.size()});
-    if (alignedCount == 0)
-    {
-        return;
-    }
+    const size_t alignedCount = m_History.size();
 
     const auto& theme = UI::Theme::get();
 
-    const auto timestamps = tailSpan(m_Timestamps, alignedCount);
-    const auto threadData = tailSpan(m_ThreadHistory, alignedCount);
-    const auto handleData = tailSpan(m_HandleHistory, alignedCount);
-    const auto faultData = tailSpan(m_PageFaultHistory, alignedCount);
+    const auto timestamps = tailSpan(m_History.timestamps(), alignedCount);
+    const auto threadData = tailSpan(m_History.series(ProcessSeries::Threads), alignedCount);
+    const auto handleData = tailSpan(m_History.series(ProcessSeries::Handles), alignedCount);
+    const auto faultData = tailSpan(m_History.series(ProcessSeries::PageFaults), alignedCount);
 
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
     const auto timeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
@@ -1364,8 +1270,8 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
 #ifdef _WIN32
     // The GDI history can be shorter than the others, and ends at the same newest sample, so it
     // starts gdiTimeOffset timestamps in (#1001).
-    const size_t gdiAlignedCount = std::min(alignedCount, m_GdiHistory.size());
-    const auto gdiData = tailSpan(m_GdiHistory, gdiAlignedCount);
+    const size_t gdiAlignedCount = std::min(alignedCount, m_History.series(ProcessSeries::GdiObjects).size());
+    const auto gdiData = tailSpan(m_History.series(ProcessSeries::GdiObjects), gdiAlignedCount);
     const size_t gdiTimeOffset = Detail::seriesTimeOffset(alignedCount, gdiData.size());
     const bool hasGdiSamples = Detail::hasAnySample(gdiData);
 #endif
@@ -1542,7 +1448,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
 
 void ProcessDetailsPanel::renderIoStats(UI::Widgets::FillPlotLayout& fill)
 {
-    const size_t alignedCount = std::min({m_Timestamps.size(), m_IoReadHistory.size(), m_IoWriteHistory.size()});
+    const size_t alignedCount = m_History.size();
     if (alignedCount == 0)
     {
         return;
@@ -1551,9 +1457,9 @@ void ProcessDetailsPanel::renderIoStats(UI::Widgets::FillPlotLayout& fill)
     const auto& theme = UI::Theme::get();
     const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
 
-    const auto timestamps = tailSpan(m_Timestamps, alignedCount);
-    const auto readData = tailSpan(m_IoReadHistory, alignedCount);
-    const auto writeData = tailSpan(m_IoWriteHistory, alignedCount);
+    const auto timestamps = tailSpan(m_History.timestamps(), alignedCount);
+    const auto readData = tailSpan(m_History.series(ProcessSeries::IoRead), alignedCount);
+    const auto writeData = tailSpan(m_History.series(ProcessSeries::IoWrite), alignedCount);
 
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
     const auto timeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
@@ -1647,7 +1553,7 @@ void ProcessDetailsPanel::renderIoStats(UI::Widgets::FillPlotLayout& fill)
 
 void ProcessDetailsPanel::renderNetworkStats(UI::Widgets::FillPlotLayout& fill)
 {
-    const size_t alignedCount = std::min({m_Timestamps.size(), m_NetSentHistory.size(), m_NetRecvHistory.size()});
+    const size_t alignedCount = m_History.size();
     if (alignedCount == 0)
     {
         return;
@@ -1656,9 +1562,9 @@ void ProcessDetailsPanel::renderNetworkStats(UI::Widgets::FillPlotLayout& fill)
     const auto& theme = UI::Theme::get();
     const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
 
-    const auto timestamps = tailSpan(m_Timestamps, alignedCount);
-    const auto sentData = tailSpan(m_NetSentHistory, alignedCount);
-    const auto recvData = tailSpan(m_NetRecvHistory, alignedCount);
+    const auto timestamps = tailSpan(m_History.timestamps(), alignedCount);
+    const auto sentData = tailSpan(m_History.series(ProcessSeries::NetSent), alignedCount);
+    const auto recvData = tailSpan(m_History.series(ProcessSeries::NetReceived), alignedCount);
 
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
     const auto timeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
@@ -1765,22 +1671,18 @@ void ProcessDetailsPanel::renderNetworkStats(UI::Widgets::FillPlotLayout& fill)
 void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill)
 {
     const bool hasCurrent = proc.powerWatts > 0.0;
-    if (m_Timestamps.empty() && m_PowerHistory.empty() && !hasCurrent)
+    if (m_History.empty() && !hasCurrent)
     {
         return;
     }
 
-    const size_t alignedCount = std::min(m_Timestamps.size(), m_PowerHistory.size());
-    if (alignedCount == 0 && !hasCurrent)
-    {
-        return;
-    }
+    const size_t alignedCount = m_History.size();
 
     const auto& theme = UI::Theme::get();
     const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
 
-    const auto powerData = tailSpan(m_PowerHistory, alignedCount);
-    const auto timestamps = tailSpan(m_Timestamps, alignedCount);
+    const auto powerData = tailSpan(m_History.series(ProcessSeries::Power), alignedCount);
+    const auto timestamps = tailSpan(m_History.timestamps(), alignedCount);
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
     const auto timeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
 
@@ -2106,15 +2008,15 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
     // GPU history graphs: drawn from the start, with the collecting hint until samples arrive, like
     // every other chart (#1013); this was a line of text until there was history.
     {
-        // Every series drawn counts, so a history that falls out of lockstep can't be read past its
-        // end (#1149).
-        const size_t alignedCount = std::min({m_GpuUtilHistory.size(), m_GpuMemHistory.size(), m_Timestamps.size()});
+        // Every series has one value per timestamp (Detail::ProcessDetailsHistory), so none can be read
+        // past its end (#1149).
+        const size_t alignedCount = m_History.size();
         const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
 
         // Extract only what we need for the graphs
-        const auto timestamps = tailSpan(m_Timestamps, alignedCount);
-        const auto gpuUtilVec = tailSpan(m_GpuUtilHistory, alignedCount);
-        const auto gpuMemVec = tailSpan(m_GpuMemHistory, alignedCount);
+        const auto timestamps = tailSpan(m_History.timestamps(), alignedCount);
+        const auto gpuUtilVec = tailSpan(m_History.series(ProcessSeries::GpuUtil), alignedCount);
+        const auto gpuMemVec = tailSpan(m_History.series(ProcessSeries::GpuMemory), alignedCount);
 
         const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
         const auto timeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
@@ -2253,103 +2155,6 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
         renderHistoryWithNowBars("ProcessGPUMemHistory", fill.plotHeight(), plotGpuMem, {gpuMemBar}, false, PROCESS_GPU_NOW_BAR_COLUMNS);
         fill.addPlot();
         ImGui::Spacing();
-    }
-}
-
-void ProcessDetailsPanel::trimHistory(double nowSeconds)
-{
-    const double cutoff = nowSeconds - m_MaxHistorySeconds;
-    // Keep the newest sample before the cutoff, so the charts' lines run off the window's left edge
-    // instead of leaving an empty strip there after every trim (#1016).
-    // Only while a newer sample remains (the newest is always the current sample, so here one does
-    // unless the window is shorter than the time since it -- then everything goes).
-    // The anchor is dropped too when nothing newer remains or it is across a gap
-    // (Domain::HistoryUtils::keepTrimAnchor).
-    const size_t removeCount = Domain::HistoryUtils::trimCountBefore(m_Timestamps, cutoff);
-
-    // One erase per buffer rather than a pop_front per sample: vector erase from the front shifts
-    // the rest, so it must not run once per dropped sample.
-    const auto trimHistoryFront = [removeCount](std::vector<double>& history)
-    {
-        dropOldest(history, removeCount);
-    };
-    trimHistoryFront(m_Timestamps);
-
-    trimHistoryFront(m_CpuHistory);
-    trimHistoryFront(m_CpuUserHistory);
-    trimHistoryFront(m_CpuSystemHistory);
-    trimHistoryFront(m_MemoryHistory);
-    trimHistoryFront(m_SharedHistory);
-    trimHistoryFront(m_VirtualHistory);
-    trimHistoryFront(m_ThreadHistory);
-    trimHistoryFront(m_HandleHistory);
-    trimHistoryFront(m_PageFaultHistory);
-    trimHistoryFront(m_IoReadHistory);
-    trimHistoryFront(m_IoWriteHistory);
-    trimHistoryFront(m_NetSentHistory);
-    trimHistoryFront(m_NetRecvHistory);
-    trimHistoryFront(m_PowerHistory);
-    trimHistoryFront(m_GpuUtilHistory);
-    trimHistoryFront(m_GpuMemHistory);
-    trimHistoryFront(m_GdiHistory);
-
-    // Keep all history buffers aligned to the smallest non-empty length.
-    size_t minSize = std::numeric_limits<size_t>::max();
-    const auto updateMin = [&minSize](size_t size)
-    {
-        if (size > 0)
-        {
-            minSize = std::min(minSize, size);
-        }
-    };
-
-    updateMin(m_Timestamps.size());
-    updateMin(m_CpuHistory.size());
-    updateMin(m_CpuUserHistory.size());
-    updateMin(m_CpuSystemHistory.size());
-    updateMin(m_MemoryHistory.size());
-    updateMin(m_SharedHistory.size());
-    updateMin(m_VirtualHistory.size());
-    updateMin(m_ThreadHistory.size());
-    updateMin(m_HandleHistory.size());
-    updateMin(m_PageFaultHistory.size());
-    updateMin(m_IoReadHistory.size());
-    updateMin(m_IoWriteHistory.size());
-    updateMin(m_NetSentHistory.size());
-    updateMin(m_NetRecvHistory.size());
-    updateMin(m_PowerHistory.size());
-    updateMin(m_GpuUtilHistory.size());
-    updateMin(m_GpuMemHistory.size());
-    updateMin(m_GdiHistory.size());
-
-    if (minSize != std::numeric_limits<size_t>::max())
-    {
-        const auto trimToMin = [minSize](std::vector<double>& history)
-        {
-            if (history.size() > minSize)
-            {
-                dropOldest(history, history.size() - minSize);
-            }
-        };
-
-        trimToMin(m_Timestamps);
-        trimToMin(m_CpuHistory);
-        trimToMin(m_CpuUserHistory);
-        trimToMin(m_CpuSystemHistory);
-        trimToMin(m_MemoryHistory);
-        trimToMin(m_SharedHistory);
-        trimToMin(m_VirtualHistory);
-        trimToMin(m_ThreadHistory);
-        trimToMin(m_HandleHistory);
-        trimToMin(m_PageFaultHistory);
-        trimToMin(m_IoReadHistory);
-        trimToMin(m_IoWriteHistory);
-        trimToMin(m_NetSentHistory);
-        trimToMin(m_NetRecvHistory);
-        trimToMin(m_PowerHistory);
-        trimToMin(m_GpuUtilHistory);
-        trimToMin(m_GpuMemHistory);
-        trimToMin(m_GdiHistory);
     }
 }
 

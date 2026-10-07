@@ -47,6 +47,9 @@ constexpr int floorFor(int recorded)
 constexpr std::array BUDGETS{
     GeometryBudget{.scene = ChartGeometry::Scene::CpuStacked, .recordedVertices = 12'600, .recordedIndices = 17'600},
     GeometryBudget{.scene = ChartGeometry::Scene::PerCoreSparklines, .recordedVertices = 45'550, .recordedIndices = 61'450},
+    // Recorded with the width-aware point budget (#1411); before it, this scene drew ~180,600
+    // vertices / ~243,500 indices, so a lost width cap fails the budget.
+    GeometryBudget{.scene = ChartGeometry::Scene::ManyCoreSparklines, .recordedVertices = 95'150, .recordedIndices = 129'550},
     GeometryBudget{.scene = ChartGeometry::Scene::Memory, .recordedVertices = 6'300, .recordedIndices = 9'200},
     GeometryBudget{.scene = ChartGeometry::Scene::LongSeriesMinMax, .recordedVertices = 3'950, .recordedIndices = 5'300},
 };

@@ -1,0 +1,10 @@
+# actionlint configuration (run by the `actionlint` pre-commit hook, #1187).
+# https://github.com/rhysd/actionlint/blob/main/docs/config.md
+paths:
+  .github/workflows/**/*.{yml,yaml}:
+    ignore:
+      # actionlint runs shellcheck over every `run:` block. Keep warning- and error-level findings,
+      # which point at real bugs, and drop the info/style ones (unquoted `${{ }}`-expanded values,
+      # grouped `>> "$GITHUB_OUTPUT"` redirects): they are matters of taste in CI one-liners and
+      # would otherwise bury the real findings.
+      - 'shellcheck reported issue in this script: SC\d+:(info|style):'
