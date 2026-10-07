@@ -238,7 +238,7 @@ void SystemMetricsPanel::adoptSystemPublication()
     // timestamps are read in place (#1180) rather than copied into panel members on every adoption.
     m_SystemPublication = m_Model->publication();
     m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
-    const std::vector<double>& timestamps = m_SystemPublication->timestamps;
+    const std::span<const double> timestamps = m_SystemPublication->timestamps;
     if (!timestamps.empty())
     {
         m_CurrentNowSeconds = timestamps.back();
@@ -676,7 +676,7 @@ void SystemMetricsPanel::renderOverview()
     const auto& cpuSystemHist = m_SystemPublication->cpuSystemHistory;
     const auto& cpuIowaitHist = m_SystemPublication->cpuIowaitHistory;
     const auto& cpuIdleHist = m_SystemPublication->cpuIdleHistory;
-    const std::vector<double>& timestamps = m_SystemPublication->timestamps;
+    const std::span<const double> timestamps = m_SystemPublication->timestamps;
     const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds);
 

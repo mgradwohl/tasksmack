@@ -2,6 +2,7 @@
 
 #include "App/Panels/NetInterfaceUtils.h"
 #include "App/Panels/StorageSection.h"
+#include "Domain/SharedHistory.h"
 #include "UI/ChartWidgets.h"
 #include "UI/EmptyState.h"
 #include "UI/Format.h"
@@ -266,7 +267,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     const std::string& ifaceName = showingInterface ? interfaces[static_cast<size_t>(selectedInterface)].name : NO_INTERFACE;
     const auto ifaceTxIt = ctx.systemPublication->perInterfaceTxHistory.find(ifaceName);
     const auto ifaceRxIt = ctx.systemPublication->perInterfaceRxHistory.find(ifaceName);
-    static const std::vector<float> emptyHistory;
+    static const Domain::HistoryView<float> emptyHistory;
     const auto& ifaceTxHist =
         showingInterface && ifaceTxIt != ctx.systemPublication->perInterfaceTxHistory.end() ? ifaceTxIt->second : emptyHistory;
     const auto& ifaceRxHist =

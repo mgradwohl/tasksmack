@@ -2,6 +2,7 @@
 
 #include "App/Panels/CpuCoreGridIds.h"
 #include "App/Panels/CpuSummaryText.h"
+#include "Domain/SharedHistory.h"
 #include "Domain/SystemSnapshot.h"
 #include "UI/ChartGrid.h"
 #include "UI/ChartGridLayout.h"
@@ -120,7 +121,7 @@ void renderCpuCoresSection(RenderContext& ctx)
         UI::Widgets::renderEmptyState(UI::Widgets::HISTORY_COLLECTING_TEXT, "Per-core charts appear once the first samples arrive.");
         return;
     }
-    static const std::vector<float> noSamples;
+    static const Domain::HistoryView<float> noSamples;
 
     // Every core's samples share these timestamps, so one time axis serves them all: each core takes
     // the tail of it its samples cover, rather than rebuilding an identical axis per core per frame --
