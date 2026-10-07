@@ -86,6 +86,15 @@ inline constexpr int INODE_PID_CACHE_EARLY_REBUILD_MS = 1000;
 // hours of traffic in one interval.
 inline constexpr int UNATTRIBUTED_SOCKET_HOLD_MS = INODE_PID_CACHE_TTL_MS + REFRESH_INTERVAL_MAX_MS;
 
+// Longest a process's cached command line is reused (milliseconds) - Linux only
+// A command line is set at exec, so LinuxProcessProbe reads /proc/[pid]/cmdline once per process
+// (pid + start time, and the comm exec sets) instead of every sample (#1425). A process may still
+// rewrite its argv (a process title: postgres, sshd, browsers), so each entry is re-read after at
+// most this long -- the same staleness bound as network attribution's inode map. Entries expire
+// spread over the second half of it, so the processes cached on one sample aren't all re-read on
+// the same later one.
+inline constexpr int PROCESS_CMDLINE_CACHE_TTL_MS = 3000;
+
 // -----------------------------------------------------------------------------
 // Instance Enumeration Caches (User-Configurable via TOML)
 // -----------------------------------------------------------------------------

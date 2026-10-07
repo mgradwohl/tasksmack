@@ -784,6 +784,7 @@ deliberate, reviewed performance change that the gate should treat as the new no
 | `BM_ProcessModel_*` | Process enumeration and snapshot computation |
 | `BM_ProcessModel_MemoryGrowth` | Memory growth over repeated refresh cycles |
 | `BM_ProcessProbe_Enumerate` | Raw OS API performance |
+| `BM_ProcessProbe_EnumerateSynthetic*` | `LinuxProcessProbe::enumerate()` over a synthetic 5,000-process /proc (Linux only), so runs compare like for like: steady state, and a pass that also rebuilds the socket inode-to-PID map from its fd walk (`...Rebuild`) |
 | `BM_SystemModel_*` | System metric sampling and history accessor performance |
 | `BM_SystemModel_MemoryGrowth` | Memory growth over repeated `refresh()` calls exercising the full probe read, delta computation, and history append path |
 | `BM_SystemProbe_Sample` | Raw OS system probe API performance |
@@ -795,6 +796,9 @@ deliberate, reviewed performance change that the gate should treat as the new no
 | `BM_GPUModel_MemoryGrowth` | Memory growth over repeated GPU `refresh()` cycles |
 | `BM_Numeric_*` | Micro-benchmarks for `toDouble`, `clampPercentToFloat`, `narrowOr`, and mixed process-table workload |
 | `BM_ChartWidgets_*` | `UI::Widgets` chart helpers: `computeAlpha` smoothing, `tailAlignedSpan` history-window selection, and the `formatAxisLocalized`/`formatAxisBytesPerSec` axis-label formatters — the layer the Windows ETW app-trace (perf-plan-574 / issue #574) flagged as expensive but that previously had no Linux-runnable coverage |
+| `BM_ChartGeometry_*` | One whole headless ImGui+ImPlot frame (`NewFrame()` through `Render()`, no window or GL) of the real `ChartWidgets.h` charts with fixed data: the stacked CPU chart at full history, the per-core grid, the memory chart, and an uncached min/max-reduced 18k-sample line. Reports `vertices`/`indices`/`draw_lists`/`draw_cmds` counters; the same scenes (`benchmarks/ChartGeometryScenes.h`) are held to a vertex/index budget by `tests/UI/test_ChartGeometryBudget.cpp`, which gates every PR (#1421) |
+| `BM_*_FullHistory/*`, `BM_*_Cardinality/*` | Domain model `publish()`/`publication()` fed from `tests/Mocks` probes at the limits: history held at 300/3k/18k samples (18k = 1800 s at 100 ms), and many cores, interfaces, disks or processes (#1422) |
+| `BM_SystemModel_Concurrent_PublicationWait/*` | How long a UI-style `publication()` call waits when it lands on a publish in another thread (the exclusive lock's hold time), with optional extra reader threads; the baseline for #868 (#1422) |
 
 ### Memory Tracking
 
