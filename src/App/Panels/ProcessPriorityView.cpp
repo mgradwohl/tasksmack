@@ -405,7 +405,10 @@ void ProcessPriorityView::renderApplyButton(Platform::IProcessActions* actions,
 {
     const auto& theme = UI::Theme::get();
     const float emPx = ImGui::GetFontSize();
-    const bool enabled = canApply(currentNice);
+    // Disabled without an edit, and also until a snapshot has confirmed the start time: no platform
+    // acts on an unknown one (IProcessActions' checkProcessIdentity()).
+    const bool enabled = canApply(currentNice, target);
+    const bool waiting = waitingForProcessDetails(currentNice, target);
 
     // Right-align the Apply button
     // Capped to the panel for the same reason the track is: the content area does not scroll
@@ -441,7 +444,7 @@ void ProcessPriorityView::renderApplyButton(Platform::IProcessActions* actions,
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
     {
-        ImGui::SetTooltip("Apply the selected priority to the process");
+        ImGui::SetTooltip("%s", waiting ? "Waiting for process details" : "Apply the selected priority to the process");
     }
 }
 

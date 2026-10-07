@@ -36,8 +36,9 @@ namespace Detail
 /// isSameProcessTarget(), except that an edit made before the process's start time was known (0) does
 /// not carry over once @p live knows it: the PID may have been reused before the first snapshot, so
 /// the edit could be for a different process, and the platform's own check of @p live cannot tell.
-/// The user edits again once the identity is known. While both stay unknown (a platform or process
-/// that never reports a start time) the edit still applies, by PID as before.
+/// The user edits again once the identity is known. While both stay unknown the edit is kept but
+/// cannot be applied: every IProcessActions refuses a target whose start time is 0, so
+/// ProcessPriorityView::canApply() is false until the start time is known.
 [[nodiscard]] constexpr bool isSameEditTarget(const Platform::ProcessTarget& edited, const Platform::ProcessTarget& live) noexcept
 {
     if (edited.startTimeTicks == 0 && live.startTimeTicks != 0)
@@ -59,7 +60,8 @@ class ProcessPriorityView
   public:
     /// Draws the control when @p capabilities allow setting priority, and nothing otherwise.
     /// @p currentNice is the process's nice value from its latest snapshot, or nullopt before the first
-    /// snapshot (the control then shows 0 and Apply stays disabled). An edit is made for @p target, and
+    /// snapshot (the control then shows 0 and Apply stays disabled). Apply also stays disabled while
+    /// @p target's start time is unknown (0), which no platform will act on. An edit is made for @p target, and
     /// Apply sets it on @p target through @p actions (null gives an "unavailable" error).
     void render(Platform::IProcessActions* actions,
                 const Platform::ProcessActionCapabilities& capabilities,
@@ -116,25 +118,36 @@ class ProcessPriorityView
         return true;
     }
 
-    /// Whether Apply is enabled: there is a pending edit, and a snapshot of the process.
-    [[nodiscard]] bool canApply(std::optional<std::int32_t> currentNice) const noexcept
+    /// Whether Apply is enabled for @p liveTarget: there is a pending edit, a snapshot of the process,
+    /// and both the edit's target and @p liveTarget know the start time. An action on a start time of 0
+    /// is refused by every IProcessActions (checkProcessIdentity()), so it is not offered.
+    [[nodiscard]] bool canApply(std::optional<std::int32_t> currentNice, const Platform::ProcessTarget& liveTarget) const noexcept
     {
-        return m_Changed && currentNice.has_value();
+        return m_Changed && currentNice.has_value() && m_EditTarget.startTimeTicks != 0 && liveTarget.startTimeTicks != 0;
+    }
+
+    /// Whether there is a pending edit that Apply cannot send yet for want of process details (a
+    /// snapshot, or the start time that confirms the process's identity): Apply's tooltip then says so.
+    [[nodiscard]] bool waitingForProcessDetails(std::optional<std::int32_t> currentNice,
+                                                const Platform::ProcessTarget& liveTarget) const noexcept
+    {
+        return m_Changed && !canApply(currentNice, liveTarget);
     }
 
     /// Apply was pressed with @p liveTarget selected: set the edited value on that target through
     /// @p actions, captured now and checked against the process the edit was made for. Success clears
     /// the error line; failure shows the platform's message and puts the control back at
     /// @p currentNice. Either way the edit is finished, so a second apply does nothing until the next
-    /// edit. With no pending edit, or one made for another process, there is no platform call.
+    /// edit. With no pending edit, one made for another process (dropped), or a start time not yet
+    /// known (kept, but not applicable: canApply()), there is no platform call.
     void apply(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget, std::optional<std::int32_t> currentNice)
     {
-        if (!canApply(currentNice) || dropEditIfTargetMoved(liveTarget))
+        if (dropEditIfTargetMoved(liveTarget) || !canApply(currentNice, liveTarget))
         {
             return;
         }
-        // The edit's own target, which the check above matched to @p liveTarget: the same PID, and the
-        // same start time, or none known for the live one. It is the more specific of the two.
+        // The edit's own target, which the checks above matched to @p liveTarget: the same PID and the
+        // same, known start time.
         const Platform::ProcessTarget target = m_EditTarget;
         const std::int32_t nice = m_NiceValue;
         m_Changed = false;

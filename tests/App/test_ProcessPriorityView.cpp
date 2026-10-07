@@ -98,10 +98,10 @@ TEST(ProcessPriorityViewTest, ApplyIsDisabledUntilAnEdit)
 {
     ProcessPriorityView view;
     view.syncToProcess(NICE_OF_A);
-    EXPECT_FALSE(view.canApply(NICE_OF_A));
+    EXPECT_FALSE(view.canApply(NICE_OF_A, TARGET_A));
 
     view.editNice(5, TARGET_A);
-    EXPECT_TRUE(view.canApply(NICE_OF_A));
+    EXPECT_TRUE(view.canApply(NICE_OF_A, TARGET_A));
 }
 
 TEST(ProcessPriorityViewTest, ApplyIsDisabledWithoutASnapshot)
@@ -109,7 +109,7 @@ TEST(ProcessPriorityViewTest, ApplyIsDisabledWithoutASnapshot)
     ProcessPriorityView view;
     view.editNice(5, TARGET_A_UNCONFIRMED);
     EXPECT_TRUE(view.hasPendingEdit());
-    EXPECT_FALSE(view.canApply(std::nullopt));
+    EXPECT_FALSE(view.canApply(std::nullopt, TARGET_A_UNCONFIRMED));
 }
 
 TEST(ProcessPriorityViewTest, PickingTheShownValueIsNoEdit)
@@ -118,7 +118,7 @@ TEST(ProcessPriorityViewTest, PickingTheShownValueIsNoEdit)
     view.syncToProcess(3);
     view.editNice(3, TARGET_A);
     EXPECT_FALSE(view.hasPendingEdit());
-    EXPECT_FALSE(view.canApply(3));
+    EXPECT_FALSE(view.canApply(3, TARGET_A));
     EXPECT_EQ(view.editTarget().pid, -1);
 }
 
@@ -177,18 +177,36 @@ TEST(ProcessPriorityViewTest, AnEditBeforeTheStartTimeIsKnownIsDroppedOnceItIs)
     }
 }
 
-TEST(ProcessPriorityViewTest, AnEditAppliesByPidWhileTheStartTimeStaysUnknown)
+TEST(ProcessPriorityViewTest, ApplyIsDisabledAndSendsNothingWhileTheStartTimeIsUnknown)
 {
-    // A platform or process that never reports a start time: the edit still applies, by PID.
+    // Every IProcessActions refuses a start time of 0 (checkProcessIdentity()), so Apply is not offered
+    // and apply() makes no call while it is unknown, even with a snapshot's nice value in hand
+    // (Copilot review on #1455). The slider can still be moved; the edit waits, and the tooltip says so.
     TestMocks::MockProcessActions mock;
     ProcessPriorityView view;
     view.editNice(10, TARGET_A_UNCONFIRMED);
-    view.apply(&mock, TARGET_A_UNCONFIRMED, NICE_OF_A);
+    EXPECT_FALSE(view.canApply(NICE_OF_A, TARGET_A_UNCONFIRMED));
+    EXPECT_TRUE(view.waitingForProcessDetails(NICE_OF_A, TARGET_A_UNCONFIRMED));
 
-    ASSERT_EQ(mock.setPriorityCount(), 1);
-    EXPECT_EQ(mock.lastTarget().pid, TARGET_A.pid);
-    EXPECT_EQ(mock.lastTarget().startTimeTicks, 0U);
-    EXPECT_EQ(mock.lastSetPriorityNice(), 10);
+    view.apply(&mock, TARGET_A_UNCONFIRMED, NICE_OF_A);
+    EXPECT_EQ(mock.setPriorityCount(), 0);
+    EXPECT_TRUE(view.hasPendingEdit()); // Kept until the start time is known, then dropped
+
+    // A known edit whose live target lost its start time is not sent either.
+    ProcessPriorityView known;
+    known.editNice(10, TARGET_A);
+    EXPECT_FALSE(known.canApply(NICE_OF_A, TARGET_A_UNCONFIRMED));
+    known.apply(&mock, TARGET_A_UNCONFIRMED, NICE_OF_A);
+    EXPECT_EQ(mock.setPriorityCount(), 0);
+}
+
+TEST(ProcessPriorityViewTest, NotWaitingWithoutAnEditOrOnceApplicable)
+{
+    ProcessPriorityView view;
+    EXPECT_FALSE(view.waitingForProcessDetails(NICE_OF_A, TARGET_A_UNCONFIRMED)); // Nothing edited
+    view.editNice(10, TARGET_A);
+    EXPECT_FALSE(view.waitingForProcessDetails(NICE_OF_A, TARGET_A));
+    EXPECT_TRUE(view.waitingForProcessDetails(std::nullopt, TARGET_A)); // No snapshot yet
 }
 
 TEST(ProcessPriorityViewTest, SameEditTargetRules)
@@ -197,21 +215,30 @@ TEST(ProcessPriorityViewTest, SameEditTargetRules)
     {
         Platform::ProcessTarget edited;
         Platform::ProcessTarget live;
-        bool same = false;
+        bool same = false;    // The edit is kept (isSameEditTarget)
+        bool applies = false; // ...and Apply may send it (canApply): only with a known, equal start time
         const char* name = "";
     };
     const std::array<Case, 6> cases{{
-        {.edited = TARGET_A, .live = TARGET_A, .same = true, .name = "both known, equal"},
-        {.edited = TARGET_A_UNCONFIRMED, .live = TARGET_A_UNCONFIRMED, .same = true, .name = "both unknown"},
-        {.edited = TARGET_A, .live = TARGET_A_UNCONFIRMED, .same = true, .name = "live lost its snapshot"},
-        {.edited = TARGET_A_UNCONFIRMED, .live = TARGET_A, .same = false, .name = "unknown became known"},
-        {.edited = TARGET_A, .live = TARGET_A_REUSED, .same = false, .name = "PID reused"},
-        {.edited = TARGET_A, .live = TARGET_B, .same = false, .name = "different PID"},
+        {.edited = TARGET_A, .live = TARGET_A, .same = true, .applies = true, .name = "both known, equal"},
+        {.edited = TARGET_A_UNCONFIRMED, .live = TARGET_A_UNCONFIRMED, .same = true, .applies = false, .name = "both unknown"},
+        {.edited = TARGET_A, .live = TARGET_A_UNCONFIRMED, .same = true, .applies = false, .name = "live lost its start time"},
+        {.edited = TARGET_A_UNCONFIRMED, .live = TARGET_A, .same = false, .applies = false, .name = "unknown became known"},
+        {.edited = TARGET_A, .live = TARGET_A_REUSED, .same = false, .applies = false, .name = "PID reused"},
+        {.edited = TARGET_A, .live = TARGET_B, .same = false, .applies = false, .name = "different PID"},
     }};
     for (const Case& c : cases)
     {
         SCOPED_TRACE(c.name);
         EXPECT_EQ(Detail::isSameEditTarget(c.edited, c.live), c.same);
+
+        TestMocks::MockProcessActions mock;
+        ProcessPriorityView view;
+        view.editNice(10, c.edited);
+        (void) view.dropEditIfTargetMoved(c.live);
+        EXPECT_EQ(view.canApply(NICE_OF_A, c.live), c.applies);
+        view.apply(&mock, c.live, NICE_OF_A);
+        EXPECT_EQ(mock.setPriorityCount(), c.applies ? 1 : 0);
     }
 }
 
@@ -285,7 +312,7 @@ TEST(ProcessPriorityViewTest, ASecondApplyIsNotAReplay)
         view.apply(&mock, TARGET_A, NICE_OF_A);
         view.apply(&mock, TARGET_A, NICE_OF_A);
         EXPECT_EQ(mock.setPriorityCount(), 1);
-        EXPECT_FALSE(view.canApply(NICE_OF_A));
+        EXPECT_FALSE(view.canApply(NICE_OF_A, TARGET_A));
     }
 }
 
