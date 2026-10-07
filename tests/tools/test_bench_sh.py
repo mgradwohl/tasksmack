@@ -6,6 +6,7 @@ writes a provenance manifest (tools/bench-manifest.py) with the same keys as ben
 host or user name (#1424). Needs bash; registered in CTest only where bash is available.
 """
 
+import datetime
 import getpass
 import hashlib
 import importlib.util
@@ -158,6 +159,7 @@ def flag_forms(user: str, home: str) -> list[tuple[str, str]]:
         (f"/IC:/Users/{user}/inc", "/I<abs>/inc"),
         (f"/Users/{user}/proj/config.h", "<abs>/config.h"),
         (f"/DDIR=/home/{user}/x", "/DDIR=<abs>/x"),
+        ('-DAUTHOR=Jos\u00e9 -I"C:/S\u00f8urce \u00dc/inc"', '-DAUTHOR=Jos\u00e9 -I"<abs>/inc"'),
         (f"-DBUILT_BY={user}", "-DBUILT_BY=<user>" if len(user) >= 3 else f"-DBUILT_BY={user}"),
     ]
 
@@ -196,7 +198,9 @@ def write_stub(path: Path) -> Path:
 @unittest.skipUnless(BASH, "bash not available")
 class BenchShTest(unittest.TestCase):
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
+        # Under a non-ASCII directory name (#1445 review), so every path the scripts handle holds
+        # Unicode characters.
+        self._tmp = tempfile.TemporaryDirectory(prefix="tasksmack-bench-\u00fcn\u00efc\u00f8d\u00e9-")
         self.root = Path(self._tmp.name)
         build_dir = self.root / "build" / "fake"
         self.flag_forms = flag_forms(getpass.getuser(), posix(Path.home()))
@@ -219,7 +223,14 @@ class BenchShTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def run_bench(
-        self, name: str, stub_exit: int, stub_output: str = "full", extra: tuple[str, ...] = (), binary: Path | None = None
+        self,
+        name: str,
+        stub_exit: int,
+        stub_output: str = "full",
+        extra: tuple[str, ...] = (),
+        binary: Path | None = None,
+        script: Path = BENCH_SH,
+        leading: tuple[str, ...] = ("fake", "--"),
     ):
         out_dir = self.root / name
         env = dict(os.environ)
@@ -233,7 +244,7 @@ class BenchShTest(unittest.TestCase):
             PATH=str(self.shim_dir) + os.pathsep + os.environ.get("PATH", ""),
         )
         result = subprocess.run(
-            [BASH, posix(BENCH_SH), "fake", "--", "--benchmark_filter=BM_X", *extra],
+            [BASH, posix(script), *leading, "--benchmark_filter=BM_X", *extra],
             env=env,
             capture_output=True,
             text=True,
@@ -290,6 +301,107 @@ class BenchShTest(unittest.TestCase):
         manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
         self.assertIn("--benchmark_context=runner=<host>", manifest["benchmark"]["args"])
         self.assertEqual(find_identity_leaks(manifest, [host, host.split(".")[0]], []), [])
+
+    def test_a_multi_config_tree_keeps_the_benchmark_in_bin_config(self):
+        # #1445 review: bin/<Config>/ under a multi-config generator; the cache has no build type.
+        multi_dir = self.root / "build" / "multi"
+        write_build_tree(multi_dir, "4.1.0", {"4.1.0": "22.1.8"})
+        cache = multi_dir / "CMakeCache.txt"
+        cache.write_text(
+            cache.read_text(encoding="utf-8")
+            .replace("CMAKE_BUILD_TYPE:STRING=Release", "CMAKE_BUILD_TYPE:STRING=")
+            .replace("CMAKE_GENERATOR:INTERNAL=Ninja", "CMAKE_GENERATOR:INTERNAL=Ninja Multi-Config")
+            + "CMAKE_CXX_FLAGS_RELWITHDEBINFO:STRING=-O2 -g -DNDEBUG\n",
+            encoding="utf-8",
+        )
+        (multi_dir / "bin" / "RelWithDebInfo").mkdir()
+        stub = write_stub(multi_dir / "bin" / "RelWithDebInfo" / "TaskSmackBenchmarks")
+        code, output, _, manifests = self.run_bench("multi", 0, binary=stub)
+        self.assertEqual(code, 0, output)
+        build = json.loads(manifests[0].read_text(encoding="utf-8"))["build"]
+        self.assertEqual(build["build_type"], "RelWithDebInfo")
+        self.assertEqual(build["generator"], "Ninja Multi-Config")
+        self.assertEqual(build["cxx_flags_config"], "-O2 -g -DNDEBUG")
+        self.assertEqual(build["compiler_version"], "22.1.8")
+
+    def test_a_unicode_checkout_outside_git(self):
+        # #1445 review: bench.sh copied into <root>/ch\u00e9ckout/tools; its own checkout maps to
+        # <source> through the UTF-8 cache, and the missing git repository leaves the git fields
+        # unknown, not an error.
+        checkout = self.root / "ch\u00e9ckout"
+        (checkout / "tools").mkdir(parents=True)
+        for name in ("bench.sh", "bench-manifest.py"):
+            shutil.copy2(REPO_ROOT / "tools" / name, checkout / "tools" / name)
+        build_dir = checkout / "build" / "uni"
+        (build_dir / "bin").mkdir(parents=True)
+        (build_dir / "CMakeCache.txt").write_text(
+            "CMAKE_BUILD_TYPE:STRING=Release\n"
+            f'CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -fprofile-instr-use="{posix(checkout)}/profiles/tasksmack.profdata"'
+            " -DAUTHOR=Jos\u00e9\n",
+            encoding="utf-8",
+        )
+        stub = write_stub(build_dir / "bin" / "TaskSmackBenchmarks")
+        code, output, _, manifests = self.run_bench("uni", 0, binary=stub, script=checkout / "tools" / "bench.sh")
+        self.assertEqual(code, 0, output)
+        manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+        self.assertEqual(
+            manifest["build"]["cxx_flags_config"],
+            '-O3 -fprofile-instr-use="<source>/profiles/tasksmack.profdata" -DAUTHOR=Jos\u00e9',
+        )
+        self.assertIsNone(manifest["git"]["commit"])
+        self.assertIsNone(manifest["git"]["dirty"])
+        # Self-review: in a repository on a non-ASCII branch, the branch name arrives intact (git
+        # writes UTF-8 whatever the locale).
+        if shutil.which("git") is None:
+            return
+        branch = "fëature"
+        subprocess.run(["git", "-C", str(checkout), "init", "-q", "-b", branch], check=True, capture_output=True)
+        identity = ["-c", "user.name=bench-test", "-c", "user.email=bench-test@example.invalid"]
+        subprocess.run(
+            ["git", "-C", str(checkout), *identity, "commit", "-q", "--allow-empty", "-m", "init"],
+            check=True,
+            capture_output=True,
+        )
+        code, output, _, manifests = self.run_bench("uni-branch", 0, binary=stub, script=checkout / "tools" / "bench.sh")
+        self.assertEqual(code, 0, output)
+        git = json.loads(manifests[0].read_text(encoding="utf-8"))["git"]
+        self.assertEqual(git["branch"], branch)
+        self.assertRegex(git["commit"] or "", r"^[0-9a-f]{40}$")
+        self.assertIs(git["dirty"], False)
+
+    def test_a_benchmark_flag_with_no_preset_uses_the_default_preset(self):
+        # Self-review: ./tools/bench.sh --benchmark_filter=Foo, with no preset and no "--".
+        code, output, results, manifests = self.run_bench("no-preset", 0, leading=())
+        self.assertEqual(code, 0, output)
+        self.assertEqual(len(results), 1, output)
+        self.assertTrue(results[0].name.startswith("benchmark-"), results[0].name)
+        args = json.loads(manifests[0].read_text(encoding="utf-8"))["benchmark"]["args"]
+        self.assertIn("--benchmark_filter=BM_X", args)
+
+    def test_unredactable_output_after_success_is_deleted(self):
+        code, output, results, _ = self.run_bench("garbled", 0, "partial")
+        self.assertNotEqual(code, 0, output)
+        self.assertIn("could not be redacted", output)
+        self.assertEqual(results, [], output)
+
+    def test_a_run_in_the_same_second_does_not_overwrite_an_earlier_one(self):
+        # Results already sit under every name this run could pick in the next 30 seconds.
+        collide = self.root / "collide"
+        collide.mkdir()
+        start = datetime.datetime.now()
+        placeholders = []
+        for offset in range(31):
+            stamp = (start + datetime.timedelta(seconds=offset)).strftime("%Y%m%d-%H%M%S")
+            path = collide / f"fake-{stamp}.json"
+            path.write_text("placeholder", encoding="utf-8")
+            placeholders.append(path)
+        code, output, results, manifests = self.run_bench("collide", 0)
+        self.assertEqual(code, 0, output)
+        for path in placeholders:
+            self.assertEqual(path.read_text(encoding="utf-8"), "placeholder", path)
+        suffixed = [p for p in results if re.fullmatch(r"fake-\d{8}-\d{6}-2\.json", p.name)]
+        self.assertEqual(len(suffixed), 1, [p.name for p in results])
+        self.assertTrue(suffixed[0].with_name(suffixed[0].stem + ".manifest.json").is_file())
 
     def test_failing_benchmark_fails_the_script(self):
         code, output, results, manifests = self.run_bench("failed", 3)

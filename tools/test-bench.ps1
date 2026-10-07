@@ -51,7 +51,10 @@ $benchScript = Join-Path $PSScriptRoot 'bench.ps1'
 $repoRootPath = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot)).TrimEnd('\')
 $repoRootForward = $repoRootPath.Replace('\', '/')
 $hostExe = (Get-Process -Id $PID).Path
-$root = Join-Path ([IO.Path]::GetTempPath()) "tasksmack-bench-tests-$([guid]::NewGuid().ToString('N'))"
+# Under a non-ASCII directory name (#1445 review), so every path the scripts and the stub wrapper
+# handle holds Unicode characters.
+$unicode = "$([char]0x00FC)n$([char]0x00EF)c$([char]0x00F8)d$([char]0x00E9)"
+$root = Join-Path ([IO.Path]::GetTempPath()) "tasksmack-bench-tests-$unicode-$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $root | Out-Null
 try {
     # A fake build tree, so the manifest's build fields are read from a CMakeCache.txt the way
@@ -111,9 +114,10 @@ try {
         , @("/IC:/Users/$U/inc", '/I<abs>/inc')
         , @("/Users/$U/proj/config.h", '<abs>/config.h')
         , @("/DDIR=/home/$U/x", '/DDIR=<abs>/x')
+        , @("-DAUTHOR=Jos$([char]0x00E9) -I`"C:/S$([char]0x00F8)urce $([char]0x00DC)/inc`"", "-DAUTHOR=Jos$([char]0x00E9) -I`"<abs>/inc`"")
         , @("-DBUILT_BY=$U", $(if ($U.Length -ge 3) { '-DBUILT_BY=<user>' } else { "-DBUILT_BY=$U" }))
     )
-    Set-Content -LiteralPath (Join-Path $buildDir 'CMakeCache.txt') -Encoding ascii -Value @(
+    Set-Content -LiteralPath (Join-Path $buildDir 'CMakeCache.txt') -Encoding utf8 -Value @(
         'CMAKE_BUILD_TYPE:STRING=Release'
         'CMAKE_GENERATOR:INTERNAL=Ninja'
         "CMAKE_CXX_COMPILER:FILEPATH=C:\Users\$U\llvm\bin\clang++.exe"
@@ -124,11 +128,11 @@ try {
         'CMAKE_CACHE_MINOR_VERSION:INTERNAL=1'
         'CMAKE_CACHE_PATCH_VERSION:INTERNAL=0'
     )
-    Set-Content -LiteralPath (Join-Path $buildDir 'CMakeFiles\4.0.0\CMakeCXXCompiler.cmake') -Encoding ascii -Value @(
+    Set-Content -LiteralPath (Join-Path $buildDir 'CMakeFiles\4.0.0\CMakeCXXCompiler.cmake') -Encoding utf8 -Value @(
         'set(CMAKE_CXX_COMPILER_ID "Clang")'
         'set(CMAKE_CXX_COMPILER_VERSION "21.1.0")'
     )
-    Set-Content -LiteralPath (Join-Path $buildDir 'CMakeFiles\4.1.0\CMakeCXXCompiler.cmake') -Encoding ascii -Value @(
+    Set-Content -LiteralPath (Join-Path $buildDir 'CMakeFiles\4.1.0\CMakeCXXCompiler.cmake') -Encoding utf8 -Value @(
         'set(CMAKE_CXX_COMPILER_ID "Clang")'
         'set(CMAKE_CXX_COMPILER_VERSION "22.1.8")'
     )
@@ -155,14 +159,27 @@ if ($env:STUB_OUTPUT -ne 'none') { Set-Content -LiteralPath $out -Value $body -E
 exit [int]$env:STUB_EXIT
 '@
     $stub = Join-Path $binDir 'TaskSmackBenchmarks.cmd'
-    Set-Content -LiteralPath $stub -Encoding ascii -Value "@`"$hostExe`" -NoProfile -File `"$stubScript`" %*`r`n@exit /b %ERRORLEVEL%"
+    # The wrapper is ASCII (cmd.exe reads it in the console code page), so the PowerShell and stub
+    # script paths, which can hold Unicode characters, come from inherited environment variables
+    # that Invoke-Bench sets (and restores) around each run.
+    Set-Content -LiteralPath $stub -Encoding ascii -Value "@`"%TASKSMACK_STUB_PWSH%`" -NoProfile -File `"%TASKSMACK_STUB_SCRIPT%`" %*`r`n@exit /b %ERRORLEVEL%"
 
     function Invoke-Bench {
         param([int]$StubExit, [string]$StubOutput = 'full', [string]$Name, [switch]$NativeErrorPromotion,
-            [string[]]$Extra = @('--benchmark_filter=BM_X'), [string]$Binary = $stub)
+            [string[]]$Extra = @('--benchmark_filter=BM_X'), [string]$Binary = $stub, [string]$Script = $benchScript,
+            [switch]$InProcessSeparator)
         $outDir = Join-Path $root $Name
-        $env:STUB_EXIT = "$StubExit"
-        $env:STUB_OUTPUT = $StubOutput
+        $variables = @{
+            STUB_EXIT             = "$StubExit"
+            STUB_OUTPUT           = $StubOutput
+            TASKSMACK_STUB_PWSH   = $hostExe
+            TASKSMACK_STUB_SCRIPT = $stubScript
+        }
+        $saved = @{}
+        foreach ($name in $variables.Keys) {
+            $saved[$name] = [Environment]::GetEnvironmentVariable($name)
+            [Environment]::SetEnvironmentVariable($name, $variables[$name])
+        }
         try {
             if ($NativeErrorPromotion) {
                 # As from a session or profile that turns native exit codes into errors.
@@ -171,13 +188,19 @@ exit [int]$env:STUB_EXIT
                 "& $(& $quote $benchScript) fake-preset -BenchmarkBinary $(& $quote $stub) -OutputDirectory $(& $quote $outDir) '--benchmark_filter=BM_X'"
                 $log = & $hostExe -NoProfile -Command $command 2>&1 | Out-String
             }
+            elseif ($InProcessSeparator) {
+                # Called from PowerShell with no preset and a "--" before the benchmark flags.
+                $quote = { param([string]$s) "'" + $s.Replace("'", "''") + "'" }
+                $command = "& $(& $quote $Script) -BenchmarkBinary $(& $quote $Binary) -OutputDirectory $(& $quote $outDir) -- " + (@($Extra | ForEach-Object { & $quote $_ }) -join ' ')
+                $log = & $hostExe -NoProfile -Command $command 2>&1 | Out-String
+            }
             else {
-                $log = & $hostExe -NoProfile -File $benchScript fake-preset -BenchmarkBinary $Binary -OutputDirectory $outDir @Extra 2>&1 | Out-String
+                $log = & $hostExe -NoProfile -File $Script fake-preset -BenchmarkBinary $Binary -OutputDirectory $outDir @Extra 2>&1 | Out-String
             }
             $code = $LASTEXITCODE
         }
         finally {
-            Remove-Item Env:STUB_EXIT, Env:STUB_OUTPUT -ErrorAction SilentlyContinue
+            foreach ($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name, $saved[$name]) }
         }
         $result = @(Get-ChildItem -LiteralPath $outDir -Filter '*.json' -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '*.manifest.json' })
         $manifest = @(Get-ChildItem -LiteralPath $outDir -Filter '*.manifest.json' -ErrorAction SilentlyContinue)
@@ -332,13 +355,13 @@ exit [int]$env:STUB_EXIT
     $staleDir = Join-Path $root 'build\stale-preset'
     New-Item -ItemType Directory -Path (Join-Path $staleDir 'bin'), (Join-Path $staleDir 'CMakeFiles\4.0.0') | Out-Null
     Copy-Item -LiteralPath $stub -Destination (Join-Path $staleDir 'bin')
-    Set-Content -LiteralPath (Join-Path $staleDir 'CMakeCache.txt') -Encoding ascii -Value @(
+    Set-Content -LiteralPath (Join-Path $staleDir 'CMakeCache.txt') -Encoding utf8 -Value @(
         'CMAKE_BUILD_TYPE:STRING=Release'
         'CMAKE_CACHE_MAJOR_VERSION:INTERNAL=4'
         'CMAKE_CACHE_MINOR_VERSION:INTERNAL=2'
         'CMAKE_CACHE_PATCH_VERSION:INTERNAL=0'
     )
-    Set-Content -LiteralPath (Join-Path $staleDir 'CMakeFiles\4.0.0\CMakeCXXCompiler.cmake') -Encoding ascii -Value 'set(CMAKE_CXX_COMPILER_ID "Clang")', 'set(CMAKE_CXX_COMPILER_VERSION "21.1.0")'
+    Set-Content -LiteralPath (Join-Path $staleDir 'CMakeFiles\4.0.0\CMakeCXXCompiler.cmake') -Encoding utf8 -Value 'set(CMAKE_CXX_COMPILER_ID "Clang")', 'set(CMAKE_CXX_COMPILER_VERSION "21.1.0")'
     $stale = Invoke-Bench -StubExit 0 -Name 'stale' -Binary (Join-Path $staleDir 'bin\TaskSmackBenchmarks.cmd')
     Assert-True ($stale.ExitCode -eq 0 -and $stale.Manifest.Count -eq 1) "Stale-tree run failed:`n$($stale.Log)"
     $staleBuild = (Get-Content -LiteralPath $stale.Manifest[0].FullName -Raw | ConvertFrom-Json).build
@@ -380,6 +403,85 @@ exit [int]$env:STUB_EXIT
     $getHostNames = $benchAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-HostNames' }, $true) | Select-Object -First 1
     . ([scriptblock]::Create($getHostNames.Extent.Text))
     Assert-True (@(Get-HostNames) -contains [Environment]::MachineName) "Get-HostNames: $(@(Get-HostNames) -join ', ')"
+
+    # ── #1445 review: a multi-config tree keeps the benchmark in bin/<Config>/ ─────────────────
+    $multiDir = Join-Path $root 'build\multi-preset'
+    New-Item -ItemType Directory -Path (Join-Path $multiDir 'bin\RelWithDebInfo'), (Join-Path $multiDir 'CMakeFiles\4.1.0') | Out-Null
+    Copy-Item -LiteralPath $stub -Destination (Join-Path $multiDir 'bin\RelWithDebInfo')
+    Set-Content -LiteralPath (Join-Path $multiDir 'CMakeCache.txt') -Encoding utf8 -Value @(
+        'CMAKE_BUILD_TYPE:STRING='
+        'CMAKE_GENERATOR:INTERNAL=Ninja Multi-Config'
+        'CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -DNDEBUG'
+        'CMAKE_CXX_FLAGS_RELWITHDEBINFO:STRING=-O2 -g -DNDEBUG'
+        'CMAKE_CACHE_MAJOR_VERSION:INTERNAL=4'
+        'CMAKE_CACHE_MINOR_VERSION:INTERNAL=1'
+        'CMAKE_CACHE_PATCH_VERSION:INTERNAL=0'
+    )
+    Set-Content -LiteralPath (Join-Path $multiDir 'CMakeFiles\4.1.0\CMakeCXXCompiler.cmake') -Encoding utf8 -Value 'set(CMAKE_CXX_COMPILER_ID "Clang")', 'set(CMAKE_CXX_COMPILER_VERSION "22.1.8")'
+    $multi = Invoke-Bench -StubExit 0 -Name 'multi' -Binary (Join-Path $multiDir 'bin\RelWithDebInfo\TaskSmackBenchmarks.cmd')
+    Assert-True ($multi.ExitCode -eq 0 -and $multi.Manifest.Count -eq 1) "Multi-config run failed:`n$($multi.Log)"
+    $multiBuild = (Get-Content -LiteralPath $multi.Manifest[0].FullName -Raw | ConvertFrom-Json).build
+    Assert-True ($multiBuild.build_type -eq 'RelWithDebInfo' -and $multiBuild.generator -eq 'Ninja Multi-Config' -and
+        $multiBuild.cxx_flags_config -eq '-O2 -g -DNDEBUG' -and $multiBuild.compiler_version -eq '22.1.8') "Multi-config build provenance: $($multiBuild | ConvertTo-Json -Compress)"
+
+    # ── #1445 review: a checkout under a Unicode path, outside git ─────────────────────────────
+    # bench.ps1 copied into <root>/ch<e-acute>ckout/tools: its own checkout maps to <source> through
+    # the UTF-8 cache, and the missing git repository leaves the git fields unknown, not an error.
+    $checkout = Join-Path $root "ch$([char]0x00E9)ckout"
+    New-Item -ItemType Directory -Path (Join-Path $checkout 'tools'), (Join-Path $checkout 'build\uni\bin') | Out-Null
+    Copy-Item -LiteralPath $benchScript -Destination (Join-Path $checkout 'tools')
+    Copy-Item -LiteralPath $stub -Destination (Join-Path $checkout 'build\uni\bin')
+    $checkoutForward = $checkout.Replace('\', '/')
+    Set-Content -LiteralPath (Join-Path $checkout 'build\uni\CMakeCache.txt') -Encoding utf8 -Value @(
+        'CMAKE_BUILD_TYPE:STRING=Release'
+        "CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -fprofile-instr-use=`"$checkoutForward/profiles/tasksmack.profdata`" -DAUTHOR=Jos$([char]0x00E9)"
+    )
+    $uni = Invoke-Bench -StubExit 0 -Name 'uni' -Script (Join-Path $checkout 'tools\bench.ps1') -Binary (Join-Path $checkout 'build\uni\bin\TaskSmackBenchmarks.cmd')
+    Assert-True ($uni.ExitCode -eq 0 -and $uni.Manifest.Count -eq 1) "Unicode-checkout run failed:`n$($uni.Log)"
+    $uniManifest = Get-Content -LiteralPath $uni.Manifest[0].FullName -Raw -Encoding utf8 | ConvertFrom-Json
+    Assert-True ($uniManifest.build.cxx_flags_config -ceq "-O3 -fprofile-instr-use=`"<source>/profiles/tasksmack.profdata`" -DAUTHOR=Jos$([char]0x00E9)") "Unicode checkout flags: $($uniManifest.build.cxx_flags_config)"
+    Assert-True ($null -eq $uniManifest.git.commit -and $null -eq $uniManifest.git.dirty) "Outside git, the git fields must be unknown: $($uniManifest.git | ConvertTo-Json -Compress)"
+    # Self-review: in a repository on a non-ASCII branch, the branch name arrives intact (git
+    # writes UTF-8; tests/tools/test_bench_sh.py checks the same for bench.sh).
+    if (Get-Command git -ErrorAction SilentlyContinue) {
+        $branchName = "f$([char]0x00EB)ature"
+        & git -C $checkout init -q -b $branchName 2>&1 | Out-Null
+        & git -C $checkout -c user.name=bench-test -c user.email=bench-test@example.invalid commit -q --allow-empty -m init 2>&1 | Out-Null
+        $branchRun = Invoke-Bench -StubExit 0 -Name 'uni-branch' -Script (Join-Path $checkout 'tools\bench.ps1') -Binary (Join-Path $checkout 'build\uni\bin\TaskSmackBenchmarks.cmd')
+        Assert-True ($branchRun.ExitCode -eq 0 -and $branchRun.Manifest.Count -eq 1) "Unicode-branch run failed:`n$($branchRun.Log)"
+        $branchGit = (Get-Content -LiteralPath $branchRun.Manifest[0].FullName -Raw -Encoding utf8 | ConvertFrom-Json).git
+        Assert-True ($branchGit.branch -ceq $branchName -and $branchGit.commit -match '^[0-9a-f]{40}$' -and $branchGit.dirty -eq $false) "Unicode branch: $($branchGit | ConvertTo-Json -Compress)"
+    }
+
+    # ── Self-review: output that cannot be redacted after exit 0 is deleted, not left behind ───
+    $garbled = Invoke-Bench -StubExit 0 -StubOutput 'partial' -Name 'garbled'
+    Assert-True ($garbled.ExitCode -ne 0) "Unredactable output was reported as a success:`n$($garbled.Log)"
+    Assert-True ($garbled.Log -like '*could not be redacted*') "The failure must say why:`n$($garbled.Log)"
+    Assert-True ($garbled.Result.Count -eq 0) 'Unredactable output must be deleted'
+
+    # ── Self-review: a run in the same second as an earlier one does not overwrite it ──────────
+    # Results already sit under every name this run could pick in the next 30 seconds.
+    $collideDir = Join-Path $root 'collide'
+    New-Item -ItemType Directory -Path $collideDir | Out-Null
+    $start = Get-Date
+    $placeholders = foreach ($offset in 0..30) {
+        $path = Join-Path $collideDir "fake-preset-$($start.AddSeconds($offset).ToString('yyyyMMdd-HHmmss')).json"
+        Set-Content -LiteralPath $path -Value 'placeholder' -Encoding utf8
+        $path
+    }
+    $collide = Invoke-Bench -StubExit 0 -Name 'collide'
+    Assert-True ($collide.ExitCode -eq 0) "Same-second run failed:`n$($collide.Log)"
+    foreach ($path in $placeholders) { Assert-True ((Get-Content -LiteralPath $path -Raw).Trim() -eq 'placeholder') "An earlier result was overwritten: $path" }
+    $suffixed = @($collide.Result | Where-Object { $_.Name -match '^fake-preset-\d{8}-\d{6}-2\.json$' })
+    Assert-True ($suffixed.Count -eq 1 -and (Test-Path -LiteralPath ($suffixed[0].FullName -replace '\.json$', '.manifest.json'))) "Expected a -2 result and manifest: $(@($collide.Result.Name) -join ', ')"
+
+    # ── Self-review: `& bench.ps1 -- --benchmark_filter=...` from PowerShell, as documented ─────
+    # PowerShell ends its own parameters at "--", so the first benchmark flag binds to -Preset.
+    $separator = Invoke-Bench -StubExit 0 -Name 'separator' -InProcessSeparator
+    Assert-True ($separator.ExitCode -eq 0 -and $separator.Manifest.Count -eq 1) "In-process -- run failed:`n$($separator.Log)"
+    Assert-True ($separator.Result[0].Name -like 'win-benchmark-*.json') "The default preset must be used: $($separator.Result[0].Name)"
+    $separatorArgs = @((Get-Content -LiteralPath $separator.Manifest[0].FullName -Raw | ConvertFrom-Json).benchmark.args)
+    Assert-True ($separatorArgs -contains '--benchmark_filter=BM_X') "The flag must reach the benchmark: $($separatorArgs -join ' ')"
 
     Write-Host 'bench.ps1 tests passed'
 }

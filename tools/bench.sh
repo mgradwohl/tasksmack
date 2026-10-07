@@ -5,7 +5,8 @@
 #   ./tools/bench.sh [preset] [-- <extra args>]
 #
 # preset defaults to 'benchmark'.
-# Produces JSON output at perf-data/<preset>-<timestamp>.json, holding every repetition plus the
+# Produces JSON output at perf-data/<preset>-<timestamp>.json (-2, -3, ... appended when a run in
+# the same second already wrote that name), holding every repetition plus the
 # mean/median/stddev/cv aggregates, and a provenance sidecar at
 # perf-data/<preset>-<timestamp>.manifest.json (git state, binary SHA-256, build config, benchmark
 # args, anonymized machine class; written by tools/bench-manifest.py, see CONTRIBUTING.md
@@ -34,6 +35,10 @@ PRESET="${1:-benchmark}"
 if [[ "${PRESET}" == "--" ]]; then
     PRESET="benchmark"
     shift
+elif [[ "${PRESET}" == --* ]]; then
+    # A benchmark flag with no preset before it (./tools/bench.sh --benchmark_filter=Foo): it stays
+    # with the extra args and the default preset is used, as in bench.ps1.
+    PRESET="benchmark"
 elif [[ $# -gt 0 && "${1}" != "--" ]]; then
     shift
 fi
@@ -42,8 +47,15 @@ if [[ $# -gt 0 && "${1}" == "--" ]]; then shift; fi
 
 OUT_DIR="${TASKSMACK_BENCH_OUT_DIR:-${REPO_ROOT}/perf-data}"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
-OUT_FILE="${OUT_DIR}/${PRESET}-${TIMESTAMP}.json"
-MANIFEST_FILE="${OUT_DIR}/${PRESET}-${TIMESTAMP}.manifest.json"
+# Two runs started in the same second would overwrite each other: the later one gets -2, -3, ...
+STEM="${PRESET}-${TIMESTAMP}"
+SUFFIX=2
+while [[ -e "${OUT_DIR}/${STEM}.json" || -e "${OUT_DIR}/${STEM}.manifest.json" ]]; do
+    STEM="${PRESET}-${TIMESTAMP}-${SUFFIX}"
+    SUFFIX=$((SUFFIX + 1))
+done
+OUT_FILE="${OUT_DIR}/${STEM}.json"
+MANIFEST_FILE="${OUT_DIR}/${STEM}.manifest.json"
 
 BENCH_BIN="${TASKSMACK_BENCH_BIN:-${REPO_ROOT}/build/${PRESET}/bin/TaskSmackBenchmarks}"
 
@@ -134,9 +146,13 @@ if [[ ${BENCH_EXIT} -ne 0 ]]; then
     exit "${BENCH_EXIT}"
 fi
 
-# Fails closed under `set -e`: if redaction fails, the script aborts before reporting the results
-# as ready to use.
-redact_result
+# Output that cannot be redacted (empty or truncated JSON despite exit code 0) may still hold the
+# host name, so it is deleted rather than left behind, and the script fails.
+if ! redact_result; then
+    rm -f "${OUT_FILE}"
+    echo "Benchmark output '${OUT_FILE}' could not be redacted and was deleted." >&2
+    exit 1
+fi
 
 if [[ ${MANIFEST_EXIT} -ne 0 ]]; then
     echo "Writing the provenance manifest '${MANIFEST_FILE}' failed (exit ${MANIFEST_EXIT})." >&2

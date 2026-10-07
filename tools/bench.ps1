@@ -2,10 +2,15 @@
 # bench.ps1 - Run TaskSmack benchmarks with consistent settings on Windows.
 #
 # Usage:
-#   pwsh tools/bench.ps1 [preset] [-BenchmarkBinary <path>] [-OutputDirectory <dir>] [-- <extra args>]
+#   pwsh tools/bench.ps1 [preset] [-BenchmarkBinary <path>] [-OutputDirectory <dir>] [<extra args>]
+#
+# Extra args go to the benchmark binary (e.g. --benchmark_filter=Foo). A "--" separator before
+# them works when the script is called from PowerShell (& tools/bench.ps1 win-benchmark -- ...),
+# but not through "pwsh -File", whose own parameter binding rejects a bare "--".
 #
 # Preset defaults to 'win-benchmark'.
-# Produces JSON output at perf-data/<preset>-<timestamp>.json, holding every repetition plus the
+# Produces JSON output at perf-data/<preset>-<timestamp>.json (-2, -3, ... appended when a run in
+# the same second already wrote that name), holding every repetition plus the
 # mean/median/stddev/cv aggregates, and a provenance sidecar at
 # perf-data/<preset>-<timestamp>.manifest.json (git state, binary SHA-256, build config, benchmark
 # args, anonymized machine class; see CONTRIBUTING.md "Benchmark Output").
@@ -45,6 +50,12 @@ $repoRoot = Split-Path -Parent $scriptDir
 if ($Preset -eq "--") {
     $Preset = "win-benchmark"
 }
+# Called from PowerShell as `& bench.ps1 -- --benchmark_filter=Foo`, the "--" ends PowerShell's own
+# parameters and the first benchmark flag binds to $Preset: it belongs with the extra args.
+elseif ($Preset.StartsWith("--")) {
+    $ExtraArgs = @($Preset) + $ExtraArgs
+    $Preset = "win-benchmark"
+}
 
 # Allow callers to pass an explicit -- separator, e.g.:
 #   bench.ps1 win-benchmark -- --benchmark_filter=Foo
@@ -62,8 +73,13 @@ foreach ($arg in $ExtraArgs) {
 
 $outDir = if ($OutputDirectory) { $OutputDirectory } else { Join-Path $repoRoot "perf-data" }
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$outFile = Join-Path $outDir "$Preset-$timestamp.json"
-$manifestFile = Join-Path $outDir "$Preset-$timestamp.manifest.json"
+# Two runs started in the same second would overwrite each other: the later one gets -2, -3, ...
+$stem = "$Preset-$timestamp"
+for ($suffix = 2; (Test-Path -LiteralPath (Join-Path $outDir "$stem.json")) -or (Test-Path -LiteralPath (Join-Path $outDir "$stem.manifest.json")); $suffix++) {
+    $stem = "$Preset-$timestamp-$suffix"
+}
+$outFile = Join-Path $outDir "$stem.json"
+$manifestFile = Join-Path $outDir "$stem.manifest.json"
 $benchBin = if ($BenchmarkBinary) { $BenchmarkBinary } else { Join-Path $repoRoot "build/$Preset/bin/TaskSmackBenchmarks.exe" }
 
 if (-not (Test-Path -LiteralPath $benchBin)) {
@@ -322,8 +338,29 @@ function Get-CMakeCompilerFile {
     return $null
 }
 
+function Find-BuildTree {
+    # The binary's build tree and multi-config configuration: the nearest ancestor holding
+    # CMakeCache.txt, at most $MaxLevels directories up -- build/<preset>/bin/ for a single-config
+    # generator, build/<preset>/bin/<Config>/ for a multi-config one
+    # (benchmarks/CMakeLists.txt). Config is that <Config> directory's name, or $null for a flat
+    # bin/. $null when no cache is found. Kept in step with find_build_tree in
+    # tools/bench-manifest.py.
+    param([string]$Binary, [int]$MaxLevels = 4)
+    $binaryDir = Split-Path -Parent ([IO.Path]::GetFullPath($Binary))
+    $directory = $binaryDir
+    for ($level = 0; $level -lt $MaxLevels -and $directory; $level++) {
+        if (Test-Path -LiteralPath (Join-Path $directory 'CMakeCache.txt') -PathType Leaf) {
+            $parts = @([IO.Path]::GetRelativePath($directory, $binaryDir).Split([char[]]@('\', '/')) | Where-Object { $_ -and $_ -ne '.' })
+            $config = if ($parts.Count -eq 2 -and $parts[0] -ieq 'bin') { $parts[1] } else { $null }
+            return [pscustomobject]@{ Directory = $directory; Config = $config }
+        }
+        $directory = Split-Path -Parent $directory
+    }
+    return $null
+}
+
 function Get-BuildProvenance {
-    # The build tree is the binary's bin/ parent (build/<preset>); read from its CMakeCache.txt.
+    # The build tree is found by Find-BuildTree (build/<preset>); read from its CMakeCache.txt.
     # Only the compiler's file name is kept: its full path can sit under a user profile.
     $build = [ordered]@{
         build_type       = $null
@@ -335,14 +372,15 @@ function Get-BuildProvenance {
         cxx_flags_config = $null
         ipo              = $null
     }
-    $buildDir = Split-Path -Parent (Split-Path -Parent ([IO.Path]::GetFullPath($benchBin)))
-    $cachePath = Join-Path $buildDir 'CMakeCache.txt'
-    if (-not (Test-Path -LiteralPath $cachePath)) { return $build }
+    $tree = Find-BuildTree -Binary $benchBin
+    if ($null -eq $tree) { return $build }
+    $buildDir = $tree.Directory
     $cache = @{}
-    foreach ($line in Get-Content -LiteralPath $cachePath) {
+    foreach ($line in Get-Content -LiteralPath (Join-Path $buildDir 'CMakeCache.txt') -Encoding utf8) {
         if ($line -match '^(?<name>[A-Za-z0-9_]+)(:[A-Za-z]+)?=(?<value>.*)$') { $cache[$Matches.name] = $Matches.value }
     }
-    $build.build_type = $cache['CMAKE_BUILD_TYPE']
+    # A multi-config tree has no CMAKE_BUILD_TYPE: the binary's bin/<Config>/ names it.
+    $build.build_type = if ($tree.Config) { $tree.Config } elseif ($cache['CMAKE_BUILD_TYPE']) { $cache['CMAKE_BUILD_TYPE'] } else { $null }
     $build.generator = $cache['CMAKE_GENERATOR']
     if ($cache['CMAKE_CXX_COMPILER']) { $build.compiler = Split-Path -Leaf $cache['CMAKE_CXX_COMPILER'] }
     # Flags can embed absolute paths (the PGO presets' -fprofile-instr-use=${sourceDir}/...).
@@ -485,7 +523,13 @@ if ($benchExit -ne 0) {
 if (-not (Test-Path -LiteralPath $outFile)) {
     throw "Benchmark output '$outFile' not found; cannot redact machine-identifying context."
 }
-Invoke-ResultRedaction
+# Output that cannot be redacted (empty or truncated JSON despite exit code 0) may still hold the
+# host name, so it is deleted rather than left behind.
+try { Invoke-ResultRedaction }
+catch {
+    Remove-Item -LiteralPath $outFile -Force
+    throw "Benchmark output '$outFile' could not be redacted and was deleted: $_"
+}
 
 if ($manifestError) {
     throw "Writing the provenance manifest '$manifestFile' failed: $manifestError"

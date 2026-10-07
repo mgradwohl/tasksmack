@@ -32,7 +32,11 @@ def git_provenance(repo_root: Path) -> dict:
     def git(*args: str) -> str | None:
         try:
             result = subprocess.run(
-                ["git", "-C", str(repo_root), *args], capture_output=True, text=True, check=False
+                ["git", "-C", str(repo_root), *args],
+                capture_output=True,
+                encoding="utf-8",  # git writes UTF-8 ref names, whatever the locale
+                errors="replace",
+                check=False,
             )
         except OSError:
             return None
@@ -260,6 +264,27 @@ def hide_identity(value, prefixes: list[str], user: str | None, hosts: list[str]
     return _hide_token(value, user, "<user>")
 
 
+def find_build_tree(binary: Path, max_levels: int = 4) -> tuple[Path | None, str | None]:
+    """The binary's build tree and multi-config configuration.
+
+    The tree is the nearest ancestor holding CMakeCache.txt, at most max_levels directories up:
+    build/<preset>/bin/ for a single-config generator, build/<preset>/bin/<Config>/ for a
+    multi-config one (benchmarks/CMakeLists.txt). The configuration is that <Config> directory's
+    name, or None for a flat bin/. Kept in step with Find-BuildTree in tools/bench.ps1.
+    """
+    binary_dir = Path(os.path.abspath(binary)).parent
+    directory = binary_dir
+    for _ in range(max_levels):
+        if (directory / "CMakeCache.txt").is_file():
+            parts = binary_dir.relative_to(directory).parts
+            config = parts[1] if len(parts) == 2 and parts[0].lower() == "bin" else None
+            return directory, config
+        if directory.parent == directory:
+            break
+        directory = directory.parent
+    return None, None
+
+
 def build_provenance(binary: Path, repo_root: Path) -> dict:
     """Read build config from the CMakeCache.txt of the binary's build tree (build/<preset>)."""
     build: dict = {
@@ -272,16 +297,16 @@ def build_provenance(binary: Path, repo_root: Path) -> dict:
         "cxx_flags_config": None,
         "ipo": None,
     }
-    build_dir = binary.resolve().parent.parent
-    cache_path = build_dir / "CMakeCache.txt"
-    if not cache_path.is_file():
+    build_dir, config = find_build_tree(binary)
+    if build_dir is None:
         return build
     cache: dict[str, str] = {}
-    for line in cache_path.read_text(encoding="utf-8", errors="replace").splitlines():
+    for line in (build_dir / "CMakeCache.txt").read_text(encoding="utf-8", errors="replace").splitlines():
         match = re.match(r"^([A-Za-z0-9_]+)(?::[A-Za-z]+)?=(.*)$", line)
         if match:
             cache[match.group(1)] = match.group(2)
-    build["build_type"] = cache.get("CMAKE_BUILD_TYPE")
+    # A multi-config tree has no CMAKE_BUILD_TYPE: the binary's bin/<Config>/ names it.
+    build["build_type"] = config or cache.get("CMAKE_BUILD_TYPE") or None
     build["generator"] = cache.get("CMAKE_GENERATOR")
     # Only the compiler's file name: its full path can sit under a user's home directory.
     if cache.get("CMAKE_CXX_COMPILER"):
@@ -443,7 +468,7 @@ def main() -> int:
         "machine": machine_class(),
     }
     manifest = hide_identity(manifest, *identity_strings())
-    options.manifest.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    options.manifest.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return 0
 
 

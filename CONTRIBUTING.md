@@ -696,11 +696,13 @@ pwsh tools/bench.ps1 win-benchmark
 
 Both scripts exit non-zero when the benchmark binary fails or crashes (#1423). A partial result
 file is still redacted (or deleted when it is too truncated to parse), so it never keeps the host
-name, but it is not reported as usable.
+name, but it is not reported as usable; output that cannot be redacted after a successful exit is
+deleted too, and the script fails.
 
 ### Benchmark Output
 
-Each `bench.sh` / `bench.ps1` run writes two files to `perf-data/`:
+Each `bench.sh` / `bench.ps1` run writes two files to `perf-data/` (a run started in the same
+second as an earlier one appends `-2`, `-3`, ... to the timestamp rather than overwrite it):
 
 - `<preset>-<timestamp>.json` -- Google Benchmark's JSON with **every repetition** (`run_type:
   "iteration"`) plus the `mean`/`median`/`stddev`/`cv` aggregate rows. The scripts deliberately do
@@ -710,7 +712,9 @@ Each `bench.sh` / `bench.ps1` run writes two files to `perf-data/`:
 - `<preset>-<timestamp>.manifest.json` -- a provenance sidecar (#1424) with the same field names
   from both scripts: `git` (commit, branch, dirty flag for tracked files; no diff), `binary` (file
   name and SHA-256), `build` (build type, generator, compiler name/id/version, C++ flags and IPO
-  read from the build tree's `CMakeCache.txt`, the compiler id/version from the
+  read from the build tree's `CMakeCache.txt` -- the nearest one above the binary, so a
+  multi-config `bin/<Config>/` binary is found too, with `<Config>` as its build type -- the
+  compiler id/version from the
   `CMakeFiles/<version>/` of the cache's own CMake version, or unknown; the flags are split into
   arguments (shell-style quoting, no backslash escapes), each argument's switch is peeled --
   prefix maps such as `-ffile-prefix-map=OLD=NEW` are split at the first `=` as clang does --
