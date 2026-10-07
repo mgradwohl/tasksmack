@@ -776,11 +776,12 @@ void ProcessDetailsCharts::renderThreadAndFaultHistory(const ProcessChartContext
     const std::size_t alignedCount = axis.alignedCount;
     const double xMin = axis.axisConfig.xMin;
 
-    ResourceChartData data{
-        .threads = tailSpan(history.series(ProcessSeries::Threads), alignedCount),
-        .handles = tailSpan(history.series(ProcessSeries::Handles), alignedCount),
-        .faults = tailSpan(history.series(ProcessSeries::PageFaults), alignedCount),
-    };
+    // Assigned field by field rather than designated-initialized: the GDI fields exist only on
+    // Windows, where leaving them out of a designated initializer is an error.
+    ResourceChartData data;
+    data.threads = tailSpan(history.series(ProcessSeries::Threads), alignedCount);
+    data.handles = tailSpan(history.series(ProcessSeries::Handles), alignedCount);
+    data.faults = tailSpan(history.series(ProcessSeries::PageFaults), alignedCount);
 #ifdef _WIN32
     // The GDI history can be shorter than the others, and ends at the same newest sample, so it starts
     // gdiTimeOffset timestamps in (#1001).
