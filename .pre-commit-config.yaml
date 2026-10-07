@@ -48,6 +48,15 @@ repos:
         name: Lint shell scripts
         args: [-x]  # Follow sourced files
 
+  # GitHub Actions workflow linting (#1187): expression/context/type errors, bad `needs:`, unknown
+  # inputs, and -- when shellcheck is on PATH -- warning-level shellcheck findings in `run:` blocks.
+  # Info/style shellcheck findings are ignored in .github/actionlint.yaml.
+  - repo: https://github.com/Mateusz-Grzelinski/actionlint-py
+    rev: v1.7.12.25
+    hooks:
+      - id: actionlint
+        name: Lint GitHub Actions workflows
+
   # Include-what-you-use (IWYU) - optional, runs in report-only mode
   # Prerequisites:
   #   - IWYU installed (apt install iwyu or brew install include-what-you-use)
