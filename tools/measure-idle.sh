@@ -43,7 +43,8 @@
 #                         TaskSmack with TASKSMACK_SYNTHETIC=<spec>, e.g. processes=5000,history=full
 #                         (keys: processes, cores, disks, interfaces, seed, history, refresh; see
 #                         src/App/SyntheticScenario.h). A TASKSMACK_SYNTHETIC already in the
-#                         environment is passed through too; this flag overrides it. The spec is
+#                         environment is passed through too; this flag overrides it, and
+#                         --synthetic '' turns an inherited one off. The spec is
 #                         printed with the results and in the RESULT line as synthetic=<spec>.
 #   -h, --help            Show this help.
 #
@@ -187,9 +188,9 @@ info "Binary:  ${BINARY}"
 info "App log: ${APP_LOG}"
 
 APP_ENV=(TASKSMACK_TRACE_RESIZE_PERF=1 "TASKSMACK_LOG_LEVEL=${TASKSMACK_LOG_LEVEL:-info}")
-if [[ -n "${SYNTHETIC}" ]]; then
-    APP_ENV+=("TASKSMACK_SYNTHETIC=${SYNTHETIC}")
-fi
+# Always set, even when empty: an explicit --synthetic '' must override an inherited
+# TASKSMACK_SYNTHETIC (an empty value turns the scenario off), so the run matches what is reported.
+APP_ENV+=("TASKSMACK_SYNTHETIC=${SYNTHETIC}")
 # env execs TaskSmack in place, so $! is TaskSmack's own PID.
 env "${APP_ENV[@]}" "${BINARY}" > "${APP_LOG}" 2>&1 &
 APP_PID=$!

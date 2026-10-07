@@ -73,7 +73,11 @@ void StorageModel::sampleAt(const std::chrono::steady_clock::time_point now)
         return;
     }
 
-    applySample(m_Probe->read(), m_Probe->capabilities(), now, /*publishNow=*/true);
+    // Read first, then ask for capabilities: a read can re-enumerate the disks and change what the
+    // probe reports (Windows), and one expression would leave the order unspecified.
+    const Platform::SystemDiskCounters counters = m_Probe->read();
+    const Platform::DiskCapabilities caps = m_Probe->capabilities();
+    applySample(counters, caps, now, /*publishNow=*/true);
 }
 
 void StorageModel::sampleSeries(const CounterSeriesSource& next)

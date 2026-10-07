@@ -229,7 +229,9 @@ void SystemModel::updateFromCounterSeries(const CounterSeriesSource& next)
     bool applied = false;
     while (next(counters, nowSeconds))
     {
-        if (!m_Timestamps.empty() && nowSeconds <= m_Timestamps.latest())
+        // Against the previous reading, not the history: after a lone seed reading the history is
+        // still empty, but a reading at or before it would give a zero or negative interval.
+        if (m_HasPrevious && nowSeconds <= m_PrevTimestamp)
         {
             continue;
         }

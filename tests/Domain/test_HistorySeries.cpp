@@ -113,6 +113,35 @@ TEST(SystemModelSeriesTest, SkipsSamplesNotLaterThanTheNewest)
     EXPECT_DOUBLE_EQ(timestamps.back(), START_SECONDS + (2.0 * STEP_SECONDS));
 }
 
+TEST(SystemModelSeriesTest, SkipsSamplesNotLaterThanALoneSeedReading)
+{
+    // One seed reading: a previous reading exists but the history is still empty.
+    Domain::SystemModel model(std::make_unique<TestMocks::MockSystemProbe>());
+    model.updateFromCounters(systemCountersAt(10), START_SECONDS);
+    ASSERT_TRUE(model.timestamps().empty());
+
+    const std::vector<double> times = {START_SECONDS - 1.0, START_SECONDS, START_SECONDS + STEP_SECONDS};
+    std::size_t index = 0;
+    model.updateFromCounterSeries(
+        [&](Platform::SystemCounters& counters, double& nowSeconds)
+        {
+            if (index >= times.size())
+            {
+                return false;
+            }
+            counters = systemCountersAt(11 + index);
+            nowSeconds = times[index++];
+            return true;
+        });
+    const auto timestamps = model.timestamps();
+    ASSERT_EQ(timestamps.size(), 1U);
+    EXPECT_DOUBLE_EQ(timestamps.front(), START_SECONDS + STEP_SECONDS);
+    const auto publication = model.publication();
+    ASSERT_EQ(publication->cpuHistory.size(), 1U);
+    EXPECT_GE(publication->cpuHistory.front(), 0.0F);
+    EXPECT_LE(publication->cpuHistory.front(), 100.0F);
+}
+
 TEST(SystemModelSeriesTest, EmptySeriesPublishesNothing)
 {
     Domain::SystemModel model(std::make_unique<TestMocks::MockSystemProbe>());
