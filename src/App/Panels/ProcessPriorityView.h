@@ -119,11 +119,15 @@ class ProcessPriorityView
     }
 
     /// Whether Apply is enabled for @p liveTarget: there is a pending edit, a snapshot of the process,
-    /// and both the edit's target and @p liveTarget know the start time. An action on a start time of 0
-    /// is refused by every IProcessActions (checkProcessIdentity()), so it is not offered.
+    /// both the edit's target and @p liveTarget know the start time, and they are the same process
+    /// (Detail::isSameEditTarget()). An action on a start time of 0 is refused by every IProcessActions
+    /// (checkProcessIdentity()), so it is not offered.
     [[nodiscard]] bool canApply(std::optional<std::int32_t> currentNice, const Platform::ProcessTarget& liveTarget) const noexcept
     {
-        return m_Changed && currentNice.has_value() && m_EditTarget.startTimeTicks != 0 && liveTarget.startTimeTicks != 0;
+        // Self-contained: an edit for another process is never applicable, whether or not the caller
+        // has dropped it with dropEditIfTargetMoved() first.
+        return m_Changed && currentNice.has_value() && m_EditTarget.startTimeTicks != 0 && liveTarget.startTimeTicks != 0 &&
+               Detail::isSameEditTarget(m_EditTarget, liveTarget);
     }
 
     /// Whether there is a pending edit that Apply cannot send yet for want of process details (a

@@ -235,10 +235,28 @@ TEST(ProcessPriorityViewTest, SameEditTargetRules)
         TestMocks::MockProcessActions mock;
         ProcessPriorityView view;
         view.editNice(10, c.edited);
-        (void) view.dropEditIfTargetMoved(c.live);
+        // canApply() on its own, with no dropEditIfTargetMoved() first: it must not rely on one.
         EXPECT_EQ(view.canApply(NICE_OF_A, c.live), c.applies);
         view.apply(&mock, c.live, NICE_OF_A);
         EXPECT_EQ(mock.setPriorityCount(), c.applies ? 1 : 0);
+    }
+}
+
+TEST(ProcessPriorityViewTest, CanApplyIsFalseForAnotherKnownProcessWithoutADropFirst)
+{
+    // Copilot review on #1455: canApply() is self-contained, not dependent on the caller having
+    // dropped a moved edit first, as render() does.
+    for (const Platform::ProcessTarget& other : {TARGET_B, TARGET_A_REUSED})
+    {
+        SCOPED_TRACE("pid=" + std::to_string(other.pid) + " start=" + std::to_string(other.startTimeTicks));
+        TestMocks::MockProcessActions mock;
+        ProcessPriorityView view;
+        view.editNice(10, TARGET_A);
+        EXPECT_FALSE(view.canApply(NICE_OF_A, other));
+        EXPECT_TRUE(view.canApply(NICE_OF_A, TARGET_A)); // Still pending for A: canApply() changes nothing
+
+        view.apply(&mock, other, NICE_OF_A);
+        EXPECT_EQ(mock.setPriorityCount(), 0);
     }
 }
 
