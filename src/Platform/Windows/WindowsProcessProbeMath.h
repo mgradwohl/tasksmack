@@ -1,8 +1,11 @@
 #pragma once
 
+#include "Platform/CpuAffinity.h"
 #include "Platform/ProcessTypes.h"
 
+#include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -524,6 +527,223 @@ makeSocketTrafficReading(std::span<const EStatsConnectionRead> reads, bool compl
         return {};
     }
     return SocketTrafficReading{.sockets = buildSocketTrafficSamples(reads), .sampleTimeNs = sampleTimeNs};
+}
+
+// ==========================================================================
+// CPU affinity across processor groups (#1247)
+// ==========================================================================
+
+/// One processor group's layout: how many processors it has room for (GetMaximumProcessorCount,
+/// fixed for the boot session, read once) and which of them are active (PROCESSOR_GROUP_INFO::
+/// ActiveProcessorMask, which hot-add or offlining can change, so re-read on the heavy cadence).
+struct ProcessorGroupLayout
+{
+    std::uint32_t maximumProcessors = 0;
+    std::uint64_t activeMask = 0;
+};
+
+/// How readCpuAffinity() may read a process's affinity, from what processor-topology discovery found.
+enum class AffinityTopology : std::uint8_t
+{
+    SingleGroup, // One group: GetProcessAffinityMask's mask is the whole affinity, bit N = CPU N
+    MultiGroup,  // Several groups, each with a current active mask: the group-aware reads
+    Unknown,     // Discovery failed: the affinity is reported unreadable rather than guessed
+};
+
+/// @param groupCount       GetMaximumProcessorGroupCount (0 if it failed).
+/// @param activeMasksRead  Whether the groups' active masks were read (needed only for several).
+/// A failed discovery is never taken for one group: on a multi-group machine that would map one
+/// group's mask onto CPUs 0-63 -- the partial value #1247 fixes.
+[[nodiscard]] constexpr AffinityTopology affinityTopology(std::size_t groupCount, bool activeMasksRead) noexcept
+{
+    if (groupCount == 1)
+    {
+        return AffinityTopology::SingleGroup;
+    }
+    if (groupCount == 0 || !activeMasksRead)
+    {
+        return AffinityTopology::Unknown;
+    }
+    return AffinityTopology::MultiGroup;
+}
+
+/// Whether this Windows build's threads have, by default, an affinity spanning every processor
+/// group: Windows 11 and Windows Server 2022 (build 20348) on. Such a thread's
+/// GetThreadGroupAffinity reports only its primary group. An unknown build (0) is assumed to.
+[[nodiscard]] constexpr bool threadsMaySpanGroups(std::uint32_t buildNumber) noexcept
+{
+    constexpr std::uint32_t SERVER_2022_BUILD = 20348; // Windows 11 is 22000
+    return buildNumber == 0 || buildNumber >= SERVER_2022_BUILD;
+}
+
+/// An affinity within one processor group: bit N is processor N of `group` (a GROUP_AFFINITY).
+struct GroupAffinityMask
+{
+    std::uint16_t group = 0;
+    std::uint64_t mask = 0;
+};
+
+/// Maps per-group affinity masks to one CpuAffinity numbered as the per-core CPU figures are:
+/// processor N of group G is CPU (sum of groups 0..G-1's maximum processor counts) + N, the coreId
+/// WindowsSystemProbe gives it (processorGroupFirstCoreIds(), #1107). Maximum counts, not active
+/// ones, so a hot-added processor never renumbers a later group's CPUs.
+///
+/// Masks for the same group are combined. A group the layout doesn't have, and bits at or above a
+/// group's maximum count, are dropped: they name no processor. With a single group of 64 or fewer
+/// processors this is CpuAffinity::fromMask(mask) of group 0's mask.
+[[nodiscard]] inline CpuAffinity cpuAffinityFromGroupMasks(std::span<const GroupAffinityMask> masks,
+                                                           std::span<const ProcessorGroupLayout> groups)
+{
+    CpuAffinity affinity;
+    std::size_t firstCpu = 0;
+    for (std::size_t group = 0; group < groups.size(); ++group)
+    {
+        const std::uint32_t size = groups[group].maximumProcessors;
+        const std::uint64_t valid = (size >= CpuAffinity::BITS_PER_WORD) ? ~std::uint64_t{0} : ((std::uint64_t{1} << size) - 1U);
+        std::uint64_t bits = 0;
+        for (const GroupAffinityMask& entry : masks)
+        {
+            if (entry.group == group)
+            {
+                bits |= entry.mask;
+            }
+        }
+        bits &= valid;
+        while (bits != 0)
+        {
+            // One setRange() per run of consecutive processors.
+            const auto low = static_cast<std::size_t>(std::countr_zero(bits));
+            const auto run = static_cast<std::size_t>(std::countr_one(bits >> low));
+            affinity.setRange(firstCpu + low, firstCpu + low + run - 1);
+            bits = (low + run >= CpuAffinity::BITS_PER_WORD) ? 0 : (bits & ~((std::uint64_t{1} << (low + run)) - 1U));
+        }
+        firstCpu += size;
+    }
+    return affinity;
+}
+
+/// A process's per-group masks from the two process-level reads, when they are enough; nullopt
+/// when its threads must be asked (groupMasksFromThreads()).
+/// @param processGroups GetProcessGroupAffinity: the groups the process's threads are assigned to.
+/// @param processMask   GetProcessAffinityMask's process mask. It describes one group only: the
+///                      process's single group, or (Windows 11 / Server 2022+, where a process spans
+///                      every group by default) its primary group -- which no documented call names
+///                      for another process. It is 0 when the process has threads explicitly
+///                      assigned to several groups.
+/// One group: that group's mask is processMask -- except, when threadsMaySpan, a mask equal to the
+/// group's every active processor. A process that spans every group by default (the Windows 11 /
+/// Server 2022+ default) reads exactly like that, as does one deliberately confined to its whole
+/// primary group, and nothing tells the two apart. The default is by far the common case, so it is
+/// read as the span over every group's active processors (#1247). Several groups, with a non-zero
+/// processMask equal to every one of those groups' active masks: the default span over all of
+/// them, unrestricted. Anything else (processMask 0, or several groups with a restricted mask
+/// somewhere) needs the threads.
+/// @param threadsMaySpan threadsMaySpanGroups() for this build. Before it, a process runs in one
+///                       group, so its one group's mask is exact.
+[[nodiscard]] inline std::optional<std::vector<GroupAffinityMask>> groupMasksFromProcess(std::span<const std::uint16_t> processGroups,
+                                                                                         std::uint64_t processMask,
+                                                                                         std::span<const ProcessorGroupLayout> groups,
+                                                                                         bool threadsMaySpan)
+{
+    if (processMask == 0)
+    {
+        return std::nullopt;
+    }
+    if (processGroups.size() == 1)
+    {
+        const std::uint16_t group = processGroups.front();
+        if (threadsMaySpan && groups.size() > 1 && group < groups.size() && groups[group].activeMask == processMask)
+        {
+            std::vector<GroupAffinityMask> span;
+            span.reserve(groups.size());
+            for (std::size_t g = 0; g < groups.size(); ++g)
+            {
+                span.push_back({.group = static_cast<std::uint16_t>(g), .mask = groups[g].activeMask});
+            }
+            return span;
+        }
+        return std::vector<GroupAffinityMask>{{.group = group, .mask = processMask}};
+    }
+    std::vector<GroupAffinityMask> masks;
+    masks.reserve(processGroups.size());
+    for (const std::uint16_t group : processGroups)
+    {
+        if (group >= groups.size() || groups[group].activeMask != processMask)
+        {
+            return std::nullopt;
+        }
+        masks.push_back({.group = group, .mask = processMask});
+    }
+    return masks;
+}
+
+/// What a process's threads' GetThreadGroupAffinity reads found.
+struct ThreadGroupAffinityReads
+{
+    std::vector<GroupAffinityMask> masks; // One per thread read
+    bool complete = false;                // Every thread in the snapshot was opened and read
+};
+
+/// A process's per-group masks from its threads' GetThreadGroupAffinity reads, for when
+/// groupMasksFromProcess() can't tell: the union of the threads' masks. Empty -- unreadable --
+/// whenever that union might not be the affinity, rather than a guess:
+///  - Not every thread was read (one exited, or denied access): the missing one may have been the
+///    only thread in a group, or the only one allowed some processor.
+///  - A listed group no thread reports: on Windows 11 / Server 2022+ a thread that spans every group
+///    by default reports only its primary group, so the absent group may be spanned in full -- or,
+///    the reads having raced a thread's move, restricted. Nothing says which.
+///  - threadsMaySpan, and a thread reports its group's every active processor: that thread may be
+///    bound to that group or may span every group by default; GetThreadGroupAffinity reads the same
+///    for both. Only when the union already covers every active processor do the two agree.
+/// @param threadsMaySpan threadsMaySpanGroups() for this build. Before it, each thread runs in one
+///                       group, so a full mask is that group alone.
+[[nodiscard]] inline std::vector<GroupAffinityMask> groupMasksFromThreads(std::span<const std::uint16_t> processGroups,
+                                                                          const ThreadGroupAffinityReads& threads,
+                                                                          std::span<const ProcessorGroupLayout> groups,
+                                                                          bool threadsMaySpan)
+{
+    if (!threads.complete || threads.masks.empty())
+    {
+        return {};
+    }
+    const auto reportedMask = [&threads](std::size_t group)
+    {
+        std::uint64_t mask = 0;
+        for (const GroupAffinityMask& entry : threads.masks)
+        {
+            if (entry.group == group)
+            {
+                mask |= entry.mask;
+            }
+        }
+        return mask;
+    };
+    for (const std::uint16_t group : processGroups)
+    {
+        if (reportedMask(group) == 0)
+        {
+            return {};
+        }
+    }
+    if (threadsMaySpan)
+    {
+        const bool someThreadFull = std::ranges::any_of(
+            threads.masks,
+            [groups](const GroupAffinityMask& entry)
+            { return entry.group < groups.size() && groups[entry.group].activeMask != 0 && entry.mask == groups[entry.group].activeMask; });
+        if (someThreadFull)
+        {
+            for (std::size_t group = 0; group < groups.size(); ++group)
+            {
+                const std::uint64_t active = groups[group].activeMask;
+                if ((reportedMask(group) & active) != active)
+                {
+                    return {}; // Bound to its group, or spanning them all: can't tell
+                }
+            }
+        }
+    }
+    return threads.masks;
 }
 
 } // namespace Platform
