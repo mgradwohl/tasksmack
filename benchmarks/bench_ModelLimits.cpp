@@ -283,39 +283,60 @@ BENCHMARK(BM_SystemModel_CardinalityHistory_Publish)
     ->Args({FULL_HISTORY_SAMPLES, 64, 10})
     ->Unit(benchmark::kMicrosecond);
 
-// The UI's read side at full history: take the publication and walk every series once, as the charts'
-// reductions do. Shared history (#1412) must not make this slower than reading a plain vector.
+// The UI's read side at full history: take the publication and walk every published series once --
+// the timestamps, all twelve aggregate series, every per-core series and both per-interface maps --
+// as the charts' reductions do. Shared history (#1412) must not make this slower than reading a
+// plain vector. Counter: `series`, how many series one iteration walks.
 void BM_SystemModel_FullHistory_ReadSeries(benchmark::State& state)
 {
     const SystemFixture& fixture = systemFixture(state.range(0), DEFAULT_CORES, DEFAULT_INTERFACES);
+    std::size_t seriesWalked = 0;
     for (auto _ : state)
     {
         const auto publication = fixture.model->publication();
         double sum = 0.0;
+        std::size_t series = 1; // the timestamps
         for (const double t : publication->timestamps)
         {
             sum += t;
         }
-        const auto add = [&sum](const auto& series)
+        const auto add = [&sum, &series](const auto& values)
         {
-            for (const float value : series)
+            for (const float value : values)
             {
                 sum += static_cast<double>(value);
             }
+            ++series;
         };
         add(publication->cpuHistory);
         add(publication->cpuUserHistory);
         add(publication->cpuSystemHistory);
+        add(publication->cpuIowaitHistory);
+        add(publication->cpuIdleHistory);
         add(publication->memoryHistory);
+        add(publication->memoryCachedHistory);
+        add(publication->swapHistory);
+        add(publication->powerHistory);
+        add(publication->batteryChargeHistory);
         add(publication->netRxHistory);
         add(publication->netTxHistory);
         for (const auto& core : publication->perCoreHistory)
         {
             add(core);
         }
+        for (const auto& [name, rx] : publication->perInterfaceRxHistory)
+        {
+            add(rx);
+        }
+        for (const auto& [name, tx] : publication->perInterfaceTxHistory)
+        {
+            add(tx);
+        }
         benchmark::DoNotOptimize(sum);
+        seriesWalked = series;
     }
     reportSystemShape(state, *fixture.model);
+    state.counters["series"] = benchmark::Counter(static_cast<double>(seriesWalked));
 }
 BENCHMARK(BM_SystemModel_FullHistory_ReadSeries)->Arg(FULL_HISTORY_SAMPLES)->Unit(benchmark::kMicrosecond);
 
