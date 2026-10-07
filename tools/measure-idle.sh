@@ -522,7 +522,19 @@ FIRST_LOG="$(head -n 1 "${REPS_FILE}" | cut -d ' ' -f 17-)"
 sampling_constant() {
     sed -n "s/^inline constexpr int $1 = \([0-9]*\);.*/\1/p" "${SAMPLING_CONFIG_H}" 2>/dev/null | head -n 1
 }
-# A [sampling] key's value from a config.toml.
+# A [sampling] key's integer value from a config.toml, as UserConfig applies it: a TOML integer
+# (underscores between digits allowed, e.g. 1_800) clamped to [<min>, <max>]. Prints nothing for a
+# missing key or any other token (a quoted string, a float, a hex literal), which TaskSmack ignores
+# in favour of the default, so the caller falls through to that default too.
+# Usage: config_sampling_int <config.toml> <key> <min> <max>
+config_sampling_int() {
+    local raw
+    raw="$(config_sampling_value "$1" "$2")"
+    [[ "${raw}" =~ ^[+-]?[0-9]+(_[0-9]+)*$ ]] || return 0
+    raw="${raw//_/}"
+    awk -v v="${raw}" -v lo="$3" -v hi="$4" 'BEGIN { v += 0; if (v < lo) v = lo; if (v > hi) v = hi; printf "%d\n", v }'
+}
+# A [sampling] key's raw token from a config.toml (use config_sampling_int for the value).
 config_sampling_value() {
     [[ -r "$1" ]] || return 0
     awk -v key="$2" '
@@ -544,7 +556,8 @@ REFRESH_MS="$(grep -oE 'BackgroundSampler: (starting with|interval changed to) [
     | tail -n 1 | grep -oE '[0-9]+' || true)"
 REFRESH_SOURCE="app log"
 if [[ -z "${REFRESH_MS}" ]]; then
-    REFRESH_MS="$(config_sampling_value "${CONFIG_PATH}" interval_ms)"
+    REFRESH_MS="$(config_sampling_int "${CONFIG_PATH}" interval_ms \
+        "$(sampling_constant REFRESH_INTERVAL_MIN_MS)" "$(sampling_constant REFRESH_INTERVAL_MAX_MS)")"
     REFRESH_SOURCE="config"
 fi
 if [[ -z "${REFRESH_MS}" ]]; then
@@ -557,7 +570,8 @@ fi
 HISTORY_S="$(grep -m 1 'showing a synthetic machine' "${FIRST_LOG}" | grep -oE 'history=[0-9]+s' | grep -oE '[0-9]+' || true)"
 HISTORY_SOURCE="synthetic scenario"
 if [[ -z "${HISTORY_S}" || "${HISTORY_S}" -eq 0 ]]; then
-    HISTORY_S="$(config_sampling_value "${CONFIG_PATH}" history_max_seconds)"
+    HISTORY_S="$(config_sampling_int "${CONFIG_PATH}" history_max_seconds \
+        "$(sampling_constant HISTORY_SECONDS_MIN)" "$(sampling_constant HISTORY_SECONDS_MAX)")"
     HISTORY_SOURCE="config"
 fi
 if [[ -z "${HISTORY_S}" ]]; then
