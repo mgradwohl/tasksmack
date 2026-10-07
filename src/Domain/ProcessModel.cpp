@@ -6,6 +6,7 @@
 #include "Numeric.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ProcessTypes.h"
+#include "PriorityConfig.h"
 #include "ProcessSnapshot.h"
 #include "ProcessState.h"
 #include "SamplingConfig.h"
@@ -78,6 +79,30 @@ struct NetworkInterval
     }
     return refreshElapsedSeconds > 0.0 ? NetworkInterval{.kind = NetworkInterval::Kind::Measure, .seconds = refreshElapsedSeconds}
                                        : NetworkInterval{};
+}
+
+// The platform's priority class, as Domain names it (#1280). Spelled out rather than cast, so the
+// two enums can't drift apart unnoticed.
+[[nodiscard]] constexpr auto toPriorityClass(Platform::PriorityClass priorityClass) noexcept -> Priority::PriorityClass
+{
+    switch (priorityClass)
+    {
+    case Platform::PriorityClass::Idle:
+        return Priority::PriorityClass::Idle;
+    case Platform::PriorityClass::BelowNormal:
+        return Priority::PriorityClass::BelowNormal;
+    case Platform::PriorityClass::Normal:
+        return Priority::PriorityClass::Normal;
+    case Platform::PriorityClass::AboveNormal:
+        return Priority::PriorityClass::AboveNormal;
+    case Platform::PriorityClass::High:
+        return Priority::PriorityClass::High;
+    case Platform::PriorityClass::Realtime:
+        return Priority::PriorityClass::Realtime;
+    case Platform::PriorityClass::None:
+    default:
+        return Priority::PriorityClass::None;
+    }
 }
 
 } // namespace
@@ -1059,6 +1084,7 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     // count would read as the process's whole lifetime of I/O in one interval.
     snapshot.ioAvailable = current.ioCountersAvailable && (previous == nullptr || previous->ioCountersAvailable);
     snapshot.nice = current.nice;
+    snapshot.priorityClass = toPriorityClass(current.priorityClass);
     snapshot.pageFaults = current.pageFaultCount;
     snapshot.cpuAffinity = current.cpuAffinity;
     snapshot.startTimeEpoch = current.startTimeEpoch;

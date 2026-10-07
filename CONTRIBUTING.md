@@ -492,6 +492,12 @@ twice, both blocking: on Linux over what `tools/clang-tidy.sh` analyses (which e
 Run the Windows script before pushing a change to Windows-only code. The Windows script skips one check,
 `clang-analyzer-optin.core.EnumCastOutOfRange`, for an MSVC STL false positive it can't suppress in our code.
 
+Naming is enforced by `readability-identifier-naming` in `.clang-tidy`: `PascalCase` classes, structs,
+enums, enumerators, namespaces and type aliases; `camelCase` functions, methods and parameters;
+`m_PascalCase` private and protected members (`m_CurrentFontSize`, not `m_currentFontSize`); and
+`UPPER_SNAKE_CASE` constants by convention. Public data members of snapshot structs are plain
+`camelCase` with no prefix.
+
 ### Include-What-You-Use (IWYU)
 
 IWYU analyzes `#include` directives and suggests additions/removals for cleaner dependencies:
@@ -629,19 +635,33 @@ pthread barrier paths, while preserving any caller-provided TSAN flags.
 
 ## Fuzzing (Linux only)
 
-ClusterFuzzLite continuously exercises the allocation-free `/proc` numeric
-parsers with libFuzzer and AddressSanitizer. Pull requests that change the
-parser or fuzzing configuration run a short code-change fuzzing job; `main`
-also produces a baseline build. Separate weekly jobs perform a longer batch
-run and prune the resulting corpus.
+ClusterFuzzLite continuously exercises three parsers with libFuzzer and AddressSanitizer:
 
-To run the current target locally with Clang:
+| Target | Entry point | Seed corpus |
+|--------|-------------|-------------|
+| `fuzz_proc_parsing` | the allocation-free `/proc` numeric parsers (`Platform/Linux/ProcParsing.h`) | none |
+| `fuzz_user_config` | `App::UserConfig::parseSettings`: toml++ plus the `config.toml` schema, as `load()` reads it | `tests/fuzz/corpus/fuzz_user_config/` |
+| `fuzz_theme_loader` | `UI::ThemeLoader::loadThemeFromString`: toml++ plus every theme colour lookup, as `loadTheme()` reads a file | `assets/themes/*.toml` and `tests/fuzz/corpus/fuzz_theme_loader/` |
+
+Pull requests that change `tests/fuzz/**`, `.clusterfuzzlite/**`, the `cflite_*.yml` workflows,
+any fuzzed parser (`ProcParsing.h`, `UserConfig.{cpp,h}`, `UserConfigHelpers.h`,
+`ThemeLoader.{cpp,h}`, and the types they fill, `Theme.h` and `ProcessColumnConfig.h`), the fuzz build's other inputs
+(`assets/themes/**`, the theme seed corpus, and `tests/Mocks/ThemeStub.cpp`), or the dependency
+pins and patches (`cmake/Dependencies.cmake`, `cmake/patches/**`) run a short
+code-change fuzzing job (`cflite_pr.yml`'s path filter); pushes to `main` touching the same paths
+refresh the baseline build (`cflite_build.yml`). Separate weekly jobs perform a longer batch run and prune the resulting corpus.
+`.clusterfuzzlite/build.sh` builds every target (ClusterFuzzLite runs each binary it leaves in
+`$OUT`), so a new target is a `tests/fuzz/fuzz_<name>.cpp` plus one `build_fuzzer` line there. The
+targets compile against the header-only toml++, spdlog, Dear ImGui and ImPlot at the commits
+`cmake/Dependencies.cmake` pins, with the same `cmake/patches/` applied (`.clusterfuzzlite/fetch-deps.sh`).
+
+To build and run the targets locally with Clang, from the repo root:
 
 ```bash
-mkdir -p build/fuzz
-clang++-22 -std=c++23 -Isrc -fsanitize=fuzzer,address \
-  tests/fuzz/fuzz_proc_parsing.cpp -o build/fuzz/fuzz_proc_parsing
-./build/fuzz/fuzz_proc_parsing -max_total_time=60
+CXX=clang++-22 CXXFLAGS="-O1 -g -fsanitize=address,fuzzer-no-link" \
+  LIB_FUZZING_ENGINE=-fsanitize=fuzzer OUT=build/fuzz .clusterfuzzlite/build.sh
+mkdir -p build/fuzz/corpus-config && unzip -o build/fuzz/fuzz_user_config_seed_corpus.zip -d build/fuzz/corpus-config
+./build/fuzz/fuzz_user_config -max_total_time=60 build/fuzz/corpus-config
 ```
 
 ## Benchmarks

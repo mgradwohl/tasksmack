@@ -52,6 +52,10 @@ if [[ -z "$CLANG_FORMAT" ]]; then
     exit 1
 fi
 
+# shellcheck source=tools/common.sh
+source "$SCRIPT_DIR/common.sh"
+warn_clang_format_version_skew "$CLANG_FORMAT"
+
 FAILED=0
 FILE_COUNT=0
 

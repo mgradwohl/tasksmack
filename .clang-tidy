@@ -59,7 +59,10 @@ CheckOptions:
     value: true
   - key: readability-implicit-bool-conversion.AllowIntegerConditions
     value: false
-  # Identifier naming conventions matching project style
+  # Identifier naming conventions matching project style. clang-tidy's "CamelCase" is PascalCase and
+  # "camelBack" is camelCase, so private/protected members are m_PascalCase (m_CurrentFontSize), the
+  # rule CONTRIBUTING.md and .github/copilot-instructions.md state (#944). Public data members (snapshot
+  # struct fields) have no rule and no prefix.
   - key: readability-identifier-naming.ClassCase
     value: CamelCase
   - key: readability-identifier-naming.StructCase
