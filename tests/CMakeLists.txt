@@ -188,6 +188,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessResourceHelpers.cpp
     App/test_ProcessHistoryHelpers.cpp
     App/test_ProcessDetailsHistory.cpp
+    App/test_ProcessSmoothedUsage.cpp
     App/test_ProcessActionHelpers.cpp
     App/test_ProcessActionsView.cpp
     App/test_ProcessActionConfirmPopup.cpp
