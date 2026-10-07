@@ -15,6 +15,7 @@
 
 #include <imgui.h>
 
+#include <cstddef>
 #include <string>
 #include <string_view>
 
@@ -125,6 +126,13 @@ auto Theme::scheme() const -> const ColorScheme&
 {
     static const ColorScheme k_Scheme = makeVisibleScheme();
     return k_Scheme;
+}
+
+// Referenced by Process Details' Resources chart (Page Faults, GDI Objects), which
+// test_ProcessDetailsChartsRender.cpp runs headless. The same lookup as Theme.cpp's.
+auto Theme::accentColor(std::size_t index) const -> ImVec4
+{
+    return scheme().accents[index % accentCount()];
 }
 
 // Referenced by ChartWidgets.h's PlotFontGuard. No fonts are loaded here, so charts draw in the
