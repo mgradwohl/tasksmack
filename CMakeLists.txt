@@ -124,6 +124,7 @@ set(TASKSMACK_SOURCES
     src/App/WindowOverride.cpp
     src/App/Panels/ProcessesPanel.cpp
     src/App/Panels/ProcessDetailsPanel.cpp
+    src/App/Panels/ProcessDetailsCharts.cpp
     src/App/Panels/ProcessActionConfirm.cpp
     src/App/Panels/ProcessActionsView.cpp
     src/App/Panels/ProcessPriorityView.cpp

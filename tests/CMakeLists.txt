@@ -190,6 +190,8 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessResourceHelpers.cpp
     App/test_ProcessHistoryHelpers.cpp
     App/test_ProcessDetailsHistory.cpp
+    App/test_ProcessDetailsChartHelpers.cpp
+    App/test_ProcessDetailsChartsRender.cpp
     App/test_ProcessSmoothedUsage.cpp
     App/test_ProcessActionHelpers.cpp
     App/test_ProcessActionsView.cpp
@@ -338,11 +340,13 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/InstanceLock.cpp
     # Synthetic scenario (#1413): the env-var parser, composition helpers and history preload
     ${CMAKE_SOURCE_DIR}/src/App/SyntheticScenario.cpp
-    # The process-action confirm modal, the Actions tab and the priority control, run headless
-    # (test_ProcessActionConfirmPopup.cpp, test_ProcessPriorityViewRender.cpp)
+    # The process-action confirm modal, the Actions tab, the priority control and the chart tabs, run
+    # headless (test_ProcessActionConfirmPopup.cpp, test_ProcessPriorityViewRender.cpp,
+    # test_ProcessDetailsChartsRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionConfirm.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionsView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessPriorityView.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessDetailsCharts.cpp
     # Domain layer
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/GPUModel.cpp
