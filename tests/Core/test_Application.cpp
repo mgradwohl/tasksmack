@@ -31,12 +31,15 @@
 #include <spdlog/sinks/ostream_sink.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -331,6 +334,125 @@ class SdlEventPushingLayer : public Core::Layer
     int m_StopAfter;
     int m_UpdateCount = 0;
     bool m_Pushed = false;
+};
+
+/// #1409: once the loop has settled into idle pacing, starts an SDL timer that pushes a key-down from
+/// SDL's timer thread partway through the idle wait (IDLE_FRAME_SLEEP_MS is 50 ms), then records, for
+/// every frame (onUpdate), whether it began after the push and whether the key had been dispatched
+/// (onSDLEvent) by then.
+///
+/// "After the push" is decided by causality, not timestamps: the timer thread enqueues the event and
+/// sets m_Pushed under m_PushMutex, and onUpdate() reads m_Pushed under the same mutex. A frame that
+/// sees m_Pushed began after the enqueue; a frame that does not began before it (its onUpdate() held
+/// the lock first). Comparing SDL_GetTicksNS() stamps instead raced: SDL_PushEvent() can wake the loop
+/// before the push time is read, so the old loop's stale post-wake frame could land just before the
+/// recorded push time, be excluded, and let the test pass on the bug.
+class KeyDuringIdleWaitLayer : public Core::Layer
+{
+  public:
+    /// Run time before the timer starts: past the startup window events and the 0.35 s interaction
+    /// grace their resize starts (INTERACTION_REDRAW_GRACE_SECONDS), during which frames come from the
+    /// move/resize redraw path before the wait rather than from the idle path after it.
+    static constexpr std::uint64_t SETTLE_NS = 1'000'000'000;
+    /// Into the 50 ms idle wait that follows the frame which starts the timer.
+    static constexpr Uint32 PUSH_DELAY_MS = 25;
+    /// Frames to keep running after the push; and the fallback stop if the push never happens.
+    static constexpr int UPDATES_AFTER_PUSH = 3;
+    static constexpr int MAX_UPDATES = 200;
+    static constexpr SDL_Keycode KEY = SDLK_F13;
+
+    KeyDuringIdleWaitLayer() : Layer("KeyDuringIdleWait")
+    {}
+
+    KeyDuringIdleWaitLayer(const KeyDuringIdleWaitLayer&) = delete;
+    KeyDuringIdleWaitLayer& operator=(const KeyDuringIdleWaitLayer&) = delete;
+    KeyDuringIdleWaitLayer(KeyDuringIdleWaitLayer&&) = delete;
+    KeyDuringIdleWaitLayer& operator=(KeyDuringIdleWaitLayer&&) = delete;
+
+    ~KeyDuringIdleWaitLayer() override
+    {
+        if (m_Timer != 0)
+        {
+            SDL_RemoveTimer(m_Timer);
+        }
+    }
+
+    void onSDLEvent(SDL_Event* event) override
+    {
+        if (event->type == SDL_EVENT_KEY_DOWN && event->key.key == KEY)
+        {
+            m_KeyDispatched = true;
+        }
+    }
+
+    void onUpdate(float /*deltaTime*/) override
+    {
+        bool pushed = false;
+        {
+            const std::scoped_lock lock(m_PushMutex);
+            pushed = m_Pushed;
+        }
+        const std::uint64_t nowNs = SDL_GetTicksNS();
+        if (m_Frames.empty())
+        {
+            m_FirstFrameNs = nowNs;
+        }
+        m_Frames.push_back({.afterPush = pushed, .keyDispatched = m_KeyDispatched});
+        const auto updates = static_cast<int>(m_Frames.size());
+        if (m_Timer == 0 && (nowNs - m_FirstFrameNs) >= SETTLE_NS)
+        {
+            m_Timer = SDL_AddTimer(PUSH_DELAY_MS, &KeyDuringIdleWaitLayer::pushKey, this);
+        }
+        if (pushed && m_FramesAtPush < 0)
+        {
+            m_FramesAtPush = updates;
+        }
+        if ((m_FramesAtPush >= 0 && updates >= m_FramesAtPush + UPDATES_AFTER_PUSH) || updates >= MAX_UPDATES)
+        {
+            Core::Application::get().stop();
+        }
+    }
+
+    struct Frame
+    {
+        /// onUpdate() saw the push: the frame began after the key was enqueued.
+        bool afterPush = false;
+        bool keyDispatched = false;
+    };
+
+    [[nodiscard]] const std::vector<Frame>& frames() const
+    {
+        return m_Frames;
+    }
+
+    [[nodiscard]] bool pushed() const
+    {
+        const std::scoped_lock lock(m_PushMutex);
+        return m_Pushed;
+    }
+
+  private:
+    static Uint32 pushKey(void* userdata, SDL_TimerID /*timerId*/, Uint32 /*interval*/)
+    {
+        auto* self = static_cast<KeyDuringIdleWaitLayer*>(userdata);
+        SDL_Event event{};
+        event.type = SDL_EVENT_KEY_DOWN;
+        event.key.key = KEY;
+        event.key.down = true;
+        // Enqueue and record under one lock: a frame whose onUpdate() runs after the enqueue blocks
+        // until m_Pushed is set, so it can't be mistaken for a frame from before the push.
+        const std::scoped_lock lock(self->m_PushMutex);
+        self->m_Pushed = SDL_PushEvent(&event);
+        return 0; // one shot
+    }
+
+    std::vector<Frame> m_Frames;
+    std::uint64_t m_FirstFrameNs = 0;
+    bool m_KeyDispatched = false;
+    mutable std::mutex m_PushMutex;
+    bool m_Pushed = false; // guarded by m_PushMutex
+    int m_FramesAtPush = -1;
+    SDL_TimerID m_Timer = 0;
 };
 
 /// Layer whose onDetach() logs to g_DetachOrder, then throws, to verify detachAllLayers() still
@@ -681,6 +803,38 @@ TEST(ApplicationTest, SdlQuitStopsTheAppAndCannotBeVetoed)
     }
 }
 
+// #1409: a key that wakes the idle wait is dispatched before the frame rendered after the wake. The
+// loop used to wait with SDL_WaitEventTimeout(nullptr, ...) and render straight away, so the first
+// frame after the key showed the state from before it.
+TEST(ApplicationTest, KeyDuringIdleWaitIsDispatchedBeforeTheNextFrame)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "KeyDuringIdleWaitTest";
+
+    try
+    {
+        Core::Application app(spec);
+        const auto& layer = app.pushLayer<KeyDuringIdleWaitLayer>();
+
+        app.run();
+
+        ASSERT_TRUE(layer.pushed()) << "the timer never pushed the key: " << SDL_GetError();
+        const auto& frames = layer.frames();
+        const auto firstAfterPush = std::ranges::find_if(frames, &KeyDuringIdleWaitLayer::Frame::afterPush);
+        ASSERT_NE(firstAfterPush, frames.end()) << "no frame started after the key was pushed";
+        EXPECT_TRUE(firstAfterPush->keyDispatched) << "the first frame after the wake rendered before the waking key was dispatched";
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
+    }
+}
+
 TEST(ApplicationTest, PushMultipleLayers)
 {
     if (!hasDisplay())
@@ -989,13 +1143,202 @@ TEST(FramePacingTest, VsyncTransitionNoChangeWhileInteractionStateUnchanged)
 
 TEST(FramePacingTest, SkipRenderThisFrameWhenDrainExceedsBudgetAndNotMinimized)
 {
-    EXPECT_TRUE(Core::FramePacing::computeSkipRenderThisFrame(16.0, 16.0, false));
-    EXPECT_FALSE(Core::FramePacing::computeSkipRenderThisFrame(15.9, 16.0, false));
+    EXPECT_TRUE(Core::FramePacing::computeSkipRenderThisFrame(16.0, 16.0, false, 0, Core::FramePacing::MAX_CONSECUTIVE_SKIPPED_RENDERS));
+    EXPECT_FALSE(Core::FramePacing::computeSkipRenderThisFrame(15.9, 16.0, false, 0, Core::FramePacing::MAX_CONSECUTIVE_SKIPPED_RENDERS));
 }
 
 TEST(FramePacingTest, SkipRenderThisFrameNeverSkipsWhileMinimized)
 {
-    EXPECT_FALSE(Core::FramePacing::computeSkipRenderThisFrame(1000.0, 16.0, true));
+    EXPECT_FALSE(Core::FramePacing::computeSkipRenderThisFrame(1000.0, 16.0, true, 0, Core::FramePacing::MAX_CONSECUTIVE_SKIPPED_RENDERS));
+}
+
+// #1410: a sustained slow drain skips at most MAX_CONSECUTIVE_SKIPPED_RENDERS renders in a row, then a
+// frame renders, however long every drain takes; the pattern repeats rather than freezing the display.
+TEST(FramePacingTest, ConsecutiveSkippedRendersAreBounded)
+{
+    using Core::FramePacing::MAX_CONSECUTIVE_SKIPPED_RENDERS;
+    static_assert(MAX_CONSECUTIVE_SKIPPED_RENDERS >= 1, "P3 must still be able to skip an isolated stall");
+
+    constexpr double SLOW_DRAIN_MS = 40.0; // every drain overruns the 16 ms skip threshold
+    constexpr int ITERATIONS = 30;
+    std::uint32_t consecutive = 0;
+    std::uint32_t longestRun = 0;
+    int renders = 0;
+    for (int i = 0; i < ITERATIONS; ++i)
+    {
+        SCOPED_TRACE(i);
+        const bool skip =
+            Core::FramePacing::computeSkipRenderThisFrame(SLOW_DRAIN_MS, 16.0, false, consecutive, MAX_CONSECUTIVE_SKIPPED_RENDERS);
+        // Every N+1-th iteration renders: N skips, then a forced frame.
+        EXPECT_EQ(skip, (i % static_cast<int>(MAX_CONSECUTIVE_SKIPPED_RENDERS + 1)) != static_cast<int>(MAX_CONSECUTIVE_SKIPPED_RENDERS));
+        renders += skip ? 0 : 1;
+        consecutive = Core::FramePacing::nextConsecutiveSkippedRenders(consecutive, skip, !skip);
+        longestRun = std::max(longestRun, consecutive);
+    }
+    EXPECT_EQ(longestRun, MAX_CONSECUTIVE_SKIPPED_RENDERS);
+    EXPECT_EQ(renders, ITERATIONS / static_cast<int>(MAX_CONSECUTIVE_SKIPPED_RENDERS + 1));
+}
+
+TEST(FramePacingTest, ConsecutiveSkipCountResetsOnAFrameAndHoldsThroughADeferredRender)
+{
+    using Core::FramePacing::nextConsecutiveSkippedRenders;
+    EXPECT_EQ(nextConsecutiveSkippedRenders(0, true, false), 1U);
+    EXPECT_EQ(nextConsecutiveSkippedRenders(1, true, false), 2U);
+    EXPECT_EQ(nextConsecutiveSkippedRenders(2, false, true), 0U);
+    // A wake that defers its render to the next iteration (#1409) neither skips nor renders.
+    EXPECT_EQ(nextConsecutiveSkippedRenders(1, false, false), 1U);
+}
+
+TEST(FramePacingTest, RegularFrameRendersUnlessAlreadyDrawnSkippedOrDeferredByAWake)
+{
+    using Core::FramePacing::computeShouldRenderRegularFrame;
+    EXPECT_TRUE(computeShouldRenderRegularFrame(false, false, false));
+    EXPECT_FALSE(computeShouldRenderRegularFrame(true, false, false));
+    EXPECT_FALSE(computeShouldRenderRegularFrame(false, true, false));
+    EXPECT_FALSE(computeShouldRenderRegularFrame(false, false, true));
+}
+
+namespace
+{
+
+/// A scripted event source for drainEventsWithinBudget(): each queued event takes the given time to
+/// poll and dispatch, on a fake millisecond clock.
+struct FakeDrainSource
+{
+    std::vector<double> eventCostsMs;
+    std::size_t next = 0;
+    double clockMs = 0.0;
+    int clockReads = 0;
+
+    auto pollAndDispatch()
+    {
+        return [this]
+        {
+            if (next >= eventCostsMs.size())
+            {
+                return false;
+            }
+            clockMs += eventCostsMs[next++];
+            return true;
+        };
+    }
+
+    auto elapsedMs()
+    {
+        return [this]
+        {
+            ++clockReads;
+            return clockMs;
+        };
+    }
+};
+
+} // namespace
+
+// #1410: the budget is checked after every event. The drain used to check only every fourth event,
+// so a single stalled poll early in a batch ran up to three more polls past the budget.
+TEST(FramePacingTest, DrainChecksItsBudgetAfterEveryEvent)
+{
+    constexpr double BUDGET_MS = 8.0;
+    struct Case
+    {
+        const char* name;
+        std::vector<double> costsMs;
+        std::uint32_t expectedEvents;
+        bool expectedBudgetExceeded;
+        double expectedMaxSingleMs;
+    };
+    const std::vector<Case> cases = {
+        {.name = "first poll stalls",
+         .costsMs = {9.0, 1.0, 1.0, 1.0, 1.0},
+         .expectedEvents = 1,
+         .expectedBudgetExceeded = true,
+         .expectedMaxSingleMs = 9.0},
+        {.name = "second poll crosses",
+         .costsMs = {1.0, 7.5, 1.0, 1.0},
+         .expectedEvents = 2,
+         .expectedBudgetExceeded = true,
+         .expectedMaxSingleMs = 7.5},
+        {.name = "fifth poll crosses",
+         .costsMs = {2.0, 2.0, 2.0, 1.0, 1.0, 1.0},
+         .expectedEvents = 5,
+         .expectedBudgetExceeded = true,
+         .expectedMaxSingleMs = 2.0},
+        {.name = "fits the budget",
+         .costsMs = {1.0, 1.0, 3.0},
+         .expectedEvents = 3,
+         .expectedBudgetExceeded = false,
+         .expectedMaxSingleMs = 3.0},
+        {.name = "empty queue", .costsMs = {}, .expectedEvents = 0, .expectedBudgetExceeded = false, .expectedMaxSingleMs = 0.0},
+    };
+    for (const auto& testCase : cases)
+    {
+        SCOPED_TRACE(testCase.name);
+        FakeDrainSource source{.eventCostsMs = testCase.costsMs};
+        const auto result = Core::FramePacing::drainEventsWithinBudget(source.pollAndDispatch(), source.elapsedMs(), BUDGET_MS);
+        EXPECT_EQ(result.eventCount, testCase.expectedEvents);
+        EXPECT_EQ(result.budgetExceeded, testCase.expectedBudgetExceeded);
+        EXPECT_DOUBLE_EQ(result.maxSingleEventMs, testCase.expectedMaxSingleMs);
+        // One clock read per event handled, none for the empty poll that ends the drain.
+        EXPECT_EQ(source.clockReads, static_cast<int>(testCase.expectedEvents));
+    }
+}
+
+// #1409: a sequence through the loop's ordering (drain, idle wait, render) with the pure decisions
+// Application::run() uses. A key pressed while the loop sleeps in the idle wait wakes it; the frame
+// rendered after the wake must already show the key.
+TEST(FramePacingTest, KeyDuringIdleWaitShowsInTheFirstFrameAfterTheWake)
+{
+    constexpr int KEY = 1;
+    std::vector<int> queue;             // events not yet taken off the queue
+    std::optional<int> idleWakeEvent;   // the event SDL_WaitEventTimeout() returned
+    bool keyHandled = false;            // the UI state the key changes
+    std::vector<bool> framesShowingKey; // one entry per rendered frame
+
+    // One Application::run() iteration; @p keyArrivesDuringWait pushes the key while the loop waits.
+    const auto iterate = [&](bool keyArrivesDuringWait)
+    {
+        const auto pollAndDispatch = [&]
+        {
+            int event = 0;
+            if (idleWakeEvent.has_value())
+            {
+                event = *idleWakeEvent;
+                idleWakeEvent.reset();
+            }
+            else if (!queue.empty())
+            {
+                event = queue.front();
+                queue.erase(queue.begin());
+            }
+            else
+            {
+                return false;
+            }
+            keyHandled = keyHandled || (event == KEY);
+            return true;
+        };
+        const auto drain = Core::FramePacing::drainEventsWithinBudget(pollAndDispatch, [] { return 0.0; }, 8.0);
+        if (drain.eventCount == 0 && keyArrivesDuringWait)
+        {
+            idleWakeEvent = KEY; // the wait wakes on the key and takes it off the queue
+        }
+        if (Core::FramePacing::computeShouldRenderRegularFrame(idleWakeEvent.has_value(), false, false))
+        {
+            framesShowingKey.push_back(keyHandled);
+        }
+    };
+
+    iterate(false); // an idle frame before the key
+    ASSERT_EQ(framesShowingKey.size(), 1U);
+    EXPECT_FALSE(framesShowingKey.back());
+
+    iterate(true); // the key arrives during this iteration's idle wait: no frame of the old state
+    EXPECT_EQ(framesShowingKey.size(), 1U);
+
+    iterate(false); // drains the key, then renders
+    ASSERT_EQ(framesShowingKey.size(), 2U);
+    EXPECT_TRUE(framesShowingKey.back()) << "the first frame after the wake must reflect the key";
 }
 
 TEST(FramePacingTest, ShouldSleepWhenIdleOutsideGracePeriod)
@@ -1064,7 +1407,7 @@ TEST(ResizePerfTraceStatsTest, RecordEventBatchAccumulatesAndTracksMax)
     EXPECT_EQ(stats.maxEventsPerBatch, 10U);
     EXPECT_DOUBLE_EQ(stats.drainMs, 7.0);
     EXPECT_DOUBLE_EQ(stats.maxDrainMs, 5.0);
-    EXPECT_DOUBLE_EQ(stats.maxSinglePollBatchMs, 6.0);
+    EXPECT_DOUBLE_EQ(stats.maxSingleEventMs, 6.0);
     EXPECT_EQ(stats.p0BudgetCapHits, 1U) << "only the second batch fired p0";
 }
 

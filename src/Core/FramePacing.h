@@ -31,10 +31,50 @@ namespace Core::FramePacing
 
 /// P0: whether the SDL event-drain loop has spent too long on the current batch and should
 /// break out early, capping how much a single frame's drain can stall (e.g. on Wayland
-/// compositor protocol stalls). Checked periodically during drain, not every event.
+/// compositor protocol stalls). drainEventsWithinBudget() checks it after every event.
 [[nodiscard]] inline auto computeShouldBreakEventDrain(double elapsedDrainMs, double drainBudgetMs) -> bool
 {
     return elapsedDrainMs >= drainBudgetMs;
+}
+
+/// What one event drain did: drainEventsWithinBudget()'s result.
+struct EventDrainResult
+{
+    std::uint32_t eventCount = 0;
+    /// The drain stopped because computeShouldBreakEventDrain() said so (P0), not because the queue
+    /// was empty.
+    bool budgetExceeded = false;
+    /// The longest single event (poll + dispatch); a large value is one SDL_PollEvent call stalling
+    /// (a Wayland configure hold).
+    double maxSingleEventMs = 0.0;
+};
+
+/// The frame's event drain: calls @p pollAndDispatch (handle the next queued event, false when the
+/// queue is empty) until the queue is empty or the drain has used @p drainBudgetMs, reading
+/// @p elapsedMs (milliseconds since the drain started) once after every event.
+///
+/// The budget is checked after every event, not every fourth (#1410): one SDL_PollEvent can stall on
+/// its own on Wayland, so three stalled polls could pass before a 4-event check and overshoot the
+/// budget several times over. A steady_clock read costs about 50-90 ns under WSL2, against 1.5-2.6 us
+/// for an SDL_PollEvent on an *empty* queue before any layer dispatch, so the per-event read is noise.
+template<typename PollAndDispatch, typename ElapsedMs>
+[[nodiscard]] auto drainEventsWithinBudget(PollAndDispatch pollAndDispatch, ElapsedMs elapsedMs, double drainBudgetMs) -> EventDrainResult
+{
+    EventDrainResult result;
+    double previousMs = 0.0;
+    while (pollAndDispatch())
+    {
+        ++result.eventCount;
+        const double nowMs = elapsedMs();
+        result.maxSingleEventMs = std::max(result.maxSingleEventMs, nowMs - previousMs);
+        previousMs = nowMs;
+        if (computeShouldBreakEventDrain(nowMs, drainBudgetMs))
+        {
+            result.budgetExceeded = true;
+            break;
+        }
+    }
+    return result;
 }
 
 /// Whether the current frame counts as an interactive (move/resize) frame: either this
@@ -81,13 +121,53 @@ computeVsyncTransition(bool wasInteracting, bool isInteracting, bool vsyncReques
     return VsyncTransition::NoChange;
 }
 
+/// P3 bound (#1410): after this many skipped renders in a row, computeSkipRenderThisFrame() renders
+/// the next frame however long its drain took. Each skip already means a drain of at least
+/// DRAIN_SKIP_RENDER_MS (16 ms, Application.cpp), so two in a row is 32+ ms without a frame; forcing
+/// the third keeps the longest gap near the 50 ms idle period under a sustained slow drain, instead of
+/// freezing the display for as long as the drain stays slow. One skip absorbs an isolated stall, which
+/// is what P3 is for; two lets a stall that straddles a frame boundary pass as well.
+inline constexpr std::uint32_t MAX_CONSECUTIVE_SKIPPED_RENDERS = 2;
+
 /// P3: whether to skip rendering this frame entirely because the event drain already
 /// consumed more than a full frame budget -- avoids compounding an input stall with
 /// render+swap time; the display catches up next frame. Never skips while minimized (there's
 /// nothing to render there anyway, and the minimized path has its own separate throttle).
-[[nodiscard]] inline auto computeSkipRenderThisFrame(double totalDrainMs, double drainSkipRenderMs, bool isMinimized) -> bool
+///
+/// Bounded (#1410): after @p maxConsecutiveSkippedRenders skips in a row (@p consecutiveSkippedRenders,
+/// from nextConsecutiveSkippedRenders()) the frame renders however long the drain took, so a sustained
+/// slow drain (a compositor stall, an input flood) can't freeze the display indefinitely.
+[[nodiscard]] inline auto computeSkipRenderThisFrame(double totalDrainMs,
+                                                     double drainSkipRenderMs,
+                                                     bool isMinimized,
+                                                     std::uint32_t consecutiveSkippedRenders,
+                                                     std::uint32_t maxConsecutiveSkippedRenders) -> bool
 {
-    return (totalDrainMs >= drainSkipRenderMs) && !isMinimized;
+    return (totalDrainMs >= drainSkipRenderMs) && !isMinimized && (consecutiveSkippedRenders < maxConsecutiveSkippedRenders);
+}
+
+/// The consecutive-skip count computeSkipRenderThisFrame() takes, after a loop iteration that skipped
+/// its render (@p skippedRender), rendered a frame (@p renderedFrame) or did neither (an idle wait that
+/// woke on an event and drains it first, #1409): a skip counts, a frame resets, neither leaves it.
+[[nodiscard]] constexpr auto
+nextConsecutiveSkippedRenders(std::uint32_t consecutiveSkippedRenders, bool skippedRender, bool renderedFrame) noexcept -> std::uint32_t
+{
+    if (skippedRender)
+    {
+        return consecutiveSkippedRenders + 1;
+    }
+    return renderedFrame ? 0 : consecutiveSkippedRenders;
+}
+
+/// Whether the loop iteration renders its regular (paced/idle) frame. Not when the move/resize path
+/// already rendered one, nor when P3 skips it, nor when the idle wait woke on an event
+/// (@p idleWaitWokeOnEvent): that event goes through the next iteration's drain first, so the frame
+/// after a wake shows its effect (#1409). Rendering straight after the wake drew the old state and
+/// left the event for the drain after it.
+[[nodiscard]] constexpr auto
+computeShouldRenderRegularFrame(bool idleWaitWokeOnEvent, bool didImmediateResizeRedraw, bool skipRenderThisFrame) noexcept -> bool
+{
+    return !idleWaitWokeOnEvent && !didImmediateResizeRedraw && !skipRenderThisFrame;
 }
 
 /// Whether to sleep (rather than render immediately) when the event queue is empty.
