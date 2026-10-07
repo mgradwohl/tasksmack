@@ -2434,7 +2434,11 @@ TEST(SystemModelTest, PowerStatus_NotCharging)
 namespace
 {
 
-/// Counters with `interfaceCount` interfaces named veth0..vethN-1, each counter advanced by `step`.
+/// Cores seeded by makeManyInterfaces(), so isAligned() exercises the per-core histories.
+constexpr std::size_t PUBLICATION_TEST_CORES = 4;
+
+/// Counters with `interfaceCount` interfaces named veth0..vethN-1 and PUBLICATION_TEST_CORES cores,
+/// each counter advanced by `step`.
 [[nodiscard]] Platform::SystemCounters makeManyInterfaces(std::size_t interfaceCount, std::uint64_t step)
 {
     std::vector<Platform::SystemCounters::InterfaceCounters> interfaces;
@@ -2443,22 +2447,45 @@ namespace
     {
         interfaces.push_back(makeInterfaceCounters("veth" + std::to_string(i), step * 1000, step * 500));
     }
-    return makeSystemCounters(
-        makeCpuCounters(step * 100, 0, step * 50, step * 850), makeMemoryCounters(1024, 512), 0, {}, 0, 0, std::move(interfaces));
+    // A few cores too, so the per-core histories are real series that isAligned() checks.
+    std::vector<Platform::CpuCounters> perCore;
+    perCore.reserve(PUBLICATION_TEST_CORES);
+    for (std::size_t core = 0; core < PUBLICATION_TEST_CORES; ++core)
+    {
+        perCore.push_back(makeCpuCounters(step * (25 + core), 0, step * 10, step * 200));
+    }
+    return makeSystemCounters(makeCpuCounters(step * 100, 0, step * 50, step * 850),
+                              makeMemoryCounters(1024, 512),
+                              0,
+                              std::move(perCore),
+                              0,
+                              0,
+                              std::move(interfaces));
 }
 
-/// Every series in one generation is aligned to its timestamps.
+/// Every series in one generation is aligned to its timestamps: a truncated or torn copy of any one
+/// of them fails. Once there is history, every seeded core has its series.
 [[nodiscard]] bool isAligned(const Domain::SystemPublication& publication)
 {
     const std::size_t n = publication.timestamps.size();
+    const auto sized = [n](const auto& series)
+    {
+        return series.size() == n;
+    };
     const auto aligned = [n](const auto& entry)
     {
         return entry.second.size() == n;
     };
-    return publication.cpuHistory.size() == n && publication.memoryHistory.size() == n && publication.netRxHistory.size() == n &&
-           publication.perInterfaceRxHistory.size() == publication.perInterfaceTxHistory.size() &&
-           std::ranges::all_of(publication.perInterfaceRxHistory, aligned) &&
-           std::ranges::all_of(publication.perInterfaceTxHistory, aligned);
+    const bool fixedSeries = sized(publication.cpuHistory) && sized(publication.cpuUserHistory) && sized(publication.cpuSystemHistory) &&
+                             sized(publication.cpuIowaitHistory) && sized(publication.cpuIdleHistory) && sized(publication.memoryHistory) &&
+                             sized(publication.memoryCachedHistory) && sized(publication.swapHistory) && sized(publication.powerHistory) &&
+                             sized(publication.batteryChargeHistory) && sized(publication.netRxHistory) && sized(publication.netTxHistory);
+    const bool perCore =
+        (n == 0 || publication.perCoreHistory.size() == PUBLICATION_TEST_CORES) && std::ranges::all_of(publication.perCoreHistory, sized);
+    const bool perInterface = publication.perInterfaceRxHistory.size() == publication.perInterfaceTxHistory.size() &&
+                              std::ranges::all_of(publication.perInterfaceRxHistory, aligned) &&
+                              std::ranges::all_of(publication.perInterfaceTxHistory, aligned);
+    return fixedSeries && perCore && perInterface;
 }
 
 } // namespace
