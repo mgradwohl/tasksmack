@@ -212,7 +212,8 @@ constexpr std::size_t DEFAULT_CORES = 8;
 constexpr std::size_t DEFAULT_INTERFACES = 2;
 
 // One SystemModel sample -- append, trim, publish() -- with range(0) samples retained (8 cores, 2
-// interfaces). publish() copies every series, so this grows with history length (#1412).
+// interfaces). publish() shares every series rather than copying it (#1412), so this no longer
+// grows with history length.
 void BM_SystemModel_FullHistory_Publish(benchmark::State& state)
 {
     SystemFixture& fixture = systemFixture(state.range(0), DEFAULT_CORES, DEFAULT_INTERFACES);
@@ -243,7 +244,7 @@ void BM_SystemModel_FullHistory_Publication(benchmark::State& state)
 BENCHMARK(BM_SystemModel_FullHistory_Publication)->Arg(FULL_HISTORY_SAMPLES);
 
 // One SystemModel sample at a 300-sample history with range(0) cores and range(1) interfaces: the
-// per-core and per-interface series publish() copies, and the per-interface maps it rebuilds.
+// per-core and per-interface series publish() shares (#1412), and the per-interface maps it rebuilds.
 void BM_SystemModel_Cardinality_Publish(benchmark::State& state)
 {
     constexpr std::int64_t SAMPLES = DEFAULT_HISTORY_SAMPLES;

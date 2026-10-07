@@ -81,6 +81,7 @@ set(COMMON_TEST_SOURCES
     Core/test_WindowEvents.cpp
     Core/test_WindowGeometry.cpp
     Domain/test_History.cpp
+    Domain/test_SharedHistory.cpp
     Domain/test_Numeric.cpp
     Domain/test_SingleLineText.cpp
     Domain/test_ProcessEnergyAttribution.cpp
