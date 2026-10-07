@@ -98,8 +98,7 @@ template<std::invocable<std::uint64_t> OnSocket> [[nodiscard]] FdScan scanFds(in
     // Listed with getdents64() into a stack buffer rather than opendir()/readdir(): this runs for
     // every process on every sample, and a DIR* costs a 32 KiB allocation plus an fstat() and an
     // fcntl() each time. A buffer of this size lists a few hundred fds per call.
-    constexpr std::size_t LISTING_BUFFER_SIZE = 8192;
-    alignas(dirent64) std::array<char, LISTING_BUFFER_SIZE> listing{};
+    alignas(dirent64) std::array<char, 8192> listing{};
     // "socket:[" plus a 20-digit inode and "]" fits with room to spare; a longer target (a file path)
     // comes back cut off, which is still no socket.
     std::array<char, 256> linkTarget{};

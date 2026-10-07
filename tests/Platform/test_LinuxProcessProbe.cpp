@@ -2061,6 +2061,71 @@ TEST(LinuxProcessProbeTest, ARebuildPassCountsFdsAndBuildsTheInodeMapInOneWalk)
         EXPECT_EQ(fdsOf(plainPass, pid), fds) << "no network, pid " << pid;
     }
 }
+TEST(LinuxProcessProbeTest, APidReusedBetweenTheStatPassAndTheFdWalkGivesTheRowNoFds)
+{
+    // #1426 review: a rebuild pass reopens /proc/[pid] for its fd walk after the stat pass. If the
+    // process exited and its PID was reused in between, the row (the old process) must not get the new
+    // process's FD count; the map still credits the new process's sockets to it, by its start time.
+    ScopedTempDir proc("ts_test_proc_fd_walk_pid_reuse");
+    writeFile(proc.path / "stat", "cpu  100 0 100 800 0 0 0 0 0 0\n");
+    const auto writeStat = [&proc](std::uint64_t startTime)
+    {
+        writeFile(proc.path / "4242" / "stat",
+                  std::format("4242 (app) S 1 4242 4242 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 {} 0 0 "
+                              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n",
+                              startTime));
+    };
+    writeStat(1000);
+    const auto fdDir = proc.path / "4242" / "fd";
+    std::filesystem::create_directories(fdDir);
+    std::filesystem::create_symlink("/dev/null", fdDir / "0");
+
+    using Platform::TestSupport::FakeSocket;
+    using Platform::TestSupport::ScriptedNetlinkTransport;
+    const std::vector<FakeSocket> sockets{{.inode = 11}};
+    auto transport = std::make_unique<ScriptedNetlinkTransport>();
+    auto* script = transport.get();
+    auto stats = std::make_shared<Platform::NetlinkSocketStats>(std::move(transport), std::chrono::milliseconds{0});
+    script->onRequest = [&](const ScriptedNetlinkTransport::Request& request) -> ScriptedNetlinkTransport::Reply
+    {
+        return Platform::TestSupport::completeDump(request, request.family == AF_INET ? sockets : std::vector<FakeSocket>{});
+    };
+
+    LinuxProcessProbe probe(proc.path);
+    probe.setSocketStatsForTesting(stats);
+    // Runs between the stat pass and the fd walk: the process exits and PID 4242 is reused.
+    probe.setInodeMapScanHookForTesting(
+        [&]
+        {
+            writeStat(2000);
+            std::filesystem::create_symlink("socket:[11]", fdDir / "1");
+            std::filesystem::create_symlink("/dev/null", fdDir / "2");
+        });
+    ASSERT_TRUE(probe.capabilities().hasNetworkCounters);
+
+    const auto processes = probe.enumerate();
+    ASSERT_EQ(processes.size(), 1U);
+    EXPECT_EQ(processes[0].startTimeTicks, 1000U) << "the row is the process the stat pass read";
+    EXPECT_FALSE(processes[0].handleCountAvailable) << "the reopened process's FDs aren't the row's";
+    EXPECT_EQ(processes[0].handleCount, 0);
+    EXPECT_FALSE(processes[0].networkCountersAvailable);
+
+    const auto traffic = probe.readSocketTraffic();
+    ASSERT_EQ(traffic.sockets.size(), 1U);
+    EXPECT_EQ(traffic.sockets[0].pid, 4242);
+    EXPECT_EQ(traffic.sockets[0].ownerStartTimeTicks, 2000U) << "credited to the process that holds it (#1336)";
+
+    // With no reuse, the same pass gives the row its count.
+    probe.setInodeMapScanHookForTesting({});
+    probe.setInodeMapTtlForTesting(std::chrono::milliseconds{0});
+    probe.setInodeMapEarlyRebuildIntervalForTesting(std::chrono::milliseconds{0});
+    const auto next = probe.enumerate();
+    ASSERT_EQ(next.size(), 1U);
+    EXPECT_EQ(next[0].startTimeTicks, 2000U);
+    EXPECT_TRUE(next[0].handleCountAvailable);
+    EXPECT_EQ(next[0].handleCount, 3);
+    EXPECT_TRUE(next[0].networkCountersAvailable);
+}
 #endif
 TEST(LinuxProcessProbeTest, EmptyProcDirReturnsNoProcesses)
 {

@@ -1467,18 +1467,28 @@ void LinuxProcessProbe::rebuildInodeMapWithFdCounts(int procDirFd, std::vector<P
             counters.networkCountersAvailable = false;
             continue;
         }
-        std::optional<std::uint64_t> ownerStartTimeTicks; // read once, on the process's first socket
+        // The process behind this handle, which may not be the row's: its PID can have been reused
+        // since the stat pass. Its sockets go into the map under its own start time either way.
+        const std::uint64_t startTimeTicks = readStartTimeTicksAt(pidDirFd.get());
+        ProcessCounters scanned{};
+        scanned.pid = counters.pid;
         countProcessFds(pidDirFd.get(),
-                        counters,
+                        scanned,
                         /*readEveryLink=*/true,
                         [&](std::uint64_t inode)
-                        {
-                            if (!ownerStartTimeTicks.has_value())
-                            {
-                                ownerStartTimeTicks = readStartTimeTicksAt(pidDirFd.get());
-                            }
-                            addSocketOwner(inodeToPid, inode, SocketOwner{.pid = counters.pid, .startTimeTicks = *ownerStartTimeTicks});
-                        });
+                        { addSocketOwner(inodeToPid, inode, SocketOwner{.pid = counters.pid, .startTimeTicks = startTimeTicks}); });
+        if (startTimeTicks == 0 || startTimeTicks != counters.startTimeTicks)
+        {
+            // Another process now (or this one exited): the row's process is gone, as above, and the
+            // new one's FDs are not its.
+            counters.handleCount = 0;
+            counters.handleCountAvailable = false;
+            counters.networkCountersAvailable = false;
+            continue;
+        }
+        counters.handleCount = scanned.handleCount;
+        counters.handleCountAvailable = scanned.handleCountAvailable;
+        counters.networkCountersAvailable = counters.networkCountersAvailable && scanned.networkCountersAvailable;
     }
     (void) publishInodeToPidMap(std::move(inodeToPid), scanStart);
 }
