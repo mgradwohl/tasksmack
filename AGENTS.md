@@ -70,4 +70,4 @@ All platform-specific window behavior uses `Core::VideoBackend` abstraction:
 
 **Drag Handling:** Wayland uses event-consistent local window coordinates; X11/XWayland/Windows use global mouse state.
 
-**Compositor Safety:** Never assume GNOME/KDE/Sway/Hyprland specifics; implement graceful fallback. Test matrix: `wayland-test-matrix.md`.
+**Compositor Safety:** Never assume GNOME/KDE/Sway/Hyprland specifics; implement graceful fallback. Test matrix: `docs/dev/wayland-test-matrix.md`.
