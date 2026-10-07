@@ -5,6 +5,7 @@
 #include "PathService.h"
 #include "Window.h"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -117,7 +118,8 @@ class Application
     // calling signalWindowGeometryChanged(), which has no other observable effect (it's
     // noexcept and only consumed internally by run()'s idle-sleep gate). Same pattern as
     // NVMLGPUProbeTestAccessor in Platform/Windows/NVMLGPUProbe.h. Production code never
-    // touches this -- only test_Application.cpp uses it.
+    // touches this -- only test_Application.cpp uses it. It also reads the idle-wait seam
+    // (m_IdleWaitCount, m_LastIdleWaitWoke; #1446).
     friend struct ApplicationTestAccessor;
 
     /// Raise a WindowCloseEvent for a close request and report whether to close: true unless a
@@ -146,6 +148,11 @@ class Application
     /// only when geometry was in flux last frame, avoiding ~20 wasted renders after
     /// the user releases the mouse while the window is stationary.
     bool m_WindowGeometryChangedThisFrame = false;
+    /// Read-only test seam (#1446), read through ApplicationTestAccessor: how many idle waits run()
+    /// has done, and whether the last one ended on an event rather than its timeout. Written only
+    /// where the idle wait returns, on the loop thread; nothing in the app reads them.
+    std::uint64_t m_IdleWaitCount = 0;
+    bool m_LastIdleWaitWoke = false;
 
     /// Run one update+render+swapBuffers cycle. Extracted so the main loop and
     /// the immediate-repaint-on-resize path share identical rendering logic. Detailed
