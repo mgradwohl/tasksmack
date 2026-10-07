@@ -4,6 +4,7 @@
 #include "App/UserConfigHelpers.h"
 #include "Domain/SamplingConfig.h"
 #include "UI/ChartWidgets.h"
+#include "UI/Theme.h"
 
 #include <gtest/gtest.h>
 #include <toml++/toml.hpp>
@@ -880,6 +881,34 @@ TEST_F(UserConfigSaveLoadFixture, ThemeIdRoundTrip)
     config.load();
 
     EXPECT_EQ(config.settings().themeId, "dracula");
+}
+
+TEST_F(UserConfigSaveLoadFixture, ThemeAndFontSizeRoundTripThroughTheTheme)
+{
+    // #1187: applyToApplication() hands the theme id and font size to UI::Theme, and
+    // captureFromApplication() reads them back before save(). Dropping or crossing either call
+    // would lose the user's theme or font size on the next save while every file round-trip test
+    // stayed green. The test build's Theme (tests/Mocks/ThemeStub.cpp) keeps what it is given.
+    auto& theme = UI::Theme::get();
+    const std::string originalId = theme.currentThemeId();
+    const UI::FontSize originalSize = theme.currentFontSize();
+
+    auto& config = UserConfig::get();
+    config.settings().themeId = "dracula";
+    config.settings().fontSize = UI::FontSize::ExtraLarge;
+    config.applyToApplication();
+    EXPECT_EQ(theme.currentThemeId(), "dracula");
+    EXPECT_EQ(theme.currentFontSize(), UI::FontSize::ExtraLarge);
+
+    config.settings().themeId = "arctic-fire";
+    config.settings().fontSize = UI::FontSize::Small;
+    config.captureFromApplication();
+    EXPECT_EQ(config.settings().themeId, "dracula");
+    EXPECT_EQ(config.settings().fontSize, UI::FontSize::ExtraLarge);
+
+    // The Theme singleton is process-wide; the chart tests in this binary scale by its font size.
+    theme.setThemeById(originalId);
+    theme.setFontSize(originalSize);
 }
 
 // ========== Load/Save: Font Size Round-Trips ==========

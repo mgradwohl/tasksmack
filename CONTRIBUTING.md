@@ -210,6 +210,8 @@ The hooks (configured in `.pre-commit-config.yaml`) include:
 - **check-added-large-files**: Prevent large files (>500KB)
 - **check-merge-conflict**: Detect merge conflict markers
 - **shellcheck**: Lint shell scripts
+- **actionlint**: Lint GitHub Actions workflows (expressions, contexts, `needs:`, inputs, and warning-level
+  shellcheck findings in `run:` blocks when shellcheck is installed; configured in `.github/actionlint.yaml`)
 
 ### Bypassing Hooks (Emergency Only)
 
@@ -1633,7 +1635,7 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
 - **`codeql.yml`**: Runs GitHub's CodeQL engine to trace execution and analyze the C/C++ codebase for semantic security vulnerabilities (pushes/PRs to main, weekly).
 - **`osv-scanner.yml`**: Uses Google's OSV-Scanner to check dependencies against the Open Source Vulnerability database (pushes to main, weekly, manual dispatch).
 - **`renovate.yml`**: Self-hosted [Renovate](https://docs.renovatebot.com/) run, scoped to C++ `FetchContent` libraries and the build/dev toolchain (LLVM, Python, CMake, Ninja, ccache, pre-commit's own hook tools) -- the freshness gap Dependabot/OSV-Scanner don't cover (weekly, manual dispatch with dry-run options). See "Keeping Dependencies Current" below.
-- **`scorecard.yml`**: Evaluates the repository against OpenSSF security best practices (branch protection, pinned dependencies) and uploads results to the security dashboard (pushes/weekly).
+- **`scorecard.yml`**: Evaluates the repository against OpenSSF security best practices (branch protection, pinned dependencies) and uploads results to the security dashboard (pushes/weekly). Its SAST check counts a merged PR as scanned only if a code-scanning check run (GitHub Advanced Security's `CodeQL` or `osv-scanner`) had already completed on the PR's head commit, and it runs on the push of the merge itself, so merge only after `Analyze C++` has passed or the newest commit counts as unscanned (#1405).
 - **`dependency-review.yml`**: Scans PRs to block any that introduce vulnerable dependencies (CVE-based) in package manifests/lockfiles.
 - **`sanitizers.yml`**: Performs heavy blocking runs using Address/Undefined Behavior (ASan+UBSan) and Thread (TSan) sanitizers on pushes to `main`, generating HTML reports of memory leaks or data races.
 - **ClusterFuzzLite (`cflite_*.yml`)**: Google's continuous fuzzing suite. Runs on PRs (`cflite_pr.yml`), pushes to main (`cflite_build.yml`), and weekly for batching and pruning corpora (`cflite_batch.yml`, `cflite_prune.yml`).
@@ -1650,6 +1652,11 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
 - **`copilot-setup-steps.yml`**: Bootstraps the repository environment (CMake, LLVM, etc.) for GitHub Copilot cloud agent sessions.
 
 PR optimization: docs-only pull requests skip compile/test and environment-validation jobs in `ci.yml` to keep feedback fast.
+
+Concurrency: a new push to a PR branch cancels that branch's in-progress runs, but pushes to `main` never cancel
+each other. `ci.yml`, `sanitizers.yml`, `static-analysis.yml` and `heavy-checks.yml` give each `main` commit its
+own concurrency group, so back-to-back merges each get a complete run and a regression is blamed on the commit
+that caused it (#1187). `codeql.yml` doesn't cancel `main` runs either, but queues them in one group.
 
 Dependabot updates GitHub Actions and Python dependencies weekly.
 [OSV Scanner](https://google.github.io/osv-scanner/) scans C++ FetchContent dependencies
@@ -1708,8 +1715,8 @@ check. Like Dependabot, Renovate only opens PRs; the same CI gate applies before
 `tools/check-prereqs.sh`): three tiers, all now automated by `renovate.json5` except where noted
 below. See #798 for the full repo-wide audit and rationale behind this split.
 
-- *Tier 1 -- auto-PR'd, no gate*: the pre-commit hook tools (`pre-commit-hooks`, `shellcheck-py`
-  -- `rev:` pins in `.pre-commit-config.yaml`) via Renovate's native `pre-commit` manager, no
+- *Tier 1 -- auto-PR'd, no gate*: the pre-commit hook tools (`pre-commit-hooks`, `shellcheck-py`,
+  `actionlint-py` -- `rev:` pins in `.pre-commit-config.yaml`) via Renovate's native `pre-commit` manager, no
   custom regex needed. The `clang-format` mirror (same file, same manager) is the one exception:
   its formatting behavior tracks the same LLVM major as the compiler toolchain, so its *major*
   bumps are gated exactly like the rest of the LLVM-major process below (a `packageRules` entry

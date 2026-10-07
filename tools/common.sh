@@ -120,3 +120,25 @@ warn_clang_format_version_skew() {
     fi
     return 0
 }
+
+# List the files this branch changes, for the --changed-only modes of clang-format.sh and
+# clang-tidy.sh: everything that differs from the merge-base with origin/main (or local main) --
+# commits already on the branch, staged and unstaged edits -- plus untracked files that aren't
+# ignored. `git diff HEAD` alone missed both the branch's commits and new files (#1187). Deleted
+# files are left out. Falls back to HEAD when neither main ref exists. Paths are relative to the
+# repository root, one per line.
+# Usage: list_changed_files "/path/to/repo"
+list_changed_files() {
+    local root="$1"
+    local base="HEAD" ref
+    for ref in origin/main main; do
+        if git -C "$root" rev-parse --verify --quiet "${ref}^{commit}" >/dev/null; then
+            base="$(git -C "$root" merge-base HEAD "$ref" 2>/dev/null || echo HEAD)"
+            break
+        fi
+    done
+    {
+        git -C "$root" diff --name-only --diff-filter=d "$base" 2>/dev/null || true
+        git -C "$root" ls-files --others --exclude-standard 2>/dev/null || true
+    } | sort -u
+}
