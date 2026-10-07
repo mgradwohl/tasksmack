@@ -15,9 +15,11 @@
 #include "Mocks/MockProbes.h"
 #include "Platform/PowerTypes.h"
 #include "Platform/SystemTypes.h"
+#include "PublicationLatency.h"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -1722,6 +1724,41 @@ TEST(SystemModelTest, AnInterfaceCounterJumpAboveTheCeilingIsAGapNotASpike)
     EXPECT_FLOAT_EQ(totalTx[1], 710.0F);
 }
 
+TEST(SystemModelTest, InterfaceRateStatusTellsAMeasuredZeroFromNoReading)
+{
+    // #1375: an unmeasured rate is held at 0, so the status is what lets Interface Status show a
+    // measured 0 as "0.0 B/s" and only a rate with no reading as a dash.
+    using Domain::InterfaceRateStatus;
+    constexpr uint64_t BASE = 1'000'000;
+    const auto jump = static_cast<uint64_t>(2.0 * Domain::Sampling::MAX_SANE_RATE_BPS_DEFAULT);
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+
+    sampleInterfaces(model, {{"eth0", BASE, BASE}}, 1.0);
+    auto snap = model.snapshot();
+    ASSERT_EQ(snap.networkInterfaces.size(), 1U);
+    EXPECT_EQ(snap.networkInterfaces[0].rxRateStatus, InterfaceRateStatus::NotYetSampled) << "the first sample has no rate";
+    EXPECT_EQ(snap.networkInterfaces[0].txRateStatus, InterfaceRateStatus::NotYetSampled);
+
+    // Idle: the counters didn't move, which is a measured zero.
+    sampleInterfaces(model, {{"eth0", BASE, BASE}, {"wlan0", BASE, BASE}}, 2.0);
+    snap = model.snapshot();
+    ASSERT_EQ(snap.networkInterfaces.size(), 2U);
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].rxBytesPerSec, 0.0);
+    EXPECT_EQ(snap.networkInterfaces[0].rxRateStatus, InterfaceRateStatus::Measured);
+    EXPECT_EQ(snap.networkInterfaces[0].txRateStatus, InterfaceRateStatus::Measured);
+    EXPECT_EQ(snap.networkInterfaces[1].rxRateStatus, InterfaceRateStatus::NotYetSampled) << "a new interface has no rate yet";
+
+    // A counter that went backwards, and one that jumped past the ceiling, are not readings.
+    sampleInterfaces(model, {{"eth0", BASE - 10, BASE + jump}, {"wlan0", BASE + 100, BASE}}, 3.0);
+    snap = model.snapshot();
+    ASSERT_EQ(snap.networkInterfaces.size(), 2U);
+    EXPECT_EQ(snap.networkInterfaces[0].rxRateStatus, InterfaceRateStatus::CounterReset);
+    EXPECT_EQ(snap.networkInterfaces[0].txRateStatus, InterfaceRateStatus::AboveCeiling);
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].txBytesPerSec, 0.0);
+    EXPECT_EQ(snap.networkInterfaces[1].rxRateStatus, InterfaceRateStatus::Measured);
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[1].rxBytesPerSec, 100.0);
+}
+
 TEST(SystemModelTest, TheConfiguredNetworkCeilingAppliesToInterfaceRates)
 {
     // The ceiling is [metrics] max_sane_rate_bps, shared with ProcessModel; lowered to its minimum,
@@ -2423,4 +2460,342 @@ TEST(SystemModelTest, PowerStatus_NotCharging)
     EXPECT_FALSE(power.isFull);
     EXPECT_FALSE(power.isDischarging);
     EXPECT_EQ(power.chargePercent, 80);
+}
+
+// ==========================================================================
+// Publication Handoff (#868)
+// ==========================================================================
+
+namespace
+{
+
+/// Cores seeded by makeManyInterfaces(), so isAligned() exercises the per-core histories.
+constexpr std::size_t PUBLICATION_TEST_CORES = 4;
+
+/// Counters with `interfaceCount` interfaces named veth0..vethN-1 and PUBLICATION_TEST_CORES cores,
+/// each counter advanced by `step`.
+[[nodiscard]] Platform::SystemCounters makeManyInterfaces(std::size_t interfaceCount, std::uint64_t step)
+{
+    std::vector<Platform::SystemCounters::InterfaceCounters> interfaces;
+    interfaces.reserve(interfaceCount);
+    for (std::size_t i = 0; i < interfaceCount; ++i)
+    {
+        interfaces.push_back(makeInterfaceCounters("veth" + std::to_string(i), step * 1000, step * 500));
+    }
+    // A few cores too, so the per-core histories are real series that isAligned() checks.
+    std::vector<Platform::CpuCounters> perCore;
+    perCore.reserve(PUBLICATION_TEST_CORES);
+    for (std::size_t core = 0; core < PUBLICATION_TEST_CORES; ++core)
+    {
+        perCore.push_back(makeCpuCounters(step * (25 + core), 0, step * 10, step * 200));
+    }
+    return makeSystemCounters(makeCpuCounters(step * 100, 0, step * 50, step * 850),
+                              makeMemoryCounters(1024, 512),
+                              0,
+                              std::move(perCore),
+                              0,
+                              0,
+                              std::move(interfaces));
+}
+
+/// Every series in one generation is aligned to its timestamps: a truncated or torn copy of any one
+/// of them fails. Once there is history, every seeded core has its series.
+[[nodiscard]] bool isAligned(const Domain::SystemPublication& publication)
+{
+    const std::size_t n = publication.timestamps.size();
+    const auto sized = [n](const auto& series)
+    {
+        return series.size() == n;
+    };
+    const auto aligned = [n](const auto& entry)
+    {
+        return entry.second.size() == n;
+    };
+    const bool fixedSeries = sized(publication.cpuHistory) && sized(publication.cpuUserHistory) && sized(publication.cpuSystemHistory) &&
+                             sized(publication.cpuIowaitHistory) && sized(publication.cpuIdleHistory) && sized(publication.memoryHistory) &&
+                             sized(publication.memoryCachedHistory) && sized(publication.swapHistory) && sized(publication.powerHistory) &&
+                             sized(publication.batteryChargeHistory) && sized(publication.netRxHistory) && sized(publication.netTxHistory);
+    const bool perCore =
+        (n == 0 || publication.perCoreHistory.size() == PUBLICATION_TEST_CORES) && std::ranges::all_of(publication.perCoreHistory, sized);
+    const bool perInterface = publication.perInterfaceRxHistory.size() == publication.perInterfaceTxHistory.size() &&
+                              std::ranges::all_of(publication.perInterfaceRxHistory, aligned) &&
+                              std::ranges::all_of(publication.perInterfaceTxHistory, aligned);
+    return fixedSeries && perCore && perInterface;
+}
+
+} // namespace
+
+TEST(SystemModelTest, PublicationDoesNotWaitForTheWriterToCopyHistory)
+{
+    // #868: the update path copied every history ring into the new publication while holding the
+    // lock publication() needs, so a UI-thread read landing then waited for most of the write -- one
+    // slow read per generation. With the copy outside the lock a read waits for a pointer swap at
+    // most. Enough interfaces and history that the copy dominates a write; see PublicationLatency.h.
+    constexpr std::size_t INTERFACES = 128;
+    constexpr std::size_t PREFILL_SAMPLES = 400;
+    constexpr std::size_t WRITES = 40;
+    constexpr double STEP_SECONDS = static_cast<double>(Domain::Sampling::REFRESH_INTERVAL_MIN_MS) / 1000.0;
+
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    double now = 1000.0;
+    std::uint64_t step = 0;
+    for (std::size_t i = 0; i < PREFILL_SAMPLES; ++i)
+    {
+        model.updateFromCounters(makeManyInterfaces(INTERFACES, ++step), now += STEP_SECONDS);
+    }
+
+    const auto result = TestPublication::measure(
+        WRITES,
+        [&](std::size_t) { model.updateFromCounters(makeManyInterfaces(INTERFACES, ++step), now += STEP_SECONDS); },
+        [&] { return model.publication(); },
+        [&] { return model.publicationVersion(); },
+        isAligned);
+
+    EXPECT_EQ(result.versionRegressions, 0U);
+    EXPECT_EQ(result.versionAheadOfPointer, 0U);
+    EXPECT_EQ(result.inconsistentReads, 0U);
+    ASSERT_FALSE(result.pacingTimedOut) << "the reader stopped keeping up with the writer";
+    EXPECT_EQ(model.publicationVersion(), PREFILL_SAMPLES + result.totalWrites);
+    EXPECT_GT(result.reads, WRITES); // the pacing guarantees a read per write, plus the last one
+    // Only reads that land inside a write can show contention; see PublicationLatency.h.
+    ASSERT_TRUE(result.overlapAchieved) << "only " << result.overlappingReads << " reads started during a write after " << result.trials
+                                        << " trials (need " << TestPublication::MIN_OVERLAPPING_READS
+                                        << "): the scheduler never ran the reader alongside the writer, so contention wasn't measured";
+    // Before #868 about one read per write waited out the copy. A quarter allows for scheduler noise.
+    EXPECT_LE(result.slowReads, WRITES / 4) << "median write " << result.medianWriteMs << " ms, slowest read " << result.maxReadMs
+                                            << " ms over " << result.reads << " reads, " << result.slowOverlappingReads << " slow of "
+                                            << result.overlappingReads << " overlapping";
+}
+
+TEST(SystemModelTest, ConcurrentWritersPublishEveryGenerationInOrder)
+{
+    // The sampler thread (updates) and the UI thread (setMaxHistorySeconds) both publish. They are
+    // serialised, so generations are committed in version order with none lost, and a reader never
+    // sees a regressed or misaligned one (#868). Both writers are paced on the reader (ReadPacer), so
+    // reads really interleave with the publishing however the threads are scheduled.
+    constexpr std::size_t INTERFACES = 4;
+    constexpr int SAMPLES = 300;
+    constexpr int RESIZES = 300;
+    constexpr double STEP_SECONDS = static_cast<double>(Domain::Sampling::REFRESH_INTERVAL_MIN_MS) / 1000.0;
+
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    model.updateFromCounters(makeManyInterfaces(INTERFACES, 1), 1000.0); // publish once so resizes republish
+
+    TestPublication::ReadPacer pacer;
+    std::atomic<int> writersRunning{2};
+    std::atomic<std::size_t> readsWhilePublishing{0};
+    std::atomic<bool> stop{false};
+    std::thread sampler(
+        [&]
+        {
+            std::size_t lastRead = 0;
+            double now = 1000.0;
+            for (int i = 0; i < SAMPLES && pacer.awaitReadSince(lastRead); ++i)
+            {
+                model.updateFromCounters(makeManyInterfaces(INTERFACES, static_cast<std::uint64_t>(i) + 2), now += STEP_SECONDS);
+            }
+            writersRunning.fetch_sub(1);
+        });
+    std::thread resizer(
+        [&]
+        {
+            std::size_t lastRead = 0;
+            for (int i = 0; i < RESIZES && pacer.awaitReadSince(lastRead); ++i)
+            {
+                model.setMaxHistorySeconds((i % 2 == 0) ? Domain::Sampling::HISTORY_SECONDS_MIN
+                                                        : Domain::Sampling::HISTORY_SECONDS_DEFAULT);
+            }
+            writersRunning.fetch_sub(1);
+        });
+    std::thread reader(
+        [&]
+        {
+            std::uint64_t lastSeen = 0;
+            while (!stop.load())
+            {
+                const std::uint64_t announced = model.publicationVersion();
+                const auto publication = model.publication();
+                EXPECT_GE(publication->version, lastSeen);
+                EXPECT_GE(publication->version, announced);
+                EXPECT_TRUE(isAligned(*publication));
+                lastSeen = publication->version;
+                if (writersRunning.load() > 0)
+                {
+                    readsWhilePublishing.fetch_add(1);
+                }
+                pacer.readDone();
+            }
+        });
+    sampler.join();
+    resizer.join();
+    stop.store(true);
+    reader.join();
+
+    ASSERT_FALSE(pacer.timedOut()) << "the reader stopped keeping up with the writers";
+    // Every sample and every resize waited for a fresh read, made while that writer was still running.
+    EXPECT_GE(readsWhilePublishing.load(), static_cast<std::size_t>(std::max(SAMPLES, RESIZES)));
+
+    EXPECT_EQ(model.publicationVersion(), static_cast<std::uint64_t>(1 + SAMPLES + RESIZES));
+    EXPECT_EQ(model.publication()->version, model.publicationVersion());
+}
+
+// ==========================================================================
+// Interface Lookups at Container-Host Scale (#1415)
+// ==========================================================================
+
+TEST(SystemModelTest, InterfaceRatesAndGapsHoldAtHundredsOfChurningInterfaces)
+{
+    // Rates are matched to the previous sample by name and gaps by presence, through sorted
+    // indexes rather than linear scans (#1415). Same results at container-host scale: 500 veth
+    // interfaces, then listed in reverse order with a fifth departing and 100 arriving.
+    constexpr std::size_t KNOWN = 500;
+    constexpr std::size_t ARRIVING = 100;
+    const auto name = [](std::size_t i)
+    {
+        return "veth" + std::to_string(i);
+    };
+    const auto departs = [](std::size_t i)
+    {
+        return i % 5 == 0;
+    };
+    // Interface i moves (i + 1) * 10 bytes received and (i + 1) * 5 sent per second.
+    const auto countersAt = [&](std::uint64_t second, bool churned)
+    {
+        std::vector<Platform::SystemCounters::InterfaceCounters> interfaces;
+        for (std::size_t i = 0; i < KNOWN + ARRIVING; ++i)
+        {
+            const bool present = churned ? !(i < KNOWN && departs(i)) : (i < KNOWN);
+            if (present)
+            {
+                interfaces.push_back(makeInterfaceCounters(name(i), (i + 1) * 10 * second, (i + 1) * 5 * second));
+            }
+        }
+        if (churned)
+        {
+            std::ranges::reverse(interfaces);
+        }
+        return makeSystemCounters(
+            makeCpuCounters(100 * second, 0, 50 * second, 850 * second), makeMemoryCounters(1024, 512), 0, {}, 0, 0, std::move(interfaces));
+    };
+
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    model.updateFromCounters(countersAt(1, false), 1.0); // no history yet: nothing to take a delta against
+    model.updateFromCounters(countersAt(2, false), 2.0); // history[0]
+    model.updateFromCounters(countersAt(3, true), 3.0);  // history[1]: churned and reordered
+    model.updateFromCounters(countersAt(4, true), 4.0);  // history[2]
+
+    const auto snap = model.snapshot();
+    ASSERT_EQ(snap.networkInterfaces.size(), KNOWN - (KNOWN / 5) + ARRIVING);
+    for (const auto& iface : snap.networkInterfaces)
+    {
+        const std::size_t i = std::stoul(iface.name.substr(4));
+        EXPECT_DOUBLE_EQ(iface.rxBytesPerSec, static_cast<double>((i + 1) * 10)) << iface.name;
+        EXPECT_DOUBLE_EQ(iface.txBytesPerSec, static_cast<double>((i + 1) * 5)) << iface.name;
+    }
+
+    const auto publication = model.publication();
+    const std::size_t samples = publication->timestamps.size();
+    ASSERT_EQ(samples, 3U);
+    ASSERT_EQ(publication->perInterfaceRxHistory.size(), KNOWN + ARRIVING);
+    for (std::size_t i = 0; i < KNOWN + ARRIVING; ++i)
+    {
+        const auto& rx = publication->perInterfaceRxHistory.at(name(i));
+        const auto rate = static_cast<float>((i + 1) * 10);
+        ASSERT_EQ(rx.size(), samples) << name(i);
+        if (i < KNOWN && departs(i))
+        {
+            EXPECT_FLOAT_EQ(rx[0], rate) << name(i);
+            EXPECT_TRUE(std::isnan(rx[1]) && std::isnan(rx[2])) << name(i) << " departed: a gap, not a rate";
+        }
+        else if (i < KNOWN)
+        {
+            EXPECT_FLOAT_EQ(rx[0], rate) << name(i);
+            EXPECT_FLOAT_EQ(rx[1], rate) << name(i);
+            EXPECT_FLOAT_EQ(rx[2], rate) << name(i);
+        }
+        else
+        {
+            EXPECT_TRUE(std::isnan(rx[0])) << name(i) << " arrived later: backfilled with a gap";
+            EXPECT_FLOAT_EQ(rx[1], 0.0F) << name(i) << " arrived: no rate before its second sample";
+            EXPECT_FLOAT_EQ(rx[2], rate) << name(i);
+        }
+    }
+}
+
+TEST(SystemModelTest, ARepeatedInterfaceNameTakesItsRateFromTheFirstPreviousEntry)
+{
+    // The sorted lookup keeps the linear scan's answer when a probe repeats a name (#1415).
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    model.updateFromCounters(makeSystemCounters(makeCpuCounters(100, 0, 50, 850),
+                                                makeMemoryCounters(1024, 512),
+                                                0,
+                                                {},
+                                                0,
+                                                0,
+                                                {makeInterfaceCounters("eth0", 1000, 100), makeInterfaceCounters("eth0", 5000, 500)}),
+                             1.0);
+    model.updateFromCounters(
+        makeSystemCounters(
+            makeCpuCounters(200, 0, 100, 1700), makeMemoryCounters(1024, 512), 0, {}, 0, 0, {makeInterfaceCounters("eth0", 6000, 600)}),
+        2.0);
+
+    // Matched against the first eth0 (1000 / 100 bytes), not the second (5000 / 500).
+    const auto snap = model.snapshot();
+    ASSERT_EQ(snap.networkInterfaces.size(), 1U);
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].rxBytesPerSec, 5000.0);
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].txBytesPerSec, 500.0);
+}
+
+TEST(SystemModelTest, PreviousCountersAndInterfaceIndexStayPairedAsTheInterfaceListResizes)
+{
+    // The previous counters and their sorted interface index are committed together (#1415 review).
+    // If they ever came apart, a lookup after the list shrinks or grows would read wrong or
+    // out-of-range positions. Shrink from 50 interfaces to 3 (a different subset, reordered), grow
+    // back, and every rate still comes from the same interface's previous counters.
+    // There is no allocation-failure seam to make the copy throw; that path is closed structurally:
+    // the copy happens before anything is committed, and the commit is static_assert'ed nothrow swaps.
+    const auto countersAt = [](std::uint64_t second, const std::vector<std::size_t>& ids)
+    {
+        std::vector<Platform::SystemCounters::InterfaceCounters> interfaces;
+        for (const std::size_t i : ids)
+        {
+            interfaces.push_back(makeInterfaceCounters("if" + std::to_string(i), (i + 1) * 100 * second, (i + 1) * 10 * second));
+        }
+        return makeSystemCounters(
+            makeCpuCounters(100 * second, 0, 50 * second, 850 * second), makeMemoryCounters(1024, 512), 0, {}, 0, 0, std::move(interfaces));
+    };
+    std::vector<std::size_t> all(50);
+    for (std::size_t i = 0; i < all.size(); ++i)
+    {
+        all[i] = i;
+    }
+    const std::vector<std::size_t> few = {42, 7, 19};
+
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    const auto expectRates = [&model](std::size_t expectedCount)
+    {
+        const auto snap = model.snapshot();
+        ASSERT_EQ(snap.networkInterfaces.size(), expectedCount);
+        for (const auto& iface : snap.networkInterfaces)
+        {
+            const std::size_t i = std::stoul(iface.name.substr(2));
+            EXPECT_DOUBLE_EQ(iface.rxBytesPerSec, static_cast<double>((i + 1) * 100)) << iface.name;
+            EXPECT_DOUBLE_EQ(iface.txBytesPerSec, static_cast<double>((i + 1) * 10)) << iface.name;
+        }
+    };
+    model.updateFromCounters(countersAt(1, all), 1.0);
+    model.updateFromCounters(countersAt(2, few), 2.0);
+    expectRates(few.size());
+    model.updateFromCounters(countersAt(3, all), 3.0);
+    // Only the three that were present last sample have a previous reading; the rest start at 0.
+    const auto snap = model.snapshot();
+    ASSERT_EQ(snap.networkInterfaces.size(), all.size());
+    for (const auto& iface : snap.networkInterfaces)
+    {
+        const std::size_t i = std::stoul(iface.name.substr(2));
+        const bool hadPrevious = std::ranges::find(few, i) != few.end();
+        EXPECT_DOUBLE_EQ(iface.rxBytesPerSec, hadPrevious ? static_cast<double>((i + 1) * 100) : 0.0) << iface.name;
+    }
+    model.updateFromCounters(countersAt(4, all), 4.0);
+    expectRates(all.size());
 }

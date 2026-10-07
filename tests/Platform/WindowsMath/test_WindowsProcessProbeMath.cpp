@@ -952,5 +952,58 @@ TEST(AffinityTopologyTest, FailedDiscoveryIsNeverOneGroup)
     EXPECT_EQ(affinityTopology(1, true), AffinityTopology::SingleGroup);
 }
 
+// ---------------------------------------------------------------------------
+// classifyNetworkCounterDenial (#1358): does elevation cure a TCP EStats denial?
+// ---------------------------------------------------------------------------
+
+TEST(ClassifyNetworkCounterDenialTest, NonElevatedDenialIsReducedPrivileges)
+{
+    const NetworkCounterDenial denial = classifyNetworkCounterDenial(/*isElevated=*/false, /*hasNetworkCounters=*/false, true);
+    EXPECT_TRUE(denial.reducedPrivileges);
+    EXPECT_FALSE(denial.blocked) << "running as Administrator would restore them";
+}
+
+TEST(ClassifyNetworkCounterDenialTest, ElevatedDenialIsBlockedNotReducedPrivileges)
+{
+    // #1358: an elevated session isn't short of privileges, but the columns still need explaining.
+    const NetworkCounterDenial denial = classifyNetworkCounterDenial(/*isElevated=*/true, /*hasNetworkCounters=*/false, true);
+    EXPECT_TRUE(denial.blocked);
+    EXPECT_FALSE(denial.reducedPrivileges);
+}
+
+TEST(ClassifyNetworkCounterDenialTest, NoDenialReportsNeither)
+{
+    for (const bool elevated : {false, true})
+    {
+        // Working counters, or counters missing for a reason other than access (EStats unsupported).
+        for (const bool hasCounters : {false, true})
+        {
+            const NetworkCounterDenial denial = classifyNetworkCounterDenial(elevated, hasCounters, /*accessDenied=*/false);
+            EXPECT_FALSE(denial.reducedPrivileges);
+            EXPECT_FALSE(denial.blocked);
+        }
+        // A denial is never reported while the counters are claimed.
+        const NetworkCounterDenial claimed = classifyNetworkCounterDenial(elevated, /*hasNetworkCounters=*/true, true);
+        EXPECT_FALSE(claimed.reducedPrivileges);
+        EXPECT_FALSE(claimed.blocked);
+    }
+}
+
+TEST(ClassifyNetworkCounterDenialTest, ElevatedSampleWithEveryEStatsAccessDeniedIsBlocked)
+{
+    // The probe's path (#1161 + #1358): elevated, the first real sample has every EStats enable and
+    // read denied, so it withdraws the counters and records the denial; capabilities() then reports
+    // them blocked on this system rather than nothing at all.
+    const auto counts = tallyEstablishedRows({
+        {.enableStatus = ESTATS_ERROR_ACCESS_DENIED, .readStatus = ESTATS_ERROR_ACCESS_DENIED, .bytesOut = 0, .bytesIn = 0},
+        {.enableStatus = ESTATS_ERROR_ACCESS_DENIED, .readStatus = ESTATS_ERROR_ACCESS_DENIED, .bytesOut = 0, .bytesIn = 0},
+    });
+    ASSERT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Unavailable);
+    const bool accessDenied = counts.accessDenied > 0;
+    const NetworkCounterDenial denial = classifyNetworkCounterDenial(/*isElevated=*/true, /*hasNetworkCounters=*/false, accessDenied);
+    EXPECT_TRUE(denial.blocked);
+    EXPECT_FALSE(denial.reducedPrivileges);
+}
+
 } // namespace
 } // namespace Platform

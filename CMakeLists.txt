@@ -118,6 +118,7 @@ set(TASKSMACK_SOURCES
     src/App/PlatformOpen.cpp
     src/App/SettingsLayer.cpp
     src/App/ShellLayer.cpp
+    src/App/SyntheticScenario.cpp
     src/App/TitleBarLayer.cpp
     src/App/UserConfig.cpp
     src/App/Panels/ProcessesPanel.cpp
@@ -135,6 +136,9 @@ set(TASKSMACK_SOURCES
     src/Domain/StorageModel.cpp
     src/Domain/GPUModel.cpp
     src/Platform/ThreadName.cpp
+    # Synthetic probes (#1413): constructed only when TASKSMACK_SYNTHETIC is set
+    src/Platform/Synthetic/SyntheticProbes.cpp
+    src/Platform/Synthetic/SyntheticWorkload.cpp
 )
 
 # Platform-specific sources
@@ -186,6 +190,7 @@ set(TASKSMACK_HEADERS
     src/UI/UILayer.h
     src/UI/RenderMetrics.h
     src/App/ShellLayer.h
+    src/App/SyntheticScenario.h
     src/App/Panels/ProcessesPanel.h
     src/Platform/Factory.h
     src/Platform/IDiskProbe.h
@@ -198,10 +203,13 @@ set(TASKSMACK_HEADERS
     src/Platform/PowerTypes.h
     src/Platform/ProcessTypes.h
     src/Platform/ThreadName.h
+    src/Platform/Synthetic/SyntheticProbes.h
+    src/Platform/Synthetic/SyntheticWorkload.h
     src/Domain/ProcessSnapshot.h
     src/Domain/ProcessModel.h
     src/Domain/SocketTrafficAccumulator.h
     src/Domain/ISamplable.h
+    src/Domain/PublicationSlot.h
     src/Domain/GPUSnapshot.h
     src/Domain/GPUModel.h
 )

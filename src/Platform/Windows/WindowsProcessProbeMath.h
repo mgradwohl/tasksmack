@@ -377,6 +377,26 @@ inline constexpr std::size_t MAX_INCONCLUSIVE_ESTATS_SAMPLES = 3;
     return EStatsProbeResult::Undetermined;
 }
 
+/// Why per-process network counters are missing, as ProcessCapabilities reports it (#1358).
+struct NetworkCounterDenial
+{
+    bool reducedPrivileges = false; ///< Not elevated: running as Administrator would restore them.
+    bool blocked = false;           ///< Elevated, yet denied (policy or a driver): elevating would not help.
+};
+
+/// Split an EStats access denial by whether elevation could cure it (#1358). Non-elevated, TCP
+/// EStats is denied for privilege (hasReducedPrivileges, the lock icon). Elevated, a denial -- at
+/// the constructor's probe or on the first real sample (#1161) -- means EStats is blocked on this
+/// system, which deserves its own explanation rather than none at all: hasReducedPrivileges was
+/// false then, so the network columns went away with nothing saying why. A denial is never
+/// reported while the counters are claimed.
+[[nodiscard]] constexpr NetworkCounterDenial
+classifyNetworkCounterDenial(bool isElevated, bool hasNetworkCounters, bool accessDenied) noexcept
+{
+    const bool denied = accessDenied && !hasNetworkCounters;
+    return {.reducedPrivileges = denied && !isElevated, .blocked = denied && isElevated};
+}
+
 /// Address family of a TCP connection (#1256).
 enum class TcpAddressFamily : std::uint8_t
 {
