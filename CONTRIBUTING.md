@@ -694,6 +694,15 @@ For repeatable benchmarking runs (recommended), use the helper scripts:
 pwsh tools/bench.ps1 win-benchmark
 ```
 
+Both scripts exit non-zero when the benchmark binary fails or crashes (#1423). A partial result
+file is still redacted (or deleted when it is too truncated to parse), so it never keeps the host
+name, but it is not reported as usable; output that cannot be redacted after a successful exit is
+deleted too, and the script fails. The scripts own the output file, so an extra `--benchmark_out`
+or `--benchmark_out_format` is refused. For the script tests (`tools/test-bench.ps1`,
+`tests/tools/test_bench_sh.py`), `bench.ps1 -BenchmarkBinary <path> -OutputDirectory <dir>` and
+`bench.sh`'s `TASKSMACK_BENCH_BIN` / `TASKSMACK_BENCH_OUT_DIR` point them at a stub binary and a
+scratch directory.
+
 ### Benchmark Output
 
 By default, benchmarks output to console. You can also:
