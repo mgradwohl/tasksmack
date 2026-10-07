@@ -156,8 +156,10 @@ class WindowsProcessProbe : public IProcessProbe
     /// The process's CPU affinity, numbered as the per-core CPU figures are (#1247). One processor
     /// group: GetProcessAffinityMask, as ever. Several: GetProcessGroupAffinity's groups with
     /// their masks (groupMasksFromProcess(); the threads' GetThreadGroupAffinity only when that
-    /// can't tell), mapped by cpuAffinityFromGroupMasks(). Empty if it can't be read.
-    [[nodiscard]] CpuAffinity readCpuAffinity(HANDLE hProcess, std::span<const std::byte> threadRecords) const;
+    /// can't tell), mapped by cpuAffinityFromGroupMasks(). Empty if it can't be read, including
+    /// when the processor topology couldn't be (affinityTopology()). Refreshes the groups' active
+    /// masks when a heavy TTL has passed since the last read.
+    [[nodiscard]] CpuAffinity readCpuAffinity(HANDLE hProcess, std::span<const std::byte> threadRecords);
 
     /// Read total system CPU time
     [[nodiscard]] static uint64_t readTotalCpuTime();
@@ -184,9 +186,13 @@ class WindowsProcessProbe : public IProcessProbe
     std::unordered_map<DetailCacheKey, DetailCacheEntry, DetailCacheKeyHash> m_DetailCache;
     std::uint64_t m_DetailCacheGeneration = 0;
     std::size_t m_LastEnumeratedProcessCount = 256;
-    // Every processor group, from GetLogicalProcessorInformationEx at construction (#1247). More
-    // than one switches readCpuAffinity() to the group-aware reads; empty if it couldn't be read.
+    // Every processor group (#1247): maximum sizes read at construction, active masks re-read by
+    // readCpuAffinity() each heavy TTL. More than one switches it to the group-aware reads; empty if
+    // discovery failed (affinity then unreadable).
     std::vector<ProcessorGroupLayout> m_ProcessorGroups;
+    bool m_ActiveMasksRead = false; // The last readActiveProcessorMasks() succeeded
+    std::chrono::steady_clock::time_point m_NextActiveMasksRead;
+    bool m_ThreadsMaySpanGroups = true;      // threadsMaySpanGroups() for this Windows build
     std::vector<std::byte> m_SnapshotBuffer; // Reused buffer for NtQuerySystemInformation snapshots
 };
 
