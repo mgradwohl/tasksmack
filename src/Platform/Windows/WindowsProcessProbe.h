@@ -24,6 +24,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -66,11 +67,13 @@ class WindowsProcessProbe : public IProcessProbe
     [[nodiscard]] uint64_t totalCpuTime() const override;
     [[nodiscard]] long ticksPerSecond() const override;
     [[nodiscard]] uint64_t systemTotalMemory() const override;
-    /// Keeps no per-connection state between calls: a connection whose EStats read fails is
-    /// reported unreadable and Domain keeps its baseline (#1256). The only state it updates is the
-    /// one-time EStats verification (#1161, verifyEStats()), whose inconclusive-sample streak
-    /// assumes one caller at a time: ProcessModel::refresh() is the only caller, under its sampling
-    /// lock. Concurrent calls stay data-race-free (atomics), but each would extend the streak.
+    /// Keeps no per-connection traffic state between calls: a connection whose EStats read fails
+    /// is reported unreadable and Domain keeps its baseline (#1256). It updates the set of
+    /// connections whose EStats collection it already enabled (#1418, m_EStatsEnabled, under
+    /// m_EStatsEnableMutex) and the one-time EStats verification (#1161, verifyEStats()), whose
+    /// inconclusive-sample streak assumes one caller at a time: ProcessModel::refresh() is the only
+    /// caller, under its sampling lock. Concurrent calls stay data-race-free (atomics and the
+    /// mutex), but each would extend the streak.
     [[nodiscard]] SocketTrafficReading readSocketTraffic() const override;
 
   private:
@@ -88,6 +91,12 @@ class WindowsProcessProbe : public IProcessProbe
 
     // Samples in a row whose established EStats reads were only NOT_FOUND / garbage (#1161)
     mutable std::atomic<std::size_t> m_EStatsInconclusiveSamples{0};
+
+    // Connections whose EStats collection is already enabled, so each is enabled once rather than
+    // every sample (#1418). readSocketTraffic() is const and documented safe to call concurrently,
+    // so the tracker is mutable and guarded: one lock covers both table walks and the prune.
+    mutable std::mutex m_EStatsEnableMutex;
+    mutable EStatsEnableTracker m_EStatsEnabled; // Guarded by m_EStatsEnableMutex
 
     // EStats function signatures
     using GetPerTcpConnectionEStatsFn =
@@ -176,8 +185,12 @@ class WindowsProcessProbe : public IProcessProbe
     /// reads and tallying the Set/Get results into counts (debug line and #1161 detection).
     /// Returns false if the table could not be read this time: the walk is then incomplete
     /// (#1256). A family whose EStats functions are unavailable is not walked and returns true.
-    [[nodiscard]] bool collectTcp4Reads(std::vector<EStatsConnectionRead>& reads, EStatsSampleCounts& counts) const;
-    [[nodiscard]] bool collectTcp6Reads(std::vector<EStatsConnectionRead>& reads, EStatsSampleCounts& counts) const;
+    /// @param enabled The enable tracker (#1418), passed in so the caller's m_EStatsEnableMutex
+    ///                lock visibly covers every use of it.
+    [[nodiscard]] bool
+    collectTcp4Reads(EStatsEnableTracker& enabled, std::vector<EStatsConnectionRead>& reads, EStatsSampleCounts& counts) const;
+    [[nodiscard]] bool
+    collectTcp6Reads(EStatsEnableTracker& enabled, std::vector<EStatsConnectionRead>& reads, EStatsSampleCounts& counts) const;
 
     /// Log the periodic EStats debug line and, until a real sample has, decide whether EStats
     /// works (#1161). Returns false if this sample proved it unusable (network counters now off).

@@ -27,6 +27,8 @@
 #include <array>
 #include <bit>
 #include <cstdint>
+#include <optional>
+#include <vector>
 
 namespace Platform
 {
@@ -92,6 +94,66 @@ namespace Platform
         .remotePort = ownerRow.dwRemotePort,
     };
 }
+
+// NOLINTBEGIN(misc-include-cleaner) - TCP_ESTATS_* come from tcpestats.h via the iphlpapi.h umbrella
+/// Read EStats for one ESTABLISHED connection, enabling collection first only if @p enabled has
+/// no remembered enable for it (#1418), hand the result to the shared recordEStatsRow() tally,
+/// and append the read to @p reads (#1256). RowT is MIB_TCPROW or MIB_TCP6ROW (#1100); the Set/Get
+/// functions are the matching IPv4 or IPv6 pair. @p setFn may be null (the read is then tried
+/// without an enable, which works if another process enabled collection).
+template<typename RowT, typename SetFn, typename GetFn>
+void readEStatsRow(RowT& row,
+                   std::uint64_t key,
+                   std::uint32_t pid,
+                   std::uint32_t state,
+                   SetFn setFn,
+                   GetFn getFn,
+                   EStatsEnableTracker& enabled,
+                   std::vector<EStatsConnectionRead>& reads,
+                   EStatsSampleCounts& counts)
+{
+    // Enable collection (requires admin, may fail) unless an earlier sample already did. A
+    // known connection's read is tallied with no enable status, as when setFn is null.
+    std::optional<std::uint32_t> enableStatus;
+    if (setFn != nullptr)
+    {
+        if (enabled.needsEnable(key))
+        {
+            TCP_ESTATS_DATA_RW_v0 rw{};
+            rw.EnableCollection = TRUE;
+            enableStatus = setFn(&row, TcpConnectionEstatsData, reinterpret_cast<PUCHAR>(&rw), 0, sizeof(rw), 0);
+        }
+        else if (state == TCP_STATE_ESTABLISHED)
+        {
+            ++counts.alreadyEnabled;
+        }
+    }
+
+    // Read the stats (may work even if enable failed, if another process enabled it), and in the
+    // same call whether collection is on: the counters are undefined while it is off (#1418), as
+    // on a new connection reusing a remembered 4-tuple, or after another tool turned it off.
+    TCP_ESTATS_DATA_RW_v0 rwState{};
+    TCP_ESTATS_DATA_ROD_v0 rod{};
+    const DWORD readStatus = getFn(&row,
+                                   TcpConnectionEstatsData,
+                                   reinterpret_cast<PUCHAR>(&rwState),
+                                   0,
+                                   sizeof(rwState),
+                                   nullptr,
+                                   0,
+                                   0,
+                                   reinterpret_cast<PUCHAR>(&rod),
+                                   0,
+                                   sizeof(rod));
+    const bool collectionEnabled = rwState.EnableCollection != FALSE;
+
+    const EStatsRowOutcome outcome =
+        recordEStatsRow(counts, state, enableStatus, readStatus, rod.DataBytesOut, rod.DataBytesIn, collectionEnabled);
+    enabled.record(key, enableStatus, outcome, rod.DataBytesOut > 0 || rod.DataBytesIn > 0);
+    reads.push_back(
+        EStatsConnectionRead{.key = key, .pid = pid, .outcome = outcome, .bytesReceived = rod.DataBytesIn, .bytesSent = rod.DataBytesOut});
+}
+// NOLINTEND(misc-include-cleaner)
 
 } // namespace Platform
 
