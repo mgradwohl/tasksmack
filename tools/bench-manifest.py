@@ -21,6 +21,7 @@ import json
 import os
 import platform
 import re
+import socket
 import subprocess
 import sys
 from collections.abc import Mapping
@@ -57,24 +58,35 @@ def git_provenance(repo_root: Path) -> dict:
 #     argument remembers its first quote character and where that quote opened.
 #  2. Peel the switch: a prefix-map switch (its OLD=NEW value is split at the first '=', as
 #     clang does, and each side scrubbed on its own); a comma-list switch (-Wl, and friends:
-#     each item scrubbed); a generic "-opt=" / "--opt=" (the value after the first '='); or a
-#     joined switch (-I, -isystem, /I, ...) when what follows it is a path. Otherwise the whole
-#     argument is the operand.
+#     each item scrubbed); a generic "-opt=" / "--opt=" (the value after the first '='); an MSVC
+#     path switch (/I, /FI, /LIBPATH:, ...), always; or a dash joined switch (-I, -isystem, ...)
+#     when what follows it is a path. Otherwise the whole argument is the operand.
 #  3. An operand is a path when it starts with a drive (C:\ or C:/), a UNC or device path (\\,
-#     //, \\?\, \\.\), a POSIX path of two or more segments (/home/u/x; so /DWIN32 stays) or ~.
-#     A path inside the checkout becomes <source>/relative, any other <abs>/<file name>. A ';'
-#     list is scrubbed item by item, and an operand with a drive, UNC or device path inside it
-#     (FOO:C:/x) is scrubbed from there.
+#     //, \\?\, \\.\), a POSIX path of two or more segments (/home/u/x) or ~. A path inside the
+#     checkout becomes <source>/relative, any other <abs>/<file name>; a relative operand
+#     (/Iinclude/common's include/common) is kept. A ';' list is scrubbed item by item, and an
+#     operand with a drive, UNC or device path inside it (FOO:C:/x) is scrubbed from there.
 #  4. Re-join with single spaces, putting each argument's quote back before the piece it opened
 #     on (or around the whole argument when that piece no longer exists).
+#
+# A leading-'/' argument is an MSVC option or a POSIX path, decided in this order:
+#  a. It starts with an MSVC path switch (_MSVC_PATH_SWITCHES, case-sensitive): the switch is
+#     peeled and what follows is the operand, kept unless it is itself absolute. /Iinclude/common
+#     stays; /I/home/u/inc becomes /I<abs>/inc.
+#  b. Otherwise it is a POSIX path only with two or more segments. Every other MSVC option
+#     (/DWIN32, /U..., /W4, /O2, /EHsc, /std:c++latest, /Zc:..., /MD) is a single segment and
+#     stays, and an option-looking path such as /Users/u/x (not a path switch: /U takes no path)
+#     is still a path. An option with a path after '=' (/DDIR=/home/u/x) goes through the generic
+#     "opt=" rule first.
 _PREFIX_MAP_SWITCHES = ("-ffile-prefix-map=", "-fdebug-prefix-map=", "-fmacro-prefix-map=", "-fprofile-prefix-map=")
 _LIST_SWITCHES = ("-Wl,", "-Wa,", "-Wp,")
+# Longest first, case-sensitive (/FR is not /Fr).
+_MSVC_PATH_SWITCHES = ("/external:I", "/LIBPATH:", "/FI", "/Fo", "/Fd", "/Fe", "/Fp", "/Fa", "/FR", "/Fr", "/I")
 # Longest first, so -isystem is not read as -I... (case matters: -I is not -i).
 _JOINED_SWITCHES = (
     "-iwithprefixbefore",
     "-iwithprefix",
     "-idirafter",
-    "/LIBPATH:",
     "-isysroot",
     "-iprefix",
     "-imacros",
@@ -82,16 +94,10 @@ _JOINED_SWITCHES = (
     "-include",
     "-iquote",
     "-imsvc",
-    "/FI",
-    "/Fo",
-    "/Fd",
-    "/Fe",
-    "/Fp",
     "-I",
     "-L",
     "-B",
     "-F",
-    "/I",
 )
 _PATH_HEAD = re.compile(r"""^(?:[A-Za-z]:[\\/]|\\\\|//|/[^/\\]+/|~[^/\\]*(?:[/\\]|$))""")
 _EMBEDDED_HEAD = re.compile(r"""[A-Za-z]:[\\/](?![\\/])|\\\\|(?<!:)//""")
@@ -172,6 +178,9 @@ def hide_absolute_paths(flags: str | None, repo_root: Path) -> str | None:
             head = argument[: argument.index("=") + 1]
             if not re.search(r"[\\/]", head[1:]):
                 return [(0, head), (len(head), operand(argument[len(head) :]))]
+        for switch in _MSVC_PATH_SWITCHES:
+            if argument.startswith(switch) and len(argument) > len(switch):
+                return [(0, switch), (len(switch), operand(argument[len(switch) :]))]
         for switch in _JOINED_SWITCHES:
             if argument.startswith(switch) and _PATH_HEAD.match(argument[len(switch) :]):
                 return [(0, switch), (len(switch), operand(argument[len(switch) :]))]
@@ -189,8 +198,21 @@ def hide_absolute_paths(flags: str | None, repo_root: Path) -> str | None:
     return " ".join(joined)
 
 
-def identity_strings() -> tuple[list[str], str | None]:
-    """This user's home directory (both slash forms) and user name, for hide_identity()."""
+def host_names() -> list[str]:
+    """This machine's names for hide_identity(): the host name, its short form and the FQDN where
+    known, longest first (so the FQDN is replaced before its short name)."""
+    names = {socket.gethostname(), platform.node()}
+    try:
+        names.add(socket.getfqdn())
+    except OSError:
+        pass
+    names |= {name.split(".")[0] for name in names if name}
+    return sorted((name for name in names if name), key=len, reverse=True)
+
+
+def identity_strings() -> tuple[list[str], str | None, list[str]]:
+    """This user's home directory (both slash forms), user name and host names, for
+    hide_identity()."""
     homes = {str(Path.home())}
     for variable in ("HOME", "USERPROFILE"):
         if os.environ.get(variable):
@@ -204,32 +226,38 @@ def identity_strings() -> tuple[list[str], str | None]:
         user = getpass.getuser()
     except (KeyError, OSError):
         user = os.environ.get("USER") or os.environ.get("USERNAME")
-    return sorted(prefixes, key=len, reverse=True), user
+    return sorted(prefixes, key=len, reverse=True), user, host_names()
 
 
-# The user name only counts where it stands alone between separators (start or end, whitespace,
-# a slash, a quote, '=', ':', ',' or ';'), so a user named "build" leaves -DBUILD=1 and
-# BUILD_TYPE alone but still hides -DBUILT_BY=build and C:/Users/build.
+# A user or host name only counts where it stands alone between separators (start or end,
+# whitespace, a slash, a quote, '=', ':', ',' or ';'), so a user named "build" leaves -DBUILD=1
+# and BUILD_TYPE alone but still hides -DBUILT_BY=build and C:/Users/build.
 _SEPARATED = r"""\s/\\"'=:,;"""
 
 
-def hide_identity(value, prefixes: list[str], user: str | None):
+def _hide_token(value: str, token: str | None, replacement: str) -> str:
+    if not token or len(token) < 3:
+        return value
+    pattern = rf"(?<![^{_SEPARATED}]){re.escape(token)}(?![^{_SEPARATED}])"
+    return re.sub(pattern, replacement, value, flags=re.IGNORECASE)
+
+
+def hide_identity(value, prefixes: list[str], user: str | None, hosts: list[str] | tuple[str, ...] = ()):
     """Defensive last pass over every string in the manifest: any home-directory prefix becomes
-    <home> (always), and the user name, when it is at least 3 characters and stands alone
-    between separators, becomes <user>."""
+    <home> (always); each host name (FQDN, short name) and the user name, when at least 3
+    characters and standing alone between separators, become <host> and <user>. Kept in step
+    with Hide-Identity in tools/bench.ps1."""
     if isinstance(value, dict):
-        return {key: hide_identity(item, prefixes, user) for key, item in value.items()}
+        return {key: hide_identity(item, prefixes, user, hosts) for key, item in value.items()}
     if isinstance(value, list):
-        return [hide_identity(item, prefixes, user) for item in value]
+        return [hide_identity(item, prefixes, user, hosts) for item in value]
     if not isinstance(value, str):
         return value
     for prefix in prefixes:
         value = re.sub(re.escape(prefix), "<home>", value, flags=re.IGNORECASE)
-    if user and len(user) >= 3:
-        value = re.sub(
-            rf"(?<![^{_SEPARATED}]){re.escape(user)}(?![^{_SEPARATED}])", "<user>", value, flags=re.IGNORECASE
-        )
-    return value
+    for host in sorted(hosts, key=len, reverse=True):
+        value = _hide_token(value, host, "<host>")
+    return _hide_token(value, user, "<user>")
 
 
 def build_provenance(binary: Path, repo_root: Path) -> dict:

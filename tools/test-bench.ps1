@@ -104,6 +104,13 @@ try {
         , @("-DDATA=foo:C:/Users/$U/data", '-DDATA=foo:<abs>/data')
         , @("/LIBPATH:C:\Users\$U\lib", '/LIBPATH:<abs>/lib')
         , @('-B/root/bin/x', '-B<abs>/x')
+        , @('/Iinclude/common', '/Iinclude/common')
+        , @('/FIinclude/config.h', '/FIinclude/config.h')
+        , @('/LIBPATH:build/lib', '/LIBPATH:build/lib')
+        , @("/I/home/$U/inc", '/I<abs>/inc')
+        , @("/IC:/Users/$U/inc", '/I<abs>/inc')
+        , @("/Users/$U/proj/config.h", '<abs>/config.h')
+        , @("/DDIR=/home/$U/x", '/DDIR=<abs>/x')
         , @("-DBUILT_BY=$U", $(if ($U.Length -ge 3) { '-DBUILT_BY=<user>' } else { "-DBUILT_BY=$U" }))
     )
     Set-Content -LiteralPath (Join-Path $buildDir 'CMakeCache.txt') -Encoding ascii -Value @(
@@ -271,6 +278,24 @@ exit [int]$env:STUB_EXIT
             Assert-True ((Find-IdentityLeaks $dirty -Tokens @($user) -Paths @("/home/$user")).Count -gt 0) "'$leaky' was not reported for user '${user}'"
         }
     }
+    # The checker covers an injected host name the same way.
+    $hostTokens = @('bench-host-123', 'bench-host-123.example.com')
+    $hostClean = [pscustomobject]@{ benchmark = [pscustomobject]@{ args = @('--benchmark_context=runner=<host>', '--benchmark_filter=BM_bench-host-123x') } }
+    Assert-True ((Find-IdentityLeaks $hostClean -Tokens $hostTokens -Paths @()).Count -eq 0) 'A redacted host name was reported'
+    foreach ($leaky in @('--benchmark_context=runner=bench-host-123', 'ssh://bench-host-123.example.com/x')) {
+        $dirty = [pscustomobject]@{ benchmark = [pscustomobject]@{ args = @($leaky) } }
+        Assert-True ((Find-IdentityLeaks $dirty -Tokens $hostTokens -Paths @()).Count -gt 0) "'$leaky' was not reported as a host-name leak"
+    }
+
+    # End to end: this machine's own host name passed in the benchmark args does not survive.
+    if ([Environment]::MachineName.Length -ge 3) {
+        $hostRun = Invoke-Bench -StubExit 0 -Name 'host' -Extra @('--benchmark_filter=BM_X', "--benchmark_context=runner=$([Environment]::MachineName)")
+        Assert-True ($hostRun.ExitCode -eq 0 -and $hostRun.Manifest.Count -eq 1) "Host-name run failed:`n$($hostRun.Log)"
+        $hostManifest = Get-Content -LiteralPath $hostRun.Manifest[0].FullName -Raw | ConvertFrom-Json
+        Assert-True (@($hostManifest.benchmark.args) -contains '--benchmark_context=runner=<host>') "Host name in args: $(@($hostManifest.benchmark.args) -join ' ')"
+        $hostLeaks = Find-IdentityLeaks $hostManifest -Tokens @([Environment]::MachineName, $env:COMPUTERNAME) -Paths @()
+        Assert-True ($hostLeaks.Count -eq 0) "The manifest leaks the host name: $($hostLeaks -join '; ')"
+    }
 
     # ── #1445 review: an extra --benchmark_out/--benchmark_out_format is refused before launch ──
     # Google Benchmark takes the last value, so the run would write somewhere the redaction and the
@@ -331,12 +356,30 @@ exit [int]$env:STUB_EXIT
         , @('C:\Users\build\src C:/Users/build/src', '<home>\src <home>/src')
     )
     foreach ($case in $identityCases) {
-        $got = Hide-Identity $case[0] -Homes @('C:\Users\build') -User 'build'
+        $got = Hide-Identity $case[0] -Homes @('C:\Users\build') -User 'build' -Hosts @()
         Assert-True ($got -ceq $case[1]) "Identity pass for user 'build': [$($case[0])] became [$got], expected [$($case[1])]"
     }
     # A user name under 3 characters is never replaced on its own; a home prefix always is.
-    $short = Hide-Identity '-DX=ab /home/ab/src' -Homes @('/home/ab') -User 'ab'
+    $short = Hide-Identity '-DX=ab /home/ab/src' -Homes @('/home/ab') -User 'ab' -Hosts @()
     Assert-True ($short -ceq '-DX=ab <home>/src') "Short user name: $short"
+
+    # ── #1445 review: host names (short and FQDN) are hidden the same way, injected here ──────
+    $hostCases = @(
+        , @('--benchmark_context=runner=bench-host-123', '--benchmark_context=runner=<host>')
+        , @('--benchmark_context=runner=BENCH-HOST-123.example.com', '--benchmark_context=runner=<host>')
+        , @('ssh://bench-host-123.example.com/x', 'ssh://<host>/x')
+        , @('xbench-host-123y -DHOST_bench-host-123', 'xbench-host-123y -DHOST_bench-host-123')
+    )
+    foreach ($case in $hostCases) {
+        $got = Hide-Identity $case[0] -Homes @() -User 'someone' -Hosts @('bench-host-123', 'bench-host-123.example.com')
+        Assert-True ($got -ceq $case[1]) "Identity pass for host 'bench-host-123': [$($case[0])] became [$got], expected [$($case[1])]"
+    }
+    $shortHost = Hide-Identity 'runner=ab' -Homes @() -User 'someone' -Hosts @('ab')
+    Assert-True ($shortHost -ceq 'runner=ab') "A host name under 3 characters is left alone: $shortHost"
+    # Hide-Identity's default host list holds this machine's own name.
+    $getHostNames = $benchAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-HostNames' }, $true) | Select-Object -First 1
+    . ([scriptblock]::Create($getHostNames.Extent.Text))
+    Assert-True (@(Get-HostNames) -contains [Environment]::MachineName) "Get-HostNames: $(@(Get-HostNames) -join ', ')"
 
     Write-Host 'bench.ps1 tests passed'
 }

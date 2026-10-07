@@ -151,6 +151,13 @@ def flag_forms(user: str, home: str) -> list[tuple[str, str]]:
         (f"-DDATA=foo:C:/Users/{user}/data", "-DDATA=foo:<abs>/data"),
         (f"/LIBPATH:C:\\Users\\{user}\\lib", "/LIBPATH:<abs>/lib"),
         ("-B/root/bin/x", "-B<abs>/x"),
+        ("/Iinclude/common", "/Iinclude/common"),
+        ("/FIinclude/config.h", "/FIinclude/config.h"),
+        ("/LIBPATH:build/lib", "/LIBPATH:build/lib"),
+        (f"/I/home/{user}/inc", "/I<abs>/inc"),
+        (f"/IC:/Users/{user}/inc", "/I<abs>/inc"),
+        (f"/Users/{user}/proj/config.h", "<abs>/config.h"),
+        (f"/DDIR=/home/{user}/x", "/DDIR=<abs>/x"),
         (f"-DBUILT_BY={user}", "-DBUILT_BY=<user>" if len(user) >= 3 else f"-DBUILT_BY={user}"),
     ]
 
@@ -274,6 +281,16 @@ class BenchShTest(unittest.TestCase):
         self.assertIsNone(build["compiler_id"])
         self.assertIsNone(build["compiler_version"])
 
+    def test_this_machines_host_name_in_the_args_does_not_survive(self):
+        host = socket.gethostname()
+        if len(host) < 3:
+            self.skipTest("host name under 3 characters")
+        code, output, _, manifests = self.run_bench("host", 0, extra=(f"--benchmark_context=runner={host}",))
+        self.assertEqual(code, 0, output)
+        manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+        self.assertIn("--benchmark_context=runner=<host>", manifest["benchmark"]["args"])
+        self.assertEqual(find_identity_leaks(manifest, [host, host.split(".")[0]], []), [])
+
     def test_failing_benchmark_fails_the_script(self):
         code, output, results, manifests = self.run_bench("failed", 3)
         self.assertEqual(code, 3, output)
@@ -377,6 +394,22 @@ class ScrubberTest(unittest.TestCase):
         # A user name under 3 characters is never replaced on its own; a home prefix always is.
         self.assertEqual(module.hide_identity("-DX=ab /home/ab/src", ["/home/ab"], "ab"), "-DX=ab <home>/src")
 
+    def test_identity_pass_hides_injected_host_names(self):
+        # #1445 review: the host name (short and FQDN) is hidden like the user name.
+        module = load_bench_manifest()
+        hosts = ["bench-host-123", "bench-host-123.example.com"]
+        cases = [
+            ("--benchmark_context=runner=bench-host-123", "--benchmark_context=runner=<host>"),
+            ("--benchmark_context=runner=BENCH-HOST-123.example.com", "--benchmark_context=runner=<host>"),
+            ("ssh://bench-host-123.example.com/x", "ssh://<host>/x"),
+            ("xbench-host-123y -DHOST_bench-host-123", "xbench-host-123y -DHOST_bench-host-123"),
+        ]
+        for given, expected in cases:
+            with self.subTest(given=given):
+                self.assertEqual(module.hide_identity(given, [], "someone", hosts), expected)
+        self.assertEqual(module.hide_identity("runner=ab", [], "someone", ["ab"]), "runner=ab")
+        self.assertIn(socket.gethostname(), module.host_names())
+
 
 class IdentityLeakCheckTest(unittest.TestCase):
     """The leak check used on the manifest, with a controlled user and home (#1445 review)."""
@@ -398,6 +431,15 @@ class IdentityLeakCheckTest(unittest.TestCase):
                 with self.subTest(user=user, leaky=leaky):
                     dirty = {"build": {"cxx_flags": f"-O2 {leaky}"}}
                     self.assertNotEqual(find_identity_leaks(dirty, [user], [f"/home/{user}"]), [])
+
+
+    def test_the_checker_covers_an_injected_host_name(self):
+        hosts = ["bench-host-123", "bench-host-123.example.com"]
+        clean = {"benchmark": {"args": ["--benchmark_context=runner=<host>", "--benchmark_filter=BM_bench-host-123x"]}}
+        self.assertEqual(find_identity_leaks(clean, hosts, []), [])
+        for leaky in ("--benchmark_context=runner=bench-host-123", "ssh://bench-host-123.example.com/x"):
+            with self.subTest(leaky=leaky):
+                self.assertNotEqual(find_identity_leaks({"benchmark": {"args": [leaky]}}, hosts, []), [])
 
 
 class ReportAggregatesOnlyTest(unittest.TestCase):

@@ -105,21 +105,33 @@ function Get-GitProvenance {
 #     argument remembers its first quote character and where that quote opened.
 #  2. Peel the switch: a prefix-map switch (its OLD=NEW value is split at the first '=', as
 #     clang does, and each side scrubbed on its own); a comma-list switch (-Wl, and friends:
-#     each item scrubbed); a generic "-opt=" / "--opt=" (the value after the first '='); or a
-#     joined switch (-I, -isystem, /I, ...) when what follows it is a path. Otherwise the whole
-#     argument is the operand.
+#     each item scrubbed); a generic "-opt=" / "--opt=" (the value after the first '='); an MSVC
+#     path switch (/I, /FI, /LIBPATH:, ...), always; or a dash joined switch (-I, -isystem, ...)
+#     when what follows it is a path. Otherwise the whole argument is the operand.
 #  3. An operand is a path when it starts with a drive (C:\ or C:/), a UNC or device path (\\,
-#     //, \\?\, \\.\), a POSIX path of two or more segments (/home/u/x; so /DWIN32 stays) or ~.
-#     A path inside the checkout becomes <source>/relative, any other <abs>/<file name>. A ';'
-#     list is scrubbed item by item, and an operand with a drive, UNC or device path inside it
-#     (FOO:C:/x) is scrubbed from there.
+#     //, \\?\, \\.\), a POSIX path of two or more segments (/home/u/x) or ~. A path inside the
+#     checkout becomes <source>/relative, any other <abs>/<file name>; a relative operand
+#     (/Iinclude/common's include/common) is kept. A ';' list is scrubbed item by item, and an
+#     operand with a drive, UNC or device path inside it (FOO:C:/x) is scrubbed from there.
 #  4. Re-join with single spaces, putting each argument's quote back before the piece it opened
 #     on (or around the whole argument when that piece no longer exists).
+#
+# A leading-'/' argument is an MSVC option or a POSIX path, decided in this order:
+#  a. It starts with an MSVC path switch ($script:MsvcPathSwitches, case-sensitive): the switch
+#     is peeled and what follows is the operand, kept unless it is itself absolute.
+#     /Iinclude/common stays; /I/home/u/inc becomes /I<abs>/inc.
+#  b. Otherwise it is a POSIX path only with two or more segments. Every other MSVC option
+#     (/DWIN32, /U..., /W4, /O2, /EHsc, /std:c++latest, /Zc:..., /MD) is a single segment and
+#     stays, and an option-looking path such as /Users/u/x (not a path switch: /U takes no path)
+#     is still a path. An option with a path after '=' (/DDIR=/home/u/x) goes through the generic
+#     "opt=" rule first.
 $script:PrefixMapSwitches = @('-ffile-prefix-map=', '-fdebug-prefix-map=', '-fmacro-prefix-map=', '-fprofile-prefix-map=')
 $script:ListSwitches = @('-Wl,', '-Wa,', '-Wp,')
+# Longest first, case-sensitive (/FR is not /Fr).
+$script:MsvcPathSwitches = @('/external:I', '/LIBPATH:', '/FI', '/Fo', '/Fd', '/Fe', '/Fp', '/Fa', '/FR', '/Fr', '/I')
 # Longest first, so -isystem is not read as -I... (case matters: -I is not -i).
-$script:JoinedSwitches = @('-iwithprefixbefore', '-iwithprefix', '-idirafter', '/LIBPATH:', '-isysroot', '-iprefix', '-imacros',
-    '-isystem', '-include', '-iquote', '-imsvc', '/FI', '/Fo', '/Fd', '/Fe', '/Fp', '-I', '-L', '-B', '-F', '/I')
+$script:JoinedSwitches = @('-iwithprefixbefore', '-iwithprefix', '-idirafter', '-isysroot', '-iprefix', '-imacros',
+    '-isystem', '-include', '-iquote', '-imsvc', '-I', '-L', '-B', '-F')
 $script:PathHead = [regex]'^(?:[A-Za-z]:[\\/]|\\\\|//|/[^/\\]+/|~[^/\\]*(?:[/\\]|$))'
 $script:EmbeddedHead = [regex]'[A-Za-z]:[\\/](?![\\/])|\\\\|(?<!:)//'
 
@@ -212,6 +224,11 @@ function Hide-AbsolutePaths {
                 return , @(@(0, $head), @($head.Length, (& $operand $Argument.Substring($head.Length))))
             }
         }
+        foreach ($switch in $script:MsvcPathSwitches) {
+            if ($Argument.StartsWith($switch, [StringComparison]::Ordinal) -and $Argument.Length -gt $switch.Length) {
+                return , @(@(0, $switch), @($switch.Length, (& $operand $Argument.Substring($switch.Length))))
+            }
+        }
         foreach ($switch in $script:JoinedSwitches) {
             if ($Argument.StartsWith($switch, [StringComparison]::Ordinal) -and $script:PathHead.IsMatch($Argument.Substring($switch.Length))) {
                 return , @(@(0, $switch), @($switch.Length, (& $operand $Argument.Substring($switch.Length))))
@@ -232,36 +249,56 @@ function Hide-AbsolutePaths {
     return (@($joined) -join ' ')
 }
 
+function Get-HostNames {
+    # This machine's names for Hide-Identity: the host name, its short form and the FQDN where
+    # known (host plus DNS domain, no lookup), longest first so the FQDN goes before its short name.
+    $names = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($name in @([Environment]::MachineName, $env:COMPUTERNAME, [System.Net.Dns]::GetHostName())) { if ($name) { [void]$names.Add($name) } }
+    try {
+        $ip = [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties()
+        if ($ip.HostName) { [void]$names.Add($ip.HostName) }
+        if ($ip.HostName -and $ip.DomainName) { [void]$names.Add("$($ip.HostName).$($ip.DomainName)") }
+    }
+    catch { $null = $_ }
+    foreach ($name in @($names)) { [void]$names.Add($name.Split('.')[0]) }
+    return [string[]]@($names | Sort-Object Length -Descending)
+}
+
 function Hide-Identity {
     # Defensive last pass over every string in the manifest (#1445 review): any home-directory
-    # prefix ($HOME, $env:USERPROFILE, both slash forms) becomes <home> (always), and the user
-    # name, when it is at least 3 characters and stands alone between separators (start or end,
-    # whitespace, a slash, a quote, '=', ':', ',' or ';'), becomes <user> -- so a user named
-    # "build" leaves -DBUILD=1 alone but still hides -DBUILT_BY=build and C:/Users/build.
-    # Kept in step with hide_identity in tools/bench-manifest.py.
-    param($Value, [string[]]$Homes, [string]$User)
+    # prefix ($HOME, $env:USERPROFILE, both slash forms) becomes <home> (always); each host name
+    # (FQDN, short name) and the user name, when at least 3 characters and standing alone between
+    # separators (start or end, whitespace, a slash, a quote, '=', ':', ',' or ';'), become <host>
+    # and <user> -- so a user named "build" leaves -DBUILD=1 alone but still hides
+    # -DBUILT_BY=build and C:/Users/build. Kept in step with hide_identity in
+    # tools/bench-manifest.py.
+    param($Value, [string[]]$Homes, [string]$User, [string[]]$Hosts)
     if (-not $PSBoundParameters.ContainsKey('Homes')) {
         $Homes = @([Environment]::GetFolderPath('UserProfile'), $HOME, $env:HOME, $env:USERPROFILE)
     }
     if (-not $PSBoundParameters.ContainsKey('User')) { $User = [Environment]::UserName }
+    if (-not $PSBoundParameters.ContainsKey('Hosts')) { $Hosts = Get-HostNames }
     if ($Value -is [System.Collections.IDictionary]) {
         $copy = [ordered]@{}
-        foreach ($key in $Value.Keys) { $copy[$key] = Hide-Identity $Value[$key] -Homes $Homes -User $User }
+        foreach ($key in $Value.Keys) { $copy[$key] = Hide-Identity $Value[$key] -Homes $Homes -User $User -Hosts $Hosts }
         return $copy
     }
     if ($Value -is [string]) {
         $trimmed = @($Homes | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\', '/') } | Where-Object { $_.Length -gt 3 })
         $prefixes = @($trimmed | ForEach-Object { $_; $_.Replace('\', '/'); $_.Replace('/', '\') } | Sort-Object -Unique | Sort-Object Length -Descending)
         foreach ($prefix in $prefixes) { $Value = [regex]::Replace($Value, [regex]::Escape($prefix), '<home>', 'IgnoreCase') }
-        if ($User -and $User.Length -ge 3) {
-            $separated = '\s/\\"''=:,;'
-            $Value = [regex]::Replace($Value, "(?<![^$separated])" + [regex]::Escape($User) + "(?![^$separated])", '<user>', 'IgnoreCase')
+        $separated = '\s/\\"''=:,;'
+        $tokens = @(@($Hosts | Where-Object { $_ } | Sort-Object Length -Descending | ForEach-Object { , @($_, '<host>') }) + , @($User, '<user>'))
+        foreach ($pair in $tokens) {
+            if ($pair[0] -and $pair[0].Length -ge 3) {
+                $Value = [regex]::Replace($Value, "(?<![^$separated])" + [regex]::Escape($pair[0]) + "(?![^$separated])", $pair[1], 'IgnoreCase')
+            }
         }
         return $Value
     }
     if ($Value -is [System.Collections.IEnumerable]) {
         # A list stays a list (written as a JSON array even with one item).
-        return , [object[]]@(foreach ($item in $Value) { Hide-Identity $item -Homes $Homes -User $User })
+        return , [object[]]@(foreach ($item in $Value) { Hide-Identity $item -Homes $Homes -User $User -Hosts $Hosts })
     }
     return $Value
 }

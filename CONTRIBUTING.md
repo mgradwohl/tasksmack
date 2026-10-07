@@ -716,12 +716,15 @@ Each `bench.sh` / `bench.ps1` run writes two files to `perf-data/`:
   prefix maps such as `-ffile-prefix-map=OLD=NEW` are split at the first `=` as clang does --
   and each path operand (drive, UNC and device paths, POSIX and `~` paths, such as the PGO
   presets' `-fprofile-instr-use=` profile) becomes `<source>/...` inside the checkout and
-  `<abs>/<file name>` elsewhere, with the original quoting kept), `benchmark` (the arguments
+  `<abs>/<file name>` elsewhere, with the original quoting kept; relative operands such as
+  `/Iinclude/common` stay, and a leading-`/` argument that is not an MSVC path switch is a path
+  only with two or more segments, so `/DWIN32` stays), `benchmark` (the arguments
   passed, with the output path reduced to its file name), `exit_code`, and `machine`, an
   anonymized machine class (CPU model, logical core count, OS name/version, architecture). It
   records no host name, user name, user-profile path, process list or other command line; a
-  final pass replaces any remaining home-directory prefix with `<home>`, and the user name (3+
-  characters, standing alone between separators) with `<user>`. `bench.sh` writes it with
+  final pass replaces any remaining home-directory prefix with `<home>`, and the host name (short
+  and FQDN) and user name (3+ characters, standing alone between separators) with `<host>` and
+  `<user>`. `bench.sh` writes it with
   `tools/bench-manifest.py`.
 
 For the script tests, `bench.ps1 -BenchmarkBinary <path> -OutputDirectory <dir>` and `bench.sh`'s
