@@ -1,0 +1,84 @@
+# TaskSmack user configuration
+# Written by TaskSmack. Keys it doesn't use are kept, but comments in this file are not.
+# Edits made while TaskSmack is running are kept unless TaskSmack changes the same setting.
+# Notes:
+#   [sampling] interval_ms: refresh cadence (100-5000ms); affects all samplers
+#   [sampling] history_max_seconds: timeline history window (10-1800s)
+#   [sampling] socket_stats_cache_ttl_ms: Linux only; per-process network stat cache TTL (0-5000ms)
+#   [metrics] max_sane_rate_bps: network rate ceiling for process and interface rates (1e9-1e11 bytes/sec); a higher rate is taken for a bad reading and shown as 0 (an interface's is also a gap in its chart); read at startup
+#   [ui] chart_smooth_factor: how slowly live values and the bars beside charts follow each sample (0.0-0.95), as a fraction of the refresh interval; read at startup
+#   [ui] chart_tau_ms_min/max: the shortest (5-100ms) and longest (100-2000ms) that easing may take; read at startup
+#   [ui] show_privilege_notice: show startup dialog when running without elevated privileges (true/false)
+#   [ui] chart_anti_aliasing: smooth chart line/fill edges (true/false); disable for lower CPU/GPU cost on integrated GPUs
+#   [window] width/height/x/y: the window's normal (restored) size and position, kept while it is maximized; a position off every connected display is ignored at startup
+#   [window] maximized: reopen maximized; Restore returns to width/height/x/y
+#   [process_columns]: toggle columns on/off; true shows the column
+#   [process_table] layout: saved column widths, order and sort (written by TaskSmack; delete it to reset)
+#   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.
+
+[font]
+size = 'extra-large'
+
+[metrics]
+max_sane_rate_bps = 12500000000.0
+
+[process_columns]
+affinity = false
+command = true
+cpu_percent = true
+cpu_time = true
+gdi_objects = false
+gpu_device = false
+gpu_engine = false
+gpu_memory = false
+gpu_percent = false
+handles = false
+io_read = false
+io_write = false
+mem_percent = true
+name = true
+net_recv = true
+net_sent = true
+nice = false
+page_faults = false
+peak_resident = false
+pid = true
+power = true
+ppid = true
+publisher = false
+resident = true
+shared = false
+start_time = false
+state = true
+status = false
+threads = false
+type = false
+user = true
+virtual = false
+
+[process_table]
+layout = 'Column 0  Width=60 Visible=1 Order=0 Sort=0v'
+
+[sampling]
+history_max_seconds = 1800
+interval_ms = 250
+socket_stats_cache_ttl_ms = 500
+
+[theme]
+id = 'tokyo-night'
+
+[ui]
+chart_anti_aliasing = false
+chart_smooth_factor = 0.5
+chart_tau_ms_max = 400
+chart_tau_ms_min = 20
+show_privilege_notice = false
+
+[window]
+force_native_decorations_on_wayland = true
+height = 1080
+maximized = true
+scale = 1.5
+width = 1920
+x = -1200
+y = 40
