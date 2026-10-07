@@ -56,6 +56,10 @@ inline constexpr std::size_t DEFAULT_WINDOW_SAMPLES = static_cast<std::size_t>(D
 /// Cores in the per-core sparkline grid, and its columns.
 inline constexpr std::size_t CORE_COUNT = 16;
 inline constexpr int CORE_GRID_COLUMNS = 4;
+/// Cores in the many-core grid, and its columns: a 64-thread machine, whose sparklines are narrow
+/// (about 150 px of plot each at DISPLAY_WIDTH), so their point budget follows the width (#1411).
+inline constexpr std::size_t MANY_CORE_COUNT = 64;
+inline constexpr int MANY_CORE_GRID_COLUMNS = 8;
 
 inline constexpr float DISPLAY_WIDTH = 1920.0F;
 inline constexpr float DISPLAY_HEIGHT = 1080.0F;
@@ -68,13 +72,15 @@ inline constexpr int WARMUP_FRAMES = 3;
 /// The scenes, in the order they are reported.
 enum class Scene : std::uint8_t
 {
-    CpuStacked,        ///< Overview CPU: User/System/IOWait bands, their edges and the Total line, full history
-    PerCoreSparklines, ///< CPU Cores grid: CORE_COUNT small filled charts, default window
-    Memory,            ///< Memory: Used (filled), Cached and Swap (markers), and the peak line, default window
-    LongSeriesMinMax,  ///< One filled line over full history, min/max-reduced afresh every frame (no cache)
+    CpuStacked,         ///< Overview CPU: User/System/IOWait bands, their edges and the Total line, full history
+    PerCoreSparklines,  ///< CPU Cores grid: CORE_COUNT small filled charts, default window
+    ManyCoreSparklines, ///< CPU Cores grid on a many-core machine: MANY_CORE_COUNT narrow filled charts, default window
+    Memory,             ///< Memory: Used (filled), Cached and Swap (markers), and the peak line, default window
+    LongSeriesMinMax,   ///< One filled line over full history, min/max-reduced afresh every frame (no cache)
 };
 
-inline constexpr std::array ALL_SCENES{Scene::CpuStacked, Scene::PerCoreSparklines, Scene::Memory, Scene::LongSeriesMinMax};
+inline constexpr std::array ALL_SCENES{
+    Scene::CpuStacked, Scene::PerCoreSparklines, Scene::ManyCoreSparklines, Scene::Memory, Scene::LongSeriesMinMax};
 
 [[nodiscard]] constexpr const char* sceneName(Scene scene) noexcept
 {
@@ -84,6 +90,8 @@ inline constexpr std::array ALL_SCENES{Scene::CpuStacked, Scene::PerCoreSparklin
         return "CpuStacked";
     case Scene::PerCoreSparklines:
         return "PerCoreSparklines";
+    case Scene::ManyCoreSparklines:
+        return "ManyCoreSparklines";
     case Scene::Memory:
         return "Memory";
     case Scene::LongSeriesMinMax:
@@ -141,7 +149,7 @@ struct SceneData
     std::vector<float> cpuIdle;
     std::vector<float> cpuTotal;
 
-    // Per-core, default window
+    // Per-core, default window (MANY_CORE_COUNT of them; the PerCoreSparklines scene draws the first CORE_COUNT)
     std::vector<std::vector<float>> perCore;
     std::vector<std::string> coreLabels;
 
@@ -164,11 +172,12 @@ struct SceneData
             cpuIdle[i] = 100.0F - busy - cpuIowait[i];
             cpuTotal[i] = busy;
         }
-        perCore.reserve(CORE_COUNT);
-        coreLabels.reserve(CORE_COUNT);
-        for (std::size_t core = 0; core < CORE_COUNT; ++core)
+        perCore.reserve(MANY_CORE_COUNT);
+        coreLabels.reserve(MANY_CORE_COUNT);
+        for (std::size_t core = 0; core < MANY_CORE_COUNT; ++core)
         {
-            perCore.push_back(percentSeries(100 + core, DEFAULT_WINDOW_SAMPLES, 20.0 + (3.0 * static_cast<double>(core)), 15.0));
+            const double base = 20.0 + (3.0 * static_cast<double>(core % CORE_COUNT));
+            perCore.push_back(percentSeries(100 + core, DEFAULT_WINDOW_SAMPLES, base, 15.0));
             coreLabels.push_back("CPU " + std::to_string(core));
         }
     }
@@ -208,6 +217,9 @@ class HeadlessChartContext
         io.DeltaTime = 1.0F / 60.0F;
         // No renderer: let ImGui build and own the font atlas itself.
         io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
+        // As the OpenGL3 backend does: a draw list past 64k vertices (the many-core grid) is split
+        // into commands with vertex offsets rather than overflowing 16-bit indices.
+        io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
         io.Fonts->AddFontDefault();
     }
 
@@ -319,17 +331,18 @@ inline void drawCpuStacked(const SceneData& data, SceneState& state)
     renderHistoryWithNowBars("OverviewCPUHistoryLayout", CHART_HEIGHT, cpuPlot, bars);
 }
 
-/// CpuCoresSection's grid: a small filled chart per core with its now bar, no time tick labels.
-inline void drawPerCoreSparklines(const SceneData& data, const SceneState& state)
+/// CpuCoresSection's grid: a small filled chart for each of the first @p coreCount cores, in
+/// @p columns columns, with its now bar and no time tick labels.
+inline void drawPerCoreSparklines(const SceneData& data, const SceneState& state, std::size_t coreCount, int columns)
 {
     using namespace UI::Widgets;
     const auto& scheme = UI::Theme::get().scheme();
     const double xMin = -static_cast<double>(DEFAULT_WINDOW_SAMPLES) * SAMPLE_INTERVAL_SECONDS;
-    if (!ImGui::BeginTable("CoreGrid", CORE_GRID_COLUMNS, ImGuiTableFlags_SizingStretchSame))
+    if (!ImGui::BeginTable("CoreGrid", columns, ImGuiTableFlags_SizingStretchSame))
     {
         return;
     }
-    for (std::size_t core = 0; core < CORE_COUNT; ++core)
+    for (std::size_t core = 0; core < coreCount; ++core)
     {
         ImGui::TableNextColumn();
         const std::string& coreLabel = data.coreLabels[core];
@@ -445,7 +458,10 @@ inline FrameGeometry renderFrame(Scene scene, const SceneData& data, SceneState&
         Detail::drawCpuStacked(data, state);
         break;
     case Scene::PerCoreSparklines:
-        Detail::drawPerCoreSparklines(data, state);
+        Detail::drawPerCoreSparklines(data, state, CORE_COUNT, CORE_GRID_COLUMNS);
+        break;
+    case Scene::ManyCoreSparklines:
+        Detail::drawPerCoreSparklines(data, state, MANY_CORE_COUNT, MANY_CORE_GRID_COLUMNS);
         break;
     case Scene::Memory:
         Detail::drawMemory(data, state);
