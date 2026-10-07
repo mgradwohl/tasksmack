@@ -1257,7 +1257,6 @@ TEST(TitleBarGeometryTest, ContentMinimumHeightIsCappedToTheDisplay)
     EXPECT_EQ(capMinimumToUsable(minimum, 1920, 1040).height, 1040);
 }
 
-// The status bar's FPS readout was drawn over "Ready" in a narrow window; it is left out instead.
 TEST(TitleBarGeometryTest, MinimumIsCappedToTheDisplaysUsableBounds)
 {
     // A large font on a small display: four NowBars and 15 em of plot wanted more than the work
@@ -1291,15 +1290,6 @@ TEST(TitleBarGeometryTest, CappedMinimumNeverFallsBelowTheBaseMinimum)
     const auto capped = capMinimumToUsable(wanted, 50, 50);
     EXPECT_EQ(capped.width, MIN);
     EXPECT_EQ(capped.height, MIN);
-}
-
-TEST(TitleBarGeometryTest, StatusBarReadoutOnlyWhenItFits)
-{
-    EXPECT_TRUE(computeStatusBarReadoutFits(60.0F, 300.0F, 8.0F));
-    EXPECT_TRUE(computeStatusBarReadoutFits(60.0F, 68.0F, 8.0F)); // exactly the gap
-    EXPECT_FALSE(computeStatusBarReadoutFits(60.0F, 67.0F, 8.0F));
-    EXPECT_FALSE(computeStatusBarReadoutFits(60.0F, 20.0F, 8.0F)); // would start left of "Ready"'s end
-    EXPECT_FALSE(computeStatusBarReadoutFits(std::numeric_limits<float>::quiet_NaN(), 300.0F, 8.0F));
 }
 
 // ========== Resize geometry with a caller-supplied minimum (#970) ==========

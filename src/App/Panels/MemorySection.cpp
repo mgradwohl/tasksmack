@@ -2,6 +2,7 @@
 
 #include "Domain/SystemSnapshot.h"
 #include "UI/ChartWidgets.h"
+#include "UI/ChromeWidgets.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/InlineText.h"
@@ -81,8 +82,7 @@ void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps,
     const auto& cachedHist = ctx.publication->memoryCachedHistory;
     const auto& swapHist = ctx.publication->swapHistory;
 
-    ImGui::TextColored(
-        theme.scheme().textPrimary, ICON_FA_MEMORY "  Memory & Swap (%zu samples)", std::min(memHist.size(), timestamps.size()));
+    (void) UI::Widgets::sectionHeader(ICON_FA_MEMORY, "Memory & Swap", {}, std::min(memHist.size(), timestamps.size()));
     // No spacing here: the value strip shares the heading's line (renderNowBarValueStrip()), like every chart's.
 
     const size_t memCount = std::min(memHist.size(), timestamps.size());

@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <string_view>
 
 namespace App::ElevationNoticeText
@@ -38,6 +39,26 @@ TEST(ElevationNoticeTextTest, WindowsNoticeNamesNetwork)
 {
     EXPECT_TRUE(WINDOWS.contains("network"));
     EXPECT_TRUE(WINDOWS.contains("Administrator"));
+}
+
+// The notice wraps its text to the dialog, so a line break inside a paragraph cut a line short beside
+// the wrapped ones (#1200). Breaks may only separate paragraphs: every '\n' is half of a "\n\n".
+TEST(ElevationNoticeTextTest, LineBreaksOnlySeparateParagraphs)
+{
+    for (const std::string_view text : {LINUX, WINDOWS, OTHER})
+    {
+        for (std::size_t i = 0; i < text.size(); ++i)
+        {
+            if (text[i] != '\n')
+            {
+                continue;
+            }
+            const bool pairedBefore = (i > 0) && text[i - 1] == '\n';
+            const bool pairedAfter = (i + 1 < text.size()) && text[i + 1] == '\n';
+            EXPECT_TRUE(pairedBefore || pairedAfter) << "lone line break at " << i << " in: " << text;
+        }
+        EXPECT_FALSE(text.contains("\n\n\n"));
+    }
 }
 
 TEST(ElevationNoticeTextTest, CurrentPlatformPicksItsOwnText)

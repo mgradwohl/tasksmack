@@ -400,6 +400,10 @@ class Theme
     /// Get the current large/heading font (based on font size setting)
     [[nodiscard]] auto largeFont() const -> ImFont*;
 
+    /// Get the current bold font, at the body size (based on font size setting), for section headers
+    /// (#1200). Falls back to the regular font when Inter-Bold could not be loaded.
+    [[nodiscard]] auto boldFont() const -> ImFont*;
+
     /// Get the current monospace font (based on font size setting); falls back to regular if unset
     [[nodiscard]] auto monospaceFont() const -> ImFont*;
 
@@ -411,6 +415,10 @@ class Theme
 
     /// Register pre-baked fonts (called by UILayer during initialization)
     void registerFonts(FontSize size, ImFont* regular, ImFont* large, ImFont* monospace);
+
+    /// Register the bold body-size font for one preset (called by UILayer during initialization).
+    /// Optional: a preset with none falls back to its regular font.
+    void registerBoldFont(FontSize size, ImFont* bold);
 
     /// Register the title-bar display font (called by UILayer during initialization).
     void registerTitleFont(ImFont* font);
@@ -483,6 +491,7 @@ class Theme
         ImFont* regular = nullptr;
         ImFont* large = nullptr;
         ImFont* monospace = nullptr;
+        ImFont* bold = nullptr; // Body size, for section headers (#1200); optional
     };
     std::array<FontPair, FONT_SIZE_COUNT> m_Fonts{};
     ImFont* m_TitleFont = nullptr;      // Sixtyfour pixel font for title bar
