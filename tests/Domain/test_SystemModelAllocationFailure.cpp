@@ -13,15 +13,22 @@
 
 #include <gtest/gtest.h>
 
-// Sanitizer runtimes (ASan, MSan, TSan) define the global operator new themselves, so replacing it
-// would not link there; the test is skipped in those builds.
+// Where the replacement is compiled out and the test skipped (TASKSMACK_NO_ALLOCATOR_HOOK names why):
+// - sanitizer builds (ASan, MSan, TSan): their runtimes define the global operator new themselves,
+//   so a replacement would not link;
+// - Windows: the MSVC/clang-cl runtime (debug CRT heap, CRT-internal allocations) does not tolerate a
+//   replaced operator new failing on demand -- the test aborted there with no output (#1454 CI). The
+//   logic under test is platform-independent and runs in the Linux debug and release builds.
 #if defined(__has_feature)
 #if __has_feature(address_sanitizer) || __has_feature(memory_sanitizer) || __has_feature(thread_sanitizer)
-#define TASKSMACK_SANITIZER_ALLOCATOR 1
+#define TASKSMACK_NO_ALLOCATOR_HOOK "the sanitizer runtime owns operator new"
 #endif
 #endif
-#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
-#define TASKSMACK_SANITIZER_ALLOCATOR 1
+#if !defined(TASKSMACK_NO_ALLOCATOR_HOOK) && (defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__))
+#define TASKSMACK_NO_ALLOCATOR_HOOK "the sanitizer runtime owns operator new"
+#endif
+#if !defined(TASKSMACK_NO_ALLOCATOR_HOOK) && defined(_WIN32)
+#define TASKSMACK_NO_ALLOCATOR_HOOK "the Windows C runtime does not support failing a replaced operator new on demand"
 #endif
 
 #include <cstddef>
@@ -61,9 +68,13 @@ class FailAllocationAfter
 
 } // namespace
 
-#if !defined(TASKSMACK_SANITIZER_ALLOCATOR)
-// The replacement allocation functions (see the file comment). operator new[] and the nothrow forms
-// forward to these, so every non-aligned allocation passes through the countdown.
+#if !defined(TASKSMACK_NO_ALLOCATOR_HOOK)
+// The replacement allocation functions (see the file comment), for the whole test binary. Disarmed,
+// they are a plain malloc/free pair. Only operator new(size_t) and the two unaligned operator deletes
+// are replaced; the standard's default operator new[] and nothrow forms call operator new(size_t),
+// and its default operator delete[] and sized forms call operator delete(void*), so every unaligned
+// form allocates with malloc and frees with free. The aligned forms are not replaced at all, so they
+// keep the library's own matching new/delete pair.
 // NOLINTBEGIN(cppcoreguidelines-no-malloc,cppcoreguidelines-owning-memory,misc-new-delete-overloads,hicpp-no-malloc)
 void* operator new(std::size_t size)
 {
@@ -178,8 +189,8 @@ void expectAligned(const Domain::SystemModel& model, const std::vector<std::stri
 // still aligned, the publication and its version are untouched, and the next sample applies cleanly.
 TEST(SystemModelAllocationFailureTest, AFailedAllocationOnASampleThatAddsAnInterfaceAndACoreKeepsTheSeriesAligned)
 {
-#if defined(TASKSMACK_SANITIZER_ALLOCATOR)
-    GTEST_SKIP() << "the sanitizer runtime owns operator new";
+#if defined(TASKSMACK_NO_ALLOCATOR_HOOK)
+    GTEST_SKIP() << TASKSMACK_NO_ALLOCATOR_HOOK;
 #endif
     const std::vector<std::string> before{"eth0"};
     const std::vector<std::string> after{"eth0", "wlan0"};
