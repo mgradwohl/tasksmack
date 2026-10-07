@@ -37,9 +37,22 @@ constexpr double MAX_LONG_LIVED_START_SECONDS = Workload::UPTIME_AT_EPOCH_SECOND
 /// Churning slots' PIDs: a block of CHURN_PID_BLOCK per slot above every long-lived PID.
 constexpr std::int32_t CHURN_PID_BASE = 1'000'000;
 constexpr std::int32_t CHURN_PID_BLOCK = 1000;
+/// The most a wave's two harmonics add up to: a rate stays within base * (1 +- MAX_SWING).
+constexpr double MAX_SWING = 0.9;
 /// The most CPU all processes' base rates may add up to, as a fraction of the cores: a machine with
 /// more busy processes than its cores can carry is scaled down to it.
-constexpr double MAX_PROCESS_CPU_SHARE = 0.5;
+constexpr double MAX_PROCESS_CPU_SHARE = 0.42;
+/// How unevenly process work is spread over the cores: each core's share is within this fraction of
+/// an even split before the shares are normalised to sum to 1.
+constexpr double MAX_CORE_SHARE_SKEW = 0.05;
+/// A core's overhead and iowait base rates (fractions of the core) are at most this.
+constexpr double MAX_CORE_OVERHEAD_BASE = 0.02;
+// A core never needs more than it has: at its peak, its share of all process work plus its overhead
+// and iowait stays under one core, so idle time never goes backwards.
+static_assert((MAX_PROCESS_CPU_SHARE * (1.0 + MAX_SWING) * (1.0 + MAX_CORE_SHARE_SKEW) / (1.0 - MAX_CORE_SHARE_SKEW)) +
+                      (2.0 * MAX_CORE_OVERHEAD_BASE * (1.0 + MAX_SWING)) <
+                  1.0,
+              "synthetic cores would exceed their capacity");
 /// An idle process's base CPU (cores): most processes sit here.
 constexpr double IDLE_CPU_MIN = 0.00005;
 constexpr double IDLE_CPU_MAX = 0.003;
@@ -104,7 +117,7 @@ class SplitMix64
 
 /// A wave of @p base with two harmonics whose amplitudes sum to at most @p maxSwing (< 1), so the
 /// rate stays positive.
-[[nodiscard]] Workload::Wave makeWave(SplitMix64& rng, double base, double maxSwing = 0.9)
+[[nodiscard]] Workload::Wave makeWave(SplitMix64& rng, double base, double maxSwing = MAX_SWING)
 {
     Workload::Wave wave;
     wave.base = base;
@@ -868,6 +881,19 @@ double Workload::WaveSum::at(double t) const noexcept
     return value;
 }
 
+double Workload::WaveSum::integral(double t) const noexcept
+{
+    // The integral of S sin(w t) + C cos(w t) from 0 to t is S (1 - cos(w t)) / w + C sin(w t) / w.
+    double value = base * t;
+    for (std::size_t band = 0; band < BAND_COUNT; ++band)
+    {
+        const double omega = bandOmega(band);
+        const double angle = omega * t;
+        value += ((sinCoefficient[band] * (1.0 - std::cos(angle))) + (cosCoefficient[band] * std::sin(angle))) / omega;
+    }
+    return value;
+}
+
 // =============================================================================
 // Workload
 // =============================================================================
@@ -1003,13 +1029,23 @@ void Workload::buildSystem()
 {
     SplitMix64 rng(m_Spec.seed ^ 0x7379'7374'656d'0000ULL); // "system"
 
+    // Each core runs a share of all process work (slightly uneven, the shares summing to 1) plus its
+    // own overhead; with iowait it stays under the core's capacity (see MAX_PROCESS_CPU_SHARE), so
+    // idle time always grows and system busy time always covers every process's work.
     m_Cores.clear();
     m_Cores.reserve(m_Spec.cores);
+    double shareSum = 0.0;
     for (std::size_t core = 0; core < m_Spec.cores; ++core)
     {
-        // Busy at most 0.45 * 1.9 and iowait at most 0.03 * 1.9 of the core, so idle time always grows.
-        const double busyBase = (core == 0) ? 0.45 : rng.uniform(0.12, 0.42);
-        m_Cores.push_back(CoreWaves{.busy = makeWave(rng, busyBase), .iowait = makeWave(rng, rng.uniform(0.002, 0.03))});
+        const double share = 1.0 + rng.uniform(-MAX_CORE_SHARE_SKEW, MAX_CORE_SHARE_SKEW);
+        shareSum += share;
+        m_Cores.push_back(CoreWaves{.processShare = share,
+                                    .overhead = makeWave(rng, rng.uniform(0.002, MAX_CORE_OVERHEAD_BASE)),
+                                    .iowait = makeWave(rng, rng.uniform(0.002, MAX_CORE_OVERHEAD_BASE))});
+    }
+    for (CoreWaves& core : m_Cores)
+    {
+        core.processShare /= shareSum;
     }
 
     m_Interfaces.clear();
@@ -1032,7 +1068,9 @@ void Workload::buildSystem()
             iface.isVirtual = true;
             break;
         default:
-            iface.name = std::format("veth{:07x}", rng.next() & 0xFFFFFFFULL);
+            // The index makes the name unique (the random suffix has a fixed width, so the index is
+            // recoverable); the suffix only makes it look like a real veth name.
+            iface.name = std::format("veth{:x}{:06x}", i, rng.next() & 0xFFFFFFULL);
             iface.isVirtual = true;
             break;
         }
@@ -1147,12 +1185,14 @@ void Workload::systemCountersAt(double uptime, SystemCounters& out) const
 {
     out.cpuTotal = {};
     out.cpuPerCore.resize(m_Cores.size());
+    const double processWork = m_CpuSum.integral(uptime); // core-seconds of all process work so far
+    const double processNow = m_CpuSum.at(uptime);
     double busyNow = 0.0;
     double busyBase = 0.0;
     for (std::size_t core = 0; core < m_Cores.size(); ++core)
     {
         const CoreWaves& waves = m_Cores[core];
-        const double busy = waves.busy.integral(uptime);
+        const double busy = (waves.processShare * processWork) + waves.overhead.integral(uptime);
         const double iowait = waves.iowait.integral(uptime);
         CpuCounters& cpu = out.cpuPerCore[core];
         cpu = {};
@@ -1171,8 +1211,8 @@ void Workload::systemCountersAt(double uptime, SystemCounters& out) const
         out.cpuTotal.softirq += cpu.softirq;
         out.cpuTotal.iowait += cpu.iowait;
         out.cpuTotal.idle += cpu.idle;
-        busyNow += waves.busy.rate(uptime);
-        busyBase += waves.busy.base;
+        busyNow += (waves.processShare * processNow) + waves.overhead.rate(uptime);
+        busyBase += (waves.processShare * m_CpuSum.base) + waves.overhead.base;
     }
 
     const double used = m_MemoryWave.rate(uptime);

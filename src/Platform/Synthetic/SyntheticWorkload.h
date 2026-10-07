@@ -162,12 +162,17 @@ class Workload
 
         void add(const Wave& wave) noexcept;
         [[nodiscard]] double at(double t) const noexcept;
+        /// The integral of at() from 0 to @p t.
+        [[nodiscard]] double integral(double t) const noexcept;
     };
 
+    /// A core's busy time is its share of every process's CPU work plus its own overhead (kernel,
+    /// interrupts), so the system's busy time always covers all the processes' work (#1413 review).
     struct CoreWaves
     {
-        Wave busy;   // fraction of the core
-        Wave iowait; // fraction of the core
+        double processShare = 0.0; // fraction of all process work this core runs; the shares sum to 1
+        Wave overhead;             // fraction of the core, on top of its process work
+        Wave iowait;               // fraction of the core
     };
     struct InterfaceSpec
     {

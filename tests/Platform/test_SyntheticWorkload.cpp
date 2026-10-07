@@ -262,6 +262,112 @@ TEST(SyntheticWorkloadTest, ProcessesChurnAtAFixedCount)
     EXPECT_LT(newPids, later.size() / 5); // but most of the machine stayed
 }
 
+namespace
+{
+
+/// CPU ticks all processes alive at both @p from and @p to ran in between.
+[[nodiscard]] std::uint64_t processTicksBetween(const Workload& workload, double from, double to)
+{
+    const auto before = byIdentity(processesAt(workload, from));
+    const auto after = byIdentity(processesAt(workload, to));
+    std::uint64_t ticks = 0;
+    for (const auto& [identity, counters] : after)
+    {
+        if (const auto it = before.find(identity); it != before.end())
+        {
+            ticks += (counters.userTime + counters.systemTime) - (it->second.userTime + it->second.systemTime);
+        }
+    }
+    return ticks;
+}
+
+/// Busy (active) and total ticks of every core between two system readings.
+[[nodiscard]] std::pair<std::uint64_t, std::uint64_t> systemTicksBetween(const Workload& workload, double from, double to)
+{
+    Platform::SystemCounters before;
+    Platform::SystemCounters after;
+    workload.systemCountersAt(from, before);
+    workload.systemCountersAt(to, after);
+    std::uint64_t busy = 0;
+    std::uint64_t total = 0;
+    for (std::size_t core = 0; core < after.cpuPerCore.size(); ++core)
+    {
+        busy += after.cpuPerCore[core].active() - before.cpuPerCore[core].active();
+        total += after.cpuPerCore[core].total() - before.cpuPerCore[core].total();
+    }
+    return {busy, total};
+}
+
+} // namespace
+
+TEST(SyntheticWorkloadTest, SystemBusyCoversProcessWorkWithinCapacity)
+{
+    // Over any interval, the cores' busy time includes every process's CPU work (the Overview must not
+    // show less CPU than the process table adds up to) and never exceeds the cores' capacity.
+    constexpr double WINDOW_SECONDS = 1800.0;
+    constexpr int POINTS = 6; // spread over the window; each covers three interval lengths
+    for (const std::size_t processes : {std::size_t{300}, std::size_t{2000}})
+    {
+        for (const std::uint64_t seed : {std::uint64_t{1}, std::uint64_t{1413}, std::uint64_t{11828}})
+        {
+            for (const std::size_t cores : {std::size_t{4}, std::size_t{16}, std::size_t{64}})
+            {
+                SCOPED_TRACE(std::to_string(processes) + " processes, seed " + std::to_string(seed) + ", " + std::to_string(cores) +
+                             " cores");
+                const Workload workload =
+                    makeWorkload(WorkloadSpec{.processes = processes, .cores = cores, .disks = 1, .interfaces = 1, .seed = seed});
+                // Each counter is rounded to a tick on its own: allow a few ticks per process and core.
+                const auto roundingTicks = static_cast<std::uint64_t>((4 * processes) + (16 * cores));
+                for (int point = 0; point < POINTS; ++point)
+                {
+                    const double from = NOW - WINDOW_SECONDS + ((WINDOW_SECONDS / POINTS) * point);
+                    for (const double interval : {0.1, 1.0, WINDOW_SECONDS / POINTS})
+                    {
+                        SCOPED_TRACE("from " + std::to_string(from) + " for " + std::to_string(interval) + " s");
+                        const double to = from + interval;
+                        const std::uint64_t processTicks = processTicksBetween(workload, from, to);
+                        const auto [busy, total] = systemTicksBetween(workload, from, to);
+                        EXPECT_GE(busy + roundingTicks, processTicks);
+                        EXPECT_LE(busy, total);
+                        const auto capacity = static_cast<double>(cores) * interval * static_cast<double>(Workload::TICKS_PER_SECOND);
+                        EXPECT_NEAR(static_cast<double>(total), capacity, static_cast<double>(16 * cores));
+                    }
+                }
+            }
+        }
+    }
+}
+
+TEST(SyntheticWorkloadTest, InterfaceNamesAreUnique)
+{
+    const auto namesOf = [](std::uint64_t seed)
+    {
+        const Workload workload = makeWorkload(
+            WorkloadSpec{.processes = 1, .cores = 16, .disks = 0, .interfaces = Platform::Synthetic::MAX_INTERFACES, .seed = seed});
+        Platform::SystemCounters system;
+        workload.systemCountersAt(NOW, system);
+        std::set<std::string> names;
+        for (const auto& iface : system.networkInterfaces)
+        {
+            names.insert(iface.name);
+            EXPECT_LE(iface.name.size(), 15U) << iface.name; // IFNAMSIZ - 1
+        }
+        return std::pair{names.size(), system.networkInterfaces.size()};
+    };
+
+    // Seed 11828 once named interfaces 252 and 254 both veth9481e92.
+    const auto [unique, total] = namesOf(11828);
+    EXPECT_EQ(total, Platform::Synthetic::MAX_INTERFACES);
+    EXPECT_EQ(unique, total);
+
+    for (std::uint64_t seed = 0; seed < 200; ++seed)
+    {
+        SCOPED_TRACE(seed);
+        const auto [seedUnique, seedTotal] = namesOf(seed);
+        EXPECT_EQ(seedUnique, seedTotal);
+    }
+}
+
 TEST(SyntheticWorkloadTest, MachineTotalsAreSane)
 {
     const Workload workload = makeWorkload(spec(2000));
