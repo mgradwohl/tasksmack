@@ -5,6 +5,7 @@
 #include "Numeric.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/IGPUProbe.h"
+#include "PublicationSlot.h"
 #include "SamplingConfig.h"
 
 #include <spdlog/spdlog.h>
@@ -238,6 +239,11 @@ void GPUModel::refreshAt(std::chrono::steady_clock::time_point now)
         }
         const auto currentTime = now;
 
+        // One writer at a time from here to the commit: m_PrevCounters and m_PrevSampleTime are
+        // writer-owned, and the publication must be numbered and committed in the order the history
+        // was updated (#868). Taken after the probe lock is released: the two are never held together.
+        const std::scoped_lock writerLock(m_WriterMutex);
+
         // Calculate time delta
         auto timeDelta = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - m_PrevSampleTime);
         const double timeDeltaSeconds = static_cast<double>(timeDelta.count()) / 1000.0;
@@ -290,22 +296,25 @@ void GPUModel::refreshAt(std::chrono::steady_clock::time_point now)
                 }
             }
             trimHistory(nowSec);
-            publish();
-
-            CounterMap nextPrevious;
-            for (const auto& counter : currentCounters)
-            {
-                auto stored = counter;
-                if (const auto before = m_PrevCounters.find(counter.gpuId); before != m_PrevCounters.end())
-                {
-                    carryBusyHighWater(stored, before->second);
-                }
-                nextPrevious[counter.gpuId] = std::move(stored);
-            }
-            m_PrevCounters = std::move(nextPrevious);
-
-            m_PrevSampleTime = currentTime;
         }
+        // Outside the exclusive lock: the history copies take a shared lock only (#868).
+        publish();
+
+        // Writer-only state (m_WriterMutex) that no reader touches, so no m_Mutex. Still after
+        // publish(), as before #868: a publish that throws leaves the previous baseline in place.
+        CounterMap nextPrevious;
+        for (const auto& counter : currentCounters)
+        {
+            auto stored = counter;
+            if (const auto before = m_PrevCounters.find(counter.gpuId); before != m_PrevCounters.end())
+            {
+                carryBusyHighWater(stored, before->second);
+            }
+            nextPrevious[counter.gpuId] = std::move(stored);
+        }
+        m_PrevCounters = std::move(nextPrevious);
+
+        m_PrevSampleTime = currentTime;
     }
     catch (const std::exception& e)
     {
@@ -386,12 +395,15 @@ void GPUModel::rescanGPUs(std::chrono::steady_clock::time_point now)
 
 void GPUModel::setMaxHistorySeconds(double seconds)
 {
-    const std::unique_lock lock(m_Mutex);
-    m_MaxHistorySeconds = Sampling::clampHistorySeconds(seconds);
-    applyHistoryCapacity();
-    if (!m_HistoryTimestamps.empty())
+    const std::scoped_lock writerLock(m_WriterMutex);
     {
-        trimHistory(m_HistoryTimestamps.back());
+        const std::unique_lock lock(m_Mutex);
+        m_MaxHistorySeconds = Sampling::clampHistorySeconds(seconds);
+        applyHistoryCapacity();
+        if (!m_HistoryTimestamps.empty())
+        {
+            trimHistory(m_HistoryTimestamps.back());
+        }
     }
     // Republish the trimmed history now rather than at the next sample (#1145); see
     // SystemModel::setMaxHistorySeconds(). Nothing is published before the first refresh.
@@ -472,64 +484,68 @@ void GPUModel::trimHistory(double nowSeconds)
 
 std::shared_ptr<const GPUPublication> GPUModel::publication() const noexcept
 {
-    const std::shared_lock lock(m_Mutex);
-    return m_Publication;
+    return m_Publication.load();
 }
 
 std::uint64_t GPUModel::publicationVersion() const noexcept
 {
-    return m_PublishedPublicationVersion.load(std::memory_order_acquire);
+    return m_Publication.version();
 }
 
 void GPUModel::publish()
 {
+    // Build contents first, commit validity keys last: the version comes from a local candidate and
+    // m_PublicationVersion only advances once the generation is committed, so a throw from the copies
+    // below (std::bad_alloc) leaves the published generation, its version and m_PublicationVersion
+    // consistent. The copies run under a shared lock: the per-field accessors still read alongside,
+    // and publication() doesn't take m_Mutex at all, so no reader waits for them (#868). The caller
+    // holds m_WriterMutex, so no other writer changes the histories meanwhile; rescanGPUs() can still
+    // replace the GPU info, but only under the exclusive m_Mutex, so this copy sees all of one list.
     auto publication = std::make_shared<GPUPublication>();
-    // Assign the version from a local candidate rather than mutating m_PublicationVersion
-    // directly here: the history copies below can throw (std::bad_alloc), and if they do,
-    // committing m_PublicationVersion/m_Publication/m_PublishedPublicationVersion only at
-    // the end (see below) keeps all three mutually consistent instead of silently advancing
-    // the version past what was actually published.
-    publication->version = m_PublicationVersion + 1;
-    publication->gpuInfo = m_GPUInfo;
-    publication->gpuInfoKnown = m_GPUInfoKnown;
-    publication->capabilities = m_Capabilities;
-    publication->snapshots = orderSnapshotsByEnumeration(m_GPUInfo, m_Snapshots);
-    for (const auto& [gpuId, history] : m_Histories)
     {
-        auto& publishedHistory = publication->histories[gpuId];
-        publishedHistory.timestamps.reserve(history.size());
-        publishedHistory.memoryUsedBytes.reserve(history.size());
-        publishedHistory.memoryTotalBytes.reserve(history.size());
-        publishedHistory.utilization.reserve(history.size());
-        publishedHistory.memoryPercent.reserve(history.size());
-        publishedHistory.gpuClock.reserve(history.size());
-        publishedHistory.encoder.reserve(history.size());
-        publishedHistory.decoder.reserve(history.size());
-        publishedHistory.temperature.reserve(history.size());
-        publishedHistory.power.reserve(history.size());
-        publishedHistory.fanSpeed.reserve(history.size());
-        for (std::size_t index = 0; index < history.size(); ++index)
+        const std::shared_lock stateLock(m_Mutex);
+        publication->version = m_PublicationVersion + 1;
+        publication->gpuInfo = m_GPUInfo;
+        publication->gpuInfoKnown = m_GPUInfoKnown;
+        publication->capabilities = m_Capabilities;
+        publication->snapshots = orderSnapshotsByEnumeration(m_GPUInfo, m_Snapshots);
+        for (const auto& [gpuId, history] : m_Histories)
         {
-            // ref(), not operator[]: a reference, so no GPUSnapshot (and its strings) is copied.
-            const auto& sample = history.ref(index);
-            publishedHistory.timestamps.push_back(sample.captureTimeSec);
-            // An unread memory sample keeps no bytes: a 0 total is the "no byte figures" marker, so
-            // the tooltip shows N/A rather than a placeholder "0 / <total>" (#1111).
-            publishedHistory.memoryUsedBytes.push_back(sample.memoryAvailable ? sample.memoryUsedBytes : 0);
-            publishedHistory.memoryTotalBytes.push_back(sample.memoryAvailable ? sample.memoryTotalBytes : 0);
-            publishedHistory.utilization.push_back(readingOrNaN(sample, sample.utilizationPercent, sample.utilizationAvailable));
-            publishedHistory.memoryPercent.push_back(readingOrNaN(sample, sample.memoryUsedPercent, sample.memoryAvailable));
-            publishedHistory.gpuClock.push_back(gpuClockOrNaN(sample));
-            publishedHistory.encoder.push_back(sampleOrNaN(sample, sample.encoderUtilPercent));
-            publishedHistory.decoder.push_back(sampleOrNaN(sample, sample.decoderUtilPercent));
-            publishedHistory.temperature.push_back(readingOrNaN(sample, sample.temperatureC, sample.temperatureAvailable));
-            publishedHistory.power.push_back(readingOrNaN(sample, sample.powerDrawWatts, sample.powerAvailable));
-            publishedHistory.fanSpeed.push_back(fanSpeedOrNaN(sample));
+            auto& publishedHistory = publication->histories[gpuId];
+            publishedHistory.timestamps.reserve(history.size());
+            publishedHistory.memoryUsedBytes.reserve(history.size());
+            publishedHistory.memoryTotalBytes.reserve(history.size());
+            publishedHistory.utilization.reserve(history.size());
+            publishedHistory.memoryPercent.reserve(history.size());
+            publishedHistory.gpuClock.reserve(history.size());
+            publishedHistory.encoder.reserve(history.size());
+            publishedHistory.decoder.reserve(history.size());
+            publishedHistory.temperature.reserve(history.size());
+            publishedHistory.power.reserve(history.size());
+            publishedHistory.fanSpeed.reserve(history.size());
+            for (std::size_t index = 0; index < history.size(); ++index)
+            {
+                // ref(), not operator[]: a reference, so no GPUSnapshot (and its strings) is copied.
+                const auto& sample = history.ref(index);
+                publishedHistory.timestamps.push_back(sample.captureTimeSec);
+                // An unread memory sample keeps no bytes: a 0 total is the "no byte figures" marker, so
+                // the tooltip shows N/A rather than a placeholder "0 / <total>" (#1111).
+                publishedHistory.memoryUsedBytes.push_back(sample.memoryAvailable ? sample.memoryUsedBytes : 0);
+                publishedHistory.memoryTotalBytes.push_back(sample.memoryAvailable ? sample.memoryTotalBytes : 0);
+                publishedHistory.utilization.push_back(readingOrNaN(sample, sample.utilizationPercent, sample.utilizationAvailable));
+                publishedHistory.memoryPercent.push_back(readingOrNaN(sample, sample.memoryUsedPercent, sample.memoryAvailable));
+                publishedHistory.gpuClock.push_back(gpuClockOrNaN(sample));
+                publishedHistory.encoder.push_back(sampleOrNaN(sample, sample.encoderUtilPercent));
+                publishedHistory.decoder.push_back(sampleOrNaN(sample, sample.decoderUtilPercent));
+                publishedHistory.temperature.push_back(readingOrNaN(sample, sample.temperatureC, sample.temperatureAvailable));
+                publishedHistory.power.push_back(readingOrNaN(sample, sample.powerDrawWatts, sample.powerAvailable));
+                publishedHistory.fanSpeed.push_back(fanSpeedOrNaN(sample));
+            }
         }
     }
-    m_PublicationVersion = publication->version;
-    m_Publication = std::move(publication);
-    m_PublishedPublicationVersion.store(m_PublicationVersion, std::memory_order_release);
+    const std::uint64_t version = publication->version;
+    m_Publication.commit(std::move(publication));
+    m_PublicationVersion = version;
 }
 
 std::vector<GPUSnapshot> GPUModel::snapshots() const

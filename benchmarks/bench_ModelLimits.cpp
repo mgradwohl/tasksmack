@@ -11,20 +11,24 @@
 //                   (REFRESH_INTERVAL_MIN_MS). publish() copies every series into a new publication.
 //   Cardinality  -- the same at a 300-sample history with many cores, interfaces or disks, and one
 //                   ProcessModel refresh with many processes.
-//   Concurrent   -- how long a UI-style SystemModel::publication() call waits when it lands on a
-//                   publish in another thread: publish() runs under the model's exclusive lock, so this
-//                   is the lock hold a frame can be stuck behind. The baseline for #868.
+//   Concurrent   -- how long a UI-style SystemModel/GPUModel::publication() call waits when it lands on
+//                   a publish in another thread. Before #868 publish() ran under the model's exclusive
+//                   lock, so this was the lock hold a frame could be stuck behind; now it is a swap.
+//   GPUModel     -- History_Publish and Concurrent on a mock GPU probe, at a 3k-sample history. Being
+//                   mocks, they run on a GPU-less runner too, unlike bench_GPUModel.cpp's (#1420).
 //
 // History is held at N samples by setting the model's window to N sample intervals: trimming then
 // drops one old sample per new one. Building a full window takes N publishes -- O(N^2) copying, about
 // a second at 18k -- so each configuration's model is built once per process and reused by every
 // repetition (cachedFixture()); a further sample leaves it at the same size.
 
+#include "Domain/GPUModel.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
 #include "Mocks/MockDiskProbe.h"
+#include "Mocks/MockGPUProbe.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/StorageTypes.h"
@@ -261,30 +265,29 @@ void spinUntil(std::chrono::steady_clock::time_point deadline)
     }
 }
 
-// How long a UI-style reader waits in SystemModel::publication() while the sampler publishes, at a
-// range(0)-sample history (8 cores, 2 interfaces): the baseline #868's critical-section work should
-// shrink.
+// How long a UI-style reader waits in a model's publication() while the sampler publishes: the
+// baseline #868's critical-section work should shrink. `fixture` has the model in `model` and takes
+// one sample with sampleOnce().
 //
 // Each iteration is one publish met head-on: the reader cues a writer thread to take one sample
-// (append, trim and publish(), which copies every series, all under the model's exclusive lock),
-// waits CONCURRENT_HEAD_START for it to take the lock, then calls publication() -- which blocks until
-// the publish is done. The reported time is that call alone (manual timing): the lock's hold time
-// less the head start, plus the blocked reader's wake-up -- what a frame that lands on a publish
-// stalls for. Handing over this way, rather than running the writer free, keeps the measurement about
-// one hold: a writer publishing back to back re-takes the lock before a woken reader runs, and the
-// reader then waits on the scheduler for many holds.
+// (append, trim and publish(), which copied every series under the model's exclusive lock before
+// #868), waits CONCURRENT_HEAD_START for it to take the lock, then calls publication() -- which, on
+// the old locking, blocks until the publish is done. The reported time is that call alone (manual
+// timing): the lock's hold time less the head start, plus the blocked reader's wake-up -- what a frame
+// that lands on a publish stalls for. Handing over this way, rather than running the writer free,
+// keeps the measurement about one hold: a writer publishing back to back re-takes the lock before a
+// woken reader runs, and the reader then waits on the scheduler for many holds.
 //
 // range(1) more reader threads call publication() throughout, as other panels would. On a
 // reader-preferring rwlock (glibc's default) they can delay the writer's lock past the head start, so
 // the measured reader slips in first: that shows as a lower time, `missed_pct`, and a higher
 // `writer_sample_us`. Counters:
 //   writer_sample_us -- the writer's mean time per sample (append, trim, publish), including taking
-//                       the lock; compare BM_SystemModel_FullHistory_Publish, the same work uncontended
+//                       the lock; compare the model's uncontended *_Publish benchmark, the same work
 //   missed_pct       -- iterations whose publication() didn't wait (the writer hadn't the lock yet)
-void BM_SystemModel_Concurrent_PublicationWait(benchmark::State& state)
+template<typename Fixture> void measureConcurrentPublicationWait(benchmark::State& state, Fixture& fixture)
 {
-    SystemFixture& fixture = systemFixture(state.range(0), DEFAULT_CORES, DEFAULT_INTERFACES);
-    Domain::SystemModel& model = *fixture.model;
+    auto& model = *fixture.model;
 
     enum class Phase : std::uint8_t
     {
@@ -358,7 +361,15 @@ void BM_SystemModel_Concurrent_PublicationWait(benchmark::State& state)
         benchmark::Counter((samples == 0) ? 0.0 : (static_cast<double>(sampleNanos.load()) / static_cast<double>(samples)) / 1e3);
     state.counters["missed_pct"] =
         benchmark::Counter((samples == 0) ? 0.0 : (100.0 * static_cast<double>(missed)) / static_cast<double>(samples));
-    reportSystemShape(state, model);
+}
+
+// measureConcurrentPublicationWait() on SystemModel at a range(0)-sample history (8 cores, 2
+// interfaces), with range(1) extra readers. Compare BM_SystemModel_FullHistory_Publish.
+void BM_SystemModel_Concurrent_PublicationWait(benchmark::State& state)
+{
+    SystemFixture& fixture = systemFixture(state.range(0), DEFAULT_CORES, DEFAULT_INTERFACES);
+    measureConcurrentPublicationWait(state, fixture);
+    reportSystemShape(state, *fixture.model);
 }
 BENCHMARK(BM_SystemModel_Concurrent_PublicationWait)
     ->ArgNames({"samples", "extra_readers"})
@@ -458,6 +469,98 @@ void BM_StorageModel_Cardinality_Publish(benchmark::State& state)
     reportStorageShape(state, *fixture.model);
 }
 BENCHMARK(BM_StorageModel_Cardinality_Publish)->ArgName("disks")->Arg(16)->Arg(64)->Unit(benchmark::kMicrosecond);
+
+// =============================================================================
+// GPUModel
+// =============================================================================
+
+/// A GPUModel on a MockGPUProbe of `gpus` GPUs whose utilization varies every sample, holding a steady
+/// `samples`-long history. A mock, so it runs (and measures the same thing) on a GPU-less runner too.
+struct GPUFixture
+{
+    TestMocks::MockGPUProbe* probe = nullptr; // Owned by model
+    std::unique_ptr<Domain::GPUModel> model;
+    std::vector<std::string> gpuIds;
+    std::uint64_t step = 0;
+
+    GPUFixture(std::int64_t samples, std::size_t gpus)
+    {
+        auto ownedProbe = std::make_unique<TestMocks::MockGPUProbe>();
+        for (std::size_t i = 0; i < gpus; ++i)
+        {
+            gpuIds.push_back("GPU" + std::to_string(i));
+            ownedProbe->withGPU(gpuIds.back(), "Synthetic GPU " + std::to_string(i));
+        }
+        probe = ownedProbe.get();
+        model = std::make_unique<Domain::GPUModel>(std::move(ownedProbe));
+        model->setMaxHistorySeconds(windowSecondsFor(samples));
+        for (std::int64_t i = 0; i <= samples; ++i)
+        {
+            sampleOnce();
+        }
+    }
+
+    /// Append, trim and publish one sample.
+    void sampleOnce()
+    {
+        for (std::size_t i = 0; i < gpuIds.size(); ++i)
+        {
+            probe->withUtilization(gpuIds[i], static_cast<double>((step + (i * 17)) % 100));
+        }
+        const auto now = std::chrono::steady_clock::time_point(std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(START_SECONDS + (static_cast<double>(step) * SAMPLE_INTERVAL_SECONDS))));
+        model->refreshAt(now);
+        ++step;
+    }
+};
+
+/// GPUs in the GPU fixtures: a discrete card and an integrated one, a common pairing.
+constexpr std::size_t DEFAULT_GPUS = 2;
+
+[[nodiscard]] GPUFixture& gpuFixture(std::int64_t samples, std::size_t gpus)
+{
+    return cachedFixture<GPUFixture>(std::pair{samples, gpus}, [&] { return std::make_unique<GPUFixture>(samples, gpus); });
+}
+
+void reportGpuShape(benchmark::State& state, const Domain::GPUModel& model)
+{
+    const auto publication = model.publication();
+    const auto first = publication->histories.begin();
+    state.counters["samples"] =
+        benchmark::Counter((first == publication->histories.end()) ? 0.0 : static_cast<double>(first->second.timestamps.size()));
+    state.counters["gpus"] = benchmark::Counter(static_cast<double>(publication->histories.size()));
+}
+
+// One GPUModel sample -- snapshots, history append, trim, publish -- at a range(0)-sample history of 2
+// GPUs. publish() derives 11 series per GPU from the history. Held at the 5-minute window at 100 ms
+// (3000), not the 18k maximum: GPUModel has no batch path, so building an 18k window takes 18k
+// publishes, far longer than the measurement.
+void BM_GPUModel_History_Publish(benchmark::State& state)
+{
+    GPUFixture& fixture = gpuFixture(state.range(0), DEFAULT_GPUS);
+    for (auto _ : state)
+    {
+        fixture.sampleOnce();
+    }
+    reportGpuShape(state, *fixture.model);
+}
+BENCHMARK(BM_GPUModel_History_Publish)->Arg(DEFAULT_WINDOW_FAST_SAMPLES)->Unit(benchmark::kMicrosecond);
+
+// measureConcurrentPublicationWait() on GPUModel at a range(0)-sample history of 2 GPUs, with
+// range(1) extra readers (#868). Compare BM_GPUModel_History_Publish.
+void BM_GPUModel_Concurrent_PublicationWait(benchmark::State& state)
+{
+    GPUFixture& fixture = gpuFixture(state.range(0), DEFAULT_GPUS);
+    measureConcurrentPublicationWait(state, fixture);
+    reportGpuShape(state, *fixture.model);
+}
+BENCHMARK(BM_GPUModel_Concurrent_PublicationWait)
+    ->ArgNames({"samples", "extra_readers"})
+    ->Args({DEFAULT_WINDOW_FAST_SAMPLES, 0})
+    ->Args({DEFAULT_WINDOW_FAST_SAMPLES, 2})
+    ->Iterations(CONCURRENT_ITERATIONS)
+    ->UseManualTime()
+    ->Unit(benchmark::kMicrosecond);
 
 // =============================================================================
 // ProcessModel
