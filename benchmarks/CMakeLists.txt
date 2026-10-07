@@ -82,6 +82,7 @@ add_executable(TaskSmackBenchmarks
     bench_Format.cpp
     bench_UI.cpp
     bench_ChartGeometry.cpp
+    bench_ModelLimits.cpp
     ${PLATFORM_BENCH_SOURCES}
     # Source files under benchmark
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
@@ -99,6 +100,7 @@ add_executable(TaskSmackBenchmarks
 
 target_include_directories(TaskSmackBenchmarks PRIVATE
     ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests  # Mocks/MockProbes.h, Mocks/MockDiskProbe.h (bench_ModelLimits.cpp, #1422)
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends
     ${imgui_SOURCE_DIR}/misc/cpp
