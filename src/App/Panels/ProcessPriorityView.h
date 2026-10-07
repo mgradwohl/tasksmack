@@ -1,0 +1,183 @@
+#pragma once
+
+// Process Details' priority control, under the Actions tab's buttons (#1179, slice 4): the nice-value
+// slider on Linux, the priority-class combo on Windows (#1204), the Apply button, and the error line
+// under it.
+//
+// The view owns only its UI state. The IProcessActions it applies through stays owned by the panel (the
+// composition root's Platform::makeProcessActions() result) and is passed in each frame, with the
+// capabilities, the process's current nice value and the target, so this class never creates a probe.
+//
+// Everything but render() is defined here, free of ImGui, so the edit and apply state can be tested
+// against a mock IProcessActions without an ImGui context (test_ProcessPriorityView.cpp).
+
+#include "Domain/PriorityConfig.h"
+#include "Platform/IProcessActions.h"
+#include "ProcessActionsView.h"
+
+#include <cstdint>
+#include <optional>
+#include <string>
+
+namespace App
+{
+
+namespace Detail
+{
+
+/// @p current moved by @p delta steps (negative is a higher priority), held to the nice range: the
+/// slider's arrow and page keys.
+[[nodiscard]] constexpr std::int32_t stepNice(std::int32_t current, std::int32_t delta) noexcept
+{
+    return Domain::Priority::clampNice(current + delta);
+}
+
+} // namespace Detail
+
+/// The priority control for the process Process Details shows.
+///
+/// An edit remembers the process it was made for. Apply acts only on that process: it is refused, and
+/// the edit dropped, when the live target is a different process by then. A selection change drops the
+/// edit and the error line, so an edited value can never be applied to another process.
+class ProcessPriorityView
+{
+  public:
+    /// Draws the control when @p capabilities allow setting priority, and nothing otherwise.
+    /// @p currentNice is the process's nice value from its latest snapshot, or nullopt before the first
+    /// snapshot (the control then shows 0 and Apply stays disabled). An edit is made for @p target, and
+    /// Apply sets it on @p target through @p actions (null gives an "unavailable" error).
+    void render(Platform::IProcessActions* actions,
+                const Platform::ProcessActionCapabilities& capabilities,
+                std::optional<std::int32_t> currentNice,
+                const Platform::ProcessTarget& target);
+
+    /// A different process was selected: drop the edit, its target and the error line.
+    void onSelectionChanged() noexcept
+    {
+        m_NiceValue = Domain::Priority::NORMAL_NICE;
+        m_Changed = false;
+        m_EditTarget = NO_TARGET;
+        m_Error.clear();
+    }
+
+    /// While nothing is edited, the control follows the process's own nice value (@p currentNice, when
+    /// a snapshot has one).
+    void syncToProcess(std::optional<std::int32_t> currentNice) noexcept
+    {
+        if (!m_Changed && currentNice.has_value())
+        {
+            m_NiceValue = *currentNice;
+        }
+    }
+
+    /// The user picked @p nice (held to the nice range) for @p target. A value other than the shown one
+    /// becomes a pending edit for @p target and clears the error line, for fresher feedback than a stale
+    /// error; the same value changes nothing.
+    void editNice(std::int32_t nice, const Platform::ProcessTarget& target)
+    {
+        const std::int32_t clamped = Domain::Priority::clampNice(nice);
+        if (clamped == m_NiceValue)
+        {
+            return;
+        }
+        m_NiceValue = clamped;
+        m_Changed = true;
+        m_EditTarget = target;
+        m_Error.clear();
+    }
+
+    /// Drops a pending edit made for a process other than @p liveTarget, which the panel can show
+    /// without a selection change (the selected PID's process replaced). Returns whether it did.
+    bool dropEditIfTargetMoved(const Platform::ProcessTarget& liveTarget) noexcept
+    {
+        if (!m_Changed || Detail::isSameProcessTarget(m_EditTarget, liveTarget))
+        {
+            return false;
+        }
+        m_Changed = false;
+        m_EditTarget = NO_TARGET;
+        return true;
+    }
+
+    /// Whether Apply is enabled: there is a pending edit, and a snapshot of the process.
+    [[nodiscard]] bool canApply(std::optional<std::int32_t> currentNice) const noexcept
+    {
+        return m_Changed && currentNice.has_value();
+    }
+
+    /// Apply was pressed with @p liveTarget selected: set the edited value on that target through
+    /// @p actions, captured now and checked against the process the edit was made for. Success clears
+    /// the error line; failure shows the platform's message and puts the control back at
+    /// @p currentNice. Either way the edit is finished, so a second apply does nothing until the next
+    /// edit. With no pending edit, or one made for another process, there is no platform call.
+    void apply(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget, std::optional<std::int32_t> currentNice)
+    {
+        if (!canApply(currentNice) || dropEditIfTargetMoved(liveTarget))
+        {
+            return;
+        }
+        const Platform::ProcessTarget target = liveTarget; // The live target carries the start time once known
+        const std::int32_t nice = m_NiceValue;
+        m_Changed = false;
+        m_EditTarget = NO_TARGET;
+
+        const Platform::ProcessActionResult result =
+            (actions != nullptr) ? actions->setPriority(target, nice) : Platform::ProcessActionResult::error("Process actions unavailable");
+        if (result.success)
+        {
+            m_Error.clear();
+        }
+        else
+        {
+            m_Error = result.errorMessage; // Stays until the next edit, apply or selection change
+            // Back to the process's actual priority, since the change failed.
+            m_NiceValue = currentNice.value_or(Domain::Priority::NORMAL_NICE);
+        }
+    }
+
+    /// The value the control shows: the edit, or the process's own nice value.
+    [[nodiscard]] std::int32_t niceValue() const noexcept
+    {
+        return m_NiceValue;
+    }
+
+    /// Whether the shown value is an edit not yet applied.
+    [[nodiscard]] bool hasPendingEdit() const noexcept
+    {
+        return m_Changed;
+    }
+
+    /// The process the pending edit was made for (PID -1 when nothing is pending).
+    [[nodiscard]] const Platform::ProcessTarget& editTarget() const noexcept
+    {
+        return m_EditTarget;
+    }
+
+    /// The last failed apply's message, empty when there is none to show.
+    [[nodiscard]] const std::string& error() const noexcept
+    {
+        return m_Error;
+    }
+
+  private:
+    static constexpr Platform::ProcessTarget NO_TARGET{.pid = -1, .startTimeTicks = 0};
+
+#ifdef _WIN32
+    /// Draws the Windows priority-class combo; returns where it ends, for right-aligning Apply.
+    float renderClassCombo(std::int32_t currentNice, const Platform::ProcessTarget& target);
+#else
+    /// Draws the nice-value slider; returns where it ends, for right-aligning Apply.
+    float renderSlider(std::int32_t currentNice, const Platform::ProcessTarget& target);
+#endif
+    void renderApplyButton(Platform::IProcessActions* actions,
+                           std::optional<std::int32_t> currentNice,
+                           const Platform::ProcessTarget& target,
+                           float controlRightEdge);
+
+    std::int32_t m_NiceValue = Domain::Priority::NORMAL_NICE;
+    bool m_Changed = false;
+    Platform::ProcessTarget m_EditTarget = NO_TARGET;
+    std::string m_Error; // Persistent error message for priority changes
+};
+
+} // namespace App
