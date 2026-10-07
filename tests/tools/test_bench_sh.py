@@ -83,30 +83,50 @@ BASH = os.environ.get("TASKSMACK_TEST_BASH") or shutil.which("bash")
 
 
 def flag_forms(user: str, home: str) -> list[tuple[str, str]]:
-    """Every absolute-path form the scrubber handles, each holding the user name (#1445 review),
-    and what it must become; the same list as tools/test-bench.ps1. -DBUILT_BY=<user name> is no
-    path: the final identity pass catches it."""
+    """(input, expected) pairs: every absolute-path form the scrubber handles, each holding the
+    user name, and the prefix maps quoted every way (#1445 review); the same list as
+    tools/test-bench.ps1. -DBUILT_BY=<user name> is no path: the final identity pass catches it
+    (for a user name of at least 3 characters)."""
+    repo = posix(REPO_ROOT)
     return [
         ("-fms-compatibility", "-fms-compatibility"),
-        (f'-I"C:/Users/{user}/My Includes/inc"', '-I"<abs>/inc"'),
-        (f"-fprofile-use C:\\Users\\{user}\\pgo\\other.profdata", "-fprofile-use <abs>/other.profdata"),
-        (f"-isystemC:/Users/{user}/sdk/include", "-isystem<abs>/include"),
-        (f"/IC:\\Users\\{user}\\sdk\\include", "/I<abs>/include"),
-        (f"-I//bench-host/Users/{user}/sdk/include", "-I<abs>/include"),
+        (f"-IC:/Users/{user}/a/inc", "-I<abs>/inc"),
+        (f"-isystemC:\\Users\\{user}\\b\\inc", "-isystem<abs>/inc"),
         (f"-idirafter\\\\fileserver\\Users\\{user}\\c\\inc", "-idirafter<abs>/inc"),
+        (f"-iquote//fileserver/Users/{user}/d/inc", "-iquote<abs>/inc"),
+        (f"-I//bench-host/Users/{user}/sdk/include", "-I<abs>/include"),
         (f"-imsvc\\\\?\\C:\\Users\\{user}\\e\\inc", "-imsvc<abs>/inc"),
         (f"/I\\\\.\\C:\\Users\\{user}\\f\\inc", "/I<abs>/inc"),
-        (f"-iquote/home/{user}/g/inc", "-iquote<abs>/inc"),
-        (f"-L/Users/{user}/lib", "-L<abs>/lib"),
-        ("-B/root/bin/x", "-B<abs>/x"),
-        (f"--sysroot=/home/{user}/sysroot", "--sysroot=<abs>/sysroot"),
+        (f"/I/home/{user}/g/inc", "/I<abs>/inc"),
+        (f"/IC:\\Users\\{user}\\sdk\\include", "/I<abs>/include"),
+        (f"-L/home/{user}/lib", "-L<abs>/lib"),
+        (f"-B/Users/{user}/bin", "-B<abs>/bin"),
+        ("--sysroot=/root/sysroot", "--sysroot=<abs>/sysroot"),
+        (f"-fprofile-use=/home/{user}/p.profdata", "-fprofile-use=<abs>/p.profdata"),
+        (f"-fprofile-instr-use=C:/Users/{user}/q.profdata", "-fprofile-instr-use=<abs>/q.profdata"),
+        (f"-fprofile-use /home/{user}/r.profdata", "-fprofile-use <abs>/r.profdata"),
+        (f"-fprofile-use C:\\Users\\{user}\\pgo\\other.profdata", "-fprofile-use <abs>/other.profdata"),
         (f"-fdebug-prefix-map={home}/src=/src", "-fdebug-prefix-map=<abs>/src=/src"),
         (f"-ffile-prefix-map=C:/Users/{user}/src=//buildhost/Users/{user}/out", "-ffile-prefix-map=<abs>/src=<abs>/out"),
+        (f"-isystem /opt/{user}/include", "-isystem <abs>/include"),
+        (f'-I"C:/Users/{user}/My Includes/inc"', '-I"<abs>/inc"'),
         (f'"-isystem/home/{user}/with space/inc"', '"-isystem<abs>/inc"'),
         ("-I~/sdk/include", "-I<abs>/include"),
-        (f"-isystem ~{user}/sdk/include", "-isystem <abs>/include"),
-        (f"-DBUILT_BY={user}", "-DBUILT_BY=<user>"),
-        ("/DWIN32", "/DWIN32"),
+        (f"-I ~{user}/sdk/include", "-I <abs>/include"),
+        (f'-fprofile-instr-use="{repo}/profiles/tasksmack.profdata"', '-fprofile-instr-use="<source>/profiles/tasksmack.profdata"'),
+        ("/DWIN32 /W3 /EHsc -DNAME=value -std=c++23 /std:c++latest -O3", "/DWIN32 /W3 /EHsc -DNAME=value -std=c++23 /std:c++latest -O3"),
+        (f"-Wl,-rpath,/home/{user}/lib", "-Wl,-rpath,<abs>/lib"),
+        ("-fsanitize-ignorelist=dir/x/y.txt", "-fsanitize-ignorelist=dir/x/y.txt"),
+        (f"-ffile-prefix-map=/opt/{user}/source=/mapped/source", "-ffile-prefix-map=<abs>/source=<abs>/source"),
+        (f'-ffile-prefix-map="/opt/{user}/source=/mapped/source"', '-ffile-prefix-map="<abs>/source=<abs>/source"'),
+        (f'"-fdebug-prefix-map=/home/{user}/My Src=/build/out dir"', '"-fdebug-prefix-map=<abs>/My Src=<abs>/out dir"'),
+        (f'-fmacro-prefix-map="/home/{user}/src dir=/out/dir"', '-fmacro-prefix-map="<abs>/src dir=<abs>/dir"'),
+        (f"-fprofile-prefix-map='C:\\Users\\{user}\\a b=D:\\x\\y'", "-fprofile-prefix-map='<abs>/a b=<abs>/y'"),
+        (f'-ffile-prefix-map=/home/{user}/a="/x/new dir"', '-ffile-prefix-map=<abs>/a="<abs>/new dir"'),
+        (f"-DDATA=foo:C:/Users/{user}/data", "-DDATA=foo:<abs>/data"),
+        (f"/LIBPATH:C:\\Users\\{user}\\lib", "/LIBPATH:<abs>/lib"),
+        ("-B/root/bin/x", "-B<abs>/x"),
+        (f"-DBUILT_BY={user}", "-DBUILT_BY=<user>" if len(user) >= 3 else f"-DBUILT_BY={user}"),
     ]
 
 
@@ -306,6 +326,37 @@ def load_bench_manifest():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+class ScrubberTest(unittest.TestCase):
+    """tools/bench-manifest.py's flag scrubber and identity pass, without bash."""
+
+    def test_every_form_is_scrubbed_exactly(self):
+        module = load_bench_manifest()
+        for given, expected in flag_forms("exampleuser", "/home/exampleuser"):
+            if given.startswith("-DBUILT_BY="):
+                continue  # the identity pass's job, below
+            with self.subTest(given=given):
+                self.assertEqual(module.hide_absolute_paths(given, REPO_ROOT), expected)
+
+    def test_identity_pass_leaves_a_flag_word_user_name_alone(self):
+        # #1445 review: a user named "build" must not mangle -DBUILD=1 and friends.
+        module = load_bench_manifest()
+        cases = [
+            (
+                "-DBUILD=1 -DBUILD_TYPE=Release -DCMAKE_BUILD=on --benchmark_filter=BM_Build",
+                "-DBUILD=1 -DBUILD_TYPE=Release -DCMAKE_BUILD=on --benchmark_filter=BM_Build",
+            ),
+            ("-DBUILT_BY=build", "-DBUILT_BY=<user>"),
+            ("E:/Users/build/x D:\\Users\\Build\\y", "E:/Users/<user>/x D:\\Users\\<user>\\y"),
+            ("C:\\Users\\build\\src C:/Users/build/src", "<home>\\src <home>/src"),
+        ]
+        prefixes = ["C:\\Users\\build", "C:/Users/build"]
+        for given, expected in cases:
+            with self.subTest(given=given):
+                self.assertEqual(module.hide_identity(given, prefixes, "build"), expected)
+        # A user name under 3 characters is never replaced on its own; a home prefix always is.
+        self.assertEqual(module.hide_identity("-DX=ab /home/ab/src", ["/home/ab"], "ab"), "-DX=ab <home>/src")
 
 
 class ReportAggregatesOnlyTest(unittest.TestCase):

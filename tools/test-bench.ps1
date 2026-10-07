@@ -25,35 +25,55 @@ try {
     New-Item -ItemType Directory -Path $binDir, (Join-Path $buildDir 'CMakeFiles\4.0.0'), (Join-Path $buildDir 'CMakeFiles\4.1.0') | Out-Null
     $U = [Environment]::UserName
     $H = $env:USERPROFILE
-    # Every absolute-path form the scrubber handles, each holding the user name (#1445 review), and
-    # what it must become. -DBUILT_BY=<user name> is no path: the final identity pass catches it.
-    $flagForms = [ordered]@{
-        '-fms-compatibility'                                         = '-fms-compatibility'
-        "-I`"C:/Users/$U/My Includes/inc`""                          = '-I"<abs>/inc"'
-        "-fprofile-use C:\Users\$U\pgo\other.profdata"               = '-fprofile-use <abs>/other.profdata'
-        "-isystemC:/Users/$U/sdk/include"                            = '-isystem<abs>/include'
-        "/IC:\Users\$U\sdk\include"                                  = '/I<abs>/include'
-        "-I//bench-host/Users/$U/sdk/include"                        = '-I<abs>/include'
-        "-idirafter\\fileserver\Users\$U\c\inc"                      = '-idirafter<abs>/inc'
-        "-imsvc\\?\C:\Users\$U\e\inc"                                = '-imsvc<abs>/inc'
-        "/I\\.\C:\Users\$U\f\inc"                                    = '/I<abs>/inc'
-        "-iquote/home/$U/g/inc"                                      = '-iquote<abs>/inc'
-        "-L/Users/$U/lib"                                            = '-L<abs>/lib'
-        '-B/root/bin/x'                                              = '-B<abs>/x'
-        "--sysroot=/home/$U/sysroot"                                 = '--sysroot=<abs>/sysroot'
-        "-fdebug-prefix-map=$H\src=/src"                             = '-fdebug-prefix-map=<abs>/src=/src'
-        "-ffile-prefix-map=C:/Users/$U/src=//buildhost/Users/$U/out" = '-ffile-prefix-map=<abs>/src=<abs>/out'
-        "`"-isystem/home/$U/with space/inc`""                        = '"-isystem<abs>/inc"'
-        '-I~/sdk/include'                                            = '-I<abs>/include'
-        "-isystem ~$U/sdk/include"                                   = '-isystem <abs>/include'
-        "-DBUILT_BY=$U"                                              = '-DBUILT_BY=<user>'
-        '/DWIN32'                                                    = '/DWIN32'
-    }
+    # (input, expected) pairs: every absolute-path form the scrubber handles, each holding the user
+    # name, and the prefix maps quoted every way (#1445 review). The same list as
+    # tests/tools/test_bench_sh.py. -DBUILT_BY=<user name> is no path: the final identity pass
+    # catches it (for a user name of at least 3 characters).
+    $flagForms = @(
+        , @('-fms-compatibility', '-fms-compatibility')
+        , @("-IC:/Users/$U/a/inc", '-I<abs>/inc')
+        , @("-isystemC:\Users\$U\b\inc", '-isystem<abs>/inc')
+        , @("-idirafter\\fileserver\Users\$U\c\inc", '-idirafter<abs>/inc')
+        , @("-iquote//fileserver/Users/$U/d/inc", '-iquote<abs>/inc')
+        , @("-I//bench-host/Users/$U/sdk/include", '-I<abs>/include')
+        , @("-imsvc\\?\C:\Users\$U\e\inc", '-imsvc<abs>/inc')
+        , @("/I\\.\C:\Users\$U\f\inc", '/I<abs>/inc')
+        , @("/I/home/$U/g/inc", '/I<abs>/inc')
+        , @("/IC:\Users\$U\sdk\include", '/I<abs>/include')
+        , @("-L/home/$U/lib", '-L<abs>/lib')
+        , @("-B/Users/$U/bin", '-B<abs>/bin')
+        , @('--sysroot=/root/sysroot', '--sysroot=<abs>/sysroot')
+        , @("-fprofile-use=/home/$U/p.profdata", '-fprofile-use=<abs>/p.profdata')
+        , @("-fprofile-instr-use=C:/Users/$U/q.profdata", '-fprofile-instr-use=<abs>/q.profdata')
+        , @("-fprofile-use /home/$U/r.profdata", '-fprofile-use <abs>/r.profdata')
+        , @("-fprofile-use C:\Users\$U\pgo\other.profdata", '-fprofile-use <abs>/other.profdata')
+        , @("-fdebug-prefix-map=$H\src=/src", '-fdebug-prefix-map=<abs>/src=/src')
+        , @("-ffile-prefix-map=C:/Users/$U/src=//buildhost/Users/$U/out", '-ffile-prefix-map=<abs>/src=<abs>/out')
+        , @("-isystem /opt/$U/include", '-isystem <abs>/include')
+        , @("-I`"C:/Users/$U/My Includes/inc`"", '-I"<abs>/inc"')
+        , @("`"-isystem/home/$U/with space/inc`"", '"-isystem<abs>/inc"')
+        , @('-I~/sdk/include', '-I<abs>/include')
+        , @("-I ~$U/sdk/include", '-I <abs>/include')
+        , @("-fprofile-instr-use=`"$repoRootForward/profiles/tasksmack.profdata`"", '-fprofile-instr-use="<source>/profiles/tasksmack.profdata"')
+        , @('/DWIN32 /W3 /EHsc -DNAME=value -std=c++23 /std:c++latest -O3', '/DWIN32 /W3 /EHsc -DNAME=value -std=c++23 /std:c++latest -O3')
+        , @("-Wl,-rpath,/home/$U/lib", '-Wl,-rpath,<abs>/lib')
+        , @('-fsanitize-ignorelist=dir/x/y.txt', '-fsanitize-ignorelist=dir/x/y.txt')
+        , @("-ffile-prefix-map=/opt/$U/source=/mapped/source", '-ffile-prefix-map=<abs>/source=<abs>/source')
+        , @("-ffile-prefix-map=`"/opt/$U/source=/mapped/source`"", '-ffile-prefix-map="<abs>/source=<abs>/source"')
+        , @("`"-fdebug-prefix-map=/home/$U/My Src=/build/out dir`"", '"-fdebug-prefix-map=<abs>/My Src=<abs>/out dir"')
+        , @("-fmacro-prefix-map=`"/home/$U/src dir=/out/dir`"", '-fmacro-prefix-map="<abs>/src dir=<abs>/dir"')
+        , @("-fprofile-prefix-map='C:\Users\$U\a b=D:\x\y'", "-fprofile-prefix-map='<abs>/a b=<abs>/y'")
+        , @("-ffile-prefix-map=/home/$U/a=`"/x/new dir`"", '-ffile-prefix-map=<abs>/a="<abs>/new dir"')
+        , @("-DDATA=foo:C:/Users/$U/data", '-DDATA=foo:<abs>/data')
+        , @("/LIBPATH:C:\Users\$U\lib", '/LIBPATH:<abs>/lib')
+        , @('-B/root/bin/x', '-B<abs>/x')
+        , @("-DBUILT_BY=$U", $(if ($U.Length -ge 3) { '-DBUILT_BY=<user>' } else { "-DBUILT_BY=$U" }))
+    )
     Set-Content -LiteralPath (Join-Path $buildDir 'CMakeCache.txt') -Encoding ascii -Value @(
         'CMAKE_BUILD_TYPE:STRING=Release'
         'CMAKE_GENERATOR:INTERNAL=Ninja'
         "CMAKE_CXX_COMPILER:FILEPATH=C:\Users\$U\llvm\bin\clang++.exe"
-        "CMAKE_CXX_FLAGS:STRING=$($flagForms.Keys -join ' ')"
+        "CMAKE_CXX_FLAGS:STRING=$(@($flagForms | ForEach-Object { $_[0] }) -join ' ')"
         "CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -DNDEBUG -fprofile-instr-use=`"$($repoRootForward)/profiles/tasksmack.profdata`" -fprofile-use=$H\x.profdata"
         'TASKSMACK_ENABLE_IPO:BOOL=ON'
         'CMAKE_CACHE_MAJOR_VERSION:INTERNAL=4'
@@ -188,10 +208,10 @@ exit [int]$env:STUB_EXIT
     # No host name, user name or user-profile path anywhere in the manifest.
     # Absolute paths in flags: the checkout's become <source>/..., others <abs>/<file name>.
     Assert-True ($manifest.build.cxx_flags_config -ceq '-O3 -DNDEBUG -fprofile-instr-use="<source>/profiles/tasksmack.profdata" -fprofile-use=<abs>/x.profdata') "cxx_flags_config: $($manifest.build.cxx_flags_config)"
-    $expectedFlags = @($flagForms.Values) -join ' '
+    $expectedFlags = @($flagForms | ForEach-Object { $_[1] }) -join ' '
     if ($manifest.build.cxx_flags -cne $expectedFlags) {
         $got = $manifest.build.cxx_flags
-        $diff = @($flagForms.GetEnumerator() | Where-Object { -not $got.Contains($_.Value) } | ForEach-Object { "$($_.Key) -> expected $($_.Value)" })
+        $diff = @($flagForms | Where-Object { -not $got.Contains($_[1]) } | ForEach-Object { "$($_[0]) -> expected $($_[1])" })
         throw "cxx_flags: $got`nForms not scrubbed as expected:`n$($diff -join "`n")"
     }
 
@@ -251,6 +271,25 @@ exit [int]$env:STUB_EXIT
     Assert-True ($stale.ExitCode -eq 0 -and $stale.Manifest.Count -eq 1) "Stale-tree run failed:`n$($stale.Log)"
     $staleBuild = (Get-Content -LiteralPath $stale.Manifest[0].FullName -Raw | ConvertFrom-Json).build
     Assert-True ($null -eq $staleBuild.compiler_id -and $null -eq $staleBuild.compiler_version) "A stale compiler directory must not be used: $($staleBuild | ConvertTo-Json -Compress)"
+
+    # ── #1445 review: the identity pass leaves a user name that is also a flag word alone ──────
+    # Hide-Identity is taken from bench.ps1 itself and given a user named "build".
+    $benchAst = [System.Management.Automation.Language.Parser]::ParseFile($benchScript, [ref]$null, [ref]$null)
+    $hideIdentity = $benchAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Hide-Identity' }, $true) | Select-Object -First 1
+    . ([scriptblock]::Create($hideIdentity.Extent.Text))
+    $identityCases = @(
+        , @('-DBUILD=1 -DBUILD_TYPE=Release -DCMAKE_BUILD=on --benchmark_filter=BM_Build', '-DBUILD=1 -DBUILD_TYPE=Release -DCMAKE_BUILD=on --benchmark_filter=BM_Build')
+        , @('-DBUILT_BY=build', '-DBUILT_BY=<user>')
+        , @('E:/Users/build/x D:\Users\Build\y', 'E:/Users/<user>/x D:\Users\<user>\y')
+        , @('C:\Users\build\src C:/Users/build/src', '<home>\src <home>/src')
+    )
+    foreach ($case in $identityCases) {
+        $got = Hide-Identity $case[0] -Homes @('C:\Users\build') -User 'build'
+        Assert-True ($got -ceq $case[1]) "Identity pass for user 'build': [$($case[0])] became [$got], expected [$($case[1])]"
+    }
+    # A user name under 3 characters is never replaced on its own; a home prefix always is.
+    $short = Hide-Identity '-DX=ab /home/ab/src' -Homes @('/home/ab') -User 'ab'
+    Assert-True ($short -ceq '-DX=ab <home>/src') "Short user name: $short"
 
     Write-Host 'bench.ps1 tests passed'
 }

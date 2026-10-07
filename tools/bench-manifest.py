@@ -49,31 +49,77 @@ def git_provenance(repo_root: Path) -> dict:
     }
 
 
-# Absolute paths inside compiler flags (#1445 review). Every form is matched in one place, and
-# tools/bench.ps1's Hide-AbsolutePaths uses the same patterns:
-# - Found anywhere in a token, so after any joined switch (-IC:/x, -isystem\\host\x, /I//host/x):
-#   a drive path with either slash (C:\x, C:/x; not "://" as in a URL), a UNC path with either
-#   slash (\\host\x, //host/x; not after ':'), and the \\?\ and \\.\ device paths.
-# - Found at the start, after whitespace, '=', ',' or a quote, optionally with a switch glued on
-#   (-I, -L, -B, -isystem, -idirafter, -iquote, -imsvc, any other -x/--x switch; MSVC /I, /FI,
-#   /Fo, /Fd, /Fe, /Fp, /LIBPATH:): a POSIX path of two or more segments (/home/u/x,
-#   /Users/u/x, /root/x; so MSVC defines such as /DWIN32 stay) and a home-relative ~/x or ~u/x.
-# - A path ends at whitespace, a quote, '=', ',' or ';', so both sides of
-#   -fdebug-prefix-map=OLD=NEW and -ffile-prefix-map=OLD=NEW are matched separately, as are
-#   --sysroot=PATH and -fprofile-*=PATH; space-separated values (-isystem PATH) are matched on
-#   their own.
-# - Quoted paths, which can hold spaces, are handled first, with the same heads and switches.
-_TAIL = r"""[^\s"'=,;]*"""
-_SWITCH = r"""(?:-{1,2}[A-Za-z][\w+-]*?|/(?:I|FI|Fo|Fd|Fe|Fp|LIBPATH:))"""
-_ANYWHERE_HEAD = r"""(?:[A-Za-z]:[\\/](?![\\/])|\\\\|(?<!:)//)"""
-_BOUNDARY_HEAD = r"""(?:/[^/\s"'=,;]+/|~[^/\s"'=,;]*/)"""
-_QUOTED_PATH = re.compile(
-    r"""(?P<q>["'])(?P<pre>""" + _SWITCH + r"""?)(?P<path>(?:[A-Za-z]:[\\/]|\\\\|//|/[^/"']+/|~[^/"']*/)[^"']*)(?P=q)"""
+# Absolute paths inside compiler flags (#1445 review). The flag string is split into arguments
+# and each argument is scrubbed on its own; tools/bench.ps1 does the same step for step
+# (Split-FlagArguments / Hide-AbsolutePaths), with the same switch lists.
+#  1. Split like a shell, but with no backslash escapes (Windows paths keep their backslashes):
+#     whitespace separates arguments, and "..." or '...' quotes a span that may hold spaces. Each
+#     argument remembers its first quote character and where that quote opened.
+#  2. Peel the switch: a prefix-map switch (its OLD=NEW value is split at the first '=', as
+#     clang does, and each side scrubbed on its own); a comma-list switch (-Wl, and friends:
+#     each item scrubbed); a generic "-opt=" / "--opt=" (the value after the first '='); or a
+#     joined switch (-I, -isystem, /I, ...) when what follows it is a path. Otherwise the whole
+#     argument is the operand.
+#  3. An operand is a path when it starts with a drive (C:\ or C:/), a UNC or device path (\\,
+#     //, \\?\, \\.\), a POSIX path of two or more segments (/home/u/x; so /DWIN32 stays) or ~.
+#     A path inside the checkout becomes <source>/relative, any other <abs>/<file name>. A ';'
+#     list is scrubbed item by item, and an operand with a drive, UNC or device path inside it
+#     (FOO:C:/x) is scrubbed from there.
+#  4. Re-join with single spaces, putting each argument's quote back before the piece it opened
+#     on (or around the whole argument when that piece no longer exists).
+_PREFIX_MAP_SWITCHES = ("-ffile-prefix-map=", "-fdebug-prefix-map=", "-fmacro-prefix-map=", "-fprofile-prefix-map=")
+_LIST_SWITCHES = ("-Wl,", "-Wa,", "-Wp,")
+# Longest first, so -isystem is not read as -I... (case matters: -I is not -i).
+_JOINED_SWITCHES = (
+    "-iwithprefixbefore",
+    "-iwithprefix",
+    "-idirafter",
+    "/LIBPATH:",
+    "-isysroot",
+    "-iprefix",
+    "-imacros",
+    "-isystem",
+    "-include",
+    "-iquote",
+    "-imsvc",
+    "/FI",
+    "/Fo",
+    "/Fd",
+    "/Fe",
+    "/Fp",
+    "-I",
+    "-L",
+    "-B",
+    "-F",
+    "/I",
 )
-_BARE_PATH = re.compile(
-    r"""(?P<anywhere>""" + _ANYWHERE_HEAD + _TAIL + r""")"""
-    r"""|(?P<pre>(?:^|(?<=[\s=,"']))""" + _SWITCH + r"""?)(?P<path>""" + _BOUNDARY_HEAD + _TAIL + r""")"""
-)
+_PATH_HEAD = re.compile(r"""^(?:[A-Za-z]:[\\/]|\\\\|//|/[^/\\]+/|~[^/\\]*(?:[/\\]|$))""")
+_EMBEDDED_HEAD = re.compile(r"""[A-Za-z]:[\\/](?![\\/])|\\\\|(?<!:)//""")
+
+
+def split_flag_arguments(flags: str) -> list[tuple[str, str | None, int]]:
+    """Split a flag string into (unquoted text, first quote char or None, offset it opened at)."""
+    arguments = []
+    index, length = 0, len(flags)
+    while index < length:
+        if flags[index].isspace():
+            index += 1
+            continue
+        text, quote, quote_start = "", None, 0
+        while index < length and not flags[index].isspace():
+            char = flags[index]
+            if char in "\"'":
+                close = flags.find(char, index + 1)
+                close = length if close < 0 else close
+                if quote is None:
+                    quote, quote_start = char, len(text)
+                text += flags[index + 1 : close]
+                index = close + 1
+            else:
+                text += char
+                index += 1
+        arguments.append((text, quote, quote_start))
+    return arguments
 
 
 def hide_absolute_paths(flags: str | None, repo_root: Path) -> str | None:
@@ -94,13 +140,53 @@ def hide_absolute_paths(flags: str | None, repo_root: Path) -> str | None:
             return "<source>" + normalized[len(root) :]
         return "<abs>/" + PurePath(normalized.rstrip("/")).name
 
-    def bare(match: re.Match) -> str:
-        if match.group("anywhere") is not None:
-            return scrub(match.group("anywhere"))
-        return match.group("pre") + scrub(match.group("path"))
+    def operand(value: str) -> str:
+        if ";" in value:
+            return ";".join(operand(item) for item in value.split(";"))
+        if _PATH_HEAD.match(value):
+            return scrub(value)
+        if embedded := _EMBEDDED_HEAD.search(value):
+            return value[: embedded.start()] + scrub(value[embedded.start() :])
+        return value
 
-    flags = _QUOTED_PATH.sub(lambda m: m.group("q") + m.group("pre") + scrub(m.group("path")) + m.group("q"), flags)
-    return _BARE_PATH.sub(bare, flags)
+    def pieces(argument: str) -> list[tuple[int, str]]:
+        """(offset in the argument, scrubbed text) for each part of the argument."""
+        for switch in _PREFIX_MAP_SWITCHES:
+            if argument.startswith(switch):
+                old, separator, new = argument[len(switch) :].partition("=")
+                result = [(0, switch), (len(switch), operand(old))]
+                if separator:
+                    result += [(len(switch) + len(old), "="), (len(switch) + len(old) + 1, operand(new))]
+                return result
+        for switch in _LIST_SWITCHES:
+            if argument.startswith(switch):
+                result, offset = [(0, switch)], len(switch)
+                for position, item in enumerate(argument[len(switch) :].split(",")):
+                    if position:
+                        result.append((offset, ","))
+                        offset += 1
+                    result.append((offset, operand(item)))
+                    offset += len(item)
+                return result
+        if argument[:1] in ("-", "/") and "=" in argument:
+            head = argument[: argument.index("=") + 1]
+            if not re.search(r"[\\/]", head[1:]):
+                return [(0, head), (len(head), operand(argument[len(head) :]))]
+        for switch in _JOINED_SWITCHES:
+            if argument.startswith(switch) and _PATH_HEAD.match(argument[len(switch) :]):
+                return [(0, switch), (len(switch), operand(argument[len(switch) :]))]
+        return [(0, operand(argument))]
+
+    joined = []
+    for text, quote, quote_start in split_flag_arguments(flags):
+        parts = pieces(text)
+        if quote is None:
+            joined.append("".join(part for _, part in parts))
+            continue
+        starts = [start for start, _ in parts]
+        at = starts.index(quote_start) if quote_start in starts else 0
+        joined.append("".join(part for _, part in parts[:at]) + quote + "".join(part for _, part in parts[at:]) + quote)
+    return " ".join(joined)
 
 
 def identity_strings() -> tuple[list[str], str | None]:
@@ -121,10 +207,16 @@ def identity_strings() -> tuple[list[str], str | None]:
     return sorted(prefixes, key=len, reverse=True), user
 
 
+# The user name only counts where it stands alone between separators (start or end, whitespace,
+# a slash, a quote, '=', ':', ',' or ';'), so a user named "build" leaves -DBUILD=1 and
+# BUILD_TYPE alone but still hides -DBUILT_BY=build and C:/Users/build.
+_SEPARATED = r"""\s/\\"'=:,;"""
+
+
 def hide_identity(value, prefixes: list[str], user: str | None):
     """Defensive last pass over every string in the manifest: any home-directory prefix becomes
-    <home> and the user name, as a whole word, becomes <user> (MSVC defines such as /DWIN32 and
-    everything else are left alone)."""
+    <home> (always), and the user name, when it is at least 3 characters and stands alone
+    between separators, becomes <user>."""
     if isinstance(value, dict):
         return {key: hide_identity(item, prefixes, user) for key, item in value.items()}
     if isinstance(value, list):
@@ -133,8 +225,10 @@ def hide_identity(value, prefixes: list[str], user: str | None):
         return value
     for prefix in prefixes:
         value = re.sub(re.escape(prefix), "<home>", value, flags=re.IGNORECASE)
-    if user and len(user) >= 2:
-        value = re.sub(r"(?<![A-Za-z0-9])" + re.escape(user) + r"(?![A-Za-z0-9])", "<user>", value, flags=re.IGNORECASE)
+    if user and len(user) >= 3:
+        value = re.sub(
+            rf"(?<![^{_SEPARATED}]){re.escape(user)}(?![^{_SEPARATED}])", "<user>", value, flags=re.IGNORECASE
+        )
     return value
 
 

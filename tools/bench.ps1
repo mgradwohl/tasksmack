@@ -97,21 +97,66 @@ function Get-GitProvenance {
     return $git
 }
 
+# Absolute paths inside compiler flags (#1445 review). The flag string is split into arguments
+# and each argument is scrubbed on its own, step for step as hide_absolute_paths in
+# tools/bench-manifest.py does, with the same switch lists:
+#  1. Split like a shell, but with no backslash escapes (Windows paths keep their backslashes):
+#     whitespace separates arguments, and "..." or '...' quotes a span that may hold spaces. Each
+#     argument remembers its first quote character and where that quote opened.
+#  2. Peel the switch: a prefix-map switch (its OLD=NEW value is split at the first '=', as
+#     clang does, and each side scrubbed on its own); a comma-list switch (-Wl, and friends:
+#     each item scrubbed); a generic "-opt=" / "--opt=" (the value after the first '='); or a
+#     joined switch (-I, -isystem, /I, ...) when what follows it is a path. Otherwise the whole
+#     argument is the operand.
+#  3. An operand is a path when it starts with a drive (C:\ or C:/), a UNC or device path (\\,
+#     //, \\?\, \\.\), a POSIX path of two or more segments (/home/u/x; so /DWIN32 stays) or ~.
+#     A path inside the checkout becomes <source>/relative, any other <abs>/<file name>. A ';'
+#     list is scrubbed item by item, and an operand with a drive, UNC or device path inside it
+#     (FOO:C:/x) is scrubbed from there.
+#  4. Re-join with single spaces, putting each argument's quote back before the piece it opened
+#     on (or around the whole argument when that piece no longer exists).
+$script:PrefixMapSwitches = @('-ffile-prefix-map=', '-fdebug-prefix-map=', '-fmacro-prefix-map=', '-fprofile-prefix-map=')
+$script:ListSwitches = @('-Wl,', '-Wa,', '-Wp,')
+# Longest first, so -isystem is not read as -I... (case matters: -I is not -i).
+$script:JoinedSwitches = @('-iwithprefixbefore', '-iwithprefix', '-idirafter', '/LIBPATH:', '-isysroot', '-iprefix', '-imacros',
+    '-isystem', '-include', '-iquote', '-imsvc', '/FI', '/Fo', '/Fd', '/Fe', '/Fp', '-I', '-L', '-B', '-F', '/I')
+$script:PathHead = [regex]'^(?:[A-Za-z]:[\\/]|\\\\|//|/[^/\\]+/|~[^/\\]*(?:[/\\]|$))'
+$script:EmbeddedHead = [regex]'[A-Za-z]:[\\/](?![\\/])|\\\\|(?<!:)//'
+
+function Split-FlagArguments {
+    # Split a flag string into arguments: Text (unquoted), Quote (first quote char or $null) and
+    # QuoteStart (the offset in Text where that quote opened).
+    param([string]$Flags)
+    $arguments = [System.Collections.Generic.List[object]]::new()
+    $index = 0
+    $length = $Flags.Length
+    while ($index -lt $length) {
+        if ([char]::IsWhiteSpace($Flags[$index])) { $index++; continue }
+        $text = [System.Text.StringBuilder]::new()
+        $quote = $null
+        $quoteStart = 0
+        while ($index -lt $length -and -not [char]::IsWhiteSpace($Flags[$index])) {
+            $char = $Flags[$index]
+            if ($char -eq [char]'"' -or $char -eq [char]"'") {
+                $close = $Flags.IndexOf($char, $index + 1)
+                if ($close -lt 0) { $close = $length }
+                if ($null -eq $quote) { $quote = [string]$char; $quoteStart = $text.Length }
+                [void]$text.Append($Flags.Substring($index + 1, $close - $index - 1))
+                $index = $close + 1
+            }
+            else {
+                [void]$text.Append($char)
+                $index++
+            }
+        }
+        $arguments.Add([pscustomobject]@{ Text = $text.ToString(); Quote = $quote; QuoteStart = $quoteStart })
+    }
+    return , $arguments
+}
+
 function Hide-AbsolutePaths {
     # Replace absolute paths in compiler flags so no user profile or checkout path is recorded: a
     # path inside the source tree becomes <source>/relative/path, any other <abs>/<file name>.
-    # The same patterns as hide_absolute_paths in tools/bench-manifest.py (#1445 review):
-    # - Found anywhere in a token, so after any joined switch (-IC:/x, -isystem\\host\x,
-    #   /I//host/x): a drive path with either slash (not "://" as in a URL), a UNC path with either
-    #   slash (not after ':'), and the \\?\ and \\.\ device paths.
-    # - Found at the start, after whitespace, '=', ',' or a quote, optionally with a switch glued
-    #   on (-I, -L, -B, -isystem, -idirafter, -iquote, -imsvc, any other -x/--x switch; MSVC /I,
-    #   /FI, /Fo, /Fd, /Fe, /Fp, /LIBPATH:): a POSIX path of two or more segments (so MSVC defines
-    #   such as /DWIN32 stay) and a home-relative ~/x or ~u/x.
-    # - A path ends at whitespace, a quote, '=', ',' or ';', so both sides of
-    #   -fdebug-prefix-map=OLD=NEW / -ffile-prefix-map=OLD=NEW, --sysroot=PATH, -fprofile-*=PATH
-    #   and space-separated values are matched on their own.
-    # - Quoted paths, which can hold spaces, are handled first, with the same heads and switches.
     param([string]$Flags)
     if (-not $Flags) { return $Flags }
     $root = ([IO.Path]::GetFullPath($repoRoot)).Replace('\', '/').TrimEnd('/')
@@ -125,44 +170,98 @@ function Hide-AbsolutePaths {
         }
         return '<abs>/' + ($normalized.TrimEnd('/') -split '/')[-1]
     }
-    $tail = '[^\s"''=,;]*'
-    $switch = '(?:-{1,2}[A-Za-z][\w+-]*?|/(?:I|FI|Fo|Fd|Fe|Fp|LIBPATH:))'
-    $anywhereHead = '(?:[A-Za-z]:[\\/](?![\\/])|\\\\|(?<!:)//)'
-    $boundaryHead = '(?:/[^/\s"''=,;]+/|~[^/\s"''=,;]*/)'
-    $quoted = [regex]('(?<q>["''])(?<pre>' + $switch + '?)(?<path>(?:[A-Za-z]:[\\/]|\\\\|//|/[^/"'']+/|~[^/"'']*/)[^"'']*)\k<q>')
-    $bare = [regex]('(?<anywhere>' + $anywhereHead + $tail + ')|(?<pre>(?:^|(?<=[\s=,"'']))' + $switch + '?)(?<path>' + $boundaryHead + $tail + ')')
-    $Flags = $quoted.Replace($Flags, { param($m) $m.Groups['q'].Value + $m.Groups['pre'].Value + (& $scrub $m.Groups['path'].Value) + $m.Groups['q'].Value })
-    return $bare.Replace($Flags, {
-            param($m)
-            if ($m.Groups['anywhere'].Success) { return (& $scrub $m.Groups['anywhere'].Value) }
-            $m.Groups['pre'].Value + (& $scrub $m.Groups['path'].Value)
-        })
+    $operand = {
+        param([string]$Value)
+        if ($Value.Contains(';')) { return (@($Value.Split(';') | ForEach-Object { & $operand $_ }) -join ';') }
+        if ($script:PathHead.IsMatch($Value)) { return (& $scrub $Value) }
+        $embedded = $script:EmbeddedHead.Match($Value)
+        if ($embedded.Success) { return $Value.Substring(0, $embedded.Index) + (& $scrub $Value.Substring($embedded.Index)) }
+        return $Value
+    }
+    $pieces = {
+        # (offset in the argument, scrubbed text) for each part of the argument.
+        param([string]$Argument)
+        foreach ($switch in $script:PrefixMapSwitches) {
+            if ($Argument.StartsWith($switch, [StringComparison]::Ordinal)) {
+                $value = $Argument.Substring($switch.Length)
+                $equals = $value.IndexOf('=')
+                if ($equals -lt 0) { return , @(, @(0, $switch), @($switch.Length, (& $operand $value))) }
+                $old = $value.Substring(0, $equals)
+                $new = $value.Substring($equals + 1)
+                return , @(@(0, $switch), @($switch.Length, (& $operand $old)), @(($switch.Length + $old.Length), '='), @(($switch.Length + $old.Length + 1), (& $operand $new)))
+            }
+        }
+        foreach ($switch in $script:ListSwitches) {
+            if ($Argument.StartsWith($switch, [StringComparison]::Ordinal)) {
+                $result = [System.Collections.Generic.List[object]]::new()
+                $result.Add(@(0, $switch))
+                $offset = $switch.Length
+                $position = 0
+                foreach ($item in $Argument.Substring($switch.Length).Split(',')) {
+                    if ($position -gt 0) { $result.Add(@($offset, ',')); $offset++ }
+                    $result.Add(@($offset, (& $operand $item)))
+                    $offset += $item.Length
+                    $position++
+                }
+                return , $result.ToArray()
+            }
+        }
+        if (($Argument.StartsWith('-') -or $Argument.StartsWith('/')) -and $Argument.Contains('=')) {
+            $head = $Argument.Substring(0, $Argument.IndexOf('=') + 1)
+            if ($head.Substring(1) -notmatch '[\\/]') {
+                return , @(@(0, $head), @($head.Length, (& $operand $Argument.Substring($head.Length))))
+            }
+        }
+        foreach ($switch in $script:JoinedSwitches) {
+            if ($Argument.StartsWith($switch, [StringComparison]::Ordinal) -and $script:PathHead.IsMatch($Argument.Substring($switch.Length))) {
+                return , @(@(0, $switch), @($switch.Length, (& $operand $Argument.Substring($switch.Length))))
+            }
+        }
+        return , @(, @(0, (& $operand $Argument)))
+    }
+
+    $joined = foreach ($argument in (Split-FlagArguments $Flags)) {
+        $parts = & $pieces $argument.Text
+        if ($null -eq $argument.Quote) { ($parts | ForEach-Object { $_[1] }) -join ''; continue }
+        $at = 0
+        for ($i = 0; $i -lt $parts.Count; $i++) { if ($parts[$i][0] -eq $argument.QuoteStart) { $at = $i; break } }
+        $before = if ($at -gt 0) { ($parts[0..($at - 1)] | ForEach-Object { $_[1] }) -join '' } else { '' }
+        $after = ($parts[$at..($parts.Count - 1)] | ForEach-Object { $_[1] }) -join ''
+        $before + $argument.Quote + $after + $argument.Quote
+    }
+    return (@($joined) -join ' ')
 }
 
 function Hide-Identity {
     # Defensive last pass over every string in the manifest (#1445 review): any home-directory
-    # prefix ($HOME, $env:USERPROFILE, both slash forms) becomes <home> and the user name, as a
-    # whole word, becomes <user>; MSVC defines such as /DWIN32 and everything else are left alone.
+    # prefix ($HOME, $env:USERPROFILE, both slash forms) becomes <home> (always), and the user
+    # name, when it is at least 3 characters and stands alone between separators (start or end,
+    # whitespace, a slash, a quote, '=', ':', ',' or ';'), becomes <user> -- so a user named
+    # "build" leaves -DBUILD=1 alone but still hides -DBUILT_BY=build and C:/Users/build.
     # Kept in step with hide_identity in tools/bench-manifest.py.
-    param($Value)
+    param($Value, [string[]]$Homes, [string]$User)
+    if (-not $PSBoundParameters.ContainsKey('Homes')) {
+        $Homes = @([Environment]::GetFolderPath('UserProfile'), $HOME, $env:HOME, $env:USERPROFILE)
+    }
+    if (-not $PSBoundParameters.ContainsKey('User')) { $User = [Environment]::UserName }
     if ($Value -is [System.Collections.IDictionary]) {
         $copy = [ordered]@{}
-        foreach ($key in $Value.Keys) { $copy[$key] = Hide-Identity $Value[$key] }
+        foreach ($key in $Value.Keys) { $copy[$key] = Hide-Identity $Value[$key] -Homes $Homes -User $User }
         return $copy
     }
     if ($Value -is [string]) {
-        $homes = @([Environment]::GetFolderPath('UserProfile'), $HOME, $env:HOME, $env:USERPROFILE) | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\', '/') } | Where-Object { $_.Length -gt 3 }
-        $prefixes = @($homes | ForEach-Object { $_; $_.Replace('\', '/'); $_.Replace('/', '\') } | Sort-Object -Unique | Sort-Object Length -Descending)
+        $trimmed = @($Homes | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\', '/') } | Where-Object { $_.Length -gt 3 })
+        $prefixes = @($trimmed | ForEach-Object { $_; $_.Replace('\', '/'); $_.Replace('/', '\') } | Sort-Object -Unique | Sort-Object Length -Descending)
         foreach ($prefix in $prefixes) { $Value = [regex]::Replace($Value, [regex]::Escape($prefix), '<home>', 'IgnoreCase') }
-        $user = [Environment]::UserName
-        if ($user -and $user.Length -ge 2) {
-            $Value = [regex]::Replace($Value, '(?<![A-Za-z0-9])' + [regex]::Escape($user) + '(?![A-Za-z0-9])', '<user>', 'IgnoreCase')
+        if ($User -and $User.Length -ge 3) {
+            $separated = '\s/\\"''=:,;'
+            $Value = [regex]::Replace($Value, "(?<![^$separated])" + [regex]::Escape($User) + "(?![^$separated])", '<user>', 'IgnoreCase')
         }
         return $Value
     }
     if ($Value -is [System.Collections.IEnumerable]) {
         # A list stays a list (written as a JSON array even with one item).
-        return , [object[]]@(foreach ($item in $Value) { Hide-Identity $item })
+        return , [object[]]@(foreach ($item in $Value) { Hide-Identity $item -Homes $Homes -User $User })
     }
     return $Value
 }
