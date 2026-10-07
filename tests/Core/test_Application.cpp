@@ -48,6 +48,40 @@
 #include <utility>
 #include <vector>
 
+// Test-only accessor: lets unit tests observe m_WindowGeometryChangedThisFrame after calling
+// signalWindowGeometryChanged(), which is noexcept and has no other observable effect.
+// It also reads the idle-wait seam (#1446), so it comes before the test layers that use it.
+// Declared directly in namespace Core (not inside the anonymous namespace below) so the
+// `friend struct ApplicationTestAccessor;` declaration in Application.h resolves to this
+// exact type. Same pattern as NVMLGPUProbeTestAccessor in test_WindowsNVMLGPUProbe.cpp.
+namespace Core
+{
+struct ApplicationTestAccessor
+{
+    [[nodiscard]] static bool geometryChangedThisFrame(const Application& app)
+    {
+        return app.m_WindowGeometryChangedThisFrame;
+    }
+
+    [[nodiscard]] static bool closeRequestAccepted(Application& app)
+    {
+        return app.closeRequestAccepted();
+    }
+
+    /// Idle waits run() has done so far (#1446).
+    [[nodiscard]] static std::uint64_t idleWaitCount(const Application& app)
+    {
+        return app.m_IdleWaitCount;
+    }
+
+    /// Whether the last idle wait ended on an event rather than its timeout (#1446).
+    [[nodiscard]] static bool lastIdleWaitWoke(const Application& app)
+    {
+        return app.m_LastIdleWaitWoke;
+    }
+};
+} // namespace Core
+
 namespace
 {
 
@@ -355,34 +389,32 @@ class SdlEventPushingLayer : public Core::Layer
 ///   wait from another thread with a message that goes through the display server. Under load that
 ///   message can arrive after the timeout (traced: push 30 ms into a 49 ms wait, no wake).
 ///
-/// So an attempt counts only if the first frame after the push began less than WAKE_DEADLINE_NS
-/// after the frame that armed the timer. The next idle wait lasts at least 50 ms from that frame's
-/// lastFrameStart (computeIdleWaitMs rounds up), which comes just before its onUpdate(). A frame
-/// that begins sooner was not the timed-out frame, so the push woke the wait. Frames are also
-/// excluded when another event was dispatched since arming, as that iteration skipped the wait. An
-/// excluded attempt lets its key drain and tries again; the test fails if none counts.
+/// So an attempt counts only if the loop says the push woke the wait: by the first frame after the
+/// push, run() did an idle wait after arming, and the last one ended on an event, not its timeout
+/// (the ApplicationTestAccessor idle-wait seam). No other event may have been dispatched since
+/// arming, so that event was the key. Timing can't decide this: input pacing can delay a woken
+/// frame past any cutoff, and a late arming frame can make a timed-out one look early. An excluded
+/// attempt lets its key drain, then waits for a fresh quiet settle before arming again; the test
+/// fails if none counts.
 ///
 /// The old loop (SDL_WaitEventTimeout(nullptr, ...), then render) still fails a counted attempt:
-/// the push wakes it, and its woken frame begins straight away and renders before draining the key.
+/// the push wakes its wait, and the frame it renders straight away has not drained the key.
 class KeyDuringIdleWaitLayer : public Core::Layer
 {
   public:
-    /// Run time before the first attempt: past the startup window events and the 0.35 s interaction
-    /// grace their resize starts (INTERACTION_REDRAW_GRACE_SECONDS), during which frames come from the
-    /// move/resize redraw path before the wait rather than from the idle path after it.
+    /// Quiet run time before each attempt: no event other than the key in this long, which is past
+    /// the startup window events and the 0.35 s interaction grace a resize or move starts
+    /// (INTERACTION_REDRAW_GRACE_SECONDS). Inside the grace, frames come from the move/resize redraw
+    /// path before the wait rather than from the idle path after it.
     static constexpr std::uint64_t SETTLE_NS = 1'000'000'000;
     /// Into the 50 ms idle wait that follows the frame which starts the timer.
     static constexpr Uint32 PUSH_DELAY_MS = 25;
-    /// A first frame after the push that begins this long or more after the arming frame may be the
-    /// frame the idle wait timed out into (at 50 ms or later). The 10 ms of margin covers the time
-    /// between the arming frame's lastFrameStart and its onUpdate().
-    static constexpr std::uint64_t WAKE_DEADLINE_NS = 40'000'000;
-    /// Attempts before the test fails for want of one that woke the wait. With every core busy twice
-    /// over, up to about 1 in 8 attempts was excluded, so 8 in a row are vanishingly rare.
-    static constexpr int MAX_ATTEMPTS = 8;
+    /// Attempts before the test fails for want of one whose push woke the wait. With every core busy
+    /// twice over, up to about 1 in 8 attempts was excluded, so 5 in a row are vanishingly rare.
+    static constexpr int MAX_ATTEMPTS = 5;
     /// Frames to keep running after the counted frame; and the fallback stop.
     static constexpr int UPDATES_AFTER_PUSH = 3;
-    static constexpr int MAX_UPDATES = 400;
+    static constexpr int MAX_UPDATES = 600;
     static constexpr SDL_Keycode KEY = SDLK_F13;
 
     KeyDuringIdleWaitLayer() : Layer("KeyDuringIdleWait")
@@ -409,7 +441,7 @@ class KeyDuringIdleWaitLayer : public Core::Layer
         }
         else
         {
-            ++m_OtherEventsSinceArm;
+            ++m_OtherEvents;
         }
     }
 
@@ -421,28 +453,36 @@ class KeyDuringIdleWaitLayer : public Core::Layer
             pushed = m_Pushed;
         }
         const std::uint64_t nowNs = SDL_GetTicksNS();
-        if (m_Updates == 0)
+        const auto& app = Core::Application::get();
+        const std::uint64_t idleWaits = Core::ApplicationTestAccessor::idleWaitCount(app);
+        const bool lastWaitWoke = Core::ApplicationTestAccessor::lastIdleWaitWoke(app);
+        // This frame follows an idle wait that timed out: the loop is in plain idle pacing.
+        const bool idlePaced = idleWaits > m_IdleWaitsSeen && !lastWaitWoke;
+        m_IdleWaitsSeen = idleWaits;
+        if (m_Updates == 0 || m_OtherEvents != m_OtherEventsSeen)
         {
-            m_FirstFrameNs = nowNs;
+            m_OtherEventsSeen = m_OtherEvents;
+            m_QuietSinceNs = nowNs;
         }
         ++m_Updates;
 
         switch (m_Phase)
         {
         case Phase::Settling:
-            if ((nowNs - m_FirstFrameNs) >= SETTLE_NS)
+            if ((nowNs - m_QuietSinceNs) >= SETTLE_NS && idlePaced)
             {
-                arm(nowNs);
+                arm(idleWaits);
             }
             break;
         case Phase::Armed:
             // The first frame that began after the push.
             if (pushed)
             {
-                if ((nowNs - m_ArmedNs) < WAKE_DEADLINE_NS && m_OtherEventsSinceArm == 0)
+                if (idleWaits > m_IdleWaitsAtArm && lastWaitWoke && m_OtherEvents == m_OtherEventsAtArm)
                 {
                     m_FirstFrameAfterPushHadKey = m_KeyDispatched;
-                    finish();
+                    m_DoneAtUpdate = m_Updates;
+                    m_Phase = Phase::Done;
                 }
                 else
                 {
@@ -451,17 +491,12 @@ class KeyDuringIdleWaitLayer : public Core::Layer
             }
             break;
         case Phase::Draining:
-            // Excluded attempt: once its key is dispatched, try again or give up.
+            // Excluded attempt: once its key is dispatched, settle again or give up.
             if (m_KeyDispatched)
             {
-                if (m_Attempts < MAX_ATTEMPTS)
-                {
-                    arm(nowNs);
-                }
-                else
-                {
-                    finish();
-                }
+                m_QuietSinceNs = nowNs;
+                m_DoneAtUpdate = m_Updates;
+                m_Phase = m_Attempts < MAX_ATTEMPTS ? Phase::Settling : Phase::Done;
             }
             break;
         case Phase::Done:
@@ -495,22 +530,22 @@ class KeyDuringIdleWaitLayer : public Core::Layer
   private:
     enum class Phase : std::uint8_t
     {
-        Settling,
+        Settling, // waiting for a quiet, idle-paced loop
         Armed,    // timer started; waiting for the first frame after its push
-        Draining, // excluded attempt; waiting for its key before the next attempt
+        Draining, // excluded attempt; waiting for its key before settling again
         Done,
     };
 
     /// Starts an attempt: resets the per-attempt state and starts the timer.
-    void arm(std::uint64_t nowNs)
+    void arm(std::uint64_t idleWaits)
     {
         {
             const std::scoped_lock lock(m_PushMutex);
             m_Pushed = false;
         }
         m_KeyDispatched = false;
-        m_OtherEventsSinceArm = 0;
-        m_ArmedNs = nowNs;
+        m_OtherEventsAtArm = m_OtherEvents;
+        m_IdleWaitsAtArm = idleWaits;
         ++m_Attempts;
         m_Phase = Phase::Armed;
         // The previous attempt's one-shot timer has fired; removing it again is a harmless no-op.
@@ -519,12 +554,6 @@ class KeyDuringIdleWaitLayer : public Core::Layer
             SDL_RemoveTimer(m_Timer);
         }
         m_Timer = SDL_AddTimer(PUSH_DELAY_MS, &KeyDuringIdleWaitLayer::pushKey, this);
-    }
-
-    void finish()
-    {
-        m_DoneAtUpdate = m_Updates;
-        m_Phase = Phase::Done;
     }
 
     static Uint32 pushKey(void* userdata, SDL_TimerID /*timerId*/, Uint32 /*interval*/)
@@ -545,10 +574,13 @@ class KeyDuringIdleWaitLayer : public Core::Layer
     int m_Updates = 0;
     int m_DoneAtUpdate = 0;
     int m_Attempts = 0;
-    std::uint64_t m_FirstFrameNs = 0;
-    std::uint64_t m_ArmedNs = 0;
+    std::uint64_t m_QuietSinceNs = 0;
+    std::uint64_t m_IdleWaitsSeen = 0;
+    std::uint64_t m_IdleWaitsAtArm = 0;
+    int m_OtherEvents = 0;
+    int m_OtherEventsSeen = 0;
+    int m_OtherEventsAtArm = 0;
     bool m_KeyDispatched = false;
-    int m_OtherEventsSinceArm = 0;
     std::optional<bool> m_FirstFrameAfterPushHadKey;
     mutable std::mutex m_PushMutex;
     bool m_Pushed = false; // guarded by m_PushMutex
@@ -595,27 +627,6 @@ void ThrowingOnAttachLayer::onDetach()
 }
 
 } // namespace
-
-// Test-only accessor: lets unit tests observe m_WindowGeometryChangedThisFrame after calling
-// signalWindowGeometryChanged(), which is noexcept and has no other observable effect.
-// Declared directly in namespace Core (not inside the anonymous namespace above) so the
-// `friend struct ApplicationTestAccessor;` declaration in Application.h resolves to this
-// exact type. Same pattern as NVMLGPUProbeTestAccessor in test_WindowsNVMLGPUProbe.cpp.
-namespace Core
-{
-struct ApplicationTestAccessor
-{
-    [[nodiscard]] static bool geometryChangedThisFrame(const Application& app)
-    {
-        return app.m_WindowGeometryChangedThisFrame;
-    }
-
-    [[nodiscard]] static bool closeRequestAccepted(Application& app)
-    {
-        return app.closeRequestAccepted();
-    }
-};
-} // namespace Core
 
 // =============================================================================
 // Construction and Initialization Tests
@@ -926,8 +937,8 @@ TEST(ApplicationTest, KeyDuringIdleWaitIsDispatchedBeforeTheNextFrame)
         ASSERT_TRUE(layer.pushed()) << "the timer never pushed the key: " << SDL_GetError();
         const std::optional<bool> firstFrameHadKey = layer.firstFrameAfterPushHadKey();
         ASSERT_TRUE(firstFrameHadKey.has_value())
-            << "none of " << layer.attempts() << " pushes woke the idle wait: the first frame after each began "
-            << "too late to rule out a timed-out wait, or other events skipped the wait";
+            << "none of " << layer.attempts() << " pushes woke the idle wait: each wait timed out first, "
+            << "or other events were dispatched during the attempt";
         EXPECT_TRUE(firstFrameHadKey.value_or(false))
             << "the first frame after the wake rendered before the waking key was dispatched (attempt " << layer.attempts() << ")";
     }
