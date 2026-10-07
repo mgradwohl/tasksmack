@@ -1351,7 +1351,8 @@ TEST(StorageModelTest, PublicationDoesNotWaitForTheWriterToCopyHistory)
     EXPECT_EQ(result.versionAheadOfPointer, 0U);
     EXPECT_EQ(result.inconsistentReads, 0U);
     EXPECT_EQ(model.publicationVersion(), PREFILL_SAMPLES + WRITES);
-    EXPECT_GE(result.reads, WRITES);
+    ASSERT_FALSE(result.pacingTimedOut) << "the reader stopped keeping up with the writer";
+    EXPECT_GT(result.reads, WRITES); // the pacing guarantees a read per write, plus the last one
     // Before #868 about one read per write waited out the copy. A quarter allows for scheduler noise.
     EXPECT_LE(result.slowReads, WRITES / 4) << "median write " << result.medianWriteMs << " ms, slowest read " << result.maxReadMs
                                             << " ms over " << result.reads << " reads";

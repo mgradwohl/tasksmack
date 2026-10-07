@@ -25,6 +25,7 @@
 #include <optional>
 #include <shared_mutex>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -259,6 +260,16 @@ void SystemModel::updateFromCountersLocked(const Platform::SystemCounters& count
                                            double nowSeconds,
                                            const std::optional<PowerStatus>& powerStatus)
 {
+    // The next delta baseline is copied up front, outside every lock, and committed below together
+    // with its interface index by non-throwing swaps. Assigning m_PrevCounters in place could throw
+    // (std::bad_alloc) part way through -- interface names or the whole interface vector replaced
+    // and the rest not -- leaving m_PrevInterfaceIndex sorted for the old counters, so the next
+    // sample's lookups would use wrong or out-of-range positions (#1415 review). Build first, commit
+    // last: a throw anywhere before the swaps leaves the previous pair untouched and consistent.
+    static_assert(std::is_nothrow_swappable_v<Platform::SystemCounters>);
+    static_assert(std::is_nothrow_swappable_v<std::vector<std::size_t>>);
+    Platform::SystemCounters nextPrevious = counters;
+
     const std::scoped_lock writerLock(m_WriterMutex);
     {
         const std::unique_lock lock(m_Mutex);
@@ -267,8 +278,9 @@ void SystemModel::updateFromCountersLocked(const Platform::SystemCounters& count
             m_Snapshot.power = *powerStatus;
         }
         computeSnapshot(counters, nowSeconds);
-        m_PrevCounters = counters;
-        // computeSnapshot() indexed these counters' interfaces; they are the previous ones now.
+        // computeSnapshot() indexed these counters' interfaces; counters and index become the
+        // previous pair together, without throwing.
+        std::swap(m_PrevCounters, nextPrevious);
         std::swap(m_PrevInterfaceIndex, m_InterfaceIndex);
         m_HasPrevious = true;
     }

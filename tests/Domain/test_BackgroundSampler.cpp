@@ -903,6 +903,60 @@ TEST(BackgroundSamplerTest, MetricsRecordEachSamplablesDurationWithoutOverruns)
     EXPECT_EQ(metrics.backoffs, 0U);
 }
 
+namespace
+{
+/// Takes SAMPLE_TIME, then throws, every sample.
+class SlowThrowingSamplable : public Domain::ISamplable
+{
+  public:
+    static constexpr auto SAMPLE_TIME = 150ms;
+
+    void sample() override
+    {
+        std::this_thread::sleep_for(SAMPLE_TIME);
+        m_Calls.fetch_add(1);
+        throw std::runtime_error("probe failed");
+    }
+
+    [[nodiscard]] int calls() const
+    {
+        return m_Calls.load();
+    }
+
+  private:
+    std::atomic<int> m_Calls{0};
+};
+} // namespace
+
+TEST(BackgroundSamplerTest, MetricsTimeASampleThatThrows)
+{
+    // A slow model that throws still counts: its duration, sample and overrun are recorded, so the
+    // overrun report names it rather than a quick model that succeeded (#1416 review).
+    Domain::SamplerConfig config;
+    config.interval = std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MIN_MS);
+    Domain::BackgroundSampler sampler(config);
+    const auto throwing = std::make_shared<SlowThrowingSamplable>();
+    const auto quick = std::make_shared<MockSamplable>();
+    sampler.addSamplable(throwing, "failing");
+    sampler.addSamplable(quick, "quick");
+    sampler.start();
+    ASSERT_TRUE(waitFor([&] { return sampler.metrics().pass.samples >= 1; }, 5000ms));
+    sampler.stop();
+
+    const auto metrics = sampler.metrics();
+    ASSERT_EQ(metrics.samplables.size(), 2U);
+    const auto& failing = metrics.samplables[0];
+    EXPECT_EQ(failing.name, "failing");
+    EXPECT_GE(failing.samples, 1U);
+    EXPECT_GE(failing.overruns, 1U);
+    EXPECT_GE(failing.lastDuration, SlowThrowingSamplable::SAMPLE_TIME);
+    EXPECT_GE(failing.maxDuration, failing.lastDuration);
+    EXPECT_GE(metrics.samplables[1].samples, 1U); // the sampler carried on past the throw
+    EXPECT_EQ(metrics.samplables[1].overruns, 0U);
+    EXPECT_GE(metrics.backoffs, 1U);
+    EXPECT_GE(throwing->calls(), 1);
+}
+
 TEST(BackgroundSamplerTest, MetricsStartOverOnRestart)
 {
     Domain::SamplerConfig config;

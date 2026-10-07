@@ -234,7 +234,8 @@ void BackgroundSampler::recordPass(const std::vector<Entry>& entries,
             {
                 timing.name = entries[i].name;
             }
-            // No duration: not sampled this pass (expired, threw, or the sampler was stopping).
+            // No duration: not called this pass (expired, or the sampler was stopping). A sample that
+            // threw has one: it was timed like any other.
             if (const auto& duration = durations[i]; duration.has_value())
             {
                 recordTiming(timing, *duration, interval);
@@ -299,7 +300,8 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
             currentSamplables = m_Samplables;
         }
 
-        // How long each samplable took this pass; empty for one not sampled (#1416).
+        // How long each samplable's sample() took this pass, whether it returned or threw; empty for
+        // one not called (expired, or the sampler was stopping) (#1416).
         std::vector<std::optional<std::chrono::steady_clock::duration>> durations(currentSamplables.size());
         for (std::size_t index = 0; index < currentSamplables.size(); ++index)
         {
@@ -323,13 +325,17 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
                 samplable->sample();
                 durations[index] = std::chrono::steady_clock::now() - sampleStart;
             }
+            // A sample that throws still took its time: timed too, so a slow failing model is
+            // counted (samples, overruns) and named as the slowest rather than hidden (#1416).
             catch (const std::exception& ex)
             {
+                durations[index] = std::chrono::steady_clock::now() - sampleStart;
                 logSamplerLoopException(ex.what(), startTime, nextExceptionLogTime, suppressedExceptionCount);
                 hadException = true;
             }
             catch (...)
             {
+                durations[index] = std::chrono::steady_clock::now() - sampleStart;
                 logSamplerLoopException("unknown exception", startTime, nextExceptionLogTime, suppressedExceptionCount);
                 hadException = true;
             }
