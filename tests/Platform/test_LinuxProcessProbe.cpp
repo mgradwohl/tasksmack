@@ -21,6 +21,7 @@
 
 #include "Platform/CpuAffinity.h"
 #include "Platform/Linux/LinuxProcessProbe.h"
+#include "Platform/Linux/ProcFdScan.h"
 #include "Platform/Linux/ProcPrivileges.h"
 #include "Platform/PlatformConfig.h"
 #include "Platform/ProcessTypes.h"
@@ -47,6 +48,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <initializer_list>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -1401,6 +1403,18 @@ TEST(LinuxProcessProbeTest, ListableFdsWhoseLinksCantBeReadReportNetworkUnavaila
     EXPECT_TRUE(processes[0].handleCountAvailable);
     EXPECT_EQ(processes[0].handleCount, 2);
     EXPECT_FALSE(processes[0].networkCountersAvailable);
+
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+    // The same from a pass that only counts (no network attribution, so no inode-to-PID map built
+    // from the walk, #1426): the first pass above rebuilt the map wherever netlink is available.
+    LinuxProcessProbe countOnly(proc.path);
+    countOnly.setSocketStatsForTesting(nullptr);
+    const auto counted = countOnly.enumerate();
+    ASSERT_EQ(counted.size(), 1U);
+    EXPECT_TRUE(counted[0].handleCountAvailable);
+    EXPECT_EQ(counted[0].handleCount, 2);
+    EXPECT_FALSE(counted[0].networkCountersAvailable);
+#endif
 }
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
@@ -1728,6 +1742,391 @@ TEST(LinuxProcessProbeTest, ACompleteEmptyReadingForgetsUnownedSocketsAndAFailed
 }
 #endif
 
+// =============================================================================
+// #1425: command lines cached by process identity
+// =============================================================================
+
+/// NUL-separated, NUL-terminated arguments, as /proc/[pid]/cmdline holds them.
+[[nodiscard]] std::string cmdlineOf(std::initializer_list<std::string_view> args)
+{
+    std::string text;
+    for (const std::string_view arg : args)
+    {
+        text += arg;
+        text.push_back('\0');
+    }
+    return text;
+}
+
+/// A synthetic process: its stat (comm, state, start time) and, unless nullopt,
+/// its cmdline.
+void writeCmdlineProcess(const std::filesystem::path& procRoot,
+                         std::int32_t pid,
+                         std::string_view comm,
+                         char state,
+                         std::uint64_t startTime,
+                         const std::optional<std::string>& cmdline)
+{
+    const auto dir = procRoot / std::to_string(pid);
+    writeFile(dir / "stat",
+              std::format("{} ({}) {} 1 {} {} 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 {} 0 0 "
+                          "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n",
+                          pid,
+                          comm,
+                          state,
+                          pid,
+                          pid,
+                          startTime));
+    std::error_code ignored;
+    std::filesystem::remove(dir / "cmdline", ignored);
+    if (cmdline.has_value())
+    {
+        writeFile(dir / "cmdline", *cmdline);
+    }
+}
+
+/// The process `pid` as one enumerate() sees it (pid 0 if it isn't listed).
+[[nodiscard]] ProcessCounters enumerateOne(LinuxProcessProbe& probe, std::int32_t pid)
+{
+    const auto processes = probe.enumerate();
+    const auto it = std::ranges::find(processes, pid, &ProcessCounters::pid);
+    return it != processes.end() ? *it : ProcessCounters{};
+}
+
+constexpr auto NEVER_EXPIRES = std::chrono::hours{1};
+
+TEST(LinuxProcessProbeTest, ACommandLineIsReadOnceAndReusedWhileFresh)
+{
+    // #1425: /proc/[pid]/cmdline used to be opened and read for every process on
+    // every sample, though a command line is set at exec. It is now kept per
+    // process and reused: a change to the file within the TTL isn't read -- which
+    // is how this test can see the cache at all.
+    ScopedTempDir proc("ts_test_proc_cmdline_cached");
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, cmdlineOf({"/usr/bin/app", "--first"}));
+    // A comm the kernel cut at 15 characters: the full name comes from the
+    // command line, and must come back with the cached command too (#951).
+    writeCmdlineProcess(proc.path, 4343, "systemd-journal", 'S', 100, cmdlineOf({"/usr/lib/systemd/systemd-journald"}));
+
+    LinuxProcessProbe probe(proc.path);
+    probe.setCmdlineCacheTtlForTesting(NEVER_EXPIRES);
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "/usr/bin/app --first");
+    EXPECT_EQ(enumerateOne(probe, 4343).name, "systemd-journald");
+
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, cmdlineOf({"/usr/bin/app", "--second"}));
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "/usr/bin/app --first") << "same process, within the TTL: the cached command";
+    const auto journald = enumerateOne(probe, 4343);
+    EXPECT_EQ(journald.name, "systemd-journald") << "the full name is cached with the command";
+    EXPECT_EQ(journald.command, "/usr/lib/systemd/systemd-journald");
+}
+
+TEST(LinuxProcessProbeTest, ACachedCommandLineIsReadAgainOnceItExpires)
+{
+    // #1425: a process can rewrite its argv (a process title: postgres, sshd), so
+    // a cached command line is read again after at most the TTL.
+    ScopedTempDir proc("ts_test_proc_cmdline_ttl");
+    writeCmdlineProcess(proc.path, 4242, "postgres", 'S', 100, cmdlineOf({"postgres: idle"}));
+
+    constexpr auto TTL = std::chrono::milliseconds{200};
+    LinuxProcessProbe probe(proc.path);
+    probe.setCmdlineCacheTtlForTesting(TTL);
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "postgres: idle");
+
+    writeCmdlineProcess(proc.path, 4242, "postgres", 'S', 100, cmdlineOf({"postgres: SELECT"}));
+    std::this_thread::sleep_for(TTL + std::chrono::milliseconds{50});
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "postgres: SELECT") << "past the TTL: read again";
+
+    // With no TTL nothing is reused.
+    LinuxProcessProbe uncached(proc.path);
+    uncached.setCmdlineCacheTtlForTesting(std::chrono::milliseconds{0});
+    EXPECT_EQ(enumerateOne(uncached, 4242).command, "postgres: SELECT");
+    writeCmdlineProcess(proc.path, 4242, "postgres", 'S', 100, cmdlineOf({"postgres: COMMIT"}));
+    EXPECT_EQ(enumerateOne(uncached, 4242).command, "postgres: COMMIT");
+}
+
+TEST(LinuxProcessProbeTest, AReusedPidGetsItsOwnCommandLine)
+{
+    // #1425: the cache is keyed on the process, not the PID: a process that
+    // reuses the PID has a different start time, and is read, not shown the
+    // exited process's command.
+    ScopedTempDir proc("ts_test_proc_cmdline_pid_reuse");
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, cmdlineOf({"app", "--old"}));
+
+    LinuxProcessProbe probe(proc.path);
+    probe.setCmdlineCacheTtlForTesting(NEVER_EXPIRES);
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "app --old");
+
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 200, cmdlineOf({"app", "--new"}));
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "app --new") << "same PID and comm, another start time: another process";
+}
+
+TEST(LinuxProcessProbeTest, AnExecGetsItsNewCommandLine)
+{
+    // #1425: exec keeps the PID and the start time but replaces the command line
+    // -- a shell's child is "bash" until it execs "ls". Exec also sets a new
+    // comm, and a changed comm is read again.
+    ScopedTempDir proc("ts_test_proc_cmdline_exec");
+    writeCmdlineProcess(proc.path, 4242, "bash", 'S', 100, cmdlineOf({"bash"}));
+
+    LinuxProcessProbe probe(proc.path);
+    probe.setCmdlineCacheTtlForTesting(NEVER_EXPIRES);
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "bash");
+
+    writeCmdlineProcess(proc.path, 4242, "ls", 'R', 100, cmdlineOf({"ls", "-la"}));
+    const auto exec = enumerateOne(probe, 4242);
+    EXPECT_EQ(exec.name, "ls");
+    EXPECT_EQ(exec.command, "ls -la");
+}
+
+TEST(LinuxProcessProbeTest, AnExitedProcessLeavesTheCommandLineCache)
+{
+    // #1425: an entry lasts only while its process is listed: the pass that no
+    // longer sees it drops it, so the cache holds no more than the live
+    // processes. Seen here by bringing back a process with the very same
+    // identity, which a kept entry would have answered.
+    ScopedTempDir proc("ts_test_proc_cmdline_evict");
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, cmdlineOf({"app", "--first"}));
+    writeCmdlineProcess(proc.path, 4343, "other", 'S', 100, cmdlineOf({"other"}));
+
+    LinuxProcessProbe probe(proc.path);
+    probe.setCmdlineCacheTtlForTesting(NEVER_EXPIRES);
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "app --first");
+
+    std::filesystem::remove_all(proc.path / "4242");
+    EXPECT_EQ(enumerateOne(probe, 4242).pid, 0) << "exited";
+
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, cmdlineOf({"app", "--second"}));
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "app --second") << "its entry went when it exited";
+    EXPECT_EQ(enumerateOne(probe, 4343).command, "other");
+}
+
+TEST(LinuxProcessProbeTest, ACachedProcessThatBecomesAZombieIsDefunct)
+{
+    // #1155 with #1425: the <defunct> label is decided from stat's state each
+    // sample, before the cache, so a process whose command was cached while it
+    // ran is still shown as defunct.
+    ScopedTempDir proc("ts_test_proc_cmdline_zombie");
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, cmdlineOf({"app", "--serve"}));
+
+    LinuxProcessProbe probe(proc.path);
+    probe.setCmdlineCacheTtlForTesting(NEVER_EXPIRES);
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "app --serve");
+
+    writeCmdlineProcess(proc.path, 4242, "app", 'Z', 100, std::string{}); // a zombie's cmdline reads empty
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "app <defunct>");
+}
+
+TEST(LinuxProcessProbeTest, AnUnreadableCommandLineIsTriedAgainNextSample)
+{
+    // #1425: a command line that can't be read (another user's process under
+    // hidepid, or one exiting) leaves the command empty and is not cached: the
+    // next sample tries again.
+    ScopedTempDir proc("ts_test_proc_cmdline_unreadable");
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, std::nullopt);
+
+    LinuxProcessProbe probe(proc.path);
+    probe.setCmdlineCacheTtlForTesting(NEVER_EXPIRES);
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "");
+
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, cmdlineOf({"app"}));
+    EXPECT_EQ(enumerateOne(probe, 4242).command, "app");
+}
+
+TEST(ProcFdScanTest, OnlyASocketLinkNamesASocketInode)
+{
+    // #1426: the shared fd walk takes a socket's inode from its link target, as buildInodeToPidMap() did.
+    EXPECT_EQ(ProcFdScan::socketInode("socket:[12345]"), std::optional<std::uint64_t>{12345});
+    EXPECT_EQ(ProcFdScan::socketInode("socket:[18446744073709551615]"), std::optional<std::uint64_t>{18446744073709551615ULL});
+    for (const std::string_view target : {"pipe:[12345]",
+                                          "/dev/null",
+                                          "anon_inode:[eventpoll]",
+                                          "socket:[]",
+                                          "socket:[0]",
+                                          "socket:[12a]",
+                                          "socket:[123",
+                                          "socket:[18446744073709551616]"})
+    {
+        EXPECT_EQ(ProcFdScan::socketInode(target), std::nullopt) << target;
+    }
+}
+
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+TEST(LinuxProcessProbeTest, ARebuildPassCountsFdsAndBuildsTheInodeMapInOneWalk)
+{
+    // #1426: every process's /proc/[pid]/fd was walked twice on the samples that
+    // rebuilt the socket inode-to-PID map -- once by enumerate() to count FDs,
+    // once by buildInodeToPidMap(). enumerate() now builds the map from its own
+    // walk when it is due, and readSocketTraffic() uses it. Both results must be
+    // what the two separate walks gave.
+    ScopedTempDir proc("ts_test_proc_shared_fd_walk");
+    writeFile(proc.path / "stat", "cpu  100 0 100 800 0 0 0 0 0 0\n");
+    const auto writeProcess = [&proc](std::int32_t pid, std::uint64_t startTime)
+    {
+        writeFile(proc.path / std::to_string(pid) / "stat",
+                  std::format("{} (app) S 1 {} {} 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 {} 0 0 "
+                              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n",
+                              pid,
+                              pid,
+                              pid,
+                              startTime));
+        std::filesystem::create_directories(proc.path / std::to_string(pid) / "fd");
+        return proc.path / std::to_string(pid) / "fd";
+    };
+    const auto fd4242 = writeProcess(4242, 1000); // two sockets, a file and a pipe
+    std::filesystem::create_symlink("socket:[11]", fd4242 / "3");
+    std::filesystem::create_symlink("socket:[12]", fd4242 / "4");
+    std::filesystem::create_symlink("/dev/null", fd4242 / "5");
+    std::filesystem::create_symlink("pipe:[77]", fd4242 / "6");
+    const auto fd4343 = writeProcess(4343, 2000); // shares 11 (the lowest PID keeps it) and has 13
+    std::filesystem::create_symlink("socket:[11]", fd4343 / "3");
+    std::filesystem::create_symlink("socket:[13]", fd4343 / "4");
+    const auto fd4444 = writeProcess(4444, 3000); // fds can't be listed
+    std::filesystem::remove(fd4444);
+    writeFile(fd4444, "not a directory");
+    const auto fd4545 = writeProcess(4545, 4000); // listable, no links (a synthetic /proc's plain files)
+    writeFile(fd4545 / "0", "");
+    writeFile(fd4545 / "1", "");
+
+    using Platform::TestSupport::FakeSocket;
+    using Platform::TestSupport::ScriptedNetlinkTransport;
+    const std::vector<FakeSocket> sockets{{.inode = 11}, {.inode = 12}, {.inode = 13}, {.inode = 99}};
+    auto transport = std::make_unique<ScriptedNetlinkTransport>();
+    auto* script = transport.get();
+    auto stats = std::make_shared<Platform::NetlinkSocketStats>(std::move(transport), std::chrono::milliseconds{0});
+    script->onRequest = [&](const ScriptedNetlinkTransport::Request& request) -> ScriptedNetlinkTransport::Reply
+    {
+        return Platform::TestSupport::completeDump(request, request.family == AF_INET ? sockets : std::vector<FakeSocket>{});
+    };
+
+    LinuxProcessProbe probe(proc.path);
+    probe.setSocketStatsForTesting(stats);
+    int scans = 0;
+    probe.setInodeMapScanHookForTesting([&scans] { ++scans; });
+    ASSERT_TRUE(probe.capabilities().hasNetworkCounters);
+
+    // The first pass rebuilds the map (it has never been built), walking each fd
+    // directory once.
+    const auto rebuildPass = probe.enumerate();
+    EXPECT_EQ(scans, 1) << "enumerate() built the map";
+    const auto traffic = probe.readSocketTraffic();
+    EXPECT_EQ(scans, 1) << "readSocketTraffic() used it rather than walking /proc/*/fd again";
+
+    // The map is the one buildInodeToPidMap()'s own walk builds.
+    const auto expected = buildInodeToPidMap(proc.path);
+    ASSERT_EQ(traffic.sockets.size(), sockets.size());
+    for (const auto& socket : traffic.sockets)
+    {
+        const auto it = expected.find(socket.key);
+        const SocketOwner owner = it != expected.end() ? it->second : SocketOwner{};
+        EXPECT_EQ(socket.pid, owner.pid) << "socket " << socket.key;
+        EXPECT_EQ(socket.ownerStartTimeTicks, owner.startTimeTicks) << "socket " << socket.key;
+    }
+    const auto ownerOf = [&traffic](std::uint64_t inode)
+    {
+        const auto it = std::ranges::find(traffic.sockets, inode, &SocketTrafficSample::key);
+        return it != traffic.sockets.end() ? std::pair{it->pid, it->ownerStartTimeTicks} : std::pair{-1, std::uint64_t{0}};
+    };
+    EXPECT_EQ(ownerOf(11), (std::pair{4242, std::uint64_t{1000}})) << "shared: the lowest PID keeps it (#1099)";
+    EXPECT_EQ(ownerOf(12), (std::pair{4242, std::uint64_t{1000}}));
+    EXPECT_EQ(ownerOf(13), (std::pair{4343, std::uint64_t{2000}})) << "with its owner's start time (#1336)";
+    EXPECT_EQ(ownerOf(99), (std::pair{0, std::uint64_t{0}})) << "held by no process listed";
+
+    // The FD counts are the ones a pass that doesn't rebuild the map gives: this
+    // probe's next pass (the map is fresh) and a probe with no network
+    // attribution at all.
+    const auto countPass = probe.enumerate();
+    EXPECT_EQ(scans, 1) << "the map isn't due again yet";
+    LinuxProcessProbe noNetwork(proc.path);
+    noNetwork.setSocketStatsForTesting(nullptr);
+    const auto plainPass = noNetwork.enumerate();
+    struct FdView
+    {
+        std::int32_t count;
+        bool countAvailable;
+        bool networkAvailable;
+        bool operator==(const FdView&) const = default;
+    };
+    const auto fdsOf = [](const std::vector<ProcessCounters>& processes, std::int32_t pid)
+    {
+        const auto it = std::ranges::find(processes, pid, &ProcessCounters::pid);
+        EXPECT_NE(it, processes.end()) << pid;
+        return it != processes.end() ? FdView{it->handleCount, it->handleCountAvailable, it->networkCountersAvailable}
+                                     : FdView{-1, false, false};
+    };
+    const std::vector<std::pair<std::int32_t, FdView>> expectedFds{
+        {4242, {4, true, true}}, {4343, {2, true, true}}, {4444, {0, false, false}}, {4545, {2, true, true}}};
+    for (const auto& [pid, fds] : expectedFds)
+    {
+        EXPECT_EQ(fdsOf(rebuildPass, pid), fds) << "rebuild pass, pid " << pid;
+        EXPECT_EQ(fdsOf(countPass, pid), fds) << "count-only pass, pid " << pid;
+        EXPECT_EQ(fdsOf(plainPass, pid), fds) << "no network, pid " << pid;
+    }
+}
+TEST(LinuxProcessProbeTest, APidReusedBetweenTheStatPassAndTheFdWalkGivesTheRowNoFds)
+{
+    // #1426 review: a rebuild pass reopens /proc/[pid] for its fd walk after the stat pass. If the
+    // process exited and its PID was reused in between, the row (the old process) must not get the new
+    // process's FD count; the map still credits the new process's sockets to it, by its start time.
+    ScopedTempDir proc("ts_test_proc_fd_walk_pid_reuse");
+    writeFile(proc.path / "stat", "cpu  100 0 100 800 0 0 0 0 0 0\n");
+    const auto writeStat = [&proc](std::uint64_t startTime)
+    {
+        writeFile(proc.path / "4242" / "stat",
+                  std::format("4242 (app) S 1 4242 4242 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 {} 0 0 "
+                              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n",
+                              startTime));
+    };
+    writeStat(1000);
+    const auto fdDir = proc.path / "4242" / "fd";
+    std::filesystem::create_directories(fdDir);
+    std::filesystem::create_symlink("/dev/null", fdDir / "0");
+
+    using Platform::TestSupport::FakeSocket;
+    using Platform::TestSupport::ScriptedNetlinkTransport;
+    const std::vector<FakeSocket> sockets{{.inode = 11}};
+    auto transport = std::make_unique<ScriptedNetlinkTransport>();
+    auto* script = transport.get();
+    auto stats = std::make_shared<Platform::NetlinkSocketStats>(std::move(transport), std::chrono::milliseconds{0});
+    script->onRequest = [&](const ScriptedNetlinkTransport::Request& request) -> ScriptedNetlinkTransport::Reply
+    {
+        return Platform::TestSupport::completeDump(request, request.family == AF_INET ? sockets : std::vector<FakeSocket>{});
+    };
+
+    LinuxProcessProbe probe(proc.path);
+    probe.setSocketStatsForTesting(stats);
+    // Runs between the stat pass and the fd walk: the process exits and PID 4242 is reused.
+    probe.setInodeMapScanHookForTesting(
+        [&]
+        {
+            writeStat(2000);
+            std::filesystem::create_symlink("socket:[11]", fdDir / "1");
+            std::filesystem::create_symlink("/dev/null", fdDir / "2");
+        });
+    ASSERT_TRUE(probe.capabilities().hasNetworkCounters);
+
+    const auto processes = probe.enumerate();
+    ASSERT_EQ(processes.size(), 1U);
+    EXPECT_EQ(processes[0].startTimeTicks, 1000U) << "the row is the process the stat pass read";
+    EXPECT_FALSE(processes[0].handleCountAvailable) << "the reopened process's FDs aren't the row's";
+    EXPECT_EQ(processes[0].handleCount, 0);
+    EXPECT_FALSE(processes[0].networkCountersAvailable);
+
+    const auto traffic = probe.readSocketTraffic();
+    ASSERT_EQ(traffic.sockets.size(), 1U);
+    EXPECT_EQ(traffic.sockets[0].pid, 4242);
+    EXPECT_EQ(traffic.sockets[0].ownerStartTimeTicks, 2000U) << "credited to the process that holds it (#1336)";
+
+    // With no reuse, the same pass gives the row its count.
+    probe.setInodeMapScanHookForTesting({});
+    probe.setInodeMapTtlForTesting(std::chrono::milliseconds{0});
+    probe.setInodeMapEarlyRebuildIntervalForTesting(std::chrono::milliseconds{0});
+    const auto next = probe.enumerate();
+    ASSERT_EQ(next.size(), 1U);
+    EXPECT_EQ(next[0].startTimeTicks, 2000U);
+    EXPECT_TRUE(next[0].handleCountAvailable);
+    EXPECT_EQ(next[0].handleCount, 3);
+    EXPECT_TRUE(next[0].networkCountersAvailable);
+}
+#endif
 TEST(LinuxProcessProbeTest, EmptyProcDirReturnsNoProcesses)
 {
     ScopedTempDir scoped("ts_test_proc_empty");
