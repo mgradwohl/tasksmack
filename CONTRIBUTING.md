@@ -727,6 +727,11 @@ a non-finite/`NaN` timing, and comparing two different timing fields for the sam
 A slowdown also has to exceed an absolute noise floor, `--min-abs-delta-ns` (default 1.0ns), to
 count: a sub-nanosecond microbenchmark such as `BM_Numeric_ToDouble_Int` moving 0.4ns -> 0.6ns
 reads as +50% but is timer noise (#1322). Pass `--min-abs-delta-ns 0` to gate on percentage alone.
+A benchmark that skips itself on purpose (`state.SkipWithMessage(...)`, `"skipped": true` in the
+JSON) on either side is reported as *not measured* and left out of coverage entirely, numerator and
+denominator; a `SkipWithError` (`"error_occurred": true`) on either side still counts against it, even if the other side skipped. The
+`BM_GPUProbe_*`/`BM_GPUModel_*` benchmarks skip this way when the real probe finds no GPU, as on the
+hosted runner, instead of timing an empty probe's early return (#1420).
 
 This is a *separate* baseline from `perf-data/linux-baseline.json` above, deliberately: that one
 was recorded on a local developer machine (10 cores @ 3.7 GHz) for local `tools/bench.sh`
@@ -794,11 +799,11 @@ deliberate, reviewed performance change that the gate should treat as the new no
 | `BM_NetlinkSocketStats_*` | Netlink INET_DIAG socket query performance (Linux only) |
 | `BM_StorageModel_*` | Storage probe/model sampling, history accessor, and per-disk snapshot performance |
 | `BM_StorageModel_MemoryGrowth` | Memory growth over repeated `sample()` cycles |
-| `BM_GPUModel_*` | GPU probe enumeration, counter reads, model refresh, and history accessor performance |
+| `BM_GPUProbe_*`, `BM_GPUModel_*` | GPU probe enumeration, counter reads, model refresh, and history accessor performance (skipped on a machine with no GPU, #1420) |
 | `BM_GPUModel_MemoryGrowth` | Memory growth over repeated GPU `refresh()` cycles |
 | `BM_Numeric_*` | Micro-benchmarks for `toDouble`, `clampPercentToFloat`, `narrowOr`, and mixed process-table workload |
 | `BM_ChartWidgets_*` | `UI::Widgets` chart helpers: `computeAlpha` smoothing, `tailAlignedSpan` history-window selection, and the `formatAxisLocalized`/`formatAxisBytesPerSec` axis-label formatters — the layer the Windows ETW app-trace (perf-plan-574 / issue #574) flagged as expensive but that previously had no Linux-runnable coverage |
-| `BM_ChartGeometry_*` | One whole headless ImGui+ImPlot frame (`NewFrame()` through `Render()`, no window or GL) of the real `ChartWidgets.h` charts with fixed data: the stacked CPU chart at full history, the per-core grid, the memory chart, and an uncached min/max-reduced 18k-sample line. Reports `vertices`/`indices`/`draw_lists`/`draw_cmds` counters; the same scenes (`benchmarks/ChartGeometryScenes.h`) are held to a vertex/index budget by `tests/UI/test_ChartGeometryBudget.cpp`, which gates every PR (#1421) |
+| `BM_ChartGeometry_*` | One whole headless ImGui+ImPlot frame (`NewFrame()` through `Render()`, no window or GL) of the real `ChartWidgets.h` charts with fixed data: the stacked CPU chart at full history, the per-core grid (16 cores, and 64 narrow ones whose point budget follows the plot width, #1411), the memory chart, and an uncached min/max-reduced 18k-sample line. Reports `vertices`/`indices`/`draw_lists`/`draw_cmds` counters; the same scenes (`benchmarks/ChartGeometryScenes.h`) are held to a vertex/index budget by `tests/UI/test_ChartGeometryBudget.cpp`, which gates every PR (#1421) |
 | `BM_*_FullHistory/*`, `BM_*_Cardinality/*` | Domain model `publish()`/`publication()` fed from `tests/Mocks` probes at the limits: history held at 300/3k/18k samples (18k = 1800 s at 100 ms), and many cores, interfaces, disks or processes (#1422) |
 | `BM_SystemModel_Concurrent_PublicationWait/*` | How long a UI-style `publication()` call waits when it lands on a publish in another thread (the exclusive lock's hold time), with optional extra reader threads; the baseline for #868 (#1422) |
 

@@ -750,6 +750,90 @@ TEST(ChartWidgetsReduceTest, MinMaxReductionKeepsASingleSamplePeak)
     EXPECT_DOUBLE_EQ(outX[static_cast<std::size_t>(written) - 1], 0.0);
 }
 
+// ========== plotPointBudget (#1411) ==========
+
+TEST(ChartWidgetsPointBudgetTest, ANarrowPlotGetsAboutTwoPointsPerPixelColumn)
+{
+    // A ~150 px per-core sparkline: 300 points, rounded up to the 16-point step, not the 720 cap.
+    EXPECT_EQ(plotPointBudget(150.0F, 1.0F), 304);
+    EXPECT_EQ(plotPointBudget(200.0F, 1.0F), 400);
+}
+
+TEST(ChartWidgetsPointBudgetTest, AWidePlotIsCappedAtTheDenseMaximum)
+{
+    EXPECT_EQ(plotPointBudget(360.0F, 1.0F), LINE_PLOT_MAX_POINTS_DENSE);
+    EXPECT_EQ(plotPointBudget(1000.0F, 1.0F), LINE_PLOT_MAX_POINTS_DENSE);
+    EXPECT_EQ(plotPointBudget(3840.0F, 2.0F), LINE_PLOT_MAX_POINTS_DENSE);
+    // A caller's lower cap wins over the width's budget.
+    EXPECT_EQ(plotPointBudget(1000.0F, 1.0F, 200), 200);
+}
+
+TEST(ChartWidgetsPointBudgetTest, ATinyPlotKeepsTheMinimum)
+{
+    EXPECT_EQ(plotPointBudget(1.0F, 1.0F), LINE_PLOT_MIN_POINTS);
+    EXPECT_EQ(plotPointBudget(20.0F, 1.0F), LINE_PLOT_MIN_POINTS);
+    // ...unless the caller's cap is lower still.
+    EXPECT_EQ(plotPointBudget(1.0F, 1.0F, 32), 32);
+}
+
+TEST(ChartWidgetsPointBudgetTest, TheBudgetCountsPhysicalPixels)
+{
+    // At a framebuffer scale of 2 the same plot covers twice the pixel columns.
+    EXPECT_EQ(plotPointBudget(150.0F, 2.0F), 608);
+    EXPECT_EQ(plotPointBudget(100.0F, 1.5F), 304);
+    // An unusable scale reads as 1.
+    EXPECT_EQ(plotPointBudget(150.0F, 0.0F), plotPointBudget(150.0F, 1.0F));
+    EXPECT_EQ(plotPointBudget(150.0F, -2.0F), plotPointBudget(150.0F, 1.0F));
+    EXPECT_EQ(plotPointBudget(150.0F, std::numeric_limits<float>::quiet_NaN()), plotPointBudget(150.0F, 1.0F));
+}
+
+TEST(ChartWidgetsPointBudgetTest, AnUnknownWidthGetsTheFullCap)
+{
+    for (const float width : {0.0F, -10.0F, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()})
+    {
+        SCOPED_TRACE(width);
+        EXPECT_EQ(plotPointBudget(width, 1.0F), LINE_PLOT_MAX_POINTS_DENSE);
+        EXPECT_EQ(plotPointBudget(width, 1.0F, 300), 300);
+    }
+}
+
+TEST(ChartWidgetsPointBudgetTest, TheBudgetGrowsWithWidthInWholeSteps)
+{
+    int previous = 0;
+    for (int width = 1; width <= 2000; ++width)
+    {
+        SCOPED_TRACE(width);
+        const int budget = plotPointBudget(static_cast<float>(width), 1.0F);
+        EXPECT_GE(budget, previous);
+        EXPECT_GE(budget, LINE_PLOT_MIN_POINTS);
+        EXPECT_LE(budget, LINE_PLOT_MAX_POINTS_DENSE);
+        EXPECT_EQ(budget % LINE_PLOT_POINT_BUDGET_STEP, 0);
+        EXPECT_GE(static_cast<double>(budget), std::min(2.0 * width, static_cast<double>(LINE_PLOT_MAX_POINTS_DENSE)));
+        previous = budget;
+    }
+    // A fraction of a pixel of layout jitter keeps the budget, and so the cached reduction.
+    EXPECT_EQ(plotPointBudget(151.3F, 1.0F), plotPointBudget(151.6F, 1.0F));
+}
+
+TEST(ChartWidgetsPointBudgetTest, ANarrowBudgetStillKeepsASingleSamplePeak)
+{
+    // The reduction under a sparkline's budget still keeps a one-sample spike, so a narrower budget
+    // draws fewer points without hiding what the wider one showed (#1411).
+    ReduceFixture f;
+    f.y[1234] = 99.0;
+    f.y[2345] = -5.0;
+    const int budget = plotPointBudget(150.0F, 1.0F);
+    std::vector<double> outX(static_cast<std::size_t>(budget));
+    std::vector<double> outY(static_cast<std::size_t>(budget));
+    const int written = reduceSeriesMinMax(f.x.data(), f.y.data(), ReduceFixture::COUNT, budget, 1000.0, outX.data(), outY.data());
+    ASSERT_GT(written, 0);
+    ASSERT_LE(written, budget);
+    const std::span<const double> kept = std::span(outY).first(static_cast<std::size_t>(written));
+    EXPECT_DOUBLE_EQ(std::ranges::max(kept), 99.0);
+    EXPECT_DOUBLE_EQ(std::ranges::min(kept), -5.0);
+    EXPECT_DOUBLE_EQ(outX[static_cast<std::size_t>(written) - 1], 0.0);
+}
+
 TEST(ChartWidgetsReduceTest, MinMaxReductionIsStableAsTheWindowScrolls)
 {
     // Every frame, x shifts left by the time elapsed and the anchor (now) moves right by the same

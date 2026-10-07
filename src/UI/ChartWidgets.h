@@ -199,7 +199,41 @@ inline constexpr float NOW_BAR_MIN_WIDTH_EM = 1.0F;
     const float minimum = std::max(1.0F, std::round(NOW_BAR_MIN_WIDTH_EM * em));
     return std::clamp(std::floor(budget / count), std::min(minimum, full), full);
 }
+/// The most points a history series is reduced to, whatever its plot's width: the ceiling under
+/// plotPointBudget().
 inline constexpr int LINE_PLOT_MAX_POINTS_DENSE = 720;
+
+/// Points a history series is reduced to per pixel column of its plot (#1411): the min/max reduction
+/// keeps a bucket's lowest and highest sample, so about two points per column keep every column's
+/// extremes in reach while drawing no more than the plot can show.
+inline constexpr double LINE_PLOT_POINTS_PER_PIXEL = 2.0;
+
+/// The fewest points plotPointBudget() gives a plot, however narrow: still a recognisable line.
+inline constexpr int LINE_PLOT_MIN_POINTS = 64;
+
+/// plotPointBudget() rounds up to a multiple of this, so a plot whose width moves by a fraction of a
+/// pixel between frames keeps the same budget, and its ReducedPointsCache entry stays valid.
+inline constexpr int LINE_PLOT_POINT_BUDGET_STEP = 16;
+
+/// How many points a history series in a plot @p plotWidth wide (ImGui units) is reduced to (#1411):
+/// LINE_PLOT_POINTS_PER_PIXEL per physical pixel column (@p framebufferScale physical pixels per unit),
+/// rounded up to LINE_PLOT_POINT_BUDGET_STEP, between LINE_PLOT_MIN_POINTS and @p maxPoints. A narrow
+/// sparkline needs a fraction of the points a full-width chart does. An unknown width (not positive,
+/// or not finite) gets @p maxPoints, the budget before widths were taken into account.
+[[nodiscard]] inline int plotPointBudget(float plotWidth, float framebufferScale, int maxPoints = LINE_PLOT_MAX_POINTS_DENSE) noexcept
+{
+    if (!std::isfinite(plotWidth) || !(plotWidth > 0.0F) || maxPoints <= 0)
+    {
+        return maxPoints;
+    }
+    const float scale = (std::isfinite(framebufferScale) && framebufferScale > 0.0F) ? framebufferScale : 1.0F;
+    const double wanted = std::ceil(static_cast<double>(plotWidth) * static_cast<double>(scale) * LINE_PLOT_POINTS_PER_PIXEL);
+    constexpr double STEP = LINE_PLOT_POINT_BUDGET_STEP;
+    const double stepped = std::ceil(wanted / STEP) * STEP;
+    const double clamped =
+        std::clamp(stepped, static_cast<double>(std::min(LINE_PLOT_MIN_POINTS, maxPoints)), static_cast<double>(maxPoints));
+    return static_cast<int>(clamped);
+}
 
 /// RAII guard that pushes the chart font (see UI::chartFontSize()) for axis labels and hints.
 class PlotFontGuard
@@ -1014,7 +1048,8 @@ inline void reduceAlignedPoints(
 ///
 /// Sound because the reductions anchor their buckets in absolute time: the indices kept depend only
 /// on the samples, which a Key names -- the data generation they were read under, how many there
-/// are, and the point budget -- with `dataId` telling apart series that share a generation and a
+/// are, and the point budget (which follows the plot's width, plotPointBudget(), so a resize that
+/// changes it rebuilds) -- with `dataId` telling apart series that share a generation and a
 /// length (two lines in one chart; see seriesFingerprint()). A generation of 0 is never cached: points() then rebuilds on
 /// every call, which is the uncached behaviour.
 /// A ReducedPointsCache::Key::dataId for a series, from its content rather than its address: the
@@ -1323,13 +1358,26 @@ inline ChartDataScope g_ActiveChartDataScope;
     return entry.cache;
 }
 
+/// The point budget for a series drawn in the current plot (#1411): plotPointBudget() for the plot
+/// area's width, capped at @p maxPoints. Call between BeginPlot and EndPlot, after any axis setup: it
+/// reads the plot's geometry, which locks ImPlot's setup (as drawing the series would).
+[[nodiscard]] inline int currentPlotPointBudget(int maxPoints = LINE_PLOT_MAX_POINTS_DENSE)
+{
+    return plotPointBudget(ImPlot::GetPlotSize().x, ImGui::GetIO().DisplayFramebufferScale.x, maxPoints);
+}
+
 /// @p lineThickness is authored at the reference configuration; it is scaled by lineWeight().
 /// A chart fills one series at most (#1198): a chart with several draws them with plotSeries() and
 /// their SeriesRole rather than passing `drawFill` by hand.
 ///
+/// A series longer than its point budget is min/max-reduced to it: @p maxPointCount, but no more than
+/// the plot's width calls for (currentPlotPointBudget(), #1411), so a narrow sparkline draws a
+/// fraction of a full-width chart's points. Each bucket's extremes are kept, so spikes still show.
+///
 /// Inside a HistoryChart with a data generation (HistoryChartConfig::dataGeneration), a long series'
-/// reduction is cached per plot and label and replayed until the generation, the series' buffer or
-/// its length changes (#1139). The generation must then cover everything `yData` is computed from.
+/// reduction is cached per plot and label and replayed until the generation, the series' buffer, its
+/// length or its point budget (so the plot's width) changes (#1139). The generation must then cover
+/// everything `yData` is computed from.
 ///
 /// Draws from function-local scratch buffers: call it only while a frame is being built, on the UI
 /// thread (see "Frame-keyed caches" above, #1181).
@@ -1377,8 +1425,10 @@ inline void plotLineWithFill(const char* label,
             label, plotXData, plotYData, plotCount, {ImPlotProp_LineColor, lineColor, ImPlotProp_LineWeight, lineWeight(lineThickness)});
     };
 
-    // Clamp effective max so the reduction and buffer capacity stay in sync.
-    const int effectiveMax = (maxPointCount > 1) ? std::min(maxPointCount, static_cast<int>(LINE_PLOT_MAX_POINTS_DENSE)) : maxPointCount;
+    // At most LINE_PLOT_MAX_POINTS_DENSE, and no more than the plot's width calls for (#1411). The
+    // budget is part of the cache key below, so a resize that changes it rebuilds the points.
+    const int effectiveMax =
+        (maxPointCount > 1) ? currentPlotPointBudget(std::min(maxPointCount, static_cast<int>(LINE_PLOT_MAX_POINTS_DENSE))) : maxPointCount;
 
     // The points actually drawn, as TX: the series (reduced if it is long), then its last reading held
     // out to x = 0 (holdLastValueToNow). UI thread only; reused, so drawing costs no allocation once
