@@ -337,9 +337,8 @@ class SdlEventPushingLayer : public Core::Layer
 };
 
 /// #1409: once the loop has settled into idle pacing, starts an SDL timer that pushes a key-down from
-/// SDL's timer thread partway through the idle wait (IDLE_FRAME_SLEEP_MS is 50 ms), then records, for
-/// every frame (onUpdate), whether it began after the push and whether the key had been dispatched
-/// (onSDLEvent) by then.
+/// SDL's timer thread partway through the idle wait (IDLE_FRAME_SLEEP_MS is 50 ms), then checks that
+/// the first frame (onUpdate) to begin after the push already had the key dispatched (onSDLEvent).
 ///
 /// "After the push" is decided by causality, not timestamps: the timer thread enqueues the event and
 /// sets m_Pushed under m_PushMutex, and onUpdate() reads m_Pushed under the same mutex. A frame that
@@ -347,18 +346,43 @@ class SdlEventPushingLayer : public Core::Layer
 /// the lock first). Comparing SDL_GetTicksNS() stamps instead raced: SDL_PushEvent() can wake the loop
 /// before the push time is read, so the old loop's stale post-wake frame could land just before the
 /// recorded push time, be excluded, and let the test pass on the bug.
+///
+/// Only a push that wakes the idle wait tests #1409 (#1446). If the wait times out first, the loop
+/// renders the frame it was due to render, and the key is left for the next drain. That is correct,
+/// but the frame begins after the push without the key. Under CPU load this happens two ways:
+/// - The 25 ms timer fires late, after the 50 ms wait has timed out.
+/// - The push lands inside the wait, but the wait does not wake. On X11 and Wayland, SDL wakes a
+///   wait from another thread with a message that goes through the display server. Under load that
+///   message can arrive after the timeout (traced: push 30 ms into a 49 ms wait, no wake).
+///
+/// So an attempt counts only if the first frame after the push began less than WAKE_DEADLINE_NS
+/// after the frame that armed the timer. The next idle wait lasts at least 50 ms from that frame's
+/// lastFrameStart (computeIdleWaitMs rounds up), which comes just before its onUpdate(). A frame
+/// that begins sooner was not the timed-out frame, so the push woke the wait. Frames are also
+/// excluded when another event was dispatched since arming, as that iteration skipped the wait. An
+/// excluded attempt lets its key drain and tries again; the test fails if none counts.
+///
+/// The old loop (SDL_WaitEventTimeout(nullptr, ...), then render) still fails a counted attempt:
+/// the push wakes it, and its woken frame begins straight away and renders before draining the key.
 class KeyDuringIdleWaitLayer : public Core::Layer
 {
   public:
-    /// Run time before the timer starts: past the startup window events and the 0.35 s interaction
+    /// Run time before the first attempt: past the startup window events and the 0.35 s interaction
     /// grace their resize starts (INTERACTION_REDRAW_GRACE_SECONDS), during which frames come from the
     /// move/resize redraw path before the wait rather than from the idle path after it.
     static constexpr std::uint64_t SETTLE_NS = 1'000'000'000;
     /// Into the 50 ms idle wait that follows the frame which starts the timer.
     static constexpr Uint32 PUSH_DELAY_MS = 25;
-    /// Frames to keep running after the push; and the fallback stop if the push never happens.
+    /// A first frame after the push that begins this long or more after the arming frame may be the
+    /// frame the idle wait timed out into (at 50 ms or later). The 10 ms of margin covers the time
+    /// between the arming frame's lastFrameStart and its onUpdate().
+    static constexpr std::uint64_t WAKE_DEADLINE_NS = 40'000'000;
+    /// Attempts before the test fails for want of one that woke the wait. With every core busy twice
+    /// over, up to about 1 in 8 attempts was excluded, so 8 in a row are vanishingly rare.
+    static constexpr int MAX_ATTEMPTS = 8;
+    /// Frames to keep running after the counted frame; and the fallback stop.
     static constexpr int UPDATES_AFTER_PUSH = 3;
-    static constexpr int MAX_UPDATES = 200;
+    static constexpr int MAX_UPDATES = 400;
     static constexpr SDL_Keycode KEY = SDLK_F13;
 
     KeyDuringIdleWaitLayer() : Layer("KeyDuringIdleWait")
@@ -383,6 +407,10 @@ class KeyDuringIdleWaitLayer : public Core::Layer
         {
             m_KeyDispatched = true;
         }
+        else
+        {
+            ++m_OtherEventsSinceArm;
+        }
     }
 
     void onUpdate(float /*deltaTime*/) override
@@ -393,36 +421,69 @@ class KeyDuringIdleWaitLayer : public Core::Layer
             pushed = m_Pushed;
         }
         const std::uint64_t nowNs = SDL_GetTicksNS();
-        if (m_Frames.empty())
+        if (m_Updates == 0)
         {
             m_FirstFrameNs = nowNs;
         }
-        m_Frames.push_back({.afterPush = pushed, .keyDispatched = m_KeyDispatched});
-        const auto updates = static_cast<int>(m_Frames.size());
-        if (m_Timer == 0 && (nowNs - m_FirstFrameNs) >= SETTLE_NS)
+        ++m_Updates;
+
+        switch (m_Phase)
         {
-            m_Timer = SDL_AddTimer(PUSH_DELAY_MS, &KeyDuringIdleWaitLayer::pushKey, this);
+        case Phase::Settling:
+            if ((nowNs - m_FirstFrameNs) >= SETTLE_NS)
+            {
+                arm(nowNs);
+            }
+            break;
+        case Phase::Armed:
+            // The first frame that began after the push.
+            if (pushed)
+            {
+                if ((nowNs - m_ArmedNs) < WAKE_DEADLINE_NS && m_OtherEventsSinceArm == 0)
+                {
+                    m_FirstFrameAfterPushHadKey = m_KeyDispatched;
+                    finish();
+                }
+                else
+                {
+                    m_Phase = Phase::Draining;
+                }
+            }
+            break;
+        case Phase::Draining:
+            // Excluded attempt: once its key is dispatched, try again or give up.
+            if (m_KeyDispatched)
+            {
+                if (m_Attempts < MAX_ATTEMPTS)
+                {
+                    arm(nowNs);
+                }
+                else
+                {
+                    finish();
+                }
+            }
+            break;
+        case Phase::Done:
+            break;
         }
-        if (pushed && m_FramesAtPush < 0)
-        {
-            m_FramesAtPush = updates;
-        }
-        if ((m_FramesAtPush >= 0 && updates >= m_FramesAtPush + UPDATES_AFTER_PUSH) || updates >= MAX_UPDATES)
+
+        if ((m_Phase == Phase::Done && m_Updates >= m_DoneAtUpdate + UPDATES_AFTER_PUSH) || m_Updates >= MAX_UPDATES)
         {
             Core::Application::get().stop();
         }
     }
 
-    struct Frame
+    /// Whether the first frame after a push that woke the idle wait had the key dispatched; empty if
+    /// no push woke it.
+    [[nodiscard]] std::optional<bool> firstFrameAfterPushHadKey() const
     {
-        /// onUpdate() saw the push: the frame began after the key was enqueued.
-        bool afterPush = false;
-        bool keyDispatched = false;
-    };
+        return m_FirstFrameAfterPushHadKey;
+    }
 
-    [[nodiscard]] const std::vector<Frame>& frames() const
+    [[nodiscard]] int attempts() const
     {
-        return m_Frames;
+        return m_Attempts;
     }
 
     [[nodiscard]] bool pushed() const
@@ -432,6 +493,40 @@ class KeyDuringIdleWaitLayer : public Core::Layer
     }
 
   private:
+    enum class Phase : std::uint8_t
+    {
+        Settling,
+        Armed,    // timer started; waiting for the first frame after its push
+        Draining, // excluded attempt; waiting for its key before the next attempt
+        Done,
+    };
+
+    /// Starts an attempt: resets the per-attempt state and starts the timer.
+    void arm(std::uint64_t nowNs)
+    {
+        {
+            const std::scoped_lock lock(m_PushMutex);
+            m_Pushed = false;
+        }
+        m_KeyDispatched = false;
+        m_OtherEventsSinceArm = 0;
+        m_ArmedNs = nowNs;
+        ++m_Attempts;
+        m_Phase = Phase::Armed;
+        // The previous attempt's one-shot timer has fired; removing it again is a harmless no-op.
+        if (m_Timer != 0)
+        {
+            SDL_RemoveTimer(m_Timer);
+        }
+        m_Timer = SDL_AddTimer(PUSH_DELAY_MS, &KeyDuringIdleWaitLayer::pushKey, this);
+    }
+
+    void finish()
+    {
+        m_DoneAtUpdate = m_Updates;
+        m_Phase = Phase::Done;
+    }
+
     static Uint32 pushKey(void* userdata, SDL_TimerID /*timerId*/, Uint32 /*interval*/)
     {
         auto* self = static_cast<KeyDuringIdleWaitLayer*>(userdata);
@@ -446,12 +541,17 @@ class KeyDuringIdleWaitLayer : public Core::Layer
         return 0; // one shot
     }
 
-    std::vector<Frame> m_Frames;
+    Phase m_Phase = Phase::Settling;
+    int m_Updates = 0;
+    int m_DoneAtUpdate = 0;
+    int m_Attempts = 0;
     std::uint64_t m_FirstFrameNs = 0;
+    std::uint64_t m_ArmedNs = 0;
     bool m_KeyDispatched = false;
+    int m_OtherEventsSinceArm = 0;
+    std::optional<bool> m_FirstFrameAfterPushHadKey;
     mutable std::mutex m_PushMutex;
     bool m_Pushed = false; // guarded by m_PushMutex
-    int m_FramesAtPush = -1;
     SDL_TimerID m_Timer = 0;
 };
 
@@ -824,10 +924,12 @@ TEST(ApplicationTest, KeyDuringIdleWaitIsDispatchedBeforeTheNextFrame)
         app.run();
 
         ASSERT_TRUE(layer.pushed()) << "the timer never pushed the key: " << SDL_GetError();
-        const auto& frames = layer.frames();
-        const auto firstAfterPush = std::ranges::find_if(frames, &KeyDuringIdleWaitLayer::Frame::afterPush);
-        ASSERT_NE(firstAfterPush, frames.end()) << "no frame started after the key was pushed";
-        EXPECT_TRUE(firstAfterPush->keyDispatched) << "the first frame after the wake rendered before the waking key was dispatched";
+        const std::optional<bool> firstFrameHadKey = layer.firstFrameAfterPushHadKey();
+        ASSERT_TRUE(firstFrameHadKey.has_value())
+            << "none of " << layer.attempts() << " pushes woke the idle wait: the first frame after each began "
+            << "too late to rule out a timed-out wait, or other events skipped the wait";
+        EXPECT_TRUE(firstFrameHadKey.value_or(false))
+            << "the first frame after the wake rendered before the waking key was dispatched (attempt " << layer.attempts() << ")";
     }
     catch (const std::exception& e)
     {
