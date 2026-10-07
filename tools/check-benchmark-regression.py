@@ -60,7 +60,11 @@ def load_benchmarks(path: Path) -> dict[str, dict]:
     if not isinstance(data, dict) or not isinstance(data.get("benchmarks"), list):
         raise ValueError("expected a JSON object containing a 'benchmarks' array")
 
+    # tools/bench.sh keeps every repetition (#1424): per-repetition rows share the median row's
+    # run_name, so the median always wins over them regardless of row order. A benchmark run
+    # without repetitions has no aggregates, and its single iteration row is used instead.
     result: dict[str, dict] = {}
+    medians: set[str] = set()
     for bm in data["benchmarks"]:
         if not isinstance(bm, dict):
             raise ValueError("each entry in 'benchmarks' must be a JSON object")
@@ -68,7 +72,12 @@ def load_benchmarks(path: Path) -> dict[str, dict]:
         if aggregate_name and aggregate_name != "median":
             continue
         name = bm.get("run_name") or bm.get("name", "")
-        if name:
+        if not name:
+            continue
+        if aggregate_name == "median":
+            result[name] = bm
+            medians.add(name)
+        elif name not in medians:
             result[name] = bm
     return result
 

@@ -75,6 +75,42 @@ class CheckBenchmarkRegressionTest(unittest.TestCase):
         code, output = self.run_gate({"BM_Big": 100.0}, {"BM_Big": 130.0})
         self.assertEqual(code, 0, output)
 
+    def test_raw_repetitions_compare_on_the_median(self):
+        # #1424: bench.sh keeps every repetition. A slow outlier repetition sharing the median's
+        # run_name must not replace the median, whichever order the rows come in.
+        def row(ns: float, aggregate: str | None = None) -> dict:
+            record = {"name": "BM_Big", "run_name": "BM_Big", "real_time": ns, "time_unit": "ns"}
+            if aggregate:
+                record.update(name=f"BM_Big_{aggregate}", run_type="aggregate", aggregate_name=aggregate)
+            else:
+                record.update(run_type="iteration")
+            return record
+
+        for rows in (
+            [row(100.0), row(1000.0), row(100.0, "mean"), row(100.0, "median")],
+            [row(100.0, "median"), row(1000.0), row(100.0, "mean")],
+        ):
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                current = tmp_path / "current.json"
+                current.write_text(json.dumps({"benchmarks": rows}), encoding="utf-8")
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(SCRIPT),
+                        "--baseline",
+                        str(write_run(tmp_path, "baseline.json", {"BM_Big": 100.0})),
+                        "--current",
+                        str(current),
+                        "--threshold",
+                        "40",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_non_finite_floor_is_a_usage_error(self):
         code, output = self.run_gate({"BM_Big": 100.0}, {"BM_Big": 100.0}, "--min-abs-delta-ns", "nan")
         self.assertEqual(code, 2, output)
