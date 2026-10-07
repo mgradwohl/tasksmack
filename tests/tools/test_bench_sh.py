@@ -11,6 +11,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import socket
 import stat
@@ -80,6 +81,30 @@ def posix(path: Path) -> str:
 
 # CTest passes the bash it found (TASKSMACK_TEST_BASH); on Windows a bare `bash` can be WSL's.
 BASH = os.environ.get("TASKSMACK_TEST_BASH") or shutil.which("bash")
+
+
+# The identity pass's separators (tools/bench-manifest.py): a name only counts standing alone.
+_SEPARATED = r"""\s/\\"'=:,;"""
+
+
+def find_identity_leaks(value, tokens: list[str], paths: list[str]) -> list[str]:
+    """Every string value (never an object key) of a decoded manifest that still holds a token
+    (user or host name) standing alone between the identity pass's separators, or contains one of
+    the paths. Tokens under 3 characters are not checked, as the identity pass leaves them."""
+    leaks = []
+    if isinstance(value, dict):
+        for item in value.values():
+            leaks += find_identity_leaks(item, tokens, paths)
+    elif isinstance(value, list):
+        for item in value:
+            leaks += find_identity_leaks(item, tokens, paths)
+    elif isinstance(value, str):
+        for token in tokens:
+            pattern = rf"(?<![^{_SEPARATED}]){re.escape(token)}(?![^{_SEPARATED}])"
+            if token and len(token) >= 3 and re.search(pattern, value, re.IGNORECASE):
+                leaks.append(f"{token!r} in {value!r}")
+        leaks += [f"{path!r} in {value!r}" for path in paths if path and path.lower() in value.lower()]
+    return leaks
 
 
 def flag_forms(user: str, home: str) -> list[tuple[str, str]]:
@@ -305,19 +330,13 @@ class BenchShTest(unittest.TestCase):
         self.assertIn(f"--benchmark_out={results[0].name}", args)
         self.assertEqual(manifest["machine"]["logical_cores"], os.cpu_count())
 
-        identities = {
-            socket.gethostname(),
-            getpass.getuser(),
-            str(Path.home()),
-            posix(Path.home()),
-            tempfile.gettempdir(),
-            str(REPO_ROOT),
-            posix(REPO_ROOT),
-            "/home/",
-        }
-        for identity in identities:
-            if identity and len(identity) >= 3:
-                self.assertNotIn(identity.lower(), text.lower(), f"manifest contains {identity!r}")
+        # The user and host names as tokens, the home, temp and checkout paths as substrings.
+        leaks = find_identity_leaks(
+            manifest,
+            tokens=[socket.gethostname(), getpass.getuser()],
+            paths=[str(Path.home()), posix(Path.home()), tempfile.gettempdir(), str(REPO_ROOT), posix(REPO_ROOT), "/home/"],
+        )
+        self.assertEqual(leaks, [])
         self.assertNotRegex(text, r"host_?name|user_?name")
 
 
@@ -357,6 +376,28 @@ class ScrubberTest(unittest.TestCase):
                 self.assertEqual(module.hide_identity(given, prefixes, "build"), expected)
         # A user name under 3 characters is never replaced on its own; a home prefix always is.
         self.assertEqual(module.hide_identity("-DX=ab /home/ab/src", ["/home/ab"], "ab"), "-DX=ab <home>/src")
+
+
+class IdentityLeakCheckTest(unittest.TestCase):
+    """The leak check used on the manifest, with a controlled user and home (#1445 review)."""
+
+    CLEAN = {
+        "build": {"build_type": "Release", "cxx_flags": "--sysroot=<abs>/sysroot -DBUILD=1 -DCMAKE_BUILD=on"},
+        "benchmark": {"args": ["--benchmark_filter=BM_Build"]},
+    }
+
+    def test_a_clean_manifest_passes_for_a_flag_word_user_name(self):
+        # root: --sysroot= keeps "root" inside a word; build: the "build" key and -DBUILD=1.
+        for user in ("root", "build"):
+            with self.subTest(user=user):
+                self.assertEqual(find_identity_leaks(self.CLEAN, [user], [f"/home/{user}", f"C:\\Users\\{user}"]), [])
+
+    def test_a_real_leak_is_still_found(self):
+        for user in ("root", "build"):
+            for leaky in (f"-DBUILT_BY={user}", f"E:/Users/{user}/x", f"/home/{user}/src"):
+                with self.subTest(user=user, leaky=leaky):
+                    dirty = {"build": {"cxx_flags": f"-O2 {leaky}"}}
+                    self.assertNotEqual(find_identity_leaks(dirty, [user], [f"/home/{user}"]), [])
 
 
 class ReportAggregatesOnlyTest(unittest.TestCase):

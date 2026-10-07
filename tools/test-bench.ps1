@@ -10,6 +10,43 @@ function Assert-True {
     if (-not $Condition) { throw $Message }
 }
 
+function Find-IdentityLeaks {
+    # Every string value (never an object key) of a decoded manifest that still holds a token
+    # (user or host name) standing alone between the identity pass's separators, or contains one
+    # of the paths. Tokens under 3 characters are not checked, as the identity pass leaves them.
+    param($Value, [string[]]$Tokens, [string[]]$Paths)
+    $leaks = [System.Collections.Generic.List[string]]::new()
+    $separated = '\s/\\"''=:,;'
+    $visit = {
+        param($Node)
+        if ($null -eq $Node) { return }
+        if ($Node -is [string]) {
+            foreach ($token in $Tokens) {
+                if ($token -and $token.Length -ge 3 -and [regex]::IsMatch($Node, "(?<![^$separated])" + [regex]::Escape($token) + "(?![^$separated])", 'IgnoreCase')) {
+                    $leaks.Add("'$token' in [$Node]")
+                }
+            }
+            foreach ($path in $Paths) {
+                if ($path -and $Node.IndexOf($path, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $leaks.Add("'$path' in [$Node]") }
+            }
+            return
+        }
+        if ($Node -is [System.Management.Automation.PSCustomObject]) {
+            foreach ($property in $Node.PSObject.Properties) { & $visit $property.Value }
+            return
+        }
+        if ($Node -is [System.Collections.IDictionary]) {
+            foreach ($item in $Node.Values) { & $visit $item }
+            return
+        }
+        if ($Node -is [System.Collections.IEnumerable]) {
+            foreach ($item in $Node) { & $visit $item }
+        }
+    }
+    & $visit $Value
+    return , $leaks
+}
+
 $benchScript = Join-Path $PSScriptRoot 'bench.ps1'
 $repoRootPath = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot)).TrimEnd('\')
 $repoRootForward = $repoRootPath.Replace('\', '/')
@@ -215,15 +252,25 @@ exit [int]$env:STUB_EXIT
         throw "cxx_flags: $got`nForms not scrubbed as expected:`n$($diff -join "`n")"
     }
 
-    $identities = @([Environment]::MachineName, [Environment]::UserName, $env:COMPUTERNAME, $env:USERNAME, $env:USERPROFILE, [IO.Path]::GetTempPath().TrimEnd('\'),
-        $repoRootPath, $repoRootForward, 'C:/Users', 'C:\Users')
-    if ($env:USERPROFILE) { $identities += $env:USERPROFILE.Replace('\', '/') }
-    foreach ($identity in $identities) {
-        if ($identity -and $identity.Length -ge 3) {
-            Assert-True ($manifestText.IndexOf($identity, [StringComparison]::OrdinalIgnoreCase) -lt 0) "The manifest contains '$identity'"
+    # The user and host names as tokens, the profile, temp and checkout paths as substrings.
+    $identityPaths = @($env:USERPROFILE, [IO.Path]::GetTempPath().TrimEnd('\'), $repoRootPath, $repoRootForward, 'C:/Users', 'C:\Users')
+    if ($env:USERPROFILE) { $identityPaths += $env:USERPROFILE.Replace('\', '/') }
+    $leaks = Find-IdentityLeaks $manifest -Tokens @([Environment]::MachineName, [Environment]::UserName, $env:COMPUTERNAME, $env:USERNAME) -Paths $identityPaths
+    Assert-True ($leaks.Count -eq 0) "The manifest leaks: $($leaks -join '; ')"
+    Assert-True ($manifestText -notmatch 'host_?name|user_?name') 'The manifest must not have host or user name fields'
+
+    # ── #1445 review: the leak check itself, with a controlled user and home ────────────────────
+    # A correctly scrubbed manifest must pass for a user whose name is also a flag word or a JSON
+    # key (root: --sysroot=; build: the "build" section), and a real leak must still be found.
+    $clean = '{"build": {"build_type": "Release", "cxx_flags": "--sysroot=<abs>/sysroot -DBUILD=1 -DCMAKE_BUILD=on"}, "benchmark": {"args": ["--benchmark_filter=BM_Build"]}}' | ConvertFrom-Json
+    foreach ($user in @('root', 'build')) {
+        $found = Find-IdentityLeaks $clean -Tokens @($user) -Paths @("/home/$user", "C:\Users\$user")
+        Assert-True ($found.Count -eq 0) "A clean manifest was reported as leaking for user '${user}': $($found -join '; ')"
+        foreach ($leaky in @("-DBUILT_BY=$user", "E:/Users/$user/x", "/home/$user/src")) {
+            $dirty = [pscustomobject]@{ build = [pscustomobject]@{ cxx_flags = "-O2 $leaky" } }
+            Assert-True ((Find-IdentityLeaks $dirty -Tokens @($user) -Paths @("/home/$user")).Count -gt 0) "'$leaky' was not reported for user '${user}'"
         }
     }
-    Assert-True ($manifestText -notmatch 'host_?name|user_?name') 'The manifest must not have host or user name fields'
 
     # ── #1445 review: an extra --benchmark_out/--benchmark_out_format is refused before launch ──
     # Google Benchmark takes the last value, so the run would write somewhere the redaction and the
