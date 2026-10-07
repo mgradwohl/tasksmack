@@ -73,11 +73,41 @@ void StorageModel::sampleAt(const std::chrono::steady_clock::time_point now)
         return;
     }
 
+    applySample(m_Probe->read(), m_Probe->capabilities(), now, /*publishNow=*/true);
+}
+
+void StorageModel::sampleSeries(const CounterSeriesSource& next)
+{
+    const Platform::DiskCapabilities caps = m_Probe ? m_Probe->capabilities() : Platform::DiskCapabilities{};
+    Platform::SystemDiskCounters counters;
+    std::chrono::steady_clock::time_point now{};
+    bool applied = false;
+    while (next(counters, now))
+    {
+        {
+            const std::shared_lock lock(m_Mutex);
+            if (!m_Timestamps.empty() && std::chrono::duration<double>(now.time_since_epoch()).count() <= m_Timestamps.latest())
+            {
+                continue;
+            }
+        }
+        applySample(counters, caps, now, /*publishNow=*/false);
+        applied = true;
+    }
+    if (applied)
+    {
+        const std::unique_lock lock(m_Mutex);
+        publish();
+    }
+}
+
+void StorageModel::applySample(const Platform::SystemDiskCounters& counters,
+                               const Platform::DiskCapabilities& caps,
+                               const std::chrono::steady_clock::time_point now,
+                               const bool publishNow)
+{
     // Use absolute time (since epoch) to match SystemModel's timestamp format
     const double nowSeconds = std::chrono::duration<double>(now.time_since_epoch()).count();
-
-    const Platform::SystemDiskCounters counters = m_Probe->read();
-    const Platform::DiskCapabilities caps = m_Probe->capabilities();
 
     StorageSnapshot snapshot;
     snapshot.hasDiskStats = caps.hasDiskStats;
@@ -213,7 +243,10 @@ void StorageModel::sampleAt(const std::chrono::steady_clock::time_point now)
         // avoiding an extra deep-copy of the disks vector on every sample.
         m_History.push(std::move(snapshot));
         trimHistory(nowSeconds);
-        publish();
+        if (publishNow)
+        {
+            publish();
+        }
     }
 
     spdlog::trace("StorageModel: sampled {} disks, total read: {:.2f} MB/s, write: {:.2f} MB/s",

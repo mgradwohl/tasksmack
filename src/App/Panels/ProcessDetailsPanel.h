@@ -35,7 +35,8 @@ class ProcessDetailsPanel : public Panel
     /// Construct with an injected IProcessActions implementation instead of the real
     /// platform one. Intended for tests (a mock IProcessActions) - production code should
     /// use the default constructor, which is the composition-root call to
-    /// Platform::makeProcessActions().
+    /// Platform::makeProcessActions() (or, under TASKSMACK_SYNTHETIC, the synthetic scenario's
+    /// refusing actions: App/SyntheticScenario.h).
     explicit ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions);
 
     ~ProcessDetailsPanel() override = default;

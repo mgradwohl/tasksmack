@@ -851,6 +851,34 @@ std::vector<double> ProcessModel::historyTimestamps() const
     return HistoryUtils::toVector(m_Timestamps);
 }
 
+void ProcessModel::appendSystemHistory(const SystemHistorySource& next)
+{
+    std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    ProcessSystemHistorySample sample;
+    bool appended = false;
+    while (next(sample))
+    {
+        if (!m_Timestamps.empty() && sample.timeSeconds <= m_Timestamps.latest())
+        {
+            continue;
+        }
+        m_Timestamps.push(sample.timeSeconds);
+        m_SystemNetSentHistory.push(sample.netSentBytesPerSec);
+        m_SystemNetRecvHistory.push(sample.netReceivedBytesPerSec);
+        m_SystemPageFaultsHistory.push(sample.pageFaultsPerSec);
+        m_SystemThreadCountHistory.push(sample.threadCount);
+        m_SystemHandleCountHistory.push(sample.handleCount);
+        m_SystemPowerHistory.push(sample.powerWatts);
+        appended = true;
+    }
+    if (appended)
+    {
+        trimHistory();
+        ++m_SystemHistoryVersion;
+        m_PublishedSystemHistoryVersion.store(m_SystemHistoryVersion, std::memory_order_release);
+    }
+}
+
 void ProcessModel::setMaxHistorySeconds(double seconds)
 {
     std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
