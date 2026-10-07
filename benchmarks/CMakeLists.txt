@@ -95,6 +95,7 @@ add_executable(TaskSmackBenchmarks
     # scheme, no fonts) in place of Theme.cpp, which needs a renderer to load its fonts.
     ${CMAKE_SOURCE_DIR}/src/UI/ChartLegend.cpp
     ${CMAKE_SOURCE_DIR}/tests/Mocks/ThemeStub.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp
     ${PLATFORM_SRC_UNDER_BENCH}
 )
 
