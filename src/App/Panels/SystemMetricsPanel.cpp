@@ -20,8 +20,10 @@
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
 #include "Platform/Factory.h"
+#include "Platform/ThreadName.h"
 #include "PowerStatusText.h"
 #include "UI/ChartWidgets.h"
+#include "UI/EmptyState.h"
 #include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
@@ -194,6 +196,7 @@ void SystemMetricsPanel::onAttach()
     Domain::SamplerConfig samplerCfg;
     samplerCfg.interval = m_RefreshInterval;
     samplerCfg.firstSampleAfterInterval = true; // seeded synchronously above (#1102)
+    samplerCfg.threadName = Platform::SYSTEM_SAMPLER_THREAD_NAME;
     m_Sampler = std::make_unique<Domain::BackgroundSampler>(samplerCfg);
     m_Sampler->addSamplable(m_Model);
     m_Sampler->addSamplable(m_StorageModel);
@@ -399,8 +402,8 @@ void SystemMetricsPanel::renderContent()
 {
     if (!m_Model)
     {
-        const auto& theme = UI::Theme::get();
-        ImGui::TextColored(theme.scheme().textError, "System model not initialized");
+        UI::Widgets::renderEmptyState(ICON_FA_TRIANGLE_EXCLAMATION "  System data unavailable",
+                                      "The system model is not initialized, so there are no system metrics to show.");
         return;
     }
 

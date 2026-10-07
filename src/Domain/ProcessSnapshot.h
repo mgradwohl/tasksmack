@@ -71,6 +71,11 @@ struct ProcessSnapshot
     // A stored value of 0 means the process is accessible but owns no GDI objects.
     std::optional<std::int32_t> gdiObjectCount;
 
+    // Whether this snapshot's GPU fields were read by a per-process GPU merge (#1210). False for a
+    // process that started between merges while they are throttled: its GPU fields are defaults,
+    // never read, and must not be shown as measured zeros.
+    bool gpuFieldsRead = true;
+
     // Whether a value was read for this process (#1110). False: the probe could not read it --
     // typically for lack of rights, e.g. another user's process without root on Linux -- and the
     // value is a placeholder 0, to be shown as unavailable and left out of totals, never as a
@@ -122,6 +127,20 @@ struct ProcessSample
     /// When that generation was sampled, as std::chrono::steady_clock seconds since its epoch -- the
     /// timebase of ProcessModel::historyTimestamps() -- not when a reader happened to see it.
     double sampleTimeSeconds = 0.0;
+    /// Whether the probe could supply per-process I/O and network counters at all when that generation
+    /// was published (Platform::ProcessCapabilities::hasIoCounters / hasNetworkCounters, as published
+    /// with it). A probe can withdraw one between generations (#1254), so a reader judges each sample by
+    /// its own generation's state, not the latest: a reading taken while it was supported stays one.
+    bool ioCountersSupported = true;
+    bool networkCountersSupported = true;
+    /// Likewise for the GPU probe when that generation was produced (#1210): whether it supplied
+    /// per-process GPU data at all, and per-process utilization among it. The GPU model can gain or
+    /// lose either on re-enumeration, on its own sampler, so each sample carries its own.
+    bool gpuPerProcessSupported = true;
+    bool gpuUtilizationSupported = true;
+    /// The GPU probe supported per-process data, but reading it failed for that generation: its GPU
+    /// fields are a gap, not a measurement (#1210).
+    bool gpuReadFailed = false;
 };
 
 } // namespace Domain

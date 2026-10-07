@@ -122,6 +122,7 @@ set(TASKSMACK_SOURCES
     src/App/UserConfig.cpp
     src/App/Panels/ProcessesPanel.cpp
     src/App/Panels/ProcessDetailsPanel.cpp
+    src/App/Panels/ProcessActionConfirm.cpp
     src/App/Panels/SystemMetricsPanel.cpp
     src/App/Panels/CpuCoresSection.cpp
     src/App/Panels/MemorySection.cpp
@@ -133,6 +134,7 @@ set(TASKSMACK_SOURCES
     src/Domain/SystemModel.cpp
     src/Domain/StorageModel.cpp
     src/Domain/GPUModel.cpp
+    src/Platform/ThreadName.cpp
 )
 
 # Platform-specific sources
@@ -195,6 +197,7 @@ set(TASKSMACK_HEADERS
     src/Platform/GPUTypes.h
     src/Platform/PowerTypes.h
     src/Platform/ProcessTypes.h
+    src/Platform/ThreadName.h
     src/Domain/ProcessSnapshot.h
     src/Domain/ProcessModel.h
     src/Domain/SocketTrafficAccumulator.h

@@ -1193,9 +1193,10 @@ TEST_F(UserConfigSaveLoadFixture, ProcessColumnsRoundTrip)
 {
     auto& config = UserConfig::get();
 
-    // Toggle two known columns to stable, self-documenting values.
-    constexpr auto col0 = ProcessColumn::PID;
-    constexpr auto col1 = ProcessColumn::Name;
+    // Toggle two known hideable columns to stable, self-documenting values (PID and Name are always
+    // shown, whatever the file says, #1209).
+    constexpr auto col0 = ProcessColumn::User;
+    constexpr auto col1 = ProcessColumn::Command;
     const bool original0 = config.settings().processColumns.isVisible(col0);
     const bool original1 = config.settings().processColumns.isVisible(col1);
 

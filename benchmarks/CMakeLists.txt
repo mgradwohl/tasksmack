@@ -53,6 +53,7 @@ else()
     set(PLATFORM_BENCH_SOURCES
         # Linux-specific benchmarks
         bench_NetlinkSocketStats.cpp
+        bench_LinuxProcessProbe.cpp
     )
     set(PLATFORM_SRC_UNDER_BENCH
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/Factory.cpp
@@ -81,6 +82,8 @@ add_executable(TaskSmackBenchmarks
     bench_Numeric.cpp
     bench_Format.cpp
     bench_UI.cpp
+    bench_ChartGeometry.cpp
+    bench_ModelLimits.cpp
     ${PLATFORM_BENCH_SOURCES}
     # Source files under benchmark
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
@@ -88,11 +91,18 @@ add_executable(TaskSmackBenchmarks
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
+    # bench_ChartGeometry.cpp draws the real charts under a headless ImGui/ImPlot context (#1421):
+    # ChartLegend.cpp for the series marker glyphs, and the test binary's Theme stub (a visible colour
+    # scheme, no fonts) in place of Theme.cpp, which needs a renderer to load its fonts.
+    ${CMAKE_SOURCE_DIR}/src/UI/ChartLegend.cpp
+    ${CMAKE_SOURCE_DIR}/tests/Mocks/ThemeStub.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp
     ${PLATFORM_SRC_UNDER_BENCH}
 )
 
 target_include_directories(TaskSmackBenchmarks PRIVATE
     ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests  # Mocks/MockProbes.h, Mocks/MockDiskProbe.h (bench_ModelLimits.cpp, #1422)
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends
     ${imgui_SOURCE_DIR}/misc/cpp
@@ -102,6 +112,7 @@ target_include_directories(TaskSmackBenchmarks PRIVATE
 target_link_libraries(TaskSmackBenchmarks PRIVATE
     benchmark::benchmark
     spdlog::spdlog_header_only
+    implot_lib  # And imgui_lib through it: bench_ChartGeometry.cpp renders headless frames (#1421)
 )
 tasksmack_apply_linux_toolchain(TaskSmackBenchmarks)
 

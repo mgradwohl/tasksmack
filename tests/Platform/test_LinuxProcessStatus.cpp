@@ -24,6 +24,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include <pwd.h>
@@ -193,6 +194,43 @@ TEST(LinuxProcessStatusTest, FrozenCgroupIsReadFromTheInjectedCgroupRoot)
     };
     EXPECT_EQ(statusOf(4242), "Suspended");
     EXPECT_EQ(statusOf(4343), "");
+}
+
+TEST(LinuxProcessStatusTest, ProcessesSharingACgroupShareItsFreezeStateWithinASampleOnly)
+{
+    // enumerate() reads each distinct cgroup's freeze state once per pass, not once per process: every
+    // process in it gets that answer, and a cgroup frozen or thawed since shows on the next pass.
+    const ScopedTempDir proc("ts_test_proc_shared_cgroup");
+    const ScopedTempDir cgroup("ts_test_cgroup_root_shared");
+    const std::vector<std::pair<std::string, std::string>> processes{
+        {"4242", "0::/app.scope\n"}, {"4343", "0::/app.scope\n"}, {"4444", "0::/other.scope\n"}};
+    for (const auto& [pid, cgroups] : processes)
+    {
+        writeControlFile(proc.path / pid / "stat",
+                         pid + " (app) S 1 1 1 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+                               "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+        writeControlFile(proc.path / pid / "cgroup", cgroups);
+    }
+    writeControlFile(cgroup.path / "app.scope" / "cgroup.events", "populated 1\nfrozen 1\n");
+    writeControlFile(cgroup.path / "other.scope" / "cgroup.events", "populated 1\nfrozen 0\n");
+
+    LinuxProcessProbe probe(proc.path, proc.path / "no-powercap", cgroup.path);
+    const auto statuses = [&probe]
+    {
+        std::vector<std::pair<std::int32_t, std::string>> result;
+        for (const ProcessCounters& p : probe.enumerate())
+        {
+            result.emplace_back(p.pid, p.status);
+        }
+        std::ranges::sort(result);
+        return result;
+    };
+    using Statuses = std::vector<std::pair<std::int32_t, std::string>>;
+    EXPECT_EQ(statuses(), (Statuses{{4242, "Suspended"}, {4343, "Suspended"}, {4444, ""}}));
+
+    writeControlFile(cgroup.path / "app.scope" / "cgroup.events", "populated 1\nfrozen 0\n");
+    writeControlFile(cgroup.path / "other.scope" / "cgroup.events", "populated 1\nfrozen 1\n");
+    EXPECT_EQ(statuses(), (Statuses{{4242, ""}, {4343, ""}, {4444, "Suspended"}}));
 }
 
 TEST(PriorityErrorMessageTest, PermissionErrorsGiveTheRightAdvice)

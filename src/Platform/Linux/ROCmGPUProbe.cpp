@@ -819,8 +819,9 @@ GPUCapabilities ROCmGPUProbe::capabilities() const
     caps.hasPCIeMetrics = false;       // Not directly available via ROCm SMI
     caps.hasEngineUtilization = false; // Not available
     caps.hasPerProcessMetrics = false; // Major limitation: no per-process data
-    caps.hasEncoderDecoder = false;    // Not available via ROCm SMI
-    caps.supportsMultiGPU = true;      // Multiple AMD GPUs supported
+    caps.hasPerProcessUtilization = false;
+    caps.hasEncoderDecoder = false; // Not available via ROCm SMI
+    caps.supportsMultiGPU = true;   // Multiple AMD GPUs supported
 
     return caps;
 }

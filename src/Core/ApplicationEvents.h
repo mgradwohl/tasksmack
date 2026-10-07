@@ -38,6 +38,22 @@ class ProcessSelectedEvent : public Event
     uint64_t m_UniqueKey;
 };
 
+/// Show-process-details request - emitted when the user asks to see a process's details from
+/// somewhere other than the Process Details tab itself, e.g. the Processes table's row menu (#1209).
+/// The shell switches to that tab; the process is selected by the ProcessSelectedEvent raised first.
+class ShowProcessDetailsEvent : public Event
+{
+  public:
+    ShowProcessDetailsEvent() = default;
+
+    [[nodiscard]] auto toString() const -> std::string override
+    {
+        return "ShowProcessDetailsEvent";
+    }
+
+    EVENT_CLASS_TYPE(ShowProcessDetails)
+};
+
 /// Refresh rate changed event - emitted when user changes the sampling interval
 /// Allows panels with background samplers to update their refresh rates
 class RefreshRateChangedEvent : public Event

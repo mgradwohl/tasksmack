@@ -12,17 +12,24 @@
 #include "Domain/BackgroundSampler.h"
 #include "Domain/ISamplable.h"
 #include "Domain/SamplingConfig.h"
+#include "Platform/ThreadName.h"
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <pthread.h>
+#endif
 
 using namespace std::chrono_literals;
 
@@ -685,3 +692,67 @@ TEST(BackgroundSamplerTest, SamplableDestroyedWhileSamplerRunningDoesNotCrash)
     // If we get here without crashing (or a TSan report), the test passes.
     SUCCEED();
 }
+
+// =============================================================================
+// Thread name (#843 measurement kit)
+// =============================================================================
+
+#if !defined(_WIN32)
+namespace
+{
+class ThreadNameRecordingSamplable : public Domain::ISamplable
+{
+  public:
+    void sample() override
+    {
+        std::array<char, 16> buffer{};
+        const bool ok = pthread_getname_np(pthread_self(), buffer.data(), buffer.size()) == 0;
+        const std::scoped_lock lock(m_Mutex);
+        m_Name = ok ? std::string(buffer.data()) : std::string("<error>");
+        m_Sampled = true;
+        m_Cv.notify_all();
+    }
+
+    [[nodiscard]] std::string waitForName()
+    {
+        std::unique_lock lock(m_Mutex);
+        if (!m_Cv.wait_for(lock, 2000ms, [this] { return m_Sampled; }))
+        {
+            ADD_FAILURE() << "Timeout waiting for a sample";
+        }
+        return m_Name;
+    }
+
+  private:
+    std::mutex m_Mutex;
+    std::condition_variable m_Cv;
+    std::string m_Name;
+    bool m_Sampled = false;
+};
+} // namespace
+
+TEST(BackgroundSamplerTest, SamplerThreadCarriesConfiguredName)
+{
+    Domain::SamplerConfig config;
+    config.interval = 100ms;
+    config.threadName = "ts-test-sampler";
+    Domain::BackgroundSampler sampler(config);
+    const auto samplable = std::make_shared<ThreadNameRecordingSamplable>();
+    sampler.addSamplable(samplable);
+    sampler.start();
+    EXPECT_EQ(samplable->waitForName(), "ts-test-sampler");
+    sampler.stop();
+}
+
+TEST(BackgroundSamplerTest, SamplerThreadDefaultName)
+{
+    Domain::SamplerConfig config;
+    config.interval = 100ms;
+    Domain::BackgroundSampler sampler(config);
+    const auto samplable = std::make_shared<ThreadNameRecordingSamplable>();
+    sampler.addSamplable(samplable);
+    sampler.start();
+    EXPECT_EQ(samplable->waitForName(), Platform::SAMPLER_THREAD_NAME);
+    sampler.stop();
+}
+#endif

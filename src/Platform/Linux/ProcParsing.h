@@ -27,11 +27,15 @@ namespace Platform::ProcParsing
 /// Read a /proc or /sys virtual file using low-level POSIX I/O.
 /// Avoids std::ifstream overhead (locale machinery, sentry, streambuf allocations).
 /// Loops to guard against short reads (POSIX allows ::read to return less than requested).
+/// `path` is resolved relative to the directory `dirFd` is open on (openat(2)), or as an ordinary
+/// path when dirFd is AT_FDCWD. Reading a process's files through one handle on its /proc/[pid]
+/// directory costs one path lookup per file instead of a walk from the root, and keeps every read
+/// on that process even if its PID is reused meanwhile (#1336).
 /// Returns bytes read, or 0 on failure. Buffer is NOT null-terminated.
-[[nodiscard]] inline std::size_t readProcFile(const char* path, char* buf, std::size_t bufSize) noexcept
+[[nodiscard]] inline std::size_t readProcFileAt(int dirFd, const char* path, char* buf, std::size_t bufSize) noexcept
 {
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — POSIX open() is variadic
-    const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — POSIX openat() is variadic
+    const int fd = ::openat(dirFd, path, O_RDONLY | O_CLOEXEC);
     if (fd == -1)
     {
         return 0;
@@ -60,13 +64,42 @@ namespace Platform::ProcParsing
     return readError ? 0 : total;
 }
 
+/// readProcFileAt() with a single read(2): for a per-process /proc file generated whole by the kernel
+/// (a seq_file: stat, statm, status, io, cgroup), one read returns all of it that fits in the buffer
+/// -- a read comes back short only at the end of the file -- so the read that would only confirm the
+/// end is skipped. That is one syscall less per file, for every process on every sample. A result of
+/// bufSize bytes may be cut off; callers that need the whole file read it again in full. Not for
+/// files read in pages (cmdline, environ) or any that can come back short before their end.
+[[nodiscard]] inline std::size_t readProcFileOnceAt(int dirFd, const char* path, char* buf, std::size_t bufSize) noexcept
+{
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — POSIX openat() is variadic
+    const int fd = ::openat(dirFd, path, O_RDONLY | O_CLOEXEC);
+    if (fd == -1)
+    {
+        return 0;
+    }
+    ssize_t n = ::read(fd, buf, bufSize);
+    while (n < 0 && errno == EINTR)
+    {
+        n = ::read(fd, buf, bufSize); // interrupted by signal — retry
+    }
+    ::close(fd);
+    return n > 0 ? static_cast<std::size_t>(n) : 0;
+}
+
+/// readProcFileAt() for an ordinary path.
+[[nodiscard]] inline std::size_t readProcFile(const char* path, char* buf, std::size_t bufSize) noexcept
+{
+    return readProcFileAt(AT_FDCWD, path, buf, bufSize);
+}
+
 /// Read an entire /proc or /sys virtual file into a heap buffer, growing until EOF.
 /// Avoids the fixed-size truncation of readProcFile for files without a known upper bound.
-/// Returns the bytes read, or an empty vector on failure.
-[[nodiscard]] inline std::vector<char> readProcFileFull(const char* path)
+/// `path` is resolved as in readProcFileAt(). Returns the bytes read, or an empty vector on failure.
+[[nodiscard]] inline std::vector<char> readProcFileFullAt(int dirFd, const char* path)
 {
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — POSIX open() is variadic
-    const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — POSIX openat() is variadic
+    const int fd = ::openat(dirFd, path, O_RDONLY | O_CLOEXEC);
     if (fd == -1)
     {
         return {};
@@ -95,6 +128,12 @@ namespace Platform::ProcParsing
         buf.insert(buf.end(), chunk.data(), chunk.data() + static_cast<std::size_t>(n));
     }
     return buf;
+}
+
+/// readProcFileFullAt() for an ordinary path.
+[[nodiscard]] inline std::vector<char> readProcFileFull(const char* path)
+{
+    return readProcFileFullAt(AT_FDCWD, path);
 }
 
 #endif

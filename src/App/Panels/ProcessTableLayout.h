@@ -4,9 +4,12 @@
 // unit-testable without a live ImGui context, following CONTRIBUTING.md's "extract the pure decision
 // logic into a small header" pattern (as ProcessTableFlags.h and ProcessTreeIndent.h do).
 
+#include "App/ProcessColumnConfig.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <initializer_list>
 
 namespace App::ProcessTableLayout
 {
@@ -109,6 +112,81 @@ layoutUnitAlignedCell(float numberWidthPx, float unitWidthPx, float unitSlotWidt
     }
     const float unitX = std::max(availWidthPx - slot, number);
     return {.numberX = unitX - number, .unitX = unitX, .itemWidth = number + unit, .fits = true};
+}
+
+/// Where a column header's label starts, in pixels from the cell's content start, so the header is
+/// aligned like its column's cells (#1209): a numeric header sits over the right-aligned numbers
+/// rather than centred above them. `rightReservePx` is kept clear at the right edge for the sort
+/// arrow ImGui draws there on the sorted column (sortArrowReserve()). A label wider than the room
+/// starts at the cell's left edge, as a clipped cell does.
+///
+/// @param align           How the column's cells are aligned.
+/// @param availWidthPx    Width from the cell's content start to its right edge.
+/// @param labelWidthPx    Measured width of the header label.
+/// @param rightReservePx  Width to keep free at the right edge.
+[[nodiscard]] inline float headerLabelOffset(ColumnAlign align, float availWidthPx, float labelWidthPx, float rightReservePx) noexcept
+{
+    if (!std::isfinite(availWidthPx) || !std::isfinite(labelWidthPx) || !std::isfinite(rightReservePx))
+    {
+        return 0.0F;
+    }
+    const float room = std::max(0.0F, availWidthPx - std::max(0.0F, rightReservePx));
+    const float slack = std::max(0.0F, room - std::max(0.0F, labelWidthPx));
+    switch (align)
+    {
+    case ColumnAlign::Right:
+        return slack;
+    case ColumnAlign::Center:
+        return std::floor(slack * 0.5F);
+    case ColumnAlign::Left:
+        break;
+    }
+    return 0.0F;
+}
+
+/// Width ImGui's sort arrow takes at a sorted header's right edge, beyond the cell padding the
+/// header's content region already leaves there. ImGui places the arrow fontSize * 0.65 +
+/// FramePadding.x from the cell's outer right edge (TableHeader()); that edge is CellPadding.x past
+/// the content region's.
+[[nodiscard]] inline float sortArrowReserve(float fontSizePx, float framePaddingXPx, float cellPaddingXPx) noexcept
+{
+    constexpr float IMGUI_SORT_ARROW_SCALE = 0.65F;
+    const float arrow = std::trunc((fontSizePx * IMGUI_SORT_ARROW_SCALE) + framePaddingXPx);
+    const float reserve = arrow - cellPaddingXPx;
+    return (std::isfinite(reserve) && reserve > 0.0F) ? reserve : 0.0F;
+}
+
+/// Where the toolbar's status text goes, right before its controls (#1209).
+struct ToolbarStatusLayout
+{
+    float x = 0.0F;       ///< Window-local left edge of the text
+    float width = 0.0F;   ///< Width it may take
+    bool clipped = false; ///< The text is wider: draw it ellipsized, with the full text as its tooltip
+};
+
+/// Lays out the toolbar's status text -- the process count, or for a few seconds a row action's
+/// result -- right-aligned against the controls after it, never wider than `maxWidthPx` nor than
+/// the room left, so the controls never move. A long platform error used to push the Columns button
+/// and the view-mode control off-screen. The text never starts left of `cursorX`.
+///
+/// @param cursorX        Where the text may start at the earliest (after the filter box).
+/// @param rightEdgeX     The row's right edge.
+/// @param controlsWidth  The controls after the text, spacing between them included.
+/// @param spacing        Spacing between the text and the controls.
+/// @param textWidthPx    Measured width of the text.
+/// @param maxWidthPx     Most the text may take: for an action's result, the count text's own width.
+[[nodiscard]] inline ToolbarStatusLayout
+layoutToolbarStatus(float cursorX, float rightEdgeX, float controlsWidth, float spacing, float textWidthPx, float maxWidthPx) noexcept
+{
+    const auto finiteOrZero = [](float value)
+    {
+        return std::isfinite(value) ? std::max(value, 0.0F) : 0.0F;
+    };
+    const float controlsLeft = rightEdgeX - finiteOrZero(controlsWidth) - finiteOrZero(spacing);
+    const float room = std::max(0.0F, controlsLeft - cursorX);
+    const float text = finiteOrZero(textWidthPx);
+    const float width = std::min({text, finiteOrZero(maxWidthPx), room});
+    return {.x = std::max(cursorX, controlsLeft - width), .width = width, .clipped = isCellTextClipped(text, width)};
 }
 
 /// Width of the filter box above the table, in ems: 200px at the reference em (32/3 px), which is
