@@ -23,6 +23,7 @@
 #include "UI/RenderMetrics.h"
 #include "UI/Theme.h"
 #include "UserConfig.h"
+#include "WindowOverride.h"
 
 #include <SDL3/SDL.h>
 #include <imgui.h>
@@ -186,26 +187,18 @@ void ShellLayer::onDetach()
     // maximized its live size and position are the maximized ones; saving those made them the
     // restore target on the next launch, so Restore did nothing (#1121). When the normal rectangle
     // is unknown (maximized by the OS/compositor rather than by Window::maximize()), the geometry
-    // saved last time is kept.
+    // saved last time is kept. The normal scale is, for a maximized window, the one captured with
+    // its restore rectangle, not the live maximized one (#1168). With TASKSMACK_WINDOW set (#1453)
+    // none of it is captured, so a measurement run leaves the saved geometry as it was.
     const auto& window = Core::Application::get().getWindow();
     auto& settings = config.settings();
-    if (const auto normal = window.getNormalGeometry(); normal.has_value())
-    {
-        settings.windowWidth = normal->width;
-        settings.windowHeight = normal->height;
-        // With the scale it was measured at -- for a maximized window, the scale captured with its
-        // restore rectangle, not the live maximized one -- so the next launch can convert it to the
-        // display it opens on (#1168). An unknown scale saves none: the size is then restored as saved.
-        const float scale = window.getNormalGeometryScale();
-        settings.windowScale = scale > 0.0F ? std::optional<float>{scale} : std::nullopt;
-        if (Core::Window::supportsPositioning())
-        {
-            settings.windowPosX = normal->x;
-            settings.windowPosY = normal->y;
-        }
-    }
-
-    settings.windowMaximized = window.isMaximized();
+    const WindowOverride::CapturedWindow captured{
+        .normal = window.getNormalGeometry(),
+        .normalScale = window.getNormalGeometryScale(),
+        .canPosition = Core::Window::supportsPositioning(),
+        .maximized = window.isMaximized(),
+    };
+    WindowOverride::captureWindowGeometry(settings, captured, WindowOverride::active());
 
     // Column widths, order and sort of the Processes table (#952). Empty means the table was never
     // drawn this session, so whatever was loaded is kept.
