@@ -64,18 +64,22 @@ class CheckBenchmarkRegressionTest(unittest.TestCase):
         current: dict[str, float],
         *extra: str,
         current_extra: list[dict] | None = None,
+        baseline_extra: list[dict] | None = None,
     ):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             current_path = write_run(tmp_path, "current.json", current)
             if current_extra:
                 add_records(current_path, current_extra)
+            baseline_path = write_run(tmp_path, "baseline.json", baseline)
+            if baseline_extra:
+                add_records(baseline_path, baseline_extra)
             result = subprocess.run(
                 [
                     sys.executable,
                     str(SCRIPT),
                     "--baseline",
-                    str(write_run(tmp_path, "baseline.json", baseline)),
+                    str(baseline_path),
                     "--current",
                     str(current_path),
                     "--threshold",
@@ -140,6 +144,33 @@ class CheckBenchmarkRegressionTest(unittest.TestCase):
         code, output = self.run_gate(baseline, current, current_extra=skipped)
         self.assertEqual(code, 1, output)
         self.assertIn("BM_Other_0", output)
+
+    def test_a_benchmark_skipped_in_the_baseline_and_absent_now_is_not_counted(self):
+        # The GPU benchmarks skipped when the baseline was recorded and are absent from this run:
+        # not a coverage loss either (#1439 review). 7 of 10 would read 70%; it is 7 of 7.
+        skipped = [record for bm in self.GPU_BENCHMARKS for record in skipped_records(bm)]
+        code, output = self.run_gate(self.OTHER_BENCHMARKS, self.OTHER_BENCHMARKS, "--min-coverage", "90", baseline_extra=skipped)
+        self.assertEqual(code, 0, output)
+        self.assertIn("Not measured (3)", output)
+        for bm in self.GPU_BENCHMARKS:
+            self.assertIn(f"{bm}: skipped in baseline run: No GPUs available", output)
+        self.assertNotIn("Missing from current run", output)
+        self.assertIn("coverage 100.0% (3 skipped on purpose, not counted)", output)
+
+    def test_a_benchmark_skipped_in_the_baseline_but_measured_now_is_not_counted(self):
+        skipped = [record for bm in self.GPU_BENCHMARKS for record in skipped_records(bm)]
+        current = {**self.OTHER_BENCHMARKS, **{bm: 40.0 for bm in self.GPU_BENCHMARKS}}
+        code, output = self.run_gate(self.OTHER_BENCHMARKS, current, "--min-coverage", "90", baseline_extra=skipped)
+        self.assertEqual(code, 0, output)
+        self.assertIn("Not measured (3)", output)
+        self.assertIn("coverage 100.0%", output)
+
+    def test_a_benchmark_missing_from_the_current_run_still_counts_against_coverage(self):
+        baseline = {**self.OTHER_BENCHMARKS, **{bm: 40.0 for bm in self.GPU_BENCHMARKS}}
+        code, output = self.run_gate(baseline, self.OTHER_BENCHMARKS, "--min-coverage", "90")
+        self.assertEqual(code, 1, output)
+        self.assertIn("Missing from current run (3)", output)
+        self.assertIn("coverage 70.0% is below the required 90.0%", output)
 
     def test_a_benchmark_that_errored_still_counts_against_coverage(self):
         baseline = {**self.OTHER_BENCHMARKS, **{bm: 40.0 for bm in self.GPU_BENCHMARKS}}

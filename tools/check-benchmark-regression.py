@@ -206,32 +206,36 @@ def main() -> int:
     print(f"Minimum required coverage: {args.min_coverage:.1f}%")
     print()
 
+    # Skipped on purpose (e.g. a GPU benchmark on a machine with no GPU, #1420): there is nothing
+    # to compare, and it is not a coverage loss either. Classified first, over every baseline
+    # benchmark, so a baseline record that skipped is not measured whether or not the current run
+    # has it at all -- otherwise it would land in missing_from_current and count against coverage.
+    not_measured: list[tuple[str, str]] = []
+    for name in sorted(baseline):
+        base_skip = skip_message(baseline[name])
+        cur_skip = skip_message(current[name]) if name in current else None
+        if cur_skip is not None:
+            not_measured.append((name, f"skipped in current run: {cur_skip}"))
+        elif base_skip is not None:
+            not_measured.append((name, f"skipped in baseline run: {base_skip}"))
+    skipped_names = {name for name, _ in not_measured}
+
     # A benchmark present in the baseline but absent from the current run is a real coverage
     # gap, not something to silently ignore -- it means this run tells us nothing about
     # whether that benchmark regressed (see #871: "removing a required baseline benchmark
     # returned success").
-    missing_from_current = sorted(set(baseline) - set(current))
+    missing_from_current = sorted(set(baseline) - set(current) - skipped_names)
     new_in_current = sorted(set(current) - set(baseline))
 
     regressions: list[tuple[str, float, str, float, str, float]] = []
     improvements: list[tuple[str, float, str, float, str, float]] = []
     below_floor: list[tuple[str, float, str, float, str, float]] = []
     invalid: list[tuple[str, str]] = []
-    not_measured: list[tuple[str, str]] = []
     compared = 0
 
-    for name in sorted(set(baseline) & set(current)):
+    for name in sorted((set(baseline) & set(current)) - skipped_names):
         base_bm = baseline[name]
         cur_bm = current[name]
-
-        # Skipped on purpose (e.g. a GPU benchmark on a machine with no GPU, #1420): there is
-        # nothing to compare, and it is not a coverage loss either.
-        cur_skip = skip_message(cur_bm)
-        base_skip = skip_message(base_bm)
-        if cur_skip is not None or base_skip is not None:
-            side = "current" if cur_skip is not None else "baseline"
-            not_measured.append((name, f"skipped in {side} run: {cur_skip if cur_skip is not None else base_skip}"))
-            continue
 
         field = common_timing_field(base_bm, cur_bm)
         if field is None:
