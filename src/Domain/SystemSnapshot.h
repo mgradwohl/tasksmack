@@ -8,6 +8,16 @@
 namespace Domain
 {
 
+/// Whether an interface's rate is a reading -- 0 included -- and, when it is not, why (#1375). An
+/// unmeasured rate is held at 0 in InterfaceSnapshot, so this is what tells the two apart.
+enum class InterfaceRateStatus : std::uint8_t
+{
+    Measured,      ///< A reading over the last interval, 0 included.
+    NotYetSampled, ///< No earlier sample of this interface far enough back to take a rate from.
+    CounterReset,  ///< The byte counter went backwards (driver reset, wrap or re-registration).
+    AboveCeiling,  ///< Above [metrics] max_sane_rate_bps: a counter glitch, not traffic (#1291).
+};
+
 /// CPU usage percentages (computed from counter deltas).
 struct CpuUsage
 {
@@ -109,6 +119,9 @@ struct SystemSnapshot
         uint64_t linkSpeedMbps = 0;  // Link speed (0 if unknown)
         bool isVirtual = false;      // Software interface left out of the Total (see Platform InterfaceCounters)
         bool isVirtualKnown = false; // The platform classified it, so isVirtual is authoritative (#1260)
+        // Whether rxBytesPerSec / txBytesPerSec are readings or held at 0 for a reason (#1375)
+        InterfaceRateStatus rxRateStatus = InterfaceRateStatus::Measured;
+        InterfaceRateStatus txRateStatus = InterfaceRateStatus::Measured;
     };
     std::vector<InterfaceSnapshot> networkInterfaces;
 

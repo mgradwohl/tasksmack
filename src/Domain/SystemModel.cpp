@@ -563,12 +563,23 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         ifaceSnap.isVirtual = iface.isVirtual;
         ifaceSnap.isVirtualKnown = iface.isVirtualKnown;
 
-        // Compute rates only if we have previous data and positive time delta
+        // Compute rates only if we have previous data and positive time delta. A rate that isn't
+        // computed stays 0, and its status says why, so the UI can tell it from a measured 0 (#1375).
+        ifaceSnap.rxRateStatus = InterfaceRateStatus::NotYetSampled;
+        ifaceSnap.txRateStatus = InterfaceRateStatus::NotYetSampled;
         if (m_HasPrevious && timeDelta > 0.0)
         {
             const auto* prevIface = findPreviousInterface(iface.name);
             if (prevIface != nullptr)
             {
+                const auto rateStatus = [](bool counterAdvanced, bool aboveCeiling)
+                {
+                    if (!counterAdvanced)
+                    {
+                        return InterfaceRateStatus::CounterReset;
+                    }
+                    return aboveCeiling ? InterfaceRateStatus::AboveCeiling : InterfaceRateStatus::Measured;
+                };
                 if (iface.rxBytes >= prevIface->rxBytes)
                 {
                     ifaceSnap.rxBytesPerSec = saneRate(Numeric::counterRate(iface.rxBytes, prevIface->rxBytes, timeDelta), gap.rx);
@@ -577,6 +588,8 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
                 {
                     ifaceSnap.txBytesPerSec = saneRate(Numeric::counterRate(iface.txBytes, prevIface->txBytes, timeDelta), gap.tx);
                 }
+                ifaceSnap.rxRateStatus = rateStatus(iface.rxBytes >= prevIface->rxBytes, gap.rx);
+                ifaceSnap.txRateStatus = rateStatus(iface.txBytes >= prevIface->txBytes, gap.tx);
             }
         }
 
