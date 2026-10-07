@@ -42,6 +42,7 @@ case "${STUB_OUTPUT}" in
     none) ;;
     *) printf '%s\n' "${body}" > "${out}" ;;
 esac
+if [[ -n "${STUB_MUTATE:-}" ]]; then printf '# rebuilt during the run\n' >> "$0"; fi
 exit "${STUB_EXIT}"
 """
 
@@ -153,6 +154,9 @@ def flag_forms(user: str, home: str) -> list[tuple[str, str]]:
         (f"-DDATA=foo:C:/Users/{user}/data", "-DDATA=foo:<abs>/data"),
         (f"/LIBPATH:C:\\Users\\{user}\\lib", "/LIBPATH:<abs>/lib"),
         ("-B/root/bin/x", "-B<abs>/x"),
+        ('-DAPP_NAME=\\"TaskSmack\\"', '-DAPP_NAME=\\"TaskSmack\\"'),
+        (f'-DDATA_DIR=\\"/home/{user}/data\\"', '-DDATA_DIR=\\"<abs>/data\\"'),
+        (f'-I"C:\\Users\\{user}\\inc dir\\"', '-I"<abs>/inc dir"'),
         ("/Iinclude/common", "/Iinclude/common"),
         ("/FIinclude/config.h", "/FIinclude/config.h"),
         ("/LIBPATH:build/lib", "/LIBPATH:build/lib"),
@@ -231,6 +235,7 @@ class BenchShTest(unittest.TestCase):
         extra: tuple[str, ...] = (),
         binary: Path | None = None,
         script: Path = BENCH_SH,
+        mutate: bool = False,
         leading: tuple[str, ...] = ("fake", "--"),
     ):
         out_dir = self.root / name
@@ -242,6 +247,7 @@ class BenchShTest(unittest.TestCase):
             STUB_EXIT=str(stub_exit),
             STUB_OUTPUT=stub_output,
             STUB_HOST=socket.gethostname(),
+            STUB_MUTATE="1" if mutate else "",
             PATH=str(self.shim_dir) + os.pathsep + os.environ.get("PATH", ""),
             # Every hop speaks UTF-8 whatever the runner's locale and code page: bash, its argument
             # conversion for native programs, and the Python helpers it starts.
@@ -286,6 +292,17 @@ class BenchShTest(unittest.TestCase):
                 benchmark = json.loads(manifests[0].read_text(encoding="utf-8"))["benchmark"]
                 self.assertIs(benchmark["report_aggregates_only"], expected)
                 self.assertIs(benchmark["raw_repetitions"], not expected)
+
+    def test_provenance_is_captured_before_the_benchmark_starts(self):
+        # #1445 review: the stub rewrites itself during the run, as a rebuild would; the manifest
+        # keeps the hash of what was launched.
+        launched = hashlib.sha256(self.stub.read_bytes()).hexdigest()
+        code, output, _, manifests = self.run_bench("mutate", 0, mutate=True)
+        self.assertEqual(code, 0, output)
+        self.assertNotEqual(hashlib.sha256(self.stub.read_bytes()).hexdigest(), launched, "the stub did not change")
+        manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+        self.assertEqual(manifest["binary"]["sha256"], launched)
+        self.assertEqual(manifest["exit_code"], 0)
 
     def test_a_compiler_directory_not_matching_the_cache_is_not_guessed(self):
         # #1445 review: the cache is CMake 4.2.0 and only a 4.0.0 directory exists.
@@ -360,9 +377,22 @@ class BenchShTest(unittest.TestCase):
         # writes UTF-8 whatever the locale).
         if shutil.which("git") is None:
             return
+        identity = ["-c", "user.name=bench-test", "-c", "user.email=bench-test@example.invalid"]
+        # #1445 review: inside an enclosing repository (a source archive unpacked in another
+        # checkout), git would find that repository; its provenance is not inherited.
+        subprocess.run(["git", "-C", str(self.root), "init", "-q"], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(self.root), *identity, "commit", "-q", "--allow-empty", "-m", "outer"],
+            check=True,
+            capture_output=True,
+        )
+        code, output, _, manifests = self.run_bench("nested", 0, binary=stub, script=checkout / "tools" / "bench.sh")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(
+            json.loads(manifests[0].read_text(encoding="utf-8"))["git"], {"commit": None, "branch": None, "dirty": None}
+        )
         branch = "fëature"
         subprocess.run(["git", "-C", str(checkout), "init", "-q", "-b", branch], check=True, capture_output=True)
-        identity = ["-c", "user.name=bench-test", "-c", "user.email=bench-test@example.invalid"]
         subprocess.run(
             ["git", "-C", str(checkout), *identity, "commit", "-q", "--allow-empty", "-m", "init"],
             check=True,
@@ -634,6 +664,19 @@ class ScrubberTest(unittest.TestCase):
                 cpu = f"{linux} Box CPU"
                 self.assertEqual(hidden["machine"]["cpu_model"], cpu)
                 self.assertEqual(hidden["machine"]["label"], f"{cpu} / 8 logical cores / Linux 6.1")
+
+    def test_custom_build_types_are_scrubbed_standard_ones_kept(self):
+        # #1445 review: only CMake's standard configurations are exempt as build types.
+        module = load_bench_manifest()
+        for build_type, user, hosts, expected in (
+            ("benchuser", "benchuser", [], "<user>"),
+            ("benchhost", "someone", ["benchhost"], "<host>"),
+            ("Release", "Release", ["Release"], "Release"),
+            ("RelWithDebInfo", "RelWithDebInfo", [], "RelWithDebInfo"),
+        ):
+            with self.subTest(build_type=build_type):
+                hidden = module.hide_manifest_identity({"build": {"build_type": build_type}}, [], user, hosts)
+                self.assertEqual(hidden["build"]["build_type"], expected)
 
     def test_identity_pass_hides_injected_host_names(self):
         # #1445 review: the host name (short and FQDN) is hidden like the user name.

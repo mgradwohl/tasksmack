@@ -73,7 +73,11 @@ foreach ($arg in $ExtraArgs) {
 
 $outDir = if ($OutputDirectory) { $OutputDirectory } else { Join-Path $repoRoot "perf-data" }
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$benchBin = if ($BenchmarkBinary) { $BenchmarkBinary } else { Join-Path $repoRoot "build/$Preset/bin/TaskSmackBenchmarks.exe" }
+# Resolved with PowerShell's path resolver, so a relative -BenchmarkBinary means the same file
+# for the launch, the hash and the build-tree lookup (.NET APIs would resolve it against the
+# process directory, which Set-Location does not change).
+$benchBin = if ($BenchmarkBinary) { $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($BenchmarkBinary) }
+else { Join-Path $repoRoot "build/$Preset/bin/TaskSmackBenchmarks.exe" }
 
 if (-not (Test-Path -LiteralPath $benchBin)) {
     Write-Error "Benchmark binary not found: $benchBin`nBuild first: cmake --build --preset $Preset"
@@ -116,6 +120,11 @@ $benchArgs = @(
 function Get-GitProvenance {
     $git = [ordered]@{ commit = $null; branch = $null; dirty = $null }
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return $git }
+    # Only the script's own checkout counts: git searches parent directories, so a source archive
+    # unpacked inside another checkout would otherwise report that checkout's commit (#1445
+    # review). The repository root must be git's top level (an empty prefix).
+    $prefix = & git -C $repoRoot rev-parse --show-prefix 2>$null
+    if ($LASTEXITCODE -ne 0 -or "$prefix".Trim()) { return $git }
     $commit = & git -C $repoRoot rev-parse HEAD 2>$null
     if ($LASTEXITCODE -ne 0) { return $git }
     $git.commit = "$commit".Trim()
@@ -166,8 +175,15 @@ $script:PathHead = [regex]'^(?:[A-Za-z]:[\\/]|\\\\|//|/[^/\\]+/|~[^/\\]*(?:[/\\]
 $script:EmbeddedHead = [regex]'[A-Za-z]:[\\/](?![\\/])|\\\\|(?<!:)//'
 
 function Split-FlagArguments {
-    # Split a flag string into arguments: Text (unquoted), Quote (first quote char or $null) and
-    # QuoteStart (the offset in Text where that quote opened).
+    # Split a flag string into arguments: Text, Quote (first quote char or $null) and QuoteStart
+    # (the offset in Text where that quote opened). Grouping quotes are removed from Text;
+    # everything else is kept verbatim, so the argument can be re-emitted as written. Backslashes
+    # are literal (Windows paths keep them), except before a double quote, where the
+    # CommandLineToArgvW parity rule applies: an odd run escapes the quote, which stays in Text as
+    # written (-DAPP_NAME=\"TaskSmack\"); an even run leaves it a grouping quote. One exception
+    # keeps Windows paths intact: inside a double-quoted group, a backslash and quote right before
+    # whitespace or the end close the group ("C:\dir\"). Kept in step with split_flag_arguments in
+    # tools/bench-manifest.py.
     param([string]$Flags)
     $arguments = [System.Collections.Generic.List[object]]::new()
     $index = 0
@@ -177,19 +193,43 @@ function Split-FlagArguments {
         $text = [System.Text.StringBuilder]::new()
         $quote = $null
         $quoteStart = 0
-        while ($index -lt $length -and -not [char]::IsWhiteSpace($Flags[$index])) {
+        $openQuote = $null
+        while ($index -lt $length) {
             $char = $Flags[$index]
+            if ($null -eq $openQuote -and [char]::IsWhiteSpace($char)) { break }
+            if ($char -eq [char]'\') {
+                $end = $index
+                while ($end -lt $length -and $Flags[$end] -eq [char]'\') { $end++ }
+                if ($end -lt $length -and $Flags[$end] -eq [char]'"' -and (($end - $index) % 2) -eq 1) {
+                    $atBoundary = ($end + 1 -ge $length) -or [char]::IsWhiteSpace($Flags[$end + 1])
+                    if ($openQuote -eq '"' -and $atBoundary) {
+                        [void]$text.Append($Flags.Substring($index, $end - $index))
+                        $openQuote = $null
+                    }
+                    else {
+                        [void]$text.Append($Flags.Substring($index, $end - $index + 1))
+                    }
+                    $index = $end + 1
+                }
+                else {
+                    [void]$text.Append($Flags.Substring($index, $end - $index))
+                    $index = $end
+                }
+                continue
+            }
+            if ($null -ne $openQuote) {
+                if ([string]$char -eq $openQuote) { $openQuote = $null } else { [void]$text.Append($char) }
+                $index++
+                continue
+            }
             if ($char -eq [char]'"' -or $char -eq [char]"'") {
-                $close = $Flags.IndexOf($char, $index + 1)
-                if ($close -lt 0) { $close = $length }
                 if ($null -eq $quote) { $quote = [string]$char; $quoteStart = $text.Length }
-                [void]$text.Append($Flags.Substring($index + 1, $close - $index - 1))
-                $index = $close + 1
+                $openQuote = [string]$char
             }
             else {
                 [void]$text.Append($char)
-                $index++
             }
+            $index++
         }
         $arguments.Add([pscustomobject]@{ Text = $text.ToString(); Quote = $quote; QuoteStart = $quoteStart })
     }
@@ -253,6 +293,11 @@ function Hide-AbsolutePaths {
     }
     $operand = {
         param([string]$Value)
+        # A value wrapped in escaped quotes (-DDATA_DIR=\"/home/u/data\") keeps them around the
+        # scrubbed path.
+        if ($Value.Length -ge 4 -and $Value.StartsWith('\"') -and $Value.EndsWith('\"')) {
+            return '\"' + (& $operand $Value.Substring(2, $Value.Length - 4)) + '\"'
+        }
         if ($Value.Contains(';')) { return (@($Value.Split(';') | ForEach-Object { & $operand $_ }) -join ';') }
         if ($script:PathHead.IsMatch($Value)) { return (& $scrub $Value) }
         $embedded = $script:EmbeddedHead.Match($Value)
@@ -493,11 +538,15 @@ function Get-MachineLabel {
 # and flags, the benchmark args, the git branch, the preset and result names, the CPU model.
 # machine.label is rebuilt from the scrubbed CPU model and the exempt fields. Numbers and booleans
 # are never touched. The same list as IDENTITY_EXEMPT in tools/bench-manifest.py.
+# build.build_type is exempt only as one of CMake's standard configurations: a custom
+# configuration can be named after a user or host. The same list as STANDARD_BUILD_TYPES in
+# tools/bench-manifest.py.
+$script:StandardBuildTypes = @('Debug', 'Release', 'RelWithDebInfo', 'MinSizeRel')
 $script:IdentityExempt = @(
     'schema_version', 'generator', 'created_utc', 'exit_code',
     'git.commit', 'git.dirty',
     'binary.sha256',
-    'build.build_type', 'build.generator', 'build.compiler_id', 'build.compiler_version', 'build.ipo',
+    'build.generator', 'build.compiler_id', 'build.compiler_version', 'build.ipo',
     'benchmark.raw_repetitions', 'benchmark.report_aggregates_only',
     'machine.label', 'machine.logical_cores', 'machine.os_name', 'machine.os_version', 'machine.arch'
 )
@@ -514,7 +563,7 @@ function Hide-ManifestIdentity {
             foreach ($key in $Value.Keys) { $copy[$key] = & $walk $Value[$key] $(if ($Path) { "$Path.$key" } else { $key }) }
             return $copy
         }
-        if ($script:IdentityExempt -contains $Path) { return , $Value }
+        if ($script:IdentityExempt -contains $Path -or ($Path -eq 'build.build_type' -and $script:StandardBuildTypes -ccontains $Value)) { return , $Value }
         return , (Hide-Identity $Value @identity)
     }
     $result = & $walk $Manifest ''
@@ -547,9 +596,10 @@ function Get-EffectiveReportAggregatesOnly {
     return $value
 }
 
-function Write-BenchManifest {
-    param([int]$ExitCode)
-    # The output path is reduced to its file name, so the manifest carries no user-profile path.
+function New-BenchManifest {
+    # The manifest as it stands before the benchmark starts (exit_code null): see the snapshot
+    # below. The output path is reduced to its file name, so the manifest carries no
+    # user-profile path.
     $recordedArgs = [string[]]@($benchArgs | ForEach-Object {
             if ($_ -like '--benchmark_out=*') { "--benchmark_out=$(Split-Path -Leaf $outFile)" } else { $_ }
         })
@@ -560,7 +610,7 @@ function Write-BenchManifest {
         created_utc    = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
         preset         = $Preset
         result_file    = Split-Path -Leaf $outFile
-        exit_code      = $ExitCode
+        exit_code      = $null
         git            = Get-GitProvenance
         binary         = [ordered]@{
             name   = Split-Path -Leaf $benchBin
@@ -574,7 +624,12 @@ function Write-BenchManifest {
         }
         machine        = Get-MachineClass
     }
-    Hide-ManifestIdentity $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestFile -Encoding utf8
+    return Hide-ManifestIdentity $manifest
+}
+
+function Save-BenchManifest {
+    param($Manifest)
+    $Manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestFile -Encoding utf8
 }
 
 function Invoke-ResultRedaction {
@@ -591,17 +646,32 @@ Write-Host "Running benchmarks (preset=$Preset) -> $outFile"
 Write-Host "Binary: $benchBin"
 Write-Host ""
 
+# Provenance is captured before the benchmark starts (#1445 review): git state, build
+# configuration and the binary's hash describe what was launched, even if the checkout, the build
+# or the binary changes during the run. Only the exit code is added afterwards. The manifest is
+# finalized before the result is redacted, so the result file stays the newest one in the output
+# directory (heavy-checks.yml picks the latest perf-data/benchmark-*.json). A manifest failure is
+# held until the result has been redacted, then fails the script. Kept in step with bench.sh.
+$manifestError = $null
+$manifest = $null
+try {
+    $manifest = New-BenchManifest
+    Save-BenchManifest $manifest
+}
+catch { $manifestError = $_ }
+
 & $benchBin @benchArgs
 # $ErrorActionPreference does not cover a native command's exit code (#1423): read it explicitly.
 $benchExit = $LASTEXITCODE
 if ($null -eq $benchExit) { $benchExit = 0 }
 
-# The manifest is written before the result is redacted, so the result file stays the newest one
-# in the output directory (heavy-checks.yml picks the latest perf-data/benchmark-*.json).
-# A manifest failure is held until the result has been redacted, then fails the script.
-$manifestError = $null
-try { Write-BenchManifest -ExitCode $benchExit }
-catch { $manifestError = $_ }
+if ($null -ne $manifest -and -not $manifestError) {
+    try {
+        $manifest.exit_code = $benchExit
+        Save-BenchManifest $manifest
+    }
+    catch { $manifestError = $_ }
+}
 
 if ($benchExit -ne 0) {
     # A failed or crashed run may have left a partial JSON file holding the host name: redact it

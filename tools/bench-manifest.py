@@ -42,9 +42,15 @@ def git_provenance(repo_root: Path) -> dict:
             return None
         return result.stdout.strip() if result.returncode == 0 else None
 
+    unknown = {"commit": None, "branch": None, "dirty": None}
+    # Only the script's own checkout counts: git searches parent directories, so a source archive
+    # unpacked inside another checkout would otherwise report that checkout's commit (#1445
+    # review). The repository root must be git's top level (an empty prefix).
+    if git("rev-parse", "--show-prefix") != "":
+        return unknown
     commit = git("rev-parse", "HEAD")
     if commit is None:
-        return {"commit": None, "branch": None, "dirty": None}
+        return unknown
     # Tracked changes only: untracked scratch files do not change what was built.
     status = git("status", "--porcelain", "--untracked-files=no")
     return {
@@ -108,26 +114,57 @@ _EMBEDDED_HEAD = re.compile(r"""[A-Za-z]:[\\/](?![\\/])|\\\\|(?<!:)//""")
 
 
 def split_flag_arguments(flags: str) -> list[tuple[str, str | None, int]]:
-    """Split a flag string into (unquoted text, first quote char or None, offset it opened at)."""
+    """Split a flag string into (text, first quote char or None, offset it opened at).
+
+    Grouping quotes are removed from the text; everything else is kept verbatim, so the argument
+    can be re-emitted as written. Backslashes are literal (Windows paths keep them), except before
+    a double quote, where the CommandLineToArgvW parity rule applies: an odd run escapes the quote,
+    which stays in the text as written (-DAPP_NAME=\\"TaskSmack\\"); an even run leaves it a
+    grouping quote. One exception keeps Windows paths intact: inside a double-quoted group, a
+    backslash and quote right before whitespace or the end close the group ("C:\\dir\\").
+    Kept in step with Split-FlagArguments in tools/bench.ps1.
+    """
     arguments = []
     index, length = 0, len(flags)
     while index < length:
         if flags[index].isspace():
             index += 1
             continue
-        text, quote, quote_start = "", None, 0
-        while index < length and not flags[index].isspace():
+        text, quote, quote_start, open_quote = "", None, 0, None
+        while index < length:
             char = flags[index]
+            if open_quote is None and char.isspace():
+                break
+            if char == "\\":
+                end = index
+                while end < length and flags[end] == "\\":
+                    end += 1
+                if end < length and flags[end] == '"' and (end - index) % 2 == 1:
+                    after = flags[end + 1] if end + 1 < length else ""
+                    if open_quote == '"' and (after == "" or after.isspace()):
+                        text += flags[index:end]
+                        open_quote = None
+                    else:
+                        text += flags[index : end + 1]
+                    index = end + 1
+                else:
+                    text += flags[index:end]
+                    index = end
+                continue
+            if open_quote is not None:
+                if char == open_quote:
+                    open_quote = None
+                else:
+                    text += char
+                index += 1
+                continue
             if char in "\"'":
-                close = flags.find(char, index + 1)
-                close = length if close < 0 else close
                 if quote is None:
                     quote, quote_start = char, len(text)
-                text += flags[index + 1 : close]
-                index = close + 1
+                open_quote = char
             else:
                 text += char
-                index += 1
+            index += 1
         arguments.append((text, quote, quote_start))
     return arguments
 
@@ -159,6 +196,10 @@ def hide_absolute_paths(flags: str | None, repo_root: Path) -> str | None:
         return "<abs>/" + PurePath(normalized.rstrip("/")).name
 
     def operand(value: str) -> str:
+        # A value wrapped in escaped quotes (-DDATA_DIR=\"/home/u/data\") keeps them around the
+        # scrubbed path.
+        if len(value) >= 4 and value.startswith('\\"') and value.endswith('\\"'):
+            return '\\"' + operand(value[2:-2]) + '\\"'
         if ";" in value:
             return ";".join(operand(item) for item in value.split(";"))
         if _PATH_HEAD.match(value):
@@ -403,7 +444,9 @@ def machine_class() -> dict:
 # named "clang"). Every other string is free-form input and is scrubbed: the compiler file name
 # and flags, the benchmark args, the git branch, the preset and result names, the CPU model.
 # machine.label is rebuilt from the scrubbed CPU model and the exempt fields. Numbers and booleans
-# are never touched. The same list as $script:IdentityExempt in tools/bench.ps1.
+# are never touched. build.build_type is exempt only as one of CMake's standard configurations
+# (STANDARD_BUILD_TYPES): a custom configuration can be named after a user or host. The same
+# lists as $script:IdentityExempt and $script:StandardBuildTypes in tools/bench.ps1.
 IDENTITY_EXEMPT = frozenset(
     {
         "schema_version",
@@ -413,7 +456,6 @@ IDENTITY_EXEMPT = frozenset(
         "git.commit",
         "git.dirty",
         "binary.sha256",
-        "build.build_type",
         "build.generator",
         "build.compiler_id",
         "build.compiler_version",
@@ -429,13 +471,16 @@ IDENTITY_EXEMPT = frozenset(
 )
 
 
+STANDARD_BUILD_TYPES = frozenset({"Debug", "Release", "RelWithDebInfo", "MinSizeRel"})
+
+
 def hide_manifest_identity(manifest: dict, prefixes: list[str], user: str | None, hosts: list[str] | tuple[str, ...] = ()) -> dict:
     """hide_identity() over the manifest's free-form fields only (see IDENTITY_EXEMPT)."""
 
     def walk(value, path: str):
         if isinstance(value, dict):
             return {key: walk(item, f"{path}.{key}" if path else key) for key, item in value.items()}
-        if path in IDENTITY_EXEMPT:
+        if path in IDENTITY_EXEMPT or (path == "build.build_type" and value in STANDARD_BUILD_TYPES):
             return value
         return hide_identity(value, prefixes, user, hosts)
 
@@ -498,14 +543,26 @@ def report_aggregates_only(args: list[str], environ: Mapping[str, str]) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument("--result", type=Path, required=True)
-    parser.add_argument("--binary", type=Path, required=True)
-    parser.add_argument("--preset", required=True)
-    parser.add_argument("--exit-code", type=int, required=True)
-    parser.add_argument("--repo-root", type=Path, required=True)
+    parser.add_argument("--result", type=Path)
+    parser.add_argument("--binary", type=Path)
+    parser.add_argument("--preset")
+    # Without --exit-code this is the snapshot taken before the benchmark starts (exit_code
+    # null); --finalize then only records the exit code in that manifest, so provenance describes
+    # what was launched even if the checkout, build or binary changes during the run (#1445).
+    parser.add_argument("--exit-code", type=int, default=None)
+    parser.add_argument("--finalize", action="store_true")
+    parser.add_argument("--repo-root", type=Path)
     parser.add_argument("--generator", default="tools/bench.sh")
     parser.add_argument("bench_args", nargs=argparse.REMAINDER)
     options = parser.parse_args()
+    if options.finalize:
+        manifest = json.loads(options.manifest.read_text(encoding="utf-8"))
+        manifest["exit_code"] = options.exit_code
+        options.manifest.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        return 0
+    missing = [name for name in ("result", "binary", "preset", "repo_root") if getattr(options, name) is None]
+    if missing:
+        parser.error("the snapshot needs " + ", ".join("--" + name.replace("_", "-") for name in missing))
     bench_args = options.bench_args
     if bench_args and bench_args[0] == "--":
         bench_args = bench_args[1:]

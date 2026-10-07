@@ -113,6 +113,9 @@ try {
         , @("-DDATA=foo:C:/Users/$U/data", '-DDATA=foo:<abs>/data')
         , @("/LIBPATH:C:\Users\$U\lib", '/LIBPATH:<abs>/lib')
         , @('-B/root/bin/x', '-B<abs>/x')
+        , @('-DAPP_NAME=\"TaskSmack\"', '-DAPP_NAME=\"TaskSmack\"')
+        , @("-DDATA_DIR=\`"/home/$U/data\`"", '-DDATA_DIR=\"<abs>/data\"')
+        , @("-I`"C:\Users\$U\inc dir\`"", '-I"<abs>/inc dir"')
         , @('/Iinclude/common', '/Iinclude/common')
         , @('/FIinclude/config.h', '/FIinclude/config.h')
         , @('/LIBPATH:build/lib', '/LIBPATH:build/lib')
@@ -170,6 +173,9 @@ if os.environ.get("STUB_OUTPUT") == "partial":
 if os.environ.get("STUB_OUTPUT") != "none":
     with open(out, "w", encoding="utf-8") as stream:
         stream.write(body)
+if os.environ.get("STUB_MUTATE"):
+    with open(os.environ["STUB_MUTATE"], "a", encoding="ascii") as stream:
+        stream.write("@rem rebuilt during the run\r\n")
 sys.exit(int(os.environ.get("STUB_EXIT") or 0))
 '@
         $stubHost = $python
@@ -192,6 +198,7 @@ $body = [ordered]@{
 if ($env:STUB_SLEEP_MS) { Start-Sleep -Milliseconds ([int]$env:STUB_SLEEP_MS) }
 if ($env:STUB_OUTPUT -eq 'partial') { $body = $body.Substring(0, 60) }
 if ($env:STUB_OUTPUT -ne 'none') { Set-Content -LiteralPath $out -Value $body -Encoding utf8 }
+if ($env:STUB_MUTATE) { Add-Content -LiteralPath $env:STUB_MUTATE -Value '@rem rebuilt during the run' -Encoding ascii }
 exit [int]$env:STUB_EXIT
 '@
         $stubHost = $hostExe
@@ -247,6 +254,12 @@ exit [int]$env:STUB_EXIT
     # The scenarios for the shared host: a name, the bench.ps1 call, the stub's behaviour, and
     # optionally a working directory and native-command error promotion.
     $checkout = Join-Path $root "ch$([char]0x00E9)ckout"
+    # A copy of the stub wrapper in a build tree of its own, rewritten by the 'mutate' scenario.
+    $mutateDir = Join-Path $root 'build\mutate-preset\bin'
+    New-Item -ItemType Directory -Path $mutateDir | Out-Null
+    $mutatingStub = Join-Path $mutateDir 'TaskSmackBenchmarks.cmd'
+    Copy-Item -LiteralPath $stub -Destination $mutatingStub
+    $launchedHash = (Get-FileHash -LiteralPath $mutatingStub -Algorithm SHA256).Hash.ToLowerInvariant()
     $scenarios = @(
         # #1445 review: a crash mid-run, from a session with native-command error promotion on.
         @{ Name = 'crashed'; StubExit = '5'; StubOutput = 'partial'; Promote = $true
@@ -263,6 +276,13 @@ exit [int]$env:STUB_EXIT
         # #1445 review: bench.ps1 copied into a checkout under a Unicode path, outside git.
         @{ Name = 'uni'; StubExit = '0'; StubOutput = 'full'
             Command = "& $(& $quote (Join-Path $checkout 'tools\bench.ps1')) fake-preset -BenchmarkBinary $(& $quote (Join-Path $checkout 'build\uni\bin\TaskSmackBenchmarks.cmd')) -OutputDirectory $(& $quote (Join-Path $root 'uni')) '--benchmark_filter=BM_X'" }
+        # #1445 review: the binary is rebuilt during the run; the manifest keeps the launched hash.
+        @{ Name = 'mutate'; StubExit = '0'; StubOutput = 'full'; StubMutate = $mutatingStub
+            Command = "& $(& $quote $benchScript) fake-preset -BenchmarkBinary $(& $quote $mutatingStub) -OutputDirectory $(& $quote (Join-Path $root 'mutate')) '--benchmark_filter=BM_X'" }
+        # #1445 review: a relative -BenchmarkBinary after Set-Location (the process directory stays
+        # where the host started) still finds its build tree.
+        @{ Name = 'relative'; StubExit = '0'; StubOutput = 'full'; Cwd = $root
+            Command = "& $(& $quote $benchScript) fake-preset -BenchmarkBinary 'build\fake-preset\bin\TaskSmackBenchmarks.cmd' -OutputDirectory $(& $quote (Join-Path $root 'relative')) '--benchmark_filter=BM_X'" }
         # Self-review: `& bench.ps1 -- --benchmark_filter=...` with no preset, as documented; the
         # stub exits 0 with output that cannot be redacted.
         @{ Name = 'separator'; StubExit = '0'; StubOutput = 'partial'
@@ -286,6 +306,7 @@ $ErrorActionPreference = 'Stop'
 $outcomes = foreach ($scenario in (Get-Content -LiteralPath $Scenarios -Raw | ConvertFrom-Json)) {
     $env:STUB_EXIT = $scenario.StubExit
     $env:STUB_OUTPUT = $scenario.StubOutput
+    $env:STUB_MUTATE = if ($scenario.PSObject.Properties['StubMutate']) { $scenario.StubMutate } else { $null }
     $PSNativeCommandUseErrorActionPreference = [bool]($scenario.PSObject.Properties['Promote'] -and $scenario.Promote)
     $here = Get-Location
     if ($scenario.PSObject.Properties['Cwd']) { Set-Location -LiteralPath $scenario.Cwd }
@@ -463,6 +484,19 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     $separatorArgs = @((Get-Content -LiteralPath $separator.Manifest[0].FullName -Raw | ConvertFrom-Json).benchmark.args)
     Assert-True ($separatorArgs -contains '--benchmark_filter=BM_X') "The flag must reach the benchmark: $($separatorArgs -join ' ')"
 
+    # ── #1445 review: provenance is captured before the benchmark starts ─────────────────────
+    $mutate = $outcomes['mutate']
+    Assert-True ($mutate.ExitCode -eq 0 -and $mutate.Manifest.Count -eq 1) "Rebuilt-binary run failed:`n$($mutate.Log)"
+    Assert-True ((Get-FileHash -LiteralPath $mutatingStub -Algorithm SHA256).Hash.ToLowerInvariant() -ne $launchedHash) 'The stub did not change during the run'
+    $mutateManifest = Get-Content -LiteralPath $mutate.Manifest[0].FullName -Raw | ConvertFrom-Json
+    Assert-True ($mutateManifest.binary.sha256 -eq $launchedHash -and $mutateManifest.exit_code -eq 0) "The manifest must keep the launched binary's hash: $($mutateManifest.binary.sha256) vs $launchedHash"
+
+    # ── #1445 review: a relative -BenchmarkBinary resolves against the PowerShell location ────
+    $relative = $outcomes['relative']
+    Assert-True ($relative.ExitCode -eq 0 -and $relative.Manifest.Count -eq 1) "Relative-binary run failed:`n$($relative.Log)"
+    $relativeBuild = (Get-Content -LiteralPath $relative.Manifest[0].FullName -Raw | ConvertFrom-Json).build
+    Assert-True ($relativeBuild.build_type -eq 'Release' -and $relativeBuild.compiler_version -eq '22.1.8') "A relative binary must find its build tree: $($relativeBuild | ConvertTo-Json -Compress)"
+
     # ── #1445 review: concurrent runs claim distinct output names, never an earlier one's ─────
     foreach ($entry in @($processes | Where-Object { $_.Name -like 'racer *' })) {
         Assert-True ($entry.Process.ExitCode -eq 0) "$($entry.Name) exited $($entry.Process.ExitCode); a successful run must exit 0"
@@ -548,6 +582,32 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
         Assert-True ($branchGit.branch -ceq $branchName -and $branchGit.commit -match '^[0-9a-f]{40}$' -and $branchGit.dirty -eq $false) "Unicode branch: $($branchGit | ConvertTo-Json -Compress)"
     }
     $repoRoot = $repoRootPath
+
+    # ── #1445 review: no provenance inherited from an enclosing repository ───────────────────
+    # A source archive unpacked inside another checkout: git would find that checkout.
+    if (Get-Command git -ErrorAction SilentlyContinue) {
+        $outer = Join-Path $root 'outer'
+        New-Item -ItemType Directory -Path (Join-Path $outer 'inner') | Out-Null
+        & git -C $outer init -q 2>&1 | Out-Null
+        & git -C $outer -c user.name=bench-test -c user.email=bench-test@example.invalid commit -q --allow-empty -m outer 2>&1 | Out-Null
+        $repoRoot = Join-Path $outer 'inner'
+        $nestedGit = Get-GitProvenance
+        Assert-True ($null -eq $nestedGit.commit -and $null -eq $nestedGit.branch -and $null -eq $nestedGit.dirty) "Inherited provenance: $($nestedGit | ConvertTo-Json -Compress)"
+        $repoRoot = $outer
+        Assert-True ((Get-GitProvenance).commit -match '^[0-9a-f]{40}$') 'The repository itself must still be read'
+        $repoRoot = $repoRootPath
+    }
+
+    # ── #1445 review: only CMake's standard configurations are exempt as build types ─────────
+    foreach ($case in @(
+            @{ BuildType = 'benchuser'; User = 'benchuser'; Hosts = @(); Expected = '<user>' }
+            @{ BuildType = 'benchhost'; User = 'someone'; Hosts = @('benchhost'); Expected = '<host>' }
+            @{ BuildType = 'Release'; User = 'Release'; Hosts = @('Release'); Expected = 'Release' }
+            @{ BuildType = 'RelWithDebInfo'; User = 'RelWithDebInfo'; Hosts = @(); Expected = 'RelWithDebInfo' }
+        )) {
+        $hiddenBuild = (Hide-ManifestIdentity ([ordered]@{ build = [ordered]@{ build_type = $case.BuildType } }) -Homes @() -User $case.User -Hosts $case.Hosts).build
+        Assert-True ($hiddenBuild.build_type -ceq $case.Expected) "Build type '$($case.BuildType)': $($hiddenBuild.build_type), expected $($case.Expected)"
+    }
 
     # ── #1445 CI: a checkout spelled another way (8.3 short name) still maps to <source> ──────
     # GitHub's Windows runners set TEMP to an 8.3 short path (C:\Users\RUNNER~1\...).

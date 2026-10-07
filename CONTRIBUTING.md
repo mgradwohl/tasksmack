@@ -717,7 +717,8 @@ concurrently or not -- appends `-2`, `-3`, ... to the timestamp rather than over
   multi-config `bin/<Config>/` binary is found too, with `<Config>` as its build type -- the
   compiler id/version from the
   `CMakeFiles/<version>/` of the cache's own CMake version, or unknown; the flags are split into
-  arguments (shell-style quoting, no backslash escapes), each argument's switch is peeled --
+  arguments (shell-style quoting; backslashes are literal except that an escaped `\"` stays a
+  literal quote, as in `-DAPP_NAME=\"TaskSmack\"`), each argument's switch is peeled --
   prefix maps such as `-ffile-prefix-map=OLD=NEW` are split at the first `=` as clang does --
   and each path operand (drive, UNC and device paths, POSIX and `~` paths, such as the PGO
   presets' `-fprofile-instr-use=` profile) becomes `<source>/...` inside the checkout and
@@ -731,9 +732,13 @@ concurrently or not -- appends `-2`, `-3`, ... to the timestamp rather than over
   result names, CPU model) replaces any remaining home-directory prefix with `<home>`, and the
   host name (short and FQDN) and user name (3+ characters, standing alone between separators)
   with `<host>` and `<user>`. Validated categorical fields (OS name/version, architecture,
-  compiler id/version, build type, generator, schema fields, numbers and booleans) are left
-  alone, so a host named `Linux` or a user named `clang` cannot rewrite them. Outside a git
-  checkout, or without git, the `git` fields are all `null`. `bench.sh` writes it with
+  compiler id/version, generator, a standard build type -- Debug, Release, RelWithDebInfo,
+  MinSizeRel --, schema fields, numbers and booleans) are left alone, so a host named `Linux` or
+  a user named `clang` cannot rewrite them; a custom build type is scrubbed. Outside a git
+  checkout, inside another repository's tree (a source archive unpacked in a checkout), or
+  without git, the `git` fields are all `null`. The manifest is written before the benchmark
+  starts (`exit_code` `null`) and only the exit code is added afterwards, so the git state, build
+  configuration and binary hash describe what was launched. `bench.sh` writes it with
   `tools/bench-manifest.py`.
 
 For the script tests, `bench.ps1 -BenchmarkBinary <path> -OutputDirectory <dir>` and `bench.sh`'s

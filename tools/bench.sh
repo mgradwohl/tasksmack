@@ -111,24 +111,31 @@ echo "Running benchmarks (preset=${PRESET}) → ${OUT_FILE}"
 echo "Binary: ${BENCH_BIN}"
 echo
 
-# Capture the exit code instead of letting `set -e` abort here, so a failed run's partial output
-# is still redacted (or deleted) before the script fails (#1423).
-BENCH_EXIT=0
-"${BENCH_BIN}" "${BENCH_ARGS[@]}" || BENCH_EXIT=$?
-
-# The manifest is written before the result is redacted, so the result file stays the newest one
-# in the output directory (heavy-checks.yml picks the latest perf-data/benchmark-*.json).
-# python3 is already a build prerequisite (GLAD loader generation). A manifest failure is held
-# until the result has been redacted, then fails the script.
+# Provenance is captured before the benchmark starts (#1445 review): git state, build
+# configuration and the binary's hash describe what was launched, even if the checkout, the build
+# or the binary changes during the run. Only the exit code is added afterwards. The manifest is
+# finalized before the result is redacted, so the result file stays the newest one in the output
+# directory (heavy-checks.yml picks the latest perf-data/benchmark-*.json). python3 is already a
+# build prerequisite (GLAD loader generation). A manifest failure is held until the result has
+# been redacted, then fails the script.
 MANIFEST_EXIT=0
 python3 "${SCRIPT_DIR}/bench-manifest.py" \
     --manifest "${MANIFEST_FILE}" \
     --result "${OUT_FILE}" \
     --binary "${BENCH_BIN}" \
     --preset "${PRESET}" \
-    --exit-code "${BENCH_EXIT}" \
     --repo-root "${REPO_ROOT}" \
     -- "${BENCH_ARGS[@]}" || MANIFEST_EXIT=$?
+
+# Capture the exit code instead of letting `set -e` abort here, so a failed run's partial output
+# is still redacted (or deleted) before the script fails (#1423).
+BENCH_EXIT=0
+"${BENCH_BIN}" "${BENCH_ARGS[@]}" || BENCH_EXIT=$?
+
+if [[ ${MANIFEST_EXIT} -eq 0 ]]; then
+    python3 "${SCRIPT_DIR}/bench-manifest.py" --manifest "${MANIFEST_FILE}" --finalize \
+        --exit-code "${BENCH_EXIT}" || MANIFEST_EXIT=$?
+fi
 
 # Redact machine-identifying context so results are safe to commit (repo convention:
 # host_name "redacted", bare executable name).
