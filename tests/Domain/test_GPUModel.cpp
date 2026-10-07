@@ -14,10 +14,12 @@
 #include "Domain/SamplingConfig.h"
 #include "Mocks/MockGPUProbe.h"
 #include "Platform/GPUTypes.h"
+#include "PublicationLatency.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -2587,6 +2589,191 @@ TEST(GPUModelTest, OrderSnapshotsByEnumerationEmitsADuplicatedIdOnce)
     EXPECT_EQ(idsOf(Domain::orderSnapshotsByEnumeration(gpuInfo, snapshots)), (std::vector<std::string>{"GPU1", "GPU0"}));
     // Enumeration failed: no GPU is listed, so all of them are ordered by id.
     EXPECT_EQ(idsOf(Domain::orderSnapshotsByEnumeration({}, snapshots)), (std::vector<std::string>{"GPU0", "GPU1"}));
+}
+
+// =============================================================================
+// Publication Handoff (#868)
+// =============================================================================
+
+/// A probe enumerating and reporting `gpuCount` GPUs named GPU0..GPUn-1.
+[[nodiscard]] std::unique_ptr<MockGPUProbe> makeManyGpus(std::size_t gpuCount)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    for (std::size_t i = 0; i < gpuCount; ++i)
+    {
+        probe->withGPU("GPU" + std::to_string(i), "Test GPU " + std::to_string(i));
+    }
+    return probe;
+}
+
+/// Every GPU's series in one generation is aligned to its timestamps: a truncated or torn copy of any
+/// one of them fails. Once there is history, every GPU of `gpuCount` has its history and snapshot.
+[[nodiscard]] bool isAligned(const Domain::GPUPublication& publication, std::size_t gpuCount)
+{
+    const auto historyAligned = [](const auto& entry)
+    {
+        const Domain::GPUPublishedHistory& history = entry.second;
+        const std::size_t n = history.timestamps.size();
+        return history.memoryUsedBytes.size() == n && history.memoryTotalBytes.size() == n && history.utilization.size() == n &&
+               history.memoryPercent.size() == n && history.gpuClock.size() == n && history.encoder.size() == n &&
+               history.decoder.size() == n && history.temperature.size() == n && history.power.size() == n && history.fanSpeed.size() == n;
+    };
+    const bool complete =
+        publication.version == 0 || (publication.histories.size() == gpuCount && publication.snapshots.size() == gpuCount);
+    return complete && std::ranges::all_of(publication.histories, historyAligned);
+}
+
+TEST(GPUModelTest, PublicationDoesNotWaitForTheWriterToCopyHistory)
+{
+    // #868: refreshAt() copied every GPU's history ring into the new publication while holding the
+    // lock publication() needs, so a UI-thread read landing then waited for most of the write -- one
+    // slow read per generation. With the copy outside the lock a read waits for a pointer swap at
+    // most. Enough GPUs and history that the copy dominates a write; see PublicationLatency.h.
+    constexpr std::size_t GPUS = 64;
+    constexpr std::size_t PREFILL_SAMPLES = 300;
+    constexpr std::size_t WRITES = 40;
+    constexpr auto STEP = std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MIN_MS);
+
+    Domain::GPUModel model(makeManyGpus(GPUS));
+    auto now = std::chrono::steady_clock::time_point{} + std::chrono::hours(1);
+    for (std::size_t i = 0; i < PREFILL_SAMPLES; ++i)
+    {
+        model.refreshAt(now += STEP);
+    }
+
+    const auto result = TestPublication::measure(
+        WRITES,
+        [&](std::size_t) { model.refreshAt(now += STEP); },
+        [&] { return model.publication(); },
+        [&] { return model.publicationVersion(); },
+        [](const Domain::GPUPublication& publication) { return isAligned(publication, GPUS); });
+
+    EXPECT_EQ(result.versionRegressions, 0U);
+    EXPECT_EQ(result.versionAheadOfPointer, 0U);
+    EXPECT_EQ(result.inconsistentReads, 0U);
+    ASSERT_FALSE(result.pacingTimedOut) << "the reader stopped keeping up with the writer";
+    EXPECT_EQ(model.publicationVersion(), PREFILL_SAMPLES + result.totalWrites);
+    EXPECT_GT(result.reads, WRITES); // the pacing guarantees a read per write, plus the last one
+    // Only reads that land inside a write can show contention; see PublicationLatency.h.
+    ASSERT_TRUE(result.overlapAchieved) << "only " << result.overlappingReads << " reads started during a write after " << result.trials
+                                        << " trials (need " << TestPublication::MIN_OVERLAPPING_READS
+                                        << "): the scheduler never ran the reader alongside the writer, so contention wasn't measured";
+    // Before #868 about one read per write waited out the copy. A quarter allows for scheduler noise.
+    EXPECT_LE(result.slowReads, WRITES / 4) << "median write " << result.medianWriteMs << " ms, slowest read " << result.maxReadMs
+                                            << " ms over " << result.reads << " reads, " << result.slowOverlappingReads << " slow of "
+                                            << result.overlappingReads << " overlapping";
+}
+
+TEST(GPUModelTest, ConcurrentWritersPublishEveryGenerationInOrder)
+{
+    // The sampler thread (refreshAt) and the UI thread (setMaxHistorySeconds) both publish. They are
+    // serialised, so generations are committed in version order with none lost, and a reader never
+    // sees a regressed or misaligned one (#868). Both writers are paced on the reader (ReadPacer), so
+    // reads really interleave with the publishing however the threads are scheduled.
+    constexpr std::size_t GPUS = 4;
+    constexpr int SAMPLES = 300;
+    constexpr int RESIZES = 300;
+    constexpr auto STEP = std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MIN_MS);
+    const auto start = std::chrono::steady_clock::time_point{} + std::chrono::hours(1);
+
+    Domain::GPUModel model(makeManyGpus(GPUS));
+    model.refreshAt(start); // publish once so resizes republish
+
+    TestPublication::ReadPacer pacer;
+    std::atomic<int> writersRunning{2};
+    std::atomic<std::size_t> readsWhilePublishing{0};
+    std::atomic<bool> stop{false};
+    std::thread sampler(
+        [&]
+        {
+            std::size_t lastRead = 0;
+            auto now = start;
+            for (int i = 0; i < SAMPLES && pacer.awaitReadSince(lastRead); ++i)
+            {
+                model.refreshAt(now += STEP);
+            }
+            writersRunning.fetch_sub(1);
+        });
+    std::thread resizer(
+        [&]
+        {
+            std::size_t lastRead = 0;
+            for (int i = 0; i < RESIZES && pacer.awaitReadSince(lastRead); ++i)
+            {
+                model.setMaxHistorySeconds((i % 2 == 0) ? Domain::Sampling::HISTORY_SECONDS_MIN
+                                                        : Domain::Sampling::HISTORY_SECONDS_DEFAULT);
+            }
+            writersRunning.fetch_sub(1);
+        });
+    std::thread reader(
+        [&]
+        {
+            std::uint64_t lastSeen = 0;
+            while (!stop.load())
+            {
+                const std::uint64_t announced = model.publicationVersion();
+                const auto publication = model.publication();
+                EXPECT_GE(publication->version, lastSeen);
+                EXPECT_GE(publication->version, announced);
+                EXPECT_TRUE(isAligned(*publication, GPUS));
+                lastSeen = publication->version;
+                if (writersRunning.load() > 0)
+                {
+                    readsWhilePublishing.fetch_add(1);
+                }
+                pacer.readDone();
+            }
+        });
+    sampler.join();
+    resizer.join();
+    stop.store(true);
+    reader.join();
+
+    ASSERT_FALSE(pacer.timedOut()) << "the reader stopped keeping up with the writers";
+    // Every sample and every resize waited for a fresh read, made while that writer was still running.
+    EXPECT_GE(readsWhilePublishing.load(), static_cast<std::size_t>(std::max(SAMPLES, RESIZES)));
+
+    EXPECT_EQ(model.publicationVersion(), static_cast<std::uint64_t>(1 + SAMPLES + RESIZES));
+    EXPECT_EQ(model.publication()->version, model.publicationVersion());
+    // Each GPU's history ends at the last sample: no sample was lost to a concurrent republish.
+    const auto publication = model.publication();
+    const double lastSeconds = std::chrono::duration<double>((start + (STEP * SAMPLES)).time_since_epoch()).count();
+    for (const auto& [gpuId, history] : publication->histories)
+    {
+        SCOPED_TRACE(gpuId);
+        ASSERT_FALSE(history.timestamps.empty());
+        EXPECT_DOUBLE_EQ(history.timestamps.back(), lastSeconds);
+    }
+}
+
+TEST(GPUModelTest, SetMaxHistorySecondsDoesNotWaitForASlowProbeRead)
+{
+    // The writer lock that serialises publishes (#868) is taken only after refreshAt() has released
+    // the probe lock, so a probe read stuck in the driver never holds up a window change on the UI
+    // thread, as it did not before #868. Hold a refresh blocked inside the probe read and resize.
+    auto probe = makeManyGpus(1);
+    auto* rawProbe = probe.get();
+    Domain::GPUModel model(std::move(probe));
+    model.refresh(); // publish once, so the resize republishes
+    const std::uint64_t versionBefore = model.publicationVersion();
+    rawProbe->armBlockingReadGPUCounters();
+
+    std::thread blockedRefresh([&model] { model.refresh(); });
+    EXPECT_TRUE(waitForBlockedEntry(*rawProbe)) << "background refresh() never entered its blocking probe call within the deadline";
+
+    // On its own thread with a bounded wait, so a regression fails instead of hanging the binary.
+    auto future = std::async(std::launch::async, [&model] { model.setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_MIN); });
+    const auto status = future.wait_for(std::chrono::milliseconds(500));
+    EXPECT_EQ(status, std::future_status::ready) << "setMaxHistorySeconds() waited for the blocked probe read";
+    if (status == std::future_status::ready)
+    {
+        EXPECT_EQ(model.publicationVersion(), versionBefore + 1); // the resize republished at once (#1145)
+    }
+
+    rawProbe->releaseBlockedReadGPUCounters();
+    blockedRefresh.join();
+    future.wait();
+    EXPECT_EQ(model.publicationVersion(), versionBefore + 2);
 }
 
 } // namespace
