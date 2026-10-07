@@ -12,7 +12,7 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
 #include "Platform/IProcessActions.h"
-#include "ProcessActionConfirm.h"
+#include "ProcessActionsView.h"
 #include "ProcessDetailsHistory.h"
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
@@ -136,8 +136,6 @@ constexpr const char* GPU_MEMORY_LABEL = "Memory";
     return usedPercent / Domain::Numeric::toDouble(snapshot.memoryBytes);
 }
 
-using App::ProcessActionConfirm::dangerButtonFills;
-
 /// A count history sample as text, or N/A for NaN (an unread value or a gap, #1110 / #1098): std::llround
 /// of NaN is unspecified, so it must not reach formatIntLocalized().
 [[nodiscard]] std::string formatCountOrNA(double value)
@@ -193,14 +191,7 @@ void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSampl
     m_LastDeltaSeconds = deltaTime;
 
     // Fade out action result message
-    if (m_ActionResultTimer > 0.0F)
-    {
-        m_ActionResultTimer -= deltaTime;
-        if (m_ActionResultTimer <= 0.0F)
-        {
-            m_LastActionResult = {};
-        }
-    }
+    m_ActionsView.tick(deltaTime);
 
     if (m_SelectedPid == -1)
     {
@@ -542,8 +533,7 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t uniqueK
     m_CachedSnapshot.reset();
     m_HasSnapshot = false;
     m_ProcessExited = false;
-    m_ShowConfirmDialog = false;
-    m_LastActionResult = {};
+    m_ActionsView.onSelectionChanged();
     m_SmoothedUsage = {};
     m_CachedRateReadings = {};
     m_PeakMemoryBytes = 0.0;
@@ -2160,167 +2150,15 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
 
 void ProcessDetailsPanel::renderActions()
 {
-    const auto& theme = UI::Theme::get();
-
-    ImGui::Text("%s (PID %d)", cachedSnapshot().name.c_str(), m_SelectedPid);
-    ImGui::Spacing();
-
-    // Section: Process Control
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GEARS "  Process Control");
-    ImGui::Spacing();
-
-    renderActionResultFeedback();
-    renderConfirmDialog();
-    renderActionButtons();
+    // The buttons, confirm dialog and result line are ProcessActionsView's (#1179); the priority
+    // control under them is still the panel's.
+    m_ActionsView.render(m_ProcessActions.get(), m_ActionCapabilities, cachedSnapshot().name, selectedTarget());
     renderPrioritySection();
-}
-
-void ProcessDetailsPanel::renderActionResultFeedback()
-{
-    if (m_LastActionResult.empty())
-    {
-        return;
-    }
-
-    const auto& theme = UI::Theme::get();
-    // The colour comes from the result's flag, not from searching its text for "Error" (#1203).
-    const ImVec4 color = m_LastActionResult.ok ? theme.scheme().textSuccess : theme.scheme().textError;
-    ImGui::TextColored(color, "%s", m_LastActionResult.text.c_str());
-    ImGui::Spacing();
-}
-
-void ProcessDetailsPanel::renderConfirmDialog()
-{
-    // The same dialog the Processes table's row menu confirms with (#1209).
-    if (ProcessActionConfirm::render(m_ShowConfirmDialog, m_ConfirmAction, cachedSnapshot().name, m_SelectedPid) ==
-        ProcessActionConfirm::Outcome::Confirmed)
-    {
-        dispatchConfirmedAction();
-    }
 }
 
 Platform::ProcessTarget ProcessDetailsPanel::selectedTarget() const
 {
     return Detail::targetForSelection(m_SelectedPid, m_HasSnapshot ? m_CachedSnapshot.get() : nullptr);
-}
-
-void ProcessDetailsPanel::dispatchConfirmedAction()
-{
-    // m_ProcessActions can be null: the injection constructor doesn't reject a null
-    // unique_ptr (m_ActionCapabilities already handles that case), so guard here too rather
-    // than dereferencing unconditionally.
-    const Platform::ProcessActionResult result = m_ProcessActions
-                                                   ? Detail::dispatchProcessAction(*m_ProcessActions, m_ConfirmAction, selectedTarget())
-                                                   : Platform::ProcessActionResult::error("Process actions unavailable");
-    m_LastActionResult = Detail::formatActionResultMessage(m_ConfirmAction, m_SelectedPid, result);
-    m_ActionResultTimer = 5.0F;
-}
-
-void ProcessDetailsPanel::renderActionButtons()
-{
-    // Action buttons - use consistent sizing and 2x2 grid layout
-    constexpr const char* TERMINATE_LABEL = ICON_FA_XMARK " Terminate";
-    constexpr const char* KILL_LABEL = ICON_FA_SKULL " Kill";
-    // "Suspend", not "Pause": the same word as the confirm dialog and the result line (#1203).
-    constexpr const char* SUSPEND_LABEL = ICON_FA_PAUSE " Suspend";
-    constexpr const char* RESUME_LABEL = ICON_FA_PLAY " Resume";
-
-    // One width for all four, from the widest label and the font, capped to the pane (#949). See
-    // ProcessDetailsLayout::computeActionButtonWidth() for why it is no longer a fixed 180px.
-    const float emPx = ImGui::GetFontSize();
-    const float gutter = ProcessDetailsLayout::ACTION_BUTTON_GUTTER_EM * emPx;
-    const float widestLabel = std::max({ImGui::CalcTextSize(TERMINATE_LABEL).x,
-                                        ImGui::CalcTextSize(KILL_LABEL).x,
-                                        ImGui::CalcTextSize(SUSPEND_LABEL).x,
-                                        ImGui::CalcTextSize(RESUME_LABEL).x});
-    // Per-column overhead is the gutter plus one CellPadding.x, not two. This table has no inner
-    // border, so ImGui does not pad inside each cell: it puts CellPadding.x on each side of the gap
-    // *between* columns. Two columns have one gap, so the table is 2 * (width + gutter) plus
-    // 2 * CellPadding.x in total -- one CellPadding.x per column.
-    const float buttonWidth = ProcessDetailsLayout::computeActionButtonWidth(
-        widestLabel, emPx, ImGui::GetContentRegionAvail().x, gutter + ImGui::GetStyle().CellPadding.x);
-    constexpr float BUTTON_HEIGHT = 0.0F; // Use default height
-    const ImVec2 buttonSize(buttonWidth, BUTTON_HEIGHT);
-
-    // Terminate and Kill end the process, so they are drawn in the theme's danger colour, apart from
-    // Suspend and Resume, which can be undone (#1273).
-    const auto& theme = UI::Theme::get();
-
-    // Use a table for consistent alignment
-    if (ImGui::BeginTable("ActionButtons", 2, ImGuiTableFlags_SizingFixedFit))
-    {
-        ImGui::TableSetupColumn("Col1", ImGuiTableColumnFlags_WidthFixed, buttonWidth + gutter);
-        ImGui::TableSetupColumn("Col2", ImGuiTableColumnFlags_WidthFixed, buttonWidth + gutter);
-
-        // Row 1: Terminate and Kill
-        ImGui::TableNextRow();
-
-        // Terminate - graceful shutdown
-        ImGui::TableNextColumn();
-        if (m_ActionCapabilities.canTerminate)
-        {
-            if (UI::Widgets::filledButton(
-                    TERMINATE_LABEL, buttonSize, dangerButtonFills(), theme.scheme().textPrimary, theme.scheme().windowBg))
-            {
-                m_ConfirmAction = ProcessAction::Terminate;
-                m_ShowConfirmDialog = true;
-            }
-            if (ImGui::IsItemHovered())
-            {
-                ImGui::SetTooltip("Ask the process to exit: it can save its work first, or refuse");
-            }
-        }
-
-        // Kill - force terminate
-        ImGui::TableNextColumn();
-        if (m_ActionCapabilities.canKill)
-        {
-            if (UI::Widgets::filledButton(KILL_LABEL, buttonSize, dangerButtonFills(), theme.scheme().textPrimary, theme.scheme().windowBg))
-            {
-                m_ConfirmAction = ProcessAction::Kill;
-                m_ShowConfirmDialog = true;
-            }
-            if (ImGui::IsItemHovered())
-            {
-                ImGui::SetTooltip("Force terminate (cannot be caught or ignored)");
-            }
-        }
-
-        // Row 2: Stop and Resume
-        ImGui::TableNextRow();
-
-        // Suspend - stop the process running until it is resumed
-        ImGui::TableNextColumn();
-        if (m_ActionCapabilities.canStop)
-        {
-            if (ImGui::Button(SUSPEND_LABEL, buttonSize))
-            {
-                m_ConfirmAction = ProcessAction::Stop;
-                m_ShowConfirmDialog = true;
-            }
-            if (ImGui::IsItemHovered())
-            {
-                ImGui::SetTooltip("Suspend the process until it is resumed");
-            }
-        }
-
-        // Resume - continue a suspended process
-        ImGui::TableNextColumn();
-        if (m_ActionCapabilities.canContinue)
-        {
-            if (ImGui::Button(RESUME_LABEL, buttonSize))
-            {
-                m_ConfirmAction = ProcessAction::Resume;
-                m_ShowConfirmDialog = true;
-            }
-            if (ImGui::IsItemHovered())
-            {
-                ImGui::SetTooltip("Resume a suspended process");
-            }
-        }
-
-        ImGui::EndTable();
-    }
 }
 
 // Renders the process-priority section: current nice value, the gradient slider (drawn via

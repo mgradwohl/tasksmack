@@ -920,6 +920,8 @@ void Application::run()
                 {
                     idleWakeEvent = wakeEvent;
                 }
+                ++m_IdleWaitCount;
+                m_LastIdleWaitWoke = idleWakeEvent.has_value();
                 if (traceResizePerfThisFrame)
                 {
                     loopTiming.waitMs = resizePerfElapsedMs(waitStart, SDL_GetPerformanceCounter());

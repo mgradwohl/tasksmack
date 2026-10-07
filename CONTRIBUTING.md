@@ -1332,7 +1332,15 @@ must not be the thing using the CPU. `tools/measure-idle.sh` (Linux) turns one i
 comparable set of numbers. It launches TaskSmack with `TASKSMACK_TRACE_RESIZE_PERF=1`, waits for the
 main loop and a warm-up (as `tools/profile-perf.sh app` does), samples per-thread CPU, closes the app
 with SIGTERM (a non-zero exit or a SIGKILL fails the run), and prints a table plus one
-machine-readable `RESULT` line.
+machine-readable `RESULT` line. With `--repeat N` it runs that whole cycle N times (a fresh process
+each time) and adds the mean, median and p95 of app CPU, total CPU and fps across the repetitions,
+plus a `SUMMARY` line. Every run also writes JSON (`perf-data/idle-<label>-<timestamp>.json`, or
+`--json <path>`) with each repetition's figures and per-thread rows, the aggregates, and provenance:
+commit and dirty flag, preset and build type, refresh interval and history window (as the app logged
+or loaded them), synthetic spec, GL renderer, display refresh rate, CPU model, logical CPU count,
+MHz, and whether it ran under WSL. `--fail-above <pct>` exits with status 3 when the median app CPU
+is above `<pct>`. Another TaskSmack running with the same settings fails the run (the
+single-instance lock would stop the new one at its "already running" box); close it first.
 
 ```bash
 # Default: profile preset (built first), 15 s warm-up (45 s for a "minimized" label), 30 s sample
@@ -1342,6 +1350,9 @@ machine-readable `RESULT` line.
 # The click position is the tab's screen position, which depends on your window size and place.
 ./tools/measure-idle.sh --preset debug --skip-build --label processes \
     --setup-cmd 'sleep 2; xdotool mousemove <x> <y> click 1'
+
+# Baseline / gate: five repetitions, fail if the median app CPU is above the target below
+./tools/measure-idle.sh --skip-build --repeat 5 --fail-above 16
 
 ./tools/measure-idle.sh --help
 ```
@@ -1360,6 +1371,7 @@ Names come from `Platform/ThreadName.h`; give any new worker thread one there (1
 |---|---|---|
 | Thread CPU% | Average CPU time of one thread over the sample window; 100% = one logical CPU busy | pidstat / `/proc` |
 | Total CPU% | The whole process over the window, including threads that started or exited in it | pidstat / `/proc/<pid>/stat` |
+| App CPU% | Total CPU% minus Mesa's software-render/driver threads (`llvmpipe-N`, `<proc>:disk$N`; the list is in the script's header). The figure the idle target applies to | pidstat / `/proc` |
 | fps | Presented frames per second: loop intervals ÷ their summed duration | `ResizePerf[...]` `loop` |
 | Frame p95/p99/max | update+render+post+swap per presented frame (the 16.6 ms budget figure) | `ResizePerf[...]` `frame` |
 | Loop p95/p99 | Deliver-to-deliver interval, frame end to frame end, skipped renders included | `ResizePerf[...]` `loop` |
@@ -1396,6 +1408,51 @@ of TaskSmack's own threads is meaningful there, but WSLg usually renders through
 software rasterizer, whose threads (`llvmpipe-N`) then dominate the total and make frame and loop
 times reflect the CPU rasterizer and the shared desktop, not a GPU driver and compositor. Quote
 fps/frame/loop figures only from native Linux or Windows; on WSL quote CPU% (and say so).
+On WSL that
+means app CPU: total CPU there is mostly `llvmpipe` (about 490–550% of one CPU in the baseline
+below) and says nothing about TaskSmack.
+
+#### Idle-CPU target (Linux/WSL app CPU)
+
+Per maintainer decision D1 (#1408, part of #843: measure first, then set a target), the idle-CPU target is:
+
+| Scenario | Target: median app CPU over `--repeat 5` |
+|---|---|
+| Default (this machine, Overview tab, window maximized at 3840×2100) | **≤ 16%** of one logical CPU |
+| `--synthetic processes=5000,history=full` | **≤ 22%** of one logical CPU |
+
+Both targets are about 1.5× the measured median on a quiet machine, rounded up: 10.60% → 16%, and
+14.70% → 22%. That leaves room for run-to-run noise (the default scenario's repetitions ranged
+9.1–11.3%) while still catching a regression that adds a few percent of one core at idle. A median
+above the target is a regression to explain or fix (`--fail-above 16` / `--fail-above 22`). The
+targets cover **Linux/WSL app CPU only**; Windows targets will follow from `tools/measure-idle.ps1`
+captures. Re-measure and revisit them when the renderer, the default scenario or the sampling
+defaults change.
+
+Measure at the same window geometry. TaskSmack restores its saved size and maximized state, and a
+larger window renders more, so the script records the window's size and maximized state in the
+`SUMMARY` line and the JSON (`scenario.window`), and warns when it varied between repetitions.
+Compare a run against these targets only at the geometry they were measured at (maximized,
+3840×2100). Making the script set a fixed geometry itself is #1453.
+
+Measure on a quiet machine. App CPU rises with presented frames, and other load slows `llvmpipe`
+and so the frame rate. A first baseline taken under load average 20–30 read 6.52% / 9.59% median
+at 12 / 6.6 fps, well below the quiet figures, so a loaded run can pass a target it would fail
+when quiet.
+
+Baseline (2026-10-07, binary built from `f4cf041a`, measured with the script at `841eda92`, `profile` preset = RelWithDebInfo, `/proc` sampler,
+15 s warm-up, 30 s samples, 5 repetitions each, load average under 1 before the runs). Intel Core
+Ultra 7 255H, 10 logical CPUs, WSL2 (kernel 6.18), WSLg with Mesa 26 `llvmpipe` (LLVM 21), 59.98 Hz
+display. Measured with the maintainer's config: **250 ms refresh** and a **300 s history** (the
+synthetic run preloads 1800 s; the defaults are 1000 ms and 300 s). A 250 ms refresh is the heavier
+case.
+
+| Scenario | App CPU% mean / median / p95 | Total CPU% mean / median / p95 | fps mean / median |
+|---|---|---|---|
+| Default | 10.41 / 10.60 / 11.32 | 530.56 / 536.70 / 545.34 | 23.82 / 23.60 |
+| `processes=5000,history=full` | 15.10 / 14.70 / 16.52 | 515.14 / 526.43 / 538.25 | 21.83 / 21.73 |
+
+p95 over five repetitions is their maximum (nearest rank).
 
 #### Synthetic large-UI scenario (captures at the limits)
 
