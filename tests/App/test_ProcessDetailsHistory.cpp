@@ -11,6 +11,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -321,18 +322,22 @@ TEST(ProcessDetailsHistoryTest, TrimCompactsOnceTheTrimmedPrefixIsAsLongAsTheLiv
 {
     // A steady 10 s window over one point per second: 12 live points (11 in the window plus the
     // anchor before it), and one more trimmed per sample. The buffers are compacted only when the
-    // trimmed prefix reaches the live count, and then start again from none.
+    // trimmed prefix reaches the live count, and then start again from none -- or, once, earlier,
+    // when an append has to grow the buffers (see CapacityStaysWithinTwiceTheMostLivePoints).
     ProcessDetailsHistory history = everySecond(0, 11);
     history.trimToWindow(10.0);
     ASSERT_EQ(history.size(), 12U);
     ASSERT_EQ(history.trimmedPrefixSize(), 0U);
 
-    std::size_t compactions = 0;
-    std::size_t previousPrefix = 0;
+    std::size_t trimCompactions = 0;
+    std::size_t growthCompactions = 0;
     for (int t = 12; t <= 60; ++t)
     {
         SCOPED_TRACE("t = " + std::to_string(t));
+        const std::size_t prefixBefore = history.trimmedPrefixSize();
         history.append(static_cast<double>(t), distinctPoint(t * 100.0), false);
+        const std::size_t prefixAfterAppend = history.trimmedPrefixSize();
+        growthCompactions += (prefixAfterAppend < prefixBefore) ? 1U : 0U;
         history.trimToWindow(10.0);
 
         ASSERT_EQ(history.size(), 12U);
@@ -341,16 +346,68 @@ TEST(ProcessDetailsHistoryTest, TrimCompactsOnceTheTrimmedPrefixIsAsLongAsTheLiv
         EXPECT_DOUBLE_EQ(history.timestamps().front(), static_cast<double>(t - 11));
         EXPECT_DOUBLE_EQ(history.series(ProcessSeries::CpuTotal).front(), (t - 11) * 100.0);
         EXPECT_DOUBLE_EQ(history.series(ProcessSeries::GdiObjects).back(), (t * 100.0) + 16.0);
-        if (history.trimmedPrefixSize() < previousPrefix)
+        if (history.trimmedPrefixSize() < prefixAfterAppend + 1U)
         {
-            EXPECT_EQ(history.trimmedPrefixSize(), 0U);
-            ++compactions;
+            EXPECT_EQ(history.trimmedPrefixSize(), 0U); // A trim compacts the whole prefix
+            ++trimCompactions;
         }
-        previousPrefix = history.trimmedPrefixSize();
     }
-    // 49 trims of one point each, compacted every 12th (t = 23, 35, 47, 59): amortized, not one
-    // erase of the whole window per sample.
-    EXPECT_EQ(compactions, 4U);
+    // 49 trims of one point each, compacted about every 12th: amortized, not one erase of the whole
+    // window per sample. At most one append has to grow the buffers once the window is full.
+    EXPECT_LE(growthCompactions, 1U);
+    EXPECT_GE(trimCompactions + growthCompactions, 4U);
+    EXPECT_LE(trimCompactions + growthCompactions, 5U);
+}
+
+TEST(ProcessDetailsHistoryTest, CapacityStaysWithinTwiceTheMostLivePoints)
+{
+    // Growth by doubling could take a buffer holding up to twice the window (live points plus the
+    // trimmed prefix) to nearly four times it. Growth is held to twice the live points instead, so
+    // the capacity stays within twice the most live points seen, plus room for one gap point and
+    // reading. Many window lengths, so the bound holds wherever the fill crosses a growth step.
+    for (int window = 1; window <= 200; ++window)
+    {
+        SCOPED_TRACE("window " + std::to_string(window));
+        ProcessDetailsHistory history;
+        std::size_t mostLive = 0;
+        std::size_t compactions = 0;
+        for (int t = 0; t < (window * 6) + 20; ++t)
+        {
+            const std::size_t prefixBefore = history.trimmedPrefixSize();
+            history.append(static_cast<double>(t), distinctPoint(t * 100.0), false);
+            mostLive = std::max(mostLive, history.size());
+            history.trimToWindow(static_cast<double>(window));
+            compactions += (history.trimmedPrefixSize() < prefixBefore) ? 1U : 0U;
+
+            ASSERT_LE(history.storageCapacity(), 2 * (mostLive + 2)) << "t = " << t;
+            ASSERT_LT(history.trimmedPrefixSize(), history.size()) << "t = " << t;
+        }
+        // Steady state: window + 1 points in the window, plus the anchor before it
+        EXPECT_EQ(history.size(), static_cast<std::size_t>(window) + 2U);
+        EXPECT_DOUBLE_EQ(history.timestamps().front(), static_cast<double>((window * 6) + 19 - window - 1));
+        EXPECT_GT(compactions, 0U);
+    }
+}
+
+TEST(ProcessDetailsHistoryTest, AppendThatMustGrowCompactsFirstAndKeepsTheReads)
+{
+    // A pending prefix is dropped before a buffer grows, so a reallocation copies only live points.
+    ProcessDetailsHistory history = everySecond(0, 20);
+    history.trimToWindow(15.0); // 4 trimmed, 17 live
+    ASSERT_EQ(history.trimmedPrefixSize(), 4U);
+
+    int t = 21;
+    while (history.trimmedPrefixSize() != 0)
+    {
+        ASSERT_LT(t, 1000);
+        history.append(static_cast<double>(t), distinctPoint(t * 100.0), false); // No trim: only growth compacts
+        ++t;
+    }
+    EXPECT_GE(history.storageCapacity(), 2 * history.size());
+    expectAligned(history);
+    EXPECT_DOUBLE_EQ(history.timestamps().front(), 4.0);
+    EXPECT_DOUBLE_EQ(history.newestTimeSeconds(), static_cast<double>(t - 1));
+    EXPECT_DOUBLE_EQ(history.series(ProcessSeries::GdiObjects).front(), 416.0);
 }
 
 /// @p history reads exactly as @p expected does: the same axis and the same values in every series.

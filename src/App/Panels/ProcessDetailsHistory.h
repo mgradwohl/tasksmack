@@ -166,10 +166,18 @@ static_assert(sizeof(ProcessHistoryPoint) == PROCESS_SERIES_COUNT * sizeof(doubl
 /// and every series, and the points before it stay in the buffers, unread, until they are at least as
 /// many as the live points. Only then are they erased, in one pass per buffer. Erasing from the
 /// front on every sample used to shift the whole window of all eighteen buffers once per sample --
-/// about 4 MB/s of memmove at 100 ms over the default 5 minutes, six times that at 30 minutes; now each live point is moved about once per
-/// window's worth of samples, so the cost per sample is amortized O(1) and the buffers hold at most
-/// about twice the window. The reads (timestamps(), series()) return spans that start at the logical
-/// start, so a reader cannot tell a compacted history from one that has not been compacted yet.
+/// about 4 MB/s of memmove at 100 ms over the default 5 minutes, six times that at 30 minutes. Now
+/// each live point is moved about once per window's worth of samples, so the cost per sample is
+/// amortized O(1). The reads (timestamps(), series()) return spans that start at the logical start,
+/// so a reader cannot tell a compacted history from one that has not been compacted yet.
+///
+/// Memory: each buffer holds fewer than twice the live points (the trimmed prefix is compacted
+/// before it reaches the live count), and its capacity is held to about twice the most live points
+/// it has had (see append()) rather than growing by doubling, which could take it to nearly four
+/// times the window. At the largest window and fastest interval (30 minutes at 100 ms) that is
+/// 18,000 points x 18 buffers x 8 bytes, about 2.6 MB live and about 5.2 MB allocated per Process
+/// Details history, plus the old buffer briefly while one grows. Capacity is never released, so a
+/// shorter window or clear() keeps the larger allocation for reuse.
 class ProcessDetailsHistory
 {
   public:
@@ -179,18 +187,29 @@ class ProcessDetailsHistory
     /// line drawn across the missing samples.
     ///
     /// Strong exception guarantee: every buffer gets room for the new points before any is pushed, so
-    /// an allocation failure (std::bad_alloc from reserveFor()) leaves every size as it was, and the
+    /// an allocation failure (std::bad_alloc from reserveAtLeast()) leaves size() and every read as they were, and the
     /// axis and series stay the same length. The push_backs after it cannot throw: they fit in the
-    /// reserved capacity, and copying a double does not throw. The buffers hold the trimmed prefix too
-    /// (see the class comment), so their capacity settles at about twice the window rather than once.
+    /// reserved capacity, and copying a double does not throw.
+    ///
+    /// When the new points do not fit, the trimmed prefix is compacted first (compact() does not
+    /// throw and leaves every read as it was, so the guarantee holds), and only then does a buffer
+    /// grow, to twice the live points. A reallocation copies only live points, and the capacity stays
+    /// within about twice the most live points the history has had. Growing to twice the live count
+    /// right after a compaction leaves room for at least as many appends again before the next
+    /// growth, so the cost stays amortized O(1).
     void append(double timeSeconds, const ProcessHistoryPoint& point, bool gapBefore)
     {
         const bool addGap = gapBefore && !empty() && timeSeconds > m_Timestamps.back();
-        const std::size_t newSize = m_Timestamps.size() + (addGap ? 2U : 1U);
-        reserveFor(m_Timestamps, newSize);
-        for (std::vector<double>& series : m_Series)
+        const std::size_t addCount = addGap ? 2U : 1U;
+        if (m_Timestamps.size() + addCount > m_Timestamps.capacity())
         {
-            reserveFor(series, newSize);
+            compact();
+            const std::size_t newCapacity = 2 * (size() + addCount);
+            reserveAtLeast(m_Timestamps, newCapacity);
+            for (std::vector<double>& series : m_Series)
+            {
+                reserveAtLeast(series, newCapacity);
+            }
         }
 
         if (addGap)
@@ -279,6 +298,13 @@ class ProcessDetailsHistory
         return std::span<const double>(m_Series[static_cast<std::size_t>(which)]).subspan(m_Start);
     }
 
+    /// The axis buffer's capacity in points; every series buffer grows with it. Exposed so the tests
+    /// can check the memory bound in the class comment.
+    [[nodiscard]] std::size_t storageCapacity() const noexcept
+    {
+        return m_Timestamps.capacity();
+    }
+
     /// How many trimmed points are still held in the buffers ahead of the live ones, waiting for the
     /// next compaction. Never part of a read; exposed so the tests and the benchmark can see when
     /// storage is reclaimed.
@@ -291,13 +317,13 @@ class ProcessDetailsHistory
     static_assert(std::is_nothrow_copy_constructible_v<double> && std::is_nothrow_move_assignable_v<double>,
                   "append() and trimToWindow() rely on copying and moving values not throwing");
 
-    /// Makes room for @p size values in @p data, growing geometrically like push_back, so appends stay
-    /// amortized O(1). Only the capacity changes: a throw leaves @p data's size and values as they were.
-    static void reserveFor(std::vector<double>& data, std::size_t size)
+    /// Makes room for @p capacity values in @p data. Only the capacity changes: a throw leaves
+    /// @p data's size and values as they were.
+    static void reserveAtLeast(std::vector<double>& data, std::size_t capacity)
     {
-        if (size > data.capacity())
+        if (capacity > data.capacity())
         {
-            data.reserve(std::max(size, data.capacity() * 2));
+            data.reserve(capacity);
         }
     }
 
