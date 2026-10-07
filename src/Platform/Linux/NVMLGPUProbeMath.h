@@ -44,7 +44,8 @@ using NVMLRunningProcesses::RunningProcess;
 using NVMLRunningProcesses::RunningProcessesSymbol;
 using NVMLRunningProcesses::VALUE_NOT_AVAILABLE;
 
-using StatusStringFn = const char* (*) (Platform::NVML::nvmlReturn_t);
+// Trailing-return spelling: clang-format 22 and 23 disagree on the space in `const char* (*)(...)` (#916).
+using StatusStringFn = auto (*)(Platform::NVML::nvmlReturn_t) -> const char*;
 
 /// Resolves an NVML return code to a human-readable string via the (possibly unresolved)
 /// nvmlErrorString function pointer, falling back to "Unknown NVML error" when the symbol
