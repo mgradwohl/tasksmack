@@ -13,13 +13,16 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace Domain
 {
@@ -1436,6 +1439,245 @@ TEST(StorageModelTest, ConcurrentWritersPublishEveryGenerationInOrder)
 
     EXPECT_EQ(model.publicationVersion(), static_cast<std::uint64_t>(1 + SAMPLES + RESIZES));
     EXPECT_EQ(model.publication()->version, model.publicationVersion());
+}
+
+// =============================================================================
+// Shared history (#1412)
+// =============================================================================
+
+/// Counters for sample @p step: sda always, sdb from step 20 on, and nvme0n1 on even steps only, so
+/// the history has a disk that appears part way and one that comes and goes (NaN gaps).
+[[nodiscard]] Platform::SystemDiskCounters churningDisks(std::uint64_t step)
+{
+    Platform::SystemDiskCounters counters;
+    const auto add = [&counters, step](const char* name, std::uint64_t salt)
+    {
+        Platform::DiskCounters disk;
+        disk.deviceName = name;
+        disk.sectorSize = 512;
+        disk.readsCompleted = step * (2 + salt);
+        disk.readSectors = step * (16 + salt);
+        disk.writesCompleted = step;
+        disk.writeSectors = step * (8 + salt);
+        counters.disks.push_back(disk);
+    };
+    add("sda", 0);
+    if (step >= 20)
+    {
+        add("sdb", 1);
+    }
+    if (step % 2 == 0)
+    {
+        add("nvme0n1", 2);
+    }
+    return counters;
+}
+
+/// The time of sample @p step at @p stepSeconds apart, on the steady_clock base StorageModel uses.
+[[nodiscard]] std::chrono::steady_clock::time_point sampleTime(std::uint64_t step, double stepSeconds = 1.0)
+{
+    return std::chrono::steady_clock::time_point{} + std::chrono::hours(1) +
+           std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+               std::chrono::duration<double>(static_cast<double>(step) * stepSeconds));
+}
+
+/// Every series of a publication copied out as bit patterns -- NaN gaps compare equal to themselves
+/// -- so a later comparison sees whether any sample changed.
+struct PublishedValues
+{
+    std::vector<std::vector<std::uint64_t>> series;
+    std::vector<std::string> disks;
+
+    explicit PublishedValues(const StoragePublication& publication)
+    {
+        const auto add = [this](std::span<const double> values)
+        {
+            auto& bits = series.emplace_back();
+            bits.reserve(values.size());
+            for (const double value : values)
+            {
+                bits.push_back(std::bit_cast<std::uint64_t>(value));
+            }
+        };
+        add(publication.timestamps);
+        add(publication.totalReadHistory);
+        add(publication.totalWriteHistory);
+        for (const auto& disk : publication.perDiskHistory)
+        {
+            disks.push_back(disk.deviceName);
+            add(disk.readBytesPerSec);
+            add(disk.writeBytesPerSec);
+        }
+    }
+
+    bool operator==(const PublishedValues&) const = default;
+};
+
+// A publication shares its samples with the model rather than copying them, so it must stay exactly
+// as published while the model appends, adds and drops disks, trims (by time and by a window change),
+// and moves its samples to new blocks.
+TEST(StorageModelTest, OlderPublicationIsUnchangedByLaterSamplesAndTrims)
+{
+    auto probe = std::make_unique<Mocks::MockDiskProbe>();
+    auto* rawProbe = probe.get();
+    StorageModel model(std::move(probe));
+    model.setMaxHistorySeconds(60.0);
+    std::uint64_t step = 0;
+    for (; step < 100; ++step)
+    {
+        rawProbe->setNextCounters(churningDisks(step));
+        model.sampleAt(sampleTime(step));
+    }
+    const auto old = model.publication();
+    const PublishedValues expected(*old);
+    ASSERT_GT(old->timestamps.size(), 50U);
+    ASSERT_EQ(old->perDiskHistory.size(), 3U);
+    ASSERT_TRUE(isAligned(*old));
+
+    for (; step < 1000; ++step)
+    {
+        rawProbe->setNextCounters(churningDisks(step));
+        model.sampleAt(sampleTime(step));
+        if (step == 500)
+        {
+            model.setMaxHistorySeconds(Sampling::HISTORY_SECONDS_MIN);
+        }
+    }
+    EXPECT_EQ(PublishedValues(*old), expected);
+    // The window, plus the sample kept just before its left edge (#1016).
+    EXPECT_EQ(model.publication()->timestamps.size(), static_cast<std::size_t>(Sampling::HISTORY_SECONDS_MIN) + 2U);
+    EXPECT_TRUE(isAligned(*model.publication()));
+}
+
+// Consecutive publications share their history (an O(series) publish, not O(history x series)), and
+// every series stays aligned with the timestamps.
+TEST(StorageModelTest, ConsecutivePublicationsShareTheirHistory)
+{
+    auto probe = std::make_unique<Mocks::MockDiskProbe>();
+    auto* rawProbe = probe.get();
+    StorageModel model(std::move(probe));
+    model.setMaxHistorySeconds(120.0);
+    std::uint64_t step = 0;
+    for (; step < 300; ++step)
+    {
+        rawProbe->setNextCounters(churningDisks(step));
+        model.sampleAt(sampleTime(step));
+    }
+
+    constexpr int GENERATIONS = 200;
+    int shared = 0;
+    auto previous = model.publication();
+    for (int i = 0; i < GENERATIONS; ++i, ++step)
+    {
+        rawProbe->setNextCounters(churningDisks(step));
+        model.sampleAt(sampleTime(step));
+        const auto next = model.publication();
+        ASSERT_TRUE(isAligned(*next));
+        ASSERT_EQ(next->perDiskHistory.size(), 3U);
+        const auto sharesWithPrevious = [&](const auto member)
+        {
+            return (next.get()->*member).sharesStorageWith(previous.get()->*member);
+        };
+        if (sharesWithPrevious(&StoragePublication::timestamps) && sharesWithPrevious(&StoragePublication::totalReadHistory) &&
+            next->perDiskHistory[0].readBytesPerSec.sharesStorageWith(previous->perDiskHistory[0].readBytesPerSec))
+        {
+            ++shared;
+            // The same samples in place: the newer view starts one sample later in the same memory.
+            EXPECT_EQ(next->timestamps.data(), previous->timestamps.data() + 1);
+            EXPECT_EQ(next->perDiskHistory[2].writeBytesPerSec.data(), previous->perDiskHistory[2].writeBytesPerSec.data() + 1);
+        }
+        previous = next;
+    }
+    // Only a compaction into a new block -- about once per window's worth of samples -- copies.
+    EXPECT_GE(shared, GENERATIONS - 4);
+}
+
+// A disk that appears once the history is full and trimming is a new series backfilled to the full
+// length; one absent past the window is pruned. The model's own series and every publication stay
+// aligned throughout (#1015, #777).
+TEST(StorageModelTest, SharedSeriesStayAlignedAsDisksAppearAndArePruned)
+{
+    auto probe = std::make_unique<Mocks::MockDiskProbe>();
+    auto* rawProbe = probe.get();
+    StorageModel model(std::move(probe));
+    model.setMaxHistorySeconds(Sampling::HISTORY_SECONDS_MIN);
+    std::uint64_t step = 0;
+    for (; step < 200; ++step)
+    {
+        // usb0 appears at step 50 and is gone from 120 on: pruned once absent for longer than the window.
+        auto counters = churningDisks(step);
+        if (step >= 50 && step < 120)
+        {
+            Platform::DiskCounters usb;
+            usb.deviceName = "usb0";
+            usb.readsCompleted = step;
+            usb.readSectors = step * 4;
+            counters.disks.push_back(usb);
+        }
+        rawProbe->setNextCounters(counters);
+        model.sampleAt(sampleTime(step));
+
+        const auto publication = model.publication();
+        ASSERT_TRUE(isAligned(*publication)) << "step " << step;
+        const auto timestamps = model.historyTimestamps();
+        ASSERT_EQ(model.totalReadHistory().size(), timestamps.size()) << "step " << step;
+        for (const auto& disk : model.perDiskHistory())
+        {
+            ASSERT_EQ(disk.readBytesPerSec.size(), timestamps.size()) << disk.deviceName << " step " << step;
+            ASSERT_EQ(disk.writeBytesPerSec.size(), timestamps.size()) << disk.deviceName << " step " << step;
+        }
+        const bool hasUsb =
+            std::ranges::any_of(publication->perDiskHistory, [](const PerDiskHistory& disk) { return disk.deviceName == "usb0"; });
+        EXPECT_EQ(hasUsb, step >= 50 && step < 120 + static_cast<std::uint64_t>(Sampling::HISTORY_SECONDS_MIN)) << "step " << step;
+    }
+}
+
+// A UI-style reader walks every sample of the latest publication while the sampler appends, trims and
+// compacts the shared history underneath it. Under TSan this shows the reader never reads a slot the
+// writer writes: published samples are never written again (#1412).
+TEST(StorageModelTest, ReadingPublishedHistoryWhileSamplingIsRaceFree)
+{
+    auto probe = std::make_unique<Mocks::MockDiskProbe>();
+    auto* rawProbe = probe.get();
+    StorageModel model(std::move(probe));
+    model.setMaxHistorySeconds(Sampling::HISTORY_SECONDS_MIN);
+    rawProbe->setNextCounters(churningDisks(0));
+    model.sampleAt(sampleTime(0));
+
+    std::atomic<bool> done{false};
+    std::atomic<std::size_t> misaligned{0};
+    std::thread reader(
+        [&]
+        {
+            while (!done.load(std::memory_order_acquire))
+            {
+                const auto publication = model.publication();
+                const PublishedValues values(*publication); // reads every sample of every series
+                const auto& timestamps = publication->timestamps;
+                for (std::size_t i = 1; i < timestamps.size(); ++i)
+                {
+                    if (timestamps[i] <= timestamps[i - 1])
+                    {
+                        misaligned.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+                for (const auto& series : values.series)
+                {
+                    if (series.size() != timestamps.size())
+                    {
+                        misaligned.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+            }
+        });
+    for (std::uint64_t step = 1; step < 2000; ++step)
+    {
+        rawProbe->setNextCounters(churningDisks(step));
+        model.sampleAt(sampleTime(step, 0.25));
+    }
+    done.store(true, std::memory_order_release);
+    reader.join();
+    EXPECT_EQ(misaligned.load(), 0U);
 }
 
 } // namespace

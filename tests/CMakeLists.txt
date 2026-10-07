@@ -112,8 +112,10 @@ set(COMMON_TEST_SOURCES
     Domain/test_ProcessStatus.cpp
     Domain/test_ProcessState.cpp
     Domain/test_SystemModel.cpp
+    Domain/AllocationFailureHook.cpp
     Domain/test_SystemModelAllocationFailure.cpp
     Domain/test_StorageModel.cpp
+    Domain/test_StorageModelAllocationFailure.cpp
     Domain/test_BackgroundSampler.cpp
     Domain/test_PriorityConfig.cpp
     Domain/test_SamplingConfig.cpp
