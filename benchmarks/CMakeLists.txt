@@ -81,6 +81,7 @@ add_executable(TaskSmackBenchmarks
     bench_Numeric.cpp
     bench_Format.cpp
     bench_UI.cpp
+    bench_ChartGeometry.cpp
     ${PLATFORM_BENCH_SOURCES}
     # Source files under benchmark
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
@@ -88,6 +89,11 @@ add_executable(TaskSmackBenchmarks
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
+    # bench_ChartGeometry.cpp draws the real charts under a headless ImGui/ImPlot context (#1421):
+    # ChartLegend.cpp for the series marker glyphs, and the test binary's Theme stub (a visible colour
+    # scheme, no fonts) in place of Theme.cpp, which needs a renderer to load its fonts.
+    ${CMAKE_SOURCE_DIR}/src/UI/ChartLegend.cpp
+    ${CMAKE_SOURCE_DIR}/tests/Mocks/ThemeStub.cpp
     ${PLATFORM_SRC_UNDER_BENCH}
 )
 
@@ -102,6 +108,7 @@ target_include_directories(TaskSmackBenchmarks PRIVATE
 target_link_libraries(TaskSmackBenchmarks PRIVATE
     benchmark::benchmark
     spdlog::spdlog_header_only
+    implot_lib  # And imgui_lib through it: bench_ChartGeometry.cpp renders headless frames (#1421)
 )
 tasksmack_apply_linux_toolchain(TaskSmackBenchmarks)
 
