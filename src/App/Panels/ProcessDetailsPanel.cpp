@@ -22,6 +22,7 @@
 #include "ProcessDetailsPanel_ResourceHelpers.h" // NOLINT(misc-include-cleaner) - used by the _WIN32 GDI code, which Linux analysis doesn't see
 #include "ProcessPriorityView.h"
 #include "UI/ChartWidgets.h"
+#include "UI/ChromeWidgets.h"
 #include "UI/EmptyState.h"
 #include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
@@ -625,14 +626,9 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             "Type",
         });
 
-        float maxTextWidth = 0.0F;
-        for (const char* label : labels)
-        {
-            maxTextWidth = std::max(maxTextWidth, ImGui::CalcTextSize(label).x);
-        }
-
-        const ImGuiStyle& style = ImGui::GetStyle();
-        return maxTextWidth + (style.CellPadding.x * 2.0F) + 8.0F;
+        // Measured, with the em-scaled gap every label column has (UI::LineLayout::labelColumnWidth()),
+        // in place of a fixed 8px that stayed 8px at every font size and display density (#1200).
+        return UI::Widgets::measureLabelColumnWidth(labels) + (ImGui::GetStyle().CellPadding.x * 2.0F);
     };
 
     const float labelColWidth = computeLabelColumnWidth();
@@ -793,7 +789,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
 
     // Identity section: Who is this process?
     ImGui::BeginGroup();
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_ID_CARD "  Identity");
+    (void) UI::Widgets::sectionHeader(ICON_FA_ID_CARD, "Identity");
     ImGui::BeginChild("BasicInfoLeft", ImVec2(leftWidth, leftHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
     renderInfoTable("BasicInfoLeftTable", identityRows.view());
     ImGui::EndChild();
@@ -803,7 +799,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
 
     // Runtime section: What is this process doing?
     ImGui::BeginGroup();
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CLOCK "  Runtime");
+    (void) UI::Widgets::sectionHeader(ICON_FA_CLOCK, "Runtime");
     ImGui::BeginChild("BasicInfoRight", ImVec2(rightWidth, rightHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
 
     renderInfoTable("BasicInfoRightTable", runtimeRows.view());
@@ -984,7 +980,7 @@ void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fil
             }
         };
 
-        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MICROCHIP "  CPU (%zu samples)", alignedCount);
+        (void) UI::Widgets::sectionHeader(ICON_FA_MICROCHIP, "CPU", {}, alignedCount);
         renderHistoryWithNowBars("ProcessCPUHistoryOverview",
                                  fill.plotHeight(),
                                  cpuPlot,
@@ -1179,7 +1175,7 @@ void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& 
             };
 
             ImGui::Spacing();
-            ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MEMORY "  Memory (%zu samples)", alignedCount);
+            (void) UI::Widgets::sectionHeader(ICON_FA_MEMORY, "Memory", {}, alignedCount);
             // Peak Memory is a line with a tooltip row but no bar; list it in the value strip too (#1193).
             const std::array peakEntry{UI::Widgets::ValueStripEntry{
                 .label = MEM_PEAK_LABEL,
@@ -1390,7 +1386,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayou
         }
     };
 
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GEARS "  Resources (%zu samples)", alignedCount);
+    (void) UI::Widgets::sectionHeader(ICON_FA_GEARS, "Resources", {}, alignedCount);
 #ifdef _WIN32
     // 4 NowBars on Windows: Threads, Handles, Page Faults, GDI Objects (PROCESS_OVERVIEW_NOW_BAR_COLUMNS)
     renderHistoryWithNowBars("ProcessResourceHistory",
@@ -1507,7 +1503,7 @@ void ProcessDetailsPanel::renderIoStats(UI::Widgets::FillPlotLayout& fill)
         }
     };
 
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  I/O Statistics (%zu samples)", alignedCount);
+    (void) UI::Widgets::sectionHeader(ICON_FA_HARD_DRIVE, "I/O Statistics", {}, alignedCount);
     renderHistoryWithNowBars("ProcessIoHistory", fill.plotHeight(), plot, {readBar, writeBar}, false, PROCESS_NETWORK_IO_NOW_BAR_COLUMNS);
     fill.addPlot();
     ImGui::Spacing();
@@ -1615,7 +1611,7 @@ void ProcessDetailsPanel::renderNetworkStats(UI::Widgets::FillPlotLayout& fill)
         }
     };
 
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_NETWORK_WIRED "  Network (%zu samples)", alignedCount);
+    (void) UI::Widgets::sectionHeader(ICON_FA_NETWORK_WIRED, "Network", {}, alignedCount);
     // The heading's tooltip is shown after the chart: its value strip is placed beside the heading,
     // the item drawn just before it, so nothing else is submitted between the two.
     const bool headingHovered = ImGui::IsItemHovered();
@@ -1700,7 +1696,7 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc, 
         }
     };
 
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_BOLT "  Power Usage (%zu samples)", alignedCount);
+    (void) UI::Widgets::sectionHeader(ICON_FA_BOLT, "Power Usage", {}, alignedCount);
     renderHistoryWithNowBars("ProcessPowerHistory", fill.plotHeight(), plot, {powerBar}, false, PROCESS_OVERVIEW_NOW_BAR_COLUMNS);
     fill.addPlot();
     ImGui::Spacing();
@@ -1708,8 +1704,6 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc, 
 
 void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill)
 {
-    auto& theme = UI::Theme::get();
-
     // Throttle debug logging to avoid per-frame spam
     // Only log when GPU data changes or on first render of a new process
     // Using member variables ensures per-panel state tracking (not static)
@@ -1726,7 +1720,7 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc, UI
     }
 
     // Show GPU info
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MICROCHIP "  GPU Usage");
+    (void) UI::Widgets::sectionHeader(ICON_FA_MICROCHIP, "GPU Usage");
     ImGui::Spacing();
 
     renderGpuCurrentMetricsTable(proc);
@@ -2108,12 +2102,12 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
             .color = theme.scheme().gpuMemory,
         };
 
-        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CHART_LINE "  GPU Utilization History (%zu samples)", alignedCount);
+        (void) UI::Widgets::sectionHeader(ICON_FA_CHART_LINE, "GPU Utilization History", {}, alignedCount);
         renderHistoryWithNowBars("ProcessGPUUtilHistory", fill.plotHeight(), plotGpuUtil, {gpuUtilBar}, false, PROCESS_GPU_NOW_BAR_COLUMNS);
         fill.addPlot();
         ImGui::Spacing();
 
-        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CHART_LINE "  GPU Memory History (%zu samples)", alignedCount);
+        (void) UI::Widgets::sectionHeader(ICON_FA_CHART_LINE, "GPU Memory History", {}, alignedCount);
         renderHistoryWithNowBars("ProcessGPUMemHistory", fill.plotHeight(), plotGpuMem, {gpuMemBar}, false, PROCESS_GPU_NOW_BAR_COLUMNS);
         fill.addPlot();
         ImGui::Spacing();

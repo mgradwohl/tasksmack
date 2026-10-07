@@ -4,6 +4,7 @@
 #include "ProcessActionConfirm.h"
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
+#include "UI/ChromeWidgets.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
@@ -22,13 +23,11 @@ void ProcessActionsView::render(Platform::IProcessActions* actions,
                                 const std::string& processName,
                                 const Platform::ProcessTarget& target)
 {
-    const auto& theme = UI::Theme::get();
-
     ImGui::Text("%s (PID %d)", processName.c_str(), target.pid);
     ImGui::Spacing();
 
     // Section: Process Control
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GEARS "  Process Control");
+    (void) UI::Widgets::sectionHeader(ICON_FA_GEARS, "Process Control");
     ImGui::Spacing();
 
     renderResultFeedback();

@@ -9,6 +9,8 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
+#include "UI/ChromeLayout.h"
+#include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
@@ -295,14 +297,24 @@ void SettingsLayer::renderSettingsDialog()
         // left at its own text's width, while the three fit at full width; in a dialog narrower than
         // that (the 200 px minimum window at the largest font) it takes a row of its own above them,
         // so Cancel and Save are never pushed past the dialog's edge (#1341 review).
-        const float actionButtonWidth = std::max(
-            UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize(CANCEL_LABEL).x, ImGui::GetFontSize(), SETTINGS_BUTTON_MIN_EM),
-            UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize(SAVE_LABEL).x, ImGui::GetFontSize(), SETTINGS_BUTTON_MIN_EM));
-        const float resetButtonWidth = ImGui::CalcTextSize(RESET_LABEL).x + (style.FramePadding.x * 2.0F);
+        // The footer is the one every dialog shares (UI::Widgets::dialogFooter(), #1200); it is laid
+        // out here, before the body, with the same inputs it will see, so the height reserved for it
+        // is the height it takes.
+        const float actionButtonWidth = UI::Widgets::footerButtonWidth({CANCEL_LABEL, SAVE_LABEL}, SETTINGS_BUTTON_MIN_EM);
+        const float resetButtonWidth = UI::Widgets::footerLeadingButtonWidth(RESET_LABEL);
         const float actionRowWidth = resetButtonWidth + (actionButtonWidth * 2.0F) + (style.ItemSpacing.x * 2.0F);
-        const bool resetOnOwnRow = ImGui::GetContentRegionAvail().x < actionRowWidth;
+        const bool resetOnOwnRow = UI::ChromeLayout::placeDialogFooter({
+                                                                           .availWidth = ImGui::GetContentRegionAvail().x,
+                                                                           .maxRowWidth = 0.0F,
+                                                                           .spacing = style.ItemSpacing.x,
+                                                                           .preferredButtonWidth = actionButtonWidth,
+                                                                           .actionCount = 2,
+                                                                           .leadingWidth = resetButtonWidth,
+                                                                       })
+                                       .leadingOnOwnRow;
+        // The item spacing after the body, then the footer itself.
         const float footerHeight =
-            (style.ItemSpacing.y * 3.0F) + 1.0F + ImGui::GetFrameHeight() + (resetOnOwnRow ? ImGui::GetFrameHeightWithSpacing() : 0.0F);
+            style.ItemSpacing.y + UI::ChromeLayout::dialogFooterHeight(style.ItemSpacing.y, ImGui::GetFrameHeight(), resetOnOwnRow);
         const float reservedHeight = ImGui::GetFrameHeight() + (style.WindowPadding.y * 2.0F) + footerHeight;
         const float bodyMaxHeight =
             UI::DialogMetrics::computeScrollableBodyMaxHeight(dialogMaxSize.y, reservedHeight, ImGui::GetFrameHeightWithSpacing() * 2.0F);
@@ -312,7 +324,7 @@ void SettingsLayer::renderSettingsDialog()
         // ========================================
         // Appearance Section
         // ========================================
-        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_PALETTE "  Appearance");
+        (void) UI::Widgets::sectionHeader(ICON_FA_PALETTE, "Appearance");
         ImGui::Separator();
         ImGui::Spacing();
 
@@ -459,10 +471,7 @@ void SettingsLayer::renderSettingsDialog()
             ImGui::EndCombo();
         }
 
-        ImGui::Spacing();
-        ImGui::Spacing();
-        ImGui::Spacing();
-        ImGui::Spacing();
+        UI::Widgets::sectionGap();
 
         // ========================================
         // Performance Section
@@ -494,7 +503,7 @@ void SettingsLayer::renderSettingsDialog()
             widestPerfValue + comboDecoration, valueColumn, rowSurrounding, viewport->WorkSize.x, comboMinWidth);
         const float perfLabelWidth = UI::DialogMetrics::computeRightAlignedStart(valueColumn, appearanceComboWidth, perfComboWidth);
 
-        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GAUGE_HIGH "  Performance");
+        (void) UI::Widgets::sectionHeader(ICON_FA_GAUGE_HIGH, "Performance");
         ImGui::Separator();
         ImGui::Spacing();
 
@@ -557,15 +566,12 @@ void SettingsLayer::renderSettingsDialog()
             ImGui::EndCombo();
         }
 
-        ImGui::Spacing();
-        ImGui::Spacing();
-        ImGui::Spacing();
-        ImGui::Spacing();
+        UI::Widgets::sectionGap();
 
         // ========================================
         // Advanced Section
         // ========================================
-        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_FOLDER_OPEN "  Advanced");
+        (void) UI::Widgets::sectionHeader(ICON_FA_FOLDER_OPEN, "Advanced");
         ImGui::Separator();
         ImGui::Spacing();
 
@@ -603,68 +609,44 @@ void SettingsLayer::renderSettingsDialog()
         }
 #endif
 
-        ImGui::Spacing();
-        ImGui::Spacing();
-        ImGui::Spacing();
-        ImGui::Spacing();
-
         ImGui::EndChild(); // ##SettingsBody
-
-        ImGui::Separator();
-        ImGui::Spacing();
 
         // ========================================
         // Buttons (pinned below the scrolling body)
         // ========================================
-        // Cancel and Save at actionButtonWidth (measured above, with the footer), shrunk to the row
-        // when the viewport-capped dialog is narrower than it (#1129), so Cancel can't be pushed off
-        // the left edge. Reset to defaults keeps its width: at their left, or on its own row above
-        // them when the dialog is too narrow for all three (resetOnOwnRow).
-        const float rowStartX = ImGui::GetCursorPosX();
-        const float availWidth = ImGui::GetContentRegionAvail().x;
-        const float pairAvailWidth = resetOnOwnRow ? availWidth : std::max(0.0F, availWidth - resetButtonWidth - style.ItemSpacing.x);
-        const float buttonWidth = UI::DialogMetrics::fitActionButtonPairWidth(actionButtonWidth, style.ItemSpacing.x, pairAvailWidth);
-        const float totalButtonWidth = (buttonWidth * 2.0F) + style.ItemSpacing.x;
-
-        // Push text color to ensure visibility on button backgrounds
-        ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
-        if (ImGui::Button(RESET_LABEL, ImVec2(resetButtonWidth, 0.0F)))
-        {
-            resetToDefaults();
-        }
-        ImGui::SetItemTooltip("Put every setting here back to its default; Save keeps them");
-        if (!resetOnOwnRow)
-        {
-            ImGui::SameLine();
-        }
-
-        // Right-align Cancel and Save
-        ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), rowStartX + availWidth - totalButtonWidth));
-
-        if (ImGui::Button(CANCEL_LABEL, ImVec2(buttonWidth, 0.0F)))
-        {
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::PopStyleColor();
-
-        ImGui::SameLine();
-
-        // Save button with success color for positive action. Its label is drawn in whichever of
-        // the theme's two poles -- its text colour or its window background -- reads better on the
+        // The footer every dialog shares (#1200): [Reset to defaults] ... [Cancel][Save]. Cancel and
+        // Save at actionButtonWidth (measured above, with the footer's height), shrunk to the row when
+        // the viewport-capped dialog is narrower than it (#1129), so Cancel can't be pushed off the
+        // left edge. Reset to defaults keeps its width: at their left, or on its own row above them
+        // when the dialog is too narrow for all three (resetOnOwnRow).
+        //
+        // Save fills with the success colour for the positive action. Its label is drawn in whichever
+        // of the theme's two poles -- its text colour or its window background -- reads better on the
         // fill showing in the button's current state; the ordinary text colour was nearly invisible
         // on it in most of the bundled themes (#969).
-        if (UI::Widgets::filledButton(SAVE_LABEL,
-                                      ImVec2(buttonWidth, 0.0F),
-                                      {
-                                          .resting = theme.scheme().successButton,
-                                          .hovered = theme.scheme().successButtonHovered,
-                                          .pressed = theme.scheme().successButtonActive,
-                                      },
-                                      theme.scheme().textPrimary,
-                                      theme.scheme().windowBg))
+        const UI::Widgets::ButtonFills saveFills{
+            .resting = theme.scheme().successButton,
+            .hovered = theme.scheme().successButtonHovered,
+            .pressed = theme.scheme().successButtonActive,
+        };
+        const UI::Widgets::DialogFooterButton saveButton{.label = SAVE_LABEL, .fills = &saveFills, .tooltip = nullptr};
+        const UI::Widgets::DialogFooterButton cancelButton{.label = CANCEL_LABEL, .fills = nullptr, .tooltip = nullptr};
+        const UI::Widgets::DialogFooterButton resetButton{
+            .label = RESET_LABEL, .fills = nullptr, .tooltip = "Put every setting here back to its default; Save keeps them"};
+        switch (UI::Widgets::dialogFooter(saveButton, cancelButton, actionButtonWidth, resetButton))
         {
+        case UI::Widgets::DialogFooterAction::Primary:
             applySettings();
             ImGui::CloseCurrentPopup();
+            break;
+        case UI::Widgets::DialogFooterAction::Secondary:
+            ImGui::CloseCurrentPopup();
+            break;
+        case UI::Widgets::DialogFooterAction::Leading:
+            resetToDefaults();
+            break;
+        case UI::Widgets::DialogFooterAction::None:
+            break;
         }
 
         m_ComboOpenLastFrame = comboOpen;

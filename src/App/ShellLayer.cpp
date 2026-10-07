@@ -11,10 +11,12 @@
 #include "Panels/SystemMetricsPanel.h"
 #include "Platform/ProcessTypes.h"
 #include "ShellMetrics.h"
+#include "StatusBarText.h"
 #include "SyntheticScenario.h"
 #include "TabLabel.h"
 #include "TitleBarGeometry.h"
 #include "TitleBarLayer.h"
+#include "UI/ChartWidgets.h"
 #include "UI/DpiScale.h"
 #include "UI/Format.h"
 #include "UI/HistoryPlotHeight.h"
@@ -34,6 +36,7 @@
 #include <cstdint>
 #include <format>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -47,6 +50,11 @@ namespace
 // "###" suffix like the other main tabs (see TabLabel.h, #1140).
 constexpr const char* PROCESSES_TAB_LABEL = ICON_FA_LIST "  Processes###ProcessesTab";
 static_assert(TabLabel::idPart(PROCESSES_TAB_LABEL) == TabLabel::PROCESSES_TAB_ID);
+
+// The status bar's Settings/About buttons (native decorations only), named once: their widths are
+// measured before they are drawn, so the text beside them can make room (#1200).
+constexpr const char* STATUS_SETTINGS_LABEL = ICON_FA_GEAR "##StatusBarSettings";
+constexpr const char* STATUS_HELP_LABEL = ICON_FA_CIRCLE_QUESTION "##StatusBarHelp";
 
 // The visible text follows the process's name, but the tab's ImGui ID does not: it comes from the
 // fixed "###" suffix (see TabLabel.h). Hashed from the visible text, the ID changed whenever the name
@@ -226,6 +234,13 @@ void ShellLayer::onEvent(Core::Event& event)
             m_ShowDetailsTabRequested = true;
             return false;
         });
+    // The status bar says how often TaskSmack updates (#1200): the refresh rate every sampler follows.
+    dispatcher.dispatch<Core::RefreshRateChangedEvent>(
+        [this](Core::RefreshRateChangedEvent& e)
+        {
+            m_RefreshIntervalMs = e.getIntervalMs();
+            return false;
+        });
 
     // Forward events to all panels; each handles the settings events it needs itself
     m_Tabs.onEvent(event);
@@ -358,6 +373,20 @@ void ShellLayer::onUpdate(float deltaTime)
         {
             changeFontSize(theme.currentFontSize());
         }
+    }
+
+    // The status bar's text (#1200), rebuilt only when what it says changes: the process count moves
+    // once a sample at most, the interval only from Settings.
+    const std::size_t processCount = m_ProcessesPanel.processCount();
+    if (processCount != m_StatusProcessCount)
+    {
+        m_StatusProcessText = StatusBarText::processCountText(processCount);
+        m_StatusProcessCount = processCount;
+    }
+    if (m_RefreshIntervalMs != m_StatusIntervalMs)
+    {
+        m_StatusIntervalText = StatusBarText::updateIntervalText(m_RefreshIntervalMs);
+        m_StatusIntervalMs = m_RefreshIntervalMs;
     }
 
     // Ctrl+Shift+M: toggle the Render Metrics overlay (per-chart vertex count and CPU cost)
@@ -600,15 +629,91 @@ void ShellLayer::renderStatusBar() const
             ImGui::SameLine();
         }
 
-        ImGui::Text("Ready");
+        // Live status (#1200): how many processes TaskSmack is tracking and how often it updates, in
+        // that order of importance, then -- only while Render Metrics (Ctrl+Shift+M) is on -- the
+        // frame rate at the right. Everything is measured before anything is drawn, so at the
+        // minimum window size the lower-priority parts are left out (or the process count cut
+        // short) rather than drawn over the buttons or each other (#1207).
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const float textStartX = ImGui::GetCursorPosX();
+        const float contentRightX = ImGui::GetWindowWidth() - statusBarPaddingX;
 
-        // When native OS decorations replace the custom title bar (see #745), its
-        // Settings/Help buttons don't exist -- surface equivalents here so those stay
-        // reachable. Hidden otherwise since the title bar already provides them.
+        // When native OS decorations replace the custom title bar (see #745), its Settings/Help
+        // buttons don't exist -- equivalents follow the text here so those stay reachable.
+        const auto smallButtonWidth = [&style](const char* label)
+        {
+            return ImGui::CalcTextSize(label, nullptr, true).x + (style.FramePadding.x * 2.0F);
+        };
+        const float buttonsWidth = showStatusBarControls ? (style.ItemSpacing.x * 2.0F) + smallButtonWidth(STATUS_SETTINGS_LABEL) +
+                                                               smallButtonWidth(STATUS_HELP_LABEL)
+                                                         : 0.0F;
+
+        // The readout is formatted first and then measured, so it ends at the status bar's padding
+        // at any font and any value (#971).
+        std::array<char, 48> fpsText{};
+        std::size_t fpsLength = 0;
+        if (m_ShowRenderMetrics)
+        {
+            const auto fpsEnd = std::format_to_n(fpsText.data(),
+                                                 fpsText.size() - 1,
+                                                 "{:.1f} FPS ({:.2f} ms)",
+                                                 static_cast<double>(m_FpsCounter.displayedFps()),
+                                                 static_cast<double>(m_FpsCounter.displayedFrameTime() * 1000.0F));
+            fpsLength = static_cast<std::size_t>(fpsEnd.out - fpsText.data());
+        }
+        const float fpsWidth = (fpsLength > 0) ? ImGui::CalcTextSize(fpsText.data(), fpsText.data() + fpsLength).x : 0.0F;
+
+        // Most important first; an empty segment (no interval yet) is left out.
+        std::array<std::string_view, 2> segments{};
+        std::array<float, 2> segmentWidths{};
+        std::size_t segmentCount = 0;
+        for (const std::string_view text : {std::string_view{m_StatusProcessText}, std::string_view{m_StatusIntervalText}})
+        {
+            if (!text.empty())
+            {
+                segments.at(segmentCount) = text;
+                segmentWidths.at(segmentCount) = ImGui::CalcTextSize(text.data(), text.data() + text.size()).x;
+                ++segmentCount;
+            }
+        }
+        const float textBudget = contentRightX - textStartX - buttonsWidth;
+        const auto fit = StatusBarText::fitStatusBar(std::span<const float>(segmentWidths.data(), segmentCount),
+                                                     ImGui::CalcTextSize(StatusBarText::SEPARATOR).x,
+                                                     fpsWidth,
+                                                     style.ItemSpacing.x,
+                                                     textBudget);
+
+        bool drewText = false;
+        if (fit.truncateFirst)
+        {
+            // Only at the very narrowest, so the cut copy is made only then.
+            const std::string cut = UI::Widgets::fitSeriesName(segments[0],
+                                                               textBudget,
+                                                               [](std::string_view text)
+                                                               { return ImGui::CalcTextSize(text.data(), text.data() + text.size()).x; });
+            ImGui::TextUnformatted(cut.data(), cut.data() + cut.size());
+            drewText = true;
+        }
+        for (std::size_t i = 0; i < fit.segmentsShown; ++i)
+        {
+            if (i > 0)
+            {
+                ImGui::SameLine(0.0F, 0.0F);
+                ImGui::TextColored(theme.scheme().textMuted, "%s", StatusBarText::SEPARATOR);
+                ImGui::SameLine(0.0F, 0.0F);
+            }
+            const std::string_view segment = segments.at(i);
+            ImGui::TextUnformatted(segment.data(), segment.data() + segment.size());
+            drewText = true;
+        }
+
         if (showStatusBarControls)
         {
-            ImGui::SameLine();
-            if (ImGui::SmallButton(ICON_FA_GEAR "##StatusBarSettings"))
+            if (drewText)
+            {
+                ImGui::SameLine();
+            }
+            if (ImGui::SmallButton(STATUS_SETTINGS_LABEL))
             {
                 Core::OpenSettingsEvent event;
                 Core::Application::get().raiseEvent(event);
@@ -618,37 +723,21 @@ void ShellLayer::renderStatusBar() const
                 ImGui::SetTooltip("Settings");
             }
             ImGui::SameLine();
-            if (ImGui::SmallButton(ICON_FA_CIRCLE_QUESTION "##StatusBarHelp"))
+            if (ImGui::SmallButton(STATUS_HELP_LABEL))
             {
                 Core::OpenAboutEvent event;
                 Core::Application::get().raiseEvent(event);
             }
             if (ImGui::IsItemHovered())
             {
-                ImGui::SetTooltip("About / Help");
+                ImGui::SetTooltip("About TaskSmack");
             }
         }
 
-        // Where the left-hand content ends, window-local, for the FPS readout's fit check.
-        const float leftContentEndX = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x;
-
-        // Right-align FPS display. The text is formatted first and then measured, so the readout
-        // ends at the status bar's padding at any font and any value. It used to be positioned from
-        // the width of the *format string* plus a fixed 50px, which is not the width of what is
-        // drawn (#971).
-        std::array<char, 48> fpsText{};
-        const auto fpsEnd = std::format_to_n(fpsText.data(),
-                                             fpsText.size() - 1,
-                                             "{:.1f} FPS ({:.2f} ms)",
-                                             static_cast<double>(m_FpsCounter.displayedFps()),
-                                             static_cast<double>(m_FpsCounter.displayedFrameTime() * 1000.0F));
-        const float fpsWidth = ImGui::CalcTextSize(fpsText.data(), fpsEnd.out).x;
-        const float fpsX = ImGui::GetWindowWidth() - statusBarPaddingX - fpsWidth;
-        // Left out, not drawn over "Ready" and the buttons, when the window is too narrow (#1207).
-        if (computeStatusBarReadoutFits(leftContentEndX, fpsX, ImGui::GetStyle().ItemSpacing.x))
+        if (fit.showReadout)
         {
-            ImGui::SameLine(fpsX);
-            ImGui::TextUnformatted(fpsText.data(), fpsEnd.out);
+            ImGui::SameLine(contentRightX - fpsWidth);
+            ImGui::TextUnformatted(fpsText.data(), fpsText.data() + fpsLength);
         }
     }
     ImGui::End();

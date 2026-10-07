@@ -692,6 +692,12 @@ auto Theme::largeFont() const -> ImFont*
     return m_Fonts[fontSizeIndex(m_CurrentFontSize)].large;
 }
 
+auto Theme::boldFont() const -> ImFont*
+{
+    const auto& fonts = m_Fonts[fontSizeIndex(m_CurrentFontSize)];
+    return fonts.bold != nullptr ? fonts.bold : fonts.regular;
+}
+
 auto Theme::monospaceFont() const -> ImFont*
 {
     const auto& fonts = m_Fonts[fontSizeIndex(m_CurrentFontSize)];
@@ -705,7 +711,12 @@ auto Theme::chartFont() const -> ImFont*
 
 void Theme::registerFonts(FontSize size, ImFont* regular, ImFont* large, ImFont* monospace)
 {
-    m_Fonts[fontSizeIndex(size)] = {.regular = regular, .large = large, .monospace = monospace};
+    m_Fonts[fontSizeIndex(size)] = {.regular = regular, .large = large, .monospace = monospace, .bold = nullptr};
+}
+
+void Theme::registerBoldFont(FontSize size, ImFont* bold)
+{
+    m_Fonts[fontSizeIndex(size)].bold = bold;
 }
 
 void Theme::registerTitleFont(ImFont* font)

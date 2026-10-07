@@ -4,7 +4,7 @@ Bundled Font Licenses
 TaskSmack bundles the font files in this directory. The copyright and licence
 notices below are copied from each upstream project (#1212).
 
-  Inter-Regular.ttf                   Inter       SIL Open Font License 1.1
+  Inter-Regular.ttf, Inter-Bold.ttf   Inter       SIL Open Font License 1.1
   Sixtyfour.ttf                       Sixtyfour   SIL Open Font License 1.1
   fa-solid-900.ttf                    Font Awesome 6 Free Solid
                                       (icon designs: CC BY 4.0;

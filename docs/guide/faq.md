@@ -130,7 +130,7 @@ System-wide and per-interface throughput should still appear.
 
 ## Why does the FPS in the status bar change?
 
-TaskSmack only draws as many frames as the screen needs. The FPS readout in the bottom-right corner shows the rate it is drawing at, averaged over half a second:
+TaskSmack only draws as many frames as the screen needs. The FPS readout, in the bottom-right corner of the status bar while the Render Metrics overlay is on (**Ctrl+Shift+M**), shows the rate it is drawing at, averaged over half a second:
 
 - **Idle, about 20 FPS or less:** nothing on screen moves faster than half a pixel per frame at that rate. With the default 300-second history, the charts scroll only a few pixels a second.
 - **Brief bursts, up to about 60 FPS:** a new sample has arrived and the now-bars or a chart's scale are easing to it, or a chart with a short history window scrolls quickly.

@@ -45,6 +45,11 @@ constexpr float TITLE_BAR_BUTTON_ASPECT = 1.15F;
 constexpr float TITLE_BAR_EDGE_MARGIN_RATIO = 0.20F;
 constexpr float TITLE_BAR_TITLE_GAP_RATIO = 0.29F;
 
+// The bar window's padding, as fractions of the bar height: exactly the former fixed 8 x 4 px on
+// the 32px (24pt) bar at 96 DPI (#1200).
+constexpr float TITLE_BAR_PADDING_X_RATIO = 0.25F;
+constexpr float TITLE_BAR_PADDING_Y_RATIO = 0.125F;
+
 // Gap separating the window controls from the app buttons, as a fraction of the bar height.
 constexpr float TITLE_BAR_SEPARATOR_GAP_RATIO = 0.39F;
 
@@ -1050,7 +1055,10 @@ void TitleBarLayer::renderTitleBar()
                                    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoCollapse |
                                    ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
 
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 4));
+    // From the bar's height like the rest of its geometry, so it follows display density but not the
+    // Font Size setting: the former fixed 8 x 4 px at the default density (#1200).
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                        ImVec2(titleBarHeight * TITLE_BAR_PADDING_X_RATIO, titleBarHeight * TITLE_BAR_PADDING_Y_RATIO));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0F);
     ImGui::PushStyleColor(ImGuiCol_WindowBg, scheme.titleBgActive);
 
@@ -1268,6 +1276,8 @@ void TitleBarLayer::renderTitleBar()
         Core::OpenSettingsEvent event;
         Core::Application::get().raiseEvent(event);
     }
+    // Shown after the chrome icon font is popped: that font has no letters (#1200).
+    const bool settingsHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip);
     m_SettingsBounds = {.minX = buttonX, .maxX = buttonX + BUTTON_WIDTH, .minY = 0, .maxY = BUTTON_HEIGHT};
 
     // Help button
@@ -1278,11 +1288,21 @@ void TitleBarLayer::renderTitleBar()
         Core::OpenAboutEvent event;
         Core::Application::get().raiseEvent(event);
     }
+    const bool helpHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip);
     m_HelpBounds = {.minX = buttonX, .maxX = buttonX + BUTTON_WIDTH, .minY = 0, .maxY = BUTTON_HEIGHT};
 
     if (pushedChromeIcons)
     {
         ImGui::PopFont();
+    }
+    // The "?" opens the About box, so its tooltip says so rather than promising help (#1200).
+    if (settingsHovered)
+    {
+        ImGui::SetTooltip("Settings");
+    }
+    else if (helpHovered)
+    {
+        ImGui::SetTooltip("About TaskSmack");
     }
     ImGui::PopStyleColor(3); // Button colors
     ImGui::PopStyleVar(2);   // Frame padding, item spacing
