@@ -4,6 +4,7 @@
 #include "App/Panels/StorageSection.h"
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
+#include "Domain/SystemSnapshot.h"
 #include "UI/FillPlotLayout.h"
 
 #include <chrono>
@@ -54,6 +55,17 @@ struct FrameCache
     std::size_t rowsSeenTraffic = 0;
     std::vector<Domain::SystemSnapshot::InterfaceSnapshot> statusRows;
     std::size_t hiddenCount = 0;
+
+    /// Each status row's formatted text, built with statusRows (same order), so the table formats
+    /// nothing per frame: the link speed ("10 Gbit/s", empty when unknown) and the Sent/Received
+    /// cells (#1375).
+    struct StatusRowText
+    {
+        std::string speed;
+        NetInterfaceUtils::RateCell sent;
+        NetInterfaceUtils::RateCell received;
+    };
+    std::vector<StatusRowText> statusRowText;
 };
 
 /// Context struct containing all state needed to render network/disk sections.

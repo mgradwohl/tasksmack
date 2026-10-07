@@ -1722,6 +1722,41 @@ TEST(SystemModelTest, AnInterfaceCounterJumpAboveTheCeilingIsAGapNotASpike)
     EXPECT_FLOAT_EQ(totalTx[1], 710.0F);
 }
 
+TEST(SystemModelTest, InterfaceRateStatusTellsAMeasuredZeroFromNoReading)
+{
+    // #1375: an unmeasured rate is held at 0, so the status is what lets Interface Status show a
+    // measured 0 as "0.0 B/s" and only a rate with no reading as a dash.
+    using Domain::InterfaceRateStatus;
+    constexpr uint64_t BASE = 1'000'000;
+    const auto jump = static_cast<uint64_t>(2.0 * Domain::Sampling::MAX_SANE_RATE_BPS_DEFAULT);
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+
+    sampleInterfaces(model, {{"eth0", BASE, BASE}}, 1.0);
+    auto snap = model.snapshot();
+    ASSERT_EQ(snap.networkInterfaces.size(), 1U);
+    EXPECT_EQ(snap.networkInterfaces[0].rxRateStatus, InterfaceRateStatus::NotYetSampled) << "the first sample has no rate";
+    EXPECT_EQ(snap.networkInterfaces[0].txRateStatus, InterfaceRateStatus::NotYetSampled);
+
+    // Idle: the counters didn't move, which is a measured zero.
+    sampleInterfaces(model, {{"eth0", BASE, BASE}, {"wlan0", BASE, BASE}}, 2.0);
+    snap = model.snapshot();
+    ASSERT_EQ(snap.networkInterfaces.size(), 2U);
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].rxBytesPerSec, 0.0);
+    EXPECT_EQ(snap.networkInterfaces[0].rxRateStatus, InterfaceRateStatus::Measured);
+    EXPECT_EQ(snap.networkInterfaces[0].txRateStatus, InterfaceRateStatus::Measured);
+    EXPECT_EQ(snap.networkInterfaces[1].rxRateStatus, InterfaceRateStatus::NotYetSampled) << "a new interface has no rate yet";
+
+    // A counter that went backwards, and one that jumped past the ceiling, are not readings.
+    sampleInterfaces(model, {{"eth0", BASE - 10, BASE + jump}, {"wlan0", BASE + 100, BASE}}, 3.0);
+    snap = model.snapshot();
+    ASSERT_EQ(snap.networkInterfaces.size(), 2U);
+    EXPECT_EQ(snap.networkInterfaces[0].rxRateStatus, InterfaceRateStatus::CounterReset);
+    EXPECT_EQ(snap.networkInterfaces[0].txRateStatus, InterfaceRateStatus::AboveCeiling);
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].txBytesPerSec, 0.0);
+    EXPECT_EQ(snap.networkInterfaces[1].rxRateStatus, InterfaceRateStatus::Measured);
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[1].rxBytesPerSec, 100.0);
+}
+
 TEST(SystemModelTest, TheConfiguredNetworkCeilingAppliesToInterfaceRates)
 {
     // The ceiling is [metrics] max_sane_rate_bps, shared with ProcessModel; lowered to its minimum,
