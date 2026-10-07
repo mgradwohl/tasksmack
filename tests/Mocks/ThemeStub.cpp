@@ -134,7 +134,7 @@ auto Theme::chartFont() const -> ImFont*
     return nullptr;
 }
 
-// Referenced by UI/SectionWidgets.h's sectionHeader(), which the Actions tab and priority control
+// Referenced by UI/ChromeWidgets.h's sectionHeader(), which the Actions tab and priority control
 // draw under test_ProcessActionConfirmPopup.cpp and test_ProcessPriorityViewRender.cpp. No fonts are
 // loaded here, so headers draw in the context's default font.
 auto Theme::boldFont() const -> ImFont*
