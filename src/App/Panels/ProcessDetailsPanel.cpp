@@ -29,6 +29,7 @@
 #include "UI/IconsFontAwesome6.h"
 #include "UI/TabContent.h"
 #include "UI/Theme.h"
+#include "UI/Widgets.h"
 
 #include <imgui.h>
 #include <implot.h>
