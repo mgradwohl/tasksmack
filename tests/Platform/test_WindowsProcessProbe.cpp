@@ -233,9 +233,16 @@ TEST(WindowsProcessProbeTest, NetworkFlagsStayConsistentAfterSampling)
     }
     const auto caps = probe.capabilities();
     EXPECT_FALSE(caps.hasNetworkCounters && caps.hasReducedPrivileges);
+    // Blocked (#1358) is the elevated counterpart of reduced privileges: never with either flag.
+    EXPECT_FALSE(caps.networkCountersBlocked && caps.hasNetworkCounters);
+    EXPECT_FALSE(caps.networkCountersBlocked && caps.hasReducedPrivileges);
     if (isTestProcessElevated())
     {
         EXPECT_FALSE(caps.hasReducedPrivileges);
+    }
+    else
+    {
+        EXPECT_FALSE(caps.networkCountersBlocked) << "non-elevated, a denial is reduced privileges";
     }
 }
 

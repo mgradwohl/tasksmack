@@ -9,6 +9,7 @@
 #include "FontSizeChange.h"
 #include "Panels/ProcessesPanel.h"
 #include "Panels/SystemMetricsPanel.h"
+#include "Platform/ProcessTypes.h"
 #include "ShellMetrics.h"
 #include "SyntheticScenario.h"
 #include "TabLabel.h"
@@ -575,12 +576,26 @@ void ShellLayer::renderStatusBar() const
         // Show a persistent lock icon when running without elevated privileges
         // Live, not a startup copy: a probe can withdraw a capability after the first sample (#1254).
         // ProcessesPanel keeps it with its cached snapshot generation, so reading it takes no lock.
-        if (m_ProcessesPanel.hasReducedPrivileges())
+        const Platform::ProcessCapabilities capabilities = m_ProcessesPanel.processCapabilities();
+        if (capabilities.hasReducedPrivileges)
         {
             ImGui::TextColored(theme.scheme().textWarning, ICON_FA_LOCK);
             if (ImGui::IsItemHovered())
             {
                 ImGui::SetTooltip("Limited data: some details of other users' processes are unavailable");
+            }
+            ImGui::SameLine();
+        }
+        // Per-process network counters denied although TaskSmack already has the rights they need
+        // (#1358): the network columns are gone, and running as Administrator would not bring them
+        // back, so this is not the lock icon's "limited data" notice.
+        if (capabilities.networkCountersBlocked)
+        {
+            ImGui::TextColored(theme.scheme().textWarning, ICON_FA_NETWORK_WIRED);
+            if (ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip("Per-process network counters are blocked on this system "
+                                  "(TCP EStats access denied even when elevated)");
             }
             ImGui::SameLine();
         }
