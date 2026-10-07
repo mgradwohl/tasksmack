@@ -165,8 +165,12 @@ StorageSnapshot StorageModel::computeSnapshot(const Platform::SystemDiskCounters
     snapshot.hasReadWriteBytes = caps.hasReadWriteBytes;
     snapshot.hasIoTime = caps.hasIoTime;
 
-    // Process each disk
+    // Process each disk. Only the first entry of a device name advances its rate state -- the entry the
+    // history records (see stageHistoryAppend()) -- so the next sample is measured from it. A later
+    // entry with the same name is measured against a scratch copy of that state and leaves it as is.
     snapshot.disks.reserve(counters.disks.size());
+    std::unordered_set<std::string> seen;
+    seen.reserve(counters.disks.size());
     for (const auto& diskCounters : counters.disks)
     {
         const std::string& deviceName = diskCounters.deviceName;
@@ -174,6 +178,13 @@ StorageSnapshot StorageModel::computeSnapshot(const Platform::SystemDiskCounters
         // Get or create state for this device
         auto& state = diskStates[deviceName];
         state.deviceName = deviceName;
+
+        if (!seen.insert(deviceName).second)
+        {
+            DiskState scratch = state;
+            snapshot.disks.push_back(computeDiskSnapshot(diskCounters, scratch, now));
+            continue;
+        }
 
         const DiskSnapshot diskSnap = computeDiskSnapshot(diskCounters, state, now);
         snapshot.disks.push_back(diskSnap);

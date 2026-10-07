@@ -1593,7 +1593,8 @@ TEST(StorageModelTest, ConsecutivePublicationsShareTheirHistory)
 }
 
 // A sample that lists one device name twice appends one point to that disk's series -- the first
-// entry's -- so every series stays aligned with the timestamps (#1412).
+// entry's -- so every series stays aligned with the timestamps, and the next sample's rate is measured
+// from that first entry too (#1412).
 TEST(StorageModelTest, ARepeatedDeviceNameIsAppendedOnceFromItsFirstEntry)
 {
     auto probe = std::make_unique<Mocks::MockDiskProbe>();
@@ -1633,6 +1634,11 @@ TEST(StorageModelTest, ARepeatedDeviceNameIsAppendedOnceFromItsFirstEntry)
     EXPECT_TRUE(std::isnan(sda.readBytesPerSec[0])); // the seed read
     EXPECT_DOUBLE_EQ(sda.readBytesPerSec[1], 1000.0 * 512.0) << "the first entry's rate, not the duplicate's";
     EXPECT_DOUBLE_EQ(sda.writeBytesPerSec[1], 300.0 * 512.0) << "the first entry's rate, not the duplicate's";
+    // The third sample is measured from the first entry's counters (2000 / 800), not the duplicate's
+    // (90000 / 70000), which would have clamped to a false 0 B/s.
+    EXPECT_DOUBLE_EQ(sda.readBytesPerSec[2], 1000.0 * 512.0) << "measured from the first entry's baseline";
+    EXPECT_DOUBLE_EQ(sda.writeBytesPerSec[2], 200.0 * 512.0) << "measured from the first entry's baseline";
+    EXPECT_DOUBLE_EQ(publication->totalReadHistory[2], 1000.0 * 512.0);
     // The model's own series agree.
     const auto timestamps = model.historyTimestamps();
     EXPECT_EQ(model.totalReadHistory().size(), timestamps.size());
