@@ -30,6 +30,10 @@ constexpr std::array<ProcessAction, 4> ALL_ACTIONS{
     ProcessAction::Resume,
 };
 
+// Two different processes: the one a confirm was requested for, and one selected after it.
+constexpr Platform::ProcessTarget TARGET_A{.pid = 1001, .startTimeTicks = 5000};
+constexpr Platform::ProcessTarget TARGET_B{.pid = 2002, .startTimeTicks = 6000};
+
 /// Capabilities with only @p action's flag set.
 Platform::ProcessActionCapabilities onlyCapability(ProcessAction action)
 {
@@ -120,7 +124,7 @@ TEST(ProcessActionsViewTest, RequestingAnActionAsksToConfirmIt)
     {
         SCOPED_TRACE(Detail::actionLabel(action));
         ProcessActionsView view;
-        view.requestAction(action);
+        view.requestAction(action, TARGET_A, "a");
         EXPECT_TRUE(view.confirmRequested());
         EXPECT_EQ(view.pendingAction(), action);
     }
@@ -129,8 +133,8 @@ TEST(ProcessActionsViewTest, RequestingAnActionAsksToConfirmIt)
 TEST(ProcessActionsViewTest, ALaterRequestReplacesTheEarlierOne)
 {
     ProcessActionsView view;
-    view.requestAction(ProcessAction::Kill);
-    view.requestAction(ProcessAction::Resume);
+    view.requestAction(ProcessAction::Kill, TARGET_A, "a");
+    view.requestAction(ProcessAction::Resume, TARGET_A, "a");
     EXPECT_EQ(view.pendingAction(), ProcessAction::Resume);
 }
 
@@ -143,8 +147,8 @@ TEST(ProcessActionsViewTest, ConfirmedActionIsDispatchedToTheTarget)
         SCOPED_TRACE(Detail::actionLabel(action));
         TestMocks::MockProcessActions mock;
         ProcessActionsView view;
-        view.requestAction(action);
-        view.dispatchConfirmed(&mock, {.pid = 321, .startTimeTicks = 99});
+        view.requestAction(action, {.pid = 321, .startTimeTicks = 99}, "proc");
+        view.dispatchConfirmed(&mock);
 
         EXPECT_EQ(mock.terminateCount(), action == ProcessAction::Terminate ? 1 : 0);
         EXPECT_EQ(mock.killCount(), action == ProcessAction::Kill ? 1 : 0);
@@ -163,8 +167,8 @@ TEST(ProcessActionsViewTest, FailedDispatchShowsTheError)
     TestMocks::MockProcessActions mock;
     mock.setKillResult(Platform::ProcessActionResult::error("Operation not permitted"));
     ProcessActionsView view;
-    view.requestAction(ProcessAction::Kill);
-    view.dispatchConfirmed(&mock, {.pid = 7, .startTimeTicks = 1});
+    view.requestAction(ProcessAction::Kill, {.pid = 7, .startTimeTicks = 1}, "proc");
+    view.dispatchConfirmed(&mock);
 
     EXPECT_FALSE(view.lastResult().ok);
     EXPECT_EQ(view.lastResult().text, "Could not kill PID 7: Operation not permitted");
@@ -173,8 +177,8 @@ TEST(ProcessActionsViewTest, FailedDispatchShowsTheError)
 TEST(ProcessActionsViewTest, NullActionsReportUnavailableInsteadOfCrashing)
 {
     ProcessActionsView view;
-    view.requestAction(ProcessAction::Terminate);
-    view.dispatchConfirmed(nullptr, {.pid = 55, .startTimeTicks = 1});
+    view.requestAction(ProcessAction::Terminate, {.pid = 55, .startTimeTicks = 1}, "proc");
+    view.dispatchConfirmed(nullptr);
 
     EXPECT_FALSE(view.lastResult().ok);
     EXPECT_EQ(view.lastResult().text, "Could not terminate PID 55: Process actions unavailable");
@@ -186,8 +190,8 @@ TEST(ProcessActionsViewTest, ResultStaysUntilItsTimeoutRunsOut)
 {
     TestMocks::MockProcessActions mock;
     ProcessActionsView view;
-    view.requestAction(ProcessAction::Stop);
-    view.dispatchConfirmed(&mock, {.pid = 1, .startTimeTicks = 1});
+    view.requestAction(ProcessAction::Stop, {.pid = 1, .startTimeTicks = 1}, "proc");
+    view.dispatchConfirmed(&mock);
 
     view.tick(Detail::ACTION_RESULT_SECONDS - 1.0F);
     EXPECT_FALSE(view.lastResult().empty());
@@ -204,12 +208,12 @@ TEST(ProcessActionsViewTest, ANewResultRestartsTheTimeout)
 {
     TestMocks::MockProcessActions mock;
     ProcessActionsView view;
-    view.requestAction(ProcessAction::Stop);
-    view.dispatchConfirmed(&mock, {.pid = 1, .startTimeTicks = 1});
+    view.requestAction(ProcessAction::Stop, {.pid = 1, .startTimeTicks = 1}, "proc");
+    view.dispatchConfirmed(&mock);
     view.tick(4.0F);
 
-    view.requestAction(ProcessAction::Resume);
-    view.dispatchConfirmed(&mock, {.pid = 1, .startTimeTicks = 1});
+    view.requestAction(ProcessAction::Resume, {.pid = 1, .startTimeTicks = 1}, "proc");
+    view.dispatchConfirmed(&mock);
     view.tick(4.0F);
     EXPECT_EQ(view.lastResult().text, "Resume sent to PID 1");
 }
@@ -226,15 +230,116 @@ TEST(ProcessActionsViewTest, SelectionChangeClosesTheDialogAndDropsTheResult)
 {
     TestMocks::MockProcessActions mock;
     ProcessActionsView view;
-    view.requestAction(ProcessAction::Kill);
-    view.dispatchConfirmed(&mock, {.pid = 9, .startTimeTicks = 1});
-    view.requestAction(ProcessAction::Terminate);
+    view.requestAction(ProcessAction::Kill, {.pid = 9, .startTimeTicks = 1}, "proc");
+    view.dispatchConfirmed(&mock);
+    view.requestAction(ProcessAction::Terminate, TARGET_A, "a");
     ASSERT_TRUE(view.confirmRequested());
     ASSERT_FALSE(view.lastResult().empty());
 
     view.onSelectionChanged();
     EXPECT_FALSE(view.confirmRequested());
     EXPECT_TRUE(view.lastResult().empty());
+}
+
+// --- Captured confirm target (Copilot review on #1447) -----------------------------------------------
+
+TEST(ProcessActionsViewTest, RequestCapturesTheTargetAndName)
+{
+    ProcessActionsView view;
+    view.requestAction(ProcessAction::Kill, TARGET_A, "firefox");
+    EXPECT_EQ(view.confirmTarget().target.pid, TARGET_A.pid);
+    EXPECT_EQ(view.confirmTarget().target.startTimeTicks, TARGET_A.startTimeTicks);
+    EXPECT_EQ(view.confirmTarget().processName, "firefox");
+}
+
+TEST(ProcessActionsViewTest, ConfirmActsOnTheCapturedTargetNotALaterOne)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessActionsView view;
+    view.requestAction(ProcessAction::Kill, TARGET_A, "a");
+    // The selection moved to B without a selection-change notice: the dialog must be dismissed,
+    // and a confirm that slipped through reaches no platform call, least of all for B.
+    EXPECT_TRUE(view.takeDismiss(TARGET_B));
+    EXPECT_FALSE(view.confirmRequested());
+    view.dispatchConfirmed(&mock);
+    EXPECT_EQ(mock.killCount(), 0);
+    EXPECT_NE(mock.lastTarget().pid, TARGET_B.pid);
+}
+
+TEST(ProcessActionsViewTest, SelectionChangeCancelsThePendingConfirm)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessActionsView view;
+    view.requestAction(ProcessAction::Terminate, TARGET_A, "a");
+
+    view.onSelectionChanged(); // Now B is selected
+    EXPECT_FALSE(view.confirmRequested());
+    EXPECT_EQ(view.pendingAction(), ProcessAction::None);
+    EXPECT_EQ(view.confirmTarget().target.pid, -1);
+    // The next render closes the dialog ImGui may still have open, whichever process is live.
+    EXPECT_TRUE(view.takeDismiss(TARGET_B));
+    EXPECT_FALSE(view.takeDismiss(TARGET_B)); // Consumed
+
+    // A confirm now reaches no platform call at all, for A or B.
+    view.dispatchConfirmed(&mock);
+    EXPECT_EQ(mock.terminateCount(), 0);
+    EXPECT_EQ(mock.killCount(), 0);
+    EXPECT_EQ(mock.stopCount(), 0);
+    EXPECT_EQ(mock.resumeCount(), 0);
+    EXPECT_FALSE(view.lastResult().ok);
+}
+
+TEST(ProcessActionsViewTest, SameTargetKeepsTheDialogOpen)
+{
+    ProcessActionsView view;
+    view.requestAction(ProcessAction::Stop, TARGET_A, "a");
+    EXPECT_FALSE(view.takeDismiss(TARGET_A));
+    EXPECT_TRUE(view.confirmRequested());
+    EXPECT_EQ(view.pendingAction(), ProcessAction::Stop);
+}
+
+TEST(ProcessActionsViewTest, NoDismissWithNothingPending)
+{
+    ProcessActionsView view;
+    EXPECT_FALSE(view.takeDismiss(TARGET_B));
+}
+
+TEST(ProcessActionsViewTest, ANewRequestAfterASelectionChangeTargetsTheNewProcess)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessActionsView view;
+    view.requestAction(ProcessAction::Kill, TARGET_A, "a");
+    view.onSelectionChanged();
+    ASSERT_TRUE(view.takeDismiss(TARGET_B));
+
+    view.requestAction(ProcessAction::Kill, TARGET_B, "b");
+    EXPECT_FALSE(view.takeDismiss(TARGET_B));
+    view.dispatchConfirmed(&mock);
+    EXPECT_EQ(mock.killCount(), 1);
+    EXPECT_EQ(mock.lastTarget().pid, TARGET_B.pid);
+}
+
+TEST(ProcessActionsViewTest, SameProcessTargetComparesPidAndKnownStartTime)
+{
+    struct Case
+    {
+        const char* name = "";
+        Platform::ProcessTarget captured;
+        Platform::ProcessTarget live;
+        bool same = false;
+    };
+    const std::array<Case, 5> cases{{
+        {.name = "identical", .captured = TARGET_A, .live = TARGET_A, .same = true},
+        {.name = "other pid", .captured = TARGET_A, .live = TARGET_B, .same = false},
+        {.name = "reused pid", .captured = TARGET_A, .live = {.pid = TARGET_A.pid, .startTimeTicks = 9999}, .same = false},
+        {.name = "captured start unknown", .captured = {.pid = TARGET_A.pid, .startTimeTicks = 0}, .live = TARGET_A, .same = true},
+        {.name = "live start unknown", .captured = TARGET_A, .live = {.pid = TARGET_A.pid, .startTimeTicks = 0}, .same = true},
+    }};
+    for (const Case& c : cases)
+    {
+        SCOPED_TRACE(c.name);
+        EXPECT_EQ(Detail::isSameProcessTarget(c.captured, c.live), c.same);
+    }
 }
 
 } // namespace

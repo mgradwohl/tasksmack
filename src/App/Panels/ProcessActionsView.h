@@ -18,6 +18,7 @@
 #include <array>
 #include <cstddef>
 #include <string>
+#include <utility>
 
 namespace App
 {
@@ -43,6 +44,17 @@ namespace Detail
         break;
     }
     return false;
+}
+
+/// Whether @p captured (taken when a confirm was requested) and @p live are the same process: the same
+/// PID and, when both know it, the same start time, so a reused PID is not taken for it (#973).
+[[nodiscard]] constexpr bool isSameProcessTarget(const Platform::ProcessTarget& captured, const Platform::ProcessTarget& live) noexcept
+{
+    if (captured.pid != live.pid)
+    {
+        return false;
+    }
+    return captured.startTimeTicks == 0 || live.startTimeTicks == 0 || captured.startTimeTicks == live.startTimeTicks;
 }
 
 /// One button of the Actions tab's 2x2 grid. The label is also the button's ImGui ID.
@@ -74,12 +86,24 @@ inline constexpr float ACTION_RESULT_SECONDS = 5.0F;
 } // namespace Detail
 
 /// The Actions tab's buttons, confirm dialog and result line for the process Process Details shows.
+///
+/// The process a confirm asks about is captured when its button is pressed: the dialog names that
+/// process and the confirm acts only on it, never on whatever is selected by then. A selection
+/// change, or a target that no longer matches the capture, closes the dialog unconfirmed.
 class ProcessActionsView
 {
   public:
+    /// The process a pending confirm is about, as it was when its button was pressed.
+    struct ConfirmTarget
+    {
+        Platform::ProcessTarget target{.pid = -1, .startTimeTicks = 0};
+        std::string processName;
+    };
+
     /// Draws the tab: the process's name and PID, the result line, the confirm dialog while it is
-    /// open, and the buttons @p capabilities allow. A confirmed action is dispatched to @p actions
-    /// (which may be null: the result then says actions are unavailable) for @p target.
+    /// open, and the buttons @p capabilities allow. A button captures @p target and @p processName for
+    /// its confirm; a confirmed action is dispatched to @p actions (which may be null: the result then
+    /// says actions are unavailable) for that captured target.
     void render(Platform::IProcessActions* actions,
                 const Platform::ProcessActionCapabilities& capabilities,
                 const std::string& processName,
@@ -98,24 +122,47 @@ class ProcessActionsView
         }
     }
 
-    /// A different process was selected: close the confirm dialog and drop the result line.
+    /// A different process was selected: drop the pending confirm and its captured target, have the
+    /// next render() close the dialog if ImGui still has it open, and drop the result line.
     void onSelectionChanged() noexcept
     {
         m_ShowConfirmDialog = false;
+        m_ConfirmAction = Detail::ProcessAction::None;
+        m_ConfirmTarget = {};
+        m_DismissPending = true;
         m_LastResult = {};
     }
 
-    /// A button was pressed: ask to confirm @p action.
-    void requestAction(Detail::ProcessAction action) noexcept
+    /// A button was pressed: ask to confirm @p action on @p target, named @p processName.
+    void requestAction(Detail::ProcessAction action, const Platform::ProcessTarget& target, std::string processName)
     {
         m_ConfirmAction = action;
+        m_ConfirmTarget = {.target = target, .processName = std::move(processName)};
         m_ShowConfirmDialog = true;
     }
 
-    /// The confirm dialog's action was pressed: run the pending action on @p target through @p actions
-    /// (null gives an "unavailable" error rather than a dereference), and show the result.
-    void dispatchConfirmed(Platform::IProcessActions* actions, const Platform::ProcessTarget& target)
+    /// Whether the dialog must be closed unconfirmed this frame, given the selection's @p liveTarget:
+    /// after a selection change (once; the request is consumed), or while a confirm is pending for a
+    /// different process than the one now selected.
+    [[nodiscard]] bool takeDismiss(const Platform::ProcessTarget& liveTarget) noexcept
     {
+        const bool selectionChanged = std::exchange(m_DismissPending, false);
+        const bool targetMoved = m_ShowConfirmDialog && !Detail::isSameProcessTarget(m_ConfirmTarget.target, liveTarget);
+        if (targetMoved)
+        {
+            m_ShowConfirmDialog = false;
+            m_ConfirmAction = Detail::ProcessAction::None;
+            m_ConfirmTarget = {};
+        }
+        return selectionChanged || targetMoved;
+    }
+
+    /// The confirm dialog's action was pressed: run the pending action on the captured target through
+    /// @p actions (null gives an "unavailable" error rather than a dereference), and show the result.
+    /// With no pending action (ProcessAction::None) nothing reaches the platform.
+    void dispatchConfirmed(Platform::IProcessActions* actions)
+    {
+        const Platform::ProcessTarget& target = m_ConfirmTarget.target;
         const Platform::ProcessActionResult result = (actions != nullptr)
                                                        ? Detail::dispatchProcessAction(*actions, m_ConfirmAction, target)
                                                        : Platform::ProcessActionResult::error("Process actions unavailable");
@@ -129,10 +176,16 @@ class ProcessActionsView
         return m_ShowConfirmDialog;
     }
 
-    /// The action the confirm dialog asks about (the last one requested).
+    /// The action the confirm dialog asks about (None when nothing is pending).
     [[nodiscard]] Detail::ProcessAction pendingAction() const noexcept
     {
         return m_ConfirmAction;
+    }
+
+    /// The process the pending confirm is about (PID -1 when nothing is pending).
+    [[nodiscard]] const ConfirmTarget& confirmTarget() const noexcept
+    {
+        return m_ConfirmTarget;
     }
 
     /// The result line, empty when there is nothing to show.
@@ -143,11 +196,15 @@ class ProcessActionsView
 
   private:
     void renderResultFeedback() const;
-    void renderConfirmDialog(Platform::IProcessActions* actions, const std::string& processName, const Platform::ProcessTarget& target);
-    void renderButtons(const Platform::ProcessActionCapabilities& capabilities);
+    void renderConfirmDialog(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget);
+    void renderButtons(const Platform::ProcessActionCapabilities& capabilities,
+                       const std::string& processName,
+                       const Platform::ProcessTarget& target);
 
     bool m_ShowConfirmDialog = false;
+    bool m_DismissPending = false; // A selection change asked to close a dialog ImGui may still have open
     Detail::ProcessAction m_ConfirmAction = Detail::ProcessAction::None;
+    ConfirmTarget m_ConfirmTarget;
     Detail::ActionResultMessage m_LastResult;
     float m_ResultSecondsLeft = 0.0F;
 };

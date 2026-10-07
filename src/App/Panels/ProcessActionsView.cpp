@@ -32,8 +32,8 @@ void ProcessActionsView::render(Platform::IProcessActions* actions,
     ImGui::Spacing();
 
     renderResultFeedback();
-    renderConfirmDialog(actions, processName, target);
-    renderButtons(capabilities);
+    renderConfirmDialog(actions, target);
+    renderButtons(capabilities, processName, target);
 }
 
 void ProcessActionsView::renderResultFeedback() const
@@ -50,19 +50,23 @@ void ProcessActionsView::renderResultFeedback() const
     ImGui::Spacing();
 }
 
-void ProcessActionsView::renderConfirmDialog(Platform::IProcessActions* actions,
-                                             const std::string& processName,
-                                             const Platform::ProcessTarget& target)
+void ProcessActionsView::renderConfirmDialog(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget)
 {
-    // The same dialog the Processes table's row menu confirms with (#1209).
-    if (ProcessActionConfirm::render(m_ShowConfirmDialog, m_ConfirmAction, processName, target.pid) ==
+    // The same dialog the Processes table's row menu confirms with (#1209). It names, and a confirm
+    // acts on, the process captured when the button was pressed; after a selection change it is
+    // closed unconfirmed instead, so it can never act on another process.
+    const bool dismiss = takeDismiss(liveTarget);
+    if (ProcessActionConfirm::render(
+            m_ShowConfirmDialog, m_ConfirmAction, m_ConfirmTarget.processName, m_ConfirmTarget.target.pid, dismiss) ==
         ProcessActionConfirm::Outcome::Confirmed)
     {
-        dispatchConfirmed(actions, target);
+        dispatchConfirmed(actions);
     }
 }
 
-void ProcessActionsView::renderButtons(const Platform::ProcessActionCapabilities& capabilities)
+void ProcessActionsView::renderButtons(const Platform::ProcessActionCapabilities& capabilities,
+                                       const std::string& processName,
+                                       const Platform::ProcessTarget& target)
 {
     // One width for all four, from the widest label and the font, capped to the pane (#949). See
     // ProcessDetailsLayout::computeActionButtonWidth() for why it is no longer a fixed 180px.
@@ -117,7 +121,7 @@ void ProcessActionsView::renderButtons(const Platform::ProcessActionCapabilities
                                : ImGui::Button(button.label, buttonSize);
         if (pressed)
         {
-            requestAction(button.action);
+            requestAction(button.action, target, processName);
         }
         if (ImGui::IsItemHovered())
         {
