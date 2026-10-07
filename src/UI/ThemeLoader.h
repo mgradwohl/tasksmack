@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace UI
@@ -44,6 +45,16 @@ class ThemeLoader
      * @return ColorScheme if successful, nullopt on error
      */
     static auto loadTheme(const std::filesystem::path& path) -> std::optional<ColorScheme>;
+
+    /**
+     * @brief Load a theme from TOML text, exactly as loadTheme() reads a file but with no file I/O
+     * @param tomlText Contents of a theme file
+     * @param sourceName Name used in log messages and parse errors (e.g. the file it came from)
+     * @return ColorScheme if the text is valid TOML, nullopt on error
+     *
+     * The seam the theme fuzz target drives (tests/fuzz/fuzz_theme_loader.cpp).
+     */
+    static auto loadThemeFromString(std::string_view tomlText, std::string_view sourceName = "<string>") -> std::optional<ColorScheme>;
 
     /**
      * @brief Load theme metadata without full color data

@@ -6,7 +6,18 @@ on:
     paths:
       - '.clusterfuzzlite/**'
       - '.github/workflows/cflite_*.yml'
+      - 'assets/themes/**'
+      - 'cmake/Dependencies.cmake'
+      - 'cmake/patches/**'
+      - 'src/App/ProcessColumnConfig.h'
+      - 'src/App/UserConfig.cpp'
+      - 'src/App/UserConfig.h'
+      - 'src/App/UserConfigHelpers.h'
       - 'src/Platform/Linux/ProcParsing.h'
+      - 'src/UI/Theme.h'
+      - 'src/UI/ThemeLoader.cpp'
+      - 'src/UI/ThemeLoader.h'
+      - 'tests/Mocks/ThemeStub.cpp'
       - 'tests/fuzz/**'
 
 concurrency:

@@ -59,6 +59,10 @@ if [[ -z "$CLANG_FORMAT" ]]; then
     exit 1
 fi
 
+# shellcheck source=tools/common.sh
+source "$SCRIPT_DIR/common.sh"
+warn_clang_format_version_skew "$CLANG_FORMAT"
+
 if [[ "$CHANGED_ONLY" == "true" ]]; then
     # Get changed files from git
     mapfile -t CHANGED_FILES < <(git diff --name-only HEAD 2>/dev/null | grep -E '\.(cpp|h)$' || true)
