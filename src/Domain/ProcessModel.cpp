@@ -27,6 +27,7 @@
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -221,6 +222,10 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
 
     std::vector<ProcessSnapshot> newSnapshots;
     std::unordered_map<std::uint64_t, CachedGpuSnapshotFields> cachedGpuByUniqueKey;
+    // Identities whose GPU fields the previous generation had read (zeros included), so a throttled
+    // generation can tell a process it has GPU data for from one that started since the last GPU
+    // merge, whose fields were never read (#1210).
+    std::unordered_set<std::uint64_t> gpuReadUniqueKeys;
     std::shared_ptr<GPUModel> gpuModel;
     GpuSupport previousGpuSupport;
     bool shouldMergeGpuData = false;
@@ -246,8 +251,13 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     if (interactionActive)
     {
         cachedGpuByUniqueKey.reserve(previousSnapshots->size());
+        gpuReadUniqueKeys.reserve(previousSnapshots->size());
         for (const auto& previousSnapshot : *previousSnapshots)
         {
+            if (previousSnapshot.gpuFieldsRead)
+            {
+                gpuReadUniqueKeys.insert(previousSnapshot.uniqueKey);
+            }
             if ((previousSnapshot.gpuMemoryBytes == 0) && (previousSnapshot.gpuDedicatedMemoryBytes == 0) &&
                 (previousSnapshot.gpuSharedMemoryBytes == 0) && (previousSnapshot.gpuUtilPercent <= 0.0) &&
                 previousSnapshot.gpuDevices.empty() && previousSnapshot.perGpuUsage.empty())
@@ -459,6 +469,9 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         gpuSupport = previousGpuSupport;
         for (auto& snapshot : newSnapshots)
         {
+            // A process the last GPU merge did not see has GPU fields that were never read: not
+            // measured zeros (#1210).
+            snapshot.gpuFieldsRead = gpuReadUniqueKeys.contains(snapshot.uniqueKey);
             const auto it = cachedGpuByUniqueKey.find(snapshot.uniqueKey);
             if (it == cachedGpuByUniqueKey.end())
             {

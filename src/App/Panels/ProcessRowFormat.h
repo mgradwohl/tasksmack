@@ -122,6 +122,10 @@ inline constexpr const char* UNREADABLE_CELL_REASON =
 /// data (#1210): a gap in one sample, not a lack of support.
 inline constexpr const char* GPU_READ_FAILED_CELL_REASON = "Not available: reading per-process GPU data failed for this sample.";
 
+/// Tooltip of a GPU cell of a process that started since per-process GPU data was last read, while
+/// those reads are throttled (#1210): its GPU figures have not been read yet.
+inline constexpr const char* GPU_NOT_READ_YET_CELL_REASON = "Not available yet: this process started since GPU usage was last read.";
+
 /// Tooltip of a cell in a column this system's process probe cannot fill at all (#1028, #1035).
 inline constexpr const char* UNSUPPORTED_CELL_REASON = "Not available on this system.";
 
@@ -302,6 +306,9 @@ struct RowFormatCache
     bool processTypeSupported = true;
     bool gpuSupported = true;   // GPU Engine and GPU Device; GPU % and GPU Memory carry their own tone
     bool gpuReadFailed = false; // Supported, but this generation's per-process GPU read failed (#1210)
+    // Why this row's GPU figures are not readings although the system has them -- a failed read, or a
+    // process the last GPU read did not see -- or null when they are (#1210).
+    const char* gpuUnreadReason = nullptr;
 };
 
 /// Formats every RowFormatCache field for one process snapshot. Pure (no ImGui calls, no shared
@@ -323,6 +330,17 @@ struct RowFormatCache
     fmt.processTypeSupported = options.hasProcessType;
     fmt.gpuSupported = options.hasPerProcessGpu;
     fmt.gpuReadFailed = options.hasPerProcessGpu && options.gpuReadFailed;
+    if (options.hasPerProcessGpu)
+    {
+        if (options.gpuReadFailed)
+        {
+            fmt.gpuUnreadReason = GPU_READ_FAILED_CELL_REASON;
+        }
+        else if (!proc.gpuFieldsRead)
+        {
+            fmt.gpuUnreadReason = GPU_NOT_READ_YET_CELL_REASON;
+        }
+    }
     fmt.ppid = makeAlignedCellText(UI::Format::formatId(proc.parentPid));
     fmt.startTime = (proc.startTimeEpoch != 0) ? makeAlignedCellText(UI::Format::formatEpochDateTimeShort(proc.startTimeEpoch))
                                                : unavailableCell(UNREADABLE_CELL_REASON);
@@ -371,9 +389,9 @@ struct RowFormatCache
     {
         fmt.gpuPercent = unavailableCell(UNSUPPORTED_CELL_REASON);
     }
-    else if (options.gpuReadFailed)
+    else if (fmt.gpuUnreadReason != nullptr)
     {
-        fmt.gpuPercent = unavailableCell(GPU_READ_FAILED_CELL_REASON);
+        fmt.gpuPercent = unavailableCell(fmt.gpuUnreadReason);
     }
     else
     {
@@ -386,7 +404,7 @@ struct RowFormatCache
     }
     else
     {
-        fmt.gpuMemory = options.gpuReadFailed ? unavailableCell(GPU_READ_FAILED_CELL_REASON) : bytesCell(proc.gpuMemoryBytes);
+        fmt.gpuMemory = (fmt.gpuUnreadReason != nullptr) ? unavailableCell(fmt.gpuUnreadReason) : bytesCell(proc.gpuMemoryBytes);
     }
     // No engine in use is a fact rather than a gap, so it is left blank rather than marked unavailable.
     for (std::size_t i = 0; i < proc.gpuEngines.size(); ++i)

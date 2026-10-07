@@ -457,6 +457,25 @@ TEST(ProcessRowFormatTest, AFailedGpuReadIsUnreadableNotUnsupported)
     EXPECT_FALSE(unsupported.gpuReadFailed);
 }
 
+TEST(ProcessRowFormatTest, GpuFieldsNotReadYetAreUnavailableNotMeasuredZeros)
+{
+    // #1210: a process that started while GPU merges are throttled has never had its GPU read.
+    ProcessSnapshot snap = makeSnapshot();
+    snap.gpuUtilPercent = 0.0;
+    snap.gpuMemoryBytes = 0;
+    snap.gpuFieldsRead = false;
+    const RowFormatCache fmt = buildRowFormatCache(snap);
+    expectUnavailable(fmt.gpuPercent, ProcessRowFormat::GPU_NOT_READ_YET_CELL_REASON);
+    expectUnavailable(fmt.gpuMemory, ProcessRowFormat::GPU_NOT_READ_YET_CELL_REASON);
+    EXPECT_STREQ(fmt.gpuUnreadReason, ProcessRowFormat::GPU_NOT_READ_YET_CELL_REASON);
+
+    // Read: a measured zero.
+    snap.gpuFieldsRead = true;
+    const RowFormatCache read = buildRowFormatCache(snap);
+    expectMeasuredZero(read.gpuMemory);
+    EXPECT_EQ(read.gpuUnreadReason, nullptr);
+}
+
 TEST(ProcessRowFormatTest, GpuPercentIsUnavailableWithoutPerProcessUtilization)
 {
     // #1210: Linux NVML gives each process's GPU memory but not its utilization; GPU % read 0.0%.

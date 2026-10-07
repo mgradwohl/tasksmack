@@ -2849,6 +2849,60 @@ TEST(ProcessModelTest, CopiedSnapshotsComeWithTheirGenerationsGpuSupport)
     EXPECT_FALSE(support.utilization);
 }
 
+// #1210: a process that starts while GPU merges are throttled has GPU fields no merge has read; they
+// must not pass for measured zeros. Processes the last merge did see keep theirs, zeros included.
+TEST(ProcessModelTest, AProcessStartedBetweenThrottledGpuMergesHasUnreadGpuFields)
+{
+    auto currentTime = Domain::ProcessModel::Clock::time_point{};
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    auto* rawProcessProbe = processProbe.get();
+    rawProcessProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1000, 500), makeCounter(150, "idle_process", 'S', 10, 5, 6000)});
+    rawProcessProbe->setTotalCpuTime(100000);
+
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    gpuProbe->withCapabilities(caps);
+    gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor").withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024);
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+
+    Domain::ProcessModel processModel(std::move(processProbe), [&currentTime] { return currentTime; });
+    processModel.setGPUModel(gpuModel);
+    gpuModel->refresh();
+    processModel.refresh(); // Merged: 100 and 150 read
+
+    processModel.setInteractionActive(true);
+    currentTime += std::chrono::milliseconds(500);
+    rawProcessProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1100, 500),
+                                  makeCounter(150, "idle_process", 'S', 10, 5, 6000),
+                                  makeCounter(200, "new_process", 'R', 10, 5, 7000)});
+    rawProcessProbe->setTotalCpuTime(200000);
+    processModel.refresh(); // Throttled: cached GPU fields, no new read
+
+    const auto snapshots = processModel.snapshots();
+    ASSERT_EQ(snapshots.size(), 3U);
+    for (const auto& snap : snapshots)
+    {
+        if (snap.pid == 200)
+        {
+            EXPECT_FALSE(snap.gpuFieldsRead) << "started since the last GPU merge";
+        }
+        else
+        {
+            EXPECT_TRUE(snap.gpuFieldsRead) << "pid " << snap.pid;
+        }
+    }
+
+    // The next merge reads everyone again.
+    currentTime += std::chrono::seconds(2);
+    processModel.setInteractionActive(false);
+    processModel.refresh();
+    for (const auto& snap : processModel.snapshots())
+    {
+        EXPECT_TRUE(snap.gpuFieldsRead) << "pid " << snap.pid;
+    }
+}
+
 // Edge case: GPU counters with empty list (no GPUs found)
 TEST(ProcessModelTest, MergeGPUDataWithEmptyCounters)
 {

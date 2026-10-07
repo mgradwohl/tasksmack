@@ -71,6 +71,11 @@ struct ProcessSnapshot
     // A stored value of 0 means the process is accessible but owns no GDI objects.
     std::optional<std::int32_t> gdiObjectCount;
 
+    // Whether this snapshot's GPU fields were read by a per-process GPU merge (#1210). False for a
+    // process that started between merges while they are throttled: its GPU fields are defaults,
+    // never read, and must not be shown as measured zeros.
+    bool gpuFieldsRead = true;
+
     // Whether a value was read for this process (#1110). False: the probe could not read it --
     // typically for lack of rights, e.g. another user's process without root on Linux -- and the
     // value is a placeholder 0, to be shown as unavailable and left out of totals, never as a

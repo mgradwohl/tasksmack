@@ -281,6 +281,25 @@ TEST(ProcessHistoryHelpersTest, AFailedGpuReadIsAGapButKeepsSupport)
     EXPECT_EQ(gpuTabContent(readings.gpuSupported, false, hasAnyReading(gapsOnly)), GpuTabContent::NoReadings);
 }
 
+TEST(ProcessHistoryHelpersTest, GpuFieldsNotReadYetAreNotReadings)
+{
+    // #1210: a process that started between throttled GPU merges: no GPU reading, support kept.
+    auto snapshot = std::make_shared<Domain::ProcessSnapshot>();
+    snapshot->gpuFieldsRead = false;
+    const Domain::ProcessSample sample{.snapshot = snapshot,
+                                       .version = 1,
+                                       .sampleTimeSeconds = 1.0,
+                                       .ioCountersSupported = true,
+                                       .networkCountersSupported = true,
+                                       .gpuPerProcessSupported = true,
+                                       .gpuUtilizationSupported = true,
+                                       .gpuReadFailed = false};
+    const SampleRateReadings readings = rateReadings(sample);
+    EXPECT_FALSE(readings.gpuPerProcess);
+    EXPECT_FALSE(readings.gpuUtilization);
+    EXPECT_TRUE(readings.gpuSupported);
+}
+
 TEST(ProcessHistoryHelpersTest, HistoriesOfOnlyGapsAreNoData)
 {
     const double gap = std::numeric_limits<double>::quiet_NaN();

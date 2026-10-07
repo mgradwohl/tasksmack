@@ -506,12 +506,12 @@ void leftAlignedOrBlankCell(const Domain::ProcessSnapshot& proc, const RowFormat
 
 /// A GPU text cell (engines, devices): blank for none, the "not available on this system" dash where
 /// per-process GPU usage cannot be observed, and the unreadable dash where it can but this
-/// generation's read failed (#1210).
+/// generation's read failed or the process started since the last read (#1210).
 void renderGpuTextCell(std::string_view text, const ProcessRowFormat::LazyTextWidth& width, const RowFormatCache& fmt, float dashWidth)
 {
-    if (fmt.gpuSupported && fmt.gpuReadFailed)
+    if (fmt.gpuSupported && (fmt.gpuUnreadReason != nullptr))
     {
-        renderUnavailableTextCell(ProcessRowFormat::GPU_READ_FAILED_CELL_REASON, dashWidth);
+        renderUnavailableTextCell(fmt.gpuUnreadReason, dashWidth);
         return;
     }
     renderTextCell(ProcessColumnAvailability::textCell(fmt.gpuSupported, !text.empty()), text, width, dashWidth);
