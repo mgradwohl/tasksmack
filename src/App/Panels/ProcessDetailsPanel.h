@@ -11,6 +11,7 @@
 #include "ProcessDetailsHistory.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
 #include "ProcessDetailsPanel_HistoryHelpers.h"
+#include "ProcessPriorityView.h"
 #include "UI/ChartWidgets.h"
 #include "UI/FillPlotLayout.h"
 
@@ -20,9 +21,6 @@
 #include <span>
 #include <string>
 #include <vector>
-
-// Forward declaration for ImGui draw list
-struct ImDrawList;
 
 namespace App
 {
@@ -124,15 +122,6 @@ class ProcessDetailsPanel : public Panel
     /// The selected process as an action target: its PID and, once a snapshot has confirmed it,
     /// its start time, so a reuse of the PID is refused rather than acted on (#973).
     [[nodiscard]] Platform::ProcessTarget selectedTarget() const;
-    void renderPrioritySection();
-
-    // Priority slider helper methods (extracted for testability and clarity)
-    struct PrioritySliderContext;
-    static void drawPriorityBadge(ImDrawList* drawList, const PrioritySliderContext& ctx);
-    static void drawPriorityGradient(ImDrawList* drawList, const PrioritySliderContext& ctx);
-    static void drawPriorityThumb(ImDrawList* drawList, const PrioritySliderContext& ctx);
-    void handlePrioritySliderInput(const PrioritySliderContext& ctx);
-    static void drawPriorityScaleLabels(const PrioritySliderContext& ctx);
     void updateSmoothedUsage(const Domain::ProcessSnapshot& snapshot, float deltaTimeSeconds);
     /// Appends one history point for @p snapshot at @p sampleTimeSeconds, after a gap point when
     /// @p gapBefore (see Detail::takeSamples()). @p rateReadings says which of its I/O and network rates
@@ -214,14 +203,10 @@ class ProcessDetailsPanel : public Panel
     // and cleared when the window changes so the next frame rebuilds it.
     std::string m_NoGpuUsageDetail;
 
-    // The Actions tab's buttons, confirm dialog and result line (#1179). It dispatches through
-    // m_ProcessActions, which the panel keeps owning; the priority control below uses it too.
+    // The Actions tab's buttons, confirm dialog and result line, and the priority control under them
+    // (#1179). Both act through m_ProcessActions, which the panel keeps owning.
     ProcessActionsView m_ActionsView;
-
-    // Priority adjustment state
-    int32_t m_PriorityNiceValue = 0;
-    bool m_PriorityChanged = false;
-    std::string m_PriorityError; // Persistent error message for priority changes
+    ProcessPriorityView m_PriorityView;
 
     struct SmoothedUsage
     {
