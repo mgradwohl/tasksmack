@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -50,6 +51,35 @@ constexpr std::size_t MAX_CORE_SLOTS = 8192;
         }
     }
     return slots;
+}
+
+/// Fill `index` with the positions of `interfaces`, sorted by name (ties by position, so a lookup
+/// finds the first of a repeated name, as a linear scan would). Reuses the vector's capacity, and
+/// std::ranges::sort, unlike stable_sort, needs no buffer: no allocation per sample once warm (#1415).
+void buildInterfaceIndex(const std::vector<Platform::SystemCounters::InterfaceCounters>& interfaces, std::vector<std::size_t>& index)
+{
+    index.resize(interfaces.size());
+    for (std::size_t i = 0; i < index.size(); ++i)
+    {
+        index[i] = i;
+    }
+    std::ranges::sort(index,
+                      [&interfaces](std::size_t lhs, std::size_t rhs)
+                      {
+                          const int order = interfaces[lhs].name.compare(interfaces[rhs].name);
+                          return (order != 0) ? (order < 0) : (lhs < rhs);
+                      });
+}
+
+/// The first interface named `name`, by binary search of an index from buildInterfaceIndex().
+[[nodiscard]] const Platform::SystemCounters::InterfaceCounters*
+findInterface(const std::vector<Platform::SystemCounters::InterfaceCounters>& interfaces,
+              const std::vector<std::size_t>& index,
+              const std::string& name)
+{
+    const auto it = std::ranges::lower_bound(
+        index, name, std::less<>{}, [&interfaces](std::size_t position) -> const std::string& { return interfaces[position].name; });
+    return (it != index.end() && interfaces[*it].name == name) ? &interfaces[*it] : nullptr;
 }
 
 /// A per-core slot with no reading this sample: NaN, drawn as a gap and shown as N/A (#1146).
@@ -238,6 +268,8 @@ void SystemModel::updateFromCountersLocked(const Platform::SystemCounters& count
         }
         computeSnapshot(counters, nowSeconds);
         m_PrevCounters = counters;
+        // computeSnapshot() indexed these counters' interfaces; they are the previous ones now.
+        std::swap(m_PrevInterfaceIndex, m_InterfaceIndex);
         m_HasPrevious = true;
     }
     // Outside the exclusive lock: the history copies take a shared lock only (#868).
@@ -537,6 +569,12 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         return gap ? 0.0 : rate;
     };
 
+    // Name lookups into this sample's interfaces and the previous sample's go through sorted
+    // indexes, not linear scans: container hosts run hundreds of veth/bridge interfaces, and a scan
+    // per interface made each sample quadratic in their number (#1415). The previous sample's index
+    // is this one's, kept from the last call (see updateFromCountersLocked()).
+    buildInterfaceIndex(counters.networkInterfaces, m_InterfaceIndex);
+
     snap.networkInterfaces.reserve(counters.networkInterfaces.size());
     for (std::size_t ifaceIndex = 0; ifaceIndex < counters.networkInterfaces.size(); ++ifaceIndex)
     {
@@ -704,11 +742,11 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         // capacity) so they align with m_Timestamps, and known interfaces absent from this
         // sample get a placeholder, so every series stays index-aligned. Both are NaN, not 0:
         // nothing was measured, and a chart must show a gap there rather than a false zero (#1015).
-        // Avoid allocating a hash-set on the hot path: the interface list is small
-        // (typically < 10 entries), so a linear scan is cheaper than hashing.
-        auto ifacePresent = [&snap](const std::string& name) -> bool
+        // snap.networkInterfaces mirrors counters.networkInterfaces one for one, so the sorted
+        // index built above answers "present this sample?" in O(log n), without allocating (#1415).
+        auto ifacePresent = [this, &counters](const std::string& name) -> bool
         {
-            return std::ranges::any_of(snap.networkInterfaces, [&name](const auto& ifaceSnap) { return ifaceSnap.name == name; });
+            return findInterface(counters.networkInterfaces, m_InterfaceIndex, name) != nullptr;
         };
         for (std::size_t ifaceIndex = 0; ifaceIndex < snap.networkInterfaces.size(); ++ifaceIndex)
         {
@@ -891,8 +929,7 @@ PowerStatus SystemModel::computePowerStatus(const Platform::PowerCounters& count
 
 const Platform::SystemCounters::InterfaceCounters* SystemModel::findPreviousInterface(const std::string& name) const
 {
-    auto it = std::ranges::find_if(m_PrevCounters.networkInterfaces, [&name](const auto& iface) { return iface.name == name; });
-    return (it != m_PrevCounters.networkInterfaces.end()) ? &(*it) : nullptr;
+    return findInterface(m_PrevCounters.networkInterfaces, m_PrevInterfaceIndex, name);
 }
 
 } // namespace Domain

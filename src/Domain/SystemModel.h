@@ -125,6 +125,10 @@ class SystemModel : public ISamplable
 
     // Previous counters for delta calculation
     Platform::SystemCounters m_PrevCounters;
+    // Positions of m_PrevCounters' / the current counters' interfaces sorted by name, for O(log n)
+    // name lookups instead of linear scans (#1415). Writer-only scratch, reused across samples.
+    std::vector<std::size_t> m_PrevInterfaceIndex;
+    std::vector<std::size_t> m_InterfaceIndex;
     double m_PrevTimestamp = 0.0;
     bool m_HasPrevious = false;
 
@@ -191,7 +195,7 @@ class SystemModel : public ISamplable
     [[nodiscard]] static CpuUsage computeCpuUsage(const Platform::CpuCounters& current, const Platform::CpuCounters& previous);
     [[nodiscard]] PowerStatus computePowerStatus(const Platform::PowerCounters& counters) const;
 
-    /// Find a previous interface by name for rate calculation.
+    /// Find a previous interface by name for rate calculation: a binary search of m_PrevInterfaceIndex.
     [[nodiscard]] const Platform::SystemCounters::InterfaceCounters* findPreviousInterface(const std::string& name) const;
 };
 

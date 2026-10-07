@@ -19,6 +19,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -2551,4 +2552,111 @@ TEST(SystemModelTest, ConcurrentWritersPublishEveryGenerationInOrder)
 
     EXPECT_EQ(model.publicationVersion(), static_cast<std::uint64_t>(1 + SAMPLES + RESIZES));
     EXPECT_EQ(model.publication()->version, model.publicationVersion());
+}
+
+// ==========================================================================
+// Interface Lookups at Container-Host Scale (#1415)
+// ==========================================================================
+
+TEST(SystemModelTest, InterfaceRatesAndGapsHoldAtHundredsOfChurningInterfaces)
+{
+    // Rates are matched to the previous sample by name and gaps by presence, through sorted
+    // indexes rather than linear scans (#1415). Same results at container-host scale: 500 veth
+    // interfaces, then listed in reverse order with a fifth departing and 100 arriving.
+    constexpr std::size_t KNOWN = 500;
+    constexpr std::size_t ARRIVING = 100;
+    const auto name = [](std::size_t i)
+    {
+        return "veth" + std::to_string(i);
+    };
+    const auto departs = [](std::size_t i)
+    {
+        return i % 5 == 0;
+    };
+    // Interface i moves (i + 1) * 10 bytes received and (i + 1) * 5 sent per second.
+    const auto countersAt = [&](std::uint64_t second, bool churned)
+    {
+        std::vector<Platform::SystemCounters::InterfaceCounters> interfaces;
+        for (std::size_t i = 0; i < KNOWN + ARRIVING; ++i)
+        {
+            const bool present = churned ? !(i < KNOWN && departs(i)) : (i < KNOWN);
+            if (present)
+            {
+                interfaces.push_back(makeInterfaceCounters(name(i), (i + 1) * 10 * second, (i + 1) * 5 * second));
+            }
+        }
+        if (churned)
+        {
+            std::ranges::reverse(interfaces);
+        }
+        return makeSystemCounters(
+            makeCpuCounters(100 * second, 0, 50 * second, 850 * second), makeMemoryCounters(1024, 512), 0, {}, 0, 0, std::move(interfaces));
+    };
+
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    model.updateFromCounters(countersAt(1, false), 1.0); // no history yet: nothing to take a delta against
+    model.updateFromCounters(countersAt(2, false), 2.0); // history[0]
+    model.updateFromCounters(countersAt(3, true), 3.0);  // history[1]: churned and reordered
+    model.updateFromCounters(countersAt(4, true), 4.0);  // history[2]
+
+    const auto snap = model.snapshot();
+    ASSERT_EQ(snap.networkInterfaces.size(), KNOWN - (KNOWN / 5) + ARRIVING);
+    for (const auto& iface : snap.networkInterfaces)
+    {
+        const std::size_t i = std::stoul(iface.name.substr(4));
+        EXPECT_DOUBLE_EQ(iface.rxBytesPerSec, static_cast<double>((i + 1) * 10)) << iface.name;
+        EXPECT_DOUBLE_EQ(iface.txBytesPerSec, static_cast<double>((i + 1) * 5)) << iface.name;
+    }
+
+    const auto publication = model.publication();
+    const std::size_t samples = publication->timestamps.size();
+    ASSERT_EQ(samples, 3U);
+    ASSERT_EQ(publication->perInterfaceRxHistory.size(), KNOWN + ARRIVING);
+    for (std::size_t i = 0; i < KNOWN + ARRIVING; ++i)
+    {
+        const auto& rx = publication->perInterfaceRxHistory.at(name(i));
+        const auto rate = static_cast<float>((i + 1) * 10);
+        ASSERT_EQ(rx.size(), samples) << name(i);
+        if (i < KNOWN && departs(i))
+        {
+            EXPECT_FLOAT_EQ(rx[0], rate) << name(i);
+            EXPECT_TRUE(std::isnan(rx[1]) && std::isnan(rx[2])) << name(i) << " departed: a gap, not a rate";
+        }
+        else if (i < KNOWN)
+        {
+            EXPECT_FLOAT_EQ(rx[0], rate) << name(i);
+            EXPECT_FLOAT_EQ(rx[1], rate) << name(i);
+            EXPECT_FLOAT_EQ(rx[2], rate) << name(i);
+        }
+        else
+        {
+            EXPECT_TRUE(std::isnan(rx[0])) << name(i) << " arrived later: backfilled with a gap";
+            EXPECT_FLOAT_EQ(rx[1], 0.0F) << name(i) << " arrived: no rate before its second sample";
+            EXPECT_FLOAT_EQ(rx[2], rate) << name(i);
+        }
+    }
+}
+
+TEST(SystemModelTest, ARepeatedInterfaceNameTakesItsRateFromTheFirstPreviousEntry)
+{
+    // The sorted lookup keeps the linear scan's answer when a probe repeats a name (#1415).
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    model.updateFromCounters(makeSystemCounters(makeCpuCounters(100, 0, 50, 850),
+                                                makeMemoryCounters(1024, 512),
+                                                0,
+                                                {},
+                                                0,
+                                                0,
+                                                {makeInterfaceCounters("eth0", 1000, 100), makeInterfaceCounters("eth0", 5000, 500)}),
+                             1.0);
+    model.updateFromCounters(
+        makeSystemCounters(
+            makeCpuCounters(200, 0, 100, 1700), makeMemoryCounters(1024, 512), 0, {}, 0, 0, {makeInterfaceCounters("eth0", 6000, 600)}),
+        2.0);
+
+    // Matched against the first eth0 (1000 / 100 bytes), not the second (5000 / 500).
+    const auto snap = model.snapshot();
+    ASSERT_EQ(snap.networkInterfaces.size(), 1U);
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].rxBytesPerSec, 5000.0);
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].txBytesPerSec, 500.0);
 }
