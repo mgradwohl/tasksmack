@@ -32,6 +32,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -78,6 +79,13 @@ struct ApplicationTestAccessor
     [[nodiscard]] static bool lastIdleWaitWoke(const Application& app)
     {
         return app.m_LastIdleWaitWoke;
+    }
+
+    /// Whether the last idle wait timed out, but the poll after it found an event already queued
+    /// (#1450).
+    [[nodiscard]] static bool lastIdleWaitPolledEvent(const Application& app)
+    {
+        return app.m_LastIdleWaitPolledEvent;
     }
 };
 } // namespace Core
@@ -381,13 +389,17 @@ class SdlEventPushingLayer : public Core::Layer
 /// before the push time is read, so the old loop's stale post-wake frame could land just before the
 /// recorded push time, be excluded, and let the test pass on the bug.
 ///
-/// Only a push that wakes the idle wait tests #1409 (#1446). If the wait times out first, the loop
-/// renders the frame it was due to render, and the key is left for the next drain. That is correct,
-/// but the frame begins after the push without the key. Under CPU load this happens two ways:
-/// - The 25 ms timer fires late, after the 50 ms wait has timed out.
+/// Only a push that wakes the idle wait tests #1409 (#1446). Under CPU load the wait can time out
+/// first, two ways:
+/// - The 25 ms timer fires late, after the 50 ms wait has timed out. The loop renders the frame it
+///   was due to render, and the key is left for the next drain. That is correct, but the frame
+///   begins after the push without the key.
 /// - The push lands inside the wait, but the wait does not wake. On X11 and Wayland, SDL wakes a
 ///   wait from another thread with a message that goes through the display server. Under load that
-///   message can arrive after the timeout (traced: push 30 ms into a 49 ms wait, no wake).
+///   message can arrive after the timeout (traced: push 30 ms into a 49 ms wait, no wake). The poll
+///   after a timed-out wait (#1450) finds the key and the loop treats it as a wake. Such an attempt
+///   is not counted, since the wait did not wake, but its first frame must still have the key
+///   (polledAttemptsWithoutKey()); FramePacingTest covers #1450 deterministically.
 ///
 /// So an attempt counts only if the loop says the push woke the wait: by the first frame after the
 /// push, run() did an idle wait after arming, and the last one ended on an event, not its timeout
@@ -486,6 +498,13 @@ class KeyDuringIdleWaitLayer : public Core::Layer
                 }
                 else
                 {
+                    // A timed-out wait whose poll found the key (#1450): not counted, but the key
+                    // must already have been dispatched, as for a wake.
+                    if (idleWaits > m_IdleWaitsAtArm && Core::ApplicationTestAccessor::lastIdleWaitPolledEvent(app) &&
+                        m_OtherEvents == m_OtherEventsAtArm && !m_KeyDispatched)
+                    {
+                        ++m_PolledAttemptsWithoutKey;
+                    }
                     m_Phase = Phase::Draining;
                 }
             }
@@ -519,6 +538,13 @@ class KeyDuringIdleWaitLayer : public Core::Layer
     [[nodiscard]] int attempts() const
     {
         return m_Attempts;
+    }
+
+    /// Excluded attempts whose idle wait timed out with the key queued, found by the poll after it,
+    /// whose first frame after the push still lacked the key (#1450). Must stay 0.
+    [[nodiscard]] int polledAttemptsWithoutKey() const
+    {
+        return m_PolledAttemptsWithoutKey;
     }
 
     [[nodiscard]] bool pushed() const
@@ -574,6 +600,7 @@ class KeyDuringIdleWaitLayer : public Core::Layer
     int m_Updates = 0;
     int m_DoneAtUpdate = 0;
     int m_Attempts = 0;
+    int m_PolledAttemptsWithoutKey = 0;
     std::uint64_t m_QuietSinceNs = 0;
     std::uint64_t m_IdleWaitsSeen = 0;
     std::uint64_t m_IdleWaitsAtArm = 0;
@@ -935,6 +962,8 @@ TEST(ApplicationTest, KeyDuringIdleWaitIsDispatchedBeforeTheNextFrame)
         app.run();
 
         ASSERT_TRUE(layer.pushed()) << "the timer never pushed the key: " << SDL_GetError();
+        EXPECT_EQ(layer.polledAttemptsWithoutKey(), 0)
+            << "an idle wait timed out with the key queued, and the frame after it rendered without the key (#1450)";
         const std::optional<bool> firstFrameHadKey = layer.firstFrameAfterPushHadKey();
         ASSERT_TRUE(firstFrameHadKey.has_value())
             << "none of " << layer.attempts() << " pushes woke the idle wait: each wait timed out first, "
@@ -1452,6 +1481,154 @@ TEST(FramePacingTest, KeyDuringIdleWaitShowsInTheFirstFrameAfterTheWake)
     iterate(false); // drains the key, then renders
     ASSERT_EQ(framesShowingKey.size(), 2U);
     EXPECT_TRUE(framesShowingKey.back()) << "the first frame after the wake must reflect the key";
+}
+
+// #1450: waitForIdleEvent() polls once after a wait that times out, and only
+// then.
+TEST(FramePacingTest, IdleWaitPollsOnceAfterATimeout)
+{
+    struct Case
+    {
+        const char* name;
+        bool waitWakes;
+        bool eventQueuedAfterTimeout;
+        Core::FramePacing::IdleWaitOutcome expected;
+        int expectedPolls;
+    };
+    using enum Core::FramePacing::IdleWaitOutcome;
+    const std::array<Case, 4> cases{{
+        {.name = "woken", .waitWakes = true, .eventQueuedAfterTimeout = false, .expected = Woke, .expectedPolls = 0},
+        {.name = "woken, more queued", .waitWakes = true, .eventQueuedAfterTimeout = true, .expected = Woke, .expectedPolls = 0},
+        {.name = "timed out, queue empty", .waitWakes = false, .eventQueuedAfterTimeout = false, .expected = TimedOut, .expectedPolls = 1},
+        {.name = "timed out, event queued",
+         .waitWakes = false,
+         .eventQueuedAfterTimeout = true,
+         .expected = PolledAfterTimeout,
+         .expectedPolls = 1},
+    }};
+    for (const auto& testCase : cases)
+    {
+        SCOPED_TRACE(testCase.name);
+        constexpr int WAKE = 1;
+        constexpr int QUEUED = 2;
+        int event = 0;
+        int polls = 0;
+        const auto outcome = Core::FramePacing::waitForIdleEvent(
+            event,
+            [&](int& out)
+            {
+                if (testCase.waitWakes)
+                {
+                    out = WAKE;
+                }
+                return testCase.waitWakes;
+            },
+            [&](int& out)
+            {
+                ++polls;
+                if (testCase.eventQueuedAfterTimeout)
+                {
+                    out = QUEUED;
+                }
+                return testCase.eventQueuedAfterTimeout;
+            });
+        EXPECT_EQ(outcome, testCase.expected);
+        EXPECT_EQ(polls, testCase.expectedPolls);
+        if (outcome == Woke)
+        {
+            EXPECT_EQ(event, WAKE);
+        }
+        else if (outcome == PolledAfterTimeout)
+        {
+            EXPECT_EQ(event, QUEUED);
+        }
+    }
+}
+
+// #1450: the loop's ordering (drain, idle wait, render) as in
+// KeyDuringIdleWaitShowsInTheFirstFrameAfterTheWake, with the idle wait going
+// through waitForIdleEvent() and a fake wait that times out while the key is
+// queued: on X11 and Wayland a push from another thread can reach the queue
+// without its wake reaching the wait in time. The frame after that wait must
+// already show the key; it used to render without it, and the key was handled
+// one frame later.
+TEST(FramePacingTest, KeyQueuedDuringATimedOutIdleWaitShowsInTheNextFrame)
+{
+    constexpr int KEY = 1;
+    std::vector<int> queue;             // events not yet taken off the queue
+    std::optional<int> idleWakeEvent;   // the event the idle wait took off the queue
+    bool keyHandled = false;            // the UI state the key changes
+    std::vector<bool> framesShowingKey; // one entry per rendered frame
+    int idleWaits = 0;
+
+    const auto pollQueue = [&](int& event)
+    {
+        if (queue.empty())
+        {
+            return false;
+        }
+        event = queue.front();
+        queue.erase(queue.begin());
+        return true;
+    };
+
+    // One Application::run() iteration; @p keyQueuedWithoutWake pushes the key
+    // during the idle wait, which still runs to its timeout.
+    const auto iterate = [&](bool keyQueuedWithoutWake)
+    {
+        const auto pollAndDispatch = [&]
+        {
+            int event = 0;
+            if (idleWakeEvent.has_value())
+            {
+                event = *idleWakeEvent;
+                idleWakeEvent.reset();
+            }
+            else if (!pollQueue(event))
+            {
+                return false;
+            }
+            keyHandled = keyHandled || (event == KEY);
+            return true;
+        };
+        const auto drain = Core::FramePacing::drainEventsWithinBudget(pollAndDispatch, [] { return 0.0; }, 8.0);
+        if (drain.eventCount == 0)
+        {
+            ++idleWaits;
+            int wakeEvent = 0;
+            const auto outcome = Core::FramePacing::waitForIdleEvent(
+                wakeEvent,
+                [&](int& /*event*/)
+                {
+                    if (keyQueuedWithoutWake)
+                    {
+                        queue.push_back(KEY); // queued, but the wake never reaches the wait
+                    }
+                    return false; // timed out
+                },
+                pollQueue);
+            if (outcome != Core::FramePacing::IdleWaitOutcome::TimedOut)
+            {
+                idleWakeEvent = wakeEvent;
+            }
+        }
+        if (Core::FramePacing::computeShouldRenderRegularFrame(idleWakeEvent.has_value(), false, false))
+        {
+            framesShowingKey.push_back(keyHandled);
+        }
+    };
+
+    iterate(false); // an idle frame before the key
+    ASSERT_EQ(framesShowingKey.size(), 1U);
+    EXPECT_FALSE(framesShowingKey.back());
+
+    iterate(true);  // the key is queued during this iteration's idle wait, which
+                    // times out
+    iterate(false); // drains the key, then renders
+    EXPECT_EQ(idleWaits, 2) << "the drain that takes the key must not wait again before rendering";
+    ASSERT_GE(framesShowingKey.size(), 2U);
+    EXPECT_TRUE(framesShowingKey[1]) << "the first frame after the timed-out wait must reflect the queued key";
+    EXPECT_EQ(framesShowingKey.size(), 2U) << "a polled event skips one render, like a wake, and no more";
 }
 
 TEST(FramePacingTest, ShouldSleepWhenIdleOutsideGracePeriod)
