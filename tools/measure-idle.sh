@@ -548,9 +548,16 @@ config_sampling_int() {
 # A [sampling] key's raw token from a config.toml (use config_sampling_int for the value).
 config_sampling_value() {
     [[ -r "$1" ]] || return 0
+    # TOML layout: whitespace around '=' and inside a table header is optional, and '#' starts a
+    # comment (the values read here are bare integers, so a '#' never sits inside a string).
     awk -v key="$2" '
-        /^\[/ { in_sampling = ($0 == "[sampling]"); next }
-        in_sampling && $1 == key && $2 == "=" { print $3; exit }
+        { line = $0; sub(/#.*/, "", line); gsub(/^[ \t]+|[ \t]+$/, "", line) }
+        line ~ /^\[/ { gsub(/[ \t]/, "", line); in_sampling = (line == "[sampling]"); next }
+        in_sampling && index(line, "=") {
+            k = substr(line, 1, index(line, "=") - 1); v = substr(line, index(line, "=") + 1)
+            gsub(/^[ \t]+|[ \t]+$/, "", k); gsub(/^[ \t]+|[ \t]+$/, "", v)
+            if (k == key) { print v; exit }
+        }
     ' "$1"
 }
 
@@ -578,9 +585,11 @@ fi
 
 # History window: the synthetic scenario's (logged as history=<N>s) when it sets one, else the
 # config file's, else SamplingConfig.h's default.
+# The scenario logs history=<N>s whenever it runs, and N is 0 for history=none: that is its setting,
+# not an absent one, so only a missing value falls back.
 HISTORY_S="$(grep -m 1 'showing a synthetic machine' "${FIRST_LOG}" | grep -oE 'history=[0-9]+s' | grep -oE '[0-9]+' || true)"
 HISTORY_SOURCE="synthetic scenario"
-if [[ -z "${HISTORY_S}" || "${HISTORY_S}" -eq 0 ]]; then
+if [[ -z "${HISTORY_S}" ]]; then
     HISTORY_S="$(config_sampling_int "${CONFIG_PATH}" history_max_seconds \
         "$(sampling_constant HISTORY_SECONDS_MIN)" "$(sampling_constant HISTORY_SECONDS_MAX)")"
     HISTORY_SOURCE="config"
