@@ -32,7 +32,6 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -40,6 +39,7 @@
 #include <exception>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -338,7 +338,15 @@ class SdlEventPushingLayer : public Core::Layer
 
 /// #1409: once the loop has settled into idle pacing, starts an SDL timer that pushes a key-down from
 /// SDL's timer thread partway through the idle wait (IDLE_FRAME_SLEEP_MS is 50 ms), then records, for
-/// every frame (onUpdate), when it started and whether the key had been dispatched (onSDLEvent) by then.
+/// every frame (onUpdate), whether it began after the push and whether the key had been dispatched
+/// (onSDLEvent) by then.
+///
+/// "After the push" is decided by causality, not timestamps: the timer thread enqueues the event and
+/// sets m_Pushed under m_PushMutex, and onUpdate() reads m_Pushed under the same mutex. A frame that
+/// sees m_Pushed began after the enqueue; a frame that does not began before it (its onUpdate() held
+/// the lock first). Comparing SDL_GetTicksNS() stamps instead raced: SDL_PushEvent() can wake the loop
+/// before the push time is read, so the old loop's stale post-wake frame could land just before the
+/// recorded push time, be excluded, and let the test pass on the bug.
 class KeyDuringIdleWaitLayer : public Core::Layer
 {
   public:
@@ -379,14 +387,23 @@ class KeyDuringIdleWaitLayer : public Core::Layer
 
     void onUpdate(float /*deltaTime*/) override
     {
-        m_Frames.push_back({.startNs = SDL_GetTicksNS(), .keyDispatched = m_KeyDispatched});
+        bool pushed = false;
+        {
+            const std::scoped_lock lock(m_PushMutex);
+            pushed = m_Pushed;
+        }
+        const std::uint64_t nowNs = SDL_GetTicksNS();
+        if (m_Frames.empty())
+        {
+            m_FirstFrameNs = nowNs;
+        }
+        m_Frames.push_back({.afterPush = pushed, .keyDispatched = m_KeyDispatched});
         const auto updates = static_cast<int>(m_Frames.size());
-        if (m_Timer == 0 && (m_Frames.back().startNs - m_Frames.front().startNs) >= SETTLE_NS)
+        if (m_Timer == 0 && (nowNs - m_FirstFrameNs) >= SETTLE_NS)
         {
             m_Timer = SDL_AddTimer(PUSH_DELAY_MS, &KeyDuringIdleWaitLayer::pushKey, this);
         }
-        const std::uint64_t pushedAt = m_PushedAtNs.load();
-        if (pushedAt != 0 && m_FramesAtPush < 0)
+        if (pushed && m_FramesAtPush < 0)
         {
             m_FramesAtPush = updates;
         }
@@ -398,7 +415,8 @@ class KeyDuringIdleWaitLayer : public Core::Layer
 
     struct Frame
     {
-        std::uint64_t startNs = 0;
+        /// onUpdate() saw the push: the frame began after the key was enqueued.
+        bool afterPush = false;
         bool keyDispatched = false;
     };
 
@@ -407,10 +425,10 @@ class KeyDuringIdleWaitLayer : public Core::Layer
         return m_Frames;
     }
 
-    /// When the timer thread's SDL_PushEvent() returned (0 = not pushed).
-    [[nodiscard]] std::uint64_t pushedAtNs() const
+    [[nodiscard]] bool pushed() const
     {
-        return m_PushedAtNs.load();
+        const std::scoped_lock lock(m_PushMutex);
+        return m_Pushed;
     }
 
   private:
@@ -421,16 +439,18 @@ class KeyDuringIdleWaitLayer : public Core::Layer
         event.type = SDL_EVENT_KEY_DOWN;
         event.key.key = KEY;
         event.key.down = true;
-        if (SDL_PushEvent(&event))
-        {
-            self->m_PushedAtNs.store(SDL_GetTicksNS());
-        }
+        // Enqueue and record under one lock: a frame whose onUpdate() runs after the enqueue blocks
+        // until m_Pushed is set, so it can't be mistaken for a frame from before the push.
+        const std::scoped_lock lock(self->m_PushMutex);
+        self->m_Pushed = SDL_PushEvent(&event);
         return 0; // one shot
     }
 
     std::vector<Frame> m_Frames;
+    std::uint64_t m_FirstFrameNs = 0;
     bool m_KeyDispatched = false;
-    std::atomic<std::uint64_t> m_PushedAtNs{0};
+    mutable std::mutex m_PushMutex;
+    bool m_Pushed = false; // guarded by m_PushMutex
     int m_FramesAtPush = -1;
     SDL_TimerID m_Timer = 0;
 };
@@ -803,11 +823,9 @@ TEST(ApplicationTest, KeyDuringIdleWaitIsDispatchedBeforeTheNextFrame)
 
         app.run();
 
-        const std::uint64_t pushedAt = layer.pushedAtNs();
-        ASSERT_NE(pushedAt, 0U) << "the timer never pushed the key: " << SDL_GetError();
+        ASSERT_TRUE(layer.pushed()) << "the timer never pushed the key: " << SDL_GetError();
         const auto& frames = layer.frames();
-        const auto firstAfterPush =
-            std::ranges::find_if(frames, [pushedAt](const KeyDuringIdleWaitLayer::Frame& frame) { return frame.startNs > pushedAt; });
+        const auto firstAfterPush = std::ranges::find_if(frames, &KeyDuringIdleWaitLayer::Frame::afterPush);
         ASSERT_NE(firstAfterPush, frames.end()) << "no frame started after the key was pushed";
         EXPECT_TRUE(firstAfterPush->keyDispatched) << "the first frame after the wake rendered before the waking key was dispatched";
     }
