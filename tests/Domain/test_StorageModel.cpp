@@ -1592,6 +1592,57 @@ TEST(StorageModelTest, ConsecutivePublicationsShareTheirHistory)
     EXPECT_GE(shared, GENERATIONS - 4);
 }
 
+// A sample that lists one device name twice appends one point to that disk's series -- the first
+// entry's -- so every series stays aligned with the timestamps (#1412).
+TEST(StorageModelTest, ARepeatedDeviceNameIsAppendedOnceFromItsFirstEntry)
+{
+    auto probe = std::make_unique<Mocks::MockDiskProbe>();
+    auto* rawProbe = probe.get();
+    StorageModel model(std::move(probe));
+    const auto disk = [](std::uint64_t readSectors, std::uint64_t writeSectors)
+    {
+        Platform::DiskCounters counters;
+        counters.deviceName = "sda";
+        counters.sectorSize = 512;
+        counters.readSectors = readSectors;
+        counters.writeSectors = writeSectors;
+        return counters;
+    };
+
+    Platform::SystemDiskCounters counters;
+    counters.disks = {disk(1000, 500)};
+    rawProbe->setNextCounters(counters);
+    model.sampleAt(sampleTime(0));
+    // The second sample lists sda twice: the first entry measures 1000 read / 300 write sectors over
+    // the second, the duplicate something else entirely.
+    counters.disks = {disk(2000, 800), disk(90000, 70000)};
+    rawProbe->setNextCounters(counters);
+    model.sampleAt(sampleTime(1));
+    counters.disks = {disk(3000, 1000)};
+    rawProbe->setNextCounters(counters);
+    model.sampleAt(sampleTime(2));
+
+    const auto publication = model.publication();
+    ASSERT_TRUE(isAligned(*publication));
+    ASSERT_EQ(publication->timestamps.size(), 3U);
+    ASSERT_EQ(publication->perDiskHistory.size(), 1U);
+    const auto& sda = publication->perDiskHistory.front();
+    EXPECT_EQ(sda.deviceName, "sda");
+    ASSERT_EQ(sda.readBytesPerSec.size(), 3U);
+    ASSERT_EQ(sda.writeBytesPerSec.size(), 3U);
+    EXPECT_TRUE(std::isnan(sda.readBytesPerSec[0])); // the seed read
+    EXPECT_DOUBLE_EQ(sda.readBytesPerSec[1], 1000.0 * 512.0) << "the first entry's rate, not the duplicate's";
+    EXPECT_DOUBLE_EQ(sda.writeBytesPerSec[1], 300.0 * 512.0) << "the first entry's rate, not the duplicate's";
+    // The model's own series agree.
+    const auto timestamps = model.historyTimestamps();
+    EXPECT_EQ(model.totalReadHistory().size(), timestamps.size());
+    for (const auto& entry : model.perDiskHistory())
+    {
+        EXPECT_EQ(entry.readBytesPerSec.size(), timestamps.size());
+        EXPECT_EQ(entry.writeBytesPerSec.size(), timestamps.size());
+    }
+}
+
 // A disk that appears once the history is full and trimming is a new series backfilled to the full
 // length; one absent past the window is pruned. The model's own series and every publication stay
 // aligned throughout (#1015, #777).
@@ -1634,9 +1685,14 @@ TEST(StorageModelTest, SharedSeriesStayAlignedAsDisksAppearAndArePruned)
 
 // A UI-style reader walks every sample of the latest publication while the sampler appends, trims and
 // compacts the shared history underneath it. Under TSan this shows the reader never reads a slot the
-// writer writes: published samples are never written again (#1412).
+// writer writes: published samples are never written again (#1412). The sampler is paced on the reader
+// (TestPublication::ReadPacer): it starts only once the reader has completed a traversal, and waits for a
+// new one every PACE_EVERY samples, so the reads really overlap the sampling however the threads are
+// scheduled.
 TEST(StorageModelTest, ReadingPublishedHistoryWhileSamplingIsRaceFree)
 {
+    constexpr int SAMPLES = 2000;
+    constexpr int PACE_EVERY = 10;
     auto probe = std::make_unique<Mocks::MockDiskProbe>();
     auto* rawProbe = probe.get();
     StorageModel model(std::move(probe));
@@ -1644,6 +1700,7 @@ TEST(StorageModelTest, ReadingPublishedHistoryWhileSamplingIsRaceFree)
     rawProbe->setNextCounters(churningDisks(0));
     model.sampleAt(sampleTime(0));
 
+    TestPublication::ReadPacer pacer;
     std::atomic<bool> done{false};
     std::atomic<std::size_t> misaligned{0};
     std::thread reader(
@@ -1668,15 +1725,36 @@ TEST(StorageModelTest, ReadingPublishedHistoryWhileSamplingIsRaceFree)
                         misaligned.fetch_add(1, std::memory_order_relaxed);
                     }
                 }
+                pacer.readDone(); // one full traversal of a publication
             }
         });
-    for (std::uint64_t step = 1; step < 2000; ++step)
+
+    // Start sampling only once the reader is running, then count the traversals made while sampling.
+    std::size_t readsSeen = 0;
+    const bool readerStarted = pacer.awaitReadSince(readsSeen);
+    const std::size_t readsBeforeSampling = readsSeen;
+    int paced = 0;
+    for (int i = 0; readerStarted && i < SAMPLES; ++i)
     {
+        if (i % PACE_EVERY == 0)
+        {
+            if (!pacer.awaitReadSince(readsSeen))
+            {
+                break;
+            }
+            ++paced;
+        }
+        const auto step = static_cast<std::uint64_t>(i) + 1;
         rawProbe->setNextCounters(churningDisks(step));
         model.sampleAt(sampleTime(step, 0.25));
     }
     done.store(true, std::memory_order_release);
     reader.join();
+    ASSERT_TRUE(readerStarted) << "the reader never completed a traversal";
+    ASSERT_FALSE(pacer.timedOut()) << "the reader stopped making progress while sampling";
+    // Every paced wait saw a traversal completed after the previous one, while sampling was under way.
+    EXPECT_EQ(paced, SAMPLES / PACE_EVERY);
+    EXPECT_GE(readsSeen - readsBeforeSampling, static_cast<std::size_t>(SAMPLES / PACE_EVERY));
     EXPECT_EQ(misaligned.load(), 0U);
 }
 

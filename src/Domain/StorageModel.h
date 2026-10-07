@@ -137,9 +137,13 @@ class StorageModel : public ISamplable
                                            const Platform::DiskCapabilities& caps,
                                            std::chrono::steady_clock::time_point now,
                                            std::unordered_map<std::string, DiskState>& diskStates);
-    /// One sample from @p counters: the shared body of sampleAt() and sampleSeries(). A transaction:
-    /// a throw (std::bad_alloc) leaves the model as it was. Publishes it when @p publishNow.
-    /// Requires m_WriterMutex held and m_Mutex not held.
+    /// One sample from @p counters: the shared body of sampleAt() and sampleSeries(). Publishes it
+    /// when @p publishNow. Requires m_WriterMutex held and m_Mutex not held.
+    /// Exception guarantee (#1412): the history append is a transaction with the strong guarantee --
+    /// a throw (std::bad_alloc) before its commit leaves the history, rate state and snapshot as they
+    /// were, every series aligned. After the commit, publish() can still throw while building the
+    /// publication; that leaves the history one sample ahead of an unchanged publication and version,
+    /// which the next successful publish catches up.
     void applySample(const Platform::SystemDiskCounters& counters,
                      const Platform::DiskCapabilities& caps,
                      std::chrono::steady_clock::time_point now,
@@ -202,6 +206,7 @@ class StorageModel : public ISamplable
     double m_MaxHistorySeconds = Sampling::HISTORY_SECONDS_DEFAULT; // 5 minutes default
 
     /// Build the next generation from the history state under a shared lock, then commit it.
+    /// Strong guarantee: a throw while building leaves the publication and its version unchanged.
     /// Requires m_WriterMutex held and m_Mutex not held.
     void publish();
 };

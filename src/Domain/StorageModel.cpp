@@ -125,10 +125,12 @@ void StorageModel::applySample(const Platform::SystemDiskCounters& counters,
     // Use absolute time (since epoch) to match SystemModel's timestamp format
     const double nowSeconds = std::chrono::duration<double>(now.time_since_epoch()).count();
 
-    // The sample is a transaction (#1412): everything that allocates -- the next per-disk rate state,
-    // the snapshot copies, new disks' series and every reservation -- is made first, off to the side,
-    // so a std::bad_alloc leaves the model exactly as it was; then it is committed without throwing,
-    // so every series advances together or none does.
+    // The sample's state and history update is a transaction (#1412): everything it allocates -- the
+    // next per-disk rate state, the snapshot copies, new disks' series and every reservation -- is made
+    // first, off to the side, so a std::bad_alloc before the commit leaves the history, rate state and
+    // snapshot as they were; then it is committed without throwing, so every series advances together
+    // or none does. publish() below still allocates: a throw there leaves the history one sample ahead
+    // of an unchanged publication, which the next successful publish catches up.
     PendingSample pending;
     // m_DiskStates is writer-owned (readers never touch it), so it is copied and updated without a
     // lock and swapped in at the commit.
