@@ -77,8 +77,9 @@
 # rank, so with fewer than 20 repetitions it is the largest value.
 #
 # The JSON (schema "tasksmack-idle/1") holds every repetition's figures and per-thread rows, the
-# aggregates, and provenance: git commit and dirty flag (tracked files only), preset and
-# CMAKE_BUILD_TYPE, the refresh interval (read from the app log, which logs the background
+# aggregates, and provenance: the measured binary's own commit, source state and build type (from
+# its ResizePerfAnchor log line), the checkout's git commit and dirty flag (tracked files only), the
+# preset and its CMAKE_BUILD_TYPE, the refresh interval (read from the app log, which logs the background
 # samplers' interval) and history window (the synthetic scenario's when it sets one, else the
 # config file the app logged it loaded, else HISTORY_SECONDS_DEFAULT from
 # src/Domain/SamplingConfig.h), the synthetic spec, the window's size and maximized state (from
@@ -184,6 +185,9 @@ REPEAT=$((10#${REPEAT}))
     || die "--fail-above must be a non-negative decimal without leading zeros (percent of one logical CPU)"
 [[ "${LABEL}" =~ ^[A-Za-z0-9._-]+$ ]] || die "--label may only contain letters, digits, '.', '_' and '-'"
 [[ -r /proc/self/stat ]] || die "/proc is required (Linux only)"
+# The config's sampling values are read with tomllib (see config_sampling_int). Checked before any
+# measuring, so a missing interpreter fails fast instead of recording the defaults as provenance.
+PYTHON="$(find_python)" || die "Python 3.14+ is required (the project .venv or python3 on PATH); see CONTRIBUTING.md"
 # Letters, digits and = , . _ - only: it goes into the RESULT line as one key=value field.
 [[ -z "${SYNTHETIC}" || "${SYNTHETIC}" =~ ^[A-Za-z0-9=,._-]+$ ]] \
     || die "--synthetic may only contain letters, digits, '=', ',', '.', '_' and '-' (e.g. processes=5000,history=full)"
@@ -326,7 +330,14 @@ run_once() {
     info "Binary:  ${BINARY}"
     info "App log: ${APP_LOG}"
 
-    local app_env=(TASKSMACK_TRACE_RESIZE_PERF=1 "TASKSMACK_LOG_LEVEL=${TASKSMACK_LOG_LEVEL:-info}")
+    # At least info: the main-loop marker, the ResizePerf summaries and the provenance lines this script
+    # reads are info-level, and an explicit TASKSMACK_LOG_LEVEL overrides the trace flag's promotion.
+    local log_level="${TASKSMACK_LOG_LEVEL:-info}"
+    case "${log_level}" in
+        trace|debug|info) ;;
+        *) log_level=info ;;
+    esac
+    local app_env=(TASKSMACK_TRACE_RESIZE_PERF=1 "TASKSMACK_LOG_LEVEL=${log_level}")
     # Always set, even when empty: an explicit --synthetic '' must override an inherited
     # TASKSMACK_SYNTHETIC (an empty value turns the scenario off), so the run matches what is reported.
     app_env+=("TASKSMACK_SYNTHETIC=${SYNTHETIC}")
@@ -570,8 +581,8 @@ sampling_constant() {
 # or its value is ignored, so the caller falls through to the default, which is what TaskSmack uses.
 # Usage: config_sampling_int <config.toml> <key> <min> <max> <default>
 config_sampling_int() {
-    [[ -r "$1" ]] && command -v python3 &>/dev/null || return 0
-    python3 - "$@" <<'PY' 2>/dev/null || true
+    [[ -r "$1" ]] || return 0
+    "${PYTHON}" - "$@" <<'PY' 2>/dev/null || true
 import sys, tomllib
 path, key, lo, hi, default = sys.argv[1], sys.argv[2], *map(int, sys.argv[3:6])
 try:
@@ -591,6 +602,18 @@ GIT_COMMIT="$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null || true)"
 GIT_DIRTY=false
 [[ -n "$(git -C "${REPO_ROOT}" status --porcelain --untracked-files=no 2>/dev/null || true)" ]] && GIT_DIRTY=true
 BUILD_TYPE="$(sed -n 's/^CMAKE_BUILD_TYPE:[A-Z]*=//p' "${REPO_ROOT}/build/${PRESET}/CMakeCache.txt" 2>/dev/null | head -n 1)"
+# What the measured executable says about itself (ResizePerfAnchor, logged under resize tracing):
+# the commit it was built from, whether that source was clean, and its build type. Authoritative
+# for the binary; GIT_COMMIT/BUILD_TYPE above describe the checkout, which --skip-build can leave
+# ahead of a stale build.
+ANCHOR_LINE="$(grep -m 1 'ResizePerfAnchor:' "${FIRST_LOG}" || true)"
+anchor_field() { grep -oE "(^| )$1=[^ ]+" <<<"${ANCHOR_LINE}" | head -n 1 | sed "s/^ *$1=//" || true; }
+BINARY_COMMIT="$(anchor_field commit)"
+BINARY_SOURCE_STATE="$(anchor_field configureSourceState)"
+BINARY_BUILD_TYPE="$(anchor_field buildType)"
+if [[ -n "${BINARY_COMMIT}" && -n "${GIT_COMMIT}" && "${BINARY_COMMIT}" != "${GIT_COMMIT}" ]]; then
+    echo "WARNING: the measured binary was built from ${BINARY_COMMIT}, not the checked-out ${GIT_COMMIT}." >&2
+fi
 
 # The app logs where it loaded its config from ("Loaded config from <path>").
 CONFIG_PATH="$(sed -n 's/.*Loaded config from \(.*\)$/\1/p' "${FIRST_LOG}" | head -n 1)"
@@ -686,6 +709,8 @@ json_stats() { printf '{ "mean": %s, "median": %s, "p95": %s, "min": %s, "max": 
     printf '  "schema": "tasksmack-idle/1",\n'
     printf '  "label": %s,\n' "$(json_str "${LABEL}")"
     printf '  "timestamp": %s,\n' "$(json_str "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+    printf '  "binary": { "commit": %s, "sourceState": %s, "buildType": %s },\n' \
+        "$(json_str "${BINARY_COMMIT}")" "$(json_str "${BINARY_SOURCE_STATE}")" "$(json_str "${BINARY_BUILD_TYPE}")"
     printf '  "git": { "commit": %s, "dirty": %s },\n' "$(json_str "${GIT_COMMIT}")" "${GIT_DIRTY}"
     printf '  "build": { "preset": %s, "buildType": %s },\n' "$(json_str "${PRESET}")" "$(json_str "${BUILD_TYPE}")"
     printf '  "scenario": {\n'

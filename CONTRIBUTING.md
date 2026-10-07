@@ -1440,7 +1440,7 @@ and so the frame rate. A first baseline taken under load average 20–30 read 6.
 at 12 / 6.6 fps, well below the quiet figures, so a loaded run can pass a target it would fail
 when quiet.
 
-Baseline (2026-10-07, commit `841eda92`, `profile` preset = RelWithDebInfo, `/proc` sampler,
+Baseline (2026-10-07, binary built from `f4cf041a`, measured with the script at `841eda92`, `profile` preset = RelWithDebInfo, `/proc` sampler,
 15 s warm-up, 30 s samples, 5 repetitions each, load average under 1 before the runs). Intel Core
 Ultra 7 255H, 10 logical CPUs, WSL2 (kernel 6.18), WSLg with Mesa 26 `llvmpipe` (LLVM 21), 59.98 Hz
 display. Measured with the maintainer's config: **250 ms refresh** and a **300 s history** (the
