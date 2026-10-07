@@ -16,6 +16,7 @@
 #include <format>
 #include <span>
 #include <string>
+#include <string_view>
 
 namespace App::StatusBarText
 {
@@ -34,23 +35,56 @@ inline constexpr const char* SEPARATOR = "  \xC2\xB7  "; // a middle dot, spaced
     return std::format("{} {}", UI::Format::formatIntLocalized(count), (count == 1) ? "process" : "processes");
 }
 
-/// "Updates every 1 s"; "every 250 ms"; "every 1.5 s". The interval is the refresh rate set in
-/// Settings, which each sampler follows.
+/// "Updates every 1 s"; "every 250 ms"; "every 1250 ms". The interval is the refresh rate set in
+/// Settings, which each sampler follows. Whole seconds read as seconds, as the presets are named;
+/// anything else stays in milliseconds, so the cadence shown is exact rather than rounded to a
+/// decimal place (#1200 review: 1001 ms read "1.0 s").
 [[nodiscard]] inline std::string updateIntervalText(int intervalMs)
 {
     if (intervalMs <= 0)
     {
         return {};
     }
-    if (intervalMs < 1000)
-    {
-        return std::format("Updates every {} ms", intervalMs);
-    }
     if (intervalMs % 1000 == 0)
     {
         return std::format("Updates every {} s", intervalMs / 1000);
     }
-    return std::format("Updates every {:.1f} s", static_cast<double>(intervalMs) / 1000.0);
+    return std::format("Updates every {} ms", intervalMs);
+}
+
+/// @p text cut short to fit @p budgetPx: the longest prefix, ended on a UTF-8 character boundary,
+/// whose "<prefix>…" fits, or @p text whole if it already fits. When not even the ellipsis fits,
+/// nothing: drawing it anyway would overrun the space it was cut for (#1200 review).
+///
+/// @param measure  The pixel width of a string, e.g. ImGui::CalcTextSize(...).x.
+template<typename Measure> [[nodiscard]] std::string ellipsize(std::string_view text, float budgetPx, const Measure& measure)
+{
+    if (measure(text) <= budgetPx)
+    {
+        return std::string(text);
+    }
+    constexpr std::string_view ELLIPSIS = "\xE2\x80\xA6";
+    std::string candidate;
+    candidate.reserve(text.size() + ELLIPSIS.size());
+    // Longest first; a status segment is a few dozen bytes, so a linear walk is plenty.
+    for (std::size_t cut = text.size(); cut > 0; --cut)
+    {
+        if (cut < text.size() && (static_cast<unsigned char>(text[cut]) & 0xC0U) == 0x80U)
+        {
+            continue; // inside a character
+        }
+        candidate.assign(text.substr(0, cut)).append(ELLIPSIS);
+        if (measure(candidate) <= budgetPx)
+        {
+            return candidate;
+        }
+    }
+    candidate.assign(ELLIPSIS);
+    if (measure(candidate) <= budgetPx)
+    {
+        return candidate;
+    }
+    return {};
 }
 
 /// How much of the status bar's text fits the space it has.

@@ -11,6 +11,7 @@
 #include <limits>
 #include <span>
 #include <string>
+#include <string_view>
 
 namespace App::StatusBarText
 {
@@ -34,10 +35,18 @@ TEST(StatusBarTextTest, NoProcessesYetSaysItIsCollecting)
 
 TEST(StatusBarTextTest, IntervalIsInTheUnitItWasSetIn)
 {
+    // The Settings presets.
+    EXPECT_EQ(updateIntervalText(100), "Updates every 100 ms");
     EXPECT_EQ(updateIntervalText(250), "Updates every 250 ms");
+    EXPECT_EQ(updateIntervalText(500), "Updates every 500 ms");
     EXPECT_EQ(updateIntervalText(1000), "Updates every 1 s");
+    EXPECT_EQ(updateIntervalText(2000), "Updates every 2 s");
     EXPECT_EQ(updateIntervalText(5000), "Updates every 5 s");
-    EXPECT_EQ(updateIntervalText(1500), "Updates every 1.5 s");
+    // Anything else (a hand-edited config, a synthetic scenario) exactly, not rounded to "1.0 s" or
+    // "1.2 s" (#1200 review).
+    EXPECT_EQ(updateIntervalText(1001), "Updates every 1001 ms");
+    EXPECT_EQ(updateIntervalText(1250), "Updates every 1250 ms");
+    EXPECT_EQ(updateIntervalText(1500), "Updates every 1500 ms");
     EXPECT_EQ(updateIntervalText(0), ""); // before the first RefreshRateChangedEvent
     EXPECT_EQ(updateIntervalText(-5), "");
 }
@@ -111,18 +120,40 @@ TEST(StatusBarTextTest, NothingIsDrawnWithoutRoom)
     }
 }
 
-// Whatever is shown fits: the text, its separators and the readout never exceed the budget, at any
-// width from nothing to wide.
+// Width of a string as 8 px per character (UTF-8 code point), standing in for ImGui::CalcTextSize.
+float measureText(std::string_view text)
+{
+    float width = 0.0F;
+    for (const char c : text)
+    {
+        width += ((static_cast<unsigned char>(c) & 0xC0U) != 0x80U) ? 8.0F : 0.0F;
+    }
+    return width;
+}
+
+// Whatever is shown fits: the text as drawn -- a cut-short first segment at its real width, ellipsis
+// included -- its separators and the readout never exceed the budget, at any width from nothing to
+// wide (#1200 review: a bare "…" was drawn even where it was wider than the space left).
 TEST(StatusBarTextTest, ShownPartsNeverOverrunTheBudget)
 {
+    const std::array<std::string_view, 2> texts{"312 processes", "Updates every 1 s"};
+    const std::array<float, 2> widths{measureText(texts[0]), measureText(texts[1])};
+    const float separator = measureText(SEPARATOR);
+    int truncatedSteps = 0;
     for (int step = 0; step <= 400; ++step)
     {
         const auto budget = static_cast<float>(step);
-        const auto fit = fitStatusBar(SEGMENTS, SEPARATOR_PX, READOUT_PX, GAP_PX, budget);
+        const auto fit = fitStatusBar(widths, separator, READOUT_PX, GAP_PX, budget);
         float used = 0.0F;
+        if (fit.truncateFirst)
+        {
+            const std::string cut = ellipsize(texts[0], budget, measureText);
+            used += measureText(cut);
+            truncatedSteps += cut.empty() ? 0 : 1;
+        }
         for (std::size_t i = 0; i < fit.segmentsShown; ++i)
         {
-            used += SEGMENTS.at(i) + ((i > 0) ? SEPARATOR_PX : 0.0F);
+            used += widths.at(i) + ((i > 0) ? separator : 0.0F);
         }
         if (fit.showReadout)
         {
@@ -130,6 +161,19 @@ TEST(StatusBarTextTest, ShownPartsNeverOverrunTheBudget)
         }
         EXPECT_LE(used, budget) << "budget " << budget;
     }
+    EXPECT_GT(truncatedSteps, 0); // the sweep does reach the cut-short case
+}
+
+TEST(StatusBarTextTest, EllipsizeKeepsTheLongestPrefixThatFits)
+{
+    EXPECT_EQ(ellipsize("312 processes", 200.0F, measureText), "312 processes");   // fits whole
+    EXPECT_EQ(ellipsize("312 processes", 40.0F, measureText), "312 \xE2\x80\xA6"); // 4 + the ellipsis
+    EXPECT_EQ(ellipsize("312 processes", 8.0F, measureText), "\xE2\x80\xA6");      // just the ellipsis
+    // Not even the ellipsis fits: nothing, rather than an ellipsis drawn past the budget.
+    EXPECT_EQ(ellipsize("312 processes", 7.0F, measureText), "");
+    EXPECT_EQ(ellipsize("312 processes", 0.0F, measureText), "");
+    // Cut on a character boundary, never inside one.
+    EXPECT_EQ(ellipsize("\xC3\xA9\xC3\xA9\xC3\xA9", 16.0F, measureText), "\xC3\xA9\xE2\x80\xA6");
 }
 
 TEST(StatusBarTextTest, NoSegmentsLeavesOnlyTheReadout)

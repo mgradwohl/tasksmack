@@ -23,6 +23,7 @@
 #include "ProcessPriorityView.h"
 #include "ProcessSmoothedUsage.h"
 #include "UI/ChartWidgets.h"
+#include "UI/ChromeLayout.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/EmptyState.h"
 #include "UI/FillPlotLayout.h"
@@ -1518,16 +1519,21 @@ void ProcessDetailsPanel::renderNetworkStats(UI::Widgets::FillPlotLayout& fill)
         }
     };
 
-    (void) UI::Widgets::sectionHeader(ICON_FA_NETWORK_WIRED, "Network", {}, alignedCount);
     // The heading's tooltip is shown after the chart: its value strip is placed beside the heading,
-    // the item drawn just before it, so nothing else is submitted between the two.
-    const bool headingHovered = ImGui::IsItemHovered();
+    // the item drawn just before it, so nothing else is submitted between the two. It is the header's
+    // only tooltip, so it carries the sample count too: a second one in the same frame would replace
+    // the other (#1200 review).
+    const bool headingHovered = UI::Widgets::sectionHeader(ICON_FA_NETWORK_WIRED, "Network");
     renderHistoryWithNowBars(
         "ProcessNetworkHistory", fill.plotHeight(), plot, {sentBar, recvBar}, false, PROCESS_NETWORK_IO_NOW_BAR_COLUMNS);
-    if (headingHovered)
+    if (headingHovered && ImGui::BeginTooltip())
     {
-        ImGui::SetTooltip("Network bytes/sec between readings of the process's open connections. A refresh that reuses a cached reading "
-                          "shows the last rate.");
+        ImGui::TextUnformatted("Network bytes/sec between readings of the process's open connections. A refresh that reuses a cached "
+                               "reading shows the last rate.");
+        std::array<char, 64> samplesText{};
+        const std::string_view samples = UI::ChromeLayout::formatSampleCount(samplesText, alignedCount);
+        ImGui::TextUnformatted(samples.data(), samples.data() + samples.size());
+        ImGui::EndTooltip();
     }
     fill.addPlot();
     ImGui::Spacing();

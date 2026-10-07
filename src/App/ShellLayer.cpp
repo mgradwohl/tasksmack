@@ -16,7 +16,6 @@
 #include "TabLabel.h"
 #include "TitleBarGeometry.h"
 #include "TitleBarLayer.h"
-#include "UI/ChartWidgets.h"
 #include "UI/DpiScale.h"
 #include "UI/Format.h"
 #include "UI/HistoryPlotHeight.h"
@@ -377,7 +376,8 @@ void ShellLayer::onUpdate(float deltaTime)
 
     // The status bar's text (#1200), rebuilt only when what it says changes: the process count moves
     // once a sample at most, the interval only from Settings.
-    const std::size_t processCount = m_ProcessesPanel.processCount();
+    // From the generation ProcessesPanel adopted this update: no lock in the render path.
+    const std::size_t processCount = m_ProcessesPanel.adoptedProcessCount();
     if (processCount != m_StatusProcessCount)
     {
         m_StatusProcessText = StatusBarText::processCountText(processCount);
@@ -686,13 +686,17 @@ void ShellLayer::renderStatusBar() const
         bool drewText = false;
         if (fit.truncateFirst)
         {
-            // Only at the very narrowest, so the cut copy is made only then.
-            const std::string cut = UI::Widgets::fitSeriesName(segments[0],
-                                                               textBudget,
-                                                               [](std::string_view text)
-                                                               { return ImGui::CalcTextSize(text.data(), text.data() + text.size()).x; });
-            ImGui::TextUnformatted(cut.data(), cut.data() + cut.size());
-            drewText = true;
+            // Only at the very narrowest, so the cut copy is made only then. Empty when not even the
+            // ellipsis fits: then nothing is drawn rather than an ellipsis past the budget.
+            const std::string cut = StatusBarText::ellipsize(segments[0],
+                                                             textBudget,
+                                                             [](std::string_view text)
+                                                             { return ImGui::CalcTextSize(text.data(), text.data() + text.size()).x; });
+            if (!cut.empty())
+            {
+                ImGui::TextUnformatted(cut.data(), cut.data() + cut.size());
+                drewText = true;
+            }
         }
         for (std::size_t i = 0; i < fit.segmentsShown; ++i)
         {
