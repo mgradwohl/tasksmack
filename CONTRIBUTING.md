@@ -727,7 +727,7 @@ count: a sub-nanosecond microbenchmark such as `BM_Numeric_ToDouble_Int` moving 
 reads as +50% but is timer noise (#1322). Pass `--min-abs-delta-ns 0` to gate on percentage alone.
 A benchmark that skips itself on purpose (`state.SkipWithMessage(...)`, `"skipped": true` in the
 JSON) on either side is reported as *not measured* and left out of coverage entirely, numerator and
-denominator; a `SkipWithError` (`"error_occurred": true`) still counts against it. The
+denominator; a `SkipWithError` (`"error_occurred": true`) on either side still counts against it, even if the other side skipped. The
 `BM_GPUProbe_*`/`BM_GPUModel_*` benchmarks skip this way when the real probe finds no GPU, as on the
 hosted runner, instead of timing an empty probe's early return (#1420).
 

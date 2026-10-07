@@ -172,6 +172,28 @@ class CheckBenchmarkRegressionTest(unittest.TestCase):
         self.assertIn("Missing from current run (3)", output)
         self.assertIn("coverage 70.0% is below the required 90.0%", output)
 
+    def test_a_current_error_is_not_hidden_by_a_baseline_skip(self):
+        # #1439 review: a baseline recorded with no GPU (skipped) and a current run whose GPU
+        # benchmarks failed (SkipWithError) must not pass as "not measured" at 100% coverage.
+        skipped = [record for bm in self.GPU_BENCHMARKS for record in skipped_records(bm)]
+        errored = [record for bm in self.GPU_BENCHMARKS for record in skipped_records(bm, error=True)]
+        code, output = self.run_gate(
+            self.OTHER_BENCHMARKS, self.OTHER_BENCHMARKS, "--min-coverage", "90", baseline_extra=skipped, current_extra=errored
+        )
+        self.assertEqual(code, 1, output)
+        self.assertNotIn("Not measured", output)
+        self.assertIn("coverage 70.0% is below the required 90.0%", output)
+
+    def test_a_baseline_error_is_not_hidden_by_a_current_skip(self):
+        errored = [record for bm in self.GPU_BENCHMARKS for record in skipped_records(bm, error=True)]
+        skipped = [record for bm in self.GPU_BENCHMARKS for record in skipped_records(bm)]
+        code, output = self.run_gate(
+            self.OTHER_BENCHMARKS, self.OTHER_BENCHMARKS, "--min-coverage", "90", baseline_extra=errored, current_extra=skipped
+        )
+        self.assertEqual(code, 1, output)
+        self.assertNotIn("Not measured", output)
+        self.assertIn("coverage 70.0% is below the required 90.0%", output)
+
     def test_a_benchmark_that_errored_still_counts_against_coverage(self):
         baseline = {**self.OTHER_BENCHMARKS, **{bm: 40.0 for bm in self.GPU_BENCHMARKS}}
         errored = [record for bm in self.GPU_BENCHMARKS for record in skipped_records(bm, error=True)]

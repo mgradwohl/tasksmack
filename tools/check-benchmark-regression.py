@@ -32,7 +32,8 @@ A benchmark that skipped itself on purpose (Google Benchmark's SkipWithMessage()
 "skipped": true) on either side is reported as not measured: neither compared nor counted in
 coverage, in the numerator or the denominator. The GPU benchmarks do this on a machine with no
 GPU, such as the CI runner, instead of timing an empty probe (#1420). A benchmark that failed
-(SkipWithError(), "error_occurred": true) still counts against coverage.
+(SkipWithError(), "error_occurred": true) on either side still counts against coverage, even if
+the other side skipped on purpose.
 
 The JSON format is Google Benchmark's --benchmark_format=json output.
 """
@@ -88,6 +89,11 @@ def skip_message(bm: dict) -> str | None:
         message = bm.get("skip_message")
         return message if isinstance(message, str) and message else "skipped"
     return None
+
+
+def errored(bm: dict) -> bool:
+    """True for a benchmark whose measurement failed (SkipWithError(): "error_occurred": true)."""
+    return bm.get("error_occurred") is True
 
 
 def common_timing_field(base_bm: dict, cur_bm: dict) -> str | None:
@@ -210,8 +216,13 @@ def main() -> int:
     # to compare, and it is not a coverage loss either. Classified first, over every baseline
     # benchmark, so a baseline record that skipped is not measured whether or not the current run
     # has it at all -- otherwise it would land in missing_from_current and count against coverage.
+    # A failed measurement (SkipWithError(), "error_occurred": true) on either side takes
+    # precedence: it is never classified as an intentional skip, so it still counts against
+    # coverage -- a baseline skip must not hide a current-run error, nor the reverse.
     not_measured: list[tuple[str, str]] = []
     for name in sorted(baseline):
+        if errored(baseline[name]) or (name in current and errored(current[name])):
+            continue
         base_skip = skip_message(baseline[name])
         cur_skip = skip_message(current[name]) if name in current else None
         if cur_skip is not None:

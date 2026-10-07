@@ -5,7 +5,7 @@
 // derived metrics (memory%, power%), and maintains history for charting.
 // Memory tracking is included to catch allocation regressions.
 //
-// They use the real platform probe, so on a machine with no GPU it sees -- the GPU-less CI runner --
+// They use the real platform probe. When that probe enumerates no GPU (as on the GPU-less CI runner),
 // every one of them skips (skipWithoutGpu()) rather than timing the probe's early return (#1420).
 
 #include "Domain/GPUModel.h"
