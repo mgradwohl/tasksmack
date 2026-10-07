@@ -1407,7 +1407,7 @@ TEST(ResizePerfTraceStatsTest, RecordEventBatchAccumulatesAndTracksMax)
     EXPECT_EQ(stats.maxEventsPerBatch, 10U);
     EXPECT_DOUBLE_EQ(stats.drainMs, 7.0);
     EXPECT_DOUBLE_EQ(stats.maxDrainMs, 5.0);
-    EXPECT_DOUBLE_EQ(stats.maxSinglePollBatchMs, 6.0);
+    EXPECT_DOUBLE_EQ(stats.maxSingleEventMs, 6.0);
     EXPECT_EQ(stats.p0BudgetCapHits, 1U) << "only the second batch fired p0";
 }
 

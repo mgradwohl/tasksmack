@@ -123,9 +123,10 @@ struct ResizePerfTraceStats
     /// Number of frames skipped by P3 (drain-overrun skip-render).
     std::uint32_t skippedRenderFrames = 0;
     /// Max wall time for any single event (poll + dispatch) inside the drain loop, which checks its
-    /// budget after every event (#1410; it was every fourth, so this was a 4-event interval).
+    /// budget after every event (#1410). Logged as maxSingleEvent; it was maxPollBatch, a 4-event
+    /// interval, so the two are not comparable across captures.
     /// A large value here indicates a single SDL_PollEvent call stalling (Wayland configure hold).
-    double maxSinglePollBatchMs = 0.0;
+    double maxSingleEventMs = 0.0;
     /// Deliver-to-deliver loop intervals: wall time from one presented frame's end (after swap)
     /// to the next one's. Unlike the frame figures above, which time only the work inside a frame,
     /// this is what the user sees as cadence: it includes the pacing wait, the event drain and any
@@ -176,8 +177,7 @@ struct ResizePerfTraceStats
     /// Counter value of the last presented frame's end; 0 = none since the last full reset.
     std::uint64_t lastDeliveredFrameEnd = 0;
 
-    void
-    recordEventBatch(std::uint32_t eventCount, std::uint32_t resizeEventCount, double durationMs, double singlePollBatchMs, bool p0Fired)
+    void recordEventBatch(std::uint32_t eventCount, std::uint32_t resizeEventCount, double durationMs, double singleEventMs, bool p0Fired)
     {
         ++eventBatches;
         drainedEvents += eventCount;
@@ -185,7 +185,7 @@ struct ResizePerfTraceStats
         maxEventsPerBatch = std::max(maxEventsPerBatch, eventCount);
         drainMs += durationMs;
         maxDrainMs = std::max(maxDrainMs, durationMs);
-        maxSinglePollBatchMs = std::max(maxSinglePollBatchMs, singlePollBatchMs);
+        maxSingleEventMs = std::max(maxSingleEventMs, singleEventMs);
         pushRollingSample(drainSamplesMs, durationMs);
         if (p0Fired)
         {
@@ -256,7 +256,7 @@ struct ResizePerfTraceStats
         frameTail = {};
         p0BudgetCapHits = 0;
         skippedRenderFrames = 0;
-        maxSinglePollBatchMs = 0.0;
+        maxSingleEventMs = 0.0;
         loopIntervals = 0;
         loopIntervalMs = 0.0;
         maxLoopIntervalMs = 0.0;
@@ -314,7 +314,7 @@ inline void logResizePerfTraceSummary(const ResizePerfTraceStats& stats, const s
     const double loopP99 = computePercentile(stats.loopIntervalSamplesMs, 0.99);
 
     spdlog::info("ResizePerf[{}]: batches={} events={} resizeEvents={} maxBatchEvents={} "
-                 "p0Hits={} skippedFrames={} maxPollBatch={:.3f} ms "
+                 "p0Hits={} skippedFrames={} maxSingleEvent={:.3f} ms "
                  "frames={} resizeFrames={} frame avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms over100={} over250={} "
                  "loopIntervals={} loop avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms "
                  "drain avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms "
@@ -329,7 +329,7 @@ inline void logResizePerfTraceSummary(const ResizePerfTraceStats& stats, const s
                  stats.maxEventsPerBatch,
                  stats.p0BudgetCapHits,
                  stats.skippedRenderFrames,
-                 stats.maxSinglePollBatchMs,
+                 stats.maxSingleEventMs,
                  stats.frames,
                  stats.resizeFrames,
                  avg(stats.totalFrameMs, stats.frames),
