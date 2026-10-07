@@ -210,6 +210,8 @@ The hooks (configured in `.pre-commit-config.yaml`) include:
 - **check-added-large-files**: Prevent large files (>500KB)
 - **check-merge-conflict**: Detect merge conflict markers
 - **shellcheck**: Lint shell scripts
+- **actionlint**: Lint GitHub Actions workflows (expressions, contexts, `needs:`, inputs, and warning-level
+  shellcheck findings in `run:` blocks when shellcheck is installed; configured in `.github/actionlint.yaml`)
 
 ### Bypassing Hooks (Emergency Only)
 
@@ -725,6 +727,11 @@ a non-finite/`NaN` timing, and comparing two different timing fields for the sam
 A slowdown also has to exceed an absolute noise floor, `--min-abs-delta-ns` (default 1.0ns), to
 count: a sub-nanosecond microbenchmark such as `BM_Numeric_ToDouble_Int` moving 0.4ns -> 0.6ns
 reads as +50% but is timer noise (#1322). Pass `--min-abs-delta-ns 0` to gate on percentage alone.
+A benchmark that skips itself on purpose (`state.SkipWithMessage(...)`, `"skipped": true` in the
+JSON) on either side is reported as *not measured* and left out of coverage entirely, numerator and
+denominator; a `SkipWithError` (`"error_occurred": true`) on either side still counts against it, even if the other side skipped. The
+`BM_GPUProbe_*`/`BM_GPUModel_*` benchmarks skip this way when the real probe finds no GPU, as on the
+hosted runner, instead of timing an empty probe's early return (#1420).
 
 This is a *separate* baseline from `perf-data/linux-baseline.json` above, deliberately: that one
 was recorded on a local developer machine (10 cores @ 3.7 GHz) for local `tools/bench.sh`
@@ -792,11 +799,11 @@ deliberate, reviewed performance change that the gate should treat as the new no
 | `BM_NetlinkSocketStats_*` | Netlink INET_DIAG socket query performance (Linux only) |
 | `BM_StorageModel_*` | Storage probe/model sampling, history accessor, and per-disk snapshot performance |
 | `BM_StorageModel_MemoryGrowth` | Memory growth over repeated `sample()` cycles |
-| `BM_GPUModel_*` | GPU probe enumeration, counter reads, model refresh, and history accessor performance |
+| `BM_GPUProbe_*`, `BM_GPUModel_*` | GPU probe enumeration, counter reads, model refresh, and history accessor performance (skipped on a machine with no GPU, #1420) |
 | `BM_GPUModel_MemoryGrowth` | Memory growth over repeated GPU `refresh()` cycles |
 | `BM_Numeric_*` | Micro-benchmarks for `toDouble`, `clampPercentToFloat`, `narrowOr`, and mixed process-table workload |
 | `BM_ChartWidgets_*` | `UI::Widgets` chart helpers: `computeAlpha` smoothing, `tailAlignedSpan` history-window selection, and the `formatAxisLocalized`/`formatAxisBytesPerSec` axis-label formatters — the layer the Windows ETW app-trace (perf-plan-574 / issue #574) flagged as expensive but that previously had no Linux-runnable coverage |
-| `BM_ChartGeometry_*` | One whole headless ImGui+ImPlot frame (`NewFrame()` through `Render()`, no window or GL) of the real `ChartWidgets.h` charts with fixed data: the stacked CPU chart at full history, the per-core grid, the memory chart, and an uncached min/max-reduced 18k-sample line. Reports `vertices`/`indices`/`draw_lists`/`draw_cmds` counters; the same scenes (`benchmarks/ChartGeometryScenes.h`) are held to a vertex/index budget by `tests/UI/test_ChartGeometryBudget.cpp`, which gates every PR (#1421) |
+| `BM_ChartGeometry_*` | One whole headless ImGui+ImPlot frame (`NewFrame()` through `Render()`, no window or GL) of the real `ChartWidgets.h` charts with fixed data: the stacked CPU chart at full history, the per-core grid (16 cores, and 64 narrow ones whose point budget follows the plot width, #1411), the memory chart, and an uncached min/max-reduced 18k-sample line. Reports `vertices`/`indices`/`draw_lists`/`draw_cmds` counters; the same scenes (`benchmarks/ChartGeometryScenes.h`) are held to a vertex/index budget by `tests/UI/test_ChartGeometryBudget.cpp`, which gates every PR (#1421) |
 | `BM_*_FullHistory/*`, `BM_*_Cardinality/*` | Domain model `publish()`/`publication()` fed from `tests/Mocks` probes at the limits: history held at 300/3k/18k samples (18k = 1800 s at 100 ms), and many cores, interfaces, disks or processes (#1422) |
 | `BM_SystemModel_Concurrent_PublicationWait/*` | How long a UI-style `publication()` call waits when it lands on a publish in another thread (the exclusive lock's hold time), with optional extra reader threads; the baseline for #868 (#1422) |
 
@@ -1628,7 +1635,7 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
 - **`codeql.yml`**: Runs GitHub's CodeQL engine to trace execution and analyze the C/C++ codebase for semantic security vulnerabilities (pushes/PRs to main, weekly).
 - **`osv-scanner.yml`**: Uses Google's OSV-Scanner to check dependencies against the Open Source Vulnerability database (pushes to main, weekly, manual dispatch).
 - **`renovate.yml`**: Self-hosted [Renovate](https://docs.renovatebot.com/) run, scoped to C++ `FetchContent` libraries and the build/dev toolchain (LLVM, Python, CMake, Ninja, ccache, pre-commit's own hook tools) -- the freshness gap Dependabot/OSV-Scanner don't cover (weekly, manual dispatch with dry-run options). See "Keeping Dependencies Current" below.
-- **`scorecard.yml`**: Evaluates the repository against OpenSSF security best practices (branch protection, pinned dependencies) and uploads results to the security dashboard (pushes/weekly).
+- **`scorecard.yml`**: Evaluates the repository against OpenSSF security best practices (branch protection, pinned dependencies) and uploads results to the security dashboard (pushes/weekly). Its SAST check counts a merged PR as scanned only if a code-scanning check run (GitHub Advanced Security's `CodeQL` or `osv-scanner`) had already completed on the PR's head commit, and it runs on the push of the merge itself, so merge only after `Analyze C++` has passed or the newest commit counts as unscanned (#1405).
 - **`dependency-review.yml`**: Scans PRs to block any that introduce vulnerable dependencies (CVE-based) in package manifests/lockfiles.
 - **`sanitizers.yml`**: Performs heavy blocking runs using Address/Undefined Behavior (ASan+UBSan) and Thread (TSan) sanitizers on pushes to `main`, generating HTML reports of memory leaks or data races.
 - **ClusterFuzzLite (`cflite_*.yml`)**: Google's continuous fuzzing suite. Runs on PRs (`cflite_pr.yml`), pushes to main (`cflite_build.yml`), and weekly for batching and pruning corpora (`cflite_batch.yml`, `cflite_prune.yml`).
@@ -1645,6 +1652,11 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
 - **`copilot-setup-steps.yml`**: Bootstraps the repository environment (CMake, LLVM, etc.) for GitHub Copilot cloud agent sessions.
 
 PR optimization: docs-only pull requests skip compile/test and environment-validation jobs in `ci.yml` to keep feedback fast.
+
+Concurrency: a new push to a PR branch cancels that branch's in-progress runs, but pushes to `main` never cancel
+each other. `ci.yml`, `sanitizers.yml`, `static-analysis.yml` and `heavy-checks.yml` give each `main` commit its
+own concurrency group, so back-to-back merges each get a complete run and a regression is blamed on the commit
+that caused it (#1187). `codeql.yml` doesn't cancel `main` runs either, but queues them in one group.
 
 Dependabot updates GitHub Actions and Python dependencies weekly.
 [OSV Scanner](https://google.github.io/osv-scanner/) scans C++ FetchContent dependencies
@@ -1703,8 +1715,8 @@ check. Like Dependabot, Renovate only opens PRs; the same CI gate applies before
 `tools/check-prereqs.sh`): three tiers, all now automated by `renovate.json5` except where noted
 below. See #798 for the full repo-wide audit and rationale behind this split.
 
-- *Tier 1 -- auto-PR'd, no gate*: the pre-commit hook tools (`pre-commit-hooks`, `shellcheck-py`
-  -- `rev:` pins in `.pre-commit-config.yaml`) via Renovate's native `pre-commit` manager, no
+- *Tier 1 -- auto-PR'd, no gate*: the pre-commit hook tools (`pre-commit-hooks`, `shellcheck-py`,
+  `actionlint-py` -- `rev:` pins in `.pre-commit-config.yaml`) via Renovate's native `pre-commit` manager, no
   custom regex needed. The `clang-format` mirror (same file, same manager) is the one exception:
   its formatting behavior tracks the same LLVM major as the compiler toolchain, so its *major*
   bumps are gated exactly like the rest of the LLVM-major process below (a `packageRules` entry

@@ -52,6 +52,10 @@ if(WIN32)
         set_tests_properties(EtwCaptureScript PROPERTIES TIMEOUT 180)
         add_test(NAME EtwAnalysisScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-analyze-etw.ps1)
+    else()
+        # Say so rather than leave the ETW script tests silently missing from ctest (#1187).
+        message(WARNING "pwsh (PowerShell 7) not found: the ResizeCaptureScript, EtwCaptureScript and "
+                        "EtwAnalysisScript tests are not registered. Install PowerShell 7 to run them.")
     endif()
 endif()
 
@@ -161,6 +165,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessGpuHelpers.cpp
     App/test_ProcessResourceHelpers.cpp
     App/test_ProcessHistoryHelpers.cpp
+    App/test_ProcessDetailsHistory.cpp
     App/test_ProcessActionHelpers.cpp
     App/test_SettingsLayerDetail.cpp
     App/test_NetInterfaceUtils.cpp
