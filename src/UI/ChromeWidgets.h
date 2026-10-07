@@ -10,6 +10,7 @@
 #include "UI/Widgets.h"
 
 #include <imgui.h>
+#include <imgui_internal.h>
 
 #include <algorithm>
 #include <array>
@@ -152,6 +153,39 @@ inline bool drawFooterButton(const DialogFooterButton& button, float width)
 }
 } // namespace Detail
 
+/// What a footer drawn in the current window, from the current cursor, has to fit: the inputs
+/// dialogFooter() lays itself out from. A dialog that reserves room for its footer before drawing it
+/// (Settings) builds the same inputs with this, in the same window and frame, and passes them to
+/// ChromeLayout::layoutDialogFooter(), so the reservation and the footer make the same decision.
+[[nodiscard]] inline ChromeLayout::DialogFooterInput
+dialogFooterInput(float preferredButtonWidth, bool hasSecondary, const char* leadingLabel, float maxRowWidth = 0.0F)
+{
+    return {
+        .availWidth = ImGui::GetContentRegionAvail().x,
+        .maxRowWidth = maxRowWidth,
+        .spacing = ImGui::GetStyle().ItemSpacing.x,
+        .preferredButtonWidth = preferredButtonWidth,
+        .actionCount = hasSecondary ? 2U : 1U,
+        .leadingWidth = (leadingLabel != nullptr) ? footerLeadingButtonWidth(leadingLabel) : 0.0F,
+        .scrollbarWidth = ImGui::GetCurrentWindow()->ScrollbarSizes.x,
+    };
+}
+
+/// SetNextWindowSizeConstraints() for an auto-fitting dialog, capped at @p maxSize, that rounds the
+/// fitted size up to whole pixels. ImGui truncates a constrained window's size, which left a dialog
+/// with a fractional-height title bar a fraction short of its contents, showing a scrollbar it did
+/// not need (#1200 review, #1461). See ChromeLayout::wholePixelDialogExtent().
+inline void setNextDialogSizeConstraints(const ImVec2& maxSize)
+{
+    ImGui::SetNextWindowSizeConstraints(ImVec2(0.0F, 0.0F),
+                                        maxSize,
+                                        [](ImGuiSizeCallbackData* data)
+                                        {
+                                            data->DesiredSize.x = ChromeLayout::wholePixelDialogExtent(data->DesiredSize.x);
+                                            data->DesiredSize.y = ChromeLayout::wholePixelDialogExtent(data->DesiredSize.y);
+                                        });
+}
+
 /// The footer every dialog ends with (#1200): a separator, then [leading] ... [secondary][primary],
 /// with the primary action rightmost. See ChromeLayout::placeDialogFooter() for how the row fits a
 /// narrow dialog, and ChromeLayout::dialogFooterHeight() for the height to reserve for it.
@@ -175,17 +209,10 @@ inline DialogFooterAction dialogFooter(const DialogFooterButton& primary,
     ImGui::Separator();
     ImGui::Spacing();
 
-    const ImGuiStyle& style = ImGui::GetStyle();
     const bool hasLeading = leading.label != nullptr;
     const bool hasSecondary = secondary.label != nullptr;
-    const auto placement = ChromeLayout::placeDialogFooter({
-        .availWidth = ImGui::GetContentRegionAvail().x,
-        .maxRowWidth = maxRowWidth,
-        .spacing = style.ItemSpacing.x,
-        .preferredButtonWidth = preferredButtonWidth,
-        .actionCount = hasSecondary ? 2U : 1U,
-        .leadingWidth = hasLeading ? footerLeadingButtonWidth(leading.label) : 0.0F,
-    });
+    const auto placement =
+        ChromeLayout::placeDialogFooter(dialogFooterInput(preferredButtonWidth, hasSecondary, leading.label, maxRowWidth));
 
     DialogFooterAction action = DialogFooterAction::None;
     const float rowStartX = ImGui::GetCursorPosX();

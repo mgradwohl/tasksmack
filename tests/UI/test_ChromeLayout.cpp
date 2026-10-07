@@ -7,7 +7,6 @@
 #include <gtest/gtest.h>
 
 #include <array>
-#include <cstddef>
 #include <limits>
 #include <string_view>
 
@@ -79,7 +78,8 @@ DialogFooterInput twoActions(float avail, float preferred, float leading = 0.0F,
             .spacing = 8.0F,
             .preferredButtonWidth = preferred,
             .actionCount = 2,
-            .leadingWidth = leading};
+            .leadingWidth = leading,
+            .scrollbarWidth = 0.0F};
 }
 
 // The primary action is the rightmost button, its right edge on the row's, with the secondary
@@ -148,11 +148,87 @@ TEST(ChromeLayoutTest, RowMayGrowAnAutoFittingDialogUpToItsBudget)
 TEST(ChromeLayoutTest, FooterPlacementSurvivesBadInput)
 {
     const float nan = std::numeric_limits<float>::quiet_NaN();
-    const auto placement = placeDialogFooter(
-        {.availWidth = nan, .maxRowWidth = nan, .spacing = nan, .preferredButtonWidth = nan, .actionCount = 0, .leadingWidth = nan});
+    const auto placement = placeDialogFooter({.availWidth = nan,
+                                              .maxRowWidth = nan,
+                                              .spacing = nan,
+                                              .preferredButtonWidth = nan,
+                                              .actionCount = 0,
+                                              .leadingWidth = nan,
+                                              .scrollbarWidth = nan});
     EXPECT_FLOAT_EQ(placement.rowWidth, 0.0F);
     EXPECT_FLOAT_EQ(placement.buttonWidth, 0.0F);
     EXPECT_FALSE(placement.leadingOnOwnRow);
+}
+
+// The Settings footer at each font preset, in a dialog exactly as wide as that footer's row (its
+// combos are widened to it), with a vertical scrollbar taking its width from the content: Reset to
+// defaults stays beside Cancel | Save, and the height reserved for the footer is the one-row height.
+// A scrollbar that narrowed the row used to wrap Reset, which grew the footer by a row, overflowed
+// the dialog and kept the scrollbar (#1200 review).
+TEST(ChromeLayoutTest, SettingsFooterStaysOnOneRowWhateverTheScrollbarAtEveryPreset)
+{
+    constexpr float REFERENCE_EM = 32.0F / 3.0F; // Medium's 8pt at 96 DPI
+    for (const float bodyPt : {7.0F, 8.0F, 10.0F, 12.0F, 14.0F, 16.0F})
+    {
+        for (const float displayScale : {1.0F, 1.5F, 2.0F})
+        {
+            const float em = bodyPt * (96.0F / 72.0F) * displayScale;
+            const float styleScale = em / REFERENCE_EM;
+            const float spacing = 8.0F * styleScale;
+            const float scrollbar = 14.0F * styleScale;
+            const float itemSpacingY = 4.0F * styleScale;
+            const float frameHeight = em + (2.0F * 3.0F * styleScale);
+            const float preferred = 9.375F * em;                          // SETTINGS_BUTTON_MIN_EM
+            const float reset = (8.2F * em) + (2.0F * 4.0F * styleScale); // "Reset to defaults" + frame padding
+            const float rowWidth = reset + (2.0F * preferred) + (2.0F * spacing);
+
+            const DialogFooterInput input{.availWidth = rowWidth - scrollbar,
+                                          .maxRowWidth = 0.0F,
+                                          .spacing = spacing,
+                                          .preferredButtonWidth = preferred,
+                                          .actionCount = 2,
+                                          .leadingWidth = reset,
+                                          .scrollbarWidth = scrollbar};
+            const auto layout = layoutDialogFooter(input, itemSpacingY, frameHeight);
+            EXPECT_FALSE(layout.placement.leadingOnOwnRow) << bodyPt << "pt x" << displayScale;
+            EXPECT_FLOAT_EQ(layout.height, dialogFooterHeight(itemSpacingY, frameHeight, false)) << bodyPt << "pt x" << displayScale;
+            // The actions stay right of Reset and inside the row.
+            EXPECT_GE(layout.placement.secondaryX, reset + spacing - 0.001F);
+            EXPECT_LE(layout.placement.primaryX + layout.placement.buttonWidth, input.availWidth + 0.001F);
+
+            // The same dialog without the scrollbar decides the same way.
+            DialogFooterInput noScrollbar = input;
+            noScrollbar.availWidth = rowWidth;
+            noScrollbar.scrollbarWidth = 0.0F;
+            EXPECT_EQ(placeDialogFooter(noScrollbar).leadingOnOwnRow, layout.placement.leadingOnOwnRow);
+        }
+    }
+}
+
+// Where the three genuinely do not fit -- the minimum window at the largest font -- Reset takes its
+// own row, and the reserved height includes that row.
+TEST(ChromeLayoutTest, SettingsFooterWrapsWhereItMustAndReservesTheRow)
+{
+    const DialogFooterInput input{.availWidth = 300.0F,
+                                  .maxRowWidth = 0.0F,
+                                  .spacing = 8.0F,
+                                  .preferredButtonWidth = 120.0F,
+                                  .actionCount = 2,
+                                  .leadingWidth = 110.0F,
+                                  .scrollbarWidth = 14.0F};
+    const auto layout = layoutDialogFooter(input, 4.0F, 20.0F);
+    EXPECT_TRUE(layout.placement.leadingOnOwnRow);
+    EXPECT_FLOAT_EQ(layout.height, dialogFooterHeight(4.0F, 20.0F, true));
+    EXPECT_GT(layout.height, dialogFooterHeight(4.0F, 20.0F, false));
+}
+
+// ImGui truncates a constrained window's size; rounding up first keeps a fractional title bar from
+// leaving the dialog a fraction short of its contents (#1461).
+TEST(ChromeLayoutTest, DialogExtentRoundsUpToAWholePixel)
+{
+    EXPECT_FLOAT_EQ(wholePixelDialogExtent(279.375F), 280.0F);
+    EXPECT_FLOAT_EQ(wholePixelDialogExtent(280.0F), 280.0F);
+    EXPECT_FLOAT_EQ(wholePixelDialogExtent(0.25F), 1.0F);
 }
 
 TEST(ChromeLayoutTest, FooterHeightCountsSeparatorSpacingAndRows)

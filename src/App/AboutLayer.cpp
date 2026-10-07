@@ -115,9 +115,8 @@ void AboutLayer::renderAboutDialog()
     // Never larger than the viewport, re-evaluated every frame so a font change or a shrinking main
     // window cannot push the OK button out of it; content that no longer fits scrolls (#1129).
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowSizeConstraints(ImVec2(0.0F, 0.0F),
-                                        ImVec2(UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.x),
-                                               UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.y)));
+    UI::Widgets::setNextDialogSizeConstraints(ImVec2(UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.x),
+                                                     UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.y)));
 
     const ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking;
     if (ImGui::BeginPopupModal("About TaskSmack", nullptr, flags))

@@ -101,6 +101,7 @@ struct DialogFooterInput
     float preferredButtonWidth = 0.0F; ///< Each action button's width, if the row has room.
     std::size_t actionCount = 1;       ///< 1 (the primary action) or 2 (a secondary, then the primary).
     float leadingWidth = 0.0F;         ///< A left-aligned extra button (Settings' Reset); 0: none.
+    float scrollbarWidth = 0.0F;       ///< Width a vertical scrollbar takes from availWidth this frame; 0: none.
 };
 
 /// Where the footer's buttons go. X positions are relative to the row's start.
@@ -143,7 +144,11 @@ struct DialogFooterPlacement
     const float cap = clean(input.maxRowWidth) > 0.0F ? clean(input.maxRowWidth) : avail;
     const float rowWidth = std::max(avail, std::min(wanted, cap));
 
-    const bool leadingOnOwnRow = (leading > 0.0F) && (wanted > rowWidth);
+    // Decided against the dialog's full content width, scrollbar included: a scrollbar that comes and
+    // goes must not move the leading button between rows. When it shared the row with the scrollbar
+    // showing, the leading button wrapped, the footer grew by a row, the dialog overflowed and kept
+    // the scrollbar, and the button never came back (#1200 review).
+    const bool leadingOnOwnRow = (leading > 0.0F) && (wanted > rowWidth + clean(input.scrollbarWidth));
     const float leadingShare = (leading > 0.0F && !leadingOnOwnRow) ? leadingPart : 0.0F;
     const float actionsAvail = std::max(0.0F, rowWidth - leadingShare);
     const float buttonWidth = std::min(preferred, std::max(0.0F, (actionsAvail - (spacing * (count - 1.0F))) / count));
@@ -169,6 +174,32 @@ struct DialogFooterPlacement
     // the buttons; the leading button's own row, when it has one, adds a row and its item spacing.
     constexpr float SEPARATOR_PX = 1.0F;
     return (spacing * 3.0F) + SEPARATOR_PX + frame + (leadingOnOwnRow ? (frame + spacing) : 0.0F);
+}
+
+/// A footer's placement together with the height it takes, from one decision.
+struct DialogFooterLayout
+{
+    DialogFooterPlacement placement;
+    float height = 0.0F; ///< dialogFooterHeight() for placement.leadingOnOwnRow.
+};
+
+/// placeDialogFooter() and dialogFooterHeight() from the same inputs, so a dialog that reserves room
+/// for its footer before drawing it reserves exactly what the footer will take: a reservation made
+/// for one layout while the footer drew the other overflowed the dialog (#1200 review).
+[[nodiscard]] inline DialogFooterLayout layoutDialogFooter(const DialogFooterInput& input, float itemSpacingY, float frameHeight) noexcept
+{
+    const DialogFooterPlacement placement = placeDialogFooter(input);
+    return {.placement = placement, .height = dialogFooterHeight(itemSpacingY, frameHeight, placement.leadingOnOwnRow)};
+}
+
+/// A dialog extent rounded up to a whole pixel. ImGui truncates a window's size to whole pixels once a
+/// size constraint is set (CalcWindowSizeAfterConstraint), so an auto-fitting dialog whose title bar
+/// is a fractional height -- a font and frame padding scaled by a non-integer factor -- came out a
+/// fraction of a pixel shorter than its contents and showed a scrollbar it did not need. Rounding up
+/// first leaves nothing for the truncation to cut (#1200 review, #1461).
+[[nodiscard]] inline float wholePixelDialogExtent(float desiredPx) noexcept
+{
+    return std::isfinite(desiredPx) ? std::ceil(desiredPx) : desiredPx;
 }
 
 } // namespace UI::ChromeLayout

@@ -258,7 +258,7 @@ void SettingsLayer::renderSettingsDialog()
     const ImVec2 dialogMaxSize(UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.x),
                                UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.y));
     ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Always, ImVec2(0.5F, 0.5F));
-    ImGui::SetNextWindowSizeConstraints(ImVec2(0.0F, 0.0F), dialogMaxSize);
+    UI::Widgets::setNextDialogSizeConstraints(dialogMaxSize);
     // No explicit width. The former fixed 450px is gone and nothing replaces it: the popup is
     // ImGuiWindowFlags_AlwaysAutoResize and every column below is measured from the text it has to
     // hold, so auto-fit already produces exactly the width the content needs at the current font.
@@ -303,22 +303,17 @@ void SettingsLayer::renderSettingsDialog()
         const float actionButtonWidth = UI::Widgets::footerButtonWidth({CANCEL_LABEL, SAVE_LABEL}, SETTINGS_BUTTON_MIN_EM);
         const float resetButtonWidth = UI::Widgets::footerLeadingButtonWidth(RESET_LABEL);
         const float actionRowWidth = resetButtonWidth + (actionButtonWidth * 2.0F) + (style.ItemSpacing.x * 2.0F);
-        const bool resetOnOwnRow = UI::ChromeLayout::placeDialogFooter({
-                                                                           .availWidth = ImGui::GetContentRegionAvail().x,
-                                                                           .maxRowWidth = 0.0F,
-                                                                           .spacing = style.ItemSpacing.x,
-                                                                           .preferredButtonWidth = actionButtonWidth,
-                                                                           .actionCount = 2,
-                                                                           .leadingWidth = resetButtonWidth,
-                                                                       })
-                                       .leadingOnOwnRow;
-        // The item spacing after the body, then the footer itself.
+        // The item spacing after the body, then the footer itself, laid out from the inputs
+        // dialogFooter() will see below.
         const float footerHeight =
-            style.ItemSpacing.y + UI::ChromeLayout::dialogFooterHeight(style.ItemSpacing.y, ImGui::GetFrameHeight(), resetOnOwnRow);
+            style.ItemSpacing.y + UI::ChromeLayout::layoutDialogFooter(UI::Widgets::dialogFooterInput(actionButtonWidth, true, RESET_LABEL),
+                                                                       style.ItemSpacing.y,
+                                                                       ImGui::GetFrameHeight())
+                                      .height;
         const float reservedHeight = ImGui::GetFrameHeight() + (style.WindowPadding.y * 2.0F) + footerHeight;
         const float bodyMaxHeight =
             UI::DialogMetrics::computeScrollableBodyMaxHeight(dialogMaxSize.y, reservedHeight, ImGui::GetFrameHeightWithSpacing() * 2.0F);
-        ImGui::SetNextWindowSizeConstraints(ImVec2(0.0F, 0.0F), ImVec2(std::numeric_limits<float>::max(), bodyMaxHeight));
+        UI::Widgets::setNextDialogSizeConstraints(ImVec2(std::numeric_limits<float>::max(), bodyMaxHeight));
         ImGui::BeginChild("##SettingsBody", ImVec2(0.0F, 0.0F), ImGuiChildFlags_AutoResizeX | ImGuiChildFlags_AutoResizeY);
 
         // ========================================
@@ -618,7 +613,8 @@ void SettingsLayer::renderSettingsDialog()
         // Save at actionButtonWidth (measured above, with the footer's height), shrunk to the row when
         // the viewport-capped dialog is narrower than it (#1129), so Cancel can't be pushed off the
         // left edge. Reset to defaults keeps its width: at their left, or on its own row above them
-        // when the dialog is too narrow for all three (resetOnOwnRow).
+        // when the dialog is too narrow for all three -- decided from the same inputs the reserved
+        // height above was measured with.
         //
         // Save fills with the success colour for the positive action. Its label is drawn in whichever
         // of the theme's two poles -- its text colour or its window background -- reads better on the

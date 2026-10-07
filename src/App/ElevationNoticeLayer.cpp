@@ -15,7 +15,6 @@
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 
-#include <algorithm>
 #include <string_view>
 
 namespace App
@@ -88,9 +87,8 @@ void ElevationNoticeLayer::renderDialog()
         // The height is held to the viewport too, every frame: the auto-fitted height grows with
         // the font and display scale, and without a cap the OK button could fall below the window
         // with this modal blocking everything else. Content that no longer fits scrolls (#1129).
-        ImGui::SetNextWindowSizeConstraints(ImVec2(0.0F, 0.0F),
-                                            ImVec2(UI::DialogMetrics::computeDialogMaxExtent(sizingViewport->WorkSize.x),
-                                                   UI::DialogMetrics::computeDialogMaxExtent(sizingViewport->WorkSize.y)));
+        UI::Widgets::setNextDialogSizeConstraints(ImVec2(UI::DialogMetrics::computeDialogMaxExtent(sizingViewport->WorkSize.x),
+                                                         UI::DialogMetrics::computeDialogMaxExtent(sizingViewport->WorkSize.y)));
     }
 
     const ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking;

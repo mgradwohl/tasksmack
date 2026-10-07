@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 #include <imgui.h>
+#include <imgui_internal.h>
 
 #include <functional>
 
@@ -118,6 +119,45 @@ TEST_F(ChromeWidgetsTest, HeaderIsOneItemCoveringItsDetail)
     EXPECT_FALSE(hovered);
     EXPECT_FLOAT_EQ(withDetail.minX, titleOnly.minX);
     EXPECT_GE(withDetail.maxX, titleOnly.maxX + detailWidth);
+}
+
+/// Twenty frames of an auto-fitting modal with a fractional-height title bar (a 13px font and 6.6875px
+/// frame padding make it 26.375px, as the app's scaled style does), its size constrained by
+/// @p constrain; returns whether ImGui gave it a vertical scrollbar.
+bool modalShowsScrollbar(const std::function<void()>& constrain)
+{
+    ImGui::GetStyle().FramePadding.y = 6.6875F;
+    bool scrollbar = false;
+    for (int frame = 0; frame < 20; ++frame)
+    {
+        ImGui::NewFrame();
+        if (frame == 0)
+        {
+            ImGui::OpenPopup("Notice");
+        }
+        constrain();
+        if (ImGui::BeginPopupModal("Notice", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            ImGui::TextUnformatted("TaskSmack is running without Administrator privileges.");
+            (void) dialogFooter({.label = "OK", .fills = nullptr, .tooltip = nullptr}, {}, 100.0F);
+            scrollbar = ImGui::GetCurrentWindow()->ScrollbarY;
+            ImGui::EndPopup();
+        }
+        ImGui::Render();
+    }
+    return scrollbar;
+}
+
+// ImGui truncates a constrained window's size to whole pixels, so with plain constraints the dialog
+// came out 0.375px shorter than its contents and showed a scrollbar it did not need: the elevation
+// notice (#1461) and Settings, where the scrollbar's width then wrapped Reset to defaults onto its
+// own row (#1200 review). The dialog constraints round the fitted size up first.
+TEST_F(ChromeWidgetsTest, ConstrainedDialogThatFitsHasNoScrollbar)
+{
+    const ImVec2 maxSize(1080.0F, 720.0F);
+    EXPECT_TRUE(modalShowsScrollbar([&] { ImGui::SetNextWindowSizeConstraints(ImVec2(0.0F, 0.0F), maxSize); }))
+        << "ImGui no longer truncates a constrained size; setNextDialogSizeConstraints() may be unnecessary";
+    EXPECT_FALSE(modalShowsScrollbar([&] { setNextDialogSizeConstraints(maxSize); }));
 }
 
 } // namespace
