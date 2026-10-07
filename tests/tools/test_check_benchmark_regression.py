@@ -152,6 +152,30 @@ class CheckBenchmarkRegressionTest(unittest.TestCase):
                 )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_an_errored_repetition_is_not_hidden_by_the_median(self):
+        # #1445 review: one repetition failed (SkipWithError) while the others produced a median.
+        # The failure must win over the median in either row order, so the benchmark still
+        # counts against coverage (7 of 8 compared = 87.5%) instead of passing at 100%.
+        ok = {"name": "BM_Big", "run_name": "BM_Big", "run_type": "iteration", "real_time": 100.0, "time_unit": "ns"}
+        error = {**ok, "error_occurred": True, "error_message": "probe failed", "real_time": 0.0}
+        median = {**ok, "name": "BM_Big_median", "run_type": "aggregate", "aggregate_name": "median"}
+        baseline = {**self.OTHER_BENCHMARKS, "BM_Big": 100.0}
+        for rows in ([ok, error, median], [median, error, ok], [error, median, ok], [median, ok, error]):
+            with self.subTest(order=[row.get("aggregate_name") or ("error" if "error_occurred" in row else "ok") for row in rows]):
+                code, output = self.run_gate(baseline, self.OTHER_BENCHMARKS, "--min-coverage", "90", current_extra=rows)
+                self.assertEqual(code, 1, output)
+                self.assertIn("coverage 87.5% is below the required 90.0%", output)
+
+    def test_the_median_still_beats_successful_repetitions(self):
+        # The error precedence above does not change the successful case: a slow successful
+        # repetition next to the median is still not compared.
+        ok = {"name": "BM_Big", "run_name": "BM_Big", "run_type": "iteration", "real_time": 1000.0, "time_unit": "ns"}
+        median = {**ok, "name": "BM_Big_median", "run_type": "aggregate", "aggregate_name": "median", "real_time": 100.0}
+        baseline = {**self.OTHER_BENCHMARKS, "BM_Big": 100.0}
+        for rows in ([ok, median], [median, ok]):
+            code, output = self.run_gate(baseline, self.OTHER_BENCHMARKS, current_extra=rows)
+            self.assertEqual(code, 0, output)
+
     def test_non_finite_floor_is_a_usage_error(self):
         code, output = self.run_gate({"BM_Big": 100.0}, {"BM_Big": 100.0}, "--min-abs-delta-ns", "nan")
         self.assertEqual(code, 2, output)
