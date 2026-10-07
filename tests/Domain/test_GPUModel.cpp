@@ -2895,13 +2895,18 @@ TEST(GPUModelTest, ConsecutivePublicationsShareTheirHistory)
 
 // A UI-style reader walks every sample of the latest publication while the sampler appends, trims, compacts,
 // and adds and drops GPUs underneath it. Under TSan this shows the reader never reads a slot the writer
-// writes: published samples are never written again (#1412).
+// writes: published samples are never written again (#1412). The sampler is paced on the reader
+// (TestPublication::ReadPacer): it starts only once the reader has completed a traversal, and waits for a
+// new one every PACE_EVERY samples, so the reads really overlap the sampling however the threads are scheduled.
 TEST(GPUModelTest, ReadingPublishedHistoryWhileSamplingIsRaceFree)
 {
+    constexpr int SAMPLES = 2000;
+    constexpr int PACE_EVERY = 10;
     SteppedGpuModel stepped;
     stepped.model->setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
     stepped.sample(0.25);
 
+    TestPublication::ReadPacer pacer;
     std::atomic<bool> done{false};
     std::atomic<std::size_t> misaligned{0};
     std::thread reader(
@@ -2929,10 +2934,25 @@ TEST(GPUModelTest, ReadingPublishedHistoryWhileSamplingIsRaceFree)
                         }
                     }
                 }
+                pacer.readDone(); // one full traversal of a publication
             }
         });
-    for (int i = 0; i < 2000; ++i)
+
+    // Start sampling only once the reader is running, then count the traversals made while sampling.
+    std::size_t readsSeen = 0;
+    const bool readerStarted = pacer.awaitReadSince(readsSeen);
+    const std::size_t readsBeforeSampling = readsSeen;
+    int paced = 0;
+    for (int i = 0; readerStarted && i < SAMPLES; ++i)
     {
+        if (i % PACE_EVERY == 0)
+        {
+            if (!pacer.awaitReadSince(readsSeen))
+            {
+                break;
+            }
+            ++paced;
+        }
         // GPU2 comes and goes: present for 100 samples of every 300, so it is added, gapped and forgotten.
         if (i % 300 == 100)
         {
@@ -2946,6 +2966,11 @@ TEST(GPUModelTest, ReadingPublishedHistoryWhileSamplingIsRaceFree)
     }
     done.store(true, std::memory_order_release);
     reader.join();
+    ASSERT_TRUE(readerStarted) << "the reader never completed a traversal";
+    ASSERT_FALSE(pacer.timedOut()) << "the reader stopped making progress while sampling";
+    // Every paced wait saw a traversal completed after the previous one, while sampling was under way.
+    EXPECT_EQ(paced, SAMPLES / PACE_EVERY);
+    EXPECT_GE(readsSeen - readsBeforeSampling, static_cast<std::size_t>(SAMPLES / PACE_EVERY));
     EXPECT_EQ(misaligned.load(), 0U);
 }
 
