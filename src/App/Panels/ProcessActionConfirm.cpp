@@ -32,8 +32,25 @@ UI::Widgets::ButtonFills dangerButtonFills()
     return {.resting = scheme.dangerButton, .hovered = scheme.dangerButtonHovered, .pressed = scheme.dangerButtonActive};
 }
 
-Outcome render(bool& showRequested, Detail::ProcessAction action, std::string_view processName, std::int32_t pid)
+Outcome render(bool& showRequested, Detail::ProcessAction action, std::string_view processName, std::int32_t pid, bool dismiss)
 {
+    if (dismiss)
+    {
+        showRequested = false;
+        if (!ImGui::IsPopupOpen(CONFIRM_POPUP_ID))
+        {
+            return Outcome::None;
+        }
+        // CloseCurrentPopup() acts on the popup being drawn, so the modal is entered to close it. Its
+        // ID comes from the "###" part alone, so the bare ID names the same popup; nothing is drawn
+        // in it, and no button can be pressed on the way out.
+        if (ImGui::BeginPopupModal(CONFIRM_POPUP_ID, nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+        return Outcome::Cancelled;
+    }
     if (showRequested)
     {
         ImGui::OpenPopup(CONFIRM_POPUP_ID);

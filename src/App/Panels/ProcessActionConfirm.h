@@ -27,6 +27,10 @@ enum class Outcome : std::uint8_t
 /// Draws the "Kill firefox (PID 1234)?" modal while it is open. Opens it on the frames `showRequested`
 /// is true, and clears that flag when the user confirms or cancels. Call it every frame, outside any
 /// table, from the window the request came from.
-Outcome render(bool& showRequested, Detail::ProcessAction action, std::string_view processName, std::int32_t pid);
+///
+/// With `dismiss`, the modal is closed unconfirmed if it is open (returning Cancelled) and
+/// `showRequested` is cleared: for a caller whose target changed while the modal was up, since
+/// clearing the flag alone does not close a modal ImGui already has open.
+Outcome render(bool& showRequested, Detail::ProcessAction action, std::string_view processName, std::int32_t pid, bool dismiss = false);
 
 } // namespace App::ProcessActionConfirm
