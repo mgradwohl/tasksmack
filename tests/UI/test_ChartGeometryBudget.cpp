@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <array>
+#include <string>
 
 namespace
 {
@@ -59,55 +60,52 @@ static_assert(Domain::Sampling::REFRESH_INTERVAL_MIN_MS == 100, "scene cadence c
 
 static_assert(BUDGETS.size() == ChartGeometry::ALL_SCENES.size(), "every scene needs a budget");
 
-class ChartGeometryBudgetTest : public ::testing::TestWithParam<GeometryBudget>
+/// The scene data, built once for every test here.
+const ChartGeometry::SceneData& sceneData()
 {
-  protected:
-    static const ChartGeometry::SceneData& data()
-    {
-        static const ChartGeometry::SceneData k_Data;
-        return k_Data;
-    }
-};
-
-TEST_P(ChartGeometryBudgetTest, FrameStaysWithinVertexAndIndexBudget)
-{
-    const GeometryBudget& budget = GetParam();
-    const ChartGeometry::HeadlessChartContext context;
-    ChartGeometry::SceneState state;
-    const ChartGeometry::FrameGeometry geometry = ChartGeometry::renderSettledFrame(budget.scene, data(), state);
-
-    RecordProperty("vertices", geometry.vertices);
-    RecordProperty("indices", geometry.indices);
-    const char* name = ChartGeometry::sceneName(budget.scene);
-    EXPECT_LE(geometry.vertices, budgetFor(budget.recordedVertices))
-        << name << ": " << geometry.vertices << " vertices against a budget of " << budgetFor(budget.recordedVertices) << " (recorded "
-        << budget.recordedVertices << " + 25%)";
-    EXPECT_LE(geometry.indices, budgetFor(budget.recordedIndices))
-        << name << ": " << geometry.indices << " indices against a budget of " << budgetFor(budget.recordedIndices) << " (recorded "
-        << budget.recordedIndices << " + 25%)";
-    EXPECT_GE(geometry.vertices, floorFor(budget.recordedVertices))
-        << name << ": only " << geometry.vertices << " vertices; did the scene stop drawing its charts? If the geometry was cut "
-        << "on purpose, lower recordedVertices";
-    EXPECT_GE(geometry.indices, floorFor(budget.recordedIndices))
-        << name << ": only " << geometry.indices << " indices; did the scene stop drawing its charts? If the geometry was cut "
-        << "on purpose, lower recordedIndices";
+    static const ChartGeometry::SceneData k_Data;
+    return k_Data;
 }
 
-INSTANTIATE_TEST_SUITE_P(Scenes,
-                         ChartGeometryBudgetTest,
-                         ::testing::ValuesIn(BUDGETS),
-                         [](const ::testing::TestParamInfo<GeometryBudget>& info) { return ChartGeometry::sceneName(info.param.scene); });
+// Every scene's settled frame stays within its vertex and index budget, and above its floor. One
+// plain test over all scenes (no parameterized suite: CodeQL flags the statics
+// INSTANTIATE_TEST_SUITE_P generates, see #1391), with each scene named in its failures.
+TEST(ChartGeometryBudgetTest, EverySceneStaysWithinVertexAndIndexBudget)
+{
+    for (const GeometryBudget& budget : BUDGETS)
+    {
+        const char* name = ChartGeometry::sceneName(budget.scene);
+        SCOPED_TRACE(name);
+        const ChartGeometry::HeadlessChartContext context;
+        ChartGeometry::SceneState state;
+        const ChartGeometry::FrameGeometry geometry = ChartGeometry::renderSettledFrame(budget.scene, sceneData(), state);
+
+        RecordProperty(std::string(name) + "_vertices", geometry.vertices);
+        RecordProperty(std::string(name) + "_indices", geometry.indices);
+        EXPECT_LE(geometry.vertices, budgetFor(budget.recordedVertices))
+            << name << ": " << geometry.vertices << " vertices against a budget of " << budgetFor(budget.recordedVertices) << " (recorded "
+            << budget.recordedVertices << " + 25%)";
+        EXPECT_LE(geometry.indices, budgetFor(budget.recordedIndices))
+            << name << ": " << geometry.indices << " indices against a budget of " << budgetFor(budget.recordedIndices) << " (recorded "
+            << budget.recordedIndices << " + 25%)";
+        EXPECT_GE(geometry.vertices, floorFor(budget.recordedVertices))
+            << name << ": only " << geometry.vertices << " vertices; did the scene stop drawing its charts? If the geometry was cut "
+            << "on purpose, lower recordedVertices";
+        EXPECT_GE(geometry.indices, floorFor(budget.recordedIndices))
+            << name << ": only " << geometry.indices << " indices; did the scene stop drawing its charts? If the geometry was cut "
+            << "on purpose, lower recordedIndices";
+    }
+}
 
 // The same fixed scene renders the same geometry frame after frame: the counts the budgets hold are
 // a property of the charts, not of how many frames have run (only the wall-clock reduction anchor,
 // see ChartGeometryScenes.h, may move a few points).
 TEST(ChartGeometryScenesTest, SettledFramesRepeatTheirGeometry)
 {
-    static const ChartGeometry::SceneData data;
     const ChartGeometry::HeadlessChartContext context;
     ChartGeometry::SceneState state;
-    const ChartGeometry::FrameGeometry first = ChartGeometry::renderSettledFrame(ChartGeometry::Scene::Memory, data, state);
-    const ChartGeometry::FrameGeometry second = ChartGeometry::renderFrame(ChartGeometry::Scene::Memory, data, state);
+    const ChartGeometry::FrameGeometry first = ChartGeometry::renderSettledFrame(ChartGeometry::Scene::Memory, sceneData(), state);
+    const ChartGeometry::FrameGeometry second = ChartGeometry::renderFrame(ChartGeometry::Scene::Memory, sceneData(), state);
 
     ASSERT_GT(first.vertices, 0);
     const int tolerance = std::max(1, first.vertices / 50); // 2 %
