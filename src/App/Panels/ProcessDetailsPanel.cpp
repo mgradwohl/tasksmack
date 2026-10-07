@@ -21,6 +21,7 @@
 #include "ProcessDetailsPanel_PriorityHelpers.h"
 #include "ProcessDetailsPanel_ResourceHelpers.h" // NOLINT(misc-include-cleaner) - used by the _WIN32 GDI code, which Linux analysis doesn't see
 #include "ProcessPriorityView.h"
+#include "ProcessSmoothedUsage.h"
 #include "UI/ChartWidgets.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/EmptyState.h"
@@ -56,13 +57,11 @@
 namespace
 {
 
-using UI::Widgets::computeAlpha;
 using UI::Widgets::formatAxisBytesPerSec;
 using UI::Widgets::formatAxisLocalized;
 using UI::Widgets::formatAxisWatts;
 using UI::Widgets::frameTimeAxis;
 using UI::Widgets::hoveredIndexFromPlotX;
-using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
 using UI::Widgets::NowBarList;
@@ -123,19 +122,6 @@ constexpr const char* NET_RECV_LABEL = "Received";
 constexpr const char* POWER_LABEL = "Power";
 constexpr const char* GPU_UTIL_LABEL = "Utilization";
 constexpr const char* GPU_MEMORY_LABEL = "Memory";
-
-/// Percent of system RAM per byte for this process's memory figures, from its own resident size and
-/// resident percent (memoryPercent = memoryBytes / totalSystemMemoryBytes * 100). 0 when either is
-/// zero, so every percent derived from it is 0 rather than a division by zero.
-[[nodiscard]] double memoryPercentPerByte(const Domain::ProcessSnapshot& snapshot)
-{
-    const double usedPercent = std::clamp(snapshot.memoryPercent, 0.0, 100.0);
-    if (usedPercent <= 0.0 || snapshot.memoryBytes == 0)
-    {
-        return 0.0;
-    }
-    return usedPercent / Domain::Numeric::toDouble(snapshot.memoryBytes);
-}
 
 /// A count history sample as text, or N/A for NaN (an unread value or a gap, #1110 / #1098): std::llround
 /// of NaN is unspecified, so it must not reach formatIntLocalized().
@@ -219,7 +205,7 @@ void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSampl
 
     if (m_HasSnapshot && !m_ProcessExited)
     {
-        updateSmoothedUsage(*m_CachedSnapshot, deltaTime);
+        m_SmoothedUsage.update(*m_CachedSnapshot, m_CachedRateReadings, deltaTime, m_RefreshInterval);
     }
 }
 
@@ -509,7 +495,7 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t uniqueK
     m_HasSnapshot = false;
     m_ProcessExited = false;
     m_ActionsView.onSelectionChanged();
-    m_SmoothedUsage = {};
+    m_SmoothedUsage.reset();
     m_CachedRateReadings = {};
     m_PeakMemoryBytes = 0.0;
     m_PriorityView.onSelectionChanged(); // Drops an edited priority, so it cannot reach the new process
@@ -518,85 +504,6 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t uniqueK
     {
         spdlog::debug("ProcessDetailsPanel: selected PID {}", pid);
     }
-}
-
-void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& snapshot, float deltaTimeSeconds)
-{
-    const double alpha = computeAlpha(deltaTimeSeconds, m_RefreshInterval);
-
-    const double targetCpu = UI::Format::clampPercent(snapshot.cpuPercent);
-    const double targetResident = Domain::Numeric::toDouble(snapshot.memoryBytes);
-    const double targetVirtual = Domain::Numeric::toDouble(std::max(snapshot.virtualBytes, snapshot.memoryBytes));
-    const double targetCpuUser = UI::Format::clampPercent(snapshot.cpuUserPercent);
-    const double targetCpuSystem = UI::Format::clampPercent(snapshot.cpuSystemPercent);
-    const double targetThreads = Domain::Numeric::toDouble(snapshot.threadCount);
-    const double targetFaults = std::max(0.0, snapshot.pageFaultsPerSec);
-    const double targetPower = std::max(0.0, snapshot.powerWatts);
-    const double targetGpuUtil = UI::Format::clampPercent(snapshot.gpuUtilPercent);
-    const double targetGpuMem = Domain::Numeric::toDouble(snapshot.gpuMemoryBytes);
-    const double targetMemShared = Domain::Numeric::toDouble(snapshot.sharedBytes);
-
-    const bool initialized = m_SmoothedUsage.initialized && (deltaTimeSeconds > 0.0F);
-
-    m_SmoothedUsage.cpuPercent = UI::Format::clampPercent(initializeOrSmooth(m_SmoothedUsage.cpuPercent, targetCpu, alpha, initialized));
-    m_SmoothedUsage.residentBytes = std::max(0.0, initializeOrSmooth(m_SmoothedUsage.residentBytes, targetResident, alpha, initialized));
-    m_SmoothedUsage.virtualBytes = initializeOrSmooth(m_SmoothedUsage.virtualBytes, targetVirtual, alpha, initialized);
-    m_SmoothedUsage.virtualBytes = std::max(m_SmoothedUsage.virtualBytes, m_SmoothedUsage.residentBytes);
-    m_SmoothedUsage.cpuUserPercent =
-        UI::Format::clampPercent(initializeOrSmooth(m_SmoothedUsage.cpuUserPercent, targetCpuUser, alpha, initialized));
-    m_SmoothedUsage.cpuSystemPercent =
-        UI::Format::clampPercent(initializeOrSmooth(m_SmoothedUsage.cpuSystemPercent, targetCpuSystem, alpha, initialized));
-    m_SmoothedUsage.threadCount = std::max(0.0, initializeOrSmooth(m_SmoothedUsage.threadCount, targetThreads, alpha, initialized));
-    m_SmoothedUsage.pageFaultsPerSec =
-        std::max(0.0, initializeOrSmooth(m_SmoothedUsage.pageFaultsPerSec, targetFaults, alpha, initialized));
-    // Handle/FD count, I/O and network rates the probe could not read (#1110) aren't smoothed toward 0:
-    // their NowBars show N/A, as their lines show a gap, and the next reading starts afresh.
-    const auto smoothReading = [alpha, initialized](double& value, bool wasAvailable, bool available, double reading)
-    {
-        const auto next = Detail::smoothOptionalReading(
-            {.value = value, .available = wasAvailable}, available ? std::optional<double>(reading) : std::nullopt, alpha, initialized);
-        value = next.value;
-    };
-    smoothReading(m_SmoothedUsage.handleCount,
-                  m_SmoothedUsage.handleCountAvailable,
-                  snapshot.handleCountAvailable,
-                  Domain::Numeric::toDouble(snapshot.handleCount));
-    m_SmoothedUsage.handleCountAvailable = snapshot.handleCountAvailable;
-    // A rate the probe could not supply at all when the shown sample was taken is not a reading
-    // either (#1210); judged with that sample's own generation, as its history point was.
-    const bool ioReading = m_CachedRateReadings.io;
-    const bool networkReading = m_CachedRateReadings.network;
-    smoothReading(m_SmoothedUsage.ioReadBytesPerSec, m_SmoothedUsage.ioAvailable, ioReading, snapshot.ioReadBytesPerSec);
-    smoothReading(m_SmoothedUsage.ioWriteBytesPerSec, m_SmoothedUsage.ioAvailable, ioReading, snapshot.ioWriteBytesPerSec);
-    m_SmoothedUsage.ioAvailable = ioReading;
-    smoothReading(m_SmoothedUsage.netSentBytesPerSec, m_SmoothedUsage.networkAvailable, networkReading, snapshot.netSentBytesPerSec);
-    smoothReading(m_SmoothedUsage.netRecvBytesPerSec, m_SmoothedUsage.networkAvailable, networkReading, snapshot.netReceivedBytesPerSec);
-    m_SmoothedUsage.networkAvailable = networkReading;
-    m_SmoothedUsage.powerWatts = std::max(0.0, initializeOrSmooth(m_SmoothedUsage.powerWatts, targetPower, alpha, initialized));
-    // GPU utilization and memory the GPU probe did not supply for the shown sample's generation are
-    // not readings either (#1210): not smoothed toward 0, so once support arrives the first real
-    // reading starts afresh rather than easing up from placeholder zeros.
-    const bool gpuUtilSupplied = m_CachedRateReadings.gpuUtilization;
-    const bool gpuMemSupplied = m_CachedRateReadings.gpuPerProcess;
-    smoothReading(m_SmoothedUsage.gpuUtilPercent, m_SmoothedUsage.gpuUtilAvailable, gpuUtilSupplied, targetGpuUtil);
-    m_SmoothedUsage.gpuUtilPercent = UI::Format::clampPercent(m_SmoothedUsage.gpuUtilPercent);
-    m_SmoothedUsage.gpuUtilAvailable = gpuUtilSupplied;
-    smoothReading(m_SmoothedUsage.gpuMemoryBytes, m_SmoothedUsage.gpuMemoryAvailable, gpuMemSupplied, targetGpuMem);
-    m_SmoothedUsage.gpuMemoryBytes = std::max(0.0, m_SmoothedUsage.gpuMemoryBytes);
-    m_SmoothedUsage.gpuMemoryAvailable = gpuMemSupplied;
-    // A sample with no GDI reading isn't smoothed toward 0: the NowBar shows N/A for it instead,
-    // matching the gap in the line, and the next reading starts afresh (#1148).
-    const auto gdi = Detail::smoothOptionalReading(
-        {.value = m_SmoothedUsage.gdiObjectCount, .available = m_SmoothedUsage.gdiInitialized},
-        snapshot.gdiObjectCount.has_value() ? std::optional<double>(Domain::Numeric::toDouble(*snapshot.gdiObjectCount)) : std::nullopt,
-        alpha,
-        initialized);
-    m_SmoothedUsage.gdiObjectCount = gdi.value;
-    m_SmoothedUsage.gdiInitialized = gdi.available;
-    m_SmoothedUsage.memorySharedBytes =
-        std::max(0.0, initializeOrSmooth(m_SmoothedUsage.memorySharedBytes, targetMemShared, alpha, initialized));
-    m_SmoothedUsage.memoryPercentPerByte = memoryPercentPerByte(snapshot);
-    m_SmoothedUsage.initialized = true;
 }
 
 void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
@@ -812,7 +719,7 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
     // Ensure smoothing is initialized even if render is called before an update tick
     if (!m_SmoothedUsage.initialized)
     {
-        updateSmoothedUsage(proc, m_LastDeltaSeconds);
+        m_SmoothedUsage.update(proc, m_CachedRateReadings, m_LastDeltaSeconds, m_RefreshInterval);
     }
 
     renderCpuUsageSection(fill);
