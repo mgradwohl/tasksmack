@@ -23,11 +23,12 @@
 # llvmpipe software rasterizer, whose worker threads run inside TaskSmack's process and usually
 # dominate its CPU. They measure the CPU rasterizer, not TaskSmack, so whole-process CPU says little
 # there. App CPU leaves out threads whose name matches MESA_THREAD_REGEX below:
-#   llvmpipe-N   llvmpipe's rasterizer threads (one per logical CPU)
-#   lp:*         llvmpipe's compute-shader / setup thread pool threads
-#   gdrv*        Gallium threaded-context driver queue (u_threaded_context)
-#   glthread*    Mesa's GL marshalling thread (mesa_glthread)
-#   disk$*, shdr*, cso*  Mesa's shader-cache, shader-compile and CSO util_queue workers
+#   llvmpipe-N       llvmpipe's rasterizer threads (one per logical CPU); nearly all of it
+#   <proc>:disk$N    Mesa's shader disk-cache util_queue worker (Mesa names its util_queue
+#                    threads "<first 7 chars of the process name>:<queue><N>", e.g. TaskSma:disk$0)
+# These are the Mesa threads seen in a WSLg llvmpipe run (Mesa 26 / LLVM 21). Mesa also starts a
+# few helper threads that keep the process name (TaskSmack) and cannot be told apart from
+# TaskSmack's own unnamed threads by name, so they stay in app CPU; they were idle (0.00%).
 # Both figures are reported; app CPU is the one the idle target and --fail-above apply to. With the
 # /proc sampler a Mesa thread that starts during the sample is not in the per-thread rows, so its
 # CPU stays in app CPU (it errs high, never low).
@@ -89,7 +90,8 @@
 # during the window are left out of the per-thread rows; the total always counts them.
 #
 # TaskSmack's own output goes to perf-data/idle-<label>-<timestamp>-app.log (-r<N>-app.log per
-# repetition when --repeat is above 1). The run fails if TaskSmack exits early, exits non-zero after
+# repetition when --repeat is above 1). The run fails if another TaskSmack already holds the
+# single-instance lock (close it first), or if TaskSmack exits early, exits non-zero after
 # SIGTERM, or needs SIGKILL. Exit status: 0 success, 1 error, 3 --fail-above exceeded.
 #
 # On WSL (WSLg), the app CPU figures are valid evidence; total CPU is dominated by llvmpipe and
@@ -115,7 +117,7 @@ PERF_DIR="${REPO_ROOT}/perf-data"
 SAMPLING_CONFIG_H="${REPO_ROOT}/src/Domain/SamplingConfig.h"
 
 # Mesa software-render / driver worker threads, left out of app CPU (see the header for each).
-MESA_THREAD_REGEX='^(llvmpipe-[0-9]+|lp:.*|gdrv.*|glthread.*|disk[$].*|shdr.*|cso.*)$'
+MESA_THREAD_REGEX='^(llvmpipe-[0-9]+|[^:]*:disk[$][0-9]+)$'
 
 usage() {
     sed -n '2,/^$/{s/^# \{0,1\}//;p}' "${BASH_SOURCE[0]}"
@@ -199,6 +201,7 @@ REPS_FILE="${WORK_DIR}/reps"
 
 MAIN_LOOP_TIMEOUT_SECONDS=30
 MAIN_LOOP_MARKER="Entering main loop" # Logged by Core::Application::run() at info level
+ALREADY_RUNNING_MARKER="TaskSmack is already running" # Logged by main() when the instance lock is held
 APP_PID=""
 APP_EXIT_CODE=""
 APP_KILLED=0
@@ -314,6 +317,11 @@ run_once() {
         if grep -q "${MAIN_LOOP_MARKER}" "${APP_LOG}" 2>/dev/null; then
             seen=1
             break
+        fi
+        # The single-instance lock: this copy shows a modal "already running" box and waits for it
+        # to be dismissed, so it would never reach its main loop. Close the other TaskSmack first.
+        if grep -q "${ALREADY_RUNNING_MARKER}" "${APP_LOG}" 2>/dev/null; then
+            die "Another TaskSmack is already running with the same settings; close it and run again. See ${APP_LOG}."
         fi
         sleep 0.25
     done
