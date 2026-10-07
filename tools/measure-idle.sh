@@ -73,14 +73,17 @@
 #                         window geometry on exit, so the run leaves the saved geometry unchanged
 #                         (other settings save as usual). A TASKSMACK_WINDOW already in the
 #                         environment is passed through too; this flag overrides it, and
-#                         --window '' turns an inherited one off. Default: unset (the saved
+#                         --window '' (or off, 0, false, no, as the app reads them) turns an
+#                         inherited one off. The value is checked and clamped here as the app
+#                         does, and the app is given the canonical clamped form. Default: unset (the saved
 #                         geometry). It is opt-in because the idle-CPU targets in CONTRIBUTING.md
 #                         were measured at a saved geometry (maximized, 3840x2100) and have not
 #                         been re-measured at a fixed size such as 1600x900; on the display they
 #                         were measured on, --window 1600x900,maximized reproduces their geometry
 #                         whatever is saved. The requested value is recorded as
-#                         scenario.requestedWindow in the JSON (with whether the app logged
-#                         applying it), next to the measured scenario.window.
+#                         scenario.requestedWindow in the JSON (the applied spec and sides, the
+#                         value as given, and whether the app logged applying it), next to the
+#                         measured scenario.window.
 #   --repeat <N>          Run the whole launch/warm-up/sample/close cycle N times (a fresh process
 #                         each time) and aggregate. Default: 1. Use 5 for a baseline or a gate.
 #   --json <path>         Write the results as JSON here. Default:
@@ -142,6 +145,7 @@ source "${SCRIPT_DIR}/common.sh"
 
 PERF_DIR="${REPO_ROOT}/perf-data"
 SAMPLING_CONFIG_H="${REPO_ROOT}/src/Domain/SamplingConfig.h"
+WINDOW_CONSTANTS_H="${REPO_ROOT}/src/Core/WindowConstants.h"
 
 # Mesa software-render / driver worker threads, left out of app CPU (see the header for each).
 MESA_THREAD_REGEX='^(llvmpipe-[0-9]+|[^:]*:disk[$][0-9]+)$'
@@ -211,17 +215,63 @@ PYTHON="$(find_python)" || die "Python 3.14+ is required (the project .venv or p
 # Letters, digits and = , . _ - only: it goes into the RESULT line as one key=value field.
 [[ -z "${SYNTHETIC}" || "${SYNTHETIC}" =~ ^[A-Za-z0-9=,._-]+$ ]] \
     || die "--synthetic may only contain letters, digits, '=', ',', '.', '_' and '-' (e.g. processes=5000,history=full)"
-# The form TaskSmack accepts (src/App/WindowOverride.h), checked here so a typo fails the run instead
-# of being ignored by the app with a warning. Sizes outside 200-16384 are clamped by the app.
+# --window is read the way TaskSmack's WindowOverride::parse() (src/App/WindowOverride.h) reads
+# TASKSMACK_WINDOW, so the geometry recorded is the one the app applies:
+#   - unset, empty, blank, or an off word ("0", "off", "false", "no", in any case, as
+#     Core::isEnvFlagEnabled reads them) means no override;
+#   - otherwise <width>x<height>[,maximized] ('x' or 'X', "maximized"/"maximised" in any case,
+#     spaces allowed around the parts); anything else fails the run here instead of being ignored
+#     by the app with a warning;
+#   - each side is clamped to [WINDOW_MIN_DIMENSION, WINDOW_MAX_DIMENSION], read from
+#     src/Core/WindowConstants.h. Compared as digit strings, not with Bash arithmetic, which would
+#     wrap a long one where the app saturates it and clamps it to the maximum.
+# The app is then given the canonical "<width>x<height>[,maximized]" of the clamped sides, which it
+# applies unchanged; the value as given is recorded too (requestedWindow.input).
+# A constant's digits from WindowConstants.h ("constexpr int NAME = 16'384;" -> 16384).
+window_constant() {
+    sed -n "s/^constexpr int $1 = \([0-9']*\);.*/\1/p" "${WINDOW_CONSTANTS_H}" 2>/dev/null | head -n 1 | tr -d "'"
+}
+# Prints the digit string $1 clamped to [$2, $3] (canonical decimals) without arithmetic.
+clamp_digits() {
+    local value="${1#"${1%%[!0]*}"}" lo="$2" hi="$3"
+    [[ -n "${value}" ]] || value=0
+    # Of equal length, C-locale string order is numeric order: the < and > below compare strings on
+    # purpose, so digit strings past Bash's integer range compare correctly.
+    # shellcheck disable=SC2071
+    if (( ${#value} > ${#hi} )) || { (( ${#value} == ${#hi} )) && [[ "${value}" > "${hi}" ]]; }; then
+        printf '%s' "${hi}"
+    elif (( ${#value} < ${#lo} )) || { (( ${#value} == ${#lo} )) && [[ "${value}" < "${lo}" ]]; }; then
+        printf '%s' "${lo}"
+    else
+        printf '%s' "${value}"
+    fi
+}
+WINDOW_MIN="$(window_constant WINDOW_MIN_DIMENSION)"
+WINDOW_MAX="$(window_constant WINDOW_MAX_DIMENSION)"
+[[ "${WINDOW_MIN}" =~ ^[1-9][0-9]*$ && "${WINDOW_MAX}" =~ ^[1-9][0-9]*$ ]] \
+    || die "Could not read WINDOW_MIN_DIMENSION/WINDOW_MAX_DIMENSION from ${WINDOW_CONSTANTS_H}"
+WINDOW_INPUT="${WINDOW_SPEC}"
 REQ_WINDOW_W="" REQ_WINDOW_H="" REQ_WINDOW_MAXIMIZED=""
-if [[ -n "${WINDOW_SPEC}" ]]; then
-    [[ "${WINDOW_SPEC}" =~ ^([0-9]+)[xX]([0-9]+)(,(maximized|maximised))?$ ]] \
-        || die "--window must be <width>x<height> or <width>x<height>,maximized (e.g. 1600x900)"
-    REQ_WINDOW_W=$((10#${BASH_REMATCH[1]}))
-    REQ_WINDOW_H=$((10#${BASH_REMATCH[2]}))
-    REQ_WINDOW_MAXIMIZED=false
-    [[ -n "${BASH_REMATCH[3]}" ]] && REQ_WINDOW_MAXIMIZED=true
-fi
+WINDOW_TRIMMED="${WINDOW_SPEC#"${WINDOW_SPEC%%[![:space:]]*}"}"
+WINDOW_TRIMMED="${WINDOW_TRIMMED%"${WINDOW_TRIMMED##*[![:space:]]}"}"
+case "${WINDOW_TRIMMED,,}" in
+    ""|0|off|false|no) WINDOW_SPEC="" ;;
+    *)
+        if ! [[ "${WINDOW_TRIMMED}" =~ ^([0-9]+)[[:space:]]*[xX][[:space:]]*([0-9]+)([[:space:]]*,[[:space:]]*([A-Za-z]+))?$ ]] \
+            || ! [[ -z "${BASH_REMATCH[3]}" || "${BASH_REMATCH[4],,}" == maximized || "${BASH_REMATCH[4],,}" == maximised ]]; then
+            die "--window must be <width>x<height> or <width>x<height>,maximized (e.g. 1600x900), or empty/off for none"
+        fi
+        REQ_WINDOW_MAXIMIZED=false
+        [[ -n "${BASH_REMATCH[3]}" ]] && REQ_WINDOW_MAXIMIZED=true
+        REQ_WINDOW_W="$(clamp_digits "${BASH_REMATCH[1]}" "${WINDOW_MIN}" "${WINDOW_MAX}")"
+        REQ_WINDOW_H="$(clamp_digits "${BASH_REMATCH[2]}" "${WINDOW_MIN}" "${WINDOW_MAX}")"
+        WINDOW_SPEC="${REQ_WINDOW_W}x${REQ_WINDOW_H}"
+        [[ "${REQ_WINDOW_MAXIMIZED}" == true ]] && WINDOW_SPEC+=",maximized"
+        if [[ "${WINDOW_SPEC}" != "${WINDOW_TRIMMED}" ]]; then
+            echo "NOTE: --window '${WINDOW_INPUT}' is applied as ${WINDOW_SPEC} (each side ${WINDOW_MIN}-${WINDOW_MAX})."
+        fi
+        ;;
+esac
 
 if [[ "${SKIP_BUILD}" -eq 0 ]]; then
     validate_build_prereqs || die "Build prerequisites not met."
@@ -771,8 +821,8 @@ json_stats() { printf '{ "mean": %s, "median": %s, "p95": %s, "min": %s, "max": 
         "$(json_num "${WINDOW_W}")" "$(json_num "${WINDOW_H}")" "$(json_num "${WINDOW_MAXIMIZED}")" "${WINDOW_VARIED}"
     # null when --window was not given: the app opened at its saved geometry.
     if [[ -n "${WINDOW_SPEC}" ]]; then
-        printf '    "requestedWindow": { "spec": %s, "width": %s, "height": %s, "maximized": %s, "applied": %s },\n' \
-            "$(json_str "${WINDOW_SPEC}")" "${REQ_WINDOW_W}" "${REQ_WINDOW_H}" "${REQ_WINDOW_MAXIMIZED}" "${REQ_WINDOW_APPLIED}"
+        printf '    "requestedWindow": { "spec": %s, "input": %s, "width": %s, "height": %s, "maximized": %s, "applied": %s },\n' \
+            "$(json_str "${WINDOW_SPEC}")" "$(json_str "${WINDOW_INPUT}")" "${REQ_WINDOW_W}" "${REQ_WINDOW_H}" "${REQ_WINDOW_MAXIMIZED}" "${REQ_WINDOW_APPLIED}"
     else
         printf '    "requestedWindow": null,\n'
     fi
