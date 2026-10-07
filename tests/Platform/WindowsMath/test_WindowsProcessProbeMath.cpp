@@ -256,6 +256,7 @@ TEST(EStatsSampleCountsTest, Ipv4AndIpv6TalliesAdd)
         .accessDenied = 0,
         .hasData = 2,
         .garbage = 1,
+        .collectionOff = 2,
     };
     const EStatsSampleCounts v6{
         .total = 5,
@@ -269,6 +270,7 @@ TEST(EStatsSampleCountsTest, Ipv4AndIpv6TalliesAdd)
         .accessDenied = 1,
         .hasData = 1,
         .garbage = 0,
+        .collectionOff = 1,
     };
     v4 += v6;
     EXPECT_EQ(v4.total, 15U);
@@ -282,6 +284,7 @@ TEST(EStatsSampleCountsTest, Ipv4AndIpv6TalliesAdd)
     EXPECT_EQ(v4.accessDenied, 1U);
     EXPECT_EQ(v4.hasData, 3U);
     EXPECT_EQ(v4.garbage, 1U);
+    EXPECT_EQ(v4.collectionOff, 3U);
 }
 
 TEST(RecordEStatsRowTest, TalliesEachOutcome)
@@ -541,6 +544,19 @@ TEST(EStatsEnableTrackerTest, FailedReadEnablesAgainNextSample)
     }
 }
 
+TEST(EStatsEnableTrackerTest, CollectionOffReadEnablesAgainNextSample)
+{
+    // Collection read back off (another tool, or a reused 4-tuple): forgotten even with data.
+    EStatsEnableTracker tracker;
+    recordSaneRead(tracker, KEY_A);
+    tracker.endSample(true);
+    ASSERT_FALSE(tracker.needsEnable(KEY_A));
+
+    tracker.record(KEY_A, std::nullopt, EStatsRowOutcome::CollectionOff, true);
+    tracker.endSample(true);
+    EXPECT_TRUE(tracker.needsEnable(KEY_A));
+}
+
 TEST(EStatsEnableTrackerTest, ReadWithNoDataEnablesAgainNextSample)
 {
     // Both counters 0: collection may be off (a reused 4-tuple, or another tool disabled it).
@@ -629,6 +645,59 @@ TEST(EStatsEnableTrackerTest, SteadyConnectionsAreEnabledOnce)
         tracker.endSample(true);
     }
     EXPECT_EQ(enables, 3U);
+}
+
+// A successful read that reports collection off (#1418): its counters are undefined.
+
+TEST(ClassifyEStatsRowTest, CollectionOffReadIsNotAccepted)
+{
+    EXPECT_EQ(classifyEStatsRow(TCP_STATE_ESTABLISHED, ESTATS_NO_ERROR, 5'000, 7'000, false), EStatsRowOutcome::CollectionOff);
+    EXPECT_EQ(classifyEStatsRow(TCP_STATE_ESTABLISHED, ESTATS_NO_ERROR, 5'000, 7'000, true), EStatsRowOutcome::Accumulated);
+    // A failed read stays a failed read; a skipped row stays skipped.
+    EXPECT_EQ(classifyEStatsRow(TCP_STATE_ESTABLISHED, ESTATS_ERROR_NOT_FOUND, 0, 0, false), EStatsRowOutcome::ReadFailed);
+    EXPECT_EQ(classifyEStatsRow(2, ESTATS_NO_ERROR, 0, 0, false), EStatsRowOutcome::SkippedState);
+}
+
+TEST(RecordEStatsRowTest, CollectionOffIsAReadButNeitherSaneNorDenied)
+{
+    EStatsSampleCounts counts;
+    EXPECT_EQ(recordEStatsRow(counts, TCP_STATE_ESTABLISHED, std::nullopt, ESTATS_NO_ERROR, 5'000, 7'000, false),
+              EStatsRowOutcome::CollectionOff);
+    EXPECT_EQ(counts.established, 1U);
+    EXPECT_EQ(counts.readOk, 1U);
+    EXPECT_EQ(counts.collectionOff, 1U);
+    EXPECT_EQ(counts.saneReads, 0U);
+    EXPECT_EQ(counts.hasData, 0U);
+    EXPECT_EQ(counts.garbage, 0U);
+    EXPECT_EQ(counts.accessDenied, 0U);
+    EXPECT_EQ(counts.readFailedOther, 0U);
+}
+
+TEST(ClassifyEStatsProbeTest, CollectionOffReadsAreInconclusive)
+{
+    // Not proof EStats works (no sane read), not proof it is denied: inconclusive, like garbage,
+    // so a streak of them still ends in Unavailable.
+    EStatsSampleCounts off;
+    (void) recordEStatsRow(off, TCP_STATE_ESTABLISHED, ESTATS_NO_ERROR, ESTATS_NO_ERROR, 5'000, 7'000, false);
+    EXPECT_EQ(classifyEStatsProbe(off, 0), EStatsProbeResult::Undetermined);
+    EXPECT_EQ(classifyEStatsProbe(off, MAX_INCONCLUSIVE_ESTATS_SAMPLES - 1), EStatsProbeResult::Unavailable);
+
+    // Beside a sane read, the sample proves EStats works.
+    (void) recordEStatsRow(off, TCP_STATE_ESTABLISHED, std::nullopt, ESTATS_NO_ERROR, 10, 10);
+    EXPECT_EQ(classifyEStatsProbe(off), EStatsProbeResult::Available);
+}
+
+TEST(BuildSocketTrafficSamplesTest, CollectionOffConnectionIsUnreadable)
+{
+    const std::vector<EStatsConnectionRead> reads{
+        {.key = KEY_A, .pid = 7, .outcome = EStatsRowOutcome::CollectionOff, .bytesReceived = 7'000, .bytesSent = 5'000},
+    };
+    const auto samples = buildSocketTrafficSamples(reads);
+    ASSERT_EQ(samples.size(), 1U);
+    EXPECT_EQ(samples.front().key, KEY_A);
+    EXPECT_FALSE(samples.front().readable);
+    EXPECT_EQ(samples.front().bytesReceived, 0U);
+    EXPECT_EQ(samples.front().bytesSent, 0U);
 }
 
 // classifyEStatsProbe() on samples where every connection was enabled earlier (#1418): the

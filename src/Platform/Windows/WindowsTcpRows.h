@@ -129,12 +129,26 @@ void readEStatsRow(RowT& row,
         }
     }
 
-    // Read the stats (may work even if enable failed, if another process enabled it)
+    // Read the stats (may work even if enable failed, if another process enabled it), and in the
+    // same call whether collection is on: the counters are undefined while it is off (#1418), as
+    // on a new connection reusing a remembered 4-tuple, or after another tool turned it off.
+    TCP_ESTATS_DATA_RW_v0 rwState{};
     TCP_ESTATS_DATA_ROD_v0 rod{};
-    const DWORD readStatus =
-        getFn(&row, TcpConnectionEstatsData, nullptr, 0, 0, nullptr, 0, 0, reinterpret_cast<PUCHAR>(&rod), 0, sizeof(rod));
+    const DWORD readStatus = getFn(&row,
+                                   TcpConnectionEstatsData,
+                                   reinterpret_cast<PUCHAR>(&rwState),
+                                   0,
+                                   sizeof(rwState),
+                                   nullptr,
+                                   0,
+                                   0,
+                                   reinterpret_cast<PUCHAR>(&rod),
+                                   0,
+                                   sizeof(rod));
+    const bool collectionEnabled = rwState.EnableCollection != FALSE;
 
-    const EStatsRowOutcome outcome = recordEStatsRow(counts, state, enableStatus, readStatus, rod.DataBytesOut, rod.DataBytesIn);
+    const EStatsRowOutcome outcome =
+        recordEStatsRow(counts, state, enableStatus, readStatus, rod.DataBytesOut, rod.DataBytesIn, collectionEnabled);
     enabled.record(key, enableStatus, outcome, rod.DataBytesOut > 0 || rod.DataBytesIn > 0);
     reads.push_back(
         EStatsConnectionRead{.key = key, .pid = pid, .outcome = outcome, .bytesReceived = rod.DataBytesIn, .bytesSent = rod.DataBytesOut});

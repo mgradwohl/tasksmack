@@ -1532,7 +1532,7 @@ bool WindowsProcessProbe::verifyEStats(const EStatsSampleCounts& counts) const
     if (sampleCount.fetch_add(1, std::memory_order_relaxed) % 60 == 0)
     {
         spdlog::debug("TCP EStats (IPv4+IPv6): {} total, {} established, {} enabled ({} already enabled), {} read OK, {} have data, "
-                      "{} garbage, {} not found, {} other read failures, {} access denied",
+                      "{} garbage, {} collection off, {} not found, {} other read failures, {} access denied",
                       counts.total,
                       counts.established,
                       counts.enabled,
@@ -1540,6 +1540,7 @@ bool WindowsProcessProbe::verifyEStats(const EStatsSampleCounts& counts) const
                       counts.readOk,
                       counts.hasData,
                       counts.garbage,
+                      counts.collectionOff,
                       counts.readNotFound,
                       counts.readFailedOther,
                       counts.accessDenied);
@@ -1561,10 +1562,12 @@ bool WindowsProcessProbe::verifyEStats(const EStatsSampleCounts& counts) const
             break;
         case EStatsProbeResult::Unavailable:
             spdlog::warn("Per-process network counters disabled: TCP EStats failed on real connections "
-                         "({} established, {} sane reads, {} garbage, {} not found, {} other read failures, {} access denied)",
+                         "({} established, {} sane reads, {} garbage, {} collection off, {} not found, {} other read failures, "
+                         "{} access denied)",
                          counts.established,
                          counts.saneReads,
                          counts.garbage,
+                         counts.collectionOff,
                          counts.readNotFound,
                          counts.readFailedOther,
                          counts.accessDenied);
@@ -1580,7 +1583,7 @@ bool WindowsProcessProbe::verifyEStats(const EStatsSampleCounts& counts) const
             return false;
         case EStatsProbeResult::Undetermined:
             // Idle samples (no established connections) carry no evidence and leave the streak
-            // alone; an inconclusive one (only NOT_FOUND / garbage) extends it. Try again next sample.
+            // alone; an inconclusive one (only NOT_FOUND / garbage / collection off) extends it. Try again next sample.
             if (counts.established > 0)
             {
                 m_EStatsInconclusiveSamples.fetch_add(1, std::memory_order_relaxed);
