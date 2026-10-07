@@ -463,12 +463,19 @@ void ProcessDetailsPanel::renderContent()
                 const Detail::GpuTabContent gpuContent = Detail::gpuTabContent(
                     m_CachedRateReadings.gpuSupported, // A failed read is not "not available on this system" (#1210)
                     Detail::hasGpuUsageToShow(
-                        proc.gpuMemoryBytes, proc.gpuUtilPercent, !proc.gpuDevices.empty(), m_GpuUtilHistory, m_GpuMemHistory));
+                        proc.gpuMemoryBytes, proc.gpuUtilPercent, !proc.gpuDevices.empty(), m_GpuUtilHistory, m_GpuMemHistory),
+                    Detail::hasAnyReading(m_GpuUtilHistory) || Detail::hasAnyReading(m_GpuMemHistory));
                 if (gpuContent == Detail::GpuTabContent::Unavailable)
                 {
                     // Not "no usage": without per-process metrics none can be seen (#1210).
                     UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  Per-process GPU usage is not available",
                                                   "This system's GPU monitoring does not report GPU usage per process.");
+                }
+                else if (gpuContent == Detail::GpuTabContent::NoReadings)
+                {
+                    // Every retained read failed: nothing is known yet about this process's GPU use (#1210).
+                    UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  No GPU readings yet",
+                                                  "Reading this process's GPU usage has not succeeded yet.");
                 }
                 else if (gpuContent == Detail::GpuTabContent::NoUsage)
                 {

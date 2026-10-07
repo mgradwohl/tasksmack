@@ -92,5 +92,15 @@ TEST(ProcessGpuHelpersTest, GpuTabSaysUnavailableRatherThanNoUsageWithoutPerProc
     EXPECT_EQ(gpuTabContent(true, true), GpuTabContent::Usage);
 }
 
+// #1210: a supported probe whose every retained read failed has a history of only gaps. That is no
+// reading yet, not a measured lack of GPU use, and must not say the process has not used a GPU.
+TEST(ProcessGpuHelpersTest, OnlyFailedReadsIsNoReadingsNotNoUsage)
+{
+    EXPECT_EQ(gpuTabContent(/*perProcessGpuSupported=*/true, /*hasUsageToShow=*/false, /*hasAnyReading=*/false), GpuTabContent::NoReadings);
+    EXPECT_EQ(gpuTabContent(true, false, /*hasAnyReading=*/true), GpuTabContent::NoUsage); // Measured zeros
+    EXPECT_EQ(gpuTabContent(true, true, false), GpuTabContent::Usage);
+    EXPECT_EQ(gpuTabContent(false, false, false), GpuTabContent::Unavailable); // Unsupported still wins
+}
+
 } // namespace
 } // namespace App::Detail

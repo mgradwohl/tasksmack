@@ -44,23 +44,31 @@ template<std::ranges::input_range UtilHistory, std::ranges::input_range MemoryHi
 enum class GpuTabContent : std::uint8_t
 {
     Unavailable, ///< Per-process GPU usage cannot be observed on this system: say so
-    NoUsage,     ///< It can, and this process has used no GPU since it was selected
+    NoReadings,  ///< It can, but no read of it has succeeded in the retained history: say so
+    NoUsage,     ///< It can, and the readings retained show no GPU use
     Usage,       ///< Its usage and charts
 };
 
 /// The GPU tab's content. Where the GPU probe has no per-process metrics (DRM- or ROCm-only Linux,
 /// no usable GPU probe), every process reads no GPU use, so "has not used a GPU" would claim what
-/// cannot be seen: that case says per-process GPU usage is not available instead.
+/// cannot be seen: that case says per-process GPU usage is not available instead. Likewise where it
+/// has them but every retained read failed (the history is only gaps): that is no readings yet, not
+/// a measured lack of use (#1210).
 ///
 /// @param perProcessGpuSupported  ProcessColumnAvailability::perProcessGpuSupported().
 /// @param hasUsageToShow          hasGpuUsageToShow().
-[[nodiscard]] constexpr GpuTabContent gpuTabContent(bool perProcessGpuSupported, bool hasUsageToShow) noexcept
+/// @param hasAnyReading           Whether the retained GPU histories hold any reading (not only gaps).
+[[nodiscard]] constexpr GpuTabContent gpuTabContent(bool perProcessGpuSupported, bool hasUsageToShow, bool hasAnyReading = true) noexcept
 {
     if (!perProcessGpuSupported)
     {
         return GpuTabContent::Unavailable;
     }
-    return hasUsageToShow ? GpuTabContent::Usage : GpuTabContent::NoUsage;
+    if (hasUsageToShow)
+    {
+        return GpuTabContent::Usage;
+    }
+    return hasAnyReading ? GpuTabContent::NoUsage : GpuTabContent::NoReadings;
 }
 
 /// The GPU tab's "No GPU usage" explanation, for a history window of `historySeconds` (#1210).

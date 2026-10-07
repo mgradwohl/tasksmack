@@ -273,6 +273,12 @@ TEST(ProcessHistoryHelpersTest, AFailedGpuReadIsAGapButKeepsSupport)
     EXPECT_FALSE(readings.gpuUtilization);
     EXPECT_TRUE(readings.gpuSupported);
     EXPECT_NE(gpuTabContent(readings.gpuSupported, false), GpuTabContent::Unavailable);
+
+    // A history of only that sample's gap holds no reading: the tab says so rather than "no usage".
+    const double gap = std::numeric_limits<double>::quiet_NaN();
+    const std::vector<double> gapsOnly{readingOrGap(readings.gpuUtilization, 0.0), readingOrGap(readings.gpuPerProcess, 0.0), gap};
+    EXPECT_FALSE(hasAnyReading(gapsOnly));
+    EXPECT_EQ(gpuTabContent(readings.gpuSupported, false, hasAnyReading(gapsOnly)), GpuTabContent::NoReadings);
 }
 
 TEST(ProcessHistoryHelpersTest, HistoriesOfOnlyGapsAreNoData)
