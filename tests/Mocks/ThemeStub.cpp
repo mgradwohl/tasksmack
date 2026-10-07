@@ -1,9 +1,11 @@
 // Minimal stub implementations of UI::Theme methods for the test and benchmark binaries.
 //
 // UserConfig.cpp is compiled into the test binary and references Theme::get(),
-// Theme::setThemeById(), Theme::setFontSize(), and Theme::currentThemeId().
-// These code paths are never exercised by the tests, but the Windows linker
-// (lld-link) requires every referenced symbol to be defined.
+// Theme::setThemeById(), Theme::setFontSize(), and Theme::currentThemeId(). The stub keeps what
+// those setters were given so UserConfig::applyToApplication() -> captureFromApplication() can be
+// round-tripped in tests (#1187): setThemeById() records the id verbatim (the real Theme ignores an
+// id it has no theme for; no theme files are discovered here), and setFontSize() sets the same
+// m_CurrentFontSize the inline currentFontSize() returns.
 //
 // Theme.cpp is excluded from the test build because applyImGuiStyle() and
 // applyPendingStyleChanges() call ImGui/ImPlot runtime APIs that require an active
@@ -44,10 +46,22 @@ auto Theme::get() -> Theme&
 // read of the object.
 // NOLINTBEGIN(readability-convert-member-functions-to-static)
 
+namespace
+{
+
+/// The id last passed to setThemeById(); empty until then, as the real Theme's is before any theme
+/// is discovered.
+[[nodiscard]] std::string& stubThemeId()
+{
+    static std::string id;
+    return id;
+}
+
+} // namespace
+
 auto Theme::currentThemeId() const -> const std::string&
 {
-    static const std::string k_Empty;
-    return k_Empty;
+    return stubThemeId();
 }
 
 namespace
@@ -127,11 +141,15 @@ auto Theme::styleScale() const -> float
     return 1.0F;
 }
 
-void Theme::setThemeById(std::string_view /*id*/)
-{}
+void Theme::setThemeById(std::string_view id)
+{
+    stubThemeId() = id;
+}
 
-void Theme::setFontSize(FontSize /*size*/)
-{}
+void Theme::setFontSize(FontSize size)
+{
+    m_CurrentFontSize = size;
+}
 
 // NOLINTEND(readability-convert-member-functions-to-static)
 
