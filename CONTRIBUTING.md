@@ -721,6 +721,9 @@ Each `bench.sh` / `bench.ps1` run writes two files to `perf-data/`:
 For the script tests, `bench.ps1 -BenchmarkBinary <path> -OutputDirectory <dir>` and `bench.sh`'s
 `TASKSMACK_BENCH_BIN` / `TASKSMACK_BENCH_OUT_DIR` environment variables point the scripts at a
 stub binary and a scratch directory (`tools/test-bench.ps1`, `tests/tools/test_bench_sh.py`).
+They are also the only way to move the output: an extra `--benchmark_out` or
+`--benchmark_out_format` argument is refused before the benchmark starts, because the redaction
+and the manifest only look at the file the script chose.
 
 By default, benchmarks output to console. You can also:
 

@@ -8,6 +8,7 @@ host or user name (#1424). Needs bash; registered in CTest only where bash is av
 
 import getpass
 import hashlib
+import importlib.util
 import json
 import os
 import shutil
@@ -96,7 +97,8 @@ class BenchShTest(unittest.TestCase):
             # Absolute paths in flags, as the PGO presets embed ${sourceDir}/profiles/...: quoted
             # with spaces, '=' and space-separated forms, a glued -I, inside and outside the checkout.
             f'CMAKE_CXX_FLAGS:STRING=-fPIC -I"/home/{getpass.getuser()}/My Includes/inc"'
-            f" -fprofile-use {posix(Path.home())}/pgo/other.profdata /DWIN32\n"
+            f" -fprofile-use {posix(Path.home())}/pgo/other.profdata -isystem/home/{getpass.getuser()}/sdk/include"
+            f" /IC:\\Users\\{getpass.getuser()}\\sdk\\include /DWIN32\n"
             f'CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -DNDEBUG -fprofile-instr-use="{posix(REPO_ROOT)}/profiles/tasksmack.profdata"'
             f" -fprofile-use=/home/{getpass.getuser()}/x.profdata\n",
             encoding="utf-8",
@@ -119,9 +121,10 @@ class BenchShTest(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def run_bench(self, name: str, stub_exit: int, stub_output: str = "full"):
+    def run_bench(self, name: str, stub_exit: int, stub_output: str = "full", extra: tuple[str, ...] = ()):
         out_dir = self.root / name
         env = dict(os.environ)
+        env.pop("BENCHMARK_REPORT_AGGREGATES_ONLY", None)
         env.update(
             TASKSMACK_BENCH_BIN=posix(self.stub),
             TASKSMACK_BENCH_OUT_DIR=posix(out_dir),
@@ -131,7 +134,7 @@ class BenchShTest(unittest.TestCase):
             PATH=str(self.shim_dir) + os.pathsep + os.environ.get("PATH", ""),
         )
         result = subprocess.run(
-            [BASH, posix(BENCH_SH), "fake", "--", "--benchmark_filter=BM_X"],
+            [BASH, posix(BENCH_SH), "fake", "--", "--benchmark_filter=BM_X", *extra],
             env=env,
             capture_output=True,
             text=True,
@@ -140,6 +143,33 @@ class BenchShTest(unittest.TestCase):
         results = sorted(p for p in out_dir.glob("*.json") if not p.name.endswith(".manifest.json"))
         manifests = sorted(out_dir.glob("*.manifest.json"))
         return result.returncode, result.stdout + result.stderr, results, manifests
+
+    def test_output_overrides_are_refused_before_launch(self):
+        # #1445 review: Google Benchmark takes the last --benchmark_out(_format), so an extra one
+        # would write somewhere the redaction and the manifest never look.
+        elsewhere = self.root / "elsewhere.json"
+        for override in (f"--benchmark_out={posix(elsewhere)}", "--benchmark_out_format=csv"):
+            with self.subTest(override=override):
+                code, output, results, manifests = self.run_bench(
+                    f"override-{len(override)}", 0, extra=(override,)
+                )
+                self.assertNotEqual(code, 0, output)
+                self.assertIn("TASKSMACK_BENCH_OUT_DIR", output)
+                self.assertFalse(elsewhere.exists(), f"the benchmark ran and wrote {elsewhere}")
+                self.assertEqual((results, manifests), ([], []), output)
+
+    def test_manifest_records_the_effective_aggregates_setting(self):
+        # #1445 review: the last --benchmark_report_aggregates_only wins, whichever way round.
+        for extra, expected in (
+            (("--benchmark_report_aggregates_only=true", "--benchmark_report_aggregates_only=FALSE"), False),
+            (("--benchmark_report_aggregates_only=no", "--benchmark_report_aggregates_only"), True),
+        ):
+            with self.subTest(extra=extra):
+                code, output, _, manifests = self.run_bench(f"aggregates-{expected}", 0, extra=extra)
+                self.assertEqual(code, 0, output)
+                benchmark = json.loads(manifests[0].read_text(encoding="utf-8"))["benchmark"]
+                self.assertIs(benchmark["report_aggregates_only"], expected)
+                self.assertIs(benchmark["raw_repetitions"], not expected)
 
     def test_failing_benchmark_fails_the_script(self):
         code, output, results, manifests = self.run_bench("failed", 3)
@@ -189,7 +219,8 @@ class BenchShTest(unittest.TestCase):
             '-O3 -DNDEBUG -fprofile-instr-use="<source>/profiles/tasksmack.profdata" -fprofile-use=<abs>/x.profdata',
         )
         self.assertEqual(
-            manifest["build"]["cxx_flags"], '-fPIC -I"<abs>/inc" -fprofile-use <abs>/other.profdata /DWIN32'
+            manifest["build"]["cxx_flags"],
+            '-fPIC -I"<abs>/inc" -fprofile-use <abs>/other.profdata -isystem<abs>/include /I<abs>/include /DWIN32',
         )
         self.assertTrue(manifest["benchmark"]["raw_repetitions"])
         self.assertFalse(manifest["benchmark"]["report_aggregates_only"])
@@ -213,6 +244,41 @@ class BenchShTest(unittest.TestCase):
             if identity and len(identity) >= 3:
                 self.assertNotIn(identity.lower(), text.lower(), f"manifest contains {identity!r}")
         self.assertNotRegex(text, r"host_?name|user_?name")
+
+
+def load_bench_manifest():
+    spec = importlib.util.spec_from_file_location("bench_manifest", REPO_ROOT / "tools" / "bench-manifest.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class ReportAggregatesOnlyTest(unittest.TestCase):
+    """The manifest's effective --benchmark_report_aggregates_only, parsed as Google Benchmark does."""
+
+    FLAG = "--benchmark_report_aggregates_only"
+
+    def effective(self, *args: str, env: dict | None = None) -> bool:
+        return load_bench_manifest().report_aggregates_only(list(args), env or {})
+
+    def test_last_occurrence_wins_in_both_orders(self):
+        self.assertFalse(self.effective(f"{self.FLAG}=true", f"{self.FLAG}=false"))
+        self.assertTrue(self.effective(f"{self.FLAG}=false", f"{self.FLAG}=true"))
+
+    def test_google_benchmark_truthiness(self):
+        # IsTruthyFlagValue in google/benchmark src/commandlineflags.cc.
+        for value in ("", "true", "TRUE", "1", "t", "T", "y", "Y", "yes", "on", "anything"):
+            self.assertTrue(self.effective(f"{self.FLAG}={value}"), value)
+        for value in ("false", "False", "0", "f", "F", "n", "N", "no", "NO", "off", "Off", "-"):
+            self.assertFalse(self.effective(f"{self.FLAG}={value}"), value)
+        self.assertTrue(self.effective(self.FLAG), "a bare flag is true")
+
+    def test_default_and_environment(self):
+        self.assertFalse(self.effective("--benchmark_filter=BM_X"))
+        # Other flags sharing the prefix are not this flag.
+        self.assertFalse(self.effective(f"{self.FLAG}_x=true"))
+        self.assertTrue(self.effective(env={"BENCHMARK_REPORT_AGGREGATES_ONLY": "yes"}))
+        self.assertFalse(self.effective(f"{self.FLAG}=0", env={"BENCHMARK_REPORT_AGGREGATES_ONLY": "1"}))
 
 
 if __name__ == "__main__":

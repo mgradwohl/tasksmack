@@ -54,6 +54,16 @@ if [[ ! -f "${BENCH_BIN}" ]]; then
     exit 1
 fi
 
+# The script owns the output file: Google Benchmark takes the last --benchmark_out(_format), so an
+# extra one would write somewhere the redaction and the manifest never look.
+for arg in "$@"; do
+    if [[ "${arg}" =~ ^--benchmark_out(_format)?(=|$) ]]; then
+        echo "'${arg}' is not allowed: bench.sh sets the benchmark output file and format itself." >&2
+        echo "Set TASKSMACK_BENCH_OUT_DIR to choose where results are written." >&2
+        exit 2
+    fi
+done
+
 mkdir -p "${OUT_DIR}"
 
 # ---------- run ---------------------------------------------------------------

@@ -52,6 +52,14 @@ if ($ExtraArgs.Count -gt 0 -and $ExtraArgs[0] -eq "--") {
     $ExtraArgs = if ($ExtraArgs.Count -gt 1) { $ExtraArgs[1..($ExtraArgs.Count - 1)] } else { @() }
 }
 
+# The script owns the output file: Google Benchmark takes the last --benchmark_out(_format), so an
+# extra one would write somewhere the redaction and the manifest never look.
+foreach ($arg in $ExtraArgs) {
+    if ($arg -match '^--benchmark_out(_format)?(=|$)') {
+        throw "'$arg' is not allowed: bench.ps1 sets the benchmark output file and format itself. Use -OutputDirectory to choose where results are written."
+    }
+}
+
 $outDir = if ($OutputDirectory) { $OutputDirectory } else { Join-Path $repoRoot "perf-data" }
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $outFile = Join-Path $outDir "$Preset-$timestamp.json"
@@ -94,7 +102,8 @@ function Hide-AbsolutePaths {
     # path inside the source tree becomes <source>/relative/path, any other <abs>/<file name>.
     # Matches a drive or UNC path, or a POSIX path of two or more segments (so MSVC-style switches
     # such as /DWIN32 are left alone), after the start, whitespace, '=' or ',', optionally with a
-    # one-letter switch glued on (-I/x, -LC:/x); quoted paths, which can hold spaces, first.
+    # switch glued on (-I/x, -LC:/x, -isystem/x, /IC:\x), which is kept; quoted paths, which can
+    # hold spaces, first.
     # Kept in step with hide_absolute_paths in tools/bench-manifest.py.
     param([string]$Flags)
     if (-not $Flags) { return $Flags }
@@ -110,7 +119,7 @@ function Hide-AbsolutePaths {
         return '<abs>/' + ($normalized.TrimEnd('/') -split '/')[-1]
     }
     $quoted = [regex]'(["''])((?:[A-Za-z]:[\\/]|\\\\|/)[^"'']*)\1'
-    $bare = [regex]'(?<pre>(?:^|[\s=,])(?:-[A-Za-z])?)(?<path>(?:[A-Za-z]:[\\/]|\\\\)[^\s"'']*|/[^/\s"'']+/[^\s"'']*)'
+    $bare = [regex]'(?<pre>(?:^|[\s=,])(?:-(?:isystem|idirafter|iquote|imsvc|[A-Za-z])|/I)?)(?<path>(?:[A-Za-z]:[\\/]|\\\\)[^\s"'']*|/[^/\s"'']+/[^\s"'']*)'
     $Flags = $quoted.Replace($Flags, { param($m) $m.Groups[1].Value + (& $scrub $m.Groups[2].Value) + $m.Groups[1].Value })
     return $bare.Replace($Flags, { param($m) $m.Groups['pre'].Value + (& $scrub $m.Groups['path'].Value) })
 }
@@ -179,12 +188,38 @@ function Get-MachineClass {
     }
 }
 
+function Test-BenchmarkTruthy {
+    # Google Benchmark's IsTruthyFlagValue (src/commandlineflags.cc): one character is true when
+    # alphanumeric and not 0/f/F/n/N; a longer value is true unless false/no/off (any case); an
+    # empty value is true.
+    param([string]$Value)
+    if ($Value.Length -eq 1) { return ($Value -cmatch '^[A-Za-z0-9]$') -and ($Value -cnotmatch '^[0fFnN]$') }
+    if ($Value.Length -gt 1) { return @('false', 'no', 'off') -notcontains $Value.ToLowerInvariant() }
+    return $true
+}
+
+function Get-EffectiveReportAggregatesOnly {
+    # The setting Google Benchmark ends up with: its default comes from the
+    # BENCHMARK_REPORT_AGGREGATES_ONLY environment variable (else false), then every
+    # --benchmark_report_aggregates_only[=value] argument is applied in order, the last one winning.
+    # A bare flag is true. Kept in step with report_aggregates_only in tools/bench-manifest.py.
+    param([string[]]$Arguments)
+    $flag = '--benchmark_report_aggregates_only'
+    $value = if ($null -ne $env:BENCHMARK_REPORT_AGGREGATES_ONLY) { Test-BenchmarkTruthy $env:BENCHMARK_REPORT_AGGREGATES_ONLY } else { $false }
+    foreach ($arg in $Arguments) {
+        if ($arg -ceq $flag) { $value = $true }
+        elseif ($arg.StartsWith("$flag=", [StringComparison]::Ordinal)) { $value = Test-BenchmarkTruthy $arg.Substring($flag.Length + 1) }
+    }
+    return $value
+}
+
 function Write-BenchManifest {
     param([int]$ExitCode)
     # The output path is reduced to its file name, so the manifest carries no user-profile path.
     $recordedArgs = [string[]]@($benchArgs | ForEach-Object {
             if ($_ -like '--benchmark_out=*') { "--benchmark_out=$(Split-Path -Leaf $outFile)" } else { $_ }
         })
+    $aggregatesOnly = Get-EffectiveReportAggregatesOnly $benchArgs
     $manifest = [ordered]@{
         schema_version = 1
         generator      = 'tools/bench.ps1'
@@ -200,8 +235,8 @@ function Write-BenchManifest {
         build          = Get-BuildProvenance
         benchmark      = [ordered]@{
             args                   = $recordedArgs
-            raw_repetitions        = -not ($recordedArgs -contains '--benchmark_report_aggregates_only=true')
-            report_aggregates_only = $recordedArgs -contains '--benchmark_report_aggregates_only=true'
+            raw_repetitions        = -not $aggregatesOnly
+            report_aggregates_only = $aggregatesOnly
         }
         machine        = Get-MachineClass
     }

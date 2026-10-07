@@ -22,6 +22,7 @@ import platform
 import re
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path, PurePath
 
 
@@ -49,11 +50,11 @@ def git_provenance(repo_root: Path) -> dict:
 
 # An absolute path inside a flag: a drive or UNC path, or a POSIX path of two or more segments
 # (so MSVC-style switches such as /DWIN32 are left alone). It may follow the start, whitespace,
-# '=' or ',', optionally with a one-letter switch glued on (-I/x, -LC:/x). Quoted paths, which can
-# hold spaces, are handled first. Kept in step with Hide-AbsolutePaths in tools/bench.ps1.
+# '=' or ',', optionally with a switch glued on (-I/x, -LC:/x, -isystem/x, /IC:\x), which is kept.
+# Quoted paths, which can hold spaces, are handled first. Kept in step with Hide-AbsolutePaths in tools/bench.ps1.
 _QUOTED_PATH = re.compile(r"""(["'])((?:[A-Za-z]:[\\/]|\\\\|/)[^"']*)\1""")
 _BARE_PATH = re.compile(
-    r"""(?P<pre>(?:^|[\s=,])(?:-[A-Za-z])?)(?P<path>(?:[A-Za-z]:[\\/]|\\\\)[^\s"']*|/[^/\s"']+/[^\s"']*)"""
+    r"""(?P<pre>(?:^|[\s=,])(?:-(?:isystem|idirafter|iquote|imsvc|[A-Za-z])|/I)?)(?P<path>(?:[A-Za-z]:[\\/]|\\\\)[^\s"']*|/[^/\s"']+/[^\s"']*)"""
 )
 
 
@@ -173,6 +174,38 @@ def recorded_args(args: list[str]) -> list[str]:
     return out
 
 
+def is_truthy_flag_value(value: str) -> bool:
+    """Google Benchmark's IsTruthyFlagValue (src/commandlineflags.cc).
+
+    One character is true when alphanumeric and not 0/f/F/n/N; a longer value is true unless it is
+    false/no/off in any case; an empty value is true.
+    """
+    if len(value) == 1:
+        return value.isascii() and value.isalnum() and value not in "0fFnN"
+    if value:
+        return value.lower() not in ("false", "no", "off")
+    return True
+
+
+def report_aggregates_only(args: list[str], environ: Mapping[str, str]) -> bool:
+    """The --benchmark_report_aggregates_only setting Google Benchmark ends up with.
+
+    The default comes from the BENCHMARK_REPORT_AGGREGATES_ONLY environment variable (else false);
+    then each --benchmark_report_aggregates_only[=value] argument applies in order, the last one
+    winning, and a bare flag is true. Kept in step with Get-EffectiveReportAggregatesOnly in
+    tools/bench.ps1.
+    """
+    flag = "--benchmark_report_aggregates_only"
+    env_value = environ.get("BENCHMARK_REPORT_AGGREGATES_ONLY")
+    value = is_truthy_flag_value(env_value) if env_value is not None else False
+    for arg in args:
+        if arg == flag:
+            value = True
+        elif arg.startswith(flag + "="):
+            value = is_truthy_flag_value(arg[len(flag) + 1 :])
+    return value
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--manifest", type=Path, required=True)
@@ -188,6 +221,7 @@ def main() -> int:
     if bench_args and bench_args[0] == "--":
         bench_args = bench_args[1:]
 
+    aggregates_only = report_aggregates_only(bench_args, os.environ)
     manifest = {
         "schema_version": 1,
         "generator": options.generator,
@@ -200,8 +234,8 @@ def main() -> int:
         "build": build_provenance(options.binary, options.repo_root),
         "benchmark": {
             "args": recorded_args(bench_args),
-            "raw_repetitions": "--benchmark_report_aggregates_only=true" not in bench_args,
-            "report_aggregates_only": "--benchmark_report_aggregates_only=true" in bench_args,
+            "raw_repetitions": not aggregates_only,
+            "report_aggregates_only": aggregates_only,
         },
         "machine": machine_class(),
     }

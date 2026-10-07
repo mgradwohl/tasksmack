@@ -28,7 +28,7 @@ try {
         "CMAKE_CXX_COMPILER:FILEPATH=C:\Users\$([Environment]::UserName)\llvm\bin\clang++.exe"
         # Absolute paths in flags, as the PGO presets embed ${sourceDir}/profiles/tasksmack.profdata:
         # quoted with spaces, '=' and space-separated forms, a glued -I, inside and outside the checkout.
-        "CMAKE_CXX_FLAGS:STRING=-fms-compatibility -I`"C:/Users/$([Environment]::UserName)/My Includes/inc`" -fprofile-use C:\Users\$([Environment]::UserName)\pgo\other.profdata /DWIN32"
+        "CMAKE_CXX_FLAGS:STRING=-fms-compatibility -I`"C:/Users/$([Environment]::UserName)/My Includes/inc`" -fprofile-use C:\Users\$([Environment]::UserName)\pgo\other.profdata -isystemC:/Users/$([Environment]::UserName)/sdk/include /IC:\Users\$([Environment]::UserName)\sdk\include /DWIN32"
         "CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -DNDEBUG -fprofile-instr-use=`"$($repoRootForward)/profiles/tasksmack.profdata`" -fprofile-use=$($env:USERPROFILE)\x.profdata"
         'TASKSMACK_ENABLE_IPO:BOOL=ON'
     )
@@ -43,7 +43,8 @@ try {
     # JSON, as a crash mid-run does.
     $stubScript = Join-Path $binDir 'stub.ps1'
     Set-Content -LiteralPath $stubScript -Encoding utf8 -Value @'
-$out = [Environment]::GetCommandLineArgs() | Where-Object { $_ -like '--benchmark_out=*' } | Select-Object -First 1
+# The last --benchmark_out wins, as in Google Benchmark's flag parsing.
+$out = [Environment]::GetCommandLineArgs() | Where-Object { $_ -like '--benchmark_out=*' } | Select-Object -Last 1
 $out = $out.Substring('--benchmark_out='.Length)
 $body = [ordered]@{
     context    = [ordered]@{ host_name = [Environment]::MachineName; executable = 'C:\some\dir\TaskSmackBenchmarks.exe' }
@@ -61,7 +62,8 @@ exit [int]$env:STUB_EXIT
     Set-Content -LiteralPath $stub -Encoding ascii -Value "@`"$hostExe`" -NoProfile -File `"$stubScript`" %*`r`n@exit /b %ERRORLEVEL%"
 
     function Invoke-Bench {
-        param([int]$StubExit, [string]$StubOutput = 'full', [string]$Name, [switch]$NativeErrorPromotion)
+        param([int]$StubExit, [string]$StubOutput = 'full', [string]$Name, [switch]$NativeErrorPromotion,
+            [string[]]$Extra = @('--benchmark_filter=BM_X'))
         $outDir = Join-Path $root $Name
         $env:STUB_EXIT = "$StubExit"
         $env:STUB_OUTPUT = $StubOutput
@@ -74,7 +76,7 @@ exit [int]$env:STUB_EXIT
                 $log = & $hostExe -NoProfile -Command $command 2>&1 | Out-String
             }
             else {
-                $log = & $hostExe -NoProfile -File $benchScript fake-preset -BenchmarkBinary $stub -OutputDirectory $outDir --benchmark_filter=BM_X 2>&1 | Out-String
+                $log = & $hostExe -NoProfile -File $benchScript fake-preset -BenchmarkBinary $stub -OutputDirectory $outDir @Extra 2>&1 | Out-String
             }
             $code = $LASTEXITCODE
         }
@@ -154,7 +156,7 @@ exit [int]$env:STUB_EXIT
     # No host name, user name or user-profile path anywhere in the manifest.
     # Absolute paths in flags: the checkout's become <source>/..., others <abs>/<file name>.
     Assert-True ($manifest.build.cxx_flags_config -ceq '-O3 -DNDEBUG -fprofile-instr-use="<source>/profiles/tasksmack.profdata" -fprofile-use=<abs>/x.profdata') "cxx_flags_config: $($manifest.build.cxx_flags_config)"
-    Assert-True ($manifest.build.cxx_flags -ceq '-fms-compatibility -I"<abs>/inc" -fprofile-use <abs>/other.profdata /DWIN32') "cxx_flags: $($manifest.build.cxx_flags)"
+    Assert-True ($manifest.build.cxx_flags -ceq '-fms-compatibility -I"<abs>/inc" -fprofile-use <abs>/other.profdata -isystem<abs>/include /I<abs>/include /DWIN32')"cxx_flags: $($manifest.build.cxx_flags)"
 
     $identities = @([Environment]::MachineName, [Environment]::UserName, $env:COMPUTERNAME, $env:USERNAME, $env:USERPROFILE, [IO.Path]::GetTempPath().TrimEnd('\'),
         $repoRootPath, $repoRootForward, 'C:/Users', 'C:\Users')
@@ -165,6 +167,37 @@ exit [int]$env:STUB_EXIT
         }
     }
     Assert-True ($manifestText -notmatch 'host_?name|user_?name') 'The manifest must not have host or user name fields'
+
+    # ── #1445 review: an extra --benchmark_out/--benchmark_out_format is refused before launch ──
+    # Google Benchmark takes the last value, so the run would write somewhere the redaction and the
+    # manifest never look (with the real host name in it).
+    # A relative path, run from $root: pwsh -File splits an argument such as
+    # --benchmark_out=C:\x at the drive colon, which would hide where the file went.
+    $elsewhere = Join-Path $root 'elsewhere.json'
+    foreach ($override in @('--benchmark_out=elsewhere.json', '--benchmark_out_format=csv')) {
+        Push-Location -LiteralPath $root
+        try { $refused = Invoke-Bench -StubExit 0 -Name "override-$([guid]::NewGuid().ToString('N'))" -Extra @('--benchmark_filter=BM_X', $override) }
+        finally { Pop-Location }
+        Assert-True ($refused.ExitCode -ne 0) "bench.ps1 accepted '$override':`n$($refused.Log)"
+        Assert-True ($refused.Log -like '*-OutputDirectory*') "The refusal must point to -OutputDirectory:`n$($refused.Log)"
+        Assert-True (-not (Test-Path -LiteralPath $elsewhere)) "The benchmark ran and wrote '$elsewhere' for '$override'"
+        Assert-True ($refused.Result.Count -eq 0 -and $refused.Manifest.Count -eq 0) "Nothing may be written for '$override'"
+    }
+
+    # ── #1445 review: the manifest records the effective --benchmark_report_aggregates_only ─────
+    # The last occurrence wins, parsed as Google Benchmark does (bare flag = true; f/n/0, false, no
+    # and off = false, case-insensitively).
+    foreach ($case in @(
+            @{ Args = @('--benchmark_report_aggregates_only=true', '--benchmark_report_aggregates_only=FALSE'); Expected = $false }
+            @{ Args = @('--benchmark_report_aggregates_only=no', '--benchmark_report_aggregates_only'); Expected = $true }
+            @{ Args = @('--benchmark_report_aggregates_only=Yes', '--benchmark_report_aggregates_only=0'); Expected = $false }
+            @{ Args = @('--benchmark_report_aggregates_only=off', '--benchmark_report_aggregates_only=t'); Expected = $true }
+        )) {
+        $run = Invoke-Bench -StubExit 0 -Name "aggregates-$([guid]::NewGuid().ToString('N'))" -Extra $case.Args
+        Assert-True ($run.ExitCode -eq 0 -and $run.Manifest.Count -eq 1) "Run with $($case.Args -join ' ') failed:`n$($run.Log)"
+        $benchmark = (Get-Content -LiteralPath $run.Manifest[0].FullName -Raw | ConvertFrom-Json).benchmark
+        Assert-True ($benchmark.report_aggregates_only -eq $case.Expected -and $benchmark.raw_repetitions -eq (-not $case.Expected)) "$($case.Args -join ' '): report_aggregates_only=$($benchmark.report_aggregates_only), raw_repetitions=$($benchmark.raw_repetitions); expected $($case.Expected)"
+    }
 
     Write-Host 'bench.ps1 tests passed'
 }
