@@ -28,7 +28,9 @@ jobs:
   analyze:
     name: Analyze C++
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # 45, not 30: full C++ analyses now take 25-30 min on a busy runner (the codebase and its tests
+    # grew), so 30 cancelled clean runs at the limit and left PRs without a CodeQL result to gate on.
+    timeout-minutes: 45
     permissions:
       actions: read
       contents: read
