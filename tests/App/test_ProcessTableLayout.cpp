@@ -317,5 +317,43 @@ TEST(ProcessTableLayoutTest, SortArrowReserveMatchesImGuisArrowPlacement)
     EXPECT_FLOAT_EQ(ProcessTableLayout::sortArrowReserve(4.0F, 0.0F, 10.0F), 0.0F); // Never negative
 }
 
+// ========== Paused indicator form (#928) ==========
+
+using ProcessTableLayout::choosePausedLabelForm;
+using ProcessTableLayout::PausedLabelForm;
+
+TEST(ProcessTableLayoutTest, PausedLabelIsFullWhenItFits)
+{
+    EXPECT_EQ(choosePausedLabelForm(500.0F, 140.0F, 24.0F), PausedLabelForm::Full);
+    EXPECT_EQ(choosePausedLabelForm(140.0F, 140.0F, 24.0F), PausedLabelForm::Full); // Exactly fits
+}
+
+TEST(ProcessTableLayoutTest, PausedLabelShrinksToItsIconOnANarrowRow)
+{
+    EXPECT_EQ(choosePausedLabelForm(139.0F, 140.0F, 24.0F), PausedLabelForm::IconOnly);
+    // At the content minimum the room is exactly the reserved icon slot; rounding must not hide it.
+    EXPECT_EQ(choosePausedLabelForm(24.0F - 0.001F, 140.0F, 24.0F), PausedLabelForm::IconOnly);
+}
+
+TEST(ProcessTableLayoutTest, PausedLabelHidesOnlyWithoutRoomForTheIcon)
+{
+    EXPECT_EQ(choosePausedLabelForm(10.0F, 140.0F, 24.0F), PausedLabelForm::Hidden);
+    EXPECT_EQ(choosePausedLabelForm(-50.0F, 140.0F, 24.0F), PausedLabelForm::Hidden);
+    EXPECT_EQ(choosePausedLabelForm(std::numeric_limits<float>::quiet_NaN(), 140.0F, 24.0F), PausedLabelForm::Hidden);
+}
+
+// The toolbar minimum reserves the icon slot, so a row at that minimum always shows the indicator.
+TEST(ProcessTableLayoutTest, ToolbarMinimumWithTheIconReservedAlwaysShowsTheIndicator)
+{
+    const float spacing = 8.0F;
+    const float icon = 16.0F;
+    const float othersAfterFilter = 400.0F; // clear button, count, toggle and their spacing
+    const float filterWanted = 200.0F;
+    const float rowMin = computeToolbarMinimumWidth(filterWanted, 103.0F, othersAfterFilter + icon + spacing);
+    // Side by side at the minimum, the room left for the indicator is the reserved slot.
+    const float room = rowMin - filterWanted - othersAfterFilter;
+    EXPECT_NE(choosePausedLabelForm(room, 140.0F + spacing, icon + spacing), PausedLabelForm::Hidden);
+}
+
 } // namespace
 } // namespace App

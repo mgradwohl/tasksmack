@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <initializer_list>
 
 namespace App::ProcessTableLayout
@@ -246,6 +247,45 @@ inline constexpr float FILTER_MAX_ROW_FRACTION = 0.5F;
     const float fits = (sideBySide < halfForRest) ? sideBySide : halfForRest;
     const float forHint = atLeastZero(filterForHintPx) * 2.0F;
     return (fits > forHint) ? fits : forHint;
+}
+
+/// Which form of the "Paused (Ctrl)" indicator the toolbar shows while a held Ctrl freezes the pane
+/// (#928).
+enum class PausedLabelForm : std::uint8_t
+{
+    Full,     ///< Icon and text
+    IconOnly, ///< Just the pause icon; its tooltip still explains it
+    Hidden,   ///< No room at all (only below the window's content minimum)
+};
+
+/// Picks the widest indicator that fits the room left on the toolbar row once the filter, clear
+/// button, process count and view toggle are placed (#928). measureToolbarMinimumWidth() reserves
+/// the icon-only form, so at the window's content minimum the icon always fits, and the full label
+/// shows whenever the real count leaves it room -- which it nearly always does, since the minimum
+/// budgets a worst-case count. Reserving only the icon keeps the minimum about one glyph wider
+/// instead of the full label's width.
+///
+/// @param roomPx     Width left for the indicator, the spacing after it included.
+/// @param fullPx     The full label's width, the spacing after it included.
+/// @param iconOnlyPx The icon-only form's width, the spacing after it included.
+[[nodiscard]] inline PausedLabelForm choosePausedLabelForm(float roomPx, float fullPx, float iconOnlyPx) noexcept
+{
+    // Absorbs float rounding where the room is exactly the reserved icon slot.
+    constexpr float FIT_SLOP_PX = 0.5F;
+    if (!std::isfinite(roomPx))
+    {
+        return PausedLabelForm::Hidden;
+    }
+    const float room = roomPx + FIT_SLOP_PX;
+    if (std::isfinite(fullPx) && fullPx <= room)
+    {
+        return PausedLabelForm::Full;
+    }
+    if (std::isfinite(iconOnlyPx) && iconOnlyPx <= room)
+    {
+        return PausedLabelForm::IconOnly;
+    }
+    return PausedLabelForm::Hidden;
 }
 
 } // namespace App::ProcessTableLayout

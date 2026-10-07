@@ -3,6 +3,7 @@
 #include "App/Panel.h"
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
+#include "App/Panels/ProcessDisplayFreeze.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessTreeFlatten.h"
 #include "App/ProcessColumnConfig.h"
@@ -180,7 +181,8 @@ class ProcessesPanel : public Panel
     /// include Domain/ProcessModel.h. UI thread; takes no lock once a generation is cached.
     [[nodiscard]] bool hasReducedPrivileges() const;
 
-    /// Narrowest the toolbar row (filter, clear button, process count, tree-view toggle) can be
+    /// Narrowest the toolbar row (filter, clear button, the paused indicator's icon-only form (#928),
+    /// process count or a row action's result, the Columns button and the List | Tree control) can be
     /// without overlapping, at the current font and style, for the window's content minimum (#1207).
     /// Measured with a worst-case process count so it does not change as processes come and go.
     /// Needs a frame.
@@ -303,6 +305,10 @@ class ProcessesPanel : public Panel
     // the cells are formatted by it, not by the GPU model's current state (m_GpuSupport), which can
     // differ while GPU merges are throttled. Column defaults and headers follow m_GpuSupport.
     Domain::ProcessModel::GpuSupport m_CachedGpuSupport;
+    // Hold Ctrl to freeze the pane (#928): while frozen, adoptNewerSnapshots() keeps the generation
+    // above, so the rows, their values and their order stay put. Evaluated once per frame in
+    // renderContent(); onUpdate() sees the previous frame's state.
+    ProcessDisplayFreeze::Tracker m_DisplayFreeze;
 
     // Per-frame filter cache: filtered indices, running count, and summary string are rebuilt
     // only when the snapshot version or search term changes (O(1) skip in 59/60 frames).
@@ -377,8 +383,13 @@ class ProcessesPanel : public Panel
     void ensureTextSizeCacheValid();
 
     /// Adopts the model's latest snapshot generation and its capabilities into the render cache if
-    /// it is newer than the cached one (onAttach(), onUpdate() and renderContent(), #1180).
+    /// it is newer than the cached one (onAttach(), onUpdate() and renderContent(), #1180). Does
+    /// nothing while the pane is frozen by a held Ctrl (#928), except to load the first generation.
     void adoptNewerSnapshots();
+
+    /// Feeds this frame's keyboard and window state to m_DisplayFreeze (#928). Must be called inside
+    /// the window the pane renders into, since it asks ImGui whether that window is hovered/focused.
+    void updateDisplayFreeze();
 
     /// Get the number of visible columns
     [[nodiscard]] int visibleColumnCount() const;

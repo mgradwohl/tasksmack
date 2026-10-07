@@ -6,6 +6,7 @@
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDetailsLayout.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
+#include "App/Panels/ProcessDisplayFreeze.h"
 #include "App/Panels/ProcessFilterCache.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessSortUtils.h"
@@ -89,6 +90,29 @@ constexpr std::string_view COLUMNS_LABEL = ICON_FA_TABLE_COLUMNS " Columns";
 constexpr const char* COLUMNS_POPUP_ID = "##ColumnsMenu";
 constexpr const char* ROW_MENU_POPUP_ID = "##ProcessRowMenu";
 constexpr const char* FILTER_HINT = "Filter by name...";
+// Shown beside the process count while a held Ctrl freezes the pane (#928).
+constexpr const char* FROZEN_LABEL = ICON_FA_PAUSE " Paused (Ctrl)";
+// The narrow-window form: measureToolbarMinimumWidth() reserves room for this one.
+constexpr const char* FROZEN_ICON = ICON_FA_PAUSE;
+
+/// True when any keyboard key other than a modifier is held: Ctrl with one of these is a shortcut
+/// (Ctrl+C, Ctrl+=), not the freeze gesture (#928). Only the keyboard block of ImGuiKey is walked;
+/// the gamepad and mouse keys follow ImGuiKey_Oem102.
+[[nodiscard]] bool anyNonModifierKeyDown()
+{
+    for (int k = ImGuiKey_Tab; k <= ImGuiKey_Oem102; ++k)
+    {
+        if (k >= ImGuiKey_LeftCtrl && k <= ImGuiKey_RightSuper)
+        {
+            continue;
+        }
+        if (ImGui::IsKeyDown(static_cast<ImGuiKey>(k)))
+        {
+            return true;
+        }
+    }
+    return false;
+}
 
 // How long a row-menu action's result stays in the toolbar, like the Actions tab's (#1209).
 constexpr float ROW_ACTION_RESULT_SECONDS = 5.0F;
@@ -786,7 +810,11 @@ float ProcessesPanel::measureToolbarMinimumWidth()
     // The Columns button and the two view-mode segments, which sit flush against each other (#1209).
     const float columnsButton = measureTextWidth(COLUMNS_LABEL) + (style.FramePadding.x * 2.0F);
     const float viewModeControl = measureTextWidth(LIST_VIEW_LABEL) + measureTextWidth(TREE_VIEW_LABEL) + (style.FramePadding.x * 4.0F);
-    const float rest = (style.ItemSpacing.x * 4.0F) + clearButton + count + columnsButton + viewModeControl;
+    // While Ctrl freezes the pane the paused indicator joins the row (#928). Only its icon-only form
+    // is reserved: the full label shows when the real count leaves room, which the worst-case count
+    // above nearly always does (ProcessTableLayout::choosePausedLabelForm()).
+    const float pausedIcon = ImGui::CalcTextSize(FROZEN_ICON).x;
+    const float rest = (style.ItemSpacing.x * 5.0F) + clearButton + pausedIcon + count + columnsButton + viewModeControl;
     return ProcessTableLayout::computeToolbarMinimumWidth(filterWanted, filterForHint, rest);
 }
 
@@ -927,6 +955,8 @@ void ProcessesPanel::onEvent(Core::Event& event)
             const bool wasShown = m_ProcessDataShown;
             m_IsActiveTab = (e.tabName() == "Processes");
             m_ProcessDataShown = AdaptiveIntervalUtils::showsProcessData(e.tabName());
+            // A freeze belongs to the pane being looked at; leaving it must not leave it frozen (#928).
+            m_DisplayFreeze.reset();
             if (!wasShown && m_ProcessDataShown)
             {
                 // Catch up straight away when coming back from a tab that showed no process data,
@@ -1003,6 +1033,12 @@ void ProcessesPanel::onUpdate(float deltaTime)
 
 void ProcessesPanel::adoptNewerSnapshots()
 {
+    // Held Ctrl (#928): keep the adopted generation, so the filter, sort and row caches keyed on it
+    // stay as they are. The model keeps sampling; releasing Ctrl adopts its latest generation.
+    if (m_DisplayFreeze.frozen() && m_CachedSnapshotVersion != std::numeric_limits<std::uint64_t>::max())
+    {
+        return;
+    }
     // Detect and copy new data in a single lock acquisition. tryCopySnapshotsIfNewer() checks the
     // published version lock-free first, so a call with nothing new costs one atomic load.
     std::uint64_t newVersion = m_CachedSnapshotVersion;
@@ -1010,6 +1046,25 @@ void ProcessesPanel::adoptNewerSnapshots()
             m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion, &m_CachedCapabilities, &m_CachedGpuSupport))
     {
         m_CachedSnapshotVersion = newVersion;
+    }
+}
+
+void ProcessesPanel::updateDisplayFreeze()
+{
+    const ImGuiIO& io = ImGui::GetIO();
+    const ProcessDisplayFreeze::Inputs inputs{
+        .appFocused = !io.AppFocusLost,
+        .ctrlHeld = io.KeyCtrl,
+        .otherModifierHeld = io.KeyShift || io.KeyAlt || io.KeySuper,
+        .otherKeyHeld = anyNonModifierKeyDown(),
+        .textInputActive = io.WantTextInput,
+        .panelHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows),
+        .panelFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows),
+    };
+    const bool wasFrozen = m_DisplayFreeze.frozen();
+    if (m_DisplayFreeze.update(inputs, Core::Application::getTime()) != wasFrozen)
+    {
+        spdlog::debug("ProcessesPanel: display {} (Ctrl)", wasFrozen ? "resumed" : "frozen");
     }
 }
 
@@ -1056,6 +1111,9 @@ void ProcessesPanel::renderContent()
 
     // Ensure text size cache is valid for current font (called once per frame)
     ensureTextSizeCacheValid();
+
+    // Decide the Ctrl freeze before adopting, so a frozen frame keeps the generation it shows (#928).
+    updateDisplayFreeze();
 
     // Get thread-safe copy of snapshots — only when data has actually changed (version-cached).
     // ProcessModel updates at 1Hz but render runs at 60fps; skip 59/60 redundant deep copies.
@@ -1226,8 +1284,38 @@ void ProcessesPanel::renderContent()
     const float rightEdgeX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
     const float summaryW = ImGui::CalcTextSize(m_CachedSummaryStr.c_str(), m_CachedSummaryStr.c_str() + m_CachedSummaryStr.size()).x;
     const float textW = showActionResult ? ImGui::CalcTextSize(statusText.c_str(), statusText.c_str() + statusText.size()).x : summaryW;
+    const float statusMinX = ImGui::GetCursorPosX();
     const ProcessTableLayout::ToolbarStatusLayout statusLayout =
-        ProcessTableLayout::layoutToolbarStatus(ImGui::GetCursorPosX(), rightEdgeX, controlsWidth, style.ItemSpacing.x, textW, summaryW);
+        ProcessTableLayout::layoutToolbarStatus(statusMinX, rightEdgeX, controlsWidth, style.ItemSpacing.x, textW, summaryW);
+    // While Ctrl freezes the pane (#928) the paused label sits left of the status text, so the text
+    // and the controls keep their places. On a row too narrow for the full label it shrinks to its icon.
+    auto pausedForm = ProcessTableLayout::PausedLabelForm::Hidden;
+    if (m_DisplayFreeze.frozen())
+    {
+        pausedForm = ProcessTableLayout::choosePausedLabelForm(statusLayout.x - statusMinX,
+                                                               ImGui::CalcTextSize(FROZEN_LABEL).x + style.ItemSpacing.x,
+                                                               ImGui::CalcTextSize(FROZEN_ICON).x + style.ItemSpacing.x);
+    }
+    const char* pausedText = nullptr;
+    if (pausedForm == ProcessTableLayout::PausedLabelForm::Full)
+    {
+        pausedText = FROZEN_LABEL;
+    }
+    else if (pausedForm == ProcessTableLayout::PausedLabelForm::IconOnly)
+    {
+        pausedText = FROZEN_ICON;
+    }
+    if (pausedText != nullptr)
+    {
+        const float pausedW = ImGui::CalcTextSize(pausedText).x + style.ItemSpacing.x;
+        ImGui::SetCursorPosX(std::max(statusMinX, statusLayout.x - pausedW));
+        ImGui::TextColored(theme.scheme().textWarning, "%s", pausedText);
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip("Updates are paused while Ctrl is held.\nSampling continues; release Ctrl to resume.");
+        }
+        ImGui::SameLine();
+    }
     ImGui::SetCursorPosX(statusLayout.x);
     {
         const bool colored = showActionResult;
