@@ -7,6 +7,7 @@
 #include "Domain/SamplingConfig.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/ProcessTypes.h"
+#include "ProcessDetailsHistory.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
 #include "ProcessDetailsPanel_HistoryHelpers.h"
 #include "UI/ChartWidgets.h"
@@ -132,7 +133,6 @@ class ProcessDetailsPanel : public Panel
     [[nodiscard]] Platform::ProcessTarget selectedTarget() const;
     void renderActionButtons();
     void renderPrioritySection();
-    void trimHistory(double nowSeconds);
 
     // Priority slider helper methods (extracted for testability and clarity)
     struct PrioritySliderContext;
@@ -158,27 +158,9 @@ class ProcessDetailsPanel : public Panel
     float m_LastDeltaSeconds = 0.0F;
     bool m_IsActiveTab = false;
 
-    // History buffers (trimmed by time window). Vectors, not deques: the charts plot the newest
-    // samples in place through spans, where a deque had to be copied out every frame (#1018).
-    // Trimming erases from the front, once per sample, not per frame.
-    std::vector<double> m_CpuHistory;       // CPU% total history (avoid narrowing)
-    std::vector<double> m_CpuUserHistory;   // CPU% user history (avoid narrowing)
-    std::vector<double> m_CpuSystemHistory; // CPU% system history (avoid narrowing)
-    std::vector<double> m_MemoryHistory;    // Used memory (RSS) bytes (#1195)
-    std::vector<double> m_SharedHistory;    // Shared memory bytes, best effort (#1195)
-    std::vector<double> m_VirtualHistory;   // Virtual memory bytes (#992)
-    std::vector<double> m_ThreadHistory;    // Thread count history
-    std::vector<double> m_HandleHistory;    // Handle/FD count history
-    std::vector<double> m_PageFaultHistory; // Page faults per second history
-    std::vector<double> m_IoReadHistory;    // Disk read rate (bytes/sec)
-    std::vector<double> m_IoWriteHistory;   // Disk write rate (bytes/sec)
-    std::vector<double> m_NetSentHistory;   // Network send rate (bytes/sec)
-    std::vector<double> m_NetRecvHistory;   // Network receive rate (bytes/sec)
-    std::vector<double> m_PowerHistory;     // Power usage history (watts)
-    std::vector<double> m_GpuUtilHistory;   // GPU utilization % history
-    std::vector<double> m_GpuMemHistory;    // GPU memory bytes history
-    std::vector<double> m_GdiHistory;       // GDI object count history (Windows-only)
-    std::vector<double> m_Timestamps;
+    // The time axis and every per-process series, appended, trimmed to m_MaxHistorySeconds and cleared
+    // together, so no series can fall out of step with the axis (#1179).
+    Detail::ProcessDetailsHistory m_History;
     // Taken (UI::Widgets::nextChartDataGeneration()) whenever the histories above change -- a sample
     // recorded or trimmed, or the selection reset -- so the charts keep their reduced points until
     // then instead of reducing every history every frame (HistoryChartConfig::dataGeneration, #1139).
