@@ -570,6 +570,60 @@ TEST_F(UserConfigLoadSaveTest, SaveUsesMediumForUnknownFontSize)
     EXPECT_EQ(*fontSize, "medium");
 }
 
+// ========== parseSettings (the string seam the config fuzz target drives) ==========
+
+TEST(UserConfigParseSettingsTest, ReadsSettingsFromText)
+{
+    UserSettings settings;
+    const bool parsed = UserConfig::parseSettings(R"(
+[sampling]
+interval_ms = 250
+
+[theme]
+id = "tokyo-night"
+
+[font]
+size = "large"
+
+[window]
+maximized = true
+)",
+                                                  settings);
+
+    ASSERT_TRUE(parsed);
+    EXPECT_EQ(settings.refreshIntervalMs, 250);
+    EXPECT_EQ(settings.themeId, "tokyo-night");
+    EXPECT_EQ(settings.fontSize, UI::FontSize::Large);
+    EXPECT_TRUE(settings.windowMaximized);
+}
+
+TEST(UserConfigParseSettingsTest, AbsentKeysKeepTheirValues)
+{
+    UserSettings settings;
+    settings.themeId = "nord";
+
+    ASSERT_TRUE(UserConfig::parseSettings("[sampling]\ninterval_ms = 500\n", settings));
+    EXPECT_EQ(settings.refreshIntervalMs, 500);
+    EXPECT_EQ(settings.themeId, "nord");
+}
+
+TEST(UserConfigParseSettingsTest, OutOfRangeValuesAreClampedAsOnLoad)
+{
+    UserSettings settings;
+    ASSERT_TRUE(UserConfig::parseSettings("[sampling]\ninterval_ms = 1\n", settings));
+    EXPECT_EQ(settings.refreshIntervalMs, Domain::Sampling::clampRefreshInterval(1));
+}
+
+TEST(UserConfigParseSettingsTest, InvalidTomlReturnsFalseAndLeavesSettingsAlone)
+{
+    UserSettings settings;
+    settings.themeId = "nord";
+
+    // A duplicate key is a parse error.
+    EXPECT_FALSE(UserConfig::parseSettings("[theme]\nid = \"dracula\"\nid = \"mocha\"\n", settings));
+    EXPECT_EQ(settings.themeId, "nord");
+}
+
 } // namespace
 } // namespace App
 // NOLINTEND(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
