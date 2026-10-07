@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import getpass
 import hashlib
 import json
 import os
@@ -48,13 +49,30 @@ def git_provenance(repo_root: Path) -> dict:
     }
 
 
-# An absolute path inside a flag: a drive or UNC path, or a POSIX path of two or more segments
-# (so MSVC-style switches such as /DWIN32 are left alone). It may follow the start, whitespace,
-# '=' or ',', optionally with a switch glued on (-I/x, -LC:/x, -isystem/x, /IC:\x), which is kept.
-# Quoted paths, which can hold spaces, are handled first. Kept in step with Hide-AbsolutePaths in tools/bench.ps1.
-_QUOTED_PATH = re.compile(r"""(["'])((?:[A-Za-z]:[\\/]|\\\\|/)[^"']*)\1""")
+# Absolute paths inside compiler flags (#1445 review). Every form is matched in one place, and
+# tools/bench.ps1's Hide-AbsolutePaths uses the same patterns:
+# - Found anywhere in a token, so after any joined switch (-IC:/x, -isystem\\host\x, /I//host/x):
+#   a drive path with either slash (C:\x, C:/x; not "://" as in a URL), a UNC path with either
+#   slash (\\host\x, //host/x; not after ':'), and the \\?\ and \\.\ device paths.
+# - Found at the start, after whitespace, '=', ',' or a quote, optionally with a switch glued on
+#   (-I, -L, -B, -isystem, -idirafter, -iquote, -imsvc, any other -x/--x switch; MSVC /I, /FI,
+#   /Fo, /Fd, /Fe, /Fp, /LIBPATH:): a POSIX path of two or more segments (/home/u/x,
+#   /Users/u/x, /root/x; so MSVC defines such as /DWIN32 stay) and a home-relative ~/x or ~u/x.
+# - A path ends at whitespace, a quote, '=', ',' or ';', so both sides of
+#   -fdebug-prefix-map=OLD=NEW and -ffile-prefix-map=OLD=NEW are matched separately, as are
+#   --sysroot=PATH and -fprofile-*=PATH; space-separated values (-isystem PATH) are matched on
+#   their own.
+# - Quoted paths, which can hold spaces, are handled first, with the same heads and switches.
+_TAIL = r"""[^\s"'=,;]*"""
+_SWITCH = r"""(?:-{1,2}[A-Za-z][\w+-]*?|/(?:I|FI|Fo|Fd|Fe|Fp|LIBPATH:))"""
+_ANYWHERE_HEAD = r"""(?:[A-Za-z]:[\\/](?![\\/])|\\\\|(?<!:)//)"""
+_BOUNDARY_HEAD = r"""(?:/[^/\s"'=,;]+/|~[^/\s"'=,;]*/)"""
+_QUOTED_PATH = re.compile(
+    r"""(?P<q>["'])(?P<pre>""" + _SWITCH + r"""?)(?P<path>(?:[A-Za-z]:[\\/]|\\\\|//|/[^/"']+/|~[^/"']*/)[^"']*)(?P=q)"""
+)
 _BARE_PATH = re.compile(
-    r"""(?P<pre>(?:^|[\s=,])(?:-(?:isystem|idirafter|iquote|imsvc|[A-Za-z])|/I)?)(?P<path>(?:[A-Za-z]:[\\/]|\\\\)[^\s"']*|/[^/\s"']+/[^\s"']*)"""
+    r"""(?P<anywhere>""" + _ANYWHERE_HEAD + _TAIL + r""")"""
+    r"""|(?P<pre>(?:^|(?<=[\s=,"']))""" + _SWITCH + r"""?)(?P<path>""" + _BOUNDARY_HEAD + _TAIL + r""")"""
 )
 
 
@@ -76,8 +94,48 @@ def hide_absolute_paths(flags: str | None, repo_root: Path) -> str | None:
             return "<source>" + normalized[len(root) :]
         return "<abs>/" + PurePath(normalized.rstrip("/")).name
 
-    flags = _QUOTED_PATH.sub(lambda m: m.group(1) + scrub(m.group(2)) + m.group(1), flags)
-    return _BARE_PATH.sub(lambda m: m.group("pre") + scrub(m.group("path")), flags)
+    def bare(match: re.Match) -> str:
+        if match.group("anywhere") is not None:
+            return scrub(match.group("anywhere"))
+        return match.group("pre") + scrub(match.group("path"))
+
+    flags = _QUOTED_PATH.sub(lambda m: m.group("q") + m.group("pre") + scrub(m.group("path")) + m.group("q"), flags)
+    return _BARE_PATH.sub(bare, flags)
+
+
+def identity_strings() -> tuple[list[str], str | None]:
+    """This user's home directory (both slash forms) and user name, for hide_identity()."""
+    homes = {str(Path.home())}
+    for variable in ("HOME", "USERPROFILE"):
+        if os.environ.get(variable):
+            homes.add(os.environ[variable])
+    prefixes = set()
+    for home in homes:
+        home = home.rstrip("\\/")
+        if len(home) > 3:  # never a bare drive or "/"
+            prefixes.update({home, home.replace("\\", "/"), home.replace("/", "\\")})
+    try:
+        user = getpass.getuser()
+    except (KeyError, OSError):
+        user = os.environ.get("USER") or os.environ.get("USERNAME")
+    return sorted(prefixes, key=len, reverse=True), user
+
+
+def hide_identity(value, prefixes: list[str], user: str | None):
+    """Defensive last pass over every string in the manifest: any home-directory prefix becomes
+    <home> and the user name, as a whole word, becomes <user> (MSVC defines such as /DWIN32 and
+    everything else are left alone)."""
+    if isinstance(value, dict):
+        return {key: hide_identity(item, prefixes, user) for key, item in value.items()}
+    if isinstance(value, list):
+        return [hide_identity(item, prefixes, user) for item in value]
+    if not isinstance(value, str):
+        return value
+    for prefix in prefixes:
+        value = re.sub(re.escape(prefix), "<home>", value, flags=re.IGNORECASE)
+    if user and len(user) >= 2:
+        value = re.sub(r"(?<![A-Za-z0-9])" + re.escape(user) + r"(?![A-Za-z0-9])", "<user>", value, flags=re.IGNORECASE)
+    return value
 
 
 def build_provenance(binary: Path, repo_root: Path) -> dict:
@@ -113,14 +171,37 @@ def build_provenance(binary: Path, repo_root: Path) -> dict:
             cache.get(f"CMAKE_CXX_FLAGS_{build['build_type'].upper()}"), repo_root
         )
     build["ipo"] = cache.get("CMAKE_INTERPROCEDURAL_OPTIMIZATION", cache.get("TASKSMACK_ENABLE_IPO"))
-    for compiler_file in sorted((build_dir / "CMakeFiles").glob("*/CMakeCXXCompiler.cmake")):
+    # A reused build tree keeps CMakeFiles/<version>/ from every CMake that configured it: read the
+    # one matching the cache's CMake version, and leave the compiler unknown rather than guess.
+    if compiler_file := cmake_compiler_file(build_dir, cache):
         text = compiler_file.read_text(encoding="utf-8", errors="replace")
         if match := re.search(r'set\(CMAKE_CXX_COMPILER_ID "([^"]*)"\)', text):
             build["compiler_id"] = match.group(1)
         if match := re.search(r'set\(CMAKE_CXX_COMPILER_VERSION "([^"]*)"\)', text):
             build["compiler_version"] = match.group(1)
-        break
     return build
+
+
+def cmake_compiler_file(build_dir: Path, cache: dict[str, str]) -> Path | None:
+    """CMakeFiles/<major.minor.patch>/CMakeCXXCompiler.cmake for the CMake version in the cache.
+
+    A development build of CMake names the directory with a suffix (4.1.20250101-gabc), so a
+    single directory starting with the version followed by '-' is accepted too; anything else
+    (no version in the cache, no match, or several) is None.
+    """
+    parts = [cache.get(f"CMAKE_CACHE_{part}_VERSION") for part in ("MAJOR", "MINOR", "PATCH")]
+    if not all(parts):
+        return None
+    version = ".".join(parts)
+    exact = build_dir / "CMakeFiles" / version / "CMakeCXXCompiler.cmake"
+    if exact.is_file():
+        return exact
+    candidates = [
+        path
+        for path in (build_dir / "CMakeFiles").glob(f"{version}-*/CMakeCXXCompiler.cmake")
+        if path.is_file()
+    ]
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def cpu_model() -> str | None:
@@ -239,6 +320,7 @@ def main() -> int:
         },
         "machine": machine_class(),
     }
+    manifest = hide_identity(manifest, *identity_strings())
     options.manifest.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return 0
 

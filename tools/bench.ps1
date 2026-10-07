@@ -100,11 +100,18 @@ function Get-GitProvenance {
 function Hide-AbsolutePaths {
     # Replace absolute paths in compiler flags so no user profile or checkout path is recorded: a
     # path inside the source tree becomes <source>/relative/path, any other <abs>/<file name>.
-    # Matches a drive or UNC path, or a POSIX path of two or more segments (so MSVC-style switches
-    # such as /DWIN32 are left alone), after the start, whitespace, '=' or ',', optionally with a
-    # switch glued on (-I/x, -LC:/x, -isystem/x, /IC:\x), which is kept; quoted paths, which can
-    # hold spaces, first.
-    # Kept in step with hide_absolute_paths in tools/bench-manifest.py.
+    # The same patterns as hide_absolute_paths in tools/bench-manifest.py (#1445 review):
+    # - Found anywhere in a token, so after any joined switch (-IC:/x, -isystem\\host\x,
+    #   /I//host/x): a drive path with either slash (not "://" as in a URL), a UNC path with either
+    #   slash (not after ':'), and the \\?\ and \\.\ device paths.
+    # - Found at the start, after whitespace, '=', ',' or a quote, optionally with a switch glued
+    #   on (-I, -L, -B, -isystem, -idirafter, -iquote, -imsvc, any other -x/--x switch; MSVC /I,
+    #   /FI, /Fo, /Fd, /Fe, /Fp, /LIBPATH:): a POSIX path of two or more segments (so MSVC defines
+    #   such as /DWIN32 stay) and a home-relative ~/x or ~u/x.
+    # - A path ends at whitespace, a quote, '=', ',' or ';', so both sides of
+    #   -fdebug-prefix-map=OLD=NEW / -ffile-prefix-map=OLD=NEW, --sysroot=PATH, -fprofile-*=PATH
+    #   and space-separated values are matched on their own.
+    # - Quoted paths, which can hold spaces, are handled first, with the same heads and switches.
     param([string]$Flags)
     if (-not $Flags) { return $Flags }
     $root = ([IO.Path]::GetFullPath($repoRoot)).Replace('\', '/').TrimEnd('/')
@@ -118,10 +125,65 @@ function Hide-AbsolutePaths {
         }
         return '<abs>/' + ($normalized.TrimEnd('/') -split '/')[-1]
     }
-    $quoted = [regex]'(["''])((?:[A-Za-z]:[\\/]|\\\\|/)[^"'']*)\1'
-    $bare = [regex]'(?<pre>(?:^|[\s=,])(?:-(?:isystem|idirafter|iquote|imsvc|[A-Za-z])|/I)?)(?<path>(?:[A-Za-z]:[\\/]|\\\\)[^\s"'']*|/[^/\s"'']+/[^\s"'']*)'
-    $Flags = $quoted.Replace($Flags, { param($m) $m.Groups[1].Value + (& $scrub $m.Groups[2].Value) + $m.Groups[1].Value })
-    return $bare.Replace($Flags, { param($m) $m.Groups['pre'].Value + (& $scrub $m.Groups['path'].Value) })
+    $tail = '[^\s"''=,;]*'
+    $switch = '(?:-{1,2}[A-Za-z][\w+-]*?|/(?:I|FI|Fo|Fd|Fe|Fp|LIBPATH:))'
+    $anywhereHead = '(?:[A-Za-z]:[\\/](?![\\/])|\\\\|(?<!:)//)'
+    $boundaryHead = '(?:/[^/\s"''=,;]+/|~[^/\s"''=,;]*/)'
+    $quoted = [regex]('(?<q>["''])(?<pre>' + $switch + '?)(?<path>(?:[A-Za-z]:[\\/]|\\\\|//|/[^/"'']+/|~[^/"'']*/)[^"'']*)\k<q>')
+    $bare = [regex]('(?<anywhere>' + $anywhereHead + $tail + ')|(?<pre>(?:^|(?<=[\s=,"'']))' + $switch + '?)(?<path>' + $boundaryHead + $tail + ')')
+    $Flags = $quoted.Replace($Flags, { param($m) $m.Groups['q'].Value + $m.Groups['pre'].Value + (& $scrub $m.Groups['path'].Value) + $m.Groups['q'].Value })
+    return $bare.Replace($Flags, {
+            param($m)
+            if ($m.Groups['anywhere'].Success) { return (& $scrub $m.Groups['anywhere'].Value) }
+            $m.Groups['pre'].Value + (& $scrub $m.Groups['path'].Value)
+        })
+}
+
+function Hide-Identity {
+    # Defensive last pass over every string in the manifest (#1445 review): any home-directory
+    # prefix ($HOME, $env:USERPROFILE, both slash forms) becomes <home> and the user name, as a
+    # whole word, becomes <user>; MSVC defines such as /DWIN32 and everything else are left alone.
+    # Kept in step with hide_identity in tools/bench-manifest.py.
+    param($Value)
+    if ($Value -is [System.Collections.IDictionary]) {
+        $copy = [ordered]@{}
+        foreach ($key in $Value.Keys) { $copy[$key] = Hide-Identity $Value[$key] }
+        return $copy
+    }
+    if ($Value -is [string]) {
+        $homes = @([Environment]::GetFolderPath('UserProfile'), $HOME, $env:HOME, $env:USERPROFILE) | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\', '/') } | Where-Object { $_.Length -gt 3 }
+        $prefixes = @($homes | ForEach-Object { $_; $_.Replace('\', '/'); $_.Replace('/', '\') } | Sort-Object -Unique | Sort-Object Length -Descending)
+        foreach ($prefix in $prefixes) { $Value = [regex]::Replace($Value, [regex]::Escape($prefix), '<home>', 'IgnoreCase') }
+        $user = [Environment]::UserName
+        if ($user -and $user.Length -ge 2) {
+            $Value = [regex]::Replace($Value, '(?<![A-Za-z0-9])' + [regex]::Escape($user) + '(?![A-Za-z0-9])', '<user>', 'IgnoreCase')
+        }
+        return $Value
+    }
+    if ($Value -is [System.Collections.IEnumerable]) {
+        # A list stays a list (written as a JSON array even with one item).
+        return , [object[]]@(foreach ($item in $Value) { Hide-Identity $item })
+    }
+    return $Value
+}
+
+function Get-CMakeCompilerFile {
+    # CMakeFiles/<major.minor.patch>/CMakeCXXCompiler.cmake for the CMake version in the cache: a
+    # reused build tree keeps one directory per CMake that configured it, so the first match can
+    # be stale. A development CMake names it with a suffix (4.1.20250101-gabc), so a single
+    # directory starting with the version and '-' is accepted too; otherwise $null (unknown,
+    # rather than a guess). Kept in step with cmake_compiler_file in tools/bench-manifest.py.
+    param([string]$BuildDirectory, [hashtable]$Cache)
+    $parts = @('MAJOR', 'MINOR', 'PATCH') | ForEach-Object { $Cache["CMAKE_CACHE_$($_)_VERSION"] }
+    if (@($parts | Where-Object { $_ }).Count -ne 3) { return $null }
+    $version = $parts -join '.'
+    $cmakeFiles = Join-Path $BuildDirectory 'CMakeFiles'
+    $exact = Join-Path (Join-Path $cmakeFiles $version) 'CMakeCXXCompiler.cmake'
+    if (Test-Path -LiteralPath $exact -PathType Leaf) { return $exact }
+    $candidates = @(Get-ChildItem -LiteralPath $cmakeFiles -Directory -Filter "$version-*" -ErrorAction SilentlyContinue |
+            ForEach-Object { Join-Path $_.FullName 'CMakeCXXCompiler.cmake' } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+    if ($candidates.Count -eq 1) { return $candidates[0] }
+    return $null
 }
 
 function Get-BuildProvenance {
@@ -153,9 +215,9 @@ function Get-BuildProvenance {
     $build.ipo = if ($cache.ContainsKey('CMAKE_INTERPROCEDURAL_OPTIMIZATION')) { $cache['CMAKE_INTERPROCEDURAL_OPTIMIZATION'] }
     elseif ($cache.ContainsKey('TASKSMACK_ENABLE_IPO')) { $cache['TASKSMACK_ENABLE_IPO'] }
     else { $null }
-    $compilerFile = Get-ChildItem -Path (Join-Path $buildDir 'CMakeFiles') -Filter 'CMakeCXXCompiler.cmake' -Recurse -Depth 1 -ErrorAction SilentlyContinue | Select-Object -First 1
+    $compilerFile = Get-CMakeCompilerFile -BuildDirectory $buildDir -Cache $cache
     if ($compilerFile) {
-        $text = Get-Content -LiteralPath $compilerFile.FullName -Raw
+        $text = Get-Content -LiteralPath $compilerFile -Raw
         if ($text -match 'set\(CMAKE_CXX_COMPILER_ID "(?<v>[^"]*)"\)') { $build.compiler_id = $Matches.v }
         if ($text -match 'set\(CMAKE_CXX_COMPILER_VERSION "(?<v>[^"]*)"\)') { $build.compiler_version = $Matches.v }
     }
@@ -240,7 +302,7 @@ function Write-BenchManifest {
         }
         machine        = Get-MachineClass
     }
-    $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestFile -Encoding utf8
+    Hide-Identity $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestFile -Encoding utf8
 }
 
 function Invoke-ResultRedaction {

@@ -18,21 +18,53 @@ $root = Join-Path ([IO.Path]::GetTempPath()) "tasksmack-bench-tests-$([guid]::Ne
 New-Item -ItemType Directory -Path $root | Out-Null
 try {
     # A fake build tree, so the manifest's build fields are read from a CMakeCache.txt the way
-    # they are for build/<preset>.
+    # they are for build/<preset>. It was configured by two CMake versions, as a reused tree is:
+    # only the cache's own (4.1.0) names the compiler.
     $buildDir = Join-Path $root 'build\fake-preset'
     $binDir = Join-Path $buildDir 'bin'
-    New-Item -ItemType Directory -Path $binDir, (Join-Path $buildDir 'CMakeFiles\4.0.0') | Out-Null
+    New-Item -ItemType Directory -Path $binDir, (Join-Path $buildDir 'CMakeFiles\4.0.0'), (Join-Path $buildDir 'CMakeFiles\4.1.0') | Out-Null
+    $U = [Environment]::UserName
+    $H = $env:USERPROFILE
+    # Every absolute-path form the scrubber handles, each holding the user name (#1445 review), and
+    # what it must become. -DBUILT_BY=<user name> is no path: the final identity pass catches it.
+    $flagForms = [ordered]@{
+        '-fms-compatibility'                                         = '-fms-compatibility'
+        "-I`"C:/Users/$U/My Includes/inc`""                          = '-I"<abs>/inc"'
+        "-fprofile-use C:\Users\$U\pgo\other.profdata"               = '-fprofile-use <abs>/other.profdata'
+        "-isystemC:/Users/$U/sdk/include"                            = '-isystem<abs>/include'
+        "/IC:\Users\$U\sdk\include"                                  = '/I<abs>/include'
+        "-I//bench-host/Users/$U/sdk/include"                        = '-I<abs>/include'
+        "-idirafter\\fileserver\Users\$U\c\inc"                      = '-idirafter<abs>/inc'
+        "-imsvc\\?\C:\Users\$U\e\inc"                                = '-imsvc<abs>/inc'
+        "/I\\.\C:\Users\$U\f\inc"                                    = '/I<abs>/inc'
+        "-iquote/home/$U/g/inc"                                      = '-iquote<abs>/inc'
+        "-L/Users/$U/lib"                                            = '-L<abs>/lib'
+        '-B/root/bin/x'                                              = '-B<abs>/x'
+        "--sysroot=/home/$U/sysroot"                                 = '--sysroot=<abs>/sysroot'
+        "-fdebug-prefix-map=$H\src=/src"                             = '-fdebug-prefix-map=<abs>/src=/src'
+        "-ffile-prefix-map=C:/Users/$U/src=//buildhost/Users/$U/out" = '-ffile-prefix-map=<abs>/src=<abs>/out'
+        "`"-isystem/home/$U/with space/inc`""                        = '"-isystem<abs>/inc"'
+        '-I~/sdk/include'                                            = '-I<abs>/include'
+        "-isystem ~$U/sdk/include"                                   = '-isystem <abs>/include'
+        "-DBUILT_BY=$U"                                              = '-DBUILT_BY=<user>'
+        '/DWIN32'                                                    = '/DWIN32'
+    }
     Set-Content -LiteralPath (Join-Path $buildDir 'CMakeCache.txt') -Encoding ascii -Value @(
         'CMAKE_BUILD_TYPE:STRING=Release'
         'CMAKE_GENERATOR:INTERNAL=Ninja'
-        "CMAKE_CXX_COMPILER:FILEPATH=C:\Users\$([Environment]::UserName)\llvm\bin\clang++.exe"
-        # Absolute paths in flags, as the PGO presets embed ${sourceDir}/profiles/tasksmack.profdata:
-        # quoted with spaces, '=' and space-separated forms, a glued -I, inside and outside the checkout.
-        "CMAKE_CXX_FLAGS:STRING=-fms-compatibility -I`"C:/Users/$([Environment]::UserName)/My Includes/inc`" -fprofile-use C:\Users\$([Environment]::UserName)\pgo\other.profdata -isystemC:/Users/$([Environment]::UserName)/sdk/include /IC:\Users\$([Environment]::UserName)\sdk\include /DWIN32"
-        "CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -DNDEBUG -fprofile-instr-use=`"$($repoRootForward)/profiles/tasksmack.profdata`" -fprofile-use=$($env:USERPROFILE)\x.profdata"
+        "CMAKE_CXX_COMPILER:FILEPATH=C:\Users\$U\llvm\bin\clang++.exe"
+        "CMAKE_CXX_FLAGS:STRING=$($flagForms.Keys -join ' ')"
+        "CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -DNDEBUG -fprofile-instr-use=`"$($repoRootForward)/profiles/tasksmack.profdata`" -fprofile-use=$H\x.profdata"
         'TASKSMACK_ENABLE_IPO:BOOL=ON'
+        'CMAKE_CACHE_MAJOR_VERSION:INTERNAL=4'
+        'CMAKE_CACHE_MINOR_VERSION:INTERNAL=1'
+        'CMAKE_CACHE_PATCH_VERSION:INTERNAL=0'
     )
     Set-Content -LiteralPath (Join-Path $buildDir 'CMakeFiles\4.0.0\CMakeCXXCompiler.cmake') -Encoding ascii -Value @(
+        'set(CMAKE_CXX_COMPILER_ID "Clang")'
+        'set(CMAKE_CXX_COMPILER_VERSION "21.1.0")'
+    )
+    Set-Content -LiteralPath (Join-Path $buildDir 'CMakeFiles\4.1.0\CMakeCXXCompiler.cmake') -Encoding ascii -Value @(
         'set(CMAKE_CXX_COMPILER_ID "Clang")'
         'set(CMAKE_CXX_COMPILER_VERSION "22.1.8")'
     )
@@ -63,7 +95,7 @@ exit [int]$env:STUB_EXIT
 
     function Invoke-Bench {
         param([int]$StubExit, [string]$StubOutput = 'full', [string]$Name, [switch]$NativeErrorPromotion,
-            [string[]]$Extra = @('--benchmark_filter=BM_X'))
+            [string[]]$Extra = @('--benchmark_filter=BM_X'), [string]$Binary = $stub)
         $outDir = Join-Path $root $Name
         $env:STUB_EXIT = "$StubExit"
         $env:STUB_OUTPUT = $StubOutput
@@ -76,7 +108,7 @@ exit [int]$env:STUB_EXIT
                 $log = & $hostExe -NoProfile -Command $command 2>&1 | Out-String
             }
             else {
-                $log = & $hostExe -NoProfile -File $benchScript fake-preset -BenchmarkBinary $stub -OutputDirectory $outDir @Extra 2>&1 | Out-String
+                $log = & $hostExe -NoProfile -File $benchScript fake-preset -BenchmarkBinary $Binary -OutputDirectory $outDir @Extra 2>&1 | Out-String
             }
             $code = $LASTEXITCODE
         }
@@ -156,7 +188,12 @@ exit [int]$env:STUB_EXIT
     # No host name, user name or user-profile path anywhere in the manifest.
     # Absolute paths in flags: the checkout's become <source>/..., others <abs>/<file name>.
     Assert-True ($manifest.build.cxx_flags_config -ceq '-O3 -DNDEBUG -fprofile-instr-use="<source>/profiles/tasksmack.profdata" -fprofile-use=<abs>/x.profdata') "cxx_flags_config: $($manifest.build.cxx_flags_config)"
-    Assert-True ($manifest.build.cxx_flags -ceq '-fms-compatibility -I"<abs>/inc" -fprofile-use <abs>/other.profdata -isystem<abs>/include /I<abs>/include /DWIN32')"cxx_flags: $($manifest.build.cxx_flags)"
+    $expectedFlags = @($flagForms.Values) -join ' '
+    if ($manifest.build.cxx_flags -cne $expectedFlags) {
+        $got = $manifest.build.cxx_flags
+        $diff = @($flagForms.GetEnumerator() | Where-Object { -not $got.Contains($_.Value) } | ForEach-Object { "$($_.Key) -> expected $($_.Value)" })
+        throw "cxx_flags: $got`nForms not scrubbed as expected:`n$($diff -join "`n")"
+    }
 
     $identities = @([Environment]::MachineName, [Environment]::UserName, $env:COMPUTERNAME, $env:USERNAME, $env:USERPROFILE, [IO.Path]::GetTempPath().TrimEnd('\'),
         $repoRootPath, $repoRootForward, 'C:/Users', 'C:\Users')
@@ -198,6 +235,22 @@ exit [int]$env:STUB_EXIT
         $benchmark = (Get-Content -LiteralPath $run.Manifest[0].FullName -Raw | ConvertFrom-Json).benchmark
         Assert-True ($benchmark.report_aggregates_only -eq $case.Expected -and $benchmark.raw_repetitions -eq (-not $case.Expected)) "$($case.Args -join ' '): report_aggregates_only=$($benchmark.report_aggregates_only), raw_repetitions=$($benchmark.raw_repetitions); expected $($case.Expected)"
     }
+
+    # ── #1445 review: a compiler directory that does not match the cache's CMake is not guessed ─
+    $staleDir = Join-Path $root 'build\stale-preset'
+    New-Item -ItemType Directory -Path (Join-Path $staleDir 'bin'), (Join-Path $staleDir 'CMakeFiles\4.0.0') | Out-Null
+    Copy-Item -LiteralPath $stub -Destination (Join-Path $staleDir 'bin')
+    Set-Content -LiteralPath (Join-Path $staleDir 'CMakeCache.txt') -Encoding ascii -Value @(
+        'CMAKE_BUILD_TYPE:STRING=Release'
+        'CMAKE_CACHE_MAJOR_VERSION:INTERNAL=4'
+        'CMAKE_CACHE_MINOR_VERSION:INTERNAL=2'
+        'CMAKE_CACHE_PATCH_VERSION:INTERNAL=0'
+    )
+    Set-Content -LiteralPath (Join-Path $staleDir 'CMakeFiles\4.0.0\CMakeCXXCompiler.cmake') -Encoding ascii -Value 'set(CMAKE_CXX_COMPILER_ID "Clang")', 'set(CMAKE_CXX_COMPILER_VERSION "21.1.0")'
+    $stale = Invoke-Bench -StubExit 0 -Name 'stale' -Binary (Join-Path $staleDir 'bin\TaskSmackBenchmarks.cmd')
+    Assert-True ($stale.ExitCode -eq 0 -and $stale.Manifest.Count -eq 1) "Stale-tree run failed:`n$($stale.Log)"
+    $staleBuild = (Get-Content -LiteralPath $stale.Manifest[0].FullName -Raw | ConvertFrom-Json).build
+    Assert-True ($null -eq $staleBuild.compiler_id -and $null -eq $staleBuild.compiler_version) "A stale compiler directory must not be used: $($staleBuild | ConvertTo-Json -Compress)"
 
     Write-Host 'bench.ps1 tests passed'
 }

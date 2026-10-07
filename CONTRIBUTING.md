@@ -710,13 +710,16 @@ Each `bench.sh` / `bench.ps1` run writes two files to `perf-data/`:
 - `<preset>-<timestamp>.manifest.json` -- a provenance sidecar (#1424) with the same field names
   from both scripts: `git` (commit, branch, dirty flag for tracked files; no diff), `binary` (file
   name and SHA-256), `build` (build type, generator, compiler name/id/version, C++ flags and IPO
-  read from the build tree's `CMakeCache.txt`; absolute paths in the flags, such as the PGO
-  presets' `-fprofile-instr-use=` profile, become `<source>/...` inside the checkout and
-  `<abs>/<file name>` elsewhere), `benchmark` (the arguments passed, with the output
-  path reduced to its file name), `exit_code`, and `machine`, an anonymized machine class (CPU
-  model, logical core count, OS name/version, architecture). It records no host name, user name,
-  user-profile path, process list or other command line. `bench.sh` writes it with
-  `tools/bench-manifest.py`.
+  read from the build tree's `CMakeCache.txt`, the compiler id/version from the
+  `CMakeFiles/<version>/` of the cache's own CMake version, or unknown; absolute paths in the
+  flags -- drive, UNC and device paths, POSIX and `~` paths, quoted or not, joined to a switch or
+  after `=` or a space, such as the PGO presets' `-fprofile-instr-use=` profile -- become
+  `<source>/...` inside the checkout and `<abs>/<file name>` elsewhere), `benchmark` (the
+  arguments passed, with the output path reduced to its file name), `exit_code`, and `machine`,
+  an anonymized machine class (CPU model, logical core count, OS name/version, architecture). It
+  records no host name, user name, user-profile path, process list or other command line; a
+  final pass replaces any remaining home-directory prefix with `<home>` and the user name with
+  `<user>`. `bench.sh` writes it with `tools/bench-manifest.py`.
 
 For the script tests, `bench.ps1 -BenchmarkBinary <path> -OutputDirectory <dir>` and `bench.sh`'s
 `TASKSMACK_BENCH_BIN` / `TASKSMACK_BENCH_OUT_DIR` environment variables point the scripts at a

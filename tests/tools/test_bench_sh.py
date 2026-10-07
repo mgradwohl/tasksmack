@@ -82,33 +82,78 @@ def posix(path: Path) -> str:
 BASH = os.environ.get("TASKSMACK_TEST_BASH") or shutil.which("bash")
 
 
+def flag_forms(user: str, home: str) -> list[tuple[str, str]]:
+    """Every absolute-path form the scrubber handles, each holding the user name (#1445 review),
+    and what it must become; the same list as tools/test-bench.ps1. -DBUILT_BY=<user name> is no
+    path: the final identity pass catches it."""
+    return [
+        ("-fms-compatibility", "-fms-compatibility"),
+        (f'-I"C:/Users/{user}/My Includes/inc"', '-I"<abs>/inc"'),
+        (f"-fprofile-use C:\\Users\\{user}\\pgo\\other.profdata", "-fprofile-use <abs>/other.profdata"),
+        (f"-isystemC:/Users/{user}/sdk/include", "-isystem<abs>/include"),
+        (f"/IC:\\Users\\{user}\\sdk\\include", "/I<abs>/include"),
+        (f"-I//bench-host/Users/{user}/sdk/include", "-I<abs>/include"),
+        (f"-idirafter\\\\fileserver\\Users\\{user}\\c\\inc", "-idirafter<abs>/inc"),
+        (f"-imsvc\\\\?\\C:\\Users\\{user}\\e\\inc", "-imsvc<abs>/inc"),
+        (f"/I\\\\.\\C:\\Users\\{user}\\f\\inc", "/I<abs>/inc"),
+        (f"-iquote/home/{user}/g/inc", "-iquote<abs>/inc"),
+        (f"-L/Users/{user}/lib", "-L<abs>/lib"),
+        ("-B/root/bin/x", "-B<abs>/x"),
+        (f"--sysroot=/home/{user}/sysroot", "--sysroot=<abs>/sysroot"),
+        (f"-fdebug-prefix-map={home}/src=/src", "-fdebug-prefix-map=<abs>/src=/src"),
+        (f"-ffile-prefix-map=C:/Users/{user}/src=//buildhost/Users/{user}/out", "-ffile-prefix-map=<abs>/src=<abs>/out"),
+        (f'"-isystem/home/{user}/with space/inc"', '"-isystem<abs>/inc"'),
+        ("-I~/sdk/include", "-I<abs>/include"),
+        (f"-isystem ~{user}/sdk/include", "-isystem <abs>/include"),
+        (f"-DBUILT_BY={user}", "-DBUILT_BY=<user>"),
+        ("/DWIN32", "/DWIN32"),
+    ]
+
+
+def write_build_tree(build_dir: Path, cache_version: str, compilers: dict[str, str], flags: str = "") -> None:
+    """A fake build/<preset> tree: CMakeCache.txt for CMake cache_version, and one
+    CMakeFiles/<version>/CMakeCXXCompiler.cmake per entry of compilers (CMake version -> Clang
+    version), as a tree reconfigured by several CMake versions keeps."""
+    (build_dir / "bin").mkdir(parents=True)
+    major, minor, patch = cache_version.split(".")
+    (build_dir / "CMakeCache.txt").write_text(
+        "CMAKE_BUILD_TYPE:STRING=Release\n"
+        "CMAKE_GENERATOR:INTERNAL=Ninja\n"
+        f"CMAKE_CXX_COMPILER:FILEPATH=/home/{getpass.getuser()}/llvm/bin/clang++\n"
+        f"CMAKE_CXX_FLAGS:STRING={flags}\n"
+        f'CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -DNDEBUG -fprofile-instr-use="{posix(REPO_ROOT)}/profiles/tasksmack.profdata"'
+        f" -fprofile-use=/home/{getpass.getuser()}/x.profdata\n"
+        f"CMAKE_CACHE_MAJOR_VERSION:INTERNAL={major}\n"
+        f"CMAKE_CACHE_MINOR_VERSION:INTERNAL={minor}\n"
+        f"CMAKE_CACHE_PATCH_VERSION:INTERNAL={patch}\n",
+        encoding="utf-8",
+    )
+    for cmake_version, clang_version in compilers.items():
+        (build_dir / "CMakeFiles" / cmake_version).mkdir(parents=True)
+        (build_dir / "CMakeFiles" / cmake_version / "CMakeCXXCompiler.cmake").write_text(
+            f'set(CMAKE_CXX_COMPILER_ID "Clang")\nset(CMAKE_CXX_COMPILER_VERSION "{clang_version}")\n', encoding="utf-8"
+        )
+
+
+def write_stub(path: Path) -> Path:
+    path.write_text(STUB, encoding="utf-8", newline="\n")
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return path
+
+
 @unittest.skipUnless(BASH, "bash not available")
 class BenchShTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
         build_dir = self.root / "build" / "fake"
-        (build_dir / "bin").mkdir(parents=True)
-        (build_dir / "CMakeFiles" / "4.0.0").mkdir(parents=True)
-        (build_dir / "CMakeCache.txt").write_text(
-            "CMAKE_BUILD_TYPE:STRING=Release\n"
-            "CMAKE_GENERATOR:INTERNAL=Ninja\n"
-            f"CMAKE_CXX_COMPILER:FILEPATH=/home/{getpass.getuser()}/llvm/bin/clang++\n"
-            # Absolute paths in flags, as the PGO presets embed ${sourceDir}/profiles/...: quoted
-            # with spaces, '=' and space-separated forms, a glued -I, inside and outside the checkout.
-            f'CMAKE_CXX_FLAGS:STRING=-fPIC -I"/home/{getpass.getuser()}/My Includes/inc"'
-            f" -fprofile-use {posix(Path.home())}/pgo/other.profdata -isystem/home/{getpass.getuser()}/sdk/include"
-            f" /IC:\\Users\\{getpass.getuser()}\\sdk\\include /DWIN32\n"
-            f'CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -DNDEBUG -fprofile-instr-use="{posix(REPO_ROOT)}/profiles/tasksmack.profdata"'
-            f" -fprofile-use=/home/{getpass.getuser()}/x.profdata\n",
-            encoding="utf-8",
+        self.flag_forms = flag_forms(getpass.getuser(), posix(Path.home()))
+        # Configured by two CMake versions, as a reused tree is: only the cache's own names the
+        # compiler.
+        write_build_tree(
+            build_dir, "4.1.0", {"4.0.0": "21.1.0", "4.1.0": "22.1.8"}, " ".join(form for form, _ in self.flag_forms)
         )
-        (build_dir / "CMakeFiles" / "4.0.0" / "CMakeCXXCompiler.cmake").write_text(
-            'set(CMAKE_CXX_COMPILER_ID "Clang")\nset(CMAKE_CXX_COMPILER_VERSION "22.1.8")\n', encoding="utf-8"
-        )
-        self.stub = build_dir / "bin" / "TaskSmackBenchmarks"
-        self.stub.write_text(STUB, encoding="utf-8", newline="\n")
-        self.stub.chmod(self.stub.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        self.stub = write_stub(build_dir / "bin" / "TaskSmackBenchmarks")
         # bench.sh calls python3; point it at this interpreter (on Windows, python3 on PATH can be
         # the Microsoft Store alias).
         shim_dir = self.root / "shim"
@@ -121,12 +166,14 @@ class BenchShTest(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def run_bench(self, name: str, stub_exit: int, stub_output: str = "full", extra: tuple[str, ...] = ()):
+    def run_bench(
+        self, name: str, stub_exit: int, stub_output: str = "full", extra: tuple[str, ...] = (), binary: Path | None = None
+    ):
         out_dir = self.root / name
         env = dict(os.environ)
         env.pop("BENCHMARK_REPORT_AGGREGATES_ONLY", None)
         env.update(
-            TASKSMACK_BENCH_BIN=posix(self.stub),
+            TASKSMACK_BENCH_BIN=posix(binary or self.stub),
             TASKSMACK_BENCH_OUT_DIR=posix(out_dir),
             STUB_EXIT=str(stub_exit),
             STUB_OUTPUT=stub_output,
@@ -170,6 +217,17 @@ class BenchShTest(unittest.TestCase):
                 benchmark = json.loads(manifests[0].read_text(encoding="utf-8"))["benchmark"]
                 self.assertIs(benchmark["report_aggregates_only"], expected)
                 self.assertIs(benchmark["raw_repetitions"], not expected)
+
+    def test_a_compiler_directory_not_matching_the_cache_is_not_guessed(self):
+        # #1445 review: the cache is CMake 4.2.0 and only a 4.0.0 directory exists.
+        stale_dir = self.root / "build" / "stale"
+        write_build_tree(stale_dir, "4.2.0", {"4.0.0": "21.1.0"})
+        stub = write_stub(stale_dir / "bin" / "TaskSmackBenchmarks")
+        code, output, _, manifests = self.run_bench("stale", 0, binary=stub)
+        self.assertEqual(code, 0, output)
+        build = json.loads(manifests[0].read_text(encoding="utf-8"))["build"]
+        self.assertIsNone(build["compiler_id"])
+        self.assertIsNone(build["compiler_version"])
 
     def test_failing_benchmark_fails_the_script(self):
         code, output, results, manifests = self.run_bench("failed", 3)
@@ -218,10 +276,7 @@ class BenchShTest(unittest.TestCase):
             manifest["build"]["cxx_flags_config"],
             '-O3 -DNDEBUG -fprofile-instr-use="<source>/profiles/tasksmack.profdata" -fprofile-use=<abs>/x.profdata',
         )
-        self.assertEqual(
-            manifest["build"]["cxx_flags"],
-            '-fPIC -I"<abs>/inc" -fprofile-use <abs>/other.profdata -isystem<abs>/include /I<abs>/include /DWIN32',
-        )
+        self.assertEqual(manifest["build"]["cxx_flags"], " ".join(expected for _, expected in self.flag_forms))
         self.assertTrue(manifest["benchmark"]["raw_repetitions"])
         self.assertFalse(manifest["benchmark"]["report_aggregates_only"])
         args = manifest["benchmark"]["args"]
