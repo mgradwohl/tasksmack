@@ -1221,6 +1221,7 @@ average can hide and a single max spike can overstate:
 ResizePerf[idle-progress]: batches=94 events=6 resizeEvents=0 maxBatchEvents=2
   frames=94 resizeFrames=0
   frame avg/p95/p99/max=4.421/6.912/7.340/7.580 ms       ← update+render+post+swap (the 16.6ms/60fps figure)
+  loopIntervals=94 loop avg/p95/p99/max=50.120/51.034/52.880/53.410 ms ← frame end to frame end (cadence)
   drain avg/p95/p99/max=0.031/0.084/0.121/0.121 ms      ← SDL event drain
   update avg/p95/p99/max=0.014/0.031/0.045/0.052 ms     ← domain model refresh (all layers)
   render avg/p95/p99/max=0.842/1.203/1.410/1.502 ms     ← ImGui layout + draw call generation
@@ -1230,6 +1231,7 @@ ResizePerf[idle-progress]: batches=94 events=6 resizeEvents=0 maxBatchEvents=2
 ResizePerf[interaction-progress]: batches=109 events=48 resizeEvents=36 maxBatchEvents=4
   frames=109 resizeFrames=109
   frame avg/p95/p99/max=4.447/17.462/19.960/22.443 ms
+  loopIntervals=109 loop avg/p95/p99/max=16.702/17.910/20.330/23.020 ms
   drain avg/p95/p99/max=0.140/1.802/2.101/2.278 ms
   update avg/p95/p99/max=0.018/0.940/1.220/1.453 ms
   render avg/p95/p99/max=0.572/6.310/7.980/8.798 ms
@@ -1241,6 +1243,13 @@ ResizePerf[interaction-progress]: batches=109 events=48 resizeEvents=36 maxBatch
 always 1:1 with a rendered frame, so it's reported separately) — this is what #843's success
 criterion "p99 frame time ≤ 16.6ms (60fps)" actually refers to: individual phase percentiles can
 each look fine on their own while their sum still misses the frame budget.
+
+`loop` is the deliver-to-deliver interval: wall time from one presented frame's end (after swap)
+to the next one's, so it includes the pacing wait, the event drain and any skipped render in
+between. A render skipped for a drain overrun (`skippedFrames=`) is not an interval of its own; its
+time stays in the interval that spans it. `frame` says how long the work took; `loop` says how
+evenly frames reached the screen (at idle it should sit near the 50 ms idle period, or the
+animation period while a chart moves).
 
 `frames=`/`batches=` count only the current interval (5s idle / 0.5s interaction), but the
 p95/p99 figures are computed over a rolling window of up to 200 samples that persists across
@@ -1305,6 +1314,78 @@ TASKSMACK_LOG_LEVEL=debug ./build/optimized/bin/TaskSmack
 `TASKSMACK_LOG_LEVEL` accepts any spdlog level name: `trace`, `debug`, `info`, `warn`,
 `error`, `critical`, `off`. When both env vars are set, `TASKSMACK_LOG_LEVEL` takes
 precedence.
+
+### Measuring idle CPU and frame time
+
+Idle cost is TaskSmack's first performance priority (#843): a task manager that sits open all day
+must not be the thing using the CPU. `tools/measure-idle.sh` (Linux) turns one idle scenario into a
+comparable set of numbers. It launches TaskSmack with `TASKSMACK_TRACE_RESIZE_PERF=1`, waits for the
+main loop and a warm-up (as `tools/profile-perf.sh app` does), samples per-thread CPU, closes the app
+with SIGTERM (a non-zero exit or a SIGKILL fails the run), and prints a table plus one
+machine-readable `RESULT` line.
+
+```bash
+# Default: profile preset (built first), 15 s warm-up (45 s for a "minimized" label), 30 s sample
+./tools/measure-idle.sh --label overview
+
+# Existing debug build; switch tabs before the warm-up with any command (it gets TASKSMACK_PID).
+# The click position is the tab's screen position, which depends on your window size and place.
+./tools/measure-idle.sh --preset debug --skip-build --label processes \
+    --setup-cmd 'sleep 2; xdotool mousemove <x> <y> click 1'
+
+./tools/measure-idle.sh --help
+```
+
+Per-thread CPU comes from `pidstat -u -t -p <pid> 1 <N>` (package `sysstat`) when installed,
+otherwise from `/proc/<pid>/task/*/stat` deltas over the same window. Threads are named so the rows
+are readable: the background samplers are `ts-sampler-proc` (process enumeration) and
+`ts-sampler-sys` (system/storage/GPU). On Linux the UI thread keeps the process name (`TaskSmack`;
+its TID equals the PID), because renaming the main thread renames the process for `ps`, `top` and
+`pgrep`. On Windows the UI thread is described as `tasksmack-ui` and shows in WPA and debuggers.
+Names come from `Platform/ThreadName.h`; give any new worker thread one there (15 bytes at most).
+
+**Metrics:**
+
+| Metric | Definition | Source |
+|---|---|---|
+| Thread CPU% | Average CPU time of one thread over the sample window; 100% = one logical CPU busy | pidstat / `/proc` |
+| Total CPU% | The whole process over the window, including threads that started or exited in it | pidstat / `/proc/<pid>/stat` |
+| fps | Presented frames per second: loop intervals ÷ their summed duration | `ResizePerf[...]` `loop` |
+| Frame p95/p99/max | update+render+post+swap per presented frame (the 16.6 ms budget figure) | `ResizePerf[...]` `frame` |
+| Loop p95/p99 | Deliver-to-deliver interval, frame end to frame end, skipped renders included | `ResizePerf[...]` `loop` |
+
+The frame figures come from the `ResizePerf` summaries TaskSmack logs on its own schedule (every 5 s
+at idle), so they cannot cover exactly the CPU sample. The script uses the summaries logged while it
+sampled CPU and prints the span they actually cover (from the summary before the first one to the
+last one) next to the CPU sample's start and end. The `RESULT` line carries both as `cpuStart`/`cpuEnd`
+and `traceStart`/`traceEnd`/`traceSpan`. The two spans differ by up to one summary interval at each
+end. The p95/p99 figures are the worst of those summaries (each is nearest-rank over a rolling window
+of up to 200 samples); max is the largest per-interval max among them.
+
+The warm-up keeps startup and tab-switch frames out of that 200-sample rolling window before
+sampling starts. The default is 15 s, enough at idle frame rates (20–60 fps). A minimized window
+presents only about 5 fps (`MINIMIZED_FRAME_SLEEP_MS = 200`), so it needs about 45 s to refill the
+window; with fewer than 100 samples, nearest-rank p99 also just equals the max. The script uses 45 s
+by default when `--label` contains `minimized`, and `--warmup` overrides either default.
+
+**Scenario matrix:** run each for 30 s at the default 1 s refresh, window left alone, after a
+warm-up on that tab:
+
+| Scenario | What it exercises |
+|---|---|
+| Overview | System charts: CPU, memory, battery, threads/faults |
+| Processes | The process table and process enumeration |
+| CPU Cores | One chart per logical CPU |
+| Minimized (optional) | The hidden-window pacing path; should be close to the sampler threads alone. Use `--label minimized` (45 s warm-up) and minimize the window in `--setup-cmd` |
+
+Compare like with like: the same machine, preset, window size and refresh interval, and the same
+scenario. Run each scenario more than once; one run on a shared desktop is noisy.
+
+**WSL:** by maintainer decision, numbers measured under WSL (WSLg) are **CPU-only evidence**. CPU%
+of TaskSmack's own threads is meaningful there, but WSLg usually renders through Mesa's `llvmpipe`
+software rasterizer, whose threads (`llvmpipe-N`) then dominate the total and make frame and loop
+times reflect the CPU rasterizer and the shared desktop, not a GPU driver and compositor. Quote
+fps/frame/loop figures only from native Linux or Windows; on WSL quote CPU% (and say so).
 
 ## Profile-Guided Optimization (PGO)
 

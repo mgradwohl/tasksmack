@@ -89,6 +89,7 @@ add_executable(TaskSmackBenchmarks
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp
     ${PLATFORM_SRC_UNDER_BENCH}
 )
 

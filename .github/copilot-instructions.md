@@ -125,6 +125,7 @@ struct ProcessCapabilities {
 - System, Storage, and GPU models atomically publish immutable versioned snapshot-and-history generations
 - UI code retains published generations and process snapshot versions to avoid locks, redundant copies, and stale history entries between samples
 - The default refresh interval is 1 second and is user-configurable
+- Every thread TaskSmack creates is named through `Platform/ThreadName.h` (`ts-sampler-proc`, `ts-sampler-sys`; 15 bytes max for Linux) so per-thread CPU tools can attribute it; see CONTRIBUTING.md "Measuring idle CPU and frame time"
 
 ### Panel Lifecycle
 ```cpp
