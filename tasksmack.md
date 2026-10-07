@@ -31,7 +31,7 @@ flowchart TD
     Platform -. path provider only .-> Core
 ```
 
-- Platform probes are stateless readers of OS counters.
+- Platform probes read raw OS counters and never compute deltas or rates. They may keep implementation state that serves those reads: caches of raw readings and the bookkeeping a raw reading needs. On Linux, `LinuxProcessProbe` keeps a UID-to-username cache (one entry per UID seen, never evicted); each process's command line, keyed by PID, start time and comm, re-read within `PROCESS_CMDLINE_CACHE_TTL_MS` and dropped once the process is no longer listed; the socket inode-to-PID map, which `enumerate()` rebuilds every `INODE_PID_CACHE_TTL_MS` from the same `/proc/[pid]/fd` walk that counts FDs; the TCP socket query result, cached for `socket_stats_cache_ttl_ms` (default `SOCKET_STATS_CACHE_TTL_MS_DEFAULT`); and, for socket attribution, when each still-unowned socket was first seen (replaced by every reading).
 - Process enumeration and heavy system metrics (System, Storage, GPU) run asynchronously on a background thread via `BackgroundSampler` (after an initial synchronous baseline read). This decoupled polling ensures UI responsiveness under heavy load.
 - Domain code transforms counters into snapshots and maintains history.
 - UI (panels) consumes snapshots, renders views through ImGui/ImPlot, and never calls platform APIs directly.
