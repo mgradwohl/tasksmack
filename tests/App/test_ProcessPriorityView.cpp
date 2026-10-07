@@ -158,18 +158,61 @@ TEST(ProcessPriorityViewTest, ApplySetsTheEditOnTheTargetWithItsStartTime)
     EXPECT_EQ(mock.lastSetPriorityNice(), 10);
 }
 
-TEST(ProcessPriorityViewTest, AnEditBeforeTheSnapshotIsAppliedWithTheConfirmedStartTime)
+TEST(ProcessPriorityViewTest, AnEditBeforeTheStartTimeIsKnownIsDroppedOnceItIs)
 {
-    // Edited while only the PID was known; by Apply the snapshot has confirmed the start time, and the
-    // platform is given it, so it can refuse a reused PID (#973).
+    // Edited while only the PID was known; by Apply a snapshot knows the start time. The PID may have
+    // been reused in between, and a check of the live target cannot tell, so the edit is dropped with
+    // no platform call (Copilot review on #1455), for A's own start time or a reuse's alike.
+    for (const Platform::ProcessTarget& live : {TARGET_A, TARGET_A_REUSED})
+    {
+        SCOPED_TRACE("start=" + std::to_string(live.startTimeTicks));
+        TestMocks::MockProcessActions mock;
+        ProcessPriorityView view;
+        view.editNice(10, TARGET_A_UNCONFIRMED);
+        view.apply(&mock, live, NICE_OF_A);
+
+        EXPECT_EQ(mock.setPriorityCount(), 0);
+        EXPECT_FALSE(view.hasPendingEdit());
+        EXPECT_EQ(view.editTarget().pid, -1);
+    }
+}
+
+TEST(ProcessPriorityViewTest, AnEditAppliesByPidWhileTheStartTimeStaysUnknown)
+{
+    // A platform or process that never reports a start time: the edit still applies, by PID.
     TestMocks::MockProcessActions mock;
     ProcessPriorityView view;
     view.editNice(10, TARGET_A_UNCONFIRMED);
-    view.apply(&mock, TARGET_A, NICE_OF_A);
+    view.apply(&mock, TARGET_A_UNCONFIRMED, NICE_OF_A);
 
     ASSERT_EQ(mock.setPriorityCount(), 1);
     EXPECT_EQ(mock.lastTarget().pid, TARGET_A.pid);
-    EXPECT_EQ(mock.lastTarget().startTimeTicks, TARGET_A.startTimeTicks);
+    EXPECT_EQ(mock.lastTarget().startTimeTicks, 0U);
+    EXPECT_EQ(mock.lastSetPriorityNice(), 10);
+}
+
+TEST(ProcessPriorityViewTest, SameEditTargetRules)
+{
+    struct Case
+    {
+        Platform::ProcessTarget edited;
+        Platform::ProcessTarget live;
+        bool same = false;
+        const char* name = "";
+    };
+    const std::array<Case, 6> cases{{
+        {.edited = TARGET_A, .live = TARGET_A, .same = true, .name = "both known, equal"},
+        {.edited = TARGET_A_UNCONFIRMED, .live = TARGET_A_UNCONFIRMED, .same = true, .name = "both unknown"},
+        {.edited = TARGET_A, .live = TARGET_A_UNCONFIRMED, .same = true, .name = "live lost its snapshot"},
+        {.edited = TARGET_A_UNCONFIRMED, .live = TARGET_A, .same = false, .name = "unknown became known"},
+        {.edited = TARGET_A, .live = TARGET_A_REUSED, .same = false, .name = "PID reused"},
+        {.edited = TARGET_A, .live = TARGET_B, .same = false, .name = "different PID"},
+    }};
+    for (const Case& c : cases)
+    {
+        SCOPED_TRACE(c.name);
+        EXPECT_EQ(Detail::isSameEditTarget(c.edited, c.live), c.same);
+    }
 }
 
 TEST(ProcessPriorityViewTest, SuccessClearsTheErrorAndEndsTheEdit)
@@ -308,14 +351,25 @@ TEST(ProcessPriorityViewTest, AnEditIsNotAppliedToAnotherProcess)
 TEST(ProcessPriorityViewTest, DropEditIfTargetMovedKeepsAnEditForTheSameProcess)
 {
     ProcessPriorityView view;
-    view.editNice(12, TARGET_A_UNCONFIRMED);
-    EXPECT_FALSE(view.dropEditIfTargetMoved(TARGET_A)); // Start time confirmed later: still A
-    EXPECT_FALSE(view.dropEditIfTargetMoved(TARGET_A_UNCONFIRMED));
+    view.editNice(12, TARGET_A);
+    EXPECT_FALSE(view.dropEditIfTargetMoved(TARGET_A));
+    EXPECT_FALSE(view.dropEditIfTargetMoved(TARGET_A_UNCONFIRMED)); // Live start time unknown: not a move
     EXPECT_TRUE(view.hasPendingEdit());
 
     EXPECT_TRUE(view.dropEditIfTargetMoved(TARGET_B));
     EXPECT_FALSE(view.hasPendingEdit());
     EXPECT_FALSE(view.dropEditIfTargetMoved(TARGET_B)); // Nothing left to drop
+}
+
+TEST(ProcessPriorityViewTest, DropEditIfTargetMovedDropsAnUnknownIdentityOnceKnown)
+{
+    ProcessPriorityView view;
+    view.editNice(12, TARGET_A_UNCONFIRMED);
+    EXPECT_FALSE(view.dropEditIfTargetMoved(TARGET_A_UNCONFIRMED)); // Still unknown: kept
+    EXPECT_TRUE(view.hasPendingEdit());
+
+    EXPECT_TRUE(view.dropEditIfTargetMoved(TARGET_A)); // Now known: the user edits again
+    EXPECT_FALSE(view.hasPendingEdit());
 }
 
 } // namespace

@@ -32,6 +32,21 @@ namespace Detail
     return Domain::Priority::clampNice(current + delta);
 }
 
+/// Whether a priority edit made for @p edited may still be applied to @p live. As
+/// isSameProcessTarget(), except that an edit made before the process's start time was known (0) does
+/// not carry over once @p live knows it: the PID may have been reused before the first snapshot, so
+/// the edit could be for a different process, and the platform's own check of @p live cannot tell.
+/// The user edits again once the identity is known. While both stay unknown (a platform or process
+/// that never reports a start time) the edit still applies, by PID as before.
+[[nodiscard]] constexpr bool isSameEditTarget(const Platform::ProcessTarget& edited, const Platform::ProcessTarget& live) noexcept
+{
+    if (edited.startTimeTicks == 0 && live.startTimeTicks != 0)
+    {
+        return false;
+    }
+    return isSameProcessTarget(edited, live);
+}
+
 } // namespace Detail
 
 /// The priority control for the process Process Details shows.
@@ -86,11 +101,13 @@ class ProcessPriorityView
         m_Error.clear();
     }
 
-    /// Drops a pending edit made for a process other than @p liveTarget, which the panel can show
-    /// without a selection change (the selected PID's process replaced). Returns whether it did.
+    /// Drops a pending edit that may be for a process other than @p liveTarget, which the panel can
+    /// show without a selection change (the selected PID's process replaced), including an edit made
+    /// before the start time was known once @p liveTarget knows it (Detail::isSameEditTarget()).
+    /// Returns whether it did.
     bool dropEditIfTargetMoved(const Platform::ProcessTarget& liveTarget) noexcept
     {
-        if (!m_Changed || Detail::isSameProcessTarget(m_EditTarget, liveTarget))
+        if (!m_Changed || Detail::isSameEditTarget(m_EditTarget, liveTarget))
         {
             return false;
         }
@@ -116,7 +133,9 @@ class ProcessPriorityView
         {
             return;
         }
-        const Platform::ProcessTarget target = liveTarget; // The live target carries the start time once known
+        // The edit's own target, which the check above matched to @p liveTarget: the same PID, and the
+        // same start time, or none known for the live one. It is the more specific of the two.
+        const Platform::ProcessTarget target = m_EditTarget;
         const std::int32_t nice = m_NiceValue;
         m_Changed = false;
         m_EditTarget = NO_TARGET;
