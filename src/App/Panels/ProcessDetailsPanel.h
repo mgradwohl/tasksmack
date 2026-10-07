@@ -2,6 +2,7 @@
 
 #include "App/Panel.h"
 #include "App/TabLabel.h"
+#include "Core/Event.h"
 #include "Domain/Numeric.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
@@ -9,14 +10,15 @@
 #include "Platform/ProcessTypes.h"
 #include "ProcessActionsView.h"
 #include "ProcessDetailsHistory.h"
-#include "ProcessDetailsPanel_ActionHelpers.h"
 #include "ProcessDetailsPanel_HistoryHelpers.h"
 #include "ProcessPriorityView.h"
+#include "ProcessSmoothedUsage.h"
 #include "UI/ChartWidgets.h"
 #include "UI/FillPlotLayout.h"
 
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
@@ -122,7 +124,6 @@ class ProcessDetailsPanel : public Panel
     /// The selected process as an action target: its PID and, once a snapshot has confirmed it,
     /// its start time, so a reuse of the PID is refused rather than acted on (#973).
     [[nodiscard]] Platform::ProcessTarget selectedTarget() const;
-    void updateSmoothedUsage(const Domain::ProcessSnapshot& snapshot, float deltaTimeSeconds);
     /// Appends one history point for @p snapshot at @p sampleTimeSeconds, after a gap point when
     /// @p gapBefore (see Detail::takeSamples()). @p rateReadings says which of its I/O and network rates
     /// are readings, by the sample's own generation (Detail::rateReadings()); the others are gaps.
@@ -208,42 +209,8 @@ class ProcessDetailsPanel : public Panel
     ProcessActionsView m_ActionsView;
     ProcessPriorityView m_PriorityView;
 
-    struct SmoothedUsage
-    {
-        double cpuPercent = 0.0;
-        double cpuUserPercent = 0.0;
-        double cpuSystemPercent = 0.0;
-        double residentBytes = 0.0;
-        double virtualBytes = 0.0;
-        double threadCount = 0.0;
-        double handleCount = 0.0;
-        double pageFaultsPerSec = 0.0;
-        double ioReadBytesPerSec = 0.0;
-        double ioWriteBytesPerSec = 0.0;
-        double netSentBytesPerSec = 0.0;
-        double netRecvBytesPerSec = 0.0;
-        double powerWatts = 0.0;
-        double gpuUtilPercent = 0.0;
-        double gpuMemoryBytes = 0.0;
-        // Whether the latest sample's generation had these from the GPU probe (#1210): one it did not
-        // leaves the value where it was and shows N/A, like the I/O and network readings above.
-        bool gpuUtilAvailable = false;
-        bool gpuMemoryAvailable = false;
-        // Whether the latest sample had these readings (#1110): an unread one leaves its value where it
-        // was and shows N/A, as its line shows a gap, like the GDI count below.
-        bool handleCountAvailable = false;
-        bool ioAvailable = false;
-        bool networkAvailable = false;
-        double gdiObjectCount = 0.0;
-        // Whether the latest sample had a GDI reading. A missing one leaves gdiObjectCount where it
-        // was (not eased toward 0) and the NowBar shows N/A, as the line shows a gap (#1148).
-        bool gdiInitialized = false;
-        // Memory bars, in bytes like the Memory chart (#1195); Used is residentBytes above. Their share
-        // of system RAM is shown only in the hover text, via memoryPercentPerByte.
-        double memorySharedBytes = 0.0;
-        double memoryPercentPerByte = 0.0; ///< Latest, not smoothed: converts bytes to a share of RAM
-        bool initialized = false;
-    } m_SmoothedUsage;
+    // The smoothed NowBar values, eased toward each shown sample (#1179).
+    Detail::ProcessSmoothedUsage m_SmoothedUsage;
 
     // GPU logging throttle state (per-panel tracking)
     std::int32_t m_LastGpuLogPid = -1;
