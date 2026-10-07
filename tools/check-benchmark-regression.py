@@ -213,30 +213,33 @@ def main() -> int:
     print()
 
     # Skipped on purpose (e.g. a GPU benchmark on a machine with no GPU, #1420): there is nothing
-    # to compare, and it is not a coverage loss either. Classified first, over every baseline
-    # benchmark, so a baseline record that skipped is not measured whether or not the current run
-    # has it at all -- otherwise it would land in missing_from_current and count against coverage.
+    # to compare, and it is not a coverage loss either. Classified first, over every benchmark on
+    # either side: a baseline record that skipped is not measured whether or not the current run
+    # has it at all (otherwise it would land in missing_from_current and count against coverage),
+    # and a skipped benchmark only the current run has is reported here too, not as new.
     # A failed measurement (SkipWithError(), "error_occurred": true) on either side takes
     # precedence: it is never classified as an intentional skip, so it still counts against
     # coverage -- a baseline skip must not hide a current-run error, nor the reverse.
     not_measured: list[tuple[str, str]] = []
-    for name in sorted(baseline):
-        if errored(baseline[name]) or (name in current and errored(current[name])):
+    for name in sorted(set(baseline) | set(current)):
+        if (name in baseline and errored(baseline[name])) or (name in current and errored(current[name])):
             continue
-        base_skip = skip_message(baseline[name])
+        base_skip = skip_message(baseline[name]) if name in baseline else None
         cur_skip = skip_message(current[name]) if name in current else None
         if cur_skip is not None:
             not_measured.append((name, f"skipped in current run: {cur_skip}"))
         elif base_skip is not None:
             not_measured.append((name, f"skipped in baseline run: {base_skip}"))
     skipped_names = {name for name, _ in not_measured}
+    # Only baseline benchmarks are in the coverage denominator, so only they are taken out of it.
+    skipped_baseline = len(skipped_names & set(baseline))
 
     # A benchmark present in the baseline but absent from the current run is a real coverage
     # gap, not something to silently ignore -- it means this run tells us nothing about
     # whether that benchmark regressed (see #871: "removing a required baseline benchmark
     # returned success").
     missing_from_current = sorted(set(baseline) - set(current) - skipped_names)
-    new_in_current = sorted(set(current) - set(baseline))
+    new_in_current = sorted(set(current) - set(baseline) - skipped_names)
 
     regressions: list[tuple[str, float, str, float, str, float]] = []
     improvements: list[tuple[str, float, str, float, str, float]] = []
@@ -362,19 +365,19 @@ def main() -> int:
 
     # ── Coverage gate ─────────────────────────────────────────────────────────
     # Benchmarks skipped on purpose are out of the denominator as well as the numerator.
-    measurable = len(baseline) - len(not_measured)
+    measurable = len(baseline) - skipped_baseline
     coverage_pct = (compared / measurable) * 100.0
     if coverage_pct < args.min_coverage:
         print(
             f"FAILED: coverage {coverage_pct:.1f}% is below the required "
             f"{args.min_coverage:.1f}% ({len(missing_from_current)} missing, "
             f"{len(invalid)} invalid/unusable, out of {measurable} measurable baseline benchmark(s); "
-            f"{len(not_measured)} skipped on purpose)."
+            f"{skipped_baseline} skipped on purpose)."
         )
         return 1
 
     floor_note = f" ({len(below_floor)} over {args.threshold:.1f}% only within the noise floor)" if below_floor else ""
-    skip_note = f" ({len(not_measured)} skipped on purpose, not counted)" if not_measured else ""
+    skip_note = f" ({skipped_baseline} skipped on purpose, not counted)" if skipped_baseline else ""
     print(f"No benchmark exceeded both the {args.threshold:.1f}% threshold and the {args.min_abs_delta_ns:.2f}ns "
           f"floor: {compared} compared{floor_note}; coverage {coverage_pct:.1f}%{skip_note}.")
     return 0

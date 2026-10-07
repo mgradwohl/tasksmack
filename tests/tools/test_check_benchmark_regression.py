@@ -194,6 +194,17 @@ class CheckBenchmarkRegressionTest(unittest.TestCase):
         self.assertNotIn("Not measured", output)
         self.assertIn("coverage 70.0% is below the required 90.0%", output)
 
+    def test_a_skipped_benchmark_only_in_the_current_run_is_not_measured_not_new(self):
+        # #1439 review: a new benchmark that skips itself is reported as not measured, like a skip
+        # on either side, and leaves coverage (over the baseline) untouched.
+        skipped = skipped_records("BM_GPUModel_New")
+        code, output = self.run_gate(self.OTHER_BENCHMARKS, self.OTHER_BENCHMARKS, "--min-coverage", "90", current_extra=skipped)
+        self.assertEqual(code, 0, output)
+        self.assertIn("Not measured (1)", output)
+        self.assertIn("BM_GPUModel_New: skipped in current run: No GPUs available", output)
+        self.assertNotIn("New in current run", output)
+        self.assertIn("7 compared; coverage 100.0%.", output)
+
     def test_a_benchmark_that_errored_still_counts_against_coverage(self):
         baseline = {**self.OTHER_BENCHMARKS, **{bm: 40.0 for bm in self.GPU_BENCHMARKS}}
         errored = [record for bm in self.GPU_BENCHMARKS for record in skipped_records(bm, error=True)]
