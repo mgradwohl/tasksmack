@@ -16,6 +16,10 @@
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
+#ifdef _WIN32
+#include "ProcessDetailsPanel_ResourceHelpers.h" // the GDI Objects series (Windows only) is its only user
+#endif
+
 #include <imgui.h>
 #include <implot.h>
 #include <spdlog/spdlog.h>
@@ -31,11 +35,8 @@
 #include <string>
 #include <vector>
 
-// The GDI Objects series (Windows only) is the only user of these.
 #ifdef _WIN32
-#include "ProcessDetailsPanel_ResourceHelpers.h"
-
-#include <algorithm>
+#include <algorithm> // the GDI Objects series (Windows only) is its only user
 #endif
 
 namespace
