@@ -539,6 +539,64 @@ inline void appendColumnLine(std::string& out, const ColumnLine& column)
     return out;
 }
 
+/// Returns a sanitised `section` in which column `columnIndex` is `widthPx` wide (#1209): its
+/// "Width=" replaced, or a line added for it if it has none. Used to save the Name column's list-view
+/// width when the app closes in tree view, which widens Name automatically and is not itself saved.
+/// A fixed column's width only; a stretch column's weight is left alone. The section is returned as
+/// sanitize() leaves it if it is empty, the width is not positive, or adding a line would take it past
+/// MAX_STORED_LINES or MAX_STORED_BYTES.
+[[nodiscard]] inline std::string withColumnWidth(std::string_view section, std::size_t columnIndex, int widthPx)
+{
+    std::string clean = sanitize(section); // not const: returned by move below
+    constexpr int MAX_WIDTH = 99999;       // Five digits, as parseColumnLine() accepts
+    if (clean.empty() || widthPx <= 0 || widthPx > MAX_WIDTH)
+    {
+        return clean;
+    }
+    const std::string indexText = std::to_string(columnIndex);
+    const std::string widthText = std::to_string(widthPx);
+
+    std::string out;
+    out.reserve(clean.size() + 32);
+    std::string_view remaining = clean;
+    bool found = false;
+    std::size_t lines = 0;
+    while (!remaining.empty())
+    {
+        const std::string_view line = Detail::takeLine(remaining);
+        ++lines;
+        Detail::ColumnLine column;
+        if (!Detail::parseColumnLine(line, column))
+        {
+            out.append(line);
+            out.push_back('\n');
+            continue;
+        }
+        if (column.index == indexText)
+        {
+            found = true;
+            if (column.weight.empty())
+            {
+                column.width = widthText;
+            }
+        }
+        Detail::appendColumnLine(out, column);
+    }
+    if (!found)
+    {
+        Detail::ColumnLine column;
+        column.index = indexText;
+        column.width = widthText;
+        Detail::appendColumnLine(out, column);
+        ++lines;
+    }
+    if (lines > MAX_STORED_LINES || out.size() > MAX_STORED_BYTES)
+    {
+        return clean;
+    }
+    return out;
+}
+
 /// Pulls the section for one table out of ImGui's full ini text, sanitised.
 ///
 /// @param ini      Text from ImGui::SaveIniSettingsToMemory().

@@ -451,8 +451,9 @@ GPUCapabilities DXGIGPUProbe::capabilities() const
     caps.hasPCIeMetrics = false;       // No PCIe metrics via DXGI
     caps.hasEngineUtilization = false; // No engine utilization via DXGI
     caps.hasPerProcessMetrics = false; // No per-process metrics via DXGI
-    caps.hasEncoderDecoder = false;    // No encoder/decoder via DXGI
-    caps.supportsMultiGPU = true;      // DXGI supports enumerating multiple GPUs
+    caps.hasPerProcessUtilization = false;
+    caps.hasEncoderDecoder = false; // No encoder/decoder via DXGI
+    caps.supportsMultiGPU = true;   // DXGI supports enumerating multiple GPUs
 
     return caps;
 }
