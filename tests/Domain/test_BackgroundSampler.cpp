@@ -15,6 +15,7 @@
 #include "Platform/ThreadName.h"
 
 #include <gtest/gtest.h>
+#include <spdlog/spdlog.h>
 
 #include <array>
 #include <atomic>
@@ -27,6 +28,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #if !defined(_WIN32)
@@ -957,6 +959,38 @@ TEST(BackgroundSamplerTest, MetricsTimeASampleThatThrows)
     EXPECT_EQ(metrics.samplables[1].overruns, 0U);
     EXPECT_GE(metrics.backoffs, 1U);
     EXPECT_GE(throwing->calls(), 1);
+}
+
+TEST(BackgroundSamplerTest, StopAndDestructionSucceedWithTheShutdownSummaryOnOrOff)
+{
+    // stop() runs from the destructor, so its debug summary must never throw: it copies only scalars
+    // under the metrics lock, skips everything when debug logging is off, and guards the formatting
+    // (#1416 review). Exercise both levels, an explicit stop() and a destructor stopping a running
+    // sampler, and check the summary leaves the metrics intact.
+    const auto previousLevel = spdlog::get_level();
+    for (const auto level : {spdlog::level::debug, spdlog::level::warn})
+    {
+        spdlog::set_level(level);
+        const auto samplable = std::make_shared<MockSamplable>();
+        {
+            Domain::SamplerConfig config;
+            config.interval = 100ms;
+            Domain::BackgroundSampler sampler(config);
+            sampler.addSamplable(samplable, "summary");
+            sampler.start();
+            samplable->waitForSamples(1);
+            EXPECT_NO_THROW(sampler.stop());
+            const auto metrics = sampler.metrics();
+            ASSERT_EQ(metrics.samplables.size(), 1U);
+            EXPECT_EQ(metrics.samplables[0].name, "summary");
+            EXPECT_EQ(metrics.samplables[0].samples, static_cast<std::uint64_t>(samplable->getSampleCount()));
+
+            sampler.start(); // left running: the destructor stops it and logs the summary
+            samplable->waitForSamples(samplable->getSampleCount() + 1);
+        }
+        static_assert(std::is_nothrow_destructible_v<Domain::BackgroundSampler>);
+    }
+    spdlog::set_level(previousLevel);
 }
 
 TEST(BackgroundSamplerTest, MetricsStartOverOnRestart)

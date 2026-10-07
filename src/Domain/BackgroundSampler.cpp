@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <memory>
 #include <mutex>
@@ -162,13 +163,40 @@ void BackgroundSampler::stop()
         m_SamplerThread.join();
     }
 
-    const SamplerMetrics finalMetrics = metrics();
-    spdlog::debug("BackgroundSampler: stopped after {} passes; pass last/max {}/{} us, {} overruns, {} backoffs",
-                  finalMetrics.pass.samples,
-                  finalMetrics.pass.lastDuration.count(),
-                  finalMetrics.pass.maxDuration.count(),
-                  finalMetrics.pass.overruns,
-                  finalMetrics.backoffs);
+    logStopSummary();
+}
+
+void BackgroundSampler::logStopSummary() const noexcept
+{
+    // Called from stop(), so from the destructor too: nothing here may throw. No copy of metrics()
+    // (its vector and strings allocate): only the scalars the line needs, under the lock, and only
+    // when the line would be logged. spdlog formats into allocated buffers, and none of its calls are
+    // noexcept, so all of it is guarded.
+    try
+    {
+        if (!spdlog::should_log(spdlog::level::debug))
+        {
+            return;
+        }
+        SampleTiming pass;
+        std::uint64_t backoffs = 0;
+        {
+            const std::scoped_lock lock(m_MetricsMutex);
+            pass.samples = m_Metrics.pass.samples;
+            pass.lastDuration = m_Metrics.pass.lastDuration;
+            pass.maxDuration = m_Metrics.pass.maxDuration;
+            pass.overruns = m_Metrics.pass.overruns;
+            backoffs = m_Metrics.backoffs;
+        }
+        spdlog::debug("BackgroundSampler: stopped after {} passes; pass last/max {}/{} us, {} overruns, {} backoffs",
+                      pass.samples,
+                      pass.lastDuration.count(),
+                      pass.maxDuration.count(),
+                      pass.overruns,
+                      backoffs);
+    }
+    catch (...) // NOLINT(bugprone-empty-catch) - a lost shutdown log line must not terminate the app
+    {}
 }
 
 bool BackgroundSampler::isRunning() const

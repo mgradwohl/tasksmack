@@ -111,6 +111,9 @@ class BackgroundSampler
     };
 
     void samplerLoop(const std::stop_token& stopToken);
+    /// stop()'s debug summary line. Never throws (stop() runs from the destructor), and does nothing
+    /// unless debug logging is on.
+    void logStopSummary() const noexcept;
     /// Fold one pass's timings into m_Metrics, and log a sustained overrun (rate-limited).
     void recordPass(const std::vector<Entry>& entries,
                     const std::vector<std::optional<std::chrono::steady_clock::duration>>& durations,
