@@ -2,8 +2,8 @@
 /// @brief The priority control's real ImGui render, headless (#1179, slice 4): it draws nothing
 /// without the capability, Apply is disabled until an edit, a click on Apply sets the edit on the
 /// selected process only, an edit made for another process is dropped before it can be applied, and
-/// the slider's keyboard shortcuts move the value as before. There is no popup or modal on Linux; the
-/// Windows priority-class combo is not built here.
+/// the slider's keyboard shortcuts move the value as before (Linux only: the slider is the Linux control).
+/// There is no popup or modal on Linux. The Windows priority-class combo has no render test.
 
 #include "App/Panels/ProcessPriorityView.h"
 #include "Mocks/MockProbes.h"
@@ -11,12 +11,16 @@
 
 #include <gtest/gtest.h>
 #include <imgui.h>
-#include <imgui_internal.h>
 
-#include <array>
 #include <cstdint>
 #include <functional>
 #include <optional>
+
+#ifndef _WIN32
+#include <imgui_internal.h>
+
+#include <array>
+#endif
 
 namespace App
 {
@@ -94,7 +98,8 @@ class ProcessPriorityViewRenderTest : public ::testing::Test
         runFrame(body);
     }
 
-    /// Presses and releases @p key over two frames while @p body draws.
+#ifndef _WIN32
+    /// Presses and releases @p key over two frames while @p body draws (the slider's keys).
     static void pressKey(ImGuiKey key, const std::function<void()>& body)
     {
         ImGuiIO& io = ImGui::GetIO();
@@ -103,6 +108,7 @@ class ProcessPriorityViewRenderTest : public ::testing::Test
         io.AddKeyEvent(key, false);
         runFrame(body);
     }
+#endif
 
   private:
     ImGuiContext* m_Context = nullptr;
@@ -187,6 +193,9 @@ TEST_F(ProcessPriorityViewRenderTest, AFailedApplyShowsTheErrorLine)
     EXPECT_EQ(view.niceValue(), 0);
 }
 
+// The nice slider is the Linux control; Windows draws the priority-class combo instead (#1204), which
+// has no render test here.
+#ifndef _WIN32
 TEST_F(ProcessPriorityViewRenderTest, TheSliderKeysMoveTheValue)
 {
     TestMocks::MockProcessActions mock;
@@ -232,6 +241,7 @@ TEST_F(ProcessPriorityViewRenderTest, TheSliderKeysMoveTheValue)
     // As before the move out of the panel, an edit back to the process's own value stays pending.
     EXPECT_TRUE(view.hasPendingEdit());
 }
+#endif
 
 } // namespace
 } // namespace App
