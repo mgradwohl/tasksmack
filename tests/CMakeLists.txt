@@ -135,6 +135,8 @@ set(COMMON_TEST_SOURCES
     UI/test_ColorDifference.cpp
     UI/test_StyleScale.cpp
     UI/test_DialogMetrics.cpp
+    UI/test_ChromeLayout.cpp
+    UI/test_ChromeWidgets.cpp
     UI/test_LineLayout.cpp
     UI/test_IconEncoding.cpp
     App/test_DialogGeometry.cpp
@@ -204,6 +206,7 @@ set(COMMON_TEST_SOURCES
     App/test_NetInterfaceUtils.cpp
     App/test_PowerStatusText.cpp
     App/test_ElevationNoticeText.cpp
+    App/test_StatusBarText.cpp
     App/test_FontSizeChange.cpp
     App/test_SyntheticScenario.cpp
     App/test_WindowOverride.cpp

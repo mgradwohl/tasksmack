@@ -4,6 +4,7 @@
 #include "Domain/GPUSnapshot.h"
 #include "Platform/GPUTypes.h"
 #include "UI/ChartWidgets.h"
+#include "UI/ChromeWidgets.h"
 #include "UI/EmptyState.h"
 #include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
@@ -426,7 +427,7 @@ void renderGpuSection(RenderContext& ctx)
         // Chart 1: Core + Video (all percentages)
         // Utilization, Memory, Clock, Encoder, Decoder
         // ========================================
-        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_VIDEO "  GPU Core & Video (%zu samples)", alignedCount);
+        (void) UI::Widgets::sectionHeader(ICON_FA_VIDEO, "GPU Core & Video", {}, alignedCount);
 
         auto gpuCorePlot = [&]()
         {
@@ -728,7 +729,7 @@ void renderGpuSection(RenderContext& ctx)
         // ========================================
         if (caps.hasTemperature || caps.hasPowerMetrics || caps.hasFanSpeed)
         {
-            ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_TEMPERATURE_HALF "  Thermal & Power");
+            (void) UI::Widgets::sectionHeader(ICON_FA_TEMPERATURE_HALF, "Thermal & Power", {}, alignedCount);
 
             // Note: maxTempC and maxPowerW are defined above with the thermal bars
             // Note: Fan speed is already a percentage, no max needed for normalization - but

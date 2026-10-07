@@ -2,6 +2,7 @@
 
 #include "Platform/IProcessActions.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
+#include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
@@ -262,7 +263,9 @@ float ProcessPriorityView::renderClassCombo(std::int32_t currentNice, const Plat
     const auto& theme = UI::Theme::get();
     const float emPx = ImGui::GetFontSize();
     const std::string currentClassName{Detail::windowsPriorityClassName(Detail::windowsPriorityClassFromNice(currentNice))};
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GAUGE_HIGH "  Priority (current: %s)", currentClassName.c_str());
+    // The current class stays on the header, quieter than the title (#1200).
+    const std::string currentDetail = "current: " + currentClassName;
+    (void) UI::Widgets::sectionHeader(ICON_FA_GAUGE_HIGH, "Priority", currentDetail);
     ImGui::Spacing();
 
     const Detail::WindowsPriorityClass selectedClass = Detail::windowsPriorityClassFromNice(m_NiceValue);
@@ -305,8 +308,9 @@ float ProcessPriorityView::renderSlider(std::int32_t currentNice, const Platform
     const auto& theme = UI::Theme::get();
     const float emPx = ImGui::GetFontSize();
 
-    // Show current nice value in the header
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GAUGE_HIGH "  Priority (current nice: %d)", currentNice);
+    // The current nice value stays on the header, quieter than the title (#1200).
+    const std::string currentDetail = "current nice: " + std::to_string(currentNice);
+    (void) UI::Widgets::sectionHeader(ICON_FA_GAUGE_HIGH, "Priority", currentDetail);
     ImGui::Spacing();
 
     auto* drawList = ImGui::GetWindowDrawList();

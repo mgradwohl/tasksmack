@@ -128,6 +128,14 @@ class ProcessesPanel : public Panel
     /// Get the process count.
     [[nodiscard]] size_t processCount() const;
 
+    /// The process count of the snapshot generation this panel last adopted (in onUpdate()), for a
+    /// per-frame reader such as the status bar (#1200): the adopted vector is immutable and owned
+    /// here, so this takes no lock, unlike processCount(), which locks the model's mutex.
+    [[nodiscard]] std::size_t adoptedProcessCount() const noexcept
+    {
+        return m_CachedRenderSnapshots->size();
+    }
+
     /// Find a single snapshot by PID without copying the full snapshot vector.
     /// Always reflects the latest published data; returns std::nullopt if not found.
     [[nodiscard]] std::optional<Domain::ProcessSnapshot> findSnapshot(std::int32_t pid) const;

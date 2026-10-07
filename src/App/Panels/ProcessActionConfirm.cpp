@@ -2,6 +2,7 @@
 
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
+#include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
@@ -81,9 +82,6 @@ Outcome render(bool& showRequested, Detail::ProcessAction action, std::string_vi
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrapWidth);
         ImGui::TextUnformatted(question.c_str());
         ImGui::PopTextWrapPos();
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
 
         // One width for both, from the font: 11.25 em is the former fixed 120px at the reference
         // em, so the dialog is unchanged there and the buttons stay a comfortable target for a
@@ -92,39 +90,34 @@ Outcome render(bool& showRequested, Detail::ProcessAction action, std::string_vi
         // Held to half the dialog's budget: at Even Huger on a 175% display each button wants
         // 420px, and the pair would be wider than a minimum-width window.
         //
-        // The confirm button is named for the action ([Kill][Cancel], not [Yes][No]) so a
-        // destructive confirmation says what it does on the button itself (#1203).
+        // The confirm button is named for the action ([Cancel][Kill], not [No][Yes]) so a
+        // destructive confirmation says what it does on the button itself (#1203). It is the primary
+        // action, so it sits on the right in the footer every dialog shares (#1200).
         const char* confirmLabel = Detail::actionLabel(action);
         const float confirmButtonWidth = ProcessDetailsLayout::computeConfirmButtonWidth(
-            UI::DialogMetrics::computeActionButtonWidth(std::max(ImGui::CalcTextSize(confirmLabel).x, ImGui::CalcTextSize("Cancel").x),
-                                                        ImGui::GetFontSize(),
-                                                        CONFIRM_BUTTON_MIN_EM),
-            contentBudget,
-            confirmStyle.ItemSpacing.x);
+            UI::Widgets::footerButtonWidth({confirmLabel, "Cancel"}, CONFIRM_BUTTON_MIN_EM), contentBudget, confirmStyle.ItemSpacing.x);
 
         // Ending a process can lose its work, so Terminate and Kill confirm in the danger colour
         // their buttons in the Actions tab use (#1273).
-        const auto& theme = UI::Theme::get();
-        const bool confirmed = Detail::isDestructiveAction(action) ? UI::Widgets::filledButton(confirmLabel,
-                                                                                               ImVec2(confirmButtonWidth, 0.0F),
-                                                                                               dangerButtonFills(),
-                                                                                               theme.scheme().textPrimary,
-                                                                                               theme.scheme().windowBg)
-                                                                   : ImGui::Button(confirmLabel, ImVec2(confirmButtonWidth, 0.0F));
-        if (confirmed)
+        const UI::Widgets::ButtonFills dangerFills = dangerButtonFills();
+        const UI::Widgets::DialogFooterButton confirmButton{
+            .label = confirmLabel, .fills = Detail::isDestructiveAction(action) ? &dangerFills : nullptr, .tooltip = nullptr};
+        const UI::Widgets::DialogFooterButton cancelButton{.label = "Cancel", .fills = nullptr, .tooltip = nullptr};
+        switch (UI::Widgets::dialogFooter(confirmButton, cancelButton, confirmButtonWidth, {}, contentBudget))
         {
+        case UI::Widgets::DialogFooterAction::Primary:
             outcome = Outcome::Confirmed;
             showRequested = false;
             ImGui::CloseCurrentPopup();
-        }
-
-        ImGui::SameLine();
-
-        if (ImGui::Button("Cancel", ImVec2(confirmButtonWidth, 0.0F)))
-        {
+            break;
+        case UI::Widgets::DialogFooterAction::Secondary:
             outcome = Outcome::Cancelled;
             showRequested = false;
             ImGui::CloseCurrentPopup();
+            break;
+        case UI::Widgets::DialogFooterAction::None:
+        case UI::Widgets::DialogFooterAction::Leading:
+            break;
         }
 
         ImGui::EndPopup();
