@@ -16,8 +16,9 @@ namespace Platform
 {
 
 /// The logical processors a process may run on, as a bitset of any width (#1247): bit N is logical
-/// processor N, numbered as the per-core CPU figures are (Linux: the kernel's CPU number). A single
-/// 64-bit mask could not describe a CPU at index 64 or above.
+/// processor N, numbered as the per-core CPU figures are (Linux: the kernel's CPU number; Windows:
+/// each processor group's processors after the earlier groups'). A single 64-bit mask could not
+/// describe a CPU at index 64 or above.
 ///
 /// Up to 64 processors live inline, so copying a process's counters and snapshot every sample costs
 /// no allocation on such machines; only an affinity that includes a processor at 64 or above keeps

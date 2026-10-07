@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -130,7 +131,7 @@ class WindowsProcessProbe : public IProcessProbe
         std::string processType;
         std::optional<std::int32_t> gdiObjectCount; // GetGuiResources (light TTL, #1156)
         // Slow-changing fields cached with light/heavy TTL to avoid redundant Win32 calls.
-        CpuAffinity cpuAffinity;       // GetProcessAffinityMask (heavy TTL)
+        CpuAffinity cpuAffinity;       // readCpuAffinity() (heavy TTL)
         std::int32_t nice = 0;         // GetPriorityClass → nice value (heavy TTL, or when the base priority changes)
         std::int32_t basePriority = 0; // Snapshot base priority last seen; a change re-reads the class (#1156)
         // GetPriorityClass, beside nice: Realtime and High share a nice bucket (#1280)
@@ -144,7 +145,21 @@ class WindowsProcessProbe : public IProcessProbe
     /// the base priority changed: planDetailRefresh()).
     /// @param imageName Wide image name from the system snapshot (may be empty for pseudo-processes)
     /// @param basePriority The process's base priority from the system snapshot
-    [[nodiscard]] bool getProcessDetails(uint32_t pid, ProcessCounters& counters, std::wstring_view imageName, std::int32_t basePriority);
+    /// @param threadRecords The process's SYSTEM_THREAD_INFORMATION array from the snapshot (empty
+    ///                      if it overran the entry); read only for a multi-group affinity.
+    [[nodiscard]] bool getProcessDetails(uint32_t pid,
+                                         ProcessCounters& counters,
+                                         std::wstring_view imageName,
+                                         std::int32_t basePriority,
+                                         std::span<const std::byte> threadRecords);
+
+    /// The process's CPU affinity, numbered as the per-core CPU figures are (#1247). One processor
+    /// group: GetProcessAffinityMask, as ever. Several: GetProcessGroupAffinity's groups with
+    /// their masks (groupMasksFromProcess(); the threads' GetThreadGroupAffinity only when that
+    /// can't tell), mapped by cpuAffinityFromGroupMasks(). Empty if it can't be read, including
+    /// when the processor topology couldn't be (affinityTopology()). Refreshes the groups' active
+    /// masks when a heavy TTL has passed since the last read.
+    [[nodiscard]] CpuAffinity readCpuAffinity(HANDLE hProcess, std::span<const std::byte> threadRecords);
 
     /// Read total system CPU time
     [[nodiscard]] static uint64_t readTotalCpuTime();
@@ -171,6 +186,13 @@ class WindowsProcessProbe : public IProcessProbe
     std::unordered_map<DetailCacheKey, DetailCacheEntry, DetailCacheKeyHash> m_DetailCache;
     std::uint64_t m_DetailCacheGeneration = 0;
     std::size_t m_LastEnumeratedProcessCount = 256;
+    // Every processor group (#1247): maximum sizes read at construction, active masks re-read by
+    // readCpuAffinity() each heavy TTL. More than one switches it to the group-aware reads; empty if
+    // discovery failed (affinity then unreadable).
+    std::vector<ProcessorGroupLayout> m_ProcessorGroups;
+    bool m_ActiveMasksRead = false; // The last readActiveProcessorMasks() succeeded
+    std::chrono::steady_clock::time_point m_NextActiveMasksRead;
+    bool m_ThreadsMaySpanGroups = true;      // threadsMaySpanGroups() for this Windows build
     std::vector<std::byte> m_SnapshotBuffer; // Reused buffer for NtQuerySystemInformation snapshots
 };
 
