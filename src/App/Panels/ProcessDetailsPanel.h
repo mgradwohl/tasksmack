@@ -9,20 +9,18 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/ProcessTypes.h"
 #include "ProcessActionsView.h"
+#include "ProcessDetailsCharts.h"
 #include "ProcessDetailsHistory.h"
 #include "ProcessDetailsPanel_HistoryHelpers.h"
 #include "ProcessPriorityView.h"
 #include "ProcessSmoothedUsage.h"
-#include "UI/ChartWidgets.h"
 #include "UI/FillPlotLayout.h"
 
 #include <chrono>
 #include <cstdint>
-#include <limits>
 #include <memory>
 #include <span>
 #include <string>
-#include <vector>
 
 namespace App
 {
@@ -109,18 +107,10 @@ class ProcessDetailsPanel : public Panel
 
   private:
     void renderBasicInfo(const Domain::ProcessSnapshot& proc);
-    void renderResourceUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
-    void renderCpuUsageSection(UI::Widgets::FillPlotLayout& fill);
-    void renderMemoryUsageSection(UI::Widgets::FillPlotLayout& fill);
-    void renderThreadAndFaultHistory(UI::Widgets::FillPlotLayout& fill);
-    void renderIoStats(UI::Widgets::FillPlotLayout& fill);
-    void renderNetworkStats(UI::Widgets::FillPlotLayout& fill);
-    void renderPowerUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
-    void renderGpuUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
-    void renderGpuCurrentMetricsTable(const Domain::ProcessSnapshot& proc) const;
-    void renderPerGpuBreakdown(const Domain::ProcessSnapshot& proc) const;
-    void renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fill);
     void renderActions();
+    /// What the chart tabs draw this frame: the history, the smoothed now-bar values and the displayed
+    /// snapshot, by pointer for this frame's calls only (ProcessDetailsCharts, #1179).
+    [[nodiscard]] ProcessChartContext chartContext() const;
     /// The selected process as an action target: its PID and, once a snapshot has confirmed it,
     /// its start time, so a reuse of the PID is refused rather than acted on (#973).
     [[nodiscard]] Platform::ProcessTarget selectedTarget() const;
@@ -154,15 +144,6 @@ class ProcessDetailsPanel : public Panel
     std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
     double m_PeakMemoryBytes = 0.0; // Peak working set (never decreases)
 
-    // Render scratch buffers for stacked CPU chart (reused across frames to avoid per-frame heap allocation):
-    // only the reduced points, at most LINE_PLOT_MAX_POINTS_DENSE, are built into them each frame.
-    // The User and System bands, their x axis held to now (#1016), shared with the Overview (#1180);
-    // the User line is the User band's top.
-    UI::Widgets::UserSystemStack m_CpuStack;
-    std::vector<double> m_CpuPlotTotal;
-    std::vector<double> m_CpuPlotSystem;
-    UI::Widgets::ReducedPointsCache m_CpuPlotReduction; // The CPU chart's reduced points (#1022), kept per m_HistoryGeneration (#1139)
-
     // The selected process as last sampled, shared with ProcessModel's sample rather than copied
     // every frame (#1172); null before the first sample.
     std::shared_ptr<const Domain::ProcessSnapshot> m_CachedSnapshot;
@@ -188,10 +169,9 @@ class ProcessDetailsPanel : public Panel
         std::string cpuTime;
         std::string priority;
     } m_BasicInfoText;
-    // Per-tab state for the shared chart-height rule (#959)
+    // The Overview's state for the shared chart-height rule (#959); the Network and GPU tabs' are
+    // m_Charts'.
     UI::Widgets::PlotFillState m_OverviewFill;
-    UI::Widgets::PlotFillState m_NetworkFill;
-    UI::Widgets::PlotFillState m_GpuFill;
 
     bool m_HasSnapshot = false;
     bool m_ProcessExited = false; // Had a snapshot of the selected process, and it has gone missing (#927)
@@ -200,9 +180,6 @@ class ProcessDetailsPanel : public Panel
     std::unique_ptr<Platform::IProcessActions> m_ProcessActions;
     Platform::ProcessActionCapabilities m_ActionCapabilities;
     Platform::ProcessCapabilities m_ProcessCapabilities;
-    // The GPU tab's "No GPU usage" explanation, naming the history window (#1210). Empty until built,
-    // and cleared when the window changes so the next frame rebuilds it.
-    std::string m_NoGpuUsageDetail;
 
     // The Actions tab's buttons, confirm dialog and result line, and the priority control under them
     // (#1179). Both act through m_ProcessActions, which the panel keeps owning.
@@ -212,9 +189,9 @@ class ProcessDetailsPanel : public Panel
     // The smoothed NowBar values, eased toward each shown sample (#1179).
     Detail::ProcessSmoothedUsage m_SmoothedUsage;
 
-    // GPU logging throttle state (per-panel tracking)
-    std::int32_t m_LastGpuLogPid = -1;
-    std::uint64_t m_LastGpuLogMemoryBytes = std::numeric_limits<std::uint64_t>::max();
+    // The Overview's charts and the GPU and Network and I/O tabs (#1179). They read m_History,
+    // m_SmoothedUsage and the snapshot through chartContext(), passed in each frame.
+    ProcessDetailsCharts m_Charts;
 };
 
 } // namespace App
