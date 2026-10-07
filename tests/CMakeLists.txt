@@ -52,11 +52,32 @@ if(WIN32)
         set_tests_properties(EtwCaptureScript PROPERTIES TIMEOUT 180)
         add_test(NAME EtwAnalysisScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-analyze-etw.ps1)
+        # tools/bench.ps1 against a stub benchmark binary: benchmark failures fail the script (#1423).
+        add_test(NAME BenchScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-bench.ps1)
+        # The stub benchmark is a Python script when CMake's interpreter is passed in (much cheaper
+        # to start than PowerShell). The test takes a few seconds; the 180 s limit only keeps it
+        # clear of the 60 s --timeout the CI ctest steps pass under heavy load.
+        set_tests_properties(BenchScript PROPERTIES TIMEOUT 180 ENVIRONMENT "TASKSMACK_TEST_PYTHON=${Python3_EXECUTABLE}")
     else()
         # Say so rather than leave the ETW script tests silently missing from ctest (#1187).
-        message(WARNING "pwsh (PowerShell 7) not found: the ResizeCaptureScript, EtwCaptureScript and "
-                        "EtwAnalysisScript tests are not registered. Install PowerShell 7 to run them.")
+        message(WARNING "pwsh (PowerShell 7) not found: the ResizeCaptureScript, EtwCaptureScript, "
+                        "EtwAnalysisScript and BenchScript tests are not registered. Install PowerShell 7 to run them.")
     endif()
+endif()
+
+# tools/bench.sh against a stub benchmark binary (#1423), wherever bash exists. On Windows only Git
+# for Windows' bash: a bare `bash` there can be WSL's, which cannot run this checkout.
+if(WIN32)
+    find_program(TASKSMACK_BASH NAMES bash
+        HINTS "$ENV{ProgramFiles}/Git/bin" "$ENV{ProgramW6432}/Git/bin" NO_DEFAULT_PATH)
+else()
+    find_program(TASKSMACK_BASH NAMES bash)
+endif()
+if(TASKSMACK_BASH)
+    add_test(NAME BenchShScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_bench_sh.py)
+    set_tests_properties(BenchShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 180)
 endif()
 
 # tools/check-benchmark-regression.py gates CI on benchmark regressions; Python3_EXECUTABLE is
