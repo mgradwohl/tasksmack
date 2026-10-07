@@ -248,6 +248,7 @@ TEST(EStatsSampleCountsTest, Ipv4AndIpv6TalliesAdd)
         .total = 10,
         .established = 4,
         .enabled = 4,
+        .alreadyEnabled = 0,
         .readOk = 3,
         .saneReads = 2,
         .readNotFound = 1,
@@ -260,6 +261,7 @@ TEST(EStatsSampleCountsTest, Ipv4AndIpv6TalliesAdd)
         .total = 5,
         .established = 2,
         .enabled = 1,
+        .alreadyEnabled = 1,
         .readOk = 2,
         .saneReads = 2,
         .readNotFound = 0,
@@ -272,6 +274,7 @@ TEST(EStatsSampleCountsTest, Ipv4AndIpv6TalliesAdd)
     EXPECT_EQ(v4.total, 15U);
     EXPECT_EQ(v4.established, 6U);
     EXPECT_EQ(v4.enabled, 5U);
+    EXPECT_EQ(v4.alreadyEnabled, 1U);
     EXPECT_EQ(v4.readOk, 5U);
     EXPECT_EQ(v4.saneReads, 4U);
     EXPECT_EQ(v4.readNotFound, 1U);
@@ -460,6 +463,216 @@ TEST(ClassifyEStatsProbeTest, InconclusiveSamplesInARowBecomeUnavailable)
 
     // An idle sample is never inconclusive in that sense, whatever the streak.
     EXPECT_EQ(classifyEStatsProbe(EStatsSampleCounts{}, MAX_INCONCLUSIVE_ESTATS_SAMPLES), EStatsProbeResult::Undetermined);
+}
+
+// ---------------------------------------------------------------------------
+// EStatsEnableTracker (#1418): enable EStats collection once per connection, not every sample
+// ---------------------------------------------------------------------------
+
+constexpr std::uint64_t KEY_A = 0x1111;
+constexpr std::uint64_t KEY_B = 0x2222;
+constexpr std::uint64_t KEY_C = 0x3333;
+
+/// Record a sane read with data for @p key, as the probe would after a successful enable (or with
+/// none attempted when needsEnable() said it was already on).
+void recordSaneRead(EStatsEnableTracker& tracker, std::uint64_t key)
+{
+    const std::optional<std::uint32_t> enableStatus =
+        tracker.needsEnable(key) ? std::optional<std::uint32_t>{ESTATS_NO_ERROR} : std::nullopt;
+    tracker.record(key, enableStatus, EStatsRowOutcome::Accumulated, true);
+}
+
+TEST(EStatsEnableTrackerTest, NewConnectionNeedsEnable)
+{
+    const EStatsEnableTracker tracker;
+    EXPECT_TRUE(tracker.needsEnable(KEY_A));
+    EXPECT_EQ(tracker.size(), 0U);
+}
+
+TEST(EStatsEnableTrackerTest, EnabledConnectionIsNotEnabledAgain)
+{
+    EStatsEnableTracker tracker;
+    tracker.record(KEY_A, ESTATS_NO_ERROR, EStatsRowOutcome::Accumulated, true);
+    tracker.endSample(true);
+    EXPECT_FALSE(tracker.needsEnable(KEY_A));
+    EXPECT_TRUE(tracker.needsEnable(KEY_B));
+
+    // Next sample: no enable attempted (nullopt) and the read works, so it stays known.
+    tracker.record(KEY_A, std::nullopt, EStatsRowOutcome::Accumulated, true);
+    tracker.endSample(true);
+    EXPECT_FALSE(tracker.needsEnable(KEY_A));
+}
+
+TEST(EStatsEnableTrackerTest, FailedEnableIsNotRemembered)
+{
+    // Every failed enable must reach recordEStatsRow() again next sample, so the #1161 / #1358
+    // access-denied detection sees it.
+    for (const std::uint32_t status : {ESTATS_ERROR_ACCESS_DENIED, ESTATS_ERROR_NOT_FOUND, std::uint32_t{87}})
+    {
+        EStatsEnableTracker tracker;
+        // Even if the read works (another process enabled collection), our enable did not.
+        tracker.record(KEY_A, status, EStatsRowOutcome::Accumulated, true);
+        tracker.endSample(true);
+        EXPECT_TRUE(tracker.needsEnable(KEY_A)) << status;
+    }
+}
+
+TEST(EStatsEnableTrackerTest, ReadWithoutAnyEnableIsNotRemembered)
+{
+    // No Set function: nothing was enabled, whatever the read says.
+    EStatsEnableTracker tracker;
+    tracker.record(KEY_A, std::nullopt, EStatsRowOutcome::Accumulated, true);
+    tracker.endSample(true);
+    EXPECT_TRUE(tracker.needsEnable(KEY_A));
+}
+
+TEST(EStatsEnableTrackerTest, FailedReadEnablesAgainNextSample)
+{
+    for (const EStatsRowOutcome outcome : {EStatsRowOutcome::ReadFailed, EStatsRowOutcome::Garbage})
+    {
+        EStatsEnableTracker tracker;
+        recordSaneRead(tracker, KEY_A);
+        tracker.endSample(true);
+        ASSERT_FALSE(tracker.needsEnable(KEY_A));
+
+        tracker.record(KEY_A, std::nullopt, outcome, false);
+        tracker.endSample(true);
+        EXPECT_TRUE(tracker.needsEnable(KEY_A)) << static_cast<int>(outcome);
+    }
+}
+
+TEST(EStatsEnableTrackerTest, ReadWithNoDataEnablesAgainNextSample)
+{
+    // Both counters 0: collection may be off (a reused 4-tuple, or another tool disabled it).
+    EStatsEnableTracker tracker;
+    tracker.record(KEY_A, ESTATS_NO_ERROR, EStatsRowOutcome::Accumulated, false);
+    tracker.endSample(true);
+    EXPECT_TRUE(tracker.needsEnable(KEY_A));
+
+    recordSaneRead(tracker, KEY_A);
+    tracker.endSample(true);
+    ASSERT_FALSE(tracker.needsEnable(KEY_A));
+    tracker.record(KEY_A, std::nullopt, EStatsRowOutcome::Accumulated, false);
+    tracker.endSample(true);
+    EXPECT_TRUE(tracker.needsEnable(KEY_A));
+}
+
+TEST(EStatsEnableTrackerTest, ReusedFourTupleIsReEnabled)
+{
+    // A connection closes and a new one takes the same 4-tuple (same key) between samples. The new
+    // one was never enabled, so its read fails or reads 0 bytes: forgotten, enabled next sample.
+    EStatsEnableTracker tracker;
+    recordSaneRead(tracker, KEY_A);
+    tracker.endSample(true);
+    ASSERT_FALSE(tracker.needsEnable(KEY_A));
+
+    tracker.record(KEY_A, std::nullopt, EStatsRowOutcome::Accumulated, false);
+    tracker.endSample(true);
+    EXPECT_TRUE(tracker.needsEnable(KEY_A));
+}
+
+TEST(EStatsEnableTrackerTest, ClosedConnectionsArePruned)
+{
+    EStatsEnableTracker tracker;
+    recordSaneRead(tracker, KEY_A);
+    recordSaneRead(tracker, KEY_B);
+    tracker.endSample(true);
+    ASSERT_EQ(tracker.size(), 2U);
+
+    // KEY_B closed: not in this complete walk.
+    recordSaneRead(tracker, KEY_A);
+    tracker.endSample(true);
+    EXPECT_EQ(tracker.size(), 1U);
+    EXPECT_FALSE(tracker.needsEnable(KEY_A));
+    EXPECT_TRUE(tracker.needsEnable(KEY_B));
+}
+
+TEST(EStatsEnableTrackerTest, IncompleteWalkPrunesNothing)
+{
+    // A table that could not be read leaves its connections out of the walk; they may still be open.
+    EStatsEnableTracker tracker;
+    recordSaneRead(tracker, KEY_A);
+    recordSaneRead(tracker, KEY_B);
+    tracker.endSample(true);
+
+    recordSaneRead(tracker, KEY_A);
+    tracker.endSample(false);
+    EXPECT_FALSE(tracker.needsEnable(KEY_B));
+
+    // The next complete walk prunes whatever it does not see.
+    recordSaneRead(tracker, KEY_A);
+    tracker.endSample(true);
+    EXPECT_TRUE(tracker.needsEnable(KEY_B));
+}
+
+TEST(EStatsEnableTrackerTest, SkippedRowsAreIgnored)
+{
+    EStatsEnableTracker tracker;
+    recordSaneRead(tracker, KEY_A);
+    tracker.record(KEY_A, std::nullopt, EStatsRowOutcome::SkippedState, false);
+    tracker.endSample(true);
+    EXPECT_FALSE(tracker.needsEnable(KEY_A));
+}
+
+TEST(EStatsEnableTrackerTest, SteadyConnectionsAreEnabledOnce)
+{
+    // The #1418 regression: three busy connections over five samples take three enables, not 15.
+    EStatsEnableTracker tracker;
+    std::size_t enables = 0;
+    for (int sample = 0; sample < 5; ++sample)
+    {
+        for (const std::uint64_t key : {KEY_A, KEY_B, KEY_C})
+        {
+            enables += tracker.needsEnable(key) ? 1U : 0U;
+            recordSaneRead(tracker, key);
+        }
+        tracker.endSample(true);
+    }
+    EXPECT_EQ(enables, 3U);
+}
+
+// classifyEStatsProbe() on samples where every connection was enabled earlier (#1418): the
+// rows are tallied with no enable status, and the verdicts must match re-enabling them first.
+
+EStatsSampleCounts tallyKnownRows(std::initializer_list<std::uint32_t> readStatuses, std::uint64_t bytes)
+{
+    EStatsSampleCounts counts;
+    for (const std::uint32_t readStatus : readStatuses)
+    {
+        (void) recordEStatsRow(counts, TCP_STATE_ESTABLISHED, std::nullopt, readStatus, bytes, bytes);
+    }
+    return counts;
+}
+
+TEST(ClassifyEStatsProbeTest, AllKnownConnectionsReadingSanelyAreAvailable)
+{
+    const EStatsSampleCounts counts = tallyKnownRows({ESTATS_NO_ERROR, ESTATS_NO_ERROR}, 100);
+    EXPECT_EQ(counts.enabled, 0U);
+    EXPECT_EQ(counts.established, 2U);
+    EXPECT_EQ(counts.saneReads, 2U);
+    EXPECT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Available);
+    EXPECT_EQ(classifyEStatsProbe(counts, MAX_INCONCLUSIVE_ESTATS_SAMPLES - 1), EStatsProbeResult::Available);
+
+    // Idle known connections (0 bytes) still read sanely.
+    EXPECT_EQ(classifyEStatsProbe(tallyKnownRows({ESTATS_NO_ERROR}, 0)), EStatsProbeResult::Available);
+}
+
+TEST(ClassifyEStatsProbeTest, AllKnownConnectionsMatchTheReEnabledVerdicts)
+{
+    // Same reads, with and without a (successful) enable first: same verdict every time.
+    for (const std::uint32_t readStatus : {ESTATS_NO_ERROR, ESTATS_ERROR_ACCESS_DENIED, ESTATS_ERROR_NOT_FOUND, std::uint32_t{87}})
+    {
+        EStatsSampleCounts known;
+        EStatsSampleCounts reEnabled;
+        (void) recordEStatsRow(known, TCP_STATE_ESTABLISHED, std::nullopt, readStatus, 10, 10);
+        (void) recordEStatsRow(reEnabled, TCP_STATE_ESTABLISHED, ESTATS_NO_ERROR, readStatus, 10, 10);
+        for (std::size_t prior = 0; prior < MAX_INCONCLUSIVE_ESTATS_SAMPLES; ++prior)
+        {
+            EXPECT_EQ(classifyEStatsProbe(known, prior), classifyEStatsProbe(reEnabled, prior)) << readStatus << " " << prior;
+        }
+    }
+    // A read denied on a known connection is still caught (#1161, #1358).
+    EXPECT_EQ(classifyEStatsProbe(tallyKnownRows({ESTATS_ERROR_ACCESS_DENIED}, 0)), EStatsProbeResult::Unavailable);
 }
 
 // ---------------------------------------------------------------------------

@@ -1485,38 +1485,6 @@ static_assert(ESTATS_NO_ERROR == NO_ERROR);
 static_assert(ESTATS_ERROR_ACCESS_DENIED == ERROR_ACCESS_DENIED);
 static_assert(ESTATS_ERROR_NOT_FOUND == ERROR_NOT_FOUND);
 
-/// Enable and read EStats for one ESTABLISHED connection, hand the result to the shared
-/// recordEStatsRow() tally, and append the read to `reads` (#1256). RowT is MIB_TCPROW or
-/// MIB_TCP6ROW (#1100); the Set/Get function pointers are the matching IPv4 or IPv6 pair.
-template<typename RowT, typename SetFn, typename GetFn>
-void readEStatsRow(RowT& row,
-                   std::uint64_t key,
-                   std::uint32_t pid,
-                   std::uint32_t state,
-                   SetFn setFn,
-                   GetFn getFn,
-                   std::vector<EStatsConnectionRead>& reads,
-                   EStatsSampleCounts& counts)
-{
-    // Try to enable EStats collection (requires admin, may fail)
-    std::optional<std::uint32_t> enableStatus;
-    if (setFn != nullptr)
-    {
-        TCP_ESTATS_DATA_RW_v0 rw{};
-        rw.EnableCollection = TRUE;
-        enableStatus = setFn(&row, TcpConnectionEstatsData, reinterpret_cast<PUCHAR>(&rw), 0, sizeof(rw), 0);
-    }
-
-    // Read the stats (may work even if enable failed, if another process enabled it)
-    TCP_ESTATS_DATA_ROD_v0 rod{};
-    const DWORD readStatus =
-        getFn(&row, TcpConnectionEstatsData, nullptr, 0, 0, nullptr, 0, 0, reinterpret_cast<PUCHAR>(&rod), 0, sizeof(rod));
-
-    const EStatsRowOutcome outcome = recordEStatsRow(counts, state, enableStatus, readStatus, rod.DataBytesOut, rod.DataBytesIn);
-    reads.push_back(
-        EStatsConnectionRead{.key = key, .pid = pid, .outcome = outcome, .bytesReceived = rod.DataBytesIn, .bytesSent = rod.DataBytesOut});
-}
-
 } // namespace
 
 SocketTrafficReading WindowsProcessProbe::readSocketTraffic() const
@@ -1531,8 +1499,15 @@ SocketTrafficReading WindowsProcessProbe::readSocketTraffic() const
     // longer takes its bytes out of its process's counter (#1256, Linux: #1099).
     std::vector<EStatsConnectionRead> reads;
     EStatsSampleCounts counts;
-    const bool ipv4Complete = collectTcp4Reads(reads, counts);
-    const bool ipv6Complete = collectTcp6Reads(reads, counts);
+    bool ipv4Complete = false;
+    bool ipv6Complete = false;
+    {
+        // Both walks and the prune are one sample of the enable tracker (#1418).
+        const std::scoped_lock lock(m_EStatsEnableMutex);
+        ipv4Complete = collectTcp4Reads(m_EStatsEnabled, reads, counts);
+        ipv6Complete = collectTcp6Reads(m_EStatsEnabled, reads, counts);
+        m_EStatsEnabled.endSample(ipv4Complete && ipv6Complete);
+    }
     if (!verifyEStats(counts))
     {
         return {};
@@ -1556,11 +1531,12 @@ bool WindowsProcessProbe::verifyEStats(const EStatsSampleCounts& counts) const
     static std::atomic<std::size_t> sampleCount{0};
     if (sampleCount.fetch_add(1, std::memory_order_relaxed) % 60 == 0)
     {
-        spdlog::debug("TCP EStats (IPv4+IPv6): {} total, {} established, {} enabled, {} read OK, {} have data, {} garbage, "
-                      "{} not found, {} other read failures, {} access denied",
+        spdlog::debug("TCP EStats (IPv4+IPv6): {} total, {} established, {} enabled ({} already enabled), {} read OK, {} have data, "
+                      "{} garbage, {} not found, {} other read failures, {} access denied",
                       counts.total,
                       counts.established,
                       counts.enabled,
+                      counts.alreadyEnabled,
                       counts.readOk,
                       counts.hasData,
                       counts.garbage,
@@ -1615,7 +1591,9 @@ bool WindowsProcessProbe::verifyEStats(const EStatsSampleCounts& counts) const
     return true;
 }
 
-bool WindowsProcessProbe::collectTcp4Reads(std::vector<EStatsConnectionRead>& reads, EStatsSampleCounts& counts) const
+bool WindowsProcessProbe::collectTcp4Reads(EStatsEnableTracker& enabled,
+                                           std::vector<EStatsConnectionRead>& reads,
+                                           EStatsSampleCounts& counts) const
 {
     if (m_GetPerTcpConnectionEStats == nullptr)
     {
@@ -1649,6 +1627,7 @@ bool WindowsProcessProbe::collectTcp4Reads(std::vector<EStatsConnectionRead>& re
                       ownerRow.dwState,
                       m_SetPerTcpConnectionEStats,
                       m_GetPerTcpConnectionEStats,
+                      enabled,
                       reads,
                       counts);
     }
@@ -1656,7 +1635,9 @@ bool WindowsProcessProbe::collectTcp4Reads(std::vector<EStatsConnectionRead>& re
     return true;
 }
 
-bool WindowsProcessProbe::collectTcp6Reads(std::vector<EStatsConnectionRead>& reads, EStatsSampleCounts& counts) const
+bool WindowsProcessProbe::collectTcp6Reads(EStatsEnableTracker& enabled,
+                                           std::vector<EStatsConnectionRead>& reads,
+                                           EStatsSampleCounts& counts) const
 {
     if (m_GetPerTcp6ConnectionEStats == nullptr || m_SetPerTcp6ConnectionEStats == nullptr)
     {
@@ -1688,6 +1669,7 @@ bool WindowsProcessProbe::collectTcp6Reads(std::vector<EStatsConnectionRead>& re
                       ownerRow.dwState,
                       m_SetPerTcp6ConnectionEStats,
                       m_GetPerTcp6ConnectionEStats,
+                      enabled,
                       reads,
                       counts);
     }

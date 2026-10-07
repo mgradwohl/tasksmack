@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
 #include <optional>
 #include <string>
 #include <thread>
@@ -995,6 +996,153 @@ TEST(EStatsConnectionKeyTest, OwnerRowsGiveTheSameKeyEveryRead)
     EXPECT_EQ(endpoints6.localAddr[0], 0x20U);
     EXPECT_EQ(endpoints6.localAddr[15], 0x01U);
     EXPECT_EQ(endpoints6.remoteScopeId, 12U);
+}
+
+// ---------------------------------------------------------------------------
+// readEStatsRow (#1418): SetPerTcpConnectionEStats once per connection, not every sample
+// ---------------------------------------------------------------------------
+
+/// What the fake Set/Get EStats functions return and how often they were called.
+struct FakeEStats
+{
+    int setCalls = 0;
+    int getCalls = 0;
+    DWORD setStatus = NO_ERROR;
+    DWORD getStatus = NO_ERROR;
+    ULONG64 bytesOut = 100;
+    ULONG64 bytesIn = 200;
+};
+
+FakeEStats& fakeEStats()
+{
+    static FakeEStats state;
+    return state;
+}
+
+DWORD WINAPI fakeSetPerTcpConnectionEStats(
+    PMIB_TCPROW /*row*/, TCP_ESTATS_TYPE /*type*/, PUCHAR /*rw*/, ULONG /*rwVersion*/, ULONG /*rwSize*/, ULONG /*offset*/)
+{
+    ++fakeEStats().setCalls;
+    return fakeEStats().setStatus;
+}
+
+DWORD WINAPI fakeGetPerTcpConnectionEStats(PMIB_TCPROW /*row*/,
+                                           TCP_ESTATS_TYPE /*type*/,
+                                           PUCHAR /*rw*/,
+                                           ULONG /*rwVersion*/,
+                                           ULONG /*rwSize*/,
+                                           PUCHAR /*ros*/,
+                                           ULONG /*rosVersion*/,
+                                           ULONG /*rosSize*/,
+                                           PUCHAR rod,
+                                           ULONG /*rodVersion*/,
+                                           ULONG rodSize)
+{
+    ++fakeEStats().getCalls;
+    if (fakeEStats().getStatus == NO_ERROR && rod != nullptr && rodSize >= sizeof(TCP_ESTATS_DATA_ROD_v0))
+    {
+        TCP_ESTATS_DATA_ROD_v0 data{};
+        data.DataBytesOut = fakeEStats().bytesOut;
+        data.DataBytesIn = fakeEStats().bytesIn;
+        std::memcpy(rod, &data, sizeof(data));
+    }
+    return fakeEStats().getStatus;
+}
+
+/// One sample's walk over @p keys (each an ESTABLISHED IPv4 connection) through readEStatsRow().
+EStatsSampleCounts walkFakeSample(EStatsEnableTracker& tracker, std::initializer_list<std::uint64_t> keys)
+{
+    std::vector<EStatsConnectionRead> reads;
+    EStatsSampleCounts counts;
+    for (const std::uint64_t key : keys)
+    {
+        MIB_TCPROW row{};
+        readEStatsRow(
+            row, key, 42, TCP_STATE_ESTABLISHED, &fakeSetPerTcpConnectionEStats, &fakeGetPerTcpConnectionEStats, tracker, reads, counts);
+    }
+    tracker.endSample(true);
+    return counts;
+}
+
+TEST(ReadEStatsRowTest, EachConnectionIsEnabledOnceAcrossSamples)
+{
+    fakeEStats() = FakeEStats{};
+    EStatsEnableTracker tracker;
+
+    const EStatsSampleCounts first = walkFakeSample(tracker, {1, 2, 3});
+    EXPECT_EQ(fakeEStats().setCalls, 3);
+    EXPECT_EQ(first.enabled, 3U);
+    EXPECT_EQ(classifyEStatsProbe(first), EStatsProbeResult::Available);
+
+    for (int sample = 0; sample < 4; ++sample)
+    {
+        const EStatsSampleCounts later = walkFakeSample(tracker, {1, 2, 3});
+        EXPECT_EQ(later.enabled, 0U);
+        EXPECT_EQ(later.alreadyEnabled, 3U);
+        EXPECT_EQ(later.saneReads, 3U);
+        EXPECT_EQ(classifyEStatsProbe(later), EStatsProbeResult::Available);
+    }
+    EXPECT_EQ(fakeEStats().setCalls, 3); // Not 15: no re-enable once enabled
+    EXPECT_EQ(fakeEStats().getCalls, 15);
+
+    // A new connection is enabled; a closed one is pruned and enabled again if it comes back.
+    (void) walkFakeSample(tracker, {1, 2, 4});
+    EXPECT_EQ(fakeEStats().setCalls, 4);
+    (void) walkFakeSample(tracker, {1, 2, 3, 4});
+    EXPECT_EQ(fakeEStats().setCalls, 5);
+}
+
+TEST(ReadEStatsRowTest, DeniedEnableIsRetriedAndStillReported)
+{
+    // #1161 / #1358: every sample's enable denial must still reach the tallies.
+    fakeEStats() = FakeEStats{};
+    fakeEStats().setStatus = ERROR_ACCESS_DENIED;
+    EStatsEnableTracker tracker;
+    for (int sample = 1; sample <= 3; ++sample)
+    {
+        const EStatsSampleCounts counts = walkFakeSample(tracker, {1, 2});
+        EXPECT_EQ(fakeEStats().setCalls, 2 * sample);
+        EXPECT_EQ(counts.accessDenied, 2U);
+        EXPECT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Unavailable);
+    }
+}
+
+TEST(ReadEStatsRowTest, FailedReadReEnablesNextSample)
+{
+    fakeEStats() = FakeEStats{};
+    EStatsEnableTracker tracker;
+    (void) walkFakeSample(tracker, {1});
+    ASSERT_EQ(fakeEStats().setCalls, 1);
+
+    fakeEStats().getStatus = ERROR_NOT_FOUND;
+    (void) walkFakeSample(tracker, {1});
+    EXPECT_EQ(fakeEStats().setCalls, 1); // Known going in: read without an enable
+
+    fakeEStats().getStatus = NO_ERROR;
+    (void) walkFakeSample(tracker, {1});
+    EXPECT_EQ(fakeEStats().setCalls, 2); // The failed read forgot it: enabled again
+}
+
+TEST(ReadEStatsRowTest, NoSetFunctionReadsWithoutEnabling)
+{
+    fakeEStats() = FakeEStats{};
+    EStatsEnableTracker tracker;
+    std::vector<EStatsConnectionRead> reads;
+    EStatsSampleCounts counts;
+    MIB_TCPROW row{};
+    readEStatsRow(row,
+                  1,
+                  42,
+                  TCP_STATE_ESTABLISHED,
+                  static_cast<DWORD(WINAPI*)(PMIB_TCPROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, ULONG)>(nullptr),
+                  &fakeGetPerTcpConnectionEStats,
+                  tracker,
+                  reads,
+                  counts);
+    EXPECT_EQ(fakeEStats().setCalls, 0);
+    EXPECT_EQ(counts.alreadyEnabled, 0U);
+    EXPECT_EQ(counts.saneReads, 1U);
+    EXPECT_TRUE(tracker.needsEnable(1));
 }
 
 TEST(WindowsProcessProbeTest, EnumerateLeavesNetworkCountersToTheSocketReading)
