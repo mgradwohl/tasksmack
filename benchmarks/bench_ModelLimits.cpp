@@ -248,6 +248,10 @@ BENCHMARK(BM_SystemModel_Cardinality_Publish)
 constexpr auto CONCURRENT_HEAD_START = std::chrono::microseconds(5);
 /// A publication() call faster than this did not wait on the writer (uncontended it is ~20 ns).
 constexpr auto CONCURRENT_WAITED = std::chrono::microseconds(1);
+/// Fixed iteration count for the concurrent benchmark. Manual time counts only the reader's wait, so
+/// once that wait is near zero (#868) the default min-time rule would run millions of iterations, each
+/// still paying a full writer sample, and overrun the Heavy Checks timeout.
+constexpr benchmark::IterationCount CONCURRENT_ITERATIONS = 2000;
 
 /// Busy-waits until @p deadline: a sleep would hand the core away for far longer than the wait.
 void spinUntil(std::chrono::steady_clock::time_point deadline)
@@ -361,6 +365,7 @@ BENCHMARK(BM_SystemModel_Concurrent_PublicationWait)
     ->Args({DEFAULT_WINDOW_FAST_SAMPLES, 0})
     ->Args({FULL_HISTORY_SAMPLES, 0})
     ->Args({FULL_HISTORY_SAMPLES, 2})
+    ->Iterations(CONCURRENT_ITERATIONS)
     ->UseManualTime()
     ->Unit(benchmark::kMicrosecond);
 

@@ -5,12 +5,12 @@
 #include "Numeric.h"
 #include "Platform/IDiskProbe.h"
 #include "Platform/StorageTypes.h"
+#include "PublicationSlot.h"
 #include "SamplingConfig.h"
 
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -77,6 +77,10 @@ void StorageModel::sampleAt(const std::chrono::steady_clock::time_point now)
     // probe reports (Windows), and one expression would leave the order unspecified.
     const Platform::SystemDiskCounters counters = m_Probe->read();
     const Platform::DiskCapabilities caps = m_Probe->capabilities();
+
+    // One writer at a time from here to the commit: m_DiskStates is writer-owned, and the
+    // publication must be numbered and committed in the order the history was updated.
+    const std::scoped_lock writerLock(m_WriterMutex);
     applySample(counters, caps, now, /*publishNow=*/true);
 }
 
@@ -86,6 +90,9 @@ void StorageModel::sampleSeries(const CounterSeriesSource& next)
     Platform::SystemDiskCounters counters;
     std::chrono::steady_clock::time_point now{};
     bool applied = false;
+    // The whole series is one write: no other writer interleaves, and its single publish below is
+    // numbered and committed after every sample it holds (#868).
+    const std::scoped_lock writerLock(m_WriterMutex);
     while (next(counters, now))
     {
         {
@@ -100,8 +107,7 @@ void StorageModel::sampleSeries(const CounterSeriesSource& next)
     }
     if (applied)
     {
-        const std::unique_lock lock(m_Mutex);
-        publish();
+        publish(); // builds under a shared lock, then commits through the publication slot
     }
 }
 
@@ -247,10 +253,11 @@ void StorageModel::applySample(const Platform::SystemDiskCounters& counters,
         // avoiding an extra deep-copy of the disks vector on every sample.
         m_History.push(std::move(snapshot));
         trimHistory(nowSeconds);
-        if (publishNow)
-        {
-            publish();
-        }
+    }
+    if (publishNow)
+    {
+        // Outside the exclusive lock: the history copies take a shared lock only (#868).
+        publish();
     }
 
     spdlog::trace("StorageModel: sampled {} disks, total read: {:.2f} MB/s, write: {:.2f} MB/s",
@@ -261,46 +268,49 @@ void StorageModel::applySample(const Platform::SystemDiskCounters& counters,
 
 std::shared_ptr<const StoragePublication> StorageModel::publication() const noexcept
 {
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return m_Publication;
+    return m_Publication.load();
 }
 
 std::uint64_t StorageModel::publicationVersion() const noexcept
 {
-    return m_PublishedPublicationVersion.load(std::memory_order_acquire);
+    return m_Publication.version();
 }
 
 void StorageModel::publish()
 {
+    // Build contents first, commit validity keys last: the version comes from a local candidate and
+    // m_PublicationVersion only advances once the generation is committed, so a throw from the copies
+    // below (std::bad_alloc) leaves the published generation, its version and m_PublicationVersion
+    // consistent. The copies run under a shared lock: the per-field accessors still read alongside,
+    // and publication() doesn't take m_Mutex at all, so no reader waits for them (#868). Nothing else
+    // can write this state meanwhile; the caller holds m_WriterMutex.
     auto publication = std::make_shared<StoragePublication>();
-    // Assign the version from a local candidate rather than mutating m_PublicationVersion
-    // directly here: the history copies below can throw (std::bad_alloc), and if they do,
-    // committing m_PublicationVersion/m_Publication/m_PublishedPublicationVersion only at
-    // the end (see below) keeps all three mutually consistent instead of silently advancing
-    // the version past what was actually published.
-    publication->version = m_PublicationVersion + 1;
-    publication->snapshot = m_LatestSnapshot;
-    publication->timestamps = HistoryUtils::toVector(m_Timestamps);
-    publication->totalReadHistory.reserve(m_History.size());
-    publication->totalWriteHistory.reserve(m_History.size());
-    for (std::size_t i = 0; i < m_History.size(); ++i)
     {
-        const auto& snapshot = m_History.ref(i);
-        publication->totalReadHistory.push_back(totalRateOrNaN(snapshot, &StorageSnapshot::totalReadBytesPerSec));
-        publication->totalWriteHistory.push_back(totalRateOrNaN(snapshot, &StorageSnapshot::totalWriteBytesPerSec));
+        const std::shared_lock stateLock(m_Mutex);
+        publication->version = m_PublicationVersion + 1;
+        publication->snapshot = m_LatestSnapshot;
+        publication->timestamps = HistoryUtils::toVector(m_Timestamps);
+        publication->totalReadHistory.reserve(m_History.size());
+        publication->totalWriteHistory.reserve(m_History.size());
+        for (std::size_t i = 0; i < m_History.size(); ++i)
+        {
+            const auto& snapshot = m_History.ref(i);
+            publication->totalReadHistory.push_back(totalRateOrNaN(snapshot, &StorageSnapshot::totalReadBytesPerSec));
+            publication->totalWriteHistory.push_back(totalRateOrNaN(snapshot, &StorageSnapshot::totalWriteBytesPerSec));
+        }
+        publication->perDiskHistory.reserve(m_DiskOrder.size());
+        for (const auto& name : m_DiskOrder)
+        {
+            publication->perDiskHistory.push_back({
+                .deviceName = name,
+                .readBytesPerSec = HistoryUtils::toVector(m_DiskReadHistory.at(name)),
+                .writeBytesPerSec = HistoryUtils::toVector(m_DiskWriteHistory.at(name)),
+            });
+        }
     }
-    publication->perDiskHistory.reserve(m_DiskOrder.size());
-    for (const auto& name : m_DiskOrder)
-    {
-        publication->perDiskHistory.push_back({
-            .deviceName = name,
-            .readBytesPerSec = HistoryUtils::toVector(m_DiskReadHistory.at(name)),
-            .writeBytesPerSec = HistoryUtils::toVector(m_DiskWriteHistory.at(name)),
-        });
-    }
-    m_PublicationVersion = publication->version;
-    m_Publication = std::move(publication);
-    m_PublishedPublicationVersion.store(m_PublicationVersion, std::memory_order_release);
+    const std::uint64_t version = publication->version;
+    m_Publication.commit(std::move(publication));
+    m_PublicationVersion = version;
 }
 
 DiskSnapshot
@@ -472,14 +482,17 @@ std::vector<double> StorageModel::historyTimestamps() const
 
 void StorageModel::setMaxHistorySeconds(double seconds)
 {
-    std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    // The same guardrail as SystemModel and GPUModel, so every model keeps the same window (#1145).
-    m_MaxHistorySeconds = Sampling::clampHistorySeconds(seconds);
-    applyHistoryCapacity();
-
-    if (!m_Timestamps.empty())
+    const std::scoped_lock writerLock(m_WriterMutex);
     {
-        trimHistory(m_Timestamps.latest());
+        const std::unique_lock lock(m_Mutex);
+        // The same guardrail as SystemModel and GPUModel, so every model keeps the same window (#1145).
+        m_MaxHistorySeconds = Sampling::clampHistorySeconds(seconds);
+        applyHistoryCapacity();
+
+        if (!m_Timestamps.empty())
+        {
+            trimHistory(m_Timestamps.latest());
+        }
     }
     // Republish the trimmed history now rather than at the next sample (#1145); see
     // SystemModel::setMaxHistorySeconds(). Nothing is published before the first sample.

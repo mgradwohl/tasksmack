@@ -209,6 +209,7 @@ set(TASKSMACK_HEADERS
     src/Domain/ProcessModel.h
     src/Domain/SocketTrafficAccumulator.h
     src/Domain/ISamplable.h
+    src/Domain/PublicationSlot.h
     src/Domain/GPUSnapshot.h
     src/Domain/GPUModel.h
 )

@@ -4,12 +4,14 @@
 #include "History.h"
 #include "ISamplable.h"
 #include "Platform/IDiskProbe.h"
+#include "PublicationSlot.h"
 #include "SamplingConfig.h"
 
-#include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
@@ -37,7 +39,9 @@ struct StoragePublication
 };
 
 /// Manages disk/storage metrics: samples probe, computes rates, maintains history.
-/// Thread-safe (allows background sampling + UI reads).
+/// Thread-safe (allows background sampling + UI reads). Writers (sampleAt(), setMaxHistorySeconds())
+/// are serialised on m_WriterMutex; each builds its publication outside every lock a reader takes
+/// and swaps it in through m_Publication, so publication() never waits for a history copy (#868).
 class StorageModel : public ISamplable
 {
   public:
@@ -109,7 +113,7 @@ class StorageModel : public ISamplable
     static DiskSnapshot
     computeDiskSnapshot(const Platform::DiskCounters& current, DiskState& state, std::chrono::steady_clock::time_point now);
     /// One sample from @p counters: the shared body of sampleAt() and sampleSeries(). Publishes it
-    /// when @p publishNow.
+    /// when @p publishNow. Requires m_WriterMutex held and m_Mutex not held.
     void applySample(const Platform::SystemDiskCounters& counters,
                      const Platform::DiskCapabilities& caps,
                      std::chrono::steady_clock::time_point now,
@@ -119,6 +123,13 @@ class StorageModel : public ISamplable
 
     std::unique_ptr<Platform::IDiskProbe> m_Probe;
 
+    // Serialises the writers, sampleAt(), sampleSeries() and setMaxHistorySeconds(), from the counter processing
+    // through the publication commit, so generations are numbered and committed in order. Readers
+    // never take it. Taken before m_Mutex, never while holding it.
+    std::mutex m_WriterMutex;
+    // Guards the history state below for the per-field accessors: writers mutate it exclusively,
+    // and publish() reads it under a shared lock, so neither publication() nor those accessors wait
+    // on a publication's copy.
     mutable std::shared_mutex m_Mutex;
     StorageSnapshot m_LatestSnapshot;
     HistoryBuffer<StorageSnapshot> m_History;
@@ -145,12 +156,13 @@ class StorageModel : public ISamplable
     // cadence, not the actual one, so a call-count threshold could retain stale entries far
     // longer than m_MaxHistorySeconds at any slower cadence.
     std::unordered_map<std::string, double> m_DiskLastSeenSeconds;
-    std::shared_ptr<const StoragePublication> m_Publication = std::make_shared<const StoragePublication>();
-    std::uint64_t m_PublicationVersion = 0;
-    std::atomic<std::uint64_t> m_PublishedPublicationVersion{0};
+    PublicationSlot<StoragePublication> m_Publication;
+    std::uint64_t m_PublicationVersion = 0; // guarded by m_WriterMutex; the last committed generation
 
     double m_MaxHistorySeconds = Sampling::HISTORY_SECONDS_DEFAULT; // 5 minutes default
 
+    /// Build the next generation from the history state under a shared lock, then commit it.
+    /// Requires m_WriterMutex held and m_Mutex not held.
     void publish();
 };
 

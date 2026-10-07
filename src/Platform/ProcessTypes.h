@@ -166,7 +166,12 @@ struct ProcessCapabilities
                                         // Windows: non-admin AND EStats was specifically denied (ERROR_ACCESS_DENIED).
                                         //          Remains false when EStats is simply unsupported, because
                                         //          running as Administrator would not restore those counters.
-    bool hasSharedMemory = false;       // Whether ProcessCounters::sharedBytes is filled (Linux: statm; not on Windows)
+    // True when per-process network counters were denied although the process already has the
+    // privileges they need, so elevating would not help. Windows: elevated, yet TCP EStats access
+    // denied (a policy or a driver, #1358). Never true together with hasNetworkCounters or
+    // hasReducedPrivileges. Linux: always false (its gaps are hasReducedPrivileges).
+    bool networkCountersBlocked = false;
+    bool hasSharedMemory = false; // Whether ProcessCounters::sharedBytes is filled (Linux: statm; not on Windows)
     // How many bits ProcessCounters::pageFaultCount is kept in by the OS before it wraps to 0 (#1184).
     // Linux: 64 (minflt + majflt, unsigned long). Windows: 32 (SYSTEM_PROCESS_INFORMATION's ULONG
     // PageFaultCount, which a long-lived process can pass). Domain takes deltas modulo 2^bits.
