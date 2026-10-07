@@ -202,15 +202,45 @@ class SystemModel : public ISamplable
     // previous cycle's CPU/memory/network data.
     void
     updateFromCountersLocked(const Platform::SystemCounters& counters, double nowSeconds, const std::optional<PowerStatus>& powerStatus);
-    void computeSnapshot(const Platform::SystemCounters& counters, double nowSeconds);
+    /// Computes one sample and applies it to the snapshot and history as a transaction: everything
+    /// that can throw (std::bad_alloc) runs before anything is changed, so a throw leaves the model
+    /// exactly as it was -- every series still aligned with m_Timestamps (#1412).
+    void computeSnapshot(const Platform::SystemCounters& counters,
+                         double nowSeconds,
+                         const std::optional<PowerStatus>& powerStatus = std::nullopt);
     /// Build the next generation from the history state under a shared lock, then commit it.
     /// Requires m_WriterMutex held and m_Mutex not held.
     void publish();
-    void trimHistory(double nowSeconds);
-    /// Make room for one more sample in every aligned history series before any is appended to, so
-    /// a failed allocation (std::bad_alloc) throws with no series appended rather than leaving them
-    /// different lengths (#1412). Requires m_Mutex held exclusively.
-    void reserveHistoryAppend();
+    void trimHistory(double nowSeconds) noexcept;
+
+    /// One sample's history append, staged: every allocation it needs is made here, so applying it
+    /// cannot fail part way (#1412).
+    struct PendingHistory
+    {
+        float netRx = 0.0F; // the history values (NaN for a glitched rate, #1291)
+        float netTx = 0.0F;
+        std::vector<float> interfaceRx; // per counters.networkInterfaces entry, likewise
+        std::vector<float> interfaceTx;
+        std::vector<SharedHistoryBuffer<float>> newCores;                  // slots for core ids not yet held, backfilled
+        std::unordered_map<std::string, SharedHistoryBuffer<float>> newRx; // new interfaces, backfilled
+        std::unordered_map<std::string, SharedHistoryBuffer<float>> newTx;
+        std::unordered_map<std::string, double> newLastSeen;
+    };
+    /// Create and backfill the series this sample introduces (new core slots, new interfaces) in
+    /// @p pending, and reserve room for one more sample in every existing series and the slots,
+    /// buckets and map entries the append will use. May throw; changes nothing observable.
+    /// Requires m_Mutex held exclusively.
+    void stageHistoryAppend(PendingHistory& pending,
+                            const Platform::SystemCounters& counters,
+                            const SystemSnapshot& snap,
+                            std::size_t coreSlots,
+                            double nowSeconds);
+    /// Apply a staged append: adopt the staged series and append this sample to every series. Uses
+    /// only what stageHistoryAppend() reserved, so it does not allocate or throw.
+    void commitHistoryAppend(PendingHistory& pending,
+                             const Platform::SystemCounters& counters,
+                             const SystemSnapshot& snap,
+                             double nowSeconds) noexcept;
     void applyHistoryCapacity();
     [[nodiscard]] static CpuUsage computeCpuUsage(const Platform::CpuCounters& current, const Platform::CpuCounters& previous);
     [[nodiscard]] PowerStatus computePowerStatus(const Platform::PowerCounters& counters) const;
