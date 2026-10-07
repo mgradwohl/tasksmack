@@ -23,6 +23,7 @@
 #include "Platform/ThreadName.h"
 #include "PowerStatusText.h"
 #include "UI/ChartWidgets.h"
+#include "UI/EmptyState.h"
 #include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
@@ -401,8 +402,8 @@ void SystemMetricsPanel::renderContent()
 {
     if (!m_Model)
     {
-        const auto& theme = UI::Theme::get();
-        ImGui::TextColored(theme.scheme().textError, "System model not initialized");
+        UI::Widgets::renderEmptyState(ICON_FA_TRIANGLE_EXCLAMATION "  System data unavailable",
+                                      "The system model is not initialized, so there are no system metrics to show.");
         return;
     }
 

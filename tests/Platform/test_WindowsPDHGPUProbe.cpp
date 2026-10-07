@@ -47,11 +47,25 @@ TEST(WindowsPDHGPUProbeTest, CapabilitiesRelationshipsAreConsistent)
     PDHGPUProbe probe;
     const auto caps = probe.capabilities();
 
-    EXPECT_EQ(caps.hasPerProcessMetrics, caps.hasEngineUtilization);
+    EXPECT_EQ(caps.hasPerProcessMetrics, caps.hasEngineUtilization); // Process role (the default)
     EXPECT_FALSE(caps.hasTemperature);
     EXPECT_FALSE(caps.hasPowerMetrics);
     EXPECT_FALSE(caps.hasClockSpeeds);
     EXPECT_FALSE(caps.hasFanSpeed);
+}
+
+// An Adapter-role probe returns no per-process counters, so it must not advertise them; engine
+// utilization (its adapter totals) it does report (#1365 review).
+TEST(WindowsPDHGPUProbeTest, AdapterRoleDoesNotAdvertisePerProcessCounters)
+{
+    const PDHGPUProbe probe(PDHGPUProbe::Role::Adapter);
+    const auto caps = probe.capabilities();
+    EXPECT_FALSE(caps.hasPerProcessMetrics);
+    EXPECT_FALSE(caps.hasPerProcessUtilization);
+    if (probe.isAvailable())
+    {
+        EXPECT_TRUE(caps.hasEngineUtilization);
+    }
 }
 
 TEST(WindowsPDHGPUProbeTest, MoveConstructionAndAssignmentTransferState)

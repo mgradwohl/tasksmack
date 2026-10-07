@@ -1411,6 +1411,7 @@ GPUCapabilities DRMGPUProbe::capabilities() const
     caps.hasPCIeMetrics = false;
     caps.hasEngineUtilization = false;
     caps.hasPerProcessMetrics = false;
+    caps.hasPerProcessUtilization = false;
     caps.hasEncoderDecoder = false;
 
     return caps;

@@ -3,6 +3,7 @@
 #include "App/Panels/NetInterfaceUtils.h"
 #include "App/Panels/StorageSection.h"
 #include "UI/ChartWidgets.h"
+#include "UI/EmptyState.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/RateAxis.h"
@@ -755,7 +756,9 @@ void renderNetworkSection(RenderContext& ctx)
 
         if (ctx.systemPublication == nullptr || !ctx.hasNetworkCounters)
         {
-            ImGui::TextUnformatted("Network monitoring not available on this platform.");
+            // A band, not the whole pane: the disk section still follows it (#1210).
+            UI::Widgets::renderEmptyStateBand(ICON_FA_NETWORK_WIRED "  Network monitoring is not available",
+                                              "TaskSmack cannot read network counters on this system.");
         }
         else
         {

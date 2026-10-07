@@ -159,6 +159,7 @@ GPUCapabilities LinuxGPUProbe::capabilities() const
         caps.hasPCIeMetrics = caps.hasPCIeMetrics || nvmlCaps.hasPCIeMetrics;
         caps.hasEngineUtilization = caps.hasEngineUtilization || nvmlCaps.hasEngineUtilization;
         caps.hasPerProcessMetrics = caps.hasPerProcessMetrics || nvmlCaps.hasPerProcessMetrics;
+        caps.hasPerProcessUtilization = caps.hasPerProcessUtilization || nvmlCaps.hasPerProcessUtilization;
         caps.hasEncoderDecoder = caps.hasEncoderDecoder || nvmlCaps.hasEncoderDecoder;
         caps.supportsMultiGPU = caps.supportsMultiGPU || nvmlCaps.supportsMultiGPU;
     }
@@ -176,6 +177,7 @@ GPUCapabilities LinuxGPUProbe::capabilities() const
         caps.hasPCIeMetrics = caps.hasPCIeMetrics || drmCaps.hasPCIeMetrics;
         caps.hasEngineUtilization = caps.hasEngineUtilization || drmCaps.hasEngineUtilization;
         caps.hasPerProcessMetrics = caps.hasPerProcessMetrics || drmCaps.hasPerProcessMetrics;
+        caps.hasPerProcessUtilization = caps.hasPerProcessUtilization || drmCaps.hasPerProcessUtilization;
         caps.hasEncoderDecoder = caps.hasEncoderDecoder || drmCaps.hasEncoderDecoder;
         caps.supportsMultiGPU = caps.supportsMultiGPU || drmCaps.supportsMultiGPU;
     }
@@ -193,6 +195,7 @@ GPUCapabilities LinuxGPUProbe::capabilities() const
         caps.hasPCIeMetrics = caps.hasPCIeMetrics || rocmCaps.hasPCIeMetrics;
         caps.hasEngineUtilization = caps.hasEngineUtilization || rocmCaps.hasEngineUtilization;
         caps.hasPerProcessMetrics = caps.hasPerProcessMetrics || rocmCaps.hasPerProcessMetrics;
+        caps.hasPerProcessUtilization = caps.hasPerProcessUtilization || rocmCaps.hasPerProcessUtilization;
         caps.hasEncoderDecoder = caps.hasEncoderDecoder || rocmCaps.hasEncoderDecoder;
         caps.supportsMultiGPU = caps.supportsMultiGPU || rocmCaps.supportsMultiGPU;
     }

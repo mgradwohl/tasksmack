@@ -96,6 +96,8 @@ void ShellLayer::onAttach()
         if (auto gpuModel = m_SystemMetricsPanel.gpuModel(); gpuModel != nullptr)
         {
             processModel->setGPUModel(gpuModel);
+            // Its probe also decides whether the GPU columns can be filled at all (#1210).
+            m_ProcessesPanel.setGpuModel(gpuModel);
         }
     }
 
@@ -214,6 +216,16 @@ void ShellLayer::onDetach()
 
 void ShellLayer::onEvent(Core::Event& event)
 {
+    // A request to see a process's details, from the Processes table's row menu (#1209): the
+    // selection itself travels as the ProcessSelectedEvent raised before it.
+    Core::EventDispatcher dispatcher(event);
+    dispatcher.dispatch<Core::ShowProcessDetailsEvent>(
+        [this](Core::ShowProcessDetailsEvent& /*e*/)
+        {
+            m_ShowDetailsTabRequested = true;
+            return false;
+        });
+
     // Forward events to all panels; each handles the settings events it needs itself
     m_Tabs.onEvent(event);
 }
@@ -273,6 +285,8 @@ void ShellLayer::onUpdate(float deltaTime)
     // The details pane follows the capabilities published with the latest generation (#1254): a
     // plain copy of what ProcessesPanel fetched with its snapshots, so no lock is taken here.
     m_ProcessDetailsPanel.setProcessCapabilities(m_ProcessesPanel.processCapabilities());
+    // Per-process GPU support reaches the details pane with each sample, as of the generation it
+    // came from (Domain::ProcessSample, #1210), not from here.
 
     // Hand Process Details the selected process's new samples: one per generation the sampler
     // published since its last frame, each with its own sample time (#1098). The model keeps them for
@@ -493,13 +507,19 @@ void ShellLayer::renderTabBar()
         std::size_t index = 0;
         for (const auto& tab : m_Tabs.tabs())
         {
-            if (ImGui::BeginTabItem(tab.label(), nullptr, ImGuiTabItemFlags_NoCloseWithMiddleMouseButton))
+            ImGuiTabItemFlags tabFlags = ImGuiTabItemFlags_NoCloseWithMiddleMouseButton;
+            if (m_ShowDetailsTabRequested && tab.eventName == "ProcessDetails")
+            {
+                tabFlags |= ImGuiTabItemFlags_SetSelected;
+            }
+            if (ImGui::BeginTabItem(tab.label(), nullptr, tabFlags))
             {
                 m_Tabs.select(index);
                 ImGui::EndTabItem();
             }
             ++index;
         }
+        m_ShowDetailsTabRequested = false;
 
         ImGui::EndTabBar();
 

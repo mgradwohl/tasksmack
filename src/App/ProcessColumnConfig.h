@@ -229,6 +229,37 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
     return infos[toIndex(col)];
 }
 
+/// How a column's cells are aligned, which its header follows (#1209).
+enum class ColumnAlign : std::uint8_t
+{
+    Left,
+    Center,
+    Right,
+};
+
+/// The alignment of a column's cells: numbers, sizes, rates, times and counts right, the one-letter
+/// State code centred, free text left. ProcessesPanel::renderProcessRow() draws each column this way,
+/// and the header is aligned to match, so a numeric header sits over its numbers (#1209).
+[[nodiscard]] constexpr auto columnAlignment(ProcessColumn col) -> ColumnAlign
+{
+    switch (col)
+    {
+    case ProcessColumn::Name:
+    case ProcessColumn::User:
+    case ProcessColumn::Publisher:
+    case ProcessColumn::Status:
+    case ProcessColumn::Type:
+    case ProcessColumn::GpuEngine:
+    case ProcessColumn::GpuDevice:
+    case ProcessColumn::Command:
+        return ColumnAlign::Left;
+    case ProcessColumn::State:
+        return ColumnAlign::Center;
+    default:
+        return ColumnAlign::Right;
+    }
+}
+
 /// What a column's header tooltip adds to its description about what the platform leaves out, or
 /// empty. The network columns say when they count TCP only: UDP traffic -- QUIC/HTTP3, video calls,
 /// games, DNS -- isn't attributed per process, and a browser streaming over HTTP/3 reads about
@@ -292,6 +323,10 @@ inline constexpr float COLUMN_CONTENT_MARGIN_EM = 1.0F;
 struct ProcessColumnSettings
 {
     std::array<bool, processColumnCount()> visible{};
+    /// Columns whose visibility was chosen -- by the user, or loaded from the config file -- rather
+    /// than left at a default. Only the others follow the system's capabilities (#1210, see
+    /// ProcessColumnAvailability::applyCapabilityDefaults()).
+    std::array<bool, processColumnCount()> chosen{};
 
     ProcessColumnSettings()
     {
@@ -307,16 +342,90 @@ struct ProcessColumnSettings
         return visible[toIndex(col)];
     }
 
+    /// Shows or hides `col` as chosen (by the user or the config file), marking it chosen.
     void setVisible(ProcessColumn col, bool vis)
     {
         visible[toIndex(col)] = vis;
+        chosen[toIndex(col)] = true;
     }
 
     void toggleVisible(ProcessColumn col)
     {
-        const std::size_t idx = toIndex(col);
-        visible[idx] = !visible[idx];
+        setVisible(col, !isVisible(col));
     }
+
+    /// Takes `col`'s visibility from the table (ImGui's state) when it differs, and returns whether it
+    /// did. Only `userChange` -- a toggle in ImGui's header menu -- counts as a choice; state ImGui
+    /// produced itself, such as a column layout it restored, is taken without marking the column
+    /// chosen, so it keeps following this system's defaults (#1210).
+    bool adoptTableVisibility(ProcessColumn col, bool enabled, bool userChange)
+    {
+        if (isVisible(col) == enabled)
+        {
+            return false;
+        }
+        if (userChange)
+        {
+            setVisible(col, enabled);
+        }
+        else
+        {
+            visible[toIndex(col)] = enabled;
+        }
+        return true;
+    }
+
+    /// Whether `col`'s visibility was chosen rather than left at a default.
+    [[nodiscard]] bool isChosen(ProcessColumn col) const
+    {
+        return chosen[toIndex(col)];
+    }
+
+    /// Sets the default visibility of a column whose visibility was not chosen; one that was is left alone.
+    void setDefaultVisible(ProcessColumn col, bool vis)
+    {
+        if (!isChosen(col))
+        {
+            visible[toIndex(col)] = vis;
+        }
+    }
+
+    /// Shows or hides `col` as the Columns menu asks (#1209); a column that cannot be hidden (PID,
+    /// Name) stays shown.
+    void requestVisible(ProcessColumn col, bool vis)
+    {
+        setVisible(col, vis || !getColumnInfo(col).canHide);
+    }
+
+    /// Shows every column that cannot be hidden (PID, Name: getColumnInfo().canHide), whatever was
+    /// asked for (#1209). A config file may say "pid = false", and the table's
+    /// TableSetColumnEnabled(false) ignores ImGui's NoHide flag, so loaded and requested visibility
+    /// is passed through this before it reaches the table.
+    void keepUnhideableColumnsVisible()
+    {
+        for (const auto col : allProcessColumns())
+        {
+            if (!getColumnInfo(col).canHide)
+            {
+                visible[toIndex(col)] = true;
+            }
+        }
+    }
+
+    /// The default column set regardless of what the system can fill; see
+    /// ProcessColumnAvailability::defaultColumns() for what "Reset columns" restores (#1209, #1210).
+    [[nodiscard]] static ProcessColumnSettings defaults()
+    {
+        return {};
+    }
+
+    /// Whether every column is shown or hidden as it is by default.
+    [[nodiscard]] bool isDefault() const
+    {
+        return visible == defaults().visible;
+    }
+
+    friend bool operator==(const ProcessColumnSettings&, const ProcessColumnSettings&) = default;
 };
 
 } // namespace App

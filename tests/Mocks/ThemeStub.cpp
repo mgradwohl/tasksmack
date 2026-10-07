@@ -1,15 +1,22 @@
-// Minimal stub implementations of UI::Theme methods for the test binary.
+// Minimal stub implementations of UI::Theme methods for the test and benchmark binaries.
 //
 // UserConfig.cpp is compiled into the test binary and references Theme::get(),
-// Theme::setThemeById(), Theme::setFontSize(), and Theme::currentThemeId().
-// These code paths are never exercised by the tests, but the Windows linker
-// (lld-link) requires every referenced symbol to be defined.
+// Theme::setThemeById(), Theme::setFontSize(), and Theme::currentThemeId(). The stub keeps what
+// those setters were given so UserConfig::applyToApplication() -> captureFromApplication() can be
+// round-tripped in tests (#1187): setThemeById() records the id verbatim (the real Theme ignores an
+// id it has no theme for; no theme files are discovered here), and setFontSize() sets the same
+// m_CurrentFontSize the inline currentFontSize() returns.
 //
 // Theme.cpp is excluded from the test build because applyImGuiStyle() and
 // applyPendingStyleChanges() call ImGui/ImPlot runtime APIs that require an active
 // rendering context.  The stubs here satisfy the linker without a context.
 
 #include "UI/Theme.h"
+
+#include <imgui.h>
+
+#include <string>
+#include <string_view>
 
 namespace UI
 {
@@ -35,24 +42,115 @@ auto Theme::get() -> Theme&
     return instance;
 }
 
+// The stubs below define Theme's member functions, which can't be made static however little they
+// read of the object.
+// NOLINTBEGIN(readability-convert-member-functions-to-static)
+
+namespace
+{
+
+/// The id last passed to setThemeById(); empty until then, as the real Theme's is before any theme
+/// is discovered.
+[[nodiscard]] std::string& stubThemeId()
+{
+    static std::string id;
+    return id;
+}
+
+} // namespace
+
 auto Theme::currentThemeId() const -> const std::string&
 {
-    static const std::string k_Empty;
-    return k_Empty;
+    return stubThemeId();
 }
 
-// Referenced by ChartWidgets.h's value-strip drawing, which test_FillPlotLayout.cpp runs under a
-// live ImGui context. No scheme is loaded here, so it is the default one.
+namespace
+{
+
+/// A scheme whose chart and text colours are all visible. ImGui and ImPlot draw nothing for a fully
+/// transparent colour, so with a default (all-zero) scheme the headless chart scenes
+/// (benchmarks/ChartGeometryScenes.h, #1421) would emit no line, fill or strip-text geometry at all
+/// and measure an empty chart. The exact hues don't matter; that each colour is drawn does. Lines
+/// and text are opaque, fills are translucent as a theme's are.
+[[nodiscard]] ColorScheme makeVisibleScheme()
+{
+    constexpr float FILL_ALPHA = 0.35F;
+    const auto line = [](float r, float g, float b)
+    {
+        return ImVec4(r, g, b, 1.0F);
+    };
+    const auto fill = [](const ImVec4& c)
+    {
+        return ImVec4(c.x, c.y, c.z, FILL_ALPHA);
+    };
+
+    ColorScheme s;
+    s.name = "Stub";
+    s.textPrimary = line(0.90F, 0.90F, 0.90F);
+    s.textMuted = line(0.60F, 0.60F, 0.60F);
+    s.textDisabled = line(0.45F, 0.45F, 0.45F);
+    s.windowBg = line(0.10F, 0.10F, 0.12F);
+    s.frameBg = line(0.16F, 0.16F, 0.18F);
+    s.plotGrid = line(0.25F, 0.25F, 0.28F);
+    s.chartCpu = line(0.30F, 0.60F, 1.00F);
+    s.chartMemory = line(0.40F, 0.85F, 0.45F);
+    s.chartIo = line(1.00F, 0.70F, 0.25F);
+    s.chartIoWrite = line(1.00F, 0.45F, 0.35F);
+    s.chartNetTx = line(0.85F, 0.45F, 0.95F);
+    s.chartNetRx = line(0.35F, 0.85F, 0.90F);
+    s.chartCpuFill = fill(s.chartCpu);
+    s.chartMemoryFill = fill(s.chartMemory);
+    s.chartIoFill = fill(s.chartIo);
+    s.chartIoWriteFill = fill(s.chartIoWrite);
+    s.chartNetTxFill = fill(s.chartNetTx);
+    s.chartNetRxFill = fill(s.chartNetRx);
+    s.cpuUser = line(0.30F, 0.60F, 1.00F);
+    s.cpuSystem = line(1.00F, 0.40F, 0.40F);
+    s.cpuIowait = line(1.00F, 0.80F, 0.30F);
+    s.cpuIdle = line(0.50F, 0.50F, 0.50F);
+    s.cpuUserFill = fill(s.cpuUser);
+    s.cpuSystemFill = fill(s.cpuSystem);
+    s.cpuIowaitFill = fill(s.cpuIowait);
+    s.cpuIdleFill = fill(s.cpuIdle);
+    s.chartPeakLine = ImVec4(0.90F, 0.90F, 0.90F, 0.50F);
+    return s;
+}
+
+} // namespace
+
+// Referenced by ChartWidgets.h's chart and value-strip drawing, which test_FillPlotLayout.cpp,
+// test_ChartGeometryBudget.cpp and bench_ChartGeometry.cpp run under a live ImGui context. No theme
+// file is loaded here; see makeVisibleScheme().
 auto Theme::scheme() const -> const ColorScheme&
 {
-    static const ColorScheme k_Default{};
-    return k_Default;
+    static const ColorScheme k_Scheme = makeVisibleScheme();
+    return k_Scheme;
 }
 
-void Theme::setThemeById(std::string_view /*id*/)
-{}
+// Referenced by ChartWidgets.h's PlotFontGuard. No fonts are loaded here, so charts draw in the
+// context's default font, as the headless scenes want.
+auto Theme::chartFont() const -> ImFont*
+{
+    return nullptr;
+}
 
-void Theme::setFontSize(FontSize /*size*/)
-{}
+// Referenced by ChartWidgets.h's lineWeight(). The reference configuration (Medium font, 100 % display
+// scale), where authored line weights are drawn as written.
+auto Theme::styleScale() const -> float
+{
+    return 1.0F;
+}
+
+void Theme::setThemeById(std::string_view id)
+{
+    stubThemeId() = id;
+}
+
+void Theme::setFontSize(FontSize size)
+{
+    m_CurrentFontSize = size;
+}
+
+// NOLINTEND(readability-convert-member-functions-to-static)
 
 } // namespace UI

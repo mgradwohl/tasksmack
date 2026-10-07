@@ -77,6 +77,8 @@ inline constexpr uint32_t ICON_MAX_FA = 0xf8ff;
 #define ICON_FA_SORT "\xef\x83\x9c"        // U+f0dc - Sort (up/down arrows)
 #define ICON_FA_SORT_UP "\xef\x83\x9e"     // U+f0de - Sort ascending
 #define ICON_FA_SORT_DOWN "\xef\x83\x9d"   // U+f0dd - Sort descending
+#define ICON_FA_CARET_RIGHT "\xef\x83\x9a" // U+f0da - Collapsed tree node
+#define ICON_FA_CARET_DOWN "\xef\x83\x97"  // U+f0d7 - Expanded tree node
 
 // ============================================================================
 // UI & Display Icons
@@ -90,6 +92,9 @@ inline constexpr uint32_t ICON_MAX_FA = 0xf8ff;
 #define ICON_FA_CHART_LINE "\xef\x88\x81"       // U+f201 - Line chart
 #define ICON_FA_CHART_BAR "\xef\x82\x80"        // U+f080 - Bar chart
 #define ICON_FA_CHART_PIE "\xef\x88\x80"        // U+f200 - Pie chart
+#define ICON_FA_TABLE_COLUMNS "\xef\x83\x9b"    // U+f0db - Table columns (column chooser)
+#define ICON_FA_SITEMAP "\xef\x83\xa8"          // U+f0e8 - Sitemap (tree view)
+#define ICON_FA_ROTATE_LEFT "\xef\x8b\xaa"      // U+f2ea - Rotate left (reset)
 
 // ============================================================================
 // Misc Icons
