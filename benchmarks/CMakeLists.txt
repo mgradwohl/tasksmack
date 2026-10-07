@@ -53,6 +53,7 @@ else()
     set(PLATFORM_BENCH_SOURCES
         # Linux-specific benchmarks
         bench_NetlinkSocketStats.cpp
+        bench_LinuxProcessProbe.cpp
     )
     set(PLATFORM_SRC_UNDER_BENCH
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/Factory.cpp

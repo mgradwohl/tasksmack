@@ -4,6 +4,7 @@
 #include "NetlinkSocketStats.h"
 
 #include "PosixGuards.h"
+#include "ProcFdScan.h"
 #include "ProcParsing.h"
 
 #include <spdlog/spdlog.h>
@@ -306,35 +307,6 @@ void drainQueuedReplies(INetlinkTransport& transport, std::span<std::byte> buffe
             return; // EAGAIN: nothing left; anything else: the next blocking read reports it
         }
     }
-}
-
-/// The start time from the stat file in the /proc/[pid] directory `pidDirFd` is open on; 0 if it
-/// can't be read (the process exited, or a synthetic /proc without one).
-[[nodiscard]] std::uint64_t readStartTimeTicks(int pidDirFd) noexcept
-{
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
-    const Posix::FdGuard statFd(::openat(pidDirFd, "stat", O_RDONLY | O_CLOEXEC));
-    if (statFd.get() == -1)
-    {
-        return 0;
-    }
-    // Ample: comm is kernel-capped at 15 chars, and the start time is field 22.
-    std::array<char, 1024> buf{};
-    std::size_t len = 0;
-    while (len < buf.size())
-    {
-        const ssize_t got = ::read(statFd.get(), buf.data() + len, buf.size() - len);
-        if (got < 0 && errno == EINTR)
-        {
-            continue;
-        }
-        if (got <= 0)
-        {
-            break;
-        }
-        len += static_cast<std::size_t>(got); // got > 0 here
-    }
-    return ProcParsing::parseStatStartTime(std::string_view(buf.data(), len)).value_or(0);
 }
 
 } // namespace
@@ -673,80 +645,42 @@ std::unordered_map<std::uint64_t, SocketOwner> buildInodeToPidMap(const std::fil
             continue; // Process exited
         }
 
-        // Scan /proc/[pid]/fd/ for socket symlinks. Use opendir/readdir for efficiency (avoid
-        // exception overhead). The DIR* itself is still wrapped in Posix::DirGuard so it can't leak if
-        // the map insertion below throws (e.g. std::bad_alloc on a rehash) -- the "avoid exception
-        // overhead" choice only opted out of std::filesystem::directory_iterator, not out of
-        // exception *safety* (#772). fdopendir() takes ownership of the descriptor on success only.
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
-        const int fdDirFd = ::openat(pidDirFd.get(), "fd", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-        if (fdDirFd == -1)
-        {
-            continue; // Permission denied or process exited
-        }
-        const Posix::DirGuard fdDirGuard(fdopendir(fdDirFd));
-        if (fdDirGuard.get() == nullptr)
-        {
-            ::close(fdDirFd);
-            continue;
-        }
-
-        std::array<char, 256> linkTarget{};
+        // Every socket link in /proc/[pid]/fd, through the same handle: the walk LinuxProcessProbe's
+        // FD count shares on the samples it rebuilds the map itself (#1426).
         std::optional<std::uint64_t> startTimeTicks; // read once, on the process's first socket
-
-        // NOLINTNEXTLINE(concurrency-mt-unsafe) - readdir is safe here: single DIR* per thread
-        while (const struct dirent* entry = readdir(fdDirGuard.get()))
-        {
-            // Skip . and ..
-            if (entry->d_name[0] == '.')
-            {
-                continue;
-            }
-
-            // Read the symlink target relative to the fd directory (no path building per entry)
-            const ssize_t linkLen = readlinkat(dirfd(fdDirGuard.get()), entry->d_name, linkTarget.data(), linkTarget.size() - 1);
-            if (linkLen <= 0)
-            {
-                continue;
-            }
-            linkTarget[static_cast<std::size_t>(linkLen)] = '\0';
-
-            // Check if it's a socket: "socket:[inode]"
-            const std::string_view target(linkTarget.data(), static_cast<std::size_t>(linkLen));
-            if (!target.starts_with("socket:["))
-            {
-                continue;
-            }
-
-            // Extract inode number
-            const std::size_t start = 8; // Length of "socket:["
-            const std::size_t end = target.find(']', start);
-            if (end == std::string_view::npos)
-            {
-                continue;
-            }
-
-            std::uint64_t inode = 0;
-            auto parseResult = std::from_chars((target.data() + start), (target.data() + end), inode);
-            if (parseResult.ec == std::errc{} && inode != 0)
-            {
-                // Shared socket: the lowest PID keeps it, whatever order readdir() lists /proc in,
-                // so the owner is the same on every rebuild (#1099).
-                if (!startTimeTicks.has_value())
-                {
-                    startTimeTicks = readStartTimeTicks(pidDirFd.get());
-                }
-                const SocketOwner owner{.pid = pid, .startTimeTicks = *startTimeTicks};
-                const auto [it, inserted] = inodeToPid.try_emplace(inode, owner);
-                if (!inserted && pid < it->second.pid)
-                {
-                    it->second = owner;
-                }
-            }
-        }
+        (void) ProcFdScan::scanFds(pidDirFd.get(),
+                                   /*readEveryLink=*/true,
+                                   [&](std::uint64_t inode)
+                                   {
+                                       if (!startTimeTicks.has_value())
+                                       {
+                                           startTimeTicks = readStartTimeTicksAt(pidDirFd.get());
+                                       }
+                                       addSocketOwner(inodeToPid, inode, SocketOwner{.pid = pid, .startTimeTicks = *startTimeTicks});
+                                   });
     }
 
     return inodeToPid;
+}
+
+void addSocketOwner(std::unordered_map<std::uint64_t, SocketOwner>& inodeToPid, std::uint64_t inode, SocketOwner owner)
+{
+    // Shared socket: the lowest PID keeps it, whatever order readdir() lists /proc in, so the owner
+    // is the same on every rebuild (#1099).
+    const auto [it, inserted] = inodeToPid.try_emplace(inode, owner);
+    if (!inserted && owner.pid < it->second.pid)
+    {
+        it->second = owner;
+    }
+}
+
+std::uint64_t readStartTimeTicksAt(int pidDirFd) noexcept
+{
+    // Ample: comm is kernel-capped at 15 chars, and the start time is field 22. 0 if the file can't
+    // be read (the process exited, or a synthetic /proc without one).
+    std::array<char, 1024> buf{};
+    const std::size_t len = ProcParsing::readProcFileOnceAt(pidDirFd, "stat", buf.data(), buf.size());
+    return ProcParsing::parseStatStartTime(std::string_view(buf.data(), len)).value_or(0);
 }
 
 } // namespace Platform

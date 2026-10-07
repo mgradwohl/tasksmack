@@ -170,6 +170,14 @@ struct SocketOwner
 /// PID mid-scan can't pair its start time with the old process's sockets, or the reverse (#1336).
 [[nodiscard]] std::unordered_map<std::uint64_t, SocketOwner> buildInodeToPidMap(const std::filesystem::path& procRoot = "/proc");
 
+/// Record `owner` as holding socket `inode` in an inode-to-PID map, unless a lower PID already holds
+/// it (see buildInodeToPidMap()). LinuxProcessProbe builds the same map during its own fd walk (#1426).
+void addSocketOwner(std::unordered_map<std::uint64_t, SocketOwner>& inodeToPid, std::uint64_t inode, SocketOwner owner);
+
+/// The start time (/proc/[pid]/stat field 22) from the stat file in the /proc/[pid] directory
+/// `pidDirFd` is open on; 0 if it can't be read. The owner start time buildInodeToPidMap() records.
+[[nodiscard]] std::uint64_t readStartTimeTicksAt(int pidDirFd) noexcept;
+
 } // namespace Platform
 
 #endif // __linux__ && headers available
