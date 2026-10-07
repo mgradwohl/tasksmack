@@ -524,7 +524,7 @@ sampling_constant() {
 }
 # A [sampling] key's integer value from a config.toml, as UserConfig applies it: a TOML integer
 # (underscores between digits allowed, e.g. 1_800) clamped to [<min>, <max>]. Prints nothing for a
-# missing key or any other token (a quoted string, a float, a hex literal), which TaskSmack ignores
+# missing key, a value outside C++ int, or any other token (a quoted string, a float, a hex literal), which TaskSmack ignores
 # in favour of the default, so the caller falls through to that default too.
 # Usage: config_sampling_int <config.toml> <key> <min> <max>
 config_sampling_int() {
@@ -532,6 +532,17 @@ config_sampling_int() {
     raw="$(config_sampling_value "$1" "$2")"
     [[ "${raw}" =~ ^[+-]?[0-9]+(_[0-9]+)*$ ]] || return 0
     raw="${raw//_/}"
+    raw="${raw#+}"
+    # Outside C++ int, UserConfig's narrowOr<int>() keeps the default: print nothing, as for a bad token.
+    # Compare as digit strings (awk numbers are doubles and would round huge values).
+    local digits="${raw#-}"
+    digits="${digits#"${digits%%[!0]*}"}"
+    local limit=2147483647
+    [[ "${raw}" == -* ]] && limit=2147483648
+    # shellcheck disable=SC2071 # equal-length digit strings: a string comparison is the numeric one
+    if (( ${#digits} > ${#limit} )) || { (( ${#digits} == ${#limit} )) && [[ "${digits}" > "${limit}" ]]; }; then
+        return 0
+    fi
     awk -v v="${raw}" -v lo="$3" -v hi="$4" 'BEGIN { v += 0; if (v < lo) v = lo; if (v > hi) v = hi; printf "%d\n", v }'
 }
 # A [sampling] key's raw token from a config.toml (use config_sampling_int for the value).
