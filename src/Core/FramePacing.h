@@ -147,8 +147,8 @@ inline constexpr std::uint32_t MAX_CONSECUTIVE_SKIPPED_RENDERS = 2;
 }
 
 /// The consecutive-skip count computeSkipRenderThisFrame() takes, after a loop iteration that skipped
-/// its render (@p skippedRender), rendered a frame (@p renderedFrame) or did neither: a skip counts, a
-/// frame resets, neither leaves it.
+/// its render (@p skippedRender), rendered a frame (@p renderedFrame) or did neither (an idle wait that
+/// woke on an event and drains it first, #1409): a skip counts, a frame resets, neither leaves it.
 [[nodiscard]] constexpr auto
 nextConsecutiveSkippedRenders(std::uint32_t consecutiveSkippedRenders, bool skippedRender, bool renderedFrame) noexcept -> std::uint32_t
 {
@@ -157,6 +157,17 @@ nextConsecutiveSkippedRenders(std::uint32_t consecutiveSkippedRenders, bool skip
         return consecutiveSkippedRenders + 1;
     }
     return renderedFrame ? 0 : consecutiveSkippedRenders;
+}
+
+/// Whether the loop iteration renders its regular (paced/idle) frame. Not when the move/resize path
+/// already rendered one, nor when P3 skips it, nor when the idle wait woke on an event
+/// (@p idleWaitWokeOnEvent): that event goes through the next iteration's drain first, so the frame
+/// after a wake shows its effect (#1409). Rendering straight after the wake drew the old state and
+/// left the event for the drain after it.
+[[nodiscard]] constexpr auto
+computeShouldRenderRegularFrame(bool idleWaitWokeOnEvent, bool didImmediateResizeRedraw, bool skipRenderThisFrame) noexcept -> bool
+{
+    return !idleWaitWokeOnEvent && !didImmediateResizeRedraw && !skipRenderThisFrame;
 }
 
 /// Whether to sleep (rather than render immediately) when the event queue is empty.

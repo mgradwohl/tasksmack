@@ -32,6 +32,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -333,6 +334,105 @@ class SdlEventPushingLayer : public Core::Layer
     int m_StopAfter;
     int m_UpdateCount = 0;
     bool m_Pushed = false;
+};
+
+/// #1409: once the loop has settled into idle pacing, starts an SDL timer that pushes a key-down from
+/// SDL's timer thread partway through the idle wait (IDLE_FRAME_SLEEP_MS is 50 ms), then records, for
+/// every frame (onUpdate), when it started and whether the key had been dispatched (onSDLEvent) by then.
+class KeyDuringIdleWaitLayer : public Core::Layer
+{
+  public:
+    /// Run time before the timer starts: past the startup window events and the 0.35 s interaction
+    /// grace their resize starts (INTERACTION_REDRAW_GRACE_SECONDS), during which frames come from the
+    /// move/resize redraw path before the wait rather than from the idle path after it.
+    static constexpr std::uint64_t SETTLE_NS = 1'000'000'000;
+    /// Into the 50 ms idle wait that follows the frame which starts the timer.
+    static constexpr Uint32 PUSH_DELAY_MS = 25;
+    /// Frames to keep running after the push; and the fallback stop if the push never happens.
+    static constexpr int UPDATES_AFTER_PUSH = 3;
+    static constexpr int MAX_UPDATES = 200;
+    static constexpr SDL_Keycode KEY = SDLK_F13;
+
+    KeyDuringIdleWaitLayer() : Layer("KeyDuringIdleWait")
+    {}
+
+    KeyDuringIdleWaitLayer(const KeyDuringIdleWaitLayer&) = delete;
+    KeyDuringIdleWaitLayer& operator=(const KeyDuringIdleWaitLayer&) = delete;
+    KeyDuringIdleWaitLayer(KeyDuringIdleWaitLayer&&) = delete;
+    KeyDuringIdleWaitLayer& operator=(KeyDuringIdleWaitLayer&&) = delete;
+
+    ~KeyDuringIdleWaitLayer() override
+    {
+        if (m_Timer != 0)
+        {
+            SDL_RemoveTimer(m_Timer);
+        }
+    }
+
+    void onSDLEvent(SDL_Event* event) override
+    {
+        if (event->type == SDL_EVENT_KEY_DOWN && event->key.key == KEY)
+        {
+            m_KeyDispatched = true;
+        }
+    }
+
+    void onUpdate(float /*deltaTime*/) override
+    {
+        m_Frames.push_back({.startNs = SDL_GetTicksNS(), .keyDispatched = m_KeyDispatched});
+        const auto updates = static_cast<int>(m_Frames.size());
+        if (m_Timer == 0 && (m_Frames.back().startNs - m_Frames.front().startNs) >= SETTLE_NS)
+        {
+            m_Timer = SDL_AddTimer(PUSH_DELAY_MS, &KeyDuringIdleWaitLayer::pushKey, this);
+        }
+        const std::uint64_t pushedAt = m_PushedAtNs.load();
+        if (pushedAt != 0 && m_FramesAtPush < 0)
+        {
+            m_FramesAtPush = updates;
+        }
+        if ((m_FramesAtPush >= 0 && updates >= m_FramesAtPush + UPDATES_AFTER_PUSH) || updates >= MAX_UPDATES)
+        {
+            Core::Application::get().stop();
+        }
+    }
+
+    struct Frame
+    {
+        std::uint64_t startNs = 0;
+        bool keyDispatched = false;
+    };
+
+    [[nodiscard]] const std::vector<Frame>& frames() const
+    {
+        return m_Frames;
+    }
+
+    /// When the timer thread's SDL_PushEvent() returned (0 = not pushed).
+    [[nodiscard]] std::uint64_t pushedAtNs() const
+    {
+        return m_PushedAtNs.load();
+    }
+
+  private:
+    static Uint32 pushKey(void* userdata, SDL_TimerID /*timerId*/, Uint32 /*interval*/)
+    {
+        auto* self = static_cast<KeyDuringIdleWaitLayer*>(userdata);
+        SDL_Event event{};
+        event.type = SDL_EVENT_KEY_DOWN;
+        event.key.key = KEY;
+        event.key.down = true;
+        if (SDL_PushEvent(&event))
+        {
+            self->m_PushedAtNs.store(SDL_GetTicksNS());
+        }
+        return 0; // one shot
+    }
+
+    std::vector<Frame> m_Frames;
+    bool m_KeyDispatched = false;
+    std::atomic<std::uint64_t> m_PushedAtNs{0};
+    int m_FramesAtPush = -1;
+    SDL_TimerID m_Timer = 0;
 };
 
 /// Layer whose onDetach() logs to g_DetachOrder, then throws, to verify detachAllLayers() still
@@ -676,6 +776,40 @@ TEST(ApplicationTest, SdlQuitStopsTheAppAndCannotBeVetoed)
         ASSERT_TRUE(pusher.pushed()) << SDL_GetError();
         EXPECT_EQ(vetoer.closeEventsSeen(), 0);
         EXPECT_LT(pusher.updateCount(), STOP_AFTER);
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
+    }
+}
+
+// #1409: a key that wakes the idle wait is dispatched before the frame rendered after the wake. The
+// loop used to wait with SDL_WaitEventTimeout(nullptr, ...) and render straight away, so the first
+// frame after the key showed the state from before it.
+TEST(ApplicationTest, KeyDuringIdleWaitIsDispatchedBeforeTheNextFrame)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "KeyDuringIdleWaitTest";
+
+    try
+    {
+        Core::Application app(spec);
+        const auto& layer = app.pushLayer<KeyDuringIdleWaitLayer>();
+
+        app.run();
+
+        const std::uint64_t pushedAt = layer.pushedAtNs();
+        ASSERT_NE(pushedAt, 0U) << "the timer never pushed the key: " << SDL_GetError();
+        const auto& frames = layer.frames();
+        const auto firstAfterPush =
+            std::ranges::find_if(frames, [pushedAt](const KeyDuringIdleWaitLayer::Frame& frame) { return frame.startNs > pushedAt; });
+        ASSERT_NE(firstAfterPush, frames.end()) << "no frame started after the key was pushed";
+        EXPECT_TRUE(firstAfterPush->keyDispatched) << "the first frame after the wake rendered before the waking key was dispatched";
     }
     catch (const std::exception& e)
     {
@@ -1027,13 +1161,23 @@ TEST(FramePacingTest, ConsecutiveSkippedRendersAreBounded)
     EXPECT_EQ(renders, ITERATIONS / static_cast<int>(MAX_CONSECUTIVE_SKIPPED_RENDERS + 1));
 }
 
-TEST(FramePacingTest, ConsecutiveSkipCountResetsOnAFrameAndHoldsOtherwise)
+TEST(FramePacingTest, ConsecutiveSkipCountResetsOnAFrameAndHoldsThroughADeferredRender)
 {
     using Core::FramePacing::nextConsecutiveSkippedRenders;
     EXPECT_EQ(nextConsecutiveSkippedRenders(0, true, false), 1U);
     EXPECT_EQ(nextConsecutiveSkippedRenders(1, true, false), 2U);
     EXPECT_EQ(nextConsecutiveSkippedRenders(2, false, true), 0U);
+    // A wake that defers its render to the next iteration (#1409) neither skips nor renders.
     EXPECT_EQ(nextConsecutiveSkippedRenders(1, false, false), 1U);
+}
+
+TEST(FramePacingTest, RegularFrameRendersUnlessAlreadyDrawnSkippedOrDeferredByAWake)
+{
+    using Core::FramePacing::computeShouldRenderRegularFrame;
+    EXPECT_TRUE(computeShouldRenderRegularFrame(false, false, false));
+    EXPECT_FALSE(computeShouldRenderRegularFrame(true, false, false));
+    EXPECT_FALSE(computeShouldRenderRegularFrame(false, true, false));
+    EXPECT_FALSE(computeShouldRenderRegularFrame(false, false, true));
 }
 
 namespace
@@ -1120,6 +1264,63 @@ TEST(FramePacingTest, DrainChecksItsBudgetAfterEveryEvent)
         // One clock read per event handled, none for the empty poll that ends the drain.
         EXPECT_EQ(source.clockReads, static_cast<int>(testCase.expectedEvents));
     }
+}
+
+// #1409: a sequence through the loop's ordering (drain, idle wait, render) with the pure decisions
+// Application::run() uses. A key pressed while the loop sleeps in the idle wait wakes it; the frame
+// rendered after the wake must already show the key.
+TEST(FramePacingTest, KeyDuringIdleWaitShowsInTheFirstFrameAfterTheWake)
+{
+    constexpr int KEY = 1;
+    std::vector<int> queue;             // events not yet taken off the queue
+    std::optional<int> idleWakeEvent;   // the event SDL_WaitEventTimeout() returned
+    bool keyHandled = false;            // the UI state the key changes
+    std::vector<bool> framesShowingKey; // one entry per rendered frame
+
+    // One Application::run() iteration; @p keyArrivesDuringWait pushes the key while the loop waits.
+    const auto iterate = [&](bool keyArrivesDuringWait)
+    {
+        const auto pollAndDispatch = [&]
+        {
+            int event = 0;
+            if (idleWakeEvent.has_value())
+            {
+                event = *idleWakeEvent;
+                idleWakeEvent.reset();
+            }
+            else if (!queue.empty())
+            {
+                event = queue.front();
+                queue.erase(queue.begin());
+            }
+            else
+            {
+                return false;
+            }
+            keyHandled = keyHandled || (event == KEY);
+            return true;
+        };
+        const auto drain = Core::FramePacing::drainEventsWithinBudget(pollAndDispatch, [] { return 0.0; }, 8.0);
+        if (drain.eventCount == 0 && keyArrivesDuringWait)
+        {
+            idleWakeEvent = KEY; // the wait wakes on the key and takes it off the queue
+        }
+        if (Core::FramePacing::computeShouldRenderRegularFrame(idleWakeEvent.has_value(), false, false))
+        {
+            framesShowingKey.push_back(keyHandled);
+        }
+    };
+
+    iterate(false); // an idle frame before the key
+    ASSERT_EQ(framesShowingKey.size(), 1U);
+    EXPECT_FALSE(framesShowingKey.back());
+
+    iterate(true); // the key arrives during this iteration's idle wait: no frame of the old state
+    EXPECT_EQ(framesShowingKey.size(), 1U);
+
+    iterate(false); // drains the key, then renders
+    ASSERT_EQ(framesShowingKey.size(), 2U);
+    EXPECT_TRUE(framesShowingKey.back()) << "the first frame after the wake must reflect the key";
 }
 
 TEST(FramePacingTest, ShouldSleepWhenIdleOutsideGracePeriod)

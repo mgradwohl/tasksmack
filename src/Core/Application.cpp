@@ -533,6 +533,9 @@ void Application::run()
     // frame (#1037, #1125).
     double requestedAnimationFps = 0.0;
     double lastFrameStart = getTime();
+    // The event that woke the idle wait, taken off the queue by SDL_WaitEventTimeout(): the next
+    // iteration's drain dispatches it before anything else, and before that iteration renders (#1409).
+    std::optional<SDL_Event> idleWakeEvent;
     // P3 skips in a row, for the FramePacing::MAX_CONSECUTIVE_SKIPPED_RENDERS bound (#1410).
     std::uint32_t consecutiveSkippedRenders = 0;
     std::uint64_t loopStart = 0;
@@ -595,10 +598,16 @@ void Application::run()
         // Always capture drain start: used by P0 budget check and P3 skip-render decision
         // regardless of whether tracing is active.
         const auto eventDrainStart = std::chrono::steady_clock::now();
-        // Handle the next event, false once the queue is empty.
+        // Handle the next event, false once the queue is empty. The event that woke the previous
+        // iteration's idle wait comes first: SDL_WaitEventTimeout() took it off the queue (#1409).
         const auto pollAndDispatch = [&]() -> bool
         {
-            if (!SDL_PollEvent(&sdlEvent))
+            if (idleWakeEvent.has_value())
+            {
+                sdlEvent = *idleWakeEvent;
+                idleWakeEvent.reset();
+            }
+            else if (!SDL_PollEvent(&sdlEvent))
             {
                 return false;
             }
@@ -871,7 +880,8 @@ void Application::run()
         //     display stays current during burst gaps between resize/move events.
         //   - Outside the grace period: sleep briefly (~20 fps idle, 5 fps minimized or covered)
         //     to reduce CPU/GPU usage when the display hasn't changed. Any SDL event wakes the
-        //     sleep immediately, keeping interactive frame rate unaffected.
+        //     sleep immediately, keeping interactive frame rate unaffected. The waking event is
+        //     dispatched before the next frame renders (#1409): see idleWakeEvent.
         const double animationFps = FramePacing::computeAnimationRate(requestedAnimationFps, IDLE_FRAME_RATE, MAX_FRAME_RATE);
         const double frameRateCap = FramePacing::computeFrameRateCap(animationFps, hadEvents, isHidden, MAX_FRAME_RATE);
         if (frameRateCap > 0.0 && !isInteracting)
@@ -901,7 +911,15 @@ void Application::run()
                 const int sleepMs =
                     FramePacing::computeIdleWaitMs(isHidden, IDLE_FRAME_SLEEP_MS, MINIMIZED_FRAME_SLEEP_MS, getTime() - lastFrameStart);
                 const auto waitStart = traceResizePerfThisFrame ? SDL_GetPerformanceCounter() : 0;
-                SDL_WaitEventTimeout(nullptr, sleepMs);
+                // Wait with a real SDL_Event, not nullptr: the event that wakes the loop is taken
+                // off the queue here and handed to the next iteration's drain, which dispatches it
+                // before rendering (#1409). With nullptr the event stayed queued and the frame below
+                // rendered straight after the wake, showing the state from before the input.
+                SDL_Event wakeEvent;
+                if (SDL_WaitEventTimeout(&wakeEvent, sleepMs))
+                {
+                    idleWakeEvent = wakeEvent;
+                }
                 if (traceResizePerfThisFrame)
                 {
                     loopTiming.waitMs = resizePerfElapsedMs(waitStart, SDL_GetPerformanceCounter());
@@ -909,7 +927,10 @@ void Application::run()
             }
         }
 
-        const bool renderRegularFrame = !didImmediateResizeRedraw && !skipRenderThisFrame;
+        // A wake on an event skips this render: the next iteration drains the event first, then
+        // renders, paced as any input-driven frame (#1153) (#1409).
+        const bool renderRegularFrame =
+            FramePacing::computeShouldRenderRegularFrame(idleWakeEvent.has_value(), didImmediateResizeRedraw, skipRenderThisFrame);
         if (renderRegularFrame)
         {
             lastFrameStart = getTime();
@@ -951,7 +972,7 @@ void Application::run()
         }
 
         // Read after this iteration's render(s): what they drew decides how the next frame is paced.
-        // A skipped render leaves the previous answer standing.
+        // A skipped render (or a wake that defers it) leaves the previous answer standing.
         const bool renderedFrame = didImmediateResizeRedraw || renderRegularFrame;
         if (renderedFrame)
         {
