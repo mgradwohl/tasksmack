@@ -26,8 +26,13 @@ validly comparable in the current run. A benchmark missing from the current run,
 no usable timing data on either side, counts against coverage rather than being silently
 ignored -- a regression-detection gate that quietly compares less and less over time as
 benchmarks disappear or degrade is not trustworthy. Default 90% tolerates the occasional
-counter-only benchmark that structurally has no timing field (e.g. BM_GPUModel_UtilizationHistory)
-without masking a real, larger coverage loss.
+benchmark with no usable timing without masking a real, larger coverage loss.
+
+A benchmark that skipped itself on purpose (Google Benchmark's SkipWithMessage(), written as
+"skipped": true) on either side is reported as not measured: neither compared nor counted in
+coverage, in the numerator or the denominator. The GPU benchmarks do this on a machine with no
+GPU, such as the CI runner, instead of timing an empty probe (#1420). A benchmark that failed
+(SkipWithError(), "error_occurred": true) still counts against coverage.
 
 The JSON format is Google Benchmark's --benchmark_format=json output.
 """
@@ -71,6 +76,18 @@ def load_benchmarks(path: Path) -> dict[str, dict]:
         if name:
             result[name] = bm
     return result
+
+
+def skip_message(bm: dict) -> str | None:
+    """The message of a benchmark that skipped itself on purpose (SkipWithMessage()), else None.
+
+    Google Benchmark writes "skipped": true and "skip_message" for an intentional skip, and
+    "error_occurred": true for SkipWithError(); an error is a failed measurement, not a skip.
+    """
+    if bm.get("skipped") is True and bm.get("error_occurred") is not True:
+        message = bm.get("skip_message")
+        return message if isinstance(message, str) and message else "skipped"
+    return None
 
 
 def common_timing_field(base_bm: dict, cur_bm: dict) -> str | None:
@@ -200,11 +217,21 @@ def main() -> int:
     improvements: list[tuple[str, float, str, float, str, float]] = []
     below_floor: list[tuple[str, float, str, float, str, float]] = []
     invalid: list[tuple[str, str]] = []
+    not_measured: list[tuple[str, str]] = []
     compared = 0
 
     for name in sorted(set(baseline) & set(current)):
         base_bm = baseline[name]
         cur_bm = current[name]
+
+        # Skipped on purpose (e.g. a GPU benchmark on a machine with no GPU, #1420): there is
+        # nothing to compare, and it is not a coverage loss either.
+        cur_skip = skip_message(cur_bm)
+        base_skip = skip_message(base_bm)
+        if cur_skip is not None or base_skip is not None:
+            side = "current" if cur_skip is not None else "baseline"
+            not_measured.append((name, f"skipped in {side} run: {cur_skip if cur_skip is not None else base_skip}"))
+            continue
 
         field = common_timing_field(base_bm, cur_bm)
         if field is None:
@@ -271,6 +298,13 @@ def main() -> int:
             print(f"   {name}")
         print()
 
+    if not_measured:
+        print(f"Not measured ({len(not_measured)}) -- skipped by the benchmark itself, "
+              "excluded from comparison and coverage:")
+        for name, reason in not_measured:
+            print(f"   {name}: {reason}")
+        print()
+
     if invalid:
         print(f"Invalid/unusable comparisons ({len(invalid)}):")
         for name, reason in invalid:
@@ -312,18 +346,22 @@ def main() -> int:
         return 1
 
     # ── Coverage gate ─────────────────────────────────────────────────────────
-    coverage_pct = (compared / len(baseline)) * 100.0
+    # Benchmarks skipped on purpose are out of the denominator as well as the numerator.
+    measurable = len(baseline) - len(not_measured)
+    coverage_pct = (compared / measurable) * 100.0
     if coverage_pct < args.min_coverage:
         print(
             f"FAILED: coverage {coverage_pct:.1f}% is below the required "
             f"{args.min_coverage:.1f}% ({len(missing_from_current)} missing, "
-            f"{len(invalid)} invalid/unusable, out of {len(baseline)} baseline benchmark(s))."
+            f"{len(invalid)} invalid/unusable, out of {measurable} measurable baseline benchmark(s); "
+            f"{len(not_measured)} skipped on purpose)."
         )
         return 1
 
     floor_note = f" ({len(below_floor)} over {args.threshold:.1f}% only within the noise floor)" if below_floor else ""
+    skip_note = f" ({len(not_measured)} skipped on purpose, not counted)" if not_measured else ""
     print(f"No benchmark exceeded both the {args.threshold:.1f}% threshold and the {args.min_abs_delta_ns:.2f}ns "
-          f"floor: {compared} compared{floor_note}; coverage {coverage_pct:.1f}%.")
+          f"floor: {compared} compared{floor_note}; coverage {coverage_pct:.1f}%{skip_note}.")
     return 0
 
 
