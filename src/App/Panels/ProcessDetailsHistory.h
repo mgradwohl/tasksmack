@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -201,7 +202,10 @@ class ProcessDetailsHistory
     {
         const bool addGap = gapBefore && !empty() && timeSeconds > m_Timestamps.back();
         const std::size_t addCount = addGap ? 2U : 1U;
-        if (m_Timestamps.size() + addCount > m_Timestamps.capacity())
+        // Every buffer is checked, not only the axis: if a reserve threw partway through an earlier
+        // append, the buffers before it grew and the rest did not, and a buffer without room would
+        // reallocate -- and could throw -- in a push_back below, after others had been pushed.
+        if (!allHaveRoomFor(addCount))
         {
             compact();
             const std::size_t newCapacity = 2 * (size() + addCount);
@@ -211,6 +215,7 @@ class ProcessDetailsHistory
                 reserveAtLeast(series, newCapacity);
             }
         }
+        assert(allHaveRoomFor(addCount) && "every buffer must have room before any push_back");
 
         if (addGap)
         {
@@ -298,11 +303,16 @@ class ProcessDetailsHistory
         return std::span<const double>(m_Series[static_cast<std::size_t>(which)]).subspan(m_Start);
     }
 
-    /// The axis buffer's capacity in points; every series buffer grows with it. Exposed so the tests
-    /// can check the memory bound in the class comment.
+    /// The largest capacity, in points, of the axis and every series buffer (they grow together).
+    /// Exposed so the tests can check the memory bound in the class comment.
     [[nodiscard]] std::size_t storageCapacity() const noexcept
     {
-        return m_Timestamps.capacity();
+        std::size_t largest = m_Timestamps.capacity();
+        for (const std::vector<double>& series : m_Series)
+        {
+            largest = std::max(largest, series.capacity());
+        }
+        return largest;
     }
 
     /// How many trimmed points are still held in the buffers ahead of the live ones, waiting for the
@@ -316,6 +326,16 @@ class ProcessDetailsHistory
   private:
     static_assert(std::is_nothrow_copy_constructible_v<double> && std::is_nothrow_move_assignable_v<double>,
                   "append() and trimToWindow() rely on copying and moving values not throwing");
+
+    /// Whether the axis and every series can take @p count more values without reallocating.
+    [[nodiscard]] bool allHaveRoomFor(std::size_t count) const noexcept
+    {
+        const auto hasRoom = [count](const std::vector<double>& data)
+        {
+            return data.capacity() - data.size() >= count;
+        };
+        return hasRoom(m_Timestamps) && std::ranges::all_of(m_Series, hasRoom);
+    }
 
     /// Makes room for @p capacity values in @p data. Only the capacity changes: a throw leaves
     /// @p data's size and values as they were.
