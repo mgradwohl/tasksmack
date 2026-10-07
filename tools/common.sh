@@ -25,7 +25,7 @@ validate_build_prereqs() {
     local clangpp
     clangpp="$(find_llvm_tool "clang++" 2>/dev/null || true)"
     if [[ -z "$clangpp" ]]; then
-        echo "Error: clang++ not found. Install via: apt install clang-22 lld-22 (or later)" >&2
+        echo "Error: clang++ not found. Install via: apt install clang-23 lld-23 (or later)" >&2
         return 1
     fi
     local clangpp_version

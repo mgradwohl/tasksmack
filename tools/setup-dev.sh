@@ -25,7 +25,7 @@ MINIMAL=false
 # literal, and the --llvm guard below reads it back rather than hardcoding "22" a second
 # time, so a Renovate-proposed bump can't silently desync the guard from the default it's
 # supposed to be checking.
-readonly LLVM_SUPPORTED_VERSION=22
+readonly LLVM_SUPPORTED_VERSION=23
 LLVM_VERSION=$LLVM_SUPPORTED_VERSION
 
 # Single source of truth for the Python major.minor version this script installs -- Renovate's

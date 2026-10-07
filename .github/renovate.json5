@@ -629,7 +629,7 @@
       // job run the same .pre-commit-config.yaml, so an unattended major bump here would move
       // both together -- the risk isn't a CI-vs-local formatting mismatch, it's that
       // clang-format's major version would silently decouple from the *compiler* toolchain
-      // (currently pinned to LLVM 22; the mirror's own next upstream tag is already v23.1.0):
+      // (currently pinned to LLVM 23):
       // a newer formatter's style-rule changes reformatting the whole codebase without any of
       // the deliberate review a real LLVM-major bump gets (new compiler warnings, clang-tidy
       // behavior changes, etc.), and now coordinated with a compiler/clang-tidy pair that

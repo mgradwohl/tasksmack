@@ -12,7 +12,7 @@ on:
             - .github/workflows/copilot-setup-steps.yml
 
 env:
-    LLVM_VERSION: '22'
+    LLVM_VERSION: '23'
 
 permissions: {}
 

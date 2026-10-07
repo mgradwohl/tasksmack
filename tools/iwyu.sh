@@ -138,10 +138,10 @@ elif [[ -n "$IWYU" ]]; then
 fi
 
 # Version check: iwyu must be built against a compatible Clang major version.
-# Mismatched versions (e.g., iwyu built against Clang 17 vs. project Clang 22+)
+# Mismatched versions (e.g., iwyu built against Clang 17 vs. project Clang 23+)
 # cause assertion failures in iwyu_include_picker.
 # Check the Clang base version from the 'based on ... clang version X' line.
-MIN_IWYU_CLANG_MAJOR=22
+MIN_IWYU_CLANG_MAJOR=23
 # Use the already-selected binary so the version check matches what the script will actually run.
 IWYU_VERSION_BIN=""
 if [[ -n "${IWYU}" ]]; then

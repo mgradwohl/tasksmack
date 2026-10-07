@@ -59,7 +59,7 @@ This is the canonical inventory of user-visible and engineering features current
 
 | Item | Current behavior |
 |------|------------------|
-| Build system | CMake 3.29+, Ninja, C++23, Clang/LLVM 22, Linux libc++, Windows MSVC STL |
+| Build system | CMake 3.29+, Ninja, C++23, Clang/LLVM 23, Linux libc++, Windows MSVC STL |
 | Workflow presets | One-command development, coverage, sanitizer, and benchmark workflows |
 | Automated setup | `tools/setup-dev.sh` and `tools/setup-dev.ps1` |
 | Background polling | Centralized `BackgroundSampler` utilizing `ISamplable` for asynchronous model updates to avoid blocking the render thread |

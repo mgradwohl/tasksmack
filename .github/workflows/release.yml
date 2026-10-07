@@ -11,20 +11,20 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  LLVM_VERSION: '22'
-  LLVM_SEMVER_VERSION: '22.1.7'
-  # Exact apt.llvm.org package version currently served for clang-22 (noble).
+  LLVM_VERSION: '23'
+  LLVM_SEMVER_VERSION: '23.1.2'
+  # Exact apt.llvm.org package version currently served for clang-23 (noble).
   # apt.llvm.org does not retain old snapshots per major version -- it only
   # ever serves the latest build for a given major -- so this pin cannot
   # survive indefinitely. When apt rotates the snapshot forward, build-linux's
   # "Assert exact LLVM package version" step fails with the new version
   # string instead of silently building with it. Review the change, then
   # update this value (found via:
-  #   curl -fsSL https://apt.llvm.org/noble/dists/llvm-toolchain-noble-22/main/binary-amd64/Packages.gz \
-  #     | gunzip | grep -A2 '^Package: clang-22$'
+  #   curl -fsSL https://apt.llvm.org/noble/dists/llvm-toolchain-noble-23/main/binary-amd64/Packages.gz \
+  #     | gunzip | grep -A2 '^Package: clang-23$'
   # ) so a Linux toolchain change is always a deliberate, reviewed PR rather
   # than a change in apt repository state between two runs of the same tag.
-  LLVM_LINUX_EXACT_VERSION: '1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80'
+  LLVM_LINUX_EXACT_VERSION: '1:23.1.2~++20260919103626+4b1925210476-1~exp1~20260919223755.77'
 
 permissions: {}
 
