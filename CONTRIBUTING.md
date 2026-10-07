@@ -1418,7 +1418,7 @@ Per maintainer decision D1 (#1408, part of #843: measure first, then set a targe
 
 | Scenario | Target: median app CPU over `--repeat 5` |
 |---|---|
-| Default (this machine, Overview tab, window left alone) | **≤ 16%** of one logical CPU |
+| Default (this machine, Overview tab, window maximized at 3840×2100) | **≤ 16%** of one logical CPU |
 | `--synthetic processes=5000,history=full` | **≤ 22%** of one logical CPU |
 
 Both targets are about 1.5× the measured median on a quiet machine, rounded up: 10.60% → 16%, and
@@ -1428,6 +1428,12 @@ above the target is a regression to explain or fix (`--fail-above 16` / `--fail-
 targets cover **Linux/WSL app CPU only**; Windows targets will follow from `tools/measure-idle.ps1`
 captures. Re-measure and revisit them when the renderer, the default scenario or the sampling
 defaults change.
+
+Measure at the same window geometry. TaskSmack restores its saved size and maximized state, and a
+larger window renders more, so the script records the window's size and maximized state in the
+`SUMMARY` line and the JSON (`scenario.window`), and warns when it varied between repetitions.
+Compare a run against these targets only at the geometry they were measured at (maximized,
+3840×2100). Making the script set a fixed geometry itself is #1453.
 
 Measure on a quiet machine. App CPU rises with presented frames, and other load slows `llvmpipe`
 and so the frame rate. A first baseline taken under load average 20–30 read 6.52% / 9.59% median

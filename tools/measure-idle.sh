@@ -81,7 +81,8 @@
 # CMAKE_BUILD_TYPE, the refresh interval (read from the app log, which logs the background
 # samplers' interval) and history window (the synthetic scenario's when it sets one, else the
 # config file the app logged it loaded, else HISTORY_SECONDS_DEFAULT from
-# src/Domain/SamplingConfig.h), the synthetic spec, the GL renderer, the display refresh rate (from
+# src/Domain/SamplingConfig.h), the synthetic spec, the window's size and maximized state (from
+# xwininfo/xprop; TaskSmack restores its saved geometry, so this is part of the workload), the GL renderer, the display refresh rate (from
 # xrandr; null when unavailable), CPU model, logical CPU count, MHz, kernel release and whether it
 # ran under WSL. No host or user names are recorded.
 #
@@ -106,6 +107,13 @@
 #   ./tools/measure-idle.sh --skip-build --label synthetic-overview --synthetic processes=5000,history=full --repeat 5
 
 set -euo pipefail
+
+# Numbers this script formats (awk printf, sort -g, the JSON) must use '.' as the decimal separator
+# whatever the caller's locale, so the whole script runs under the C locale. TaskSmack itself is
+# launched with the caller's own LC_ALL (or none), so its locale-dependent formatting is unchanged.
+CALLER_LC_ALL="${LC_ALL-}"
+CALLER_LC_ALL_SET="${LC_ALL+1}"
+export LC_ALL=C
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -210,6 +218,22 @@ CLK_TCK="$(getconf CLK_TCK)"
 IS_WSL=0
 grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null && IS_WSL=1
 
+# The size of TaskSmack's top-level X11 window (found by _NET_WM_PID) and whether it is maximized, as
+# "<width> <height> <true|false>", or nothing without an X display, xwininfo/xprop, or the window.
+# TaskSmack restores its saved size and maximized state, so this records the rendering workload.
+window_geometry() {
+    [[ -n "${DISPLAY:-}" ]] && command -v xwininfo &>/dev/null && command -v xprop &>/dev/null || return 0
+    local id info state
+    for id in $(xwininfo -root -tree 2>/dev/null | awk '/"TaskSmack"/ { print $1 }'); do
+        [[ "$(xprop -id "${id}" _NET_WM_PID 2>/dev/null | awk '{ print $NF }')" == "${APP_PID}" ]] || continue
+        info="$(xwininfo -id "${id}" 2>/dev/null)" || continue
+        state="$(xprop -id "${id}" _NET_WM_STATE 2>/dev/null || true)"
+        printf '%s %s %s\n' "$(awk '/^ *Width:/ { print $2 }' <<<"${info}")" "$(awk '/^ *Height:/ { print $2 }' <<<"${info}")" \
+            "$([[ "${state}" == *_NET_WM_STATE_MAXIMIZED_VERT* && "${state}" == *_NET_WM_STATE_MAXIMIZED_HORZ* ]] && echo true || echo false)"
+        return 0
+    done
+}
+
 app_alive() { [[ -n "${APP_PID}" ]] && kill -0 "${APP_PID}" 2>/dev/null; }
 reap_app() {
     [[ -n "${APP_PID}" ]] || return 0
@@ -306,8 +330,11 @@ run_once() {
     # Always set, even when empty: an explicit --synthetic '' must override an inherited
     # TASKSMACK_SYNTHETIC (an empty value turns the scenario off), so the run matches what is reported.
     app_env+=("TASKSMACK_SYNTHETIC=${SYNTHETIC}")
+    # The caller's locale, not this script's C locale (see the top of the script).
+    local env_args=(-u LC_ALL)
+    [[ -n "${CALLER_LC_ALL_SET}" ]] && app_env+=("LC_ALL=${CALLER_LC_ALL}")
     # env execs TaskSmack in place, so $! is TaskSmack's own PID.
-    env "${app_env[@]}" "${BINARY}" > "${APP_LOG}" 2>&1 &
+    env "${env_args[@]}" "${app_env[@]}" "${BINARY}" > "${APP_LOG}" 2>&1 &
     APP_PID=$!
 
     echo "Launched TaskSmack (pid ${APP_PID}). Waiting for its main loop (up to ${MAIN_LOOP_TIMEOUT_SECONDS}s)..."
@@ -344,6 +371,7 @@ run_once() {
         done
     fi
     check_alive "during the warm-up"
+    window_geometry > "${WORK_DIR}/window-${rep}"
 
     # ResizePerf summaries logged after this line, while CPU is sampled, supply the frame figures.
     local log_start_line cpu_start
@@ -516,6 +544,17 @@ read -r TOTAL_MEAN TOTAL_MEDIAN TOTAL_P95 TOTAL_MIN TOTAL_MAX <<<"$(aggregate 2)
 read -r APP_MEAN APP_MEDIAN APP_P95 APP_MIN APP_MAX <<<"$(aggregate 3)"
 read -r FPS_MEAN FPS_MEDIAN FPS_P95 FPS_MIN FPS_MAX <<<"$(aggregate 5)"
 
+# Window geometry: the first repetition's, and whether any repetition's differed from it (a varying
+# window is a varying workload, so the repetitions are not comparable).
+WINDOW_W="" WINDOW_H="" WINDOW_MAXIMIZED="" WINDOW_VARIED=false
+read -r WINDOW_W WINDOW_H WINDOW_MAXIMIZED < "${WORK_DIR}/window-1" || true
+for ((i = 2; i <= REPEAT; i++)); do
+    if [[ "$(cat "${WORK_DIR}/window-${i}")" != "$(cat "${WORK_DIR}/window-1")" ]]; then
+        WINDOW_VARIED=true
+        echo "WARNING: the window geometry differed between repetitions; they are not comparable." >&2
+    fi
+done
+
 # ---- Provenance ---------------------------------------------------------------------------------
 FIRST_LOG="$(head -n 1 "${REPS_FILE}" | cut -d ' ' -f 17-)"
 
@@ -614,8 +653,9 @@ printf '  %-14s %8s %8s %8s %8s %8s\n' "" "mean" "median" "p95" "min" "max"
 printf '  %-14s %8s %8s %8s %8s %8s\n' "app CPU%" "${APP_MEAN}" "${APP_MEDIAN}" "${APP_P95}" "${APP_MIN}" "${APP_MAX}"
 printf '  %-14s %8s %8s %8s %8s %8s\n' "total CPU%" "${TOTAL_MEAN}" "${TOTAL_MEDIAN}" "${TOTAL_P95}" "${TOTAL_MIN}" "${TOTAL_MAX}"
 printf '  %-14s %8s %8s %8s %8s %8s\n' "fps" "${FPS_MEAN}" "${FPS_MEDIAN}" "${FPS_P95}" "${FPS_MIN}" "${FPS_MAX}"
+info "window=${WINDOW_W:-?}x${WINDOW_H:-?} maximized=${WINDOW_MAXIMIZED:-unknown}"
 info "refresh=${REFRESH_MS}ms (${REFRESH_SOURCE}) history=${HISTORY_S}s (${HISTORY_SOURCE}) display=${DISPLAY_HZ:-unknown}Hz renderer=${GL_RENDERER:-unknown}"
-echo "SUMMARY label=${LABEL} preset=${PRESET} reps=${REPEAT} appCpuMean=${APP_MEAN} appCpuMedian=${APP_MEDIAN} appCpuP95=${APP_P95} totalCpuMean=${TOTAL_MEAN} totalCpuMedian=${TOTAL_MEDIAN} totalCpuP95=${TOTAL_P95} fpsMean=${FPS_MEAN} fpsMedian=${FPS_MEDIAN} fpsP95=${FPS_P95} synthetic=${SYNTHETIC:-none}"
+echo "SUMMARY label=${LABEL} preset=${PRESET} reps=${REPEAT} appCpuMean=${APP_MEAN} appCpuMedian=${APP_MEDIAN} appCpuP95=${APP_P95} totalCpuMean=${TOTAL_MEAN} totalCpuMedian=${TOTAL_MEDIAN} totalCpuP95=${TOTAL_P95} fpsMean=${FPS_MEAN} fpsMedian=${FPS_MEDIAN} fpsP95=${FPS_P95} window=${WINDOW_W:-0}x${WINDOW_H:-0} maximized=${WINDOW_MAXIMIZED:-unknown} synthetic=${SYNTHETIC:-none}"
 
 FAILED=false
 if [[ -n "${FAIL_ABOVE}" ]] && awk -v m="${APP_MEDIAN}" -v t="${FAIL_ABOVE}" 'BEGIN { exit !(m > t) }'; then
@@ -653,6 +693,8 @@ json_stats() { printf '{ "mean": %s, "median": %s, "p95": %s, "min": %s, "max": 
     printf '    "setupCmd": %s,\n' "$(json_str "${SETUP_CMD}")"
     printf '    "refreshIntervalMs": %s, "refreshIntervalSource": %s,\n' "$(json_num "${REFRESH_MS}")" "$(json_str "${REFRESH_SOURCE}")"
     printf '    "historySeconds": %s, "historySource": %s,\n' "$(json_num "${HISTORY_S}")" "$(json_str "${HISTORY_SOURCE}")"
+    printf '    "window": { "width": %s, "height": %s, "maximized": %s, "variedAcrossRepetitions": %s },\n' \
+        "$(json_num "${WINDOW_W}")" "$(json_num "${WINDOW_H}")" "$(json_num "${WINDOW_MAXIMIZED}")" "${WINDOW_VARIED}"
     printf '    "warmupSeconds": %s, "durationSeconds": %s, "repeat": %s\n' "${WARMUP_SECONDS}" "${DURATION_SECONDS}" "${REPEAT}"
     printf '  },\n'
     printf '  "machine": {\n'
