@@ -1228,7 +1228,7 @@ CpuAffinity WindowsProcessProbe::readCpuAffinity(HANDLE hProcess, std::span<cons
     }
     groups.resize(std::min<std::size_t>(groupCount, groups.size()));
 
-    if (const auto masks = groupMasksFromProcess(groups, processMask, m_ProcessorGroups); masks.has_value())
+    if (const auto masks = groupMasksFromProcess(groups, processMask, m_ProcessorGroups, m_ThreadsMaySpanGroups); masks.has_value())
     {
         return cpuAffinityFromGroupMasks(*masks, m_ProcessorGroups);
     }

@@ -630,11 +630,20 @@ struct GroupAffinityMask
 ///                      every group by default) its primary group -- which no documented call names
 ///                      for another process. It is 0 when the process has threads explicitly
 ///                      assigned to several groups.
-/// One group: that group's mask is processMask. Several, with a non-zero processMask equal to every
-/// one of those groups' active masks: the default span over all of them, unrestricted. Anything else
-/// (processMask 0, or several groups with a restricted mask somewhere) needs the threads.
-[[nodiscard]] inline std::optional<std::vector<GroupAffinityMask>>
-groupMasksFromProcess(std::span<const std::uint16_t> processGroups, std::uint64_t processMask, std::span<const ProcessorGroupLayout> groups)
+/// One group: that group's mask is processMask -- except, when threadsMaySpan, a mask equal to the
+/// group's every active processor. A process that spans every group by default (the Windows 11 /
+/// Server 2022+ default) reads exactly like that, as does one deliberately confined to its whole
+/// primary group, and nothing tells the two apart. The default is by far the common case, so it is
+/// read as the span over every group's active processors (#1247). Several groups, with a non-zero
+/// processMask equal to every one of those groups' active masks: the default span over all of
+/// them, unrestricted. Anything else (processMask 0, or several groups with a restricted mask
+/// somewhere) needs the threads.
+/// @param threadsMaySpan threadsMaySpanGroups() for this build. Before it, a process runs in one
+///                       group, so its one group's mask is exact.
+[[nodiscard]] inline std::optional<std::vector<GroupAffinityMask>> groupMasksFromProcess(std::span<const std::uint16_t> processGroups,
+                                                                                         std::uint64_t processMask,
+                                                                                         std::span<const ProcessorGroupLayout> groups,
+                                                                                         bool threadsMaySpan)
 {
     if (processMask == 0)
     {
@@ -642,7 +651,18 @@ groupMasksFromProcess(std::span<const std::uint16_t> processGroups, std::uint64_
     }
     if (processGroups.size() == 1)
     {
-        return std::vector<GroupAffinityMask>{{.group = processGroups.front(), .mask = processMask}};
+        const std::uint16_t group = processGroups.front();
+        if (threadsMaySpan && groups.size() > 1 && group < groups.size() && groups[group].activeMask == processMask)
+        {
+            std::vector<GroupAffinityMask> span;
+            span.reserve(groups.size());
+            for (std::size_t g = 0; g < groups.size(); ++g)
+            {
+                span.push_back({.group = static_cast<std::uint16_t>(g), .mask = groups[g].activeMask});
+            }
+            return span;
+        }
+        return std::vector<GroupAffinityMask>{{.group = group, .mask = processMask}};
     }
     std::vector<GroupAffinityMask> masks;
     masks.reserve(processGroups.size());

@@ -799,9 +799,39 @@ TEST(GroupMasksFromProcessTest, OneGroupTakesTheProcessMask)
     const std::vector<ProcessorGroupLayout> groups{{.maximumProcessors = 64, .activeMask = FULL_GROUP},
                                                    {.maximumProcessors = 64, .activeMask = FULL_GROUP}};
     const std::vector<std::uint16_t> processGroups{1};
-    const auto masks = groupMasksFromProcess(processGroups, 0xF0, groups);
+    const auto masks = groupMasksFromProcess(processGroups, 0xF0, groups, true);
     ASSERT_TRUE(masks.has_value());
     EXPECT_EQ(cpuAffinityFromGroupMasks(masks.value_or(std::vector<GroupAffinityMask>{}), groups), cpuList("68-71"));
+}
+
+TEST(GroupMasksFromProcessTest, OneFullGroupIsTheDefaultSpanWhereThreadsMaySpan)
+{
+    // Review #1434: on Windows 11 / Server 2022+ a process that spans every group by default lists
+    // only its primary group, with that group's full mask. Read as the span over every group (the
+    // default, by far the common case), not as the primary group alone.
+    const std::vector<ProcessorGroupLayout> groups{{.maximumProcessors = 64, .activeMask = FULL_GROUP},
+                                                   {.maximumProcessors = 32, .activeMask = 0xFFFF'FFFF}};
+    const std::vector<std::uint16_t> primaryOnly{1};
+    const auto spanned = groupMasksFromProcess(primaryOnly, 0xFFFF'FFFF, groups, true);
+    ASSERT_TRUE(spanned.has_value());
+    EXPECT_EQ(cpuAffinityFromGroupMasks(spanned.value_or(std::vector<GroupAffinityMask>{}), groups), cpuList("0-95"));
+
+    // Before Windows 11 a process runs in one group: its full mask is that group alone.
+    const auto confined = groupMasksFromProcess(primaryOnly, 0xFFFF'FFFF, groups, false);
+    ASSERT_TRUE(confined.has_value());
+    EXPECT_EQ(cpuAffinityFromGroupMasks(confined.value_or(std::vector<GroupAffinityMask>{}), groups), cpuList("64-95"));
+
+    // A restricted mask is exact either way: SetProcessAffinityMask confines it to that group.
+    const auto restricted = groupMasksFromProcess(primaryOnly, 0xF, groups, true);
+    ASSERT_TRUE(restricted.has_value());
+    EXPECT_EQ(cpuAffinityFromGroupMasks(restricted.value_or(std::vector<GroupAffinityMask>{}), groups), cpuList("64-67"));
+
+    // One group on the machine: nothing to span.
+    const std::vector<ProcessorGroupLayout> single{{.maximumProcessors = 16, .activeMask = 0xFFFF}};
+    const std::vector<std::uint16_t> group0{0};
+    const auto only = groupMasksFromProcess(group0, 0xFFFF, single, true);
+    ASSERT_TRUE(only.has_value());
+    EXPECT_EQ(cpuAffinityFromGroupMasks(only.value_or(std::vector<GroupAffinityMask>{}), single), cpuList("0-15"));
 }
 
 TEST(GroupMasksFromProcessTest, DefaultSpanOverEveryGroupNeedsNoThreads)
@@ -810,7 +840,7 @@ TEST(GroupMasksFromProcessTest, DefaultSpanOverEveryGroupNeedsNoThreads)
     const std::vector<ProcessorGroupLayout> groups{{.maximumProcessors = 64, .activeMask = FULL_GROUP},
                                                    {.maximumProcessors = 64, .activeMask = FULL_GROUP}};
     const std::vector<std::uint16_t> processGroups{0, 1};
-    const auto masks = groupMasksFromProcess(processGroups, FULL_GROUP, groups);
+    const auto masks = groupMasksFromProcess(processGroups, FULL_GROUP, groups, true);
     ASSERT_TRUE(masks.has_value());
     EXPECT_EQ(cpuAffinityFromGroupMasks(masks.value_or(std::vector<GroupAffinityMask>{}), groups), cpuList("0-127"));
 }
@@ -821,13 +851,13 @@ TEST(GroupMasksFromProcessTest, AmbiguousReadsNeedTheThreads)
                                                    {.maximumProcessors = 32, .activeMask = 0xFFFF'FFFF}};
     const std::vector<std::uint16_t> both{0, 1};
     // Threads explicitly in several groups: GetProcessAffinityMask reports 0.
-    EXPECT_FALSE(groupMasksFromProcess(both, 0, groups).has_value());
+    EXPECT_FALSE(groupMasksFromProcess(both, 0, groups, true).has_value());
     // Several groups, and the one mask doesn't match every group's processors: which group is it?
-    EXPECT_FALSE(groupMasksFromProcess(both, FULL_GROUP, groups).has_value());
-    EXPECT_FALSE(groupMasksFromProcess(both, 0xFF, groups).has_value());
+    EXPECT_FALSE(groupMasksFromProcess(both, FULL_GROUP, groups, true).has_value());
+    EXPECT_FALSE(groupMasksFromProcess(both, 0xFF, groups, true).has_value());
     // A listed group the layout doesn't have.
     const std::vector<std::uint16_t> unknown{0, 3};
-    EXPECT_FALSE(groupMasksFromProcess(unknown, FULL_GROUP, groups).has_value());
+    EXPECT_FALSE(groupMasksFromProcess(unknown, FULL_GROUP, groups, true).has_value());
 }
 
 // Two full groups of 64, the layout most of the thread cases use.
@@ -922,8 +952,8 @@ TEST(GroupMasksFromProcessTest, DefaultSpanFollowsTheCurrentActiveMasks)
                                                    {.maximumProcessors = 64, .activeMask = 0xFFFF'FFFF}};
     const std::vector<ProcessorGroupLayout> after{{.maximumProcessors = 64, .activeMask = FULL_GROUP},
                                                   {.maximumProcessors = 64, .activeMask = FULL_GROUP}};
-    EXPECT_FALSE(groupMasksFromProcess(processGroups, FULL_GROUP, before).has_value());
-    const auto masks = groupMasksFromProcess(processGroups, FULL_GROUP, after);
+    EXPECT_FALSE(groupMasksFromProcess(processGroups, FULL_GROUP, before, true).has_value());
+    const auto masks = groupMasksFromProcess(processGroups, FULL_GROUP, after, true);
     ASSERT_TRUE(masks.has_value());
     EXPECT_EQ(cpuAffinityFromGroupMasks(masks.value_or(std::vector<GroupAffinityMask>{}), after), cpuList("0-127"));
 }
